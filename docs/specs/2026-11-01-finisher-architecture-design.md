@@ -1,6 +1,6 @@
 # Finisher — Architecture Design
 
-- **Status:** Draft for review, revision 2. Incorporates the Fable review (B1–B5, I1–I15) and the NAS/cloud-folder requirement.
+- **Status:** revision 3 (post-spike). Incorporates the Fable review (B1–B5, I1–I15), the NAS/cloud-folder requirement and the spike results (§27).
 - **Date:** 2026-11-02
 - **Scope:** Top-level architecture for the Finisher rewrite. Every numbered sub-project in §24 gets its own spec → plan → implementation cycle. This document fixes the boundaries between them.
 - **Predecessor:** `video-creater` (working name, now the legacy reference app).
@@ -77,7 +77,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 | D28 | Providers v1 | Claude Code via the user-installed `claude` CLI in stream-JSON mode (Agent SDK not bundled); Codex app-server bundled, T3's client vendored |
 | D29 | Library indexing | Semantic embeddings run locally by default (SigLIP2 via ONNX); cloud embeddings (Gemini/Qwen) are opt-in per library |
 | D30 | Built-in agent APIs | Anthropic (Messages API), OpenAI (Responses API), and one OpenAI-compatible adapter (OpenRouter, Ollama, LM Studio, others) |
-| D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs: headless server only, best effort |
+| D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs are not supported |
 | D32 | Distribution | Direct download + auto-update: notarised DMG, signed Windows installer, AppImage/deb/rpm, Docker image for the server. No app stores in v1 |
 
 ---
@@ -685,7 +685,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | Accessibility | Keyboard-operable timeline and inspector, focus management, screen-reader labels for controls, reduced-motion setting |
 | Updates | Electron auto-update; `finisherd` and worker binaries ship with the app and are version-locked to it; headless servers update via package or Docker image; protocol version and capabilities prevent mismatches |
 | Onboarding | Codex sign-in (bundled); detect Claude Code (optional); set up API keys, add a library, take a sample project tour, explain the codec capability report |
-| Minimum platforms | D31: macOS 14+ Apple Silicon; Windows 11 / 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+. Machines below minimum fall back to server-rendered preview or headless use |
+| Minimum platforms | D31: macOS 14+ Apple Silicon only (no Intel Macs); Windows 11 / 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+. Machines below minimum fall back to server-rendered preview or headless use |
 | Distribution | D32: notarised DMG, signed Windows installer, AppImage/deb/rpm, server Docker image; auto-update; no app stores in v1 |
 | Indexing cost and privacy | D29: local embeddings by default. Cloud indexing shows an estimated cost and upload notice per library before starting |
 
@@ -711,7 +711,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 ## 23. CI (GitHub Actions)
 
 - Actions pinned to commit SHAs.
-- Matrix: macOS arm64/x64, Windows x64, Linux x64 (arm64 where available).
+- Matrix: macOS arm64 (no Intel Macs), Windows x64, Linux x64 (arm64 where available).
 - **Gates:** build, tests, licence gate, cloud import-graph guard, file-size lint, generated-types drift, event-loop lint, performance and A/V budgets, sandbox escape tests.
 - **Artifacts:** napi prebuilds (or the sidecar fallback), WASM build, signed and notarised release artifacts.
 
@@ -800,3 +800,58 @@ Ported deliberately:
 10. Rights-cleared test footage for the eval harness, alignment fixtures and golden frames.
 11. Direct publishing to TikTok, YouTube, Instagram (proposed: after v1).
 12. Pricing and paid hosted feature set (cloud phase).
+
+---
+
+## 27. Post-spike amendments (revision 3)
+
+Spike code, evidence and the report are throwaway and live in the git-ignored `archive/spike/` folder (`report/2026-11-spike-report.md`, `report/results/`); this section is the durable record. Where an entry conflicts with an earlier section, the entry wins.
+
+1. **§7 Rust/TS boundary (S1, S2): confirmed.**
+   - napi measured: apply p99 1.9 µs, same-track 1k-op rebase 4.0 ms (every op shifted), event-loop p99 1.35 ms.
+   - A TS model rebases about 5.8× slower at p50 (22.9 ms, JSON parsing excluded) and uses 2.4× the memory.
+   - Baked render plans are small (676 B/frame), but keyframe evaluation and caption layout still have to be shared Rust code.
+   - The sidecar fallback is measured at 22 µs p99 and is the documented alternative if napi prebuilds fail on any platform.
+2. **§12.3 preview (S3):**
+   - Frame ingest is `copyExternalImageToTexture` (one GPU copy, 0.4 ms p95).
+   - The preview scheduler must be **cadence-aware**: it measures the real display/rAF interval and paces against it.
+   - The measured A/V offset is scheduler-internal (mean −9.6 ms = video late). End-to-end A/V latency must be measured by capture before any display-latency correction is applied.
+   - Drop bursts under machine contention came from the compositor cadence falling to about 53 Hz, not from the pipeline.
+3. **§12.1–12.2 codecs (S5):**
+   - Rust/objc2 AVFoundation and VideoToolbox are confirmed: 2.5k fps 1080p decode, HEVC Main10 HLG, 24× realtime short-GOP proxies.
+   - The hardware decoder path is verified in use via a VideoToolbox session. The software AV1 fallback (rav1e: 1.22× and then 0.75× realtime on an M4) is not reliably realtime: it is a **background job, not interactive**. Evaluate SVT-AV1 in sub-project 6.
+4. **§13 transcription and alignment (S6):** the default English pipeline is:
+   - **Parakeet-TDT 0.6B v2** (CC-BY-4.0, attribution) for the transcript;
+   - **wav2vec2-base-960h** (Apache-2.0) CTC forced alignment;
+   - a constant bias calibration.
+   - Measured: WER 1.9%, start p50/p95 19/80 ms, RTF 0.046.
+   - The p95 target of 50 ms stays and requires an onset-refinement stage.
+   - whisper.cpp alone is not acceptable for per-word captions.
+   - Multilingual: Parakeet v3 or whisper.cpp + per-language CTC.
+   - MMS models are excluded (CC-BY-NC).
+5. **§8.2 providers (S7):**
+   - Claude Code is launched with `-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio --setting-sources project`. `--permission-prompts host` alone auto-denies.
+   - Codex is driven over newline-delimited JSON-RPC (`initialize`, `initialized`, `thread/start`, `turn/start`, `*/requestApproval` → `accept|decline`, `turn/interrupt`, `thread/resume`).
+   - Adapters bind events and errors to the emitting process, ignore late messages from a replaced process, and fail the pending turn on spawn failure or exit.
+6. **§8.4 sandbox (S8):**
+   - Protected roots (`.finisher/`, `assets/`) deny **both file-write and file-link**; this closes hardlink escapes.
+   - Writable roots: `workspace/`, temp dirs, and each provider's own state dirs (`CLAUDE_CONFIG_DIR`/`~/.claude`, `~/.codex`, caches).
+   - The sandbox, not the approval policy, is the guarantee: with a fooled allow-all policy only the sandbox blocked writes.
+7. **§8.4 / §16 environment (S1, S7):** *every* child process (desktop shell → `finisherd` → workers, agents, plugins) starts from an explicit environment allow-list. Inherited `ELECTRON_RUN_AS_NODE`, `CLAUDECODE` and `CLAUDE_CODE_*` must never pass through.
+8. **§23 packaging (S9):**
+   - The signed bundle needs only `com.apple.security.cs.allow-jit`.
+   - Release builds prune per-platform binaries (ONNX Runtime ships all platforms) and download optional components on demand; the spike bundle was 645 MB.
+   - The shell build lists `node_modules` in `extraResources` explicitly, because electron-builder drops them silently.
+9. **§6.7 storage (S10):**
+   - Lease acquisition is check-then-write, so not atomic. Conflict detection (duplicate segment sequence, sync conflict copies, unknown server ids → read-only plus a recovery prompt) is **mandatory**, not optional.
+   - Defaults until NAS runs: TTL 5 s, heartbeat 5 s, stale after 15 s, network-root polling every 60 s.
+10. **§12.5 Lottie (S11):**
+    - thorvg WASM is confirmed for template preview (≤ 2.9 ms per 1080p frame, 77.6 dB vs native).
+    - The preview must size the Lottie render target from the intended pixel size, not the canvas bounding rect.
+    - Template **text slots** (fonts in WASM) are unverified and must be tested before shipping text templates.
+11. **Validation still outstanding** (blocked on hardware or accounts, not design):
+    - Windows and Linux rows of S1, S3, S4, S5, S8 and S9;
+    - NAS and sync-service rows of S10;
+    - notarisation (Apple agreement).
+    - These gate the cross-platform claims of D4/D31 before sub-project 6.
+

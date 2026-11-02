@@ -1,20 +1,24 @@
-# Tasks — bootstrap and spike
+# Tasks
 
-Plan: docs/plans/2026-11-02-bootstrap-and-spike.md
+Spec: `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 holds the spike conclusions).
+Spike code, results and report are local-only in `archive/spike/` (git-ignored).
 
-- [x] Task 1: Repository skeleton and agent docs
-- [x] Task 2: Toolchains and workspaces
-- [x] Task 3: Quality gates
-- [x] Task 4: CI workflow (written, pins verified locally; not yet run — E2 no GitHub repo)
-- [ ] Task 5: Spike harness and result schema
-- [ ] Task 6: S1 engine boundary
-- [ ] Task 7: S2 render-plan size + S3 WASM preview
-- [ ] Task 8: S4 WebGPU/WebCodecs in Electron on Linux
-- [ ] Task 9: S5 OS codecs and proxy speed
-- [ ] Task 10: S6 word-alignment accuracy
-- [ ] Task 11: S7 agent CLI control
-- [ ] Task 12: S8 OS sandbox feasibility
-- [ ] Task 13: S9 signed and notarised bundle
-- [ ] Task 14: S10 NAS and synced-folder storage
-- [ ] Task 15: S11 thorvg WASM
-- [ ] Task 16: Spike report and spec amendments
+## Spike round 1 (2026-11-02): done
+
+S1–S11 executed on macOS. Conclusions are in spec §27.
+
+## Spike round 2: macOS follow-ups
+
+- [ ] S6b: caption word timing meets p95 ≤ 50 ms (onset refinement)
+- [ ] S3b: capture-based end-to-end A/V latency of the preview
+- [ ] S11b: Lottie text slots and font loading in WASM vs native
+- [ ] S5b: SVT-AV1 vs rav1e for the software AV1 fallback (speed, quality, licence)
+- [x] Drop Intel Mac support (D31, §23, CI matrix)
+- [x] Move spikes and evaluations to git-ignored `archive/`
+
+## Blocked on hardware or accounts
+
+- Windows PC (E4): S1, S3, S5, S8, S9 Windows rows
+- Linux machine (E3, VM or Proxmox host): S4, S5 VA-API, S8 Landlock
+- E2 GitHub repo (CI), E5 NAS, E6 sync services, E8 Apple agreement (notarisation),
+  E9 Windows signing cert, own short-form speech clips (S6)

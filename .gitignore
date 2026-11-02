@@ -5,5 +5,6 @@ out/
 *.node
 .DS_Store
 .superpowers/
-spike/**/fixtures/media/
-spike/**/output/
+__pycache__/
+# Throwaway spikes, evaluations, benchmarks and scratchpads (local only).
+/archive/

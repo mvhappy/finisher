@@ -9,4 +9,4 @@
 - Non-test source files ≤ 600 lines, tests ≤ 1500.
 - No cloud-only imports in this repository.
 - The spec is `docs/specs/2026-11-01-finisher-architecture-design.md`.
-- Spike code lives only on the `spike` branch.
+- Spikes, evaluations, benchmarks and scratchpads live in `archive/` (git-ignored). Only durable conclusions go into the spec.
