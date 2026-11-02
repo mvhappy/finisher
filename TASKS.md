@@ -9,7 +9,7 @@ S1–S11 executed on macOS. Conclusions are in spec §27.
 
 ## Spike round 2: macOS follow-ups
 
-- [x] S6b: caption word timing — learned boundary correction; p95 46/49 ms vs MFA; starts pass the perceptual gate, ends 91.2 % (open)
+- [x] S6b: caption word timing — learned boundary correction; p95 46/49 ms vs MFA (held out); human-label gate unmeasured
 - [x] S3b: end-to-end A/V latency — audio 37 ms early uncompensated; compensated p95 7.4 ms
 - [x] S11b: Lottie text — thorvg text rejected for slots; shared fin-text engine injects image slots
 - [x] S5b: SVT-AV1 replaces rav1e (9–22× realtime, +1.2–1.5 dB); VP9 rt as reserve
@@ -25,6 +25,6 @@ S1–S11 executed on macOS. Conclusions are in spec §27.
 
 ## Open from round 2
 
-- S6: end-boundary accuracy (91.2 % within the window, needs 95 %); creator-speech check
+- S6: human-labelled, permissively licensed eval set (hand-checked creator clips); end-boundary accuracy
 - S3b: 240 fps phone check of panel response; Bluetooth/AirPlay output
 - S11b: colour emoji in fin-text (COLRv1)

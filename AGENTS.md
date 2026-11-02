@@ -10,3 +10,4 @@
 - No cloud-only imports in this repository.
 - The spec is `docs/specs/2026-11-01-finisher-architecture-design.md`.
 - Spikes, evaluations, benchmarks and scratchpads live in `archive/` (git-ignored). Only durable conclusions go into the spec.
+- Evaluation data must be permissively licensed too: no NC or share-alike corpora.

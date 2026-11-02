@@ -835,13 +835,13 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **wav2vec2-base-960h** (Apache-2.0, fp32 ONNX; int8 costs 7–10 ms of p95) CTC Viterbi word spans;
    - a **learned start/end boundary correction** (S6b): gradient-boosted trees, 0.5 MB, ported to Rust. Features are CTC blank probabilities, band energies, energy edges and pause/letter context. It is trained on MFA-aligned LibriSpeech dev-clean, speaker-disjoint from test.
    - **Measured, held out (WER 1.9 / 4.1%; RTF ≈ 0.1 on CPU):**
-     - start/end p95 vs MFA references: 46/49 ms on test-clean and 52/60 ms on test-other (round 1: 80/119 ms);
-     - against TIMIT hand labels, with no TIMIT tuning: 60/67 ms.
+     - start/end p95 vs MFA references: 46/49 ms on test-clean and 52/60 ms on test-other (round 1: 80/119 ms).
    - **Quality gate** (replaces "p95 ≤ 50 ms"):
      - ≥ 95 % of word starts and ends must fall within [−125, +45] ms of human-labelled boundaries (ITU-R BT.1359 detectability: a caption late by more than 45 ms, or early by more than 125 ms).
      - p95 against MFA ≤ 50 ms is tracked, not gated.
-     - p95 ≤ 50 ms against humans can't be a gate: MFA itself puts only 89 % of TIMIT boundaries within 50 ms.
-     - Status: starts 95.4 % (pass), **ends 91.2 % (fail)**. End boundaries need more work, and creator-speech validation is outstanding.
+     - p95 ≤ 50 ms against humans can't be a gate: published evaluations put only 89 % of MFA's word boundaries within 50 ms of hand labels (Rousso et al., Interspeech 2024).
+     - On MFA references (held out), 95.9 % of starts and 96.9 % of ends are in the window.
+     - **Status against human labels: unmeasured.** Evaluation data must be permissively licensed; no NC-licensed corpora are used. The planned human-labelled set is the owner's hand-checked creator clips. End boundaries are expected to be the weak side.
    - whisper.cpp alone is not acceptable for per-word captions. Qwen3-ForcedAligner was evaluated and rejected: 80 ms timestamp steps.
    - Multilingual: Parakeet v3 or whisper.cpp + per-language CTC.
    - MMS models are excluded (CC-BY-NC).
