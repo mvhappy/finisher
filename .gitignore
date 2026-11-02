@@ -1,0 +1,9 @@
+target/
+node_modules/
+dist/
+out/
+*.node
+.DS_Store
+.superpowers/
+spike/**/fixtures/media/
+spike/**/output/
