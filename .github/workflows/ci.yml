@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main, bootstrap, spike]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install pnpm
+        run: npm install -g pnpm@12.15.0
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Rust tests
+        run: cargo test --workspace --release
+      - name: TypeScript tests
+        run: pnpm test
+      - name: Gate tests
+        run: pnpm test:gates
+      - name: Install cargo-deny
+        if: runner.os != 'Windows'
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Gates
+        run: pnpm gates

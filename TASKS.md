@@ -4,8 +4,8 @@ Plan: docs/plans/2026-11-02-bootstrap-and-spike.md
 
 - [x] Task 1: Repository skeleton and agent docs
 - [x] Task 2: Toolchains and workspaces
-- [ ] Task 3: Quality gates
-- [ ] Task 4: CI workflow
+- [x] Task 3: Quality gates
+- [x] Task 4: CI workflow (written, pins verified locally; not yet run — E2 no GitHub repo)
 - [ ] Task 5: Spike harness and result schema
 - [ ] Task 6: S1 engine boundary
 - [ ] Task 7: S2 render-plan size + S3 WASM preview
