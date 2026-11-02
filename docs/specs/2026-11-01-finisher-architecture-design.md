@@ -79,6 +79,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 | D30 | Built-in agent APIs | Anthropic (Messages API), OpenAI (Responses API), and one OpenAI-compatible adapter (OpenRouter, Ollama, LM Studio, others) |
 | D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs are not supported |
 | D32 | Distribution | Direct download + auto-update: notarised DMG, signed Windows installer, AppImage/deb/rpm, Docker image for the server. No app stores in v1 |
+| D33 | Internationalisation | i18n-ready from the first commit, English-only at launch: every user-facing string is an ICU message in a catalogue, never a literal; translations are added later without code changes (§17.1). UI language and content language (transcripts, captions, generated text) are separate settings |
 
 ---
 
@@ -631,6 +632,27 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - A/V sync ±1 frame
 - **Electron:** pruned fork of T3's desktop (backend manager, protocol, updates, window/menu, settings, SSH/WSL), shipped for macOS, Windows and Linux. Web client in v1.
 
+### 17.1 Internationalisation (D33)
+
+- **Catalogue:**
+  - All user-facing text lives in ICU MessageFormat catalogues (`packages/i18n/messages/<locale>.json`), with plurals, select and arguments.
+  - The library is MIT/BSD with typed, tree-shakable message functions (Paraglide JS or Lingui; chosen in sub-project 4). `en` is the source locale and the only one shipped at launch.
+- **No literals:** a lint gate (`no-literal-string` for JSX, attributes and `aria-*`) fails CI on hard-coded UI text.
+- **Message keys are semantic** (`timeline.clip.split`), never English sentences. A new key needs a description for translators.
+- **Server and agents never send display text to the UI:**
+  - Errors, reviewer findings, op names and notifications travel as stable codes plus parameters; the client renders them through the catalogue.
+  - Free text written by agents is content, not UI, and is shown as-is.
+- **Formatting:**
+  - Numbers, dates, durations, file sizes and lists go through `Intl` with the active locale. Timecode stays locale-independent.
+- **Layout readiness:**
+  - CSS uses logical properties (`margin-inline-start`, etc.) so RTL works later.
+  - No text baked into images or icons. Layouts tolerate +40 % text expansion.
+- **Pseudo-locale in CI:** `en-XA` (accented and expanded) renders every screen in Playwright visual QA, catching unexternalised or truncated strings.
+- **Separate settings:** UI locale and content language are independent.
+  - Content language drives the ASR/aligner choice, caption fonts and shaping (`fin-text`), and hyphenation.
+  - The CLI (`fin`) is agent-only and English, but returns the same error codes.
+- **Plugins** ship their own catalogues under their namespace; the registry manifest declares supported locales.
+
 ---
 
 ## 18. Licensing and third-party reuse
@@ -812,6 +834,9 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - A TS model rebases about 5.8× slower at p50 (22.9 ms, JSON parsing excluded) and uses 2.4× the memory.
    - Baked render plans are small (676 B/frame), but keyframe evaluation and caption layout still have to be shared Rust code.
    - The sidecar fallback is measured at 22 µs p99 and is the documented alternative if napi prebuilds fail on any platform.
+   - **Linux x64** (Ubuntu 24.04 VM, Alder Lake):
+     - apply p99 3.4 µs, rebase 5.3 ms, event loop 1.1 ms, sidecar 32 µs;
+     - Electron main and `ELECTRON_RUN_AS_NODE` child load 5/5, with state hashes identical to macOS.
 2. **§12.3 preview (S3):**
    - Frame ingest is `copyExternalImageToTexture` (one GPU copy, 0.4 ms p95).
    - The preview scheduler must be **cadence-aware**: it measures the real display/rAF interval and paces against it.
@@ -821,6 +846,17 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - It never adds `outputLatency` (double-counting). Result: compensated |offset| p95 7.4 ms (held out).
      - Open: physical panel check (240 fps phone test), Bluetooth/AirPlay outputs, refresh rates other than 60 Hz, Windows and Linux. About 2 % of events have a one-refresh window-server slip.
    - Drop bursts under machine contention came from the compositor cadence falling to about 53 Hz, not from the pipeline.
+   - **Linux, Intel Gen12 iGPU (S3/S4, Docker on Xvfb, so indicative):**
+     - WebGPU runs on Vulkan/ANV, not the fallback adapter.
+     - WebCodecs decodes H.264, HEVC (incl. Main10), VP9 and AV1 on VA-API: 889–1,875 fps at 1080p, with the video engine verified busy.
+     - The wgpu preview ran 1080p60 with 59.99 fps, 0 drops, ingest 0.3 ms, scrub p95 7.3 ms.
+   - **Chromium switches on Linux:**
+     - Wayland: none, because Vulkan switches crash the GPU process there.
+     - X11 without DRI3: `--use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan`.
+     - `--ozone-platform=headless` is unusable.
+   - **HEVC on Linux:** Chromium has no software HEVC decoder there, so HEVC preview needs VA-API or a proxy.
+   - **Without a GPU:** only the SwiftShader/llvmpipe fallback is available, behind unsafe flags. Such machines use proxies and server-rendered preview (D31).
+   - A real-desktop Linux run with real vsync is still pending.
 3. **§12.1–12.2 codecs (S5):**
    - Rust/objc2 AVFoundation and VideoToolbox are confirmed: 2.5k fps 1080p decode, HEVC Main10 HLG, 24× realtime short-GOP proxies.
    - The hardware decoder path is verified in use via a VideoToolbox session. 
@@ -829,7 +865,11 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **libvpx VP9 `--rt`** (cpu-used 6–7) is the reserve for clients without AV1 decode.
    - **Licence:** SVT-AV1 is BSD-3-Clause-Clear + AOMedia Patent License 1.0, the same patent licence as dav1d and libaom. It is added to the cargo-deny allow list and `THIRD_PARTY_NOTICES` when adopted.
    - **Build:** from source at a pinned, vendored tag; never the binding's prebuilt download. Keep a minimal FFI as the fallback to the single-vendor binding.
-   - **Unverified:** Windows MSVC and Linux x64 builds, and x86 speed.
+   - **Linux x64 (Alder Lake, AVX2):** builds from source; 10.4× realtime all cores and 10.7× on 4 threads at 540p; PSNR matches arm64 within 0.02 dB; static lib 10.5 MB. A Windows MSVC build is unverified.
+   - **Linux VA-API (Intel Gen12):**
+     - decodes H.264, HEVC Main/Main10, VP9 and AV1;
+     - encodes H.264, HEVC and VP9 (low-power VDEnc), with 540p proxies at 26.7× realtime; no AV1 encode.
+     - `fin-codecs` on Linux uses libva FFI (MIT; `cros-libva` BSD-3 is an alternative) and keeps frames on the GPU: 10-bit download to the CPU is slow (174 fps).
 4. **§13 transcription and alignment (S6):** the default English pipeline is:
    - **Parakeet-TDT 0.6B v2** (CC-BY-4.0, attribution) for the transcript;
    - **wav2vec2-base-960h** (Apache-2.0, fp32 ONNX; int8 costs 7–10 ms of p95) CTC Viterbi word spans;
@@ -841,7 +881,12 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - p95 against MFA ≤ 50 ms is tracked, not gated.
      - p95 ≤ 50 ms against humans can't be a gate: published evaluations put only 89 % of MFA's word boundaries within 50 ms of hand labels (Rousso et al., Interspeech 2024).
      - On MFA references (held out), 95.9 % of starts and 96.9 % of ends are in the window.
-     - **Status against human labels: unmeasured.** Evaluation data must be permissively licensed; no NC-licensed corpora are used. The planned human-labelled set is the owner's hand-checked creator clips. End boundaries are expected to be the weak side.
+     - **Status against human labels: unmeasured (S6c).**
+       - No permissively licensed English corpus with human word boundaries exists: those with human labels are NC, LDC or research-only, and the permissive ones are forced-aligned.
+       - TTS duration references (Kokoro, Matcha) are rejected: they miss audible speech edges by 50–400 ms. ElevenLabs is excluded on licence and terms.
+       - The reference set is built from the owner's own videos, corrected by hand in a word-timing labeller. Corrections are prefilled from an independent coarse aligner, never from the pipeline under test, and the pipeline is never tuned on this set.
+       - An independent aligner on a real reel suggests end boundaries are the weak side.
+     - Digit words ("6", "$20", "7:30") get no timing from CTC; numbers are spelled out before alignment.
    - whisper.cpp alone is not acceptable for per-word captions. Qwen3-ForcedAligner was evaluated and rejected: 80 ms timestamp steps.
    - Multilingual: Parakeet v3 or whisper.cpp + per-language CTC.
    - MMS models are excluded (CC-BY-NC).
@@ -853,20 +898,50 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - Protected roots (`.finisher/`, `assets/`) deny **both file-write and file-link**; this closes hardlink escapes.
    - Writable roots: `workspace/`, temp dirs, and each provider's own state dirs (`CLAUDE_CONFIG_DIR`/`~/.claude`, `~/.codex`, caches).
    - The sandbox, not the approval policy, is the guarantee: with a fooled allow-all policy only the sandbox blocked writes.
+   - **Linux Landlock (ABI 4, kernel 6.8): confirmed.** 90/90 escapes blocked; unsandboxed, 7/7 succeeded.
+     - Landlock only adds access, so a protected root can't sit inside a writable root. Write roots are enumerated around protected roots.
+     - Each agent gets a private `TMPDIR` inside a write root instead of `/tmp`.
+     - A hardlink denial surfaces as EXDEV. TCP can be filtered; UDP can't.
+     - Real agent turns under Landlock still need logged-in CLIs on a Linux host.
 7. **§8.4 / §16 environment (S1, S7):** *every* child process (desktop shell → `finisherd` → workers, agents, plugins) starts from an explicit environment allow-list. Inherited `ELECTRON_RUN_AS_NODE`, `CLAUDECODE` and `CLAUDE_CODE_*` must never pass through.
 8. **§23 packaging (S9):**
    - The signed bundle needs only `com.apple.security.cs.allow-jit`.
    - Release builds prune per-platform binaries (ONNX Runtime ships all platforms) and download optional components on demand; the spike bundle was 645 MB.
    - The shell build lists `node_modules` in `extraResources` explicitly, because electron-builder drops them silently.
+   - **macOS: notarised.** Publisher is Maryna Vdovenko's team `9XN7WN8JN2`.
+     - The app is signed with that team's Developer ID Application certificate and notarised with an App Store Connect API key (`notarytool --key/--key-id/--issuer`, the same path CI will use).
+     - Stapled; Gatekeeper reports "Notarized Developer ID"; all native parts launch.
+     - Apple's queue took about 30 minutes, so release CI must not use a short notarisation timeout.
+   - **Linux (Ubuntu 24.04):** AppImage 270 MB, deb 207 MB; napi, ONNX and Codex load.
+     - Ubuntu's AppArmor user-namespace restriction disables the Chromium sandbox unless an AppArmor profile is installed. An AppImage can't install one and so runs with the sandbox silently off.
+     - **Linux ships as deb/rpm with the AppArmor profile; the AppImage is secondary and warns.** AppImage also needs libfuse2.
 9. **§6.7 storage (S10):**
-   - Lease acquisition is check-then-write, so not atomic. Conflict detection (duplicate segment sequence, sync conflict copies, unknown server ids → read-only plus a recovery prompt) is **mandatory**, not optional.
-   - Defaults until NAS runs: TTL 5 s, heartbeat 5 s, stale after 15 s, network-root polling every 60 s.
+   - **The round-1 check-then-write lease is rejected.** On SMB it split-brained:
+     - 111/200 races from one Mac;
+     - 6/50 from two machines on a fresh folder;
+     - 50/50 with per-writer temp names.
+   - **SMB 3.1.1, macOS + Linux clients: the fenced lease is required.**
+     - **Claim:** epoch by exclusive create (`O_EXCL`), per-writer temp files, retried rename.
+     - **Reads:** lease reads are uncached (`F_NOCACHE` on macOS, `O_DIRECT` on Linux). Default client caching held stale content for 14–36 s; uncached reads cut the worst lag to 60 ms.
+     - **Takeover:** only after stale-after, plus a confirming re-read ≥ 1.5 s later.
+     - **Fencing:** a check (no newer epoch claim) before every write and after every heartbeat; the holder self-fences at its stamp + 2×TTL. An unreadable lease (e.g. EACCES) counts as held.
+     - **Results:** the hardened-but-unfenced design survived 200/200 cross-machine races but took over early in 12/24 kill -9 tests and let a stale holder clobber the new one in 10/10. The fenced design: 0/24 early takeovers and 0/20 stale writes.
+   - **Defaults:**
+     - SMB roots: TTL 10 s, heartbeat 5 s, stale after 30 s, lease polled every 2–5 s.
+     - Local roots: TTL 5 s, heartbeat 5 s, stale after 15 s.
+     - Durability uses plain `fsync`: `F_FULLFSYNC` is ENOTSUP on macOS smbfs.
+     - Server ids are case-normalised (shares can be case-insensitive). `link()` is unavailable.
+     - Warn on `cache=loose`, `actimeo` > 1 or SMB1.
+   - **Conflict detection stays mandatory.** A write already in flight during network loss landed 10 s after takeover. Segments carry their epoch; duplicate sequence numbers, lower epochs, sync conflict copies and unknown server ids put the project read-only and prompt recovery.
+   - **Media on a NAS:** a 1080p H.264 reel decoded at 650–686 fps over SMB (about 66 MB/s; first frame 0.11–0.23 s) against about 2,300 fps locally, and proxy speed was similar. Proxies stay local.
+   - **Library scans on a NAS:** about 60k files take 161 s with 32 parallel stats against 450 s serially. Full scans run on open or on demand, never continuously; network roots are polled by directory mtime every 60 s.
 10. **§12.5 Lottie (S11):**
     - thorvg WASM is confirmed for template preview (≤ 2.9 ms per 1080p frame, 77.6 dB vs native).
     - The preview must size the Lottie render target from the intended pixel size, not the canvas bounding rect.
     - **Text slots (S11b): thorvg text is not used for slots.**
       - Slot text is laid out and rasterised by the shared Rust text engine (`fin-text`: cosmic-text + swash, the same path as captions). It is oversampled for animated scale and injected as an image slot.
       - The spike's `fin-text` rendered native and wasm32 bit-identically in 10/10 cases, with Arabic shaping, bidi, kerning and font fallback.
+      - Its output is also byte-identical across x86-64 Linux and arm64 macOS (20/20), on condition that fonts are always bundled, never taken from the system.
       - Why not thorvg: it lacks shaping, bidi, kerning, colour emoji, per-glyph font fallback and OTF/CFF fonts. Its text layout also differs across versions, and a wrapped 7-line box took 12 ms per frame.
       - Per-character animators work only on baked-glyph templates.
       - **Colour emoji is open:** swash has no COLRv1, so this needs a bitmap or COLRv0 font, or a COLRv1 painter.
@@ -874,8 +949,8 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - Hosts validate that every font a template names is registered; unregistered names fall back differently per runtime.
     - Template JSON is validated, and export runs in the sandboxed worker, because thorvg segfaults on malformed `chars`.
 11. **Validation still outstanding** (blocked on hardware or accounts, not design):
-    - Windows and Linux rows of S1, S3, S4, S5, S8 and S9, and of S3b, S5b and S11b;
-    - NAS and sync-service rows of S10;
-    - notarisation (Apple agreement).
+    - all Windows rows;
+    - a Linux real-desktop run (vsync, Wayland/X11 session) and Linux S3b latency;
+    - sync-service rows of S10;
     - These gate the cross-platform claims of D4/D31 before sub-project 6.
 
