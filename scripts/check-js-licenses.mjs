@@ -21,7 +21,7 @@ function permitted(expr) {
 const input = arg("--input");
 const json = input
   ? readFileSync(input, "utf8")
-  : execFileSync("pnpm", ["licenses", "list", "--json", "--prod"], { encoding: "utf8" });
+  : execFileSync("pnpm", ["licenses", "list", "--json", "--prod"], { encoding: "utf8", shell: process.platform === "win32" });
 const allowlist = JSON.parse(readFileSync(arg("--allowlist") ?? new URL("./license-allowlist.json", import.meta.url), "utf8"));
 
 const violations = [];

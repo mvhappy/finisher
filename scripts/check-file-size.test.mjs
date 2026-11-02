@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { symlinkSync } from "node:fs";
 import { fixtureRoot, lines, runGate } from "./gate-helpers.mjs";
 
 const gate = (root) => runGate("./check-file-size.mjs", ["--root", root]);
@@ -30,4 +32,24 @@ test("ignored directories are skipped", () => {
     }),
   );
   assert.equal(r.code, 0, r.out);
+});
+
+test("gitignored files in a git checkout are skipped", () => {
+  const root = fixtureRoot({ ".gitignore": "build/\n", "build/gen.js": lines(900), "src/ok.ts": lines(10) });
+  spawnSync("git", ["init", "-q"], { cwd: root });
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  const r = gate(root);
+  assert.equal(r.code, 0, r.out);
+});
+
+test("works without a pwd binary on PATH (Windows-like environment)", () => {
+  const root = fixtureRoot({ "src/ok.ts": lines(10) });
+  spawnSync("git", ["init", "-q"], { cwd: root });
+  const bin = fixtureRoot({});
+  symlinkSync(spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim(), `${bin}/git`);
+  const r = spawnSync(process.execPath, [new URL("./check-file-size.mjs", import.meta.url).pathname, "--root", root], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: bin },
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });
