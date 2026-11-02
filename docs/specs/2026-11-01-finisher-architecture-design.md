@@ -815,18 +815,34 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
 2. **§12.3 preview (S3):**
    - Frame ingest is `copyExternalImageToTexture` (one GPU copy, 0.4 ms p95).
    - The preview scheduler must be **cadence-aware**: it measures the real display/rAF interval and paces against it.
-   - The measured A/V offset is scheduler-internal (mean −9.6 ms = video late). End-to-end A/V latency must be measured by capture before any display-latency correction is applied.
+   - **End-to-end A/V latency (S3b, measured by ScreenCaptureKit capture; offset = sound − light, + = audio late):**
+     - The round-1 scheduler plays audio **37 ms early** on average (−48 ms under load), because frames reach the glass 23–56 ms after rAF, with a pipeline depth that varies per run. `getOutputTimestamp` already includes CoreAudio output latency.
+     - The player therefore samples the audio clock at rAF + the running median (last 9 probes) of Element Timing `presentationTime − rAF` + scan-out + panel response, and shows the **nearest** frame. The probe is a 1-px `elementtiming` element inserted every 30 rAFs. Panel response is 5 ms until physically verified.
+     - It never adds `outputLatency` (double-counting). Result: compensated |offset| p95 7.4 ms (held out).
+     - Open: physical panel check (240 fps phone test), Bluetooth/AirPlay outputs, refresh rates other than 60 Hz, Windows and Linux. About 2 % of events have a one-refresh window-server slip.
    - Drop bursts under machine contention came from the compositor cadence falling to about 53 Hz, not from the pipeline.
 3. **§12.1–12.2 codecs (S5):**
    - Rust/objc2 AVFoundation and VideoToolbox are confirmed: 2.5k fps 1080p decode, HEVC Main10 HLG, 24× realtime short-GOP proxies.
-   - The hardware decoder path is verified in use via a VideoToolbox session. The software AV1 fallback (rav1e: 1.22× and then 0.75× realtime on an M4) is not reliably realtime: it is a **background job, not interactive**. Evaluate SVT-AV1 in sub-project 6.
+   - The hardware decoder path is verified in use via a VideoToolbox session. 
+   - **Software fallback encoder (S5b): SVT-AV1** (preset 10, CRF mode, closed GOP every 15 frames). On an M4 it ran 9–22× realtime at 540p, both with all cores and with 4 threads. It was +1.2 to +1.5 dB PSNR over rav1e at matched bitrate, with a 69 ms p95 software scrub. It adds 3.8 MB.
+   - **rav1e is dropped** (0.4–1.3× realtime; doesn't scale with threads at 540p).
+   - **libvpx VP9 `--rt`** (cpu-used 6–7) is the reserve for clients without AV1 decode.
+   - **Licence:** SVT-AV1 is BSD-3-Clause-Clear + AOMedia Patent License 1.0, the same patent licence as dav1d and libaom. It is added to the cargo-deny allow list and `THIRD_PARTY_NOTICES` when adopted.
+   - **Build:** from source at a pinned, vendored tag; never the binding's prebuilt download. Keep a minimal FFI as the fallback to the single-vendor binding.
+   - **Unverified:** Windows MSVC and Linux x64 builds, and x86 speed.
 4. **§13 transcription and alignment (S6):** the default English pipeline is:
    - **Parakeet-TDT 0.6B v2** (CC-BY-4.0, attribution) for the transcript;
-   - **wav2vec2-base-960h** (Apache-2.0) CTC forced alignment;
-   - a constant bias calibration.
-   - Measured: WER 1.9%, start p50/p95 19/80 ms, RTF 0.046.
-   - The p95 target of 50 ms stays and requires an onset-refinement stage.
-   - whisper.cpp alone is not acceptable for per-word captions.
+   - **wav2vec2-base-960h** (Apache-2.0, fp32 ONNX; int8 costs 7–10 ms of p95) CTC Viterbi word spans;
+   - a **learned start/end boundary correction** (S6b): gradient-boosted trees, 0.5 MB, ported to Rust. Features are CTC blank probabilities, band energies, energy edges and pause/letter context. It is trained on MFA-aligned LibriSpeech dev-clean, speaker-disjoint from test.
+   - **Measured, held out (WER 1.9 / 4.1%; RTF ≈ 0.1 on CPU):**
+     - start/end p95 vs MFA references: 46/49 ms on test-clean and 52/60 ms on test-other (round 1: 80/119 ms);
+     - against TIMIT hand labels, with no TIMIT tuning: 60/67 ms.
+   - **Quality gate** (replaces "p95 ≤ 50 ms"):
+     - ≥ 95 % of word starts and ends must fall within [−125, +45] ms of human-labelled boundaries (ITU-R BT.1359 detectability: a caption late by more than 45 ms, or early by more than 125 ms).
+     - p95 against MFA ≤ 50 ms is tracked, not gated.
+     - p95 ≤ 50 ms against humans can't be a gate: MFA itself puts only 89 % of TIMIT boundaries within 50 ms.
+     - Status: starts 95.4 % (pass), **ends 91.2 % (fail)**. End boundaries need more work, and creator-speech validation is outstanding.
+   - whisper.cpp alone is not acceptable for per-word captions. Qwen3-ForcedAligner was evaluated and rejected: 80 ms timestamp steps.
    - Multilingual: Parakeet v3 or whisper.cpp + per-language CTC.
    - MMS models are excluded (CC-BY-NC).
 5. **§8.2 providers (S7):**
@@ -848,9 +864,17 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
 10. **§12.5 Lottie (S11):**
     - thorvg WASM is confirmed for template preview (≤ 2.9 ms per 1080p frame, 77.6 dB vs native).
     - The preview must size the Lottie render target from the intended pixel size, not the canvas bounding rect.
-    - Template **text slots** (fonts in WASM) are unverified and must be tested before shipping text templates.
+    - **Text slots (S11b): thorvg text is not used for slots.**
+      - Slot text is laid out and rasterised by the shared Rust text engine (`fin-text`: cosmic-text + swash, the same path as captions). It is oversampled for animated scale and injected as an image slot.
+      - The spike's `fin-text` rendered native and wasm32 bit-identically in 10/10 cases, with Arabic shaping, bidi, kerning and font fallback.
+      - Why not thorvg: it lacks shaping, bidi, kerning, colour emoji, per-glyph font fallback and OTF/CFF fonts. Its text layout also differs across versions, and a wrapped 7-line box took 12 ms per frame.
+      - Per-character animators work only on baked-glyph templates.
+      - **Colour emoji is open:** swash has no COLRv1, so this needs a bitmap or COLRv0 font, or a COLRv1 painter.
+    - Native thorvg is pinned to the thorvg version inside the shipped dotlottie-web (v1.1.x). A golden-frame test checks it: v1.1.1 is pixel-identical to dotlottie-web 0.81.0, and the legacy 1.0.6-dev pin is not.
+    - Hosts validate that every font a template names is registered; unregistered names fall back differently per runtime.
+    - Template JSON is validated, and export runs in the sandboxed worker, because thorvg segfaults on malformed `chars`.
 11. **Validation still outstanding** (blocked on hardware or accounts, not design):
-    - Windows and Linux rows of S1, S3, S4, S5, S8 and S9;
+    - Windows and Linux rows of S1, S3, S4, S5, S8 and S9, and of S3b, S5b and S11b;
     - NAS and sync-service rows of S10;
     - notarisation (Apple agreement).
     - These gate the cross-platform claims of D4/D31 before sub-project 6.
