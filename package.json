@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:gates": "node --test scripts/"
+    "test:gates": "node --test scripts/",
+    "gates": "node scripts/gates.mjs"
   },
   "devDependencies": {
     "typescript": "7.0.2",

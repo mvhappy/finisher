@@ -3,7 +3,7 @@
 Plan: docs/plans/2026-11-02-bootstrap-and-spike.md
 
 - [x] Task 1: Repository skeleton and agent docs
-- [ ] Task 2: Toolchains and workspaces
+- [x] Task 2: Toolchains and workspaces
 - [ ] Task 3: Quality gates
 - [ ] Task 4: CI workflow
 - [ ] Task 5: Spike harness and result schema
