@@ -6,15 +6,17 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# Exposes the fixture writer in `tests/support` to other crates' tests (Task 12).
-fixtures = []
+# Exposes `fixtures::write_fixture_mp4` so other crates' tests can generate media.
+fixtures = ["dep:bytes"]
 
 [dependencies]
 blake3 = "1"
+bytes = { version = "1", optional = true }
+dunce = "1"
 fin-core = { path = "../fin-core" }
 mp4 = "0.14"
 serde_json = "1"
 
 [dev-dependencies]
-bytes = "1"
+fin-probe = { path = ".", features = ["fixtures"] }
 tempfile = "3"
