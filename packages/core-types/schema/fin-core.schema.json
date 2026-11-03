@@ -222,6 +222,14 @@
       ],
       "type": "object"
     },
+    "Edge": {
+      "description": "Which edge of a clip a trim moves.",
+      "enum": [
+        "start",
+        "end"
+      ],
+      "type": "string"
+    },
     "EntityKind": {
       "enum": [
         "asset",
@@ -317,6 +325,48 @@
             "asset",
             "sourceIn",
             "duration"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Moves one edge of a clip by `delta` seconds, rippling later clips on the track.",
+          "properties": {
+            "clip": {
+              "type": "string"
+            },
+            "delta": {
+              "$ref": "#/$defs/Rational"
+            },
+            "edge": {
+              "$ref": "#/$defs/Edge"
+            },
+            "op": {
+              "const": "clip.trim",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "clip",
+            "edge",
+            "delta"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Removes a clip and closes the gap (ripple).",
+          "properties": {
+            "clip": {
+              "type": "string"
+            },
+            "op": {
+              "const": "clip.delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "clip"
           ],
           "type": "object"
         },

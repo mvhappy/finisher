@@ -47,6 +47,16 @@ export type Op =
       track: string;
     }
   | {
+      clip: string;
+      delta: Rational;
+      edge: Edge;
+      op: "clip.trim";
+    }
+  | {
+      clip: string;
+      op: "clip.delete";
+    }
+  | {
       id: string;
       op: "asset.remove";
     }
@@ -61,6 +71,13 @@ export type Op =
       ripple?: boolean;
       track: string;
     };
+/**
+ * Which edge of a clip a trim moves.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Edge".
+ */
+export type Edge = "start" | "end";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TrackKind".

@@ -1,6 +1,6 @@
 //! Primitive edit operations, one module per op (schema, validate, apply, invert, rebase).
 //!
-//! Client ops: `asset.add`, `clip.insert`. Internal ops exist only
+//! Client ops: `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`. Internal ops exist only
 //! as inverses (`asset.remove`, `clip.remove`, `clip.restore`); clients sending them get
 //! `INVALID_OP`.
 //!
@@ -21,9 +21,11 @@ use crate::tx::Diff;
 
 mod asset_add;
 mod asset_remove;
+mod clip_delete;
 mod clip_insert;
 mod clip_remove;
 mod clip_restore;
+mod clip_trim;
 pub(crate) mod util;
 
 /// A primitive edit operation, tagged by `op`.
@@ -55,6 +57,17 @@ pub enum Op {
         // Clip length in seconds; at least one frame.
         duration: Rational,
     },
+    /// Moves one edge of a clip by `delta` seconds, rippling later clips on the track.
+    #[serde(rename = "clip.trim")]
+    ClipTrim {
+        clip: String,
+        edge: Edge,
+        // Seconds; positive moves the edge later.
+        delta: Rational,
+    },
+    /// Removes a clip and closes the gap (ripple).
+    #[serde(rename = "clip.delete")]
+    ClipDelete { clip: String },
     /// Internal (inverse of `asset.add`): removes an unused asset.
     #[serde(rename = "asset.remove")]
     AssetRemove { id: String },
@@ -76,12 +89,22 @@ fn yes() -> bool {
     true
 }
 
+/// Which edge of a clip a trim moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Edge {
+    Start,
+    End,
+}
+
 impl Op {
     /// The wire name (`"clip.insert"`, ...).
     pub fn name(&self) -> &'static str {
         match self {
             Op::AssetAdd { .. } => "asset.add",
             Op::ClipInsert { .. } => "clip.insert",
+            Op::ClipTrim { .. } => "clip.trim",
+            Op::ClipDelete { .. } => "clip.delete",
             Op::AssetRemove { .. } => "asset.remove",
             Op::ClipRemove { .. } => "clip.remove",
             Op::ClipRestore { .. } => "clip.restore",
@@ -178,6 +201,8 @@ pub(crate) fn apply(
     match op {
         Op::AssetAdd { .. } => asset_add::apply(project, op, bindings, ids, diff),
         Op::ClipInsert { .. } => clip_insert::apply(project, op, bindings, ids, diff),
+        Op::ClipTrim { .. } => clip_trim::apply(project, op, bindings, ids, diff),
+        Op::ClipDelete { .. } => clip_delete::apply(project, op, bindings, ids, diff),
         Op::AssetRemove { .. } => asset_remove::apply(project, op, bindings, ids, diff),
         Op::ClipRemove { .. } => clip_remove::apply(project, op, bindings, ids, diff),
         Op::ClipRestore { .. } => clip_restore::apply(project, op, bindings, ids, diff),
