@@ -79,6 +79,10 @@ impl Rational {
         self.den
     }
 
+    pub fn is_positive(&self) -> bool {
+        self.num > 0
+    }
+
     pub fn is_zero(&self) -> bool {
         self.num == 0
     }
@@ -188,10 +192,14 @@ impl JsonSchema for Rational {
     }
 }
 
-/// One frame at `rate` frames per second (`1/rate`).
-pub fn frame_duration(rate: Rational) -> Rational {
-    // rate.num may be zero or negative for malformed rates; callers validate rates.
-    Rational::from_i128(rate.den as i128, rate.num as i128).unwrap_or(Rational::zero())
+/// One frame at `rate` frames per second (`1/rate`). Rejects a rate <= 0 with `INVALID_RANGE`.
+pub fn frame_duration(rate: Rational) -> Result<Rational, CoreError> {
+    if !rate.is_positive() {
+        return Err(CoreError::new("INVALID_RANGE", "frame rate must be positive")
+            .with_details(json!({ "rate": rate.to_string() }))
+            .with_fix("use a rate greater than zero, e.g. 30 or 30000/1001"));
+    }
+    Rational::from_i128(rate.den as i128, rate.num as i128)
 }
 
 /// Parses `12.4s`, `12s`, `-0.5s`, `00:12.4`, `01:00:12.4`, `f300` (frames at `rate`),

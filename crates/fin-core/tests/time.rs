@@ -37,7 +37,7 @@ fn frames_use_the_rate() {
     let t = parse_time("f300", ntsc).unwrap();
     assert_eq!(t, r("1001/100"));
     assert_eq!(t.to_string(), "1001/100");
-    assert_eq!(frame_duration(ntsc), r("1001/30000"));
+    assert_eq!(frame_duration(ntsc).unwrap(), r("1001/30000"));
 }
 
 #[test]
@@ -78,5 +78,13 @@ proptest! {
         let a = Rational::new(an, ad).unwrap();
         let b = Rational::new(bn, bd).unwrap();
         prop_assert_eq!(((a + b).unwrap() - b).unwrap(), a);
+    }
+}
+
+#[test]
+fn frame_duration_rejects_non_positive_rates() {
+    for bad in [rate(0), rate(-30)] {
+        let e = frame_duration(bad).unwrap_err();
+        assert_eq!(e.code, "INVALID_RANGE");
     }
 }

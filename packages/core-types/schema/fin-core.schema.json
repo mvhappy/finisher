@@ -133,12 +133,10 @@
           "type": "string"
         },
         "sourceIn": {
-          "$ref": "#/$defs/Rational",
-          "description": "Offset into the asset, in seconds."
+          "$ref": "#/$defs/Rational"
         },
         "start": {
-          "$ref": "#/$defs/Rational",
-          "description": "Position on the timeline, in seconds."
+          "$ref": "#/$defs/Rational"
         }
       },
       "required": [
@@ -185,9 +183,7 @@
         "code": {
           "type": "string"
         },
-        "details": {
-          "default": null
-        },
+        "details": true,
         "fix": {
           "type": [
             "string",
@@ -200,7 +196,8 @@
       },
       "required": [
         "code",
-        "message"
+        "message",
+        "details"
       ],
       "type": "object"
     },
@@ -253,8 +250,7 @@
           "type": "string"
         },
         "rate": {
-          "$ref": "#/$defs/Rational",
-          "description": "Timeline frame rate in frames per second."
+          "$ref": "#/$defs/Rational"
         },
         "schemaVersion": {
           "format": "uint32",

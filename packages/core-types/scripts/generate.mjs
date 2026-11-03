@@ -1,4 +1,4 @@
-// Regenerates schema/fin-core.schema.json (from fin-core) and src/generated.ts (from the schema).
+// Regenerates schema/fin-core.schema.json (from fin-core) and src/generated/index.ts (from the schema).
 // `--out <dir>` writes both files under <dir> instead of the package, for the drift gate.
 // Deterministic: no timestamps, sorted keys, fixed banner. Needs no network.
 import { spawnSync } from "node:child_process";
@@ -33,6 +33,6 @@ const ts = await compile(schema, "FinCore", {
 });
 
 mkdirSync(join(out, "schema"), { recursive: true });
-mkdirSync(join(out, "src"), { recursive: true });
+mkdirSync(join(out, "src/generated"), { recursive: true });
 writeFileSync(join(out, "schema/fin-core.schema.json"), cargo.stdout);
-writeFileSync(join(out, "src/generated.ts"), ts);
+writeFileSync(join(out, "src/generated/index.ts"), ts);

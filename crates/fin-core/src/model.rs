@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::time::Rational;
+use crate::error::CoreError;
+use crate::time::{Rational, frame_duration};
 
 /// Version of the serialized model and op format.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -16,7 +17,8 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub schema_version: u32,
-    /// Timeline frame rate in frames per second.
+    // Timeline frame rate in frames per second (a doc comment here would flatten the
+    // Rational $ref to a plain string in the generated TS).
     pub rate: Rational,
     pub timeline: Timeline,
     pub assets: BTreeMap<String, Asset>,
@@ -50,9 +52,9 @@ pub enum TrackKind {
 pub struct Clip {
     pub id: String,
     pub asset: String,
-    /// Position on the timeline, in seconds.
+    // Position on the timeline, in seconds.
     pub start: Rational,
-    /// Offset into the asset, in seconds.
+    // Offset into the asset, in seconds.
     pub source_in: Rational,
     pub duration: Rational,
 }
@@ -84,9 +86,11 @@ pub struct AudioInfo {
 }
 
 /// A new project with timeline `tl1`, video track `t1` and audio track `t2`.
-pub fn new_project(id: String, name: String, rate: Rational) -> Project {
+/// Fails with `INVALID_RANGE` when `rate` is not positive.
+pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, CoreError> {
+    frame_duration(rate)?;
     let track = |id: &str, kind| Track { id: id.to_string(), kind, items: Vec::new() };
-    Project {
+    Ok(Project {
         id,
         name,
         schema_version: SCHEMA_VERSION,
@@ -96,5 +100,5 @@ pub fn new_project(id: String, name: String, rate: Rational) -> Project {
             tracks: vec![track("t1", TrackKind::Video), track("t2", TrackKind::Audio)],
         },
         assets: BTreeMap::new(),
-    }
+    })
 }

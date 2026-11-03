@@ -1,1 +1,1 @@
-export * from "./generated.ts";
+export * from "./generated/index.ts";

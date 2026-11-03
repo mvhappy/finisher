@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 pub struct CoreError {
     pub code: String,
     pub message: String,
-    #[serde(default)]
     pub details: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,

@@ -94,10 +94,7 @@ export interface Project {
   };
   id: string;
   name: string;
-  /**
-   * Exact rational seconds: "n/d" in lowest terms, or "n" when d is 1.
-   */
-  rate: string;
+  rate: Rational;
   schemaVersion: number;
   timeline: Timeline;
 }
@@ -158,14 +155,8 @@ export interface Clip {
   asset: string;
   duration: Rational;
   id: string;
-  /**
-   * Exact rational seconds: "n/d" in lowest terms, or "n" when d is 1.
-   */
-  sourceIn: string;
-  /**
-   * Exact rational seconds: "n/d" in lowest terms, or "n" when d is 1.
-   */
-  start: string;
+  sourceIn: Rational;
+  start: Rational;
 }
 /**
  * A transaction as persisted: with its revision, resolved bindings and diff.
@@ -201,9 +192,7 @@ export interface Tx {
  */
 export interface CoreError {
   code: string;
-  details?: {
-    [k: string]: unknown;
-  };
+  details: unknown;
   fix?: string | null;
   message: string;
 }
