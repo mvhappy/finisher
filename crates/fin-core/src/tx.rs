@@ -6,12 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Project;
+pub use crate::ops::Op;
 use crate::time::Rational;
-
-/// A primitive edit operation. Variants arrive with the op modules (one module per op).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "op")]
-pub enum Op {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

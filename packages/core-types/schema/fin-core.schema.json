@@ -232,8 +232,158 @@
       "type": "string"
     },
     "Op": {
-      "description": "A primitive edit operation. Variants arrive with the op modules (one module per op).",
-      "not": {}
+      "description": "A primitive edit operation, tagged by `op`.",
+      "oneOf": [
+        {
+          "description": "Adds a media asset. `id` is a `$name` placeholder bound to a new `a<n>` id.",
+          "properties": {
+            "audio": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AudioInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "duration": {
+              "$ref": "#/$defs/Rational"
+            },
+            "fingerprint": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "asset.add",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "video": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/VideoInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "path",
+            "duration",
+            "fingerprint"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Inserts a clip at `at` on `track`, rippling later clips by `duration`. `id` is a `$name`\nplaceholder; `asset` is an asset id or a placeholder bound earlier in the transaction.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "at": {
+              "$ref": "#/$defs/Rational"
+            },
+            "duration": {
+              "$ref": "#/$defs/Rational"
+            },
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "clip.insert",
+              "type": "string"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
+            },
+            "track": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "track",
+            "at",
+            "asset",
+            "sourceIn",
+            "duration"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Internal (inverse of `asset.add`): removes an unused asset.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "asset.remove",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Internal (inverse of `clip.insert`): removes a clip, rippling when `ripple`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "op": {
+              "const": "clip.remove",
+              "type": "string"
+            },
+            "ripple": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "ripple"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Internal (inverse of `clip.delete`/`clip.remove`): puts `clip` back at its `start`,\nrippling later clips by its duration when `ripple`.",
+          "properties": {
+            "clip": {
+              "$ref": "#/$defs/Clip"
+            },
+            "op": {
+              "const": "clip.restore",
+              "type": "string"
+            },
+            "ripple": {
+              "default": true,
+              "type": "boolean"
+            },
+            "track": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "clip",
+            "track"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Project": {
       "properties": {

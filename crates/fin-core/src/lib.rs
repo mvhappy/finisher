@@ -1,15 +1,19 @@
 //! Finisher edit domain: model, operations, evaluation, branches.
 
+pub mod apply;
 pub mod error;
 pub mod ids;
 pub mod model;
+pub mod ops;
 pub mod schema;
 pub mod time;
 pub mod tx;
 
+pub use apply::{ApplyMode, apply_internal, apply_tx, apply_tx_mode};
 pub use error::CoreError;
 pub use ids::{IdAlloc, IdKind, MemIds};
 pub use model::*;
+pub use ops::Op;
 pub use schema::json_schema;
 pub use tx::*;
 pub use time::{Rational, frame_duration, parse_time};
