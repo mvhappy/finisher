@@ -4,5 +4,11 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "exports": { ".": "./src/index.ts" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@finisher/core-types": "workspace:*",
+    "effect": "4.0.6"
+  }
 }
