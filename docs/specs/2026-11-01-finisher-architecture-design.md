@@ -122,7 +122,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 1. Every edit enters through one gateway as an operation. Nothing else writes canonical state.
 2. The server is identical everywhere: embedded in desktop, headless on any OS or a NAS, and composed into the private cloud.
 3. Crash-prone native work runs out of process, with a hard kill on timeout or cancel.
-4. One protocol definition, in Effect Schema. Rust op types are generated from the exported JSON Schema.
+4. One protocol definition: RPC envelopes in Effect Schema; model, op, diff and error types are owned by `fin-core` and exported as JSON Schema, from which TypeScript types are generated.
 5. **The stable contract is the versioned JSON op format plus its JSON Schema**, not a crate or package.
 6. Command-pattern permissions (§8.3) and `PreCommand` hooks (§10) apply to the **command registry**, whatever the transport: `fin`, MCP, plugin, UI composer.
 
@@ -999,3 +999,10 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - sync-service rows of S10;
     - These gate the cross-platform claims of D4/D31 before sub-project 6.
 
+12. **Sub-project 2 decisions:**
+    1. **Schema direction:** Rust `fin-core` is the source of truth for model, op, diff and error types → `schemars` JSON Schema (`packages/core-types/schema/fin-core.schema.json`, committed) → generated TS (`packages/core-types/src/generated.ts`, committed). Effect Schema defines only the RPC envelopes and treats transactions/snapshots as JSON validated by Rust.
+    2. **Rational JSON form:** a string `"n/d"` in lowest terms with `d > 0`, or `"n"` when `d == 1` (e.g. `"1001/30000"`, `"12"`). Parsing rejects floats.
+    3. **Entity IDs:** short, readable, project-global: `a<n>` assets, `t<n>` tracks, `c<n>` clips, `tl<n>` timelines. Allocated by `fin-store` from one per-project counter table at commit time (one writer per project makes this unique across branches). Transactions refer to entities they create with placeholders `$<name>`; the committed transaction and the response carry the resolved bindings.
+    4. **Editing semantics (sub-project 2):** all three clip ops are **ripple** edits on one track (later items on the same track shift; other tracks untouched). Inserting strictly inside a clip is rejected (`INSERT_INSIDE_CLIP`, fix: insert at the clip's start or end). Minimum clip duration is one frame at the timeline rate.
+    5. **Local transport:** Effect RPC with NDJSON serialization on a Unix socket `<server-data>/fin.sock` (mode 0600) or the Windows named pipe `\\.\pipe\finisher-<username>`; WebSocket on `127.0.0.1` (port written to `<server-data>/finisherd.json`, mode 0600, with a random bearer token the WS client must send). Pairing/remote auth is sub-project 5.
+    6. **Server data dir:** `FIN_SERVER_DATA` if set; else macOS `~/Library/Application Support/Finisher`, Linux `${XDG_DATA_HOME:-~/.local/share}/finisher`, Windows `%LOCALAPPDATA%\Finisher`.
