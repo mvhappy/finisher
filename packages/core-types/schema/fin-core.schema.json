@@ -1,0 +1,415 @@
+{
+  "$defs": {
+    "Applied": {
+      "description": "The result of applying a transaction to a project.",
+      "properties": {
+        "bindings": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Placeholder (`$name`) to allocated id.",
+          "type": "object"
+        },
+        "diff": {
+          "$ref": "#/$defs/Diff"
+        },
+        "inverse": {
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": "array"
+        },
+        "project": {
+          "$ref": "#/$defs/Project"
+        }
+      },
+      "required": [
+        "project",
+        "diff",
+        "inverse",
+        "bindings"
+      ],
+      "type": "object"
+    },
+    "Asset": {
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "video": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "duration",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "AudioInfo": {
+      "properties": {
+        "channels": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampleRate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sampleRate",
+        "channels"
+      ],
+      "type": "object"
+    },
+    "Change": {
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/ChangeKind"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EntityKind"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "change"
+      ],
+      "type": "object"
+    },
+    "ChangeKind": {
+      "enum": [
+        "added",
+        "removed",
+        "updated"
+      ],
+      "type": "string"
+    },
+    "Clip": {
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
+        },
+        "sourceIn": {
+          "$ref": "#/$defs/Rational",
+          "description": "Offset into the asset, in seconds."
+        },
+        "start": {
+          "$ref": "#/$defs/Rational",
+          "description": "Position on the timeline, in seconds."
+        }
+      },
+      "required": [
+        "id",
+        "asset",
+        "start",
+        "sourceIn",
+        "duration"
+      ],
+      "type": "object"
+    },
+    "CommittedTx": {
+      "description": "A transaction as persisted: with its revision, resolved bindings and diff.",
+      "properties": {
+        "bindings": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "diff": {
+          "$ref": "#/$defs/Diff"
+        },
+        "rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tx": {
+          "$ref": "#/$defs/Tx"
+        }
+      },
+      "required": [
+        "rev",
+        "tx",
+        "diff",
+        "bindings"
+      ],
+      "type": "object"
+    },
+    "CoreError": {
+      "description": "A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "default": null
+        },
+        "fix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Diff": {
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/Change"
+          },
+          "type": "array"
+        },
+        "shifts": {
+          "items": {
+            "$ref": "#/$defs/Shift"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "changes",
+        "shifts"
+      ],
+      "type": "object"
+    },
+    "EntityKind": {
+      "enum": [
+        "asset",
+        "track",
+        "clip",
+        "timeline"
+      ],
+      "type": "string"
+    },
+    "Op": {
+      "description": "A primitive edit operation. Variants arrive with the op modules (one module per op).",
+      "not": {}
+    },
+    "Project": {
+      "properties": {
+        "assets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Asset"
+          },
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rate": {
+          "$ref": "#/$defs/Rational",
+          "description": "Timeline frame rate in frames per second."
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeline": {
+          "$ref": "#/$defs/Timeline"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "schemaVersion",
+        "rate",
+        "timeline",
+        "assets"
+      ],
+      "type": "object"
+    },
+    "Rational": {
+      "description": "Exact rational seconds: \"n/d\" in lowest terms, or \"n\" when d is 1.",
+      "pattern": "^-?\\d+(/[1-9]\\d*)?$",
+      "type": "string"
+    },
+    "Shift": {
+      "description": "Items on `track` at or after `from` moved by `by` (ripple).",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/Rational"
+        },
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "from",
+        "by"
+      ],
+      "type": "object"
+    },
+    "Timeline": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tracks": {
+          "items": {
+            "$ref": "#/$defs/Track"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "tracks"
+      ],
+      "type": "object"
+    },
+    "Track": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "items": {
+          "description": "Sorted by `start`, non-overlapping.",
+          "items": {
+            "$ref": "#/$defs/Clip"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/TrackKind"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "items"
+      ],
+      "type": "object"
+    },
+    "TrackKind": {
+      "enum": [
+        "video",
+        "audio"
+      ],
+      "type": "string"
+    },
+    "Tx": {
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "baseRev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "ops": {
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "txId",
+        "author",
+        "branch",
+        "baseRev",
+        "schemaVersion",
+        "ops"
+      ],
+      "type": "object"
+    },
+    "VideoInfo": {
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rate": {
+          "$ref": "#/$defs/Rational"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "rate"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FinCore"
+}

@@ -5,6 +5,8 @@ const steps = [
   ["node", ["scripts/check-cloud-imports.mjs"]],
   ["node", ["scripts/check-action-pins.mjs"]],
   ["node", ["scripts/check-js-licenses.mjs"]],
+  ["node", ["scripts/check-generated-types.mjs"]],
+  ["cargo", ["build", "-q", "-p", "fin-core", "--target", "wasm32-unknown-unknown"]],
 ];
 const hasCargoDeny = spawnSync("cargo", ["deny", "--version"], { stdio: "ignore" }).status === 0;
 if (process.platform !== "win32" && hasCargoDeny) steps.push(["cargo", ["deny", "check", "licenses", "sources", "bans"]]);

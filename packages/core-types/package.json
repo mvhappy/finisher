@@ -1,0 +1,16 @@
+{
+  "name": "@finisher/core-types",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "16.0.0"
+  }
+}
