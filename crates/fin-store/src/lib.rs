@@ -8,6 +8,7 @@ mod commit;
 mod db;
 mod paths;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -136,7 +137,9 @@ pub struct Store {
     conn: rusqlite::Connection,
     project_id: String,
     db_path: PathBuf,
-    heads: HashMap<String, Head>,
+    /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
+    /// every read and commit first checks the newest rev in the database and catches up.
+    heads: RefCell<HashMap<String, Head>>,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
@@ -218,15 +221,7 @@ impl Store {
         }
         let mut heads = HashMap::new();
         for branch in db::branches(&conn)? {
-            let Some((rev, mut project)) = db::latest_snapshot(&conn, &branch)? else {
-                continue;
-            };
-            let mut head = rev;
-            for c in db::txs_since(&conn, &branch, rev)? {
-                project = replay(&project, &c)?;
-                head = c.rev;
-            }
-            heads.insert(branch, Head { rev: head, project });
+            refresh(&conn, &mut heads, &branch)?;
         }
         Ok(Store::new(conn, file.id, db_path, heads))
     }
@@ -241,7 +236,7 @@ impl Store {
             conn,
             project_id,
             db_path,
-            heads,
+            heads: RefCell::new(heads),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }
@@ -256,27 +251,29 @@ impl Store {
         &self.db_path
     }
 
-    /// The head revision of `branch` (0 for a branch with no commits or that does not exist).
+    /// The head revision of `branch` (0 for a branch that does not exist). Catches up with
+    /// commits made through another `Store`; if the database cannot be read, the cached head is
+    /// returned.
     pub fn head(&self, branch: &str) -> u64 {
-        self.heads.get(branch).map_or(0, |h| h.rev)
+        let mut heads = self.heads.borrow_mut();
+        let _ = refresh(&self.conn, &mut heads, branch);
+        heads.get(branch).map_or(0, |h| h.rev)
     }
 
     /// The head revision of `branch` and the project at it.
     pub fn snapshot(&self, branch: &str) -> Result<(u64, Project), StoreError> {
-        let head = self.branch_head(branch)?;
+        let mut heads = self.heads.borrow_mut();
+        refresh(&self.conn, &mut heads, branch)?;
+        let head = heads.get(branch).ok_or_else(|| branch_not_found(branch))?;
         Ok((head.rev, head.project.clone()))
     }
 
     /// Committed txs on `branch` with `rev > after`, in rev order.
     pub fn ops_since(&self, branch: &str, after: u64) -> Result<Vec<CommittedTx>, StoreError> {
-        self.branch_head(branch)?;
+        if db::latest_rev(&self.conn, branch)?.is_none() {
+            return Err(branch_not_found(branch).into());
+        }
         db::txs_since(&self.conn, branch, after)
-    }
-
-    fn branch_head(&self, branch: &str) -> Result<&Head, StoreError> {
-        self.heads
-            .get(branch)
-            .ok_or_else(|| branch_not_found(branch).into())
     }
 
     /// Test hook: the next `commit` fails after applying and writing its rows but before the
@@ -285,6 +282,40 @@ impl Store {
     pub fn fail_next_commit_after_apply(&mut self) {
         self.fail_after_apply = true;
     }
+}
+
+/// Brings the cached head of `branch` up to the newest rev in the database: replays the txs
+/// committed since the cached rev, or loads the latest snapshot plus its tail when there is no
+/// usable cache. Drops the cache entry when the branch does not exist.
+pub(crate) fn refresh(
+    conn: &rusqlite::Connection,
+    heads: &mut HashMap<String, Head>,
+    branch: &str,
+) -> Result<(), StoreError> {
+    let Some(latest) = db::latest_rev(conn, branch)? else {
+        heads.remove(branch);
+        return Ok(());
+    };
+    if let Some(head) = heads.get_mut(branch) {
+        if head.rev == latest {
+            return Ok(());
+        }
+        if head.rev < latest {
+            for c in db::txs_since(conn, branch, head.rev)? {
+                head.project = replay(&head.project, &c)?;
+                head.rev = c.rev;
+            }
+            return Ok(());
+        }
+    }
+    let (mut rev, mut project) =
+        db::latest_snapshot(conn, branch)?.ok_or_else(|| branch_not_found(branch))?;
+    for c in db::txs_since(conn, branch, rev)? {
+        project = replay(&project, &c)?;
+        rev = c.rev;
+    }
+    heads.insert(branch.to_string(), Head { rev, project });
+    Ok(())
 }
 
 fn branch_not_found(branch: &str) -> CoreError {

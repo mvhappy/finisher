@@ -6,7 +6,7 @@ use rusqlite::TransactionBehavior;
 use serde_json::{Value, json};
 
 use crate::db::{self, Counters, SNAPSHOT_EVERY};
-use crate::{Head, Store, StoreError, branch_not_found};
+use crate::{Head, Store, StoreError, branch_not_found, refresh};
 
 impl Store {
     /// Commits `tx` to its branch and returns it as committed.
@@ -21,11 +21,17 @@ impl Store {
     /// inverse and bindings of that same apply. Ids are allocated from the `ids` table inside the
     /// same SQLite transaction as the `txs` insert, so a failed commit consumes none.
     pub fn commit(&mut self, tx: Tx) -> Result<CommittedTx, StoreError> {
-        if let Some(existing) = db::find_tx(&self.conn, &tx.tx_id)? {
+        // Everything below runs under the write lock, against the head as stored: another
+        // `Store` on this database may have committed since our cache was filled.
+        let txn = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = db::find_tx(&txn, &tx.tx_id)? {
             return Ok(existing);
         }
-        let head = self
-            .heads
+        let heads = self.heads.get_mut();
+        refresh(&txn, heads, &tx.branch)?;
+        let head = heads
             .get(&tx.branch)
             .ok_or_else(|| branch_not_found(&tx.branch))?;
         if tx.base_rev > head.rev {
@@ -35,16 +41,13 @@ impl Store {
                 .into());
         }
         let tx = if tx.base_rev < head.rev {
-            let since = db::txs_since(&self.conn, &tx.branch, tx.base_rev)?;
+            let since = db::txs_since(&txn, &tx.branch, tx.base_rev)?;
             rebase_tx(&tx, &since).map_err(|c| with_tx_id(CoreError::from(c), &tx.tx_id))?
         } else {
             tx
         };
         let rev = head.rev + 1;
 
-        let txn = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut ids = Counters::load(&txn)?;
         let applied = apply_tx(&head.project, &tx, &mut ids)?;
         ids.save(&txn)?;
@@ -63,7 +66,7 @@ impl Store {
         }
         txn.commit()?;
 
-        self.heads.insert(
+        heads.insert(
             tx.branch.clone(),
             Head {
                 rev,

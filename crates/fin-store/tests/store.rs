@@ -431,3 +431,62 @@ fn ukrainian_name_and_dir_round_trip() {
         "Літній відпочинок у Львові"
     );
 }
+
+#[test]
+fn two_stores_on_one_project_interleave_commits() {
+    let e = env();
+    let mut a = with_asset(&e);
+    let mut b = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(b.head(MAIN), 1);
+
+    let a1 = a
+        .commit(tx("tx-a1", 1, vec![insert("$x", 0, "a1", 5)]))
+        .unwrap();
+    assert_eq!(b.head(MAIN), 2, "B sees A's commit");
+    assert_eq!(b.snapshot(MAIN).unwrap(), a.snapshot(MAIN).unwrap());
+
+    // B still thinks in terms of rev 1: its tx is rebased over A's (the committed insert at the
+    // same point stays first), not rejected.
+    let b1 = b
+        .commit(tx("tx-b1", 1, vec![insert("$y", 0, "a1", 2)]))
+        .unwrap();
+    let a2 = a
+        .commit(tx("tx-a2", 3, vec![insert("$z", 7, "a1", 1)]))
+        .unwrap();
+    let b2 = b
+        .commit(tx("tx-b2", 4, vec![Op::ClipDelete { clip: "c3".into() }]))
+        .unwrap();
+    assert_eq!([a1.rev, b1.rev, a2.rev, b2.rev], [2, 3, 4, 5]);
+    assert_eq!(
+        [&a1.bindings["$x"], &b1.bindings["$y"], &a2.bindings["$z"]],
+        ["c1", "c2", "c3"],
+        "ids are unique across stores"
+    );
+
+    let (rev, p) = b.snapshot(MAIN).unwrap();
+    assert_eq!(rev, 5);
+    assert_eq!(a.snapshot(MAIN).unwrap(), (rev, p.clone()));
+    assert_eq!(
+        clips(&p),
+        vec![
+            ("c1".to_string(), secs(0), secs(5)),
+            ("c2".to_string(), secs(5), secs(2)),
+        ]
+    );
+    assert_eq!(a.ops_since(MAIN, 1).unwrap(), b.ops_since(MAIN, 1).unwrap());
+}
+
+#[test]
+fn same_tx_id_via_two_stores_is_idempotent() {
+    let e = env();
+    let mut a = with_asset(&e);
+    let mut b = Store::open(&e.data, &e.dir).unwrap();
+    let first = a
+        .commit(tx("tx-same", 1, vec![insert("$c", 0, "a1", 5)]))
+        .unwrap();
+    let again = b
+        .commit(tx("tx-same", 1, vec![insert("$c", 0, "a1", 5)]))
+        .unwrap();
+    assert_eq!(again, first);
+    assert_eq!((a.head(MAIN), b.head(MAIN)), (2, 2));
+}

@@ -124,6 +124,18 @@ pub(crate) fn branches(conn: &Connection) -> Result<Vec<String>, StoreError> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// The newest rev of `branch` (its latest tx, else its latest snapshot); `None` when the branch
+/// does not exist.
+pub(crate) fn latest_rev(conn: &Connection, branch: &str) -> Result<Option<u64>, StoreError> {
+    let rev: Option<i64> = conn.query_row(
+        "SELECT MAX(rev) FROM (SELECT rev FROM txs WHERE branch = ?1
+                               UNION ALL SELECT rev FROM snapshots WHERE branch = ?1)",
+        params![branch],
+        |r| r.get(0),
+    )?;
+    rev.map(to_u64).transpose()
+}
+
 /// The newest snapshot of `branch`.
 pub(crate) fn latest_snapshot(
     conn: &Connection,
