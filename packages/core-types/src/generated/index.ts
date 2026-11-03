@@ -22,6 +22,63 @@ export type EntityKind = "asset" | "track" | "clip" | "timeline";
  */
 export type Rational = string;
 /**
+ * A primitive edit operation, tagged by `op`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Op".
+ */
+export type Op =
+  | {
+      audio?: AudioInfo | null;
+      duration: Rational;
+      fingerprint: string;
+      id: string;
+      op: "asset.add";
+      path: string;
+      video?: VideoInfo | null;
+    }
+  | {
+      asset: string;
+      at: Rational;
+      duration: Rational;
+      id: string;
+      op: "clip.insert";
+      sourceIn: Rational;
+      track: string;
+    }
+  | {
+      clip: string;
+      delta: Rational;
+      edge: Edge;
+      op: "clip.trim";
+    }
+  | {
+      clip: string;
+      op: "clip.delete";
+    }
+  | {
+      id: string;
+      op: "asset.remove";
+    }
+  | {
+      id: string;
+      op: "clip.remove";
+      ripple: boolean;
+    }
+  | {
+      clip: Clip;
+      op: "clip.restore";
+      ripple?: boolean;
+      track: string;
+    };
+/**
+ * Which edge of a clip a trim moves.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Edge".
+ */
+export type Edge = "start" | "end";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TrackKind".
  */
@@ -76,13 +133,32 @@ export interface Shift {
   track: string;
 }
 /**
- * A primitive edit operation. Variants arrive with the op modules (one module per op).
- *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Op".
+ * via the `definition` "AudioInfo".
  */
-export interface Op {
-  [k: string]: unknown;
+export interface AudioInfo {
+  channels: number;
+  sampleRate: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoInfo".
+ */
+export interface VideoInfo {
+  height: number;
+  rate: Rational;
+  width: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Clip".
+ */
+export interface Clip {
+  asset: string;
+  duration: Rational;
+  id: string;
+  sourceIn: Rational;
+  start: Rational;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -112,23 +188,6 @@ export interface Asset {
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AudioInfo".
- */
-export interface AudioInfo {
-  channels: number;
-  sampleRate: number;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoInfo".
- */
-export interface VideoInfo {
-  height: number;
-  rate: Rational;
-  width: number;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Timeline".
  */
 export interface Timeline {
@@ -146,17 +205,6 @@ export interface Track {
    */
   items: Clip[];
   kind: TrackKind;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Clip".
- */
-export interface Clip {
-  asset: string;
-  duration: Rational;
-  id: string;
-  sourceIn: Rational;
-  start: Rational;
 }
 /**
  * A transaction as persisted: with its revision, resolved bindings and diff.
