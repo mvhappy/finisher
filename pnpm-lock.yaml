@@ -173,7 +173,14 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(vite@8.3.5)
 
-  packages/contracts: {}
+  packages/contracts:
+    dependencies:
+      '@finisher/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+      effect:
+        specifier: 4.0.6
+        version: 4.0.6
 
   packages/core-types:
     devDependencies:
@@ -468,6 +475,9 @@ packages:
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
+
+  effect@4.0.6:
+    resolution: {integrity: sha512-Tc3mkzuLR6t6P9dhLt0D2GrxYtmU5td4XEJEiXCmILz53IRIfJyHsKZWjTA3xEjiwpNTtXBgI4iqYPxMztBDrw==}
 
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
@@ -893,6 +903,8 @@ snapshots:
   chai@6.3.0: {}
 
   detect-libc@2.1.2: {}
+
+  effect@4.0.6: {}
 
   es-module-lexer@2.3.2: {}
 
