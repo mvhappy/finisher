@@ -27,9 +27,22 @@ S1–S11 executed on macOS. Conclusions are in spec §27.
 - [x] S9 notarisation — notarised and stapled under Maryna's team 9XN7WN8JN2 (API key)
 - [ ] Remove leftover empty dirs `/Volumes/Storage-1/.finisher-spike-tmp/` and `Reels/.finisher-spike-tmp/` after the share is remounted
 
+## Spike round 4: Windows (E4)
+
+Test PC: Win 11 Pro 26300, Ryzen 7 7800X3D, RX 9070 XT + Radeon iGPU, 31 GB.
+Host access details: `archive/hosts.md` (local, git-ignored).
+
+- [x] Batch A: toolchain (`toolchain\env.ps1`), gates fixed for Windows (888bf58), S1 pass, S5b pass (17×), S11b 20/20 identical, S9 NSIS signed 17/17 PEs, S10 NTFS pass
+- [ ] S10 Windows SMB: hardened lease 105/105 split brain under the PC's +9.7 s clock skew → lease must not compare local clock to server mtime (spec)
+- [ ] S10(c) Windows↔Mac cross-host race: needs the share mounted on the Mac
+- [x] Batch B: S3 pass (D3D12, 59.96 fps), S3b compensated p95 9.1 ms at 144 Hz, S5 MF hardware decode + 18.1× proxies
+- [ ] Windows open: iGPU/hybrid run (per-app graphics setting), HEVC without the extensions, 240 fps phone check
+- [x] Batch C: S8 AppContainer launcher; escapes 90/90 blocked; fooled policy blocked; allow-only ACLs, per-project profile, ACL broker in finisherd
+- [ ] S8 Windows: Claude Code's Bash tool (Git Bash/MSYS) cannot start in an AppContainer → decide the Windows shell-tool design
+- [ ] S8 Windows: rerun as a non-elevated desktop user, with real agent turns
+
 ## Blocked on hardware or accounts
 
-- Windows PC (E4): all Windows rows
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
 - E2 GitHub repo (CI), E6 sync services, E9 Windows signing cert
 - Owner: correct caption timings for posing-mistakes-part-1 in the labeller

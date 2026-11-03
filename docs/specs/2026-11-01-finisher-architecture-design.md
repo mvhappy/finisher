@@ -837,6 +837,10 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **Linux x64** (Ubuntu 24.04 VM, Alder Lake):
      - apply p99 3.4 µs, rebase 5.3 ms, event loop 1.1 ms, sidecar 32 µs;
      - Electron main and `ELECTRON_RUN_AS_NODE` child load 5/5, with state hashes identical to macOS.
+   - **Windows 11 x64** (Ryzen 7 7800X3D, MSVC):
+     - apply p99 2.5 µs, rebase 5.2 ms, sidecar 31 µs over a named pipe;
+     - Electron main and child load 5/5, with identical state hashes.
+     - Windows timers tick at 15.6 ms, so event-loop latency needs a longer measurement window there.
 2. **§12.3 preview (S3):**
    - Frame ingest is `copyExternalImageToTexture` (one GPU copy, 0.4 ms p95).
    - The preview scheduler must be **cadence-aware**: it measures the real display/rAF interval and paces against it.
@@ -844,7 +848,15 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - The round-1 scheduler plays audio **37 ms early** on average (−48 ms under load), because frames reach the glass 23–56 ms after rAF, with a pipeline depth that varies per run. `getOutputTimestamp` already includes CoreAudio output latency.
      - The player therefore samples the audio clock at rAF + the running median (last 9 probes) of Element Timing `presentationTime − rAF` + scan-out + panel response, and shows the **nearest** frame. The probe is a 1-px `elementtiming` element inserted every 30 rAFs. Panel response is 5 ms until physically verified.
      - It never adds `outputLatency` (double-counting). Result: compensated |offset| p95 7.4 ms (held out).
-     - Open: physical panel check (240 fps phone test), Bluetooth/AirPlay outputs, refresh rates other than 60 Hz, Windows and Linux. About 2 % of events have a one-refresh window-server slip.
+     - **The display-correction constant is per platform and measured, never assumed.**
+       - Element Timing `presentationTime` is 1.75 ms after the real display time on macOS but 4.8 ms before it on Windows.
+       - The "nearest frame" window is half the **display** refresh interval, not half the content frame.
+     - **Windows (RX 9070 XT, 144 Hz, measured with Windows.Graphics.Capture + WASAPI loopback):**
+       - Uncompensated |offset| p95 13.9 ms: frames reach the glass a steady 2 refreshes after rAF.
+       - Compensated p95 9.1 ms (held out).
+       - `getOutputTimestamp` already includes the WASAPI output latency there too (−0.97 ms vs the OS play time).
+     - The player interpolates the audio clock between render callbacks (Windows steps it every 10 ms).
+     - Open: physical panel check (240 fps phone test), Bluetooth/AirPlay outputs, refresh rates other than 60 and 144 Hz, Linux. About 2 % of macOS events have a one-refresh window-server slip.
    - Drop bursts under machine contention came from the compositor cadence falling to about 53 Hz, not from the pipeline.
    - **Linux, Intel Gen12 iGPU (S3/S4, Docker on Xvfb, so indicative):**
      - WebGPU runs on Vulkan/ANV, not the fallback adapter.
@@ -857,6 +869,12 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **HEVC on Linux:** Chromium has no software HEVC decoder there, so HEVC preview needs VA-API or a proxy.
    - **Without a GPU:** only the SwiftShader/llvmpipe fallback is available, behind unsafe flags. Such machines use proxies and server-rendered preview (D31).
    - A real-desktop Linux run with real vsync is still pending.
+   - **Windows (RX 9070 XT, 4K 144 Hz HDR desktop): confirmed.**
+     - WebGPU runs on D3D12, not the fallback adapter; ANGLE and the compositor run on D3D11; `importExternalTexture` works.
+     - The 1080p60 preview ran at 59.96 fps with 0.06 % drops, ingest 0.2 ms and scrub p95 27 ms.
+     - WebCodecs hardware decode at 1080p: H.264, HEVC Main/Main10, VP9 and AV1 at 969–1,206 fps. No software HEVC decoder.
+     - WebCodecs hardware H.264/HEVC **encode hangs** (supported, but no chunks). Encode stays in `fin-codecs`, not WebCodecs.
+     - Chromium on Windows ignores `powerPreference`: GPU choice on hybrid machines follows the Windows per-app graphics setting.
 3. **§12.1–12.2 codecs (S5):**
    - Rust/objc2 AVFoundation and VideoToolbox are confirmed: 2.5k fps 1080p decode, HEVC Main10 HLG, 24× realtime short-GOP proxies.
    - The hardware decoder path is verified in use via a VideoToolbox session. 
@@ -865,7 +883,14 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **libvpx VP9 `--rt`** (cpu-used 6–7) is the reserve for clients without AV1 decode.
    - **Licence:** SVT-AV1 is BSD-3-Clause-Clear + AOMedia Patent License 1.0, the same patent licence as dav1d and libaom. It is added to the cargo-deny allow list and `THIRD_PARTY_NOTICES` when adopted.
    - **Build:** from source at a pinned, vendored tag; never the binding's prebuilt download. Keep a minimal FFI as the fallback to the single-vendor binding.
-   - **Linux x64 (Alder Lake, AVX2):** builds from source; 10.4× realtime all cores and 10.7× on 4 threads at 540p; PSNR matches arm64 within 0.02 dB; static lib 10.5 MB. A Windows MSVC build is unverified.
+   - **Linux x64 (Alder Lake, AVX2):** builds from source; 10.4× realtime all cores and 10.7× on 4 threads at 540p; PSNR matches arm64 within 0.02 dB; static lib 10.5 MB.
+   - **Windows x64 (MSVC + NASM, Ninja):** builds from source; 17.2× realtime all cores and 16.0× on 4 threads; quality identical to Linux; static lib 12 MB.
+   - **Windows Media Foundation (Rust, RX 9070 XT):**
+     - hardware decode verified (D3D11 textures, video engine busy): H.264 1080p 1,119 fps, HEVC Main10 HLG 1,114 fps;
+     - 540p short-GOP proxies via the AMD H.264 MFT at 18.1× realtime, keyframes exactly every 0.5 s.
+     - `fin-codecs` binds the hardware encoder MFT explicitly by adapter: the default sink writer picked the iGPU's MFT and hung.
+     - Media Foundation ignores MP4 edit lists, so our demuxer applies them (VFR → CFR is then exact).
+     - **HEVC needs the HEVC Video Extensions**, the only HEVC decoder Media Foundation offers. Without them Finisher decodes HEVC through D3D11VA directly, as Chromium does. Not yet verified on a machine without them.
    - **Linux VA-API (Intel Gen12):**
      - decodes H.264, HEVC Main/Main10, VP9 and AV1;
      - encodes H.264, HEVC and VP9 (low-power VDEnc), with 540p proxies at 26.7× realtime; no AV1 encode.
@@ -903,6 +928,16 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - Each agent gets a private `TMPDIR` inside a write root instead of `/tmp`.
      - A hardlink denial surfaces as EXDEV. TCP can be filtered; UDP can't.
      - Real agent turns under Landlock still need logged-in CLIs on a Linux host.
+   - **Windows AppContainer (normal, not LPAC): confirmed.** 90/90 core escapes blocked, plus Windows-specific paths. Those are junctions, ADS, 8.3 names, `\\?\` paths, admin shares, WMI and `schtasks`; all succeed unsandboxed.
+     - LPAC is rejected: it breaks node, curl, git, PowerShell, ConPTY and Codex.
+     - **Allow-only ACLs.** Deny ACEs and integrity labels don't stop an AppContainer (17/25 and 9/25 escapes). Protected roots sit outside write roots. If nesting is unavoidable, the protected root stops inheriting, and the parent loses delete-child.
+     - **One container profile per project** (`finisher-<project-uuid>`, never reused), granted once. Launch takes 35 ms against 3.1 s when granting and revoking per launch on 10k files.
+     - **ACL changes go through one broker in `finisherd`**, with a write-ahead log and a startup sweep. Concurrent read-modify-write lost a grant, and a crash leaves ACEs behind (5/5).
+     - **Per session:** a private TEMP/home, a private window station and desktop (CLIs don't start without one), a kill-on-close job, and only the standard handles. `fin` talks to `finisherd` over a named pipe, because loopback TCP is blocked.
+     - Imported assets are copied, not moved: a moved file keeps its old ACL.
+     - **Open: Claude Code's Bash tool.** Git Bash/MSYS can't start in any AppContainer; PowerShell and cmd work. Decide before Windows ships: PowerShell-only, a non-MSYS shell, or a brokered shell tool.
+     - **Open:** a non-elevated desktop user, and real agent turns.
+     - A restricted token is not better: no network isolation, and it breaks DNS, ConPTY and PowerShell.
 7. **§8.4 / §16 environment (S1, S7):** *every* child process (desktop shell → `finisherd` → workers, agents, plugins) starts from an explicit environment allow-list. Inherited `ELECTRON_RUN_AS_NODE`, `CLAUDECODE` and `CLAUDE_CODE_*` must never pass through.
 8. **§23 packaging (S9):**
    - The signed bundle needs only `com.apple.security.cs.allow-jit`.
@@ -915,6 +950,8 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **Linux (Ubuntu 24.04):** AppImage 270 MB, deb 207 MB; napi, ONNX and Codex load.
      - Ubuntu's AppArmor user-namespace restriction disables the Chromium sandbox unless an AppArmor profile is installed. An AppImage can't install one and so runs with the sandbox silently off.
      - **Linux ships as deb/rpm with the AppArmor profile; the AppImage is secondary and warns.** AppImage also needs libfuse2.
+   - **Windows:** a per-user NSIS installer, 220 MB (789 MB installed, of which Codex is 355 MB); napi, ONNX and Codex load.
+     - electron-builder doesn't sign single-file `extraResources`. Native files ship inside directory entries so that every PE gets signed; the release check runs `signtool verify` on every PE (17/17).
 9. **§6.7 storage (S10):**
    - **The round-1 check-then-write lease is rejected.** On SMB it split-brained:
      - 111/200 races from one Mac;
@@ -932,6 +969,14 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - Durability uses plain `fsync`: `F_FULLFSYNC` is ENOTSUP on macOS smbfs.
      - Server ids are case-normalised (shares can be case-insensitive). `link()` is unavailable.
      - Warn on `cache=loose`, `actimeo` > 1 or SMB1.
+   - **Clock skew: a lease never compares the local clock with server mtimes.** A Windows client 9.7 s ahead of the NAS split-brained the hardened lease in 105/105 races; with the clock corrected it passed 200/200.
+     - Staleness is judged in server time: the server's clock offset is measured from the mtime of a freshly written probe file, or by heartbeat-counter progress.
+     - Fencing still prevented every stale write under skew.
+   - **Windows SMB client:**
+     - `create_new`, hard links and no-replace rename each had exactly one winner in 100/100 races.
+     - Rename-over fails with ACCESS_DENIED while a reader holds the file open, so lease readers open with delete sharing and writers retry.
+     - Uncached lease reads use `FILE_FLAG_NO_BUFFERING`. That doesn't bypass the 10 s file-info cache, so cross-host staleness on Windows is still unmeasured.
+     - Directory fsync isn't possible on Windows (ACCESS_DENIED), so it is a no-op there.
    - **Conflict detection stays mandatory.** A write already in flight during network loss landed 10 s after takeover. Segments carry their epoch; duplicate sequence numbers, lower epochs, sync conflict copies and unknown server ids put the project read-only and prompt recovery.
    - **Media on a NAS:** a 1080p H.264 reel decoded at 650–686 fps over SMB (about 66 MB/s; first frame 0.11–0.23 s) against about 2,300 fps locally, and proxy speed was similar. Proxies stay local.
    - **Library scans on a NAS:** about 60k files take 161 s with 32 parallel stats against 450 s serially. Full scans run on open or on demand, never continuously; network roots are polled by directory mtime every 60 s.
@@ -949,7 +994,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - Hosts validate that every font a template names is registered; unregistered names fall back differently per runtime.
     - Template JSON is validated, and export runs in the sandboxed worker, because thorvg segfaults on malformed `chars`.
 11. **Validation still outstanding** (blocked on hardware or accounts, not design):
-    - all Windows rows;
+    - Windows: the cross-host SMB race against the Mac, S8 as a non-elevated user with real agent turns, an iGPU/hybrid run, and HEVC without the extensions;
     - a Linux real-desktop run (vsync, Wayland/X11 session) and Linux S3b latency;
     - sync-service rows of S10;
     - These gate the cross-platform claims of D4/D31 before sub-project 6.
