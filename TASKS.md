@@ -44,8 +44,11 @@ Host access details: `archive/hosts.md` (local, git-ignored).
 ## Captions round (S6d/S6e)
 
 - [x] Owner labelled the reel (187 words) and the 12-clip multilingual set (1,450 words), 2026-11-03
-- [ ] S6d English: baseline vs human labels, anchoring check, alternatives (running)
-- [ ] S6e multilingual (uk, de, es, fr, pt-BR): candidates and per-language pipeline (running)
+- [x] S6d English: B0 95.7 % starts / 75.7 % ends in window vs labels; ~40 candidates; keep B0 (+ a-priori −40 ms shift); labels anchored to prefill (46/882 edges moved)
+- [x] S6e multilingual: one shared stack (whisper turbo transcript forced language + base-960h CTC w/ transliteration + GBM starts); labels = prefill (reviewed by holding Enter)
+- [ ] Labeller blind mode (jittered prefill, play-before-review gate, Unicode scorer) — in progress
+- [ ] Owner: re-label reel + 2 EN clips + at least uk clips in blind mode (`--relabel`)
+- [ ] Ukrainian number verbaliser with case agreement (MIT/Rust); multilingual end-boundary corrector on permissive data
 - [x] S8 Windows follow-up: non-elevated 45/45; Credential Manager denied in container; shell tool → brokered
 - [x] S5 Windows HEVC via D3D11VA direct (no MF extension): 1,500/1,500 frames exact, ~1,090 fps
 

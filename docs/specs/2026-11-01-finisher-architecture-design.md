@@ -906,14 +906,18 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
      - p95 against MFA ≤ 50 ms is tracked, not gated.
      - p95 ≤ 50 ms against humans can't be a gate: published evaluations put only 89 % of MFA's word boundaries within 50 ms of hand labels (Rousso et al., Interspeech 2024).
      - On MFA references (held out), 95.9 % of starts and 96.9 % of ends are in the window.
-     - **Status against human labels: unmeasured (S6c).**
-       - No permissively licensed English corpus with human word boundaries exists: those with human labels are NC, LDC or research-only, and the permissive ones are forced-aligned.
-       - TTS duration references (Kokoro, Matcha) are rejected: they miss audible speech edges by 50–400 ms. ElevenLabs is excluded on licence and terms.
-       - The reference set is built from the owner's own videos, corrected by hand in a word-timing labeller. Corrections are prefilled from an independent coarse aligner, never from the pipeline under test, and the pipeline is never tuned on this set.
-       - An independent aligner on a real reel suggests end boundaries are the weak side.
-     - Digit words ("6", "$20", "7:30") get no timing from CTC; numbers are spelled out before alignment.
+     - **Reference set (S6c–S6e):** the owner's reel (187 words) plus 12 ElevenLabs clips (en, uk, de, es, fr, pt-BR; 1,450 words). The owner checked English and Ukrainian word by word and corrected what was wrong; unchanged edges there are confirmed correct. The other four languages are unverified references (mostly the generator's own timing). Labels came from an independent prefill, never from the pipeline under test. ElevenLabs audio is evaluation-only: never used to train or tune.
+     - **English, measured vs those labels:** the pipeline above puts 95.7 % of starts but only 75.7 % of ends in the window (reel 89.8 / 70.6). Every miss is late: the boundary correction, trained on MFA conventions, extends ends about 60 ms past where people place them.
+     - **Decision:** starts use the learned correction; **ends use the raw CTC span end** (95.7 / 91.5 % pooled, 89.8 / 83.4 % on the reel). This was chosen on a small set from about 40 candidates (listed in the archive), so expect some selection optimism.
+     - **Next step (sub-project 8):** retrain the boundary correction on permissive public data with the gate window as its objective, with music mixed in (the reel's misses are under background music). Fitted end offsets reached 96.8 % in leave-one-clip-out, which shows the headroom.
+     - Rejected on these labels: Parakeet's native timestamps, whisper cross-attention timing, NeMo Forced Aligner (80 ms frames), larger CTC models (no gain beyond noise at 3–5× the cost), VAD/energy edge snapping and speech enhancement before alignment. CrisperWhisper (NC weights) and whisper-timestamped (AGPL) are excluded on licence.
+     - Digit words ("6", "$20", "7:30") get no timing from CTC; numbers are spelled out per language before alignment. Ukrainian needs grammatical case agreement (a permissive verbaliser is still to build).
    - whisper.cpp alone is not acceptable for per-word captions. Qwen3-ForcedAligner was evaluated and rejected: 80 ms timestamp steps.
-   - Multilingual: Parakeet v3 or whisper.cpp + per-language CTC.
+   - **Multilingual (uk, de, es, fr, pt-BR): one shared stack, no per-language models.**
+     - Transcript: whisper large-v3-turbo (MIT) with the language forced: 2.3–3.5 % WER on every language. Parakeet v3 is rejected for non-English: it can't force the language and switched to English mid-clip in French (30 % WER).
+     - Alignment: the same wav2vec2-base-960h CTC, with accents stripped and Cyrillic transliterated. It beat every permissive per-language XLS-R model and a phoneme CTC model in every language.
+     - Learned start correction, raw CTC ends (as in English): starts 98–100 % and ends 94–98 % in the window against the references; Ukrainian and French ends miss the 95 % line by about 1 point, all at pauses.
+     - Runs on CPU via ONNX Runtime at about 0.14 real-time factor with whisper turbo. GPU is not needed (DirectML was 3–4× slower than CPU on an RX 9070 XT).
    - MMS models are excluded (CC-BY-NC).
 5. **§8.2 providers (S7):**
    - Claude Code is launched with `-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio --setting-sources project`. `--permission-prompts host` alone auto-denies.
