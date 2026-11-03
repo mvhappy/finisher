@@ -11,6 +11,7 @@ use crate::ops::util::{
     shift, track_index, wrong_op,
 };
 use crate::ops::{Bindings, Op};
+use crate::rebase::{Conflict, inserted_range, shift_position};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -62,4 +63,28 @@ pub(crate) fn apply(
     let id = clip.id.clone();
     place(track, clip);
     Ok(vec![Op::ClipRemove { id, ripple: *rippling }])
+}
+
+/// Moves the clip's `start` like an insert position; conflicts when the committed op restored
+/// the same clip or placed a clip around the new start.
+pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflict> {
+    let Op::ClipRestore { clip, track, .. } = op else { return Ok(op.clone()) };
+    if let Op::ClipRestore { clip: other, .. } = over
+        && other.id == clip.id
+    {
+        return Err(Conflict::new("clip already restored"));
+    }
+    let moved = shift_position(track, clip.start, over_diff)?;
+    if let Some((t, start, end)) = inserted_range(over, over_diff)?
+        && &t == track
+        && start < moved
+        && moved < end
+    {
+        return Err(Conflict::new("restore lands inside a clip"));
+    }
+    let mut out = op.clone();
+    if let Op::ClipRestore { clip, .. } = &mut out {
+        clip.start = moved;
+    }
+    Ok(out)
 }

@@ -7,6 +7,7 @@ use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, Project};
 use crate::ops::util::{invalid_range, record, wrong_op};
 use crate::ops::{Bindings, Op};
+use crate::rebase::Conflict;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
 /// Checks the op against `project`; on success the op can be applied.
@@ -43,4 +44,9 @@ pub(crate) fn apply(
     project.assets.insert(id.clone(), asset);
     record(diff, EntityKind::Asset, &id, ChangeKind::Added);
     Ok(vec![Op::AssetRemove { id }])
+}
+
+/// Adding an asset never conflicts and has no positions to move.
+pub(crate) fn rebase(op: &Op, _over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
+    Ok(op.clone())
 }

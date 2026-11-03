@@ -16,6 +16,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{AudioInfo, Clip, Project, VideoInfo};
+use crate::rebase::Conflict;
 use crate::time::Rational;
 use crate::tx::Diff;
 
@@ -115,6 +116,32 @@ impl Op {
     pub fn is_internal(&self) -> bool {
         matches!(self, Op::AssetRemove { .. } | Op::ClipRemove { .. } | Op::ClipRestore { .. })
     }
+
+    /// Clip ops record exactly one `Shift` when applied; asset ops record none.
+    pub(crate) fn records_shift(&self) -> bool {
+        !matches!(self, Op::AssetAdd { .. } | Op::AssetRemove { .. })
+    }
+
+    /// Replaces `$name` references with their bound ids (unbound ones are left as they are).
+    pub(crate) fn resolved(&self, bindings: &BTreeMap<String, String>) -> Op {
+        let r = |s: &String| bindings.get(s).cloned().unwrap_or_else(|| s.clone());
+        let mut op = self.clone();
+        match &mut op {
+            Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => *id = r(id),
+            Op::ClipInsert { id, track, asset, .. } => {
+                *id = r(id);
+                *track = r(track);
+                *asset = r(asset);
+            }
+            Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } => *clip = r(clip),
+            Op::ClipRestore { clip, track, .. } => {
+                clip.id = r(&clip.id);
+                clip.asset = r(&clip.asset);
+                *track = r(track);
+            }
+        }
+        op
+    }
 }
 
 /// `$name` placeholders bound during one transaction, in op order.
@@ -206,5 +233,19 @@ pub(crate) fn apply(
         Op::AssetRemove { .. } => asset_remove::apply(project, op, bindings, ids, diff),
         Op::ClipRemove { .. } => clip_remove::apply(project, op, bindings, ids, diff),
         Op::ClipRestore { .. } => clip_restore::apply(project, op, bindings, ids, diff),
+    }
+}
+
+/// Rebases `op` over one committed op `over` whose own diff (its single shift, if any) is
+/// `over_diff`. `over` must already have its placeholders resolved.
+pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflict> {
+    match op {
+        Op::AssetAdd { .. } => asset_add::rebase(op, over, over_diff),
+        Op::ClipInsert { .. } => clip_insert::rebase(op, over, over_diff),
+        Op::ClipTrim { .. } => clip_trim::rebase(op, over, over_diff),
+        Op::ClipDelete { .. } => clip_delete::rebase(op, over, over_diff),
+        Op::AssetRemove { .. } => asset_remove::rebase(op, over, over_diff),
+        Op::ClipRemove { .. } => clip_remove::rebase(op, over, over_diff),
+        Op::ClipRestore { .. } => clip_restore::rebase(op, over, over_diff),
     }
 }

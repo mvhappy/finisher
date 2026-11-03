@@ -9,6 +9,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{asset, clip_index, end, invalid_range, record, ripple, shift, wrong_op};
 use crate::ops::{Bindings, Edge, Op};
+use crate::rebase::{Conflict, removed_clip};
 use crate::time::frame_duration;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -67,4 +68,20 @@ pub(crate) fn apply(
     record(diff, EntityKind::Clip, &id, ChangeKind::Updated);
     shift(diff, &track.id, from, by);
     Ok(vec![Op::ClipTrim { clip: id, edge: *edge, delta: delta.checked_neg()? }])
+}
+
+/// Conflicts when the committed op removed the clip or trimmed the same edge of it. Trims carry
+/// no positions, so nothing moves.
+pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
+    let Op::ClipTrim { clip, edge, .. } = op else { return Ok(op.clone()) };
+    if removed_clip(over) == Some(clip.as_str()) {
+        return Err(Conflict::new("clip removed"));
+    }
+    if let Op::ClipTrim { clip: other, edge: other_edge, .. } = over
+        && other == clip
+        && other_edge == edge
+    {
+        return Err(Conflict::new("clip trimmed on the same edge"));
+    }
+    Ok(op.clone())
 }

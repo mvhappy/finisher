@@ -5,6 +5,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{clip_index, end, record, ripple, shift, wrong_op};
 use crate::ops::{Bindings, Op};
+use crate::rebase::{Conflict, removed_clip};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -38,4 +39,12 @@ pub(crate) fn apply(
     let id = validate(project, op, bindings)?;
     let Op::ClipRemove { ripple, .. } = op else { return Err(wrong_op(op)) };
     remove(project, &id, *ripple, diff)
+}
+
+pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
+    let Op::ClipRemove { id, .. } = op else { return Ok(op.clone()) };
+    if removed_clip(over) == Some(id.as_str()) {
+        return Err(Conflict::new("clip removed"));
+    }
+    Ok(op.clone())
 }
