@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 export function fixtureRoot(files) {
   const root = mkdtempSync(join(tmpdir(), "fin-gate-"));
@@ -18,7 +19,7 @@ export function lines(n) {
 }
 
 export function runGate(script, args) {
-  const result = spawnSync(process.execPath, [new URL(script, import.meta.url).pathname, ...args], {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL(script, import.meta.url)), ...args], {
     encoding: "utf8",
   });
   return { code: result.status, out: result.stdout + result.stderr };

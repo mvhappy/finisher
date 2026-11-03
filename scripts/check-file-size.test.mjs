@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { symlinkSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fixtureRoot, lines, runGate } from "./gate-helpers.mjs";
 
 const gate = (root) => runGate("./check-file-size.mjs", ["--root", root]);
@@ -45,9 +47,15 @@ test("gitignored files in a git checkout are skipped", () => {
 test("works without a pwd binary on PATH (Windows-like environment)", () => {
   const root = fixtureRoot({ "src/ok.ts": lines(10) });
   spawnSync("git", ["init", "-q"], { cwd: root });
-  const bin = fixtureRoot({});
-  symlinkSync(spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim(), `${bin}/git`);
-  const r = spawnSync(process.execPath, [new URL("./check-file-size.mjs", import.meta.url).pathname, "--root", root], {
+  const win = process.platform === "win32";
+  const git = spawnSync(win ? "where" : "which", ["git"], { encoding: "utf8" }).stdout.split(/\r?\n/)[0].trim();
+  // Windows: Git's cmd dir holds git.exe but no pwd; symlinks need Developer Mode there.
+  let bin = dirname(git);
+  if (!win) {
+    bin = fixtureRoot({});
+    symlinkSync(git, `${bin}/git`);
+  }
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL("./check-file-size.mjs", import.meta.url)), "--root", root], {
     encoding: "utf8",
     env: { ...process.env, PATH: bin },
   });
