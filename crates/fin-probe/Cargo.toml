@@ -1,0 +1,20 @@
+[package]
+name = "fin-probe"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Exposes the fixture writer in `tests/support` to other crates' tests (Task 12).
+fixtures = []
+
+[dependencies]
+blake3 = "1"
+fin-core = { path = "../fin-core" }
+mp4 = "0.14"
+serde_json = "1"
+
+[dev-dependencies]
+bytes = "1"
+tempfile = "3"
