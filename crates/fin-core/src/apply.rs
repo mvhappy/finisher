@@ -13,9 +13,10 @@ use crate::tx::{Applied, Diff, Tx};
 /// entities with literal ids.
 ///
 /// `Replay` re-applies committed history (see [`crate::apply_committed`]): like `Internal`, but
-/// policy checks (minimum durations, source ranges, `INSERT_INSIDE_CLIP`, ...) are skipped and
-/// only structural ones run: referenced entities exist, ids are new, track kinds match, and no
-/// track holds overlapping or empty clips after any op.
+/// policy checks (the one-frame minimum, `sourceIn + duration` within the asset, trim limits,
+/// `INSERT_INSIDE_CLIP`) are skipped and only structural ones run: referenced entities exist,
+/// new ids are new and fit their kind, track kinds match, assets have a positive duration, and
+/// after every op no track holds overlapping, empty or negative-start/`sourceIn` clips.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyMode {
     Client,

@@ -48,8 +48,8 @@ pub struct Record {
 
 /// The record's bytes: compact JSON, no trailing newline. These are the bytes that are hashed.
 pub fn encode_record(r: &Record) -> Vec<u8> {
-    // Serialising plain structs with string map keys cannot fail.
-    serde_json::to_vec(r).unwrap_or_default()
+    serde_json::to_vec(r)
+        .expect("a Record holds only structs, strings, numbers and string-keyed maps, which always serialise")
 }
 
 /// `ops` with every `$placeholder` reference replaced by its binding. A placeholder without a

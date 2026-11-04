@@ -150,3 +150,115 @@ fn bound_ids_hand_out_bindings_in_placeholder_order() {
     assert_eq!(ids.next(IdKind::Clip), "c9");
     assert!(ids.finished());
 }
+
+fn cause(p: &fin_core::Project, ops: Vec<Op>, b: &BTreeMap<String, String>) -> String {
+    let e = apply_committed(p, &tx(ops), b).unwrap_err();
+    assert_eq!(e.code, "REPLAY_FAILED");
+    e.details["cause"]["code"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn replay_rejects_non_positive_asset_duration() {
+    let ops = vec![
+        av_asset("$a", secs(-5)),
+        insert("$x", "t1", secs(0), "$a", secs(0), secs(2)),
+    ];
+    let b = bindings(&[("$a", "a1"), ("$x", "c1")]);
+    assert_eq!(cause(&project(), ops, &b), "INVALID_RANGE");
+    let zero = vec![av_asset("$a", secs(0))];
+    assert_eq!(
+        cause(&project(), zero, &bindings(&[("$a", "a1")])),
+        "INVALID_RANGE"
+    );
+}
+
+#[test]
+fn replay_rejects_negative_start_and_source_in() {
+    let p = with_clips(&[3]);
+    let b = bindings(&[("$x", "c2")]);
+    let at = vec![insert("$x", "t1", secs(-10), "a1", secs(0), secs(2))];
+    assert_eq!(cause(&p, at, &b), "CLIP_NEGATIVE");
+    let source = vec![insert("$x", "t1", secs(3), "a1", secs(-3), secs(2))];
+    assert_eq!(cause(&p, source, &b), "CLIP_NEGATIVE");
+}
+
+#[test]
+fn replay_rejects_a_trim_to_nothing() {
+    let p = with_clips(&[3]);
+    let trim = vec![Op::ClipTrim {
+        clip: "c1".into(),
+        edge: fin_core::Edge::End,
+        delta: secs(-3),
+    }];
+    assert_eq!(cause(&p, trim, &BTreeMap::new()), "CLIP_EMPTY");
+}
+
+#[test]
+fn replay_rejects_removing_an_asset_in_use() {
+    let p = with_clips(&[3]);
+    let ops = vec![Op::AssetRemove { id: "a1".into() }];
+    assert_eq!(cause(&p, ops, &BTreeMap::new()), "ASSET_IN_USE");
+}
+
+#[test]
+fn replay_rejects_a_restore_without_ripple_that_overlaps() {
+    let p = with_clips(&[4]);
+    let mut c = clip(&p, "c1").clone();
+    c.id = "c5".into();
+    c.start = secs(2);
+    let ops = vec![Op::ClipRestore {
+        clip: c,
+        track: "t1".into(),
+        ripple: false,
+    }];
+    assert_eq!(cause(&p, ops, &BTreeMap::new()), "CLIP_OVERLAP");
+}
+
+#[test]
+fn replay_rejects_a_duplicate_placeholder() {
+    let p = with_clips(&[3]);
+    let ops = vec![
+        insert("$x", "t1", secs(3), "a1", secs(0), secs(1)),
+        insert("$x", "t1", secs(4), "a1", secs(0), secs(1)),
+    ];
+    assert_eq!(
+        cause(&p, ops, &bindings(&[("$x", "c2")])),
+        "DUPLICATE_PLACEHOLDER"
+    );
+}
+
+#[test]
+fn replay_rejects_literal_ids_that_do_not_fit_their_kind() {
+    let p = with_clips(&[3]);
+    let wrong = vec![av_asset("c9", secs(10))];
+    assert_eq!(cause(&p, wrong, &BTreeMap::new()), "INVALID_ID");
+    let right = vec![av_asset("a9", secs(10))];
+    apply_committed(&p, &tx(right), &BTreeMap::new()).unwrap();
+
+    let mut c = clip(&p, "c1").clone();
+    c.id = "$r".into();
+    c.start = secs(3);
+    let restore = |clip| Op::ClipRestore {
+        clip,
+        track: "t1".into(),
+        ripple: true,
+    };
+    assert_eq!(
+        cause(&p, vec![restore(c.clone())], &BTreeMap::new()),
+        "INVALID_ID"
+    );
+    c.id = "x5".into();
+    assert_eq!(
+        cause(&p, vec![restore(c.clone())], &BTreeMap::new()),
+        "INVALID_ID"
+    );
+    c.id = "c5".into();
+    apply_committed(&p, &tx(vec![restore(c)]), &BTreeMap::new()).unwrap();
+}
+
+#[test]
+fn internal_mode_still_accepts_any_literal_id() {
+    let p = with_clips(&[3]);
+    let ops = vec![av_asset("c9", secs(10))];
+    fin_core::apply_internal(&p, &tx(ops), &mut MemIds::after(&p)).unwrap();
+}

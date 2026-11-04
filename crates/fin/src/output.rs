@@ -44,6 +44,9 @@ const VALIDATION_CODES: &[&str] = &[
     "INVALID_FORMAT",
     "REPLAY_FAILED",
     "CLIP_OVERLAP",
+    "CLIP_EMPTY",
+    "CLIP_NEGATIVE",
+    "INVALID_ID",
     "BINDINGS_MISMATCH",
 ];
 
@@ -177,6 +180,9 @@ mod tests {
             "INVALID_FORMAT",
             "REPLAY_FAILED",
             "CLIP_OVERLAP",
+            "CLIP_EMPTY",
+            "CLIP_NEGATIVE",
+            "INVALID_ID",
             "BINDINGS_MISMATCH",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::error::CoreError;
 use crate::model::{Project, SCHEMA_VERSION};
-use crate::record::{Record, decode_record, invalid_format};
+use crate::record::{Record, RecordKind, decode_record, invalid_format};
 
 /// Converts a value at schema version `from` to `from + 1`. The runner stamps the new version.
 pub(crate) struct Step {
@@ -22,11 +22,23 @@ const RECORD_STEPS: &[Step] = &[];
 const SNAPSHOT_STEPS: &[Step] = &[];
 
 /// A record value of any known schema version, upgraded to `SCHEMA_VERSION`. Upgrading also
-/// stamps `intent.schemaVersion`, which follows the record's. Above `SCHEMA_VERSION` is
-/// `NEWER_FORMAT`; an older version with no step is `SCHEMA_VERSION`; a value that is not a
+/// stamps `intent.schemaVersion`, which follows the record's. Above `SCHEMA_VERSION`, or an
+/// unknown string `kind`, is `NEWER_FORMAT`; an older version with no step is `SCHEMA_VERSION`; a value that is not a
 /// record is `INVALID_FORMAT`.
 pub fn upcast_record(v: Value) -> Result<Record, CoreError> {
-    decode_record(upcast(v, RECORD_STEPS, SCHEMA_VERSION, "record")?)
+    let v = upcast(v, RECORD_STEPS, SCHEMA_VERSION, "record")?;
+    // An unknown kind was written by a newer Finisher; a non-string kind is damage.
+    if let Some(kind @ Value::String(name)) = v.get("kind")
+        && serde_json::from_value::<RecordKind>(kind.clone()).is_err()
+    {
+        return Err(CoreError::new(
+            "NEWER_FORMAT",
+            format!("record kind {name:?} is not known to this Finisher"),
+        )
+        .with_details(json!({ "kind": "record", "recordKind": name }))
+        .with_fix("update Finisher to open this project"));
+    }
+    decode_record(v)
 }
 
 /// A snapshot (model state) value of any known schema version, upgraded to `SCHEMA_VERSION`.

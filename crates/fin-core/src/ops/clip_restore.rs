@@ -28,6 +28,10 @@ pub(crate) fn validate(
     else {
         return Err(wrong_op(op));
     };
+    // Replay: a restore names its clip literally (it never allocates).
+    if !bindings.policy() {
+        crate::ops::check_literal(&clip.id, IdKind::Clip)?;
+    }
     bindings.check_new(project, &clip.id, IdKind::Clip)?;
     let ti = track_index(project, &bindings.resolve(track)?)?;
     let a = asset(project, &bindings.resolve(&clip.asset)?)?;

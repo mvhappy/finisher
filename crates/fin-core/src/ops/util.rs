@@ -198,10 +198,10 @@ pub(crate) fn shift(diff: &mut Diff, track: &str, from: Rational, by: Rational) 
     });
 }
 
-/// The structural invariant of a track: positive durations, sorted by `start`, no overlaps.
-/// Policy checks keep it on the edit path; replay, which skips them, checks it after every op
-/// on each track the op shifted (`CLIP_OVERLAP`, or `INVALID_RANGE` for a non-positive
-/// duration).
+/// The structural invariant of a track: positive durations (`CLIP_EMPTY`), non-negative
+/// `start` and `sourceIn` (`CLIP_NEGATIVE`), sorted by `start` with no overlaps
+/// (`CLIP_OVERLAP`). Policy checks keep it on the edit path; replay, which skips them, checks it
+/// after every op on each track the op shifted.
 pub(crate) fn check_tracks(project: &Project, shifts: &[Shift]) -> Result<(), CoreError> {
     for s in shifts {
         check_track(&project.timeline.tracks[track_index(project, &s.track)?])?;
@@ -212,11 +212,23 @@ pub(crate) fn check_tracks(project: &Project, shifts: &[Shift]) -> Result<(), Co
 fn check_track(track: &Track) -> Result<(), CoreError> {
     for c in &track.items {
         if !c.duration.is_positive() {
-            return Err(invalid_range(
+            return Err(CoreError::new(
+                "CLIP_EMPTY",
                 format!("clip {} has no positive duration", c.id),
-                json!({ "clip": c.id, "duration": c.duration }),
-                "a clip needs a positive duration",
-            ));
+            )
+            .with_details(json!({ "track": track.id, "clip": c.id, "duration": c.duration })));
+        }
+        if c.start < Rational::zero() || c.source_in < Rational::zero() {
+            return Err(CoreError::new(
+                "CLIP_NEGATIVE",
+                format!("clip {} has a negative start or sourceIn", c.id),
+            )
+            .with_details(json!({
+                "track": track.id,
+                "clip": c.id,
+                "start": c.start,
+                "sourceIn": c.source_in,
+            })));
         }
     }
     for w in track.items.windows(2) {

@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::apply::{ApplyMode, apply_tx_mode};
 use crate::error::CoreError;
-use crate::ids::{IdAlloc, IdKind};
+use crate::ids::{IdAlloc, IdKind, suffix};
 use crate::model::Project;
 use crate::ops::Op;
 use crate::tx::{Applied, Tx};
@@ -52,17 +52,11 @@ impl<'a> BoundIds<'a> {
     }
 }
 
-/// Exactly `prefix` followed by digits.
-fn has_prefix(id: &str, prefix: &str) -> bool {
-    id.strip_prefix(prefix)
-        .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
-}
-
 impl IdAlloc for BoundIds<'_> {
     fn next(&mut self, kind: IdKind) -> String {
         match self.queue.pop_front() {
             Some(id) => {
-                if !has_prefix(id, kind.prefix()) {
+                if suffix(id, kind.prefix()).is_none() {
                     self.mismatch = true;
                 }
                 id.to_string()
@@ -79,8 +73,10 @@ impl IdAlloc for BoundIds<'_> {
 /// with `bindings` fixing every new id. The result's bindings equal `bindings`.
 ///
 /// Fails only on structural damage, as `REPLAY_FAILED` with `details {txId, cause}`; `cause`
-/// is the structural error (`NOT_FOUND`, `DUPLICATE_ID`, `TRACK_KIND_MISMATCH`, `CLIP_OVERLAP`,
-/// `UNBOUND_PLACEHOLDER`, `DUPLICATE_PLACEHOLDER`, `TIME_OVERFLOW`, ...), or
+/// is the structural error (`NOT_FOUND`, `DUPLICATE_ID`, `INVALID_ID`, `TRACK_KIND_MISMATCH`,
+/// `ASSET_IN_USE`, `CLIP_OVERLAP`, `CLIP_EMPTY`, `CLIP_NEGATIVE`, `INVALID_RANGE` for a
+/// non-positive asset duration, `UNBOUND_PLACEHOLDER`, `DUPLICATE_PLACEHOLDER`,
+/// `TIME_OVERFLOW`), or
 /// `BINDINGS_MISMATCH` when the recorded bindings are not the ones the intent allocates.
 pub fn apply_committed(
     project: &Project,

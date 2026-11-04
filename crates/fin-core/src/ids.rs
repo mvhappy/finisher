@@ -43,7 +43,7 @@ impl Default for MemIds {
 }
 
 /// Numeric suffix of `id` when it is exactly `prefix` followed by digits.
-fn suffix(id: &str, prefix: &str) -> Option<u64> {
+pub(crate) fn suffix(id: &str, prefix: &str) -> Option<u64> {
     let digits = id.strip_prefix(prefix)?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;

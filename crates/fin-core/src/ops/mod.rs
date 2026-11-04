@@ -236,6 +236,9 @@ impl Bindings {
                 "use a placeholder such as ${id}; the server allocates the id"
             )));
         }
+        if !self.policy {
+            check_literal(id, kind)?;
+        }
         if util::exists(project, kind, id) {
             return Err(
                 CoreError::new("DUPLICATE_ID", format!("id {id} already exists"))
@@ -269,6 +272,18 @@ impl Bindings {
         self.map.insert(id.to_string(), new.clone());
         Ok(new)
     }
+}
+
+/// Replay: a literal id for a new entity must be `<kind prefix><digits>`, so ids read off disk
+/// cannot break the id counters (`INVALID_ID`).
+pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
+    if crate::ids::suffix(id, kind.prefix()).is_some() {
+        return Ok(());
+    }
+    Err(
+        CoreError::new("INVALID_ID", format!("{id} is not a {} id", kind.prefix()))
+            .with_details(json!({ "id": id, "prefix": kind.prefix() })),
+    )
 }
 
 /// Applies one op to `project`, appending to `diff`; returns the op's inverse ops (in order).

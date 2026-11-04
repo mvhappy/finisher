@@ -163,3 +163,20 @@ fn upcast_rejects_unknown_older_and_malformed() {
     v["seq"] = json!("seven");
     assert_eq!(upcast_record(v).unwrap_err().code, "INVALID_FORMAT");
 }
+
+#[test]
+fn upcast_unknown_kind_is_newer_format() {
+    let mut v = record_value();
+    v["kind"] = json!("undo");
+    let e = upcast_record(v).unwrap_err();
+    assert_eq!(e.code, "NEWER_FORMAT");
+    assert_eq!(e.details["recordKind"], "undo");
+
+    let mut v = record_value();
+    v["kind"] = json!(3);
+    assert_eq!(upcast_record(v).unwrap_err().code, "INVALID_FORMAT");
+
+    let mut v = record_value();
+    v.as_object_mut().unwrap().remove("kind");
+    assert_eq!(upcast_record(v).unwrap_err().code, "INVALID_FORMAT");
+}
