@@ -181,6 +181,30 @@ fn same_idem_key_delete_twice_replays_the_commit() {
 }
 
 #[test]
+fn idem_key_with_a_locally_invalid_step_keeps_the_servers_conflict() {
+    let Some((server, dir)) = project("idem_key_with_a_locally_invalid_step_keeps_the_servers_conflict") else { return };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    ok(fin(&server.sd, &dir, &["clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "2s"]));
+    // Locally invalid (c1 is only 2 s long), so it is deferred and sent because of the key...
+    let gate = server.root.join("gate");
+    let args = ["clip", "trim", "c1", "--end", "-10s", "--idem-key", "trim-1"];
+    let writer = fin_cmd(&server.sd, &dir, &args).env("FIN_TEST_COMMIT_GATE", &gate).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let ready = || std::fs::read_dir(&server.root).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("gate.ready."));
+    while !ready() {
+        assert!(Instant::now() < deadline, "writer never reached the commit gate");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // ...but c1 is deleted before it commits, so the server's answer is a rebase conflict.
+    ok(fin(&server.sd, &dir, &["clip", "delete", "c1"]));
+    std::fs::write(&gate, b"").unwrap();
+    let run = finish(&args, writer.wait_with_output().unwrap());
+    assert_error(&run, 4, "CONFLICT");
+    assert_eq!(run.json["error"]["details"]["txId"], "trim-1");
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 3);
+}
+
+#[test]
 fn concurrent_inserts_on_one_snapshot_both_commit_rebased() {
     let Some((server, dir)) = project("concurrent_inserts_on_one_snapshot_both_commit_rebased") else { return };
     ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
