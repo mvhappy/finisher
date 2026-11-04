@@ -7,6 +7,11 @@
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
 // Usage: node scripts/e2e.mjs [--skip-build]
+//
+// After the builds, the run has a deadline (E2E_DEADLINE_MS, default 120 s): when it passes,
+// the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
+// E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
+// and E2E_START_TIMEOUT_MS bounds the wait for its `finisherd.json` (default 30 s).
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +22,11 @@ import { isDeepStrictEqual } from "node:util";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WIN = process.platform === "win32";
 const FIN = join(ROOT, "target", "release", WIN ? "fin.exe" : "fin");
+const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 120_000);
+const START_TIMEOUT_MS = Number(process.env.E2E_START_TIMEOUT_MS ?? 30_000);
+
+/** What the watchdog must clean up: the spawned server and the temp dir, once they exist. */
+const live = { child: undefined, tmp: undefined };
 
 /** Splits WebSocket message text into NDJSON frames (a message may carry several lines). */
 export function parseFrames(text) {
@@ -60,7 +70,9 @@ function build(cmd, args) {
 function fin(serverData, cwd, args) {
   const env = { ...process.env, FIN_SERVER_DATA: serverData };
   delete env.FIN_SERVER; // find the server through <server-data>/finisherd.json
-  const out = spawnSync(FIN, args, { cwd, encoding: "utf8", env });
+  // fin has its own 30 s server timeouts; this bounds a hang the watchdog cannot interrupt
+  // (spawnSync blocks the event loop).
+  const out = spawnSync(FIN, args, { cwd, encoding: "utf8", env, timeout: 60_000 });
   if (out.error) throw out.error;
   const text = out.stdout.trim();
   if (out.status !== 0) throw new Error(`fin ${args.join(" ")} exited ${out.status}: ${text} ${out.stderr}`);
@@ -78,31 +90,46 @@ async function waitFor(what, predicate, timeoutMs, onTimeout = () => "") {
   }
 }
 
-/** Starts `finisherd --server-data <dir>` and waits for its `finisherd.json`. */
+function serverCommand(serverData) {
+  if (process.env.E2E_SERVER_CMD) {
+    const [cmd, ...args] = JSON.parse(process.env.E2E_SERVER_CMD).map((a) => a.replaceAll("{serverData}", serverData));
+    return [cmd, args];
+  }
+  return [process.execPath, [join(ROOT, "apps", "finisherd", "src", "main.ts"), "--server-data", serverData]];
+}
+
+/**
+ * Starts `finisherd --server-data <dir>` and waits for its `finisherd.json`. If it never
+ * becomes ready, the child is stopped before the error propagates.
+ */
 async function startServer(serverData) {
-  const child = spawn(process.execPath, [join(ROOT, "apps", "finisherd", "src", "main.ts"), "--server-data", serverData], {
-    cwd: ROOT,
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  const [cmd, args] = serverCommand(serverData);
+  const child = spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"] });
+  live.child = child;
   let stderr = "";
   child.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve(code ?? signal)));
   const file = join(serverData, "finisherd.json");
   const server = { child, exited, stderr: () => stderr };
-  server.info = await waitFor(
-    "finisherd.json",
-    () => {
-      if (child.exitCode !== null) throw new Error(`finisherd exited ${child.exitCode}: ${stderr}`);
-      if (!existsSync(file)) return undefined;
-      try {
-        return JSON.parse(readFileSync(file, "utf8"));
-      } catch {
-        return undefined; // mid-write
-      }
-    },
-    30_000,
-    () => `: ${stderr}`,
-  );
+  try {
+    server.info = await waitFor(
+      "finisherd.json",
+      () => {
+        if (child.exitCode !== null) throw new Error(`finisherd exited ${child.exitCode}: ${stderr}`);
+        if (!existsSync(file)) return undefined;
+        try {
+          return JSON.parse(readFileSync(file, "utf8"));
+        } catch {
+          return undefined; // mid-write
+        }
+      },
+      START_TIMEOUT_MS,
+      () => `: ${stderr}`,
+    );
+  } catch (e) {
+    await stopServer(server);
+    throw e;
+  }
   log(`finisherd pid=${server.info.pid} wsPort=${server.info.wsPort} socket=${server.info.socket}`);
   return server;
 }
@@ -181,15 +208,48 @@ function assertEqual(actual, expected, what) {
 }
 
 async function main(argv) {
-  const started = Date.now();
   if (!argv.includes("--skip-build")) {
     build("cargo", ["build", "--release", "-p", "fin"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
   }
+  // The builds run synchronously (a cold release build can take minutes in CI), so the
+  // deadline covers the run itself.
+  await withDeadline(run(), DEADLINE_MS);
+}
+
+/** Removes the temp dir; a failure (a Windows file lock) is logged, never thrown. */
+function removeTmp(tmp) {
+  try {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (e) {
+    process.stderr.write(`e2e: cleanup: cannot remove ${tmp}: ${e instanceof Error ? e.message : String(e)}\n`);
+  }
+}
+
+/** Races `work` against `ms`; on expiry the server is killed and the temp dir removed. */
+async function withDeadline(work, ms) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      live.child?.kill("SIGKILL");
+      if (live.tmp) removeTmp(live.tmp);
+      reject(new Error(`watchdog: the run did not finish within ${ms / 1000}s; killed finisherd`));
+    }, ms);
+  });
+  try {
+    await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function run() {
+  const started = Date.now();
 
   // realpath: macOS tmp is a symlink (/var → /private/var), and fin echoes resolved paths.
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-")));
+  live.tmp = tmp;
   const serverData = join(tmp, "server-data");
   let server;
   let ws;
@@ -258,7 +318,7 @@ async function main(argv) {
   } finally {
     ws?.close();
     if (server) await stopServer(server);
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    removeTmp(tmp);
   }
 }
 
@@ -266,5 +326,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main(process.argv.slice(2)).catch((e) => {
     process.stderr.write(`e2e: FAIL: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exitCode = 1;
+    // After a watchdog expiry the run may still be pending: do not wait on it. Unref'd, so a
+    // clean failure exits as soon as the output is flushed.
+    setTimeout(() => process.exit(1), 1000).unref();
   });
 }
