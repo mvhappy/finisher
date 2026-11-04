@@ -1,0 +1,26 @@
+[package]
+name = "fin"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The agent-only Finisher CLI."
+
+[[bin]]
+name = "fin"
+path = "src/main.rs"
+
+[dependencies]
+# No `color` or `help` features: fin never renders clap's own help or ANSI output.
+clap = { version = "4", default-features = false, features = ["std", "derive", "error-context", "suggestions", "usage"] }
+fin-core = { path = "../fin-core" }
+# Unix domain sockets and Windows named pipes with blocking IO (0BSD OR Apache-2.0).
+interprocess = "2"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ulid = "1"
+
+[dev-dependencies]
+fin-probe = { path = "../fin-probe", features = ["fixtures"] }
+tempfile = "3"

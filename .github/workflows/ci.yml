@@ -26,12 +26,19 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Build fin-node (finisherd needs it for the fin online tests)
+        run: pnpm --filter @finisher/fin-node build
       - name: Rust tests
         run: cargo test --workspace --release
+        env:
+          # fin's online and contract tests must run against a live finisherd, never skip.
+          FIN_REQUIRE_SERVER: "1"
       - name: TypeScript tests
         run: pnpm test
       - name: Gate tests
         run: pnpm test:gates
+      - name: End-to-end (fin → finisherd → WebSocket subscriber)
+        run: pnpm e2e
       - name: Install cargo-deny
         if: runner.os != 'Windows'
         run: cargo install cargo-deny --locked --version 0.20.2

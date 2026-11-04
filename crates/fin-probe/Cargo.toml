@@ -1,0 +1,22 @@
+[package]
+name = "fin-probe"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Exposes `fixtures::write_fixture_mp4` so other crates' tests can generate media.
+fixtures = ["dep:bytes"]
+
+[dependencies]
+blake3 = "1"
+bytes = { version = "1", optional = true }
+dunce = "1"
+fin-core = { path = "../fin-core" }
+mp4 = "0.14"
+serde_json = "1"
+
+[dev-dependencies]
+fin-probe = { path = ".", features = ["fixtures"] }
+tempfile = "3"

@@ -10,7 +10,8 @@
   "scripts": {
     "test": "vitest run",
     "test:gates": "node --test scripts/",
-    "gates": "node scripts/gates.mjs"
+    "gates": "node scripts/gates.mjs",
+    "e2e": "node scripts/e2e.mjs"
   },
   "devDependencies": {
     "typescript": "7.0.2",
