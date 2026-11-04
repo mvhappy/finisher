@@ -65,6 +65,9 @@ fin clip insert --track t1 --at end --asset a1 --in 4s --dur 3s
 fin view
 ```
 
+`clip.mp4` must be at least 7 s long: the second insert reads the source from 4 s to 7 s
+(a shorter file fails with `INVALID_RANGE`). Any 7 s+ video works; `pnpm e2e` uses a 10 s one.
+
 Run `fin` with no arguments for the command map, and `fin help clip` for details.
 
 **Server data** (the project databases, `finisherd.json` with the server's pid, socket and
