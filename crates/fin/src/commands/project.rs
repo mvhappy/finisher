@@ -1,6 +1,6 @@
 //! `fin project create|open`. Both need the server; `create --dry-run` validates locally.
-
-use std::path::{Path, PathBuf};
+//! `open` only registers the folder with the server: it is not a write, so `--dry-run` does not
+//! apply to it.
 
 use clap::{Args, Subcommand};
 use fin_core::{CoreError, Rational, frame_duration, new_project};
@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use super::Globals;
 use crate::backend::Backend;
+use crate::paths;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum ProjectCmd {
@@ -33,18 +34,14 @@ pub struct CreateArgs {
     pub rate: Option<String>,
 }
 
-/// Open an existing project folder.
+/// Open an existing project folder: registers it with the server. Not a write, so --dry-run
+/// does not apply (it is accepted and ignored).
 #[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpenArgs {
     /// Project folder.
     #[arg(value_name = "dir")]
     pub dir: String,
-}
-
-fn absolute(dir: &str) -> PathBuf {
-    let path = Path::new(dir);
-    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub fn create(backend: &dyn Backend, globals: &Globals, a: &CreateArgs) -> Result<Value, CoreError> {
@@ -55,7 +52,7 @@ pub fn create(backend: &dyn Backend, globals: &Globals, a: &CreateArgs) -> Resul
         e
     })?;
     frame_duration(rate)?;
-    let dir = absolute(&a.dir);
+    let dir = paths::resolve_str(&a.dir);
     let resolved = json!({ "dir": dir.display().to_string(), "name": a.name, "rate": rate });
     if globals.dry_run || backend.dry_run_only() {
         let project = new_project("$project".to_string(), a.name.clone(), rate)?;
@@ -66,7 +63,7 @@ pub fn create(backend: &dyn Backend, globals: &Globals, a: &CreateArgs) -> Resul
 }
 
 pub fn open(backend: &dyn Backend, a: &OpenArgs) -> Result<Value, CoreError> {
-    let dir = absolute(&a.dir);
+    let dir = paths::resolve_str(&a.dir);
     let project = backend.open_project(&dir)?;
     Ok(json!({ "project": project, "resolved": { "dir": dir.display().to_string() } }))
 }

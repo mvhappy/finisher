@@ -30,14 +30,30 @@ const VALIDATION_CODES: &[&str] = &[
     "ASSET_NOT_FOUND",
     "ASSET_UNREADABLE",
     "UNSUPPORTED_CONTAINER",
+    "PROJECT_NOT_FOUND",
+    "PROJECT_EXISTS",
+    "PROJECT_INVALID",
+    "BRANCH_NOT_FOUND",
+    "PROJECT_DB_MISSING",
+    "PROJECT_DB_MISMATCH",
+    "SERVER_DATA_UNSAFE",
+    "ENGINE_CLOSED",
+    "SERVER_SHUTTING_DOWN",
 ];
+
+/// Codes that mean "the project moved under you; read it again and retry" (exit 4).
+const CONFLICT_CODES: &[&str] = &["CONFLICT", "BASE_REV_AHEAD"];
+
+/// Codes that mean "no usable server" (exit 5). `SERVER_TIMEOUT` is fin's own: the server
+/// accepted the connection but did not answer in time.
+const UNAVAILABLE_CODES: &[&str] = &["SERVER_UNAVAILABLE", "SERVER_RUNNING", "SERVER_START_FAILED", "SERVER_TIMEOUT"];
 
 /// The one place error codes become exit codes.
 pub fn exit_code(code: &str) -> i32 {
     match code {
         "USAGE" => USAGE,
-        "CONFLICT" => CONFLICT,
-        "SERVER_UNAVAILABLE" => UNAVAILABLE,
+        c if CONFLICT_CODES.contains(&c) => CONFLICT,
+        c if UNAVAILABLE_CODES.contains(&c) => UNAVAILABLE,
         c if VALIDATION_CODES.contains(&c) => VALIDATION,
         _ => INTERNAL,
     }
@@ -98,9 +114,26 @@ mod tests {
     fn exit_codes_follow_the_contract() {
         assert_eq!(exit_code("USAGE"), 2);
         assert_eq!(exit_code("CONFLICT"), 4);
-        assert_eq!(exit_code("SERVER_UNAVAILABLE"), 5);
-        assert_eq!(exit_code("INTERNAL"), 6);
-        assert_eq!(exit_code("SOMETHING_NEW"), 6);
+        assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
+        for code in ["SERVER_UNAVAILABLE", "SERVER_RUNNING", "SERVER_START_FAILED", "SERVER_TIMEOUT"] {
+            assert_eq!(exit_code(code), 5, "{code}");
+        }
+        for code in ["INTERNAL", "SOMETHING_NEW", "PROTOCOL_ERROR", "PROTOCOL_MISMATCH", "CANCELLED"] {
+            assert_eq!(exit_code(code), 6, "{code}");
+        }
+        for code in [
+            "PROJECT_NOT_FOUND",
+            "PROJECT_EXISTS",
+            "PROJECT_INVALID",
+            "BRANCH_NOT_FOUND",
+            "PROJECT_DB_MISSING",
+            "PROJECT_DB_MISMATCH",
+            "SERVER_DATA_UNSAFE",
+            "ENGINE_CLOSED",
+            "SERVER_SHUTTING_DOWN",
+        ] {
+            assert_eq!(exit_code(code), 3, "{code}");
+        }
         for code in VALIDATION_CODES {
             assert_eq!(exit_code(code), 3, "{code}");
         }

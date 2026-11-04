@@ -63,7 +63,12 @@ impl Env {
 
     fn run_with_stdin(&self, args: &[&str], stdin: &str) -> Run {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fin"));
-        cmd.args(args).current_dir(self.dir.path()).env_remove("FIN_OFFLINE_SNAPSHOT");
+        // Never reach a real finisherd: point server data at an empty folder.
+        cmd.args(args)
+            .current_dir(self.dir.path())
+            .env_remove("FIN_OFFLINE_SNAPSHOT")
+            .env_remove("FIN_SERVER")
+            .env("FIN_SERVER_DATA", self.dir.path().join("no-server"));
         if self.snapshot {
             cmd.env("FIN_OFFLINE_SNAPSHOT", self.dir.path().join("snapshot.json"));
         }
@@ -249,16 +254,20 @@ fn batch_is_one_transaction_with_numbered_placeholders() {
 fn without_a_server_online_commands_are_unavailable() {
     let env = Env::no_server();
     for args in [
-        &["status"][..],
-        &["view"],
-        &["clip", "delete", "c1"],
-        &["clip", "delete", "c1", "--dry-run"],
+        &["status", "--project", "."][..],
+        &["view", "--project", "."],
+        &["clip", "delete", "c1", "--project", "."],
+        &["clip", "delete", "c1", "--dry-run", "--project", "."],
         &["project", "open", "."],
         &["project", "create", "x", "--name", "X"],
     ] {
         let run = env.run(args);
         assert_error(&run, 5, "SERVER_UNAVAILABLE");
         assert_eq!(run.json["error"]["fix"], "start finisherd");
+    }
+    // Without --project and no finisher.project.json up the tree there is nothing to open.
+    for args in [&["status"][..], &["view"], &["clip", "delete", "c1", "--dry-run"]] {
+        assert_error(&env.run(args), 3, "PROJECT_NOT_FOUND");
     }
     let offline = Env::offline();
     assert_error(&offline.run(&["asset", "add", "a.mp4"]), 5, "SERVER_UNAVAILABLE");

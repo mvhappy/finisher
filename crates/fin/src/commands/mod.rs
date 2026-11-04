@@ -126,6 +126,8 @@ impl<'a> Builder<'a> {
             }));
         }
         let committed = self.backend.commit(&tx)?;
+        let mut resolved = resolved;
+        echo_committed(&mut resolved, &committed.tx.ops);
         Ok(json!({
             "rev": committed.rev,
             "txId": committed.tx.tx_id,
@@ -133,6 +135,36 @@ impl<'a> Builder<'a> {
             "diff": committed.diff,
             "resolved": resolved,
         }))
+    }
+}
+
+/// Echoes what was committed rather than what was planned: the server may have rebased the tx
+/// over concurrent commits (moving insert positions), or returned an earlier commit for the same
+/// `--idem-key`. Each planned step pushed exactly one op, so steps and ops pair up in order.
+fn echo_committed(resolved: &mut Value, ops: &[Op]) {
+    let patch = |r: &mut Value, op: &Op| {
+        if let (Op::ClipInsert { at, source_in, duration, .. }, Some(map)) = (op, r.as_object_mut()) {
+            map.insert("at".to_string(), json!(at));
+            map.insert("in".to_string(), json!(source_in));
+            map.insert("duration".to_string(), json!(duration));
+            if let Ok(out) = source_in.checked_add(*duration) {
+                map.insert("out".to_string(), json!(out));
+            }
+        }
+    };
+    match resolved {
+        Value::Array(steps) => {
+            for (step, op) in steps.iter_mut().zip(ops) {
+                if let Some(r) = step.get_mut("resolved") {
+                    patch(r, op);
+                }
+            }
+        }
+        single => {
+            if let Some(op) = ops.first() {
+                patch(single, op);
+            }
+        }
     }
 }
 

@@ -3,9 +3,12 @@
 
 mod addr;
 mod backend;
+mod client;
 mod commands;
+mod endpoint;
 mod map;
 mod output;
+mod paths;
 mod registry;
 
 use std::ffi::OsString;

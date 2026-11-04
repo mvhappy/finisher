@@ -4,6 +4,8 @@ all-features = true
 [licenses]
 allow = [
   "MIT",
+  # Public-domain-equivalent; interprocess's doctest-file and recvmsg (Windows) use it alone.
+  "0BSD",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
