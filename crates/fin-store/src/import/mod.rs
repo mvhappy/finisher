@@ -176,12 +176,19 @@ pub(crate) struct ImportState {
     hydrate_from: Option<PathBuf>,
     /// The counters were raised past the log by this store at least once.
     ids_checked: bool,
-    /// Storage kind for the epoch rule. Detection is Task 10; until then `Local`.
+    /// Storage kind for the epoch rule (detected or overridden at open).
     pub(crate) kind: StorageKind,
     resolves: u64,
 }
 
 impl ImportState {
+    pub(crate) fn with_kind(kind: StorageKind) -> Self {
+        ImportState {
+            kind,
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn read_only(&self) -> Option<ReadOnlyReason> {
         self.read_only
     }
@@ -375,7 +382,7 @@ impl Store {
         self.import.read_only
     }
 
-    /// Test hook until storage-kind detection (Task 10): the kind the epoch rule uses.
+    /// Test hook: replaces the detected storage kind the epoch rule uses.
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn set_test_storage_kind(&mut self, kind: StorageKind) {

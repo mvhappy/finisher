@@ -122,6 +122,10 @@ pub struct ProjectFile {
     pub id: String,
     pub name: String,
     pub schema_version: u32,
+    /// User override of the detected storage kind (`local`, `network` or `sync:<provider>`),
+    /// kept as text so a bad value cannot stop the project from opening.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_override: Option<String>,
 }
 
 /// Reads and checks `<project_dir>/finisher.project.json`.
@@ -188,6 +192,7 @@ pub struct Store {
     server_id: String,
     export: export::ExportState,
     import: import::ImportState,
+    storage_warning: Option<String>,
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,
@@ -246,6 +251,7 @@ impl Store {
             id: id.clone(),
             name: name.to_string(),
             schema_version: SCHEMA_VERSION,
+            storage_override: None,
         };
         let mut bytes = serde_json::to_vec_pretty(&marker)?;
         bytes.push(b'\n');
@@ -258,7 +264,15 @@ impl Store {
                 project,
             },
         )]);
-        Ok(Store::new(conn, id, db_path, project_dir, server_id, heads))
+        Ok(Store::new(
+            conn,
+            id,
+            db_path,
+            project_dir,
+            server_id,
+            heads,
+            None,
+        ))
     }
 
     /// Opens the project whose `finisher.project.json` is in `project_dir`. A missing database
@@ -291,6 +305,7 @@ impl Store {
         for branch in db::branches(&conn)? {
             refresh(&conn, &mut heads, &branch)?;
         }
+        let storage_override = file.storage_override.clone();
         Ok(Store::new(
             conn,
             file.id,
@@ -298,6 +313,7 @@ impl Store {
             project_dir,
             server_id,
             heads,
+            storage_override.as_deref(),
         ))
     }
 
@@ -308,7 +324,9 @@ impl Store {
         project_dir: &Path,
         server_id: String,
         heads: HashMap<String, Head>,
+        storage_override: Option<&str>,
     ) -> Store {
+        let (kind, storage_warning) = storage_kind::resolve(project_dir, storage_override);
         Store {
             conn,
             project_id,
@@ -316,11 +334,22 @@ impl Store {
             project_dir: project_dir.to_path_buf(),
             server_id,
             export: export::ExportState::default(),
-            import: import::ImportState::default(),
+            import: import::ImportState::with_kind(kind),
+            storage_warning,
             heads: RefCell::new(heads),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }
+    }
+
+    /// The storage kind in use: the project's `storageOverride`, else detected at open.
+    pub fn storage_kind(&self) -> storage_kind::StorageKind {
+        self.import.kind
+    }
+
+    /// Why a `storageOverride` in the project file was ignored, if it was.
+    pub fn storage_warning(&self) -> Option<&str> {
+        self.storage_warning.as_deref()
     }
 
     pub fn project_id(&self) -> &str {
