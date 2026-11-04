@@ -65,9 +65,11 @@ fn detected_then_overridden_then_ignored() {
     assert_eq!(s.storage_kind(), StorageKind::Local);
     assert!(s.storage_warning().unwrap().contains("floppy"));
 
-    // A non-string is a malformed project file, like any other wrongly typed field.
+    // A non-string is ignored with a warning too; the project still opens.
     set_override(proj.path(), Some(json!(7)));
-    assert!(Store::open(server.path(), proj.path()).is_err());
+    let s = open();
+    assert_eq!(s.storage_kind(), StorageKind::Local);
+    assert!(s.storage_warning().unwrap().contains("ignored"));
 
     set_override(proj.path(), None);
     assert_eq!(open().storage_warning(), None);
@@ -80,4 +82,17 @@ fn test_hook_still_replaces_the_detected_kind() {
     let mut s = Store::open(server.path(), proj.path()).unwrap();
     s.set_test_storage_kind(StorageKind::Sync(Provider::Dropbox));
     assert_eq!(s.storage_kind(), StorageKind::Sync(Provider::Dropbox));
+}
+
+#[test]
+fn weakening_a_detected_sync_folder_warns_but_is_honoured() {
+    let (server, proj) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    make(server.path(), proj.path());
+    std::fs::create_dir(proj.path().join(".stfolder")).unwrap();
+    let s = Store::open(server.path(), proj.path()).unwrap();
+    assert_eq!(s.storage_kind(), StorageKind::Sync(Provider::Syncthing));
+    set_override(proj.path(), Some(json!("local")));
+    let s = Store::open(server.path(), proj.path()).unwrap();
+    assert_eq!(s.storage_kind(), StorageKind::Local);
+    assert!(s.storage_warning().unwrap().contains("sync:syncthing"));
 }

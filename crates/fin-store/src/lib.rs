@@ -122,10 +122,11 @@ pub struct ProjectFile {
     pub id: String,
     pub name: String,
     pub schema_version: u32,
-    /// User override of the detected storage kind (`local`, `network` or `sync:<provider>`),
-    /// kept as text so a bad value cannot stop the project from opening.
+    /// User override of the detected storage kind (`local`, `network` or `sync[:<provider>]`).
+    /// Kept as raw JSON so a bad value cannot stop the project from opening: it is ignored
+    /// with a warning instead ([`Store::storage_warning`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage_override: Option<String>,
+    pub storage_override: Option<serde_json::Value>,
 }
 
 /// Reads and checks `<project_dir>/finisher.project.json`.
@@ -313,7 +314,7 @@ impl Store {
             project_dir,
             server_id,
             heads,
-            storage_override.as_deref(),
+            storage_override.as_ref(),
         ))
     }
 
@@ -324,7 +325,7 @@ impl Store {
         project_dir: &Path,
         server_id: String,
         heads: HashMap<String, Head>,
-        storage_override: Option<&str>,
+        storage_override: Option<&serde_json::Value>,
     ) -> Store {
         let (kind, storage_warning) = storage_kind::resolve(project_dir, storage_override);
         Store {
