@@ -46,13 +46,12 @@ Host access details: `archive/hosts.md` (local, git-ignored).
 - [x] Owner labelled the reel (187 words) and the 12-clip multilingual set (1,450 words), 2026-11-03
 - [x] S6d English: B0 95.7 % starts / 75.7 % ends in window vs labels; ~40 candidates; keep B0 (+ a-priori −40 ms shift); labels anchored to prefill (46/882 edges moved)
 - [x] S6e multilingual: one shared stack (whisper turbo transcript forced language + base-960h CTC w/ transliteration + GBM starts); labels = prefill (reviewed by holding Enter)
-- [ ] Labeller blind mode (jittered prefill, play-before-review gate, Unicode scorer) — in progress
-- [ ] Owner: re-label reel + 2 EN clips + at least uk clips in blind mode (`--relabel`)
+- [x] Labeller blind mode (jittered prefill, play-before-review gate, Unicode scorer); owner's en/uk labels accepted as confirmed (no relabel)
 - [ ] Ukrainian number verbaliser with case agreement (MIT/Rust); multilingual end-boundary corrector on permissive data
 - [x] S8 Windows follow-up: non-elevated 45/45; Credential Manager denied in container; shell tool → brokered
 - [x] S5 Windows HEVC via D3D11VA direct (no MF extension): 1,500/1,500 frames exact, ~1,090 fps
 
-## Sub-project 2: minimal core (branch `sp2`)
+## Sub-project 2: minimal core (done, merged 2026-11-04)
 
 Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
 
@@ -62,9 +61,25 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
 - [x] Task 13: `pnpm e2e` (fin → finisherd → WebSocket subscriber), README "Run it", CI runs e2e
 - [x] Cross-platform: `cargo test --workspace` (FIN_REQUIRE_SERVER=1), `pnpm test`, `pnpm gates`, `pnpm e2e` pass on macOS, Windows 11 and the Linux VM
 - [x] Windows fixes from the first run: per-server-data named pipe, fin timeouts on named pipes, probe path-through-a-file code, Windows-portable tests
-- [ ] Merge `sp2` into `main`
-- [ ] Windows: graceful stop (no SIGTERM; `Stop-Process` leaves `finisherd.json` behind)
-- [ ] `cargo deny` not run on Windows/Linux test hosts (not installed); CI installs it on macOS/Linux
+- [x] Final whole-branch review; fix wave (idem-key reuse → `IDEM_KEY_REUSED`, `PROJECT_DIR_UNWRITABLE`, `CANCELLED` exit 5, empty tx rejected, clock field ranges, rustfmt gate); merged to `main`
+
+### Follow-ups for sub-project 4 (core breadth)
+- Store open replays the tail through the current `fin-core` and fails `DB_ERROR` on any diff/schema change: add migrations and rebuild-from-segments **before any op or model change**
+- `project create`: idempotent retry, reject empty `--name`, atomic create (orphan db when the JSON write fails, check-then-rename race)
+- `ops.subscribe` with `fromRev` > head should return `BASE_REV_AHEAD`
+- Typecheck gate (`tsc`) for all TS packages, tests included (`@types/node`)
+- Idempotency: `tx.get` RPC (asset add retry after the file moved) and a stored-args hash (same key, same op kind, different args)
+- Rebase: per-track (not per-tx) conservatism; stale insert vs committed `asset.remove` → `CONFLICT`; stronger proptest oracle (positions, multi-track); `clip.restore` placeholders
+- fin output: trim echoes the resulting edge; `project open` ignores `--dry-run`; `--out < --in` fix wording; negative `details.max` text when `sourceIn` ≥ asset duration
+- Rational parsing: reject non-canonical input ("2/4", "-0"); `details.rev` should stay numeric
+- `fin-node`: Linux loader libc detection; libuv pool use under many projects; hubs never removed in finisherd
+- Generate `Probe` TS type from `fin-probe`; MOV fixture test
+
+### Follow-ups for sub-project 5 (control plane, auth)
+- Windows: named-pipe DACL and pipe-squatting protection; server-data ACL check; graceful stop (no SIGTERM)
+- RPC for non-`fin` clients: decode failures and unknown tags as `FinError` (not `Die`); reject relative paths server-side (`INVALID_PATH`)
+- Client hardening: overall deadline and frame-size cap; test hooks (`FIN_TEST_COMMIT_GATE`, `FIN_OFFLINE_SNAPSHOT`, `FIN_NODE_BINARY_DIR`) out of release builds
+- `childEnv`: pass provider auth/config dir variables when providers arrive
 
 ## Blocked on hardware or accounts
 
