@@ -4,8 +4,10 @@
 //! The project folder only holds `finisher.project.json` (`{id, name, schemaVersion}`); the
 //! live database never lives there. One `Store` is the single writer for its project.
 
+mod backup;
 mod commit;
 mod db;
+mod migrations;
 mod paths;
 
 use std::cell::RefCell;
@@ -18,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub use db::{SNAPSHOT_EVERY, replay};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use migrations::fail_next_migration_step;
+pub use migrations::{APPLICATION_ID, DB_VERSION};
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
 
 /// The only branch sub-project 2 creates.
@@ -25,7 +30,7 @@ pub const MAIN: &str = "main";
 
 /// A store failure. Converts to the one `CoreError` shape: `PROJECT_EXISTS`,
 /// `PROJECT_NOT_FOUND`, `PROJECT_INVALID`, `PROJECT_DB_MISSING`, `PROJECT_DB_MISMATCH`,
-/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `PROJECT_DIR_UNWRITABLE` (the user's project folder),
+/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `PROJECT_DIR_UNWRITABLE` (the user's project folder),
 /// `IO_ERROR` (server data), `DB_ERROR`, or a `fin-core` code
 /// (`CONFLICT`, validation codes) passed through.
 #[derive(Debug, thiserror::Error)]
@@ -219,6 +224,10 @@ impl Store {
 
     /// Opens the project whose `finisher.project.json` is in `project_dir`. A missing database
     /// is `PROJECT_DB_MISSING` (rebuilding from segments is sub-project 4).
+    ///
+    /// The database is checked read-only first: one written by a newer Finisher is
+    /// `DB_TOO_NEW`, anything else that is not a project database `NOT_A_PROJECT_DB`, and
+    /// neither is modified. An older one is backed up and migrated to [`DB_VERSION`].
     pub fn open(server_data: &Path, project_dir: &Path) -> Result<Store, StoreError> {
         let file = read_project_file(project_dir)?;
         let db_path = db_path(server_data, &file.id);
@@ -228,13 +237,16 @@ impl Store {
                 .with_fix("restore project.fdb into the server data dir; rebuilding from segments is not available yet")
                 .into());
         }
-        let conn = db::connect(&db_path, false)?;
+        migrations::check(&db_path)?;
+        let mut conn = db::connect(&db_path, false)?;
         let stored = db::meta(&conn, "projectId")?;
         if stored.as_deref() != Some(file.id.as_str()) {
             return Err(CoreError::new("PROJECT_DB_MISMATCH", format!("{} belongs to another project", db_path.display()))
                 .with_details(json!({ "projectId": file.id, "dbProjectId": stored, "path": db_path.to_string_lossy() }))
                 .into());
         }
+        migrations::migrate(&mut conn, db_path.parent().unwrap_or(server_data))?;
+        db::set_meta(&conn, "lastOpenedBy", &db::written_by())?;
         let mut heads = HashMap::new();
         for branch in db::branches(&conn)? {
             refresh(&conn, &mut heads, &branch)?;

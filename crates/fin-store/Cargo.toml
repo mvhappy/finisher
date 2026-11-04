@@ -11,6 +11,8 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+blake3 = "1.8.7"
+crc32c = "0.6.9"
 fin-core = { path = "../fin-core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

@@ -2,7 +2,9 @@
 //! storage formats can prove they migrate it to identical state.
 //!
 //! Run from the repo root with `cargo run -p fin-store --example make_sp2_fixture`. It replaces
-//! the fixture directory. The output is:
+//! the fixture directory. Only a checkout from before DB migrations existed writes the SP2 layout
+//! (the fixture was generated at commit 30e2983); later stores write the current schema, so
+//! do not regenerate the committed fixture from a newer checkout. The output is:
 //! - `folder/finisher.project.json`;
 //! - `server-data/projects/<id>/project.fdb` (WAL checkpointed, so a single file);
 //! - `expected.json`: `{"rev", "project"}` = `Store::snapshot("main")` after the last commit.

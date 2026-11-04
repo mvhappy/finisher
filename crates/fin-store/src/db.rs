@@ -1,43 +1,74 @@
 //! SQLite layout and row access for `project.fdb`.
 //!
-//! One database per project. `txs` is the op log per branch; `snapshots` holds the full project
-//! at rev 0 and every [`SNAPSHOT_EVERY`] revs so opening replays at most that many txs; `ids` is
-//! the project-global id counter table, updated in the same SQLite transaction as the `txs`
-//! insert so a failed commit never consumes ids.
+//! One database per project, at schema [`DB_VERSION`] (older ones are migrated on open,
+//! [`crate::migrations`]). `txs` is the op log per branch: each row holds the commit record's
+//! exact bytes (`record_bytes`), their hash and the previous record's hash; `snapshots` holds the
+//! full project at rev 0 and every [`SNAPSHOT_EVERY`] revs so opening replays at most that many
+//! txs; `ids` is the project-global id counter table, updated in the same SQLite transaction as
+//! the `txs` insert so a failed commit never consumes ids. `segments`, `lease_state` and
+//! `quarantine` belong to the project-folder export (sub-project 4A).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fin_core::{
-    Applied, CommittedTx, CoreError, IdAlloc, IdKind, MemIds, Project, Tx, apply_committed,
+    Applied, CommittedTx, CoreError, IdAlloc, IdKind, MemIds, Op, Project, Record, RecordKind, Tx,
+    apply_committed, encode_record, resolve_ops, upcast_record, upcast_snapshot,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
 use crate::StoreError;
+use crate::migrations::{APPLICATION_ID, DB_VERSION, MIN_READER_VERSION};
 
 /// A snapshot is written at rev 0 and whenever `rev % SNAPSHOT_EVERY == 0`.
 pub const SNAPSHOT_EVERY: u64 = 200;
 
+/// The current schema, created directly for a new project (no migrations). Migrations bring an
+/// older database to the same tables (`tests/migrations.rs` compares the two).
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS ids (kind TEXT PRIMARY KEY, next INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS txs (
-    rev INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
     branch TEXT NOT NULL,
     tx_id TEXT NOT NULL UNIQUE,
-    json TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    record_bytes BLOB NOT NULL,
+    tx_hash TEXT NOT NULL,
+    parent_hash TEXT,
+    epoch INTEGER NOT NULL,
+    exported INTEGER NOT NULL,
     diff TEXT NOT NULL,
-    inverse TEXT NOT NULL,
-    bindings TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    author TEXT NOT NULL,
     committed_at INTEGER NOT NULL,
-    PRIMARY KEY (branch, rev)
+    PRIMARY KEY (branch, seq)
 );
 CREATE TABLE IF NOT EXISTS snapshots (
     branch TEXT NOT NULL,
     rev INTEGER NOT NULL,
     json TEXT NOT NULL,
     PRIMARY KEY (branch, rev)
+);
+CREATE TABLE IF NOT EXISTS segments (
+    branch TEXT NOT NULL,
+    hash TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    first_seq INTEGER NOT NULL,
+    last_seq INTEGER NOT NULL,
+    pack INTEGER NOT NULL,
+    replaces TEXT NOT NULL,
+    state TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lease_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS quarantine (
+    id INTEGER PRIMARY KEY,
+    origin TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    record_bytes BLOB NOT NULL,
+    added_at INTEGER NOT NULL
 );
 ";
 
@@ -61,7 +92,8 @@ pub(crate) fn connect(path: &Path, create: bool) -> Result<Connection, StoreErro
     Ok(conn)
 }
 
-/// Creates the tables and stores the rev-0 state of `project` on `branch`.
+/// Creates the tables at [`DB_VERSION`] (header `application_id` and `user_version`, the
+/// version `meta` keys) and stores the rev-0 state of `project` on `branch`.
 pub(crate) fn init(
     conn: &mut Connection,
     project: &Project,
@@ -69,14 +101,21 @@ pub(crate) fn init(
 ) -> Result<(), StoreError> {
     let txn = conn.transaction()?;
     txn.execute_batch(SCHEMA)?;
-    txn.execute(
-        "INSERT INTO meta (key, value) VALUES ('projectId', ?1)",
-        params![project.id],
-    )?;
-    txn.execute(
-        "INSERT INTO meta (key, value) VALUES ('schemaVersion', ?1)",
-        params![project.schema_version.to_string()],
-    )?;
+    txn.pragma_update(None, "application_id", APPLICATION_ID)?;
+    txn.pragma_update(None, "user_version", DB_VERSION)?;
+    let version = DB_VERSION.to_string();
+    let min_reader = MIN_READER_VERSION.to_string();
+    let by = written_by();
+    for (key, value) in [
+        ("projectId", project.id.as_str()),
+        ("schemaVersion", &project.schema_version.to_string()),
+        ("formatVersion", &version),
+        ("minReaderVersion", &min_reader),
+        ("createdBy", &by),
+        ("lastOpenedBy", &by),
+    ] {
+        set_meta(&txn, key, value)?;
+    }
     Counters::seed(project).save(&txn)?;
     insert_snapshot(&txn, branch, 0, project)?;
     txn.commit()?;
@@ -91,13 +130,58 @@ pub(crate) fn meta(conn: &Connection, key: &str) -> Result<Option<String>, Store
         .optional()?)
 }
 
-fn to_i64(n: u64) -> Result<i64, StoreError> {
+pub(crate) fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value != excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// `finisher/<version>`: what `meta.createdBy` and `meta.lastOpenedBy` record. Never a host or
+/// user name.
+pub(crate) fn written_by() -> String {
+    format!("finisher/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// `blake3:<64 lowercase hex>` of `b`.
+pub(crate) fn hash_bytes(b: &[u8]) -> String {
+    format!("blake3:{}", blake3::hash(b).to_hex())
+}
+
+/// The record a commit of `intent` at `seq` stores (spec §3.3). Migration 0001 builds the
+/// records of sub-project 2 history with this too, so both are the same for the same tx.
+pub(crate) fn new_record(
+    seq: u64,
+    intent: Tx,
+    inverse: Vec<Op>,
+    bindings: BTreeMap<String, String>,
+    parent_hash: Option<String>,
+    committed_at: i64,
+) -> Result<Record, StoreError> {
+    Ok(Record {
+        tx_id: intent.tx_id.clone(),
+        seq,
+        kind: RecordKind::Edit,
+        schema_version: intent.schema_version,
+        parent_hash,
+        author: intent.author.clone(),
+        committed_at,
+        resolved: resolve_ops(&intent.ops, &bindings)?,
+        intent,
+        inverse,
+        bindings,
+    })
+}
+
+pub(crate) fn to_i64(n: u64) -> Result<i64, StoreError> {
     i64::try_from(n).map_err(|_| {
         CoreError::new("DB_ERROR", format!("value {n} does not fit the database")).into()
     })
 }
 
-fn to_u64(n: i64) -> Result<u64, StoreError> {
+pub(crate) fn to_u64(n: i64) -> Result<u64, StoreError> {
     u64::try_from(n).map_err(|_| {
         CoreError::new("DB_ERROR", format!("negative value {n} in the database")).into()
     })
@@ -128,7 +212,7 @@ pub(crate) fn branches(conn: &Connection) -> Result<Vec<String>, StoreError> {
 /// does not exist.
 pub(crate) fn latest_rev(conn: &Connection, branch: &str) -> Result<Option<u64>, StoreError> {
     let rev: Option<i64> = conn.query_row(
-        "SELECT MAX(rev) FROM (SELECT rev FROM txs WHERE branch = ?1
+        "SELECT MAX(rev) FROM (SELECT seq AS rev FROM txs WHERE branch = ?1
                                UNION ALL SELECT rev FROM snapshots WHERE branch = ?1)",
         params![branch],
         |r| r.get(0),
@@ -148,50 +232,73 @@ pub(crate) fn latest_snapshot(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    row.map(|(rev, json)| Ok((to_u64(rev)?, serde_json::from_str(&json)?)))
-        .transpose()
+    row.map(|(rev, json)| {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        Ok((to_u64(rev)?, upcast_snapshot(value)?))
+    })
+    .transpose()
 }
 
+/// Appends `tx` at `seq` as a hashed record chained to the branch's previous record (epoch 0,
+/// not exported).
 pub(crate) fn insert_tx(
     conn: &Connection,
-    rev: u64,
+    seq: u64,
     tx: &Tx,
     applied: &Applied,
 ) -> Result<(), StoreError> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT tx_hash FROM txs WHERE branch = ?1 ORDER BY seq DESC LIMIT 1",
+            params![tx.branch],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let record = new_record(
+        seq,
+        tx.clone(),
+        applied.inverse.clone(),
+        applied.bindings.clone(),
+        parent,
+        i64::try_from(now).unwrap_or(i64::MAX),
+    )?;
+    let bytes = encode_record(&record);
     conn.execute(
-        "INSERT INTO txs (rev, branch, tx_id, json, diff, inverse, bindings, committed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
+                          exported, diff, schema_version, author, committed_at)
+         VALUES (?1, ?2, ?3, 'edit', ?4, ?5, ?6, 0, 0, ?7, ?8, ?9, ?10)",
         params![
-            to_i64(rev)?,
+            to_i64(seq)?,
             tx.branch,
-            tx.tx_id,
-            serde_json::to_string(tx)?,
+            record.tx_id,
+            bytes,
+            hash_bytes(&bytes),
+            record.parent_hash,
             serde_json::to_string(&applied.diff)?,
-            serde_json::to_string(&applied.inverse)?,
-            serde_json::to_string(&applied.bindings)?,
-            i64::try_from(now).unwrap_or(i64::MAX),
+            record.schema_version,
+            record.author,
+            record.committed_at,
         ],
     )?;
     Ok(())
 }
 
-const TX_COLUMNS: &str = "rev, json, diff, bindings";
+const TX_COLUMNS: &str = "seq, record_bytes, diff";
 
-fn committed_from_row(row: &Row<'_>) -> rusqlite::Result<(i64, String, String, String)> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+fn committed_from_row(row: &Row<'_>) -> rusqlite::Result<(i64, Vec<u8>, String)> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
 }
 
-fn decode(
-    (rev, json, diff, bindings): (i64, String, String, String),
-) -> Result<CommittedTx, StoreError> {
+fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, StoreError> {
+    let record = upcast_record(serde_json::from_slice(&bytes)?)?;
     Ok(CommittedTx {
-        rev: to_u64(rev)?,
-        tx: serde_json::from_str(&json)?,
+        rev: to_u64(seq)?,
+        tx: record.intent,
         diff: serde_json::from_str(&diff)?,
-        bindings: serde_json::from_str(&bindings)?,
+        bindings: record.bindings,
     })
 }
 
@@ -209,7 +316,7 @@ pub(crate) fn txs_since(
     branch: &str,
     after: u64,
 ) -> Result<Vec<CommittedTx>, StoreError> {
-    let sql = format!("SELECT {TX_COLUMNS} FROM txs WHERE branch = ?1 AND rev > ?2 ORDER BY rev");
+    let sql = format!("SELECT {TX_COLUMNS} FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![branch, to_i64(after)?], committed_from_row)?;
     rows.map(|r| decode(r?)).collect()

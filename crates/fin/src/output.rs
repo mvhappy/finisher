@@ -40,6 +40,8 @@ const VALIDATION_CODES: &[&str] = &[
     "IDEM_KEY_REUSED",
     "PROJECT_DIR_UNWRITABLE",
     // Stored history that this code cannot or will not read (sub-project 4).
+    "DB_TOO_NEW",
+    "NOT_A_PROJECT_DB",
     "NEWER_FORMAT",
     "INVALID_FORMAT",
     "REPLAY_FAILED",
@@ -176,6 +178,8 @@ mod tests {
             "SERVER_DATA_UNSAFE",
             "PROJECT_DIR_UNWRITABLE",
             "IDEM_KEY_REUSED",
+            "DB_TOO_NEW",
+            "NOT_A_PROJECT_DB",
             "NEWER_FORMAT",
             "INVALID_FORMAT",
             "REPLAY_FAILED",
