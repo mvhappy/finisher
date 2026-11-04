@@ -49,6 +49,20 @@ Host access details: `archive/hosts.md` (local, git-ignored).
 - [x] S8 Windows follow-up: non-elevated 45/45; Credential Manager denied in container; shell tool → brokered
 - [x] S5 Windows HEVC via D3D11VA direct (no MF extension): 1,500/1,500 frames exact, ~1,090 fps
 
+## Sub-project 2: minimal core (branch `sp2`)
+
+Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
+
+- [x] Tasks 0–5: spec decisions, `Rational` time, model/tx/errors with generated TS types, ops `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`, rebase
+- [x] Tasks 6–9: `fin-store` SQLite op log, `fin-probe`, `fin-node` napi binding, `@finisher/contracts` RPC group
+- [x] Tasks 10–12: `finisherd` (socket/pipe + bearer WebSocket, live op stream), `fin` CLI offline and online
+- [x] Task 13: `pnpm e2e` (fin → finisherd → WebSocket subscriber), README "Run it", CI runs e2e
+- [x] Cross-platform: `cargo test --workspace` (FIN_REQUIRE_SERVER=1), `pnpm test`, `pnpm gates`, `pnpm e2e` pass on macOS, Windows 11 and the Linux VM
+- [x] Windows fixes from the first run: per-server-data named pipe, fin timeouts on named pipes, probe path-through-a-file code, Windows-portable tests
+- [ ] Merge `sp2` into `main`
+- [ ] Windows: graceful stop (no SIGTERM; `Stop-Process` leaves `finisherd.json` behind)
+- [ ] `cargo deny` not run on Windows/Linux test hosts (not installed); CI installs it on macOS/Linux
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
