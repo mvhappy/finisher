@@ -3,6 +3,8 @@ export interface FinNodeError extends Error {
   code: string;
   details: Record<string, unknown>;
   fix: string | undefined;
+  /** Always `true`: the code comes from fin-core/fin-store (not Node or SQLite). */
+  finNode: true;
 }
 
 /**

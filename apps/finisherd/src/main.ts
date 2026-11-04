@@ -11,24 +11,29 @@ import {
   parseArgs,
   removeServerInfo,
   type ServerInfo,
+  type ServerStartError,
   socketPath,
   writeServerInfo,
 } from "./config.ts";
 import { HandlersLive } from "./handlers.ts";
-import { layerProjectRegistry } from "./projects.ts";
+import { withServerLock } from "./lock.ts";
+import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, serveRpc } from "./transport.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
+  readonly registry?: RegistryOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
 
 /** Runs the server until interrupted; finalizers stop the transports, close engines and remove `finisherd.json`. */
-export const serve = ({ serverData, onReady }: ServeOptions) =>
+export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
-      ensureServerData(serverData);
+      yield* Effect.try({ try: () => ensureServerData(serverData), catch: (e) => e as ServerStartError });
+      // Held until shutdown, before touching the socket: claim + listen is then race-free.
+      yield* withServerLock(serverData);
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const token = newToken();
@@ -38,7 +43,7 @@ export const serve = ({ serverData, onReady }: ServeOptions) =>
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local), serveRpc(ws)).pipe(
           Layer.provide(HandlersLive),
-          Layer.provide(layerProjectRegistry(serverData)),
+          Layer.provide(layerProjectRegistry(serverData, registry)),
         ),
       );
 

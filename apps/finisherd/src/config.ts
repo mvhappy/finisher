@@ -1,6 +1,6 @@
 // Server-data location, local socket path and the `finisherd.json` discovery file.
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
@@ -63,17 +63,39 @@ export function infoPath(serverData: string): string {
   return join(serverData, "finisherd.json");
 }
 
-export function ensureServerData(serverData: string): void {
-  mkdirSync(serverData, { recursive: true, mode: 0o700 });
+/** A startup failure with a stable code; `main` prints `finisherd: <code>: <message>`. */
+export class ServerStartError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
 }
 
-/** Writes the discovery file atomically enough for readers: created 0600, then chmod against umask. */
+/**
+ * Creates the server-data directory (0700) or checks an existing one: it must be a real
+ * directory (not a symlink) owned by this user; group/other permissions are stripped.
+ */
+export function ensureServerData(serverData: string, platform: NodeJS.Platform = process.platform): void {
+  mkdirSync(serverData, { recursive: true, mode: 0o700 });
+  const st = lstatSync(serverData);
+  if (st.isSymbolicLink()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is a symlink`);
+  if (!st.isDirectory()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is not a directory`);
+  if (platform === "win32") return;
+  if (process.getuid && st.uid !== process.getuid()) {
+    throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is owned by uid ${st.uid}, not this user`);
+  }
+  if (st.mode & 0o077) chmodSync(serverData, 0o700);
+}
+
+/** Writes the discovery file atomically: a private `<file>.<pid>.tmp` (0600, `wx`) renamed into place. */
 export function writeServerInfo(serverData: string, info: Omit<ServerInfo, "protocolVersion">): ServerInfo {
   const full: ServerInfo = { ...info, protocolVersion: PROTOCOL_VERSION };
   const file = infoPath(serverData);
-  rmSync(file, { force: true });
-  writeFileSync(file, `${JSON.stringify(full, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(file, 0o600);
+  const tmp = `${file}.${process.pid}.tmp`;
+  rmSync(tmp, { force: true });
+  writeFileSync(tmp, `${JSON.stringify(full, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  renameSync(tmp, file);
   return full;
 }
 

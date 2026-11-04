@@ -2,14 +2,16 @@
 import { FinError } from "@finisher/contracts";
 import { Effect } from "effect";
 
-const CODE = /^[A-Z][A-Z0-9_]*$/;
-
-/** An engine `Error` keeps its stable code; anything else becomes `INTERNAL`. */
+/**
+ * Only errors tagged by `@finisher/fin-node` (`finNode === true`) keep their code: those are
+ * the stable fin-core/fin-store codes. Anything else — Node (`ENOENT`), SQLite
+ * (`ERR_SQLITE_*`), bugs — becomes `INTERNAL`, with the original code in `details.cause`.
+ */
 export function toFinError(e: unknown): FinError {
   if (e instanceof FinError) return e;
   if (e instanceof Error) {
-    const { code, details, fix } = e as Error & { code?: unknown; details?: unknown; fix?: unknown };
-    if (typeof code === "string" && CODE.test(code)) {
+    const { code, details, fix, finNode } = e as Error & { code?: unknown; details?: unknown; fix?: unknown; finNode?: unknown };
+    if (finNode === true && typeof code === "string") {
       return new FinError({
         code,
         message: e.message,
@@ -17,7 +19,11 @@ export function toFinError(e: unknown): FinError {
         ...(typeof fix === "string" ? { fix } : {}),
       });
     }
-    return new FinError({ code: "INTERNAL", message: e.message, details: { name: e.name } });
+    return new FinError({
+      code: "INTERNAL",
+      message: e.message,
+      details: { name: e.name, ...(code === undefined ? {} : { cause: String(code) }) },
+    });
   }
   return new FinError({ code: "INTERNAL", message: String(e), details: {} });
 }
@@ -34,4 +40,11 @@ export function attemptJson<A>(f: () => Promise<string>): Effect.Effect<A, FinEr
 
 export function finError(code: string, message: string, details: unknown = {}, fix?: string): FinError {
   return new FinError({ code, message, details, ...(fix === undefined ? {} : { fix }) });
+}
+
+/** True when an engine can no longer be used: a panic (`INTERNAL`) or `ENGINE_CLOSED` after one. */
+export function isEngineDead(e: FinError): boolean {
+  if (e.code === "INTERNAL") return true;
+  const reason = (e.details as { reason?: unknown } | null | undefined)?.reason;
+  return e.code === "ENGINE_CLOSED" && reason === "panicked";
 }

@@ -40,6 +40,8 @@ function toFinError(e) {
   err.code = core.code;
   err.details = core.details ?? {};
   err.fix = core.fix ?? undefined;
+  // Marks codes that come from fin-core/fin-store, so servers can pass them through verbatim.
+  err.finNode = true;
   return err;
 }
 

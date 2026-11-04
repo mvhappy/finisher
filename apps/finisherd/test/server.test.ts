@@ -1,5 +1,6 @@
 import { request } from "node:http";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -141,7 +142,7 @@ describe("finisherd", () => {
     await sub.done;
   });
 
-  test("restart keeps projects; shutdown removes finisherd.json", async () => {
+  test("restart keeps projects; SIGTERM removes fin.sock, finisherd.json and finisherd.lock", async () => {
     await start();
     let c = await client();
     const projectId = await createProject(c);
@@ -149,7 +150,7 @@ describe("finisherd", () => {
     await clients.splice(0)[0]!.close();
     expect(await server!.stop()).toBe(0);
     server = undefined;
-    expect(existsSync(join(serverData, "finisherd.json"))).toBe(false);
+    for (const f of ["finisherd.json", "fin.sock", "finisherd.lock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
 
     await start();
     c = await client();
@@ -160,9 +161,45 @@ describe("finisherd", () => {
     expect(ok(await c.call("project.open", { dir: join(tmp, "My Проєкт") }))).toEqual({ projectId, rev: 1 });
   });
 
-  test("a second server on the same server-data refuses to start", async () => {
+  test("a second server on the same server-data refuses to start; the first stays reachable", async () => {
     await start();
     await expect(startServer(serverData, 5_000)).rejects.toThrow(/SERVER_RUNNING/);
+    const c = await client();
+    expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(1);
+  });
+
+  test("two servers racing over a stale socket: exactly one wins", async () => {
+    mkdirSync(serverData, { recursive: true, mode: 0o700 });
+    writeFileSync(join(serverData, "fin.sock"), ""); // stale leftover, nothing listening
+    const results = await Promise.allSettled([startServer(serverData, 10_000), startServer(serverData, 10_000)]);
+    const winners = results.filter((r): r is PromiseFulfilledResult<RunningServer> => r.status === "fulfilled");
+    const losers = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(winners).toHaveLength(1);
+    expect(String(losers[0]!.reason)).toMatch(/SERVER_RUNNING/);
+    server = winners[0]!.value;
+    const c = await client();
+    ok(await c.call("server.hello", {}));
+    expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(server.info.pid));
+  });
+
+  test("a stale lock left by a dead pid is taken over", async () => {
+    const dead = spawnSync(process.execPath, ["-e", "process.pid"]).pid!;
+    mkdirSync(serverData, { recursive: true, mode: 0o700 });
+    writeFileSync(join(serverData, "finisherd.lock"), `${dead}\n`);
+    const { info } = await start();
+    expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(info.pid));
+  });
+
+  test("an existing 0755 server-data becomes 0700; a symlinked one is refused", async () => {
+    mkdirSync(serverData, { mode: 0o755 });
+    chmodSync(serverData, 0o755);
+    await start();
+    expect(statSync(serverData).mode & 0o777).toBe(0o700);
+    expect(server!.child.exitCode).toBeNull();
+
+    const link = join(tmp, "link");
+    symlinkSync(serverData, link);
+    await expect(startServer(link, 5_000)).rejects.toThrow(/SERVER_DATA_UNSAFE/);
   });
 
   test("WebSocket requires the bearer token", async () => {
