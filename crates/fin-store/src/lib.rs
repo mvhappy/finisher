@@ -25,7 +25,8 @@ pub const MAIN: &str = "main";
 
 /// A store failure. Converts to the one `CoreError` shape: `PROJECT_EXISTS`,
 /// `PROJECT_NOT_FOUND`, `PROJECT_INVALID`, `PROJECT_DB_MISSING`, `PROJECT_DB_MISMATCH`,
-/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `IO_ERROR`, `DB_ERROR`, or a `fin-core` code
+/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `PROJECT_DIR_UNWRITABLE` (the user's project folder),
+/// `IO_ERROR` (server data), `DB_ERROR`, or a `fin-core` code
 /// (`CONFLICT`, validation codes) passed through.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -70,6 +71,21 @@ impl From<StoreError> for CoreError {
             StoreError::Io { path, source } => CoreError::new("IO_ERROR", source.to_string())
                 .with_details(json!({ "path": path.to_string_lossy() })),
         }
+    }
+}
+
+/// A failure writing into the user's project folder (as opposed to server data): the caller chose
+/// the folder, so it is a fixable input error, not an internal one.
+fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
+    move |source| {
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        CoreError::new(
+            "PROJECT_DIR_UNWRITABLE",
+            format!("cannot write {}: {source}", path.display()),
+        )
+        .with_details(json!({ "path": path.to_string_lossy(), "reason": source.to_string() }))
+        .with_fix("choose a writable folder for the project")
+        .into()
     }
 }
 
@@ -176,7 +192,7 @@ impl Store {
         }
         let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
         let project = new_project(id.clone(), name.to_string(), rate)?;
-        fs::create_dir_all(project_dir).map_err(StoreError::io(project_dir))?;
+        fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
         let db_path = db_path(server_data, &id);
         let db_dir = db_path.parent().unwrap_or(server_data);
         fs::create_dir_all(db_dir).map_err(StoreError::io(db_dir))?;
@@ -196,7 +212,7 @@ impl Store {
         };
         let mut bytes = serde_json::to_vec_pretty(&marker)?;
         bytes.push(b'\n');
-        paths::write_atomic(&file_path, &bytes).map_err(StoreError::io(&file_path))?;
+        paths::write_atomic(&file_path, &bytes).map_err(unwritable(&file_path))?;
         let heads = HashMap::from([(MAIN.to_string(), Head { rev: 0, project })]);
         Ok(Store::new(conn, id, db_path, heads))
     }

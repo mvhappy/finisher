@@ -38,14 +38,16 @@ const VALIDATION_CODES: &[&str] = &[
     "PROJECT_DB_MISMATCH",
     "SERVER_DATA_UNSAFE",
     "IDEM_KEY_REUSED",
+    "PROJECT_DIR_UNWRITABLE",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
 const CONFLICT_CODES: &[&str] = &["CONFLICT", "BASE_REV_AHEAD"];
 
 /// Codes that mean "no usable server" (exit 5). `SERVER_TIMEOUT` is fin's own: the server
-/// accepted the connection but did not answer in time. `ENGINE_CLOSED` and
-/// `SERVER_SHUTTING_DOWN` are transient: retrying against a (re)started server can succeed.
+/// accepted the connection but did not answer in time. `ENGINE_CLOSED`,
+/// `SERVER_SHUTTING_DOWN` and `CANCELLED` (the server interrupted the request, e.g. while
+/// stopping) are transient: retrying against a (re)started server can succeed.
 const UNAVAILABLE_CODES: &[&str] = &[
     "SERVER_UNAVAILABLE",
     "SERVER_RUNNING",
@@ -53,6 +55,7 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "SERVER_TIMEOUT",
     "ENGINE_CLOSED",
     "SERVER_SHUTTING_DOWN",
+    "CANCELLED",
 ];
 
 /// The one place error codes become exit codes.
@@ -140,6 +143,7 @@ mod tests {
             "SERVER_TIMEOUT",
             "ENGINE_CLOSED",
             "SERVER_SHUTTING_DOWN",
+            "CANCELLED",
         ] {
             assert_eq!(exit_code(code), 5, "{code}");
         }
@@ -148,7 +152,8 @@ mod tests {
             "SOMETHING_NEW",
             "PROTOCOL_ERROR",
             "PROTOCOL_MISMATCH",
-            "CANCELLED",
+            "DB_ERROR",
+            "IO_ERROR",
         ] {
             assert_eq!(exit_code(code), 6, "{code}");
         }
@@ -160,6 +165,8 @@ mod tests {
             "PROJECT_DB_MISSING",
             "PROJECT_DB_MISMATCH",
             "SERVER_DATA_UNSAFE",
+            "PROJECT_DIR_UNWRITABLE",
+            "IDEM_KEY_REUSED",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

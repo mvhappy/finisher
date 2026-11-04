@@ -172,8 +172,14 @@ fn timeout_error(endpoint: &Endpoint, what: &str, timeout: Duration) -> CoreErro
     .with_fix("check that finisherd is responsive; retry writes with the same --idem-key")
 }
 
-/// Codes for which a sent commit may or may not have landed.
-const IN_FLIGHT_CODES: &[&str] = &["SERVER_TIMEOUT", "SERVER_UNAVAILABLE", "PROTOCOL_ERROR"];
+/// Codes for which a sent commit may or may not have landed. `CANCELLED`: the server interrupted
+/// the request (e.g. while stopping), possibly after the commit was written.
+const IN_FLIGHT_CODES: &[&str] = &[
+    "SERVER_TIMEOUT",
+    "SERVER_UNAVAILABLE",
+    "PROTOCOL_ERROR",
+    "CANCELLED",
+];
 
 fn in_flight(mut e: CoreError, tx_id: &str) -> CoreError {
     if !IN_FLIGHT_CODES.contains(&e.code.as_str()) {
@@ -392,6 +398,21 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(fixture("ping"), [Frame::Pong]);
+    }
+
+    #[test]
+    fn a_commit_that_may_have_landed_carries_its_tx_id() {
+        let cancelled = r#"{"_tag":"Exit","requestId":"1","exit":{"_tag":"Failure","cause":[{"_tag":"Interrupt"}]}}"#;
+        let Frame::Exit { result: Err(e), .. } = parse_frame(cancelled).unwrap() else {
+            panic!("not a failure");
+        };
+        for e in [e, CoreError::new("SERVER_TIMEOUT", "slow")] {
+            let e = in_flight(e, "tx-9");
+            assert_eq!(e.details["txId"], "tx-9", "{}", e.code);
+            assert!(e.fix.unwrap().contains("--idem-key tx-9"));
+        }
+        let settled = in_flight(CoreError::new("CONFLICT", "no"), "tx-9");
+        assert!(settled.details.get("txId").is_none());
     }
 
     #[test]

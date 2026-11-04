@@ -171,6 +171,24 @@ fn missing_media_is_asset_not_found_with_the_resolved_path() {
 }
 
 #[test]
+fn project_create_under_a_file_is_project_dir_unwritable() {
+    let Some(server) = Server::start("project_create_under_a_file_is_project_dir_unwritable")
+    else {
+        return;
+    };
+    std::fs::write(server.root.join("notes.txt"), b"x").unwrap();
+    let run = fin(
+        &server.sd,
+        &server.root,
+        &["project", "create", "notes.txt/film", "--name", "Film"],
+    );
+    assert_error(&run, 3, "PROJECT_DIR_UNWRITABLE");
+    let details = &run.json["error"]["details"];
+    assert_eq!(details["path"], s(&native(&server.root, "notes.txt/film")));
+    assert!(details["reason"].as_str().is_some_and(|r| !r.is_empty()));
+}
+
+#[test]
 fn server_down_is_exit_5() {
     let Some((mut server, dir)) = project("server_down_is_exit_5") else {
         return;

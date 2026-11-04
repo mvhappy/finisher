@@ -127,6 +127,24 @@ fn create_refuses_an_existing_project() {
 }
 
 #[test]
+fn create_under_a_file_is_project_dir_unwritable() {
+    let e = env();
+    std::fs::create_dir_all(&e.dir).unwrap();
+    let file = e.dir.join("not-a-dir");
+    std::fs::write(&file, b"x").unwrap();
+    let dir = file.join("film");
+    let err = code(Store::create(&e.data, &dir, "Film", secs(30)).unwrap_err());
+    assert_eq!(err.code, "PROJECT_DIR_UNWRITABLE");
+    assert_eq!(err.details["path"], dir.to_string_lossy().as_ref());
+    assert!(
+        err.details["reason"]
+            .as_str()
+            .is_some_and(|r| !r.is_empty())
+    );
+    assert!(err.fix.is_some());
+}
+
+#[test]
 fn create_rejects_a_bad_rate_without_touching_disk() {
     let e = env();
     let err = code(Store::create(&e.data, &e.dir, "Demo", secs(0)).unwrap_err());
