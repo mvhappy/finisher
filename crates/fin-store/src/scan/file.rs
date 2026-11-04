@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{Cached, Entry, ForeignContent, NotArrivedWhy, Place, SEGMENT_CAP, SNAPSHOT_CAP, Walk};
 use crate::conflict_names::{Provider, classify, is_lease_name};
@@ -129,7 +130,7 @@ fn foreign_file(w: &mut Walk, path: &Path, name: &str, meta: &fs::Metadata, deco
 /// ours: `None`, not `Damaged`.
 fn decode_any(bytes: &[u8]) -> Option<ForeignContent> {
     let e1 = match segment::decode(bytes) {
-        Ok(s) => return Some(ForeignContent::Segment(s)),
+        Ok(s) => return Some(ForeignContent::Segment(Arc::new(s))),
         Err(e) => e,
     };
     let e2 = match snapfile::decode(bytes) {
@@ -207,10 +208,10 @@ fn canonical(w: &mut Walk, path: &Path, name: &str, branch: &str, seg: bool, met
                 Entry::Segment {
                     branch: branch.to_string(),
                     name: n,
-                    seg: s,
+                    seg: Arc::new(s),
                 }
             } else {
-                wrong_name(Some(ForeignContent::Segment(s)))
+                wrong_name(Some(ForeignContent::Segment(Arc::new(s))))
             }
         })
     } else {

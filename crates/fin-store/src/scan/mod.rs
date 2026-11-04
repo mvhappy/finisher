@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::conflict_names::Provider;
@@ -60,7 +61,7 @@ pub enum NotArrivedWhy {
 /// What a foreign file decodes to, for import into quarantine (spec §3.7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForeignContent {
-    Segment(Segment),
+    Segment(Arc<Segment>),
     Snapshot(SnapHeader),
     Newer {
         min_reader: u32,
@@ -77,7 +78,7 @@ pub enum Entry {
     Segment {
         branch: String,
         name: SegmentName,
-        seg: Segment,
+        seg: Arc<Segment>,
     },
     /// A verified snapshot. The body was decoded to check the trailer, then dropped.
     Snapshot {
