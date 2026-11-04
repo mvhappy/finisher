@@ -272,11 +272,33 @@ fn duplicate_tx_id_returns_the_committed_tx() {
     drop(s);
     let mut s = Store::open(&e.data, &e.dir).unwrap();
     assert_eq!(
-        s.commit(tx("tx-1", 0, vec![])).unwrap(),
+        s.commit(tx("tx-1", 0, vec![asset("$other")])).unwrap(),
         first,
         "dedupe survives reopen"
     );
     assert_eq!(s.head(MAIN), 2);
+}
+
+#[test]
+fn empty_tx_id_or_ops_is_invalid_op() {
+    let e = env();
+    let mut s = with_asset(&e);
+    let committed = s.commit(tx("tx-1", 1, vec![asset("$b")])).unwrap();
+    for (t, field) in [
+        (tx("", 2, vec![asset("$c")]), "txId"),
+        (tx("  ", 2, vec![asset("$c")]), "txId"),
+        (tx("tx-2", 2, vec![]), "ops"),
+        // Even for a committed txId: an empty retry is malformed, not a replay.
+        (tx("tx-1", 1, vec![]), "ops"),
+    ] {
+        let err = code(s.commit(t).unwrap_err());
+        assert_eq!(
+            (err.code.as_str(), &err.details["field"]),
+            ("INVALID_OP", &serde_json::json!(field))
+        );
+        assert!(err.fix.is_some());
+    }
+    assert_eq!(s.head(MAIN), committed.rev);
 }
 
 #[test]

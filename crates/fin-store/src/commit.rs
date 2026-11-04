@@ -11,6 +11,7 @@ use crate::{Head, Store, StoreError, branch_not_found, refresh};
 impl Store {
     /// Commits `tx` to its branch and returns it as committed.
     ///
+    /// - An empty `txId` or empty `ops` is `INVALID_OP`, checked before anything else.
     /// - A `txId` that is already committed returns that `CommittedTx` unchanged (idempotent
     ///   retries); the head does not move.
     /// - `baseRev` behind the head: the tx is rebased over the txs committed since; a conflict
@@ -23,6 +24,7 @@ impl Store {
     pub fn commit(&mut self, tx: Tx) -> Result<CommittedTx, StoreError> {
         // Everything below runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.
+        check_shape(&tx)?;
         let txn = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -87,4 +89,19 @@ fn with_tx_id(mut e: CoreError, tx_id: &str) -> CoreError {
         map.insert("txId".to_string(), json!(tx_id));
     }
     e
+}
+
+/// A tx needs an id to dedupe on and at least one op to be worth a rev.
+fn check_shape(tx: &Tx) -> Result<(), CoreError> {
+    if tx.tx_id.trim().is_empty() {
+        return Err(CoreError::new("INVALID_OP", "transaction txId is empty")
+            .with_details(json!({ "field": "txId" }))
+            .with_fix("send a non-empty txId (a ULID, or the caller's idempotency key)"));
+    }
+    if tx.ops.is_empty() {
+        return Err(CoreError::new("INVALID_OP", "transaction has no ops")
+            .with_details(json!({ "field": "ops", "txId": tx.tx_id }))
+            .with_fix("send at least one op"));
+    }
+    Ok(())
 }
