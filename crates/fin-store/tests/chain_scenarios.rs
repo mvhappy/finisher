@@ -102,12 +102,7 @@ fn tail_without_lease_never_wins() {
     assert_eq!(applied(&r), ids(&["x"]));
     assert!(r.quarantine.is_empty());
     no_fork(&r);
-    // The same on sync storage.
-    let mut ks = kb.clone();
-    ks.kind = SYNC;
-    let r = resolve(&[s1.clone(), x.clone()], &ks);
-    assert!(r.local_tail_diverged);
-    assert_eq!(applied(&r), ids(&["x"]));
+    // On sync storage the lease is advisory: see `sync_tail_without_lease_is_a_fork`.
     // With nothing new in the folder the tail just stays.
     let r = resolve(std::slice::from_ref(&s1), &kb);
     assert!(!r.local_tail_diverged && r.apply.is_empty());
@@ -313,4 +308,62 @@ fn head_missing_leaves_everything_pending() {
     let r = resolve(&[s1.clone(), s3], &known(&[&s1, &s2], LOCAL));
     assert_eq!(r.waiting, vec![s2.hash().to_string()]);
     assert_eq!(pending(&r), ids(&["c"]));
+}
+
+// Spec §3.5: on sync storage two offline writers can both hold epochs, so a tail without the
+// lease against a folder line is a fork for the user to settle, never set aside silently.
+#[test]
+fn sync_tail_without_lease_is_a_fork() {
+    let s1 = next(None, 1, &["a"]);
+    let x = next(Some(&s1), 1, &["x"]);
+    let b1 = next(Some(&s1), 2, &["b1"]);
+    let k = without_lease(with_tail(known(&[&s1], SYNC), &b1, 2));
+    let r = resolve(&[s1.clone(), x.clone()], &k);
+    assert!(!r.local_tail_diverged, "{r:#?}");
+    assert!(r.apply.is_empty() && r.quarantine.is_empty());
+    let fork = r.fork.expect("fork");
+    assert_eq!(fork.reason, ForkReason::SyncFolder);
+    assert_eq!(fork.sides.last(), Some(&ForkSide::LocalTail { epoch: 2 }));
+    assert_eq!(fork.sides.len(), 2);
+    // Nothing new in the folder: no fork, the tail stays.
+    let r = resolve(std::slice::from_ref(&s1), &k);
+    assert!(r.fork.is_none() && !r.local_tail_diverged);
+}
+
+// Without the lease on network/local storage, the tail is set aside and the folder's own
+// lines can still tie: both outcomes come in one Resolution.
+#[test]
+fn no_lease_tail_diverges_and_folder_lines_fork_together() {
+    let s1 = next(None, 1, &["a"]);
+    let x = next(Some(&s1), 2, &["x"]);
+    let y = next(Some(&s1), 2, &["y"]);
+    let b1 = next(Some(&s1), 1, &["b1"]);
+    let k = without_lease(with_tail(known(&[&s1], LOCAL), &b1, 1));
+    let r = resolve(&[s1, x, y], &k);
+    assert!(r.local_tail_diverged);
+    assert_eq!(r.fork.expect("fork").reason, ForkReason::EqualEpoch);
+    assert!(r.apply.is_empty());
+}
+
+// A pack stands in for an absent predecessor only if the successor's seq continues the
+// parent record it holds.
+#[test]
+fn pack_stand_in_still_checks_seq() {
+    let s1 = next(None, 1, &["a"]);
+    let s2 = next(Some(&s1), 1, &["b"]);
+    let p = pack(2, &[&s1, &s2]);
+    let b = &s2.txs()[0];
+    let bad = build(
+        1,
+        Some(s2.hash().to_string()),
+        vec![rec("c", b.seq + 2, Some(&b.tx_hash), "")],
+        vec![],
+        0,
+    );
+    let r = resolve(&[p, bad.clone()], &Known::empty(LOCAL));
+    assert_eq!(applied(&r), ids(&["a", "b"]));
+    assert!(
+        matches!(&r.quarantine[..], [(s, QuarantineReason::Malformed(_))] if s == &bad),
+        "{r:#?}"
+    );
 }

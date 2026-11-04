@@ -34,7 +34,9 @@
 //! The tail competes only while this server holds the lease ([`Known::holds_lease`]).
 //! Without the lease it never wins: as soon as the folder holds anything after the point the
 //! tail starts from, the tail is set aside (`local_tail_diverged`, spec §3.6 step 7) and the
-//! folder's line is imported.
+//! folder's line is imported. On sync storage the lease is only advisory and two offline
+//! writers can both have committed, so there the same situation is a `SyncFolder` fork with
+//! the local tail as one side (spec §3.5): the user chooses, nothing is set aside.
 //!
 //! # Nothing is dropped
 //!
@@ -303,6 +305,21 @@ pub struct ForkInfo {
     pub sides: Vec<ForkSide>,
 }
 
+/// The outcome of one poll.
+///
+/// Every verdict here describes the current state of the folder and the DB, and is
+/// recomputed on every poll: `StaleEpoch` and `Malformed` quarantine entries,
+/// `local_tail_diverged`, `fork`, `waiting` and `pending` alike. Any of them may flip on the
+/// next poll, for example when the lease is lost during the export debounce (the tail then no
+/// longer competes), when a late file arrives, or when a lying pack's replaced segment
+/// appears. Callers act on them (import, set the tail aside, go read-only) but must not
+/// persist a verdict as final; quarantine rows keep the bytes so a later poll can decide
+/// differently.
+///
+/// Outcomes combine. In particular a server without the lease on local or network storage
+/// can get `local_tail_diverged` and a `fork` (for example `EqualEpoch` between two folder
+/// lines after the point its tail started from) in the same resolution: it must set the tail
+/// aside and go read-only for the fork.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Resolution {
     /// Records to import, in order.

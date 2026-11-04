@@ -13,7 +13,9 @@
 //!      the winner;
 //!    - a tie (or any two lines on sync storage) → fork.
 //! 3. **At the end of the DB line**, the unexported tail competes with the folder's children
-//!    the same way. Losing sets `local_tail_diverged`.
+//!    the same way. Losing sets `local_tail_diverged`. Without the lease the tail does not
+//!    compete: it is set aside (and the folder's children are decided among themselves), or
+//!    on sync storage the branch forks with the tail as one side.
 //! 4. **New records**: follow the unique child, or the epoch-rule winner, quarantining losers,
 //!    until a leaf, a fork, or a record whose `txId` the DB already holds with other bytes
 //!    (or that repeats on the chain): `TxIdReused` fork.
@@ -155,6 +157,12 @@ impl<'g, 'a> Walk<'g, 'a> {
         let kids = g.kids(at);
         if tail_left && !kids.is_empty() {
             let mut cands: Vec<Cand> = kids.iter().map(|&k| Cand::Node(k)).collect();
+            if !self.known.holds_lease && self.known.kind.is_sync() {
+                // Spec §3.5: on sync storage the lease is advisory and two offline writers
+                // can both have committed; the user chooses.
+                cands.push(Cand::Tail);
+                return self.set_fork(ForkReason::SyncFolder, at, &cands);
+            }
             if !self.known.holds_lease {
                 // Spec §3.6 step 7: without the lease the tail never wins once the folder
                 // has moved on from where it starts.

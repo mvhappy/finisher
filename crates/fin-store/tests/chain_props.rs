@@ -325,6 +325,9 @@ impl Model<'_> {
             let mut cands: Vec<C> = kids.iter().map(|&k| C::Seg(k)).collect();
             if w.known.holds_lease {
                 cands.push(C::Tail);
+            } else if self.sync {
+                // Spec §3.5: the lease is advisory on sync storage; the user chooses.
+                return self.out.fork = Some(ForkReason::SyncFolder);
             } else {
                 // Spec §3.6 step 7: without the lease the tail is set aside.
                 self.out.diverged = true;
