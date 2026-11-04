@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::Args;
-use fin_core::{MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
 use fin_core::CoreError;
+use fin_core::{MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
 use serde_json::{Value, json};
 
 use crate::backend::{Backend, Snapshot};
@@ -58,7 +58,6 @@ pub struct Builder<'a> {
     deferred: Option<CoreError>,
 }
 
-
 fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
     if let Some(map) = e.details.as_object_mut() {
         map.insert(key.to_string(), value);
@@ -86,7 +85,10 @@ impl<'a> Builder<'a> {
     /// The id a reference names in the working copy: placeholders bound by earlier steps map to
     /// their working ids, anything else is returned unchanged.
     pub fn id(&self, reference: &str) -> String {
-        self.bound.get(reference).cloned().unwrap_or_else(|| reference.to_string())
+        self.bound
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(|| reference.to_string())
     }
 
     /// Validates `op` against the working copy and appends it to the transaction.
@@ -134,7 +136,11 @@ impl<'a> Builder<'a> {
     pub fn finish(self, globals: &Globals, resolved: Value) -> Result<Value, CoreError> {
         let tx_id = match &globals.idem_key {
             Some(key) if key.trim().is_empty() => {
-                return Err(usage("--idem-key must not be empty", json!({ "field": "idem-key" }), "pass a non-empty key"));
+                return Err(usage(
+                    "--idem-key must not be empty",
+                    json!({ "field": "idem-key" }),
+                    "pass a non-empty key",
+                ));
             }
             Some(key) => key.clone(),
             None => ulid::Ulid::new().to_string(),
@@ -142,7 +148,11 @@ impl<'a> Builder<'a> {
         let mut tx = self.tx(self.ops.clone());
         tx.tx_id = tx_id;
         if globals.dry_run || self.backend.dry_run_only() {
-            let applied = apply_tx(&self.base.project, &tx, &mut MemIds::after(&self.base.project))?;
+            let applied = apply_tx(
+                &self.base.project,
+                &tx,
+                &mut MemIds::after(&self.base.project),
+            )?;
             return Ok(json!({
                 "dryRun": true,
                 "txId": tx.tx_id,
@@ -176,7 +186,16 @@ impl<'a> Builder<'a> {
 /// `--idem-key`. Each planned step pushed exactly one op, so steps and ops pair up in order.
 fn echo_committed(resolved: &mut Value, ops: &[Op]) {
     let patch = |r: &mut Value, op: &Op| {
-        if let (Op::ClipInsert { at, source_in, duration, .. }, Some(map)) = (op, r.as_object_mut()) {
+        if let (
+            Op::ClipInsert {
+                at,
+                source_in,
+                duration,
+                ..
+            },
+            Some(map),
+        ) = (op, r.as_object_mut())
+        {
             map.insert("at".to_string(), json!(at));
             map.insert("in".to_string(), json!(source_in));
             map.insert("duration".to_string(), json!(duration));
@@ -222,7 +241,11 @@ pub fn write(backend: &dyn Backend, globals: &Globals, step: Write) -> Result<Va
 
 fn batch_step(cmd: &str, args: Value) -> Result<Write, CoreError> {
     let parse_err = |e: serde_json::Error| {
-        usage(format!("invalid args for {cmd}: {e}"), json!({ "cmd": cmd }), format!("see `fin schema {cmd}`"))
+        usage(
+            format!("invalid args for {cmd}: {e}"),
+            json!({ "cmd": cmd }),
+            format!("see `fin schema {cmd}`"),
+        )
     };
     Ok(match cmd {
         "asset.add" => Write::AssetAdd(serde_json::from_value(args).map_err(parse_err)?),
@@ -250,16 +273,28 @@ pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Va
         let n = i + 1;
         let at_line = |e: CoreError| with_detail(e, "line", json!(n));
         let entry: Value = serde_json::from_str(line).map_err(|e| {
-            at_line(usage(format!("line {n} is not JSON: {e}"), json!({}), "send one {\"cmd\",\"args\"} object per line"))
+            at_line(usage(
+                format!("line {n} is not JSON: {e}"),
+                json!({}),
+                "send one {\"cmd\",\"args\"} object per line",
+            ))
         })?;
         let Some(cmd) = entry.get("cmd").and_then(Value::as_str) else {
-            return Err(at_line(usage(format!("line {n} has no \"cmd\""), json!({}), "add \"cmd\": \"clip.insert\" or similar")));
+            return Err(at_line(usage(
+                format!("line {n} has no \"cmd\""),
+                json!({}),
+                "add \"cmd\": \"clip.insert\" or similar",
+            )));
         };
         let args = entry.get("args").cloned().unwrap_or_else(|| json!({}));
         steps.push((n, cmd.to_string(), batch_step(cmd, args).map_err(at_line)?));
     }
     if steps.is_empty() {
-        return Err(usage("batch received no commands", json!({}), "pipe JSONL to stdin: {\"cmd\":\"clip.delete\",\"args\":{\"clip\":\"c1\"}}"));
+        return Err(usage(
+            "batch received no commands",
+            json!({}),
+            "pipe JSONL to stdin: {\"cmd\":\"clip.delete\",\"args\":{\"clip\":\"c1\"}}",
+        ));
     }
     let mut b = Builder::new(backend, globals)?;
     let mut resolved = Vec::with_capacity(steps.len());
@@ -287,7 +322,10 @@ mod tests {
     impl Backend for Rejecting {
         fn snapshot(&self) -> Result<Snapshot, CoreError> {
             let rate: Rational = "30".parse()?;
-            Ok(Snapshot { rev: 1, project: new_project("p".into(), "P".into(), rate)? })
+            Ok(Snapshot {
+                rev: 1,
+                project: new_project("p".into(), "P".into(), rate)?,
+            })
         }
         fn commit(&self, _tx: &Tx) -> Result<CommittedTx, CoreError> {
             Err(self.answer.clone())
@@ -295,7 +333,12 @@ mod tests {
         fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
             unreachable!()
         }
-        fn create_project(&self, _dir: &Path, _name: &str, _rate: Rational) -> Result<Value, CoreError> {
+        fn create_project(
+            &self,
+            _dir: &Path,
+            _name: &str,
+            _rate: Rational,
+        ) -> Result<Value, CoreError> {
             unreachable!()
         }
         fn open_project(&self, _dir: &Path) -> Result<Value, CoreError> {
@@ -304,7 +347,10 @@ mod tests {
     }
 
     fn delete_missing_with_key(answer: CoreError) -> CoreError {
-        let globals = Globals { idem_key: Some("k".into()), ..Globals::default() };
+        let globals = Globals {
+            idem_key: Some("k".into()),
+            ..Globals::default()
+        };
         let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
         write(&Rejecting { answer }, &globals, step).unwrap_err()
     }
@@ -316,12 +362,21 @@ mod tests {
         assert_eq!(local.code, "NOT_FOUND");
         assert_ne!(local.message, "server says no");
         assert_eq!(local.details["opIndex"], 0);
-        for code in ["CONFLICT", "BASE_REV_AHEAD", "SERVER_SHUTTING_DOWN", "ENGINE_CLOSED", "INTERNAL", "SERVER_TIMEOUT"] {
+        for code in [
+            "CONFLICT",
+            "BASE_REV_AHEAD",
+            "SERVER_SHUTTING_DOWN",
+            "ENGINE_CLOSED",
+            "INTERNAL",
+            "SERVER_TIMEOUT",
+        ] {
             let e = delete_missing_with_key(CoreError::new(code, "server"));
             assert_eq!((e.code.as_str(), e.message.as_str()), (code, "server"));
         }
         let no_key = write(
-            &Rejecting { answer: CoreError::new("CONFLICT", "server") },
+            &Rejecting {
+                answer: CoreError::new("CONFLICT", "server"),
+            },
             &Globals::default(),
             Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() }),
         );

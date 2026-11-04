@@ -14,11 +14,11 @@ pub use apply::{ApplyMode, apply_internal, apply_tx, apply_tx_mode};
 pub use error::CoreError;
 pub use ids::{IdAlloc, IdKind, MemIds};
 pub use model::*;
-pub use rebase::{Conflict, rebase_tx};
 pub use ops::{Edge, Op};
+pub use rebase::{Conflict, rebase_tx};
 pub use schema::json_schema;
-pub use tx::*;
 pub use time::{Rational, frame_duration, parse_time};
+pub use tx::*;
 
 /// The crate version, as declared in its manifest.
 pub fn version() -> &'static str {

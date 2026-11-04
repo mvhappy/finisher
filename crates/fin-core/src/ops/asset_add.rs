@@ -12,7 +12,9 @@ use crate::tx::{ChangeKind, Diff, EntityKind};
 
 /// Checks the op against `project`; on success the op can be applied.
 pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Result<(), CoreError> {
-    let Op::AssetAdd { id, duration, .. } = op else { return Err(wrong_op(op)) };
+    let Op::AssetAdd { id, duration, .. } = op else {
+        return Err(wrong_op(op));
+    };
     if !duration.is_positive() {
         return Err(invalid_range(
             "asset duration must be positive",
@@ -31,7 +33,17 @@ pub(crate) fn apply(
     diff: &mut Diff,
 ) -> Result<Vec<Op>, CoreError> {
     validate(project, op, bindings)?;
-    let Op::AssetAdd { id, path, duration, video, audio, fingerprint } = op else { return Err(wrong_op(op)) };
+    let Op::AssetAdd {
+        id,
+        path,
+        duration,
+        video,
+        audio,
+        fingerprint,
+    } = op
+    else {
+        return Err(wrong_op(op));
+    };
     let id = bindings.create(project, id, IdKind::Asset, ids)?;
     let asset = Asset {
         id: id.clone(),

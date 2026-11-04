@@ -44,7 +44,11 @@ pub struct OpenArgs {
     pub dir: String,
 }
 
-pub fn create(backend: &dyn Backend, globals: &Globals, a: &CreateArgs) -> Result<Value, CoreError> {
+pub fn create(
+    backend: &dyn Backend,
+    globals: &Globals,
+    a: &CreateArgs,
+) -> Result<Value, CoreError> {
     let rate_input = a.rate.as_deref().unwrap_or("30");
     let rate: Rational = rate_input.parse().map_err(|mut e: CoreError| {
         e.details = json!({ "input": rate_input, "field": "rate" });

@@ -70,7 +70,8 @@ fn missing_file_reports_absolute_path() {
     let p = err.details["path"].as_str().unwrap();
     // `Path::ends_with` compares components: `/` and `\` both separate them on Windows.
     assert!(
-        std::path::Path::new(p).is_absolute() && std::path::Path::new(p).ends_with("nope/missing.mp4"),
+        std::path::Path::new(p).is_absolute()
+            && std::path::Path::new(p).ends_with("nope/missing.mp4"),
         "{p}"
     );
 }
@@ -97,7 +98,10 @@ fn spaces_and_cyrillic_paths_work() {
 fn missing_relative_path_is_cwd_joined() {
     let err = probe(std::path::Path::new("nope/missing.mp4")).unwrap_err();
     // Absolutising normalises separators (backslashes on Windows).
-    let expected = std::env::current_dir().unwrap().join("nope").join("missing.mp4");
+    let expected = std::env::current_dir()
+        .unwrap()
+        .join("nope")
+        .join("missing.mp4");
     assert_eq!(
         err.details["path"].as_str().unwrap(),
         expected.to_str().unwrap()

@@ -46,8 +46,12 @@ enum Cmd {
     #[command(subcommand)]
     Clip(ClipCmd),
     Batch,
-    Help { topic: Option<String> },
-    Schema { command: Vec<String> },
+    Help {
+        topic: Option<String>,
+    },
+    Schema {
+        command: Vec<String>,
+    },
 }
 
 /// No clap help/version flags, help subcommand or help-on-missing-subcommand anywhere in the
@@ -81,7 +85,10 @@ fn clap_usage(err: &clap::Error) -> CoreError {
         .find(|l| !l.trim().is_empty())
         .map(|l| l.trim_start_matches("error: ").to_string())
         .unwrap_or_else(|| format!("{:?}", err.kind()));
-    let usage_line = rendered.lines().find_map(|l| l.trim().strip_prefix("Usage: ")).map(str::to_string);
+    let usage_line = rendered
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Usage: "))
+        .map(str::to_string);
     let mut context = Map::new();
     for (kind, value) in err.context() {
         let value = context_value(value);
@@ -90,14 +97,21 @@ fn clap_usage(err: &clap::Error) -> CoreError {
         }
         let name = format!("{kind:?}");
         let mut chars = name.chars();
-        let key = chars.next().map(|c| c.to_ascii_lowercase().to_string() + chars.as_str()).unwrap_or_default();
+        let key = chars
+            .next()
+            .map(|c| c.to_ascii_lowercase().to_string() + chars.as_str())
+            .unwrap_or_default();
         context.insert(key, value);
     }
     let mut details = json!({ "kind": format!("{:?}", err.kind()), "context": context });
-    let suggested = [ContextKind::SuggestedArg, ContextKind::SuggestedSubcommand, ContextKind::ValidSubcommand]
-        .iter()
-        .filter_map(|k| err.get(*k).map(context_value))
-        .find(|v| v.as_array().is_none_or(|a| !a.is_empty()));
+    let suggested = [
+        ContextKind::SuggestedArg,
+        ContextKind::SuggestedSubcommand,
+        ContextKind::ValidSubcommand,
+    ]
+    .iter()
+    .filter_map(|k| err.get(*k).map(context_value))
+    .find(|v| v.as_array().is_none_or(|a| !a.is_empty()));
     if let Some(alternatives) = suggested {
         details["alternatives"] = alternatives;
     }
@@ -109,7 +123,9 @@ fn clap_usage(err: &clap::Error) -> CoreError {
 }
 
 fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
-    let matches = configure(Cli::command()).try_get_matches_from(args).map_err(|e| clap_usage(&e))?;
+    let matches = configure(Cli::command())
+        .try_get_matches_from(args)
+        .map_err(|e| clap_usage(&e))?;
     Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))
 }
 
@@ -123,16 +139,30 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Schema { command }) => commands::schema::schema(&command),
         Some(Cmd::Status) => commands::view::status(backend()?.as_ref()),
         Some(Cmd::View(a)) => commands::view::view(backend()?.as_ref(), &a),
-        Some(Cmd::Project(ProjectCmd::Create(a))) => commands::project::create(backend()?.as_ref(), g, &a),
+        Some(Cmd::Project(ProjectCmd::Create(a))) => {
+            commands::project::create(backend()?.as_ref(), g, &a)
+        }
         Some(Cmd::Project(ProjectCmd::Open(a))) => commands::project::open(backend()?.as_ref(), &a),
-        Some(Cmd::Asset(AssetCmd::Add(a))) => commands::write(backend()?.as_ref(), g, Write::AssetAdd(a)),
-        Some(Cmd::Clip(ClipCmd::Insert(a))) => commands::write(backend()?.as_ref(), g, Write::ClipInsert(a)),
-        Some(Cmd::Clip(ClipCmd::Trim(a))) => commands::write(backend()?.as_ref(), g, Write::ClipTrim(a)),
-        Some(Cmd::Clip(ClipCmd::Delete(a))) => commands::write(backend()?.as_ref(), g, Write::ClipDelete(a)),
+        Some(Cmd::Asset(AssetCmd::Add(a))) => {
+            commands::write(backend()?.as_ref(), g, Write::AssetAdd(a))
+        }
+        Some(Cmd::Clip(ClipCmd::Insert(a))) => {
+            commands::write(backend()?.as_ref(), g, Write::ClipInsert(a))
+        }
+        Some(Cmd::Clip(ClipCmd::Trim(a))) => {
+            commands::write(backend()?.as_ref(), g, Write::ClipTrim(a))
+        }
+        Some(Cmd::Clip(ClipCmd::Delete(a))) => {
+            commands::write(backend()?.as_ref(), g, Write::ClipDelete(a))
+        }
         Some(Cmd::Batch) => {
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input).map_err(|e| {
-                output::usage(format!("cannot read stdin: {e}"), json!({}), "pipe UTF-8 JSONL to `fin batch`")
+                output::usage(
+                    format!("cannot read stdin: {e}"),
+                    json!({}),
+                    "pipe UTF-8 JSONL to `fin batch`",
+                )
             })?;
             commands::batch(backend()?.as_ref(), g, &input)
         }
@@ -153,7 +183,10 @@ mod tests {
     use super::*;
 
     fn args(s: &str) -> Vec<OsString> {
-        std::iter::once("fin").chain(s.split_whitespace()).map(OsString::from).collect()
+        std::iter::once("fin")
+            .chain(s.split_whitespace())
+            .map(OsString::from)
+            .collect()
     }
 
     #[test]
@@ -173,14 +206,21 @@ mod tests {
         ];
         assert_eq!(samples.len(), registry::COMMANDS.len());
         for (sample, command) in samples.iter().zip(registry::COMMANDS) {
-            assert!(sample.starts_with(&command.name.replace('.', " ")), "{sample} vs {}", command.name);
+            assert!(
+                sample.starts_with(&command.name.replace('.', " ")),
+                "{sample} vs {}",
+                command.name
+            );
             assert!(parse(args(sample)).is_ok(), "{sample}");
         }
     }
 
     #[test]
     fn colour_is_never_used() {
-        assert_eq!(configure(Cli::command()).get_color(), clap::ColorChoice::Never);
+        assert_eq!(
+            configure(Cli::command()).get_color(),
+            clap::ColorChoice::Never
+        );
     }
 
     #[test]

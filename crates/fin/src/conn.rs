@@ -34,7 +34,9 @@ impl TimedConn {
                 let result = match op {
                     Op::Write(bytes) => {
                         let out = conn.get_mut();
-                        out.write_all(&bytes).and_then(|()| out.flush()).map(|()| String::new())
+                        out.write_all(&bytes)
+                            .and_then(|()| out.flush())
+                            .map(|()| String::new())
                     }
                     Op::ReadLine => {
                         let mut line = String::new();
@@ -46,12 +48,20 @@ impl TimedConn {
                 }
             }
         });
-        TimedConn { ops, results, timeout, poisoned: false }
+        TimedConn {
+            ops,
+            results,
+            timeout,
+            poisoned: false,
+        }
     }
 
     fn run(&mut self, op: Op) -> io::Result<String> {
         if self.poisoned {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "an earlier operation on this connection timed out"));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "an earlier operation on this connection timed out",
+            ));
         }
         let stopped = || io::Error::new(io::ErrorKind::BrokenPipe, "the connection worker stopped");
         self.ops.send(op).map_err(|_| stopped())?;
@@ -105,8 +115,14 @@ mod tests {
         let (_hold, rx) = mpsc::channel();
         let mut conn = TimedConn::new(Silent(rx), Duration::from_millis(100));
         conn.write_all(b"hello\n").unwrap();
-        assert_eq!(conn.read_line().unwrap_err().kind(), io::ErrorKind::TimedOut);
-        assert_eq!(conn.write_all(b"again\n").unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            conn.read_line().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            conn.write_all(b"again\n").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 
     #[test]

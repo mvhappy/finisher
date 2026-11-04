@@ -1,5 +1,6 @@
 use fin_core::{
-    Clip, IdAlloc, IdKind, MemIds, Project, Rational, TrackKind, json_schema, new_project, SCHEMA_VERSION,
+    Clip, IdAlloc, IdKind, MemIds, Project, Rational, SCHEMA_VERSION, TrackKind, json_schema,
+    new_project,
 };
 
 fn rate() -> Rational {
@@ -11,8 +12,14 @@ fn new_project_has_default_timeline_and_tracks() {
     let p = new_project("p1".into(), "Demo".into(), rate()).unwrap();
     assert_eq!(p.timeline.id, "tl1");
     assert_eq!(p.timeline.tracks.len(), 2);
-    assert_eq!((p.timeline.tracks[0].id.as_str(), p.timeline.tracks[0].kind), ("t1", TrackKind::Video));
-    assert_eq!((p.timeline.tracks[1].id.as_str(), p.timeline.tracks[1].kind), ("t2", TrackKind::Audio));
+    assert_eq!(
+        (p.timeline.tracks[0].id.as_str(), p.timeline.tracks[0].kind),
+        ("t1", TrackKind::Video)
+    );
+    assert_eq!(
+        (p.timeline.tracks[1].id.as_str(), p.timeline.tracks[1].kind),
+        ("t2", TrackKind::Audio)
+    );
     assert_eq!(p.rate, rate());
     assert_eq!(p.schema_version, SCHEMA_VERSION);
 }
@@ -82,10 +89,20 @@ fn new_project_rejects_non_positive_rate() {
 fn schema_requires_details_and_keeps_rational_refs() {
     let schema = json_schema();
     let err = &schema["$defs"]["CoreError"];
-    let required: Vec<&str> = err["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let required: Vec<&str> = err["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert!(required.contains(&"details"), "{required:?}");
     assert!(err["properties"].get("details").is_some());
-    for (def, field) in [("Project", "rate"), ("Clip", "start"), ("Clip", "sourceIn"), ("Clip", "duration")] {
+    for (def, field) in [
+        ("Project", "rate"),
+        ("Clip", "start"),
+        ("Clip", "sourceIn"),
+        ("Clip", "duration"),
+    ] {
         let f = &schema["$defs"][def]["properties"][field];
         assert_eq!(f["$ref"], "#/$defs/Rational", "{def}.{field}");
     }

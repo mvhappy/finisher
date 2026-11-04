@@ -66,7 +66,9 @@ pub fn exit_code(code: &str) -> i32 {
 }
 
 pub fn usage(message: impl Into<String>, details: Value, fix: impl Into<String>) -> CoreError {
-    CoreError::new("USAGE", message).with_details(details).with_fix(fix)
+    CoreError::new("USAGE", message)
+        .with_details(details)
+        .with_fix(fix)
 }
 
 pub fn internal(message: impl Into<String>, details: Value) -> CoreError {
@@ -103,11 +105,20 @@ pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let message = match info.payload().downcast_ref::<&str>() {
             Some(s) => (*s).to_string(),
-            None => info.payload().downcast_ref::<String>().cloned().unwrap_or_else(|| "panic".to_string()),
+            None => info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_else(|| "panic".to_string()),
         };
-        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line()));
-        let e = internal(format!("fin crashed: {message}"), json!({ "location": location }))
-            .with_fix("report this as a bug in fin");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
+        let e = internal(
+            format!("fin crashed: {message}"),
+            json!({ "location": location }),
+        )
+        .with_fix("report this as a bug in fin");
         std::process::exit(error(&e));
     }));
 }
@@ -131,7 +142,13 @@ mod tests {
         ] {
             assert_eq!(exit_code(code), 5, "{code}");
         }
-        for code in ["INTERNAL", "SOMETHING_NEW", "PROTOCOL_ERROR", "PROTOCOL_MISMATCH", "CANCELLED"] {
+        for code in [
+            "INTERNAL",
+            "SOMETHING_NEW",
+            "PROTOCOL_ERROR",
+            "PROTOCOL_MISMATCH",
+            "CANCELLED",
+        ] {
             assert_eq!(exit_code(code), 6, "{code}");
         }
         for code in [

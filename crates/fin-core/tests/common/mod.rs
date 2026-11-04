@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use fin_core::{
-    Applied, AudioInfo, CoreError, MemIds, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo, apply_internal,
-    apply_tx, new_project,
+    Applied, AudioInfo, CoreError, MemIds, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo,
+    apply_internal, apply_tx, new_project,
 };
 
 pub fn r(s: &str) -> Rational {
@@ -35,8 +35,15 @@ fn asset(id: &str, duration: Rational, video: bool, audio: bool) -> Op {
         id: id.into(),
         path: format!("/media/{}.mov", id.trim_start_matches('$')),
         duration,
-        video: video.then(|| VideoInfo { width: 1920, height: 1080, rate: secs(30) }),
-        audio: audio.then_some(AudioInfo { sample_rate: 48_000, channels: 2 }),
+        video: video.then(|| VideoInfo {
+            width: 1920,
+            height: 1080,
+            rate: secs(30),
+        }),
+        audio: audio.then_some(AudioInfo {
+            sample_rate: 48_000,
+            channels: 2,
+        }),
         fingerprint: "fp".into(),
     }
 }
@@ -50,8 +57,22 @@ pub fn audio_asset(id: &str, duration: Rational) -> Op {
     asset(id, duration, false, true)
 }
 
-pub fn insert(id: &str, track: &str, at: Rational, asset: &str, source_in: Rational, duration: Rational) -> Op {
-    Op::ClipInsert { id: id.into(), track: track.into(), at, asset: asset.into(), source_in, duration }
+pub fn insert(
+    id: &str,
+    track: &str,
+    at: Rational,
+    asset: &str,
+    source_in: Rational,
+    duration: Rational,
+) -> Op {
+    Op::ClipInsert {
+        id: id.into(),
+        track: track.into(),
+        at,
+        asset: asset.into(),
+        source_in,
+        duration,
+    }
 }
 
 pub fn try_apply(p: &Project, ops: Vec<Op>) -> Result<Applied, CoreError> {
@@ -65,7 +86,9 @@ pub fn apply(p: &Project, ops: Vec<Op>) -> Applied {
 /// Applies `applied.inverse` (an internal transaction) to `applied.project`.
 pub fn undo(applied: &Applied) -> Project {
     let p = &applied.project;
-    apply_internal(p, &tx(applied.inverse.clone()), &mut MemIds::after(p)).unwrap().project
+    apply_internal(p, &tx(applied.inverse.clone()), &mut MemIds::after(p))
+        .unwrap()
+        .project
 }
 
 /// A project with asset `a1` (100 s, video+audio) and back-to-back clips of `durations` on `t1`.
@@ -73,7 +96,14 @@ pub fn with_clips(durations: &[i64]) -> Project {
     let mut ops = vec![av_asset("$a", secs(100))];
     let mut at = 0;
     for (i, d) in durations.iter().enumerate() {
-        ops.push(insert(&format!("$c{i}"), "t1", secs(at), "$a", Rational::zero(), secs(*d)));
+        ops.push(insert(
+            &format!("$c{i}"),
+            "t1",
+            secs(at),
+            "$a",
+            Rational::zero(),
+            secs(*d),
+        ));
         at += d;
     }
     apply(&project(), ops).project
@@ -87,19 +117,37 @@ pub fn assert_well_formed(p: &Project) {
             assert!(c.source_in >= Rational::zero(), "negative sourceIn {c:?}");
             assert!(c.duration.is_positive(), "non-positive duration {c:?}");
             let asset = &p.assets[&c.asset];
-            assert!((c.source_in + c.duration).unwrap() <= asset.duration, "past asset end {c:?}");
+            assert!(
+                (c.source_in + c.duration).unwrap() <= asset.duration,
+                "past asset end {c:?}"
+            );
         }
         for w in track.items.windows(2) {
             let end = (w[0].start + w[0].duration).unwrap();
-            assert!(end <= w[1].start, "overlap or unsorted on {}: {:?} then {:?}", track.id, w[0], w[1]);
+            assert!(
+                end <= w[1].start,
+                "overlap or unsorted on {}: {:?} then {:?}",
+                track.id,
+                w[0],
+                w[1]
+            );
         }
     }
 }
 
 pub fn clip<'a>(p: &'a Project, id: &str) -> &'a fin_core::Clip {
-    p.timeline.tracks.iter().flat_map(|t| &t.items).find(|c| c.id == id).unwrap_or_else(|| panic!("no clip {id}"))
+    p.timeline
+        .tracks
+        .iter()
+        .flat_map(|t| &t.items)
+        .find(|c| c.id == id)
+        .unwrap_or_else(|| panic!("no clip {id}"))
 }
 
 pub fn starts(p: &Project, track: usize) -> Vec<(String, Rational)> {
-    p.timeline.tracks[track].items.iter().map(|c| (c.id.clone(), c.start)).collect()
+    p.timeline.tracks[track]
+        .items
+        .iter()
+        .map(|c| (c.id.clone(), c.start))
+        .collect()
 }

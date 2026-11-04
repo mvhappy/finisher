@@ -30,15 +30,27 @@ pub struct Conflict {
 impl Conflict {
     /// A conflict whose op index and committed tx id `rebase_tx` fills in.
     pub(crate) fn new(reason: impl Into<String>) -> Self {
-        Conflict { reason: reason.into(), op_index: 0, against_tx: String::new() }
+        Conflict {
+            reason: reason.into(),
+            op_index: 0,
+            against_tx: String::new(),
+        }
     }
 }
 
 impl From<Conflict> for CoreError {
     fn from(c: Conflict) -> Self {
-        CoreError::new("CONFLICT", format!("op {} conflicts with committed tx {}: {}", c.op_index, c.against_tx, c.reason))
-            .with_details(json!({ "reason": c.reason, "opIndex": c.op_index, "againstTx": c.against_tx }))
-            .with_fix("read the project at the current head and send the edit again")
+        CoreError::new(
+            "CONFLICT",
+            format!(
+                "op {} conflicts with committed tx {}: {}",
+                c.op_index, c.against_tx, c.reason
+            ),
+        )
+        .with_details(
+            json!({ "reason": c.reason, "opIndex": c.op_index, "againstTx": c.against_tx }),
+        )
+        .with_fix("read the project at the current head and send the edit again")
     }
 }
 
@@ -47,7 +59,11 @@ fn overflow() -> Conflict {
 }
 
 /// `pos` on `track` moved by every shift in `diff` on that track whose `from` is at or before it.
-pub(crate) fn shift_position(track: &str, pos: Rational, diff: &Diff) -> Result<Rational, Conflict> {
+pub(crate) fn shift_position(
+    track: &str,
+    pos: Rational,
+    diff: &Diff,
+) -> Result<Rational, Conflict> {
     let mut pos = pos;
     for s in diff.shifts.iter().filter(|s| s.track == track) {
         if pos >= s.from {
@@ -59,13 +75,25 @@ pub(crate) fn shift_position(track: &str, pos: Rational, diff: &Diff) -> Result<
 
 /// For an op that places a clip, its track and `[start, end)`. The start comes from the op's
 /// shift when present, since that shift is carried forward through our own earlier inserts.
-pub(crate) fn inserted_range(over: &Op, over_diff: &Diff) -> Result<Option<(String, Rational, Rational)>, Conflict> {
+pub(crate) fn inserted_range(
+    over: &Op,
+    over_diff: &Diff,
+) -> Result<Option<(String, Rational, Rational)>, Conflict> {
     let (track, start, duration) = match over {
-        Op::ClipInsert { track, at, duration, .. } => (track, *at, *duration),
+        Op::ClipInsert {
+            track,
+            at,
+            duration,
+            ..
+        } => (track, *at, *duration),
         Op::ClipRestore { clip, track, .. } => (track, clip.start, clip.duration),
         _ => return Ok(None),
     };
-    let start = over_diff.shifts.first().filter(|s| &s.track == track).map_or(start, |s| s.from);
+    let start = over_diff
+        .shifts
+        .first()
+        .filter(|s| &s.track == track)
+        .map_or(start, |s| s.from);
     let end = start.checked_add(duration).map_err(|_| overflow())?;
     Ok(Some((track.clone(), start, end)))
 }
@@ -82,8 +110,17 @@ pub(crate) fn removed_clip(over: &Op) -> Option<&str> {
 /// Where an op of ours places a clip and how far it ripples the track: `(track, at, by)`.
 fn placement(op: &Op) -> Option<(&str, Rational, Rational)> {
     match op {
-        Op::ClipInsert { track, at, duration, .. } => Some((track, *at, *duration)),
-        Op::ClipRestore { clip, track, ripple: true } => Some((track, clip.start, clip.duration)),
+        Op::ClipInsert {
+            track,
+            at,
+            duration,
+            ..
+        } => Some((track, *at, *duration)),
+        Op::ClipRestore {
+            clip,
+            track,
+            ripple: true,
+        } => Some((track, clip.start, clip.duration)),
         _ => None,
     }
 }
@@ -109,7 +146,8 @@ fn split(committed: &CommittedTx) -> Result<Vec<(Op, Diff)>, Conflict> {
     for op in &committed.tx.ops {
         let mut diff = Diff::default();
         if op.records_shift() {
-            diff.shifts.push(shifts.next().ok_or_else(mismatch)?.clone());
+            diff.shifts
+                .push(shifts.next().ok_or_else(mismatch)?.clone());
         }
         out.push((op.resolved(&committed.bindings), diff));
     }
@@ -130,9 +168,15 @@ fn rebase_over(ops: &[Op], committed: &CommittedTx) -> Result<Vec<Op>, Conflict>
     let mut out = Vec::with_capacity(ops.len());
     for (i, op) in ops.iter().enumerate() {
         if blind && let Some(track) = positioned_track(op) {
-            let moved = over.iter().flat_map(|(_, d)| &d.shifts).any(|s| s.track == track && !s.by.is_zero());
+            let moved = over
+                .iter()
+                .flat_map(|(_, d)| &d.shifts)
+                .any(|s| s.track == track && !s.by.is_zero());
             if moved {
-                return Err(tag(Conflict::new("position follows a trim or delete on a track that moved"), i));
+                return Err(tag(
+                    Conflict::new("position follows a trim or delete on a track that moved"),
+                    i,
+                ));
             }
         }
         let mut cur = op.clone();
@@ -140,13 +184,20 @@ fn rebase_over(ops: &[Op], committed: &CommittedTx) -> Result<Vec<Op>, Conflict>
             let next = ops::rebase(&cur, o, d).map_err(|c| tag(c, i))?;
             // Carry the committed shift past our op, so our later ops see it in their frame.
             if let Some((track, at, by)) = placement(&cur) {
-                for s in d.shifts.iter_mut().filter(|s| s.track == track && s.from > at) {
+                for s in d
+                    .shifts
+                    .iter_mut()
+                    .filter(|s| s.track == track && s.from > at)
+                {
                     s.from = s.from.checked_add(by).map_err(|_| tag(overflow(), i))?;
                 }
             }
             cur = next;
         }
-        blind |= matches!(cur, Op::ClipTrim { .. } | Op::ClipDelete { .. } | Op::ClipRemove { .. });
+        blind |= matches!(
+            cur,
+            Op::ClipTrim { .. } | Op::ClipDelete { .. } | Op::ClipRemove { .. }
+        );
         out.push(cur);
     }
     Ok(out)

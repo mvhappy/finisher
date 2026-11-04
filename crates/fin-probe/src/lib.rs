@@ -70,16 +70,21 @@ pub fn probe(path: &Path) -> Result<Probe, CoreError> {
 /// True when some ancestor of `path` exists but is not a directory. Unix reports such a path
 /// as `ENOTDIR`; Windows reports it as not found (`ERROR_PATH_NOT_FOUND`).
 fn through_a_file(path: &Path) -> bool {
-    path.ancestors().skip(1).any(|a| !a.as_os_str().is_empty() && a.metadata().is_ok_and(|m| !m.is_dir()))
+    path.ancestors()
+        .skip(1)
+        .any(|a| !a.as_os_str().is_empty() && a.metadata().is_ok_and(|m| !m.is_dir()))
 }
 
 fn io_error(path: &Path, e: &io::Error) -> CoreError {
     let through_file = e.kind() == io::ErrorKind::NotFound && through_a_file(path);
     let path = absolute(path).to_string_lossy().into_owned();
     if through_file {
-        return CoreError::new("ASSET_UNREADABLE", "a parent of the media path is a file, not a folder")
-            .with_details(json!({ "path": path, "reason": "NotADirectory" }))
-            .with_fix("check the file and its parent folders exist and are readable");
+        return CoreError::new(
+            "ASSET_UNREADABLE",
+            "a parent of the media path is a file, not a folder",
+        )
+        .with_details(json!({ "path": path, "reason": "NotADirectory" }))
+        .with_fix("check the file and its parent folders exist and are readable");
     }
     if e.kind() == io::ErrorKind::NotFound {
         return CoreError::new("ASSET_NOT_FOUND", "media file does not exist")

@@ -63,7 +63,12 @@ pub fn view(backend: &dyn Backend, a: &ViewArgs) -> Result<Value, CoreError> {
         None => (None, None),
     };
     let mut tracks = Vec::new();
-    for t in p.timeline.tracks.iter().filter(|t| a.track.as_ref().is_none_or(|id| &t.id == id)) {
+    for t in p
+        .timeline
+        .tracks
+        .iter()
+        .filter(|t| a.track.as_ref().is_none_or(|id| &t.id == id))
+    {
         let mut clips = Vec::new();
         for c in &t.items {
             let end = c.start.checked_add(c.duration)?;

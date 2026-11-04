@@ -42,7 +42,9 @@ fn frames_use_the_rate() {
 
 #[test]
 fn rejects_bad_input_with_details() {
-    for bad in ["1e3s", "12.4", "abc", "1/0", "", "1.5/2", "f", "1:2:3:4", "12.s", ".5s"] {
+    for bad in [
+        "1e3s", "12.4", "abc", "1/0", "", "1.5/2", "f", "1:2:3:4", "12.s", ".5s",
+    ] {
         let e = parse_time(bad, rate(30)).unwrap_err();
         assert_eq!(e.code, "INVALID_TIME", "{bad}");
         assert_eq!(e.details["input"], bad);

@@ -11,9 +11,9 @@ use std::io;
 use std::time::Duration;
 
 use fin_core::CoreError;
+use interprocess::ConnectWaitMode;
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{ConnectOptions, GenericFilePath};
-use interprocess::ConnectWaitMode;
 use serde_json::{Value, json};
 
 use crate::conn::TimedConn;
@@ -27,9 +27,15 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     /// The final answer to a request: its success value or its error.
-    Exit { request_id: String, result: Result<Value, CoreError> },
+    Exit {
+        request_id: String,
+        result: Result<Value, CoreError>,
+    },
     /// Stream items; must be acknowledged.
-    Chunk { request_id: String, values: Vec<Value> },
+    Chunk {
+        request_id: String,
+        values: Vec<Value>,
+    },
     Pong,
     /// A server-side defect not tied to one request.
     Defect(Value),
@@ -59,8 +65,16 @@ fn fin_error(e: &Value) -> CoreError {
     };
     CoreError {
         code: code.to_string(),
-        message: e.get("message").and_then(Value::as_str).unwrap_or(code).to_string(),
-        details: e.get("details").cloned().filter(|d| !d.is_null()).unwrap_or_else(|| json!({})),
+        message: e
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or(code)
+            .to_string(),
+        details: e
+            .get("details")
+            .cloned()
+            .filter(|d| !d.is_null())
+            .unwrap_or_else(|| json!({})),
         fix: e.get("fix").and_then(Value::as_str).map(str::to_string),
     }
 }
@@ -72,7 +86,12 @@ fn failure(cause: &Value) -> CoreError {
         Value::Object(_) => vec![cause],
         _ => Vec::new(),
     };
-    let tagged = |tag: &str| reasons.iter().copied().find(|r| r.get("_tag").and_then(Value::as_str) == Some(tag));
+    let tagged = |tag: &str| {
+        reasons
+            .iter()
+            .copied()
+            .find(|r| r.get("_tag").and_then(Value::as_str) == Some(tag))
+    };
     if let Some(fail) = tagged("Fail") {
         return fin_error(fail.get("error").unwrap_or(&Value::Null));
     }
@@ -100,7 +119,8 @@ pub fn decode_exit(exit: &Value) -> Result<Value, CoreError> {
 
 /// Parses one NDJSON line from the server.
 pub fn parse_frame(line: &str) -> Result<Frame, CoreError> {
-    let frame: Value = serde_json::from_str(line).map_err(|e| protocol(format!("server sent invalid JSON: {e}"), &json!(line)))?;
+    let frame: Value = serde_json::from_str(line)
+        .map_err(|e| protocol(format!("server sent invalid JSON: {e}"), &json!(line)))?;
     match frame.get("_tag").and_then(Value::as_str) {
         Some("Exit") => Ok(Frame::Exit {
             request_id: request_id(&frame)?,
@@ -111,11 +131,18 @@ pub fn parse_frame(line: &str) -> Result<Frame, CoreError> {
                 Some(Value::Array(v)) => v.clone(),
                 _ => return Err(protocol("chunk without values", &frame)),
             };
-            Ok(Frame::Chunk { request_id: request_id(&frame)?, values })
+            Ok(Frame::Chunk {
+                request_id: request_id(&frame)?,
+                values,
+            })
         }
         Some("Pong") => Ok(Frame::Pong),
-        Some("Defect") => Ok(Frame::Defect(frame.get("defect").cloned().unwrap_or(Value::Null))),
-        Some("ClientProtocolError") => Err(protocol("the server rejected a frame from fin", &frame)),
+        Some("Defect") => Ok(Frame::Defect(
+            frame.get("defect").cloned().unwrap_or(Value::Null),
+        )),
+        Some("ClientProtocolError") => {
+            Err(protocol("the server rejected a frame from fin", &frame))
+        }
         _ => Err(protocol("unknown frame", &frame)),
     }
 }
@@ -125,13 +152,24 @@ pub fn request_frame(id: &str, tag: &str, payload: &Value) -> Value {
 }
 
 fn timed_out(e: &io::Error) -> bool {
-    matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
+    matches!(
+        e.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
 }
 
 fn timeout_error(endpoint: &Endpoint, what: &str, timeout: Duration) -> CoreError {
-    CoreError::new("SERVER_TIMEOUT", format!("finisherd did not {what} within {} s", timeout.as_secs_f64()))
-        .with_details(json!({ "endpoint": endpoint.display(), "timeoutMs": timeout.as_millis() as u64 }))
-        .with_fix("check that finisherd is responsive; retry writes with the same --idem-key")
+    CoreError::new(
+        "SERVER_TIMEOUT",
+        format!(
+            "finisherd did not {what} within {} s",
+            timeout.as_secs_f64()
+        ),
+    )
+    .with_details(
+        json!({ "endpoint": endpoint.display(), "timeoutMs": timeout.as_millis() as u64 }),
+    )
+    .with_fix("check that finisherd is responsive; retry writes with the same --idem-key")
 }
 
 /// Codes for which a sent commit may or may not have landed.
@@ -147,7 +185,9 @@ fn in_flight(mut e: CoreError, tx_id: &str) -> CoreError {
         }
         None => e.details = json!({ "txId": tx_id, "detail": e.details }),
     }
-    e.fix = Some(format!("the commit may have landed; retry with `--idem-key {tx_id}` (after starting finisherd if it is down)"));
+    e.fix = Some(format!(
+        "the commit may have landed; retry with `--idem-key {tx_id}` (after starting finisherd if it is down)"
+    ));
     e
 }
 
@@ -161,42 +201,72 @@ pub struct Client {
 
 impl Client {
     pub fn connect(endpoint: &Endpoint, timeout: Duration) -> Result<Client, CoreError> {
-        let down = |reason: String| unavailable(json!({ "endpoint": endpoint.display(), "reason": reason }));
+        let down = |reason: String| {
+            unavailable(json!({ "endpoint": endpoint.display(), "reason": reason }))
+        };
         let name = match endpoint {
             Endpoint::Socket(p) => p.as_path().to_fs_name::<GenericFilePath>(),
             Endpoint::Pipe(p) if cfg!(windows) => p.as_str().to_fs_name::<GenericFilePath>(),
-            Endpoint::Pipe(_) => return Err(down("named pipes exist only on Windows; set FIN_SERVER to a socket path".into())),
+            Endpoint::Pipe(_) => {
+                return Err(down(
+                    "named pipes exist only on Windows; set FIN_SERVER to a socket path".into(),
+                ));
+            }
         }
         .map_err(|e| down(e.to_string()))?;
         let stream = ConnectOptions::new()
             .name(name)
             .wait_mode(ConnectWaitMode::Timeout(timeout))
             .connect_sync()
-            .map_err(|e| if timed_out(&e) { timeout_error(endpoint, "accept the connection", timeout) } else { down(format!("{:?}", e.kind())) })?;
+            .map_err(|e| {
+                if timed_out(&e) {
+                    timeout_error(endpoint, "accept the connection", timeout)
+                } else {
+                    down(format!("{:?}", e.kind()))
+                }
+            })?;
         // Read/write timeouts come from `TimedConn`: Windows named pipes have no OS-level ones.
-        Ok(Client { endpoint: endpoint.clone(), timeout, conn: TimedConn::new(stream, timeout), next_id: 1 })
+        Ok(Client {
+            endpoint: endpoint.clone(),
+            timeout,
+            conn: TimedConn::new(stream, timeout),
+            next_id: 1,
+        })
     }
 
     fn io_error(&self, what: &str, e: &io::Error) -> CoreError {
         if timed_out(e) {
             return timeout_error(&self.endpoint, what, self.timeout);
         }
-        unavailable(json!({ "endpoint": self.endpoint.display(), "reason": format!("{what}: {:?}", e.kind()) }))
+        unavailable(
+            json!({ "endpoint": self.endpoint.display(), "reason": format!("{what}: {:?}", e.kind()) }),
+        )
     }
 
     fn send(&mut self, frame: &Value) -> Result<(), CoreError> {
         let mut line = frame.to_string();
         line.push('\n');
-        self.conn.write_all(line.as_bytes()).map_err(|e| self.io_error("send", &e))
+        self.conn
+            .write_all(line.as_bytes())
+            .map_err(|e| self.io_error("send", &e))
     }
 
     fn read_frame(&mut self) -> Result<Frame, CoreError> {
         loop {
-            let line = self.conn.read_line().map_err(|e| self.io_error("answer", &e))?;
+            let line = self
+                .conn
+                .read_line()
+                .map_err(|e| self.io_error("answer", &e))?;
             let n = line.len();
             if n == 0 || !line.ends_with('\n') {
-                let reason = if n == 0 { "the server closed the connection" } else { "the server closed the connection mid-frame" };
-                return Err(unavailable(json!({ "endpoint": self.endpoint.display(), "reason": reason })));
+                let reason = if n == 0 {
+                    "the server closed the connection"
+                } else {
+                    "the server closed the connection mid-frame"
+                };
+                return Err(unavailable(
+                    json!({ "endpoint": self.endpoint.display(), "reason": reason }),
+                ));
             }
             if !line.trim().is_empty() {
                 return parse_frame(line.trim_end());
@@ -214,7 +284,8 @@ impl Client {
     /// (timeout, lost connection, garbled answer) leaves the commit's fate unknown: the error
     /// then carries `details.txId` and tells the agent to retry with that idempotency key.
     pub fn commit(&mut self, payload: Value, tx_id: &str) -> Result<Value, CoreError> {
-        self.request("tx.commit", payload).map_err(|e| in_flight(e, tx_id))
+        self.request("tx.commit", payload)
+            .map_err(|e| in_flight(e, tx_id))
     }
 
     fn request(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
@@ -228,9 +299,12 @@ impl Client {
                     self.send(&json!({ "_tag": "Ack", "requestId": id }))?;
                 }
                 Frame::Defect(defect) => {
-                    return Err(CoreError::new("INTERNAL", "the server reported a protocol defect")
-                        .with_details(json!({ "defect": defect, "tag": tag }))
-                        .with_fix("report this as a bug in finisherd"));
+                    return Err(CoreError::new(
+                        "INTERNAL",
+                        "the server reported a protocol defect",
+                    )
+                    .with_details(json!({ "defect": defect, "tag": tag }))
+                    .with_fix("report this as a bug in finisherd"));
                 }
                 Frame::Exit { .. } | Frame::Chunk { .. } | Frame::Pong => {}
             }
@@ -243,9 +317,15 @@ mod tests {
     use super::*;
 
     fn fixture(name: &str) -> Vec<Frame> {
-        let path = format!("{}/tests/fixtures/rpc/{name}.response.ndjson", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/tests/fixtures/rpc/{name}.response.ndjson",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let text = std::fs::read_to_string(&path).unwrap();
-        text.lines().filter(|l| !l.trim().is_empty()).map(|l| parse_frame(l).unwrap()).collect()
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| parse_frame(l).unwrap())
+            .collect()
     }
 
     fn only_exit(name: &str) -> Result<Value, CoreError> {
@@ -262,9 +342,18 @@ mod tests {
     fn success_fixtures_decode_to_their_values() {
         let hello = only_exit("hello").unwrap();
         assert_eq!(hello["protocolVersion"], 1);
-        assert!(hello["capabilities"].as_array().unwrap().contains(&json!("tx.commit")));
-        assert_eq!(only_exit("project-create").unwrap()["projectId"], "01fixtureproject0000000000");
-        let committed: fin_core::CommittedTx = serde_json::from_value(only_exit("tx-commit").unwrap()).unwrap();
+        assert!(
+            hello["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("tx.commit"))
+        );
+        assert_eq!(
+            only_exit("project-create").unwrap()["projectId"],
+            "01fixtureproject0000000000"
+        );
+        let committed: fin_core::CommittedTx =
+            serde_json::from_value(only_exit("tx-commit").unwrap()).unwrap();
         assert_eq!(committed.rev, 1);
         assert_eq!(committed.bindings["$a"], "a1");
     }
@@ -287,7 +376,12 @@ mod tests {
         let revs: Vec<u64> = frames
             .iter()
             .filter_map(|f| match f {
-                Frame::Chunk { values, .. } => Some(values.iter().map(|v| v["rev"].as_u64().unwrap()).collect::<Vec<_>>()),
+                Frame::Chunk { values, .. } => Some(
+                    values
+                        .iter()
+                        .map(|v| v["rev"].as_u64().unwrap())
+                        .collect::<Vec<_>>(),
+                ),
                 _ => None,
             })
             .flatten()
@@ -302,16 +396,32 @@ mod tests {
 
     #[test]
     fn odd_frames_are_typed_errors_not_panics() {
-        for line in ["", "{", "[]", r#"{"_tag":"Nope"}"#, r#"{"_tag":"Exit"}"#, r#"{"_tag":"Chunk","requestId":"1"}"#] {
-            assert_eq!(parse_frame(line).unwrap_err().code, "PROTOCOL_ERROR", "{line}");
+        for line in [
+            "",
+            "{",
+            "[]",
+            r#"{"_tag":"Nope"}"#,
+            r#"{"_tag":"Exit"}"#,
+            r#"{"_tag":"Chunk","requestId":"1"}"#,
+        ] {
+            assert_eq!(
+                parse_frame(line).unwrap_err().code,
+                "PROTOCOL_ERROR",
+                "{line}"
+            );
         }
         let die = r#"{"_tag":"Exit","requestId":2,"exit":{"_tag":"Failure","cause":[{"_tag":"Interrupt"},{"_tag":"Die","defect":"x"}]}}"#;
         match parse_frame(die).unwrap() {
-            Frame::Exit { request_id, result: Err(e) } => assert_eq!((request_id.as_str(), e.code.as_str()), ("2", "INTERNAL")),
+            Frame::Exit {
+                request_id,
+                result: Err(e),
+            } => assert_eq!((request_id.as_str(), e.code.as_str()), ("2", "INTERNAL")),
             other => panic!("{other:?}"),
         }
         let bare = r#"{"_tag":"Exit","requestId":"1","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"message":"m"}}]}}"#;
-        assert!(matches!(parse_frame(bare).unwrap(), Frame::Exit { result: Err(e), .. } if e.code == "INTERNAL"));
+        assert!(
+            matches!(parse_frame(bare).unwrap(), Frame::Exit { result: Err(e), .. } if e.code == "INTERNAL")
+        );
     }
 
     /// Runs on Unix (socket files) and Windows (named pipes, which have no OS I/O timeouts).
@@ -323,7 +433,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = |name: &str| {
             if cfg!(windows) {
-                Endpoint::Pipe(format!(r"\\.\pipe\fin-client-test-{}-{name}", std::process::id()))
+                Endpoint::Pipe(format!(
+                    r"\\.\pipe\fin-client-test-{}-{name}",
+                    std::process::id()
+                ))
             } else {
                 Endpoint::Socket(dir.path().join(format!("{name}.sock")))
             }
@@ -333,7 +446,10 @@ mod tests {
                 Endpoint::Socket(p) => p.as_path().to_fs_name::<GenericFilePath>(),
                 Endpoint::Pipe(p) => p.as_str().to_fs_name::<GenericFilePath>(),
             };
-            ListenerOptions::new().name(name.unwrap()).create_sync().unwrap()
+            ListenerOptions::new()
+                .name(name.unwrap())
+                .create_sync()
+                .unwrap()
         };
 
         let silent = endpoint("silent");
@@ -345,7 +461,10 @@ mod tests {
         assert_eq!(hello.code, "SERVER_TIMEOUT");
         assert!(hello.details.get("txId").is_none());
         let commit = client.commit(json!({}), "tx-9").unwrap_err();
-        assert_eq!((commit.code.as_str(), &commit.details["txId"]), ("SERVER_TIMEOUT", &json!("tx-9")));
+        assert_eq!(
+            (commit.code.as_str(), &commit.details["txId"]),
+            ("SERVER_TIMEOUT", &json!("tx-9"))
+        );
         assert!(commit.fix.unwrap().contains("retry with `--idem-key tx-9`"));
         drop(server_side);
         // The server reads the request, writes half a frame and goes away: unavailable, not a
@@ -356,15 +475,30 @@ mod tests {
             let stream = listener.accept().unwrap();
             let mut reader = BufReader::new(stream);
             reader.read_line(&mut String::new()).unwrap();
-            reader.get_mut().write_all(br#"{"_tag":"Exit","requestId":"1""#).unwrap();
+            reader
+                .get_mut()
+                .write_all(br#"{"_tag":"Exit","requestId":"1""#)
+                .unwrap();
             reader.get_mut().flush().unwrap();
         });
         let mut client = Client::connect(&half, Duration::from_secs(5)).unwrap();
         let cut = client.commit(json!({}), "tx-10").unwrap_err();
         server.join().unwrap();
-        assert_eq!((cut.code.as_str(), &cut.details["txId"]), ("SERVER_UNAVAILABLE", &json!("tx-10")));
-        assert_eq!(cut.details["reason"], "the server closed the connection mid-frame");
+        assert_eq!(
+            (cut.code.as_str(), &cut.details["txId"]),
+            ("SERVER_UNAVAILABLE", &json!("tx-10"))
+        );
+        assert_eq!(
+            cut.details["reason"],
+            "the server closed the connection mid-frame"
+        );
         let gone = endpoint("none");
-        assert_eq!(Client::connect(&gone, Duration::from_millis(200)).err().unwrap().code, "SERVER_UNAVAILABLE");
+        assert_eq!(
+            Client::connect(&gone, Duration::from_millis(200))
+                .err()
+                .unwrap()
+                .code,
+            "SERVER_UNAVAILABLE"
+        );
     }
 }

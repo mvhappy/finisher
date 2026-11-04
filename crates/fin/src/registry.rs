@@ -23,7 +23,11 @@ impl Command {
     /// `fin clip insert --track <t> ...`
     pub fn usage(&self) -> String {
         let words = self.name.replace('.', " ");
-        if self.args.is_empty() { format!("fin {words}") } else { format!("fin {words} {}", self.args) }
+        if self.args.is_empty() {
+            format!("fin {words}")
+        } else {
+            format!("fin {words} {}", self.args)
+        }
     }
 }
 

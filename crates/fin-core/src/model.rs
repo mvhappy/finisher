@@ -89,7 +89,11 @@ pub struct AudioInfo {
 /// Fails with `INVALID_RANGE` when `rate` is not positive.
 pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, CoreError> {
     frame_duration(rate)?;
-    let track = |id: &str, kind| Track { id: id.to_string(), kind, items: Vec::new() };
+    let track = |id: &str, kind| Track {
+        id: id.to_string(),
+        kind,
+        items: Vec::new(),
+    };
     Ok(Project {
         id,
         name,

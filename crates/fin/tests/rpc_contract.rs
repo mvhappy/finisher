@@ -17,7 +17,12 @@ const FIXTURE_PROJECT: &str = "01fixtureproject0000000000";
 
 fn fixture(name: &str) -> Vec<String> {
     let path = format!("{}/tests/fixtures/rpc/{name}", env!("CARGO_MANIFEST_DIR"));
-    std::fs::read_to_string(&path).unwrap().lines().filter(|l| !l.trim().is_empty()).map(str::to_string).collect()
+    std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `_tag` and `code` values are kept; every other leaf becomes its JSON type.
@@ -51,12 +56,21 @@ struct Conn {
 
 impl Conn {
     fn open(server: &Server, subst: &[(String, String)]) -> Conn {
-        let name = server.socket.as_str().to_fs_name::<GenericFilePath>().unwrap();
+        let name = server
+            .socket
+            .as_str()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap();
         let stream = Stream::connect(name).unwrap();
         // Synchronous Windows named pipes have no I/O timeouts (fin's client uses a worker).
         #[cfg(unix)]
-        stream.set_recv_timeout(Some(Duration::from_secs(30))).unwrap();
-        Conn { io: BufReader::new(stream), subst: subst.to_vec() }
+        stream
+            .set_recv_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        Conn {
+            io: BufReader::new(stream),
+            subst: subst.to_vec(),
+        }
     }
 
     fn send_line(&mut self, line: &str) {
@@ -75,7 +89,10 @@ impl Conn {
 
     fn frame(&mut self) -> Value {
         let mut line = String::new();
-        assert!(self.io.read_line(&mut line).unwrap() > 0, "server closed the connection");
+        assert!(
+            self.io.read_line(&mut line).unwrap() > 0,
+            "server closed the connection"
+        );
         serde_json::from_str(&line).unwrap()
     }
 
@@ -109,7 +126,9 @@ fn tx(id: &str, base: u64, ops: Value) -> Value {
 
 #[test]
 fn captured_frames_replay_against_a_live_server() {
-    let Some(server) = Server::start("captured_frames_replay_against_a_live_server") else { return };
+    let Some(server) = Server::start("captured_frames_replay_against_a_live_server") else {
+        return;
+    };
     // Substituted inside JSON string literals: escape it (Windows paths have backslashes).
     let tmp = serde_json::to_string(&server.root.display().to_string()).unwrap();
     let mut subst = vec![("/fixture".to_string(), tmp[1..tmp.len() - 1].to_string())];
@@ -118,19 +137,33 @@ fn captured_frames_replay_against_a_live_server() {
     assert_eq!(hello["exit"]["value"]["protocolVersion"], 1, "{hello}");
     Conn::open(&server, &subst).replay("ping");
     let created = Conn::open(&server, &subst).replay("project-create");
-    let project_id = created["exit"]["value"]["projectId"].as_str().unwrap().to_string();
+    let project_id = created["exit"]["value"]["projectId"]
+        .as_str()
+        .unwrap()
+        .to_string();
     subst.push((FIXTURE_PROJECT.to_string(), project_id.clone()));
     let committed = Conn::open(&server, &subst).replay("tx-commit");
-    assert_eq!(committed["exit"]["value"]["bindings"], json!({ "$a": "a1" }));
+    assert_eq!(
+        committed["exit"]["value"]["bindings"],
+        json!({ "$a": "a1" })
+    );
 
     // The capture script's setup between scenarios: insert c1, then delete it (revs 2 and 3).
     let mut setup = Conn::open(&server, &subst);
     let insert = json!({ "op": "clip.insert", "id": "$c", "track": "t1", "at": "0", "asset": "a1", "sourceIn": "0", "duration": "5" });
     commit(&mut setup, "1", &project_id, tx("tx-2", 1, json!([insert])));
-    commit(&mut setup, "2", &project_id, tx("tx-3", 2, json!([{ "op": "clip.delete", "clip": "c1" }])));
+    commit(
+        &mut setup,
+        "2",
+        &project_id,
+        tx("tx-3", 2, json!([{ "op": "clip.delete", "clip": "c1" }])),
+    );
 
     let conflict = Conn::open(&server, &subst).replay("conflict");
-    assert_eq!(conflict["exit"]["cause"][0]["error"]["details"]["againstTx"], "tx-3");
+    assert_eq!(
+        conflict["exit"]["cause"][0]["error"]["details"]["againstTx"],
+        "tx-3"
+    );
 
     replay_subscribe(&server, &subst, &project_id);
     Conn::open(&server, &subst).replay("subscribe-error");
@@ -140,15 +173,32 @@ fn captured_frames_replay_against_a_live_server() {
 /// replay follows the protocol (ack every chunk, commit rev 4 live, then interrupt) and compares
 /// each frame kind's shape with the captured ones.
 fn replay_subscribe(server: &Server, subst: &[(String, String)], project_id: &str) {
-    let requests: Vec<Value> = fixture("ops-subscribe.request.ndjson").iter().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let expected: Vec<Value> = fixture("ops-subscribe.response.ndjson").iter().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let tags: Vec<&str> = requests.iter().map(|r| r["_tag"].as_str().unwrap()).collect();
+    let requests: Vec<Value> = fixture("ops-subscribe.request.ndjson")
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let expected: Vec<Value> = fixture("ops-subscribe.response.ndjson")
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let tags: Vec<&str> = requests
+        .iter()
+        .map(|r| r["_tag"].as_str().unwrap())
+        .collect();
     assert_eq!(tags, ["Request", "Ack", "Ack", "Ack", "Interrupt"]);
-    let envelope = |chunk: &Value| shape(&json!({ "_tag": chunk["_tag"], "requestId": chunk["requestId"], "values": [] }));
+    let envelope = |chunk: &Value| {
+        shape(&json!({ "_tag": chunk["_tag"], "requestId": chunk["requestId"], "values": [] }))
+    };
     let by_rev: Vec<(u64, Value)> = expected
         .iter()
         .filter(|f| f["_tag"] == "Chunk")
-        .flat_map(|f| f["values"].as_array().unwrap().iter().map(|v| (v["rev"].as_u64().unwrap(), shape(v))))
+        .flat_map(|f| {
+            f["values"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| (v["rev"].as_u64().unwrap(), shape(v)))
+        })
         .collect();
     let exit_shape = shape(expected.last().unwrap());
 
@@ -164,7 +214,11 @@ fn replay_subscribe(server: &Server, subst: &[(String, String)], project_id: &st
         assert_eq!(envelope(&frame), envelope(&expected[0]), "{frame}");
         for v in frame["values"].as_array().unwrap() {
             let rev = v["rev"].as_u64().unwrap();
-            let want = &by_rev.iter().find(|(r, _)| *r == rev).unwrap_or_else(|| panic!("unexpected rev {rev}")).1;
+            let want = &by_rev
+                .iter()
+                .find(|(r, _)| *r == rev)
+                .unwrap_or_else(|| panic!("unexpected rev {rev}"))
+                .1;
             assert_eq!(&shape(v), want, "rev {rev}: {v}");
             revs.push(rev);
         }

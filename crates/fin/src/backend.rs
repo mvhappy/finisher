@@ -62,8 +62,13 @@ pub struct Offline {
 impl Offline {
     pub fn load(path: &Path) -> Result<Offline, CoreError> {
         let bad = |why: String| {
-            internal(format!("cannot use {SNAPSHOT_ENV}: {why}"), json!({ "path": path.display().to_string() }))
-                .with_fix(format!("point {SNAPSHOT_ENV} at a JSON file holding {{ \"rev\": N, \"project\": {{...}} }}"))
+            internal(
+                format!("cannot use {SNAPSHOT_ENV}: {why}"),
+                json!({ "path": path.display().to_string() }),
+            )
+            .with_fix(format!(
+                "point {SNAPSHOT_ENV} at a JSON file holding {{ \"rev\": N, \"project\": {{...}} }}"
+            ))
         };
         let text = std::fs::read_to_string(path).map_err(|e| bad(e.to_string()))?;
         let snapshot = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
@@ -88,7 +93,12 @@ impl Backend for Offline {
         Err(offline_only("probe"))
     }
 
-    fn create_project(&self, _dir: &Path, _name: &str, _rate: Rational) -> Result<Value, CoreError> {
+    fn create_project(
+        &self,
+        _dir: &Path,
+        _name: &str,
+        _rate: Rational,
+    ) -> Result<Value, CoreError> {
         Err(offline_only("project.create"))
     }
 
@@ -102,15 +112,25 @@ impl Backend for Offline {
 }
 
 fn no_project() -> CoreError {
-    let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
-    CoreError::new("PROJECT_NOT_FOUND", format!("no {PROJECT_FILE} in the working directory or any parent"))
-        .with_details(json!({ "cwd": cwd }))
-        .with_fix("run `fin project create <dir> --name <s>` to make a project, or pass --project <dir>")
+    let cwd = std::env::current_dir()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    CoreError::new(
+        "PROJECT_NOT_FOUND",
+        format!("no {PROJECT_FILE} in the working directory or any parent"),
+    )
+    .with_details(json!({ "cwd": cwd }))
+    .with_fix(
+        "run `fin project create <dir> --name <s>` to make a project, or pass --project <dir>",
+    )
 }
 
 fn unexpected(tag: &str, e: impl std::fmt::Display, value: &Value) -> CoreError {
-    internal(format!("finisherd answered {tag} with an unexpected shape: {e}"), json!({ "tag": tag, "value": value }))
-        .with_fix("use fin and finisherd from the same Finisher release")
+    internal(
+        format!("finisherd answered {tag} with an unexpected shape: {e}"),
+        json!({ "tag": tag, "value": value }),
+    )
+    .with_fix("use fin and finisherd from the same Finisher release")
 }
 
 /// Test hook: `FIN_TEST_COMMIT_GATE=<file>` makes `commit` create `<file>.ready.<pid>` and wait
@@ -119,11 +139,15 @@ pub const COMMIT_GATE_ENV: &str = "FIN_TEST_COMMIT_GATE";
 
 fn commit_gate(gate: &Path) -> Result<(), CoreError> {
     let ready = format!("{}.ready.{}", gate.display(), std::process::id());
-    std::fs::write(&ready, b"").map_err(|e| internal(format!("{COMMIT_GATE_ENV}: {e}"), json!({ "path": ready })))?;
+    std::fs::write(&ready, b"")
+        .map_err(|e| internal(format!("{COMMIT_GATE_ENV}: {e}"), json!({ "path": ready })))?;
     let deadline = std::time::Instant::now() + crate::client::TIMEOUT;
     while !gate.exists() {
         if std::time::Instant::now() > deadline {
-            return Err(internal(format!("{COMMIT_GATE_ENV} never opened"), json!({ "path": gate.display().to_string() })));
+            return Err(internal(
+                format!("{COMMIT_GATE_ENV} never opened"),
+                json!({ "path": gate.display().to_string() }),
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -141,14 +165,24 @@ pub struct Online {
 
 impl Online {
     pub fn new(project: Option<PathBuf>) -> Online {
-        Online { project, client: RefCell::new(None), project_id: OnceCell::new() }
+        Online {
+            project,
+            client: RefCell::new(None),
+            project_id: OnceCell::new(),
+        }
     }
 
-    fn with_client<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, CoreError>) -> Result<T, CoreError> {
+    fn with_client<T>(
+        &self,
+        f: impl FnOnce(&mut Client) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
         let mut slot = self.client.borrow_mut();
         let client = match &mut *slot {
             Some(c) => c,
-            None => slot.insert(Client::connect(&endpoint::resolve()?, crate::client::TIMEOUT)?),
+            None => slot.insert(Client::connect(
+                &endpoint::resolve()?,
+                crate::client::TIMEOUT,
+            )?),
         };
         f(client)
     }
@@ -190,7 +224,10 @@ struct ProbeResult {
 impl Backend for Online {
     fn snapshot(&self) -> Result<Snapshot, CoreError> {
         let project_id = self.project_id()?;
-        self.call_as("snapshot.get", json!({ "projectId": project_id, "branch": "main" }))
+        self.call_as(
+            "snapshot.get",
+            json!({ "projectId": project_id, "branch": "main" }),
+        )
     }
 
     fn commit(&self, tx: &Tx) -> Result<CommittedTx, CoreError> {
@@ -205,16 +242,27 @@ impl Backend for Online {
 
     fn probe(&self, path: &Path) -> Result<Probed, CoreError> {
         let Some(text) = path.to_str() else {
-            return Err(CoreError::new("ASSET_UNREADABLE", "media path is not valid UTF-8")
-                .with_details(json!({ "path": path.to_string_lossy() }))
-                .with_fix("rename the file to a UTF-8 name"));
+            return Err(
+                CoreError::new("ASSET_UNREADABLE", "media path is not valid UTF-8")
+                    .with_details(json!({ "path": path.to_string_lossy() }))
+                    .with_fix("rename the file to a UTF-8 name"),
+            );
         };
         let p: ProbeResult = self.call_as("asset.probe", json!({ "path": text }))?;
-        Ok(Probed { path: text.to_string(), duration: p.duration, video: p.video, audio: p.audio, fingerprint: p.fingerprint })
+        Ok(Probed {
+            path: text.to_string(),
+            duration: p.duration,
+            video: p.video,
+            audio: p.audio,
+            fingerprint: p.fingerprint,
+        })
     }
 
     fn create_project(&self, dir: &Path, name: &str, rate: Rational) -> Result<Value, CoreError> {
-        self.call("project.create", json!({ "dir": dir, "name": name, "rate": rate }))
+        self.call(
+            "project.create",
+            json!({ "dir": dir, "name": name, "rate": rate }),
+        )
     }
 
     fn open_project(&self, dir: &Path) -> Result<Value, CoreError> {
@@ -229,7 +277,9 @@ pub fn project_dir(explicit: Option<&Path>) -> Option<PathBuf> {
         return Some(paths::resolve(dir));
     }
     let cwd = std::env::current_dir().ok()?;
-    cwd.ancestors().find(|d| d.join(PROJECT_FILE).is_file()).map(Path::to_path_buf)
+    cwd.ancestors()
+        .find(|d| d.join(PROJECT_FILE).is_file())
+        .map(Path::to_path_buf)
 }
 
 /// The snapshot hook when set, otherwise the server.

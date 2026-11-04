@@ -28,9 +28,12 @@ fn gcd(mut a: i128, mut b: i128) -> i128 {
 }
 
 fn invalid_time(input: &str, why: &str) -> CoreError {
-    CoreError::new("INVALID_TIME", format!("cannot parse time {input:?}: {why}"))
-        .with_details(json!({ "input": input }))
-        .with_fix("use 12.4s, 00:12.4, 01:00:12.4, f300 or a rational like 62/5")
+    CoreError::new(
+        "INVALID_TIME",
+        format!("cannot parse time {input:?}: {why}"),
+    )
+    .with_details(json!({ "input": input }))
+    .with_fix("use 12.4s, 00:12.4, 01:00:12.4, f300 or a rational like 62/5")
 }
 
 fn overflow() -> CoreError {
@@ -88,7 +91,12 @@ impl Rational {
     }
 
     pub fn checked_add(self, rhs: Rational) -> Result<Rational, CoreError> {
-        let (a, b, c, d) = (self.num as i128, self.den as i128, rhs.num as i128, rhs.den as i128);
+        let (a, b, c, d) = (
+            self.num as i128,
+            self.den as i128,
+            rhs.num as i128,
+            rhs.den as i128,
+        );
         Self::from_i128(a * d + c * b, b * d)
     }
 
@@ -136,7 +144,11 @@ impl Ord for Rational {
 
 impl fmt::Display for Rational {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.den == 1 { write!(f, "{}", self.num) } else { write!(f, "{}/{}", self.num, self.den) }
+        if self.den == 1 {
+            write!(f, "{}", self.num)
+        } else {
+            write!(f, "{}/{}", self.num, self.den)
+        }
     }
 }
 
@@ -195,9 +207,11 @@ impl JsonSchema for Rational {
 /// One frame at `rate` frames per second (`1/rate`). Rejects a rate <= 0 with `INVALID_RANGE`.
 pub fn frame_duration(rate: Rational) -> Result<Rational, CoreError> {
     if !rate.is_positive() {
-        return Err(CoreError::new("INVALID_RANGE", "frame rate must be positive")
-            .with_details(json!({ "rate": rate.to_string() }))
-            .with_fix("use a rate greater than zero, e.g. 30 or 30000/1001"));
+        return Err(
+            CoreError::new("INVALID_RANGE", "frame rate must be positive")
+                .with_details(json!({ "rate": rate.to_string() }))
+                .with_fix("use a rate greater than zero, e.g. 30 or 30000/1001"),
+        );
     }
     Rational::from_i128(rate.den as i128, rate.num as i128)
 }
@@ -224,7 +238,13 @@ pub fn parse_time(input: &str, rate: Rational) -> Result<Rational, CoreError> {
         return parse_clock(input).ok_or_else(|| bad("expected MM:SS[.f] or HH:MM:SS[.f]"))?;
     }
     if input.contains('/') || all_digits(input.strip_prefix('-').unwrap_or(input)) {
-        return input.parse().map_err(|e: CoreError| if e.code == "INVALID_TIME" { bad("invalid rational") } else { e });
+        return input.parse().map_err(|e: CoreError| {
+            if e.code == "INVALID_TIME" {
+                bad("invalid rational")
+            } else {
+                e
+            }
+        });
     }
     Err(bad("a bare number needs a unit (s) or a rational form"))
 }
@@ -264,7 +284,9 @@ fn parse_clock(s: &str) -> Option<Result<Rational, CoreError>> {
     }
     let mut total: i128 = 0;
     for p in head {
-        total = total.checked_mul(60)?.checked_add(p.parse::<i128>().ok()?)?;
+        total = total
+            .checked_mul(60)?
+            .checked_add(p.parse::<i128>().ok()?)?;
     }
     let sec = match parse_decimal(secs)? {
         Ok(r) => r,

@@ -19,14 +19,21 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
 }
 
 /// A temp dir with symlinks resolved (macOS `/var` is `/private/var`), so it compares equal to
 /// what the child sees as its working directory.
 pub fn real_tempdir() -> (TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let real = if cfg!(windows) { dir.path().to_path_buf() } else { dir.path().canonicalize().unwrap() };
+    let real = if cfg!(windows) {
+        dir.path().to_path_buf()
+    } else {
+        dir.path().canonicalize().unwrap()
+    };
     (dir, real)
 }
 
@@ -35,15 +42,26 @@ fn why_unavailable(root: &Path) -> Option<String> {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         _ => return Some("`node` is not on PATH (source .superpowers/env.sh)".into()),
     };
-    let major: u32 = version.trim_start_matches('v').split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0);
+    let major: u32 = version
+        .trim_start_matches('v')
+        .split('.')
+        .next()
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(0);
     if major < 26 {
-        return Some(format!("finisherd needs Node 26+, found {version} (source .superpowers/env.sh)"));
+        return Some(format!(
+            "finisherd needs Node 26+, found {version} (source .superpowers/env.sh)"
+        ));
     }
     if !root.join("apps/finisherd/node_modules").is_dir() {
         return Some("apps/finisherd/node_modules is missing (run `pnpm install`)".into());
     }
     let binary = std::fs::read_dir(root.join("packages/fin-node"))
-        .map(|entries| entries.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".node")))
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".node"))
+        })
         .unwrap_or(false);
     if !binary {
         return Some("no fin-node binary (run `pnpm --filter @finisher/fin-node build`)".into());
@@ -63,12 +81,16 @@ fn env_on(name: &str) -> bool {
 /// The body of each test binary's `server_tests_ran_or_explicitly_skipped`: passes when the
 /// server tests can run, or when `FIN_SKIP_SERVER_TESTS=1` asks to skip them.
 pub fn server_tests_ran_or_explicitly_skipped() {
-    let Some(reason) = why_unavailable(&repo_root()) else { return };
+    let Some(reason) = why_unavailable(&repo_root()) else {
+        return;
+    };
     if env_on(SKIP_ENV) && !env_on(REQUIRE_ENV) {
         eprintln!("SKIPPED fin server tests ({SKIP_ENV}=1): {reason}");
         return;
     }
-    panic!("fin's server tests cannot run: {reason}. Fix that, or set {SKIP_ENV}=1 to skip them on purpose");
+    panic!(
+        "fin's server tests cannot run: {reason}. Fix that, or set {SKIP_ENV}=1 to skip them on purpose"
+    );
 }
 
 /// A running finisherd with its own server-data directory.
@@ -103,7 +125,13 @@ impl Server {
             .stderr(log)
             .spawn()
             .expect("spawn finisherd");
-        let mut server = Server { child: Some(child), _tmp: tmp, root, sd, socket: String::new() };
+        let mut server = Server {
+            child: Some(child),
+            _tmp: tmp,
+            root,
+            sd,
+            socket: String::new(),
+        };
         let info = server.sd.join("finisherd.json");
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
@@ -116,7 +144,11 @@ impl Server {
             if let Some(status) = server.child.as_mut().unwrap().try_wait().unwrap() {
                 panic!("finisherd exited with {status}: {}", server.log());
             }
-            assert!(Instant::now() < deadline, "finisherd did not start: {}", server.log());
+            assert!(
+                Instant::now() < deadline,
+                "finisherd did not start: {}",
+                server.log()
+            );
             std::thread::sleep(Duration::from_millis(25));
         }
     }
@@ -165,13 +197,25 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
 pub fn finish(args: &[&str], out: Output) -> Run {
     let stdout = String::from_utf8(out.stdout).unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert_eq!(stdout.lines().count(), 1, "exactly one JSON document for {args:?}: {stdout}");
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "exactly one JSON document for {args:?}: {stdout}"
+    );
     let json = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{args:?}: {e}: {stdout}"));
     let code = out.status.code().unwrap();
     if code == 0 {
-        assert!(stderr.is_empty(), "stderr on success for {args:?}: {stderr}");
+        assert!(
+            stderr.is_empty(),
+            "stderr on success for {args:?}: {stderr}"
+        );
     }
-    Run { code, json, stdout, stderr }
+    Run {
+        code,
+        json,
+        stdout,
+        stderr,
+    }
 }
 
 pub fn fin_env(sd: &Path, cwd: &Path, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
@@ -195,7 +239,13 @@ pub fn ok(run: Run) -> Value {
 pub fn assert_error(run: &Run, code: i32, error: &str) {
     assert_eq!(run.code, code, "{}", run.stdout);
     assert_eq!(run.json["error"]["code"], error, "{}", run.stdout);
-    assert!(run.json["error"]["fix"].as_str().is_some_and(|f| !f.is_empty()), "no fix: {}", run.stdout);
+    assert!(
+        run.json["error"]["fix"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty()),
+        "no fix: {}",
+        run.stdout
+    );
 }
 
 /// Writes a small MP4 (H.264 video + AAC audio) the server can probe.
@@ -203,5 +253,11 @@ pub fn media(path: &Path, seconds: u32) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    fin_probe::fixtures::write_fixture_mp4(path, fin_probe::fixtures::FixtureOpts { seconds, ..Default::default() });
+    fin_probe::fixtures::write_fixture_mp4(
+        path,
+        fin_probe::fixtures::FixtureOpts {
+            seconds,
+            ..Default::default()
+        },
+    );
 }

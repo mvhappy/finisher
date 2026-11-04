@@ -7,7 +7,9 @@ use serde_json::json;
 fn not_found(kind: &str, id: &str, alternatives: Vec<String>) -> CoreError {
     CoreError::new("NOT_FOUND", format!("{kind} {id} does not exist"))
         .with_details(json!({ "id": id, "kind": kind, "alternatives": alternatives }))
-        .with_fix(format!("use the id of an existing {kind}; `fin view` lists them"))
+        .with_fix(format!(
+            "use the id of an existing {kind}; `fin view` lists them"
+        ))
 }
 
 /// Tags a time error with the flag it came from.
@@ -30,18 +32,30 @@ pub fn delta(project: &Project, field: &str, input: &str) -> Result<Rational, Co
         (Some(rest), _) => (false, rest),
         (_, Some(rest)) => (true, rest),
         _ => {
-            return Err(CoreError::new("INVALID_TIME", format!("trim delta {input:?} needs a sign"))
-                .with_details(json!({ "input": input, "field": field }))
-                .with_fix(format!("write +{input} to move the edge later or -{input} to move it earlier")));
+            return Err(CoreError::new(
+                "INVALID_TIME",
+                format!("trim delta {input:?} needs a sign"),
+            )
+            .with_details(json!({ "input": input, "field": field }))
+            .with_fix(format!(
+                "write +{input} to move the edge later or -{input} to move it earlier"
+            )));
         }
     };
     let magnitude = parse_time(body, project.rate).map_err(|e| for_field(e, field))?;
     if magnitude < Rational::zero() {
-        return Err(CoreError::new("INVALID_TIME", format!("trim delta {input:?} has two signs"))
-            .with_details(json!({ "input": input, "field": field }))
-            .with_fix("use a single sign, e.g. +0.5s or -1s"));
+        return Err(CoreError::new(
+            "INVALID_TIME",
+            format!("trim delta {input:?} has two signs"),
+        )
+        .with_details(json!({ "input": input, "field": field }))
+        .with_fix("use a single sign, e.g. +0.5s or -1s"));
     }
-    if negative { magnitude.checked_neg() } else { Ok(magnitude) }
+    if negative {
+        magnitude.checked_neg()
+    } else {
+        Ok(magnitude)
+    }
 }
 
 fn clip_end(clip: &Clip) -> Result<Rational, CoreError> {
@@ -49,11 +63,21 @@ fn clip_end(clip: &Clip) -> Result<Rational, CoreError> {
 }
 
 fn clip_ids(project: &Project) -> Vec<String> {
-    project.timeline.tracks.iter().flat_map(|t| t.items.iter().map(|c| c.id.clone())).collect()
+    project
+        .timeline
+        .tracks
+        .iter()
+        .flat_map(|t| t.items.iter().map(|c| c.id.clone()))
+        .collect()
 }
 
 pub fn track_ids(project: &Project) -> Vec<String> {
-    project.timeline.tracks.iter().map(|t| t.id.clone()).collect()
+    project
+        .timeline
+        .tracks
+        .iter()
+        .map(|t| t.id.clone())
+        .collect()
 }
 
 /// The end of the last clip on `track` (0 when empty).
@@ -64,16 +88,28 @@ pub fn track_end(project: &Project, track: &str) -> Result<Rational, CoreError> 
         .iter()
         .find(|t| t.id == track)
         .ok_or_else(|| not_found("track", track, track_ids(project)))?;
-    t.items.iter().try_fold(Rational::zero(), |acc, c| Ok(acc.max(clip_end(c)?)))
+    t.items
+        .iter()
+        .try_fold(Rational::zero(), |acc, c| Ok(acc.max(clip_end(c)?)))
 }
 
 /// An insert position on `track`: `end`, `after:<clip>`, or an absolute time.
-pub fn position(project: &Project, track: &str, field: &str, input: &str) -> Result<Rational, CoreError> {
+pub fn position(
+    project: &Project,
+    track: &str,
+    field: &str,
+    input: &str,
+) -> Result<Rational, CoreError> {
     if input == "end" {
         return track_end(project, track);
     }
     if let Some(id) = input.strip_prefix("after:") {
-        let clip = project.timeline.tracks.iter().flat_map(|t| t.items.iter()).find(|c| c.id == id);
+        let clip = project
+            .timeline
+            .tracks
+            .iter()
+            .flat_map(|t| t.items.iter())
+            .find(|c| c.id == id);
         return match clip {
             Some(c) => clip_end(c),
             None => Err(for_field(not_found("clip", id, clip_ids(project)), field)),
@@ -83,20 +119,33 @@ pub fn position(project: &Project, track: &str, field: &str, input: &str) -> Res
 }
 
 /// `a..b`, `a..` or `..b`; both ends absolute times. Rejects `a >= b`.
-pub fn range(project: &Project, input: &str) -> Result<(Option<Rational>, Option<Rational>), CoreError> {
+pub fn range(
+    project: &Project,
+    input: &str,
+) -> Result<(Option<Rational>, Option<Rational>), CoreError> {
     let Some((a, b)) = input.split_once("..") else {
-        return Err(CoreError::new("INVALID_RANGE", format!("range {input:?} is not a..b"))
-            .with_details(json!({ "input": input, "field": "range" }))
-            .with_fix("write the range as 2s..5s, 2s.. or ..5s"));
+        return Err(
+            CoreError::new("INVALID_RANGE", format!("range {input:?} is not a..b"))
+                .with_details(json!({ "input": input, "field": "range" }))
+                .with_fix("write the range as 2s..5s, 2s.. or ..5s"),
+        );
     };
-    let end = |s: &str| if s.is_empty() { Ok(None) } else { time(project, "range", s).map(Some) };
+    let end = |s: &str| {
+        if s.is_empty() {
+            Ok(None)
+        } else {
+            time(project, "range", s).map(Some)
+        }
+    };
     let (from, to) = (end(a)?, end(b)?);
     if let (Some(f), Some(t)) = (from, to)
         && f >= t
     {
-        return Err(CoreError::new("INVALID_RANGE", format!("range {input:?} is empty"))
-            .with_details(json!({ "input": input, "from": f, "to": t }))
-            .with_fix("make the start of the range earlier than its end"));
+        return Err(
+            CoreError::new("INVALID_RANGE", format!("range {input:?} is empty"))
+                .with_details(json!({ "input": input, "from": f, "to": t }))
+                .with_fix("make the start of the range earlier than its end"),
+        );
     }
     Ok((from, to))
 }
@@ -114,7 +163,14 @@ mod tests {
         let mut p = new_project("p1".into(), "Demo".into(), r("30")).unwrap();
         p.assets.insert(
             "a1".into(),
-            Asset { id: "a1".into(), path: "/m.mp4".into(), duration: r("60"), video: None, audio: None, fingerprint: "x".into() },
+            Asset {
+                id: "a1".into(),
+                path: "/m.mp4".into(),
+                duration: r("60"),
+                video: None,
+                audio: None,
+                fingerprint: "x".into(),
+            },
         );
         let clip = |id: &str, start: &str, dur: &str| Clip {
             id: id.into(),
@@ -150,8 +206,14 @@ mod tests {
         assert_eq!(position(&p, "t1", "at", "end").unwrap(), r("25/2"));
         assert_eq!(position(&p, "t2", "at", "end").unwrap(), r("0"));
         assert_eq!(position(&p, "t1", "at", "after:c1").unwrap(), r("10"));
-        assert_eq!(position(&p, "t1", "at", "after:c9").unwrap_err().code, "NOT_FOUND");
-        assert_eq!(position(&p, "t9", "at", "end").unwrap_err().code, "NOT_FOUND");
+        assert_eq!(
+            position(&p, "t1", "at", "after:c9").unwrap_err().code,
+            "NOT_FOUND"
+        );
+        assert_eq!(
+            position(&p, "t9", "at", "end").unwrap_err().code,
+            "NOT_FOUND"
+        );
     }
 
     #[test]

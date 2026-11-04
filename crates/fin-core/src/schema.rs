@@ -4,8 +4,8 @@ use schemars::{SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
 use crate::error::CoreError;
-use crate::tx::{Applied, CommittedTx, Diff, Op, Tx};
 use crate::model::Project;
+use crate::tx::{Applied, CommittedTx, Diff, Op, Tx};
 
 /// The document: `$defs` holds `Project`, `Tx`, `Op`, `Diff`, `CoreError`, `CommittedTx`
 /// (plus everything they reference). Output is deterministic (sorted keys, no timestamps).

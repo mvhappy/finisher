@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 use crate::registry::{COMMANDS, groups};
 
 pub fn map() -> Value {
-    let commands: Vec<String> = COMMANDS.iter().map(|c| format!("{}  # {}", c.usage(), c.summary)).collect();
+    let commands: Vec<String> = COMMANDS
+        .iter()
+        .map(|c| format!("{}  # {}", c.usage(), c.summary))
+        .collect();
     json!({
         "fin": "agent-only Finisher CLI; stdout is one JSON document, stderr is logs",
         "groups": groups(),

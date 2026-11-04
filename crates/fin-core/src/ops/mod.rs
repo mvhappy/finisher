@@ -114,7 +114,10 @@ impl Op {
 
     /// Internal ops are produced as inverses and never accepted from clients.
     pub fn is_internal(&self) -> bool {
-        matches!(self, Op::AssetRemove { .. } | Op::ClipRemove { .. } | Op::ClipRestore { .. })
+        matches!(
+            self,
+            Op::AssetRemove { .. } | Op::ClipRemove { .. } | Op::ClipRestore { .. }
+        )
     }
 
     /// Clip ops record exactly one `Shift` when applied; asset ops record none.
@@ -127,8 +130,12 @@ impl Op {
         let r = |s: &String| bindings.get(s).cloned().unwrap_or_else(|| s.clone());
         let mut op = self.clone();
         match &mut op {
-            Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => *id = r(id),
-            Op::ClipInsert { id, track, asset, .. } => {
+            Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => {
+                *id = r(id)
+            }
+            Op::ClipInsert {
+                id, track, asset, ..
+            } => {
                 *id = r(id);
                 *track = r(track);
                 *asset = r(asset);
@@ -152,7 +159,10 @@ pub(crate) struct Bindings {
 
 impl Bindings {
     pub(crate) fn new(internal: bool) -> Self {
-        Bindings { map: BTreeMap::new(), internal }
+        Bindings {
+            map: BTreeMap::new(),
+            internal,
+        }
     }
 
     /// A reference: `$name` resolves through the bindings, anything else is a literal id.
@@ -161,35 +171,55 @@ impl Bindings {
             return Ok(reference.to_string());
         }
         self.map.get(reference).cloned().ok_or_else(|| {
-            CoreError::new("UNBOUND_PLACEHOLDER", format!("placeholder {reference} is not bound by an earlier op"))
-                .with_details(json!({ "placeholder": reference }))
-                .with_fix("create the entity earlier in the same transaction, or use an existing id")
+            CoreError::new(
+                "UNBOUND_PLACEHOLDER",
+                format!("placeholder {reference} is not bound by an earlier op"),
+            )
+            .with_details(json!({ "placeholder": reference }))
+            .with_fix("create the entity earlier in the same transaction, or use an existing id")
         })
     }
 
     /// Checks that `id` can name a new entity without allocating anything.
-    pub(crate) fn check_new(&self, project: &Project, id: &str, kind: IdKind) -> Result<(), CoreError> {
+    pub(crate) fn check_new(
+        &self,
+        project: &Project,
+        id: &str,
+        kind: IdKind,
+    ) -> Result<(), CoreError> {
         if let Some(name) = id.strip_prefix('$') {
             if name.is_empty() {
-                return Err(CoreError::new("INVALID_OP", "placeholder needs a name after `$`")
-                    .with_details(json!({ "id": id }))
-                    .with_fix("use a placeholder like $clip1"));
+                return Err(
+                    CoreError::new("INVALID_OP", "placeholder needs a name after `$`")
+                        .with_details(json!({ "id": id }))
+                        .with_fix("use a placeholder like $clip1"),
+                );
             }
             if self.map.contains_key(id) {
-                return Err(CoreError::new("DUPLICATE_PLACEHOLDER", format!("placeholder {id} is bound twice"))
-                    .with_details(json!({ "placeholder": id }))
-                    .with_fix("give every new entity in the transaction its own placeholder"));
+                return Err(CoreError::new(
+                    "DUPLICATE_PLACEHOLDER",
+                    format!("placeholder {id} is bound twice"),
+                )
+                .with_details(json!({ "placeholder": id }))
+                .with_fix("give every new entity in the transaction its own placeholder"));
             }
             return Ok(());
         }
         if !self.internal {
-            return Err(CoreError::new("INVALID_OP", "new entities are named with `$name` placeholders")
-                .with_details(json!({ "id": id }))
-                .with_fix(format!("use a placeholder such as ${id}; the server allocates the id")));
+            return Err(CoreError::new(
+                "INVALID_OP",
+                "new entities are named with `$name` placeholders",
+            )
+            .with_details(json!({ "id": id }))
+            .with_fix(format!(
+                "use a placeholder such as ${id}; the server allocates the id"
+            )));
         }
         if util::exists(project, kind, id) {
-            return Err(CoreError::new("DUPLICATE_ID", format!("id {id} already exists"))
-                .with_details(json!({ "id": id })));
+            return Err(
+                CoreError::new("DUPLICATE_ID", format!("id {id} already exists"))
+                    .with_details(json!({ "id": id })),
+            );
         }
         Ok(())
     }
@@ -209,8 +239,11 @@ impl Bindings {
         }
         let new = ids.next(kind);
         if util::exists(project, kind, &new) {
-            return Err(CoreError::new("DUPLICATE_ID", format!("allocated id {new} already exists"))
-                .with_details(json!({ "id": new })));
+            return Err(CoreError::new(
+                "DUPLICATE_ID",
+                format!("allocated id {new} already exists"),
+            )
+            .with_details(json!({ "id": new })));
         }
         self.map.insert(id.to_string(), new.clone());
         Ok(new)

@@ -12,7 +12,11 @@ fn entry(c: &crate::registry::Command) -> Value {
 
 /// The commands of a group (or a single command by name), with usage and input schema.
 pub fn help(topic: &str) -> Result<Value, CoreError> {
-    let commands: Vec<Value> = COMMANDS.iter().filter(|c| c.group == topic).map(entry).collect();
+    let commands: Vec<Value> = COMMANDS
+        .iter()
+        .filter(|c| c.group == topic)
+        .map(entry)
+        .collect();
     if !commands.is_empty() {
         return Ok(json!({ "group": topic, "commands": commands }));
     }
@@ -32,7 +36,11 @@ pub fn schema(words: &[String]) -> Result<Value, CoreError> {
     match find(&name) {
         Some(c) => Ok((c.schema)()),
         None => Err(usage(
-            if name.is_empty() { "schema needs a command name".to_string() } else { format!("unknown command {name:?}") },
+            if name.is_empty() {
+                "schema needs a command name".to_string()
+            } else {
+                format!("unknown command {name:?}")
+            },
             json!({ "command": name, "alternatives": names() }),
             "run `fin schema <cmd>` with one of the listed commands, e.g. clip.insert",
         )),

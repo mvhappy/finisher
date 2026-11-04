@@ -2,5 +2,8 @@
 
 fn main() {
     let schema = fin_core::json_schema();
-    println!("{}", serde_json::to_string_pretty(&schema).expect("schema serializes"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&schema).expect("schema serializes")
+    );
 }

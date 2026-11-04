@@ -36,7 +36,12 @@ pub struct InsertArgs {
     #[serde(rename = "in", default)]
     pub source_in: Option<String>,
     /// Clip length.
-    #[arg(long, value_name = "time", required_unless_present = "out", conflicts_with = "out")]
+    #[arg(
+        long,
+        value_name = "time",
+        required_unless_present = "out",
+        conflicts_with = "out"
+    )]
     #[serde(default)]
     pub dur: Option<String>,
     /// Asset time where the clip ends; length = out - in.
@@ -54,7 +59,13 @@ pub struct TrimArgs {
     #[arg(value_name = "cN")]
     pub clip: String,
     /// Signed delta for the start edge: "+0.5s" trims in, "-1s" extends.
-    #[arg(long, value_name = "±time", allow_hyphen_values = true, required_unless_present = "end", conflicts_with = "end")]
+    #[arg(
+        long,
+        value_name = "±time",
+        allow_hyphen_values = true,
+        required_unless_present = "end",
+        conflicts_with = "end"
+    )]
     #[serde(default)]
     pub start: Option<String>,
     /// Signed delta for the end edge: "+1s" extends, "-0.5s" trims in.
@@ -73,7 +84,11 @@ pub struct DeleteArgs {
 }
 
 /// Exactly one of two optional flags.
-fn one_of<'v>(cmd: &str, a: (&str, &'v Option<String>), b: (&str, &'v Option<String>)) -> Result<(bool, &'v str), CoreError> {
+fn one_of<'v>(
+    cmd: &str,
+    a: (&str, &'v Option<String>),
+    b: (&str, &'v Option<String>),
+) -> Result<(bool, &'v str), CoreError> {
     match (a.1, b.1) {
         (Some(v), None) => Ok((true, v)),
         (None, Some(v)) => Ok((false, v)),
@@ -85,7 +100,11 @@ fn one_of<'v>(cmd: &str, a: (&str, &'v Option<String>), b: (&str, &'v Option<Str
     }
 }
 
-pub fn plan_insert(b: &mut Builder<'_>, a: &InsertArgs, placeholder: &str) -> Result<Value, CoreError> {
+pub fn plan_insert(
+    b: &mut Builder<'_>,
+    a: &InsertArgs,
+    placeholder: &str,
+) -> Result<Value, CoreError> {
     let (by_dur, length) = one_of("clip.insert", ("dur", &a.dur), ("out", &a.out))?;
     let p = &b.work;
     let track = b.id(&a.track);
@@ -125,13 +144,23 @@ pub fn plan_insert(b: &mut Builder<'_>, a: &InsertArgs, placeholder: &str) -> Re
 
 pub fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> {
     let (is_start, input) = one_of("clip.trim", ("start", &a.start), ("end", &a.end))?;
-    let (edge, field) = if is_start { (Edge::Start, "start") } else { (Edge::End, "end") };
+    let (edge, field) = if is_start {
+        (Edge::Start, "start")
+    } else {
+        (Edge::End, "end")
+    };
     let delta = addr::delta(&b.work, field, input)?;
-    b.push(Op::ClipTrim { clip: a.clip.clone(), edge, delta })?;
+    b.push(Op::ClipTrim {
+        clip: a.clip.clone(),
+        edge,
+        delta,
+    })?;
     Ok(json!({ "clip": a.clip, "edge": edge, "delta": delta }))
 }
 
 pub fn plan_delete(b: &mut Builder<'_>, a: &DeleteArgs) -> Result<Value, CoreError> {
-    b.push(Op::ClipDelete { clip: a.clip.clone() })?;
+    b.push(Op::ClipDelete {
+        clip: a.clip.clone(),
+    })?;
     Ok(json!({ "clip": a.clip }))
 }

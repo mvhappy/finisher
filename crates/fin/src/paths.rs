@@ -44,17 +44,29 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(resolve_str("~bob/x"), cwd.join("~bob/x"));
         assert_eq!(resolve_str("x/~/y"), cwd.join("x/~/y"));
-        assert_eq!(resolve_str("відео/кліп 1.mp4"), cwd.join("відео/кліп 1.mp4"));
+        assert_eq!(
+            resolve_str("відео/кліп 1.mp4"),
+            cwd.join("відео/кліп 1.mp4")
+        );
     }
 
     #[test]
     fn absolute_paths_are_kept() {
         #[cfg(unix)]
-        assert_eq!(resolve_str("/media/../a.mp4"), PathBuf::from("/media/../a.mp4"));
+        assert_eq!(
+            resolve_str("/media/../a.mp4"),
+            PathBuf::from("/media/../a.mp4")
+        );
         #[cfg(windows)]
         {
-            assert_eq!(resolve_str(r"C:\media\a.mp4"), PathBuf::from(r"C:\media\a.mp4"));
-            assert_eq!(resolve_str(r"\\nas\share\a.mp4"), PathBuf::from(r"\\nas\share\a.mp4"));
+            assert_eq!(
+                resolve_str(r"C:\media\a.mp4"),
+                PathBuf::from(r"C:\media\a.mp4")
+            );
+            assert_eq!(
+                resolve_str(r"\\nas\share\a.mp4"),
+                PathBuf::from(r"\\nas\share\a.mp4")
+            );
         }
     }
 }

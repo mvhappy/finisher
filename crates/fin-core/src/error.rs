@@ -18,7 +18,12 @@ pub struct CoreError {
 
 impl CoreError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        CoreError { code: code.to_string(), message: message.into(), details: json!({}), fix: None }
+        CoreError {
+            code: code.to_string(),
+            message: message.into(),
+            details: json!({}),
+            fix: None,
+        }
     }
 
     pub fn with_details(mut self, details: Value) -> Self {

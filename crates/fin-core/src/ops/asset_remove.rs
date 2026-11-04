@@ -10,8 +10,14 @@ use crate::ops::{Bindings, Op};
 use crate::rebase::Conflict;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
-pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Result<String, CoreError> {
-    let Op::AssetRemove { id } = op else { return Err(wrong_op(op)) };
+pub(crate) fn validate(
+    project: &Project,
+    op: &Op,
+    bindings: &Bindings,
+) -> Result<String, CoreError> {
+    let Op::AssetRemove { id } = op else {
+        return Err(wrong_op(op));
+    };
     let id = bindings.resolve(id)?;
     asset(project, &id)?;
     let users: Vec<&str> = project
@@ -23,9 +29,11 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
         .map(|c| c.id.as_str())
         .collect();
     if !users.is_empty() {
-        return Err(CoreError::new("ASSET_IN_USE", format!("asset {id} is used by clips"))
-            .with_details(json!({ "id": id, "clips": users }))
-            .with_fix("delete the clips that use the asset first"));
+        return Err(
+            CoreError::new("ASSET_IN_USE", format!("asset {id} is used by clips"))
+                .with_details(json!({ "id": id, "clips": users }))
+                .with_fix("delete the clips that use the asset first"),
+        );
     }
     Ok(id)
 }
@@ -38,7 +46,9 @@ pub(crate) fn apply(
     diff: &mut Diff,
 ) -> Result<Vec<Op>, CoreError> {
     let id = validate(project, op, bindings)?;
-    let Some(a) = project.assets.remove(&id) else { return Err(crate::ops::util::not_found("asset", &id)) };
+    let Some(a) = project.assets.remove(&id) else {
+        return Err(crate::ops::util::not_found("asset", &id));
+    };
     record(diff, EntityKind::Asset, &id, ChangeKind::Removed);
     Ok(vec![Op::AssetAdd {
         id: a.id,
@@ -52,7 +62,9 @@ pub(crate) fn apply(
 
 /// Conflicts when the committed op placed a clip using the asset.
 pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
-    let Op::AssetRemove { id } = op else { return Ok(op.clone()) };
+    let Op::AssetRemove { id } = op else {
+        return Ok(op.clone());
+    };
     let used = match over {
         Op::ClipInsert { asset, .. } => asset == id,
         Op::ClipRestore { clip, .. } => &clip.asset == id,
