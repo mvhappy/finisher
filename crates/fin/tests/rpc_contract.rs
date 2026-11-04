@@ -111,7 +111,8 @@ fn captured_frames_replay_against_a_live_server() {
     let tmp = server.root.display().to_string();
     let mut subst = vec![("/fixture".to_string(), tmp)];
 
-    Conn::open(&server, &subst).replay("hello");
+    let hello = Conn::open(&server, &subst).replay("hello");
+    assert_eq!(hello["exit"]["value"]["protocolVersion"], 1, "{hello}");
     Conn::open(&server, &subst).replay("ping");
     let created = Conn::open(&server, &subst).replay("project-create");
     let project_id = created["exit"]["value"]["projectId"].as_str().unwrap().to_string();
@@ -179,4 +180,9 @@ fn replay_subscribe(server: &Server, subst: &[(String, String)], project_id: &st
     };
     assert_eq!(revs, [2, 3, 4]);
     assert_eq!(shape(&exit), exit_shape, "{exit}");
+}
+
+#[test]
+fn server_tests_ran_or_explicitly_skipped() {
+    support::server_tests_ran_or_explicitly_skipped();
 }

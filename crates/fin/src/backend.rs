@@ -144,13 +144,17 @@ impl Online {
         Online { project, client: RefCell::new(None), project_id: OnceCell::new() }
     }
 
-    fn call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+    fn with_client<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, CoreError>) -> Result<T, CoreError> {
         let mut slot = self.client.borrow_mut();
         let client = match &mut *slot {
             Some(c) => c,
             None => slot.insert(Client::connect(&endpoint::resolve()?, crate::client::TIMEOUT)?),
         };
-        client.call(tag, payload)
+        f(client)
+    }
+
+    fn call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+        self.with_client(|c| c.call(tag, payload))
     }
 
     fn call_as<T: DeserializeOwned>(&self, tag: &str, payload: Value) -> Result<T, CoreError> {
@@ -194,7 +198,9 @@ impl Backend for Online {
         if let Some(gate) = std::env::var_os(COMMIT_GATE_ENV).filter(|g| !g.is_empty()) {
             commit_gate(Path::new(&gate))?;
         }
-        self.call_as("tx.commit", json!({ "projectId": project_id, "tx": tx }))
+        let payload = json!({ "projectId": project_id, "tx": tx });
+        let value = self.with_client(|c| c.commit(payload, &tx.tx_id))?;
+        serde_json::from_value(value.clone()).map_err(|e| unexpected("tx.commit", e, &value))
     }
 
     fn probe(&self, path: &Path) -> Result<Probed, CoreError> {

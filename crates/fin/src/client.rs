@@ -133,6 +133,23 @@ fn timeout_error(endpoint: &Endpoint, what: &str, timeout: Duration) -> CoreErro
         .with_fix("check that finisherd is responsive; retry writes with the same --idem-key")
 }
 
+/// Codes for which a sent commit may or may not have landed.
+const IN_FLIGHT_CODES: &[&str] = &["SERVER_TIMEOUT", "SERVER_UNAVAILABLE", "PROTOCOL_ERROR"];
+
+fn in_flight(mut e: CoreError, tx_id: &str) -> CoreError {
+    if !IN_FLIGHT_CODES.contains(&e.code.as_str()) {
+        return e;
+    }
+    match e.details.as_object_mut() {
+        Some(map) => {
+            map.insert("txId".to_string(), json!(tx_id));
+        }
+        None => e.details = json!({ "txId": tx_id, "detail": e.details }),
+    }
+    e.fix = Some(format!("the commit may have landed; retry with `--idem-key {tx_id}` (after starting finisherd if it is down)"));
+    e
+}
+
 /// A connection to `finisherd`. One request at a time.
 pub struct Client {
     endpoint: Endpoint,
@@ -179,8 +196,9 @@ impl Client {
         loop {
             line.clear();
             let n = self.conn.read_line(&mut line).map_err(|e| self.io_error("answer", &e))?;
-            if n == 0 {
-                return Err(unavailable(json!({ "endpoint": self.endpoint.display(), "reason": "the server closed the connection" })));
+            if n == 0 || !line.ends_with('\n') {
+                let reason = if n == 0 { "the server closed the connection" } else { "the server closed the connection mid-frame" };
+                return Err(unavailable(json!({ "endpoint": self.endpoint.display(), "reason": reason })));
             }
             if !line.trim().is_empty() {
                 return parse_frame(line.trim_end());
@@ -191,6 +209,17 @@ impl Client {
     /// Sends one unary request and waits for its `Exit`. Stream chunks for it are acknowledged
     /// and dropped; frames for other requests are ignored.
     pub fn call(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+        self.request(tag, payload)
+    }
+
+    /// `tx.commit`. Once the request may have reached the server, a transport failure
+    /// (timeout, lost connection, garbled answer) leaves the commit's fate unknown: the error
+    /// then carries `details.txId` and tells the agent to retry with that idempotency key.
+    pub fn commit(&mut self, payload: Value, tx_id: &str) -> Result<Value, CoreError> {
+        self.request("tx.commit", payload).map_err(|e| in_flight(e, tx_id))
+    }
+
+    fn request(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
         let id = self.next_id.to_string();
         self.next_id += 1;
         self.send(&request_frame(&id, tag, &payload))?;
@@ -295,8 +324,30 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
         let mut client = Client::connect(&Endpoint::Socket(path.clone()), Duration::from_millis(200)).unwrap();
-        let _server_side = held.join().unwrap().unwrap();
-        assert_eq!(client.call("server.hello", json!({})).unwrap_err().code, "SERVER_TIMEOUT");
+        let server_side = held.join().unwrap().unwrap();
+        let hello = client.call("server.hello", json!({})).unwrap_err();
+        assert_eq!(hello.code, "SERVER_TIMEOUT");
+        assert!(hello.details.get("txId").is_none());
+        let commit = client.commit(json!({}), "tx-9").unwrap_err();
+        assert_eq!((commit.code.as_str(), &commit.details["txId"]), ("SERVER_TIMEOUT", &json!("tx-9")));
+        assert!(commit.fix.unwrap().contains("retry with `--idem-key tx-9`"));
+        drop(server_side);
+        // The server reads the request, writes half a frame and goes away: unavailable, not a
+        // protocol error, and the commit's fate is unknown.
+        let half = dir.path().join("half.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&half).unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            reader.read_line(&mut String::new()).unwrap();
+            reader.get_mut().write_all(br#"{"_tag":"Exit","requestId":"1""#).unwrap();
+        });
+        let mut client = Client::connect(&Endpoint::Socket(half), Duration::from_secs(5)).unwrap();
+        let cut = client.commit(json!({}), "tx-10").unwrap_err();
+        server.join().unwrap();
+        assert_eq!((cut.code.as_str(), &cut.details["txId"]), ("SERVER_UNAVAILABLE", &json!("tx-10")));
+        assert_eq!(cut.details["reason"], "the server closed the connection mid-frame");
         let gone = Endpoint::Socket(dir.path().join("none.sock"));
         assert_eq!(Client::connect(&gone, Duration::from_millis(200)).err().unwrap().code, "SERVER_UNAVAILABLE");
     }

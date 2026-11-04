@@ -159,6 +159,28 @@ fn same_idem_key_twice_gives_identical_output_and_one_rev() {
 }
 
 #[test]
+fn same_idem_key_delete_twice_replays_the_commit() {
+    let Some((server, dir)) = project("same_idem_key_delete_twice_replays_the_commit") else { return };
+    let run = |args: &[&str]| fin(&server.sd, &dir, args);
+    ok(run(&["asset", "add", "clip.mp4"]));
+    ok(run(&["clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "2s"]));
+    let args = ["clip", "delete", "c1", "--idem-key", "delete-1"];
+    let first = run(&args);
+    let again = run(&args);
+    assert_eq!(first.code, 0, "{}", first.stdout);
+    assert_eq!(again.code, 0, "{}", again.stdout);
+    assert_eq!(first.stdout, again.stdout);
+    assert_eq!(ok(run(&["status"]))["rev"], 3);
+    // A new key for a delete that really is invalid: the local error, nothing committed.
+    let fresh = run(&["clip", "delete", "c1", "--idem-key", "delete-2"]);
+    assert_error(&fresh, 3, "NOT_FOUND");
+    assert_eq!(fresh.json["error"]["details"]["opIndex"], 0);
+    // Without a key, local validation still answers.
+    assert_error(&run(&["clip", "delete", "c1"]), 3, "NOT_FOUND");
+    assert_eq!(ok(run(&["status"]))["rev"], 3);
+}
+
+#[test]
 fn concurrent_inserts_on_one_snapshot_both_commit_rebased() {
     let Some((server, dir)) = project("concurrent_inserts_on_one_snapshot_both_commit_rebased") else { return };
     ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
@@ -194,4 +216,9 @@ fn concurrent_inserts_on_one_snapshot_both_commit_rebased() {
     let later = docs[1]["bindings"]["$clip"].as_str().unwrap();
     let landed = clips.iter().find(|c| c["id"] == later).unwrap();
     assert_eq!(docs[1]["resolved"]["at"], landed["start"]);
+}
+
+#[test]
+fn server_tests_ran_or_explicitly_skipped() {
+    support::server_tests_ran_or_explicitly_skipped();
 }

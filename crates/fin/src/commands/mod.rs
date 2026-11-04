@@ -51,7 +51,15 @@ pub struct Builder<'a> {
     ids: MemIds,
     bound: BTreeMap<String, String>,
     ops: Vec<Op>,
+    /// `--idem-key` on a real commit: an op that fails local validation is still sent, because
+    /// it may be a retry of a tx that already committed (the server then returns that commit).
+    lenient: bool,
+    /// The first local validation error a lenient build let through.
+    deferred: Option<CoreError>,
 }
+
+/// Transport failures, where the server's answer is unknown and so says nothing about the tx.
+const TRANSPORT_CODES: &[&str] = &["SERVER_TIMEOUT", "SERVER_UNAVAILABLE", "PROTOCOL_ERROR"];
 
 fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
     if let Some(map) = e.details.as_object_mut() {
@@ -61,10 +69,20 @@ fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
 }
 
 impl<'a> Builder<'a> {
-    pub fn new(backend: &'a dyn Backend) -> Result<Builder<'a>, CoreError> {
+    pub fn new(backend: &'a dyn Backend, globals: &Globals) -> Result<Builder<'a>, CoreError> {
         let base = backend.snapshot()?;
         let ids = MemIds::after(&base.project);
-        Ok(Builder { backend, work: base.project.clone(), base, ids, bound: BTreeMap::new(), ops: Vec::new() })
+        let lenient = globals.idem_key.is_some() && !globals.dry_run && !backend.dry_run_only();
+        Ok(Builder {
+            backend,
+            work: base.project.clone(),
+            base,
+            ids,
+            bound: BTreeMap::new(),
+            ops: Vec::new(),
+            lenient,
+            deferred: None,
+        })
     }
 
     /// The id a reference names in the working copy: placeholders bound by earlier steps map to
@@ -85,8 +103,18 @@ impl<'a> Builder<'a> {
             _ => {}
         }
         let tx = self.tx(vec![local]);
-        let applied = apply_tx(&self.work, &tx, &mut self.ids)
-            .map_err(|e| with_detail(e, "opIndex", json!(self.ops.len())))?;
+        let applied = match apply_tx(&self.work, &tx, &mut self.ids) {
+            Ok(applied) => applied,
+            Err(e) => {
+                let e = with_detail(e, "opIndex", json!(self.ops.len()));
+                if !self.lenient {
+                    return Err(e);
+                }
+                self.deferred.get_or_insert(e);
+                self.ops.push(op);
+                return Ok(());
+            }
+        };
         self.bound.extend(applied.bindings);
         self.work = applied.project;
         self.ops.push(op);
@@ -125,7 +153,13 @@ impl<'a> Builder<'a> {
                 "resolved": resolved,
             }));
         }
-        let committed = self.backend.commit(&tx)?;
+        let committed = match (self.backend.commit(&tx), self.deferred) {
+            (Ok(committed), _) => committed,
+            (Err(e), _) if TRANSPORT_CODES.contains(&e.code.as_str()) => return Err(e),
+            // Not a retry after all: report the local error, which names the failing input.
+            (Err(_), Some(local)) => return Err(local),
+            (Err(e), None) => return Err(e),
+        };
         let mut resolved = resolved;
         echo_committed(&mut resolved, &committed.tx.ops);
         Ok(json!({
@@ -182,7 +216,7 @@ pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value
 
 /// Runs one write command.
 pub fn write(backend: &dyn Backend, globals: &Globals, step: Write) -> Result<Value, CoreError> {
-    let mut b = Builder::new(backend)?;
+    let mut b = Builder::new(backend, globals)?;
     let resolved = plan(&mut b, &step, None)?;
     b.finish(globals, resolved)
 }
@@ -228,7 +262,7 @@ pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Va
     if steps.is_empty() {
         return Err(usage("batch received no commands", json!({}), "pipe JSONL to stdin: {\"cmd\":\"clip.delete\",\"args\":{\"clip\":\"c1\"}}"));
     }
-    let mut b = Builder::new(backend)?;
+    let mut b = Builder::new(backend, globals)?;
     let mut resolved = Vec::with_capacity(steps.len());
     for (n, cmd, step) in &steps {
         let r = plan(&mut b, step, Some(*n)).map_err(|e| with_detail(e, "line", json!(n)))?;

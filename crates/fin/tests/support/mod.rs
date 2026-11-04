@@ -1,9 +1,12 @@
 //! A real `finisherd` for `fin`'s online tests, and a `fin` runner.
 //!
 //! `Server::start()` spawns `node apps/finisherd/src/main.ts --server-data <tmp>` and waits for
-//! `finisherd.json`. It returns `None` (after printing why) when Node 26+, `pnpm install` or the
-//! fin-node binary is missing, so `cargo test` still passes on machines without the JS side.
-//! The server is killed when the guard drops, including when a test panics.
+//! `finisherd.json`. When Node 26+, `pnpm install` or the fin-node binary is missing it returns
+//! `None` (after printing why) — but never silently: each test binary also has
+//! `server_tests_ran_or_explicitly_skipped`, which fails in that case unless
+//! `FIN_SKIP_SERVER_TESTS=1` says the skip is intended. With `FIN_REQUIRE_SERVER=1` (CI) every
+//! server test panics instead of skipping. The server is killed when the guard drops,
+//! including when a test panics.
 
 #![allow(dead_code)]
 
@@ -48,6 +51,26 @@ fn why_unavailable(root: &Path) -> Option<String> {
     None
 }
 
+/// Set (to `1`) in CI: a missing Node or fin-node binary fails every server test.
+pub const REQUIRE_ENV: &str = "FIN_REQUIRE_SERVER";
+/// Set (to `1`) to skip the server tests on purpose on a machine without the JS side.
+pub const SKIP_ENV: &str = "FIN_SKIP_SERVER_TESTS";
+
+fn env_on(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| v == "1")
+}
+
+/// The body of each test binary's `server_tests_ran_or_explicitly_skipped`: passes when the
+/// server tests can run, or when `FIN_SKIP_SERVER_TESTS=1` asks to skip them.
+pub fn server_tests_ran_or_explicitly_skipped() {
+    let Some(reason) = why_unavailable(&repo_root()) else { return };
+    if env_on(SKIP_ENV) && !env_on(REQUIRE_ENV) {
+        eprintln!("SKIPPED fin server tests ({SKIP_ENV}=1): {reason}");
+        return;
+    }
+    panic!("fin's server tests cannot run: {reason}. Fix that, or set {SKIP_ENV}=1 to skip them on purpose");
+}
+
 /// A running finisherd with its own server-data directory.
 pub struct Server {
     child: Option<Child>,
@@ -63,6 +86,7 @@ impl Server {
     pub fn start(test: &str) -> Option<Server> {
         let repo = repo_root();
         if let Some(reason) = why_unavailable(&repo) {
+            assert!(!env_on(REQUIRE_ENV), "{test}: {REQUIRE_ENV}=1 but {reason}");
             eprintln!("SKIPPED {test}: {reason}");
             return None;
         }

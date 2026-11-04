@@ -73,12 +73,12 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
     let bad = |why: &str| unavailable(json!({ "infoFile": file.display().to_string(), "reason": why }));
     let info: Value = serde_json::from_str(text).map_err(|e| bad(&format!("not JSON: {e}")))?;
     let socket = info.get("socket").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(|| bad("no \"socket\""))?;
-    if let Some(version) = info.get("protocolVersion").and_then(Value::as_u64)
-        && version != PROTOCOL_VERSION
-    {
-        return Err(CoreError::new("PROTOCOL_MISMATCH", format!("finisherd speaks protocol {version}, fin speaks {PROTOCOL_VERSION}"))
+    let version = info.get("protocolVersion").and_then(Value::as_u64);
+    if version != Some(PROTOCOL_VERSION) {
+        let shown = version.map_or_else(|| "no protocol version".to_string(), |v| format!("protocol {v}"));
+        return Err(CoreError::new("PROTOCOL_MISMATCH", format!("finisherd speaks {shown}, fin speaks {PROTOCOL_VERSION}"))
             .with_details(json!({ "server": version, "client": PROTOCOL_VERSION, "infoFile": file.display().to_string() }))
-            .with_fix("use fin and finisherd from the same Finisher release"));
+            .with_fix("update fin or finisherd so both come from the same Finisher release"));
     }
     Ok(Endpoint::parse(socket))
 }
@@ -123,6 +123,7 @@ mod tests {
         assert_eq!(from_info(file, ok).unwrap().display(), Endpoint::parse("/sd/fin.sock").display());
         assert_eq!(from_info(file, "{").unwrap_err().code, "SERVER_UNAVAILABLE");
         assert_eq!(from_info(file, r#"{"pid":1}"#).unwrap_err().code, "SERVER_UNAVAILABLE");
+        assert_eq!(from_info(file, r#"{"socket":"/sd/fin.sock"}"#).unwrap_err().code, "PROTOCOL_MISMATCH");
         let newer = r#"{"socket":"/sd/fin.sock","protocolVersion":2}"#;
         assert_eq!(from_info(file, newer).unwrap_err().code, "PROTOCOL_MISMATCH");
     }
