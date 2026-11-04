@@ -295,9 +295,9 @@ fn check_fails_once_another_server_overwrites_record() {
         let lost = a.check().unwrap_err();
         assert!(lost.reason.contains("lease.json"), "{lost:?}");
         assert_eq!(a.check().unwrap_err(), lost, "lost stays lost");
-        // The heartbeat never writes over it.
+        // The heartbeat thread has ended, so nothing writes over it.
+        a.hooks().wait_exited();
         c.advance(s(6));
-        std::thread::sleep(ms(30));
         assert_eq!(read_record(&dir), r, "{server} {epoch}");
     }
 }
@@ -314,15 +314,12 @@ fn heartbeats_keep_the_lease_and_stop_on_drop() {
     }
     let r = read_record(&dir);
     assert_eq!(r.heartbeat, 12);
+    let hooks = a.hooks();
+    assert!(!hooks.exited());
     drop(a);
-    let before = fs::read(dir.join("lease.json")).unwrap();
+    assert!(hooks.exited(), "drop stopped and joined the thread");
     c.advance(s(10));
-    std::thread::sleep(ms(50));
-    assert_eq!(
-        fs::read(dir.join("lease.json")).unwrap(),
-        before,
-        "no heartbeat after drop"
-    );
+    assert_eq!(read_record(&dir), r, "no heartbeat after drop");
 }
 
 #[test]
@@ -332,7 +329,7 @@ fn self_fences_after_20s_without_heartbeat() {
     let a = acquire(&dir, A, local(&c));
     a.fail_heartbeats(u32::MAX);
     c.advance(s(19));
-    std::thread::sleep(ms(20));
+    eventually("failed attempts", || a.failed_heartbeats() >= 1);
     assert_eq!(a.check(), Ok(1));
     c.advance(ms(1_000));
     let lost = a.check().unwrap_err();
@@ -362,6 +359,7 @@ fn stale_needs_two_probes_5s_apart() {
     let c = FakeClock::new();
     drop(acquire(&dir, A, local(&c)));
     let mut b = contender(&dir, B, local(&c));
+    held_elsewhere(b.try_acquire()); // B starts watching
     c.advance(s(44));
     let (_, _, age) = held_elsewhere(b.try_acquire());
     assert!(
@@ -411,6 +409,8 @@ fn a_record_change_between_probes_resets_staleness() {
     eventually("a heartbeat", || a.heartbeats() == 1);
     o.advance(s(5));
     held_elsewhere(b.try_acquire()); // the record changed: start again
+    o.advance(s(20));
+    held_elsewhere(b.try_acquire()); // stale and 5 s apart, but unchanged for only 20 s
     o.advance(s(5));
     let l = b.try_acquire().unwrap();
     assert_eq!(l.epoch(), 2);
@@ -424,6 +424,7 @@ fn takeover_on_network_after_confirmed_staleness_fences_the_old_holder() {
     // A is frozen (its clock does not move, so it neither heartbeats nor self-fences).
     let a = acquire(&dir, A, params(StorageKind::Network, &h));
     let mut b = contender(&dir, B, params(StorageKind::Network, &o));
+    assert_eq!(b.takeover(false).unwrap_err().details["reason"], "HELD");
     o.advance(s(46));
     assert_eq!(
         b.takeover(false).unwrap_err().details["reason"],
@@ -435,9 +436,9 @@ fn takeover_on_network_after_confirmed_staleness_fences_the_old_holder() {
     assert_eq!(bl.check(), Ok(2));
     let lost = a.check().unwrap_err();
     assert!(lost.reason.contains("serverb"), "{lost:?}");
-    // A's heartbeat does not resurrect it.
+    // A's heartbeat has ended and does not resurrect it.
+    a.hooks().wait_exited();
     h.advance(s(5));
-    std::thread::sleep(ms(30));
     assert_eq!(read_record(&dir).server_id, B);
     assert_eq!(claims(&dir), [2], "claims below the new epoch are gone");
 }
@@ -533,6 +534,7 @@ fn old_claims_deleted_after_acquire() {
     assert_eq!(claims(&dir), [1]);
     for (id, epoch) in [(B, 2), (C, 3)] {
         let mut x = contender(&dir, id, local(&c));
+        held_elsewhere(x.try_acquire());
         c.advance(s(46));
         held_elsewhere(x.try_acquire());
         c.advance(s(5));
@@ -547,6 +549,7 @@ fn a_rival_claim_in_progress_backs_off() {
     let c = FakeClock::new();
     drop(acquire(&dir, A, local(&c)));
     let mut b = contender(&dir, B, local(&c));
+    held_elsewhere(b.try_acquire());
     c.advance(s(46));
     held_elsewhere(b.try_acquire());
     c.advance(s(5));
@@ -639,4 +642,295 @@ fn commit_refuses_without_a_held_lease() {
         (e.code.as_str(), &e.details["reason"]),
         ("PROJECT_READ_ONLY", &serde_json::json!("LEASE_LOST"))
     );
+}
+
+// ---- Review follow-up: suspend-aware fencing, claim authority, safer takeover ----
+
+use fin_store::lease::HangPoint;
+
+#[test]
+fn a_hung_beat_past_the_deadline_never_writes() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    let hooks = a.hooks();
+    hooks.hang(HangPoint::BeatBeforeWrite);
+    c.advance(s(5));
+    hooks.wait_hung(); // the beat has stamped and verified, then stalls (a slow share)
+    c.advance(s(21)); // past last heartbeat + 20 s
+    hooks.release();
+    hooks.wait_exited();
+    assert_eq!(
+        read_record(&dir).heartbeat,
+        0,
+        "the stalled beat wrote nothing"
+    );
+    assert!(a.check().is_err());
+    assert!(matches!(a.state(), LeaseState::Lost { .. }));
+}
+
+#[test]
+fn a_beat_stalled_across_drop_never_writes() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    let hooks = a.hooks();
+    hooks.hang(HangPoint::BeatBeforeWrite);
+    c.advance(s(5));
+    hooks.wait_hung();
+    let releaser = {
+        let hooks = a.hooks();
+        std::thread::spawn(move || {
+            std::thread::sleep(ms(50));
+            hooks.release();
+        })
+    };
+    drop(a);
+    releaser.join().unwrap();
+    hooks.wait_exited();
+    assert_eq!(
+        read_record(&dir).heartbeat,
+        0,
+        "a dropped lease never writes"
+    );
+}
+
+/// A Mac sleeps right after its heartbeat verified the record: on wake both clocks have
+/// moved 10 minutes, and another server has taken over. The pending write must not happen.
+#[test]
+fn a_holder_waking_from_sleep_does_not_overwrite_the_new_holder() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    let mut b = contender(&dir, B, local(&c));
+    held_elsewhere(b.try_acquire());
+    let hooks = a.hooks();
+    hooks.hang(HangPoint::BeatBeforeWrite);
+    c.advance(s(5));
+    hooks.wait_hung();
+    c.advance(s(600));
+    // B slept too (one clock): its evidence expired, so it watches for 25 s again.
+    held_elsewhere(b.try_acquire());
+    c.advance(s(25));
+    let bl = b.try_acquire().unwrap();
+    assert_eq!(bl.epoch(), 2);
+    hooks.release();
+    hooks.wait_exited();
+    let r = read_record(&dir);
+    assert_eq!((r.server_id.as_str(), r.epoch), (B, 2));
+    assert!(a.check().is_err());
+    assert!(matches!(a.state(), LeaseState::Lost { .. }));
+    assert_eq!(bl.check(), Ok(2));
+}
+
+#[test]
+fn a_newer_claim_loses_the_lease() {
+    // Seen by the fence…
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    fs::write(dir.join(claim_name(2)), C).unwrap();
+    let lost = a.check().unwrap_err();
+    assert!(lost.reason.contains("lease.claim-00000002"), "{lost:?}");
+    // …and by the heartbeat, which then stops without writing.
+    let (_t2, dir2) = folder();
+    let a2 = acquire(&dir2, A, local(&c));
+    fs::write(dir2.join(claim_name(5)), C).unwrap();
+    c.advance(s(5));
+    a2.hooks().wait_exited();
+    assert_eq!(read_record(&dir2).heartbeat, 0);
+    assert!(matches!(a2.state(), LeaseState::Lost { .. }));
+    // A claim at or below our epoch is no threat.
+    let (_t3, dir3) = folder();
+    let a3 = acquire(&dir3, A, local(&c));
+    fs::write(dir3.join(claim_name(0)), C).unwrap();
+    assert_eq!(a3.check(), Ok(1));
+}
+
+#[test]
+fn a_running_holder_is_never_taken_over_whatever_the_clocks_say() {
+    let (_t, dir) = folder();
+    let (h, o) = (FakeClock::new(), FakeClock::new());
+    let a = acquire(&dir, A, local(&h));
+    let mut b = contender(&dir, B, local(&o));
+    // The observer's server time runs 60 s ahead of the holder's stamps…
+    o.advance(s(60));
+    // …and the holder's heartbeats fail for 15 s (but it is within its 20 s).
+    a.fail_heartbeats(u32::MAX);
+    h.advance(s(15));
+    for _ in 0..4 {
+        held_elsewhere(b.try_acquire());
+        o.advance(s(5));
+    }
+    // Its next beat succeeds and changes the record before 25 s of it being unchanged.
+    a.fail_heartbeats(0);
+    h.advance(s(1));
+    eventually("a heartbeat", || a.heartbeats() == 1);
+    for _ in 0..4 {
+        held_elsewhere(b.try_acquire());
+        o.advance(s(5));
+    }
+    assert_eq!(a.check(), Ok(1));
+}
+
+#[test]
+fn stale_evidence_expires() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    drop(acquire(&dir, A, local(&c)));
+    let mut b = contender(&dir, B, local(&c));
+    held_elsewhere(b.try_acquire());
+    c.advance(s(46));
+    held_elsewhere(b.try_acquire()); // first stale probe
+    c.advance(s(100)); // no observation for more than 2 × 45 s
+    held_elsewhere(b.try_acquire()); // starts over
+    c.advance(s(5));
+    held_elsewhere(b.try_acquire()); // 5 s apart, but watched for only 5 s
+    c.advance(s(20));
+    assert_eq!(b.try_acquire().unwrap().epoch(), 2);
+}
+
+#[test]
+fn a_record_with_our_epoch_and_a_later_heartbeat_is_ours() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    // A heartbeat write that landed late (after its retry) leaves a later counter.
+    let mut r = read_record(&dir);
+    r.heartbeat = 7;
+    overwrite(&dir, &r);
+    assert_eq!(a.check(), Ok(1));
+    c.advance(s(5));
+    eventually("a heartbeat", || a.heartbeats() == 1);
+    assert_eq!(read_record(&dir).heartbeat, 8);
+}
+
+#[test]
+fn a_lost_lease_with_a_stuck_thread_does_not_block_reacquiring() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    let hooks = a.hooks();
+    hooks.hang(HangPoint::BeatBeforeWrite);
+    c.advance(s(5));
+    hooks.wait_hung();
+    c.advance(s(21));
+    assert!(a.check().is_err());
+    let again = Lease::acquire(&dir, A, "x", local(&c)).unwrap();
+    assert_eq!(again.epoch(), 2);
+    hooks.release();
+    hooks.wait_exited();
+    assert_eq!(read_record(&dir).epoch, 2);
+    assert_eq!(again.check(), Ok(2));
+}
+
+#[test]
+fn rival_claims_are_aged_only_by_a_timely_probe() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    drop(acquire(&dir, A, local(&c)));
+    // A claim above the record, written 100 s ago: an acquirer that crashed.
+    fs::write(dir.join(claim_name(5)), C).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(dir.join(claim_name(5)))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - s(100))
+        .unwrap();
+    // A slow probe cannot tell its age: assume it is fresh.
+    c.set_step(s(3));
+    held_elsewhere(Lease::acquire(&dir, A, "x", local(&c)));
+    c.set_step(Duration::ZERO);
+    assert_eq!(Lease::acquire(&dir, A, "x", local(&c)).unwrap().epoch(), 6);
+}
+
+#[test]
+fn a_failed_read_back_leaves_no_claim() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let mut b = contender(&dir, B, local(&c));
+    b.after_write_for_test(|dir| {
+        let r = LeaseRecord::new(C, 9, 0, "c", 0);
+        fin_store::fsio::write_in_place(&dir.join("lease.json"), &record::encode(&r)).unwrap();
+    });
+    held_elsewhere(b.try_acquire());
+    assert_eq!(claims(&dir), Vec::<u64>::new(), "B removed its claim");
+}
+
+#[test]
+fn a_torn_read_back_is_rewritten() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let mut b = contender(&dir, B, local(&c));
+    b.after_write_for_test(|dir| {
+        let mut bytes = fs::read(dir.join("lease.json")).unwrap();
+        bytes[30] ^= 0x01;
+        fin_store::fsio::write_in_place(&dir.join("lease.json"), &bytes).unwrap();
+    });
+    let l = b.try_acquire().unwrap();
+    assert_eq!(l.epoch(), 1);
+    assert_eq!(read_record(&dir).server_id, B);
+    assert_eq!(l.check(), Ok(1));
+}
+
+#[test]
+fn two_contenders_racing_never_both_hold() {
+    let c = FakeClock::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut held = 0;
+    for round in 0..150 {
+        let dir = tmp.path().join(format!("r{round}"));
+        fs::create_dir(&dir).unwrap();
+        // Half the rounds hide fresh claims from listings, as Windows does for up to 9.9 s.
+        if round % 2 == 1 {
+            claim::hide_young_claims(&dir, s(5));
+        }
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = [A, B]
+            .into_iter()
+            .map(|id| {
+                let (dir, barrier, c) = (dir.clone(), barrier.clone(), c.clone());
+                std::thread::spawn(move || {
+                    let mut x = contender(&dir, id, local(&c));
+                    barrier.wait();
+                    x.try_acquire().ok()
+                })
+            })
+            .collect();
+        let leases: Vec<Lease> = handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap())
+            .collect();
+        let valid: Vec<&Lease> = leases.iter().filter(|l| l.check().is_ok()).collect();
+        assert!(valid.len() <= 1, "round {round}: {leases:?}");
+        if let [l] = valid.as_slice() {
+            assert_eq!(read_record(&dir).epoch, l.epoch(), "round {round}");
+            held += 1;
+        }
+    }
+    assert!(held > 100, "a winner in most rounds: {held}");
+}
+
+#[test]
+fn commit_does_not_hold_the_database_lock_during_a_blocked_check() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (data, proj) = (tmp.path().join("data"), tmp.path().join("P"));
+    let mut store = Store::create(&data, &proj, "P", Rational::from_int(30)).unwrap();
+    let c = FakeClock::new();
+    let dir = proj.join(".finisher");
+    fs::create_dir_all(&dir).unwrap();
+    let lease = acquire(&dir, A, local(&c));
+    let hooks = lease.hooks();
+    store.set_lease_for_test(lease);
+    let db = store.db_path().to_path_buf();
+    hooks.hang(HangPoint::CheckBeforeRead);
+    let committer = std::thread::spawn(move || store.commit(tx("t1", 0)).map(|c| c.rev));
+    hooks.wait_hung();
+    // While the fence waits on the share, the database stays writable.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.busy_timeout(Duration::ZERO).unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+        .expect("no write lock held across the lease check");
+    hooks.release();
+    assert_eq!(committer.join().unwrap().unwrap(), 1);
 }

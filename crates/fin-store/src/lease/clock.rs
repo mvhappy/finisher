@@ -26,13 +26,18 @@ pub const SAMPLE_MAX_AGE: Duration = Duration::from_secs(60);
 /// …and the holder re-probes once its sample is this old (a synced host still drifted about
 /// 29 ms/h against the NAS, parent spec §27.9).
 pub const REPROBE_EVERY: Duration = Duration::from_secs(30);
+/// A probe whose mtime lands further than this below the server time extrapolated from the
+/// previous sample is rejected.
+pub const MAX_BEHIND: Duration = Duration::from_secs(1);
 
 /// The probe file's content length. The content changes every probe (a counter), so no
 /// filesystem can skip the write.
 const PROBE_LEN: usize = 32;
 
-/// A monotonic clock. [`SystemClock`] in production; tests inject a [`FakeClock`] through
-/// [`super::Params::clock`].
+/// A monotonic clock that keeps counting while the machine sleeps. [`SystemClock`] in
+/// production; tests inject a [`FakeClock`] through [`super::Params::clock`]. Every lease
+/// deadline (self-fence, heartbeat, sample age, confirm gap, unchanged time) is measured on
+/// it, so all instants a lease compares must come from the same `MonoClock`.
 pub trait MonoClock: Send + Sync + fmt::Debug {
     fn now(&self) -> Instant;
 
@@ -46,14 +51,67 @@ pub trait MonoClock: Send + Sync + fmt::Debug {
     }
 }
 
-/// `Instant::now()`.
+/// The system's monotonic clock **including time asleep**, as `Instant`s.
+///
+/// `Instant` itself stops while the machine sleeps on Linux (`CLOCK_MONOTONIC`) and macOS
+/// (`CLOCK_UPTIME_RAW`). A holder that slept 10 minutes would then wake believing its last
+/// heartbeat was a moment ago and write as holder, after another server took over. So:
+/// - Linux/Android: `clock_gettime(CLOCK_BOOTTIME)`;
+/// - macOS/iOS: `clock_gettime(CLOCK_MONOTONIC)`, which Apple documents as continuing to
+///   increment while the system is asleep (unlike `CLOCK_UPTIME_RAW`);
+/// - Windows: `QueryInterruptTimePrecise`. Interrupt time includes time in sleep and
+///   hibernation (the "unbiased" variant excludes it). `Instant` uses QPC there, whose
+///   behaviour across sleep Microsoft does not state clearly, so it is not relied on;
+/// - other Unix: `CLOCK_MONOTONIC`; elsewhere `Instant` itself.
+///
+/// The value is mapped onto `Instant` as `start + (clock now − clock at start)`, with one
+/// process-wide start, so every `SystemClock` shares one timeline.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;
 
 impl MonoClock for SystemClock {
     fn now(&self) -> Instant {
-        Instant::now()
+        static START: std::sync::OnceLock<(Instant, Option<Duration>)> = std::sync::OnceLock::new();
+        let (start, at_start) = *START.get_or_init(|| (Instant::now(), awake_or_asleep()));
+        match (at_start, awake_or_asleep()) {
+            (Some(a), Some(b)) => start + b.saturating_sub(a),
+            _ => Instant::now(),
+        }
     }
+}
+
+/// Time since an arbitrary point, counting suspend (see [`SystemClock`]).
+#[cfg(unix)]
+fn awake_or_asleep() -> Option<Duration> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let id = libc::CLOCK_BOOTTIME;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let id = libc::CLOCK_MONOTONIC;
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec for the duration of the call.
+    if unsafe { libc::clock_gettime(id, &mut ts) } != 0 {
+        return None;
+    }
+    let secs = u64::try_from(ts.tv_sec).ok()?;
+    let nanos = u32::try_from(ts.tv_nsec).ok()?;
+    Some(Duration::new(secs, nanos))
+}
+
+#[cfg(windows)]
+fn awake_or_asleep() -> Option<Duration> {
+    let mut t = 0u64;
+    // SAFETY: `t` is a valid, writable u64 for the duration of the call.
+    unsafe { windows_sys::Win32::System::WindowsProgramming::QueryInterruptTimePrecise(&mut t) };
+    // 100 ns units.
+    Some(Duration::from_nanos(t.saturating_mul(100)))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn awake_or_asleep() -> Option<Duration> {
+    None
 }
 
 /// Test clock: stands still until [`FakeClock::advance`]d. The folder's mtimes are real, but
@@ -188,12 +246,33 @@ impl ServerClock {
             rtt: end.saturating_duration_since(at),
             at,
         };
-        let advanced = self.last.is_none_or(|l| sample.server_ms > l.server_ms);
+        let advanced = self.accepts(&sample);
         if advanced {
             self.last = Some(sample);
             self.retry = false;
         }
         Ok(Probe { sample, advanced })
+    }
+
+    /// A sample is accepted when there is no usable previous one (none, or older than
+    /// [`SAMPLE_MAX_AGE`], so a NAS clock stepped backwards cannot wedge us), or when it moved
+    /// forward from the previous one **and** is not more than [`MAX_BEHIND`] (plus the previous
+    /// probe's round trip, by which its extrapolation overestimates) below the time
+    /// extrapolated from it: a stale, delayed or client-set mtime is not server time.
+    fn accepts(&self, sample: &ProbeSample) -> bool {
+        let Some(l) = self.last.filter(|l| {
+            sample
+                .at
+                .checked_duration_since(l.at)
+                .is_some_and(|d| d <= SAMPLE_MAX_AGE)
+        }) else {
+            return true;
+        };
+        let expected = l
+            .server_ms
+            .saturating_add(millis(sample.at.saturating_duration_since(l.at)));
+        let slack = millis(MAX_BEHIND + l.rtt);
+        sample.server_ms > l.server_ms && sample.server_ms >= expected.saturating_sub(slack)
     }
 
     /// Server time at `at`: the last accepted sample plus monotonic time since it started.
@@ -278,5 +357,76 @@ mod tests {
         assert!(!q.advanced);
         assert_eq!(c.last.unwrap().server_ms, p.sample.server_ms + 1_000_000);
         assert!(c.needs_probe(fake.now()), "retried at the next chance");
+    }
+
+    /// An mtime newer than the last sample but well below where server time should be by
+    /// now (a stale, delayed or client-set mtime) is not used; extrapolation continues.
+    #[test]
+    fn a_sample_far_below_the_extrapolation_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = FakeClock::new();
+        let mut c = ServerClock::new(tmp.path(), "s1", fake.clone());
+        let p = c.probe().unwrap();
+        // The last sample says server time was 10 s behind, 12 s ago: about 2 s ahead of
+        // what the file shows now.
+        let last = ProbeSample {
+            server_ms: p.sample.server_ms - 10_000,
+            rtt: Duration::ZERO,
+            at: p.sample.at - Duration::from_secs(12),
+        };
+        c.last = Some(last);
+        let q = c.probe().unwrap();
+        assert!(!q.advanced, "{q:?}");
+        assert_eq!(c.last, Some(last));
+        assert_eq!(
+            c.now_server_ms(q.sample.at),
+            Some(last.server_ms + 12_000),
+            "still extrapolated from the last good sample"
+        );
+        // Within the 1 s tolerance it is fine.
+        c.last = Some(ProbeSample {
+            at: p.sample.at - Duration::from_millis(10_500),
+            ..last
+        });
+        assert!(c.probe().unwrap().advanced);
+    }
+
+    /// The NAS clock stepped back an hour: once the old sample is past its 60 s age it no
+    /// longer blocks new ones.
+    #[test]
+    fn an_expired_sample_does_not_block_a_clock_stepped_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = FakeClock::new();
+        let mut c = ServerClock::new(tmp.path(), "s1", fake.clone());
+        let p = c.probe().unwrap();
+        c.last = Some(ProbeSample {
+            server_ms: p.sample.server_ms + 3_600_000,
+            ..p.sample
+        });
+        assert!(!c.probe().unwrap().advanced, "younger than 60 s: refused");
+        fake.advance(Duration::from_secs(61));
+        let q = c.probe().unwrap();
+        assert!(q.advanced, "{q:?}");
+        assert_eq!(c.now_server_ms(q.sample.at), Some(q.sample.server_ms));
+    }
+
+    #[test]
+    fn the_system_clock_is_monotonic_and_keeps_time() {
+        let (a, ia) = (SystemClock.now(), Instant::now());
+        std::thread::sleep(Duration::from_millis(30));
+        let (b, ib) = (SystemClock.now(), Instant::now());
+        let (d, di) = (b - a, ib - ia);
+        assert!(d >= Duration::from_millis(29), "{d:?}");
+        // Awake, it runs at the rate of `Instant`.
+        assert!(
+            d.abs_diff(di) < Duration::from_millis(20),
+            "{d:?} vs {di:?}"
+        );
+        let mut last = SystemClock.now();
+        for _ in 0..1000 {
+            let t = SystemClock.now();
+            assert!(t >= last);
+            last = t;
+        }
     }
 }

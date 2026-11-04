@@ -50,11 +50,43 @@ pub fn list(dir: &Path) -> io::Result<Vec<ClaimFile>> {
         let Some(epoch) = e.file_name().to_str().and_then(parse_claim) else {
             continue;
         };
-        let server_ms = e.metadata().and_then(|m| m.modified()).ok().map(unix_ms);
-        out.push(ClaimFile { epoch, server_ms });
+        let mtime = e.metadata().and_then(|m| m.modified()).ok();
+        #[cfg(any(test, feature = "test-hooks"))]
+        if hidden(dir, mtime) {
+            continue;
+        }
+        out.push(ClaimFile {
+            epoch,
+            server_ms: mtime.map(unix_ms),
+        });
     }
     out.sort_by_key(|c| c.epoch);
     Ok(out)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn lags()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::time::Duration>> {
+    static LAGS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::time::Duration>>,
+    > = std::sync::OnceLock::new();
+    LAGS.get_or_init(Default::default)
+}
+
+/// Test hook: listings of `dir` leave out claims younger than `lag` (real time), as the
+/// Windows SMB client does for up to 9.9 s. Creating a claim still finds the name taken.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn hide_young_claims(dir: &Path, lag: std::time::Duration) {
+    super::clock::lock(lags()).insert(dir.to_path_buf(), lag);
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn hidden(dir: &Path, mtime: Option<std::time::SystemTime>) -> bool {
+    let Some(lag) = super::clock::lock(lags()).get(dir).copied() else {
+        return false;
+    };
+    mtime.is_none_or(|t| t.elapsed().map_or(true, |age| age < lag))
 }
 
 /// What [`claim_next`] got.

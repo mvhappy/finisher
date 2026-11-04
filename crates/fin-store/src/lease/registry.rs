@@ -4,12 +4,14 @@
 //! - **Is one of our own `Lease`s still heartbeating this folder?** Then another acquisition
 //!   by the same server (a second `Store` on the same project) must see "held", not its own
 //!   record to re-take.
-//! - **Did this process write the record now in the folder, and has that lease stopped?**
-//!   Then nobody else can have written since (the record would differ) and no thread of
-//!   ours still writes it, so re-acquiring needs no wait for staleness: after `LEASE_LOST`
-//!   (self-fence, the folder vanishing and returning) or after a `Store` closed. It still
-//!   takes a fresh epoch through a claim, so a takeover by another server racing it is
-//!   decided by the claim name.
+//! - **Is the record in the folder one this process wrote (our server id and an epoch our
+//!   lease claimed), and has that lease stopped (lost or dropped)?** Then nobody else has
+//!   written since (claims make the epoch ours alone) and nothing of ours writes it any more
+//!   (every heartbeat write re-checks `lost` and `stop` first), so re-acquiring needs no
+//!   wait for staleness: after `LEASE_LOST` (self-fence, the folder vanishing and
+//!   returning) or after a `Store` closed, even while that lease's thread is still stuck in
+//!   I/O. It still takes a fresh epoch through a claim, so a takeover by another server
+//!   racing it is decided by the claim name.
 //!
 //! A record with our server id that this process did not write (a previous run, or another
 //! process using the same server data) gets no shortcut: it is judged like anyone's.
@@ -65,7 +67,7 @@ pub(super) fn wrote(key: &Key, record: &LeaseRecord) {
     }
 }
 
-/// Our lease at `epoch` no longer writes (its heartbeat thread has ended).
+/// Our lease at `epoch` no longer writes (lost, dropped, or its heartbeat thread ended).
 pub(super) fn stopped(key: &Key, epoch: u64) {
     if let Some(e) = lock(table()).get_mut(key)
         && e.epoch == epoch
@@ -77,7 +79,7 @@ pub(super) fn stopped(key: &Key, epoch: u64) {
 pub(super) enum Mine {
     /// One of our leases is heartbeating this folder.
     Live,
-    /// `record` is exactly what this process last wrote, and nothing of ours writes it now.
+    /// `record` is at the epoch this process last held, and nothing of ours writes it now.
     Leftover,
     /// Nothing known.
     Unknown,
@@ -86,7 +88,9 @@ pub(super) enum Mine {
 pub(super) fn lookup(key: &Key, record: &LeaseRecord) -> Mine {
     match lock(table()).get(key) {
         Some(e) if e.live => Mine::Live,
-        Some(e) if e.last == *record => Mine::Leftover,
+        Some(e) if e.epoch == record.epoch && e.last.server_id == record.server_id => {
+            Mine::Leftover
+        }
         _ => Mine::Unknown,
     }
 }

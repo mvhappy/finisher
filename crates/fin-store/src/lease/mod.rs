@@ -16,6 +16,9 @@
 //! |---|---|
 //! | TTL 10 s, heartbeat 5 s, stale after 45 s of server time, on every kind | spec §3.5 table |
 //! | Takeover after two stale probes ≥ 5 s apart, each with round trip ≤ TTL/4, record unchanged between them | spec §3.5 table; plan Task 9 |
+//! | …and the record unchanged for ≥ self-fence + heartbeat (25 s) by the observer's monotonic clock | review of Task 9 (spec amendment pending) |
+//! | Staleness evidence expires after 2 × stale-after without a look | review of Task 9 |
+//! | A probe is used only if it moved forward and lands ≤ 1 s (+ the previous round trip) below the extrapolated server time; a sample older than 60 s is ignored | spec §3.5 "Probe file"; review of Task 9 |
 //! | Sync folders: never automatic, only with confirmation | spec §3.5 table, "On sync folders" |
 //! | Every acquisition takes a fresh epoch through a claim | spec §3.5 "Claims and epochs" |
 //! | After acquiring, claims below the epoch are deleted | spec §3.5 "Claims and epochs" |
@@ -23,6 +26,9 @@
 //! | Unreadable or bad checksum: held when acquiring, lost when fencing | spec §3.5 "Record" |
 //! | The epoch is checked before every write and after every heartbeat | spec §3.5 "Fencing" |
 //! | Self-fence at last successful heartbeat + 2×TTL, monotonic | spec §3.5 "Fencing" |
+//! | The monotonic clock counts time asleep ([`SystemClock`]) | review of Task 9 (a sleeping Mac must wake fenced) |
+//! | A heartbeat re-checks stop, lost and the deadline right before writing, and a beat finishing past the deadline revives nothing | spec §3.5 "Fencing"; review of Task 9 |
+//! | A claim above our epoch = lost (claims are the authority on epochs) | §27.9 fenced design ("no newer epoch claim") |
 //! | Never compare the local wall clock with a server mtime | §27.9 "Clock skew" |
 //! | Lease reads are uncached, with delete sharing on Windows | §27.9 "Reads", "Windows SMB client" |
 //!
@@ -46,7 +52,10 @@ mod acquire;
 pub mod claim;
 pub mod clock;
 mod heartbeat;
+#[cfg(any(test, feature = "test-hooks"))]
+mod hooks;
 pub mod record;
+mod refusal;
 mod registry;
 
 use std::path::{Path, PathBuf};
@@ -64,6 +73,8 @@ pub use acquire::Contender;
 pub use clock::FakeClock;
 use clock::lock;
 pub use clock::{MonoClock, ServerClock, SystemClock};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use hooks::{HangPoint, LeaseHooks};
 use record::LeaseRecord;
 
 /// A heartbeat that failed is tried again this soon (monotonic).
@@ -86,6 +97,11 @@ pub struct Params {
     /// The holder self-fences this long (monotonic) after its last successful heartbeat
     /// (2×TTL).
     pub self_fence: Duration,
+    /// Staleness is confirmed only once the record has also been seen unchanged this long by
+    /// the observer's own monotonic clock (self-fence + heartbeat). A holder that is running
+    /// rewrites its record within that time or has already fenced itself, so it is never
+    /// taken over, whatever either clock says.
+    pub min_unchanged: Duration,
     /// Whether a confirmed-stale lease is taken over without asking (not on sync folders).
     pub auto_takeover: bool,
     pub clock: Arc<dyn MonoClock>,
@@ -103,6 +119,7 @@ impl Params {
             confirm_gap: Duration::from_secs(5),
             max_rtt: ttl / 4,
             self_fence: ttl * 2,
+            min_unchanged: ttl * 2 + Duration::from_secs(5),
             auto_takeover: !kind.is_sync(),
             clock: Arc::new(SystemClock),
             poll: Duration::from_millis(250),
@@ -201,14 +218,14 @@ pub(crate) struct Inner {
     wake: Condvar,
     exited: Mutex<bool>,
     exited_cv: Condvar,
+    #[cfg(any(test, feature = "test-hooks"))]
+    hang: hooks::Hang,
 }
 
 struct Io {
     clock: ServerClock,
-    /// What this lease last wrote and verified.
+    /// What this lease last wrote and verified (or adopted, see [`Inner::verify`]).
     last: LeaseRecord,
-    /// A heartbeat whose write failed: it may or may not have landed.
-    pending: Option<LeaseRecord>,
 }
 
 struct Status {
@@ -251,7 +268,6 @@ impl Lease {
             io: Mutex::new(Io {
                 clock,
                 last: record,
-                pending: None,
             }),
             status: Mutex::new(Status {
                 lost: None,
@@ -264,6 +280,8 @@ impl Lease {
             wake: Condvar::new(),
             exited: Mutex::new(false),
             exited_cv: Condvar::new(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            hang: hooks::Hang::default(),
         });
         let for_thread = inner.clone();
         let thread = std::thread::Builder::new()
@@ -298,14 +316,24 @@ impl Lease {
     /// this lease is held right now.
     ///
     /// 1. Lost before → lost.
-    /// 2. The self-fence deadline (last successful heartbeat + 2×TTL, monotonic) passed →
-    ///    lost.
+    /// 2. The self-fence deadline (last successful heartbeat + 2×TTL, monotonic, counting
+    ///    sleep) passed → lost.
     /// 3. `lease.json`, read uncached: missing, unreadable or a bad checksum → lost; a record
-    ///    other than the one this lease last wrote (another server, another epoch, another
-    ///    heartbeat) → lost.
-    /// 4. The deadline again (the read may have waited on a slow share).
+    ///    naming another server or another epoch → lost.
+    /// 4. A claim file above our epoch → lost.
+    /// 5. The deadline again (the read may have waited on a slow share).
+    ///
+    /// It does folder I/O and can wait on a heartbeat in progress: never call it under a
+    /// database lock ([`Lease::quick_check`] is the in-memory part).
     pub fn check(&self) -> Result<u64, LeaseLost> {
         self.inner.check()
+    }
+
+    /// The in-memory part of [`Lease::check`] (steps 1–2), for use under a database lock:
+    /// lost (by the heartbeat or an earlier check, including a newer claim it saw) or past
+    /// the self-fence deadline. No folder I/O, never blocks on the heartbeat.
+    pub fn quick_check(&self) -> Result<u64, LeaseLost> {
+        self.inner.deadline().map(|()| self.inner.epoch)
     }
 
     /// Successful heartbeats so far.
@@ -316,6 +344,13 @@ impl Lease {
     /// Heartbeats that failed and were retried.
     pub fn failed_heartbeats(&self) -> u64 {
         lock(&self.inner.status).failed
+    }
+
+    /// Test hooks that outlive the lease (hang points, the heartbeat thread's end).
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn hooks(&self) -> LeaseHooks {
+        LeaseHooks(self.inner.clone())
     }
 
     /// Test hook: the next `n` heartbeats fail before touching the folder (`u32::MAX`: all).
@@ -351,6 +386,8 @@ impl Drop for Lease {
         if done && let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // A thread still stuck in I/O checks `stop` before any write.
+        registry::stopped(&self.inner.key, self.inner.epoch);
     }
 }
 
@@ -363,16 +400,17 @@ impl Inner {
         self.params.clock.now()
     }
 
-    /// Steps 1–2 of [`Lease::check`].
+    /// Steps 1–2 of [`Lease::check`]: lost before, or past the self-fence deadline. In
+    /// memory only.
     fn deadline(&self) -> Result<(), LeaseLost> {
         let now = self.now();
         let mut s = lock(&self.status);
         if s.lost.is_none() && now >= s.last_ok + self.params.self_fence {
-            s.lost = Some(format!(
+            let reason = format!(
                 "self-fenced: no successful heartbeat for {} s",
                 self.params.self_fence.as_secs()
-            ));
-            self.wake.notify_all();
+            );
+            self.lose(&mut s, reason);
         }
         match &s.lost {
             Some(reason) => Err(LeaseLost {
@@ -384,7 +422,11 @@ impl Inner {
 
     fn check(&self) -> Result<u64, LeaseLost> {
         self.deadline()?;
-        let verdict = self.verify(&mut lock(&self.io));
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.hang.at(HangPoint::CheckBeforeRead);
+        let verdict = self
+            .verify(&mut lock(&self.io))
+            .and_then(|()| self.no_newer_claim());
         if let Err(reason) = verdict {
             return Err(self.set_lost(reason));
         }
@@ -392,8 +434,26 @@ impl Inner {
         Ok(self.epoch)
     }
 
-    /// Whether `lease.json` still holds what this lease last wrote (or the heartbeat whose
-    /// write failed, which then counts as written).
+    /// Claims are the authority on epochs (parent spec §27.9, fenced design: "no newer epoch
+    /// claim"): any `lease.claim-<e>` above our epoch means another server is acquiring or
+    /// has acquired, even before its record is visible (or after our record overwrote
+    /// theirs). A claim hidden by Windows' readdir lag only delays this extra protection.
+    fn no_newer_claim(&self) -> Result<(), String> {
+        let claims = claim::list(&self.dir)
+            .map_err(|e| format!("cannot list {}: {e}", self.dir.display()))?;
+        match claims.iter().rev().find(|c| c.epoch > self.epoch) {
+            Some(c) => Err(format!(
+                "a newer claim {} exists; this lease was epoch {}",
+                claim::claim_name(c.epoch),
+                self.epoch
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether `lease.json` still names this lease: our server id **and** our epoch. Claims
+    /// make the epoch ours alone, so any heartbeat counter will do; a later one (a heartbeat
+    /// write that landed after its retry was given up) is adopted.
     fn verify(&self, io: &mut Io) -> Result<(), String> {
         match record::read(&self.path()) {
             Err(e) => Err(format!("lease.json is unreadable: {e}")),
@@ -402,11 +462,12 @@ impl Inner {
                 "lease.json fails its checksum (damaged or being rewritten by another server)"
                     .to_string(),
             ),
-            Ok(record::Seen::Valid(r)) if r == io.last => Ok(()),
-            Ok(record::Seen::Valid(r)) if io.pending.as_ref() == Some(&r) => {
-                io.pending = None;
-                registry::wrote(&self.key, &r);
-                io.last = r;
+            Ok(record::Seen::Valid(r))
+                if r.server_id == io.last.server_id && r.epoch == self.epoch =>
+            {
+                if r.heartbeat > io.last.heartbeat {
+                    io.last = r;
+                }
                 Ok(())
             }
             Ok(record::Seen::Valid(r)) => Err(format!(
@@ -419,8 +480,19 @@ impl Inner {
     /// Marks the lease lost (the first reason stays) and returns why it is lost.
     fn set_lost(&self, reason: String) -> LeaseLost {
         let mut s = lock(&self.status);
-        let reason = s.lost.get_or_insert(reason).clone();
+        self.lose(&mut s, reason);
+        LeaseLost {
+            reason: s.lost.clone().unwrap_or_default(),
+        }
+    }
+
+    /// A lost lease never writes again (every write re-checks `lost`), so this process may
+    /// re-acquire at once even if its heartbeat thread is still stuck in I/O.
+    fn lose(&self, s: &mut Status, reason: String) {
+        if s.lost.is_none() {
+            s.lost = Some(reason);
+            registry::stopped(&self.key, self.epoch);
+        }
         self.wake.notify_all();
-        LeaseLost { reason }
     }
 }

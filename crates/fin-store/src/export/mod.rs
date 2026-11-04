@@ -162,7 +162,8 @@ pub(crate) fn export_pending(
     {
         store.export.last_sweep = Some(now);
         let root = segments_root(&store.project_dir);
-        store.export.temps.sweep(&root, now);
+        let ExportState { temps, lease, .. } = &mut store.export;
+        temps.sweep(&root, now, &|| lease.quick_check().is_ok());
     }
     let branches = pending_branches(&store.conn)?;
     if branches.is_empty() {

@@ -21,9 +21,10 @@ impl Store {
     /// - `baseRev` ahead of the head is `BASE_REV_AHEAD`.
     /// - While the last import found a fork or a newer format ([`Store::read_only`]):
     ///   `PROJECT_READ_ONLY` with `details.reason`.
-    /// - Without a held lease (the fence, checked right before the rows are written):
-    ///   `PROJECT_READ_ONLY` with `details.reason` `LEASE_LOST`. The row records the epoch that
-    ///   check returned (`txs.epoch`).
+    /// - Without a held lease: `PROJECT_READ_ONLY` with `details.reason` `LEASE_LOST`. The full
+    ///   fence (`lease.check()`, folder I/O) runs before the database lock is taken; under the
+    ///   lock, right before the rows are written, only the in-memory part
+    ///   (`lease.quick_check()`). The row records the epoch the fence returned (`txs.epoch`).
     ///
     /// The stored tx is the rebased one (`baseRev` = the head it was applied to), with the diff,
     /// inverse and bindings of that same apply. Ids are allocated from the `ids` table inside the
@@ -35,12 +36,17 @@ impl Store {
         if let Some(reason) = self.import.read_only() {
             return Err(crate::import::read_only_error(&self.project_id, reason));
         }
+        // The full fence reads the folder (uncached; seconds on a slow share, longer on a
+        // hung one), so it runs before the database write lock is taken. Its answer is applied
+        // after the dedupe below, so a retry of a committed tx is answered without the lease.
+        let fenced = self.export.lease.check();
         let txn = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) = db::find_tx(&txn, &tx.tx_id)? {
             return Ok(existing);
         }
+        let epoch = fenced.map_err(|e| crate::import::lease_lost_error(&self.project_id, &e))?;
         let heads = self.heads.get_mut();
         refresh(&txn, heads, &tx.branch)?;
         let head = heads
@@ -64,12 +70,19 @@ impl Store {
         let applied = apply_tx(&head.project, &tx, &mut ids)?;
         ids.save(&txn)?;
         let parent = db::tip_hash(&txn, &tx.branch)?;
-        // The fence, as close to the write as the epoch allows.
-        let epoch = self
-            .export
-            .lease
-            .check()
-            .map_err(|e| crate::import::lease_lost_error(&self.project_id, &e))?;
+        // In memory only, under the lock: still the same lease, not lost since (the heartbeat
+        // or another check may have seen a newer claim) and not past its self-fence deadline.
+        match self.export.lease.quick_check() {
+            Ok(e) if e == epoch => {}
+            Ok(e) => {
+                let cause = CoreError::new(
+                    "LEASE_LOST",
+                    format!("the lease changed from epoch {epoch} to {e} during the commit"),
+                );
+                return Err(crate::import::lease_lost_error(&self.project_id, &cause));
+            }
+            Err(e) => return Err(crate::import::lease_lost_error(&self.project_id, &e)),
+        }
         let record = db::new_record(
             rev,
             tx.clone(),

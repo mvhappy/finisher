@@ -12,17 +12,25 @@
 //!      the folder forever (inferred; see [`Contender`]);
 //!    - **unreadable or bad checksum** → held (spec §3.5). Never taken over automatically,
 //!      only by a confirmed takeover;
-//!    - **ours**: if one of our leases in this process still heartbeats it → held; if this
-//!      process wrote exactly this record and stopped → ours to re-take at once ([`registry`]);
+//!    - **ours**: if one of our leases in this process still heartbeats it → held; if it is
+//!      at an epoch this process held and that lease is lost or dropped → ours to re-take at
+//!      once ([`registry`]);
 //!    - otherwise **held**, with age = this round's server time − the record's stamp.
-//! 3. Staleness: age > 45 s, observed by two counting rounds ≥ 5 s apart (monotonic) that saw
-//!    the identical record (or claim set). Any change, or a round that is not stale, starts
-//!    over; a round that does not count changes nothing.
+//! 3. Staleness, all of:
+//!    - age > 45 s in two counting rounds ≥ 5 s apart (monotonic), with no non-stale counting
+//!      round between them;
+//!    - the identical record (or claim set) seen for ≥ [`Params::min_unchanged`] (25 s) by
+//!      our own monotonic clock. A running holder rewrites it within 20 s or fences itself,
+//!      so it is never taken over, however wrong either clock is;
+//!    - observations no more than 2 × 45 s apart (older evidence is discarded).
+//!
+//!    Any change of the record starts over; a round that does not count changes nothing.
 //!
 //! # Taking ([`Contender::take`])
 //!
 //! 1. List claims. A claim above the expected record's epoch that is younger than 45 s
-//!    (server time), or whose age is unknown, is another acquisition in progress → back off.
+//!    (server time from the last counting probe, extrapolated so it never overestimates), or
+//!    whose age is unknown, is another acquisition in progress → back off.
 //! 2. Claim `base+1..base+4` (base = the highest of the record's epoch and every claim).
 //!    Needing more than the first name means a claim invisible to our listing exists, i.e. a
 //!    fresh one (Windows hides new files for up to 9.9 s) → delete ours and back off. So of
@@ -31,8 +39,10 @@
 //!    record, the same damaged bytes); else delete our claim and back off.
 //! 4. Write ours (epoch, heartbeat 0, stamped with server time): `create_new` when it was
 //!    missing (the file server decides, so a `lease.json` hidden by Windows' not-found cache
-//!    still wins), else in place.
-//! 5. Read it back: it must be ours.
+//!    still wins), else in place. If the write fails, put back what was there (a record we
+//!    created is removed), delete our claim and back off.
+//! 5. Read it back: it must be ours. Torn while no claim above ours exists → rewrite once.
+//!    Anything else → delete our claim and back off.
 //! 6. Delete claims below our epoch (spec §3.5), register, start the heartbeat.
 
 use std::fs::OpenOptions;
@@ -41,10 +51,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use fin_core::CoreError;
-use serde_json::json;
 
-use super::clock::ServerClock;
+use super::clock::{ProbeSample, SAMPLE_MAX_AGE, ServerClock};
 use super::record::{self, LeaseRecord, Seen};
+use super::refusal::refused;
 use super::registry::{self, Mine};
 use super::{Lease, LeaseState, Params, claim, valid_server_id};
 use crate::fsio;
@@ -55,10 +65,11 @@ use crate::fsio;
 /// Inferred (the spike is not available; these follow the spec's rules):
 /// - the back-off rules of [`Contender::take`] steps 1–2;
 /// - a missing `lease.json` beside claims ages like a record, by the newest claim's mtime;
-/// - re-taking our own record at once when this process wrote it last;
+/// - re-taking our own record at once when this process held its epoch and that lease is
+///   lost or dropped;
+/// - restoring the previous record after a failed write, and rewriting a torn read-back;
 /// - on network and local storage a takeover never displaces a live holder, confirmed or not
 ///   (`confirm` matters on sync folders, and for a damaged `lease.json`).
-#[derive(Debug)]
 pub struct Contender {
     dir: PathBuf,
     server_id: String,
@@ -66,13 +77,25 @@ pub struct Contender {
     params: Params,
     clock: ServerClock,
     evidence: Option<Evidence>,
+    /// The last probe that counted (moved forward, round trip ≤ TTL/4); used to age rival
+    /// claims.
+    counted: Option<ProbeSample>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    after_write: Option<AfterWrite>,
 }
 
-/// The first stale observation of what is now in the folder.
+/// Test hook run after the record is written ([`Contender::after_write_for_test`]).
+#[cfg(any(test, feature = "test-hooks"))]
+type AfterWrite = Box<dyn FnOnce(&Path) + Send + Sync>;
+
+/// What is now in the folder, since when (monotonic) it has been seen unchanged, and since
+/// when it has been seen stale.
 #[derive(Debug)]
 struct Evidence {
     seen: Fingerprint,
-    since: Instant,
+    first_seen: Instant,
+    stale_since: Option<Instant>,
+    last_at: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +131,16 @@ enum Verdict {
     },
 }
 
+impl std::fmt::Debug for Contender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Contender")
+            .field("dir", &self.dir)
+            .field("server_id", &self.server_id)
+            .field("evidence", &self.evidence)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Contender {
     pub fn new(dir: &Path, server_id: &str, holder: &str, params: Params) -> Contender {
         Contender {
@@ -117,6 +150,9 @@ impl Contender {
             clock: ServerClock::new(dir, server_id, params.clock.clone()),
             params,
             evidence: None,
+            counted: None,
+            #[cfg(any(test, feature = "test-hooks"))]
+            after_write: None,
         }
     }
 
@@ -207,6 +243,14 @@ impl Contender {
         })
     }
 
+    /// Test hook: `f(dir)` runs once, right after the next acquisition writes its record and
+    /// before it reads it back (another writer, or a torn write).
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn after_write_for_test(&mut self, f: impl FnOnce(&Path) + Send + Sync + 'static) {
+        self.after_write = Some(Box::new(f));
+    }
+
     fn record_path(&self) -> PathBuf {
         self.dir.join(record::FILE)
     }
@@ -222,6 +266,9 @@ impl Contender {
             .map_err(|e| format!("cannot write the probe file in {}: {e}", self.dir.display()))?;
         let counts = probe.advanced && probe.sample.rtt <= self.params.max_rtt;
         let server_now = counts.then_some(probe.sample.server_ms);
+        if counts {
+            self.counted = Some(probe.sample);
+        }
         let at = probe.sample.at;
         let unknown = |holder: String, expected| Verdict::Held {
             holder,
@@ -316,9 +363,24 @@ impl Contender {
         epoch: u64,
         expected: Expected,
     ) -> Verdict {
-        if self.evidence.as_ref().is_some_and(|e| e.seen != seen) {
-            self.evidence = None;
-        }
+        let p = &self.params;
+        // Evidence is about what is in the folder now and recent: a change, or a gap of more
+        // than 2 × stale-after since the last look, starts it over.
+        let ev = match self.evidence.take() {
+            Some(e)
+                if e.seen == seen
+                    && at.saturating_duration_since(e.last_at) <= p.stale_after * 2 =>
+            {
+                Evidence { last_at: at, ..e }
+            }
+            _ => Evidence {
+                seen,
+                first_seen: at,
+                stale_since: None,
+                last_at: at,
+            },
+        };
+        let ev = self.evidence.insert(ev);
         let held = |why| Verdict::Held {
             holder: holder.clone(),
             epoch,
@@ -328,30 +390,28 @@ impl Contender {
         };
         if !counts {
             // Undecided this round: keep what was seen before.
-            return held(if self.evidence.is_some() {
+            return held(if ev.stale_since.is_some() {
                 "STALE_UNCONFIRMED"
             } else {
                 "HELD"
             });
         }
-        let stale_ms = i64::try_from(self.params.stale_after.as_millis()).unwrap_or(i64::MAX);
+        let stale_ms = i64::try_from(p.stale_after.as_millis()).unwrap_or(i64::MAX);
         if !age.is_some_and(|a| a > stale_ms) {
-            self.evidence = None;
+            ev.stale_since = None;
             return held("HELD");
         }
-        match &self.evidence {
-            Some(e) if at.saturating_duration_since(e.since) >= self.params.confirm_gap => {
-                Verdict::Stale {
-                    holder,
-                    epoch,
-                    expected,
-                }
+        let since = *ev.stale_since.get_or_insert(at);
+        if at.saturating_duration_since(since) >= p.confirm_gap
+            && at.saturating_duration_since(ev.first_seen) >= p.min_unchanged
+        {
+            Verdict::Stale {
+                holder,
+                epoch,
+                expected,
             }
-            Some(_) => held("STALE_UNCONFIRMED"),
-            None => {
-                self.evidence = Some(Evidence { seen, since: at });
-                held("STALE_UNCONFIRMED")
-            }
+        } else {
+            held("STALE_UNCONFIRMED")
         }
     }
 
@@ -372,7 +432,7 @@ impl Contender {
             Expected::Missing | Expected::Corrupt(_) => 0,
         };
         // 1. Another acquisition in progress.
-        let server_now = self.clock.now_server_ms(mono.now());
+        let server_now = self.counted.and_then(|p| counted_server_ms(&p, mono.now()));
         let stale_ms = i64::try_from(self.params.stale_after.as_millis()).unwrap_or(i64::MAX);
         let in_progress = |c: &claim::ClaimFile| match (server_now, c.server_ms) {
             (Some(now), Some(m)) => now - m <= stale_ms,
@@ -430,13 +490,35 @@ impl Contender {
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                 return back_off(busy("another server".into(), epoch));
             }
-            Err(e) => return back_off(lost(format!("cannot write lease.json: {e}"))),
+            Err(e) => {
+                // An in-place write that failed may have landed in part. Put back what was
+                // there, so the folder is as it was judged (a torn record would read as
+                // damaged to everyone, and damaged records need a confirmed takeover).
+                // A record we created is already removed by `create_record`.
+                restore(&path, &expected);
+                return back_off(lost(format!("cannot write lease.json: {e}")));
+            }
         }
-        // 5. Read back.
-        match record::read(&path) {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(f) = self.after_write.take() {
+            f(&self.dir);
+        }
+        // 5. Read back. Anything but our record: remove our claim (a young orphan claim
+        // would hold others off for 45 s). A torn read-back, while no claim above ours exists,
+        // is our write landing badly: rewrite it once rather than leave a damaged record,
+        // which would need a confirmed takeover. Another server cannot be writing it then:
+        // it would hold a claim above ours.
+        let mut seen = record::read(&path);
+        if matches!(seen, Ok(Seen::Corrupt(_)))
+            && claim::list(&self.dir).is_ok_and(|c| c.iter().all(|c| c.epoch <= epoch))
+            && fsio::write_in_place(&path, &bytes).is_ok()
+        {
+            seen = record::read(&path);
+        }
+        match seen {
             Ok(Seen::Valid(r)) if r == mine => {}
-            Ok(seen) => return Err(changed(seen)),
-            Err(e) => return Err(lost(format!("lease.json is unreadable: {e}"))),
+            Ok(seen) => return back_off(changed(seen)),
+            Err(e) => return back_off(lost(format!("lease.json is unreadable: {e}"))),
         }
         // 6.
         claim::remove_below(&self.dir, epoch);
@@ -449,6 +531,27 @@ impl Contender {
             stamped,
         ))
     }
+}
+
+/// Server time at `now` from a counting probe, extrapolated from the end of its round trip,
+/// so it never overestimates (a rival claim never looks older than it is); `None` once the
+/// sample is older than [`SAMPLE_MAX_AGE`].
+fn counted_server_ms(p: &ProbeSample, now: Instant) -> Option<i64> {
+    let since = now.checked_duration_since(p.at)?;
+    if since > SAMPLE_MAX_AGE {
+        return None;
+    }
+    let after = since.saturating_sub(p.rtt);
+    Some(p.server_ms + i64::try_from(after.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Best effort: `lease.json` back to what it was before our failed in-place write.
+fn restore(path: &Path, expected: &Expected) {
+    let _ = match expected {
+        Expected::Record(r) => fsio::write_in_place(path, &record::encode(r)),
+        Expected::Corrupt(b) => fsio::write_in_place(path, b),
+        Expected::Missing => Ok(()),
+    };
 }
 
 /// `lease.json` changed between judging and writing.
@@ -477,32 +580,4 @@ fn create_record(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(path);
     }
     result
-}
-
-fn refused(reason: &str, message: &str, holder: Option<(&str, u64, Option<i64>)>) -> CoreError {
-    let fix = match reason {
-        "CONFIRM_REQUIRED" => {
-            "on a sync folder the lease is advisory: once the other machine has stopped editing, take over with confirmation (fin project takeover --confirm)"
-        }
-        "HELD" => {
-            "another server is editing this project; close it there, or wait: a holder that stops is taken over automatically about 50 s after its last heartbeat"
-        }
-        "STALE_UNCONFIRMED" => {
-            "the holder looks stopped; a second probe at least 5 s after the first confirms it, so retry shortly"
-        }
-        "CONTENDED" => "another server is acquiring the lease right now; retry shortly",
-        _ => "check that the project folder is reachable and writable, then retry",
-    };
-    let mut details = json!({ "reason": reason });
-    if let Some((holder, epoch, age)) = holder {
-        details["holder"] = json!(holder);
-        details["epoch"] = json!(epoch);
-        details["ageServerMs"] = json!(age);
-    }
-    CoreError::new(
-        "LEASE_TAKEOVER_REFUSED",
-        format!("lease takeover refused: {message}"),
-    )
-    .with_details(details)
-    .with_fix(fix)
 }

@@ -71,6 +71,15 @@ pub(crate) enum StoreLease {
 }
 
 impl StoreLease {
+    /// The in-memory part of [`StoreLease::check`] ([`Lease::quick_check`]): for use under a
+    /// database lock and per temp-file delete. No folder I/O.
+    pub(crate) fn quick_check(&self) -> Result<u64, CoreError> {
+        match self {
+            StoreLease::Lease(l) => l.quick_check().map_err(CoreError::from),
+            other => other.check(),
+        }
+    }
+
     /// The current epoch if this server may write now, else why not (`LEASE_LOST`).
     pub(crate) fn check(&self) -> Result<u64, CoreError> {
         match self {
@@ -99,8 +108,10 @@ pub(crate) struct TempSweep {
 }
 
 impl TempSweep {
-    /// One sweep of `root/*`. Errors are ignored: the next sweep tries again.
-    pub(super) fn sweep(&mut self, root: &Path, now: Instant) {
+    /// One sweep of `root/*`. Errors are ignored: the next sweep tries again. Each delete is
+    /// fenced by `may_delete` (the lease's in-memory check): the folder belongs to whoever
+    /// holds the lease now.
+    pub(super) fn sweep(&mut self, root: &Path, now: Instant, may_delete: &dyn Fn() -> bool) {
         let mut present = HashMap::new();
         for dir in fs::read_dir(root).into_iter().flatten().flatten() {
             let Ok(entries) = fs::read_dir(dir.path()) else {
@@ -120,6 +131,7 @@ impl TempSweep {
                     _ => now,
                 };
                 if now.saturating_duration_since(since) >= TEMP_MAX_AGE
+                    && may_delete()
                     && fs::remove_file(&path).is_ok()
                 {
                     continue;
@@ -134,6 +146,22 @@ impl TempSweep {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_temp_sweep_deletes_only_while_fenced_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("main");
+        fs::create_dir(&dir).unwrap();
+        let temp = dir.join(names::temp_name());
+        fs::write(&temp, b"x").unwrap();
+        let t0 = Instant::now();
+        let mut sweep = TempSweep::default();
+        sweep.sweep(tmp.path(), t0, &|| false);
+        sweep.sweep(tmp.path(), t0 + TEMP_MAX_AGE, &|| false);
+        assert!(temp.exists(), "no lease, no delete");
+        sweep.sweep(tmp.path(), t0 + TEMP_MAX_AGE, &|| true);
+        assert!(!temp.exists());
+    }
 
     #[test]
     fn delay_is_2s_then_30s_above_30_segments_in_10_minutes() {
