@@ -79,7 +79,7 @@ pub const COMMANDS: &[Command] = &[
         name: "project.open",
         group: "project",
         args: "<dir>",
-        summary: "open an existing project folder",
+        summary: "register a project folder with the server (not a write; no --dry-run)",
         write: false,
         schema: || schema_of::<project::OpenArgs>("project.open"),
     },

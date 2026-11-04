@@ -1,8 +1,6 @@
 //! `fin asset add`: the server probes the file, then the probe result is committed as
 //! `asset.add`.
 
-use std::path::Path;
-
 use clap::{Args, Subcommand};
 use fin_core::{CoreError, Op};
 use schemars::JsonSchema;
@@ -10,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Builder;
+use crate::paths;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum AssetCmd {
@@ -20,15 +19,14 @@ pub enum AssetCmd {
 #[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddArgs {
-    /// Media file path (relative paths resolve against the working directory).
+    /// Media file path; `~` expands to the home directory and relative paths resolve against the
+    /// working directory. The resolved absolute path is echoed and stored.
     #[arg(value_name = "path")]
     pub path: String,
 }
 
 pub fn plan_add(b: &mut Builder<'_>, a: &AddArgs, placeholder: &str) -> Result<Value, CoreError> {
-    let path = Path::new(&a.path);
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let probed = b.backend.probe(&absolute)?;
+    let probed = b.backend.probe(&paths::resolve_str(&a.path))?;
     let resolved = json!({ "path": probed.path, "duration": probed.duration });
     b.push(Op::AssetAdd {
         id: placeholder.to_string(),

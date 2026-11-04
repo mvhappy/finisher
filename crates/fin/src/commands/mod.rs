@@ -17,7 +17,7 @@ use fin_core::CoreError;
 use serde_json::{Value, json};
 
 use crate::backend::{Backend, Snapshot};
-use crate::output::usage;
+use crate::output::{VALIDATION, exit_code, usage};
 
 /// Flags accepted by every command.
 #[derive(Debug, Clone, Default, Args)]
@@ -51,7 +51,13 @@ pub struct Builder<'a> {
     ids: MemIds,
     bound: BTreeMap<String, String>,
     ops: Vec<Op>,
+    /// `--idem-key` on a real commit: an op that fails local validation is still sent, because
+    /// it may be a retry of a tx that already committed (the server then returns that commit).
+    lenient: bool,
+    /// The first local validation error a lenient build let through.
+    deferred: Option<CoreError>,
 }
+
 
 fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
     if let Some(map) = e.details.as_object_mut() {
@@ -61,10 +67,20 @@ fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
 }
 
 impl<'a> Builder<'a> {
-    pub fn new(backend: &'a dyn Backend) -> Result<Builder<'a>, CoreError> {
+    pub fn new(backend: &'a dyn Backend, globals: &Globals) -> Result<Builder<'a>, CoreError> {
         let base = backend.snapshot()?;
         let ids = MemIds::after(&base.project);
-        Ok(Builder { backend, work: base.project.clone(), base, ids, bound: BTreeMap::new(), ops: Vec::new() })
+        let lenient = globals.idem_key.is_some() && !globals.dry_run && !backend.dry_run_only();
+        Ok(Builder {
+            backend,
+            work: base.project.clone(),
+            base,
+            ids,
+            bound: BTreeMap::new(),
+            ops: Vec::new(),
+            lenient,
+            deferred: None,
+        })
     }
 
     /// The id a reference names in the working copy: placeholders bound by earlier steps map to
@@ -85,8 +101,18 @@ impl<'a> Builder<'a> {
             _ => {}
         }
         let tx = self.tx(vec![local]);
-        let applied = apply_tx(&self.work, &tx, &mut self.ids)
-            .map_err(|e| with_detail(e, "opIndex", json!(self.ops.len())))?;
+        let applied = match apply_tx(&self.work, &tx, &mut self.ids) {
+            Ok(applied) => applied,
+            Err(e) => {
+                let e = with_detail(e, "opIndex", json!(self.ops.len()));
+                if !self.lenient {
+                    return Err(e);
+                }
+                self.deferred.get_or_insert(e);
+                self.ops.push(op);
+                return Ok(());
+            }
+        };
         self.bound.extend(applied.bindings);
         self.work = applied.project;
         self.ops.push(op);
@@ -125,7 +151,16 @@ impl<'a> Builder<'a> {
                 "resolved": resolved,
             }));
         }
-        let committed = self.backend.commit(&tx)?;
+        let committed = match (self.backend.commit(&tx), self.deferred) {
+            (Ok(committed), _) => committed,
+            // The server also rejected it as invalid, so it was not a retry after all: report the
+            // local error, which names the failing input. Any other server answer (conflict,
+            // shutting down, internal, transport) is the more useful one and keeps its exit code.
+            (Err(e), Some(local)) if exit_code(&e.code) == VALIDATION => return Err(local),
+            (Err(e), _) => return Err(e),
+        };
+        let mut resolved = resolved;
+        echo_committed(&mut resolved, &committed.tx.ops);
         Ok(json!({
             "rev": committed.rev,
             "txId": committed.tx.tx_id,
@@ -133,6 +168,36 @@ impl<'a> Builder<'a> {
             "diff": committed.diff,
             "resolved": resolved,
         }))
+    }
+}
+
+/// Echoes what was committed rather than what was planned: the server may have rebased the tx
+/// over concurrent commits (moving insert positions), or returned an earlier commit for the same
+/// `--idem-key`. Each planned step pushed exactly one op, so steps and ops pair up in order.
+fn echo_committed(resolved: &mut Value, ops: &[Op]) {
+    let patch = |r: &mut Value, op: &Op| {
+        if let (Op::ClipInsert { at, source_in, duration, .. }, Some(map)) = (op, r.as_object_mut()) {
+            map.insert("at".to_string(), json!(at));
+            map.insert("in".to_string(), json!(source_in));
+            map.insert("duration".to_string(), json!(duration));
+            if let Ok(out) = source_in.checked_add(*duration) {
+                map.insert("out".to_string(), json!(out));
+            }
+        }
+    };
+    match resolved {
+        Value::Array(steps) => {
+            for (step, op) in steps.iter_mut().zip(ops) {
+                if let Some(r) = step.get_mut("resolved") {
+                    patch(r, op);
+                }
+            }
+        }
+        single => {
+            if let Some(op) = ops.first() {
+                patch(single, op);
+            }
+        }
     }
 }
 
@@ -150,7 +215,7 @@ pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value
 
 /// Runs one write command.
 pub fn write(backend: &dyn Backend, globals: &Globals, step: Write) -> Result<Value, CoreError> {
-    let mut b = Builder::new(backend)?;
+    let mut b = Builder::new(backend, globals)?;
     let resolved = plan(&mut b, &step, None)?;
     b.finish(globals, resolved)
 }
@@ -196,11 +261,70 @@ pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Va
     if steps.is_empty() {
         return Err(usage("batch received no commands", json!({}), "pipe JSONL to stdin: {\"cmd\":\"clip.delete\",\"args\":{\"clip\":\"c1\"}}"));
     }
-    let mut b = Builder::new(backend)?;
+    let mut b = Builder::new(backend, globals)?;
     let mut resolved = Vec::with_capacity(steps.len());
     for (n, cmd, step) in &steps {
         let r = plan(&mut b, step, Some(*n)).map_err(|e| with_detail(e, "line", json!(n)))?;
         resolved.push(json!({ "line": n, "cmd": cmd, "resolved": r }));
     }
     b.finish(globals, Value::Array(resolved))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use fin_core::{CommittedTx, Rational, new_project};
+
+    use super::*;
+    use crate::backend::Probed;
+
+    /// An empty project at rev 1 whose server rejects every commit with `answer`.
+    struct Rejecting {
+        answer: CoreError,
+    }
+
+    impl Backend for Rejecting {
+        fn snapshot(&self) -> Result<Snapshot, CoreError> {
+            let rate: Rational = "30".parse()?;
+            Ok(Snapshot { rev: 1, project: new_project("p".into(), "P".into(), rate)? })
+        }
+        fn commit(&self, _tx: &Tx) -> Result<CommittedTx, CoreError> {
+            Err(self.answer.clone())
+        }
+        fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
+            unreachable!()
+        }
+        fn create_project(&self, _dir: &Path, _name: &str, _rate: Rational) -> Result<Value, CoreError> {
+            unreachable!()
+        }
+        fn open_project(&self, _dir: &Path) -> Result<Value, CoreError> {
+            unreachable!()
+        }
+    }
+
+    fn delete_missing_with_key(answer: CoreError) -> CoreError {
+        let globals = Globals { idem_key: Some("k".into()), ..Globals::default() };
+        let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+        write(&Rejecting { answer }, &globals, step).unwrap_err()
+    }
+
+    #[test]
+    fn a_deferred_local_error_only_replaces_server_validation_errors() {
+        let server_invalid = CoreError::new("NOT_FOUND", "server says no");
+        let local = delete_missing_with_key(server_invalid);
+        assert_eq!(local.code, "NOT_FOUND");
+        assert_ne!(local.message, "server says no");
+        assert_eq!(local.details["opIndex"], 0);
+        for code in ["CONFLICT", "BASE_REV_AHEAD", "SERVER_SHUTTING_DOWN", "ENGINE_CLOSED", "INTERNAL", "SERVER_TIMEOUT"] {
+            let e = delete_missing_with_key(CoreError::new(code, "server"));
+            assert_eq!((e.code.as_str(), e.message.as_str()), (code, "server"));
+        }
+        let no_key = write(
+            &Rejecting { answer: CoreError::new("CONFLICT", "server") },
+            &Globals::default(),
+            Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() }),
+        );
+        assert_eq!(no_key.unwrap_err().code, "NOT_FOUND");
+    }
 }
