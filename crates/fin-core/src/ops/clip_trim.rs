@@ -27,6 +27,14 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     let (ti, ci) = clip_index(project, &id)?;
     let c = &project.timeline.tracks[ti].items[ci];
     let a = asset(project, &c.asset)?;
+    let plan = Plan {
+        track: ti,
+        item: ci,
+    };
+    // Policy (skipped on replay): the source range and the one-frame minimum.
+    if !bindings.policy() {
+        return Ok(plan);
+    }
     let frame = frame_duration(project.rate)?;
     let (min, max) = match edge {
         Edge::Start => (c.source_in.checked_neg()?, c.duration.checked_sub(frame)?),
@@ -46,10 +54,7 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
             format!("use a delta between {min} and {max}"),
         ));
     }
-    Ok(Plan {
-        track: ti,
-        item: ci,
-    })
+    Ok(plan)
 }
 
 pub(crate) fn apply(

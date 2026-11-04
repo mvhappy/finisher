@@ -39,6 +39,12 @@ const VALIDATION_CODES: &[&str] = &[
     "SERVER_DATA_UNSAFE",
     "IDEM_KEY_REUSED",
     "PROJECT_DIR_UNWRITABLE",
+    // Stored history that this code cannot or will not read (sub-project 4).
+    "NEWER_FORMAT",
+    "INVALID_FORMAT",
+    "REPLAY_FAILED",
+    "CLIP_OVERLAP",
+    "BINDINGS_MISMATCH",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -167,6 +173,11 @@ mod tests {
             "SERVER_DATA_UNSAFE",
             "PROJECT_DIR_UNWRITABLE",
             "IDEM_KEY_REUSED",
+            "NEWER_FORMAT",
+            "INVALID_FORMAT",
+            "REPLAY_FAILED",
+            "CLIP_OVERLAP",
+            "BINDINGS_MISMATCH",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

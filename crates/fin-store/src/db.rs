@@ -5,12 +5,12 @@
 //! the project-global id counter table, updated in the same SQLite transaction as the `txs`
 //! insert so a failed commit never consumes ids.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fin_core::{
-    Applied, CommittedTx, CoreError, IdAlloc, IdKind, MemIds, Op, Project, Tx, apply_tx,
+    Applied, CommittedTx, CoreError, IdAlloc, IdKind, MemIds, Project, Tx, apply_committed,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
@@ -286,45 +286,13 @@ impl IdAlloc for Counters {
     }
 }
 
-/// Hands out a committed tx's bound ids again, in op order, so replay reproduces it exactly.
-struct ReplayIds {
-    queue: VecDeque<String>,
-    mismatch: bool,
-}
-
-impl IdAlloc for ReplayIds {
-    fn next(&mut self, kind: IdKind) -> String {
-        match self.queue.pop_front() {
-            Some(id) if suffix(&id, kind.prefix()).is_some() => id,
-            _ => {
-                self.mismatch = true;
-                String::new()
-            }
-        }
-    }
-}
-
-/// `project` with the committed tx `c` applied again, producing the same ids, bindings and diff
-/// as when it was committed. Used to rebuild heads from snapshots and by replay checks.
+/// `project` with the committed tx `c` applied again ([`fin_core::apply_committed`]: the
+/// recorded bindings fix every id, structural checks only), producing the same ids, bindings and
+/// diff as when it was committed. Used to rebuild heads from snapshots and by replay checks.
 pub fn replay(project: &Project, c: &CommittedTx) -> Result<Project, StoreError> {
-    let queue =
-        c.tx.ops
-            .iter()
-            .filter_map(|op| match op {
-                Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } => c.bindings.get(id).cloned(),
-                _ => None,
-            })
-            .collect();
-    let mut ids = ReplayIds {
-        queue,
-        mismatch: false,
-    };
-    let applied = apply_tx(project, &c.tx, &mut ids).map_err(|e| replay_error(c, Some(e)))?;
-    if ids.mismatch
-        || !ids.queue.is_empty()
-        || applied.bindings != c.bindings
-        || applied.diff != c.diff
-    {
+    let applied =
+        apply_committed(project, &c.tx, &c.bindings).map_err(|e| replay_error(c, Some(e)))?;
+    if applied.diff != c.diff {
         return Err(replay_error(c, None));
     }
     Ok(applied.project)

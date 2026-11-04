@@ -38,16 +38,20 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     let a = asset(project, &asset_id)?;
     let track = &project.timeline.tracks[ti];
     check_kind(track, a)?;
-    if *at < Rational::zero() {
-        return Err(invalid_range(
-            "insert position must not be negative",
-            json!({ "at": at, "min": Rational::zero() }),
-            "insert at 0 or later",
-        ));
-    }
-    check_source(project, a, *source_in, *duration)?;
-    if let Some(clip) = clip_containing(track, *at)? {
-        return Err(insert_inside(clip, *at)?);
+    // Policy (skipped on replay). An insert inside a clip also overlaps it, which replay still
+    // rejects through the structural track check.
+    if bindings.policy() {
+        if *at < Rational::zero() {
+            return Err(invalid_range(
+                "insert position must not be negative",
+                json!({ "at": at, "min": Rational::zero() }),
+                "insert at 0 or later",
+            ));
+        }
+        check_source(project, a, *source_in, *duration)?;
+        if let Some(clip) = clip_containing(track, *at)? {
+            return Err(insert_inside(clip, *at)?);
+        }
     }
     bindings.check_new(project, id, IdKind::Clip)?;
     Ok(Plan {

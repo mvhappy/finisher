@@ -11,10 +11,16 @@ use crate::tx::{Applied, Diff, Tx};
 /// Who is applying: clients may only send client ops; internal callers (undo, replaying
 /// inverses) may also send `asset.remove`, `clip.remove` and `clip.restore`, and may name new
 /// entities with literal ids.
+///
+/// `Replay` re-applies committed history (see [`crate::apply_committed`]): like `Internal`, but
+/// policy checks (minimum durations, source ranges, `INSERT_INSIDE_CLIP`, ...) are skipped and
+/// only structural ones run: referenced entities exist, ids are new, track kinds match, and no
+/// track holds overlapping or empty clips after any op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyMode {
     Client,
     Internal,
+    Replay,
 }
 
 /// Applies a client transaction. See [`apply_tx_mode`].
@@ -53,7 +59,7 @@ pub fn apply_tx_mode(
         .with_fix(format!("send schemaVersion {SCHEMA_VERSION}")));
     }
     let mut next = project.clone();
-    let mut bindings = Bindings::new(mode == ApplyMode::Internal);
+    let mut bindings = Bindings::new(mode);
     let mut diff = Diff::default();
     let mut inverses = Vec::with_capacity(tx.ops.len());
     for (i, op) in tx.ops.iter().enumerate() {
@@ -65,7 +71,13 @@ pub fn apply_tx_mode(
             .with_details(json!({ "op": op.name() }))
             .with_fix("use asset.add, clip.insert, clip.trim or clip.delete"))
         } else {
-            ops::apply(&mut next, op, &mut bindings, ids, &mut diff)
+            let before = diff.shifts.len();
+            ops::apply(&mut next, op, &mut bindings, ids, &mut diff).and_then(|inverse| {
+                if mode == ApplyMode::Replay {
+                    ops::util::check_tracks(&next, &diff.shifts[before..])?;
+                }
+                Ok(inverse)
+            })
         };
         inverses.push(applied.map_err(|e| at_op(e, i))?);
     }

@@ -33,6 +33,10 @@ pub(crate) fn validate(
     let a = asset(project, &bindings.resolve(&clip.asset)?)?;
     let track = &project.timeline.tracks[ti];
     check_kind(track, a)?;
+    // Policy (skipped on replay); overlaps are caught there by the structural track check.
+    if !bindings.policy() {
+        return Ok(ti);
+    }
     check_source(project, a, clip.source_in, clip.duration)?;
     if clip.start < Rational::zero() {
         return Err(invalid_range(

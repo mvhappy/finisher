@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{AudioInfo, Clip, Project, VideoInfo};
@@ -125,26 +126,36 @@ impl Op {
         !matches!(self, Op::AssetAdd { .. } | Op::AssetRemove { .. })
     }
 
-    /// Replaces `$name` references with their bound ids (unbound ones are left as they are).
-    pub(crate) fn resolved(&self, bindings: &BTreeMap<String, String>) -> Op {
-        let r = |s: &String| bindings.get(s).cloned().unwrap_or_else(|| s.clone());
-        let mut op = self.clone();
-        match &mut op {
+    /// Every id reference in the op (new-entity ids, tracks, assets, clips), mutably, so
+    /// placeholders can be substituted in one place.
+    pub(crate) fn refs_mut(&mut self) -> Vec<&mut String> {
+        match self {
             Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => {
-                *id = r(id)
+                vec![id]
             }
             Op::ClipInsert {
                 id, track, asset, ..
-            } => {
-                *id = r(id);
-                *track = r(track);
-                *asset = r(asset);
-            }
-            Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } => *clip = r(clip),
-            Op::ClipRestore { clip, track, .. } => {
-                clip.id = r(&clip.id);
-                clip.asset = r(&clip.asset);
-                *track = r(track);
+            } => vec![id, track, asset],
+            Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } => vec![clip],
+            Op::ClipRestore { clip, track, .. } => vec![&mut clip.id, &mut clip.asset, track],
+        }
+    }
+
+    /// The placeholder this op binds to a newly allocated id, if any (in op order these are
+    /// the order ids are allocated in).
+    pub(crate) fn allocates(&self) -> Option<&str> {
+        match self {
+            Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } if id.starts_with('$') => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Replaces `$name` references with their bound ids (unbound ones are left as they are).
+    pub(crate) fn resolved(&self, bindings: &BTreeMap<String, String>) -> Op {
+        let mut op = self.clone();
+        for r in op.refs_mut() {
+            if let Some(id) = bindings.get(r.as_str()) {
+                *r = id.clone();
             }
         }
         op
@@ -154,15 +165,25 @@ impl Op {
 /// `$name` placeholders bound during one transaction, in op order.
 pub(crate) struct Bindings {
     pub(crate) map: BTreeMap<String, String>,
+    /// Literal ids may name new entities (internal and replay).
     internal: bool,
+    /// Policy checks run (everything but replay).
+    policy: bool,
 }
 
 impl Bindings {
-    pub(crate) fn new(internal: bool) -> Self {
+    pub(crate) fn new(mode: ApplyMode) -> Self {
         Bindings {
             map: BTreeMap::new(),
-            internal,
+            internal: mode != ApplyMode::Client,
+            policy: mode != ApplyMode::Replay,
         }
+    }
+
+    /// Whether policy checks run. Replay ([`ApplyMode::Replay`]) checks structure only: what
+    /// was committed under the rules of its day is not re-judged.
+    pub(crate) fn policy(&self) -> bool {
+        self.policy
     }
 
     /// A reference: `$name` resolves through the bindings, anything else is a literal id.
@@ -188,7 +209,7 @@ impl Bindings {
         kind: IdKind,
     ) -> Result<(), CoreError> {
         if let Some(name) = id.strip_prefix('$') {
-            if name.is_empty() {
+            if name.is_empty() && self.policy {
                 return Err(
                     CoreError::new("INVALID_OP", "placeholder needs a name after `$`")
                         .with_details(json!({ "id": id }))

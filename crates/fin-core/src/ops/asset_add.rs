@@ -15,7 +15,8 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     let Op::AssetAdd { id, duration, .. } = op else {
         return Err(wrong_op(op));
     };
-    if !duration.is_positive() {
+    // Policy: a later rule never rejects a committed asset.
+    if bindings.policy() && !duration.is_positive() {
         return Err(invalid_range(
             "asset duration must be positive",
             json!({ "duration": duration }),

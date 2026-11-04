@@ -530,3 +530,37 @@ fn same_tx_id_via_two_stores_is_idempotent() {
     assert_eq!(again, first);
     assert_eq!((a.head(MAIN), b.head(MAIN)), (2, 2));
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
+}
+
+/// The committed sub-project 2 fixture opens (snapshot at rev 200 + tail) and replays from rev 0
+/// (every tx, through `apply_committed`) to the state it was generated with.
+#[test]
+fn sp2_fixture_opens_and_replays_to_expected_state() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sp2");
+    let tmp = tempfile::tempdir().unwrap();
+    copy_dir(&fixture, tmp.path());
+    let expected: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(tmp.path().join("expected.json")).unwrap()).unwrap();
+    let store = Store::open(&tmp.path().join("server-data"), &tmp.path().join("folder")).unwrap();
+    let (rev, head) = store.snapshot(MAIN).unwrap();
+    assert_eq!(rev, expected["rev"].as_u64().unwrap());
+    assert_eq!(serde_json::to_value(&head).unwrap(), expected["project"]);
+
+    let history = store.ops_since(MAIN, 0).unwrap();
+    assert_eq!(history.len() as u64, rev);
+    let zero = fin_core::new_project(head.id.clone(), head.name.clone(), head.rate).unwrap();
+    let replayed = history.iter().try_fold(zero, |p, c| replay(&p, c)).unwrap();
+    assert_eq!(replayed, head);
+}

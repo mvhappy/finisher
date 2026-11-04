@@ -197,3 +197,45 @@ pub(crate) fn shift(diff: &mut Diff, track: &str, from: Rational, by: Rational) 
         by,
     });
 }
+
+/// The structural invariant of a track: positive durations, sorted by `start`, no overlaps.
+/// Policy checks keep it on the edit path; replay, which skips them, checks it after every op
+/// on each track the op shifted (`CLIP_OVERLAP`, or `INVALID_RANGE` for a non-positive
+/// duration).
+pub(crate) fn check_tracks(project: &Project, shifts: &[Shift]) -> Result<(), CoreError> {
+    for s in shifts {
+        check_track(&project.timeline.tracks[track_index(project, &s.track)?])?;
+    }
+    Ok(())
+}
+
+fn check_track(track: &Track) -> Result<(), CoreError> {
+    for c in &track.items {
+        if !c.duration.is_positive() {
+            return Err(invalid_range(
+                format!("clip {} has no positive duration", c.id),
+                json!({ "clip": c.id, "duration": c.duration }),
+                "a clip needs a positive duration",
+            ));
+        }
+    }
+    for w in track.items.windows(2) {
+        let prev_end = end(&w[0])?;
+        if w[1].start < prev_end {
+            return Err(CoreError::new(
+                "CLIP_OVERLAP",
+                format!(
+                    "clips {} and {} overlap on track {}",
+                    w[0].id, w[1].id, track.id
+                ),
+            )
+            .with_details(json!({
+                "track": track.id,
+                "clips": [w[0].id, w[1].id],
+                "end": prev_end,
+                "start": w[1].start,
+            })));
+        }
+    }
+    Ok(())
+}
