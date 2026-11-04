@@ -37,6 +37,8 @@ jobs:
         run: pnpm test
       - name: Gate tests
         run: pnpm test:gates
+      - name: End-to-end (fin → finisherd → WebSocket subscriber)
+        run: pnpm e2e
       - name: Install cargo-deny
         if: runner.os != 'Windows'
         run: cargo install cargo-deny --locked --version 0.20.2
