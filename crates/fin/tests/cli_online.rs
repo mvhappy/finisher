@@ -282,6 +282,60 @@ fn same_idem_key_delete_twice_replays_the_commit() {
 }
 
 #[test]
+fn idem_key_reused_for_a_different_command_is_rejected() {
+    let Some((server, dir)) = project("idem_key_reused_for_a_different_command_is_rejected") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&server.sd, &dir, args);
+    ok(run(&["asset", "add", "clip.mp4"]));
+    for _ in 0..2 {
+        ok(run(&[
+            "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "2s",
+        ]));
+    }
+    let delete = ["clip", "delete", "c2", "--idem-key", "k1"];
+    let first = run(&delete);
+    assert_eq!(first.code, 0, "{}", first.stdout);
+    assert_eq!(first.json["rev"], 4);
+    let insert = [
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "end",
+        "--asset",
+        "a1",
+        "--dur",
+        "1s",
+        "--idem-key",
+        "k1",
+    ];
+    let reused = run(&insert);
+    assert_error(&reused, 3, "IDEM_KEY_REUSED");
+    let error = &reused.json["error"];
+    assert_eq!(error["details"]["txId"], "k1");
+    assert_eq!(error["details"]["rev"], 4);
+    assert_eq!(error["details"]["committedOps"][0]["op"], "clip.delete");
+    assert_eq!(error["details"]["committedOps"][0]["clip"], "c2");
+    assert_eq!(error["fix"], "use a new --idem-key for a different command");
+    // The same kind of op on another clip is a different command too.
+    ok(run(&[
+        "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "2s",
+    ]));
+    assert_error(
+        &run(&["clip", "delete", "c3", "--idem-key", "k1"]),
+        3,
+        "IDEM_KEY_REUSED",
+    );
+    // A genuine retry still replays the original commit, byte for byte.
+    let again = run(&delete);
+    assert_eq!(again.code, 0, "{}", again.stdout);
+    assert_eq!(first.stdout, again.stdout);
+    assert_eq!(ok(run(&["status"]))["rev"], 5);
+}
+
+#[test]
 fn idem_key_with_a_locally_invalid_step_keeps_the_servers_conflict() {
     let Some((server, dir)) =
         project("idem_key_with_a_locally_invalid_step_keeps_the_servers_conflict")

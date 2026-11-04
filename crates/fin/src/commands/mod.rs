@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::Args;
-use fin_core::CoreError;
+use fin_core::{CommittedTx, CoreError};
 use fin_core::{MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
 use serde_json::{Value, json};
 
@@ -169,6 +169,9 @@ impl<'a> Builder<'a> {
             (Err(e), Some(local)) if exit_code(&e.code) == VALIDATION => return Err(local),
             (Err(e), _) => return Err(e),
         };
+        if !same_command(&tx.ops, &committed.tx.ops) {
+            return Err(idem_key_reused(&committed));
+        }
         let mut resolved = resolved;
         echo_committed(&mut resolved, &committed.tx.ops);
         Ok(json!({
@@ -179,6 +182,37 @@ impl<'a> Builder<'a> {
             "resolved": resolved,
         }))
     }
+}
+
+/// Whether a commit returned for this tx's id is this command's commit (possibly rebased) rather
+/// than an earlier, different command sent with the same `--idem-key`. Rebasing keeps op count,
+/// op kinds and the clip a trim or delete targets; insert positions may move.
+fn same_command(planned: &[Op], committed: &[Op]) -> bool {
+    planned.len() == committed.len()
+        && planned.iter().zip(committed).all(|(p, c)| {
+            p.name() == c.name()
+                && match (p, c) {
+                    (Op::ClipTrim { clip: a, .. }, Op::ClipTrim { clip: b, .. })
+                    | (Op::ClipDelete { clip: a }, Op::ClipDelete { clip: b }) => a == b,
+                    _ => true,
+                }
+        })
+}
+
+fn idem_key_reused(committed: &CommittedTx) -> CoreError {
+    CoreError::new(
+        "IDEM_KEY_REUSED",
+        format!(
+            "--idem-key {} already committed a different command at rev {}",
+            committed.tx.tx_id, committed.rev
+        ),
+    )
+    .with_details(json!({
+        "txId": committed.tx.tx_id,
+        "rev": committed.rev,
+        "committedOps": committed.tx.ops,
+    }))
+    .with_fix("use a new --idem-key for a different command")
 }
 
 /// Echoes what was committed rather than what was planned: the server may have rebased the tx
@@ -381,5 +415,27 @@ mod tests {
             Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() }),
         );
         assert_eq!(no_key.unwrap_err().code, "NOT_FOUND");
+    }
+
+    #[test]
+    fn a_rebased_commit_is_the_same_command_but_another_kind_or_clip_is_not() {
+        let r = |s: &str| s.parse::<Rational>().unwrap();
+        let insert = |at: &str| Op::ClipInsert {
+            id: "$clip".into(),
+            track: "t1".into(),
+            at: r(at),
+            asset: "a1".into(),
+            source_in: r("0"),
+            duration: r("2"),
+        };
+        let delete = |clip: &str| Op::ClipDelete { clip: clip.into() };
+        assert!(same_command(&[insert("0")], &[insert("4")]));
+        assert!(same_command(&[delete("c1")], &[delete("c1")]));
+        assert!(!same_command(&[insert("0")], &[delete("c1")]));
+        assert!(!same_command(&[delete("c1")], &[delete("c2")]));
+        assert!(!same_command(
+            &[delete("c1")],
+            &[delete("c1"), delete("c2")]
+        ));
     }
 }

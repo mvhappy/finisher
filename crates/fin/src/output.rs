@@ -37,6 +37,7 @@ const VALIDATION_CODES: &[&str] = &[
     "PROJECT_DB_MISSING",
     "PROJECT_DB_MISMATCH",
     "SERVER_DATA_UNSAFE",
+    "IDEM_KEY_REUSED",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
