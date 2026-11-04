@@ -64,6 +64,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
 - [x] Final whole-branch review; fix wave (idem-key reuse → `IDEM_KEY_REUSED`, `PROJECT_DIR_UNWRITABLE`, `CANCELLED` exit 5, empty tx rejected, clock field ranges, rustfmt gate); merged to `main`
 
 ### Follow-ups for sub-project 4 (core breadth)
+- Lease: implement spec §27.9 "v3" (in-place checksummed record, missing+claims = held, server-time staleness with periodic re-probe); validate with Linux clients, network loss and real skew
 - Store open replays the tail through the current `fin-core` and fails `DB_ERROR` on any diff/schema change: add migrations and rebuild-from-segments **before any op or model change**
 - `project create`: idempotent retry, reject empty `--name`, atomic create (orphan db when the JSON write fails, check-then-rename race)
 - `ops.subscribe` with `fromRev` > head should return `BASE_REV_AHEAD`

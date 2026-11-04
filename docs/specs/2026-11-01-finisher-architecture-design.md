@@ -979,8 +979,17 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - **Windows SMB client:**
      - `create_new`, hard links and no-replace rename each had exactly one winner in 100/100 races.
      - Rename-over fails with ACCESS_DENIED while a reader holds the file open, so lease readers open with delete sharing and writers retry.
-     - Uncached lease reads use `FILE_FLAG_NO_BUFFERING`. That doesn't bypass the 10 s file-info cache, so cross-host staleness on Windows is still unmeasured.
      - Directory fsync isn't possible on Windows (ACCESS_DENIED), so it is a no-op there.
+   - **Windows ↔ Mac on one share: the fenced lease above is not enough. The lease is revised as follows (spike "v3", the required design):**
+     - **Why:** after a Mac rename-over of `lease.json`, Windows reports the file *missing* for up to 5 s (its file-not-found cache; `FILE_FLAG_NO_BUFFERING` doesn't help), so the fenced lease treated a live lease as absent: 5/12 early takeovers even with correct clocks, 3 of them of a live holder. A newly created claim file can stay invisible to Windows `stat`/readdir for up to 9.9 s. Under real clock skew (+9.9 s) the fenced lease took over early 12/12, and the 1.5 s confirm re-read missed a live holder at TTL 10 s.
+     - **Record:** `lease.json` is created once, then always rewritten **in place** as a fixed 512-byte record with a checksum (never rename-over). In-place writes were visible to the other host before the writer's call returned. Reads stay uncached.
+     - **Missing or unreadable:** a missing `lease.json` while any `lease.claim-*` exists counts as held, never absent. An unreadable or bad-checksum record counts as held when acquiring and as **lost** when fencing.
+     - **Epoch:** the record's epoch is authoritative; claim-file existence is only a secondary signal (it can lag 10 s on Windows).
+     - **Time:** staleness is judged in server time. The offset is measured from a freshly written probe file's mtime and re-measured periodically (a synced host still drifted about 29 ms/h). A takeover is refused when the probe's round trip exceeds TTL/4.
+     - **Result (v3):** 300 cross-host races with 0 double holders, 0/48 early takeovers and 0/50 stale writes, under emulated +9.9 s skew and after the clock was corrected. The skew emulation reproduced the real-skew behaviour (4/4).
+     - The defaults above hold (TTL 10 s, heartbeat 5 s, stale after 30 s, 1.5 s confirm, self-fence at stamp + 2×TTL). Overshoot was 1.45–3.3 s.
+     - **Still to validate:** v3 with Linux clients, under network loss, with a real (not emulated) skew, and with segment writes in flight.
+     - **Clocks:** Windows did eventually sync on its own, but only after running 9.9 s off for at least a day with "Set time automatically" on. The design assumes any client clock may be wrong by seconds and never asks users to fix it.
    - **Conflict detection stays mandatory.** A write already in flight during network loss landed 10 s after takeover. Segments carry their epoch; duplicate sequence numbers, lower epochs, sync conflict copies and unknown server ids put the project read-only and prompt recovery.
    - **Media on a NAS:** a 1080p H.264 reel decoded at 650–686 fps over SMB (about 66 MB/s; first frame 0.11–0.23 s) against about 2,300 fps locally, and proxy speed was similar. Proxies stay local.
    - **Library scans on a NAS:** about 60k files take 161 s with 32 parallel stats against 450 s serially. Full scans run on open or on demand, never continuously; network roots are polled by directory mtime every 60 s.
