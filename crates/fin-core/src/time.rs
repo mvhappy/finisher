@@ -38,6 +38,20 @@ fn invalid_time(input: &str, why: &str) -> CoreError {
 
 fn overflow() -> CoreError {
     CoreError::new("TIME_OVERFLOW", "rational time overflowed 64 bits")
+        .with_fix("use smaller times, or a frame rate with a smaller denominator")
+}
+
+/// Names the input that overflowed, so a parse error points at what to change.
+fn overflow_at(input: &str, e: CoreError) -> CoreError {
+    if e.code != "TIME_OVERFLOW" {
+        return e;
+    }
+    CoreError::new(
+        "TIME_OVERFLOW",
+        format!("time {input:?} does not fit a 64-bit rational"),
+    )
+    .with_details(json!({ "input": input }))
+    .with_fix("use a smaller time value")
 }
 
 impl Rational {
@@ -160,21 +174,25 @@ impl FromStr for Rational {
     type Err = CoreError;
     /// Accepts `n` or `n/d` (integers only; floats are rejected).
     fn from_str(s: &str) -> Result<Self, CoreError> {
-        let (n, d) = match s.split_once('/') {
-            Some((n, d)) => (n, Some(d)),
-            None => (s, None),
-        };
-        let digits = n.strip_prefix('-').unwrap_or(n);
-        if !all_digits(digits) || d.is_some_and(|d| !all_digits(d)) {
-            return Err(invalid_time(s, "expected an integer or n/d"));
-        }
-        let num = n.parse::<i128>().map_err(|_| overflow())?;
-        let den = d.map_or(Ok(1), |d| d.parse::<i128>().map_err(|_| overflow()))?;
-        if den == 0 {
-            return Err(invalid_time(s, "denominator is zero"));
-        }
-        Rational::from_i128(num, den)
+        parse_rational(s).map_err(|e| overflow_at(s, e))
     }
+}
+
+fn parse_rational(s: &str) -> Result<Rational, CoreError> {
+    let (n, d) = match s.split_once('/') {
+        Some((n, d)) => (n, Some(d)),
+        None => (s, None),
+    };
+    let digits = n.strip_prefix('-').unwrap_or(n);
+    if !all_digits(digits) || d.is_some_and(|d| !all_digits(d)) {
+        return Err(invalid_time(s, "expected an integer or n/d"));
+    }
+    let num = n.parse::<i128>().map_err(|_| overflow())?;
+    let den = d.map_or(Ok(1), |d| d.parse::<i128>().map_err(|_| overflow()))?;
+    if den == 0 {
+        return Err(invalid_time(s, "denominator is zero"));
+    }
+    Rational::from_i128(num, den)
 }
 
 impl Serialize for Rational {
@@ -219,6 +237,10 @@ pub fn frame_duration(rate: Rational) -> Result<Rational, CoreError> {
 /// Parses `12.4s`, `12s`, `-0.5s`, `00:12.4`, `01:00:12.4`, `f300` (frames at `rate`),
 /// or a bare rational/integer (`62/5`, `12`; read as seconds). Decimals are exact.
 pub fn parse_time(input: &str, rate: Rational) -> Result<Rational, CoreError> {
+    parse_time_inner(input, rate).map_err(|e| overflow_at(input, e))
+}
+
+fn parse_time_inner(input: &str, rate: Rational) -> Result<Rational, CoreError> {
     let bad = |why: &str| invalid_time(input, why);
     if let Some(frames) = input.strip_prefix('f') {
         let digits = frames.strip_prefix('-').unwrap_or(frames);
@@ -235,7 +257,7 @@ pub fn parse_time(input: &str, rate: Rational) -> Result<Rational, CoreError> {
         return parse_decimal(sec).ok_or_else(|| bad("expected decimal seconds like 12.4s"))?;
     }
     if input.contains(':') {
-        return parse_clock(input).ok_or_else(|| bad("expected MM:SS[.f] or HH:MM:SS[.f]"))?;
+        return parse_clock(input);
     }
     if input.contains('/') || all_digits(input.strip_prefix('-').unwrap_or(input)) {
         return input.parse().map_err(|e: CoreError| {
@@ -268,31 +290,39 @@ fn parse_decimal(s: &str) -> Option<Result<Rational, CoreError>> {
     Some(Rational::from_i128(n, scale))
 }
 
-/// `[HH:]MM:SS[.f]`, optionally negative.
-fn parse_clock(s: &str) -> Option<Result<Rational, CoreError>> {
-    let (neg, body) = match s.strip_prefix('-') {
+/// `[HH:]MM:SS[.f]`, optionally negative. The leading field is unbounded (`90:00` is 90
+/// minutes); minutes after hours and seconds must be below 60.
+fn parse_clock(input: &str) -> Result<Rational, CoreError> {
+    let bad = |why: &str| invalid_time(input, why);
+    let shape = || bad("expected MM:SS[.f] or HH:MM:SS[.f]");
+    let (neg, body) = match input.strip_prefix('-') {
         Some(rest) => (true, rest),
-        None => (false, s),
+        None => (false, input),
     };
     let parts: Vec<&str> = body.split(':').collect();
     if !(2..=3).contains(&parts.len()) {
-        return None;
+        return Err(shape());
     }
-    let (secs, head) = parts.split_last()?;
+    let (secs, head) = parts.split_last().ok_or_else(shape)?;
     if head.iter().any(|p| !all_digits(p)) || secs.starts_with('-') {
-        return None;
+        return Err(shape());
     }
     let mut total: i128 = 0;
-    for p in head {
+    for (i, p) in head.iter().enumerate() {
+        let field: i128 = p.parse().map_err(|_| overflow())?;
+        if i > 0 && field >= 60 {
+            return Err(bad("minutes must be below 60"));
+        }
         total = total
-            .checked_mul(60)?
-            .checked_add(p.parse::<i128>().ok()?)?;
+            .checked_mul(60)
+            .and_then(|t| t.checked_add(field))
+            .ok_or_else(overflow)?;
     }
-    let sec = match parse_decimal(secs)? {
-        Ok(r) => r,
-        Err(e) => return Some(Err(e)),
-    };
-    let whole = Rational::from_i128(total.checked_mul(60)?, 1);
-    let sum = whole.and_then(|w| w.checked_add(sec));
-    Some(sum.and_then(|r| if neg { r.checked_neg() } else { Ok(r) }))
+    let sec = parse_decimal(secs).ok_or_else(shape)??;
+    if sec >= Rational::from_int(60) {
+        return Err(bad("seconds must be below 60"));
+    }
+    let whole = Rational::from_i128(total.checked_mul(60).ok_or_else(overflow)?, 1)?;
+    let sum = whole.checked_add(sec)?;
+    if neg { sum.checked_neg() } else { Ok(sum) }
 }

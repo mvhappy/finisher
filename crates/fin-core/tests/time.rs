@@ -69,6 +69,65 @@ fn overflow_is_typed() {
 }
 
 #[test]
+fn clock_fields_after_the_first_are_below_60() {
+    // The leading field is unbounded: 90 minutes, or 100 hours.
+    assert_eq!(parse_time("90:00", rate(30)).unwrap(), r("5400"));
+    assert_eq!(parse_time("100:00:00", rate(30)).unwrap(), r("360000"));
+    assert_eq!(parse_time("00:59.999", rate(30)).unwrap(), r("59999/1000"));
+    assert_eq!(parse_time("01:59:59", rate(30)).unwrap(), r("7199"));
+    for bad in [
+        "00:60",
+        "00:75",
+        "00:60.0",
+        "00:59.9999:1",
+        "01:60:00",
+        "01:00:60",
+        "-00:61",
+    ] {
+        let e = parse_time(bad, rate(30)).unwrap_err();
+        assert_eq!(e.code, "INVALID_TIME", "{bad}");
+        assert_eq!(e.details["input"], bad);
+        assert!(e.fix.is_some(), "{bad}");
+    }
+    let e = parse_time("01:75:00", rate(30)).unwrap_err();
+    assert!(
+        e.message.contains("minutes must be below 60"),
+        "{}",
+        e.message
+    );
+    let e = parse_time("00:75", rate(30)).unwrap_err();
+    assert!(
+        e.message.contains("seconds must be below 60"),
+        "{}",
+        e.message
+    );
+}
+
+#[test]
+fn parse_overflow_names_the_input_and_has_a_fix() {
+    let huge = "99999999999999999999999";
+    for input in [
+        format!("{huge}s"),
+        format!("{huge}:00"),
+        format!("{huge}{huge}:00:00"),
+        format!("f{huge}"),
+        huge.to_string(),
+    ] {
+        let e = parse_time(&input, rate(30)).unwrap_err();
+        assert_eq!(e.code, "TIME_OVERFLOW", "{input}");
+        assert_eq!(e.details["input"], input.as_str());
+        assert!(e.fix.is_some(), "{input}");
+    }
+    let e = huge.parse::<Rational>().unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), &e.details["input"]),
+        ("TIME_OVERFLOW", &serde_json::json!(huge))
+    );
+    let max = Rational::from_int(i64::MAX);
+    assert!((max + max).unwrap_err().fix.is_some());
+}
+
+#[test]
 fn orders_by_value() {
     assert!(r("1/3") < r("1/2"));
     assert!(r("-1/2") < r("-1/3"));
