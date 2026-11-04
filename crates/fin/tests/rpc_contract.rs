@@ -110,8 +110,9 @@ fn tx(id: &str, base: u64, ops: Value) -> Value {
 #[test]
 fn captured_frames_replay_against_a_live_server() {
     let Some(server) = Server::start("captured_frames_replay_against_a_live_server") else { return };
-    let tmp = server.root.display().to_string();
-    let mut subst = vec![("/fixture".to_string(), tmp)];
+    // Substituted inside JSON string literals: escape it (Windows paths have backslashes).
+    let tmp = serde_json::to_string(&server.root.display().to_string()).unwrap();
+    let mut subst = vec![("/fixture".to_string(), tmp[1..tmp.len() - 1].to_string())];
 
     let hello = Conn::open(&server, &subst).replay("hello");
     assert_eq!(hello["exit"]["value"]["protocolVersion"], 1, "{hello}");
