@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { lockExclusive } from "@finisher/fin-node";
+import { socketPath } from "../src/config.ts";
 import { childEnv } from "../src/env.ts";
 import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
@@ -170,6 +171,21 @@ describe("finisherd", () => {
     expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(1);
   });
 
+  test("servers on two server-data dirs run side by side (distinct sockets/pipes)", async () => {
+    const { info } = await start();
+    const other = await startServer(join(tmp, "other-server-data"));
+    try {
+      expect(other.info.socket).not.toBe(info.socket);
+      for (const socket of [info.socket, other.info.socket]) {
+        const c = await NdjsonClient.connect(socket);
+        expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(1);
+        await c.close();
+      }
+    } finally {
+      await other.stop();
+    }
+  });
+
   test("two servers racing over a stale socket: exactly one wins", async () => {
     mkdirSync(serverData, { recursive: true, mode: 0o700 });
     writeFileSync(join(serverData, "fin.sock"), ""); // stale leftover, nothing listening
@@ -242,6 +258,25 @@ describe("finisherd", () => {
     });
     ws.close();
     expect(JSON.parse(reply.trim())).toMatchObject({ _tag: "Exit", requestId: "1", exit: { _tag: "Success", value: { protocolVersion: 1 } } });
+  });
+});
+
+describe("socketPath", () => {
+  const appData = "C:\\Users\\ann\\AppData\\Local\\Finisher";
+
+  test("Unix: fin.sock inside server-data", () => {
+    expect(socketPath("/srv/sd", "linux", "/home/ann/.local/share/finisher", "ann")).toBe(join("/srv/sd", "fin.sock"));
+  });
+
+  test("Windows: the default server-data owns finisher-<username>, others get a hashed pipe", () => {
+    expect(socketPath(appData, "win32", appData, "ann")).toBe("\\\\.\\pipe\\finisher-ann");
+    // Case and a trailing separator do not make a different server-data on Windows.
+    expect(socketPath(`${appData.toUpperCase()}\\`, "win32", appData, "ann")).toBe("\\\\.\\pipe\\finisher-ann");
+
+    const temp = socketPath("C:\\Temp\\sd-1", "win32", appData, "ann");
+    expect(temp).toMatch(/^\\\\\.\\pipe\\finisher-ann-[0-9a-f]{12}$/);
+    expect(socketPath("c:\\temp\\SD-1", "win32", appData, "ann")).toBe(temp);
+    expect(socketPath("C:\\Temp\\sd-2", "win32", appData, "ann")).not.toBe(temp);
   });
 });
 

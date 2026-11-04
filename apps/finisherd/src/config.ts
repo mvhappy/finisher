@@ -1,5 +1,5 @@
 // Server-data location, local socket path and the `finisherd.json` discovery file.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,10 +19,25 @@ export function defaultServerData(
   return join(env.XDG_DATA_HOME || join(home, ".local", "share"), "finisher");
 }
 
-/** Plan decision 5: `<server-data>/fin.sock`, or `\\.\pipe\finisher-<username>` on Windows. */
-export function socketPath(serverData: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform === "win32") return `\\\\.\\pipe\\finisher-${userInfo().username}`;
-  return join(serverData, "fin.sock");
+/**
+ * Plan decision 5: `<server-data>/fin.sock`, or on Windows the named pipe
+ * `\\.\pipe\finisher-<username>` for the default server-data. Pipe names are global per
+ * machine rather than per directory, so any other server-data gets its own pipe
+ * `finisher-<username>-<hash>` (12 hex chars of SHA-256 of the lower-cased path): otherwise a
+ * second server-data (tests, a temp dir) would collide with the default server's pipe.
+ * Clients find the actual name in `finisherd.json`.
+ */
+export function socketPath(
+  serverData: string,
+  platform: NodeJS.Platform = process.platform,
+  defaultDir: string = defaultServerData({ ...process.env, FIN_SERVER_DATA: undefined }, platform),
+  username: string = userInfo().username,
+): string {
+  if (platform !== "win32") return join(serverData, "fin.sock");
+  const pipe = `\\\\.\\pipe\\finisher-${username}`;
+  const key = (dir: string) => dir.replace(/[\\/]+$/, "").toLowerCase();
+  if (key(serverData) === key(defaultDir)) return pipe;
+  return `${pipe}-${createHash("sha256").update(key(serverData)).digest("hex").slice(0, 12)}`;
 }
 
 export interface CliArgs {
