@@ -47,8 +47,12 @@ function log(message) {
 
 function build(cmd, args) {
   log(`$ ${cmd} ${args.join(" ")}`);
-  // `pnpm` is a .cmd shim on Windows, which only a shell can run.
-  const { status } = spawnSync(cmd, args, { cwd: ROOT, stdio: "inherit", shell: WIN && cmd === "pnpm" });
+  // `pnpm` is a .cmd shim on Windows, which only a shell can run; the args are fixed words,
+  // passed as one command line (Node deprecates separate args with `shell`).
+  const shell = WIN && cmd === "pnpm";
+  const { status } = shell
+    ? spawnSync(`${cmd} ${args.join(" ")}`, { cwd: ROOT, stdio: "inherit", shell })
+    : spawnSync(cmd, args, { cwd: ROOT, stdio: "inherit" });
   if (status !== 0) throw new Error(`${cmd} ${args.join(" ")} failed (exit ${status})`);
 }
 
