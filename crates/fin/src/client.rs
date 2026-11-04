@@ -7,15 +7,16 @@
 //! server stalls. An `exit` is `{"_tag":"Success","value"}` or `{"_tag":"Failure","cause":[…]}`
 //! whose reasons are `Fail {error: FinError}`, `Die {defect}` or `Interrupt {fiberId}`.
 
-use std::io::{self, BufRead, BufReader, Write};
+use std::io;
 use std::time::Duration;
 
 use fin_core::CoreError;
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{ConnectOptions, GenericFilePath, Stream};
+use interprocess::local_socket::{ConnectOptions, GenericFilePath};
 use interprocess::ConnectWaitMode;
 use serde_json::{Value, json};
 
+use crate::conn::TimedConn;
 use crate::endpoint::Endpoint;
 use crate::output::unavailable;
 
@@ -154,7 +155,7 @@ fn in_flight(mut e: CoreError, tx_id: &str) -> CoreError {
 pub struct Client {
     endpoint: Endpoint,
     timeout: Duration,
-    conn: BufReader<Stream>,
+    conn: TimedConn,
     next_id: u64,
 }
 
@@ -172,9 +173,8 @@ impl Client {
             .wait_mode(ConnectWaitMode::Timeout(timeout))
             .connect_sync()
             .map_err(|e| if timed_out(&e) { timeout_error(endpoint, "accept the connection", timeout) } else { down(format!("{:?}", e.kind())) })?;
-        stream.set_recv_timeout(Some(timeout)).map_err(|e| down(e.to_string()))?;
-        stream.set_send_timeout(Some(timeout)).map_err(|e| down(e.to_string()))?;
-        Ok(Client { endpoint: endpoint.clone(), timeout, conn: BufReader::new(stream), next_id: 1 })
+        // Read/write timeouts come from `TimedConn`: Windows named pipes have no OS-level ones.
+        Ok(Client { endpoint: endpoint.clone(), timeout, conn: TimedConn::new(stream, timeout), next_id: 1 })
     }
 
     fn io_error(&self, what: &str, e: &io::Error) -> CoreError {
@@ -187,15 +187,13 @@ impl Client {
     fn send(&mut self, frame: &Value) -> Result<(), CoreError> {
         let mut line = frame.to_string();
         line.push('\n');
-        let out = self.conn.get_mut();
-        out.write_all(line.as_bytes()).and_then(|()| out.flush()).map_err(|e| self.io_error("send", &e))
+        self.conn.write_all(line.as_bytes()).map_err(|e| self.io_error("send", &e))
     }
 
     fn read_frame(&mut self) -> Result<Frame, CoreError> {
-        let mut line = String::new();
         loop {
-            line.clear();
-            let n = self.conn.read_line(&mut line).map_err(|e| self.io_error("answer", &e))?;
+            let line = self.conn.read_line().map_err(|e| self.io_error("answer", &e))?;
+            let n = line.len();
             if n == 0 || !line.ends_with('\n') {
                 let reason = if n == 0 { "the server closed the connection" } else { "the server closed the connection mid-frame" };
                 return Err(unavailable(json!({ "endpoint": self.endpoint.display(), "reason": reason })));
@@ -316,14 +314,32 @@ mod tests {
         assert!(matches!(parse_frame(bare).unwrap(), Frame::Exit { result: Err(e), .. } if e.code == "INTERNAL"));
     }
 
-    #[cfg(unix)]
+    /// Runs on Unix (socket files) and Windows (named pipes, which have no OS I/O timeouts).
     #[test]
     fn a_silent_server_is_a_typed_timeout_and_a_missing_one_is_unavailable() {
+        use interprocess::local_socket::{Listener, ListenerOptions};
+        use std::io::{BufRead, BufReader, Write};
+
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
-        let mut client = Client::connect(&Endpoint::Socket(path.clone()), Duration::from_millis(200)).unwrap();
+        let endpoint = |name: &str| {
+            if cfg!(windows) {
+                Endpoint::Pipe(format!(r"\\.\pipe\fin-client-test-{}-{name}", std::process::id()))
+            } else {
+                Endpoint::Socket(dir.path().join(format!("{name}.sock")))
+            }
+        };
+        let listen = |ep: &Endpoint| -> Listener {
+            let name = match ep {
+                Endpoint::Socket(p) => p.as_path().to_fs_name::<GenericFilePath>(),
+                Endpoint::Pipe(p) => p.as_str().to_fs_name::<GenericFilePath>(),
+            };
+            ListenerOptions::new().name(name.unwrap()).create_sync().unwrap()
+        };
+
+        let silent = endpoint("silent");
+        let listener = listen(&silent);
+        let held = std::thread::spawn(move || listener.accept());
+        let mut client = Client::connect(&silent, Duration::from_millis(200)).unwrap();
         let server_side = held.join().unwrap().unwrap();
         let hello = client.call("server.hello", json!({})).unwrap_err();
         assert_eq!(hello.code, "SERVER_TIMEOUT");
@@ -334,21 +350,21 @@ mod tests {
         drop(server_side);
         // The server reads the request, writes half a frame and goes away: unavailable, not a
         // protocol error, and the commit's fate is unknown.
-        let half = dir.path().join("half.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&half).unwrap();
+        let half = endpoint("half");
+        let listener = listen(&half);
         let server = std::thread::spawn(move || {
-            use std::io::Write as _;
-            let (stream, _) = listener.accept().unwrap();
+            let stream = listener.accept().unwrap();
             let mut reader = BufReader::new(stream);
             reader.read_line(&mut String::new()).unwrap();
             reader.get_mut().write_all(br#"{"_tag":"Exit","requestId":"1""#).unwrap();
+            reader.get_mut().flush().unwrap();
         });
-        let mut client = Client::connect(&Endpoint::Socket(half), Duration::from_secs(5)).unwrap();
+        let mut client = Client::connect(&half, Duration::from_secs(5)).unwrap();
         let cut = client.commit(json!({}), "tx-10").unwrap_err();
         server.join().unwrap();
         assert_eq!((cut.code.as_str(), &cut.details["txId"]), ("SERVER_UNAVAILABLE", &json!("tx-10")));
         assert_eq!(cut.details["reason"], "the server closed the connection mid-frame");
-        let gone = Endpoint::Socket(dir.path().join("none.sock"));
+        let gone = endpoint("none");
         assert_eq!(Client::connect(&gone, Duration::from_millis(200)).err().unwrap().code, "SERVER_UNAVAILABLE");
     }
 }

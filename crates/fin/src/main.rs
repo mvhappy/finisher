@@ -5,6 +5,7 @@ mod addr;
 mod backend;
 mod client;
 mod commands;
+mod conn;
 mod endpoint;
 mod map;
 mod output;
