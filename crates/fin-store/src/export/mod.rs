@@ -213,6 +213,9 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
     let Ok(lease_epoch) = store.export.lease.check() else {
         return Ok(Step::Stopped);
     };
+    if let Some(e) = too_large(branch, &rows[0]) {
+        return Ok(Step::Failed(e));
+    }
     let prev = prev_segment(&store.conn, branch, first)?;
     let dir = segments_root(&store.project_dir).join(branch);
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -236,6 +239,29 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
         }
     };
     write(store, &dir, attempt)
+}
+
+/// A record that cannot fit a segment every reader accepts. Commit refuses them
+/// (`TX_TOO_LARGE`), but migration 0001 brings sub-project 2 history in unchecked: export
+/// stops at such a record rather than write a file followers would reject.
+fn too_large(branch: &str, row: &Row) -> Option<CoreError> {
+    let limit = segment::MAX_RECORD_BYTES;
+    (row.bytes.len() > limit).then(|| {
+        CoreError::new(
+            "RECORD_TOO_LARGE",
+            format!(
+                "record {} (seq {}) is {} bytes; a segment holds records of at most {limit}",
+                row.tx_id,
+                row.seq,
+                row.bytes.len()
+            ),
+        )
+        .with_details(json!({
+            "branch": branch, "txId": row.tx_id, "seq": row.seq,
+            "bytes": row.bytes.len(), "limit": limit,
+        }))
+        .with_fix("export stops at this record; nothing after it reaches the folder until it is removed or split (fin project verify reports it)")
+    })
 }
 
 /// Writes `a`, verifies it by read-back and marks it.
@@ -267,12 +293,23 @@ fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> 
             io::ErrorKind::AlreadyExists | io::ErrorKind::NotFound
         )
     });
+    // Only a write that put a file in place (or found one there) makes an unverifiable
+    // read-back evidence of a foreign file; otherwise it is the folder failing.
+    let file_in_place = written
+        .as_ref()
+        .map_or_else(|e| e.kind() == io::ErrorKind::AlreadyExists, |()| true);
     let retries = if plain_failure { 0 } else { READBACK_RETRIES };
     let mut a = a;
     match read_back(&target, &a.hash, retries) {
         ReadBack::Ours => {}
         ReadBack::Other(why) => return Ok(collision(store, &target, a, why)),
         ReadBack::Missing(read_err) if read_err.kind() == io::ErrorKind::NotFound => {
+            let branch = a.branch.clone();
+            store.export.attempt = Some(a);
+            let e = written.err().unwrap_or(read_err);
+            return Ok(Step::Failed(folder_error(&target, &branch, &e)));
+        }
+        ReadBack::Missing(read_err) if !file_in_place => {
             let branch = a.branch.clone();
             store.export.attempt = Some(a);
             let e = written.err().unwrap_or(read_err);
@@ -425,16 +462,17 @@ fn prepare(
         };
         let lines: Vec<&[u8]> = chunk.iter().map(|r| r.bytes.as_slice()).collect();
         let (bytes, hash) = segment::encode(&header, &lines);
-        if bytes.len() > segment::MAX_BYTES && n > 1 {
-            n -= 1;
-            continue;
+        if bytes.len() > segment::MAX_BYTES {
+            if n > 1 {
+                n -= 1;
+                continue;
+            }
+            // `too_large` stops export before such a record; never write it.
+            return Err(broken(
+                branch,
+                format!("seq {first} does not fit a segment"),
+            ));
         }
-        // Commit refuses records above MAX_RECORD_BYTES, so one record always fits.
-        debug_assert!(
-            bytes.len() <= segment::MAX_BYTES,
-            "segment of {} bytes",
-            bytes.len()
-        );
         let name = names::hash12(&hash)
             .and_then(|h| SegmentName::new(epoch, first, last, h))
             .ok_or_else(|| {

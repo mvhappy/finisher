@@ -50,6 +50,8 @@ const VALIDATION_CODES: &[&str] = &[
     "CLIP_NEGATIVE",
     "INVALID_ID",
     "BINDINGS_MISMATCH",
+    // A stored (migrated) record too large for a segment: export stops at it.
+    "RECORD_TOO_LARGE",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -154,6 +156,7 @@ mod tests {
         assert_eq!(exit_code("TX_TOO_LARGE"), 2);
         assert_eq!(exit_code("CONFLICT"), 4);
         assert_eq!(exit_code("SEGMENT_COLLISION"), 4);
+        assert_eq!(exit_code("RECORD_TOO_LARGE"), 3);
         assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
         for code in [
             "SERVER_UNAVAILABLE",

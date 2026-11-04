@@ -941,3 +941,69 @@ fn export_error_clears_when_nothing_is_left() {
     s.tick(t + 3 * S).unwrap();
     assert_eq!(s.export_error(), None);
 }
+
+#[test]
+fn an_oversized_stored_record_stops_the_export_instead_of_being_written() {
+    // Migration 0001 brings sub-project 2 history in without the commit-time size check.
+    let e = env();
+    let mut s = create(&e);
+    commit(&mut s, "a");
+    commit(&mut s, "b");
+    commit(&mut s, "c");
+    // A real record, padded past the limit (it still replays).
+    let huge = String::from_utf8(record_bytes(&s, 2)).unwrap().replacen(
+        "\"author\":\"test\"",
+        &format!("\"author\":\"{}\"", "x".repeat(MAX_BYTES)),
+        1,
+    );
+    assert!(huge.len() > MAX_BYTES);
+    conn(&s)
+        .execute(
+            "UPDATE txs SET record_bytes = ?1 WHERE seq = 2",
+            params![huge.as_bytes()],
+        )
+        .unwrap();
+    let r = s.close().unwrap();
+    assert_eq!(
+        (r.segments_written, r.records),
+        (1, 1),
+        "the records before it go out"
+    );
+    let err = r.error.expect("reported");
+    assert_eq!(err.code, "RECORD_TOO_LARGE");
+    assert_eq!(
+        (err.details["txId"].as_str(), err.details["seq"].as_u64()),
+        (Some("b"), Some(2))
+    );
+    let s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(exported_flags(&s), [(1, true), (2, false), (3, false)]);
+    for (_, _, len) in segments(&e.dir) {
+        assert!(len <= MAX_BYTES as u64);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unwritable_unreadable_folder_never_escalates_to_a_collision() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root ignores directory permissions");
+        return;
+    }
+    let e = env();
+    let mut s = create(&e);
+    commit(&mut s, "a");
+    let dir = seg_dir(&e.dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let t = Instant::now();
+    s.tick(t).unwrap();
+    let mut codes = Vec::new();
+    for i in 1..=5 {
+        codes.push(s.tick(t + 2 * i * S).unwrap().error.expect("reported").code);
+    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(codes, vec!["PROJECT_DIR_UNWRITABLE"; 5]);
+    let r = s.tick(t + 12 * S).unwrap();
+    assert_eq!((r.segments_written, r.error), (1, None));
+}
