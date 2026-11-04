@@ -4,8 +4,8 @@ import { Rpc, RpcGroup } from "effect/rpc";
 import { FinError } from "./errors.ts";
 
 /**
- * TODO(Task 7/8): `Probe` is a Rust type and is not generated yet. Replace this
- * with the generated `Probe` from `@finisher/core-types` once it exists.
+ * TODO(sub-project 4): generate Probe from fin-probe's schema. Until then it is
+ * opaque here; Rust validates it.
  */
 export type Probe = unknown;
 
