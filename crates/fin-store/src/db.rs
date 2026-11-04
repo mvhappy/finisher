@@ -10,11 +10,10 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use fin_core::{
-    Applied, CommittedTx, CoreError, IdAlloc, IdKind, MemIds, Op, Project, Record, RecordKind, Tx,
-    apply_committed, encode_record, resolve_ops, upcast_record, upcast_snapshot,
+    Applied, CommittedTx, CoreError, Diff, IdAlloc, IdKind, MemIds, Op, Project, Record,
+    RecordKind, Tx, apply_committed, encode_record, resolve_ops, upcast_record, upcast_snapshot,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
@@ -240,52 +239,64 @@ pub(crate) fn latest_snapshot(
     .transpose()
 }
 
-/// Appends `tx` at `seq` as a hashed record chained to the branch's previous record (epoch 0,
-/// not exported).
-pub(crate) fn insert_tx(
-    conn: &Connection,
-    seq: u64,
-    tx: &Tx,
-    applied: &Applied,
-) -> Result<(), StoreError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis());
-    let parent: Option<String> = conn
+/// Hash of the newest record on `branch`: the `parent_hash` of the next one (`None` for the
+/// first).
+pub(crate) fn tip_hash(conn: &Connection, branch: &str) -> Result<Option<String>, StoreError> {
+    Ok(conn
         .query_row(
             "SELECT tx_hash FROM txs WHERE branch = ?1 ORDER BY seq DESC LIMIT 1",
-            params![tx.branch],
+            params![branch],
             |r| r.get(0),
         )
-        .optional()?;
-    let record = new_record(
-        seq,
-        tx.clone(),
-        applied.inverse.clone(),
-        applied.bindings.clone(),
-        parent,
-        i64::try_from(now).unwrap_or(i64::MAX),
-    )?;
-    let bytes = encode_record(&record);
+        .optional()?)
+}
+
+/// Appends `record` (epoch 0, not exported) on `branch`. The stored bytes are the record's
+/// encoding and `tx_hash` is their hash, so what is hashed is exactly what is stored.
+pub(crate) fn insert_tx(
+    conn: &Connection,
+    branch: &str,
+    record: &Record,
+    diff: &Diff,
+) -> Result<(), StoreError> {
+    let bytes = encode_record(record);
     conn.execute(
         "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
                           exported, diff, schema_version, author, committed_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, ?9, ?10, ?11)",
         params![
-            to_i64(seq)?,
-            tx.branch,
+            to_i64(record.seq)?,
+            branch,
             record.tx_id,
             kind_text(record.kind)?,
             bytes,
             hash_bytes(&bytes),
             record.parent_hash,
-            serde_json::to_string(&applied.diff)?,
+            serde_json::to_string(diff)?,
             record.schema_version,
             record.author,
             record.committed_at,
         ],
     )?;
     Ok(())
+}
+
+/// The raw `(seq, record_bytes)` rows of `branch` with `seq > after`, in order.
+pub(crate) fn record_rows(
+    conn: &Connection,
+    branch: &str,
+    after: u64,
+) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
+    let mut stmt = conn
+        .prepare("SELECT seq, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq")?;
+    let rows = stmt.query_map(params![branch, to_i64(after)?], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    rows.map(|r| {
+        let (seq, bytes) = r?;
+        Ok((to_u64(seq)?, bytes))
+    })
+    .collect()
 }
 
 /// The `kind` column: the record's serialised kind (`"edit"` → `edit`).
@@ -422,34 +433,39 @@ impl IdAlloc for Counters {
     }
 }
 
-/// `project` with the committed tx `c` applied again ([`fin_core::apply_committed`]: the
-/// recorded bindings fix every id, structural checks only), producing the same ids, bindings and
-/// diff as when it was committed. Used to rebuild heads from snapshots and by replay checks.
-pub fn replay(project: &Project, c: &CommittedTx) -> Result<Project, StoreError> {
-    let applied =
-        apply_committed(project, &c.tx, &c.bindings).map_err(|e| replay_error(c, Some(e)))?;
-    if applied.diff != c.diff {
-        return Err(replay_error(c, None));
-    }
-    Ok(applied.project)
+/// Applies the stored record `bytes` to `project`: upcasts it and re-applies its intent with the
+/// recorded bindings fixing every id ([`apply_committed`]: structural checks only, no policy and
+/// no comparison with the stored diff), so history is never re-judged.
+///
+/// Structural damage is `REPLAY_FAILED` with `details {txId, seq, cause}`. Bytes that are not
+/// JSON, or not a record (or newer than this Finisher), keep the error of [`upcast_record`] /
+/// `INVALID_FORMAT` with `details {kind: "record", reason}`.
+pub fn replay_record(project: &Project, bytes: &[u8]) -> Result<Applied, StoreError> {
+    let value = serde_json::from_slice(bytes).map_err(|e| {
+        CoreError::new(
+            "INVALID_FORMAT",
+            format!("a stored record is not JSON: {e}"),
+        )
+        .with_details(serde_json::json!({ "kind": "record", "reason": e.to_string() }))
+    })?;
+    let record = upcast_record(value)?;
+    Ok(apply_committed(project, &record.intent, &record.bindings)
+        .map_err(|e| with_seq(e, to_i64(record.seq).unwrap_or(i64::MAX)))?)
 }
 
-fn replay_error(c: &CommittedTx, cause: Option<CoreError>) -> StoreError {
-    let mut details = BTreeMap::new();
-    details.insert("rev", serde_json::json!(c.rev));
-    details.insert("txId", serde_json::json!(c.tx.tx_id));
-    if let Some(e) = cause {
-        details.insert("cause", serde_json::json!(e));
+/// [`replay_record`] for the row at `seq`: failures carry `details.seq`.
+pub(crate) fn replay_row(project: &Project, seq: u64, bytes: &[u8]) -> Result<Applied, StoreError> {
+    replay_record(project, bytes).map_err(|e| {
+        let e = CoreError::from(e);
+        with_seq(e, to_i64(seq).unwrap_or(i64::MAX)).into()
+    })
+}
+
+fn with_seq(mut e: CoreError, seq: i64) -> CoreError {
+    if let serde_json::Value::Object(map) = &mut e.details {
+        map.insert("seq".into(), serde_json::json!(seq));
     }
-    CoreError::new(
-        "DB_ERROR",
-        format!(
-            "committed tx {} (rev {}) does not replay",
-            c.tx.tx_id, c.rev
-        ),
-    )
-    .with_details(serde_json::json!(details))
-    .into()
+    e
 }
 
 #[cfg(test)]

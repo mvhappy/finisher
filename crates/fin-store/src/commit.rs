@@ -2,6 +2,8 @@
 //! apply it, and append it in one SQLite transaction together with the id counters it used.
 
 use fin_core::{CommittedTx, CoreError, Tx, apply_tx, rebase_tx};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use rusqlite::TransactionBehavior;
 use serde_json::{Value, json};
 
@@ -53,7 +55,16 @@ impl Store {
         let mut ids = Counters::load(&txn)?;
         let applied = apply_tx(&head.project, &tx, &mut ids)?;
         ids.save(&txn)?;
-        db::insert_tx(&txn, rev, &tx, &applied)?;
+        let parent = db::tip_hash(&txn, &tx.branch)?;
+        let record = db::new_record(
+            rev,
+            tx.clone(),
+            applied.inverse.clone(),
+            applied.bindings.clone(),
+            parent,
+            now_ms(),
+        )?;
+        db::insert_tx(&txn, &tx.branch, &record, &applied.diff)?;
         if rev % SNAPSHOT_EVERY == 0 {
             db::insert_snapshot(&txn, &tx.branch, rev, &applied.project)?;
         }
@@ -82,6 +93,13 @@ impl Store {
             bindings: applied.bindings,
         })
     }
+}
+
+fn now_ms() -> i64 {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    i64::try_from(ms).unwrap_or(i64::MAX)
 }
 
 fn with_tx_id(mut e: CoreError, tx_id: &str) -> CoreError {

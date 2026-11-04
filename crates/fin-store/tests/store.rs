@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use fin_core::{CoreError, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo};
-use fin_store::{MAIN, Store, StoreError, db_path, read_project_file, replay};
+use fin_store::{MAIN, Store, StoreError, db_path, read_project_file, replay_record};
 use tempfile::TempDir;
 
 fn secs(n: i64) -> Rational {
@@ -81,6 +81,22 @@ fn with_asset(e: &Env) -> Store {
     let mut s = create(e);
     s.commit(tx("tx-asset", 0, vec![asset("$a")])).unwrap();
     s
+}
+
+/// Replays the first `n` stored records of `main` onto `zero` through `replay_record`.
+fn replay_all(s: &Store, zero: Project, n: usize) -> Project {
+    let conn = rusqlite::Connection::open(s.db_path()).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT record_bytes FROM txs WHERE branch = ?1 ORDER BY seq")
+        .unwrap();
+    let rows: Vec<Vec<u8>> = stmt
+        .query_map([MAIN], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows.len(), n);
+    rows.iter()
+        .fold(zero, |p, b| replay_record(&p, b).unwrap().project)
 }
 
 fn code(e: StoreError) -> CoreError {
@@ -423,7 +439,7 @@ fn ops_since_zero_replays_to_the_snapshot() {
     let head = s.snapshot(MAIN).unwrap().1;
     let zero =
         fin_core::new_project(s.project_id().to_string(), head.name.clone(), head.rate).unwrap();
-    let replayed = history.iter().try_fold(zero, |p, c| replay(&p, c)).unwrap();
+    let replayed = replay_all(&s, zero, history.len());
     assert_eq!(replayed, head);
     drop(s);
     assert_eq!(
@@ -561,6 +577,6 @@ fn sp2_fixture_opens_and_replays_to_expected_state() {
     let history = store.ops_since(MAIN, 0).unwrap();
     assert_eq!(history.len() as u64, rev);
     let zero = fin_core::new_project(head.id.clone(), head.name.clone(), head.rate).unwrap();
-    let replayed = history.iter().try_fold(zero, |p, c| replay(&p, c)).unwrap();
+    let replayed = replay_all(&store, zero, history.len());
     assert_eq!(replayed, head);
 }

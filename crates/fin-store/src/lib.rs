@@ -19,7 +19,7 @@ use fin_core::{CommittedTx, CoreError, Project, Rational, SCHEMA_VERSION, new_pr
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub use db::{SNAPSHOT_EVERY, replay};
+pub use db::{SNAPSHOT_EVERY, replay_record};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
 pub use migrations::{APPLICATION_ID, DB_VERSION};
@@ -329,18 +329,18 @@ pub(crate) fn refresh(
             return Ok(());
         }
         if head.rev < latest {
-            for c in db::txs_since(conn, branch, head.rev)? {
-                head.project = replay(&head.project, &c)?;
-                head.rev = c.rev;
+            for (seq, bytes) in db::record_rows(conn, branch, head.rev)? {
+                head.project = db::replay_row(&head.project, seq, &bytes)?.project;
+                head.rev = seq;
             }
             return Ok(());
         }
     }
     let (mut rev, mut project) =
         db::latest_snapshot(conn, branch)?.ok_or_else(|| branch_not_found(branch))?;
-    for c in db::txs_since(conn, branch, rev)? {
-        project = replay(&project, &c)?;
-        rev = c.rev;
+    for (seq, bytes) in db::record_rows(conn, branch, rev)? {
+        project = db::replay_row(&project, seq, &bytes)?.project;
+        rev = seq;
     }
     heads.insert(branch.to_string(), Head { rev, project });
     Ok(())
