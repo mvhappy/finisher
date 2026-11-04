@@ -6,11 +6,13 @@
 
 mod backup;
 mod commit;
+pub mod conflict_names;
 mod db;
 pub mod fsio;
 mod migrations;
 pub mod names;
 mod paths;
+pub mod scan;
 pub mod segment;
 pub mod snapfile;
 
