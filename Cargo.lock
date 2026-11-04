@@ -332,6 +332,7 @@ dependencies = [
  "fin-core",
  "fin-store",
  "libc",
+ "proptest",
  "rusqlite",
  "serde",
  "serde_json",

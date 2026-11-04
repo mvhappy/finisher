@@ -5,6 +5,7 @@
 //! live database never lives there. One `Store` is the single writer for its project.
 
 mod backup;
+pub mod chain;
 mod commit;
 pub mod conflict_names;
 mod db;
@@ -15,6 +16,7 @@ mod paths;
 pub mod scan;
 pub mod segment;
 pub mod snapfile;
+pub mod storage_kind;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

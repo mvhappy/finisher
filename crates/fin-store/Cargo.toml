@@ -28,4 +28,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 fin-store = { path = ".", features = ["test-hooks"] }
+proptest = "1"
 tempfile = "3"
