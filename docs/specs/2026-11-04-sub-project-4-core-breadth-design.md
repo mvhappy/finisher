@@ -42,12 +42,13 @@ These follow the research summarised in §7.
    - Replay uses the resolved ops.
    - Rebase, merge, cherry-pick and undo create *new* edits: they re-run intent through the rebase engine with full policy checks.
 4. **Single writer, fenced on both sides.**
-   - The lease (v3) decides who writes.
+   - The lease (v3) decides who writes; epochs are per project.
    - Every file written to the project folder carries the writer's epoch.
-   - Readers reject data from an epoch older than the newest one they have seen. The storage can't enforce a token, so writer-side fencing alone can always race.
+   - Where two lines of history continue from the same point, readers keep the higher-epoch one and set the other aside. §3.6 step 5 is the exact rule.
+   - The storage can't enforce a token, so writer-side fencing alone can always race.
 5. **The local DB is a cache of the folder plus the not-yet-exported tail.**
    - It can always be rebuilt from the project folder's files.
-   - It is never wiped to "recover".
+   - It is never wiped to "recover": unexported records are salvaged to quarantine first (§3.8).
 6. **Newer data is never written by older code.**
    - Every persisted format carries `formatVersion` and `minReaderVersion` (Chromium's `last_compatible_version` pattern).
    - Code below `minReaderVersion` refuses.
@@ -72,12 +73,12 @@ These follow the research summarised in §7.
 - **Migration from the SP2 layout.** Migration `0001` converts the sub-project 2 schema in place:
   - each existing tx gets `seq` = its `rev`;
   - `intent` = its stored JSON;
-  - `txHash`/`parentHash` are computed in rev order.
+  - each record is serialised **once** into its segment line, stored in `record_bytes`, and hashed in rev order (§3.3).
 
   This migration is the first thing 4A builds (TASKS follow-up "migrations before any op or model change").
 - **Tables, at the end of 4A:**
   - `meta`, `ids`;
-  - `txs`: `branch`, `seq`, `tx_id`, `kind`, `schema_version`, `intent`, `resolved`, `inverse`, `diff`, `bindings`, `author`, `committed_at`, `parent_hash`, `tx_hash`, `epoch`, `exported`;
+  - `txs`: `branch`, `seq`, `tx_id`, `kind`, `record_bytes` (the exact segment line, §3.3), `tx_hash`, `parent_hash`, `epoch`, `exported`, `diff`. The typed columns (`schema_version`, `author`, `committed_at`, …) are derived from `record_bytes` for indexing only;
   - `snapshots`;
   - `segments` (files known to exist in the folder, with hash, epoch and state);
   - `lease_state`;
@@ -101,9 +102,13 @@ These follow the research summarised in §7.
 
 - **`txId`:** the ULID the client sends (unchanged). It is stable across upcasts.
 - **`seq`:** dense per branch (§4.1 for how branches number).
-- **`txHash`:** `blake3:<64 hex>`, computed over the record's JSON line **exactly as written to the segment** (§3.4). The record contains `parentHash` (the previous record's `txHash` on that branch, or the branch's fork-point hash) and does **not** contain its own `txHash` or the epoch.
+- **`txHash`:** `blake3:<64 hex>`, computed over the record's JSON line **exactly as written** (§3.4).
+  - Commit serialises the record once, stores those bytes in `txs.record_bytes`, hashes them, and export writes the same bytes. Nothing is ever re-serialised for hashing or export.
+  - The record contains `parentHash`: the previous record's `txHash` on that branch, the branch's fork-point hash (4B), or `null` for the first record of `main`.
+  - The record does **not** contain its own `txHash` or the epoch.
 - **Algorithm prefix:** every hash is written `<alg>:<hex>`, so the algorithm can change later. Readers reject unknown prefixes with `UNSUPPORTED_HASH`.
-- **Canonical encoding:** stored bytes are never re-encoded, so the hash needs no canonical-JSON rules. Writers still emit compact JSON with fields in declaration order (deterministic for a given version). Times stay rational strings, never floats.
+- **Canonical encoding:** stored bytes are never re-encoded, so the hash needs no canonical-JSON rules. Times stay rational strings, never floats.
+- **Entity ids after import:** replay doesn't mint ids, so after every import each `ids` counter (including branch ids) is raised to max(id seen in the log) + 1. Otherwise the first edit after a takeover would reuse another machine's ids.
 
 ### 3.4 Project folder layout and file formats
 
@@ -112,7 +117,7 @@ MyProject/
   finisher.project.json
   .finisher/
     lease.json                     v3 lease record (§3.5)
-    lease.claim-<serverId>-<epoch> v3 claim files
+    lease.claim-<epoch>            v3 claim files (server id inside; §3.5)
     lease.probe-<serverId>         server-clock probe file
     segments/<branch>/<epoch:08>-<firstSeq:012>-<lastSeq:012>-<hash12>.fseg
     snapshots/<branch>/<seq:012>-<hash12>.fsnap
@@ -123,6 +128,7 @@ MyProject/
 - `<branch>` is the branch id (`main`, or `br<n>` from 4B). `<hash12>` is the first 12 hex characters of the file hash.
 - Names are strict: anything under `.finisher/` that does not match these patterns is a *foreign file* (§3.7).
 - Every file is written to `.~fin-<random>.tmp` in the same directory, fsynced, renamed, then the directory is fsynced (a no-op on Windows, arch §27.9).
+- The lease holder deletes `.~fin-*.tmp` files older than 2×TTL. It is the only writer, so these are crash leftovers.
 - A finished `.fseg`/`.fsnap` is never modified or overwritten.
 
 **Segment (`.fseg`).** UTF-8 JSON lines.
@@ -136,14 +142,20 @@ MyProject/
 - Same three-part shape.
 - Header: `{"magic":"finisher-snapshot","formatVersion","minReaderVersion","projectId","branch","seq","txHash","modelSchemaVersion","writerId","epoch"}`.
 - Body: one line holding the model state.
-- Snapshots are derived and can be regenerated. They speed up opening and replace history only where compaction says so (§3.9).
+- Snapshots are derived and can be regenerated.
+- In 4A, folder snapshots are written only by compaction (§3.9).
+- A snapshot may seed an import or rebuild only if its `txHash` lies on the resolved chain.
 
-**`finisher.project.json`.** Adds `formatVersion`, `minReaderVersion` and `storage` (detected kind, informational). It is written temp-then-rename and rewritten only on settings changes.
+**`finisher.project.json`.**
+- Adds `formatVersion`, `minReaderVersion` and `storage` (detected kind, informational).
+- It is written temp-then-rename and rewritten only on settings changes.
+- Windows can report it missing for about 5 s after such a rename, so openers retry for up to 15 s before reporting `NOT_A_PROJECT`.
 
 **Export cadence**
 - The writer exports after commits, debounced to 2 s, and on close or shutdown.
 - A segment holds at most 1,000 records or 4 MiB; a transaction is never split.
 - A record is marked `exported` only after the rename succeeds and a read-back of the file's trailer verifies.
+- **Crash between the rename and the marking:** on the next import, a folder record whose `txId` **and** `txHash` already exist in the DB marks that record exported from that file and is never re-applied. The same `txId` with a different `txHash` is a fork.
 
 ### 3.5 Lease v3
 
@@ -157,11 +169,18 @@ This implements arch §27.9 "v3" in `fin-store::lease`, with the changes from th
 
 **Why 45 s.** Windows documents three client-side cache windows: `FileNotFoundCacheLifetime` 5 s, `DirectoryCacheLifetime` 10 s, `FileInfoCacheLifetime` 10 s. Our measured client skew was about 10 s, and the heartbeat interval is 5 s. Those add up to about 40 s, so 30 s was too tight.
 
+**Claims and epochs**
+- To acquire, a server creates `lease.claim-<epoch>` with `create_new` (exclusive create), with its server id as the content. The exclusivity of that name is what makes epochs unique. This is the proven spike design.
+- **Every** acquisition takes a fresh epoch, including automatic re-acquisition after `LEASE_LOST`.
+- After acquiring, the holder deletes claim files below its own epoch. Otherwise "missing `lease.json` plus a claim" would mean "held" forever.
+
 **Record**
 - `lease.json` is a fixed 512-byte record, rewritten in place, holding: magic, version, `serverId`, `epoch`, heartbeat counter, holder description (machine name, app version), last probe server-time, and a CRC-32C.
 - **Missing** `lease.json` while any claim file exists = held.
 - **Unreadable or bad checksum** = held when acquiring, **lost** when fencing.
-- **Probe file:** each server writes its own probe file and reads its mtime as "server now". The probe must move forward between reads; if it doesn't, staleness is not decided that round.
+- **Probe file:**
+  - each server rewrites its own probe file in place and reads its mtime, uncached, as "server now";
+  - the probe must move forward between reads; if it doesn't, staleness is not decided that round.
 
 **Fencing (writer side)**
 - The epoch is checked before every segment write and after every heartbeat.
@@ -182,6 +201,7 @@ This implements arch §27.9 "v3" in `fin-store::lease`, with the changes from th
 
 **On sync folders**
 - The lease only warns: another holder makes the project read-only with "take over?".
+- Two offline writers can legitimately hold different epochs, so the epoch rule (§3.6 step 5) **never auto-resolves** there. Diverged lines are always `CHAIN_FORK`, and the user chooses.
 - A sync conflict copy *of `lease.json`* puts the project read-only as a suspected split brain.
 
 ### 3.6 Opening, importing and following
@@ -199,8 +219,19 @@ This implements arch §27.9 "v3" in `fin-store::lease`, with the changes from th
 4. **Build each branch's chain** from the DB's last known segment hash. Then compare:
    - folder ahead → upcast and `apply_committed` the new records in order (the import);
    - DB ahead (unexported records) and this server holds the lease → export them;
-   - both diverged → fork (§3.7).
-5. **Epoch rule:** a valid segment whose epoch is lower than the newest epoch seen for that branch, and whose `prevSegmentHash` is already the predecessor of a higher-epoch segment, is a stale write. Its records go to `quarantine`. 4B offers them as a `recovered-<server>-<time>` branch. They are never applied to the branch.
+   - both diverged → steps 5–7.
+5. **Resolve packs and duplicates first.**
+   - A segment listed in a present pack's replaced list is equivalent to the pack.
+   - A segment whose records' `txHash`es all already exist adds nothing.
+   - Both are skipped before the epoch rule.
+   - A chain predecessor is valid if it is the hash of a present segment **or** a hash in a present pack's replaced list.
+6. **Epoch rule** (network and local roots; on sync roots see §3.5). Two different segments continue from the same predecessor:
+   - The higher-epoch line wins.
+   - Before this server has exported anything at its epoch, its unexported DB tail counts as that higher-epoch successor. A lower-epoch segment landing after a takeover is therefore stale, not a fork.
+   - The losing segment's records go to `quarantine` and are never applied. 4B offers them as a `recovered-<server>-<time>` branch.
+   - Equal epochs are a `CHAIN_FORK`. That can only happen through a bug or a manual copy.
+7. **Diverged local tail without the lease.** If this server has unexported records but doesn't hold the lease, and the folder has moved on, the tail goes to `quarantine`. The project stays usable read-only.
+8. **Quarantine is never silent.** A non-empty quarantine is a warning in `fin project status` from 4A on, with its count and origin.
 
 **Following.** A read-only server re-scans and imports:
 - every 3 s on network roots;
@@ -218,7 +249,6 @@ This implements arch §27.9 "v3" in `fin-store::lease`, with the changes from th
 | `CHAIN_FORK` | two segments on one branch claim the same predecessor | `fin project recover`: keep one side as the branch, the other becomes `recovered-*` (needs 4B; until then manual, documented) |
 | `CONFLICT_COPY` | a foreign file matches a known conflict-copy pattern or parses as a Finisher file under a non-matching name | the same recovery; the copy's contents are imported to quarantine |
 | `NEWER_FORMAT` | any file with `minReaderVersion` above ours | update Finisher |
-| `UNKNOWN_WRITER` | a segment from a `writerId` never seen holding the lease, with an epoch that doesn't fit the chain | recovery as `CHAIN_FORK` |
 
 **Conflict-copy patterns** (case-insensitive, matched after the strict-name check fails):
 - `conflicted copy` (Dropbox);
@@ -232,7 +262,9 @@ Other foreign files are listed as warnings and otherwise ignored.
 ### 3.8 Integrity, rebuild, backups
 
 **Rebuild**
-- **Automatic:** if `quick_check` fails, or the DB is missing while the folder has segments, the server rebuilds from the folder into a new DB, verifies it, and swaps it in. The old file is kept as `project.fdb.corrupt-<ts>`.
+- **Automatic:** if `quick_check` fails, or the DB is missing while the folder has segments, the server rebuilds from the folder into a new DB and verifies it.
+- **Salvage before the swap:** readable unexported records are copied from the old DB into the new DB's `quarantine`, and their count is reported.
+- The new DB is then swapped in. The old file is kept as `project.fdb.corrupt-<ts>`.
 - **Manual:** `fin project rebuild` forces the same.
 
 **Verify.** `fin project verify` reports, without changing anything:
@@ -250,16 +282,21 @@ Other foreign files are listed as warnings and otherwise ignored.
 
 ### 3.9 Compaction (history is kept)
 
-- **Trigger:** more than 200 segment files on a branch, or on demand (`fin project compact`).
+- **Runs only on the lease holder.**
+- **Trigger:** more than 200 **non-pack** segment files on a branch, or on demand (`fin project compact`).
+  - With 2 s export debouncing, an active editing session reaches that in a few hours, not minutes.
+  - The export debounce grows with the session: 2 s at first, then up to 30 s while edits keep coming, plus a final flush on idle or close.
 - **Phase 1:**
   - write a new snapshot at the branch head;
-  - write **one pack segment** containing every record of the replaced segments, byte-for-byte as they were written, so all `txHash`/`parentHash` values still verify. Its header lists the replaced segment hashes;
+  - write **pack segments** (each within the normal 1,000-record / 4 MiB cap) containing every record of the replaced segments, byte-for-byte as they were written, so all `txHash`/`parentHash` values still verify;
+  - each pack's header lists the hashes it replaces. A pack's `prevSegmentHash` is the predecessor of the first segment it replaces. The segment after the last replaced one keeps its original `prevSegmentHash`, which resolves through the pack's replaced list (§3.6 step 5);
+  - packs are never re-packed in sub-project 4;
   - write a manifest `compaction/<id>.json` listing the replaced files.
 - **Phase 2:**
   - after the pack and snapshot are read back and verified, and a grace period has passed, delete the replaced files and then the manifest;
   - grace period: 10 min local/NAS, 24 h on sync folders.
 - **Readers:** they treat a pack and the segments it replaces as equivalent; duplicates are skipped by `txHash`.
-- **Main history is never discarded.** Squashing archived branches is the only history removal (4B, §4.5).
+- **History is never discarded in sub-project 4.** Squashing archived branches is deferred (§4.5).
 
 ### 3.10 RPC and `fin`
 
@@ -303,7 +340,9 @@ Other foreign files are listed as warnings and otherwise ignored.
 
 **Unit and property tests**
 - **Classification:** valid, not-arrived, foreign and conflict-copy, for every pattern in §3.7.
-- **Chain building and the epoch rule:** randomised sets of segments, including duplicates, gaps, forks, stale epochs and packs.
+- **Chain building and the epoch rule:** randomised sets of segments, including duplicates, gaps, forks, stale epochs, packs during their grace window, and a stale segment landing after a takeover but before the new holder's first export.
+- **Export crash** between rename and marking: no fork, no double apply.
+- **Id counters** after import: no reuse after a takeover (also in the cross-host run).
 - **Migrations:**
   - SP2 database fixture → current;
   - newer-DB refusal;
@@ -337,11 +376,12 @@ Other foreign files are listed as warnings and otherwise ignored.
 
 ### 4.1 Branches
 
-- **Identity:** a branch has an id (`main`, then `br<n>` from the shared id counter), a display name (unique among active branches), a parent branch, `forkSeq` and `forkHash`, `createdBy`, and a state (`active | archived | merged`).
+- **Identity:** a branch has an id (`main`, then `br<n>` from the shared id counter, §3.3), a display name (unique among active branches), a parent branch, `forkSeq` and `forkHash`, `createdBy`, and a state (`active | archived | merged`).
 - **Numbering:** a branch's `seq` continues from `forkSeq + 1`, so seqs up to the fork mean the same on both. The first record's `parentHash` is `forkHash`.
-- **Storage:**
-  - the branch table is local;
-  - branch creation is also a record in the **parent** branch's log (`kind: "branch"`, no ops), so it syncs and has a place in the chain.
+- **Storage: all branch state is derived from the log, so it syncs.** The local branch table is only an index.
+  - **Creation:** a `branch` record in the **parent** branch's log (no ops).
+  - **Rename and archive:** `branchSet` records on the parent's log.
+  - **`merged`:** derived from `merge` records (§4.4).
 - **Live sync:** `ops.subscribe` takes `branch` (it already does).
 - **CLI:** `fin branch new <name> [--from <branch>@<seq|checkpoint>]`, `fin branch ls`, `fin branch archive <name>`. A global `--branch <name>` (default `main`) applies to every command.
 
@@ -359,13 +399,16 @@ Added to the segment format; the format version is bumped via the 4A migration p
 | `revert` | `reverts: mergeId` | inverses of the merge group, newest first |
 | `checkpoint` | `name` | none |
 | `branch` | `branchId`, `name` | none |
+| `branchSet` | `branchId`, `name?`, `archived?` | none |
+
+**Unknown kinds.** 4B bumps `formatVersion` and `minReaderVersion` of segment files to 2. A reader that meets an unknown `kind` in any file treats it as `NEWER_FORMAT`.
 
 ### 4.3 Rebase engine (stronger)
 
 - **Rebase rule:** an edit is rebased by transforming the positions its intent refers to through the **per-track shift maps** of the edits committed since its base, then re-running it with full policy checks.
 - **Shift maps** are exact: every structural op records how it moved later items (ripple by Δ from t; overwrite/lift: none). The sub-project 2 case "a later position on a track our trim/delete rippled → conflict" is removed.
 - **Conflicts are judged per track and per entity:**
-  - an edit on track B never conflicts with edits on track A;
+  - an edit on track B never conflicts with edits on track A, **unless** they touch the same link group or one of them moves an item between the two tracks. The unit is the set of tracks the edit's link groups span;
   - an edit of entity X conflicts only with intervening edits that removed X, or changed the same edge or parameter of X.
 - **References to removed entities:** an intent referring to an entity removed in between → `CONFLICT` with reason `REMOVED`. This includes a stale insert of an asset that was removed.
 - **Placeholders:** `clip.restore` and the internal inverse ops support `$placeholders`.
@@ -374,8 +417,9 @@ Added to the segment format; the format version is bumped via the 4A migration p
 ### 4.4 Merge, cherry-pick, revert
 
 - **`fin merge <branch> [--into main] [--skip-conflicting] [--dry-run]`:**
-  - all branch records since the last merge are re-run in order on the target head;
-  - **all-or-nothing:** one DB transaction and one segment group, or nothing plus the conflict list;
+  - **candidates:** the source branch's content records (`edit`, `undo`, `redo`, `cherryPick`, `revert`) whose `txId` is not already the `origin` of a `merge` record on the target. Records skipped earlier are therefore offered again;
+  - candidates are re-run in order on the target head;
+  - **all-or-nothing:** one DB transaction, or nothing plus the full conflict list. Export happens as usual; followers apply any prefix safely, so no folder-level atomicity is needed;
   - `--skip-conflicting` merges the rest and leaves the skipped records on the branch;
   - the source branch becomes `merged` when nothing is left.
 - **`fin cherry-pick <txId> [--into <branch>]`:** the same machinery for one record.
@@ -384,12 +428,16 @@ Added to the segment format; the format version is bumped via the 4A migration p
 ### 4.5 Undo, redo, checkpoints, `try`, archiving
 
 **Undo and redo**
-- **The stack is derived from the log, not stored.** For (author, branch), walk the records newest-first:
-  - `undo` cancels the most recent un-undone `edit`, `merge` group, `cherryPick` or `revert` by that author;
-  - `redo` cancels the most recent un-redone `undo`;
-  - a new `edit` by the author clears the redo side;
-  - a `merge` of this branch into another closes the stack for that branch's records on the target.
-- **`fin undo`:** rebases the target's stored inverse across the records since the target, then commits. It may `CONFLICT`.
+- **The stacks are derived from the log, not stored.**
+  - For (author, branch), simulate the branch's records **oldest-first**, keeping an undo stack and a redo stack of *units*.
+  - A unit is one `edit`, `cherryPick` or `revert` record, one whole `merge` group (by `mergeId`), or one `undo` record (including an `undo --to`).
+  - The author's content record, or the first record of a merge group: push the unit on the undo stack and clear the redo stack.
+  - `undo` (with `undoes: txId | mergeId`): pop that unit from the undo stack and push the undo record on the redo stack.
+  - `redo` (with `redoes: <undo txId>`): pop it from the redo stack and push the original unit back on the undo stack.
+  - `checkpoint`, `branch` and `branchSet` records are skipped.
+  - Records copied **to another branch** by a merge are units of *that* branch's merging author on the target. On the source, the stack is dropped (arch §6.4). Merged edits are undone on the target as one merge unit or with `revert`, never individually.
+- **One redo reverses one undo record,** so it also reverses a whole `undo --to`.
+- **`fin undo`:** takes the unit's stored **inverse** (not its intent), rebases it across the records since the unit with full policy checks, then commits. It may `CONFLICT`.
 - **`fin redo`:** the same for the undo it cancels.
 - **`fin undo --to <checkpoint>`:** one `undo` record holding the inverses of all of the author's later records on the branch, newest first, all-or-nothing.
 
@@ -402,9 +450,9 @@ Added to the segment format; the format version is bumped via the 4A migration p
 
 **Recovered branches.** Quarantined records (§3.6) are offered via `fin project recover`. They become `recovered-<server>-<time>`, a branch forked at their last common hash.
 
-**Archiving and squashing**
-- Archived branches older than 30 days (configurable) are squashed by compaction into a `squash` summary record (counts, author, first/last time, list of `txId`s); their records are removed.
-- `main` and any branch with unmerged records referenced by a checkpoint are never squashed.
+**Archiving.**
+- Archived branches are hidden from `fin branch ls` (unless `--all`) and are kept.
+- Squashing them is **deferred out of sub-project 4**: nothing before sub-project 6 needs it, and it needs its own two-phase delete.
 
 ### 4.6 Property tests (proptest, in `cargo test`, < 30 s total)
 
@@ -441,6 +489,7 @@ Added to the segment format; the format version is bumped via the 4A migration p
   - `image` (image or SVG asset);
   - `adjustment` (applies its effects to the tracks below);
   - `nested` (timeline id; cycles rejected).
+  - **Last-batch kinds:** `adjustment`, `nested`, `mask` and `blend` are built in 4C's final batch. Nothing consumes them before sub-project 6, so they may move there if 4C runs long. They stay in the model from the start so no migration is needed.
 - **Common item fields:**
   - `transform` (position, scale, rotation, anchor);
   - `crop`, `opacity`, `blend`;
@@ -450,7 +499,11 @@ Added to the segment format; the format version is bumped via the 4A migration p
   - `keyframes` (per parameter path);
   - `link?` (link group id; linked items move, trim and delete together).
 - **Speed:** a constant rational, greater than 0. Ramps and reverse come later.
-- **Crossfades:** an overlap between adjacent clips on one audio track is still forbidden. A crossfade is a `transition` record attached to the cut point, `{kind: crossfade, duration, curve}`. Video dissolves use the same record.
+- **Transitions:**
+  - Overlapping clips on one track are still forbidden.
+  - A crossfade or dissolve is a `transition` stored on the **track**: `{id, between: [itemA, itemB], kind: crossfade|dissolve, duration, curve}`.
+  - It is valid only while A's end equals B's start. It is anchored to the items, so ripples move it with them.
+  - An edit that separates or removes either item removes the transition, and its inverse restores it.
 
 ### 5.2 Settings registry
 
@@ -476,13 +529,14 @@ Added to the segment format; the format version is bumped via the 4A migration p
 
 ### 5.3 Structural edits
 
-Every edit takes an explicit `mode` where one applies. The default is `ripple` on the timeline's first video track and its linked audio, and `overwrite` everywhere else.
+- **Edit modes:** structural edits that can move other items carry a **required** `mode` in the op, so a stored record is never ambiguous.
+- **CLI default:** `fin` defaults `--mode` to `ripple` for clips and `overwrite` for every other item kind, and always echoes the mode it used.
 
 | Edit | Notes |
 |---|---|
 | `item.insert` | generalises `clip.insert`; any kind; `ripple` or `overwrite` |
 | `item.move` | to a time and/or track; `ripple` or `overwrite` |
-| `item.split` | at a time strictly inside the item; keyframes and effects are copied, times rebased |
+| `item.split` | at a time strictly inside the item; keyframes and effects are copied, times rebased. On a `caption` item it is refused with `fix: use caption.split` |
 | `item.delete` | `ripple` (close gap) or `lift` (leave gap) |
 | `item.trim` | edge `in`/`out`; `ripple`, `roll` (with the neighbour), `overwrite` |
 | `item.slip` | moves `sourceIn` only |
@@ -539,7 +593,9 @@ Every edit takes an explicit `mode` where one applies. The default is `ripple` o
   - always bundled, never from the system (the condition for identical output, arch §27.10);
   - starting set: Inter, Noto Sans (Latin, Cyrillic, Greek), Noto Sans Arabic, Noto Sans Hebrew, all OFL. The set is listed in `THIRD_PARTY_NOTICES`;
   - users can add fonts as font assets.
-  - `fin-core` gets a `FontProvider` trait; `fin-node` and `fin` implement it from the bundled set plus project font assets.
+  - **`fin-core` does not depend on `fin-text`.** `fin-core` defines a `TextMeasurer` trait. `fin-text` implements it, and `fin-node`/`fin` inject that implementation (bundled fonts plus project font assets) into the edit path and eval.
+  - **Replay (`apply_committed`) never needs a measurer.**
+  - **Known consequence:** a font or `fin-text` update can make an accepted caption overflow. Old records still replay, but a rebase, merge or undo that re-checks it may return `CAPTION_OVERFLOW` as a conflict.
 - **Uses:**
   - caption validation rejects blocks that overflow the style's safe zone (`CAPTION_OVERFLOW`, `fix`: shorten, split, or reduce size);
   - eval attaches each caption's layout to the frame plan.
@@ -571,7 +627,7 @@ Every edit takes an explicit `mode` where one applies. The default is `ripple` o
 
 | Crate / package | 4A | 4B | 4C |
 |---|---|---|---|
-| `fin-core` | `upgrade/`, `apply_committed` | `branch/`, rebase rewrite, undo derivation | `model` growth, `ops/*`, `params/`, `eval/`, `layout/` (via `FontProvider`), `captions/` |
+| `fin-core` | `upgrade/`, `apply_committed` | `branch/`, rebase rewrite, undo derivation | `model` growth, `ops/*`, `params/`, `eval/`, `layout/` (via `TextMeasurer`), `captions/` |
 | `fin-store` | `migrations/`, `segment/`, `snapshot_file/`, `lease/`, `storage_kind/`, `import/`, `compact/`, `backup/` | branch table, record kinds, quarantine → recovered | — |
 | `fin-text` (new) | — | — | shaping and measurement |
 | `fin-probe` | `Probe` TS type, MOV fixture | — | image/SVG/Lottie/font/LUT/audio probes |
