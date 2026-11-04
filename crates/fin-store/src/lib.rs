@@ -16,6 +16,7 @@ mod db;
 mod export;
 pub mod fsio;
 mod import;
+pub mod lease;
 mod migrations;
 pub mod names;
 mod paths;
@@ -400,12 +401,38 @@ impl Store {
         self.export.fail_at = Some(point);
     }
 
-    /// Test hook until the lease lands (Task 9): this store holds (or has lost) a lease at
-    /// `epoch`. Commits are recorded at `epoch`; export writes only while `held`.
+    /// Test hook: this store holds (or has lost) a lease at `epoch`. Commits and export
+    /// write only while `held`, at `epoch`.
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn set_test_lease(&mut self, epoch: u64, held: bool) {
-        self.export.lease = export::ExportLease::Fixed { epoch, held };
+        self.export.lease = export::StoreLease::Fixed { epoch, held };
+    }
+
+    /// Makes `lease` the fence of every commit and export; returns the previous one. Plan
+    /// Task 11 calls this from open and tick, after acquiring, and must keep commits and
+    /// exports blocked until an import at the new epoch has resolved every branch.
+    #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+    pub(crate) fn attach_lease(&mut self, lease: lease::Lease) -> Option<lease::Lease> {
+        match std::mem::replace(&mut self.export.lease, export::StoreLease::Lease(lease)) {
+            export::StoreLease::Lease(old) => Some(old),
+            _ => None,
+        }
+    }
+
+    /// The real lease, once one is attached.
+    pub fn lease(&self) -> Option<&lease::Lease> {
+        match &self.export.lease {
+            export::StoreLease::Lease(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Test hook: [`Store::attach_lease`] (until Task 11 acquires in `open`).
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn set_lease_for_test(&mut self, lease: lease::Lease) {
+        self.attach_lease(lease);
     }
 
     /// The head revision of `branch` (0 for a branch that does not exist). Catches up with

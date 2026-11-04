@@ -21,6 +21,9 @@ impl Store {
     /// - `baseRev` ahead of the head is `BASE_REV_AHEAD`.
     /// - While the last import found a fork or a newer format ([`Store::read_only`]):
     ///   `PROJECT_READ_ONLY` with `details.reason`.
+    /// - Without a held lease (the fence, checked right before the rows are written):
+    ///   `PROJECT_READ_ONLY` with `details.reason` `LEASE_LOST`. The row records the epoch that
+    ///   check returned (`txs.epoch`).
     ///
     /// The stored tx is the rebased one (`baseRev` = the head it was applied to), with the diff,
     /// inverse and bindings of that same apply. Ids are allocated from the `ids` table inside the
@@ -61,6 +64,12 @@ impl Store {
         let applied = apply_tx(&head.project, &tx, &mut ids)?;
         ids.save(&txn)?;
         let parent = db::tip_hash(&txn, &tx.branch)?;
+        // The fence, as close to the write as the epoch allows.
+        let epoch = self
+            .export
+            .lease
+            .check()
+            .map_err(|e| crate::import::lease_lost_error(&self.project_id, &e))?;
         let record = db::new_record(
             rev,
             tx.clone(),
@@ -69,13 +78,7 @@ impl Store {
             parent,
             now_ms(),
         )?;
-        let tip = db::insert_tx(
-            &txn,
-            &tx.branch,
-            &record,
-            &applied.diff,
-            self.export.lease.epoch(),
-        )?;
+        let tip = db::insert_tx(&txn, &tx.branch, &record, &applied.diff, epoch)?;
         if rev % SNAPSHOT_EVERY == 0 {
             db::insert_snapshot(&txn, &tx.branch, rev, &applied.project)?;
         }

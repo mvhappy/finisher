@@ -60,11 +60,17 @@ const VALIDATION_CODES: &[&str] = &[
 /// `PROJECT_READ_ONLY`: the project cannot take edits now (`details.reason`: `CHAIN_FORK`,
 /// `NEWER_FORMAT`, `IMPORT_ERROR`, and from the lease work `LEASE_HELD`, `LEASE_LOST`,
 /// `CONFLICT_COPY`).
+/// `LEASE_TAKEOVER_REFUSED`: `fin project takeover` found a live holder, a sync folder without
+/// `--confirm`, or a holder not yet confirmed stopped (`details.reason`).
+/// `LEASE_LOST`: this server's lease failed its fencing check (writes surface it as
+/// `PROJECT_READ_ONLY` with reason `LEASE_LOST`).
 const CONFLICT_CODES: &[&str] = &[
     "CONFLICT",
     "BASE_REV_AHEAD",
     "SEGMENT_COLLISION",
     "PROJECT_READ_ONLY",
+    "LEASE_TAKEOVER_REFUSED",
+    "LEASE_LOST",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
@@ -167,6 +173,8 @@ mod tests {
         assert_eq!(exit_code("RECORD_TOO_LARGE"), 3);
         assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
         assert_eq!(exit_code("PROJECT_READ_ONLY"), 4);
+        assert_eq!(exit_code("LEASE_TAKEOVER_REFUSED"), 4);
+        assert_eq!(exit_code("LEASE_LOST"), 4);
         for code in [
             "SERVER_UNAVAILABLE",
             "SERVER_RUNNING",

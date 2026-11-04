@@ -205,6 +205,24 @@ pub(crate) fn read_only_error(project_id: &str, reason: ReadOnlyReason) -> Store
     .into()
 }
 
+/// `PROJECT_READ_ONLY` (`LEASE_LOST`) for a failed lease check `cause`.
+pub(crate) fn lease_lost_error(project_id: &str, cause: &CoreError) -> StoreError {
+    let reason = ReadOnlyReason::LeaseLost;
+    CoreError::new(
+        "PROJECT_READ_ONLY",
+        format!(
+            "the project is read-only ({}): {}",
+            reason.code(),
+            cause.message
+        ),
+    )
+    .with_details(
+        json!({ "reason": reason, "projectId": project_id, "cause": cause.details.get("cause") }),
+    )
+    .with_fix(reason.fix())
+    .into()
+}
+
 impl Store {
     /// One import pass (module docs). `Err` only for a DB failure or a broken DB invariant;
     /// folder problems are in the report.

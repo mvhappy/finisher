@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::CoreError;
 
+use crate::lease::Lease;
 use crate::names;
 
 /// Segment export delay after commits…
@@ -53,37 +54,36 @@ impl ExportPolicy {
     }
 }
 
-/// The lease as export sees it. Task 9 adds the real `Lease` (whose `check()` returns the
-/// epoch or `LeaseLost`); until then a store always holds epoch 0.
+/// The lease as the store sees it: commit and export ask [`StoreLease::check`] for the epoch
+/// right before writing, and refuse when it fails. There is no way to get an epoch without
+/// that check.
 #[derive(Debug, Default)]
-pub(crate) enum ExportLease {
+pub(crate) enum StoreLease {
+    /// No lease is wired in yet: writable at epoch 0, unfenced. This is every store until
+    /// plan Task 11 makes `Store::open` acquire a [`Lease`]; it then goes away.
     #[default]
-    NoLease,
+    Unfenced,
+    /// A real lease (lease v3).
+    Lease(Lease),
     /// Test hook: a lease at `epoch`, held or lost.
     #[cfg(any(test, feature = "test-hooks"))]
     Fixed { epoch: u64, held: bool },
 }
 
-impl ExportLease {
-    /// The current epoch if this server may write, else why not.
+impl StoreLease {
+    /// The current epoch if this server may write now, else why not (`LEASE_LOST`).
     pub(crate) fn check(&self) -> Result<u64, CoreError> {
         match self {
-            ExportLease::NoLease => Ok(0),
+            StoreLease::Unfenced => Ok(0),
+            StoreLease::Lease(l) => l.check().map_err(CoreError::from),
             #[cfg(any(test, feature = "test-hooks"))]
-            ExportLease::Fixed { epoch, held: true } => Ok(*epoch),
+            StoreLease::Fixed { epoch, held: true } => Ok(*epoch),
             #[cfg(any(test, feature = "test-hooks"))]
-            ExportLease::Fixed { held: false, .. } => {
-                Err(CoreError::new("LEASE_LOST", "the lease is lost"))
+            StoreLease::Fixed { held: false, .. } => {
+                Err(CoreError::from(crate::lease::LeaseLost {
+                    reason: "the test lease is lost".to_string(),
+                }))
             }
-        }
-    }
-
-    /// The epoch a commit made now is recorded at (`txs.epoch`).
-    pub(crate) fn epoch(&self) -> u64 {
-        match self {
-            ExportLease::NoLease => 0,
-            #[cfg(any(test, feature = "test-hooks"))]
-            ExportLease::Fixed { epoch, .. } => *epoch,
         }
     }
 }

@@ -576,7 +576,7 @@ fn diverged_tail_moves_to_quarantine_and_ids_are_not_reused() {
     let mut a = create(&e);
     let mut b = server(&e, &a, "b");
     // B committed at epoch 1 and lost the lease before exporting.
-    b.set_test_lease(1, false);
+    b.set_test_lease(1, true);
     commit(&mut b, "b-asset", vec![asset("/m/b.mov")]);
     commit(
         &mut b,
@@ -589,6 +589,7 @@ fn diverged_tail_moves_to_quarantine_and_ids_are_not_reused() {
             op
         }],
     );
+    b.set_test_lease(1, false);
     // The client retried "b-clips" against A after failover: same txId, other bytes.
     a.set_test_lease(2, true);
     commit(&mut a, "a-asset", vec![asset("/m/a.mov")]);
@@ -628,7 +629,7 @@ fn diverged_tail_drops_a_db_snapshot_inside_it() {
     let e = env();
     let mut a = create(&e);
     let mut b = server(&e, &a, "b");
-    b.set_test_lease(1, false);
+    b.set_test_lease(1, true);
     for i in 0..fin_store::SNAPSHOT_EVERY {
         commit(
             &mut b,
@@ -636,6 +637,7 @@ fn diverged_tail_drops_a_db_snapshot_inside_it() {
             vec![asset(&format!("/m/b{i}.mov"))],
         );
     }
+    b.set_test_lease(1, false);
     a.set_test_lease(2, true);
     commit(&mut a, "a1", vec![asset("/m/a.mov")]);
     export(&mut a);
@@ -720,9 +722,10 @@ fn conflict_copy_duplicates_are_harmless_and_unknown_records_are_quarantined() {
     assert!(quarantine(&f).is_empty(), "known records are not set aside");
 
     // A copy holding records nobody exported.
-    c.set_test_lease(0, false);
+    c.set_test_lease(0, true);
     commit(&mut c, "u1", vec![asset("/m/u.mov")]);
     commit(&mut c, "u2", vec![insert(0, "a1")]);
+    c.set_test_lease(0, false);
     let recs: Vec<Vec<u8>> = rows(&c).into_iter().map(|r| r.2).collect();
     let lines: Vec<&[u8]> = recs.iter().map(Vec::as_slice).collect();
     let (bytes, _) = segment::encode(&header(&c, 0, 1, 2, None), &lines);
@@ -844,10 +847,11 @@ fn an_import_that_replaces_a_tail_invalidates_another_store_on_the_db() {
     let mut a = create(&e);
     let mut b1 = server(&e, &a, "b");
     let mut b2 = Store::open(&e.data("b"), &e.dir).unwrap();
-    // B1 commits two rows without the lease; B2 (same DB) caches them as its head.
-    b1.set_test_lease(1, false);
+    // B1 commits two rows, then loses the lease; B2 (same DB) caches them as its head.
+    b1.set_test_lease(1, true);
     commit(&mut b1, "b-1", vec![asset("/m/b.mov")]);
     commit(&mut b1, "b-2", vec![insert(0, "a1")]);
+    b1.set_test_lease(1, false);
     assert_eq!(b2.snapshot(MAIN).unwrap(), b1.snapshot(MAIN).unwrap());
     // A commits two other rows at epoch 2 and exports: same number of rows.
     a.set_test_lease(2, true);

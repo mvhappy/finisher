@@ -3,7 +3,7 @@
 //!
 //! # One pass ([`export_pending`])
 //!
-//! 1. Only while this server holds the lease ([`ExportLease::check`]) and the last import
+//! 1. Only while this server holds the lease ([`StoreLease::check`]) and the last import
 //!    found the project writable (no fork, no newer format). The lease is checked
 //!    again right before every write (the fence), but the segment's epoch is **not** taken
 //!    from it: a segment is labelled with the highest commit epoch (`txs.epoch`) of its
@@ -72,7 +72,7 @@ use crate::names::{self, SegmentName};
 use crate::segment::{self, Header};
 use crate::{Store, StoreError, fsio};
 
-pub(crate) use policy::{ExportLease, ExportPolicy};
+pub(crate) use policy::{ExportPolicy, StoreLease};
 use policy::{SWEEP_EVERY, TempSweep};
 use rows::{Row, broken, mark_exported, pending_branches, pending_rows, prev_segment};
 
@@ -138,7 +138,7 @@ pub(crate) struct ExportState {
     salt: Option<(String, u64, i64)>,
     pub(crate) error: Option<CoreError>,
     attempt: Option<Attempt>,
-    pub(crate) lease: ExportLease,
+    pub(crate) lease: StoreLease,
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fail_at: Option<FailPoint>,
 }
