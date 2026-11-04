@@ -1,0 +1,82 @@
+// Server-data location, local socket path and the `finisherd.json` discovery file.
+import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
+import { PROTOCOL_VERSION } from "@finisher/contracts";
+
+export const SERVER_VERSION = "0.0.0";
+
+/** Plan decision 6: `FIN_SERVER_DATA`, else the per-OS application data directory. */
+export function defaultServerData(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): string {
+  if (env.FIN_SERVER_DATA) return resolve(env.FIN_SERVER_DATA);
+  if (platform === "darwin") return join(home, "Library", "Application Support", "Finisher");
+  if (platform === "win32") return join(env.LOCALAPPDATA ?? join(home, "AppData", "Local"), "Finisher");
+  return join(env.XDG_DATA_HOME || join(home, ".local", "share"), "finisher");
+}
+
+/** Plan decision 5: `<server-data>/fin.sock`, or `\\.\pipe\finisher-<username>` on Windows. */
+export function socketPath(serverData: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return `\\\\.\\pipe\\finisher-${userInfo().username}`;
+  return join(serverData, "fin.sock");
+}
+
+export interface CliArgs {
+  readonly serverData: string;
+}
+
+export function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process.env): CliArgs {
+  let serverData: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--server-data") {
+      const value = argv[++i];
+      if (!value) throw new Error("--server-data needs a directory");
+      serverData = resolve(value);
+    } else if (arg?.startsWith("--server-data=")) {
+      serverData = resolve(arg.slice("--server-data=".length));
+    } else {
+      throw new Error(`unknown argument: ${arg}`);
+    }
+  }
+  return { serverData: serverData ?? defaultServerData(env) };
+}
+
+/** Contents of `<server-data>/finisherd.json` (mode 0600). */
+export interface ServerInfo {
+  readonly pid: number;
+  readonly wsPort: number;
+  readonly socket: string;
+  readonly token: string;
+  readonly protocolVersion: number;
+}
+
+export function newToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+export function infoPath(serverData: string): string {
+  return join(serverData, "finisherd.json");
+}
+
+export function ensureServerData(serverData: string): void {
+  mkdirSync(serverData, { recursive: true, mode: 0o700 });
+}
+
+/** Writes the discovery file atomically enough for readers: created 0600, then chmod against umask. */
+export function writeServerInfo(serverData: string, info: Omit<ServerInfo, "protocolVersion">): ServerInfo {
+  const full: ServerInfo = { ...info, protocolVersion: PROTOCOL_VERSION };
+  const file = infoPath(serverData);
+  rmSync(file, { force: true });
+  writeFileSync(file, `${JSON.stringify(full, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(file, 0o600);
+  return full;
+}
+
+export function removeServerInfo(serverData: string): void {
+  rmSync(infoPath(serverData), { force: true });
+}

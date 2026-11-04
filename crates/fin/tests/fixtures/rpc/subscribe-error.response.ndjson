@@ -1,0 +1,1 @@
+{"_tag":"Exit","requestId":"1","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"FinError","code":"PROJECT_NOT_FOUND","message":"no project with id nope","details":{"projectId":"nope"},"fix":"open the project by its directory first"}}]}}

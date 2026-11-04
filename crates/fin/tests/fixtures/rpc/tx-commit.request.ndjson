@@ -1,0 +1,1 @@
+{"_tag":"Request","id":"1","tag":"tx.commit","payload":{"projectId":"01fixtureproject0000000000","tx":{"txId":"tx-1","author":"test","branch":"main","baseRev":0,"schemaVersion":1,"ops":[{"op":"asset.add","id":"$a","path":"/media/a.mov","duration":"600","video":{"width":1920,"height":1080,"rate":"30"},"audio":null,"fingerprint":"fp"}]}},"headers":[]}
