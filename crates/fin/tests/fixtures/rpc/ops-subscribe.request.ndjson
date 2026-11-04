@@ -1,0 +1,5 @@
+{"_tag":"Request","id":"1","tag":"ops.subscribe","payload":{"projectId":"01fixtureproject0000000000","branch":"main","fromRev":1},"headers":[]}
+{"_tag":"Ack","requestId":"1"}
+{"_tag":"Ack","requestId":"1"}
+{"_tag":"Ack","requestId":"1"}
+{"_tag":"Interrupt","requestId":"1"}

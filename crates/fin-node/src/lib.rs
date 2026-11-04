@@ -22,8 +22,11 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod server_lock;
 #[cfg(feature = "test-hooks")]
 mod test_hooks;
+
+pub use server_lock::{ServerLock, lock_exclusive};
 
 /// Marks a napi error message as a serialized `CoreError`. Must match `index.js`.
 const ERROR_PREFIX: &str = "FIN_CORE_ERROR:";

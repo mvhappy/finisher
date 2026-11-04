@@ -86,6 +86,7 @@ describe("Engine", () => {
     const err = await rejection(engine.commit(tx("tx-late", 2, [{ op: "clip.delete", clip: "c1" }])));
     expect(err).toBeInstanceOf(Error);
     expect(err.code).toBe("CONFLICT");
+    expect(err.finNode).toBe(true);
     expect(err.details.againstTx).toBe("tx-del");
     expect(err.details.txId).toBe("tx-late");
     expect(err.message).not.toContain("FIN_CORE_ERROR");

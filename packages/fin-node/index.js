@@ -40,6 +40,8 @@ function toFinError(e) {
   err.code = core.code;
   err.details = core.details ?? {};
   err.fix = core.fix ?? undefined;
+  // Marks codes that come from fin-core/fin-store, so servers can pass them through verbatim.
+  err.finNode = true;
   return err;
 }
 
@@ -96,6 +98,18 @@ export class Engine {
   panicForTest() {
     if (!this.#native.panicForTest) throw new Error("fin-node was built without the test-hooks feature");
     return call(this.#native.panicForTest());
+  }
+}
+
+/**
+ * Kernel-held exclusive lock (flock / LockFileEx) on `path`; throws `SERVER_RUNNING` if held.
+ * Keep the returned `ServerLock` until shutdown, then call `release()`.
+ */
+export function lockExclusive(path) {
+  try {
+    return native.lockExclusive(path);
+  } catch (e) {
+    throw toFinError(e);
   }
 }
 
