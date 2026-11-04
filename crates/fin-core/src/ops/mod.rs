@@ -141,6 +141,22 @@ impl Op {
         }
     }
 
+    /// Every id the op names (new-entity ids, tracks, assets, clips). After placeholders are
+    /// resolved these are real ids; replay accepts literal ones, which the store's id counters
+    /// must see too. Lists the same fields as `refs_mut`.
+    pub fn ids(&self) -> Vec<&str> {
+        match self {
+            Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => {
+                vec![id]
+            }
+            Op::ClipInsert {
+                id, track, asset, ..
+            } => vec![id, track, asset],
+            Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } => vec![clip],
+            Op::ClipRestore { clip, track, .. } => vec![&clip.id, &clip.asset, track],
+        }
+    }
+
     /// The placeholder this op binds to a newly allocated id, if any (in op order these are
     /// the order ids are allocated in).
     pub(crate) fn allocates(&self) -> Option<&str> {
@@ -316,5 +332,63 @@ pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflic
         Op::AssetRemove { .. } => asset_remove::rebase(op, over, over_diff),
         Op::ClipRemove { .. } => clip_remove::rebase(op, over, over_diff),
         Op::ClipRestore { .. } => clip_restore::rebase(op, over, over_diff),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Clip;
+    use crate::time::Rational;
+
+    #[test]
+    fn ids_lists_the_fields_refs_mut_does() {
+        let r = Rational::from_int;
+        let clip = Clip {
+            id: "c1".into(),
+            asset: "a1".into(),
+            start: r(0),
+            source_in: r(0),
+            duration: r(1),
+        };
+        let ops = [
+            Op::AssetAdd {
+                id: "a1".into(),
+                path: "p".into(),
+                duration: r(1),
+                video: None,
+                audio: None,
+                fingerprint: "f".into(),
+            },
+            Op::AssetRemove { id: "a2".into() },
+            Op::ClipInsert {
+                id: "c3".into(),
+                track: "t1".into(),
+                asset: "a1".into(),
+                at: r(0),
+                source_in: r(0),
+                duration: r(1),
+            },
+            Op::ClipTrim {
+                clip: "c4".into(),
+                edge: crate::Edge::End,
+                delta: r(1),
+            },
+            Op::ClipDelete { clip: "c5".into() },
+            Op::ClipRemove {
+                id: "c6".into(),
+                ripple: true,
+            },
+            Op::ClipRestore {
+                clip,
+                track: "t2".into(),
+                ripple: true,
+            },
+        ];
+        for op in ops {
+            let mut m = op.clone();
+            let want: Vec<String> = m.refs_mut().into_iter().map(|s| s.clone()).collect();
+            assert_eq!(op.ids(), want, "{}", op.name());
+        }
     }
 }

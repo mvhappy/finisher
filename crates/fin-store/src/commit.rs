@@ -69,7 +69,7 @@ impl Store {
             parent,
             now_ms(),
         )?;
-        db::insert_tx(
+        let tip = db::insert_tx(
             &txn,
             &tx.branch,
             &record,
@@ -94,6 +94,7 @@ impl Store {
             tx.branch.clone(),
             Head {
                 rev,
+                tip: Some(tip),
                 project: applied.project,
             },
         );

@@ -36,7 +36,8 @@
 //!
 //! Every verdict (quarantine, a diverged tail, a fork, waiting, newer files) is recomputed on
 //! each pass and never persisted as final. The read-only state this module sets
-//! ([`Store::read_only`]: `CHAIN_FORK`, `NEWER_FORMAT`) is that of the last pass; commits and
+//! ([`Store::read_only`]: `CHAIN_FORK`, `NEWER_FORMAT`, `IMPORT_ERROR`) is that of the last
+//! pass (a pass that cannot list the folder changes nothing); commits and
 //! export are refused while it holds. The full read-only state machine (lease states,
 //! `CONFLICT_COPY`, status events) is Task 11, which also runs `import` from `open` and
 //! `tick`.
@@ -97,8 +98,13 @@ pub struct ForeignFile {
     pub quarantined: u32,
 }
 
-/// Why the project is read-only (spec §3.7). Task 8 sets `ChainFork` and `NewerFormat`; the
-/// others arrive with the lease and status work (Tasks 9 and 11).
+/// Why the project is read-only (spec §3.7). Import sets `ChainFork`, `NewerFormat` and
+/// `ImportError`; the others arrive with the lease and status work (Tasks 9 and 11).
+///
+/// `ImportError` (not in the spec's table; Task 20 adds it): a record on the resolved chain
+/// cannot be applied ([`ImportReport::error`]). Writing past it would build a line that
+/// servers able to replay it see as a fork, so commits and export wait until a later pass
+/// no longer reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReadOnlyReason {
@@ -107,6 +113,7 @@ pub enum ReadOnlyReason {
     ChainFork,
     ConflictCopy,
     NewerFormat,
+    ImportError,
 }
 
 impl ReadOnlyReason {
@@ -117,6 +124,7 @@ impl ReadOnlyReason {
             ReadOnlyReason::ChainFork => "CHAIN_FORK",
             ReadOnlyReason::ConflictCopy => "CONFLICT_COPY",
             ReadOnlyReason::NewerFormat => "NEWER_FORMAT",
+            ReadOnlyReason::ImportError => "IMPORT_ERROR",
         }
     }
 
@@ -128,6 +136,9 @@ impl ReadOnlyReason {
                 "two histories exist in the project folder; keep one and move the other's segment files out of .finisher/segments (fin project status lists them)"
             }
             ReadOnlyReason::NewerFormat => "update Finisher to edit this project",
+            ReadOnlyReason::ImportError => {
+                "a record in the project folder cannot be applied (details in fin project status): update Finisher, or move the damaged segment out of .finisher/segments"
+            }
         }
     }
 }
@@ -161,6 +172,8 @@ pub(crate) struct ImportState {
     /// The `current` set last written to `quarantine`; `None` before the first pass.
     flagged: Option<BTreeSet<String>>,
     read_only: Option<ReadOnlyReason>,
+    /// The last placeholder read: the next pass starts after it (hydration takes turns).
+    hydrate_from: Option<PathBuf>,
     /// The counters were raised past the log by this store at least once.
     ids_checked: bool,
     /// Storage kind for the epoch rule. Detection is Task 10; until then `Local`.
@@ -203,7 +216,7 @@ impl Store {
                 return Ok(report);
             }
         };
-        report.hydrated = hydrate::run(&self.project_dir, &entries);
+        report.hydrated = hydrate::run(&self.project_dir, &entries, &mut self.import.hydrate_from);
 
         // Classify.
         let mut by_branch: HashMap<String, Vec<SegRef>> = HashMap::new();
@@ -292,7 +305,15 @@ impl Store {
             cache.insert(branch, (key, out.verdict));
         }
         let foreign = quarantine::foreign(&mut ctx, project_dir, foreign)?;
-        if ctx.changed || !import.ids_checked {
+        if !import.ids_checked {
+            // First pass: every branch head, so ids without a binding count too.
+            let mut all = HashMap::new();
+            for b in db::branches(&txn)? {
+                refresh(&txn, &mut all, &b)?;
+            }
+            let projects: Vec<_> = all.values().map(|h| &h.project).collect();
+            Counters::raise_to_log(&txn, &projects)?;
+        } else if ctx.changed {
             let projects: Vec<_> = new_heads
                 .iter()
                 .filter_map(|(_, h)| h.as_ref().map(|h| &h.project))
@@ -341,6 +362,8 @@ impl Store {
             Some(ReadOnlyReason::ChainFork)
         } else if newer {
             Some(ReadOnlyReason::NewerFormat)
+        } else if report.error.is_some() {
+            Some(ReadOnlyReason::ImportError)
         } else {
             None
         };

@@ -10,11 +10,8 @@
 //! The `ids` table is keyed by kind name, so a kind added later (`branch`) needs no
 //! migration: a missing row starts at 1.
 
-use std::collections::BTreeMap;
-
 use fin_core::{ID_KINDS, IdAlloc, IdKind, MemIds, Project};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
 
 use crate::StoreError;
 use crate::db::{meta, parse_record, set_meta, to_i64, to_u64};
@@ -47,12 +44,6 @@ fn suffix(id: &str, prefix: &str) -> Option<u64> {
 /// `meta` key: the highest seq of `branch` whose bindings [`Counters::raise_to_log`] has seen.
 fn scanned_key(branch: &str) -> String {
     format!("idsScannedThrough.{branch}")
-}
-
-#[derive(Deserialize)]
-struct Bindings {
-    #[serde(default)]
-    bindings: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +99,8 @@ impl Counters {
     /// Raises every counter to (the highest id in the log and in `projects`) + 1, never
     /// lowering one, and saves them.
     ///
-    /// "The log" is every record's `bindings` plus every branch name (branch ids). Each
+    /// "The log" is every record's `bindings` and the ids its `resolved` ops name (replay
+    /// accepts literal ids), plus every branch name (branch ids). Each
     /// branch's rows are scanned once: `meta` `idsScannedThrough.<branch>` remembers the
     /// highest seq seen, so a follower importing every few seconds reads only the new rows.
     /// Removing rows ([`rewind_scan`]) moves it back. `projects` are the branch heads after
@@ -138,14 +130,15 @@ impl Counters {
             while let Some(row) = rows.next()? {
                 let seq = to_u64(row.get(0)?)?;
                 let bytes: Vec<u8> = row.get(1)?;
-                // Upcasters never change bindings (spec §3.2), so the raw field is enough;
-                // anything that does not parse that way gets the full decode's error.
-                let bindings = match serde_json::from_slice::<Bindings>(&bytes) {
-                    Ok(b) => b.bindings,
-                    Err(_) => parse_record(Some(seq), &bytes)?.bindings,
-                };
-                for id in bindings.values() {
+                // Bound ids, and literal ids in the resolved ops (replay accepts them).
+                let record = parse_record(Some(seq), &bytes)?;
+                for id in record.bindings.values() {
                     c.saw(id);
+                }
+                for op in &record.resolved {
+                    for id in op.ids() {
+                        c.saw(id);
+                    }
                 }
                 last = Some(seq);
             }

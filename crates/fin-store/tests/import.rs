@@ -837,3 +837,158 @@ fn follower_imports_across_a_pack() {
     let last = segments(&e.dir).pop().unwrap().1;
     assert_eq!(last.header.prev_segment_hash, Some(segs[2].1.hash.clone()));
 }
+
+#[test]
+fn an_import_that_replaces_a_tail_invalidates_another_store_on_the_db() {
+    let e = env();
+    let mut a = create(&e);
+    let mut b1 = server(&e, &a, "b");
+    let mut b2 = Store::open(&e.data("b"), &e.dir).unwrap();
+    // B1 commits two rows without the lease; B2 (same DB) caches them as its head.
+    b1.set_test_lease(1, false);
+    commit(&mut b1, "b-1", vec![asset("/m/b.mov")]);
+    commit(&mut b1, "b-2", vec![insert(0, "a1")]);
+    assert_eq!(b2.snapshot(MAIN).unwrap(), b1.snapshot(MAIN).unwrap());
+    // A commits two other rows at epoch 2 and exports: same number of rows.
+    a.set_test_lease(2, true);
+    commit(&mut a, "a-1", vec![asset("/m/a.mov")]);
+    commit(&mut a, "a-2", vec![insert(3, "a1")]);
+    export(&mut a);
+    let r = b1.import().unwrap();
+    assert_eq!((r.applied.len(), r.quarantined), (2, 2));
+    assert_eq!(b1.snapshot(MAIN).unwrap(), a.snapshot(MAIN).unwrap());
+
+    assert_eq!(
+        b2.snapshot(MAIN).unwrap(),
+        b1.snapshot(MAIN).unwrap(),
+        "B2 sees the import"
+    );
+    // An insert at 0 ripples what is there, so its diff depends on the head it applies to.
+    let c = commit(&mut b2, "b2-1", vec![insert(0, "a1")]);
+    let after = b2.snapshot(MAIN).unwrap();
+    drop((b1, b2));
+    let fresh = Store::open(&e.data("b"), &e.dir).unwrap();
+    assert_eq!(fresh.snapshot(MAIN).unwrap(), after, "replays identically");
+    assert_eq!(fresh.ops_since(MAIN, 2).unwrap(), [c]);
+}
+
+/// A record at `seq` after `parent` holding `ops` with no bindings.
+fn raw_record(s: &Store, tx_id: &str, seq: u64, parent: &str, ops: Vec<Op>) -> Vec<u8> {
+    let mut intent = tx(s, tx_id, ops.clone());
+    intent.base_rev = seq - 1;
+    encode_record(&Record {
+        tx_id: tx_id.into(),
+        seq,
+        kind: RecordKind::Edit,
+        schema_version: SCHEMA_VERSION,
+        parent_hash: Some(parent.into()),
+        author: "test".into(),
+        committed_at: 1,
+        resolved: ops,
+        intent,
+        inverse: vec![],
+        bindings: BTreeMap::new(),
+    })
+}
+
+#[test]
+fn a_record_that_cannot_be_replayed_blocks_writes_until_it_is_gone() {
+    let e = env();
+    let mut a = create(&e);
+    let mut b = server(&e, &a, "b");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    export(&mut a);
+    let prev = segments(&e.dir)[0].1.hash.clone();
+    let bad = raw_record(
+        &a,
+        "bad",
+        2,
+        &rows(&a)[0].3,
+        vec![Op::ClipDelete { clip: "c9".into() }],
+    );
+    let path = {
+        plant(&e.dir, &header(&a, 0, 2, 2, Some(prev)), &[&bad]);
+        segments(&e.dir).pop().unwrap().0
+    };
+    // A follower and the writer itself (whose lease the record continues) both stop.
+    for s in [&mut b, &mut a] {
+        let r = s.import().unwrap();
+        assert_eq!(
+            r.error.as_ref().map(|e| e.code.as_str()),
+            Some("REPLAY_FAILED")
+        );
+        assert_eq!(s.head(MAIN), 1);
+        assert_eq!(s.read_only(), Some(ReadOnlyReason::ImportError));
+        let t = tx(s, "next", vec![asset("/m/n.mov")]);
+        let err = code(s.commit(t).unwrap_err());
+        assert_eq!(err.code, "PROJECT_READ_ONLY");
+        assert_eq!(err.details["reason"], "IMPORT_ERROR");
+        assert!(err.fix.is_some());
+    }
+    assert_eq!(
+        rows(&a).len(),
+        1,
+        "nothing committed past the unreadable record"
+    );
+
+    fs::remove_file(path).unwrap();
+    for s in [&mut b, &mut a] {
+        let r = s.import().unwrap();
+        assert_eq!((r.error, s.read_only()), (None, None));
+    }
+    commit(&mut a, "next", vec![asset("/m/n.mov")]);
+}
+
+#[test]
+fn literal_ids_in_imported_records_raise_the_counters() {
+    let e = env();
+    let mut a = create(&e);
+    let mut b = server(&e, &a, "b");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    export(&mut a);
+    let prev = segments(&e.dir)[0].1.hash.clone();
+    // Replay accepts literal ids: a7 is added, then removed, all in one import.
+    let mut add = asset("/m/x.mov");
+    if let Op::AssetAdd { id, .. } = &mut add {
+        *id = "a7".into();
+    }
+    let r2 = raw_record(&a, "lit-add", 2, &rows(&a)[0].3, vec![add]);
+    let r3 = raw_record(
+        &a,
+        "lit-del",
+        3,
+        &hash(&r2),
+        vec![Op::AssetRemove { id: "a7".into() }],
+    );
+    plant(&e.dir, &header(&a, 0, 2, 3, Some(prev)), &[&r2, &r3]);
+    let r = b.import().unwrap();
+    assert_eq!((r.applied.len(), r.error), (3, None));
+    assert!(!b.snapshot(MAIN).unwrap().1.assets.contains_key("a7"));
+    let c = commit(&mut b, "b1", vec![asset("/m/b.mov")]);
+    assert_eq!(c.bindings["$a"], "a8");
+}
+
+#[test]
+fn first_pass_after_open_raises_counters_past_the_snapshot() {
+    let e = env();
+    let mut a = create(&e);
+    let mut b = server(&e, &a, "b");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    for i in 0..3 {
+        commit(&mut a, &format!("c{i}"), vec![insert(i, "a1")]);
+    }
+    export(&mut a);
+    b.import().unwrap();
+    drop(b);
+    // Counters fell behind (damage, or a DB from before the repair): nothing new to import.
+    let c = Connection::open(db_path(&e.data("b"), a.project_id())).unwrap();
+    c.execute("UPDATE ids SET next = 1", []).unwrap();
+    drop(c);
+    let mut b = Store::open(&e.data("b"), &e.dir).unwrap();
+    assert!(b.import().unwrap().applied.is_empty());
+    let c = commit(&mut b, "b1", vec![asset("/m/b.mov"), insert(9, "$a")]);
+    assert_eq!(
+        (c.bindings["$a"].as_str(), c.bindings["$c"].as_str()),
+        ("a2", "c4")
+    );
+}

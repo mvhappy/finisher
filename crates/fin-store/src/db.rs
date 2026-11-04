@@ -257,15 +257,31 @@ pub(crate) fn tip_hash(conn: &Connection, branch: &str) -> Result<Option<String>
         .optional()?)
 }
 
+/// `txHash` of the row at `seq` of `branch` (`None` when there is none, e.g. rev 0).
+pub(crate) fn hash_at(
+    conn: &Connection,
+    branch: &str,
+    seq: u64,
+) -> Result<Option<String>, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT tx_hash FROM txs WHERE branch = ?1 AND seq = ?2",
+            params![branch, to_i64(seq)?],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// Appends `record` (committed at `epoch`, not exported) on `branch`. The stored bytes are the record's
-/// encoding and `tx_hash` is their hash, so what is hashed is exactly what is stored.
+/// encoding and `tx_hash` is their hash, so what is hashed is exactly what is stored. Returns
+/// that hash.
 pub(crate) fn insert_tx(
     conn: &Connection,
     branch: &str,
     record: &Record,
     diff: &Diff,
     epoch: u64,
-) -> Result<(), StoreError> {
+) -> Result<String, StoreError> {
     let bytes = encode_record(record);
     if bytes.len() > crate::segment::MAX_RECORD_BYTES {
         // Exported, it could not fit a segment that every reader accepts.
@@ -286,6 +302,7 @@ pub(crate) fn insert_tx(
         .with_fix("split the edit into several smaller transactions")
         .into());
     }
+    let tx_hash = hash_bytes(&bytes);
     conn.execute(
         "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
                           exported, diff, schema_version, author, committed_at)
@@ -296,7 +313,7 @@ pub(crate) fn insert_tx(
             record.tx_id,
             kind_text(record.kind)?,
             bytes,
-            hash_bytes(&bytes),
+            tx_hash,
             record.parent_hash,
             serde_json::to_string(diff)?,
             record.schema_version,
@@ -305,7 +322,7 @@ pub(crate) fn insert_tx(
             to_i64(epoch)?,
         ],
     )?;
-    Ok(())
+    Ok(tx_hash)
 }
 
 /// Appends a record taken from the project folder: its exact `bytes` (whose hash is

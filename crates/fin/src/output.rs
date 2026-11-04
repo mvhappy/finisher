@@ -58,7 +58,8 @@ const VALIDATION_CODES: &[&str] = &[
 /// `SEGMENT_COLLISION`: the project folder holds another file under the name this server's
 /// export needs (the folder changed under it); the export retries under another name.
 /// `PROJECT_READ_ONLY`: the project cannot take edits now (`details.reason`: `CHAIN_FORK`,
-/// `NEWER_FORMAT`, and from the lease work `LEASE_HELD`, `LEASE_LOST`, `CONFLICT_COPY`).
+/// `NEWER_FORMAT`, `IMPORT_ERROR`, and from the lease work `LEASE_HELD`, `LEASE_LOST`,
+/// `CONFLICT_COPY`).
 const CONFLICT_CODES: &[&str] = &[
     "CONFLICT",
     "BASE_REV_AHEAD",

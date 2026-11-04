@@ -171,6 +171,9 @@ pub fn read_project_file(project_dir: &Path) -> Result<ProjectFile, StoreError> 
 #[derive(Debug, Clone)]
 pub(crate) struct Head {
     rev: u64,
+    /// `txHash` of the row at `rev` (`None` at a branch's start). An import can replace rows
+    /// with as many others (a diverged tail), so the rev alone does not identify a head.
+    tip: Option<String>,
     project: Project,
 }
 
@@ -247,7 +250,14 @@ impl Store {
         let mut bytes = serde_json::to_vec_pretty(&marker)?;
         bytes.push(b'\n');
         paths::write_atomic(&file_path, &bytes).map_err(unwritable(&file_path))?;
-        let heads = HashMap::from([(MAIN.to_string(), Head { rev: 0, project })]);
+        let heads = HashMap::from([(
+            MAIN.to_string(),
+            Head {
+                rev: 0,
+                tip: None,
+                project,
+            },
+        )]);
         Ok(Store::new(conn, id, db_path, project_dir, server_id, heads))
     }
 
@@ -403,7 +413,9 @@ impl Store {
 
 /// Brings the cached head of `branch` up to the newest rev in the database: replays the txs
 /// committed since the cached rev, or loads the latest snapshot plus its tail when there is no
-/// usable cache. Drops the cache entry when the branch does not exist.
+/// usable cache. The cache is usable only while the row at its rev still has the hash it was
+/// built from: an import (here or through another `Store` on the same database) may have
+/// replaced rows. Drops the cache entry when the branch does not exist.
 pub(crate) fn refresh(
     conn: &rusqlite::Connection,
     heads: &mut HashMap<String, Head>,
@@ -413,25 +425,26 @@ pub(crate) fn refresh(
         heads.remove(branch);
         return Ok(());
     };
-    if let Some(head) = heads.get_mut(branch) {
-        if head.rev == latest {
-            return Ok(());
+    if let Some(head) = heads.get_mut(branch)
+        && head.rev <= latest
+        && db::hash_at(conn, branch, head.rev)? == head.tip
+    {
+        for row in db::record_rows(conn, branch, head.rev)? {
+            head.project = db::replay_row(&head.project, branch, &row)?.project;
+            head.rev = row.0;
+            head.tip = Some(db::hash_bytes(&row.2));
         }
-        if head.rev < latest {
-            for row in db::record_rows(conn, branch, head.rev)? {
-                head.project = db::replay_row(&head.project, branch, &row)?.project;
-                head.rev = row.0;
-            }
-            return Ok(());
-        }
+        return Ok(());
     }
     let (mut rev, mut project) =
         db::latest_snapshot(conn, branch)?.ok_or_else(|| branch_not_found(branch))?;
+    let mut tip = db::hash_at(conn, branch, rev)?;
     for row in db::record_rows(conn, branch, rev)? {
         project = db::replay_row(&project, branch, &row)?.project;
         rev = row.0;
+        tip = Some(db::hash_bytes(&row.2));
     }
-    heads.insert(branch.to_string(), Head { rev, project });
+    heads.insert(branch.to_string(), Head { rev, tip, project });
     Ok(())
 }
 

@@ -235,7 +235,8 @@ pub struct Known {
     /// The segment that holds `head` (the DB's last known segment). Reported in `waiting`
     /// when the folder does not hold `head`.
     pub last_hash: Option<String>,
-    /// Every record of this branch in the DB, the tail included: `txId → txHash`.
+    /// Every record in the DB, on any branch, the tail included: `txId → txHash`. `txId` is
+    /// unique across branches, so a folder record reusing any of them is `TxIdReused`.
     pub known_tx: HashMap<String, String>,
     /// The unexported records, in seq order, as `(txId, txHash)`. They continue from `head`.
     pub tail: Vec<(String, String)>,

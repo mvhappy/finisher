@@ -239,6 +239,7 @@ pub(super) fn branch(
                     Ok((project, tx)) => {
                         h = Head {
                             rev: meta.seq,
+                            tip: Some(meta.tx_hash.clone()),
                             project,
                         };
                         tip_hash = Some(meta.tx_hash.clone());
