@@ -20,15 +20,23 @@
 //!
 //! Each step moves one record deeper in a finite tree, so the walk ends.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use super::graph::{Graph, ROOT};
+use super::graph::{Graph, ROOT, short};
 use super::{ForkInfo, ForkReason, ForkSide, Known, QuarantineReason, Resolution};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Cand {
     Node(usize),
     Tail,
+}
+
+#[derive(Clone, Copy)]
+enum Cause<'a> {
+    Reached,
+    Waiting,
+    /// Descends from this malformed file.
+    Malformed(&'a str),
 }
 
 enum Decision {
@@ -64,7 +72,7 @@ pub(super) fn run(g: &Graph<'_>, known: &Known) -> Resolution {
         dropped: HashSet::new(),
         fork: None,
         diverged: false,
-        waiting: g.waiting.iter().cloned().collect(),
+        waiting: vec![],
     };
     w.walk();
     w.finish()
@@ -111,7 +119,7 @@ impl<'g, 'a> Walk<'g, 'a> {
             }
         }
         let tail_left = self.known.tail.len() > line.len() - n_known;
-        self.subtree_epochs(tail_left.then_some(at));
+        self.subtree_epochs((tail_left && self.known.holds_lease).then_some(at));
 
         // 2. Down the DB line.
         let mut parent = ROOT;
@@ -147,6 +155,22 @@ impl<'g, 'a> Walk<'g, 'a> {
         let kids = g.kids(at);
         if tail_left && !kids.is_empty() {
             let mut cands: Vec<Cand> = kids.iter().map(|&k| Cand::Node(k)).collect();
+            if !self.known.holds_lease {
+                // Spec §3.6 step 7: without the lease the tail never wins once the folder
+                // has moved on from where it starts.
+                self.diverge();
+                return match kids {
+                    [only] => self.forward(at, Some(*only)),
+                    _ => match self.decide(&cands) {
+                        Decision::Win(Cand::Node(win)) => {
+                            self.lose_all(kids, win);
+                            self.forward(at, Some(win));
+                        }
+                        Decision::Win(Cand::Tail) => unreachable!("the tail is not a candidate"),
+                        Decision::Fork(reason) => self.set_fork(reason, at, &cands),
+                    },
+                };
+            }
             cands.push(Cand::Tail);
             match self.decide(&cands) {
                 Decision::Win(Cand::Tail) => self.lose_all(kids, usize::MAX),
@@ -327,8 +351,84 @@ impl<'g, 'a> Walk<'g, 'a> {
             .collect()
     }
 
+    /// Why each record that no decision reached was not reached.
+    fn causes(&self) -> Vec<Cause<'a>> {
+        let g = self.g;
+        let mut gap: HashMap<usize, &'a str> = HashMap::new();
+        for &(n, q) in &g.gaps {
+            let e = gap.entry(n).or_insert(q);
+            *e = (*e).min(q);
+        }
+        let mut cause: Vec<Option<Cause<'a>>> = vec![None; g.nodes.len()];
+        for start in 0..g.nodes.len() {
+            let mut chain = vec![];
+            let mut at = start;
+            // Each step goes to a parent; the length bound only guards the loop.
+            let found = loop {
+                if let Some(c) = cause[at] {
+                    break c;
+                }
+                if g.reachable[at] {
+                    break Cause::Reached;
+                }
+                chain.push(at);
+                if g.nodes[at].occ.is_empty() {
+                    // Held only by malformed files.
+                    break g.all_occ[at]
+                        .first()
+                        .map_or(Cause::Waiting, |&s| Cause::Malformed(g.segs[s].hash()));
+                }
+                match g.nodes[at].parent {
+                    Some(p) if p != ROOT && chain.len() <= g.nodes.len() => at = p,
+                    _ => {
+                        break match gap.get(&at) {
+                            Some(q) if g.malformed_hashes.contains(q) => Cause::Malformed(q),
+                            _ => Cause::Waiting,
+                        };
+                    }
+                }
+            };
+            for c in chain {
+                cause[c] = Some(found);
+            }
+        }
+        cause
+            .into_iter()
+            .map(|c| c.unwrap_or(Cause::Reached))
+            .collect()
+    }
+
     fn finish(self) -> Resolution {
+        let g = self.g;
         let apply = self.slices(self.applied.iter().map(|&n| self.occ(n)));
+
+        // Every record with a usable copy ends up in exactly one place: imported, marked,
+        // set aside, on the DB line already, or pending (behind a fork, a gap or a missing
+        // head). Records only in malformed files are covered by those files' entries.
+        let mut placed = vec![false; g.nodes.len()];
+        for &n in self.applied.iter().chain(&self.marked).chain(&self.lost) {
+            debug_assert!(!placed[n], "record placed twice");
+            placed[n] = true;
+        }
+        let tail_ids: HashSet<&str> = self.known.tail.iter().map(|(i, _)| i.as_str()).collect();
+        let causes = self.causes();
+        let mut pending = vec![];
+        let mut descends: Vec<(&str, (usize, usize))> = vec![];
+        for (n, node) in g.nodes.iter().enumerate() {
+            let m = node.meta;
+            let on_db_line = !tail_ids.contains(m.tx_id.as_str())
+                && self.known.known_tx.get(&m.tx_id) == Some(&m.tx_hash);
+            if placed[n] || node.occ.is_empty() || on_db_line {
+                continue;
+            }
+            match causes[n] {
+                Cause::Malformed(h) => descends.push((h, self.occ(n))),
+                Cause::Reached | Cause::Waiting => pending.push(self.occ(n)),
+            }
+        }
+        pending.sort_unstable();
+        let pending = self.slices(pending);
+
         let mut lost: Vec<(usize, usize)> = self.lost.iter().map(|&n| self.occ(n)).collect();
         lost.sort_unstable();
         lost.dedup();
@@ -337,32 +437,43 @@ impl<'g, 'a> Walk<'g, 'a> {
             .into_iter()
             .map(|s| (s, QuarantineReason::StaleEpoch))
             .chain(
-                self.g
-                    .malformed
+                g.malformed
                     .iter()
                     .map(|(s, why)| (s.clone(), QuarantineReason::Malformed(why.clone()))),
             )
             .collect();
+        descends.sort_unstable();
+        for group in descends.chunk_by(|a, b| a.0 == b.0) {
+            let why = format!("descends from malformed segment {}", short(group[0].0));
+            for s in self.slices(group.iter().map(|&(_, o)| o)) {
+                quarantine.push((s, QuarantineReason::Malformed(why.clone())));
+            }
+        }
         quarantine.sort_by(|(a, _), (b, _)| {
             (a.hash(), a.range().start).cmp(&(b.hash(), b.range().start))
         });
+
         let mark_exported = self
             .marked
             .iter()
             .map(|&n| {
-                let m = self.g.nodes[n].meta;
+                let m = g.nodes[n].meta;
                 (m.tx_id.clone(), self.seg_of(n).0.to_string())
             })
             .collect();
-        let mut waiting = self.waiting;
-        waiting.sort();
-        waiting.dedup();
+        let mut waiting: BTreeSet<String> = self.waiting.iter().cloned().collect();
+        for &(n, q) in &g.gaps {
+            if !g.reachable[n] && !g.malformed_hashes.contains(q) {
+                waiting.insert(q.to_string());
+            }
+        }
         Resolution {
             apply,
             mark_exported,
             quarantine,
             fork: self.fork,
-            waiting,
+            waiting: waiting.into_iter().collect(),
+            pending,
             local_tail_diverged: self.diverged,
         }
     }

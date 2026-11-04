@@ -31,6 +31,27 @@
 //! ([`QuarantineReason::StaleEpoch`]); a tie is a fork. On sync storage any two lines are a
 //! fork (spec §3.5).
 //!
+//! The tail competes only while this server holds the lease ([`Known::holds_lease`]).
+//! Without the lease it never wins: as soon as the folder holds anything after the point the
+//! tail starts from, the tail is set aside (`local_tail_diverged`, spec §3.6 step 7) and the
+//! folder's line is imported.
+//!
+//! # Nothing is dropped
+//!
+//! Every record of a usable segment ends up in exactly one of: `apply`, `mark_exported`,
+//! `quarantine`, `pending`, or the DB's own line (already applied). Records that descend from
+//! a malformed file can never link, so they are quarantined as
+//! `Malformed("descends from malformed segment <hash12>")`, and a present malformed file is
+//! never reported in `waiting`.
+//!
+//! # Verdicts are per poll
+//!
+//! `Malformed` verdicts are recomputed on every poll and must not be persisted as final. They
+//! depend on what else is present: for example a lying pack (one that lists an absent segment
+//! in `replaces`) is honoured until that segment arrives and shows the pack does not hold its
+//! records, and while it is honoured it can make a genuine successor look malformed or
+//! waiting. Quarantine rows keep the bytes; the next poll may resolve them differently.
+//!
 //! # Canonical output order
 //!
 //! - `apply`: chain order (parent before child), as slices of the segment that holds each
@@ -218,6 +239,9 @@ pub struct Known {
     pub tail: Vec<(String, String)>,
     /// The highest epoch the tail was committed at (`txs.epoch`). Ignored when `tail` is empty.
     pub tail_epoch: u64,
+    /// Whether this server holds the lease now. Without it the tail never wins: once the
+    /// folder has moved on from where the tail starts, the tail is set aside (spec §3.6 step 7).
+    pub holds_lease: bool,
     pub kind: StorageKind,
 }
 
@@ -230,6 +254,7 @@ impl Known {
             known_tx: HashMap::new(),
             tail: Vec::new(),
             tail_epoch: 0,
+            holds_lease: false,
             kind,
         }
     }
@@ -291,6 +316,9 @@ pub struct Resolution {
     pub fork: Option<ForkInfo>,
     /// Missing predecessor segment hashes (gaps). Retry on the next poll.
     pub waiting: Vec<String>,
+    /// Records neither imported nor set aside yet: beyond a fork point, behind a gap, or
+    /// everything when the folder does not hold `Known::head`.
+    pub pending: Vec<SegRef>,
     /// The unexported tail lost: quarantine every tail record not in `mark_exported`, then
     /// import `apply`.
     pub local_tail_diverged: bool,

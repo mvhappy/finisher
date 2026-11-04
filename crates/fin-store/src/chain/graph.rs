@@ -10,17 +10,22 @@
 //! 4. Records become nodes keyed by `txHash`.
 //! 5. Per segment (link checks), its first record:
 //!    - `prevSegmentHash` null: a child of the branch start, unless its `parentHash` names a
-//!      record present here (malformed: it claims to start the branch but continues it);
-//!    - `prevSegmentHash` neither a present segment nor in an honoured pack's `replaces`: the
-//!      segment waits (a gap) and its first record is not linked through it;
-//!    - otherwise the `parentHash` must be that predecessor's last record (or a record of the
-//!      pack that replaces it) with `seq` one less; else malformed.
+//!      record present here (malformed: it claims to start the branch but continues it). On
+//!      `main` the first record must have no parent at all (checked locally); only 4B
+//!      branches start at a fork point;
+//!    - `prevSegmentHash` a present segment: the `parentHash` must be its last record, with
+//!      `seq` one less; else malformed;
+//!    - `prevSegmentHash` only in an honoured pack's `replaces`: the pack stands in only if
+//!      it holds the `parentHash` record (`seq` must then continue, else malformed);
+//!      otherwise the segment waits for the real predecessor;
+//!    - anything else: the segment waits (a gap) and its first record is not linked through
+//!      it.
 //!
 //!    Later records link to the record before them. Malformed segments add no links and no
 //!    epochs; their records are not linked through them.
 //! 6. Reachability from the branch start (breadth first, each node once).
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{RecMeta, SegRef};
 
@@ -49,8 +54,12 @@ pub(super) struct Graph<'a> {
     pub reachable: Vec<bool>,
     /// Reachable nodes, parents before children.
     pub order: Vec<usize>,
-    /// Missing predecessors of segments whose first record is not reachable otherwise.
-    pub waiting: BTreeSet<String>,
+    /// `(first record, missing predecessor)` of each segment that waits.
+    pub gaps: Vec<(usize, &'a str)>,
+    /// Hashes of present files that are malformed: their descendants never link.
+    pub malformed_hashes: HashSet<&'a str>,
+    /// Node → every segment holding it, usable or not.
+    pub all_occ: Vec<Vec<usize>>,
 }
 
 impl<'a> Graph<'a> {
@@ -68,14 +77,18 @@ impl<'a> Graph<'a> {
         sorted.dedup_by(|a, b| a.hash() == b.hash());
 
         let mut malformed = vec![];
+        let mut malformed_hashes = HashSet::new();
         let mut valid = vec![];
         for s in sorted {
             match local_check(s) {
                 Ok(()) => valid.push(s),
-                Err(why) => malformed.push((s.whole(), why)),
+                Err(why) => {
+                    malformed_hashes.insert(s.hash());
+                    malformed.push((s.whole(), why));
+                }
             }
         }
-        let segs = honest_packs(valid, &mut malformed);
+        let segs = honest_packs(valid, &mut malformed, &mut malformed_hashes);
         let seg_idx: HashMap<&str, usize> = segs
             .iter()
             .enumerate()
@@ -122,26 +135,30 @@ impl<'a> Graph<'a> {
                     Err("starts the branch but continues a record that is present".to_string())
                 }
                 None => Ok(Some(ROOT)),
-                Some(q) if !seg_idx.contains_key(q) && !alias.contains_key(q) => {
-                    gaps.push((si, q));
-                    Ok(None)
-                }
                 Some(q) => {
-                    let continues = parent.is_some_and(|x| {
-                        let seq_ok = nodes[x].meta.seq.checked_add(1) == Some(m0.seq);
-                        let place_ok = match seg_idx.get(q) {
-                            Some(&qi) => {
-                                segs[qi].all_txs().last().map(|l| &l.tx_hash)
-                                    == m0.parent_hash.as_ref()
-                            }
-                            None => alias[q].iter().any(|pi| all_occ[x].contains(pi)),
-                        };
-                        seq_ok && place_ok
-                    });
-                    if continues {
-                        Ok(parent)
+                    let seq_ok = |x: usize| nodes[x].meta.seq.checked_add(1) == Some(m0.seq);
+                    let bad = || Err(format!("does not continue its predecessor {}", short(q)));
+                    if let Some(&qi) = seg_idx.get(q) {
+                        let last = segs[qi].all_txs().last().map(|l| &l.tx_hash);
+                        match parent {
+                            Some(x) if seq_ok(x) && last == m0.parent_hash.as_ref() => Ok(parent),
+                            _ => bad(),
+                        }
                     } else {
-                        Err(format!("does not continue its predecessor {}", short(q)))
+                        // A pack stands in for `q` only if it holds the parent record.
+                        let held = parent.filter(|&x| {
+                            alias
+                                .get(q)
+                                .is_some_and(|ps| ps.iter().any(|pi| all_occ[x].contains(pi)))
+                        });
+                        match held {
+                            Some(x) if seq_ok(x) => Ok(held),
+                            Some(_) => bad(),
+                            None => {
+                                gaps.push((si, q));
+                                Ok(None)
+                            }
+                        }
                     }
                 }
             };
@@ -149,6 +166,7 @@ impl<'a> Graph<'a> {
                 Ok(link) => first_link[si] = link,
                 Err(why) => {
                     usable[si] = false;
+                    malformed_hashes.insert(s.hash());
                     malformed.push((s.whole(), why));
                 }
             }
@@ -201,10 +219,9 @@ impl<'a> Graph<'a> {
             }
         }
 
-        let waiting = gaps
+        let gaps = gaps
             .into_iter()
-            .filter(|(si, _)| !reachable[by_hash[segs[*si].all_txs()[0].tx_hash.as_str()]])
-            .map(|(_, q)| q.to_string())
+            .map(|(si, q)| (by_hash[segs[si].all_txs()[0].tx_hash.as_str()], q))
             .collect();
 
         Graph {
@@ -217,7 +234,9 @@ impl<'a> Graph<'a> {
             root_children,
             reachable,
             order,
-            waiting,
+            gaps,
+            malformed_hashes,
+            all_occ,
         }
     }
 }
@@ -249,6 +268,9 @@ fn local_check(s: &SegRef) -> Result<(), String> {
     if h.prev_segment_hash.is_some() && first.parent_hash.is_none() {
         return Err("has a predecessor but its first record has no parentHash".into());
     }
+    if h.prev_segment_hash.is_none() && h.branch == crate::MAIN && first.parent_hash.is_some() {
+        return Err("starts main but its first record has a parentHash".into());
+    }
     Ok(())
 }
 
@@ -256,6 +278,7 @@ fn local_check(s: &SegRef) -> Result<(), String> {
 fn honest_packs<'a>(
     valid: Vec<&'a SegRef>,
     malformed: &mut Vec<(SegRef, String)>,
+    malformed_hashes: &mut HashSet<&'a str>,
 ) -> Vec<&'a SegRef> {
     let idx: HashMap<&str, usize> = valid
         .iter()
@@ -277,10 +300,13 @@ fn honest_packs<'a>(
             })
         });
         match lie.flatten() {
-            Some(r) => malformed.push((
-                s.whole(),
-                format!("replaces {} without holding its records", short(r)),
-            )),
+            Some(r) => {
+                malformed_hashes.insert(s.hash());
+                malformed.push((
+                    s.whole(),
+                    format!("replaces {} without holding its records", short(r)),
+                ));
+            }
             None => keep.push(*s),
         }
     }
