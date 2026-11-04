@@ -209,15 +209,19 @@ fn claim_name_exclusive_gives_unique_epochs() {
                 let (dir, barrier) = (dir.clone(), barrier.clone());
                 std::thread::spawn(move || {
                     barrier.wait();
-                    claim::claim_next(&dir, 0, id).unwrap()
+                    claim::claim_next(&dir, 0, id)
                 })
             })
             .collect();
         let got: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert_ne!(got[0].epoch, got[1].epoch, "round {round}");
-        assert_eq!(claims(&dir).len(), 2);
-        // Exactly one of them had to step past a taken name.
-        assert!(got.iter().filter(|c| c.contended).count() == 1, "{got:?}");
+        // One wins epoch 1; the other backs off without creating anything (a claim at 2 would
+        // only fence the winner).
+        let won: Vec<_> = got.iter().filter_map(|r| r.as_ref().ok()).collect();
+        assert_eq!(won.len(), 1, "round {round}: {got:?}");
+        assert_eq!(won[0].epoch, 1);
+        let lost = got.iter().find_map(|r| r.as_ref().err()).unwrap();
+        assert_eq!(lost.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(claims(&dir), [1], "round {round}");
     }
     // Non-canonical spellings are not claims.
     assert_eq!(claim::parse_claim("lease.claim-00000012"), Some(12));
@@ -618,10 +622,12 @@ fn commit_refuses_without_a_held_lease() {
     let name = store.planned_segment_name(MAIN).unwrap().unwrap();
     assert_eq!(&name[..8], "00000001");
 
-    // Another server takes the record over.
+    // Another server takes the record over. A commit trusts a full check for 1 s (it only
+    // writes the local DB); after that the next full check sees the takeover.
     let mut r = read_record(&dir);
     (r.server_id, r.epoch) = (B.to_string(), 2);
     overwrite(&dir, &r);
+    c.advance(ms(1_001));
     let e = fin_core::CoreError::from(store.commit(tx("t2", 1)).unwrap_err());
     assert_eq!(e.code, "PROJECT_READ_ONLY");
     assert_eq!(e.details["reason"], "LEASE_LOST");
@@ -933,4 +939,176 @@ fn commit_does_not_hold_the_database_lock_during_a_blocked_check() {
         .expect("no write lock held across the lease check");
     hooks.release();
     assert_eq!(committer.join().unwrap().unwrap(), 1);
+}
+
+// ---- Second review: fewer spurious lease losses ----
+
+#[test]
+fn many_contenders_confirming_together_never_fence_the_winner() {
+    let tmp = tempfile::tempdir().unwrap();
+    for round in 0..40 {
+        let dir = tmp.path().join(format!("r{round}"));
+        fs::create_dir(&dir).unwrap();
+        if round % 2 == 1 {
+            claim::hide_young_claims(&dir, s(5));
+        }
+        // A loser's clean-up that never happens (it crashed, or its delete is slow).
+        claim::keep_backed_off_claims_for_test(&dir);
+        let c = FakeClock::new();
+        // A holder that died 100 s ago (its last stamp is that old). The fake clock then only
+        // moves 26 s, so claims made during the race are, as on a real share, seen as young
+        // (files written after a fake advance look as old as the advance).
+        drop(acquire(&dir, A, local(&c)));
+        let mut r = read_record(&dir);
+        r.probe_server_ms -= 100_000;
+        overwrite(&dir, &r);
+        let ids = [B, C, "serverd", "servere"];
+        let mut cs: Vec<Contender> = ids
+            .iter()
+            .map(|id| contender(&dir, id, local(&c)))
+            .collect();
+        for x in &mut cs {
+            held_elsewhere(x.try_acquire()); // the first stale probe
+        }
+        c.advance(s(26));
+        let barrier = Arc::new(Barrier::new(cs.len()));
+        let handles: Vec<_> = cs
+            .into_iter()
+            .map(|mut x| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    x.try_acquire().ok()
+                })
+            })
+            .collect();
+        let leases: Vec<Lease> = handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(leases.len(), 1, "round {round}: one winner");
+        assert_eq!(
+            leases[0].check(),
+            Ok(2),
+            "round {round}: not fenced by the losers"
+        );
+        // (With listings lagging, the winner may not have seen claim 1 to delete it yet.)
+        let left = claims(&dir);
+        assert!(
+            left.contains(&2) && left.iter().all(|e| *e <= 2),
+            "round {round}: the losers created nothing: {left:?}"
+        );
+    }
+}
+
+#[test]
+fn an_old_claim_above_our_epoch_is_ignored() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    // An acquirer that crashed 100 s ago, right after claiming.
+    fs::write(dir.join(claim_name(2)), C).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(dir.join(claim_name(2)))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - s(100))
+        .unwrap();
+    assert_eq!(a.check(), Ok(1));
+    c.advance(s(5));
+    eventually("a heartbeat", || a.heartbeats() == 1);
+    assert_eq!(a.check(), Ok(1));
+    // Its late record write is still caught by the record compare.
+    let mut r = read_record(&dir);
+    (r.server_id, r.epoch) = (C.to_string(), 2);
+    overwrite(&dir, &r);
+    assert!(a.check().is_err());
+}
+
+#[test]
+fn a_listing_error_refuses_one_write_but_keeps_the_lease() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    // A transient one is retried inside the listing.
+    claim::fail_next_list_for_test(&dir, std::io::ErrorKind::Interrupted);
+    assert_eq!(a.check(), Ok(1));
+    // Any other refuses this write, without losing the lease.
+    claim::fail_next_list_for_test(&dir, std::io::ErrorKind::Other);
+    let e = a.check().unwrap_err();
+    assert!(e.transient, "{e:?}");
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    assert_eq!(a.check(), Ok(1));
+    // In a heartbeat it is a failed beat, retried.
+    claim::fail_next_list_for_test(&dir, std::io::ErrorKind::Other);
+    c.advance(s(5));
+    eventually("the failed beat", || a.failed_heartbeats() == 1);
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    c.advance(s(1));
+    eventually("the retry", || a.heartbeats() == 1);
+    assert_eq!(a.check(), Ok(1));
+}
+
+#[test]
+fn commit_trusts_a_full_check_for_one_second() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (data, proj) = (tmp.path().join("data"), tmp.path().join("P"));
+    let mut store = Store::create(&data, &proj, "P", Rational::from_int(30)).unwrap();
+    let c = FakeClock::new();
+    let dir = proj.join(".finisher");
+    fs::create_dir_all(&dir).unwrap();
+    let lease = acquire(&dir, A, local(&c));
+    let hooks = lease.hooks();
+    store.set_lease_for_test(lease);
+    store.commit(tx("t1", 0)).unwrap();
+    store.commit(tx("t2", 1)).unwrap();
+    assert_eq!(
+        hooks.full_checks(),
+        1,
+        "the second commit trusted the first check"
+    );
+    c.advance(ms(1_001));
+    store.commit(tx("t3", 2)).unwrap();
+    assert_eq!(hooks.full_checks(), 2);
+    // A lease lost in between is still refused (the in-memory part always runs).
+    c.advance(s(21));
+    let e = fin_core::CoreError::from(store.commit(tx("t4", 3)).unwrap_err());
+    assert_eq!(e.details["reason"], "LEASE_LOST");
+}
+
+fn segment_file(dir: &Path, epoch: u64) {
+    let seg = dir.join("segments").join(MAIN);
+    fs::create_dir_all(&seg).unwrap();
+    let name = fin_store::names::SegmentName::new(epoch, 1, 1, "abcdefabcdef").unwrap();
+    fs::write(seg.join(name.to_string()), b"x").unwrap();
+}
+
+#[test]
+fn epochs_never_repeat_when_lease_files_are_gone() {
+    // A damaged record, its claims deleted, segments at epoch 7 in the folder.
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    drop(acquire(&dir, A, local(&c)));
+    segment_file(&dir, 7);
+    fs::write(dir.join("lease.json"), [b'x'; 512]).unwrap();
+    fs::remove_file(dir.join(claim_name(1))).unwrap();
+    let mut b = contender(&dir, B, local(&c));
+    assert_eq!(b.takeover(true).unwrap().epoch(), 8);
+
+    // No lease files at all, segments at epoch 7.
+    let (_t2, dir2) = folder();
+    segment_file(&dir2, 7);
+    assert_eq!(acquire(&dir2, B, local(&c)).epoch(), 8);
+
+    // Our own last epoch, after someone deleted every lease file.
+    let (_t3, dir3) = folder();
+    drop(acquire(&dir3, A, local(&c)));
+    let a2 = acquire(&dir3, A, local(&c));
+    assert_eq!(a2.epoch(), 2);
+    drop(a2);
+    fs::remove_file(dir3.join("lease.json")).unwrap();
+    for e in claims(&dir3) {
+        fs::remove_file(dir3.join(claim_name(e))).unwrap();
+    }
+    assert_eq!(acquire(&dir3, A, local(&c)).epoch(), 3);
 }

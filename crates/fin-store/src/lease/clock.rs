@@ -71,12 +71,63 @@ pub struct SystemClock;
 
 impl MonoClock for SystemClock {
     fn now(&self) -> Instant {
-        static START: std::sync::OnceLock<(Instant, Option<Duration>)> = std::sync::OnceLock::new();
-        let (start, at_start) = *START.get_or_init(|| (Instant::now(), awake_or_asleep()));
-        match (at_start, awake_or_asleep()) {
-            (Some(a), Some(b)) => start + b.saturating_sub(a),
-            _ => Instant::now(),
+        system().now()
+    }
+}
+
+fn system() -> &'static Timeline {
+    static SYSTEM: std::sync::OnceLock<Timeline> = std::sync::OnceLock::new();
+    SYSTEM.get_or_init(|| Timeline::new(awake_or_asleep))
+}
+
+impl SystemClock {
+    /// Whether this process's monotonic clock counts time asleep. Decided once, at first
+    /// use: `false` only where the suspend-aware clock was unavailable then, in which case
+    /// `Instant` is used for the whole process (a sleeping machine then wakes with its
+    /// self-fence deadline not yet passed; its record compare and the claims still fence it).
+    pub fn counts_sleep() -> bool {
+        system().counts_sleep()
+    }
+}
+
+/// A clock source mapped onto `Instant`s from one start. The source is chosen once:
+/// - available at start: always it. A later failed read returns the last value (never
+///   `Instant::now()`, whose timeline lags by the total time asleep, so mixing them could
+///   jump back by hours), and the result never goes backwards;
+/// - unavailable at start: `Instant` for the whole process.
+struct Timeline {
+    start: Instant,
+    at_start: Option<Duration>,
+    source: fn() -> Option<Duration>,
+    /// The largest offset from `start` returned so far, in nanoseconds.
+    last: std::sync::atomic::AtomicU64,
+}
+
+impl Timeline {
+    fn new(source: fn() -> Option<Duration>) -> Timeline {
+        Timeline {
+            start: Instant::now(),
+            at_start: source(),
+            source,
+            last: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    fn counts_sleep(&self) -> bool {
+        self.at_start.is_some()
+    }
+
+    fn now(&self) -> Instant {
+        use std::sync::atomic::Ordering;
+        let Some(at_start) = self.at_start else {
+            return Instant::now();
+        };
+        let offset = (self.source)().map(|t| {
+            let ns = u64::try_from(t.saturating_sub(at_start).as_nanos()).unwrap_or(u64::MAX);
+            self.last.fetch_max(ns, Ordering::SeqCst).max(ns)
+        });
+        let ns = offset.unwrap_or_else(|| self.last.load(Ordering::SeqCst));
+        self.start + Duration::from_nanos(ns)
     }
 }
 
@@ -311,6 +362,18 @@ fn fresh_mtime(path: &Path) -> io::Result<SystemTime> {
     file.metadata()?.modified()
 }
 
+/// Server time at `now` from a counting probe, extrapolated from the end of its round trip,
+/// so it never overestimates (a rival claim never looks older than it is); `None` once the
+/// sample is older than [`SAMPLE_MAX_AGE`].
+pub(super) fn counted_server_ms(p: &ProbeSample, now: Instant) -> Option<i64> {
+    let since = now.checked_duration_since(p.at)?;
+    if since > SAMPLE_MAX_AGE {
+        return None;
+    }
+    let after = since.saturating_sub(p.rtt);
+    Some(p.server_ms + i64::try_from(after.as_millis()).unwrap_or(i64::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +471,49 @@ mod tests {
         let q = c.probe().unwrap();
         assert!(q.advanced, "{q:?}");
         assert_eq!(c.now_server_ms(q.sample.at), Some(q.sample.server_ms));
+    }
+
+    /// The clock source is chosen once: a suspend-aware source that fails later never mixes
+    /// in `Instant` (whose timeline lags by the total time asleep), and one unavailable at
+    /// start means `Instant` for the whole process.
+    #[test]
+    fn the_clock_source_is_chosen_once() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static T: AtomicU64 = AtomicU64::new(0);
+        // A source far ahead of `Instant` (as after hours asleep); 0 means "failed".
+        fn source() -> Option<Duration> {
+            match T.load(Ordering::SeqCst) {
+                0 => None,
+                ms => Some(Duration::from_millis(ms)),
+            }
+        }
+        T.store(3_600_000, Ordering::SeqCst);
+        let t = Timeline::new(source);
+        assert!(t.counts_sleep());
+        let a = t.now();
+        T.store(3_600_500, Ordering::SeqCst);
+        let b = t.now();
+        assert_eq!(b - a, Duration::from_millis(500));
+        T.store(0, Ordering::SeqCst);
+        let c = t.now();
+        assert_eq!(
+            c, b,
+            "a failed read holds the last value, never Instant::now()"
+        );
+        T.store(3_601_000, Ordering::SeqCst);
+        assert_eq!(t.now() - a, Duration::from_secs(1));
+        T.store(3_600_100, Ordering::SeqCst);
+        assert_eq!(t.now() - a, Duration::from_secs(1), "never backwards");
+
+        T.store(0, Ordering::SeqCst);
+        let i = Timeline::new(source);
+        assert!(!i.counts_sleep());
+        T.store(9_000_000, Ordering::SeqCst);
+        let (x, y) = (i.now(), Instant::now());
+        assert!(
+            y.saturating_duration_since(x) < Duration::from_millis(50),
+            "Instant throughout"
+        );
     }
 
     #[test]

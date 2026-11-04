@@ -80,6 +80,14 @@ impl StoreLease {
         }
     }
 
+    /// [`Lease::check_recent`]: a full check up to `max_age` old is trusted (commits only).
+    pub(crate) fn check_recent(&self, max_age: Duration) -> Result<u64, CoreError> {
+        match self {
+            StoreLease::Lease(l) => l.check_recent(max_age).map_err(CoreError::from),
+            other => other.check(),
+        }
+    }
+
     /// The current epoch if this server may write now, else why not (`LEASE_LOST`).
     pub(crate) fn check(&self) -> Result<u64, CoreError> {
         match self {
@@ -90,6 +98,7 @@ impl StoreLease {
             #[cfg(any(test, feature = "test-hooks"))]
             StoreLease::Fixed { held: false, .. } => {
                 Err(CoreError::from(crate::lease::LeaseLost {
+                    transient: false,
                     reason: "the test lease is lost".to_string(),
                 }))
             }

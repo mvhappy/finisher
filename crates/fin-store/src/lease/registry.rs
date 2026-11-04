@@ -85,6 +85,11 @@ pub(super) enum Mine {
     Unknown,
 }
 
+/// The last epoch this process held for `key`, live or not.
+pub(super) fn last_epoch(key: &Key) -> Option<u64> {
+    lock(table()).get(key).map(|e| e.epoch)
+}
+
 pub(super) fn lookup(key: &Key, record: &LeaseRecord) -> Mine {
     match lock(table()).get(key) {
         Some(e) if e.live => Mine::Live,

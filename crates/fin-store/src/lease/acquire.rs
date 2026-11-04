@@ -31,10 +31,12 @@
 //! 1. List claims. A claim above the expected record's epoch that is younger than 45 s
 //!    (server time from the last counting probe, extrapolated so it never overestimates), or
 //!    whose age is unknown, is another acquisition in progress → back off.
-//! 2. Claim `base+1..base+4` (base = the highest of the record's epoch and every claim).
-//!    Needing more than the first name means a claim invisible to our listing exists, i.e. a
-//!    fresh one (Windows hides new files for up to 9.9 s) → delete ours and back off. So of
-//!    two racing contenders, the lower claim proceeds and the higher backs off.
+//! 2. Claim `base + 1` only (base = the highest of the record's epoch, every claim, every
+//!    segment name's epoch and the last epoch this process held here, so epochs never
+//!    repeat even with every lease file gone). If it is taken, someone else is acquiring
+//!    from the same view (perhaps with a claim our listing cannot see yet): back off without
+//!    creating anything. Stepping on to `base + 2` could never lead to an acquisition, but
+//!    that claim would fence the winner.
 //! 3. Re-read `lease.json`: it must be exactly what was judged (still missing, the same
 //!    record, the same damaged bytes); else delete our claim and back off.
 //! 4. Write ours (epoch, heartbeat 0, stamped with server time): `create_new` when it was
@@ -52,7 +54,7 @@ use std::time::Instant;
 
 use fin_core::CoreError;
 
-use super::clock::{ProbeSample, SAMPLE_MAX_AGE, ServerClock};
+use super::clock::{ProbeSample, ServerClock};
 use super::record::{self, LeaseRecord, Seen};
 use super::refusal::refused;
 use super::registry::{self, Mine};
@@ -432,7 +434,9 @@ impl Contender {
             Expected::Missing | Expected::Corrupt(_) => 0,
         };
         // 1. Another acquisition in progress.
-        let server_now = self.counted.and_then(|p| counted_server_ms(&p, mono.now()));
+        let server_now = self
+            .counted
+            .and_then(|p| super::clock::counted_server_ms(&p, mono.now()));
         let stale_ms = i64::try_from(self.params.stale_after.as_millis()).unwrap_or(i64::MAX);
         let in_progress = |c: &claim::ClaimFile| match (server_now, c.server_ms) {
             (Some(now), Some(m)) => now - m <= stale_ms,
@@ -447,10 +451,19 @@ impl Contender {
                 .unwrap_or_else(|| "another server (acquiring)".to_string());
             return Err(busy(who, rival.epoch));
         }
-        // 2. Claim.
-        let base = claims.last().map_or(floor, |c| c.epoch.max(floor));
+        // 2. Claim the one epoch after everything ever used here.
+        let base = [
+            floor,
+            claims.last().map_or(0, |c| c.epoch),
+            claim::highest_segment_epoch(&self.dir),
+            registry::last_epoch(&registry::key(&self.dir, &self.server_id)).unwrap_or(0),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
         let claimed = match claim::claim_next(&self.dir, base, &self.server_id) {
             Ok(c) => c,
+            // Someone else claimed it from the same view: back off, creating nothing.
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                 return Err(busy("another server (acquiring)".into(), base + 1));
             }
@@ -461,9 +474,6 @@ impl Contender {
             claim::remove(&self.dir, epoch);
             Err(state)
         };
-        if claimed.contended {
-            return back_off(busy("another server (acquiring)".into(), epoch - 1));
-        }
         let stamped = mono.now();
         let Some(stamp) = self.clock.now_server_ms(stamped) else {
             return back_off(lost("no server time: the probe file cannot be read".into()));
@@ -531,18 +541,6 @@ impl Contender {
             stamped,
         ))
     }
-}
-
-/// Server time at `now` from a counting probe, extrapolated from the end of its round trip,
-/// so it never overestimates (a rival claim never looks older than it is); `None` once the
-/// sample is older than [`SAMPLE_MAX_AGE`].
-fn counted_server_ms(p: &ProbeSample, now: Instant) -> Option<i64> {
-    let since = now.checked_duration_since(p.at)?;
-    if since > SAMPLE_MAX_AGE {
-        return None;
-    }
-    let after = since.saturating_sub(p.rtt);
-    Some(p.server_ms + i64::try_from(after.as_millis()).unwrap_or(i64::MAX))
 }
 
 /// Best effort: `lease.json` back to what it was before our failed in-place write.

@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 use crate::db::{self, Counters, SNAPSHOT_EVERY};
 use crate::{Head, Store, StoreError, branch_not_found, refresh};
 
+/// How old a passed lease check a commit may rely on (see [`Store::commit`]).
+const COMMIT_TRUSTS_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Store {
     /// Commits `tx` to its branch and returns it as committed.
     ///
@@ -39,7 +42,15 @@ impl Store {
         // The full fence reads the folder (uncached; seconds on a slow share, longer on a
         // hung one), so it runs before the database write lock is taken. Its answer is applied
         // after the dedupe below, so a retry of a committed tx is answered without the lease.
-        let fenced = self.export.lease.check();
+        //
+        // A full check that passed within the last [`COMMIT_TRUSTS_CHECK`] is trusted (the
+        // in-memory part still runs, here and under the lock). That is safe because a commit
+        // only writes the local database: every write to the folder (each segment export)
+        // takes its own full check. The cost is bounded: a commit made in the last second
+        // of a lease that another server has already taken over becomes a diverged tail,
+        // which import sets aside (spec §3.6 step 7), as it does for a commit made just
+        // before the loss.
+        let fenced = self.export.lease.check_recent(COMMIT_TRUSTS_CHECK);
         let txn = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

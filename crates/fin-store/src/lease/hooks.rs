@@ -18,6 +18,8 @@ pub enum HangPoint {
 
 #[derive(Debug, Default)]
 pub(super) struct Hang {
+    /// Full checks ([`super::Lease::check`]) so far.
+    pub(super) full_checks: std::sync::atomic::AtomicU64,
     state: Mutex<(Option<HangPoint>, bool, bool)>,
     cv: Condvar,
 }
@@ -70,6 +72,14 @@ impl LeaseHooks {
         let h = &self.0.hang;
         lock(&h.state).2 = true;
         h.cv.notify_all();
+    }
+
+    /// How many full checks (with folder I/O) this lease has done.
+    pub fn full_checks(&self) -> u64 {
+        self.0
+            .hang
+            .full_checks
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether the heartbeat thread has ended.

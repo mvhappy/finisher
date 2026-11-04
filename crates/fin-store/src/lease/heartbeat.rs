@@ -6,8 +6,9 @@
 //! 2. the stamp is server time now ([`super::ServerClock::now_server_ms`]); without one the
 //!    beat fails;
 //! 3. the fence: `lease.json` must still name our server id and epoch, and no claim above our
-//!    epoch may exist (else lost). The record is only rewritten after this, so a deleted
-//!    `lease.json` is never recreated (`write_in_place` never creates either);
+//!    epoch younger than 45 s of server time may exist (else lost; a listing that fails is a
+//!    failed beat). The record is only rewritten after this, so a deleted `lease.json` is
+//!    never recreated (`write_in_place` never creates either);
 //! 4. right before writing, in memory: the lease was not dropped, not lost, and the
 //!    self-fence deadline has not passed. Steps 1–3 can stall for any time (a hung share, a
 //!    machine asleep), and a stalled beat must not write as holder after it should have
@@ -30,7 +31,7 @@ use std::time::Instant;
 
 use super::clock::lock;
 use super::record::{self, LeaseRecord};
-use super::{Inner, RETRY_AFTER, registry};
+use super::{ClaimFence, Inner, RETRY_AFTER, registry};
 use crate::fsio;
 
 enum Failed {
@@ -92,6 +93,15 @@ fn beat_until_stopped(inner: &Inner) {
     }
 }
 
+/// A newer claim loses the lease; a listing that failed is a failed beat, retried (the
+/// self-fence deadline still bounds it).
+fn claim_failed(f: ClaimFence) -> Failed {
+    match f {
+        ClaimFence::Lost(reason) => Failed::Lost(reason),
+        ClaimFence::Unlisted(_) => Failed::Retry,
+    }
+}
+
 /// One beat (module docs). Returns the monotonic instant it stamped.
 fn beat(inner: &Inner) -> Result<Instant, Failed> {
     {
@@ -110,7 +120,7 @@ fn beat(inner: &Inner) -> Result<Instant, Failed> {
     let now = inner.now();
     let stamp = io.clock.now_server_ms(now).ok_or(Failed::Retry)?;
     inner.verify(&mut io).map_err(Failed::Lost)?;
-    inner.no_newer_claim().map_err(Failed::Lost)?;
+    inner.no_newer_claim(Some(stamp)).map_err(claim_failed)?;
     #[cfg(any(test, feature = "test-hooks"))]
     inner.hang.at(super::HangPoint::BeatBeforeWrite);
     // The probe, the read and the listing may each have stalled (a hung share, a machine
@@ -148,7 +158,8 @@ fn beat(inner: &Inner) -> Result<Instant, Failed> {
         }
         Err(e) => return Err(Failed::Lost(format!("lease.json is unreadable: {e}"))),
     }
-    inner.no_newer_claim().map_err(Failed::Lost)?;
+    let server_now = io.clock.now_server_ms(inner.now());
+    inner.no_newer_claim(server_now).map_err(claim_failed)?;
     // A beat that started before the deadline but finished after it revives nothing: the
     // deadline is still measured from the previous success.
     inner.deadline().map_err(|l| Failed::Lost(l.reason))?;

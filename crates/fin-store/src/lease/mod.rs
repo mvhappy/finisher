@@ -28,7 +28,9 @@
 //! | Self-fence at last successful heartbeat + 2×TTL, monotonic | spec §3.5 "Fencing" |
 //! | The monotonic clock counts time asleep ([`SystemClock`]) | review of Task 9 (a sleeping Mac must wake fenced) |
 //! | A heartbeat re-checks stop, lost and the deadline right before writing, and a beat finishing past the deadline revives nothing | spec §3.5 "Fencing"; review of Task 9 |
-//! | A claim above our epoch = lost (claims are the authority on epochs) | §27.9 fenced design ("no newer epoch claim") |
+//! | A claim above our epoch, younger than 45 s of server time = lost (claims are the authority on epochs) | §27.9 fenced design ("no newer epoch claim"); second review of Task 9 (bounded lockout) |
+//! | One claim per acquisition (`base + 1`); taken → back off creating nothing | second review of Task 9 |
+//! | A new epoch is above every claim, segment epoch and our own last epoch | second review of Task 9 |
 //! | Never compare the local wall clock with a server mtime | §27.9 "Clock skew" |
 //! | Lease reads are uncached, with delete sharing on Windows | §27.9 "Reads", "Windows SMB client" |
 //!
@@ -154,6 +156,9 @@ pub enum LeaseState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseLost {
     pub reason: String,
+    /// Only this check failed (the folder could not be listed): the write is refused but the
+    /// lease is not lost.
+    pub transient: bool,
 }
 
 impl From<LeaseLost> for CoreError {
@@ -222,6 +227,15 @@ pub(crate) struct Inner {
     hang: hooks::Hang,
 }
 
+/// Why [`Inner::no_newer_claim`] refused.
+pub(crate) enum ClaimFence {
+    /// A newer claim: the lease is lost.
+    Lost(String),
+    /// The folder could not be listed (after retrying transient errors): this write is
+    /// refused, the lease stands. The self-fence deadline bounds how long that can last.
+    Unlisted(String),
+}
+
 struct Io {
     clock: ServerClock,
     /// What this lease last wrote and verified (or adopted, see [`Inner::verify`]).
@@ -233,6 +247,8 @@ struct Status {
     /// The monotonic instant the last successful heartbeat (or the acquisition) stamped.
     last_ok: Instant,
     heartbeats: u64,
+    /// When the last full check that passed started (monotonic).
+    last_checked: Option<Instant>,
     failed: u64,
     fail_next: u32,
 }
@@ -273,6 +289,7 @@ impl Lease {
                 lost: None,
                 last_ok: stamped,
                 heartbeats: 0,
+                last_checked: None,
                 failed: 0,
                 fail_next: 0,
             }),
@@ -320,7 +337,9 @@ impl Lease {
     ///    sleep) passed → lost.
     /// 3. `lease.json`, read uncached: missing, unreadable or a bad checksum → lost; a record
     ///    naming another server or another epoch → lost.
-    /// 4. A claim file above our epoch → lost.
+    /// 4. A claim file above our epoch, younger than 45 s of server time → lost. If `.finisher`
+    ///    cannot be listed (after retrying transient errors), this write is refused with
+    ///    [`LeaseLost::transient`] set, and the lease is **not** lost.
     /// 5. The deadline again (the read may have waited on a slow share).
     ///
     /// It does folder I/O and can wait on a heartbeat in progress: never call it under a
@@ -334,6 +353,20 @@ impl Lease {
     /// the self-fence deadline. No folder I/O, never blocks on the heartbeat.
     pub fn quick_check(&self) -> Result<u64, LeaseLost> {
         self.inner.deadline().map(|()| self.inner.epoch)
+    }
+
+    /// [`Lease::check`], unless a full check passed within `max_age` (monotonic): then only
+    /// [`Lease::quick_check`]. For commits only, which write the local database, never the
+    /// folder (see `Store::commit`); every folder write takes a full check.
+    pub fn check_recent(&self, max_age: Duration) -> Result<u64, LeaseLost> {
+        let recent = lock(&self.inner.status)
+            .last_checked
+            .is_some_and(|t| self.inner.now().saturating_duration_since(t) <= max_age);
+        if recent {
+            self.quick_check()
+        } else {
+            self.check()
+        }
     }
 
     /// Successful heartbeats so far.
@@ -414,6 +447,7 @@ impl Inner {
         }
         match &s.lost {
             Some(reason) => Err(LeaseLost {
+                transient: false,
                 reason: reason.clone(),
             }),
             None => Ok(()),
@@ -421,32 +455,69 @@ impl Inner {
     }
 
     fn check(&self) -> Result<u64, LeaseLost> {
+        let started = self.now();
         self.deadline()?;
         #[cfg(any(test, feature = "test-hooks"))]
-        self.hang.at(HangPoint::CheckBeforeRead);
-        let verdict = self
-            .verify(&mut lock(&self.io))
-            .and_then(|()| self.no_newer_claim());
-        if let Err(reason) = verdict {
-            return Err(self.set_lost(reason));
+        {
+            self.hang
+                .full_checks
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.hang.at(HangPoint::CheckBeforeRead);
+        }
+        let server_now = {
+            let mut io = lock(&self.io);
+            if let Err(reason) = self.verify(&mut io) {
+                return Err(self.set_lost(reason));
+            }
+            io.clock.now_server_ms(self.now())
+        };
+        match self.no_newer_claim(server_now) {
+            Ok(()) => {}
+            Err(ClaimFence::Lost(reason)) => return Err(self.set_lost(reason)),
+            // This write is refused; the lease stands (the next check lists again).
+            Err(ClaimFence::Unlisted(reason)) => {
+                return Err(LeaseLost {
+                    reason,
+                    transient: true,
+                });
+            }
         }
         self.deadline()?;
+        lock(&self.status).last_checked = Some(started);
         Ok(self.epoch)
     }
 
     /// Claims are the authority on epochs (parent spec §27.9, fenced design: "no newer epoch
-    /// claim"): any `lease.claim-<e>` above our epoch means another server is acquiring or
-    /// has acquired, even before its record is visible (or after our record overwrote
-    /// theirs). A claim hidden by Windows' readdir lag only delays this extra protection.
-    fn no_newer_claim(&self) -> Result<(), String> {
-        let claims = claim::list(&self.dir)
-            .map_err(|e| format!("cannot list {}: {e}", self.dir.display()))?;
-        match claims.iter().rev().find(|c| c.epoch > self.epoch) {
-            Some(c) => Err(format!(
+    /// claim"): a `lease.claim-<e>` above our epoch means another server is acquiring or has
+    /// acquired, even before its record is visible (or after our record overwrote theirs).
+    /// A claim hidden by Windows' readdir lag only delays this extra protection.
+    ///
+    /// Only while the claim is younger than stale-after (45 s) of server time, though, an
+    /// unknown age counting as young: an acquirer that crashed right after claiming must not
+    /// lock the holder out for good. If it was merely slow, its record write is still caught
+    /// by the record compare. Old claims are left in place (deleting one would let a later
+    /// acquirer reuse its epoch).
+    ///
+    /// `server_now`: our server time ([`ServerClock::now_server_ms`]).
+    fn no_newer_claim(&self, server_now: Option<i64>) -> Result<(), ClaimFence> {
+        let claims = claim::list(&self.dir).map_err(|e| {
+            ClaimFence::Unlisted(format!("cannot list {}: {e}", self.dir.display()))
+        })?;
+        let stale_ms = i64::try_from(self.params.stale_after.as_millis()).unwrap_or(i64::MAX);
+        let young = |c: &claim::ClaimFile| match (server_now, c.server_ms) {
+            (Some(now), Some(m)) => now - m <= stale_ms,
+            _ => true,
+        };
+        match claims
+            .iter()
+            .rev()
+            .find(|c| c.epoch > self.epoch && young(c))
+        {
+            Some(c) => Err(ClaimFence::Lost(format!(
                 "a newer claim {} exists; this lease was epoch {}",
                 claim::claim_name(c.epoch),
                 self.epoch
-            )),
+            ))),
             None => Ok(()),
         }
     }
@@ -482,6 +553,7 @@ impl Inner {
         let mut s = lock(&self.status);
         self.lose(&mut s, reason);
         LeaseLost {
+            transient: false,
             reason: s.lost.clone().unwrap_or_default(),
         }
     }

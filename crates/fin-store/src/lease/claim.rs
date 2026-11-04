@@ -11,15 +11,12 @@
 //! for up to 9.9 s. The record's epoch is authoritative.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
 use super::clock::unix_ms;
 use crate::fsio;
 use crate::names::MAX_EPOCH;
-
-/// How many successive epochs one acquisition tries.
-pub const TRIES: u64 = 4;
 
 pub fn claim_name(epoch: u64) -> String {
     format!("lease.claim-{epoch:08}")
@@ -42,8 +39,26 @@ pub struct ClaimFile {
     pub server_ms: Option<i64>,
 }
 
-/// The claim files in `dir`, by epoch.
+/// The claim files in `dir`, by epoch. Transient errors ([`fsio::is_transient`]) are
+/// retried as [`super::record`] reads are, for up to [`fsio::RETRIES`] × [`fsio::RETRY_DELAY`].
 pub fn list(dir: &Path) -> io::Result<Vec<ClaimFile>> {
+    let mut attempt = 0;
+    loop {
+        match list_once(dir) {
+            Err(e) if attempt < fsio::RETRIES && fsio::is_transient(&e) => {
+                attempt += 1;
+                std::thread::sleep(fsio::RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
+fn list_once(dir: &Path) -> io::Result<Vec<ClaimFile>> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(kind) = hook(dir, |h| h.fail_list.take()) {
+        return Err(io::Error::new(kind, "injected listing failure"));
+    }
     let mut out = vec![];
     for e in fs::read_dir(dir)? {
         let e = e?;
@@ -64,13 +79,22 @@ pub fn list(dir: &Path) -> io::Result<Vec<ClaimFile>> {
     Ok(out)
 }
 
+/// Per-folder test hooks.
 #[cfg(any(test, feature = "test-hooks"))]
-fn lags()
--> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::time::Duration>> {
-    static LAGS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::time::Duration>>,
+#[derive(Debug, Default)]
+struct Hooks {
+    lag: Option<std::time::Duration>,
+    fail_list: Option<io::ErrorKind>,
+    keep_backed_off: bool,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn hook<T>(dir: &Path, f: impl FnOnce(&mut Hooks) -> T) -> T {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Hooks>>,
     > = std::sync::OnceLock::new();
-    LAGS.get_or_init(Default::default)
+    let mut all = super::clock::lock(HOOKS.get_or_init(Default::default));
+    f(all.entry(dir.to_path_buf()).or_default())
 }
 
 /// Test hook: listings of `dir` leave out claims younger than `lag` (real time), as the
@@ -78,12 +102,27 @@ fn lags()
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub fn hide_young_claims(dir: &Path, lag: std::time::Duration) {
-    super::clock::lock(lags()).insert(dir.to_path_buf(), lag);
+    hook(dir, |h| h.lag = Some(lag));
+}
+
+/// Test hook: the next listing of `dir` fails with `kind` (once).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn fail_next_list_for_test(dir: &Path, kind: io::ErrorKind) {
+    hook(dir, |h| h.fail_list = Some(kind));
+}
+
+/// Test hook: an acquisition that backs off in `dir` never gets to remove its claim (it
+/// crashed, or its delete is slow).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn keep_backed_off_claims_for_test(dir: &Path) {
+    hook(dir, |h| h.keep_backed_off = true);
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
 fn hidden(dir: &Path, mtime: Option<std::time::SystemTime>) -> bool {
-    let Some(lag) = super::clock::lock(lags()).get(dir).copied() else {
+    let Some(lag) = hook(dir, |h| h.lag) else {
         return false;
     };
     mtime.is_none_or(|t| t.elapsed().map_or(true, |age| age < lag))
@@ -93,35 +132,23 @@ fn hidden(dir: &Path, mtime: Option<std::time::SystemTime>) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Claimed {
     pub epoch: u64,
-    /// A lower name in the range was already taken: someone else claimed it, possibly a
-    /// moment ago (a fresh claim can be invisible to the listing the base came from).
-    pub contended: bool,
 }
 
-/// Claims the first free epoch of `base+1..=base+4` for `server_id`. `AlreadyExists` if all
-/// four are taken; any other error as is.
+/// Claims epoch `base + 1` for `server_id`, and only that one. `AlreadyExists` if it is
+/// taken: someone else is acquiring (or acquired) from the same view, possibly with a claim
+/// our listing cannot see yet. The caller backs off **without creating anything**: a claim
+/// at `base + 2` could never lead to an acquisition (the winner's record changes what it
+/// judged), but it would fence the winner, since a claim above a holder's epoch loses it the
+/// lease.
 pub fn claim_next(dir: &Path, base: u64, server_id: &str) -> io::Result<Claimed> {
-    for epoch in base + 1..=base + TRIES {
-        if epoch > MAX_EPOCH {
-            return Err(io::Error::other(format!(
-                "lease epoch {epoch} is above {MAX_EPOCH}"
-            )));
-        }
-        match create(&dir.join(claim_name(epoch)), server_id) {
-            Ok(()) => {
-                return Ok(Claimed {
-                    epoch,
-                    contended: epoch > base + 1,
-                });
-            }
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
+    let epoch = base + 1;
+    if epoch > MAX_EPOCH {
+        return Err(io::Error::other(format!(
+            "lease epoch {epoch} is above {MAX_EPOCH}"
+        )));
     }
-    Err(io::Error::new(
-        ErrorKind::AlreadyExists,
-        format!("epochs {} to {} are all claimed", base + 1, base + TRIES),
-    ))
+    create(&dir.join(claim_name(epoch)), server_id)?;
+    Ok(Claimed { epoch })
 }
 
 fn create(path: &Path, server_id: &str) -> io::Result<()> {
@@ -146,6 +173,10 @@ pub fn owner(dir: &Path, epoch: u64) -> Option<String> {
 
 /// Removes our own claim `epoch` (an acquisition that backed off). Best effort.
 pub fn remove(dir: &Path, epoch: u64) {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if hook(dir, |h| h.keep_backed_off) {
+        return;
+    }
     let _ = fs::remove_file(dir.join(claim_name(epoch)));
 }
 
@@ -154,7 +185,25 @@ pub fn remove(dir: &Path, epoch: u64) {
 pub fn remove_below(dir: &Path, epoch: u64) {
     for c in list(dir).unwrap_or_default() {
         if c.epoch < epoch {
-            remove(dir, c.epoch);
+            let _ = fs::remove_file(dir.join(claim_name(c.epoch)));
         }
     }
+}
+
+/// The highest epoch in a segment name under `<dir>/segments/*/` (0 if none or unreadable).
+/// With every lease file gone (deleted, or a damaged record whose claims were removed), the
+/// segments still carry the epochs used, so a new one never repeats them.
+pub(super) fn highest_segment_epoch(dir: &Path) -> u64 {
+    let Ok(branches) = std::fs::read_dir(dir.join("segments")) else {
+        return 0;
+    };
+    branches
+        .flatten()
+        .filter_map(|b| std::fs::read_dir(b.path()).ok())
+        .flat_map(|files| files.flatten())
+        .filter_map(|f| {
+            crate::names::SegmentName::parse(f.file_name().to_str()?).map(|n| n.epoch())
+        })
+        .max()
+        .unwrap_or(0)
 }
