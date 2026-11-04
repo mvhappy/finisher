@@ -1,0 +1,294 @@
+//! Scan of a project folder's `.finisher/` directory (sub-project 4 spec §3.4, §3.6, §3.7).
+//!
+//! Layout read:
+//! - `.finisher/*`: regular files. Our own lease files (`lease.json`, claims, probes) are
+//!   skipped; anything else is foreign, so a conflict copy of `lease.json` shows up.
+//! - `.finisher/segments/<branch>/*` and `.finisher/snapshots/<branch>/*`, where `<branch>`
+//!   is `main` or `br<digits>`. A directory with any other name is one `Foreign` entry and is
+//!   not entered.
+//! - Files directly in `segments/` or `snapshots/` are foreign.
+//! - Not scanned: `compaction/` (manifests belong to compaction, spec §3.9) and any other
+//!   directory.
+//!
+//! A path that is not a regular file (symlink, FIFO, socket, device) is `Foreign` and never
+//! opened. Known OS and sync litter is skipped: `.DS_Store`, AppleDouble `._*`,
+//! `desktop.ini`, `Thumbs.db`, `.dropbox`, `.dropbox.attr`, `.nfs*`, `.fuse_hidden*`,
+//! `.smbdelete*`. Sync temp files (`.syncthing.*.tmp`, `~syncthing~*.tmp`) are
+//! `NotArrived { Temp }`.
+//!
+//! Decoding is stateless apart from the [`Scanner`] cache: only *verified* segments and
+//! snapshots are cached, keyed by path and `(len, mtime)`. Names are content-addressed and
+//! files are write-once, so a hit needs no read. `NotArrived`, `Damaged`, `Foreign` and
+//! `Unreadable` are never cached, because sync roots hydrate out of order and a file that
+//! looks bad now may be valid on the next poll. Entries whose files leave the listing are
+//! evicted. A placeholder is never read; its status comes from the directory entry's own
+//! metadata.
+//!
+//! Size caps (from `metadata().len()`, before reading): a segment above [`SEGMENT_CAP`] or a
+//! snapshot above [`SNAPSHOT_CAP`] is `Damaged("too large")`; a foreign file above
+//! [`SEGMENT_CAP`] is listed without decoding.
+
+mod file;
+
+use std::collections::HashMap;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use crate::conflict_names::Provider;
+use crate::names::{SegmentName, SnapName};
+use crate::segment::{self, Segment};
+use crate::snapfile::SnapHeader;
+
+/// The largest segment file accepted: twice the writer's cap plus slack for a header.
+pub const SEGMENT_CAP: u64 = 2 * segment::MAX_BYTES as u64 + 64 * 1024;
+/// The largest snapshot file accepted. A snapshot holds the whole model on one line.
+pub const SNAPSHOT_CAP: u64 = 256 << 20;
+
+/// Why a file is not usable yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotArrivedWhy {
+    /// A cloud-sync placeholder; hydrate it by reading it (the caller decides when).
+    Placeholder,
+    /// Short, no trailer yet, or momentarily locked by a sync client.
+    Incomplete,
+    /// A `.~fin-*.tmp` or sync-client temp file.
+    Temp,
+}
+
+/// What a foreign file decodes to, for import into quarantine (spec §3.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForeignContent {
+    Segment(Segment),
+    Snapshot(SnapHeader),
+    Newer {
+        min_reader: u32,
+    },
+    /// Carries a Finisher magic but does not verify.
+    Damaged(String),
+    UnsupportedHash,
+}
+
+/// One classified file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    /// A verified segment whose name, directory and header agree.
+    Segment {
+        branch: String,
+        name: SegmentName,
+        seg: Segment,
+    },
+    /// A verified snapshot. The body was decoded to check the trailer, then dropped.
+    Snapshot {
+        branch: String,
+        name: SnapName,
+        header: SnapHeader,
+        /// `blake3:<64 hex>` of the file.
+        hash: String,
+    },
+    NotArrived {
+        path: PathBuf,
+        why: NotArrivedWhy,
+    },
+    /// Anything else. `conflict_copy` is `Some` for a known provider pattern, or
+    /// `Some(Unknown)` for a Finisher file stored under a name that is not its own.
+    /// `content` is the decoded Finisher file, if it is one.
+    Foreign {
+        path: PathBuf,
+        conflict_copy: Option<Provider>,
+        content: Option<ForeignContent>,
+    },
+    /// Needs a newer Finisher (`minReaderVersion` above ours).
+    Newer {
+        path: PathBuf,
+        min_reader: u32,
+    },
+    /// A canonically named file that decodes as `Corrupt` (or is too large). The spec treats
+    /// damage as not arrived until the file stops changing for 60 s, which needs state across
+    /// scans; `len` and `modified` let the caller track that.
+    Damaged {
+        path: PathBuf,
+        reason: String,
+        len: u64,
+        modified: Option<SystemTime>,
+    },
+    /// A newer format revision uses a hash algorithm this code does not know
+    /// (`UNSUPPORTED_HASH`).
+    UnsupportedHash {
+        path: PathBuf,
+    },
+    /// A read failed for a reason that is not transient (permissions, I/O error, a cloud
+    /// file that cannot be fetched). The rest of the scan is unaffected.
+    Unreadable {
+        path: PathBuf,
+        error: String,
+    },
+}
+
+struct Cached {
+    len: u64,
+    modified: SystemTime,
+    entry: Entry,
+}
+
+/// A scan in progress.
+struct Walk {
+    old: HashMap<PathBuf, Cached>,
+    new: HashMap<PathBuf, Cached>,
+    out: Vec<Entry>,
+}
+
+#[derive(Clone, Copy)]
+enum Place<'a> {
+    /// Directly in `.finisher/`.
+    Root,
+    /// Directly in `segments/` or `snapshots/`, outside any branch directory.
+    Loose,
+    Seg(&'a str),
+    Snap(&'a str),
+}
+
+/// A scanner that remembers verified files between polls.
+#[derive(Default)]
+pub struct Scanner {
+    cache: HashMap<PathBuf, Cached>,
+}
+
+impl Scanner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Scans `<project_dir>/.finisher/`. A missing directory is an empty result; only a
+    /// directory that cannot be listed fails the scan. Entries are ordered by directory,
+    /// then name.
+    pub fn scan(&mut self, project_dir: &Path) -> io::Result<Vec<Entry>> {
+        let mut w = Walk {
+            old: std::mem::take(&mut self.cache),
+            new: HashMap::new(),
+            out: Vec::new(),
+        };
+        let base = project_dir.join(".finisher");
+        for (path, meta) in list(&base)? {
+            if !meta.is_dir() {
+                file::entry(&mut w, &path, &meta, Place::Root);
+            }
+        }
+        for (sub, is_seg) in [("segments", true), ("snapshots", false)] {
+            for (path, meta) in list(&base.join(sub))? {
+                if !meta.is_dir() {
+                    file::entry(&mut w, &path, &meta, Place::Loose);
+                    continue;
+                }
+                let Some(branch) = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|b| valid_branch(b))
+                else {
+                    w.out.push(Entry::Foreign {
+                        path,
+                        conflict_copy: None,
+                        content: None,
+                    });
+                    continue;
+                };
+                for (p, m) in list(&path)? {
+                    if !m.is_dir() {
+                        let place = if is_seg {
+                            Place::Seg(branch)
+                        } else {
+                            Place::Snap(branch)
+                        };
+                        file::entry(&mut w, &p, &m, place);
+                    }
+                }
+            }
+        }
+        self.cache = w.new;
+        Ok(w.out)
+    }
+}
+
+/// An uncached scan: see [`Scanner::scan`].
+pub fn scan(project_dir: &Path) -> io::Result<Vec<Entry>> {
+    Scanner::new().scan(project_dir)
+}
+
+/// `main` or `br<digits>` (spec §3.3).
+fn valid_branch(b: &str) -> bool {
+    b == "main"
+        || b.strip_prefix("br")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// The directory's entries with their `DirEntry::metadata()` (symlinks are not followed),
+/// sorted by path. A missing directory is empty; an entry that vanishes mid-listing (a
+/// writer's temp file renamed) is skipped.
+fn list(dir: &Path) -> io::Result<Vec<(PathBuf, fs::Metadata)>> {
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(vec![]);
+        }
+        Err(e) => return Err(e),
+    };
+    let mut v = Vec::new();
+    for e in rd {
+        let e = e?;
+        match e.metadata() {
+            Ok(m) => v.push((e.path(), m)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(v)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static HOOKED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    static READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn hooked_placeholder(path: &Path) -> bool {
+    #[cfg(any(test, feature = "test-hooks"))]
+    return HOOKED.with(|h| h.borrow().iter().any(|p| p == path));
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn note_read() {
+    #[cfg(any(test, feature = "test-hooks"))]
+    READS.with(|n| n.set(n.get() + 1));
+}
+
+/// Test hook: scans on this thread treat `path` as a cloud-sync placeholder.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn mark_placeholder(path: &Path) {
+    HOOKED.with(|h| h.borrow_mut().push(path.to_path_buf()));
+}
+
+/// Test hook: forgets every [`mark_placeholder`] on this thread.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn clear_placeholders() {
+    HOOKED.with(|h| h.borrow_mut().clear());
+}
+
+/// Test hook: how many file reads scans on this thread have made.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn reads() -> u32 {
+    READS.with(std::cell::Cell::get)
+}
