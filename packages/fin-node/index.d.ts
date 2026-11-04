@@ -25,7 +25,19 @@ export declare class Engine {
   opsSince(branch: string, rev: number): Promise<string>;
   /** Closes the database; later calls reject with `ENGINE_CLOSED`. */
   close(): Promise<void>;
+  /** @internal Test builds only (`test-hooks`): rejects with `INTERNAL` and kills the engine. */
+  panicForTest(): Promise<void>;
 }
 
 /** Probes an MP4/MOV file; resolves to `{ duration, video, audio, fingerprint, size }` JSON. */
 export declare function probe(path: string): Promise<string>;
+
+/** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
+export declare const testHooks:
+  | {
+      writeFixtureMp4(
+        path: string,
+        opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
+      ): void;
+    }
+  | undefined;

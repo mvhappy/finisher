@@ -12,6 +12,11 @@ crate-type = ["cdylib"]
 test = false
 doctest = false
 
+[features]
+# Test-only exports (`Engine.panicForTest`, `writeFixtureMp4ForTest`). The vitest build enables
+# it; the plain `build` script does not.
+test-hooks = ["fin-probe/fixtures"]
+
 [dependencies]
 fin-core = { path = "../fin-core" }
 fin-probe = { path = "../fin-probe" }

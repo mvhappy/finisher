@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const here = fileURLToPath(new URL(".", import.meta.url));
+/** Tests point this at the `build:test` output (binary with the `test-hooks` feature). */
+const binaryDir = process.env.FIN_NODE_BINARY_DIR ? `${process.env.FIN_NODE_BINARY_DIR.replace(/[\\/]$/, "")}/` : here;
 
 /** Must match `ERROR_PREFIX` in crates/fin-node/src/lib.rs. */
 const ERROR_PREFIX = "FIN_CORE_ERROR:";
@@ -13,10 +15,10 @@ function loadNative() {
   const base = `${process.platform}-${process.arch}`;
   // `napi build --platform` appends an ABI on Linux (gnu/musl) and Windows (msvc).
   const names = [base, `${base}-gnu`, `${base}-musl`, `${base}-msvc`].map((s) => `fin-node.${s}.node`);
-  const file = names.map((n) => here + n).find((p) => existsSync(p));
+  const file = names.map((n) => binaryDir + n).find((p) => existsSync(p));
   if (!file) {
     throw new Error(
-      `@finisher/fin-node: no native binary for ${base} in ${here} (looked for ${names.join(", ")}); ` +
+      `@finisher/fin-node: no native binary for ${base} in ${binaryDir} (looked for ${names.join(", ")}); ` +
         "run `pnpm --filter @finisher/fin-node build`",
     );
   }
@@ -89,8 +91,27 @@ export class Engine {
   async close() {
     await call(this.#native.close());
   }
+
+  /** @internal Test builds only: panics inside the native store call. */
+  panicForTest() {
+    if (!this.#native.panicForTest) throw new Error("fin-node was built without the test-hooks feature");
+    return call(this.#native.panicForTest());
+  }
 }
 
 export function probe(path) {
   return call(native.probe(path));
 }
+
+/** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
+export const testHooks = native.writeFixtureMp4ForTest
+  ? {
+      writeFixtureMp4(path, { seconds = 2, fps = 25, audio = true, sampleRate = 48000 } = {}) {
+        try {
+          native.writeFixtureMp4ForTest(path, seconds, fps, audio, sampleRate);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
+    }
+  : undefined;

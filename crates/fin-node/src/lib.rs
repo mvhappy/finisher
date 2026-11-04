@@ -4,7 +4,14 @@
 //! the boundary as JSON strings. A failure rejects with a napi error whose message is
 //! `ERROR_PREFIX` followed by the `CoreError` JSON (`{code, message, details, fix?}`); the JS
 //! wrapper in `packages/fin-node/index.js` turns that into an `Error` carrying those fields.
+//!
+//! napi runs `Task::compute` inside an `extern "C"` callback without `catch_unwind`, so a panic
+//! there would abort the whole Node process. Every task body therefore runs under `guarded`,
+//! which turns a panic into an `INTERNAL` rejection; an `Engine` whose store panicked is dead
+//! (`ENGINE_CLOSED`, `details.reason = "panicked"`), since the store may be inconsistent.
 
+use std::any::Any;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -14,6 +21,9 @@ use fin_store::Store;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
+
+#[cfg(feature = "test-hooks")]
+mod test_hooks;
 
 /// Marks a napi error message as a serialized `CoreError`. Must match `index.js`.
 const ERROR_PREFIX: &str = "FIN_CORE_ERROR:";
@@ -35,25 +45,64 @@ fn encode(value: &impl serde::Serialize) -> Result<String> {
     })
 }
 
-fn closed() -> CoreError {
-    CoreError::new("ENGINE_CLOSED", "the engine has been closed")
-        .with_fix("open the project again with Engine.open")
+fn panic_error(payload: &(dyn Any + Send)) -> CoreError {
+    let text = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned());
+    let details = match text {
+        Some(t) => json!({ "panic": t }),
+        None => json!({}),
+    };
+    CoreError::new("INTERNAL", "internal error in fin-node").with_details(details)
 }
 
-/// One `Store` shared by an `Engine` and its in-flight tasks; `None` once closed.
-type Shared = Arc<Mutex<Option<Store>>>;
+/// Runs `f`, turning a panic into an `INTERNAL` rejection. `on_panic` runs after the unwind.
+fn guarded<T>(f: impl FnOnce() -> Result<T>, on_panic: impl FnOnce()) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let err = reject(panic_error(payload.as_ref()));
+        // Cleanup must not unwind into the FFI boundary either.
+        let _ = catch_unwind(AssertUnwindSafe(on_panic));
+        Err(err)
+    })
+}
 
-fn lock(shared: &Shared) -> MutexGuard<'_, Option<Store>> {
-    // A panic while holding the lock cannot leave the store half-written (SQLite rolls back),
-    // so a poisoned lock is still usable.
+/// The store behind an `Engine`.
+enum State {
+    Open(Box<Store>),
+    Closed,
+    /// A call panicked while using the store; it is dropped and the engine stays unusable.
+    Panicked,
+}
+
+/// One `State` shared by an `Engine` and its in-flight tasks.
+type Shared = Arc<Mutex<State>>;
+
+fn lock(shared: &Shared) -> MutexGuard<'_, State> {
+    // The mutex is only poisoned by a panic during a call, and `StoreTask` then replaces the
+    // state with `Panicked` (dropping the store), so the recovered guard never exposes a store
+    // that was in use when the panic happened.
     shared.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// Runs `f` against the open store, or fails with `ENGINE_CLOSED`.
 fn with_store<T>(shared: &Shared, f: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
     let mut guard = lock(shared);
-    let store = guard.as_mut().ok_or_else(|| reject(closed()))?;
-    f(store)
+    match &mut *guard {
+        State::Open(store) => f(store),
+        State::Closed => Err(reject(closed("closed"))),
+        State::Panicked => Err(reject(closed("panicked"))),
+    }
+}
+
+fn closed(reason: &str) -> CoreError {
+    let message = match reason {
+        "panicked" => "the engine stopped after an internal error",
+        _ => "the engine has been closed",
+    };
+    CoreError::new("ENGINE_CLOSED", message)
+        .with_details(json!({ "reason": reason }))
+        .with_fix("open the project again with Engine.open")
 }
 
 /// A project's op log. Created only through `Engine.create` / `Engine.open`.
@@ -67,7 +116,7 @@ pub struct Engine {
 impl Engine {
     /// Creates a project in `project_dir`, its database under `server_data`. `rate` is a
     /// rational string such as `"30"` or `"30000/1001"`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create(
         server_data: String,
         project_dir: String,
@@ -82,7 +131,7 @@ impl Engine {
     }
 
     /// Opens the project whose `finisher.project.json` is in `project_dir`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open(server_data: String, project_dir: String) -> AsyncTask<OpenTask> {
         AsyncTask::new(OpenTask {
             server_data: server_data.into(),
@@ -91,38 +140,38 @@ impl Engine {
         })
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn project_id(&self) -> String {
         self.project_id.clone()
     }
 
     /// Head revision of `branch` (0 when the branch does not exist).
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn head(&self, branch: String) -> AsyncTask<StoreTask> {
         self.task(Call::Head { branch })
     }
 
     /// Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn commit(&self, tx_json: String) -> AsyncTask<StoreTask> {
         self.task(Call::Commit { tx_json })
     }
 
     /// Resolves to `{"rev": n, "project": {...}}` JSON for the head of `branch`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn snapshot(&self, branch: String) -> AsyncTask<StoreTask> {
         self.task(Call::Snapshot { branch })
     }
 
     /// Resolves to the JSON array of `CommittedTx` on `branch` with `rev > after`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn ops_since(&self, branch: String, rev: f64) -> AsyncTask<StoreTask> {
         self.task(Call::OpsSince { branch, after: rev })
     }
 
     /// Closes the database once in-flight calls finish. Later calls fail with `ENGINE_CLOSED`;
-    /// closing twice is a no-op.
-    #[napi]
+    /// closing twice (or after a panic) is a no-op.
+    #[napi(catch_unwind)]
     pub fn close(&self) -> AsyncTask<StoreTask> {
         self.task(Call::Close)
     }
@@ -147,30 +196,52 @@ impl Task for OpenTask {
     type JsValue = Engine;
 
     fn compute(&mut self) -> Result<Store> {
-        let store = match &self.create {
-            Some((name, rate)) => {
-                let rate: Rational = rate.parse().map_err(reject)?;
-                Store::create(&self.server_data, &self.project_dir, name, rate)
-            }
-            None => Store::open(&self.server_data, &self.project_dir),
-        };
-        store.map_err(reject)
+        guarded(
+            || {
+                let store = match &self.create {
+                    Some((name, rate)) => {
+                        let rate: Rational = rate.parse().map_err(reject)?;
+                        Store::create(&self.server_data, &self.project_dir, name, rate)
+                    }
+                    None => Store::open(&self.server_data, &self.project_dir),
+                };
+                store.map_err(reject)
+            },
+            || {},
+        )
     }
 
     fn resolve(&mut self, _env: Env, store: Store) -> Result<Engine> {
-        Ok(Engine {
-            project_id: store.project_id().to_string(),
-            store: Arc::new(Mutex::new(Some(store))),
-        })
+        guarded(
+            || {
+                Ok(Engine {
+                    project_id: store.project_id().to_string(),
+                    store: Arc::new(Mutex::new(State::Open(Box::new(store)))),
+                })
+            },
+            || {},
+        )
     }
 }
 
 enum Call {
-    Head { branch: String },
-    Commit { tx_json: String },
-    Snapshot { branch: String },
-    OpsSince { branch: String, after: f64 },
+    Head {
+        branch: String,
+    },
+    Commit {
+        tx_json: String,
+    },
+    Snapshot {
+        branch: String,
+    },
+    OpsSince {
+        branch: String,
+        after: f64,
+    },
     Close,
+    /// Test hook: panics while holding the store.
+    #[cfg(feature = "test-hooks")]
+    Panic,
 }
 
 /// What a `StoreTask` hands back to JS.
@@ -196,7 +267,7 @@ fn parse_tx(json: &str) -> Result<Tx> {
 }
 
 fn parse_rev(rev: f64) -> Result<u64> {
-    // 2^53: the largest integer a JS number holds exactly.
+    // 2^53: the largest integer a JS number holds exactly. NaN fails both checks.
     if rev.fract() == 0.0 && (0.0..=9_007_199_254_740_992.0).contains(&rev) {
         Ok(rev as u64)
     } else {
@@ -205,8 +276,43 @@ fn parse_rev(rev: f64) -> Result<u64> {
                 "INVALID_RANGE",
                 format!("rev must be a non-negative integer, got {rev}"),
             )
-            .with_details(json!({ "rev": rev })),
+            .with_details(json!({ "rev": rev.to_string() })),
         ))
+    }
+}
+
+fn run(store: &Shared, call: Call) -> Result<Reply> {
+    match call {
+        Call::Close => {
+            let mut guard = lock(store);
+            if let State::Open(_) = &*guard {
+                *guard = State::Closed;
+            }
+            Ok(Reply::Unit)
+        }
+        Call::Head { branch } => with_store(store, |s| Ok(Reply::Rev(s.head(&branch)))),
+        Call::Commit { tx_json } => {
+            let tx = parse_tx(&tx_json)?;
+            with_store(store, |s| {
+                Ok(Reply::Json(encode(&s.commit(tx).map_err(reject)?)?))
+            })
+        }
+        Call::Snapshot { branch } => with_store(store, |s| {
+            let (rev, project) = s.snapshot(&branch).map_err(reject)?;
+            Ok(Reply::Json(encode(
+                &json!({ "rev": rev, "project": project }),
+            )?))
+        }),
+        Call::OpsSince { branch, after } => {
+            let after = parse_rev(after)?;
+            with_store(store, |s| {
+                Ok(Reply::Json(encode(
+                    &s.ops_since(&branch, after).map_err(reject)?,
+                )?))
+            })
+        }
+        #[cfg(feature = "test-hooks")]
+        Call::Panic => with_store(store, |_| panic!("fin-node test panic")),
     }
 }
 
@@ -218,33 +324,8 @@ impl Task for StoreTask {
         let Some(call) = self.call.take() else {
             return Err(reject(CoreError::new("INTERNAL", "task ran twice")));
         };
-        match call {
-            Call::Close => {
-                lock(&self.store).take();
-                Ok(Reply::Unit)
-            }
-            Call::Head { branch } => with_store(&self.store, |s| Ok(Reply::Rev(s.head(&branch)))),
-            Call::Commit { tx_json } => {
-                let tx = parse_tx(&tx_json)?;
-                with_store(&self.store, |s| {
-                    Ok(Reply::Json(encode(&s.commit(tx).map_err(reject)?)?))
-                })
-            }
-            Call::Snapshot { branch } => with_store(&self.store, |s| {
-                let (rev, project) = s.snapshot(&branch).map_err(reject)?;
-                Ok(Reply::Json(encode(
-                    &json!({ "rev": rev, "project": project }),
-                )?))
-            }),
-            Call::OpsSince { branch, after } => {
-                let after = parse_rev(after)?;
-                with_store(&self.store, |s| {
-                    Ok(Reply::Json(encode(
-                        &s.ops_since(&branch, after).map_err(reject)?,
-                    )?))
-                })
-            }
-        }
+        let store = &self.store;
+        guarded(|| run(store, call), || *lock(store) = State::Panicked)
     }
 
     fn resolve(&mut self, _env: Env, reply: Reply) -> Result<Self::JsValue> {
@@ -257,7 +338,7 @@ impl Task for StoreTask {
 }
 
 /// Probes an MP4/MOV file; resolves to `{duration, video, audio, fingerprint, size}` JSON.
-#[napi]
+#[napi(catch_unwind)]
 pub fn probe(path: String) -> AsyncTask<ProbeTask> {
     AsyncTask::new(ProbeTask { path: path.into() })
 }
@@ -281,8 +362,11 @@ impl Task for ProbeTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<String> {
-        let probe = fin_probe::probe(&self.path).map_err(reject)?;
-        encode(&probe_json(&probe))
+        let path = &self.path;
+        guarded(
+            || encode(&probe_json(&fin_probe::probe(path).map_err(reject)?)),
+            || {},
+        )
     }
 
     fn resolve(&mut self, _env: Env, output: String) -> Result<String> {

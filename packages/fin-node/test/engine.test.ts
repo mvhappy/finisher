@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { Engine, type FinNodeError, probe } from "../index.js";
+import { Engine, type FinNodeError, probe, testHooks } from "../index.js";
 
 let tmp: string;
 let serverData: string;
@@ -103,7 +103,11 @@ describe("Engine", () => {
     expect(typeof exists.fix).toBe("string");
 
     expect((await rejection(engine.commit("{not json"))).code).toBe("INVALID_OP");
-    expect((await rejection(engine.opsSince("main", -1))).code).toBe("INVALID_RANGE");
+    for (const rev of [-1, 1.5, Number.NaN]) {
+      const err = await rejection(engine.opsSince("main", rev));
+      expect(err.code, String(rev)).toBe("INVALID_RANGE");
+      expect(err.details.rev).toBe(String(rev));
+    }
     expect((await rejection(engine.snapshot("nope"))).code).toBe("BRANCH_NOT_FOUND");
     expect((await rejection(Engine.open(serverData, join(tmp, "empty")))).code).toBe("PROJECT_NOT_FOUND");
   });
@@ -132,7 +136,40 @@ describe("Engine", () => {
   }, 120_000);
 });
 
+describe("panics", () => {
+  test("a panic rejects with INTERNAL, the process survives and the engine is dead", async () => {
+    engine = await Engine.create(serverData, projectDir, "Demo", "30");
+    await engine.commit(tx("tx-asset", 0, [addAsset]));
+
+    const err = await rejection(engine.panicForTest());
+    expect(err.code).toBe("INTERNAL");
+    expect(err.message).toBe("internal error in fin-node");
+    expect(err.details.panic).toBe("fin-node test panic");
+
+    const dead = await rejection(engine.head("main"));
+    expect(dead.code).toBe("ENGINE_CLOSED");
+    expect(dead.details.reason).toBe("panicked");
+    await engine.close();
+    expect((await rejection(engine.snapshot("main"))).details.reason).toBe("panicked");
+
+    // The process (this worker) is still alive and the project reopens intact.
+    engine = await Engine.open(serverData, projectDir);
+    expect(await engine.head("main")).toBe(1);
+  });
+});
+
 describe("probe", () => {
+  test("a real MP4 resolves to duration, video and audio", async () => {
+    const file = join(tmp, "clip.mp4");
+    testHooks!.writeFixtureMp4(file, { seconds: 2, fps: 25, audio: true, sampleRate: 44100 });
+    const p = JSON.parse(await probe(file));
+    expect(p.duration).toBe("2");
+    expect(p.video).toEqual({ width: 320, height: 180, rate: "25" });
+    expect(p.audio).toEqual({ sampleRate: 44100, channels: 2 });
+    expect(p.fingerprint).toMatch(/\S/);
+    expect(p.size).toBeGreaterThan(0);
+  });
+
   test("a missing path rejects with ASSET_NOT_FOUND", async () => {
     const err = await rejection(probe(join(tmp, "missing.mp4")));
     expect(err.code).toBe("ASSET_NOT_FOUND");
