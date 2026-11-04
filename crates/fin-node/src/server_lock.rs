@@ -3,6 +3,8 @@
 //! `LockFileEx(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)` on Windows. The OS drops
 //! the lock when the process dies, so there is no staleness logic. flock locks belong to the
 //! open file description: a second `lockExclusive` in the same process fails too.
+//! On Windows the lock is mandatory: other processes cannot read the file (`EBUSY`) while it
+//! is held, so the diagnostic pid is only readable there once the lock is released.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Seek, SeekFrom, Write};

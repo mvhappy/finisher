@@ -8,6 +8,13 @@ import { socketPath } from "../src/config.ts";
 import { childEnv } from "../src/env.ts";
 import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
+/**
+ * Windows has no SIGTERM: `stop()` is TerminateProcess, so there is no graceful shutdown (no
+ * exit 0, `finisherd.json` stays behind until the next start replaces it). There are no Unix
+ * modes either, and LockFileEx locks are mandatory (the lock file is unreadable while held).
+ */
+const WIN = process.platform === "win32";
+
 let tmp: string;
 let serverData: string;
 let server: RunningServer | undefined;
@@ -20,7 +27,10 @@ beforeEach(() => {
 
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((c) => c.close().catch(() => undefined)));
-  if (server) expect(await server.stop()).toBe(0);
+  if (server) {
+    const code = await server.stop();
+    if (!WIN) expect(code).toBe(0);
+  }
   server = undefined;
   rmSync(tmp, { recursive: true, force: true });
 });
@@ -48,10 +58,12 @@ describe("finisherd", () => {
   test("hello returns protocol 1; finisherd.json and fin.sock are 0600", async () => {
     const { info } = await start();
     expect(info.protocolVersion).toBe(1);
-    expect(info.socket).toBe(join(serverData, "fin.sock"));
+    expect(info.socket).toBe(WIN ? socketPath(serverData) : join(serverData, "fin.sock"));
     expect(info.token.length).toBeGreaterThanOrEqual(32);
-    expect(statSync(join(serverData, "finisherd.json")).mode & 0o777).toBe(0o600);
-    expect(statSync(info.socket).mode & 0o777).toBe(0o600);
+    if (!WIN) {
+      expect(statSync(join(serverData, "finisherd.json")).mode & 0o777).toBe(0o600);
+      expect(statSync(info.socket).mode & 0o777).toBe(0o600);
+    }
 
     const c = await client();
     const hello = ok<{ protocolVersion: number; capabilities: string[] }>(await c.call("server.hello", {}));
@@ -149,9 +161,12 @@ describe("finisherd", () => {
     const projectId = await createProject(c);
     ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
     await clients.splice(0)[0]!.close();
-    expect(await server!.stop()).toBe(0);
+    const code = await server!.stop();
     server = undefined;
-    for (const f of ["finisherd.json", "fin.sock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
+    if (!WIN) {
+      expect(code).toBe(0);
+      for (const f of ["finisherd.json", "fin.sock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
+    }
     // The lock file stays (never unlinked) but is released: this process can take it.
     lockExclusive(join(serverData, "finisherd.lock")).release();
 
@@ -197,14 +212,14 @@ describe("finisherd", () => {
     server = winners[0]!.value;
     const c = await client();
     ok(await c.call("server.hello", {}));
-    expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(server.info.pid));
+    if (!WIN) expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(server.info.pid));
   });
 
   test("a lock file left by a crashed process (no lock held) does not block startup", async () => {
     mkdirSync(serverData, { recursive: true, mode: 0o700 });
     writeFileSync(join(serverData, "finisherd.lock"), ""); // nobody holds it: as after a crash
     const { info } = await start();
-    expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(info.pid));
+    if (!WIN) expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(info.pid));
   });
 
   test("filesystem failures at startup are SERVER_START_FAILED with a cause", async () => {
@@ -217,11 +232,12 @@ describe("finisherd", () => {
     mkdirSync(serverData, { mode: 0o755 });
     chmodSync(serverData, 0o755);
     await start();
-    expect(statSync(serverData).mode & 0o777).toBe(0o700);
+    if (!WIN) expect(statSync(serverData).mode & 0o777).toBe(0o700);
     expect(server!.child.exitCode).toBeNull();
 
     const link = join(tmp, "link");
-    symlinkSync(serverData, link);
+    // A junction needs no privilege on Windows and is a symlink to lstat.
+    symlinkSync(serverData, link, WIN ? "junction" : "dir");
     await expect(startServer(link, 5_000)).rejects.toThrow(/SERVER_DATA_UNSAFE/);
   });
 

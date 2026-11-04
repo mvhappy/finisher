@@ -2,11 +2,13 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type FinNodeError, lockExclusive } from "../index.js";
 
 const INDEX = fileURLToPath(new URL("../index.js", import.meta.url));
+/** No Unix modes on Windows, and LockFileEx locks are mandatory: the held file is unreadable. */
+const WIN = process.platform === "win32";
 let tmp: string;
 let file: string;
 
@@ -31,7 +33,7 @@ function thrown(f: () => unknown): FinNodeError {
 /** Tries the lock from a separate process; returns its error code or "OK". */
 function lockFromChild(path: string): string {
   const script = `
-    const { lockExclusive } = await import(${JSON.stringify(INDEX)});
+    const { lockExclusive } = await import(${JSON.stringify(pathToFileURL(INDEX).href)});
     try { lockExclusive(${JSON.stringify(path)}).release(); console.log("OK"); }
     catch (e) { console.log(e.code); }
   `;
@@ -44,8 +46,10 @@ describe("lockExclusive", () => {
   test("is exclusive across descriptors and processes until released", () => {
     const held = lockExclusive(file);
     expect(held.path).toBe(file);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(readFileSync(file, "utf8").trim()).toBe(String(process.pid));
+    if (!WIN) {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(readFileSync(file, "utf8").trim()).toBe(String(process.pid));
+    }
 
     const again = thrown(() => lockExclusive(file));
     expect(again.code).toBe("SERVER_RUNNING");
@@ -54,6 +58,7 @@ describe("lockExclusive", () => {
 
     held.release();
     held.release(); // idempotent
+    expect(readFileSync(file, "utf8").trim()).toBe(String(process.pid));
     expect(lockFromChild(file)).toBe("OK");
     const next = lockExclusive(file);
     next.release();
