@@ -143,6 +143,7 @@ pub(super) fn branch(
     let mut verdict = Verdict {
         fork: res.fork.clone(),
         waiting: res.waiting.clone(),
+        pending: res.pending.iter().map(|s| s.hash().to_string()).collect(),
         ..Verdict::default()
     };
     let mut touched: Vec<SegRef> = vec![];

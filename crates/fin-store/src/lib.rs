@@ -1,16 +1,18 @@
 //! Finisher's local store: one SQLite op log per project at
 //! `<server-data>/projects/<id>/project.fdb`, with rebase-on-commit (spec §6.1, D27).
 //!
-//! The project folder holds `finisher.project.json` (`{id, name, schemaVersion}`) and, under
-//! `.finisher/segments/`, the write-once export of the committed records ([`Store::tick`],
-//! [`Store::close`]); the live database never lives there. [`Store::import`] takes what other
-//! servers exported into the database, setting aside what loses (quarantine). One `Store` is
-//! the single writer for its project.
+//! The project folder holds `finisher.project.json` ([`ProjectFile`]) and `.finisher/`: the
+//! lease (one writer per folder), and under `segments/` the write-once export of the
+//! committed records; the live database never lives there. [`Store::open`] acquires the lease
+//! when it can and imports what other servers exported before it returns; [`Store::tick`]
+//! then follows the folder, exports, and retries or re-checks the lease. One `Store` is the
+//! single writer for its project database.
 
 mod backup;
 pub mod chain;
 mod commit;
 pub mod conflict_names;
+mod copies;
 mod counters;
 mod db;
 mod export;
@@ -19,21 +21,23 @@ mod import;
 pub mod lease;
 mod migrations;
 pub mod names;
+mod open;
 mod paths;
+pub mod project_file;
+mod rebuild;
 pub mod scan;
 pub mod segment;
 pub mod server_id;
 pub mod snapfile;
+mod status;
 pub mod storage_kind;
+mod tick;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
-use fin_core::{CommittedTx, CoreError, Project, Rational, SCHEMA_VERSION, new_project};
-use serde::{Deserialize, Serialize};
+use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
 pub use db::{SNAPSHOT_EVERY, replay_record};
@@ -44,16 +48,23 @@ pub use import::{ForeignFile, ImportReport, ReadOnlyReason};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
 pub use migrations::{APPLICATION_ID, DB_VERSION};
+pub use open::OpenOptions;
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
+pub use project_file::{Genesis, ProjectFile, read_project_file};
 pub use server_id::server_id;
+pub use status::{
+    BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
+};
+pub use tick::TickReport;
 
 /// The only branch sub-project 2 creates.
 pub const MAIN: &str = "main";
 
 /// A store failure. Converts to the one `CoreError` shape: `PROJECT_EXISTS`,
 /// `PROJECT_NOT_FOUND`, `PROJECT_INVALID`, `PROJECT_DB_MISSING`, `PROJECT_DB_MISMATCH`,
-/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `PROJECT_DIR_UNWRITABLE` (the user's project folder),
-/// `IO_ERROR` (server data), `DB_ERROR`, or a `fin-core` code
+/// `BRANCH_NOT_FOUND`, `BASE_REV_AHEAD`, `DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `PROJECT_COPY`,
+/// `PROJECT_READ_ONLY`, `LEASE_TAKEOVER_REFUSED`, `PROJECT_DIR_UNWRITABLE` (the user's project
+/// folder), `IO_ERROR` (server data), `DB_ERROR`, or a `fin-core` code
 /// (`CONFLICT`, validation codes) passed through.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -79,7 +90,7 @@ impl StoreError {
         }
     }
 
-    fn io(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
+    pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
         move |source| StoreError::Io {
             path: path.to_path_buf(),
             source,
@@ -103,7 +114,7 @@ impl From<StoreError> for CoreError {
 
 /// A failure writing into the user's project folder (as opposed to server data): the caller chose
 /// the folder, so it is a fixable input error, not an internal one.
-fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
+pub(crate) fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
     move |source| {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         CoreError::new(
@@ -114,63 +125,6 @@ fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
         .with_fix("choose a writable folder for the project")
         .into()
     }
-}
-
-/// `finisher.project.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectFile {
-    pub id: String,
-    pub name: String,
-    pub schema_version: u32,
-    /// User override of the detected storage kind (`local`, `network` or `sync[:<provider>]`).
-    /// Kept as raw JSON so a bad value cannot stop the project from opening: it is ignored
-    /// with a warning instead ([`Store::storage_warning`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage_override: Option<serde_json::Value>,
-}
-
-/// Reads and checks `<project_dir>/finisher.project.json`.
-pub fn read_project_file(project_dir: &Path) -> Result<ProjectFile, StoreError> {
-    let path = project_file(project_dir);
-    let invalid = |why: String| {
-        CoreError::new(
-            "PROJECT_INVALID",
-            format!("{} is not a valid project file: {why}", path.display()),
-        )
-        .with_details(json!({ "path": path.to_string_lossy() }))
-    };
-    let bytes = match fs::read(&path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CoreError::new(
-                "PROJECT_NOT_FOUND",
-                format!("no {PROJECT_FILE} in {}", project_dir.display()),
-            )
-            .with_details(json!({ "path": path.to_string_lossy() }))
-            .with_fix(
-                "create the project first, or pass the folder that holds finisher.project.json",
-            )
-            .into());
-        }
-        Err(e) => return Err(StoreError::io(&path)(e)),
-    };
-    let file: ProjectFile = serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
-    // The id names a directory under the server data dir: accept only a lowercase ULID.
-    if file.id.len() != 26
-        || !file
-            .id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
-    {
-        return Err(invalid(format!("id {:?} is not a lowercase ULID", file.id)).into());
-    }
-    if file.schema_version != SCHEMA_VERSION {
-        return Err(CoreError::new("SCHEMA_VERSION", format!("project schema version {} is not supported", file.schema_version))
-            .with_details(json!({ "expected": SCHEMA_VERSION, "actual": file.schema_version, "path": path.to_string_lossy() }))
-            .into());
-    }
-    Ok(file)
 }
 
 /// A branch head, cached in memory.
@@ -195,6 +149,12 @@ pub struct Store {
     export: export::ExportState,
     import: import::ImportState,
     storage_warning: Option<String>,
+    /// The lease as this store drives it: acquisition, re-checks, the ordering rule.
+    ctl: tick::LeaseCtl,
+    /// What the last import passes found, for status.
+    follow: status::Follow,
+    /// `finisher.project.json` needs a newer Finisher (`NEWER_FORMAT`).
+    file_newer: bool,
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,
@@ -213,137 +173,6 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
-    /// Creates a project: a new lowercase-ULID id, the database at
-    /// `<server_data>/projects/<id>/project.fdb` with `main` at rev 0, then
-    /// `<project_dir>/finisher.project.json` (written via an fsync'd temp file and rename).
-    /// Fails with `PROJECT_EXISTS` when the project file is already there.
-    pub fn create(
-        server_data: &Path,
-        project_dir: &Path,
-        name: &str,
-        rate: Rational,
-    ) -> Result<Store, StoreError> {
-        let file_path = project_file(project_dir);
-        if fs::symlink_metadata(&file_path).is_ok() {
-            return Err(CoreError::new(
-                "PROJECT_EXISTS",
-                format!("{} already holds a project", project_dir.display()),
-            )
-            .with_details(json!({ "path": file_path.to_string_lossy() }))
-            .with_fix("open the existing project, or choose another folder")
-            .into());
-        }
-        let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
-        let project = new_project(id.clone(), name.to_string(), rate)?;
-        fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
-        let server_id = server_id(server_data)?;
-        let db_path = db_path(server_data, &id);
-        let db_dir = db_path.parent().unwrap_or(server_data);
-        fs::create_dir_all(db_dir).map_err(StoreError::io(db_dir))?;
-        if db_path.exists() {
-            return Err(CoreError::new(
-                "DB_ERROR",
-                format!("{} already exists", db_path.display()),
-            )
-            .into());
-        }
-        let mut conn = db::connect(&db_path, true)?;
-        db::init(&mut conn, &project, MAIN)?;
-        let marker = ProjectFile {
-            id: id.clone(),
-            name: name.to_string(),
-            schema_version: SCHEMA_VERSION,
-            storage_override: None,
-        };
-        let mut bytes = serde_json::to_vec_pretty(&marker)?;
-        bytes.push(b'\n');
-        paths::write_atomic(&file_path, &bytes).map_err(unwritable(&file_path))?;
-        let heads = HashMap::from([(
-            MAIN.to_string(),
-            Head {
-                rev: 0,
-                tip: None,
-                project,
-            },
-        )]);
-        Ok(Store::new(
-            conn,
-            id,
-            db_path,
-            project_dir,
-            server_id,
-            heads,
-            None,
-        ))
-    }
-
-    /// Opens the project whose `finisher.project.json` is in `project_dir`. A missing database
-    /// is `PROJECT_DB_MISSING` (rebuilding from segments is sub-project 4).
-    ///
-    /// The database is checked read-only first: one written by a newer Finisher is
-    /// `DB_TOO_NEW`, anything else that is not a project database `NOT_A_PROJECT_DB`, and
-    /// neither is modified. An older one is backed up and migrated to [`DB_VERSION`].
-    pub fn open(server_data: &Path, project_dir: &Path) -> Result<Store, StoreError> {
-        let file = read_project_file(project_dir)?;
-        let db_path = db_path(server_data, &file.id);
-        if !db_path.is_file() {
-            return Err(CoreError::new("PROJECT_DB_MISSING", format!("the database for project {} is missing", file.id))
-                .with_details(json!({ "projectId": file.id, "path": db_path.to_string_lossy() }))
-                .with_fix("restore project.fdb into the server data dir; rebuilding from segments is not available yet")
-                .into());
-        }
-        migrations::check(&db_path)?;
-        let server_id = server_id(server_data)?;
-        let mut conn = db::connect(&db_path, false)?;
-        let stored = db::meta(&conn, "projectId")?;
-        if stored.as_deref() != Some(file.id.as_str()) {
-            return Err(CoreError::new("PROJECT_DB_MISMATCH", format!("{} belongs to another project", db_path.display()))
-                .with_details(json!({ "projectId": file.id, "dbProjectId": stored, "path": db_path.to_string_lossy() }))
-                .into());
-        }
-        migrations::migrate(&mut conn, db_path.parent().unwrap_or(server_data))?;
-        db::set_meta(&conn, "lastOpenedBy", &db::written_by())?;
-        let mut heads = HashMap::new();
-        for branch in db::branches(&conn)? {
-            refresh(&conn, &mut heads, &branch)?;
-        }
-        let storage_override = file.storage_override.clone();
-        Ok(Store::new(
-            conn,
-            file.id,
-            db_path,
-            project_dir,
-            server_id,
-            heads,
-            storage_override.as_ref(),
-        ))
-    }
-
-    fn new(
-        conn: rusqlite::Connection,
-        project_id: String,
-        db_path: PathBuf,
-        project_dir: &Path,
-        server_id: String,
-        heads: HashMap<String, Head>,
-        storage_override: Option<&serde_json::Value>,
-    ) -> Store {
-        let (kind, storage_warning) = storage_kind::resolve(project_dir, storage_override);
-        Store {
-            conn,
-            project_id,
-            db_path,
-            project_dir: project_dir.to_path_buf(),
-            server_id,
-            export: export::ExportState::default(),
-            import: import::ImportState::with_kind(kind),
-            storage_warning,
-            heads: RefCell::new(heads),
-            #[cfg(any(test, feature = "test-hooks"))]
-            fail_after_apply: false,
-        }
-    }
-
     /// The storage kind in use: the project's `storageOverride`, else detected at open.
     pub fn storage_kind(&self) -> storage_kind::StorageKind {
         self.import.kind
@@ -371,68 +200,6 @@ impl Store {
     /// This server's id, the `writerId` of the segments it exports.
     pub fn server_id(&self) -> &str {
         &self.server_id
-    }
-
-    /// Periodic folder work. For now only the export: unexported records are written to the
-    /// project folder once the export delay has passed since they were first seen (2 s; 30 s
-    /// under churn). Call it often (about once a second). A folder failure is
-    /// [`ExportReport::error`] (and [`Store::export_error`]), retried after the delay; `Err` is a
-    /// database failure.
-    pub fn tick(&mut self, now: Instant) -> Result<ExportReport, StoreError> {
-        export::export_pending(self, now, false)
-    }
-
-    /// Flushes the export without waiting for the delay, then closes the store. Dropping a
-    /// `Store` does not flush: folder I/O can block for seconds on a network share, and a
-    /// drop must not.
-    pub fn close(mut self) -> Result<ExportReport, StoreError> {
-        export::export_pending(&mut self, Instant::now(), true)
-    }
-
-    /// The last export failure, cleared by the next successful export.
-    pub fn export_error(&self) -> Option<&CoreError> {
-        self.export.error.as_ref()
-    }
-
-    /// Test hook: the next export stops at `point` with `TEST_FAULT`, as if the process died
-    /// there.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn fail_next_export_at(&mut self, point: FailPoint) {
-        self.export.fail_at = Some(point);
-    }
-
-    /// Test hook: this store holds (or has lost) a lease at `epoch`. Commits and export
-    /// write only while `held`, at `epoch`.
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn set_test_lease(&mut self, epoch: u64, held: bool) {
-        self.export.lease = export::StoreLease::Fixed { epoch, held };
-    }
-
-    /// Makes `lease` the fence of every commit and export; returns the previous one. Plan
-    /// Task 11 calls this from open and tick, after acquiring, and must keep commits and
-    /// exports blocked until an import at the new epoch has resolved every branch.
-    #[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
-    pub(crate) fn attach_lease(&mut self, lease: lease::Lease) -> Option<lease::Lease> {
-        match std::mem::replace(&mut self.export.lease, export::StoreLease::Lease(lease)) {
-            export::StoreLease::Lease(old) => Some(old),
-            _ => None,
-        }
-    }
-
-    /// The real lease, once one is attached.
-    pub fn lease(&self) -> Option<&lease::Lease> {
-        match &self.export.lease {
-            export::StoreLease::Lease(l) => Some(l),
-            _ => None,
-        }
-    }
-
-    /// Test hook: [`Store::attach_lease`] (until Task 11 acquires in `open`).
-    #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
-    pub fn set_lease_for_test(&mut self, lease: lease::Lease) {
-        self.attach_lease(lease);
     }
 
     /// The head revision of `branch` (0 for a branch that does not exist). Catches up with

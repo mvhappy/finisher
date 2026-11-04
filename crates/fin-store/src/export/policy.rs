@@ -59,10 +59,9 @@ impl ExportPolicy {
 /// that check.
 #[derive(Debug, Default)]
 pub(crate) enum StoreLease {
-    /// No lease is wired in yet: writable at epoch 0, unfenced. This is every store until
-    /// plan Task 11 makes `Store::open` acquire a [`Lease`]; it then goes away.
+    /// This server does not hold the lease (it follows, or lost it): nothing is written.
     #[default]
-    Unfenced,
+    NotHeld,
     /// A real lease (lease v3).
     Lease(Lease),
     /// Test hook: a lease at `epoch`, held or lost.
@@ -91,7 +90,10 @@ impl StoreLease {
     /// The current epoch if this server may write now, else why not (`LEASE_LOST`).
     pub(crate) fn check(&self) -> Result<u64, CoreError> {
         match self {
-            StoreLease::Unfenced => Ok(0),
+            StoreLease::NotHeld => Err(CoreError::from(crate::lease::LeaseLost {
+                transient: false,
+                reason: "this server does not hold the lease".to_string(),
+            })),
             StoreLease::Lease(l) => l.check().map_err(CoreError::from),
             #[cfg(any(test, feature = "test-hooks"))]
             StoreLease::Fixed { epoch, held: true } => Ok(*epoch),

@@ -36,11 +36,16 @@
 //!
 //! Every verdict (quarantine, a diverged tail, a fork, waiting, newer files) is recomputed on
 //! each pass and never persisted as final. The read-only state this module sets
-//! ([`Store::read_only`]: `CHAIN_FORK`, `NEWER_FORMAT`, `IMPORT_ERROR`) is that of the last
-//! pass (a pass that cannot list the folder changes nothing); commits and
-//! export are refused while it holds. The full read-only state machine (lease states,
-//! `CONFLICT_COPY`, status events) is Task 11, which also runs `import` from `open` and
-//! `tick`.
+//! (`CHAIN_FORK`, `CONFLICT_COPY`, `NEWER_FORMAT`, `IMPORT_ERROR`; [`Store::read_only`]
+//! combines it with the lease's) is that of the last pass (a pass that cannot list the
+//! folder, or finds `.finisher/` missing, changes nothing); commits and export are refused
+//! while it holds. `Store::open` runs a pass before returning, and `Store::tick` one per
+//! poll, so the state is re-established before any commit after a restart.
+//!
+//! A foreign file matching a conflict-copy pattern, or a Finisher file under a name that is
+//! not its own (`conflict_copy` is `Some`), makes the project `CONFLICT_COPY` (spec §3.7);
+//! other foreign files are listed only. A conflicted *branch directory* is one foreign
+//! entry without `conflict_copy` (scan does not enter it), so it is listed only.
 
 mod apply;
 mod hydrate;
@@ -58,7 +63,7 @@ use serde_json::json;
 use crate::chain::{ForkInfo, SegRef, resolve};
 use crate::conflict_names::Provider;
 use crate::counters::Counters;
-use crate::scan::{Entry, ForeignContent, Scanner};
+use crate::scan::{Entry, ForeignContent, NotArrivedWhy, Scanner};
 use crate::storage_kind::StorageKind;
 use crate::{Head, Store, StoreError, db, refresh};
 
@@ -72,6 +77,10 @@ pub struct ImportReport {
     pub quarantined: u32,
     /// Missing predecessor segment hashes (gaps); retried on the next pass.
     pub waiting: Vec<String>,
+    /// Hashes of segments neither imported nor set aside yet (beyond a fork, behind a gap).
+    pub pending: Vec<String>,
+    /// Files under `.finisher/` that have not arrived yet (placeholders, incomplete, temp).
+    pub not_arrived: Vec<(PathBuf, NotArrivedWhy)>,
     /// The first branch that cannot continue without a person choosing (`CHAIN_FORK`).
     pub fork: Option<ForkInfo>,
     /// Files under `.finisher/` that are not ours, conflict copies among them.
@@ -98,13 +107,23 @@ pub struct ForeignFile {
     pub quarantined: u32,
 }
 
-/// Why the project is read-only (spec §3.7). Import sets `ChainFork`, `NewerFormat` and
-/// `ImportError`; the others arrive with the lease and status work (Tasks 9 and 11).
+/// Why the project is read-only (spec §3.7). Import sets `ChainFork`, `ConflictCopy`,
+/// `NewerFormat` and `ImportError`; the lease sets `LeaseHeld`, `LeaseLost` and
+/// `CatchingUp` (`Store::read_only` combines them).
 ///
-/// `ImportError` (not in the spec's table; Task 20 adds it): a record on the resolved chain
-/// cannot be applied ([`ImportReport::error`]). Writing past it would build a line that
-/// servers able to replay it see as a fork, so commits and export wait until a later pass
-/// no longer reports it.
+/// Not in the spec's table (Task 20 adds them):
+/// - `ImportError`: a record on the resolved chain cannot be applied
+///   ([`ImportReport::error`]). Writing past it would build a line that servers able to
+///   replay it see as a fork, so commits and export wait until a later pass no longer
+///   reports it.
+/// - `CatchingUp`: the lease was just acquired, and no import pass at the new epoch has yet
+///   resolved every branch with nothing waiting (after waiting out the directory-cache
+///   window when another server wrote before). Until then a commit or an export could extend
+///   a line the folder has already moved past (plan Task 11, ordering rule).
+///
+/// Precedence, highest first: `ChainFork`, `ConflictCopy`, `NewerFormat`, `ImportError`
+/// (the folder's content: a person or an update must act, whoever holds the lease), then
+/// `LeaseLost`, `LeaseHeld`, `CatchingUp` (the lease: resolved by waiting or a takeover).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReadOnlyReason {
@@ -114,6 +133,7 @@ pub enum ReadOnlyReason {
     ConflictCopy,
     NewerFormat,
     ImportError,
+    CatchingUp,
 }
 
 impl ReadOnlyReason {
@@ -125,15 +145,22 @@ impl ReadOnlyReason {
             ReadOnlyReason::ConflictCopy => "CONFLICT_COPY",
             ReadOnlyReason::NewerFormat => "NEWER_FORMAT",
             ReadOnlyReason::ImportError => "IMPORT_ERROR",
+            ReadOnlyReason::CatchingUp => "CATCHING_UP",
         }
     }
 
-    fn fix(self) -> &'static str {
+    pub fn fix(self) -> &'static str {
         match self {
             ReadOnlyReason::LeaseHeld => "wait for the other server, or take the project over",
             ReadOnlyReason::LeaseLost => "the lease is re-acquired automatically when possible",
-            ReadOnlyReason::ChainFork | ReadOnlyReason::ConflictCopy => {
+            ReadOnlyReason::ChainFork => {
                 "two histories exist in the project folder; keep one and move the other's segment files out of .finisher/segments (fin project status lists them)"
+            }
+            ReadOnlyReason::ConflictCopy => {
+                "a sync client made a conflict copy of a Finisher file (fin project status lists it): another machine may have written at the same time; keep one history and move the copy out of .finisher"
+            }
+            ReadOnlyReason::CatchingUp => {
+                "the lease was just taken: the project is writable once the folder has been read (about 10 s, or once missing segments arrive)"
             }
             ReadOnlyReason::NewerFormat => "update Finisher to edit this project",
             ReadOnlyReason::ImportError => {
@@ -157,6 +184,7 @@ struct Key {
 struct Verdict {
     fork: Option<ForkInfo>,
     waiting: Vec<String>,
+    pending: Vec<String>,
     /// `txHash`es this verdict sets aside.
     quarantined: BTreeSet<String>,
     newer: bool,
@@ -228,7 +256,17 @@ impl Store {
     /// folder problems are in the report.
     pub fn import(&mut self) -> Result<ImportReport, StoreError> {
         let mut report = ImportReport::default();
-        let entries = match self.import.scanner.scan(&self.project_dir) {
+        let dot = self.project_dir.join(".finisher");
+        let listed = if dot.is_dir() {
+            self.import.scanner.scan(&self.project_dir)
+        } else {
+            // The folder vanished (unmounted, renamed): never read that as "empty".
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} is missing", dot.display()),
+            ))
+        };
+        let entries = match listed {
             Ok(e) => e,
             Err(e) => {
                 report.error = Some(
@@ -260,6 +298,7 @@ impl Store {
                     present.insert(seg.hash.clone(), r);
                 }
                 Entry::Newer { .. } | Entry::UnsupportedHash { .. } => newer = true,
+                Entry::NotArrived { path, why } => report.not_arrived.push((path.clone(), *why)),
                 Entry::Foreign {
                     path,
                     conflict_copy,
@@ -368,12 +407,14 @@ impl Store {
         let mut branches: Vec<&String> = cache.keys().collect();
         branches.sort();
         let mut waiting = BTreeSet::new();
+        let mut pending = BTreeSet::new();
         for b in branches {
             let v = &cache[b].1;
             if report.fork.is_none() {
                 report.fork = v.fork.clone();
             }
             waiting.extend(v.waiting.iter().cloned());
+            pending.extend(v.pending.iter().cloned());
             newer |= v.newer;
             if report.error.is_none() {
                 report.error = v.error.clone();
@@ -381,10 +422,14 @@ impl Store {
         }
         import.cache = cache;
         report.waiting = waiting.into_iter().collect();
+        report.pending = pending.into_iter().collect();
         report.foreign = foreign.files;
         report.newer = newer;
+        let conflict_copy = report.foreign.iter().any(|f| f.conflict_copy.is_some());
         import.read_only = if report.fork.is_some() {
             Some(ReadOnlyReason::ChainFork)
+        } else if conflict_copy {
+            Some(ReadOnlyReason::ConflictCopy)
         } else if newer {
             Some(ReadOnlyReason::NewerFormat)
         } else if report.error.is_some() {
@@ -393,11 +438,6 @@ impl Store {
             None
         };
         Ok(report)
-    }
-
-    /// Why the project is read-only after the last import pass, if it is (module docs).
-    pub fn read_only(&self) -> Option<ReadOnlyReason> {
-        self.import.read_only
     }
 
     /// Test hook: replaces the detected storage kind the epoch rule uses.

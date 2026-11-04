@@ -52,14 +52,17 @@ const VALIDATION_CODES: &[&str] = &[
     "BINDINGS_MISMATCH",
     // A stored (migrated) record too large for a segment: export stops at it.
     "RECORD_TOO_LARGE",
+    // A copy of a project folder opened by the server that uses the original (plan
+    // Decision 6).
+    "PROJECT_COPY",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
 /// `SEGMENT_COLLISION`: the project folder holds another file under the name this server's
 /// export needs (the folder changed under it); the export retries under another name.
 /// `PROJECT_READ_ONLY`: the project cannot take edits now (`details.reason`: `CHAIN_FORK`,
-/// `NEWER_FORMAT`, `IMPORT_ERROR`, and from the lease work `LEASE_HELD`, `LEASE_LOST`,
-/// `CONFLICT_COPY`).
+/// `CONFLICT_COPY`, `NEWER_FORMAT`, `IMPORT_ERROR`, `LEASE_LOST`, `LEASE_HELD`,
+/// `CATCHING_UP`).
 /// `LEASE_TAKEOVER_REFUSED`: `fin project takeover` found a live holder, a sync folder without
 /// `--confirm`, or a holder not yet confirmed stopped (`details.reason`).
 /// `LEASE_LOST`: this server's lease failed its fencing check (writes surface it as
@@ -216,6 +219,7 @@ mod tests {
             "CLIP_NEGATIVE",
             "INVALID_ID",
             "BINDINGS_MISMATCH",
+            "PROJECT_COPY",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

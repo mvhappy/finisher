@@ -22,8 +22,9 @@ impl Store {
     /// - `baseRev` behind the head: the tx is rebased over the txs committed since; a conflict
     ///   is `CONFLICT` with `details.againstTx` (committed) and `details.txId` (incoming).
     /// - `baseRev` ahead of the head is `BASE_REV_AHEAD`.
-    /// - While the last import found a fork or a newer format ([`Store::read_only`]):
-    ///   `PROJECT_READ_ONLY` with `details.reason`.
+    /// - While the project is read-only ([`Store::read_only`]: a fork, a conflict copy, a
+    ///   newer format, an import error, the lease held elsewhere or lost, or not yet caught up
+    ///   after acquiring it): `PROJECT_READ_ONLY` with `details.reason` and `fix`.
     /// - Without a held lease: `PROJECT_READ_ONLY` with `details.reason` `LEASE_LOST`. The full
     ///   fence (`lease.check()`, folder I/O) runs before the database lock is taken; under the
     ///   lock, right before the rows are written, only the in-memory part
@@ -36,7 +37,11 @@ impl Store {
         // Everything below runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.
         check_shape(&tx)?;
-        if let Some(reason) = self.import.read_only() {
+        // A retry of a committed tx is answered whatever the state (it writes nothing).
+        if let Some(existing) = db::find_tx(&self.conn, &tx.tx_id)? {
+            return Ok(existing);
+        }
+        if let Some(reason) = self.read_only() {
             return Err(crate::import::read_only_error(&self.project_id, reason));
         }
         // The full fence reads the folder (uncached; seconds on a slow share, longer on a

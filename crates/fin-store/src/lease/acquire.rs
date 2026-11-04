@@ -58,7 +58,7 @@ use super::clock::{ProbeSample, ServerClock};
 use super::record::{self, LeaseRecord, Seen};
 use super::refusal::refused;
 use super::registry::{self, Mine};
-use super::{Lease, LeaseState, Params, claim, valid_server_id};
+use super::{Lease, LeaseState, Params, Previous, claim, valid_server_id};
 use crate::fsio;
 
 /// A server that wants the lease of one folder. Keep one across attempts: staleness needs two
@@ -530,7 +530,20 @@ impl Contender {
             Ok(seen) => return back_off(changed(seen)),
             Err(e) => return back_off(lost(format!("lease.json is unreadable: {e}"))),
         }
-        // 6.
+        // 6. What this acquisition replaced, for the owner's ordering rule (module docs of
+        // [`super`]), before the claims below ours are gone.
+        let previous = Previous {
+            record: match &expected {
+                Expected::Record(r) => Some(r.server_id.clone()),
+                Expected::Missing | Expected::Corrupt(_) => None,
+            },
+            damaged: matches!(expected, Expected::Corrupt(_)),
+            claims: claims
+                .iter()
+                .filter(|c| c.epoch < epoch)
+                .map(|c| (c.epoch, claim::owner(&self.dir, c.epoch)))
+                .collect(),
+        };
         claim::remove_below(&self.dir, epoch);
         Ok(Lease::start(
             &self.dir,
@@ -539,6 +552,7 @@ impl Contender {
             self.clock.clone(),
             mine,
             stamped,
+            previous,
         ))
     }
 }

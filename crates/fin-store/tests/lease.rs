@@ -586,6 +586,15 @@ fn server_id_is_stable() {
 
 // ---- Store fencing ----
 
+/// A store whose lease (acquired at create) runs on the fake clock.
+fn store_with(data: &Path, proj: &Path, c: &Arc<FakeClock>) -> Store {
+    let opts = fin_store::OpenOptions {
+        clock: Some(c.clone()),
+        poll: Some(ms(2)),
+    };
+    Store::create_with(data, proj, "P", Rational::from_int(30), opts).unwrap()
+}
+
 fn tx(id: &str, base_rev: u64) -> Tx {
     Tx {
         tx_id: id.into(),
@@ -612,11 +621,9 @@ fn tx(id: &str, base_rev: u64) -> Tx {
 fn commit_refuses_without_a_held_lease() {
     let tmp = tempfile::tempdir().unwrap();
     let (data, proj) = (tmp.path().join("data"), tmp.path().join("P"));
-    let mut store = Store::create(&data, &proj, "P", Rational::from_int(30)).unwrap();
     let c = FakeClock::new();
+    let mut store = store_with(&data, &proj, &c);
     let dir = proj.join(".finisher");
-    fs::create_dir_all(&dir).unwrap();
-    store.set_lease_for_test(acquire(&dir, A, local(&c)));
     store.commit(tx("t1", 0)).unwrap();
     // Recorded at the checked epoch: the segment is labelled with it.
     let name = store.planned_segment_name(MAIN).unwrap().unwrap();
@@ -921,14 +928,12 @@ fn two_contenders_racing_never_both_hold() {
 fn commit_does_not_hold_the_database_lock_during_a_blocked_check() {
     let tmp = tempfile::tempdir().unwrap();
     let (data, proj) = (tmp.path().join("data"), tmp.path().join("P"));
-    let mut store = Store::create(&data, &proj, "P", Rational::from_int(30)).unwrap();
     let c = FakeClock::new();
-    let dir = proj.join(".finisher");
-    fs::create_dir_all(&dir).unwrap();
-    let lease = acquire(&dir, A, local(&c));
-    let hooks = lease.hooks();
-    store.set_lease_for_test(lease);
+    let mut store = store_with(&data, &proj, &c);
+    let hooks = store.lease().expect("acquired at create").hooks();
     let db = store.db_path().to_path_buf();
+    // Past the 1 s a commit trusts the check made by create's import.
+    c.advance(ms(1_001));
     hooks.hang(HangPoint::CheckBeforeRead);
     let committer = std::thread::spawn(move || store.commit(tx("t1", 0)).map(|c| c.rev));
     hooks.wait_hung();
@@ -1053,13 +1058,9 @@ fn a_listing_error_refuses_one_write_but_keeps_the_lease() {
 fn commit_trusts_a_full_check_for_one_second() {
     let tmp = tempfile::tempdir().unwrap();
     let (data, proj) = (tmp.path().join("data"), tmp.path().join("P"));
-    let mut store = Store::create(&data, &proj, "P", Rational::from_int(30)).unwrap();
     let c = FakeClock::new();
-    let dir = proj.join(".finisher");
-    fs::create_dir_all(&dir).unwrap();
-    let lease = acquire(&dir, A, local(&c));
-    let hooks = lease.hooks();
-    store.set_lease_for_test(lease);
+    let mut store = store_with(&data, &proj, &c);
+    let hooks = store.lease().expect("acquired at create").hooks();
     store.commit(tx("t1", 0)).unwrap();
     store.commit(tx("t2", 1)).unwrap();
     assert_eq!(

@@ -242,6 +242,10 @@ fn list(dir: &Path) -> io::Result<Vec<(PathBuf, fs::Metadata)>> {
     let mut v = Vec::new();
     for e in rd {
         let e = e?;
+        #[cfg(any(test, feature = "test-hooks"))]
+        if is_hidden(&e.path()) {
+            continue;
+        }
         match e.metadata() {
             Ok(m) => v.push((e.path(), m)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -301,4 +305,41 @@ pub fn clear_placeholders() {
 #[doc(hidden)]
 pub fn reads() -> u32 {
     READS.with(std::cell::Cell::get)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn hidden_set() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static HIDDEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    HIDDEN.get_or_init(Default::default)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn is_hidden(path: &Path) -> bool {
+    hidden_set()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(path)
+}
+
+/// Test hook: scans (on any thread) leave `path` out of their listing until
+/// [`unhide_for_test`], as a directory cache that has not seen a new file yet does (the
+/// Windows SMB client: up to 10 s).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn hide_for_test(path: &Path) {
+    hidden_set()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path.to_path_buf());
+}
+
+/// Test hook: undoes [`hide_for_test`].
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn unhide_for_test(path: &Path) {
+    hidden_set()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(path);
 }

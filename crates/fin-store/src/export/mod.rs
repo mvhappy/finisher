@@ -151,8 +151,9 @@ pub(crate) fn export_pending(
     force: bool,
 ) -> Result<ExportReport, StoreError> {
     let mut report = ExportReport::default();
-    // Read-only after a fork or a newer format (Task 8's import): records stay unexported.
-    if store.export.lease.check().is_err() || store.import.read_only().is_some() {
+    // Read-only (a fork, a newer format, a conflict copy, not caught up after acquiring the
+    // lease, not holding it): records stay unexported. The fence itself comes below.
+    if store.read_only().is_some() || store.export.lease.check().is_err() {
         return Ok(report);
     }
     if store

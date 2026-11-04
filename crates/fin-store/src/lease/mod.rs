@@ -39,8 +39,10 @@
 //! A new [`Lease`] (from [`Lease::acquire`], [`Contender::try_acquire`] or
 //! [`Contender::takeover`]) only says no one else writes from now on. What the previous
 //! holder exported up to the takeover is not yet in our database, so the owner must block
-//! commits and exports until an import pass at the new epoch has resolved every branch
-//! (plan Task 11). Until then a commit would extend a line the folder has already moved past.
+//! commits and exports until an import pass at the new epoch has resolved every branch.
+//! Until then a commit would extend a line the folder has already moved past. `Store` does
+//! this (its `tick` module, "The ordering rule"), using [`Lease::previous`] to decide whether
+//! it must first wait out the directory-cache window.
 //!
 //! # Holding
 //!
@@ -56,6 +58,7 @@ pub mod clock;
 mod heartbeat;
 #[cfg(any(test, feature = "test-hooks"))]
 mod hooks;
+mod previous;
 pub mod record;
 mod refusal;
 mod registry;
@@ -77,6 +80,7 @@ use clock::lock;
 pub use clock::{MonoClock, ServerClock, SystemClock};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use hooks::{HangPoint, LeaseHooks};
+pub use previous::Previous;
 use record::LeaseRecord;
 
 /// A heartbeat that failed is tried again this soon (monotonic).
@@ -215,6 +219,7 @@ pub(crate) struct Inner {
     dir: PathBuf,
     key: registry::Key,
     epoch: u64,
+    previous: Previous,
     params: Params,
     /// All `lease.json` I/O of this lease, so a fence never reads half of its own heartbeat.
     io: Mutex<Io>,
@@ -274,12 +279,14 @@ impl Lease {
         clock: ServerClock,
         record: LeaseRecord,
         stamped: Instant,
+        previous: Previous,
     ) -> Lease {
         registry::started(&key, &record);
         let inner = Arc::new(Inner {
             dir: dir.to_path_buf(),
             key,
             epoch: record.epoch,
+            previous,
             params,
             io: Mutex::new(Io {
                 clock,
@@ -317,6 +324,16 @@ impl Lease {
 
     pub fn epoch(&self) -> u64 {
         self.inner.epoch
+    }
+
+    /// What this acquisition replaced ([`Previous`]).
+    pub fn previous(&self) -> &Previous {
+        &self.inner.previous
+    }
+
+    /// The monotonic clock this lease measures its deadlines on.
+    pub fn clock(&self) -> &Arc<dyn MonoClock> {
+        &self.inner.params.clock
     }
 
     /// `Held` or `Lost`, without folder I/O (the self-fence deadline is applied).

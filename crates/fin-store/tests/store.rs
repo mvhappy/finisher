@@ -179,13 +179,21 @@ fn create_rejects_a_bad_rate_without_touching_disk() {
 
 #[test]
 fn open_without_db_is_project_db_missing() {
+    // A project file without a genesis (sub-project 2, never backfilled) cannot be rebuilt.
+    // (With one, the database is rebuilt from the folder: tests/integration.)
     let e = env();
     let s = create(&e);
     let db = s.db_path().to_path_buf();
     drop(s);
     std::fs::remove_dir_all(db.parent().unwrap()).unwrap();
+    let path = e.dir.join("finisher.project.json");
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file.as_object_mut().unwrap().remove("genesis");
+    std::fs::write(&path, file.to_string()).unwrap();
     let err = code(Store::open(&e.data, &e.dir).unwrap_err());
     assert_eq!(err.code, "PROJECT_DB_MISSING");
+    assert!(!db.exists(), "nothing created");
 }
 
 #[test]
@@ -504,6 +512,10 @@ fn two_stores_on_one_project_interleave_commits() {
     let mut a = with_asset(&e);
     let mut b = Store::open(&e.data, &e.dir).unwrap();
     assert_eq!(b.head(MAIN), 1);
+    // The second store of this process on the folder follows (A holds the lease); give it
+    // A's epoch to exercise two writers on one database.
+    assert_eq!(b.read_only(), Some(fin_store::ReadOnlyReason::LeaseHeld));
+    b.set_test_lease(a.lease().unwrap().epoch(), true);
 
     let a1 = a
         .commit(tx("tx-a1", 1, vec![insert("$x", 0, "a1", 5)]))

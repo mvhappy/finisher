@@ -53,7 +53,10 @@ fn create(e: &Env) -> Store {
     Store::create(&e.data("a"), &e.dir, "Demo", Rational::from_int(30)).unwrap()
 }
 
-/// Another server whose DB is a copy of `a`'s at rev 0.
+/// Another server whose DB is a copy of `a`'s at rev 0. `a` holds the real lease, so this one
+/// would follow (`LEASE_HELD`); these tests are about import, not the lease, so it gets the
+/// test lease at epoch 0, as every store had before the lease was wired in (Task 11): it may
+/// commit, and its commits are at epoch 0. Tests set other epochs where the epoch matters.
 fn server(e: &Env, a: &Store, name: &str) -> Store {
     let to = db_path(&e.data(name), a.project_id());
     fs::create_dir_all(to.parent().unwrap()).unwrap();
@@ -61,7 +64,9 @@ fn server(e: &Env, a: &Store, name: &str) -> Store {
         .unwrap()
         .execute("VACUUM INTO ?1", [to.to_string_lossy()])
         .unwrap();
-    Store::open(&e.data(name), &e.dir).unwrap()
+    let mut s = Store::open(&e.data(name), &e.dir).unwrap();
+    s.set_test_lease(0, true);
+    s
 }
 
 fn asset(path: &str) -> Op {
@@ -109,8 +114,8 @@ fn commit(s: &mut Store, id: &str, ops: Vec<Op>) -> fin_core::CommittedTx {
 /// Exports everything pending now (the 2 s delay passed).
 fn export(s: &mut Store) -> u32 {
     let t = Instant::now();
-    s.tick(t).unwrap();
-    let r = s.tick(t + 3 * S).unwrap();
+    s.tick_report(t).unwrap();
+    let r = s.tick_report(t + 3 * S).unwrap().export;
     assert_eq!(r.error, None);
     r.segments_written
 }
@@ -432,7 +437,7 @@ fn ids_never_reused_after_takeover() {
 fn branch_counter_is_raised_by_branch_names_in_the_log() {
     let e = env();
     let a = create(&e);
-    let mut b = server(&e, &a, "b");
+    let b = server(&e, &a, "b");
     // A 4B branch in the DB (only its name matters here).
     let c = conn(&b);
     c.execute(
@@ -441,7 +446,9 @@ fn branch_counter_is_raised_by_branch_names_in_the_log() {
     )
     .unwrap();
     drop(c);
-    b.import().unwrap();
+    drop(b);
+    // The first pass of a store (here: the one inside open) raises every counter.
+    let b = Store::open(&e.data("b"), &e.dir).unwrap();
     let next: i64 = conn(&b)
         .query_row("SELECT next FROM ids WHERE kind = 'branch'", [], |r| {
             r.get(0)
@@ -542,7 +549,7 @@ fn crash_after_rename_is_adopted_by_import() {
     commit(&mut a, "t2", vec![insert(0, "a1")]);
     a.fail_next_export_at(FailPoint::AfterRename);
     let t = Instant::now();
-    a.tick(t).unwrap();
+    a.tick_report(t).unwrap();
     assert!(a.tick(t + 3 * S).is_err());
     assert!(!rows(&a)[1].4, "not marked");
 
@@ -670,8 +677,9 @@ fn equal_epoch_lines_fork_and_block_commits() {
     let x_path = segments(&e.dir).remove(0).0;
     d.set_test_lease(1, true);
     commit(&mut d, "z", vec![asset("/m/z.mov")]);
-    // D exports without importing first, as a buggy or copied server would.
-    export(&mut d);
+    // D exports without importing first, as a buggy or copied server would (`close` flushes
+    // without a poll; `tick` would import x first and see the fork).
+    d.close().unwrap();
 
     let r = f.import().unwrap();
     let fork = r.fork.expect("a fork");
@@ -743,7 +751,7 @@ fn conflict_copy_duplicates_are_harmless_and_unknown_records_are_quarantined() {
     assert_eq!(q.iter().map(|r| r.3.clone()).collect::<Vec<_>>(), recs);
     let ff = r.foreign.iter().find(|f| f.path == other).unwrap();
     assert_eq!((ff.known, ff.quarantined), (0, 2));
-    assert_eq!(f.read_only(), None, "CONFLICT_COPY read-only is Task 11");
+    assert_eq!(f.read_only(), Some(ReadOnlyReason::ConflictCopy));
     // Dedupe across polls.
     assert_eq!(f.import().unwrap().quarantined, 2);
     assert_eq!(quarantine(&f).len(), 2);
@@ -752,6 +760,11 @@ fn conflict_copy_duplicates_are_harmless_and_unknown_records_are_quarantined() {
     fs::remove_file(&other).unwrap();
     let r = f.import().unwrap();
     assert_eq!(r.quarantined, 0);
+    assert_eq!(
+        f.read_only(),
+        Some(ReadOnlyReason::ConflictCopy),
+        "the Dropbox copy is still there"
+    );
     let q = quarantine(&f);
     assert_eq!(q.len(), 2);
     assert!(q.iter().all(|r| !r.4));
@@ -868,6 +881,7 @@ fn an_import_that_replaces_a_tail_invalidates_another_store_on_the_db() {
         "B2 sees the import"
     );
     // An insert at 0 ripples what is there, so its diff depends on the head it applies to.
+    b2.set_test_lease(2, true);
     let c = commit(&mut b2, "b2-1", vec![insert(0, "a1")]);
     let after = b2.snapshot(MAIN).unwrap();
     drop((b1, b2));
@@ -990,6 +1004,7 @@ fn first_pass_after_open_raises_counters_past_the_snapshot() {
     drop(c);
     let mut b = Store::open(&e.data("b"), &e.dir).unwrap();
     assert!(b.import().unwrap().applied.is_empty());
+    b.set_test_lease(0, true);
     let c = commit(&mut b, "b1", vec![asset("/m/b.mov"), insert(9, "$a")]);
     assert_eq!(
         (c.bindings["$a"].as_str(), c.bindings["$c"].as_str()),

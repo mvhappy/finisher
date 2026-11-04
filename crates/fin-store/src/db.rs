@@ -245,6 +245,29 @@ pub(crate) fn latest_snapshot(
     .transpose()
 }
 
+/// The highest commit (or import) epoch of any record, 0 for none.
+pub(crate) fn max_epoch(conn: &Connection) -> Result<u64, StoreError> {
+    let e: Option<i64> = conn.query_row("SELECT MAX(epoch) FROM txs", [], |r| r.get(0))?;
+    e.map_or(Ok(0), to_u64)
+}
+
+/// The snapshot of `branch` at exactly `seq`, if there is one.
+pub(crate) fn snapshot_at(
+    conn: &Connection,
+    branch: &str,
+    seq: u64,
+) -> Result<Option<Project>, StoreError> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT json FROM snapshots WHERE branch = ?1 AND seq = ?2",
+            params![branch, to_i64(seq)?],
+            |r| r.get(0),
+        )
+        .optional()?;
+    json.map(|j| Ok(upcast_snapshot(serde_json::from_str(&j)?)?))
+        .transpose()
+}
+
 /// Hash of the newest record on `branch`: the `parent_hash` of the next one (`None` for the
 /// first).
 pub(crate) fn tip_hash(conn: &Connection, branch: &str) -> Result<Option<String>, StoreError> {

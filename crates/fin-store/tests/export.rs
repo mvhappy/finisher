@@ -219,12 +219,15 @@ fn nothing_is_exported_before_the_delay() {
     let mut s = create(&e);
     commit(&mut s, "t1");
     let t0 = Instant::now();
-    assert_eq!(s.tick(t0).unwrap().segments_written, 0);
-    assert_eq!(s.tick(t0 + S).unwrap().segments_written, 0);
-    let r = s.tick(t0 + 2 * S).unwrap();
+    assert_eq!(s.tick_report(t0).unwrap().export.segments_written, 0);
+    assert_eq!(s.tick_report(t0 + S).unwrap().export.segments_written, 0);
+    let r = s.tick_report(t0 + 2 * S).unwrap().export;
     assert_eq!((r.segments_written, r.records, r.error), (1, 1, None));
     assert!(all_exported(&s));
-    assert_eq!(s.tick(t0 + 10 * S).unwrap().segments_written, 0);
+    assert_eq!(
+        s.tick_report(t0 + 10 * S).unwrap().export.segments_written,
+        0
+    );
 }
 
 #[test]
@@ -374,9 +377,9 @@ fn export_delay_grows_under_churn() {
     // 30 segments in a few minutes: still 2 s.
     for i in 0..=30 {
         commit(&mut s, &format!("t{i}"));
-        assert_eq!(s.tick(t).unwrap().segments_written, 0);
+        assert_eq!(s.tick_report(t).unwrap().export.segments_written, 0);
         assert_eq!(
-            s.tick(t + 2 * S).unwrap().segments_written,
+            s.tick_report(t + 2 * S).unwrap().export.segments_written,
             1,
             "segment {i}"
         );
@@ -384,15 +387,21 @@ fn export_delay_grows_under_churn() {
     }
     // 31 in the last 10 minutes: now 30 s.
     commit(&mut s, "late");
-    assert_eq!(s.tick(t).unwrap().segments_written, 0);
-    assert_eq!(s.tick(t + 2 * S).unwrap().segments_written, 0);
-    assert_eq!(s.tick(t + 29 * S).unwrap().segments_written, 0);
-    assert_eq!(s.tick(t + 30 * S).unwrap().segments_written, 1);
+    assert_eq!(s.tick_report(t).unwrap().export.segments_written, 0);
+    assert_eq!(s.tick_report(t + 2 * S).unwrap().export.segments_written, 0);
+    assert_eq!(
+        s.tick_report(t + 29 * S).unwrap().export.segments_written,
+        0
+    );
+    assert_eq!(
+        s.tick_report(t + 30 * S).unwrap().export.segments_written,
+        1
+    );
     // Ten quiet minutes later the window has emptied: back to 2 s.
     t += 11 * 60 * S;
     commit(&mut s, "quiet");
-    assert_eq!(s.tick(t).unwrap().segments_written, 0);
-    assert_eq!(s.tick(t + 2 * S).unwrap().segments_written, 1);
+    assert_eq!(s.tick_report(t).unwrap().export.segments_written, 0);
+    assert_eq!(s.tick_report(t + 2 * S).unwrap().export.segments_written, 1);
 }
 
 #[test]
@@ -401,8 +410,8 @@ fn prev_segment_hash_chains_across_exports_and_reopen() {
     let mut s = create(&e);
     let t = Instant::now();
     commit(&mut s, "a");
-    s.tick(t).unwrap();
-    s.tick(t + 2 * S).unwrap();
+    s.tick_report(t).unwrap();
+    s.tick_report(t + 2 * S).unwrap();
     commit(&mut s, "b");
     commit(&mut s, "c");
     s.close().unwrap();
@@ -433,7 +442,7 @@ fn crash_at_each_failpoint_recovers_without_fork() {
         commit(&mut s, "c");
         s.fail_next_export_at(point);
         let t = Instant::now();
-        s.tick(t).unwrap();
+        s.tick_report(t).unwrap();
         assert!(s.tick(t + 2 * S).is_err(), "{point:?} crashes the export");
         drop(s);
         let temp_bytes: Vec<Vec<u8>> = fs::read_dir(seg_dir(&e.dir))
@@ -443,13 +452,17 @@ fn crash_at_each_failpoint_recovers_without_fork() {
             .map(|d| fs::read(d.path()).unwrap())
             .collect();
 
+        // Reopening imports first: a segment in place (a crash after the rename) holds our
+        // tail records with the same txIds and hashes, so import marks them exported from it
+        // (spec §3.4); only the crash before the rename leaves them to the export.
         let mut s = Store::open(&e.data, &e.dir).unwrap();
-        assert!(!all_exported(&s), "{point:?}: nothing was marked");
+        let renamed = point != FailPoint::AfterTempWrite;
+        assert_eq!(all_exported(&s), renamed, "{point:?}: marked by the import");
         let t = Instant::now();
-        s.tick(t).unwrap();
-        let r = s.tick(t + 2 * S).unwrap();
+        s.tick_report(t).unwrap();
+        let r = s.tick_report(t + 2 * S).unwrap().export;
         assert_eq!(r.error, None, "{point:?}");
-        assert_eq!(r.records, 2, "{point:?}");
+        assert_eq!(r.records, if renamed { 0 } else { 2 }, "{point:?}");
         assert!(all_exported(&s), "{point:?}");
         assert_prefix(&s);
         assert_eq!(segments(&e.dir).len(), 2, "{point:?}: no duplicate segment");
@@ -491,12 +504,13 @@ fn existing_identical_file_counts_as_written() {
     commit(&mut s, "a");
     s.fail_next_export_at(FailPoint::AfterRename);
     let t = Instant::now();
-    s.tick(t).unwrap();
+    s.tick_report(t).unwrap();
     assert!(s.tick(t + 2 * S).is_err());
     let first = segments(&e.dir);
     assert_eq!(first.len(), 1);
-    // The same Store retries with the same bytes, so the same name.
-    let r = s.tick(t + 10 * S).unwrap();
+    // The same Store retries with the same bytes, so the same name. (At t + 3 s no poll is
+    // due, so no import marks it first: the export's read-back does.)
+    let r = s.tick_report(t + 3 * S).unwrap().export;
     assert_eq!((r.records, r.error), (1, None));
     assert_eq!(segments(&e.dir).len(), 1);
     assert!(all_exported(&s));
@@ -528,9 +542,14 @@ fn different_file_under_our_name_is_an_error_and_not_overwritten() {
     };
     let (other, _) = segment::encode(&header, &[b"{\"txId\":\"x\",\"seq\":1}".as_slice()]);
     fs::write(dir.join(&planned), &other).unwrap();
+    // Names are content-addressed, so another file under our name is a Finisher file under a
+    // name not its own: once listed, import makes the project read-only (CONFLICT_COPY) and
+    // nothing is exported. Export's own check matters while the listing cannot show it yet
+    // (a directory cache), as here.
+    fin_store::scan::hide_for_test(&dir.join(&planned));
     let t = Instant::now();
-    s.tick(t).unwrap();
-    let r = s.tick(t + 2 * S).unwrap();
+    s.tick_report(t).unwrap();
+    let r = s.tick_report(t + 2 * S).unwrap().export;
     let err = r.error.expect("a collision is reported");
     assert_eq!(err.code, "SEGMENT_COLLISION");
     assert_eq!(
@@ -540,7 +559,7 @@ fn different_file_under_our_name_is_an_error_and_not_overwritten() {
     );
     assert!(!all_exported(&s));
     // The next attempt uses another name.
-    let r = s.tick(t + 4 * S).unwrap();
+    let r = s.tick_report(t + 4 * S).unwrap().export;
     assert_eq!((r.segments_written, r.error), (1, None));
     assert!(all_exported(&s));
     assert_eq!(fs::read(dir.join(&planned)).unwrap(), other);
@@ -559,13 +578,13 @@ fn export_retries_after_unwritable_dir() {
     let mut s = create(&e);
     commit(&mut s, "a");
     let t = Instant::now();
-    s.tick(t).unwrap();
-    assert_eq!(s.tick(t + 2 * S).unwrap().segments_written, 1);
+    s.tick_report(t).unwrap();
+    assert_eq!(s.tick_report(t + 2 * S).unwrap().export.segments_written, 1);
     commit(&mut s, "b");
     let dir = seg_dir(&e.dir);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
-    s.tick(t + 3 * S).unwrap();
-    let r = s.tick(t + 5 * S).unwrap();
+    s.tick_report(t + 3 * S).unwrap();
+    let r = s.tick_report(t + 5 * S).unwrap().export;
     let err = r.error.expect("the failure is reported");
     assert_eq!(err.code, "PROJECT_DIR_UNWRITABLE");
     assert_eq!(
@@ -574,9 +593,9 @@ fn export_retries_after_unwritable_dir() {
     );
     assert_eq!(exported_flags(&s), [(1, true), (2, false)]);
     // Not retried on every tick: the next attempt waits the delay again.
-    assert_eq!(s.tick(t + 6 * S).unwrap().segments_written, 0);
+    assert_eq!(s.tick_report(t + 6 * S).unwrap().export.segments_written, 0);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-    let r = s.tick(t + 7 * S).unwrap();
+    let r = s.tick_report(t + 7 * S).unwrap().export;
     assert_eq!((r.segments_written, r.error), (1, None));
     assert_eq!(s.export_error(), None);
     assert!(all_exported(&s));
@@ -611,17 +630,17 @@ fn old_temp_files_are_removed() {
             .unwrap();
     }
     let t = Instant::now();
-    s.tick(t).unwrap();
+    s.tick_report(t).unwrap();
     assert!(old_mtime.exists(), "an old mtime alone proves nothing");
-    s.tick(t + 10 * S).unwrap();
+    s.tick_report(t + 10 * S).unwrap();
     assert!(old_mtime.exists());
     fs::write(&growing, b"partial, and more").unwrap();
-    s.tick(t + 21 * S).unwrap();
+    s.tick_report(t + 21 * S).unwrap();
     assert!(!old_mtime.exists(), "unchanged for 20 s: removed");
     assert!(growing.exists(), "changed: its 20 s start again");
-    s.tick(t + 31 * S).unwrap();
+    s.tick_report(t + 31 * S).unwrap();
     assert!(growing.exists());
-    s.tick(t + 42 * S).unwrap();
+    s.tick_report(t + 42 * S).unwrap();
     assert!(!growing.exists());
     assert!(not_ours.exists(), "only our own temp names");
 }
@@ -654,8 +673,8 @@ fn exported_rows_stay_a_prefix() {
             commit(&mut s, &format!("r{round}-{i}"));
             assert_prefix(&s);
         }
-        s.tick(t).unwrap();
-        s.tick(t + 2 * S).unwrap();
+        s.tick_report(t).unwrap();
+        s.tick_report(t + 2 * S).unwrap();
         assert_prefix(&s);
         t += 3 * S;
     }
@@ -703,8 +722,11 @@ fn copy_db(from_data: &Path, to_data: &Path, id: &str) {
 
 #[test]
 fn stale_commit_never_outranks_a_newer_export() {
-    // B commits t1 at epoch 2 and loses the lease before exporting it; C (epoch 3) exports u;
-    // B re-acquires at epoch 4 and exports t1. t1 keeps its commit epoch, so u's line wins.
+    // B commits t1 at epoch 2 and loses the lease before exporting it; C (epoch 3) exports u.
+    // When B opens again, its open imports before anything can be written: t1 (committed at
+    // epoch 2) loses to u at 3 and is set aside, never exported. (Before Task 11 the export
+    // ran first and labelled t1 with its commit epoch 2, so it lost in the folder instead;
+    // `segment_epoch_is_the_highest_commit_epoch` keeps that labelling covered.)
     let e = env();
     let c_data = e.data.with_file_name("server-c");
     let mut b = create(&e);
@@ -731,22 +753,23 @@ fn stale_commit_never_outranks_a_newer_export() {
 
     let mut b = Store::open(&e.data, &e.dir).unwrap();
     let r = resolve(&folder_refs(&e.dir), &known(&b));
-    assert!(r.local_tail_diverged, "B's epoch-2 tail loses to u at 3");
+    assert!(!r.local_tail_diverged && r.fork.is_none(), "{r:?}");
+    let q = b.status().quarantine;
+    assert_eq!(q.reasons.get("DIVERGED_TAIL"), Some(&1), "{q:?}");
     b.set_test_lease(4, true);
-    assert_eq!(b.close().unwrap().segments_written, 1);
-    let epochs: Vec<u64> = segments(&e.dir).iter().map(|(n, _, _)| n.epoch()).collect();
     assert_eq!(
-        epochs.iter().filter(|e| **e == 2).count(),
-        1,
-        "t1 is labelled 2: {epochs:?}"
+        b.close().unwrap().segments_written,
+        0,
+        "t1 is never exported"
     );
-    assert!(!epochs.contains(&4), "{epochs:?}");
+    let epochs: Vec<u64> = segments(&e.dir).iter().map(|(n, _, _)| n.epoch()).collect();
+    assert_eq!(epochs, [1, 3]);
 
-    // A fresh follower applies u and sets t1 aside.
+    // A fresh follower applies u; nothing to set aside.
     let r = resolve(&folder_refs(&e.dir), &Known::empty(StorageKind::Local));
     assert_eq!(r.fork, None);
     assert_eq!(tx_ids(&r.apply), ["t0", "u"]);
-    assert_eq!(tx_ids(r.quarantine.iter().map(|(s, _)| s)), ["t1"]);
+    assert!(r.quarantine.is_empty());
 }
 
 #[test]
@@ -903,10 +926,10 @@ fn an_unverifiable_file_under_our_name_is_given_up_after_three_read_backs() {
     let stuck = br#"{"magic":"finisher-segment""#;
     fs::write(dir.join(&planned), stuck).unwrap();
     let t = Instant::now();
-    s.tick(t).unwrap();
+    s.tick_report(t).unwrap();
     let mut codes = Vec::new();
     for i in 1..=3 {
-        let r = s.tick(t + 2 * i * S).unwrap();
+        let r = s.tick_report(t + 2 * i * S).unwrap().export;
         assert_eq!(r.segments_written, 0);
         codes.push(r.error.expect("reported").code);
     }
@@ -918,7 +941,7 @@ fn an_unverifiable_file_under_our_name_is_given_up_after_three_read_backs() {
             "SEGMENT_COLLISION"
         ]
     );
-    let r = s.tick(t + 8 * S).unwrap();
+    let r = s.tick_report(t + 8 * S).unwrap().export;
     assert_eq!((r.segments_written, r.error), (1, None), "another name");
     assert_eq!(fs::read(dir.join(&planned)).unwrap(), stuck, "untouched");
     assert!(all_exported(&s));
@@ -933,12 +956,12 @@ fn export_error_clears_when_nothing_is_left() {
     fs::create_dir_all(e.dir.join(".finisher").join("segments")).unwrap();
     fs::write(seg_dir(&e.dir), b"not a dir").unwrap();
     let t = Instant::now();
-    s.tick(t).unwrap();
-    assert!(s.tick(t + 2 * S).unwrap().error.is_some());
+    s.tick_report(t).unwrap();
+    assert!(s.tick_report(t + 2 * S).unwrap().export.error.is_some());
     assert!(s.export_error().is_some());
     // Something else exported the records (Task 8's import will).
     conn(&s).execute("UPDATE txs SET exported = 1", []).unwrap();
-    s.tick(t + 3 * S).unwrap();
+    s.tick_report(t + 3 * S).unwrap();
     assert_eq!(s.export_error(), None);
 }
 
@@ -997,13 +1020,20 @@ fn an_unwritable_unreadable_folder_never_escalates_to_a_collision() {
     fs::create_dir_all(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
     let t = Instant::now();
-    s.tick(t).unwrap();
+    s.tick_report(t).unwrap();
     let mut codes = Vec::new();
     for i in 1..=5 {
-        codes.push(s.tick(t + 2 * i * S).unwrap().error.expect("reported").code);
+        codes.push(
+            s.tick_report(t + 2 * i * S)
+                .unwrap()
+                .export
+                .error
+                .expect("reported")
+                .code,
+        );
     }
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(codes, vec!["PROJECT_DIR_UNWRITABLE"; 5]);
-    let r = s.tick(t + 12 * S).unwrap();
+    let r = s.tick_report(t + 12 * S).unwrap().export;
     assert_eq!((r.segments_written, r.error), (1, None));
 }
