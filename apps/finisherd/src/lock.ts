@@ -1,5 +1,5 @@
 // `<server-data>/finisherd.lock`: one finisherd per server-data, held for the process lifetime.
-import { closeSync, linkSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, linkSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Effect } from "effect";
 import { ServerStartError } from "./config.ts";
@@ -18,13 +18,33 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-function readPid(file: string): number | undefined {
+/** An unreadable or empty lock older than this is treated as stale. */
+export const UNPARSABLE_LOCK_STALE_MS = 10_000;
+
+interface LockState {
+  readonly raw: string;
+  readonly mtimeMs: number;
+  readonly pid: number | undefined;
+}
+
+function parsePid(raw: string): number | undefined {
+  const text = raw.trim();
+  if (!/^[0-9]+$/.test(text)) return undefined;
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+function readLock(file: string): LockState | undefined {
   try {
-    const pid = Number.parseInt(readFileSync(file, "utf8").trim(), 10);
-    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+    const raw = readFileSync(file, "utf8");
+    return { raw, mtimeMs: statSync(file).mtimeMs, pid: parsePid(raw) };
   } catch {
     return undefined;
   }
+}
+
+function readPid(file: string): number | undefined {
+  return readLock(file)?.pid;
 }
 
 function running(file: string, pid: number | undefined): ServerStartError {
@@ -34,15 +54,26 @@ function running(file: string, pid: number | undefined): ServerStartError {
   );
 }
 
+/** Errors meaning "this filesystem cannot hard-link", where we fall back to `wx`. */
+const NO_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV"]);
+
 /**
- * Creates the lock with `open(..., "wx")` and writes this pid. If it exists and its pid is
- * dead, the lock is stolen: renamed aside (only one contender can win that rename), checked
- * to still be the dead owner's, removed, and created again. A live or unreadable owner
- * (a lock being written right now) means `SERVER_RUNNING`.
+ * Publishes a lock that always contains a pid: `<lock>.<pid>.tmp` is written first, then
+ * hard-linked to the lock name (`link` fails with `EEXIST` if a lock exists — exclusive and
+ * atomic). Where hard links are unsupported (some Windows filesystems) it falls back to
+ * `open(..., "wx")` + write; the mtime rule in `isStale` covers a crash in that window.
+ * Returns false if a lock already exists.
  */
-export function acquireLock(serverData: string, pid: number = process.pid): string {
-  const file = lockPath(serverData);
-  for (let attempt = 0; attempt < 5; attempt++) {
+function publish(file: string, pid: number): boolean {
+  const tmp = `${file}.${pid}.tmp`;
+  writeFileSync(tmp, `${pid}\n`, { mode: 0o600 });
+  try {
+    linkSync(tmp, file);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "";
+    if (code === "EEXIST") return false;
+    if (!NO_LINK.has(code)) throw e;
     try {
       const fd = openSync(file, "wx", 0o600);
       try {
@@ -50,12 +81,34 @@ export function acquireLock(serverData: string, pid: number = process.pid): stri
       } finally {
         closeSync(fd);
       }
-      return file;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      return true;
+    } catch (e2) {
+      if ((e2 as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw e2;
     }
-    const owner = readPid(file);
-    if (owner === undefined || (owner !== pid && isPidAlive(owner))) throw running(file, owner);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** A lock is stale if its pid is dead (or ours), or it has no parsable pid and is >10 s old. */
+function isStale(state: LockState, pid: number, now: number): boolean {
+  if (state.pid === undefined) return now - state.mtimeMs > UNPARSABLE_LOCK_STALE_MS;
+  return state.pid === pid || !isPidAlive(state.pid);
+}
+
+/**
+ * Takes `<server-data>/finisherd.lock` for this process (see `publish`). An existing stale
+ * lock is stolen: renamed aside (only one contender wins that rename), checked to still be
+ * the same stale file, removed, and published again. A live owner means `SERVER_RUNNING`.
+ */
+export function acquireLock(serverData: string, pid: number = process.pid, now: () => number = Date.now): string {
+  const file = lockPath(serverData);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (publish(file, pid)) return file;
+    const state = readLock(file);
+    if (state === undefined) continue; // released in the meantime
+    if (!isStale(state, pid, now())) throw running(file, state.pid);
     const aside = `${file}.${pid}.stale`;
     try {
       renameSync(file, aside);
@@ -63,8 +116,8 @@ export function acquireLock(serverData: string, pid: number = process.pid): stri
       if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; // another contender moved it
       throw e;
     }
-    const moved = readPid(aside);
-    if (moved !== owner) {
+    const moved = readLock(aside);
+    if (moved === undefined || moved.raw !== state.raw || moved.mtimeMs !== state.mtimeMs) {
       // We moved a fresh lock that replaced the stale one in the meantime: put it back.
       try {
         linkSync(aside, file);
@@ -72,7 +125,7 @@ export function acquireLock(serverData: string, pid: number = process.pid): stri
         // someone else holds a newer lock already
       }
       rmSync(aside, { force: true });
-      throw running(file, moved);
+      throw running(file, moved?.pid);
     }
     rmSync(aside, { force: true });
   }

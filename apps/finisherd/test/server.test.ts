@@ -1,6 +1,6 @@
 import { request } from "node:http";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -188,6 +188,20 @@ describe("finisherd", () => {
     writeFileSync(join(serverData, "finisherd.lock"), `${dead}\n`);
     const { info } = await start();
     expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(info.pid));
+  });
+
+  test("an empty lock older than 10 s is taken over; a fresh empty lock means SERVER_RUNNING", async () => {
+    mkdirSync(serverData, { recursive: true, mode: 0o700 });
+    const lock = join(serverData, "finisherd.lock");
+    writeFileSync(lock, "");
+    await expect(startServer(serverData, 5_000)).rejects.toThrow(/SERVER_RUNNING/);
+    expect(readFileSync(lock, "utf8")).toBe("");
+
+    const old = new Date(Date.now() - 20_000);
+    utimesSync(lock, old, old);
+    const { info } = await start();
+    expect(readFileSync(lock, "utf8").trim()).toBe(String(info.pid));
+    expect(readdirSync(serverData).filter((f) => f.includes(".tmp") || f.includes(".stale"))).toEqual([]);
   });
 
   test("an existing 0755 server-data becomes 0700; a symlinked one is refused", async () => {
