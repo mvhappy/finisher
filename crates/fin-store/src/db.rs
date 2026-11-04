@@ -251,19 +251,39 @@ pub(crate) fn tip_hash(conn: &Connection, branch: &str) -> Result<Option<String>
         .optional()?)
 }
 
-/// Appends `record` (epoch 0, not exported) on `branch`. The stored bytes are the record's
+/// Appends `record` (committed at `epoch`, not exported) on `branch`. The stored bytes are the record's
 /// encoding and `tx_hash` is their hash, so what is hashed is exactly what is stored.
 pub(crate) fn insert_tx(
     conn: &Connection,
     branch: &str,
     record: &Record,
     diff: &Diff,
+    epoch: u64,
 ) -> Result<(), StoreError> {
     let bytes = encode_record(record);
+    if bytes.len() > crate::segment::MAX_RECORD_BYTES {
+        // Exported, it could not fit a segment that every reader accepts.
+        return Err(CoreError::new(
+            "TX_TOO_LARGE",
+            format!(
+                "transaction {} is {} bytes as a record; the limit is {}",
+                record.tx_id,
+                bytes.len(),
+                crate::segment::MAX_RECORD_BYTES
+            ),
+        )
+        .with_details(serde_json::json!({
+            "txId": record.tx_id,
+            "bytes": bytes.len(),
+            "limit": crate::segment::MAX_RECORD_BYTES,
+        }))
+        .with_fix("split the edit into several smaller transactions")
+        .into());
+    }
     conn.execute(
         "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
                           exported, diff, schema_version, author, committed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, ?9, ?10, ?11)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?12, 0, ?8, ?9, ?10, ?11)",
         params![
             to_i64(record.seq)?,
             branch,
@@ -276,6 +296,7 @@ pub(crate) fn insert_tx(
             record.schema_version,
             record.author,
             record.committed_at,
+            to_i64(epoch)?,
         ],
     )?;
     Ok(())

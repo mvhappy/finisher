@@ -2,9 +2,9 @@
 //! created on first use. Segment headers carry it as `writerId`; the lease (Task 9) names its
 //! probe file after it.
 //!
-//! The file is written to a temp file (mode 0600 on unix), fsynced, then hard-linked into
-//! place, which never replaces: when two processes race on first use, one link wins and both
-//! read the winner's id.
+//! The file is written to a temp file (mode 0600 on unix), fsynced, then moved into place by
+//! `fsio`'s no-replace rename (a hard link where supported, else the kernel's no-replace
+//! rename): when two processes race on first use, one wins and both read the winner's id.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Write};
@@ -60,7 +60,7 @@ fn create(dir: &Path, path: &Path, id: &str) -> io::Result<()> {
         file.write_all(format!("{id}\n").as_bytes())?;
         fsio::sync_file(&file)?;
         drop(file);
-        fs::hard_link(&tmp, path)?;
+        fsio::rename_noreplace(&tmp, path)?;
         fsio::sync_dir(dir)
     })();
     let _ = fs::remove_file(&tmp);

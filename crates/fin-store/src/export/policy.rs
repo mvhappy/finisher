@@ -1,8 +1,8 @@
 //! Export cadence, the lease seen by export, and the temp-file sweep.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::CoreError;
@@ -15,7 +15,7 @@ pub(crate) const DELAY: Duration = Duration::from_secs(2);
 pub(crate) const CHURN_DELAY: Duration = Duration::from_secs(30);
 pub(crate) const CHURN_SEGMENTS: usize = 30;
 pub(crate) const CHURN_WINDOW: Duration = Duration::from_secs(10 * 60);
-/// Temp files older than this (2×TTL) are crash leftovers.
+/// Temp files unchanged this long (2×TTL) are crash leftovers.
 pub(crate) const TEMP_MAX_AGE: Duration = Duration::from_secs(20);
 /// How often the temp sweep runs.
 pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(10);
@@ -59,38 +59,75 @@ impl ExportPolicy {
 pub(crate) enum ExportLease {
     #[default]
     NoLease,
+    /// Test hook: a lease at `epoch`, held or lost.
+    #[cfg(any(test, feature = "test-hooks"))]
+    Fixed { epoch: u64, held: bool },
 }
 
 impl ExportLease {
-    /// The epoch to write at, or why this server may not write.
+    /// The current epoch if this server may write, else why not.
     pub(crate) fn check(&self) -> Result<u64, CoreError> {
         match self {
             ExportLease::NoLease => Ok(0),
+            #[cfg(any(test, feature = "test-hooks"))]
+            ExportLease::Fixed { epoch, held: true } => Ok(*epoch),
+            #[cfg(any(test, feature = "test-hooks"))]
+            ExportLease::Fixed { held: false, .. } => {
+                Err(CoreError::new("LEASE_LOST", "the lease is lost"))
+            }
+        }
+    }
+
+    /// The epoch a commit made now is recorded at (`txs.epoch`).
+    pub(crate) fn epoch(&self) -> u64 {
+        match self {
+            ExportLease::NoLease => 0,
+            #[cfg(any(test, feature = "test-hooks"))]
+            ExportLease::Fixed { epoch, .. } => *epoch,
         }
     }
 }
 
-/// Removes our own temp files older than [`TEMP_MAX_AGE`] in `root/*`. Errors are ignored:
-/// the next sweep tries again.
-pub(super) fn sweep_temps(root: &Path) {
-    let Ok(branches) = fs::read_dir(root) else {
-        return;
-    };
-    let now = SystemTime::now();
-    for dir in branches.flatten() {
-        let Ok(entries) = fs::read_dir(dir.path()) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let is_ours = e.file_name().to_str().is_some_and(names::is_temp);
-            let old = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age > TEMP_MAX_AGE));
-            if is_ours && old {
-                let _ = fs::remove_file(e.path());
+/// Removes our own temp files once they have been seen unchanged for [`TEMP_MAX_AGE`].
+///
+/// Age is observed, never computed from the mtime: the mtime is the file server's clock,
+/// which may be far from ours. Each temp file is remembered with its `(len, mtime)` and the
+/// monotonic time it was first seen so; any change restarts its clock.
+#[derive(Debug, Default)]
+pub(crate) struct TempSweep {
+    seen: HashMap<PathBuf, (u64, Option<SystemTime>, Instant)>,
+}
+
+impl TempSweep {
+    /// One sweep of `root/*`. Errors are ignored: the next sweep tries again.
+    pub(super) fn sweep(&mut self, root: &Path, now: Instant) {
+        let mut present = HashMap::new();
+        for dir in fs::read_dir(root).into_iter().flatten().flatten() {
+            let Ok(entries) = fs::read_dir(dir.path()) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                if !e.file_name().to_str().is_some_and(names::is_temp) {
+                    continue;
+                }
+                let Ok(meta) = e.metadata() else {
+                    continue;
+                };
+                let state = (meta.len(), meta.modified().ok());
+                let path = e.path();
+                let since = match self.seen.get(&path) {
+                    Some((len, mtime, since)) if (*len, *mtime) == state => *since,
+                    _ => now,
+                };
+                if now.saturating_duration_since(since) >= TEMP_MAX_AGE
+                    && fs::remove_file(&path).is_ok()
+                {
+                    continue;
+                }
+                present.insert(path, (state.0, state.1, since));
             }
         }
+        self.seen = present;
     }
 }
 

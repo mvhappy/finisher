@@ -354,6 +354,14 @@ impl Store {
         self.export.fail_at = Some(point);
     }
 
+    /// Test hook until the lease lands (Task 9): this store holds (or has lost) a lease at
+    /// `epoch`. Commits are recorded at `epoch`; export writes only while `held`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn set_test_lease(&mut self, epoch: u64, held: bool) {
+        self.export.lease = export::ExportLease::Fixed { epoch, held };
+    }
+
     /// The head revision of `branch` (0 for a branch that does not exist). Catches up with
     /// commits made through another `Store`; if the database cannot be read, the cached head is
     /// returned.

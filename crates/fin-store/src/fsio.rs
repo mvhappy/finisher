@@ -238,7 +238,7 @@ pub(crate) fn sync_dir(_dir: &Path) -> io::Result<()> {
 ///    check and the rename, but only the lease holder writes, and a name carries the epoch,
 ///    the seq range and the content hash, so two files with one name hold the same records.
 #[cfg(unix)]
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     let unsupported = |e: &io::Error| {
         e.kind() == ErrorKind::Unsupported
             || e.raw_os_error().is_some_and(|code| {
@@ -332,7 +332,7 @@ fn rename_exclusive(_from: &Path, _to: &Path) -> io::Result<()> {
 /// `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` (so an existing target is
 /// `ERROR_ALREADY_EXISTS`, i.e. `AlreadyExists`), written through, retried while transient.
 #[cfg(windows)]
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
     let (from, to) = (verbatim_wide(from)?, verbatim_wide(to)?);
     retry(|| {

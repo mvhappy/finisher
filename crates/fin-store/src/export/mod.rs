@@ -4,14 +4,18 @@
 //! # One pass ([`export_pending`])
 //!
 //! 1. Only while this server holds the lease ([`ExportLease::check`]). The lease is checked
-//!    again right before every write, and the segment carries the epoch that check returned:
-//!    the lease epoch at export, not the epoch the records were committed at. A segment is the
-//!    writer's fenced act, so it is labelled with the fence it passed (spec §3.6 step 6: "before
-//!    this server has exported anything *at its epoch*"). One segment therefore never mixes
-//!    epochs, whatever the commit epochs of its records.
-//! 2. Removes our own `.~fin-*.tmp` files older than [`policy::TEMP_MAX_AGE`] (2×TTL) under
-//!    `segments/*`, at most every [`SWEEP_EVERY`]. The lease holder is the only writer, so they
-//!    are crash leftovers.
+//!    again right before every write (the fence), but the segment's epoch is **not** taken
+//!    from it: a segment is labelled with the highest commit epoch (`txs.epoch`) of its
+//!    records, which must not exceed the current lease epoch. Labelling with the epoch at
+//!    export would launder records committed under a lost lease into a newer epoch: after B
+//!    commits t1 at epoch 2, loses the lease, C exports u at 3 and B re-acquires at 4, a
+//!    t1 labelled 4 would beat u, an export other servers already applied. Labelled 2, it
+//!    loses, as the spec's epoch rule (§3.6 step 6) intends: the unexported tail competes at
+//!    its commit epoch (Task 20 amends the spec's wording).
+//! 2. Removes our own `.~fin-*.tmp` files under `segments/*` once each has been seen unchanged
+//!    (same length and mtime) for [`policy::TEMP_MAX_AGE`] (2×TTL) by the monotonic clock,
+//!    checked at most every [`SWEEP_EVERY`]. The mtime is the server's clock and is never
+//!    compared with ours. The lease holder is the only writer, so these are crash leftovers.
 //! 3. Debounce: the first pass that sees unexported records starts the clock; they are written
 //!    once [`ExportPolicy::delay`] has passed (2 s, or 30 s under churn). `force` (close) skips
 //!    the wait. After a failure the clock restarts, so a broken folder is retried once per delay.
@@ -19,19 +23,25 @@
 //!    - the exported rows must be a seq prefix of the branch (else `DB_ERROR`);
 //!    - `prevSegmentHash` is the hash of the segment (from the `segments` table) whose last
 //!      record is the one before; `null` when nothing precedes;
-//!    - a retry of a failed write reuses the exact bytes (and so the name) of that attempt,
-//!      never a re-encoding with a new `createdAt`;
+//!    - a retry of a failed write reuses the exact bytes (and so the name) of that attempt
+//!      while the lease is held, even across a re-acquisition. Encoding is deterministic
+//!      anyway (`createdAt` is the records' latest `committedAt`), so a re-export after a
+//!      crash is byte-identical;
 //!    - otherwise a file already in the folder that starts at the same seq, continues the same
 //!      predecessor and holds exactly our next records byte for byte (left by a crash after
 //!      the rename) is adopted instead of writing a duplicate;
 //!    - otherwise the next records, up to [`segment::MAX_RECORDS`] or [`segment::MAX_BYTES`]
-//!      (one transaction is never split, so one large record may exceed the bytes cap), are
-//!      encoded and written with [`fsio::write_once`];
+//!      (a transaction is never split; commit refuses a record above
+//!      [`segment::MAX_RECORD_BYTES`] with `TX_TOO_LARGE`, so every segment fits), are encoded
+//!      and written with [`fsio::write_once`];
 //!    - whatever `write_once` returned, the target is read back uncached and decoded. Our hash
 //!      → written (this covers `AlreadyExists` after an NFS link retransmit, `NotFound` after a
 //!      Windows rename that succeeded server-side, and a failed directory fsync after the
-//!      rename). Another valid file under our name → `SEGMENT_COLLISION`, never overwritten.
-//!      Absent or unreadable → the write error, retried later;
+//!      rename). Another valid file under our name → `SEGMENT_COLLISION`, never overwritten;
+//!      the next attempt adds 1 ms to `createdAt` for another name. Absent → retried briefly
+//!      in place ([`READBACK_RETRIES`], for SMB reporting a fresh rename missing), then
+//!      reported and retried on a later pass with the same bytes. Present but not verifiable
+//!      (incomplete, unreadable) [`MAX_FAILED_READS`] times → treated as a collision;
 //!    - only then, in one DB transaction: the segment's rows are marked `exported = 1` and its
 //!      `segments` row inserted.
 //!
@@ -62,11 +72,14 @@ use crate::segment::{self, Header};
 use crate::{Store, StoreError, fsio};
 
 pub(crate) use policy::{ExportLease, ExportPolicy};
-use policy::{SWEEP_EVERY, sweep_temps};
+use policy::{SWEEP_EVERY, TempSweep};
 use rows::{Row, broken, mark_exported, pending_branches, pending_rows, prev_segment};
 
-/// Room left for the header and trailer when filling a segment (both are far smaller).
-const FRAME_RESERVE: usize = 1024;
+/// A read-back that finds nothing is retried this many times, [`READBACK_DELAY`] apart.
+pub(crate) const READBACK_RETRIES: u32 = 4;
+pub(crate) const READBACK_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+/// A file under our name that will not verify this many times is given up (another name).
+pub(crate) const MAX_FAILED_READS: u32 = 3;
 
 pub(crate) fn segments_root(project_dir: &Path) -> PathBuf {
     project_dir.join(".finisher").join("segments")
@@ -109,6 +122,8 @@ struct Attempt {
     hash: String,
     /// `txHash` of each record, to check the rows are still the same.
     tx_hashes: Vec<String>,
+    /// Read-backs that found the file but could not verify it.
+    failed_reads: u32,
 }
 
 /// Export state held by the `Store`.
@@ -117,6 +132,9 @@ pub(crate) struct ExportState {
     policy: ExportPolicy,
     pending_since: Option<Instant>,
     last_sweep: Option<Instant>,
+    temps: TempSweep,
+    /// `(branch, first_seq, ms)`: added to `createdAt` after collisions at that start.
+    salt: Option<(String, u64, i64)>,
     pub(crate) error: Option<CoreError>,
     attempt: Option<Attempt>,
     pub(crate) lease: ExportLease,
@@ -141,11 +159,13 @@ pub(crate) fn export_pending(
         .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
     {
         store.export.last_sweep = Some(now);
-        sweep_temps(&segments_root(&store.project_dir));
+        let root = segments_root(&store.project_dir);
+        store.export.temps.sweep(&root, now);
     }
     let branches = pending_branches(&store.conn)?;
     if branches.is_empty() {
         store.export.pending_since = None;
+        store.export.error = None;
         return Ok(report);
     }
     let since = *store.export.pending_since.get_or_insert(now);
@@ -190,7 +210,7 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
     let Some(first) = rows.first().map(|r| r.seq) else {
         return Ok(Step::Done);
     };
-    let Ok(epoch) = store.export.lease.check() else {
+    let Ok(lease_epoch) = store.export.lease.check() else {
         return Ok(Step::Stopped);
     };
     let prev = prev_segment(&store.conn, branch, first)?;
@@ -201,7 +221,6 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
     let retry = store.export.attempt.take().filter(|a| {
         a.branch == branch
             && a.first_seq == first
-            && a.epoch == epoch
             && a.prev == prev
             && a.tx_hashes.len() <= rows.len()
             && a.tx_hashes.iter().zip(&rows).all(|(h, r)| *h == r.tx_hash)
@@ -213,7 +232,7 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
                 let n = mark_exported(&mut store.conn, branch, &found)?;
                 return Ok(Step::Adopted(n));
             }
-            prepare(store, branch, &rows, epoch, prev)?
+            prepare(store, branch, &rows, lease_epoch, prev)?
         }
     };
     write(store, &dir, attempt)
@@ -229,8 +248,9 @@ fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> 
         store.export.attempt = Some(a);
         return Err(fault());
     }
-    // The fence: right before the write, at the epoch the segment carries.
-    if store.export.lease.check().ok() != Some(a.epoch) {
+    // The fence, right before the write.
+    if !store.export.lease.check().is_ok_and(|e| a.epoch <= e) {
+        store.export.attempt = Some(a);
         return Ok(Step::Stopped);
     }
     let written = fsio::write_once(dir, &a.name, &a.bytes);
@@ -240,26 +260,33 @@ fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> 
         return Err(fault());
     }
     let target = dir.join(&a.name);
-    match read_back(&target, &a.hash) {
+    // Absent after a write that did not plainly fail: SMB may not show a fresh rename yet.
+    let plain_failure = written.as_ref().is_err_and(|e| {
+        !matches!(
+            e.kind(),
+            io::ErrorKind::AlreadyExists | io::ErrorKind::NotFound
+        )
+    });
+    let retries = if plain_failure { 0 } else { READBACK_RETRIES };
+    let mut a = a;
+    match read_back(&target, &a.hash, retries) {
         ReadBack::Ours => {}
-        ReadBack::Other(why) => {
-            // Dropped: the next attempt re-encodes, which gives another name.
-            return Ok(Step::Failed(
-                CoreError::new(
-                    "SEGMENT_COLLISION",
-                    format!("{} already holds other content", target.display()),
-                )
-                .with_details(
-                    json!({ "path": target.to_string_lossy(), "branch": a.branch, "reason": why }),
-                )
-                .with_fix("the file was left untouched; export retries under another name"),
-            ));
-        }
-        ReadBack::Missing(read_err) => {
+        ReadBack::Other(why) => return Ok(collision(store, &target, a, why)),
+        ReadBack::Missing(read_err) if read_err.kind() == io::ErrorKind::NotFound => {
             let branch = a.branch.clone();
             store.export.attempt = Some(a);
             let e = written.err().unwrap_or(read_err);
             return Ok(Step::Failed(folder_error(&target, &branch, &e)));
+        }
+        ReadBack::Missing(read_err) => {
+            a.failed_reads += 1;
+            if a.failed_reads >= MAX_FAILED_READS {
+                let why = format!("{} read-backs failed: {read_err}", a.failed_reads);
+                return Ok(collision(store, &target, a, why));
+            }
+            let branch = a.branch.clone();
+            store.export.attempt = Some(a);
+            return Ok(Step::Failed(folder_error(&target, &branch, &read_err)));
         }
     }
     #[cfg(any(test, feature = "test-hooks"))]
@@ -268,7 +295,27 @@ fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> 
         return Err(fault());
     }
     let n = mark_exported(&mut store.conn, &a.branch, &a)?;
+    store.export.salt = None;
     Ok(Step::Wrote(n))
+}
+
+/// Our name holds something else: leave it, and use another name next time.
+fn collision(store: &mut Store, target: &Path, a: Attempt, why: String) -> Step {
+    let salt = match &store.export.salt {
+        Some((b, f, ms)) if *b == a.branch && *f == a.first_seq => ms + 1,
+        _ => 1,
+    };
+    store.export.salt = Some((a.branch.clone(), a.first_seq, salt));
+    Step::Failed(
+        CoreError::new(
+            "SEGMENT_COLLISION",
+            format!("{} already holds other content", target.display()),
+        )
+        .with_details(
+            json!({ "path": target.to_string_lossy(), "branch": a.branch, "reason": why }),
+        )
+        .with_fix("the file was left untouched; export retries under another name"),
+    )
 }
 
 enum ReadBack {
@@ -279,10 +326,18 @@ enum ReadBack {
     Missing(io::Error),
 }
 
-fn read_back(path: &Path, hash: &str) -> ReadBack {
-    let bytes = match fsio::read_uncached(path) {
-        Ok(b) => b,
-        Err(e) => return ReadBack::Missing(e),
+/// Reads `path` back uncached; `NotFound` is retried `retries` times.
+fn read_back(path: &Path, hash: &str, retries: u32) -> ReadBack {
+    let mut left = retries;
+    let bytes = loop {
+        match fsio::read_uncached(path) {
+            Ok(b) => break b,
+            Err(e) if e.kind() == io::ErrorKind::NotFound && left > 0 => {
+                left -= 1;
+                std::thread::sleep(READBACK_DELAY);
+            }
+            Err(e) => return ReadBack::Missing(e),
+        }
     };
     match segment::decode(&bytes) {
         Ok(seg) if seg.hash == hash => ReadBack::Ours,
@@ -316,14 +371,20 @@ fn prepare(
     store: &Store,
     branch: &str,
     rows: &[Row],
-    epoch: u64,
+    lease_epoch: u64,
     prev: Option<String>,
 ) -> Result<Attempt, StoreError> {
+    let salt = match &store.export.salt {
+        Some((b, f, ms)) if b == branch && Some(*f) == rows.first().map(|r| r.seq) => *ms,
+        _ => 0,
+    };
     let mut n = 0;
     let mut body = 0;
     for row in rows {
         let line = row.bytes.len() + 1;
-        if n > 0 && (n == segment::MAX_RECORDS || body + line + FRAME_RESERVE > segment::MAX_BYTES)
+        if n > 0
+            && (n == segment::MAX_RECORDS
+                || body + line + segment::FRAME_RESERVE > segment::MAX_BYTES)
         {
             break;
         }
@@ -335,6 +396,15 @@ fn prepare(
         let first = chunk[0].seq;
         let last = chunk[n - 1].seq;
         let versions = chunk.iter().map(|r| r.schema_version);
+        // The highest commit epoch, never the epoch at export (module docs).
+        let epoch = chunk.iter().map(|r| r.epoch).max().unwrap_or(0);
+        if epoch > lease_epoch {
+            return Err(broken(
+                branch,
+                format!("records committed at epoch {epoch}, above the lease epoch {lease_epoch}"),
+            ));
+        }
+        let created_at = chunk.iter().map(|r| r.committed_at).max().unwrap_or(0) + salt;
         let header = Header {
             format_version: segment::FORMAT_VERSION,
             min_reader_version: segment::MIN_READER_VERSION,
@@ -349,7 +419,7 @@ fn prepare(
                 versions.clone().min().unwrap_or(0),
                 versions.max().unwrap_or(0),
             ],
-            created_at: crate::commit::now_ms(),
+            created_at,
             pack: false,
             replaces: Vec::new(),
         };
@@ -359,6 +429,12 @@ fn prepare(
             n -= 1;
             continue;
         }
+        // Commit refuses records above MAX_RECORD_BYTES, so one record always fits.
+        debug_assert!(
+            bytes.len() <= segment::MAX_BYTES,
+            "segment of {} bytes",
+            bytes.len()
+        );
         let name = names::hash12(&hash)
             .and_then(|h| SegmentName::new(epoch, first, last, h))
             .ok_or_else(|| {
@@ -377,6 +453,7 @@ fn prepare(
             bytes,
             hash,
             tx_hashes: chunk.iter().map(|r| r.tx_hash.clone()).collect(),
+            failed_reads: 0,
         });
     }
 }
@@ -423,6 +500,7 @@ fn adoptable(
                 .iter()
                 .map(|r| r.tx_hash.clone())
                 .collect(),
+            failed_reads: 0,
         })
     })
 }
@@ -437,9 +515,9 @@ impl Store {
         let Some(first) = rows.first().map(|r| r.seq) else {
             return Ok(None);
         };
-        let epoch = self.export.lease.check()?;
+        let lease_epoch = self.export.lease.check()?;
         let prev = prev_segment(&self.conn, branch, first)?;
-        let a = prepare(self, branch, &rows, epoch, prev)?;
+        let a = prepare(self, branch, &rows, lease_epoch, prev)?;
         let name = a.name.clone();
         self.export.attempt = Some(a);
         Ok(Some(name))

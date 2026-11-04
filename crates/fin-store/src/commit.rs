@@ -64,7 +64,13 @@ impl Store {
             parent,
             now_ms(),
         )?;
-        db::insert_tx(&txn, &tx.branch, &record, &applied.diff)?;
+        db::insert_tx(
+            &txn,
+            &tx.branch,
+            &record,
+            &applied.diff,
+            self.export.lease.epoch(),
+        )?;
         if rev % SNAPSHOT_EVERY == 0 {
             db::insert_snapshot(&txn, &tx.branch, rev, &applied.project)?;
         }

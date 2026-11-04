@@ -16,6 +16,9 @@ pub(super) struct Row {
     pub(super) bytes: Vec<u8>,
     pub(super) tx_hash: String,
     pub(super) schema_version: u32,
+    /// The lease epoch it was committed at.
+    pub(super) epoch: u64,
+    pub(super) committed_at: i64,
 }
 
 /// Branches with unexported records.
@@ -47,7 +50,7 @@ pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, 
         ));
     }
     let mut stmt = conn.prepare(
-        "SELECT seq, record_bytes, tx_hash, schema_version FROM txs
+        "SELECT seq, record_bytes, tx_hash, schema_version, epoch, committed_at FROM txs
          WHERE branch = ?1 AND exported = 0 ORDER BY seq LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![branch, segment::MAX_RECORDS as i64], |r| {
@@ -56,11 +59,13 @@ pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, 
             r.get::<_, Vec<u8>>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, u32>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
         ))
     })?;
     let mut out: Vec<Row> = Vec::new();
     for row in rows {
-        let (seq, bytes, tx_hash, schema_version) = row?;
+        let (seq, bytes, tx_hash, schema_version, epoch, committed_at) = row?;
         let seq = to_u64(seq)?;
         if out.last().is_some_and(|p| p.seq + 1 != seq) {
             return Err(broken(
@@ -73,6 +78,8 @@ pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, 
             bytes,
             tx_hash,
             schema_version,
+            epoch: to_u64(epoch)?,
+            committed_at,
         });
     }
     Ok(out)

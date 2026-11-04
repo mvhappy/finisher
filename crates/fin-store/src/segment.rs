@@ -23,8 +23,13 @@ pub const MIN_READER_VERSION: u32 = 1;
 pub const READER_VERSION: u32 = 1;
 /// A segment holds at most this many records…
 pub const MAX_RECORDS: usize = 1_000;
-/// …or this many bytes (one transaction is never split, so a single record may exceed it).
+/// …or this many bytes. One transaction is never split, so no record may be larger than
+/// [`MAX_RECORD_BYTES`]: then every segment fits.
 pub const MAX_BYTES: usize = 4 << 20;
+/// Room kept for the header and trailer lines (both are far smaller).
+pub const FRAME_RESERVE: usize = 1024;
+/// The largest record a commit accepts (`TX_TOO_LARGE` above it).
+pub const MAX_RECORD_BYTES: usize = MAX_BYTES - FRAME_RESERVE;
 
 const MAGIC: &str = "finisher-segment";
 const HASH_ALG: &str = "blake3";

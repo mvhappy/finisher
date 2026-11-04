@@ -53,7 +53,13 @@ const VALIDATION_CODES: &[&str] = &[
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
-const CONFLICT_CODES: &[&str] = &["CONFLICT", "BASE_REV_AHEAD"];
+/// `SEGMENT_COLLISION`: the project folder holds another file under the name this server's
+/// export needs (the folder changed under it); the export retries under another name.
+const CONFLICT_CODES: &[&str] = &["CONFLICT", "BASE_REV_AHEAD", "SEGMENT_COLLISION"];
+
+/// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
+/// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
+const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE"];
 
 /// Codes that mean "no usable server" (exit 5). `SERVER_TIMEOUT` is fin's own: the server
 /// accepted the connection but did not answer in time. `ENGINE_CLOSED`,
@@ -72,7 +78,7 @@ const UNAVAILABLE_CODES: &[&str] = &[
 /// The one place error codes become exit codes.
 pub fn exit_code(code: &str) -> i32 {
     match code {
-        "USAGE" => USAGE,
+        c if USAGE_CODES.contains(&c) => USAGE,
         c if CONFLICT_CODES.contains(&c) => CONFLICT,
         c if UNAVAILABLE_CODES.contains(&c) => UNAVAILABLE,
         c if VALIDATION_CODES.contains(&c) => VALIDATION,
@@ -145,7 +151,9 @@ mod tests {
     #[test]
     fn exit_codes_follow_the_contract() {
         assert_eq!(exit_code("USAGE"), 2);
+        assert_eq!(exit_code("TX_TOO_LARGE"), 2);
         assert_eq!(exit_code("CONFLICT"), 4);
+        assert_eq!(exit_code("SEGMENT_COLLISION"), 4);
         assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
         for code in [
             "SERVER_UNAVAILABLE",

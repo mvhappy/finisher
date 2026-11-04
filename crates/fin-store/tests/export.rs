@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::{Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
@@ -13,7 +12,7 @@ use fin_store::names::{SegmentName, temp_name};
 use fin_store::scan::{Entry, NotArrivedWhy, scan};
 use fin_store::segment::{self, Header, MAX_BYTES, MAX_RECORDS, Segment};
 use fin_store::storage_kind::StorageKind;
-use fin_store::{FailPoint, MAIN, Store, fsio, server_id};
+use fin_store::{FailPoint, MAIN, Store, db_path, server_id};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
@@ -328,28 +327,22 @@ fn sized_op(i: usize, kib: usize) -> Op {
 
 #[test]
 fn export_caps_segments_at_4_mib_and_keeps_a_large_tx_whole() {
+    // The largest record a commit accepts still fits a segment of its own.
     let e = env();
     let mut s = create(&e);
     // Records of several hundred KiB: a handful fill 4 MiB.
     for i in 0..12 {
         commit_ops(&mut s, &format!("m{i}"), vec![sized_op(i, 256)]);
     }
-    // One tx larger than the cap goes alone, whole.
-    commit_ops(
-        &mut s,
-        "huge",
-        vec![sized_op(100, 1100), sized_op(101, 1100)],
-    );
+    // A large tx (about 3.7 MiB: the path is in both intent and resolved) goes alone, whole.
+    commit_ops(&mut s, "huge", vec![sized_op(100, 1900)]);
     commit(&mut s, "after");
     s.close().unwrap();
     let segs = segments(&e.dir);
     assert_chained(&segs);
     assert!(segs.iter().filter(|(_, g, _)| g.records.len() > 1).count() >= 2);
     for w in segs.windows(2) {
-        let ((_, a, len), (_, b, _)) = (&w[0], &w[1]);
-        if a.records.len() > 1 {
-            assert!(*len <= MAX_BYTES as u64, "{len}");
-        }
+        let ((_, _, len), (_, b, _)) = (&w[0], &w[1]);
         // Greedy: the next record would not have fitted.
         assert!(*len + b.records[0].len() as u64 + 1 > MAX_BYTES as u64);
     }
@@ -361,14 +354,14 @@ fn export_caps_segments_at_4_mib_and_keeps_a_large_tx_whole() {
                 .any(|r| serde_json::from_slice::<serde_json::Value>(r).unwrap()["txId"] == "huge")
         })
         .collect();
-    assert_eq!(huge.len(), 1);
-    assert_eq!(huge[0].1.records.len(), 1);
-    assert!(huge[0].2 > MAX_BYTES as u64);
-    assert_eq!(
-        segs.last().unwrap().1.records.len(),
-        1,
-        "`after` starts a new segment"
-    );
+    assert_eq!(huge.len(), 1, "whole, in one segment");
+    assert!(huge[0].2 > 3 << 20);
+    for (_, _, len) in &segs {
+        assert!(
+            *len <= MAX_BYTES as u64,
+            "every segment fits the cap: {len}"
+        );
+    }
     let s = Store::open(&e.data, &e.dir).unwrap();
     assert_folder_matches_db(&s, &e.dir);
 }
@@ -443,6 +436,12 @@ fn crash_at_each_failpoint_recovers_without_fork() {
         s.tick(t).unwrap();
         assert!(s.tick(t + 2 * S).is_err(), "{point:?} crashes the export");
         drop(s);
+        let temp_bytes: Vec<Vec<u8>> = fs::read_dir(seg_dir(&e.dir))
+            .unwrap()
+            .map(|d| d.unwrap())
+            .filter(|d| d.file_name().to_str().unwrap().starts_with(".~fin-"))
+            .map(|d| fs::read(d.path()).unwrap())
+            .collect();
 
         let mut s = Store::open(&e.data, &e.dir).unwrap();
         assert!(!all_exported(&s), "{point:?}: nothing was marked");
@@ -474,6 +473,12 @@ fn crash_at_each_failpoint_recovers_without_fork() {
             usize::from(point == FailPoint::AfterTempWrite),
             "{point:?}"
         );
+        if point == FailPoint::AfterTempWrite {
+            // The re-export after the crash is byte-identical to the lost attempt.
+            let (name, _, _) = &segments(&e.dir)[1];
+            let bytes = fs::read(seg_dir(&e.dir).join(name.to_string())).unwrap();
+            assert_eq!(temp_bytes, [bytes], "deterministic createdAt");
+        }
     }
 }
 
@@ -523,7 +528,9 @@ fn different_file_under_our_name_is_an_error_and_not_overwritten() {
     };
     let (other, _) = segment::encode(&header, &[b"{\"txId\":\"x\",\"seq\":1}".as_slice()]);
     fs::write(dir.join(&planned), &other).unwrap();
-    let r = s.close().unwrap();
+    let t = Instant::now();
+    s.tick(t).unwrap();
+    let r = s.tick(t + 2 * S).unwrap();
     let err = r.error.expect("a collision is reported");
     assert_eq!(err.code, "SEGMENT_COLLISION");
     assert_eq!(
@@ -531,8 +538,13 @@ fn different_file_under_our_name_is_an_error_and_not_overwritten() {
         other,
         "never overwritten"
     );
-    let s = Store::open(&e.data, &e.dir).unwrap();
     assert!(!all_exported(&s));
+    // The next attempt uses another name.
+    let r = s.tick(t + 4 * S).unwrap();
+    assert_eq!((r.segments_written, r.error), (1, None));
+    assert!(all_exported(&s));
+    assert_eq!(fs::read(dir.join(&planned)).unwrap(), other);
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
 }
 
 #[cfg(unix)]
@@ -574,20 +586,23 @@ fn export_retries_after_unwritable_dir() {
 
 #[test]
 fn old_temp_files_are_removed() {
+    // Age is observed with the monotonic clock passed to `tick`, never by comparing the
+    // server's mtime with the local clock: a temp file is removed once it has been seen
+    // unchanged for 20 s.
     let e = env();
     let mut s = create(&e);
     commit(&mut s, "a");
     s.close().unwrap();
     let mut s = Store::open(&e.data, &e.dir).unwrap();
     let dir = seg_dir(&e.dir);
-    let old = dir.join(temp_name());
-    let young = dir.join(temp_name());
+    let old_mtime = dir.join(temp_name());
+    let growing = dir.join(temp_name());
     let not_ours = dir.join(".~fin-notaulid.tmp");
-    for p in [&old, &young, &not_ours] {
+    for p in [&old_mtime, &growing, &not_ours] {
         fs::write(p, b"partial").unwrap();
     }
-    let past = SystemTime::now() - Duration::from_secs(60);
-    for p in [&old, &not_ours] {
+    let past = SystemTime::now() - Duration::from_secs(3600);
+    for p in [&old_mtime, &not_ours] {
         fs::File::options()
             .write(true)
             .open(p)
@@ -595,9 +610,19 @@ fn old_temp_files_are_removed() {
             .set_modified(past)
             .unwrap();
     }
-    s.tick(Instant::now()).unwrap();
-    assert!(!old.exists(), "older than 20 s: removed");
-    assert!(young.exists(), "may still be in flight");
+    let t = Instant::now();
+    s.tick(t).unwrap();
+    assert!(old_mtime.exists(), "an old mtime alone proves nothing");
+    s.tick(t + 10 * S).unwrap();
+    assert!(old_mtime.exists());
+    fs::write(&growing, b"partial, and more").unwrap();
+    s.tick(t + 21 * S).unwrap();
+    assert!(!old_mtime.exists(), "unchanged for 20 s: removed");
+    assert!(growing.exists(), "changed: its 20 s start again");
+    s.tick(t + 31 * S).unwrap();
+    assert!(growing.exists());
+    s.tick(t + 42 * S).unwrap();
+    assert!(!growing.exists());
     assert!(not_ours.exists(), "only our own temp names");
 }
 
@@ -645,17 +670,274 @@ fn exported_rows_stay_a_prefix() {
     assert_eq!(err.code(), "DB_ERROR");
 }
 
+/// Every verified segment in the folder.
+fn folder_refs(dir: &Path) -> Vec<SegRef> {
+    scan(dir)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e {
+            Entry::Segment { seg, .. } => Some(SegRef::new(seg)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tx_ids<'a>(refs: impl IntoIterator<Item = &'a SegRef>) -> Vec<String> {
+    refs.into_iter()
+        .flat_map(|r| r.txs().iter().map(|t| t.tx_id.clone()))
+        .collect()
+}
+
+/// Copies a closed store's database to another server data dir (as if that server had
+/// imported everything so far).
+fn copy_db(from_data: &Path, to_data: &Path, id: &str) {
+    let (from, to) = (db_path(from_data, id), db_path(to_data, id));
+    fs::create_dir_all(to.parent().unwrap()).unwrap();
+    for ext in ["", "-wal", "-shm"] {
+        let src = PathBuf::from(format!("{}{ext}", from.display()));
+        if src.exists() {
+            fs::copy(&src, format!("{}{ext}", to.display())).unwrap();
+        }
+    }
+}
+
 #[test]
-fn read_back_is_uncached_and_verifies() {
-    // The segment on disk is what `read_uncached` returns and decodes with the name's hash.
+fn stale_commit_never_outranks_a_newer_export() {
+    // B commits t1 at epoch 2 and loses the lease before exporting it; C (epoch 3) exports u;
+    // B re-acquires at epoch 4 and exports t1. t1 keeps its commit epoch, so u's line wins.
+    let e = env();
+    let c_data = e.data.with_file_name("server-c");
+    let mut b = create(&e);
+    b.set_test_lease(1, true);
+    commit(&mut b, "t0");
+    let id = b.project_id().to_string();
+    b.close().unwrap();
+    copy_db(&e.data, &c_data, &id);
+
+    let mut b = Store::open(&e.data, &e.dir).unwrap();
+    b.set_test_lease(2, true);
+    commit(&mut b, "t1");
+    b.set_test_lease(2, false);
+    assert_eq!(
+        b.close().unwrap().segments_written,
+        0,
+        "no lease, no export"
+    );
+
+    let mut c = Store::open(&c_data, &e.dir).unwrap();
+    c.set_test_lease(3, true);
+    commit(&mut c, "u");
+    assert_eq!(c.close().unwrap().segments_written, 1);
+
+    let mut b = Store::open(&e.data, &e.dir).unwrap();
+    let r = resolve(&folder_refs(&e.dir), &known(&b));
+    assert!(r.local_tail_diverged, "B's epoch-2 tail loses to u at 3");
+    b.set_test_lease(4, true);
+    assert_eq!(b.close().unwrap().segments_written, 1);
+    let epochs: Vec<u64> = segments(&e.dir).iter().map(|(n, _, _)| n.epoch()).collect();
+    assert_eq!(
+        epochs.iter().filter(|e| **e == 2).count(),
+        1,
+        "t1 is labelled 2: {epochs:?}"
+    );
+    assert!(!epochs.contains(&4), "{epochs:?}");
+
+    // A fresh follower applies u and sets t1 aside.
+    let r = resolve(&folder_refs(&e.dir), &Known::empty(StorageKind::Local));
+    assert_eq!(r.fork, None);
+    assert_eq!(tx_ids(&r.apply), ["t0", "u"]);
+    assert_eq!(tx_ids(r.quarantine.iter().map(|(s, _)| s)), ["t1"]);
+}
+
+#[test]
+fn segment_epoch_is_the_highest_commit_epoch() {
+    let e = env();
+    let mut s = create(&e);
+    s.set_test_lease(2, true);
+    commit(&mut s, "a");
+    s.set_test_lease(4, true);
+    commit(&mut s, "b");
+    s.set_test_lease(5, true);
+    assert_eq!(s.close().unwrap().segments_written, 1);
+    let segs = segments(&e.dir);
+    assert_eq!(segs.len(), 1);
+    assert_eq!((segs[0].0.epoch(), segs[0].1.header.epoch), (4, 4));
+}
+
+#[test]
+fn oversized_tx_is_refused_at_commit() {
+    let e = env();
+    let mut s = create(&e);
+    let base_rev = s.head(MAIN);
+    let err = s
+        .commit(Tx {
+            tx_id: "huge".into(),
+            author: "test".into(),
+            branch: MAIN.into(),
+            base_rev,
+            schema_version: SCHEMA_VERSION,
+            ops: vec![sized_op(1, 1100), sized_op(2, 1100)],
+        })
+        .unwrap_err();
+    let err = fin_core::CoreError::from(err);
+    assert_eq!(err.code, "TX_TOO_LARGE");
+    assert_eq!(err.details["txId"], "huge");
+    assert!(err.fix.is_some());
+    assert_eq!(s.head(MAIN), base_rev, "nothing committed");
+    commit(&mut s, "fine");
+    assert_eq!(s.head(MAIN), base_rev + 1);
+}
+
+/// Plants a valid segment at `seq..=seq` on `main` holding `record`, continuing `prev`.
+fn plant(s: &Store, dir: &Path, seq: u64, prev: Option<String>, record: &[u8]) -> String {
+    let header = Header {
+        format_version: 1,
+        min_reader_version: 1,
+        project_id: s.project_id().into(),
+        branch: MAIN.into(),
+        writer_id: "someone-else".into(),
+        epoch: 0,
+        first_seq: seq,
+        last_seq: seq,
+        prev_segment_hash: prev,
+        op_schema_versions: [1, 1],
+        created_at: 0,
+        pack: false,
+        replaces: Vec::new(),
+    };
+    let (bytes, hash) = segment::encode(&header, &[record]);
+    let name = SegmentName::new(0, seq, seq, fin_store::names::hash12(&hash).unwrap())
+        .unwrap()
+        .to_string();
+    fs::write(seg_dir(dir).join(&name), bytes).unwrap();
+    name
+}
+
+fn record_bytes(s: &Store, seq: u64) -> Vec<u8> {
+    conn(s)
+        .query_row(
+            "SELECT record_bytes FROM txs WHERE branch = ?1 AND seq = ?2",
+            params![MAIN, seq],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// `a` exported; `b` committed, not exported. Returns the hash of `a`'s segment.
+fn one_exported_one_pending(e: &Env) -> (Store, String) {
+    let mut s = create(e);
+    commit(&mut s, "a");
+    s.close().unwrap();
+    let mut s = Store::open(&e.data, &e.dir).unwrap();
+    commit(&mut s, "b");
+    let prev = segments(&e.dir)[0].1.hash.clone();
+    (s, prev)
+}
+
+#[test]
+fn a_file_with_other_records_is_not_adopted() {
+    let e = env();
+    let (s, prev) = one_exported_one_pending(&e);
+    let planted = plant(&s, &e.dir, 2, Some(prev), br#"{"txId":"other","seq":2}"#);
+    let r = s.close().unwrap();
+    assert_eq!(
+        (r.segments_written, r.error),
+        (1, None),
+        "written, not adopted"
+    );
+    let s = Store::open(&e.data, &e.dir).unwrap();
+    let ours: Vec<_> = segments(&e.dir)
+        .into_iter()
+        .filter(|(n, _, _)| n.first_seq() == 2 && n.to_string() != planted)
+        .collect();
+    assert_eq!(ours.len(), 1);
+    assert_eq!(ours[0].1.records, [record_bytes(&s, 2)]);
+}
+
+#[test]
+fn a_file_from_another_predecessor_is_not_adopted() {
+    let e = env();
+    let (s, _) = one_exported_one_pending(&e);
+    let other_prev = format!("blake3:{}", "1".repeat(64));
+    plant(&s, &e.dir, 2, Some(other_prev), &record_bytes(&s, 2));
+    let r = s.close().unwrap();
+    assert_eq!(
+        (r.segments_written, r.error),
+        (1, None),
+        "written, not adopted"
+    );
+}
+
+#[test]
+fn a_retry_re_encodes_when_the_rows_changed() {
     let e = env();
     let mut s = create(&e);
     commit(&mut s, "a");
+    s.planned_segment_name(MAIN).unwrap().unwrap();
+    // The rows the cached attempt was built from are not the rows any more.
+    let new_bytes = String::from_utf8(record_bytes(&s, 1))
+        .unwrap()
+        .replace("\"author\":\"test\"", "\"author\":\"tess\"")
+        .into_bytes();
+    conn(&s)
+        .execute(
+            "UPDATE txs SET record_bytes = ?1, tx_hash = ?2 WHERE seq = 1",
+            params![
+                new_bytes,
+                format!("blake3:{}", blake3::hash(&new_bytes).to_hex())
+            ],
+        )
+        .unwrap();
     s.close().unwrap();
-    let (name, seg, _) = segments(&e.dir).remove(0);
-    let bytes = fsio::read_uncached(&seg_dir(&e.dir).join(name.to_string())).unwrap();
-    let back = segment::decode(&bytes).unwrap();
-    assert_eq!(back.hash, seg.hash);
-    assert_eq!(fin_store::names::hash12(&back.hash), Some(name.hash12()));
-    let _ = Arc::new(back);
+    assert_eq!(segments(&e.dir)[0].1.records, [new_bytes]);
+}
+
+#[test]
+fn an_unverifiable_file_under_our_name_is_given_up_after_three_read_backs() {
+    let e = env();
+    let mut s = create(&e);
+    commit(&mut s, "a");
+    let planned = s.planned_segment_name(MAIN).unwrap().unwrap();
+    let dir = seg_dir(&e.dir);
+    fs::create_dir_all(&dir).unwrap();
+    let stuck = br#"{"magic":"finisher-segment""#;
+    fs::write(dir.join(&planned), stuck).unwrap();
+    let t = Instant::now();
+    s.tick(t).unwrap();
+    let mut codes = Vec::new();
+    for i in 1..=3 {
+        let r = s.tick(t + 2 * i * S).unwrap();
+        assert_eq!(r.segments_written, 0);
+        codes.push(r.error.expect("reported").code);
+    }
+    assert_eq!(
+        codes,
+        [
+            "PROJECT_DIR_UNWRITABLE",
+            "PROJECT_DIR_UNWRITABLE",
+            "SEGMENT_COLLISION"
+        ]
+    );
+    let r = s.tick(t + 8 * S).unwrap();
+    assert_eq!((r.segments_written, r.error), (1, None), "another name");
+    assert_eq!(fs::read(dir.join(&planned)).unwrap(), stuck, "untouched");
+    assert!(all_exported(&s));
+}
+
+#[test]
+fn export_error_clears_when_nothing_is_left() {
+    let e = env();
+    let mut s = create(&e);
+    commit(&mut s, "a");
+    // A file where the segments directory should be: the export fails.
+    fs::create_dir_all(e.dir.join(".finisher").join("segments")).unwrap();
+    fs::write(seg_dir(&e.dir), b"not a dir").unwrap();
+    let t = Instant::now();
+    s.tick(t).unwrap();
+    assert!(s.tick(t + 2 * S).unwrap().error.is_some());
+    assert!(s.export_error().is_some());
+    // Something else exported the records (Task 8's import will).
+    conn(&s).execute("UPDATE txs SET exported = 1", []).unwrap();
+    s.tick(t + 3 * S).unwrap();
+    assert_eq!(s.export_error(), None);
 }
