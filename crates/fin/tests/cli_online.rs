@@ -20,6 +20,12 @@ fn project(test: &str) -> Option<(Server, PathBuf)> {
     Some((server, dir))
 }
 
+/// `base` joined with each `/`-separated part: the OS-native form fin echoes (Windows
+/// absolutising turns `/` into `\`).
+fn native(base: &Path, rel: &str) -> PathBuf {
+    rel.split('/').fold(base.to_path_buf(), |p, part| p.join(part))
+}
+
 fn s(p: &Path) -> String {
     p.display().to_string()
 }
@@ -77,10 +83,10 @@ fn asset_paths_resolve_to_absolute_and_are_echoed() {
     let Some((server, dir)) = project("asset_paths_resolve_to_absolute_and_are_echoed") else { return };
     let (_home_tmp, home) = real_tempdir();
     let files = [
-        ("media/rel.mp4", dir.join("media/rel.mp4")),
+        ("media/rel.mp4", native(&dir, "media/rel.mp4")),
         ("~/home clip.mp4", home.join("home clip.mp4")),
         ("my clip with spaces.mp4", dir.join("my clip with spaces.mp4")),
-        ("відео/кліп один.mp4", dir.join("відео/кліп один.mp4")),
+        ("відео/кліп один.mp4", native(&dir, "відео/кліп один.mp4")),
     ];
     for (n, (input, expected)) in files.iter().enumerate() {
         media(expected, 2);
@@ -90,7 +96,7 @@ fn asset_paths_resolve_to_absolute_and_are_echoed() {
         assert_eq!(doc["bindings"]["$asset"], format!("a{}", n + 1), "{input}");
     }
     // An absolute path passes through unchanged, and `~` in --project expands too.
-    let abs = dir.join("відео/кліп один.mp4");
+    let abs = native(&dir, "відео/кліп один.mp4");
     assert_eq!(ok(fin(&server.sd, &dir, &["asset", "add", &s(&abs)]))["resolved"]["path"], s(&abs));
     let with_home = |args: &[&str]| ok(fin_env(&server.sd, &server.root, args, &[("HOME", home.as_os_str())]));
     let created = with_home(&["project", "create", "~/другий проєкт", "--name", "Second"]);
@@ -103,7 +109,7 @@ fn missing_media_is_asset_not_found_with_the_resolved_path() {
     let Some((server, dir)) = project("missing_media_is_asset_not_found_with_the_resolved_path") else { return };
     let run = fin(&server.sd, &dir, &["asset", "add", "nope/кліп.mp4"]);
     assert_error(&run, 3, "ASSET_NOT_FOUND");
-    assert_eq!(run.json["error"]["details"]["path"], s(&dir.join("nope/кліп.mp4")));
+    assert_eq!(run.json["error"]["details"]["path"], s(&native(&dir, "nope/кліп.mp4")));
     assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 0);
 }
 

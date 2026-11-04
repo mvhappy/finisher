@@ -53,6 +53,8 @@ impl Conn {
     fn open(server: &Server, subst: &[(String, String)]) -> Conn {
         let name = server.socket.as_str().to_fs_name::<GenericFilePath>().unwrap();
         let stream = Stream::connect(name).unwrap();
+        // Synchronous Windows named pipes have no I/O timeouts (fin's client uses a worker).
+        #[cfg(unix)]
         stream.set_recv_timeout(Some(Duration::from_secs(30))).unwrap();
         Conn { io: BufReader::new(stream), subst: subst.to_vec() }
     }
