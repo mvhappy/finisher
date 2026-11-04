@@ -7,9 +7,10 @@
 
 use crate::conflict_names::Provider;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StorageKind {
-    /// A local disk.
+    /// A local disk. The default until detection (plan Task 10) lands.
+    #[default]
     Local,
     /// A network share (SMB, NFS, AFP, WebDAV).
     Network,

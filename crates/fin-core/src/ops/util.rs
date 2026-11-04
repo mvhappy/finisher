@@ -34,6 +34,8 @@ pub(crate) fn exists(project: &Project, kind: IdKind, id: &str) -> bool {
             .any(|t| t.items.iter().any(|c| c.id == id)),
         IdKind::Track => project.timeline.tracks.iter().any(|t| t.id == id),
         IdKind::Timeline => project.timeline.id == id,
+        // Branches are not part of the model.
+        IdKind::Branch => false,
     }
 }
 

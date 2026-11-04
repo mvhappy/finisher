@@ -19,6 +19,8 @@ impl Store {
     /// - `baseRev` behind the head: the tx is rebased over the txs committed since; a conflict
     ///   is `CONFLICT` with `details.againstTx` (committed) and `details.txId` (incoming).
     /// - `baseRev` ahead of the head is `BASE_REV_AHEAD`.
+    /// - While the last import found a fork or a newer format ([`Store::read_only`]):
+    ///   `PROJECT_READ_ONLY` with `details.reason`.
     ///
     /// The stored tx is the rebased one (`baseRev` = the head it was applied to), with the diff,
     /// inverse and bindings of that same apply. Ids are allocated from the `ids` table inside the
@@ -27,6 +29,9 @@ impl Store {
         // Everything below runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.
         check_shape(&tx)?;
+        if let Some(reason) = self.import.read_only() {
+            return Err(crate::import::read_only_error(&self.project_id, reason));
+        }
         let txn = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

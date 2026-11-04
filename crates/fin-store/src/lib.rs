@@ -3,16 +3,19 @@
 //!
 //! The project folder holds `finisher.project.json` (`{id, name, schemaVersion}`) and, under
 //! `.finisher/segments/`, the write-once export of the committed records ([`Store::tick`],
-//! [`Store::close`]); the live database never lives there. One `Store` is the single writer
-//! for its project.
+//! [`Store::close`]); the live database never lives there. [`Store::import`] takes what other
+//! servers exported into the database, setting aside what loses (quarantine). One `Store` is
+//! the single writer for its project.
 
 mod backup;
 pub mod chain;
 mod commit;
 pub mod conflict_names;
+mod counters;
 mod db;
 mod export;
 pub mod fsio;
+mod import;
 mod migrations;
 pub mod names;
 mod paths;
@@ -36,6 +39,7 @@ pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
+pub use import::{ForeignFile, ImportReport, ReadOnlyReason};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
 pub use migrations::{APPLICATION_ID, DB_VERSION};
@@ -165,7 +169,7 @@ pub fn read_project_file(project_dir: &Path) -> Result<ProjectFile, StoreError> 
 
 /// A branch head, cached in memory.
 #[derive(Debug, Clone)]
-struct Head {
+pub(crate) struct Head {
     rev: u64,
     project: Project,
 }
@@ -180,6 +184,7 @@ pub struct Store {
     /// This server's id ([`server_id()`]), the `writerId` of exported segments.
     server_id: String,
     export: export::ExportState,
+    import: import::ImportState,
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,
@@ -301,6 +306,7 @@ impl Store {
             project_dir: project_dir.to_path_buf(),
             server_id,
             export: export::ExportState::default(),
+            import: import::ImportState::default(),
             heads: RefCell::new(heads),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,

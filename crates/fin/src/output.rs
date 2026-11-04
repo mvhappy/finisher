@@ -57,7 +57,14 @@ const VALIDATION_CODES: &[&str] = &[
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
 /// `SEGMENT_COLLISION`: the project folder holds another file under the name this server's
 /// export needs (the folder changed under it); the export retries under another name.
-const CONFLICT_CODES: &[&str] = &["CONFLICT", "BASE_REV_AHEAD", "SEGMENT_COLLISION"];
+/// `PROJECT_READ_ONLY`: the project cannot take edits now (`details.reason`: `CHAIN_FORK`,
+/// `NEWER_FORMAT`, and from the lease work `LEASE_HELD`, `LEASE_LOST`, `CONFLICT_COPY`).
+const CONFLICT_CODES: &[&str] = &[
+    "CONFLICT",
+    "BASE_REV_AHEAD",
+    "SEGMENT_COLLISION",
+    "PROJECT_READ_ONLY",
+];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
 /// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
@@ -158,6 +165,7 @@ mod tests {
         assert_eq!(exit_code("SEGMENT_COLLISION"), 4);
         assert_eq!(exit_code("RECORD_TOO_LARGE"), 3);
         assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
+        assert_eq!(exit_code("PROJECT_READ_ONLY"), 4);
         for code in [
             "SERVER_UNAVAILABLE",
             "SERVER_RUNNING",

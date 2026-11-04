@@ -12,12 +12,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use fin_core::{
-    Applied, CommittedTx, CoreError, Diff, IdAlloc, IdKind, MemIds, Op, Project, Record,
-    RecordKind, Tx, apply_committed, encode_record, resolve_ops, upcast_record, upcast_snapshot,
+    Applied, CommittedTx, CoreError, Diff, Op, Project, Record, RecordKind, Tx, apply_committed,
+    encode_record, resolve_ops, upcast_record, upcast_snapshot,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
 use crate::StoreError;
+pub(crate) use crate::counters::Counters;
 use crate::migrations::{APPLICATION_ID, DB_VERSION, MIN_READER_VERSION};
 
 /// A snapshot is written at rev 0 and whenever `rev % SNAPSHOT_EVERY == 0`.
@@ -65,10 +66,15 @@ CREATE TABLE IF NOT EXISTS segments (
 CREATE TABLE IF NOT EXISTS lease_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quarantine (
     id INTEGER PRIMARY KEY,
+    tx_hash TEXT NOT NULL UNIQUE,
+    branch TEXT NOT NULL,
     origin TEXT NOT NULL,
     reason TEXT NOT NULL,
+    detail TEXT NOT NULL,
     record_bytes BLOB NOT NULL,
-    added_at INTEGER NOT NULL
+    added_at INTEGER NOT NULL,
+    seen_at INTEGER NOT NULL,
+    current INTEGER NOT NULL
 );
 ";
 
@@ -302,6 +308,42 @@ pub(crate) fn insert_tx(
     Ok(())
 }
 
+/// Appends a record taken from the project folder: its exact `bytes` (whose hash is
+/// `tx_hash`), already exported, at `epoch`. `schema_version` is the version the bytes were
+/// written with (`record` is upcast).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_imported(
+    conn: &Connection,
+    branch: &str,
+    record: &Record,
+    bytes: &[u8],
+    tx_hash: &str,
+    schema_version: u32,
+    diff: &Diff,
+    epoch: u64,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
+                          exported, diff, schema_version, author, committed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12)",
+        params![
+            to_i64(record.seq)?,
+            branch,
+            record.tx_id,
+            kind_text(record.kind)?,
+            bytes,
+            tx_hash,
+            record.parent_hash,
+            to_i64(epoch)?,
+            serde_json::to_string(diff)?,
+            schema_version,
+            record.author,
+            record.committed_at,
+        ],
+    )?;
+    Ok(())
+}
+
 /// A `txs` row as stored: `(seq, tx_id, record_bytes)`.
 pub(crate) type RecordRow = (u64, String, Vec<u8>);
 
@@ -396,77 +438,6 @@ pub(crate) fn txs_since(
     rows.map(|r| decode(r?)).collect()
 }
 
-const KINDS: [IdKind; 4] = [IdKind::Asset, IdKind::Track, IdKind::Clip, IdKind::Timeline];
-
-fn kind_name(kind: IdKind) -> &'static str {
-    match kind {
-        IdKind::Asset => "asset",
-        IdKind::Track => "track",
-        IdKind::Clip => "clip",
-        IdKind::Timeline => "timeline",
-    }
-}
-
-fn slot(kind: IdKind) -> usize {
-    KINDS.iter().position(|k| *k == kind).unwrap_or(0)
-}
-
-/// Numeric suffix of `id` when it is exactly `prefix` followed by digits.
-fn suffix(id: &str, prefix: &str) -> Option<u64> {
-    let digits = id.strip_prefix(prefix)?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
-}
-
-/// The `ids` table loaded into memory for one SQLite transaction and saved back in it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Counters {
-    next: [u64; 4],
-}
-
-impl Counters {
-    /// Counters past every id in `project`, by `fin-core`'s own rule (`MemIds::after`).
-    pub(crate) fn seed(project: &Project) -> Counters {
-        let mut mem = MemIds::after(project);
-        let next = KINDS.map(|k| suffix(&mem.next(k), k.prefix()).unwrap_or(1));
-        Counters { next }
-    }
-
-    pub(crate) fn load(conn: &Connection) -> Result<Counters, StoreError> {
-        let mut next = [1; 4];
-        for kind in KINDS {
-            let n: i64 = conn.query_row(
-                "SELECT next FROM ids WHERE kind = ?1",
-                params![kind_name(kind)],
-                |r| r.get(0),
-            )?;
-            next[slot(kind)] = to_u64(n)?;
-        }
-        Ok(Counters { next })
-    }
-
-    pub(crate) fn save(&self, conn: &Connection) -> Result<(), StoreError> {
-        for kind in KINDS {
-            conn.execute(
-                "INSERT INTO ids (kind, next) VALUES (?1, ?2) ON CONFLICT(kind) DO UPDATE SET next = excluded.next",
-                params![kind_name(kind), to_i64(self.next[slot(kind)])?],
-            )?;
-        }
-        Ok(())
-    }
-}
-
-impl IdAlloc for Counters {
-    fn next(&mut self, kind: IdKind) -> String {
-        let n = &mut self.next[slot(kind)];
-        let id = format!("{}{}", kind.prefix(), n);
-        *n += 1;
-        id
-    }
-}
-
 /// Applies the stored record `bytes` to `project`: upcasts it and re-applies its intent with the
 /// recorded bindings fixing every id ([`apply_committed`]: structural checks only, no policy and
 /// no comparison with the stored diff), so history is never re-judged.
@@ -507,25 +478,4 @@ pub(crate) fn replay_row(
         }
         e.into()
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fin_core::{Rational, new_project};
-
-    #[test]
-    fn seed_starts_past_the_new_project_ids() {
-        let p = new_project("p".into(), "n".into(), Rational::from_int(30)).unwrap();
-        let mut c = Counters::seed(&p);
-        assert_eq!(
-            KINDS.map(|k| c.next(k)),
-            [
-                "a1".to_string(),
-                "t3".to_string(),
-                "c1".to_string(),
-                "tl2".to_string()
-            ]
-        );
-    }
 }

@@ -74,10 +74,15 @@ CREATE TABLE segments (
 CREATE TABLE lease_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE quarantine (
     id INTEGER PRIMARY KEY,
+    tx_hash TEXT NOT NULL UNIQUE,
+    branch TEXT NOT NULL,
     origin TEXT NOT NULL,
     reason TEXT NOT NULL,
+    detail TEXT NOT NULL,
     record_bytes BLOB NOT NULL,
-    added_at INTEGER NOT NULL
+    added_at INTEGER NOT NULL,
+    seen_at INTEGER NOT NULL,
+    current INTEGER NOT NULL
 );
 ";
 

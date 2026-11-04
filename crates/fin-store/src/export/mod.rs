@@ -3,7 +3,8 @@
 //!
 //! # One pass ([`export_pending`])
 //!
-//! 1. Only while this server holds the lease ([`ExportLease::check`]). The lease is checked
+//! 1. Only while this server holds the lease ([`ExportLease::check`]) and the last import
+//!    found the project writable (no fork, no newer format). The lease is checked
 //!    again right before every write (the fence), but the segment's epoch is **not** taken
 //!    from it: a segment is labelled with the highest commit epoch (`txs.epoch`) of its
 //!    records, which must not exceed the current lease epoch. Labelling with the epoch at
@@ -150,7 +151,8 @@ pub(crate) fn export_pending(
     force: bool,
 ) -> Result<ExportReport, StoreError> {
     let mut report = ExportReport::default();
-    if store.export.lease.check().is_err() {
+    // Read-only after a fork or a newer format (Task 8's import): records stay unexported.
+    if store.export.lease.check().is_err() || store.import.read_only().is_some() {
         return Ok(report);
     }
     if store

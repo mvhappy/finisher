@@ -15,7 +15,7 @@ pub mod upgrade;
 
 pub use apply::{ApplyMode, apply_internal, apply_tx, apply_tx_mode};
 pub use error::CoreError;
-pub use ids::{IdAlloc, IdKind, MemIds};
+pub use ids::{ID_KINDS, IdAlloc, IdKind, MemIds};
 pub use model::*;
 pub use ops::{Edge, Op};
 pub use rebase::{Conflict, rebase_tx};

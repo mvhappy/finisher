@@ -280,6 +280,15 @@ pub fn mark_placeholder(path: &Path) {
     HOOKED.with(|h| h.borrow_mut().push(path.to_path_buf()));
 }
 
+/// A placeholder at `path` was read through, which hydrates it. Real placeholders lose their
+/// placeholder state by themselves; under test hooks this forgets a [`mark_placeholder`].
+pub(crate) fn hydrated(path: &Path) {
+    #[cfg(any(test, feature = "test-hooks"))]
+    HOOKED.with(|h| h.borrow_mut().retain(|p| p != path));
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    let _ = path;
+}
+
 /// Test hook: forgets every [`mark_placeholder`] on this thread.
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
