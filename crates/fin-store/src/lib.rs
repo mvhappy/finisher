@@ -1,20 +1,24 @@
 //! Finisher's local store: one SQLite op log per project at
 //! `<server-data>/projects/<id>/project.fdb`, with rebase-on-commit (spec §6.1, D27).
 //!
-//! The project folder only holds `finisher.project.json` (`{id, name, schemaVersion}`); the
-//! live database never lives there. One `Store` is the single writer for its project.
+//! The project folder holds `finisher.project.json` (`{id, name, schemaVersion}`) and, under
+//! `.finisher/segments/`, the write-once export of the committed records ([`Store::tick`],
+//! [`Store::close`]); the live database never lives there. One `Store` is the single writer
+//! for its project.
 
 mod backup;
 pub mod chain;
 mod commit;
 pub mod conflict_names;
 mod db;
+mod export;
 pub mod fsio;
 mod migrations;
 pub mod names;
 mod paths;
 pub mod scan;
 pub mod segment;
+pub mod server_id;
 pub mod snapfile;
 pub mod storage_kind;
 
@@ -22,16 +26,21 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use fin_core::{CommittedTx, CoreError, Project, Rational, SCHEMA_VERSION, new_project};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub use db::{SNAPSHOT_EVERY, replay_record};
+pub use export::ExportReport;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use export::FailPoint;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
 pub use migrations::{APPLICATION_ID, DB_VERSION};
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
+pub use server_id::server_id;
 
 /// The only branch sub-project 2 creates.
 pub const MAIN: &str = "main";
@@ -166,6 +175,11 @@ pub struct Store {
     conn: rusqlite::Connection,
     project_id: String,
     db_path: PathBuf,
+    /// The user's project folder, which receives the export.
+    project_dir: PathBuf,
+    /// This server's id ([`server_id()`]), the `writerId` of exported segments.
+    server_id: String,
+    export: export::ExportState,
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,
@@ -178,6 +192,7 @@ impl std::fmt::Debug for Store {
         f.debug_struct("Store")
             .field("project_id", &self.project_id)
             .field("db_path", &self.db_path)
+            .field("project_dir", &self.project_dir)
             .finish()
     }
 }
@@ -206,6 +221,7 @@ impl Store {
         let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
         let project = new_project(id.clone(), name.to_string(), rate)?;
         fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
+        let server_id = server_id(server_data)?;
         let db_path = db_path(server_data, &id);
         let db_dir = db_path.parent().unwrap_or(server_data);
         fs::create_dir_all(db_dir).map_err(StoreError::io(db_dir))?;
@@ -227,7 +243,7 @@ impl Store {
         bytes.push(b'\n');
         paths::write_atomic(&file_path, &bytes).map_err(unwritable(&file_path))?;
         let heads = HashMap::from([(MAIN.to_string(), Head { rev: 0, project })]);
-        Ok(Store::new(conn, id, db_path, heads))
+        Ok(Store::new(conn, id, db_path, project_dir, server_id, heads))
     }
 
     /// Opens the project whose `finisher.project.json` is in `project_dir`. A missing database
@@ -246,6 +262,7 @@ impl Store {
                 .into());
         }
         migrations::check(&db_path)?;
+        let server_id = server_id(server_data)?;
         let mut conn = db::connect(&db_path, false)?;
         let stored = db::meta(&conn, "projectId")?;
         if stored.as_deref() != Some(file.id.as_str()) {
@@ -259,19 +276,31 @@ impl Store {
         for branch in db::branches(&conn)? {
             refresh(&conn, &mut heads, &branch)?;
         }
-        Ok(Store::new(conn, file.id, db_path, heads))
+        Ok(Store::new(
+            conn,
+            file.id,
+            db_path,
+            project_dir,
+            server_id,
+            heads,
+        ))
     }
 
     fn new(
         conn: rusqlite::Connection,
         project_id: String,
         db_path: PathBuf,
+        project_dir: &Path,
+        server_id: String,
         heads: HashMap<String, Head>,
     ) -> Store {
         Store {
             conn,
             project_id,
             db_path,
+            project_dir: project_dir.to_path_buf(),
+            server_id,
+            export: export::ExportState::default(),
             heads: RefCell::new(heads),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
@@ -285,6 +314,44 @@ impl Store {
     /// Path of the live database.
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// The project folder.
+    pub fn project_dir(&self) -> &Path {
+        &self.project_dir
+    }
+
+    /// This server's id, the `writerId` of the segments it exports.
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    /// Periodic folder work. For now only the export: unexported records are written to the
+    /// project folder once the export delay has passed since they were first seen (2 s; 30 s
+    /// under churn). Call it often (about once a second). A folder failure is
+    /// [`ExportReport::error`] (and [`Store::export_error`]), retried after the delay; `Err` is a
+    /// database failure.
+    pub fn tick(&mut self, now: Instant) -> Result<ExportReport, StoreError> {
+        export::export_pending(self, now, false)
+    }
+
+    /// Flushes the export without waiting for the delay, then closes the store. Dropping a
+    /// `Store` does not flush: folder I/O can block for seconds on a network share, and a
+    /// drop must not.
+    pub fn close(mut self) -> Result<ExportReport, StoreError> {
+        export::export_pending(&mut self, Instant::now(), true)
+    }
+
+    /// The last export failure, cleared by the next successful export.
+    pub fn export_error(&self) -> Option<&CoreError> {
+        self.export.error.as_ref()
+    }
+
+    /// Test hook: the next export stops at `point` with `TEST_FAULT`, as if the process died
+    /// there.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn fail_next_export_at(&mut self, point: FailPoint) {
+        self.export.fail_at = Some(point);
     }
 
     /// The head revision of `branch` (0 for a branch that does not exist). Catches up with

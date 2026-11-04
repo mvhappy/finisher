@@ -95,7 +95,7 @@ impl Store {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
