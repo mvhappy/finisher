@@ -4,7 +4,7 @@
 
 use std::fs::{self, File};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fin_core::CoreError;
 use rusqlite::{Connection, params};
@@ -14,6 +14,8 @@ use crate::paths::sync_dir;
 
 /// How many `pre-migrate-*` backups are kept.
 const KEEP_PRE_MIGRATION: usize = 3;
+/// A backup temp file older than this was left by a crash (a live backup takes seconds).
+const STALE_TEMP: Duration = Duration::from_secs(10 * 60);
 
 /// A consistent copy of the database behind `conn` at `dest` (which must not exist), durable
 /// once this returns.
@@ -28,7 +30,10 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<(), StoreError
             )
         })?;
         conn.execute("VACUUM INTO ?1", params![target])?;
-        File::open(&tmp)
+        // Windows' FlushFileBuffers needs a handle with write access.
+        File::options()
+            .write(true)
+            .open(&tmp)
             .and_then(|f| f.sync_all())
             .map_err(StoreError::io(&tmp))?;
         if dest.exists() {
@@ -48,7 +53,11 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<(), StoreError
 }
 
 /// Backs the database up to `<project_data>/backups/pre-migrate-<from>-<to>-<ts>.fdb` and
-/// keeps only the newest [`KEEP_PRE_MIGRATION`] such backups.
+/// keeps only the newest [`KEEP_PRE_MIGRATION`] such backups, always including the new one.
+///
+/// First removes `.~fin-*.tmp` files older than [`STALE_TEMP`] (left by a crash). Once the new
+/// backup is durable, failing to clean up or prune does not fail the migration: an extra old
+/// file is harmless.
 pub(crate) fn pre_migration(
     conn: &Connection,
     project_data: &Path,
@@ -57,37 +66,80 @@ pub(crate) fn pre_migration(
 ) -> Result<(), StoreError> {
     let dir = project_data.join("backups");
     fs::create_dir_all(&dir).map_err(StoreError::io(&dir))?;
+    remove_stale_temps(&dir);
     let mut ms = now_ms();
-    let dest = loop {
-        let dest = dir.join(format!("pre-migrate-{from}-{to}-{}.fdb", timestamp(ms)));
+    let (name, dest) = loop {
+        let name = format!("pre-migrate-{from}-{to}-{}.fdb", timestamp(ms));
+        let dest = dir.join(&name);
         if !dest.exists() {
-            break dest;
+            break (name, dest);
         }
         ms += 1;
     };
     backup_to(conn, &dest)?;
-    prune(&dir, "pre-migrate-", KEEP_PRE_MIGRATION)
+    let _ = prune(&dir, &name, KEEP_PRE_MIGRATION);
+    Ok(())
 }
 
-/// Deletes all but the newest `keep` `<prefix>…-<ts>.fdb` files in `dir`, by timestamp.
-fn prune(dir: &Path, prefix: &str, keep: usize) -> Result<(), StoreError> {
-    let mut found: Vec<(String, String)> = fs::read_dir(dir)
+fn remove_stale_temps(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !(name.starts_with(".~fin-") && name.ends_with(".tmp")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE_TEMP);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The timestamp of a strict `pre-migrate-<n>-<n>-<YYYYMMDDTHHMMSSmmm>Z.fdb` name.
+fn pre_migration_ts(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("pre-migrate-")?.strip_suffix(".fdb")?;
+    let mut parts = rest.splitn(3, '-');
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let (from, to, ts) = (parts.next()?, parts.next()?, parts.next()?);
+    let b = ts.as_bytes();
+    let ok = digits(from)
+        && digits(to)
+        && b.len() == 19
+        && digits(&ts[..8])
+        && b[8] == b'T'
+        && digits(&ts[9..18])
+        && b[18] == b'Z';
+    ok.then_some(ts)
+}
+
+/// Deletes all but the newest `keep` pre-migration backups in `dir` (by timestamp), never
+/// `new` (the one just taken, which counts towards `keep`). Other names are left alone.
+fn prune(dir: &Path, new: &str, keep: usize) -> Result<(), StoreError> {
+    let mut others: Vec<(String, String)> = fs::read_dir(dir)
         .map_err(StoreError::io(dir))?
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter_map(|name| {
-            let stem = name.strip_prefix(prefix)?.strip_suffix(".fdb")?;
-            let ts = stem.rsplit('-').next()?.to_string();
-            Some((ts, name))
-        })
+        .filter(|name| name != new)
+        .filter_map(|name| Some((pre_migration_ts(&name)?.to_string(), name)))
         .collect();
-    found.sort();
-    let excess = found.len().saturating_sub(keep);
-    for (_, name) in found.into_iter().take(excess) {
+    others.sort();
+    let excess = others.len().saturating_sub(keep.saturating_sub(1));
+    let mut result = Ok(());
+    for (_, name) in others.into_iter().take(excess) {
         let path = dir.join(name);
-        fs::remove_file(&path).map_err(StoreError::io(&path))?;
+        if let Err(e) = fs::remove_file(&path) {
+            result = Err(StoreError::io(&path)(e));
+        }
     }
-    Ok(())
+    result
 }
 
 fn now_ms() -> i64 {
@@ -138,6 +190,25 @@ mod tests {
     }
 
     #[test]
+    fn strict_names_only() {
+        assert_eq!(
+            pre_migration_ts("pre-migrate-0-12-20261104T101530042Z.fdb"),
+            Some("20261104T101530042Z")
+        );
+        for name in [
+            "pre-migrate-0-1-20261104T101530042Z.fdb.tmp",
+            "pre-migrate--1-20261104T101530042Z.fdb",
+            "pre-migrate-0-1-2026110XT101530042Z.fdb",
+            "pre-migrate-0-1-20261104T10153004Z.fdb",
+            "pre-migrate-0-1-20261104-101530042Z.fdb",
+            "pre-migrate-0-1-junk.fdb",
+            "pre-migrate-a-1-20261104T101530042Z.fdb",
+        ] {
+            assert_eq!(pre_migration_ts(name), None, "{name}");
+        }
+    }
+
+    #[test]
     fn prune_keeps_the_newest() {
         let dir = tempfile::tempdir().unwrap();
         for name in [
@@ -149,7 +220,7 @@ mod tests {
         ] {
             fs::write(dir.path().join(name), b"").unwrap();
         }
-        prune(dir.path(), "pre-migrate-", 3).unwrap();
+        prune(dir.path(), "pre-migrate-0-1-20261105T000000000Z.fdb", 3).unwrap();
         let mut left: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())

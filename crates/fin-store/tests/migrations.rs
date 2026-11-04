@@ -329,42 +329,65 @@ fn fresh_project_has_no_backups() {
     assert!(backup_names(&db.parent().unwrap().join("backups")).is_empty());
 }
 
+fn sidecars(db: &Path) -> Vec<String> {
+    ["project.fdb-wal", "project.fdb-shm", "project.fdb-journal"]
+        .into_iter()
+        .filter(|side| db.with_file_name(side).exists())
+        .map(String::from)
+        .collect()
+}
+
+/// A fresh project whose database is switched to `journal` mode and then changed by `sql`,
+/// opened once per mode: the refusal must leave the file byte-identical and create no
+/// `-wal`/`-shm`. In `DELETE` mode a read-write open would rewrite header bytes 18–19 (WAL).
+fn refused(sql: &str) -> Vec<fin_core::CoreError> {
+    ["DELETE", "WAL"]
+        .into_iter()
+        .map(|journal| {
+            let (_tmp, data, dir, db) = fresh();
+            let conn = Connection::open(&db).unwrap();
+            let mode: String = conn
+                .query_row(&format!("PRAGMA journal_mode = {journal}"), [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert!(mode.eq_ignore_ascii_case(journal));
+            conn.execute_batch(sql).unwrap();
+            drop(conn);
+            assert_eq!(sidecars(&db), Vec::<String>::new(), "{journal}");
+            let before = fs::read(&db).unwrap();
+            let err = Store::open(&data, &dir).unwrap_err();
+            assert!(fs::read(&db).unwrap() == before, "{journal}: file changed");
+            assert_eq!(sidecars(&db), Vec::<String>::new(), "{journal}");
+            assert!(backup_names(&db.parent().unwrap().join("backups")).is_empty());
+            fin_core::CoreError::from(err)
+        })
+        .collect()
+}
+
 #[test]
 fn newer_db_is_refused() {
-    let (_tmp, data, dir, db) = fresh();
-    Connection::open(&db)
-        .unwrap()
-        .execute_batch("PRAGMA user_version = 99")
-        .unwrap();
-    let before = fs::read(&db).unwrap();
-    let err = Store::open(&data, &dir).unwrap_err();
-    assert_eq!(err.code(), "DB_TOO_NEW");
-    let e = fin_core::CoreError::from(err);
-    assert_eq!(e.details["dbVersion"], 99);
-    assert_eq!(e.details["supported"], DB_VERSION);
-    assert!(e.fix.is_some());
-    assert_eq!(fs::read(&db).unwrap(), before);
-    assert!(backup_names(&db.parent().unwrap().join("backups")).is_empty());
+    for e in refused("PRAGMA user_version = 99") {
+        assert_eq!(e.code, "DB_TOO_NEW");
+        assert_eq!(e.details["dbVersion"], 99);
+        assert_eq!(e.details["supported"], DB_VERSION);
+        assert!(e.fix.is_some());
+    }
 }
 
 #[test]
 fn min_reader_too_new_is_refused() {
-    let (_tmp, data, dir, db) = fresh();
-    Connection::open(&db)
-        .unwrap()
-        .execute(
-            "UPDATE meta SET value = '99' WHERE key = 'minReaderVersion'",
-            [],
-        )
-        .unwrap();
-    let before = fs::read(&db).unwrap();
-    let err = Store::open(&data, &dir).unwrap_err();
-    assert_eq!(err.code(), "DB_TOO_NEW");
-    assert_eq!(
-        fin_core::CoreError::from(err).details["minReaderVersion"],
-        99
-    );
-    assert_eq!(fs::read(&db).unwrap(), before);
+    for e in refused("UPDATE meta SET value = '99' WHERE key = 'minReaderVersion'") {
+        assert_eq!(e.code, "DB_TOO_NEW");
+        assert_eq!(e.details["minReaderVersion"], 99);
+    }
+}
+
+#[test]
+fn foreign_application_id_is_refused() {
+    for e in refused("PRAGMA application_id = 1234") {
+        assert_eq!(e.code, "NOT_A_PROJECT_DB");
+    }
 }
 
 #[test]
@@ -379,24 +402,46 @@ fn foreign_sqlite_is_refused() {
         .unwrap();
     drop(conn);
     let before = fs::read(&db).unwrap();
-    assert_eq!(code(Store::open(&data, &dir)), "NOT_A_PROJECT_DB");
-    assert_eq!(fs::read(&db).unwrap(), before);
+    let e = Store::open(&data, &dir).unwrap_err();
+    assert_eq!(e.code(), "NOT_A_PROJECT_DB", "{e}");
+    assert!(fs::read(&db).unwrap() == before, "file changed");
+    assert_eq!(sidecars(&db), Vec::<String>::new());
 
     // Not SQLite at all.
     fs::write(&db, b"definitely not a database, just some bytes in a file").unwrap();
     assert_eq!(code(Store::open(&data, &dir)), "NOT_A_PROJECT_DB");
+    assert_eq!(sidecars(&db), Vec::<String>::new());
+}
+
+/// A database another connection holds open in WAL mode (its `-wal` has frames not yet in the
+/// main file) is read through the WAL: a refusal written only to the WAL is still seen.
+#[test]
+fn refusal_sees_uncheckpointed_wal() {
+    let (_tmp, data, dir, db) = fresh();
+    let holder = Connection::open(&db).unwrap();
+    holder
+        .execute_batch("PRAGMA wal_autocheckpoint = 0; PRAGMA user_version = 99;")
+        .unwrap();
+    assert!(db.with_file_name("project.fdb-wal").exists());
+    assert_eq!(code(Store::open(&data, &dir)), "DB_TOO_NEW");
+    drop(holder);
 }
 
 #[test]
-fn foreign_application_id_is_refused() {
-    let (_tmp, data, dir, db) = fresh();
-    Connection::open(&db)
+fn corrupt_record_bytes_are_invalid_format() {
+    let sp2 = Sp2::new();
+    drop(sp2.open().unwrap());
+    Connection::open(sp2.db())
         .unwrap()
-        .execute_batch("PRAGMA application_id = 1234")
+        .execute(
+            "UPDATE txs SET record_bytes = X'7B6E6F74206A736F6E' WHERE seq = 204",
+            [],
+        )
         .unwrap();
-    let before = fs::read(&db).unwrap();
-    assert_eq!(code(Store::open(&data, &dir)), "NOT_A_PROJECT_DB");
-    assert_eq!(fs::read(&db).unwrap(), before);
+    let e = fin_core::CoreError::from(sp2.open().unwrap_err());
+    assert_eq!(e.code, "INVALID_FORMAT");
+    assert_eq!(e.details["seq"], 204);
+    assert_eq!(e.details["kind"], "record");
 }
 
 #[test]
@@ -437,4 +482,190 @@ fn pre_migration_backups_keep_three() {
     let mut newest = seen[1..].to_vec();
     newest.sort();
     assert_eq!(backup_names(&sp2.backups()), newest);
+}
+
+/// Backups dated in the future (a clock that was ahead) never cause the one just taken to be
+/// pruned; names that are not strict pre-migration backups are never touched.
+#[test]
+fn prune_never_deletes_the_new_backup() {
+    let sp2 = Sp2::new();
+    let dir = sp2.backups();
+    fs::create_dir_all(&dir).unwrap();
+    let future = [
+        "pre-migrate-0-1-20990101T000000000Z.fdb",
+        "pre-migrate-0-1-20990102T000000000Z.fdb",
+        "pre-migrate-0-1-20990103T000000000Z.fdb",
+    ];
+    let foreign = [
+        "pre-migrate-0-1-junk.fdb",
+        "pre-migrate-0-1-19990101T000000000Z.fdb.bak",
+        "pre-migrate-x-1-19990101T000000000Z.fdb",
+        "pre-migrate-0-1-1999010T1000000000Z.fdb",
+        "notes.txt",
+    ];
+    for name in future.iter().chain(&foreign) {
+        fs::write(dir.join(name), b"").unwrap();
+    }
+    drop(sp2.open().unwrap());
+    let left = backup_names(&dir);
+    let new: Vec<_> = left
+        .iter()
+        .filter(|n| !future.contains(&n.as_str()) && !foreign.contains(&n.as_str()))
+        .collect();
+    assert_eq!(new.len(), 1, "{left:?}");
+    // The new one plus the two newest others.
+    assert!(!dir.join(future[0]).exists(), "{left:?}");
+    assert!(dir.join(future[1]).exists() && dir.join(future[2]).exists());
+    for name in foreign {
+        assert!(dir.join(name).exists(), "{name}");
+    }
+}
+
+/// Once the new backup is durable, failing to prune an old one does not fail the migration.
+#[test]
+fn prune_failure_does_not_abort_migration() {
+    let sp2 = Sp2::new();
+    let dir = sp2.backups();
+    // A directory with a backup's name cannot be removed as a file.
+    fs::create_dir_all(dir.join("pre-migrate-0-1-20000101T000000000Z.fdb")).unwrap();
+    for name in [
+        "pre-migrate-0-1-20000102T000000000Z.fdb",
+        "pre-migrate-0-1-20000103T000000000Z.fdb",
+    ] {
+        fs::write(dir.join(name), b"").unwrap();
+    }
+    let store = sp2.open().unwrap();
+    assert_eq!(store.head(MAIN), 205);
+    assert!(dir.join("pre-migrate-0-1-20000101T000000000Z.fdb").is_dir());
+}
+
+/// Temp files a crashed backup left behind are removed at the next migration once they are
+/// older than ten minutes; younger ones may belong to a backup in progress.
+#[test]
+fn stale_backup_temps_are_cleaned() {
+    let sp2 = Sp2::new();
+    let dir = sp2.backups();
+    fs::create_dir_all(&dir).unwrap();
+    let old = dir.join(".~fin-01JC0000000000000000000000.tmp");
+    let young = dir.join(".~fin-01JC0000000000000000000001.tmp");
+    fs::write(&old, b"partial").unwrap();
+    fs::write(&young, b"partial").unwrap();
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    fs::File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    drop(sp2.open().unwrap());
+    assert!(!old.exists());
+    assert!(young.exists());
+}
+
+/// Migration 0001 is frozen at schema v1: its output for the fixture is pinned. The final
+/// `tx_hash` covers every record's bytes through the `parentHash` chain.
+#[test]
+fn migration_0001_output_is_pinned() {
+    let sp2 = Sp2::new();
+    drop(sp2.open().unwrap());
+    let conn = read_only(&sp2.db());
+    let last: String = conn
+        .query_row(
+            "SELECT tx_hash FROM txs ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(last, GOLDEN_LAST_TX_HASH);
+}
+
+const GOLDEN_LAST_TX_HASH: &str =
+    "blake3:4e6755bc3ae846cec660a6bef924520123073bca9042aa95d3f35f39409c2139";
+
+/// Today the frozen migration and a 4A commit agree byte for byte: each SP2 row, rebuilt
+/// through the current `fin-core` types and `encode_record`, gives the migrated bytes.
+#[test]
+fn migration_0001_matches_encode_record() {
+    let sp2 = Sp2::new();
+    let old = read_only(&sp2.db());
+    let mut stmt = old
+        .prepare("SELECT rev, json, inverse, bindings, committed_at FROM txs ORDER BY rev")
+        .unwrap();
+    let expected: Vec<Vec<u8>> = {
+        let mut parent = None;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| {
+            let (rev, json, inverse, bindings, committed_at) = row.unwrap();
+            let intent: Tx = serde_json::from_str(&json).unwrap();
+            let bindings: std::collections::BTreeMap<String, String> =
+                serde_json::from_str(&bindings).unwrap();
+            let record = Record {
+                tx_id: intent.tx_id.clone(),
+                seq: rev as u64,
+                kind: RecordKind::Edit,
+                schema_version: intent.schema_version,
+                parent_hash: parent.clone(),
+                author: intent.author.clone(),
+                committed_at,
+                resolved: resolve_ops(&intent.ops, &bindings).unwrap(),
+                intent,
+                inverse: serde_json::from_str(&inverse).unwrap(),
+                bindings,
+            };
+            let bytes = fin_core::encode_record(&record);
+            parent = Some(hash(&bytes));
+            bytes
+        })
+        .collect()
+    };
+    drop(stmt);
+    drop(old);
+    drop(sp2.open().unwrap());
+    let conn = read_only(&sp2.db());
+    let mut stmt = conn
+        .prepare("SELECT record_bytes FROM txs ORDER BY seq")
+        .unwrap();
+    let got: Vec<Vec<u8>> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(got.len(), expected.len());
+    for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
+        assert_eq!(
+            String::from_utf8_lossy(g),
+            String::from_utf8_lossy(e),
+            "seq {}",
+            i + 1
+        );
+    }
+}
+
+/// The read-only check builds a `file:` URI: spaces, non-ASCII, `#` and `%` in the server
+/// data path still open the right file, and nothing is created beside it.
+#[test]
+fn check_handles_awkward_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("Sërver data #1 %41 Мой");
+    let dir = tmp.path().join("Проект 1");
+    let db = Store::create(&data, &dir, "Demo", Rational::from_int(30))
+        .unwrap()
+        .db_path()
+        .to_path_buf();
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("PRAGMA user_version = 99")
+        .unwrap();
+    assert_eq!(sidecars(&db), Vec::<String>::new());
+    assert_eq!(code(Store::open(&data, &dir)), "DB_TOO_NEW");
+    assert_eq!(sidecars(&db), Vec::<String>::new());
 }

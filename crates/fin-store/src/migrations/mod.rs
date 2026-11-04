@@ -54,13 +54,64 @@ pub fn fail_next_migration_step() {
 
 /// The version of the database at `path`, read without writing to it. Refuses with
 /// `NOT_A_PROJECT_DB` or `DB_TOO_NEW`.
+///
+/// Without a `-wal` or `-journal` beside it, the main file holds the whole database, so it is
+/// opened `immutable=1`: no locks, no `-wal`/`-shm` created. Otherwise (another connection is
+/// live, or a crash left a journal), or if the URI open fails, it is opened plainly read-only,
+/// which reads through the WAL but may create `-shm`.
 pub(crate) fn check(path: &Path) -> Result<u32, StoreError> {
+    let side = |ext: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(ext);
+        PathBuf::from(name).exists()
+    };
+    if !side("-wal")
+        && !side("-journal")
+        && let Some(uri) = immutable_uri(path)
+    {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        match Connection::open_with_flags(&uri, flags)
+            .map_err(|e| classify(e, path))
+            .and_then(|conn| version(&conn, path))
+        {
+            Err(StoreError::Db(_)) => {} // fall back to a plain read-only open
+            other => return other,
+        }
+    }
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| classify(e, path))?;
     version(&conn, path)
+}
+
+/// `file:` URI for the absolute `path` with `immutable=1`, every byte outside `[A-Za-z0-9-._~/:]`
+/// percent-encoded; Windows separators become `/` (`C:/x` → `file:///C:/x`, UNC `//h/s` →
+/// `file:////h/s`). `None` for a path that is not UTF-8.
+fn immutable_uri(path: &Path) -> Option<String> {
+    let path = std::path::absolute(path).ok()?;
+    let text = path.to_str()?;
+    let text = if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_string()
+    };
+    let mut uri = String::from("file://");
+    if !text.starts_with('/') {
+        uri.push('/');
+    }
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/:".contains(&b) {
+            uri.push(char::from(b));
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri.push_str("?immutable=1");
+    Some(uri)
 }
 
 /// Brings the database to [`DB_VERSION`]. Before the first step it is backed up to

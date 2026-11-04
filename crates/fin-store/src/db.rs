@@ -45,11 +45,12 @@ CREATE TABLE IF NOT EXISTS txs (
     committed_at INTEGER NOT NULL,
     PRIMARY KEY (branch, seq)
 );
+CREATE INDEX IF NOT EXISTS txs_unexported ON txs (branch, seq) WHERE exported = 0;
 CREATE TABLE IF NOT EXISTS snapshots (
     branch TEXT NOT NULL,
-    rev INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
     json TEXT NOT NULL,
-    PRIMARY KEY (branch, rev)
+    PRIMARY KEY (branch, seq)
 );
 CREATE TABLE IF NOT EXISTS segments (
     branch TEXT NOT NULL,
@@ -195,7 +196,7 @@ pub(crate) fn insert_snapshot(
 ) -> Result<(), StoreError> {
     let json = serde_json::to_string(project)?;
     conn.execute(
-        "INSERT INTO snapshots (branch, rev, json) VALUES (?1, ?2, ?3)",
+        "INSERT INTO snapshots (branch, seq, json) VALUES (?1, ?2, ?3)",
         params![branch, to_i64(rev)?, json],
     )?;
     Ok(())
@@ -212,8 +213,8 @@ pub(crate) fn branches(conn: &Connection) -> Result<Vec<String>, StoreError> {
 /// does not exist.
 pub(crate) fn latest_rev(conn: &Connection, branch: &str) -> Result<Option<u64>, StoreError> {
     let rev: Option<i64> = conn.query_row(
-        "SELECT MAX(rev) FROM (SELECT seq AS rev FROM txs WHERE branch = ?1
-                               UNION ALL SELECT rev FROM snapshots WHERE branch = ?1)",
+        "SELECT MAX(seq) FROM (SELECT seq FROM txs WHERE branch = ?1
+                               UNION ALL SELECT seq FROM snapshots WHERE branch = ?1)",
         params![branch],
         |r| r.get(0),
     )?;
@@ -227,7 +228,7 @@ pub(crate) fn latest_snapshot(
 ) -> Result<Option<(u64, Project)>, StoreError> {
     let row: Option<(i64, String)> = conn
         .query_row(
-            "SELECT rev, json FROM snapshots WHERE branch = ?1 ORDER BY rev DESC LIMIT 1",
+            "SELECT seq, json FROM snapshots WHERE branch = ?1 ORDER BY seq DESC LIMIT 1",
             params![branch],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -269,11 +270,12 @@ pub(crate) fn insert_tx(
     conn.execute(
         "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
                           exported, diff, schema_version, author, committed_at)
-         VALUES (?1, ?2, ?3, 'edit', ?4, ?5, ?6, 0, 0, ?7, ?8, ?9, ?10)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, ?9, ?10, ?11)",
         params![
             to_i64(seq)?,
             tx.branch,
             record.tx_id,
+            kind_text(record.kind)?,
             bytes,
             hash_bytes(&bytes),
             record.parent_hash,
@@ -286,14 +288,41 @@ pub(crate) fn insert_tx(
     Ok(())
 }
 
+/// The `kind` column: the record's serialised kind (`"edit"` → `edit`).
+fn kind_text(kind: RecordKind) -> Result<String, StoreError> {
+    match serde_json::to_value(kind)? {
+        serde_json::Value::String(s) => Ok(s),
+        other => {
+            Err(CoreError::new("DB_ERROR", format!("record kind {other} is not a string")).into())
+        }
+    }
+}
+
 const TX_COLUMNS: &str = "seq, record_bytes, diff";
 
 fn committed_from_row(row: &Row<'_>) -> rusqlite::Result<(i64, Vec<u8>, String)> {
     Ok((row.get(0)?, row.get(1)?, row.get(2)?))
 }
 
+/// A stored record that is not JSON, or not a record, is `INVALID_FORMAT` with
+/// `details {kind: "record", seq, reason}`.
 fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, StoreError> {
-    let record = upcast_record(serde_json::from_slice(&bytes)?)?;
+    let with_seq = |mut e: CoreError| {
+        if let serde_json::Value::Object(map) = &mut e.details {
+            map.insert("seq".into(), serde_json::json!(seq));
+        }
+        e
+    };
+    let value = serde_json::from_slice(&bytes).map_err(|e| {
+        with_seq(
+            CoreError::new(
+                "INVALID_FORMAT",
+                format!("the record at seq {seq} is not JSON: {e}"),
+            )
+            .with_details(serde_json::json!({ "kind": "record", "reason": e.to_string() })),
+        )
+    })?;
+    let record = upcast_record(value).map_err(with_seq)?;
     Ok(CommittedTx {
         rev: to_u64(seq)?,
         tx: record.intent,
