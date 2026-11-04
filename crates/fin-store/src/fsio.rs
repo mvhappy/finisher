@@ -33,7 +33,7 @@ pub fn write_once(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     let result = (|| {
         let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        sync_file(&file)?;
         drop(file);
         rename_noreplace(&tmp, &target)?;
         sync_dir(dir)
@@ -44,20 +44,73 @@ pub fn write_once(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
-/// Overwrites the start of `path` with `bytes` (creating it if missing, never truncating) and
-/// syncs it, retrying transient errors ([`is_transient`]) [`RETRIES`] times [`RETRY_DELAY`]
-/// apart. Each attempt reopens the file, so a stale handle is not reused. Callers write
-/// fixed-size records.
+/// Overwrites the start of the existing file `path` with `bytes` (never truncating) and syncs
+/// it, retrying transient errors ([`is_transient`]) [`RETRIES`] times [`RETRY_DELAY`] apart.
+/// Each attempt reopens the file, so a stale handle is not reused. Callers write fixed-size
+/// records.
+///
+/// `NotFound` if `path` is missing: a heartbeat must never silently recreate a deleted
+/// `lease.json`. [`write_in_place_or_create`] is the creating variant.
 pub fn write_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    in_place(path, bytes, false)
+}
+
+/// [`write_in_place`], creating `path` if it is missing (for the lease probe file).
+pub fn write_in_place_or_create(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    in_place(path, bytes, true)
+}
+
+fn in_place(path: &Path, bytes: &[u8], create: bool) -> io::Result<()> {
     retry(|| {
         let mut file = OpenOptions::new()
             .write(true)
-            .create(true)
+            .create(create)
             .truncate(false)
             .open(path)?;
         file.write_all(bytes)?;
-        file.sync_all()
+        sync_file(&file)
     })
+}
+
+/// Makes `file`'s data and metadata durable. `file` must be open for writing on Windows
+/// (`FlushFileBuffers` needs write access).
+///
+/// On Apple platforms `File::sync_all` is `F_FULLFSYNC` with no fallback, which is `ENOTSUP`
+/// on macOS smbfs (parent spec §27.9), so every write to a Mac SMB share would fail. Here
+/// `F_FULLFSYNC` (which also flushes the drive's cache on local disks) is tried first and a
+/// filesystem that refuses it (`ENOTSUP`, `ENOTTY`, `EINVAL`) gets the plain `fsync` §27.9
+/// prescribes. Elsewhere this is `sync_all`.
+#[cfg(target_vendor = "apple")]
+pub fn sync_file(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let fd = file.as_raw_fd();
+    let call = |f: &dyn Fn() -> libc::c_int| loop {
+        if f() != -1 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != ErrorKind::Interrupted {
+            return Err(e);
+        }
+    };
+    // SAFETY: `file` owns `fd` for the whole call; F_FULLFSYNC takes no argument.
+    match call(&|| unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) }) {
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL)
+            ) =>
+        {
+            // SAFETY: as above.
+            call(&|| unsafe { libc::fsync(fd) })
+        }
+        result => result,
+    }
+}
+
+#[cfg(not(target_vendor = "apple"))]
+pub fn sync_file(file: &File) -> io::Result<()> {
+    file.sync_all()
 }
 
 /// The OS error codes worth retrying, in one place. These are judgement calls from first
@@ -165,7 +218,7 @@ pub fn is_placeholder(_path: &Path, meta: &fs::Metadata) -> bool {
 /// as having nothing to sync.
 #[cfg(unix)]
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
-    match File::open(dir)?.sync_all() {
+    match sync_file(&File::open(dir)?) {
         Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL | libc::ENOTSUP)) => Ok(()),
         result => result,
     }
@@ -312,6 +365,45 @@ fn verbatim_wide(path: &Path) -> io::Result<Vec<u16>> {
     Ok(out)
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static REFUSE_DIRECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FALLBACKS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Test hook: the next direct read on this thread is refused as a filesystem without direct
+/// I/O would (`EINVAL` on Linux, `ERROR_INVALID_PARAMETER` on Windows).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn refuse_next_direct_read() {
+    REFUSE_DIRECT.with(|f| f.set(true));
+}
+
+/// Test hook: how many reads on this thread fell back to a buffered read.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn buffered_fallbacks() -> u32 {
+    FALLBACKS.with(std::cell::Cell::get)
+}
+
+/// `refused` if the [`refuse_next_direct_read`] hook is armed (disarming it), else `result`.
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+#[cfg_attr(not(any(test, feature = "test-hooks")), allow(unused_variables))]
+fn hooked_direct(result: io::Result<File>, refused: i32) -> io::Result<File> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if REFUSE_DIRECT.with(|f| f.replace(false)) {
+        return Err(io::Error::from_raw_os_error(refused));
+    }
+    result
+}
+
+/// Counts a buffered fallback for [`buffered_fallbacks`].
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+fn note_fallback() {
+    #[cfg(any(test, feature = "test-hooks"))]
+    FALLBACKS.with(|n| n.set(n.get() + 1));
+}
+
 /// Direct I/O alignment (buffer address and read sizes): a multiple of 512- and 4096-byte
 /// sectors.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
@@ -348,7 +440,7 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
         .read(true)
         .custom_flags(libc::O_DIRECT)
         .open(path);
-    match direct.and_then(read_aligned) {
+    match hooked_direct(direct, libc::EINVAL).and_then(read_aligned) {
         Err(e) if refused(&e) => read_dropping_cache(path),
         Ok(None) => read_dropping_cache(path),
         Ok(Some(bytes)) => Ok(bytes),
@@ -360,6 +452,7 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn read_dropping_cache(path: &Path) -> io::Result<Vec<u8>> {
     use std::os::fd::AsRawFd;
+    note_fallback();
     let mut file = File::open(path)?;
     // SAFETY: `file` owns the descriptor for the whole call. Advice only: failure is harmless.
     unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
@@ -377,6 +470,7 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
     };
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     let buffered = || {
+        note_fallback();
         let mut out = Vec::new();
         OpenOptions::new()
             .read(true)
@@ -390,7 +484,7 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
         .share_mode(share)
         .custom_flags(FILE_FLAG_NO_BUFFERING)
         .open(path);
-    match direct.and_then(read_aligned) {
+    match hooked_direct(direct, ERROR_INVALID_PARAMETER as i32).and_then(read_aligned) {
         Err(e) if e.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) => buffered(),
         Ok(None) => buffered(),
         Ok(Some(bytes)) => Ok(bytes),

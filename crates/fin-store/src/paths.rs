@@ -67,7 +67,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let result = (|| {
         let mut file = File::create(&tmp)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        crate::fsio::sync_file(&file)?;
         drop(file);
         fs::rename(&tmp, path)?;
         crate::fsio::sync_dir(dir)

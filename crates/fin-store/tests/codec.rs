@@ -157,7 +157,7 @@ fn unknown_hash_prefix_is_unsupported() {
 fn bad_headers_and_lines_are_corrupt() {
     let reencode = |line: &str| -> Vec<u8> {
         let mut body = line.as_bytes().to_vec();
-        body.extend_from_slice(b"\n{\"txId\":\"t1\"}\n");
+        body.extend_from_slice(b"\n{\"txId\":\"t7\"}\n{\"txId\":\"t8\"}\n{\"txId\":\"t9\"}\n");
         let hash = format!("blake3:{}", blake3::hash(&body).to_hex());
         let mut out = body.clone();
         out.extend_from_slice(b"{}\n");
@@ -168,6 +168,12 @@ fn bad_headers_and_lines_are_corrupt() {
     for bad in [
         head.replace("finisher-segment", "finisher-snapshot"),
         head.replace("\"firstSeq\":7", "\"firstSeq\":10"),
+        // Three records, but the range says two or four.
+        head.replace("\"firstSeq\":7", "\"firstSeq\":8"),
+        head.replace("\"lastSeq\":9", "\"lastSeq\":10"),
+        head.replace("\"firstSeq\":7", "\"firstSeq\":0")
+            .replace("\"lastSeq\":9", "\"lastSeq\":18446744073709551615"),
+        head.replace("\"opSchemaVersions\":[1,2]", "\"opSchemaVersions\":[2,1]"),
         head.replace(
             "\"prevSegmentHash\":\"blake3:ab",
             "\"prevSegmentHash\":\"blake3:AB",
@@ -182,6 +188,8 @@ fn bad_headers_and_lines_are_corrupt() {
         );
     }
     assert!(segment::decode(&reencode(head)).is_ok());
+    let same = head.replace("\"opSchemaVersions\":[1,2]", "\"opSchemaVersions\":[2,2]");
+    assert!(segment::decode(&reencode(&same)).is_ok());
     // A segment needs at least one record.
     let (bytes, _) = segment::encode(&header(), &RECORDS[..1]);
     let lines: Vec<&str> = std::str::from_utf8(&bytes).unwrap().lines().collect();
@@ -255,12 +263,11 @@ fn snapshot_roundtrip_flip_and_truncate() {
 
 #[test]
 fn names_parse_strict() {
-    let seg = SegmentName {
-        epoch: 3,
-        first_seq: 7,
-        last_seq: 9,
-        hash12: "0123456789ab".into(),
-    };
+    let seg = SegmentName::new(3, 7, 9, "0123456789ab").unwrap();
+    assert_eq!(
+        (seg.epoch(), seg.first_seq(), seg.last_seq(), seg.hash12()),
+        (3, 7, 9, "0123456789ab")
+    );
     let shown = seg.to_string();
     assert_eq!(
         shown,
@@ -291,10 +298,8 @@ fn names_parse_strict() {
         assert_eq!(SegmentName::parse(bad), None, "{bad:?}");
     }
 
-    let snap = SnapName {
-        seq: 1200,
-        hash12: "fedcba987654".into(),
-    };
+    let snap = SnapName::new(1200, "fedcba987654").unwrap();
+    assert_eq!((snap.seq(), snap.hash12()), (1200, "fedcba987654"));
     let shown = snap.to_string();
     assert_eq!(shown, "000000001200-fedcba987654.fsnap");
     assert_eq!(SnapName::parse(&shown), Some(snap));
@@ -310,6 +315,24 @@ fn names_parse_strict() {
     ] {
         assert_eq!(SnapName::parse(bad), None, "{bad:?}");
     }
+
+    // A name is only ever built if it parses back: widths, seq order and hash are checked.
+    let max = SegmentName::new(names::MAX_EPOCH, 0, names::MAX_SEQ, "0123456789ab").unwrap();
+    assert_eq!(SegmentName::parse(&max.to_string()), Some(max));
+    for (epoch, first, last, hash) in [
+        (names::MAX_EPOCH + 1, 7, 9, "0123456789ab"),
+        (3, 7, names::MAX_SEQ + 1, "0123456789ab"),
+        (3, names::MAX_SEQ + 1, names::MAX_SEQ + 1, "0123456789ab"),
+        (3, 9, 7, "0123456789ab"),
+        (3, 7, 9, "0123456789AB"),
+        (3, 7, 9, "0123456789a"),
+    ] {
+        assert_eq!(SegmentName::new(epoch, first, last, hash), None);
+    }
+    let max = SnapName::new(names::MAX_SEQ, "fedcba987654").unwrap();
+    assert_eq!(SnapName::parse(&max.to_string()), Some(max));
+    assert_eq!(SnapName::new(names::MAX_SEQ + 1, "fedcba987654"), None);
+    assert_eq!(SnapName::new(1, "fedcba98765g"), None);
 
     let temp = names::temp_name();
     assert!(names::is_temp(&temp), "{temp}");
@@ -352,8 +375,9 @@ fn write_once_never_overwrites() {
 
 #[test]
 fn read_uncached_reads_every_size() {
-    // The system temp dir may be tmpfs (no O_DIRECT, so the fallback runs); the target dir is
-    // usually a disk filesystem (so the direct path runs).
+    // The system temp dir is often tmpfs, the target dir a disk filesystem. Both may accept
+    // O_DIRECT (tmpfs does since Linux 6.6); `read_uncached_falls_back_when_direct_is_refused`
+    // covers the fallback.
     let tmp = tempfile::tempdir().unwrap();
     let target = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     for dir in [tmp.path(), target.path()] {
@@ -370,6 +394,26 @@ fn read_uncached_reads_every_size() {
     }
     let err = fsio::read_uncached(&tmp.path().join("missing")).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+/// The buffered fallback, forced through the test hook: filesystems that refuse O_DIRECT
+/// (older tmpfs, some network mounts) or Windows `NO_BUFFERING` still read correctly.
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
+#[test]
+fn read_uncached_falls_back_when_direct_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    for len in [0usize, 1, 4096, 70_000] {
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 13 % 251) as u8).collect();
+        let name = format!("f{len}");
+        fsio::write_once(tmp.path(), &name, &bytes).unwrap();
+        let before = fsio::buffered_fallbacks();
+        fsio::refuse_next_direct_read();
+        assert_eq!(fsio::read_uncached(&tmp.path().join(&name)).unwrap(), bytes);
+        assert_eq!(fsio::buffered_fallbacks(), before + 1, "{len}");
+        // The hook is one-shot.
+        assert_eq!(fsio::read_uncached(&tmp.path().join(&name)).unwrap(), bytes);
+        assert_eq!(fsio::buffered_fallbacks(), before + 1, "{len}");
+    }
 }
 
 #[cfg(unix)]
@@ -405,7 +449,11 @@ fn file_id(path: &Path) -> (u64, u64) {
 fn in_place_write_keeps_inode() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("lease.json");
-    fsio::write_once(tmp.path(), "lease.json", &[b'a'; 512]).unwrap();
+    // Open-only by default: a deleted lease.json is never silently recreated.
+    let err = fsio::write_in_place(&path, &[b'a'; 512]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::NotFound, "{err}");
+    assert!(!path.exists());
+    fsio::write_in_place_or_create(&path, &[b'a'; 512]).unwrap();
     let before = file_id(&path);
     fsio::write_in_place(&path, &[b'b'; 512]).unwrap();
     assert_eq!(file_id(&path), before);
@@ -414,6 +462,9 @@ fn in_place_write_keeps_inode() {
     fsio::write_in_place(&path, b"cc").unwrap();
     let got = fs::read(&path).unwrap();
     assert_eq!((got.len(), &got[..3]), (512, &b"ccb"[..]));
+    assert_eq!(file_id(&path), before);
+    fsio::write_in_place_or_create(&path, b"d").unwrap();
+    assert_eq!(&fs::read(&path).unwrap()[..3], b"dcb");
     assert_eq!(file_id(&path), before);
     assert_eq!(file_names(tmp.path()), ["lease.json"]);
 }

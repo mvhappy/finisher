@@ -95,8 +95,19 @@ pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
     check_nonempty("projectId", &header.project_id)?;
     check_nonempty("branch", &header.branch)?;
     check_nonempty("writerId", &header.writer_id)?;
-    if header.first_seq > header.last_seq {
-        return Err(corrupt("firstSeq is after lastSeq"));
+    // One record per seq: `lastSeq - firstSeq + 1` records (no overflow at `u64::MAX`).
+    let span = header.last_seq.checked_sub(header.first_seq);
+    if span.and_then(|d| d.checked_add(1)) != Some(frame.lines.len() as u64) {
+        return Err(corrupt(format!(
+            "{} records for seqs {}..={}",
+            frame.lines.len(),
+            header.first_seq,
+            header.last_seq
+        )));
+    }
+    let [low, high] = header.op_schema_versions;
+    if low > high {
+        return Err(corrupt("opSchemaVersions is not [min, max]"));
     }
     if let Some(prev) = &header.prev_segment_hash {
         check_hash("prevSegmentHash", prev)?;
@@ -108,9 +119,6 @@ pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
         return Err(corrupt(
             "a pack, and only a pack, lists the segments it replaces",
         ));
-    }
-    if frame.lines.is_empty() {
-        return Err(corrupt("a segment holds at least one record"));
     }
     Ok(Segment {
         header,

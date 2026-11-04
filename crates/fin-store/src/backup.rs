@@ -34,7 +34,7 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<(), StoreError
         File::options()
             .write(true)
             .open(&tmp)
-            .and_then(|f| f.sync_all())
+            .and_then(|f| crate::fsio::sync_file(&f))
             .map_err(StoreError::io(&tmp))?;
         if dest.exists() {
             return Err(CoreError::new(
