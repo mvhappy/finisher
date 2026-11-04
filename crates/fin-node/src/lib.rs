@@ -105,7 +105,7 @@ fn closed(reason: &str) -> CoreError {
     };
     CoreError::new("ENGINE_CLOSED", message)
         .with_details(json!({ "reason": reason }))
-        .with_fix("open the project again with Engine.open")
+        .with_fix("retry the command; the project reopens automatically")
 }
 
 /// A project's op log. Created only through `Engine.create` / `Engine.open`.

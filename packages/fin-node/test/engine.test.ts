@@ -71,7 +71,10 @@ describe("Engine", () => {
 
     const id = engine.projectId;
     await engine.close();
-    expect((await rejection(engine.head("main"))).code).toBe("ENGINE_CLOSED");
+    const closed = await rejection(engine.head("main"));
+    expect(closed.code).toBe("ENGINE_CLOSED");
+    // Reaches agents through finisherd, so it names no internal API.
+    expect(closed.fix).toBe("retry the command; the project reopens automatically");
     engine = await Engine.open(serverData, projectDir);
     expect(engine.projectId).toBe(id);
     expect(JSON.parse(await engine.snapshot("main"))).toEqual(snap);
