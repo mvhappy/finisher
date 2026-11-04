@@ -59,35 +59,23 @@ pub fn project_file(project_dir: &Path) -> PathBuf {
     project_dir.join(PROJECT_FILE)
 }
 
-/// Writes `bytes` to `path` atomically: a temp file in the same directory, fsync'd, renamed
-/// over `path`, then the directory fsync'd (Unix) so the rename itself is durable.
+/// Writes `bytes` to `path` atomically: a `.~fin-<ulid>.tmp` in the same directory, fsync'd,
+/// renamed over `path`, then the directory fsync'd (Unix) so the rename itself is durable.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    let mut name = path.file_name().map(OsString::from).unwrap_or_default();
-    name.push(format!(".tmp-{}", std::process::id()));
-    let tmp = dir.join(name);
+    let tmp = dir.join(crate::names::temp_name());
     let result = (|| {
         let mut file = File::create(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp, path)?;
-        sync_dir(dir)
+        crate::fsio::sync_dir(dir)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
-}
-
-#[cfg(unix)]
-pub(crate) fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-pub(crate) fn sync_dir(_dir: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

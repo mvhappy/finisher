@@ -331,12 +331,14 @@ dependencies = [
  "crc32c",
  "fin-core",
  "fin-store",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "ulid",
+ "windows-sys",
 ]
 
 [[package]]

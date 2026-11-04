@@ -20,6 +20,12 @@ serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 ulid = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 fin-store = { path = ".", features = ["test-hooks"] }
 tempfile = "3"

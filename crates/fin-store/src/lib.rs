@@ -7,8 +7,12 @@
 mod backup;
 mod commit;
 mod db;
+pub mod fsio;
 mod migrations;
+pub mod names;
 mod paths;
+pub mod segment;
+pub mod snapfile;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

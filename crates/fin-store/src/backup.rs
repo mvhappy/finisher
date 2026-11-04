@@ -10,7 +10,7 @@ use fin_core::CoreError;
 use rusqlite::{Connection, params};
 
 use crate::StoreError;
-use crate::paths::sync_dir;
+use crate::fsio::sync_dir;
 
 /// How many `pre-migrate-*` backups are kept.
 const KEEP_PRE_MIGRATION: usize = 3;
