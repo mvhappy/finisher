@@ -1,0 +1,25 @@
+{
+  "name": "@finisher/fin-node",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "napi": {
+    "binaryName": "fin-node"
+  },
+  "scripts": {
+    "build": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir . --no-js",
+    "build:test": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir test/native --no-js --features test-hooks"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.10.9"
+  }
+}
