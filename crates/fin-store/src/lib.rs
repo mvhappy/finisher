@@ -329,18 +329,18 @@ pub(crate) fn refresh(
             return Ok(());
         }
         if head.rev < latest {
-            for (seq, bytes) in db::record_rows(conn, branch, head.rev)? {
-                head.project = db::replay_row(&head.project, seq, &bytes)?.project;
-                head.rev = seq;
+            for row in db::record_rows(conn, branch, head.rev)? {
+                head.project = db::replay_row(&head.project, branch, &row)?.project;
+                head.rev = row.0;
             }
             return Ok(());
         }
     }
     let (mut rev, mut project) =
         db::latest_snapshot(conn, branch)?.ok_or_else(|| branch_not_found(branch))?;
-    for (seq, bytes) in db::record_rows(conn, branch, rev)? {
-        project = db::replay_row(&project, seq, &bytes)?.project;
-        rev = seq;
+    for row in db::record_rows(conn, branch, rev)? {
+        project = db::replay_row(&project, branch, &row)?.project;
+        rev = row.0;
     }
     heads.insert(branch.to_string(), Head { rev, project });
     Ok(())

@@ -99,6 +99,15 @@ fn replay_all(s: &Store, zero: Project, n: usize) -> Project {
         .fold(zero, |p, b| replay_record(&p, b).unwrap().project)
 }
 
+/// Folds `ops_since` output (intent + bindings) onto `zero` with `apply_committed`.
+fn fold_history(zero: Project, history: &[fin_core::CommittedTx]) -> Project {
+    history.iter().fold(zero, |p, c| {
+        fin_core::apply_committed(&p, &c.tx, &c.bindings)
+            .unwrap()
+            .project
+    })
+}
+
 fn code(e: StoreError) -> CoreError {
     CoreError::from(e)
 }
@@ -439,8 +448,9 @@ fn ops_since_zero_replays_to_the_snapshot() {
     let head = s.snapshot(MAIN).unwrap().1;
     let zero =
         fin_core::new_project(s.project_id().to_string(), head.name.clone(), head.rate).unwrap();
-    let replayed = replay_all(&s, zero, history.len());
+    let replayed = replay_all(&s, zero.clone(), history.len());
     assert_eq!(replayed, head);
+    assert_eq!(fold_history(zero, &history), head);
     drop(s);
     assert_eq!(
         Store::open(&e.data, &e.dir)
@@ -577,6 +587,7 @@ fn sp2_fixture_opens_and_replays_to_expected_state() {
     let history = store.ops_since(MAIN, 0).unwrap();
     assert_eq!(history.len() as u64, rev);
     let zero = fin_core::new_project(head.id.clone(), head.name.clone(), head.rate).unwrap();
-    let replayed = replay_all(&store, zero, history.len());
+    let replayed = replay_all(&store, zero.clone(), history.len());
     assert_eq!(replayed, head);
+    assert_eq!(fold_history(zero, &history), head);
 }

@@ -1,9 +1,9 @@
 //! `Store::commit`: dedupe by `txId`, rebase a stale tx over what was committed since its base,
 //! apply it, and append it in one SQLite transaction together with the id counters it used.
 
-use fin_core::{CommittedTx, CoreError, Tx, apply_tx, rebase_tx};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fin_core::{CommittedTx, CoreError, Tx, apply_tx, rebase_tx};
 use rusqlite::TransactionBehavior;
 use serde_json::{Value, json};
 

@@ -190,3 +190,29 @@ fn reopen_reports_structural_damage() {
     assert_eq!(err.code, "REPLAY_FAILED");
     assert_eq!(err.details["txId"], "tx-3");
 }
+
+#[test]
+fn reopen_rejects_a_record_copied_into_another_row() {
+    let e = env();
+    let s = store_with_three(&e);
+    let db = s.db_path().to_path_buf();
+    drop(s);
+    let conn = Connection::open(&db).unwrap();
+    // Row 3 gets row 2's bytes (and hash); its own seq and tx_id columns stay.
+    let bytes: Vec<u8> = conn
+        .query_row("SELECT record_bytes FROM txs WHERE seq = 2", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    conn.execute(
+        "UPDATE txs SET record_bytes = ?1, tx_hash = ?2 WHERE seq = 3",
+        params![bytes, hash_of(&bytes)],
+    )
+    .unwrap();
+    drop(conn);
+    let err = CoreError::from(Store::open(&e.data, &e.dir).unwrap_err());
+    assert_eq!(err.code, "REPLAY_FAILED");
+    assert_eq!(err.details["seq"], 3);
+    assert_eq!(err.details["txId"], "tx-3");
+    assert_eq!(err.details["recordTxId"], "tx-2");
+}

@@ -281,20 +281,28 @@ pub(crate) fn insert_tx(
     Ok(())
 }
 
-/// The raw `(seq, record_bytes)` rows of `branch` with `seq > after`, in order.
+/// A `txs` row as stored: `(seq, tx_id, record_bytes)`.
+pub(crate) type RecordRow = (u64, String, Vec<u8>);
+
+/// The raw rows of `branch` with `seq > after`, in order.
 pub(crate) fn record_rows(
     conn: &Connection,
     branch: &str,
     after: u64,
-) -> Result<Vec<(u64, Vec<u8>)>, StoreError> {
-    let mut stmt = conn
-        .prepare("SELECT seq, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq")?;
+) -> Result<Vec<RecordRow>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, tx_id, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq",
+    )?;
     let rows = stmt.query_map(params![branch, to_i64(after)?], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Vec<u8>>(2)?,
+        ))
     })?;
     rows.map(|r| {
-        let (seq, bytes) = r?;
-        Ok((to_u64(seq)?, bytes))
+        let (seq, tx_id, bytes) = r?;
+        Ok((to_u64(seq)?, tx_id, bytes))
     })
     .collect()
 }
@@ -315,27 +323,32 @@ fn committed_from_row(row: &Row<'_>) -> rusqlite::Result<(i64, Vec<u8>, String)>
     Ok((row.get(0)?, row.get(1)?, row.get(2)?))
 }
 
-/// A stored record that is not JSON, or not a record, is `INVALID_FORMAT` with
-/// `details {kind: "record", seq, reason}`.
-fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, StoreError> {
+/// Bytes to a [`Record`]: not JSON, or not a record, is `INVALID_FORMAT` with
+/// `details {kind: "record", reason}`, plus `seq` when the row is known.
+pub(crate) fn parse_record(seq: Option<u64>, bytes: &[u8]) -> Result<Record, CoreError> {
     let with_seq = |mut e: CoreError| {
-        if let serde_json::Value::Object(map) = &mut e.details {
+        if let (Some(seq), serde_json::Value::Object(map)) = (seq, &mut e.details) {
             map.insert("seq".into(), serde_json::json!(seq));
         }
         e
     };
-    let value = serde_json::from_slice(&bytes).map_err(|e| {
+    let value = serde_json::from_slice(bytes).map_err(|e| {
         with_seq(
             CoreError::new(
                 "INVALID_FORMAT",
-                format!("the record at seq {seq} is not JSON: {e}"),
+                format!("a stored record is not JSON: {e}"),
             )
             .with_details(serde_json::json!({ "kind": "record", "reason": e.to_string() })),
         )
     })?;
-    let record = upcast_record(value).map_err(with_seq)?;
+    upcast_record(value).map_err(with_seq)
+}
+
+fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, StoreError> {
+    let seq = to_u64(seq)?;
+    let record = parse_record(Some(seq), &bytes)?;
     Ok(CommittedTx {
-        rev: to_u64(seq)?,
+        rev: seq,
         tx: record.intent,
         diff: serde_json::from_str(&diff)?,
         bindings: record.bindings,
@@ -437,35 +450,42 @@ impl IdAlloc for Counters {
 /// recorded bindings fixing every id ([`apply_committed`]: structural checks only, no policy and
 /// no comparison with the stored diff), so history is never re-judged.
 ///
-/// Structural damage is `REPLAY_FAILED` with `details {txId, seq, cause}`. Bytes that are not
-/// JSON, or not a record (or newer than this Finisher), keep the error of [`upcast_record`] /
-/// `INVALID_FORMAT` with `details {kind: "record", reason}`.
+/// Structural damage is `REPLAY_FAILED` with `details {txId, cause}`. Bytes that are not JSON, or
+/// not a record (or newer than this Finisher), are the error of [`parse_record`].
 pub fn replay_record(project: &Project, bytes: &[u8]) -> Result<Applied, StoreError> {
-    let value = serde_json::from_slice(bytes).map_err(|e| {
-        CoreError::new(
-            "INVALID_FORMAT",
-            format!("a stored record is not JSON: {e}"),
+    let record = parse_record(None, bytes)?;
+    Ok(apply_committed(project, &record.intent, &record.bindings)?)
+}
+
+/// [`replay_record`] for the row `(seq, tx_id)` of `branch`. The record must be the row's own:
+/// a different `seq`, `txId` or branch is `REPLAY_FAILED` with `details {seq, txId, recordSeq,
+/// recordTxId, branch}` (damage, like any record that does not belong in the history). Failures
+/// carry `details.seq`.
+pub(crate) fn replay_row(
+    project: &Project,
+    branch: &str,
+    (seq, tx_id, bytes): &RecordRow,
+) -> Result<Applied, StoreError> {
+    let record = parse_record(Some(*seq), bytes)?;
+    if record.seq != *seq || record.tx_id != *tx_id || record.intent.branch != branch {
+        return Err(CoreError::new(
+            "REPLAY_FAILED",
+            format!("the record stored at seq {seq} (tx {tx_id}) is another record"),
         )
-        .with_details(serde_json::json!({ "kind": "record", "reason": e.to_string() }))
-    })?;
-    let record = upcast_record(value)?;
-    Ok(apply_committed(project, &record.intent, &record.bindings)
-        .map_err(|e| with_seq(e, to_i64(record.seq).unwrap_or(i64::MAX)))?)
-}
-
-/// [`replay_record`] for the row at `seq`: failures carry `details.seq`.
-pub(crate) fn replay_row(project: &Project, seq: u64, bytes: &[u8]) -> Result<Applied, StoreError> {
-    replay_record(project, bytes).map_err(|e| {
-        let e = CoreError::from(e);
-        with_seq(e, to_i64(seq).unwrap_or(i64::MAX)).into()
-    })
-}
-
-fn with_seq(mut e: CoreError, seq: i64) -> CoreError {
-    if let serde_json::Value::Object(map) = &mut e.details {
-        map.insert("seq".into(), serde_json::json!(seq));
+        .with_details(serde_json::json!({
+            "seq": seq, "txId": tx_id, "branch": branch,
+            "recordSeq": record.seq, "recordTxId": record.tx_id,
+            "recordBranch": record.intent.branch,
+        }))
+        .with_fix("the stored history is damaged; restore the project from a backup")
+        .into());
     }
-    e
+    apply_committed(project, &record.intent, &record.bindings).map_err(|mut e| {
+        if let serde_json::Value::Object(map) = &mut e.details {
+            map.insert("seq".into(), serde_json::json!(seq));
+        }
+        e.into()
+    })
 }
 
 #[cfg(test)]
