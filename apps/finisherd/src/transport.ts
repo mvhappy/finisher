@@ -9,7 +9,7 @@ import { FinRpcs } from "@finisher/contracts";
 import { Effect, Layer } from "effect";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { SocketServer } from "effect/socket/SocketServer";
-import { ServerStartError } from "./config.ts";
+import { ServerStartError, startFailure } from "./config.ts";
 
 /** One server per server-data: a live finisherd already owns the socket. */
 function serverRunning(socket: string): ServerStartError {
@@ -45,8 +45,11 @@ export const claimSocketPath = (
     (live) =>
       live
         ? Effect.fail(serverRunning(path))
-        : Effect.sync(() => {
-            if (platform !== "win32") rmSync(path, { force: true });
+        : Effect.try({
+            try: () => {
+              if (platform !== "win32") rmSync(path, { force: true });
+            },
+            catch: startFailure,
           }),
   );
 
@@ -69,11 +72,16 @@ export const makeLocalSocketServer = (path: string, platform: NodeJS.Platform = 
     () =>
       NodeSocketServer.make({ path }).pipe(
         Effect.mapError((e) =>
-          (e.reason as { cause?: { code?: unknown } }).cause?.code === "EADDRINUSE" ? serverRunning(path) : e,
+          (e.reason as { cause?: { code?: unknown } }).cause?.code === "EADDRINUSE"
+            ? serverRunning(path)
+            : startFailure((e.reason as { cause?: unknown }).cause ?? e),
         ),
         Effect.tap(() =>
-          Effect.sync(() => {
-            if (platform !== "win32") chmodSync(path, 0o600);
+          Effect.try({
+            try: () => {
+              if (platform !== "win32") chmodSync(path, 0o600);
+            },
+            catch: startFailure,
           }),
         ),
       ),

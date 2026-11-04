@@ -1,9 +1,9 @@
 import { request } from "node:http";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { lockExclusive } from "@finisher/fin-node";
 import { childEnv } from "../src/env.ts";
 import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
@@ -142,7 +142,7 @@ describe("finisherd", () => {
     await sub.done;
   });
 
-  test("restart keeps projects; SIGTERM removes fin.sock, finisherd.json and finisherd.lock", async () => {
+  test("restart keeps projects; SIGTERM removes fin.sock and finisherd.json and releases the lock", async () => {
     await start();
     let c = await client();
     const projectId = await createProject(c);
@@ -150,7 +150,9 @@ describe("finisherd", () => {
     await clients.splice(0)[0]!.close();
     expect(await server!.stop()).toBe(0);
     server = undefined;
-    for (const f of ["finisherd.json", "fin.sock", "finisherd.lock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
+    for (const f of ["finisherd.json", "fin.sock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
+    // The lock file stays (never unlinked) but is released: this process can take it.
+    lockExclusive(join(serverData, "finisherd.lock")).release();
 
     await start();
     c = await client();
@@ -182,26 +184,17 @@ describe("finisherd", () => {
     expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(server.info.pid));
   });
 
-  test("a stale lock left by a dead pid is taken over", async () => {
-    const dead = spawnSync(process.execPath, ["-e", "process.pid"]).pid!;
+  test("a lock file left by a crashed process (no lock held) does not block startup", async () => {
     mkdirSync(serverData, { recursive: true, mode: 0o700 });
-    writeFileSync(join(serverData, "finisherd.lock"), `${dead}\n`);
+    writeFileSync(join(serverData, "finisherd.lock"), ""); // nobody holds it: as after a crash
     const { info } = await start();
     expect(readFileSync(join(serverData, "finisherd.lock"), "utf8").trim()).toBe(String(info.pid));
   });
 
-  test("an empty lock older than 10 s is taken over; a fresh empty lock means SERVER_RUNNING", async () => {
-    mkdirSync(serverData, { recursive: true, mode: 0o700 });
-    const lock = join(serverData, "finisherd.lock");
-    writeFileSync(lock, "");
-    await expect(startServer(serverData, 5_000)).rejects.toThrow(/SERVER_RUNNING/);
-    expect(readFileSync(lock, "utf8")).toBe("");
-
-    const old = new Date(Date.now() - 20_000);
-    utimesSync(lock, old, old);
-    const { info } = await start();
-    expect(readFileSync(lock, "utf8").trim()).toBe(String(info.pid));
-    expect(readdirSync(serverData).filter((f) => f.includes(".tmp") || f.includes(".stale"))).toEqual([]);
+  test("filesystem failures at startup are SERVER_START_FAILED with a cause", async () => {
+    const notADir = join(tmp, "plain-file");
+    writeFileSync(notADir, "");
+    await expect(startServer(join(notADir, "sd"), 5_000)).rejects.toThrow(/SERVER_START_FAILED: .*"cause":"ENOTDIR"/);
   });
 
   test("an existing 0755 server-data becomes 0700; a symlinked one is refused", async () => {

@@ -101,6 +101,18 @@ export class Engine {
   }
 }
 
+/**
+ * Kernel-held exclusive lock (flock / LockFileEx) on `path`; throws `SERVER_RUNNING` if held.
+ * Keep the returned `ServerLock` until shutdown, then call `release()`.
+ */
+export function lockExclusive(path) {
+  try {
+    return native.lockExclusive(path);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
 export function probe(path) {
   return call(native.probe(path));
 }

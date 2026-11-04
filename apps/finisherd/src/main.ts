@@ -11,7 +11,7 @@ import {
   parseArgs,
   removeServerInfo,
   type ServerInfo,
-  type ServerStartError,
+  startFailure,
   socketPath,
   writeServerInfo,
 } from "./config.ts";
@@ -31,7 +31,7 @@ export interface ServeOptions {
 export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
-      yield* Effect.try({ try: () => ensureServerData(serverData), catch: (e) => e as ServerStartError });
+      yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
       // Held until shutdown, before touching the socket: claim + listen is then race-free.
       yield* withServerLock(serverData);
       const socket = socketPath(serverData);
@@ -39,7 +39,7 @@ export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
       const token = newToken();
 
       const local = yield* makeLocalSocketServer(socket);
-      const ws = yield* makeWebSocketServer(token);
+      const ws = yield* Effect.mapError(makeWebSocketServer(token), (e) => startFailure(e.reason.cause ?? e));
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local), serveRpc(ws)).pipe(
           Layer.provide(HandlersLive),
@@ -48,7 +48,10 @@ export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
       );
 
       const info = yield* Effect.acquireRelease(
-        Effect.sync(() => writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token })),
+        Effect.try({
+          try: () => writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token }),
+          catch: startFailure,
+        }),
         () => Effect.sync(() => removeServerInfo(serverData)),
       );
       yield* Effect.logInfo(`finisherd ready: socket=${socket} wsPort=${info.wsPort} serverData=${serverData}`);
@@ -74,8 +77,9 @@ function main(argv: ReadonlyArray<string>): void {
     Effect.catchCause((cause) =>
       Effect.sync(() => {
         if (Cause.hasInterruptsOnly(cause)) return;
-        const error = Cause.squash(cause) as { code?: string; message?: string };
-        process.stderr.write(`finisherd: ${error.code ? `${error.code}: ` : ""}${error.message ?? String(error)}\n`);
+        const error = startFailure(Cause.squash(cause));
+        const details = Object.keys(error.details).length > 0 ? ` ${JSON.stringify(error.details)}` : "";
+        process.stderr.write(`finisherd: ${error.code}: ${error.message}${details}\n`);
         process.exitCode = 1;
       }),
     ),

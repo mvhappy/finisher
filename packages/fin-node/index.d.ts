@@ -31,6 +31,22 @@ export declare class Engine {
   panicForTest(): Promise<void>;
 }
 
+/** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */
+export declare class ServerLock {
+  private constructor();
+  readonly path: string;
+  /** Unlocks and closes the file (left in place). Idempotent. */
+  release(): void;
+}
+
+/**
+ * Opens or creates `path` (0600) and takes a non-blocking exclusive kernel lock
+ * (`flock(LOCK_EX|LOCK_NB)` / `LockFileEx`). Throws a `FinNodeError` with code
+ * `SERVER_RUNNING` if it is held (also by another descriptor in this process), or
+ * `SERVER_START_FAILED` on I/O errors. The pid is written into the file for diagnostics only.
+ */
+export declare function lockExclusive(path: string): ServerLock;
+
 /** Probes an MP4/MOV file; resolves to `{ duration, video, audio, fingerprint, size }` JSON. */
 export declare function probe(path: string): Promise<string>;
 

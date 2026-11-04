@@ -66,10 +66,28 @@ export function infoPath(serverData: string): string {
 /** A startup failure with a stable code; `main` prints `finisherd: <code>: <message>`. */
 export class ServerStartError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly details: Record<string, unknown>;
+  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.code = code;
+    this.details = details;
   }
+}
+
+/**
+ * Any startup failure as a `ServerStartError`: our own and fin-node's (`SERVER_RUNNING`,
+ * `SERVER_START_FAILED`) keep their code; anything else (EACCES, ENOTDIR, …) becomes
+ * `SERVER_START_FAILED` with the original code in `details.cause`.
+ */
+export function startFailure(e: unknown): ServerStartError {
+  if (e instanceof ServerStartError) return e;
+  const err = e as { code?: unknown; message?: unknown; details?: unknown; finNode?: unknown; name?: unknown } | null;
+  const message = typeof err?.message === "string" ? err.message : String(e);
+  if (err?.finNode === true && typeof err.code === "string") {
+    return new ServerStartError(err.code, message, (err.details as Record<string, unknown>) ?? {});
+  }
+  const cause = typeof err?.code === "string" ? err.code : typeof err?.name === "string" ? err.name : "unknown";
+  return new ServerStartError("SERVER_START_FAILED", message, { cause });
 }
 
 /**
