@@ -11,8 +11,12 @@
 //! amounts only the project knows, so a later position on a track the committed side rippled is
 //! reported as a conflict rather than guessed.
 
+pub mod conflict;
+pub mod footprint;
 pub mod map;
 
+pub use conflict::{Conflict, Conflicts, reasons};
+pub use footprint::{Footprint, Touch, entity_conflict, footprint};
 pub use map::{Assoc, MapResult, Mapping, Recover, StepMap, Unmapped};
 
 use serde_json::json;
@@ -22,19 +26,20 @@ use crate::ops::{self, Op};
 use crate::time::Rational;
 use crate::tx::{CommittedTx, Diff, Tx};
 
-/// Why an op of a stale transaction cannot be rebased. Converts to a `CONFLICT` `CoreError`.
+/// Why an op of a stale transaction cannot be rebased (the 4A engine; Task 6 replaces it with
+/// [`Conflict`]). Converts to a `CONFLICT` `CoreError`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("CONFLICT: {reason} (op {op_index}, against {against_tx})")]
-pub struct Conflict {
+pub struct LegacyConflict {
     pub reason: String,
     pub op_index: usize,
     pub against_tx: String,
 }
 
-impl Conflict {
+impl LegacyConflict {
     /// A conflict whose op index and committed tx id `rebase_tx` fills in.
     pub(crate) fn new(reason: impl Into<String>) -> Self {
-        Conflict {
+        LegacyConflict {
             reason: reason.into(),
             op_index: 0,
             against_tx: String::new(),
@@ -42,8 +47,8 @@ impl Conflict {
     }
 }
 
-impl From<Conflict> for CoreError {
-    fn from(c: Conflict) -> Self {
+impl From<LegacyConflict> for CoreError {
+    fn from(c: LegacyConflict) -> Self {
         CoreError::new(
             "CONFLICT",
             format!(
@@ -58,8 +63,8 @@ impl From<Conflict> for CoreError {
     }
 }
 
-fn overflow() -> Conflict {
-    Conflict::new("time overflow while rebasing")
+fn overflow() -> LegacyConflict {
+    LegacyConflict::new("time overflow while rebasing")
 }
 
 /// `pos` on `track` moved by every shift in `diff` on that track whose `from` is at or before it.
@@ -67,7 +72,7 @@ pub(crate) fn shift_position(
     track: &str,
     pos: Rational,
     diff: &Diff,
-) -> Result<Rational, Conflict> {
+) -> Result<Rational, LegacyConflict> {
     let mut pos = pos;
     for s in diff.shifts.iter().filter(|s| s.track == track) {
         if pos >= s.from {
@@ -82,7 +87,7 @@ pub(crate) fn shift_position(
 pub(crate) fn inserted_range(
     over: &Op,
     over_diff: &Diff,
-) -> Result<Option<(String, Rational, Rational)>, Conflict> {
+) -> Result<Option<(String, Rational, Rational)>, LegacyConflict> {
     let (track, start, duration) = match over {
         Op::ClipInsert {
             track,
@@ -131,7 +136,7 @@ fn placement(op: &Op) -> Option<(&str, Rational, Rational)> {
 
 /// `tx` with every op rebased over each committed tx with `rev > tx.base_rev` (in rev order),
 /// and `base_rev` set to the last of them. Unchanged when nothing newer was committed.
-pub fn rebase_tx(tx: &Tx, since: &[CommittedTx]) -> Result<Tx, Conflict> {
+pub fn rebase_tx(tx: &Tx, since: &[CommittedTx]) -> Result<Tx, LegacyConflict> {
     let mut newer: Vec<&CommittedTx> = since.iter().filter(|c| c.rev > tx.base_rev).collect();
     newer.sort_by_key(|c| c.rev);
     let mut out = tx.clone();
@@ -143,8 +148,8 @@ pub fn rebase_tx(tx: &Tx, since: &[CommittedTx]) -> Result<Tx, Conflict> {
 }
 
 /// Pairs each committed op (placeholders resolved) with its own shift.
-fn split(committed: &CommittedTx) -> Result<Vec<(Op, Diff)>, Conflict> {
-    let mismatch = || Conflict::new("committed diff does not match its ops");
+fn split(committed: &CommittedTx) -> Result<Vec<(Op, Diff)>, LegacyConflict> {
+    let mismatch = || LegacyConflict::new("committed diff does not match its ops");
     let mut shifts = committed.diff.shifts.iter();
     let mut out = Vec::with_capacity(committed.tx.ops.len());
     for op in &committed.tx.ops {
@@ -161,8 +166,8 @@ fn split(committed: &CommittedTx) -> Result<Vec<(Op, Diff)>, Conflict> {
     Ok(out)
 }
 
-fn rebase_over(ops: &[Op], committed: &CommittedTx) -> Result<Vec<Op>, Conflict> {
-    let tag = |mut c: Conflict, i: usize| {
+fn rebase_over(ops: &[Op], committed: &CommittedTx) -> Result<Vec<Op>, LegacyConflict> {
+    let tag = |mut c: LegacyConflict, i: usize| {
         c.op_index = i;
         c.against_tx = committed.tx.tx_id.clone();
         c
@@ -178,7 +183,7 @@ fn rebase_over(ops: &[Op], committed: &CommittedTx) -> Result<Vec<Op>, Conflict>
                 .any(|s| s.track == track && !s.by.is_zero());
             if moved {
                 return Err(tag(
-                    Conflict::new("position follows a trim or delete on a track that moved"),
+                    LegacyConflict::new("position follows a trim or delete on a track that moved"),
                     i,
                 ));
             }

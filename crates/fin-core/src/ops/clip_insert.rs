@@ -11,7 +11,7 @@ use crate::ops::util::{
     ripple, shift, track_index, wrong_op,
 };
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Conflict, inserted_range, shift_position};
+use crate::rebase::{Footprint, LegacyConflict, inserted_range, shift_position};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -96,7 +96,7 @@ pub(crate) fn apply(
 
 /// Moves `at` with the committed op's shift; conflicts when it lands strictly inside a clip the
 /// committed op placed.
-pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflict> {
+pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, LegacyConflict> {
     let Op::ClipInsert { track, at, .. } = op else {
         return Ok(op.clone());
     };
@@ -106,11 +106,33 @@ pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflic
         && start < moved
         && moved < end
     {
-        return Err(Conflict::new("insert lands inside a clip"));
+        return Err(LegacyConflict::new("insert lands inside a clip"));
     }
     let mut out = op.clone();
     if let Op::ClipInsert { at, .. } = &mut out {
         *at = moved;
     }
     Ok(out)
+}
+
+/// Creates the clip on its track, using the track and the asset.
+pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    let Op::ClipInsert {
+        id, track, asset, ..
+    } = op
+    else {
+        return Footprint::on(None, op_diff);
+    };
+    let mut f = Footprint::on(Some(track), op_diff);
+    f.creates.push(id.clone());
+    f.uses.extend([asset.clone(), track.clone()]);
+    f
+}
+
+/// `at`, on the insert's track.
+pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
+    match op {
+        Op::ClipInsert { track, at, .. } => vec![(track.clone(), at)],
+        _ => Vec::new(),
+    }
 }

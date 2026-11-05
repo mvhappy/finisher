@@ -479,17 +479,19 @@ Rules:
 - the same `Edge` of X → `SAME_EDGE`; the same `Param` → `SAME_PARAM`.
 - disjoint track sets never conflict.
 
-- [ ] **Step 1: Write failing tests** (table: committed op, our op, expected):
+- [x] **Step 1: Write failing tests** (table: committed op, our op, expected):
   - an insert on `t2` against every op on `t1` → none;
   - trim end `c1` vs trim end `c1` → `SAME_EDGE`; trim start vs trim end → none;
   - trim vs delete of the same clip → `REMOVED`; delete vs trim → none;
   - insert using `a1` vs `asset.remove a1` → `REMOVED`;
   - `every_op_has_a_footprint` (an exhaustive match);
-  - `conflict_into_core_error_keeps_4a_fields`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test conflict_rules`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Footprints come from the resolved op plus its own diff, never from a project.
-- [ ] **Step 4: Run** the three gates (types regenerated). Expected: PASS.
-- [ ] **Step 5: Commit** `feat(core): per-track and per-entity conflict footprints`.
+  - `conflict_into_core_error_keeps_4a_fields`;
+  - also: `removed_then_restored_is_not_removed` (the last removal or creation of X decides), `removed_wins_over_same_edge`, `same_param_conflicts_and_disjoint_tracks_never_do` (a footprint with no track, an asset op, is judged by entities alone), `rerun_conflict_takes_the_policy_code`, `conflict_without_against_tx`; `positions_mut_lists_placements` (unit).
+  - Until Task 6 the 4A struct is `rebase::LegacyConflict` (fields unchanged), so `Conflict` names the new type; Task 6 deletes it with the per-op `rebase` fns.
+- [x] **Step 2: Run** `rtk cargo test -p fin-core --test conflict_rules`. Expected: FAIL.
+- [x] **Step 3: Implement.** Footprints come from the resolved op plus its own diff, never from a project.
+- [x] **Step 4: Run** the three gates (types regenerated). Expected: PASS.
+- [x] **Step 5: Commit** `feat(core): per-track and per-entity conflict footprints`.
 
 ### Task 6: Rebase engine rewrite and commit integration — tier: opus
 

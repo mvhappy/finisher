@@ -336,6 +336,20 @@ export interface Tx {
   txId: string;
 }
 /**
+ * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
+ * record to blame when there is one (else null), and what to do.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Conflict".
+ */
+export interface Conflict {
+  againstTx?: string | null;
+  fix: string;
+  opIndex: number;
+  reason: string;
+  txId: string;
+}
+/**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema

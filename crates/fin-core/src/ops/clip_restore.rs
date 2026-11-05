@@ -11,7 +11,7 @@ use crate::ops::util::{
     record, ripple, shift, track_index, wrong_op,
 };
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Conflict, inserted_range, shift_position};
+use crate::rebase::{Footprint, LegacyConflict, inserted_range, shift_position};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -107,14 +107,14 @@ pub(crate) fn apply(
 
 /// Moves the clip's `start` like an insert position; conflicts when the committed op restored
 /// the same clip or placed a clip around the new start.
-pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflict> {
+pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, LegacyConflict> {
     let Op::ClipRestore { clip, track, .. } = op else {
         return Ok(op.clone());
     };
     if let Op::ClipRestore { clip: other, .. } = over
         && other.id == clip.id
     {
-        return Err(Conflict::new("clip already restored"));
+        return Err(LegacyConflict::new("clip already restored"));
     }
     let moved = shift_position(track, clip.start, over_diff)?;
     if let Some((t, start, end)) = inserted_range(over, over_diff)?
@@ -122,11 +122,30 @@ pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflic
         && start < moved
         && moved < end
     {
-        return Err(Conflict::new("restore lands inside a clip"));
+        return Err(LegacyConflict::new("restore lands inside a clip"));
     }
     let mut out = op.clone();
     if let Op::ClipRestore { clip, .. } = &mut out {
         clip.start = moved;
     }
     Ok(out)
+}
+
+/// Creates the clip on its track, using the track and the asset.
+pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    let Op::ClipRestore { clip, track, .. } = op else {
+        return Footprint::on(None, op_diff);
+    };
+    let mut f = Footprint::on(Some(track), op_diff);
+    f.creates.push(clip.id.clone());
+    f.uses.extend([clip.asset.clone(), track.clone()]);
+    f
+}
+
+/// The clip's `start`, on the restore's track.
+pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
+    match op {
+        Op::ClipRestore { clip, track, .. } => vec![(track.clone(), &mut clip.start)],
+        _ => Vec::new(),
+    }
 }

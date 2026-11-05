@@ -7,7 +7,8 @@ use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, Project};
 use crate::ops::util::{invalid_range, record, wrong_op};
 use crate::ops::{Bindings, Op};
-use crate::rebase::Conflict;
+use crate::rebase::{Footprint, LegacyConflict};
+use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
 /// Checks the op against `project`; on success the op can be applied.
@@ -60,6 +61,20 @@ pub(crate) fn apply(
 }
 
 /// Adding an asset never conflicts and has no positions to move.
-pub(crate) fn rebase(op: &Op, _over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
+pub(crate) fn rebase(op: &Op, _over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
     Ok(op.clone())
+}
+
+/// Creates the asset; binds no track.
+pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    let mut f = Footprint::on(None, op_diff);
+    if let Op::AssetAdd { id, .. } = op {
+        f.creates.push(id.clone());
+    }
+    f
+}
+
+/// No timeline positions.
+pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
 }

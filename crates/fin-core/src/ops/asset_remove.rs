@@ -7,7 +7,8 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{asset, record, wrong_op};
 use crate::ops::{Bindings, Op};
-use crate::rebase::Conflict;
+use crate::rebase::{Footprint, LegacyConflict, Touch};
+use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
 pub(crate) fn validate(
@@ -61,7 +62,7 @@ pub(crate) fn apply(
 }
 
 /// Conflicts when the committed op placed a clip using the asset.
-pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
+pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
     let Op::AssetRemove { id } = op else {
         return Ok(op.clone());
     };
@@ -71,7 +72,22 @@ pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, Confli
         _ => false,
     };
     if used {
-        return Err(Conflict::new("asset in use"));
+        return Err(LegacyConflict::new("asset in use"));
     }
     Ok(op.clone())
+}
+
+/// Removes the asset; binds no track.
+pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    let mut f = Footprint::on(None, op_diff);
+    if let Op::AssetRemove { id } = op {
+        f.touches.push((id.clone(), Touch::Exists));
+        f.removes.push(id.clone());
+    }
+    f
+}
+
+/// No timeline positions.
+pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
 }

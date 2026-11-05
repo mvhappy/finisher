@@ -1,4 +1,5 @@
-//! Primitive edit operations, one module per op (schema, validate, apply, invert, rebase).
+//! Primitive edit operations, one module per op (schema, validate, apply, invert, conflict
+//! footprint, positions, rebase).
 //!
 //! Client ops: `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`. Internal ops exist only
 //! as inverses (`asset.remove`, `clip.remove`, `clip.restore`); clients sending them get
@@ -17,7 +18,7 @@ use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{AudioInfo, Clip, Project, VideoInfo};
-use crate::rebase::Conflict;
+use crate::rebase::{Footprint, LegacyConflict};
 use crate::time::Rational;
 use crate::tx::Diff;
 
@@ -163,6 +164,22 @@ impl Op {
         match self {
             Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } if id.starts_with('$') => Some(id),
             _ => None,
+        }
+    }
+
+    /// Every timeline position the op carries, with its track, mutably, so a rebase can map
+    /// them (`clip.insert` `at`, `clip.restore` `clip.start`).
+    // The rebase engine (plan Task 6) is the caller; until then only the unit test uses it.
+    #[allow(dead_code)]
+    pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)> {
+        match self {
+            Op::AssetAdd { .. } => asset_add::positions_mut(self),
+            Op::ClipInsert { .. } => clip_insert::positions_mut(self),
+            Op::ClipTrim { .. } => clip_trim::positions_mut(self),
+            Op::ClipDelete { .. } => clip_delete::positions_mut(self),
+            Op::AssetRemove { .. } => asset_remove::positions_mut(self),
+            Op::ClipRemove { .. } => clip_remove::positions_mut(self),
+            Op::ClipRestore { .. } => clip_restore::positions_mut(self),
         }
     }
 
@@ -321,9 +338,23 @@ pub(crate) fn apply(
     }
 }
 
+/// The conflict footprint of `op` (placeholders resolved) from its own diff (`op_diff`: its
+/// single shift, if any).
+pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    match op {
+        Op::AssetAdd { .. } => asset_add::footprint(op, op_diff),
+        Op::ClipInsert { .. } => clip_insert::footprint(op, op_diff),
+        Op::ClipTrim { .. } => clip_trim::footprint(op, op_diff),
+        Op::ClipDelete { .. } => clip_delete::footprint(op, op_diff),
+        Op::AssetRemove { .. } => asset_remove::footprint(op, op_diff),
+        Op::ClipRemove { .. } => clip_remove::footprint(op, op_diff),
+        Op::ClipRestore { .. } => clip_restore::footprint(op, op_diff),
+    }
+}
+
 /// Rebases `op` over one committed op `over` whose own diff (its single shift, if any) is
 /// `over_diff`. `over` must already have its placeholders resolved.
-pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, Conflict> {
+pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, LegacyConflict> {
     match op {
         Op::AssetAdd { .. } => asset_add::rebase(op, over, over_diff),
         Op::ClipInsert { .. } => clip_insert::rebase(op, over, over_diff),
@@ -340,6 +371,52 @@ mod tests {
     use super::*;
     use crate::model::Clip;
     use crate::time::Rational;
+
+    #[test]
+    fn positions_mut_lists_placements() {
+        let r = Rational::from_int;
+        let mut insert = Op::ClipInsert {
+            id: "$c".into(),
+            track: "t2".into(),
+            asset: "a1".into(),
+            at: r(3),
+            source_in: r(0),
+            duration: r(1),
+        };
+        for (track, pos) in insert.positions_mut() {
+            assert_eq!(track, "t2");
+            *pos = r(7);
+        }
+        assert!(matches!(insert, Op::ClipInsert { at, .. } if at == r(7)));
+        let mut restore = Op::ClipRestore {
+            clip: Clip {
+                id: "c1".into(),
+                asset: "a1".into(),
+                start: r(4),
+                source_in: r(0),
+                duration: r(1),
+            },
+            track: "t1".into(),
+            ripple: true,
+        };
+        let got: Vec<(String, Rational)> = restore
+            .positions_mut()
+            .into_iter()
+            .map(|(t, p)| (t, *p))
+            .collect();
+        assert_eq!(got, vec![("t1".to_string(), r(4))]);
+        let mut trim = Op::ClipTrim {
+            clip: "c1".into(),
+            edge: Edge::End,
+            delta: r(1),
+        };
+        assert!(trim.positions_mut().is_empty());
+        assert!(
+            Op::ClipDelete { clip: "c1".into() }
+                .positions_mut()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn ids_lists_the_fields_refs_mut_does() {

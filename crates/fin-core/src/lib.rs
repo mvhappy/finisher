@@ -18,7 +18,7 @@ pub use error::CoreError;
 pub use ids::{ID_KINDS, IdAlloc, IdKind, MemIds};
 pub use model::*;
 pub use ops::{Edge, Op};
-pub use rebase::{Conflict, rebase_tx};
+pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{
     Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,
 };

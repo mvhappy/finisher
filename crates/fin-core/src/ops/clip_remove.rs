@@ -5,7 +5,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{clip_index, end, record, ripple, shift, wrong_op};
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Conflict, removed_clip};
+use crate::rebase::{Footprint, LegacyConflict, Touch, removed_clip};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -62,12 +62,27 @@ pub(crate) fn apply(
     remove(project, &id, *ripple, diff)
 }
 
-pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, Conflict> {
+pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
     let Op::ClipRemove { id, .. } = op else {
         return Ok(op.clone());
     };
     if removed_clip(over) == Some(id.as_str()) {
-        return Err(Conflict::new("clip removed"));
+        return Err(LegacyConflict::new("clip removed"));
     }
     Ok(op.clone())
+}
+
+/// Removes the clip, on the track its shift names.
+pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    let mut f = Footprint::on(None, op_diff);
+    if let Op::ClipRemove { id, .. } = op {
+        f.touches.push((id.clone(), Touch::Exists));
+        f.removes.push(id.clone());
+    }
+    f
+}
+
+/// No timeline positions.
+pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
 }
