@@ -105,6 +105,8 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [x] Task 18: `pnpm e2e` storage scenario (rebuild from folder, follower)
 - [x] Task 20: spec, tracker and README record the decisions (spec §3.13 holds the Task 19 checklist)
 - [ ] **Task 19: cross-host and sync-folder validation** (spec §3.13). Must measure or confirm:
+  - [x] macOS suites re-run on 3e284dc: 569 Rust, 85 JS, gates, e2e, clippy clean
+  - [x] iCloud sync rows (one device): temp-then-rename safe, hydration matches the code, `sync:icloud`; conflict copies need a second device
   - [x] full suites on Windows 11 and the Linux VM — pass on both (2026-11-05; Windows 542 Rust, 85 JS, gate tests, e2e); fixed the Windows probe ignoring sync markers. macOS 550 Rust, 85 JS, gates, e2e pass (one APFS test-only fix)
   - NAS matrix per host pair: lease races (0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse), network loss with writes in flight, real or emulated skew, follow latency ≤ 3 s + cache window
     - [x] Windows↔Linux: all rows 0 critical on the final code (spec §3.13 item 2)
@@ -142,6 +144,8 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] macOS smbfs: whether the lease probe can read a client-set mtime (no `AT_STATX_FORCE_SYNC`); untested
 - [ ] Locked files: no test for the pending-deletion path (first sighting without metadata); a verify right after open shows `SEGMENT_LOCKED`, not `unreadable`, until the store has been open 60 s
 - [ ] A segment held open by another SMB client slows compaction to one 60 s retry per file
+- [ ] iCloud: a first read of a dataless file can fail `ETIMEDOUT` (1 in ~25); only the hydrate pass retries. Retry such reads (rebuild, snapshot reads) on dataless files
+- [ ] iCloud conflict-copy names and second-device mid-upload view: need a second device
 - [ ] Clean close could write a "released" lease record so other servers need not wait out 45 s of staleness
 - [ ] `fin project verify` / `rebuild` / `compact` have no progress or cancellation (only `ENGINE_BUSY {operation, sinceMs}`)
 - [ ] `diffs::fill` loads a whole branch's rows; restore tooling for daily backups should mint a new incarnation (backups already do; a hand-copied DB does not)
