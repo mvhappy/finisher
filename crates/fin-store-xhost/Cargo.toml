@@ -1,0 +1,30 @@
+[package]
+name = "fin-store-xhost"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Cross-host storage harness (plan 4A Task 19): never shipped, never published.
+publish = false
+
+[[bin]]
+name = "xhost"
+path = "src/main.rs"
+test = false
+doctest = false
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+# `test-hooks` is enabled here only: stalls (`Lease::fail_heartbeats`, hang points) and the
+# passive follower (`Store::set_test_lease`). Build this crate alone (`-p fin-store-xhost`) so
+# the feature never unifies into a shipped binary.
+fin-store = { path = "../fin-store", features = ["test-hooks"] }
+blake3 = "1.8.7"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_WindowsProgramming"] }

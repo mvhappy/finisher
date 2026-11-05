@@ -349,6 +349,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-store-xhost"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "fin-core",
+ "fin-store",
+ "libc",
+ "rusqlite",
+ "serde_json",
+ "windows-sys",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
