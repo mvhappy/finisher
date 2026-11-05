@@ -123,6 +123,19 @@ try {
     "HISTORY_REWOUND",
   );
 
+  // A subscriber that read rev 1 at another generation: ended at once, nothing replayed.
+  await scenario("ops-subscribe-stale", async (c) => {
+    const generation = { incarnation: "an-older-database", n: 0 };
+    const sub = c.stream("ops.subscribe", { projectId, branch: "main", fromRev: 1, generation }, () => undefined);
+    const exit = await sub.done;
+    if (exit.ok || exit.error.code !== "HISTORY_REWOUND") throw new Error(`expected HISTORY_REWOUND, got ${JSON.stringify(exit)}`);
+  });
+
+  // Already open here: relocate changes nothing, the answer is the usual ref.
+  await scenario("project-open-relocate", async (c) => {
+    ok(await c.call("project.open", { dir, relocate: true }));
+  });
+
   // The status now, then the client interrupts.
   await scenario("project-events", async (c) => {
     let first!: () => void;

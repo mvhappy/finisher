@@ -8,7 +8,7 @@ import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
-import { type HubItem, Hubs } from "./hubs.ts";
+import { follower, Hubs, type Stamped } from "./hubs.ts";
 
 export interface ProjectRef {
   readonly projectId: string;
@@ -34,9 +34,16 @@ export interface ProjectRegistryShape {
   ) => Effect.Effect<{ rev: number; project: unknown; generation?: Generation }, FinError>;
   /**
    * Replays `rev > fromRev`, then follows live commits and imports: every rev exactly once, in
-   * order. Ends with `HISTORY_REWOUND` once history it reported (or started from) is rewound.
+   * order. Ends with `HISTORY_REWOUND` once history it reported (or started from) is rewound,
+   * at once when `generation` (what the caller read `fromRev` at) is not the branch's now,
+   * and with `ENGINE_CLOSED` when the engine is evicted (subscribe again to reopen it).
    */
-  readonly subscribe: (projectId: string, branch: string, fromRev: number) => Stream.Stream<CommittedTx, FinError>;
+  readonly subscribe: (
+    projectId: string,
+    branch: string,
+    fromRev: number,
+    generation?: Generation,
+  ) => Stream.Stream<CommittedTx, FinError>;
   /** The status now, then every status change and rewind/rebuild/background error. */
   readonly events: (projectId: string) => Stream.Stream<ProjectEvent, FinError>;
   readonly status: (projectId: string) => Effect.Effect<unknown, FinError>;
@@ -97,15 +104,24 @@ class ProjectIndex {
 }
 
 /** A rewound history, as the op stream reports it to a subscriber that saw it. */
-function historyRewound(details: Readonly<Record<string, unknown>>): FinError {
+function historyRewound(details: Record<string, unknown>): FinError {
   const branch = String(details.branch);
-  return finError(
-    "HISTORY_REWOUND",
+  const message =
     details.reason === undefined
       ? `the history of ${branch} from rev ${String(details.rev)} on was set aside`
-      : `the project database was rebuilt (${String(details.reason)}); revs read before may hold something else`,
-    details,
-    `read ${branch} again (snapshot.get) and subscribe from that rev`,
+      : details.reason === "GENERATION"
+        ? `the history of ${branch} was rewound or rebuilt since the caller read it`
+        : `the project database was rebuilt (${String(details.reason)}); revs read before may hold something else`;
+  return finError("HISTORY_REWOUND", message, details, `read ${branch} again (snapshot.get) and subscribe from that rev`);
+}
+
+/** Ends the streams of an evicted engine: their clients reconnect, which reopens it. */
+function engineEvicted(projectId: string): FinError {
+  return finError(
+    "ENGINE_CLOSED",
+    "the project's engine stopped; its history may have changed since",
+    { projectId, reason: "evicted" },
+    "read the project again and subscribe again (that reopens it)",
   );
 }
 
@@ -171,17 +187,20 @@ export function makeProjectRegistry(
         case "status":
           hubs.publishEvent(id, { type: "status", status: e.status });
           break;
-        case "rewound":
-          hubs.rewind(id, e.branch, e.fromRev, { generation: { incarnation: e.incarnation, n: e.generation } });
+        case "rewound": {
+          const generation = { incarnation: e.incarnation, n: e.generation };
+          hubs.rewind(id, e.branch, e.fromRev, historyRewound({ branch: e.branch, rev: e.fromRev, generation }));
           hubs.publishEvent(id, e);
           break;
+        }
         case "rebuilt":
-          hubs.rewindAll(id, { reason: "REBUILT", incarnation: e.incarnation });
+          // `rev: 0` as on fin-store's own `HISTORY_REWOUND` (`REBUILT`): read from the start.
+          hubs.endAll(id, 1, (branch) => historyRewound({ branch, rev: 0, reason: "REBUILT", incarnation: e.incarnation }));
           hubs.publishEvent(id, e);
           break;
         case "lagged":
           // Events were dropped before registration (a rewind or rebuild among them, maybe).
-          hubs.rewindAll(id, { reason: "EVENTS_LAGGED" });
+          hubs.endAll(id, 1, (branch) => historyRewound({ branch, rev: 0, reason: "EVENTS_LAGGED" }));
           break;
         case "error":
           hubs.publishEvent(id, { type: "error", error: e.error, fatal: e.fatal });
@@ -210,12 +229,18 @@ export function makeProjectRegistry(
       return project;
     };
 
-    /** Forgets a dead engine so the next `get`/`open` reopens the project from disk. */
+    /**
+     * Forgets a dead engine so the next `get`/`open` reopens the project from disk. Its
+     * subscribers end with `ENGINE_CLOSED`: nothing would feed them now, and the events it
+     * still had queued (a rewind, maybe) are lost, so they are treated like a rebuild.
+     */
     const evict = (p: OpenProject): void => {
       const id = p.engine.projectId;
       if (byId.get(id) !== p) return;
       byId.delete(id);
       for (const [dir, pid] of byDir) if (pid === id) byDir.delete(dir);
+      hubs.endAll(id, 0, () => engineEvicted(id));
+      hubs.endEvents(id, engineEvicted(id));
       void p.engine.close().catch(() => undefined);
     };
 
@@ -304,22 +329,34 @@ export function makeProjectRegistry(
 
       snapshot: (projectId, branch) => on(projectId, (e) => e.snapshot(branch)),
 
-      subscribe: (projectId, branch, fromRev) =>
+      subscribe: (projectId, branch, fromRev, generation) =>
         Stream.unwrap(
           Effect.gen(function* () {
             yield* get(projectId);
+            const channel = hubs.ops(projectId, branch);
+            // Before subscribing: an ending published from now on is seen, as its marker or
+            // through the `seq` of any later item. One whose engine event lands after the
+            // backlog below already reads the new history ends this subscriber needlessly
+            // (it is told to re-read what it has): conservative, never silent.
+            const check = follower(channel, branch);
             // Subscribe before reading the backlog: a commit landing in between is then
             // both in the backlog and on the hub, and the rev filter below drops the copy.
-            const live = yield* PubSub.subscribe(hubs.ops(projectId, branch));
-            const backlog = yield* opsSince(projectId, branch, fromRev);
+            const live = yield* PubSub.subscribe(channel.pubsub);
+            const read = yield* on<{ generation: Generation; ops: CommittedTx[] }>(projectId, (e) => e.opsSinceAt(branch, fromRev));
+            if (
+              generation !== undefined &&
+              (generation.incarnation !== read.generation.incarnation || generation.n !== read.generation.n)
+            ) {
+              return yield* Effect.fail(
+                historyRewound({ branch, rev: 0, reason: "GENERATION", generation: read.generation, expected: generation }),
+              );
+            }
             let last = fromRev;
-            const emit = (item: HubItem): Effect.Effect<ReadonlyArray<CommittedTx>, FinError> => {
-              if (item.kind === "rewound") {
-                // Revs this subscriber reported (or started from) are gone: it must re-read.
-                return last >= item.fromRev ? Effect.fail(historyRewound(item.details)) : Effect.succeed([]);
-              }
-              const c = item.tx;
-              if (c.rev <= last) return Effect.succeed([]);
+            const emit = (item: Stamped<CommittedTx>): Effect.Effect<ReadonlyArray<CommittedTx>, FinError> => {
+              const ended = check(item, last);
+              if (ended !== undefined) return Effect.fail(ended);
+              const c = item.value;
+              if (c === undefined || c.rev <= last) return Effect.succeed([]);
               if (c.rev === last + 1) {
                 last = c.rev;
                 return Effect.succeed([c]);
@@ -331,8 +368,8 @@ export function makeProjectRegistry(
                 return out;
               });
             };
-            const backlogItems = backlog.map((tx): HubItem => ({ kind: "tx", tx }));
-            return Stream.concat(Stream.fromIterable(backlogItems), Stream.fromSubscription(live)).pipe(
+            const backlog = read.ops.map((tx): Stamped<CommittedTx> => ({ seq: -1, value: tx }));
+            return Stream.concat(Stream.fromIterable(backlog), Stream.fromSubscription(live)).pipe(
               Stream.mapEffect(emit),
               Stream.flattenIterable,
             );
@@ -343,14 +380,23 @@ export function makeProjectRegistry(
         Stream.unwrap(
           Effect.gen(function* () {
             const p = yield* get(projectId);
+            const channel = hubs.events(projectId);
+            const check = follower(channel, "");
             // Subscribe first: a change landing while the status is read is then not missed.
-            const live = yield* PubSub.subscribe(hubs.events(projectId));
+            const live = yield* PubSub.subscribe(channel.pubsub);
             const status = yield* call<unknown>(p, (e) => e.status());
             const first: ProjectEvent = { type: "status", status };
-            return Stream.concat(Stream.make(first), Stream.fromSubscription(live));
+            const items = Stream.fromSubscription(live).pipe(
+              Stream.mapEffect((item) => {
+                const ended = check(item, 0);
+                if (ended !== undefined) return Effect.fail(ended);
+                return Effect.succeed(item.value === undefined ? [] : [item.value]);
+              }),
+              Stream.flattenIterable,
+            );
+            return Stream.concat(Stream.make(first), items);
           }),
         ),
-
       status: (projectId) => on(projectId, (e) => e.status()),
       takeover: (projectId, confirm) => on(projectId, (e) => e.takeover(confirm)),
       verify: (projectId) => on(projectId, (e) => e.verify()),

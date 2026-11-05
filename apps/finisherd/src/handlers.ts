@@ -30,9 +30,9 @@ export const HandlersLive = FinRpcs.toLayer(
       "tx.commit": ({ projectId, tx, generation }) => guard(registry.commit(projectId, tx, generation)),
       "snapshot.get": ({ projectId, branch }) => guard(registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
-      "ops.subscribe": ({ projectId, branch, fromRev }) =>
+      "ops.subscribe": ({ projectId, branch, fromRev, generation }) =>
         registry
-          .subscribe(projectId, branch, fromRev)
+          .subscribe(projectId, branch, fromRev, generation)
           .pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),
       "project.events": ({ projectId }) =>
         registry.events(projectId).pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),

@@ -5,9 +5,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FinError } from "@finisher/contracts";
-import { Effect, Exit, Fiber, Scope, Stream } from "effect";
+import type { CommittedTx } from "@finisher/core-types";
+import { Effect, Exit, Fiber, PubSub, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { makeProjectRegistry, type ProjectRegistryShape } from "../src/projects.ts";
+import { Hubs } from "../src/hubs.ts";
+import { makeProjectRegistry, type ProjectRegistryShape, type RegistryOptions } from "../src/projects.ts";
 import { addAsset, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
@@ -92,6 +94,28 @@ describe("storage RPCs", () => {
     expect(old.ok ? undefined : old.error.code).toBe("HISTORY_REWOUND");
   });
 
+  test("ops.subscribe with a stale generation ends at once with HISTORY_REWOUND", async () => {
+    const c = await server();
+    const { projectId } = ok<{ projectId: string }>(await c.call("project.create", { dir: join(tmp, "p"), name: "Demo", rate: "30" }));
+    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
+    const snap = ok<{ rev: number; generation: unknown }>(await c.call("snapshot.get", { projectId, branch: "main" }));
+    const revs: number[] = [];
+    const live = c.stream("ops.subscribe", { projectId, branch: "main", fromRev: 0, generation: snap.generation }, (v) =>
+      revs.push((v as { rev: number }).rev),
+    );
+    await until(() => (revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    c.interrupt(live.id);
+    await live.done;
+    const stale = c.stream(
+      "ops.subscribe",
+      { projectId, branch: "main", fromRev: 1, generation: { incarnation: "an-older-database", n: 0 } },
+      () => undefined,
+    );
+    const exit = await stale.done;
+    expect(exit.ok ? undefined : exit.error.code).toBe("HISTORY_REWOUND");
+    expect(exit.ok ? undefined : exit.error.details).toMatchObject({ branch: "main", rev: 0, reason: "GENERATION" });
+  });
+
   test("events stream emits status on lease change", async () => {
     const c = await server();
     const dir = join(tmp, "p");
@@ -141,9 +165,14 @@ describe("storage RPCs", () => {
 });
 
 describe("engine events in the registry", () => {
-  async function registry(): Promise<ProjectRegistryShape> {
+  async function registry(options?: RegistryOptions): Promise<ProjectRegistryShape> {
     scope = Effect.runSync(Scope.make());
-    return Effect.runPromise(Scope.provide(scope)(makeProjectRegistry(join(tmp, "sd"))));
+    return Effect.runPromise(Scope.provide(scope)(makeProjectRegistry(join(tmp, "sd"), options)));
+  }
+
+  /** `exit`, or `undefined` when it has not settled within `ms`. */
+  async function within<A>(p: Promise<A>, ms: number): Promise<A | undefined> {
+    return Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))]);
   }
   const run = <A>(e: Effect.Effect<A, FinError>) => Effect.runPromise(e);
 
@@ -217,5 +246,64 @@ describe("engine events in the registry", () => {
     expect((await verifying) as { ok: boolean }).toMatchObject({ ok: true });
     const status = (await run(r.status(projectId))) as Status;
     expect(status.busy).toBeNull();
+  });
+  test("a subscriber behind a hub smaller than the burst still ends on a rewind whose marker it lost", async () => {
+    const r = await registry({ hubCapacity: 2 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    for (let i = 0; i < 3; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    const revs: number[] = [];
+    // A slow consumer: the 2-item hub drops the rewind's marker under the burst below.
+    const fiber = Effect.runFork(
+      r.subscribe(projectId, "main", 0).pipe(
+        Stream.mapEffect((c) => Effect.as(Effect.sleep("200 millis"), c.rev)),
+        Stream.runForEach((rev) => Effect.sync(() => revs.push(rev))),
+      ),
+    );
+    r.engineOf(projectId)!.emitRewoundForTest("main", 2);
+    // The marker is on the hub (events arrive within milliseconds) while the backlog is
+    // still being consumed (3 × 200 ms); the commits push it out.
+    await new Promise((res) => setTimeout(res, 100));
+    for (let i = 3; i < 10; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    const exit = await within(Effect.runPromise(Fiber.await(fiber)), 5_000);
+    expect(exit, "the subscriber never ended").toBeDefined();
+    expect(failureOf(exit!)?.code).toBe("HISTORY_REWOUND");
+    expect(revs.every((rev) => rev <= 3)).toBe(true);
+  }, 15_000);
+
+  test("the hub publishes every rev, also one below a rev it published before", async () => {
+    const hubs = new Hubs(8);
+    const committed = (rev: number) => ({ rev, tx: { branch: "main" } }) as unknown as CommittedTx;
+    const got = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sub = yield* PubSub.subscribe(hubs.ops("p", "main").pubsub);
+          // The new history's rev 2 can be published before its rewind is known.
+          hubs.publishTx("p", committed(3));
+          hubs.publishTx("p", committed(2));
+          return yield* PubSub.takeAll(sub);
+        }),
+      ),
+    );
+    expect(got.map((i) => i.value?.rev)).toEqual([3, 2]);
+  });
+
+  test("an evicted engine ends its subscribers with ENGINE_CLOSED; subscribing again reopens it", async () => {
+    const r = await registry();
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const sub = subscribe(r, projectId, 0);
+    const events = Effect.runFork(Stream.runDrain(r.events(projectId)));
+    await until(() => (sub.revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    const engine = r.engineOf(projectId)!;
+    engine.panicNextTickForTest();
+    const exit = await within(sub.exit(), 5_000);
+    expect(exit, "the subscriber never ended").toBeDefined();
+    expect(failureOf(exit!)?.code).toBe("ENGINE_CLOSED");
+    const ev = await within(Effect.runPromise(Fiber.await(events)), 5_000);
+    expect(ev && failureOf(ev)?.code).toBe("ENGINE_CLOSED");
+    expect(r.engineOf(projectId)).toBeUndefined();
+    const again = subscribe(r, projectId, 0);
+    await until(() => (again.revs.length === 1 ? true : undefined), 5_000, "rev 1 again");
+    expect(r.engineOf(projectId)).not.toBe(engine);
   });
 });

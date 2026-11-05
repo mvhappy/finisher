@@ -1,90 +1,147 @@
-// Live fan-out for subscribers: per-(project, branch) op hubs and per-project event hubs.
-// They outlive engine reopens, so a live `ops.subscribe` or `project.events` keeps going
-// when an evicted engine is reopened.
+// Live fan-out for subscribers: per-(project, branch) op channels and per-project event
+// channels. They outlive engine reopens, so a live `ops.subscribe` or `project.events` keeps
+// going when an evicted engine is reopened (unless the eviction ended it).
+//
+// A channel is a sliding PubSub (a slow subscriber loses the oldest items, never blocks a
+// commit) plus a short log of *endings*: a rewind, a rebuild, an engine eviction. Endings
+// must never be lost with the items a slow subscriber drops, so they are not only published:
+// each bumps the channel's `seq`, every item carries the `seq` it was published at, and a
+// subscriber that receives an item with a higher `seq` than it last saw replays the endings
+// in between from the log. One it can no longer replay (the log is pruned) ends it.
 import type { CommittedTx } from "@finisher/core-types";
-import type { ProjectEvent } from "@finisher/contracts";
+import type { FinError, ProjectEvent } from "@finisher/contracts";
 import { Effect, PubSub } from "effect";
+import { finError } from "./errors.ts";
+
+/** One ending: subscribers that reported a rev ≥ `fromRev` (0: every one) end with `error`. */
+export interface Ending {
+  readonly seq: number;
+  readonly fromRev: number;
+  readonly error: FinError;
+}
+
+/** An item as delivered: `value` is absent on the marker an ending publishes. */
+export interface Stamped<T> {
+  readonly seq: number;
+  readonly value?: T;
+}
+
+/** Endings kept per channel for subscribers that lost their markers. */
+export const ENDINGS_KEPT = 64;
+
+export class Channel<T> {
+  readonly pubsub: PubSub.PubSub<Stamped<T>>;
+  #seq = 0;
+  readonly #endings: Ending[] = [];
+
+  constructor(capacity: number) {
+    this.pubsub = Effect.runSync(PubSub.sliding<Stamped<T>>(capacity));
+  }
+
+  /** The `seq` a new subscriber starts from: read it before subscribing to `pubsub`. */
+  get seq(): number {
+    return this.#seq;
+  }
+
+  publish(value: T): void {
+    Effect.runSync(PubSub.publish(this.pubsub, { seq: this.#seq, value }));
+  }
+
+  end(fromRev: number, error: FinError): void {
+    this.#seq += 1;
+    this.#endings.push({ seq: this.#seq, fromRev, error });
+    if (this.#endings.length > ENDINGS_KEPT) this.#endings.shift();
+    Effect.runSync(PubSub.publish(this.pubsub, { seq: this.#seq }));
+  }
+
+  /** The endings after `seen` up to `upTo`; `undefined` when some were pruned already. */
+  endingsIn(seen: number, upTo: number): ReadonlyArray<Ending> | undefined {
+    const oldest = this.#seq - this.#endings.length + 1;
+    if (seen + 1 < oldest) return undefined;
+    return this.#endings.filter((e) => e.seq > seen && e.seq <= upTo);
+  }
+}
 
 /**
- * One op-hub item: a committed or imported tx, or a marker that the branch's history from
- * `fromRev` on was set aside (a rewind; `fromRev` 1 for a rebuilt database). A subscriber
- * that already reported a rev at or after `fromRev` (or was started from one) ends with
- * `HISTORY_REWOUND`; one still before it carries on.
+ * Tracks what one subscriber has seen of a channel. `check(item)` fails when an ending it
+ * has not applied yet applies to it (`last`: the highest rev it reported, or started from).
  */
-export type HubItem =
-  | { readonly kind: "tx"; readonly tx: CommittedTx }
-  | { readonly kind: "rewound"; readonly fromRev: number; readonly details: Readonly<Record<string, unknown>> };
-
-interface OpHub {
-  readonly pubsub: PubSub.PubSub<HubItem>;
-  /** Highest rev published since the last rewind: commits and imports overlap, publish once. */
-  top: number;
+export function follower<T>(channel: Channel<T>, branch: string) {
+  let seen = channel.seq;
+  return (item: Stamped<T>, last: number): FinError | undefined => {
+    if (item.seq <= seen) return undefined;
+    const missed = channel.endingsIn(seen, item.seq);
+    seen = item.seq;
+    if (missed === undefined) {
+      return finError(
+        "HISTORY_REWOUND",
+        `this subscriber fell too far behind to tell whether the history of ${branch} it reported still holds`,
+        { branch, rev: 0, reason: "TOO_FAR_BEHIND" },
+        `read ${branch} again (snapshot.get) and subscribe from that rev`,
+      );
+    }
+    return missed.find((e) => last >= e.fromRev)?.error;
+  };
 }
 
 const key = (projectId: string, branch: string) => `${projectId}\u0000${branch}`;
 
 export class Hubs {
   readonly #capacity: number;
-  readonly #ops = new Map<string, OpHub>();
-  readonly #events = new Map<string, PubSub.PubSub<ProjectEvent>>();
+  readonly #ops = new Map<string, Channel<CommittedTx>>();
+  readonly #events = new Map<string, Channel<ProjectEvent>>();
 
   constructor(capacity: number) {
     this.#capacity = capacity;
   }
 
-  #hub(projectId: string, branch: string): OpHub {
+  ops(projectId: string, branch: string): Channel<CommittedTx> {
     const k = key(projectId, branch);
-    let hub = this.#ops.get(k);
-    if (!hub) {
-      // Sliding: a slow subscriber loses the oldest buffered items, never blocks commits;
-      // the subscriber notices the rev gap and reads the missing revs from the log.
-      hub = { pubsub: Effect.runSync(PubSub.sliding<HubItem>(this.#capacity)), top: 0 };
-      this.#ops.set(k, hub);
+    let ch = this.#ops.get(k);
+    if (!ch) {
+      ch = new Channel<CommittedTx>(this.#capacity);
+      this.#ops.set(k, ch);
     }
-    return hub;
-  }
-
-  ops(projectId: string, branch: string): PubSub.PubSub<HubItem> {
-    return this.#hub(projectId, branch).pubsub;
-  }
-
-  /** Publishes `tx` on its branch unless that rev was already published (deduped by rev). */
-  publishTx(projectId: string, tx: CommittedTx): void {
-    const hub = this.#hub(projectId, tx.tx.branch);
-    if (tx.rev <= hub.top) return;
-    hub.top = tx.rev;
-    Effect.runSync(PubSub.publish(hub.pubsub, { kind: "tx", tx }));
-  }
-
-  /** `branch` lost its history from `fromRev` on. */
-  rewind(projectId: string, branch: string, fromRev: number, details: Record<string, unknown>): void {
-    const hub = this.#hub(projectId, branch);
-    hub.top = Math.min(hub.top, fromRev - 1);
-    Effect.runSync(PubSub.publish(hub.pubsub, { kind: "rewound", fromRev, details: { branch, rev: fromRev, ...details } }));
+    return ch;
   }
 
   /**
-   * Every branch of the project may hold something else now (a rebuilt database): every
-   * subscriber that reported a rev ends. `details.rev` is 0, as on fin-store's own
-   * `HISTORY_REWOUND` (`REBUILT`): read the branch again from the start.
+   * Publishes `tx` on its branch. Commits and imports may publish the same rev, in either
+   * order; subscribers drop revs they already reported (no dedupe here, which would drop a
+   * new-history rev published before its rewind is known).
    */
-  rewindAll(projectId: string, details: Record<string, unknown>): void {
+  publishTx(projectId: string, tx: CommittedTx): void {
+    this.ops(projectId, tx.tx.branch).publish(tx);
+  }
+
+  /** `branch` lost its history from `fromRev` on. */
+  rewind(projectId: string, branch: string, fromRev: number, error: FinError): void {
+    this.ops(projectId, branch).end(fromRev, error);
+  }
+
+  /** Every op channel of the project ends `error` for subscribers that reported rev ≥ `fromRev`. */
+  endAll(projectId: string, fromRev: number, error: (branch: string) => FinError): void {
     const prefix = key(projectId, "");
-    for (const k of this.#ops.keys()) {
-      if (k.startsWith(prefix)) this.rewind(projectId, k.slice(prefix.length), 1, { ...details, rev: 0 });
+    for (const [k, ch] of this.#ops) {
+      if (k.startsWith(prefix)) ch.end(fromRev, error(k.slice(prefix.length)));
     }
   }
 
-  events(projectId: string): PubSub.PubSub<ProjectEvent> {
-    let hub = this.#events.get(projectId);
-    if (!hub) {
-      hub = Effect.runSync(PubSub.sliding<ProjectEvent>(this.#capacity));
-      this.#events.set(projectId, hub);
+  events(projectId: string): Channel<ProjectEvent> {
+    let ch = this.#events.get(projectId);
+    if (!ch) {
+      ch = new Channel<ProjectEvent>(this.#capacity);
+      this.#events.set(projectId, ch);
     }
-    return hub;
+    return ch;
   }
 
   publishEvent(projectId: string, event: ProjectEvent): void {
-    Effect.runSync(PubSub.publish(this.events(projectId), event));
+    this.events(projectId).publish(event);
+  }
+
+  /** Ends every `project.events` subscriber of the project. */
+  endEvents(projectId: string, error: FinError): void {
+    this.events(projectId).end(0, error);
   }
 }

@@ -144,10 +144,16 @@ export type TxSetAside = typeof TxSetAsideSchema.Type;
 export const TxGetSuccess = Schema.NullOr(Schema.Union([TxSetAsideSchema, CommittedTxSchema]));
 export type TxGetResult = CommittedTx | TxSetAside | null;
 
+/**
+ * `generation`: what the caller read `fromRev` at (from `snapshot.get`). When the branch was
+ * rewound or the database rebuilt since, the stream ends at once with `HISTORY_REWOUND`
+ * instead of continuing a history the caller never saw. Optional for protocol-1 clients.
+ */
 export const OpsSubscribePayload = Schema.Struct({
   projectId: Schema.String,
   branch: Schema.String,
   fromRev: Schema.Number,
+  generation: Schema.optional(GenerationSchema),
 });
 
 export const FinRpcs = RpcGroup.make(

@@ -226,7 +226,9 @@ fn tick(inner: &Shared) -> bool {
     }));
     match result {
         Ok(Ok((events, incarnation))) => {
-            drop(guard);
+            // Queued before the store is released: a commit that runs right after this tick
+            // answers after these events reach JS (a rewind is seen before the new history's
+            // first commit).
             for e in &events {
                 if let StoreEvent::Status(st) = e
                     && let Ok(v) = serde_json::to_value(st)
@@ -235,6 +237,7 @@ fn tick(inner: &Shared) -> bool {
                 }
                 inner.events.emit(event_json(e, incarnation.as_deref()));
             }
+            drop(guard);
             true
         }
         Ok(Err(e)) => {

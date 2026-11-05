@@ -224,6 +224,13 @@ fn replay_storage(server: &Server, subst: &[(String, String)]) {
         stale["exit"]["cause"][0]["error"]["code"],
         "HISTORY_REWOUND"
     );
+    let stale = Conn::open(server, subst).replay("ops-subscribe-stale");
+    assert_eq!(
+        stale["exit"]["cause"][0]["error"]["details"]["reason"],
+        "GENERATION"
+    );
+    let relocated = Conn::open(server, subst).replay("project-open-relocate");
+    assert_eq!(relocated["exit"]["value"]["rev"], 4, "{relocated}");
     replay_events(server, subst);
     let rebuilt = Conn::open(server, subst).replay_to("project-rebuild", REPORT_KEYS);
     assert_eq!(rebuilt["exit"]["value"]["reason"], "manual", "{rebuilt}");

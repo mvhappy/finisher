@@ -262,7 +262,9 @@ async function run() {
 
     ws = await connectWs(server.info);
     const seen = [];
-    const sub = ws.subscribe({ projectId, branch: "main", fromRev: 0 }, (tx) => seen.push(tx));
+    // With the generation it read rev 0 at: a rewind or rebuild in between ends the stream.
+    const { generation } = await ws.call("snapshot.get", { projectId, branch: "main" });
+    const sub = ws.subscribe({ projectId, branch: "main", fromRev: 0, generation }, (tx) => seen.push(tx));
     let subExit;
     sub.done.then((exit) => (subExit = exit));
 
