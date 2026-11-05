@@ -101,8 +101,10 @@ pub(crate) fn decode(s: &str) -> Option<PathBuf> {
     if let Some(h) = v.get("wide").and_then(Value::as_str) {
         use std::os::windows::ffi::OsStringExt;
         let units: Vec<u16> = unhex(h)?
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         return Some(PathBuf::from(std::ffi::OsString::from_wide(&units)));
     }

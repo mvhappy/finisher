@@ -408,6 +408,7 @@ fn missing_finisher_dir_is_empty() {
 }
 
 /// Runs `scan` on a thread so a regression that blocks fails instead of hanging the suite.
+#[cfg(unix)]
 fn scan_with_timeout(dir: &Path) -> Vec<Entry> {
     let (tx, rx) = std::sync::mpsc::channel();
     let dir = dir.to_path_buf();
@@ -590,7 +591,12 @@ fn non_utf8_names_are_foreign() {
     let dir = d.path().join(".finisher/segments/main");
     fs::create_dir_all(&dir).unwrap();
     let p = dir.join(std::ffi::OsStr::from_bytes(b"bad-\xff.fseg"));
-    fs::write(&p, "x").unwrap();
+    // APFS and other Unicode-only volumes refuse non-UTF-8 names (EILSEQ): no such name
+    // can appear there, so there is nothing to classify.
+    match fs::write(&p, "x") {
+        Err(e) if e.raw_os_error() == Some(libc::EILSEQ) => return,
+        r => r.unwrap(),
+    }
     assert_eq!(
         scan(d.path()).unwrap(),
         [Entry::Foreign {
