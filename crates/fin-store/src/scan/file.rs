@@ -8,7 +8,7 @@ use std::sync::Arc;
 use super::{Cached, Entry, ForeignContent, NotArrivedWhy, Place, SEGMENT_CAP, SNAPSHOT_CAP, Walk};
 use crate::conflict_names::{Provider, classify, is_lease_name};
 use crate::fsio;
-use crate::names::{self, SegmentName, SnapName};
+use crate::names::{self, ManifestName, SegmentName, SnapName};
 use crate::segment::{self, SegError};
 use crate::snapfile;
 
@@ -97,6 +97,13 @@ pub(super) fn entry(w: &mut Walk, path: &Path, meta: &fs::Metadata, place: Place
             canonical(w, path, name, branch, false, meta);
         }
         Place::Seg(_) | Place::Snap(_) => foreign_file(w, path, name, meta, true),
+        Place::Compaction => match ManifestName::parse(name) {
+            Some(name) => w.out.push(Entry::Manifest {
+                path: path.to_path_buf(),
+                name,
+            }),
+            None => foreign_file(w, path, name, meta, false),
+        },
     }
 }
 

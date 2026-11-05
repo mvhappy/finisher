@@ -39,11 +39,17 @@
 //! 1. exported rows move to quarantine as `SUPERSEDED`, origin `local` when this server wrote
 //!    them (a `segments` row in state `exported` covers the seq, or a folder segment holding
 //!    the record has our `writerId` or one this database had before a `SERVER_ID_RENEWED`,
-//!    [`history::server_ids`]), else `folder`; unexported rows (a tail that descends
-//!    from a lost record) as `DIVERGED_TAIL`, origin `local`, as for any diverged tail;
+//!    [`history::server_ids`]; a compaction pack never counts: it carries other writers'
+//!    records, and its rows are `imported`), else `folder`; unexported rows (a tail that
+//!    descends from a lost record) as `DIVERGED_TAIL`, origin `local`, as for any diverged
+//!    tail;
 //! 2. the rows, the DB snapshots at or above the fork seq, and the `segments` rows whose last
 //!    record is lost are deleted (rev 0's snapshot always remains, so the head is rebuilt
-//!    from the latest snapshot below the fork plus the remaining rows);
+//!    from the latest snapshot below the fork plus the remaining rows). That includes a
+//!    pack that spans the fork: it holds lost records, so no export may continue from it.
+//!    The pack file stays in the folder (compaction never deletes a pack, and deletes only
+//!    segments on the resolved chain), and the winner's first segment still resolves
+//!    through the pack's `replaces` (it holds the shared record);
 //! 3. the id counters stay where they are (ids the lost records used are never handed out
 //!    again); `idsScannedThrough` moves back so the winner's ids are scanned;
 //! 4. the branch's generation is bumped and the rewind recorded ([`crate::history`]).
@@ -243,8 +249,11 @@ pub(super) fn run(
     };
     let lost_hashes: HashSet<&str> = rows.iter().map(|r| r.tx_hash.as_str()).collect();
     // The folder segments holding lost records: writers, epochs, how many.
-    let mut writers = BTreeSet::new();
-    let mut epochs = BTreeSet::new();
+    // A pack (compaction) carries other writers' records under its own `writerId` and the
+    // highest epoch it replaces: it names who wrote and at which epoch only when no original
+    // segment holding a lost record is left, and never makes a record this server's own.
+    let (mut writers, mut pack_writers) = (BTreeSet::new(), BTreeSet::new());
+    let (mut epochs, mut pack_epochs) = (BTreeSet::new(), BTreeSet::new());
     let mut ours_in_folder: HashSet<String> = HashSet::new();
     let mut our_ids: HashSet<String> = history::server_ids(txn)?.into_iter().collect();
     our_ids.insert(ctx.server_id().to_string());
@@ -262,16 +271,22 @@ pub(super) fn run(
             continue;
         }
         let h = s.header();
+        if h.pack {
+            pack_writers.insert(h.writer_id.clone());
+            pack_epochs.insert(h.epoch);
+            packs.insert(s.hash().to_string());
+            continue;
+        }
         writers.insert(h.writer_id.clone());
         epochs.insert(h.epoch);
-        if h.pack {
-            packs.insert(s.hash().to_string());
-        } else {
-            plain.insert(s.hash().to_string());
-        }
+        plain.insert(s.hash().to_string());
         if our_ids.contains(&h.writer_id) {
             ours_in_folder.extend(held);
         }
+    }
+    if plain.is_empty() {
+        writers = pack_writers;
+        epochs = pack_epochs;
     }
 
     let mut own = 0u32;

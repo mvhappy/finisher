@@ -270,6 +270,11 @@ impl ImportState {
     pub(crate) fn read_only(&self) -> Option<ReadOnlyReason> {
         self.read_only
     }
+
+    /// The verified segments the last pass listed (every branch).
+    pub(crate) fn segrefs(&self) -> impl Iterator<Item = &SegRef> {
+        self.segrefs.values()
+    }
 }
 
 /// `PROJECT_READ_ONLY` for `reason`.

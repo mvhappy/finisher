@@ -13,8 +13,9 @@
 //!    t1 labelled 4 would beat u, an export other servers already applied. Labelled 2, it
 //!    loses, as the spec's epoch rule (§3.6 step 6) intends: the unexported tail competes at
 //!    its commit epoch (Task 20 amends the spec's wording).
-//! 2. Removes our own `.~fin-*.tmp` files under `segments/*` once each has been seen unchanged
-//!    (same length and mtime) for [`policy::TEMP_MAX_AGE`] (2×TTL) by the monotonic clock,
+//! 2. Removes our own `.~fin-*.tmp` files under `segments/*`, `snapshots/*` and `compaction/`
+//!    once each has been seen unchanged (same length and mtime) for
+//!    [`policy::TEMP_MAX_AGE`] (2×TTL) by the monotonic clock,
 //!    checked at most every [`SWEEP_EVERY`]. The mtime is the server's clock and is never
 //!    compared with ours. The lease holder is the only writer, so these are crash leftovers.
 //! 3. Debounce: the first pass that sees unexported records starts the clock; they are written
@@ -84,6 +85,21 @@ pub(crate) const MAX_FAILED_READS: u32 = 3;
 
 pub(crate) fn segments_root(project_dir: &Path) -> PathBuf {
     project_dir.join(".finisher").join("segments")
+}
+
+/// The directories the holder writes temp files in: `segments/*`, `snapshots/*` and
+/// `compaction/`.
+fn temp_dirs(project_dir: &Path) -> Vec<PathBuf> {
+    let dot = project_dir.join(".finisher");
+    let mut dirs = vec![dot.join("compaction")];
+    for sub in ["segments", "snapshots"] {
+        for d in fs::read_dir(dot.join(sub)).into_iter().flatten().flatten() {
+            if d.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(d.path());
+            }
+        }
+    }
+    dirs
 }
 
 /// What one export pass did.
@@ -162,9 +178,9 @@ pub(crate) fn export_pending(
         .is_none_or(|t| now.saturating_duration_since(t) >= SWEEP_EVERY)
     {
         store.export.last_sweep = Some(now);
-        let root = segments_root(&store.project_dir);
+        let dirs = temp_dirs(&store.project_dir);
         let ExportState { temps, lease, .. } = &mut store.export;
-        temps.sweep(&root, now, &|| lease.quick_check().is_ok());
+        temps.sweep(&dirs, now, &|| lease.quick_check().is_ok());
     }
     let branches = pending_branches(&store.conn)?;
     if branches.is_empty() {

@@ -8,8 +8,10 @@
 //!   not entered (with `conflict_copy` set when it is a sync client's copy of a branch
 //!   directory).
 //! - Files directly in `segments/` or `snapshots/` are foreign.
-//! - Not scanned: `compaction/` (manifests belong to compaction, spec §3.9) and any other
-//!   directory.
+//! - `.finisher/compaction/*`: compaction manifests (spec §3.9) are listed by name only
+//!   ([`Entry::Manifest`]; compaction reads them itself). Anything else there is foreign (a
+//!   sync client's copy of a manifest is a conflict copy), and so is any directory in it.
+//! - Not scanned: any other directory.
 //!
 //! A path that is not a regular file (symlink, FIFO, socket, device) is `Foreign` and never
 //! opened. Known OS and sync litter is skipped: `.DS_Store`, AppleDouble `._*`,
@@ -39,7 +41,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::conflict_names::Provider;
-use crate::names::{SegmentName, SnapName};
+use crate::names::{ManifestName, SegmentName, SnapName};
 use crate::segment::{self, Segment};
 use crate::snapfile::SnapHeader;
 
@@ -88,6 +90,11 @@ pub enum Entry {
         header: SnapHeader,
         /// `blake3:<64 hex>` of the file.
         hash: String,
+    },
+    /// A compaction manifest (`compaction/<ulid>.json`), not read by the scan.
+    Manifest {
+        path: PathBuf,
+        name: ManifestName,
     },
     NotArrived {
         path: PathBuf,
@@ -149,6 +156,8 @@ enum Place<'a> {
     Loose,
     Seg(&'a str),
     Snap(&'a str),
+    /// Directly in `compaction/`.
+    Compaction,
 }
 
 /// A scanner that remembers verified files between polls.
@@ -211,6 +220,17 @@ impl Scanner {
                         file::entry(&mut w, &p, &m, place);
                     }
                 }
+            }
+        }
+        for (path, meta) in list(&base.join("compaction"))? {
+            if meta.is_dir() {
+                w.out.push(Entry::Foreign {
+                    path,
+                    conflict_copy: None,
+                    content: None,
+                });
+            } else {
+                file::entry(&mut w, &path, &meta, Place::Compaction);
             }
         }
         self.cache = w.new;

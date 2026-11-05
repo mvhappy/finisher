@@ -1,8 +1,8 @@
 //! Conflict-copy names of the common sync providers (sub-project 4 spec §3.7).
 //!
 //! A name is a conflict copy of provider P when removing P's marker leaves one of our own
-//! canonical names (segment, snapshot or lease file). Litter that merely looks like a marker
-//! (`notes 2`, `Untitled 2.txt`) is therefore not a conflict copy. Matching is
+//! canonical names (segment, snapshot, compaction manifest or lease file). Litter that merely
+//! looks like a marker (`notes 2`, `Untitled 2.txt`) is therefore not a conflict copy. Matching is
 //! case-insensitive and hand-written, so no regex crate is needed.
 //!
 //! Markers, per provider:
@@ -15,7 +15,7 @@
 //!   split of the stem is tried;
 //! - Google Drive (unverified): `(<n>)` or `[Conflict]`, with a leading space if any.
 
-use crate::names::{self, SegmentName, SnapName};
+use crate::names::{self, ManifestName, SegmentName, SnapName};
 
 /// Which sync provider's naming a copy follows. `Unknown` marks a Finisher file stored under
 /// a name that is not its own (see `scan`).
@@ -48,7 +48,10 @@ pub fn is_own_name(name: &str) -> bool {
 }
 
 fn is_canonical(name: &str) -> bool {
-    is_lease_name(name) || SegmentName::parse(name).is_some() || SnapName::parse(name).is_some()
+    is_lease_name(name)
+        || SegmentName::parse(name).is_some()
+        || SnapName::parse(name).is_some()
+        || ManifestName::parse(name).is_some()
 }
 
 /// The provider whose conflict-copy pattern turns one of our names into `name`, or `None`.

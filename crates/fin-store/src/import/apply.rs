@@ -27,7 +27,10 @@
 //!    snapshot. The highest such snapshot wins; any other is ignored.
 //! 4. A `segments` row (`imported`) for each segment touched whose last record is now in
 //!    the DB with the same hash, so the next export chains `prevSegmentHash` from it.
-//!    Segments only partly in the DB (a fork or a stop inside one) get none.
+//!    Segments only partly in the DB (a fork or a stop inside one) get none. Every present
+//!    pack ending on the DB line gets one too, touched or not: once compaction deletes the
+//!    segments it replaces, the pack is what the DB knows the folder by (project copies,
+//!    `crate::copies`).
 //! 5. `quarantine` (stale or malformed folder records), keyed by `txHash`, skipping records
 //!    the DB holds.
 
@@ -338,7 +341,8 @@ pub(super) fn branch(
         head = Some(h);
     }
 
-    // 4. Segment rows.
+    // 4. Segment rows (and every pack that ends on the DB line).
+    touched.extend(segs.iter().filter(|s| s.header().pack).cloned());
     touched.sort_by(|a, b| a.hash().cmp(b.hash()));
     touched.dedup_by(|a, b| a.hash() == b.hash());
     for s in &touched {
@@ -550,7 +554,8 @@ fn record_segment(ctx: &Ctx, branch: &str, s: &SegRef) -> Result<(), StoreError>
     else {
         return Ok(());
     };
-    let state = if h.writer_id == ctx.server_id {
+    // A pack carries records other servers may have written: never this server's own.
+    let state = if h.writer_id == ctx.server_id && !h.pack {
         "exported"
     } else {
         "imported"

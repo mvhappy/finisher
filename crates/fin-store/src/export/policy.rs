@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::CoreError;
@@ -119,13 +119,13 @@ pub(crate) struct TempSweep {
 }
 
 impl TempSweep {
-    /// One sweep of `root/*`. Errors are ignored: the next sweep tries again. Each delete is
-    /// fenced by `may_delete` (the lease's in-memory check): the folder belongs to whoever
-    /// holds the lease now.
-    pub(super) fn sweep(&mut self, root: &Path, now: Instant, may_delete: &dyn Fn() -> bool) {
+    /// One sweep of each of `dirs`. Errors are ignored: the next sweep tries again. Each
+    /// delete is fenced by `may_delete` (the lease's in-memory check): the folder belongs to
+    /// whoever holds the lease now.
+    pub(super) fn sweep(&mut self, dirs: &[PathBuf], now: Instant, may_delete: &dyn Fn() -> bool) {
         let mut present = HashMap::new();
-        for dir in fs::read_dir(root).into_iter().flatten().flatten() {
-            let Ok(entries) = fs::read_dir(dir.path()) else {
+        for dir in dirs {
+            let Ok(entries) = fs::read_dir(dir) else {
                 continue;
             };
             for e in entries.flatten() {
@@ -167,10 +167,11 @@ mod tests {
         fs::write(&temp, b"x").unwrap();
         let t0 = Instant::now();
         let mut sweep = TempSweep::default();
-        sweep.sweep(tmp.path(), t0, &|| false);
-        sweep.sweep(tmp.path(), t0 + TEMP_MAX_AGE, &|| false);
+        let dirs = [dir.clone()];
+        sweep.sweep(&dirs, t0, &|| false);
+        sweep.sweep(&dirs, t0 + TEMP_MAX_AGE, &|| false);
         assert!(temp.exists(), "no lease, no delete");
-        sweep.sweep(tmp.path(), t0 + TEMP_MAX_AGE, &|| true);
+        sweep.sweep(&dirs, t0 + TEMP_MAX_AGE, &|| true);
         assert!(!temp.exists());
     }
 

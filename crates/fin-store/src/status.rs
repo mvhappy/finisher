@@ -24,6 +24,8 @@
 //! - `LEASE_CHECK`: the last fencing check could not list `.finisher/` (the lease stands);
 //! - `SYNC_ARRIVING`: on a sync folder, segment files are placeholders or incomplete (they
 //!   also hold `CATCHING_UP` after an acquisition);
+//! - `COMPACTION_ABANDONED`: a compaction manifest whose packs or segments do not check out
+//!   against the folder: nothing it names is deleted;
 //! - `PROJECT_FILE_CONFLICT`: a sync conflict copy of `finisher.project.json` sits in the
 //!   project folder (warning only: the copy is never read).
 
@@ -130,6 +132,8 @@ pub struct ProjectStatus {
     /// The database's incarnation: with a branch's `generation`, what a caller passes to
     /// commit against what it read (`Generation`). New whenever the database is rebuilt.
     pub incarnation: String,
+    /// Pending compaction manifests, the last run, its last problem.
+    pub compaction: crate::CompactionStatus,
 }
 
 /// What the import passes found, kept for status.
@@ -363,6 +367,17 @@ impl Store {
                 ),
             );
         }
+        let compaction = self.compaction_status();
+        for p in compaction.pending.iter().filter(|p| p.state == "abandoned") {
+            warn(
+                "COMPACTION_ABANDONED",
+                format!(
+                    "compaction {} was abandoned: {}; every file it names is kept (fin project compact checks it again)",
+                    p.manifest,
+                    p.reason.clone().unwrap_or_default()
+                ),
+            );
+        }
         let rel = |p: &String| {
             std::path::Path::new(p)
                 .strip_prefix(&self.project_dir)
@@ -385,6 +400,7 @@ impl Store {
             pending: f.pending.clone(),
             warnings,
             incarnation: crate::history::incarnation(&self.conn).unwrap_or_default(),
+            compaction,
         }
     }
 

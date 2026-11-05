@@ -11,6 +11,7 @@
 mod backup;
 pub mod chain;
 mod commit;
+mod compact;
 pub mod conflict_names;
 mod copies;
 mod counters;
@@ -46,6 +47,12 @@ use std::path::{Path, PathBuf};
 use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
+#[cfg(any(test, feature = "test-hooks"))]
+pub use compact::CompactFail;
+pub use compact::{
+    CompactReport, CompactionStatus, PendingCompaction, TRIGGER as COMPACT_TRIGGER,
+    grace as compaction_grace,
+};
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use copies::mount_root_for_test as copies_mount_root_for_test;
@@ -201,6 +208,8 @@ pub struct Store {
     db_lock: Option<std::fs::File>,
     /// Damaged folder files and since when they look unchanged (verify's 60 s rule).
     damage: RefCell<verify::DamageSeen>,
+    /// Compaction manifests seen and their grace periods.
+    compact: compact::CompactState,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }

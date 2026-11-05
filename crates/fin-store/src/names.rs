@@ -110,6 +110,43 @@ impl fmt::Display for SnapName {
     }
 }
 
+/// `compaction/<ulid>.json` (spec §3.9): a lowercase 26-character Crockford ULID. Built only
+/// by [`ManifestName::new`] or [`ManifestName::parse`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ManifestName {
+    id: String,
+}
+
+impl ManifestName {
+    /// A name for a fresh ULID.
+    pub fn new() -> ManifestName {
+        ManifestName {
+            id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        let id = name.strip_suffix(".json")?;
+        let lower = id.len() == 26
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase());
+        (lower && ulid::Ulid::from_string(id).is_ok()).then(|| ManifestName { id: id.to_string() })
+    }
+}
+
+impl Default for ManifestName {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ManifestName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.json", self.id)
+    }
+}
+
 /// The first 12 hex characters of a `<algorithm>:<hex>` file hash.
 pub fn hash12(hash: &str) -> Option<&str> {
     let (_, hex) = hash.split_once(':')?;

@@ -20,7 +20,9 @@
 //! 5. temp-file cleanup runs inside the export; then the daily backup of the database
 //!    ([`Store::daily_backup`], on every server: it is a copy of local state; checked once per
 //!    poll, taken once per local calendar day, a failure retried after
-//!    [`BACKUP_RETRY_MS`]); compaction (Task 13) goes at the marked call point.
+//!    [`BACKUP_RETRY_MS`]);
+//! 6. compaction (`crate::compact`; holder only, writable and caught up), also under a test
+//!    lease.
 //!
 //! (The plan lists the retry before the re-check; re-checking first lets a loss found by
 //! this poll be retried by the same poll.)
@@ -143,6 +145,8 @@ pub struct TickReport {
     /// The import passes of this tick (none between polls; two after an acquisition).
     pub imports: Vec<ImportReport>,
     pub export: ExportReport,
+    /// Compaction (on polls only; [`crate::CompactReport::skipped`] says why it did not run).
+    pub compact: crate::CompactReport,
 }
 
 impl Store {
@@ -184,7 +188,10 @@ impl Store {
                 }
             }
             self.daily_tick(crate::commit::now_ms());
-            // Task 13: compaction when triggered (holder only).
+        }
+        if due {
+            // Holder only, writable, caught up (`compact`); after the export and lease steps.
+            out.compact = crate::compact::run(self, crate::commit::now_ms(), false)?;
         }
         if let Some(status) = self.status_if_changed() {
             out.events.push(StoreEvent::Status(Box::new(status)));

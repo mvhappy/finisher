@@ -281,6 +281,7 @@ impl Store {
             daily: tick::DailyState::default(),
             db_lock: None,
             damage: RefCell::new(crate::verify::DamageSeen::default()),
+            compact: crate::compact::CompactState::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }
