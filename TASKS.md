@@ -110,6 +110,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
     - [x] Windows↔Linux: all rows 0 critical on the final code (spec §3.13 item 2)
     - [x] Mac↔Linux before the fix: found the macOS smbfs 30–60 s directory cache (unsafe 10 s ordering-rule wait); fixed (65 s wait + listing refresh, 3e284dc); network poll 1 s, churn export delay 5 s
     - [ ] Mac↔Linux and Mac↔Windows on the final code (needs the rebuilt Mac binary)
+  - [x] items 4, 5, 7, 8, 13, 14, 15 and most of 10 on Linux↔Windows SMB (spec §3.13); fixed the cifs cached-mtime probe read and verify flagging locked segments as corrupt
   - mtime source on SMB (server- vs client-set; Samba 2 s write-time delay; cifs deferred close); claims judged by client-set mtime under skew > 45 s
   - clock skew; suspend/resume of a holder (wakes fenced); Windows claim invisibility race (up to 9.9 s)
   - `File::try_lock`/`lock_shared` behaviour on Linux, Windows, macOS (`lease.lock`, `db.lock`, `server-id.lock`, restart shortcut)
@@ -137,6 +138,9 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] `BASE_REV_AHEAD` vs `HISTORY_REWOUND` precision for a subscriber whose `fromRev` is beyond a rewound head
 - [ ] `tx.commit.generation` and `ops.subscribe.generation` optional in protocol 1 → required in protocol 2
 - [ ] Linux NFS: directory attribute cache (`acdirmax`, 60 s by default) exceeds the 10 s ordering-rule wait; NFS is classified `network` but untested. Measure, and use a longer wait or a listing refresh there
+- [ ] Windows: `PROJECT_NOT_FOUND` for ~2.5 s right after another host creates the project (Windows directory cache hides `.finisher/` too; the 15 s project-file retry doesn't cover it)
+- [ ] macOS smbfs: whether the lease probe can read a client-set mtime (no `AT_STATX_FORCE_SYNC`); untested
+- [ ] A segment held open by another SMB client slows compaction to one 60 s retry per file
 - [ ] Clean close could write a "released" lease record so other servers need not wait out 45 s of staleness
 - [ ] `fin project verify` / `rebuild` / `compact` have no progress or cancellation (only `ENGINE_BUSY {operation, sinceMs}`)
 - [ ] `diffs::fill` loads a whole branch's rows; restore tooling for daily backups should mint a new incarnation (backups already do; a hand-copied DB does not)
