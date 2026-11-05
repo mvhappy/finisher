@@ -80,10 +80,12 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
     let dot = store.project_dir.join(".finisher");
     let seg_dir = dot.join("segments").join(branch);
     let snap_dir = dot.join("snapshots").join(branch);
-    let entries = match crate::scan::scan(&store.project_dir) {
-        Ok(e) => e,
-        Err(e) => return Ok(Err(format!("cannot list the project folder: {e}"))),
-    };
+    // Fresh (§3.9 Phase 1): a listing refresh where the client caches listings.
+    let entries =
+        match crate::scan::Scanner::new().scan_for(&store.project_dir, store.storage_kind()) {
+            Ok(e) => e,
+            Err(e) => return Ok(Err(format!("cannot list the project folder: {e}"))),
+        };
     let genesis = crate::project_file::db_genesis_hash(&store.conn)?;
     let mut segs = vec![];
     let mut snaps = vec![];

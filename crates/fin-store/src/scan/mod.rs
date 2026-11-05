@@ -44,6 +44,7 @@ use crate::conflict_names::Provider;
 use crate::names::{ManifestName, SegmentName, SnapName};
 use crate::segment::{self, Segment};
 use crate::snapfile::SnapHeader;
+use crate::storage_kind::StorageKind;
 
 /// The largest segment file accepted: twice the writer's cap plus slack for a header.
 pub const SEGMENT_CAP: u64 = 2 * segment::MAX_BYTES as u64 + 64 * 1024;
@@ -175,6 +176,19 @@ impl Scanner {
     /// directory that cannot be listed fails the scan. Entries are ordered by directory,
     /// then name.
     pub fn scan(&mut self, project_dir: &Path) -> io::Result<Vec<Entry>> {
+        self.walk(project_dir, false)
+    }
+
+    /// [`Scanner::scan`] of a folder on `kind`, as import and follow need it: fresh. Where the
+    /// client caches listings for up to a minute ([`crate::storage_kind::slow_dir_cache`]),
+    /// `segments/` and each `segments/<branch>/` are refreshed ([`refresh_listing`]) right
+    /// before they are listed.
+    pub fn scan_for(&mut self, project_dir: &Path, kind: StorageKind) -> io::Result<Vec<Entry>> {
+        self.walk(project_dir, crate::storage_kind::slow_dir_cache(kind))
+    }
+
+    /// The scan, refreshing the segment listings first when `refresh`.
+    fn walk(&mut self, project_dir: &Path, refresh: bool) -> io::Result<Vec<Entry>> {
         let mut w = Walk {
             old: std::mem::take(&mut self.cache),
             new: HashMap::new(),
@@ -187,6 +201,10 @@ impl Scanner {
             }
         }
         for (sub, is_seg) in [("segments", true), ("snapshots", false)] {
+            let refresh = refresh && is_seg;
+            if refresh {
+                refresh_listing(&base.join(sub));
+            }
             for (path, meta) in list(&base.join(sub))? {
                 if !meta.is_dir() {
                     file::entry(&mut w, &path, &meta, Place::Loose);
@@ -210,6 +228,9 @@ impl Scanner {
                     });
                     continue;
                 };
+                if refresh {
+                    refresh_listing(&path);
+                }
                 for (p, m) in list(&path)? {
                     if !m.is_dir() {
                         let place = if is_seg {
@@ -241,6 +262,26 @@ impl Scanner {
 /// An uncached scan: see [`Scanner::scan`].
 pub fn scan(project_dir: &Path) -> io::Result<Vec<Entry>> {
     Scanner::new().scan(project_dir)
+}
+
+/// Makes the client drop its cached listing of `dir` by creating and removing a file in it:
+/// on macOS smbfs a change made through this machine invalidates that directory's cache at
+/// once (measured; a `stat` of the directory does not). Best effort: any failure (a
+/// read-only share, a missing directory) is ignored and the listing may then be up to a
+/// minute old, which only delays following; the ordering rule never relies on this
+/// (`tick::MACOS_DIR_CACHE_WINDOW`). The file has a temp name ([`crate::names::temp_name`]), which
+/// every reader skips and the holder's temp sweep removes if a crash leaves it.
+pub(crate) fn refresh_listing(dir: &Path) {
+    let path = dir.join(crate::names::temp_name());
+    note_refresh();
+    if fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .is_ok()
+    {
+        let _ = fs::remove_file(&path);
+    }
 }
 
 /// `main` or `br<digits>` (spec §3.3).
@@ -287,6 +328,7 @@ fn list(dir: &Path) -> io::Result<Vec<(PathBuf, fs::Metadata)>> {
 thread_local! {
     static HOOKED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
     static READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static REFRESHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 fn hooked_placeholder(path: &Path) -> bool {
@@ -302,6 +344,11 @@ fn hooked_placeholder(path: &Path) -> bool {
 fn note_read() {
     #[cfg(any(test, feature = "test-hooks"))]
     READS.with(|n| n.set(n.get() + 1));
+}
+
+fn note_refresh() {
+    #[cfg(any(test, feature = "test-hooks"))]
+    REFRESHES.with(|n| n.set(n.get() + 1));
 }
 
 /// Test hook: scans on this thread treat `path` as a cloud-sync placeholder.
@@ -333,6 +380,16 @@ pub fn clear_placeholders() {
 pub fn reads() -> u32 {
     READS.with(std::cell::Cell::get)
 }
+
+/// Test hook: how many listing refreshes ([`refresh_listing`]) this thread has attempted.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn refreshes() -> u32 {
+    REFRESHES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(any(test, feature = "test-hooks"))]
 fn hidden_set() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {

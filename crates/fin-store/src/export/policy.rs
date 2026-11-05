@@ -9,11 +9,19 @@ use fin_core::CoreError;
 
 use crate::lease::Lease;
 use crate::names;
+use crate::storage_kind::StorageKind;
 
 /// Segment export delay after commits…
 pub(crate) const DELAY: Duration = Duration::from_secs(2);
-/// …and under churn: more than [`CHURN_SEGMENTS`] segments within [`CHURN_WINDOW`].
-pub(crate) const CHURN_DELAY: Duration = Duration::from_secs(30);
+/// …and under churn (more than [`CHURN_SEGMENTS`] segments within [`CHURN_WINDOW`]) on a local
+/// disk or a share. Kept short for follow latency: a commit waits up to this long before
+/// another server can see it. It caps a continuous session at 12 segments a minute, and
+/// compaction (`crate::compact`, more than 200 non-pack segments on a branch) packs them, so
+/// the count on a share stays bounded.
+pub(crate) const CHURN_DELAY: Duration = Duration::from_secs(5);
+/// …and under churn on a sync folder: every file is an upload and a download for the sync
+/// client, and compaction deletes there only after a 24 h grace, so the rate stays low.
+pub(crate) const SYNC_CHURN_DELAY: Duration = Duration::from_secs(30);
 pub(crate) const CHURN_SEGMENTS: usize = 30;
 pub(crate) const CHURN_WINDOW: Duration = Duration::from_secs(10 * 60);
 /// Temp files unchanged this long (2×TTL) are crash leftovers.
@@ -21,24 +29,26 @@ pub(crate) const TEMP_MAX_AGE: Duration = Duration::from_secs(20);
 /// How often the temp sweep runs.
 pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(10);
 
-/// How long to wait before writing: 2 s, or 30 s while more than 30 segments were written in
-/// the last 10 minutes.
+/// How long to wait before writing: 2 s, or while more than 30 segments were written in the
+/// last 10 minutes 5 s ([`CHURN_DELAY`]; 30 s on a sync folder, [`SYNC_CHURN_DELAY`]).
 #[derive(Debug, Default)]
 pub(crate) struct ExportPolicy {
     recent: VecDeque<Instant>,
 }
 
 impl ExportPolicy {
-    pub(crate) fn delay(&self, now: Instant) -> Duration {
+    pub(crate) fn delay(&self, now: Instant, kind: StorageKind) -> Duration {
         let recent = self
             .recent
             .iter()
             .filter(|t| now.saturating_duration_since(**t) <= CHURN_WINDOW)
             .count();
-        if recent > CHURN_SEGMENTS {
-            CHURN_DELAY
-        } else {
+        if recent <= CHURN_SEGMENTS {
             DELAY
+        } else if kind.is_sync() {
+            SYNC_CHURN_DELAY
+        } else {
+            CHURN_DELAY
         }
     }
 
@@ -176,19 +186,31 @@ mod tests {
     }
 
     #[test]
-    fn delay_is_2s_then_30s_above_30_segments_in_10_minutes() {
+    fn delay_is_2s_then_5s_or_30s_on_sync_above_30_segments_in_10_minutes() {
+        use crate::conflict_names::Provider;
+        let local = StorageKind::Local;
+        let net = StorageKind::Network;
+        let sync = StorageKind::Sync(Provider::Dropbox);
         let t0 = Instant::now();
         let mut p = ExportPolicy::default();
-        assert_eq!(p.delay(t0), DELAY);
+        for k in [local, net, sync] {
+            assert_eq!(p.delay(t0, k), DELAY);
+        }
         for i in 0..30 {
             p.wrote(t0 + Duration::from_secs(i));
         }
-        assert_eq!(p.delay(t0 + Duration::from_secs(30)), DELAY);
+        assert_eq!(p.delay(t0 + Duration::from_secs(30), net), DELAY);
         p.wrote(t0 + Duration::from_secs(30));
-        assert_eq!(p.delay(t0 + Duration::from_secs(31)), CHURN_DELAY);
+        let t = t0 + Duration::from_secs(31);
+        assert_eq!(p.delay(t, local), Duration::from_secs(5));
+        assert_eq!(p.delay(t, net), Duration::from_secs(5));
+        assert_eq!(p.delay(t, sync), Duration::from_secs(30));
         // The oldest leaves the window 10 minutes after it was written.
-        assert_eq!(p.delay(t0 + CHURN_WINDOW), CHURN_DELAY);
-        assert_eq!(p.delay(t0 + CHURN_WINDOW + Duration::from_secs(1)), DELAY);
+        assert_eq!(p.delay(t0 + CHURN_WINDOW, net), CHURN_DELAY);
+        assert_eq!(p.delay(t0 + CHURN_WINDOW, sync), SYNC_CHURN_DELAY);
+        let after = t0 + CHURN_WINDOW + Duration::from_secs(1);
+        assert_eq!(p.delay(after, net), DELAY);
+        assert_eq!(p.delay(after, sync), DELAY);
         p.wrote(t0 + CHURN_WINDOW + Duration::from_secs(100));
         assert!(p.recent.len() < 31, "old entries are pruned");
     }

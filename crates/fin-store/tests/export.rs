@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::{Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
 use fin_store::chain::{Known, SegRef, resolve};
+use fin_store::conflict_names::Provider;
 use fin_store::names::{SegmentName, temp_name};
 use fin_store::scan::{Entry, NotArrivedWhy, scan};
 use fin_store::segment::{self, Header, MAX_BYTES, MAX_RECORDS, Segment};
@@ -386,10 +387,16 @@ fn export_delay_grows_under_churn() {
         );
         t += 3 * S;
     }
-    // 31 in the last 10 minutes: now 30 s.
+    // 31 in the last 10 minutes: now 5 s (a local folder; 30 s on a sync folder).
     commit(&mut s, "late");
     assert_eq!(s.tick_report(t).unwrap().export.segments_written, 0);
     assert_eq!(s.tick_report(t + 2 * S).unwrap().export.segments_written, 0);
+    assert_eq!(s.tick_report(t + 4 * S).unwrap().export.segments_written, 0);
+    assert_eq!(s.tick_report(t + 5 * S).unwrap().export.segments_written, 1);
+    t += 6 * S;
+    s.set_test_storage_kind(StorageKind::Sync(Provider::Dropbox));
+    commit(&mut s, "synced");
+    assert_eq!(s.tick_report(t).unwrap().export.segments_written, 0);
     assert_eq!(
         s.tick_report(t + 29 * S).unwrap().export.segments_written,
         0
@@ -398,6 +405,7 @@ fn export_delay_grows_under_churn() {
         s.tick_report(t + 30 * S).unwrap().export.segments_written,
         1
     );
+    s.set_test_storage_kind(StorageKind::Local);
     // Ten quiet minutes later the window has emptied: back to 2 s.
     t += 11 * 60 * S;
     commit(&mut s, "quiet");

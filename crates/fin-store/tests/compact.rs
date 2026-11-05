@@ -674,7 +674,7 @@ fn more_than_200_segments_trigger_compaction() {
     let mut a = e.create("a");
     a.set_test_lease(1, true);
     short_grace(&mut a);
-    // Fixed lease: the clock may jump (the export delay grows to 30 s under churn).
+    // Fixed lease: the clock may jump (the export delay grows under churn).
     let flush = |a: &mut Store| {
         e.poll(a);
         e.clock.advance(Duration::from_secs(31));

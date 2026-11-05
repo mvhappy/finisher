@@ -2,8 +2,8 @@
 //!
 //! # One tick ([`Store::tick`])
 //!
-//! Folder work runs once per poll, at the storage kind's cadence (plan Decision 3: local 2 s,
-//! network 3 s, sync 10 s); calls in between only export (the export has its own delay) and
+//! Folder work runs once per poll, at the storage kind's cadence ([`poll_every`]: local 2 s,
+//! network 1 s, sync 10 s); calls in between only export (the export has its own delay) and
 //! report status changes. A poll:
 //! 1. **import** ([`Store::import`]); records taken out of a branch's history become
 //!    [`StoreEvent::Rewound`], then applied records [`StoreEvent::Applied`]. Every import
@@ -46,11 +46,12 @@
 //! highest epoch in our database belongs to another server, or `lease.json` was missing while
 //! the folder holds a segment by another writer or above our epochs, that server may have
 //! exported files our directory listing does not show yet. Then the pass that lifts the block must
-//! start at least [`DIR_CACHE_WINDOW`] (10 s, monotonic: the Windows SMB directory cache)
-//! after the acquisition. Passes before that still import.
+//! start at least [`dir_cache_window`] after the acquisition (monotonic): 10 s
+//! ([`DIR_CACHE_WINDOW`], the Windows SMB directory cache), or 65 s on a network share mounted
+//! by macOS ([`MACOS_DIR_CACHE_WINDOW`]). Passes before that still import.
 //!
 //! On a sync folder the block also stays while any file under `segments/` has not arrived
-//! (a placeholder, or incomplete). The 10 s are a directory-cache bound, not a propagation
+//! (a placeholder, or incomplete). The window is a directory-cache bound, not a propagation
 //! bound: after a confirmed takeover on a sync folder the other machine's last edits may
 //! still be on their way; status lists what is arriving (`SYNC_ARRIVING`), and nothing
 //! bounds what has not started arriving.
@@ -66,14 +67,44 @@ use crate::status::StoreEvent;
 use crate::storage_kind::StorageKind;
 use crate::{Store, StoreError};
 
-/// How long a directory listing may lag behind another server's writes.
+/// How long a directory listing may lag behind another server's writes: the Windows SMB
+/// client's `DirectoryCacheLifetime` (10 s). Linux clients and local disks lag less.
 pub const DIR_CACHE_WINDOW: Duration = Duration::from_secs(10);
 
-/// The poll cadence for `kind` (plan Decision 3).
+/// [`DIR_CACHE_WINDOW`] on a network share mounted by macOS. smbfs caches a directory's
+/// listing for `dir_cache_min` 30 s up to `dir_cache_max` 60 s (`man nsmb.conf` defaults), for
+/// every process on the machine: a listing measured on the NAS missed another host's new
+/// segments for 30–31 s, and a verifier missed 64 of them for over 27 s. 65 s is
+/// `dir_cache_max` plus a margin for the poll that must start after it. A user's
+/// `/etc/nsmb.conf` can raise `dir_cache_max` (or turn the cache off); a raised value is
+/// not detected and puts the bound back at risk (spec §3.6, a documented limit). The
+/// listing refresh (`crate::scan`) makes the follow fast, never this rule safe: it is best
+/// effort and cannot run read-only.
+pub const MACOS_DIR_CACHE_WINDOW: Duration = Duration::from_secs(65);
+
+/// The ordering rule's wait on `kind` (module docs) on this OS.
+pub fn dir_cache_window(kind: StorageKind) -> Duration {
+    dir_cache_window_on(kind, cfg!(target_os = "macos"))
+}
+
+/// [`dir_cache_window`] as on macOS (`is_macos`) or elsewhere, apart from the `cfg` so both
+/// answers are tested on every OS ([`crate::storage_kind::slow_dir_cache_on`]).
+pub(crate) fn dir_cache_window_on(kind: StorageKind, is_macos: bool) -> Duration {
+    if crate::storage_kind::slow_dir_cache_on(kind, is_macos) {
+        MACOS_DIR_CACHE_WINDOW
+    } else {
+        DIR_CACHE_WINDOW
+    }
+}
+
+/// The poll cadence for `kind` (spec §3.6, Decision 3). A share polls every second for
+/// follow latency (an import pass is one listing per branch directory; verified segments are
+/// cached, so an idle poll reads no file); sync folders poll slowly because their client
+/// delivers files seconds apart anyway.
 pub fn poll_every(kind: StorageKind) -> Duration {
     match kind {
         StorageKind::Local => Duration::from_secs(2),
-        StorageKind::Network => Duration::from_secs(3),
+        StorageKind::Network => Duration::from_secs(1),
         StorageKind::Sync(_) => Duration::from_secs(10),
     }
 }
@@ -380,8 +411,9 @@ impl Store {
         let wait = previous.other_writer_since(&self.server_id, known)
             || (missing && self.folder_has_other_writes(known));
         let now = self.ctl.now();
+        let window = dir_cache_window(self.storage_kind());
         self.ctl.gate = Gate::Pending {
-            wait_until: wait.then(|| now + DIR_CACHE_WINDOW),
+            wait_until: wait.then(|| now + window),
         };
         self.ctl.contender = None;
         self.ctl.check_error = None;
@@ -393,7 +425,11 @@ impl Store {
     /// another server's writes (a segment by another writer, or above the epochs we know).
     /// A folder that cannot be listed counts as yes.
     fn folder_has_other_writes(&mut self, known: u64) -> bool {
-        match self.import.scanner.scan(&self.project_dir) {
+        match self
+            .import
+            .scanner
+            .scan_for(&self.project_dir, self.storage_kind())
+        {
             Ok(entries) => entries.iter().any(|e| {
                 matches!(e, crate::scan::Entry::Segment { seg, .. }
                     if seg.header.writer_id != self.server_id || seg.header.epoch > known)
@@ -546,3 +582,6 @@ impl LeaseCtl {
         matches!(self.gate, Gate::Pending { wait_until: None })
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -58,10 +58,12 @@ fn lease_files(dir: &std::path::Path) -> Value {
 
 /// Every verified segment with its records; other entries by kind.
 fn segments(dir: &std::path::Path) -> Value {
-    let entries = match scan::scan(dir) {
-        Ok(e) => e,
-        Err(e) => return json!({ "error": e.to_string() }),
-    };
+    // Refreshed like an import's listing (a Mac's smbfs caches listings up to 60 s).
+    let entries =
+        match scan::Scanner::new().scan_for(dir, fin_store::storage_kind::StorageKind::Network) {
+            Ok(e) => e,
+            Err(e) => return json!({ "error": e.to_string() }),
+        };
     let mut segs = Vec::new();
     let mut other = Vec::new();
     for e in entries {

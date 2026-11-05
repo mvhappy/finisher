@@ -278,11 +278,14 @@ fn args_hash_is_of_the_command_input() {
     let b = input(&insert(
         json!({ "dur": "2s", "asset": "a1", "at": "end", "track": "t1", "in": null }),
     ));
-    assert_eq!(args_hash(&[a.clone()]), args_hash(&[b]));
+    assert_eq!(args_hash(std::slice::from_ref(&a)), args_hash(&[b]));
     let c = input(&insert(
         json!({ "track": "t1", "at": "0", "asset": "a1", "dur": "2s" }),
     ));
-    assert_ne!(args_hash(&[a.clone()]), args_hash(&[c.clone()]));
+    assert_ne!(
+        args_hash(std::slice::from_ref(&a)),
+        args_hash(std::slice::from_ref(&c))
+    );
     assert_ne!(args_hash(&[a.clone(), c.clone()]), args_hash(&[c, a]));
     let h = args_hash(&[]);
     assert!(h.starts_with("blake3:") && h.len() == 71, "{h}");
@@ -302,13 +305,16 @@ fn args_hash_uses_the_canonical_media_path() {
     let direct = add(&media.join("a.mov"));
     // `media/../media/a.mov`, as `asset add ../media/a.mov` typed inside `media/` gives.
     let dotted = add(&media.join("..").join("media").join("a.mov"));
-    assert_eq!(args_hash(&[direct.clone()]), args_hash(&[dotted]));
+    assert_eq!(
+        args_hash(std::slice::from_ref(&direct)),
+        args_hash(&[dotted])
+    );
     #[cfg(unix)]
     {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&media, &link).unwrap();
         assert_eq!(
-            args_hash(&[direct.clone()]),
+            args_hash(std::slice::from_ref(&direct)),
             args_hash(&[add(&link.join("a.mov"))])
         );
     }

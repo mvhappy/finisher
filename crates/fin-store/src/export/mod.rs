@@ -13,14 +13,15 @@
 //!    t1 labelled 4 would beat u, an export other servers already applied. Labelled 2, it
 //!    loses, as the spec's epoch rule (§3.6 step 6) intends: the unexported tail competes at
 //!    its commit epoch (Task 20 amends the spec's wording).
-//! 2. Removes our own `.~fin-*.tmp` files under `segments/*`, `snapshots/*` and `compaction/`
-//!    once each has been seen unchanged (same length and mtime) for
+//! 2. Removes our own `.~fin-*.tmp` files under `segments/`, `segments/*`, `snapshots/*` and
+//!    `compaction/` once each has been seen unchanged (same length and mtime) for
 //!    [`policy::TEMP_MAX_AGE`] (2×TTL) by the monotonic clock,
 //!    checked at most every [`SWEEP_EVERY`]. The mtime is the server's clock and is never
-//!    compared with ours. The lease holder is the only writer, so these are crash leftovers.
+//!    compared with ours. Only the holder writes them (and any server's listing refresh,
+//!    which removes its file at once), so these are crash leftovers.
 //! 3. Debounce: the first pass that sees unexported records starts the clock; they are written
-//!    once [`ExportPolicy::delay`] has passed (2 s, or 30 s under churn). `force` (close) skips
-//!    the wait. After a failure the clock restarts, so a broken folder is retried once per delay.
+//!    once [`ExportPolicy::delay`] has passed (2 s; under churn 5 s, or 30 s on a sync
+//!    folder). `force` (close) skips the wait. After a failure the clock restarts, so a broken folder is retried once per delay.
 //! 4. Per branch, from its lowest unexported seq, one segment at a time:
 //!    - the exported rows must be a seq prefix of the branch (else `DB_ERROR`);
 //!    - `prevSegmentHash` is the hash of the segment (from the `segments` table) whose last
@@ -87,11 +88,12 @@ pub(crate) fn segments_root(project_dir: &Path) -> PathBuf {
     project_dir.join(".finisher").join("segments")
 }
 
-/// The directories the holder writes temp files in: `segments/*`, `snapshots/*` and
-/// `compaction/`.
+/// The directories temp files are written in: `segments/*`, `snapshots/*` and
+/// `compaction/` by the holder, and `segments/` itself by a listing refresh
+/// (`scan::refresh_listing`, macOS network shares).
 fn temp_dirs(project_dir: &Path) -> Vec<PathBuf> {
     let dot = project_dir.join(".finisher");
-    let mut dirs = vec![dot.join("compaction")];
+    let mut dirs = vec![dot.join("compaction"), dot.join("segments")];
     for sub in ["segments", "snapshots"] {
         for d in fs::read_dir(dot.join(sub)).into_iter().flatten().flatten() {
             if d.file_type().is_ok_and(|t| t.is_dir()) {
@@ -189,7 +191,10 @@ pub(crate) fn export_pending(
         return Ok(report);
     }
     let since = *store.export.pending_since.get_or_insert(now);
-    if !force && now.saturating_duration_since(since) < store.export.policy.delay(now) {
+    if !force
+        && now.saturating_duration_since(since)
+            < store.export.policy.delay(now, store.storage_kind())
+    {
         return Ok(report);
     }
     'branches: for branch in branches {

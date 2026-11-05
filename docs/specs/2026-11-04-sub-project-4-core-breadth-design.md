@@ -66,7 +66,7 @@ These follow the research summarised in §7.
 |---|---|---|
 | 1 | The DB column is `seq`. APIs keep the name `rev` for the same number (`CommittedTx.rev`, `opsSince(rev)`, `fromRev`). | §3.1 |
 | 2 | `intent` is the `Tx` as applied (after any rebase, still with `$placeholders`). `resolved` is stored for readers and 4B. Replay applies `intent` with the recorded bindings feeding id allocation. | §3.2 |
-| 3 | Following **polls** (local 2 s, network 3 s, sync 10 s) and does not use file-system events. *Deviation from the earlier §3.6.* | §3.6 |
+| 3 | Following **polls** (local 2 s, network 1 s, sync 10 s) and does not use file-system events. *Deviation from the earlier §3.6.* | §3.6 |
 | 4 | Status and history events go on a separate stream RPC, `project.events`. `ops.subscribe` does not change shape. *Deviation from the earlier §3.10.* | §3.10 |
 | 5 | The server id is a lowercase ULID in `<server-data>/server-id`, created on first use (written atomically, mode 0600 on unix). | §3.5 |
 | 6 | Project copies: the DB `meta` records `projectDir`. A folder whose project id is registered to another folder that still exists is refused (`PROJECT_COPY`). | §3.7 |
@@ -173,7 +173,7 @@ MyProject/
 - The exceptions are `lease.json` and the probe files: they are rewritten in place (`write_in_place`, which never creates a file), never renamed over. `lease.json` is created once like any other file, but published only by a no-replace step the file server decides (§3.5 "Files").
 - Lease and verification reads bypass the client cache (`read_uncached`).
 - Errors treated as transient and retried (`fsio::is_transient`): unix `EINTR`, `EAGAIN`, `EBUSY`, `ESTALE`; Windows 5 (access denied), 32 (sharing violation), 33 (lock violation), 64 (network name deleted). The S10 spike also retried `ENOENT`, `EIO` and `EACCES` and Windows 2 and 3; they stay out of this generic list on purpose: "missing" is an answer the lease relies on, a real `EIO` or permission error would cost every caller 1.5 s, and the lease holder rides out a cifs `soft` mount's `EIO` by its own retry up to the self-fence deadline (§3.5). The reasons are in `fsio::transient`. §3.13 validates this list.
-- **Temp sweep:** the export removes this server's leftover `.~fin-*.tmp` files under `segments/*`, `snapshots/*` and `compaction/`. A file is removed once this server has seen it unchanged (same length and mtime) for 2×TTL (20 s) on its own monotonic clock, checked at most every 10 s. The sweep never compares the file's mtime with the local clock.
+- **Temp sweep:** the export removes leftover `.~fin-*.tmp` files under `segments/`, `segments/*`, `snapshots/*` and `compaction/` (the holder's, and a crashed listing refresh's, §3.6). A file is removed once this server has seen it unchanged (same length and mtime) for 2×TTL (20 s) on its own monotonic clock, checked at most every 10 s. The sweep never compares the file's mtime with the local clock.
 
 **Segment (`.fseg`).** UTF-8 JSON lines, each ending in `\n`:
 1. **Header:** `{"magic":"finisher-segment","formatVersion":1,"minReaderVersion":1,"projectId","branch","writerId","epoch","firstSeq","lastSeq","prevSegmentHash","opSchemaVersions":[min,max],"createdAt","genesisHash"}`, plus on packs only `"pack":true,"replaces":[{"hash","lastTxHash"},…]`.
@@ -201,7 +201,8 @@ A truncated file always decodes as *incomplete* (not arrived); any single damage
 - A sync conflict copy of this file is a warning (`PROJECT_FILE_CONFLICT`); the copy is never read.
 
 **Export** (`fin-store::export`)
-- **Cadence:** the holder exports 2 s after the first unexported commit is seen, or 30 s once more than 30 segments have been written in the last 10 minutes. `close` flushes; dropping a `Store` does not, because folder I/O can block for seconds and a drop must not.
+- **Cadence:** the holder exports 2 s after the first unexported commit is seen. Once more than 30 segments have been written in the last 10 minutes (churn) it waits 5 s, or 30 s on a sync folder, where every file costs the sync client an upload and a download. On local and network storage the short delay keeps following fast, and compaction (§3.9) bounds the segment count. `close` flushes; dropping a `Store` does not, because folder I/O can block for seconds and a drop must not.
+- **Acknowledged, not yet exported.** A commit is acknowledged once it is durable in the local database. Until its export (the delay above) it exists only on this server: if the holder stalls or dies before exporting and another server takes over and moves the folder on, the record is set aside as `DIVERGED_TAIL` when this server next imports (§3.6.2 steps 6–7): recoverable from quarantine, never silently dropped.
 - **Gate:** export runs only while this server holds the lease and the project is writable (§3.7). The full lease check runs again right before every write (the fence).
 - **Epoch label = highest commit epoch** of the segment's records, which must not exceed the current lease epoch. Labelling with the epoch at export time would launder records committed under a lost lease into a newer epoch. Example: B commits t1 at epoch 2 and loses the lease; C exports u at 3; B re-acquires at 4. Labelled 4, t1 would beat u, which other servers have already applied. Labelled 2, it loses, as the epoch rule intends (§3.6.2 step 6).
 - **Sizes:** at most 1,000 records or 4 MiB per segment, and a transaction is never split. Commit refuses a record above 4 MiB − 1 KiB with `TX_TOO_LARGE` (exit 2), so every segment fits. A stored record that is already too large (only a migrated sub-project 2 record can be) stops the export at it with `RECORD_TOO_LARGE` (exit 3); verify reports it (`record_size`).
@@ -311,7 +312,7 @@ This implements arch §27.9 "v3" in `fin-store::lease`. The module docs there ho
 - `fin-node` exposes it through `status()` and `takeover(confirm)`. `finisherd` publishes lease changes as `status` events on `project.events` (§3.10).
 
 **Storage kind** (`fin-store::storage_kind`: `local | network | sync(provider)`)
-- The kind picks the lease parameters, the poll cadence, the compaction grace and whether the epoch rule may decide.
+- The kind picks the lease parameters, the poll cadence, the export's churn delay, the ordering rule's directory-cache wait (with the OS), the compaction grace and whether the epoch rule may decide.
 - **Principle:** taking a sync folder for local or network storage is the dangerous mistake, because it enables automatic takeover on what is only an advisory lease. The reverse is merely annoying. Ambiguous evidence therefore **leans to sync**, and a failed probe yields `network` unless a sync signal was already seen.
 - **macOS:**
   - sync: `<x>/Library/Mobile Documents/**` (iCloud), `<x>/Library/CloudStorage/<Provider>-*/**`, iCloud "Desktop & Documents" (reached through links into `com~apple~CloudDocs`), well-known sync folder names in the home folder, a dataless (`SF_DATALESS`) folder or ancestor, and any FUSE file system;
@@ -359,7 +360,7 @@ Open writes no segments; the first `tick` exports, and `close` flushes. Open's f
    5. quarantine.
 7. **Raise id counters** (§3.3).
 
-**Following (Decision 3).** `Store::tick` runs the folder work once per poll, at the storage kind's cadence: **local 2 s, network 3 s, sync 10 s**. No file-system events are used. This deviates from the earlier text (events plus a 30 s poll locally, events plus 10 s on sync). Listing `.finisher/segments/<branch>` is cheap, polling needs no watcher dependency, and events can be added later without a format change. A poll:
+**Following (Decision 3).** `Store::tick` runs the folder work once per poll, at the storage kind's cadence: **local 2 s, network 1 s, sync 10 s**. No file-system events are used. This deviates from the earlier text (events plus a 30 s poll locally, events plus 10 s on sync). Listing `.finisher/segments/<branch>` is cheap, polling needs no watcher dependency, and events can be added later without a format change. A poll:
 1. import (queuing `Rewound` then `Applied` events);
 2. export, if holding and writable;
 3. the fencing re-check while holding (a lost lease is dropped → `LEASE_LOST`);
@@ -367,18 +368,20 @@ Open writes no segments; the first `tick` exports, and `close` flushes. Open's f
 5. the daily backup (§3.8);
 6. compaction (§3.9).
 
+**Listing refresh (macOS network shares).** macOS smbfs serves a directory listing from a cache for 30–60 s (`dir_cache_min`/`dir_cache_max`, `man nsmb.conf`), to every process on the machine; a change made through this machine drops that directory's cache at once, a `stat` does not. So on a macOS network share each import scan first creates and removes a temp-named file (`.~fin-<ulid>.tmp`) in `segments/` and in each `segments/<branch>/`. It is best effort: a failure (a read-only user) is ignored and the listing may be a minute old. It only speeds following; the ordering rule never relies on it.
+
 The plan put the retry before the re-check; re-checking first lets the same poll retry a loss it found. Calls between polls only export and report status changes. Every call ends with a `Status` event if the status changed (lease ages ignored).
 
 **The ordering rule** (after **every** acquisition: at open, automatic re-acquisition, takeover)
 - Commits and exports are blocked, read-only reason **`CATCHING_UP`**, until an import pass that started at the new epoch has resolved every branch with nothing `waiting` and no import error.
 - Without it, a stale local tail, or a new commit on top of it, would be written at the new epoch. It would beat records another server exported meanwhile, laundering them: export labels by commit epoch, but a new commit raises the tail's epoch.
-- **Directory-cache wait.** The pass that lifts the block must start at least **10 s** (monotonic; the Windows SMB directory cache) after the acquisition when any of these holds:
+- **Directory-cache wait.** The pass that lifts the block must start at least **10 s** (monotonic; the Windows SMB directory cache), or **65 s** on a network share mounted by macOS (smbfs `dir_cache_max` 60 s plus a margin; measured: another host's new segments stayed out of a Mac's listings for 30 s), after the acquisition when any of these holds:
   - the replaced `lease.json` named another server, or was damaged;
   - a claim above the highest epoch in our DB belongs to another server;
   - `lease.json` was missing while the folder holds a segment by another writer or above our epochs.
 
-  Passes before then still import.
-- **Sync gate.** On a sync folder the block also stays while any file under `segments/` has not arrived (`SYNC_ARRIVING`). The 10 s bound only a directory cache, not propagation: after a confirmed takeover on a sync folder, the other machine's last edits may still be on their way, and nothing bounds what hasn't started arriving.
+  Passes before then still import. Limit: a user's `/etc/nsmb.conf` can raise `dir_cache_max` above 60 s; that is not detected, and the 65 s no longer covers it.
+- **Sync gate.** On a sync folder the block also stays while any file under `segments/` has not arrived (`SYNC_ARRIVING`). The wait bounds only a directory cache, not propagation: after a confirmed takeover on a sync folder, the other machine's last edits may still be on their way, and nothing bounds what hasn't started arriving.
 
 #### 3.6.1 Scan classification
 
@@ -592,7 +595,7 @@ Other foreign files are listed (`FOREIGN_FILES`) and otherwise ignored. The conf
 `fin-store::compact` is the only code that deletes from the project folder, and what it deletes may be another machine's only copy of history, so every step re-checks from a fresh read.
 
 - **Who and when:** only the lease holder; only while `read_only()` is `None` (so not while `CATCHING_UP`, forked, conflicted, newer or failing to import); a full lease check before every write and every delete. Followers never compact. Losing the lease forgets every grace period observed. `tick` checks on every poll (cheap when idle); `fin project compact` forces a run.
-- **Trigger:** more than **200** non-pack segments on a branch that no present pack replaces, or `--force`/`fin project compact`. With the 2 s export debounce, an active session reaches that in hours. Export's 30 s churn delay (§3.4) keeps it there.
+- **Trigger:** more than **200** non-pack segments on a branch that no present pack replaces, or `--force`/`fin project compact`. With the 2 s export debounce, an active session reaches that in hours; continuous commits, capped by the churn delay (§3.4) at 12 segments a minute (2 on a sync folder), in about 17 minutes.
 - **Phase 1** (per branch; one pending manifest per branch at a time):
   1. **Fresh view:** an uncached scan; a fresh resolution (`Known::empty`) with no fork, nothing waiting or pending, and every file under `segments/<b>` settled; the DB's exported rows exactly the chain's prefix. Otherwise wait 60 s.
   2. **Eligible segments:** non-pack segments wholly on the resolved chain, exported in the DB, not set aside, not held by an abandoned manifest, not named as predecessor by a malformed file (once gone, that file could link through the pack), and linked to a present predecessor. **Never a segment off the resolved chain:** losing segments are what let a late follower reach the same verdict, and 4B's `recovered-*` branches need them.
@@ -772,7 +775,7 @@ All landed (plan Tasks 16–17):
 1. lease races, 100 per host pair: 0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse;
 2. network loss with writes in flight: the stale writer's segments are quarantined or superseded, never left applied;
 3. real clock skew if any host is naturally off by ≥ 5 s, else emulated and noted;
-4. follow latency: edits from host A appear on read-only host B within 3 s plus the cache window;
+4. follow latency: edits from host A appear on read-only host B within the export delay (2 s; 5 s under churn) plus one poll (1 s on a share) plus the cache window;
 5. sync folders (macOS, owner's accounts; blocked on the owner if not installed): temp-then-rename upload, conflict-copy naming per provider, placeholder hydration.
 
 **Acceptance:** all of the above pass, or are recorded as blocked with a reason; an SP2-era project opens after migration with identical state (done); the e2e storage scenario passes (done).

@@ -1030,5 +1030,5 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
       - a commit trusts a full check that passed within the last 1 s;
       - a restart re-takes its own lease at once through an OS lock in server data, never in the project folder.
     - **The folder:** hash-chained, write-once segments labelled by commit epoch; reader-side epoch rule with rewind of a lost applied line; quarantine instead of deletion; rebuild with salvage; verify; daily and pre-migration backups; two-phase compaction into packs that keep full history.
-    - **§6.7 polling:** project folders are polled (local 2 s, network 3 s, sync 10 s), not watched, and the heartbeat is 5 s, not 15 s.
+    - **§6.7 polling:** project folders are polled (local 2 s, network 1 s, sync 10 s), not watched, and the heartbeat is 5 s, not 15 s.
     - **Still outstanding:** cross-host and sync-folder validation (sub-project 4 spec §3.13). This replaces the "Still to validate" line of item 9 for the lease.

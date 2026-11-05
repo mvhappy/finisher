@@ -55,6 +55,22 @@ impl StorageKind {
     }
 }
 
+/// Whether `kind` is a network share mounted by macOS: its client (smbfs; the measured case)
+/// serves a directory listing from a cache for up to 60 s (`dir_cache_max`, `man nsmb.conf`),
+/// to every process on the machine. The ordering rule waits longer there
+/// (`tick::dir_cache_window`) and each scan refreshes the listings it follows from
+/// (`scan::Scanner::scan_for`). A sync folder on macOS is a local file system (its provider
+/// syncs it), so it is not affected.
+pub fn slow_dir_cache(kind: StorageKind) -> bool {
+    slow_dir_cache_on(kind, cfg!(target_os = "macos"))
+}
+
+/// [`slow_dir_cache`] as on macOS (`is_macos`) or elsewhere: apart from the `cfg`, so both
+/// answers are tested on every OS.
+pub fn slow_dir_cache_on(kind: StorageKind, is_macos: bool) -> bool {
+    is_macos && kind == StorageKind::Network
+}
+
 fn provider_name(p: Provider) -> &'static str {
     match p {
         Provider::Dropbox => "dropbox",

@@ -313,8 +313,9 @@ impl Store {
     pub fn import(&mut self) -> Result<ImportReport, StoreError> {
         let mut report = ImportReport::default();
         let dot = self.project_dir.join(".finisher");
+        let kind = self.import.kind;
         let listed = if dot.is_dir() {
-            self.import.scanner.scan(&self.project_dir)
+            self.import.scanner.scan_for(&self.project_dir, kind)
         } else {
             // The folder vanished (unmounted, renamed): never read that as "empty".
             Err(std::io::Error::new(
@@ -417,7 +418,6 @@ impl Store {
 
         let held = self.export.lease.check().ok();
         let holds = held.is_some();
-        let kind = self.import.kind;
         // Lease files for the rewind rule, before the database lock (module docs).
         let seen = (self.import.segrefs.keys().cloned().collect(), held);
         if self.import.forked || self.import.lease_seen.as_ref() != Some(&seen) {

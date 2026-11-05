@@ -1,7 +1,7 @@
 //! The per-engine maintenance thread and the events it forwards to JS.
 //!
 //! Every [`TICK_EVERY`] the thread calls `Store::tick_with` under the store mutex; the store's
-//! own cadence decides when a tick polls the folder (local 2 s, network 3 s, sync 10 s), and
+//! own cadence decides when a tick polls the folder (local 2 s, network 1 s, sync 10 s), and
 //! only then imports and re-checks or re-acquires the lease. Between polls a tick only flushes
 //! a due export and reports a status change. Without these ticks a follower never follows, a
 //! lost lease is never re-acquired and nothing is exported before `close`.
@@ -106,9 +106,7 @@ impl EventSink {
     pub(crate) fn set(&self, callback: EventFn) {
         let mut s = lock(&self.sink);
         if s.dropped > 0 {
-            let lagged = to_json(&EngineEvent::Lagged {
-                dropped: s.dropped as u64,
-            });
+            let lagged = to_json(&EngineEvent::Lagged { dropped: s.dropped });
             callback.call(lagged, ThreadsafeFunctionCallMode::NonBlocking);
             s.dropped = 0;
         }
