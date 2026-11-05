@@ -275,18 +275,18 @@ pub fn scan(project_dir: &Path) -> io::Result<Vec<Entry>> {
 /// read-only share, a missing directory) is ignored and the listing may then be up to a
 /// minute old, which only delays following; the ordering rule never relies on this
 /// (`tick::MACOS_DIR_CACHE_WINDOW`). The file has a temp name ([`crate::names::temp_name`]), which
-/// every reader skips and the holder's temp sweep removes if a crash leaves it.
-pub(crate) fn refresh_listing(dir: &Path) {
+/// every reader skips and the holder's temp sweep removes if a crash leaves it. Returns the
+/// probe if it was created but could not be removed (outside `.finisher/` nothing sweeps it:
+/// the caller does).
+pub(crate) fn refresh_listing(dir: &Path) -> Option<PathBuf> {
     let path = dir.join(crate::names::temp_name());
     note_refresh();
-    if fs::OpenOptions::new()
+    let created = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)
-        .is_ok()
-    {
-        let _ = fs::remove_file(&path);
-    }
+        .is_ok();
+    (created && (keep_probe() || fs::remove_file(&path).is_err())).then_some(path)
 }
 
 /// `main` or `br<digits>` (spec §3.3).
@@ -335,6 +335,23 @@ thread_local! {
     static LOCKED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
     static READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static REFRESHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static KEEP_PROBES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test hook: on this thread, [`refresh_listing`] leaves its probe file in place, as when
+/// removing it fails.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn keep_refresh_probes_for_test(keep: bool) {
+    KEEP_PROBES.with(|k| k.set(keep));
+}
+
+fn keep_probe() -> bool {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if KEEP_PROBES.with(std::cell::Cell::get) {
+        return true;
+    }
+    false
 }
 
 fn hooked_placeholder(path: &Path) -> bool {

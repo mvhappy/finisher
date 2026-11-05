@@ -182,17 +182,22 @@ pub fn network_for_test(window: Option<Duration>) {
 }
 
 /// How long a project folder that does not show its project file is retried as a network
-/// share's, and whether its listings are refreshed first (module docs). Judged by the nearest
-/// folder that exists: the project folder itself may be what the cache hides.
+/// share's, and whether its listings are refreshed first (module docs). Judged by the folder,
+/// or by its parent when the folder itself is what the cache hides. A folder whose parent
+/// does not exist either is not retried: a typo higher up in the path fails at once.
 fn network_retry(project_dir: &Path) -> (Duration, bool) {
+    let abs = std::path::absolute(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let Some(existing) = [Some(abs.as_path()), abs.parent()]
+        .into_iter()
+        .flatten()
+        .find(|a| a.is_dir())
+    else {
+        return (Duration::ZERO, false);
+    };
     #[cfg(any(test, feature = "test-hooks"))]
     if let Some(w) = NETWORK.with(std::cell::Cell::get) {
         return (w, true);
     }
-    let abs = std::path::absolute(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
-    let Some(existing) = abs.ancestors().find(|a| a.is_dir()) else {
-        return (Duration::ZERO, false);
-    };
     match crate::storage_kind::detect(existing, None) {
         k @ StorageKind::Network => (NETWORK_RETRY, crate::storage_kind::slow_dir_cache(k)),
         _ => (Duration::ZERO, false),
@@ -200,13 +205,40 @@ fn network_retry(project_dir: &Path) -> (Duration, bool) {
 }
 
 /// Drops the client's cached listings that could hide a new project folder: its parent's
-/// and its own.
-fn refresh_listings(project_dir: &Path) {
+/// and its own. Probes that could not be removed go to `left`.
+fn refresh_listings(project_dir: &Path, left: &mut Leftovers) {
+    left.sweep();
     if let Some(parent) = project_dir.parent().filter(|p| !p.as_os_str().is_empty()) {
-        crate::scan::refresh_listing(parent);
+        left.0.extend(crate::scan::refresh_listing(parent));
     }
     if project_dir.is_dir() {
-        crate::scan::refresh_listing(project_dir);
+        left.0.extend(crate::scan::refresh_listing(project_dir));
+    }
+}
+
+/// Refresh probes that could not be removed: removed again on the next attempt and when the
+/// read ends; one still there then is reported on stderr. It has a temp name, which every
+/// Finisher reader skips, but it sits in the user's folder, where nothing sweeps it.
+#[derive(Default)]
+struct Leftovers(Vec<std::path::PathBuf>);
+
+impl Leftovers {
+    fn sweep(&mut self) {
+        self.0.retain(|p| {
+            fs::remove_file(p).is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
+        });
+    }
+}
+
+impl Drop for Leftovers {
+    fn drop(&mut self) {
+        self.sweep();
+        for p in &self.0 {
+            eprintln!(
+                "finisher: could not remove the listing-refresh probe {}; delete it by hand",
+                p.display()
+            );
+        }
     }
 }
 
@@ -239,8 +271,17 @@ fn read(project_dir: &Path, retry: Duration) -> Result<ProjectFile, StoreError> 
     let started = Instant::now();
     let mut network: Option<(Duration, bool)> = None;
     let mut refreshed: Option<Instant> = None;
+    let mut left = Leftovers::default();
     let bytes = loop {
-        match crate::fsio::hydrating(&path, || fs::read(&path)) {
+        // The once-only read (each poll's reread, under the store's mutex) never waits out a
+        // placeholder's download: a failed reread changes nothing.
+        let read = || fs::read(&path);
+        let got = if retry.is_zero() {
+            read()
+        } else {
+            crate::fsio::hydrating(&path, read)
+        };
+        match got {
             Ok(b) => break b,
             Err(e)
                 if started.elapsed() < retry
@@ -259,7 +300,7 @@ fn read(project_dir: &Path, retry: Duration) -> Result<ProjectFile, StoreError> 
                 if network.is_some_and(|n| n.1)
                     && refreshed.is_none_or(|t| t.elapsed() >= REFRESH_EVERY)
                 {
-                    refresh_listings(project_dir);
+                    refresh_listings(project_dir, &mut left);
                     refreshed = Some(Instant::now());
                     continue;
                 }
@@ -346,6 +387,8 @@ mod tests {
         assert!(t.elapsed() < Duration::from_millis(150), "local: at once");
 
         network_for_test(Some(Duration::from_secs(10)));
+        // Probes that could not be removed are removed by the next attempt or at the end.
+        crate::scan::keep_refresh_probes_for_test(true);
         let refreshes = crate::scan::refreshes();
         let genesis = Genesis {
             name: "Demo".into(),
@@ -365,6 +408,20 @@ mod tests {
         assert!(t.elapsed() >= Duration::from_millis(350));
         creator.join().unwrap();
         assert!(crate::scan::refreshes() > refreshes, "listings refreshed");
+        crate::scan::keep_refresh_probes_for_test(false);
+        let temps = |d: &Path| {
+            fs::read_dir(d)
+                .unwrap()
+                .filter(|e| {
+                    crate::names::is_temp(&e.as_ref().unwrap().file_name().to_string_lossy())
+                })
+                .count()
+        };
+        assert_eq!((temps(tmp.path()), temps(&dir)), (0, 0), "no probe left");
+        // A typo above the folder (its parent is missing too) fails at once.
+        let t = Instant::now();
+        not_found(read_project_file(&tmp.path().join("typo").join("p")));
+        assert!(t.elapsed() < Duration::from_millis(150));
         // Bounded, and never for the once-only read.
         let gone = tmp.path().join("gone");
         network_for_test(Some(Duration::from_millis(300)));
@@ -375,6 +432,32 @@ mod tests {
         not_found(read_project_file_once(&gone));
         assert!(t.elapsed() < Duration::from_millis(150));
         network_for_test(None);
+    }
+
+    /// The per-poll reread never waits out a placeholder's download; the retrying read
+    /// goes through `fsio::hydrating`.
+    #[test]
+    fn only_the_retrying_read_waits_for_a_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let genesis = Genesis {
+            name: "Demo".into(),
+            rate: Rational::from_int(30),
+        };
+        write(
+            tmp.path(),
+            &ProjectFile::new("01jbcdefghjkmnpqrstvwxyz00", genesis, "local".into()),
+        )
+        .unwrap();
+        crate::fsio::time_out_next_reads_for_test(1, false);
+        assert!(
+            read_project_file_once(tmp.path()).is_ok(),
+            "not through the hook"
+        );
+        assert!(matches!(
+            read_project_file(tmp.path()),
+            Err(StoreError::Io { .. })
+        ));
+        assert!(read_project_file(tmp.path()).is_ok());
     }
 
     #[test]
