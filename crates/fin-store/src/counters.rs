@@ -100,7 +100,8 @@ impl Counters {
     /// lowering one, and saves them.
     ///
     /// "The log" is every record's `bindings` and the ids its `resolved` ops name (replay
-    /// accepts literal ids), plus every branch name (branch ids). Each
+    /// accepts literal ids), plus every branch name (branch ids), the index's ids and the
+    /// branches `branch` and `branchSet` records name (`record_links.targets`). Each
     /// branch's rows are scanned once: `meta` `idsScannedThrough.<branch>` remembers the
     /// highest seq seen, so a follower importing every few seconds reads only the new rows.
     /// Removing rows ([`rewind_scan`]) moves it back. `projects` are the branch heads after
@@ -146,6 +147,22 @@ impl Counters {
                 set_meta(conn, &scanned_key(branch), &last.to_string())?;
             }
         }
+        // Branch ids: the index, and the branches `branch` and `branchSet` records name.
+        for sql in [
+            "SELECT id FROM branches",
+            "SELECT targets FROM record_links WHERE kind IN ('branch', 'branchSet')
+             AND targets IS NOT NULL",
+        ] {
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            for v in rows {
+                let v = v?;
+                match serde_json::from_str::<Vec<String>>(&v) {
+                    Ok(ids) => ids.iter().for_each(|id| c.saw(id)),
+                    Err(_) => c.saw(&v),
+                }
+            }
+        }
         for p in projects {
             let s = Counters::seed(p);
             for (mine, theirs) in c.next.iter_mut().zip(s.next) {
@@ -158,6 +175,57 @@ impl Counters {
         Ok(c)
     }
 }
+
+impl Counters {
+    /// Raises every counter past the ids that quarantined records used (plan 4B Decision 28),
+    /// so this server never hands out an id a set-aside record used: their bindings, the ids
+    /// their resolved ops name and a `branch` record's `branchId`. Only rows added since
+    /// `meta` `quarantineIdsScannedThrough` (the highest `quarantine.id` scanned) are read,
+    /// so a pass that added none reads one row. Bytes that are no readable record (a
+    /// malformed or newer one) still give their `bindings` and `branchId`. Never lowers.
+    pub(crate) fn raise_to_quarantine(conn: &Connection) -> Result<(), StoreError> {
+        let from: i64 = meta(conn, QUARANTINE_SCANNED)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let mut stmt =
+            conn.prepare("SELECT id, record_bytes FROM quarantine WHERE id > ?1 ORDER BY id")?;
+        let mut rows = stmt.query(params![from])?;
+        let loaded = Counters::load(conn)?;
+        let mut c = loaded.clone();
+        let mut last = None;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            last = Some(id);
+            if let Ok(record) = parse_record(None, &bytes) {
+                for op in &record.resolved {
+                    for id in op.ids() {
+                        c.saw(id);
+                    }
+                }
+            }
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            if let Some(b) = v.get("bindings").and_then(|b| b.as_object()) {
+                b.values().filter_map(|x| x.as_str()).for_each(|x| c.saw(x));
+            }
+            if let Some(b) = v.get("branchId").and_then(|b| b.as_str()) {
+                c.saw(b);
+            }
+        }
+        if let Some(last) = last {
+            set_meta(conn, QUARANTINE_SCANNED, &last.to_string())?;
+        }
+        if c != loaded {
+            c.save(conn)?;
+        }
+        Ok(())
+    }
+}
+
+/// `meta` key: the highest `quarantine.id` [`Counters::raise_to_quarantine`] has scanned.
+const QUARANTINE_SCANNED: &str = "quarantineIdsScannedThrough";
 
 /// Rows of `branch` after `tip` were removed: the next [`Counters::raise_to_log`] scans
 /// whatever takes their seqs. The counters themselves stay where they are.

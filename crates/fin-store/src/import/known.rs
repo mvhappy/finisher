@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::json;
 
 use crate::StoreError;
-use crate::chain::Known;
+use crate::chain::{ForkPoint, Known};
 use crate::db::{to_i64, to_u64};
 use crate::storage_kind::StorageKind;
 
@@ -87,9 +87,24 @@ pub(super) fn line(conn: &Connection, branch: &str) -> Result<Line, StoreError> 
     Ok(Line { head, tail })
 }
 
+/// Where `branch` starts on its parent, from the branch index: `None` for `main` and for a
+/// branch without an index row (a root).
+pub(crate) fn fork_point(conn: &Connection, branch: &str) -> Result<Option<ForkPoint>, StoreError> {
+    if branch == crate::MAIN {
+        return Ok(None);
+    }
+    Ok(crate::branch::index::get(conn, branch)?
+        .filter(|i| i.parent.is_some())
+        .map(|i| ForkPoint {
+            seq: i.fork_seq,
+            hash: i.fork_hash,
+        }))
+}
+
 /// [`Known`] for `branch` from its `line` and `all_tx` (every record in the DB: `txId` is
 /// unique across branches, so a folder record reusing another branch's `txId` must be a
-/// `TxIdReused` fork, not an insert that fails).
+/// `TxIdReused` fork, not an insert that fails), forking at `fork`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build(
     conn: &Connection,
     branch: &str,
@@ -97,6 +112,7 @@ pub(super) fn build(
     all_tx: HashMap<String, String>,
     holds_lease: bool,
     kind: StorageKind,
+    fork: Option<ForkPoint>,
 ) -> Result<Known, StoreError> {
     let last_hash = match &line.head {
         Some((seq, _)) => segment_ending_at(conn, branch, *seq)?,
@@ -114,6 +130,7 @@ pub(super) fn build(
         tail_epoch: line.tail.iter().map(|t| t.epoch).max().unwrap_or(0),
         holds_lease,
         kind,
+        fork,
     })
 }
 
@@ -147,5 +164,6 @@ pub(crate) fn known_now(
     let all = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<Result<HashMap<_, _>, _>>()?;
-    build(conn, branch, &line, all, holds_lease, kind)
+    let fork = fork_point(conn, branch)?;
+    build(conn, branch, &line, all, holds_lease, kind, fork)
 }

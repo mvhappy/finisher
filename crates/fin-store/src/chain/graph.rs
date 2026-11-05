@@ -14,7 +14,9 @@
 //!    - `prevSegmentHash` null: a child of the branch start, unless its `parentHash` names a
 //!      record present here (malformed: it claims to start the branch but continues it). On
 //!      `main` the first record must have no parent at all (checked locally); only 4B
-//!      branches start at a fork point;
+//!      branches start at a fork point. With a known fork point (`Known::fork`) the first
+//!      record must be seq `fork.seq + 1` with `parentHash == fork.hash`, else the segment is
+//!      malformed ("does not start at the branch's fork point");
 //!    - `prevSegmentHash` a present segment: the `parentHash` must be its last record, with
 //!      `seq` one less; else malformed;
 //!    - `prevSegmentHash` only in an honoured pack's `replaces`: the pack stands in only
@@ -30,7 +32,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::{RecMeta, SegRef};
+use super::{ForkPoint, RecMeta, SegRef};
 
 /// The branch start, as a parent.
 pub(super) const ROOT: usize = usize::MAX;
@@ -74,7 +76,7 @@ impl<'a> Graph<'a> {
         }
     }
 
-    pub fn build(input: &'a [SegRef]) -> Graph<'a> {
+    pub fn build(input: &'a [SegRef], fork: Option<&ForkPoint>) -> Graph<'a> {
         let mut sorted: Vec<&SegRef> = input.iter().collect();
         sorted.sort_by(|a, b| a.hash().cmp(b.hash()));
         sorted.dedup_by(|a, b| a.hash() == b.hash());
@@ -140,6 +142,12 @@ impl<'a> Graph<'a> {
             let verdict = match s.header().prev_segment_hash.as_deref() {
                 None if parent.is_some() => {
                     Err("starts the branch but continues a record that is present".to_string())
+                }
+                None if fork.is_some_and(|f| {
+                    f.seq.checked_add(1) != Some(m0.seq) || f.hash != m0.parent_hash
+                }) =>
+                {
+                    Err("does not start at the branch's fork point".to_string())
                 }
                 None => Ok(Some(ROOT)),
                 Some(q) => {

@@ -34,7 +34,8 @@ pub struct BranchCreate {
     /// The idempotency key: the `branch` record's txId.
     pub tx_id: String,
     pub author: String,
-    /// The display name; `None`: `try-<n>` for the new id `br<n>`.
+    /// The display name; `None`: `try-<n>` for the new id `br<n>` (`try-<n>-2`, `-3`, … when
+    /// a branch holds that name).
     pub name: Option<String>,
     /// The parent, as a branch reference.
     pub from: String,
@@ -107,7 +108,8 @@ impl Store {
     ///
     /// Errors, in order: `INVALID_OP` (empty txId, nothing to set), `INVALID_NAME`; then as a
     /// commit (dedupe, `PROJECT_READ_ONLY`); `BRANCH_NOT_FOUND`; `INVALID_OP` for `main` (it
-    /// is never renamed or archived, Decision 13); `NAME_TAKEN` when the branch would be
+    /// is never renamed or archived, Decision 13), and when nothing would change (a restore of
+    /// an active branch, an archive of an archived one, a rename to its own name); `NAME_TAKEN` when the branch would be
     /// active under a name another non-archived branch holds (restoring one: `fix` names
     /// `--restore --as <new>`).
     pub fn set_branch(&mut self, r: BranchSet) -> Result<CommittedTx, StoreError> {
@@ -271,11 +273,21 @@ fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated
     let mut ids = Counters::load(txn)?;
     let id = ids.next(IdKind::Branch);
     ids.save(txn)?;
+    let ix = index::load(txn)?;
     let name = match &r.name {
         Some(name) => name.clone(),
-        None => format!("try-{}", id_number(&id).unwrap_or_default()),
+        None => {
+            // `try-<n>`; when a branch holds that name, `try-<n>-2`, `try-<n>-3`, …
+            let base = format!("try-{}", id_number(&id).unwrap_or_default());
+            let mut name = base.clone();
+            let mut k = 2;
+            while ix.holder(&name).is_some() {
+                name = format!("{base}-{k}");
+                k += 1;
+            }
+            name
+        }
     };
-    let ix = index::load(txn)?;
     if let Some(holder) = ix.holder(&name) {
         let fix = format!(
             "choose another name, or rename or archive branch {} first",
@@ -315,6 +327,19 @@ fn plan_set(ctx: &mut WriteCtx<'_>, r: &BranchSet) -> Result<CommittedTx, StoreE
     };
     let archived = r.archived.unwrap_or(info.archived);
     let name = r.name.as_deref().unwrap_or(&info.name);
+    if name == info.name && archived == info.archived {
+        return Err(CoreError::new(
+            "INVALID_OP",
+            format!("nothing to change on branch {}", info.id),
+        )
+        .with_details(json!({ "branch": info.id, "name": info.name, "archived": info.archived }))
+        .with_fix(if info.archived {
+            format!("restore it: fin branch archive {} --restore", info.id)
+        } else {
+            "give another name, or archive it".to_string()
+        })
+        .into());
+    }
     let ix = index::load(txn)?;
     if !archived && let Some(holder) = ix.holder(name).filter(|h| h.id != info.id) {
         let fix = if info.archived && r.name.is_none() {

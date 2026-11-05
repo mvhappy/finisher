@@ -159,10 +159,16 @@ impl WriteCtx<'_> {
 }
 
 /// The branch a write appends content to, for reference `r` (Decision 12): `BRANCH_NOT_FOUND`,
-/// or `BRANCH_ARCHIVED` (`details {branch, name}`, `fix` to restore it) for an archived one
+/// `DB_ERROR` for a branch with rows but no index row (reads take it as a root; a write
+/// would grow history the log cannot explain), or `BRANCH_ARCHIVED` (`details {branch, name}`, `fix` to restore it) for an archived one
 /// (Decision 13). Resolved under the write lock, before the write reads a head.
 pub(crate) fn writable(conn: &Connection, r: &str) -> Result<BranchInfo, StoreError> {
     let info = crate::branch::index::resolve(conn, r)?;
+    if info.parent.is_none() && info.id != crate::MAIN {
+        // Rows without an index row: readable as a root, never written to (`DB_ERROR`, the
+        // fix is a rebuild).
+        return Err(crate::branch::index::missing(&info.id));
+    }
     if info.archived {
         return Err(CoreError::new(
             "BRANCH_ARCHIVED",

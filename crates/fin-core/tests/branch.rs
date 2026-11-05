@@ -187,6 +187,31 @@ fn index_folds_branch_and_branch_set() {
         ("main", 8, branch("br3", "high", 8)),
         ("main", 8, branch("main", "x", 1)),
         ("br77", 8, branch("br3", "x", 1)),
+        // Names that would not resolve or list back, and fork hashes against Decision 3.
+        ("main", 8, branch("br3", "br4", 1)),
+        ("main", 8, branch("br3", "a#br1", 1)),
+        ("main", 8, branch("br3", "MAIN", 1)),
+        ("main", 8, set("br1", Some("br9"), None)),
+        (
+            "main",
+            8,
+            Link::Branch {
+                branch_id: "br3".into(),
+                name: "x".into(),
+                fork_seq: 0,
+                fork_hash: Some("h0".into()),
+            },
+        ),
+        (
+            "main",
+            8,
+            Link::Branch {
+                branch_id: "br3".into(),
+                name: "x".into(),
+                fork_seq: 2,
+                fork_hash: None,
+            },
+        ),
     ] {
         let e = ix
             .absorb(on, seq, &record(on, seq, link.clone()))

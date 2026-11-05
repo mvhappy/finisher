@@ -208,8 +208,11 @@ impl BranchIndex {
     /// branch (a child of `branch`), a `branchSet` renames, archives or restores a child of
     /// `branch`; other kinds change nothing. Returns the id of the branch it changed. A
     /// record the log of a project never holds (an id already known, a branch record on an
-    /// unknown branch or forking at or above its own seq, a `branchSet` of a branch that is
-    /// not a child of `branch`) is `INVALID_FORMAT`, and the index is left as it was.
+    /// unknown branch or forking at or above its own seq, a `forkHash` present when
+    /// `forkSeq` is 0 or absent when it is not (Decision 3), a name the name rules refuse
+    /// ([`validate_branch_name`]: it would not resolve or list back), a `branchSet` of a
+    /// branch that is not a child of `branch`) is `INVALID_FORMAT`, and the index is left as
+    /// it was.
     pub fn absorb(
         &mut self,
         branch: &str,
@@ -241,6 +244,13 @@ impl BranchIndex {
                         format!("it forks at seq {fork_seq}, not below its own seq {seq}"),
                     ));
                 }
+                if fork_hash.is_some() != (fork_seq > 0) {
+                    return Err(malformed(
+                        rec,
+                        format!("forkHash must be present exactly when forkSeq ({fork_seq}) > 0"),
+                    ));
+                }
+                validate_branch_name(&name).map_err(|e| malformed(rec, e.message))?;
                 let info = BranchInfo {
                     id: branch_id.clone(),
                     name,
@@ -261,6 +271,9 @@ impl BranchIndex {
                 name,
                 archived,
             } => {
+                if let Some(name) = &name {
+                    validate_branch_name(name).map_err(|e| malformed(rec, e.message))?;
+                }
                 let Some(info) = self.by_id.get_mut(&branch_id) else {
                     return Err(malformed(rec, format!("branch {branch_id} is unknown")));
                 };

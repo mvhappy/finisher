@@ -370,3 +370,83 @@ fn pack_stand_in_still_checks_seq() {
         "{r:#?}"
     );
 }
+
+fn fork_at(seq: u64, hash: Option<&str>) -> Known {
+    Known::for_branch(
+        LOCAL,
+        Some(ForkPoint {
+            seq,
+            hash: hash.map(String::from),
+        }),
+    )
+}
+
+// Plan 4B Task 9: a segment that starts a branch (`prevSegmentHash` null) must start at the
+// branch's fork point: seq `forkSeq + 1`, `parentHash` the fork record.
+#[test]
+fn branch_segment_must_start_at_fork_point() {
+    let fork = blake3_of(b"main record 5");
+    let other = blake3_of(b"another record");
+    let start = |seq, parent: Option<&str>, tx: &str| {
+        build_on("br1", 1, None, vec![rec(tx, seq, parent, "")], vec![], 0)
+    };
+    let good = start(6, Some(&fork), "a");
+    let r = resolve(std::slice::from_ref(&good), &fork_at(5, Some(&fork)));
+    assert_eq!(applied(&r), ids(&["a"]));
+
+    for bad in [
+        start(7, Some(&fork), "b"),
+        start(6, Some(&other), "c"),
+        start(6, None, "d"),
+    ] {
+        let r = resolve(std::slice::from_ref(&bad), &fork_at(5, Some(&fork)));
+        assert!(r.apply.is_empty(), "{r:#?}");
+        assert!(
+            matches!(&r.quarantine[..], [(s, QuarantineReason::Malformed(w))]
+                if s == &bad && w.contains("fork point")),
+            "{r:#?}"
+        );
+    }
+
+    // A fork at seq 0 has no fork record: the first record is seq 1 without a parent.
+    let zero = start(1, None, "e");
+    let r = resolve(std::slice::from_ref(&zero), &fork_at(0, None));
+    assert_eq!(applied(&r), ids(&["e"]));
+    let r = resolve(&[start(1, Some(&fork), "f")], &fork_at(0, None));
+    assert!(r.apply.is_empty());
+
+    // Its successors follow as on `main`; one descending from a bad start is set aside.
+    let next = build_on(
+        "br1",
+        1,
+        Some(good.hash().to_string()),
+        records_after(Some(&good), &["g"], ""),
+        vec![],
+        0,
+    );
+    let r = resolve(&[good, next], &fork_at(5, Some(&fork)));
+    assert_eq!(applied(&r), ids(&["a", "g"]));
+}
+
+// Two lines that both start the branch compete by the epoch rule, as two lines from one
+// record do: the higher epoch wins, the lower is stale.
+#[test]
+fn branch_start_competition_uses_epoch_rule() {
+    let fork = blake3_of(b"main record 3");
+    let line = |epoch, tx: &str| {
+        build_on(
+            "br1",
+            epoch,
+            None,
+            vec![rec(tx, 4, Some(&fork), tx)],
+            vec![],
+            0,
+        )
+    };
+    let low = line(1, "x");
+    let high = line(2, "y");
+    let r = resolve(&[low.clone(), high], &fork_at(3, Some(&fork)));
+    no_fork(&r);
+    assert_eq!(applied(&r), ids(&["y"]));
+    assert!(matches!(&r.quarantine[..], [(s, QuarantineReason::StaleEpoch)] if s == &low));
+}

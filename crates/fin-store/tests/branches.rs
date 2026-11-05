@@ -447,12 +447,13 @@ fn restore_onto_taken_name_needs_as() {
         "{:?}",
         err.fix
     );
-    // An archived branch may be renamed without restoring it: archived names hold nothing.
-    s.set_branch(set("a3", "feature#br1", Some("feature"), None))
+    // An archived branch may be renamed without restoring it, even to a name an active
+    // branch holds: archived names hold nothing.
+    s.set_branch(set("a3", "feature#br1", Some("Feature"), None))
         .unwrap();
     // `--restore --as <new>`.
     let c = s
-        .set_branch(set("a4", "feature#br1", Some("feature-old"), Some(false)))
+        .set_branch(set("a4", "Feature#br1", Some("feature-old"), Some(false)))
         .unwrap();
     assert_eq!(
         c.link.as_deref(),
@@ -781,4 +782,72 @@ fn default_try_name_uses_branch_id() {
         ("br3", "try-3")
     );
     assert_eq!(c.branch.parent.as_deref(), Some("br1"));
+}
+
+// Task 8 review: a user branch holding `try-<n>` never blocks unnamed creates that draw br<n>.
+#[test]
+fn default_try_name_skips_a_taken_one() {
+    let e = env();
+    let mut s = project(&e);
+    new_branch(&mut s, "b1", MAIN, "try-2");
+    let c = s.create_branch(create("t2", MAIN, None)).unwrap();
+    assert_eq!(
+        (c.branch.id.as_str(), c.branch.name.as_str()),
+        ("br2", "try-2-2")
+    );
+    new_branch(&mut s, "b3", MAIN, "try-3-2");
+    new_branch(&mut s, "b4", MAIN, "try-5");
+    let c = s.create_branch(create("t5", MAIN, None)).unwrap();
+    assert_eq!(c.branch.name, "try-5-2");
+}
+
+// Task 8 review: a `branchSet` that changes nothing is refused, never written.
+#[test]
+fn branch_set_that_changes_nothing_is_refused() {
+    let e = env();
+    let mut s = project(&e);
+    new_branch(&mut s, "b1", MAIN, "feature");
+    let before = rows(&s);
+    for (id, name, archived) in [
+        ("n1", None, Some(false)),
+        ("n2", Some("feature"), None),
+        ("n3", Some("feature"), Some(false)),
+    ] {
+        let err = code(s.set_branch(set(id, "br1", name, archived)).unwrap_err());
+        assert_eq!(err.code, "INVALID_OP", "{id}");
+        assert!(err.message.contains("nothing to change"), "{id}");
+    }
+    s.set_branch(set("a1", "br1", None, Some(true))).unwrap();
+    let err = code(
+        s.set_branch(set("a2", "feature#br1", None, Some(true)))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "INVALID_OP");
+    assert!(err.fix.unwrap().contains("--restore"));
+    // A change of case is a rename.
+    s.set_branch(set("a3", "feature#br1", Some("Feature"), None))
+        .unwrap();
+    assert_ne!(rows(&s), before);
+}
+
+// Task 8 review: rows without an index row read as a root, but no write goes there.
+#[test]
+fn branch_without_index_row_refuses_writes() {
+    let e = env();
+    let mut s = project(&e);
+    new_branch(&mut s, "b1", MAIN, "feature");
+    s.commit(tx("c1", "br1", 2, vec![insert("$c", 5, 1)]))
+        .unwrap();
+    conn(&s)
+        .execute("DELETE FROM branches WHERE id = 'br1'", [])
+        .unwrap();
+    assert_eq!(s.head("br1"), 3, "still readable");
+    let err = code(
+        s.commit(tx("c2", "br1", 3, vec![insert("$c", 6, 1)]))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "DB_ERROR");
+    assert!(err.fix.unwrap().contains("rebuild"));
+    let err = code(s.create_branch(create("b2", "br1", Some("x"))).unwrap_err());
+    assert_eq!(err.code, "DB_ERROR");
 }

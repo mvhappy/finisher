@@ -22,12 +22,25 @@ pub(super) struct Row {
     pub(super) committed_at: i64,
 }
 
-/// Branches with unexported records.
+/// Branches with unexported records, parents before children (plan 4B Decision 10): in
+/// index order (depth, then numeric id), then any branch without an index row, by name. A
+/// follower therefore never lists a child's segment before its parent's `branch` record from
+/// the same writer.
 pub(super) fn pending_branches(conn: &Connection) -> Result<Vec<String>, StoreError> {
     let mut stmt =
         conn.prepare("SELECT DISTINCT branch FROM txs WHERE exported = 0 ORDER BY branch")?;
     let rows = stmt.query_map([], |r| r.get(0))?;
-    Ok(rows.collect::<Result<_, _>>()?)
+    let mut pending: Vec<String> = rows.collect::<Result<_, _>>()?;
+    let ix = crate::branch::index::load(conn)?;
+    let mut out: Vec<String> = ix
+        .parents_first()
+        .into_iter()
+        .filter(|id| pending.iter().any(|p| p == id))
+        .map(String::from)
+        .collect();
+    pending.retain(|p| !out.contains(p));
+    out.append(&mut pending);
+    Ok(out)
 }
 
 /// The next (at most [`segment::MAX_RECORDS`]) unexported rows of `branch`, in seq order,

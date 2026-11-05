@@ -20,6 +20,11 @@ pub(super) struct Ctx<'a> {
     pub(super) seeds: &'a [super::Seed],
     /// The seq a branch was seeded at, this pass.
     pub(super) seeded: Option<u64>,
+    /// Branches an applied `branch` record made, not yet resolved this pass (the worklist).
+    pub(super) born: Vec<String>,
+    /// The set-aside `branch` records by branch id, read on first use and dropped whenever
+    /// this pass sets more records aside ([`super::aside`]).
+    pub(super) aside: Option<super::aside::AsideMap>,
 }
 
 impl<'a> Ctx<'a> {
@@ -38,6 +43,8 @@ impl<'a> Ctx<'a> {
             changed: false,
             seeds,
             seeded: None,
+            born: vec![],
+            aside: None,
         }
     }
 

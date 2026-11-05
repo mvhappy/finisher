@@ -20,6 +20,9 @@ use crate::{Head, StoreError};
 pub(super) enum Stop {
     Newer,
     Failed(CoreError),
+    /// A `branch` or `branchSet` record that does not fit the branch index: set aside with
+    /// everything after it on the resolved chain (`MALFORMED`), never an error of the pass.
+    Aside(CoreError),
     Db(StoreError),
 }
 
@@ -35,11 +38,15 @@ pub(super) struct Version {
     pub(super) schema_version: u32,
 }
 
-/// The highest seed of `branch` that this resolution reaches from seq 1 and whose records up
-/// to it all read as this branch's (module docs, step 3).
+/// The highest seed of `branch` that this resolution reaches from the branch's start (seq
+/// `start + 1`: 1 on `main`, its fork seq + 1 on a branch) and whose records up to it all
+/// read as this branch's and are no `branch` or `branchSet` record (those are absorbed, and
+/// a `branch` record's fork state is replayed, so they are never stored unreplayed) (module
+/// docs, step 3).
 pub(super) fn seed_for<'s>(
     ctx: &Ctx<'s>,
     branch: &str,
+    start: u64,
     res: &Resolution,
 ) -> Option<&'s super::Seed> {
     let mut on_chain = HashMap::new();
@@ -49,15 +56,20 @@ pub(super) fn seed_for<'s>(
         }
     }
     let readable = |through: u64| {
-        (1..=through).all(|seq| {
-            on_chain
-                .get(&seq)
-                .is_some_and(|(_, bytes, meta, slice)| read(branch, slice, bytes, meta).is_ok())
+        (start + 1..=through).all(|seq| {
+            on_chain.get(&seq).is_some_and(|(_, bytes, meta, slice)| {
+                read(branch, slice, bytes, meta).is_ok_and(|r| {
+                    !matches!(
+                        r.kind,
+                        fin_core::RecordKind::Branch | fin_core::RecordKind::BranchSet
+                    )
+                })
+            })
         })
     };
     ctx.seeds
         .iter()
-        .filter(|s| s.branch == branch && s.seq > 0)
+        .filter(|s| s.branch == branch && s.seq > start)
         .filter(|s| on_chain.get(&s.seq).is_some_and(|(h, ..)| *h == s.tx_hash))
         .max_by_key(|s| s.seq)
         .filter(|s| readable(s.seq))
@@ -153,6 +165,11 @@ pub(super) fn one(
     let record = read(branch, slice, bytes, meta)?;
     let applied = apply_committed(&h.project, &record.intent, &record.bindings)
         .map_err(|e| Stop::Failed(with(e)))?;
+    match crate::branch::index::absorb_imported(txn, branch, meta.seq, &record, &h.project)? {
+        Ok(Some(child)) => ctx.born.push(child),
+        Ok(None) => {}
+        Err(e) => return Err(Stop::Aside(with(e))),
+    }
     let version = serde_json::from_slice::<Version>(bytes)
         .map(|v| v.schema_version)
         .unwrap_or(record.schema_version);

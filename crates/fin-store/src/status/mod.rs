@@ -89,7 +89,15 @@ pub struct ReadOnly {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchStatus {
+    /// The branch id.
     pub branch: String,
+    /// Its display name (`main` for `main`; a branch without an index row: its id).
+    pub name: String,
+    /// The parent's id (`None` for `main`).
+    pub parent: Option<String>,
+    /// The parent's seq it forks at (0 for `main`).
+    pub fork_seq: u64,
+    pub state: fin_core::branch::BranchState,
     pub head: u64,
     /// The highest seq in the folder (0: none).
     pub exported_through: u64,
@@ -140,6 +148,8 @@ pub struct ProjectStatus {
     pub waiting: Vec<String>,
     /// Segments neither imported nor set aside yet (beyond a fork, behind a gap).
     pub pending: Vec<String>,
+    /// Folder branch directories waiting for their `branch` record (never read-only).
+    pub unknown_branches: Vec<String>,
     pub warnings: Vec<Warning>,
     /// The database's incarnation: with a branch's `generation`, what a caller passes to
     /// commit against what it read (`Generation`). New whenever the database is rebuilt.
@@ -154,6 +164,7 @@ pub(crate) struct Follow {
     foreign: Vec<String>,
     waiting: Vec<String>,
     pending: Vec<String>,
+    unknown_branches: Vec<String>,
     import_error: Option<CoreError>,
     /// Incomplete files and the consecutive polls each was seen so.
     incomplete: HashMap<PathBuf, u32>,
@@ -199,6 +210,7 @@ impl Follow {
             .collect();
         self.waiting = r.waiting.clone();
         self.pending = r.pending.clone();
+        self.unknown_branches = r.unknown_branches.clone();
         let segments = project_dir.join(".finisher").join("segments");
         self.arriving_files = r
             .not_arrived
@@ -298,6 +310,7 @@ impl Store {
             foreign: f.foreign.iter().map(rel).collect(),
             waiting: f.waiting.clone(),
             pending: f.pending.clone(),
+            unknown_branches: f.unknown_branches.clone(),
             warnings,
             incarnation: crate::history::incarnation(&self.conn).unwrap_or_default(),
             compaction,
@@ -328,14 +341,31 @@ impl Store {
 
     fn branch_status(&self) -> Result<Vec<BranchStatus>, StoreError> {
         let mut out = vec![];
-        for branch in db::branches(&self.conn)? {
+        let ix = crate::branch::index::load(&self.conn)?;
+        // `main` first, then by numeric id (the index's order), then branches without an
+        // index row, by name.
+        let mut all = db::branches(&self.conn)?;
+        let mut ordered: Vec<String> = ix
+            .list()
+            .into_iter()
+            .map(|(_, i)| i.id.clone())
+            .filter(|id| all.contains(id))
+            .collect();
+        all.retain(|b| !ordered.contains(b));
+        ordered.append(&mut all);
+        for branch in ordered {
+            let info = ix.get(&branch);
             let through: Option<i64> = self.conn.query_row(
                 "SELECT MAX(seq) FROM txs WHERE branch = ?1 AND exported = 1",
                 params![branch],
                 |r| r.get(0),
             )?;
             out.push(BranchStatus {
-                head: self.head(&branch),
+                name: info.map_or_else(|| branch.clone(), |i| i.name.clone()),
+                parent: info.and_then(|i| i.parent.clone()),
+                fork_seq: info.map_or(0, |i| i.fork_seq),
+                state: info.map_or(fin_core::branch::BranchState::Active, |i| i.state()),
+                head: self.head_of(&branch),
                 generation: crate::history::current(&self.conn, &branch)?,
                 exported_through: through.map_or(Ok(0), db::to_u64)?,
                 branch,

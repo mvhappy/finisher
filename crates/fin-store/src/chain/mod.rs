@@ -248,11 +248,28 @@ pub struct Known {
     /// folder has moved on from where the tail starts, the tail is set aside (spec §3.6 step 7).
     pub holds_lease: bool,
     pub kind: StorageKind,
+    /// Where the branch starts on its parent (4B branches; `None` for `main`, or when the
+    /// fork point is not known): a segment that starts the branch (`prevSegmentHash` null)
+    /// must start at `fork.seq + 1` with `parentHash == fork.hash`, else it is malformed.
+    pub fork: Option<ForkPoint>,
+}
+
+/// A branch's fork point: the parent's seq it forks at and that record's `txHash` (`None` at
+/// seq 0). A branch's first record has seq `seq + 1` and `parentHash` `hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ForkPoint {
+    pub seq: u64,
+    pub hash: Option<String>,
 }
 
 impl Known {
     /// A DB that holds nothing for this branch.
     pub fn empty(kind: StorageKind) -> Known {
+        Known::for_branch(kind, None)
+    }
+
+    /// A DB that holds nothing for a branch forking at `fork`.
+    pub fn for_branch(kind: StorageKind, fork: Option<ForkPoint>) -> Known {
         Known {
             head: None,
             last_hash: None,
@@ -261,6 +278,7 @@ impl Known {
             tail_epoch: 0,
             holds_lease: false,
             kind,
+            fork,
         }
     }
 }
@@ -348,6 +366,6 @@ pub struct Resolution {
 
 /// Resolves one branch. `branch_segments` may come in any order and hold duplicates.
 pub fn resolve(branch_segments: &[SegRef], known: &Known) -> Resolution {
-    let graph = graph::Graph::build(branch_segments);
+    let graph = graph::Graph::build(branch_segments, known.fork.as_ref());
     walk::run(&graph, known)
 }

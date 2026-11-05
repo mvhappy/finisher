@@ -17,12 +17,21 @@
 //!    segment is labelled with the highest commit epoch of its records (export), so this is
 //!    an upper bound. Only unexported rows' epochs are ever used (export labels, the tail's
 //!    epoch in the epoch rule), and imported rows are exported, so the bound is never used
-//!    as a commit epoch. A record that cannot be read stops the branch there:
+//!    as a commit epoch (`super::aside` reads it as the label it is, for a `branch` record
+//!    whose id a set-aside record also made). A record that cannot be read stops the branch there:
 //!    `NEWER_FORMAT` sets `newer`, anything else is the branch's `error`.
-//!    **Seeding** (a rebuild only, `crate::rebuild`): on a branch whose DB holds only rev 0,
+//!    **Branch records** (plan 4B Decisions 14–15): a `branch` or `branchSet` record is folded
+//!    into the index before its row is stored (`crate::branch::index::absorb_imported`); a
+//!    `branch` record also stores its child's fork state. One that does not fit the index (a
+//!    name the rules refuse, an id already known, a `forkHash` that is not the parent's
+//!    record) is set aside as `MALFORMED` with every record after it on the resolved chain,
+//!    and the pass goes on: no error, nothing applied past it.
+//!    **Seeding** (a rebuild only, `crate::rebuild`): on a branch whose DB holds only its start
+//!    (rev 0 on `main`; the fork snapshot on a 4B branch),
 //!    a folder snapshot ([`super::Seed`]) whose `(seq, txHash)` is a record of this
-//!    resolution (so on the resolved chain, from seq 1) and whose records up to it all read
-//!    as this branch's is the state after that seq: those records are stored without being
+//!    resolution (so on the resolved chain, from the branch's start) and whose records up to
+//!    it all read as this branch's, none of them a `branch` or `branchSet` record, is the state
+//!    after that seq: those records are stored without being
 //!    replayed (their diffs are filled later, `crate::diffs`), and replay continues from the
 //!    snapshot. The highest such snapshot wins; any other is ignored.
 //! 4. A `segments` row (`imported`) for each segment touched whose last record is now in
@@ -37,7 +46,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use fin_core::CommittedTx;
+use fin_core::{CommittedTx, CoreError};
 use rusqlite::params;
 
 use super::Verdict;
@@ -183,13 +192,17 @@ pub(super) fn branch(
             .clone()
             .ok_or_else(|| broken(branch, "the branch has no head to import onto".into()))?;
         let mut tip_hash = crate::branch::lineage::tip_hash(txn, branch)?;
-        let seed = if h.rev == 0 {
-            seed_for(ctx, branch, res)
+        // A branch's start: 0 on `main`, the fork seq on a 4B branch (its head before its
+        // first record is the fork state, Decision 14, never a project genesis).
+        let start = crate::branch::index::get(txn, branch)?.map_or(0, |i| i.fork_seq);
+        let seed = if h.rev == start {
+            seed_for(ctx, branch, start, res)
         } else {
             None
         };
-        'slices: for slice in &res.apply {
-            for (bytes, meta) in slice.records().zip(slice.txs()) {
+        let mut aside_from: Option<(usize, usize, CoreError)> = None;
+        'slices: for (si, slice) in res.apply.iter().enumerate() {
+            for (ri, (bytes, meta)) in slice.records().zip(slice.txs()).enumerate() {
                 if h.rev.checked_add(1) != Some(meta.seq) || meta.parent_hash != tip_hash {
                     return Err(broken(
                         branch,
@@ -238,12 +251,19 @@ pub(super) fn branch(
                         verdict.error = Some(e);
                         break 'slices;
                     }
+                    Err(Stop::Aside(e)) => {
+                        aside_from = Some((si, ri, e));
+                        break 'slices;
+                    }
                     Err(Stop::Db(e)) => return Err(e),
                 }
             }
             touched.push(slice.clone());
         }
         head = Some(h);
+        if let Some((si, ri, e)) = aside_from {
+            set_aside_rest(ctx, branch, res, si, ri, &e, &mut verdict)?;
+        }
     }
 
     // 4. Segment rows (and every pack that ends on the DB line, unless this resolution sets
@@ -295,4 +315,51 @@ pub(super) fn branch(
         verdict,
         rewound,
     })
+}
+
+/// A record of the resolved chain that does not fit the branch index (`records::Stop::Aside`)
+/// is set aside as `MALFORMED`, and every record after it on the chain with it (they descend
+/// from it): nothing is applied past it, and the pass goes on.
+fn set_aside_rest(
+    ctx: &mut Ctx,
+    branch: &str,
+    res: &Resolution,
+    si: usize,
+    ri: usize,
+    e: &CoreError,
+    verdict: &mut Verdict,
+) -> Result<(), StoreError> {
+    let first = &res.apply[si];
+    let first_hash = first.txs()[ri].tx_hash.clone();
+    let short = crate::names::hash12(&first_hash)
+        .unwrap_or(&first_hash)
+        .to_string();
+    for (i, slice) in res.apply.iter().enumerate().skip(si) {
+        let skip = if i == si { ri } else { 0 };
+        for (bytes, meta) in slice.records().zip(slice.txs()).skip(skip) {
+            if ctx.has_hash(&meta.tx_hash)? {
+                continue;
+            }
+            let detail = if meta.tx_hash == first_hash {
+                format!("{}: {}", slice.hash(), e.message)
+            } else {
+                format!("{}: descends from set-aside record {short}", slice.hash())
+            };
+            quarantine::upsert(
+                ctx.txn,
+                &Quarantined {
+                    tx_hash: &meta.tx_hash,
+                    branch,
+                    origin: "folder",
+                    reason: quarantine::MALFORMED,
+                    detail: &detail,
+                    bytes,
+                    now: ctx.now,
+                },
+            )?;
+            verdict.quarantined.insert(meta.tx_hash.clone());
+        }
+    }
+    ctx.aside = None;
+    Ok(())
 }

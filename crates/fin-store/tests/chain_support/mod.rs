@@ -5,7 +5,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 #[allow(unused_imports)]
-pub use fin_store::chain::{ForkReason, ForkSide, Known, QuarantineReason, Resolution, SegRef};
+pub use fin_store::chain::{
+    ForkPoint, ForkReason, ForkSide, Known, QuarantineReason, Resolution, SegRef,
+};
 use fin_store::conflict_names::Provider;
 use fin_store::segment::{self, Header, Replaced};
 use fin_store::storage_kind::StorageKind;

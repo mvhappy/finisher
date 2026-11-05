@@ -29,9 +29,10 @@
 //!     `lease.claim-*` file, is at or above it. A higher epoch nobody claimed looks like a
 //!     hand copy or a bug, not a takeover. The caller reads both before the pass takes the
 //!     database lock ([`lease_top`]) and passes the highest.
-//! (d) No other branch is based inside the lost range. (4A has only `main`; a branch whose
-//!     base is not recorded counts as based inside, until 4B records bases in `meta`
-//!     `branchBase.<branch>` = `{"branch", "seq"}`.)
+//! (d) No other branch is based inside the lost range: the range holds no `branch` or
+//!     `branchSet` record (until plan 4B Task 10 cascades the rewind to the children those
+//!     records made), and a branch without an index row (a root made by hand) is based
+//!     where `meta` `branchBase.<branch>` = `{"branch", "seq"}` says, else inside.
 //!
 //! # What ([`run`])
 //!
@@ -126,7 +127,9 @@ pub(super) fn eligible(
     }
     let txn = ctx.txn;
     let from_seq = match &fork.after {
-        None => 1,
+        // The branch start: seq 1 on `main`, the first seq after the fork on a 4B branch
+        // (its fork snapshot is not part of the lost range).
+        None => super::known::fork_point(txn, branch)?.map_or(0, |f| f.seq) + 1,
         Some(h) => {
             let seq: Option<i64> = txn
                 .query_row(
@@ -160,9 +163,25 @@ pub(super) fn eligible(
             return Ok(None);
         }
     }
-    // (d)
+    // (d) Until the cascade (plan 4B Task 10): a lost `branch` or `branchSet` record would
+    // leave the index (and a child's fork state) behind, so such a range is not rewound.
+    let indexed: i64 = txn.query_row(
+        "SELECT COUNT(*) FROM txs WHERE branch = ?1 AND seq >= ?2 AND kind IN (?3, ?4)",
+        params![
+            branch,
+            to_i64(from_seq)?,
+            db::kind_text(fin_core::RecordKind::Branch)?,
+            db::kind_text(fin_core::RecordKind::BranchSet)?
+        ],
+        |r| r.get(0),
+    )?;
+    if indexed > 0 {
+        return Ok(None);
+    }
+    // A branch with an index row is based where its `branch` record says (checked above);
+    // one without (a root made by hand) counts as based inside unless `meta` records it.
     for other in db::branches(txn)? {
-        if other == branch {
+        if other == branch || crate::branch::index::get(txn, &other)?.is_some() {
             continue;
         }
         let base: Option<BranchBase> = db::meta(txn, &format!("branchBase.{other}"))?

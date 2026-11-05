@@ -37,6 +37,9 @@ pub struct ImportReport {
     /// Records taken out of a branch's history this pass (a rewound applied line, a diverged
     /// tail), before `applied` was applied.
     pub rewound: Vec<Rewind>,
+    /// Folder branch directories (`br<n>`) whose `branch` record this database does not hold
+    /// and has not set aside: they wait for it (plan 4B Decision 8; never read-only).
+    pub unknown_branches: Vec<String>,
 }
 
 /// Records taken out of `branch`'s history by an import ([`crate::StoreEvent::Rewound`]).

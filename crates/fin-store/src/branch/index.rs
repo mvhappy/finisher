@@ -7,6 +7,7 @@ use fin_core::branch::{BranchIndex, BranchInfo};
 use fin_core::{CoreError, Record, RecordKind};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use super::lineage;
 use crate::db::{self, to_i64, to_u64};
 use crate::{StoreError, branch_not_found};
 
@@ -103,6 +104,67 @@ pub(crate) fn absorb(
         save(conn, info)?;
     }
     Ok(changed)
+}
+
+/// Folds a record import is about to store at `seq` of `branch` into the table, before the
+/// row is inserted (plan 4B Decision 15): `Ok(Err(why))` when it does not fit the index
+/// ([`BranchIndex::absorb`]), or when a `branch` record's `forkHash` is not the parent's
+/// record at `forkSeq`: the caller sets it aside and writes nothing. A `branch` record also
+/// stores the child's fork state as its snapshot at `forkSeq` (Decision 14), as
+/// [`crate::Store::create_branch`] does: `before` is `branch`'s state at `seq - 1`, used when
+/// the fork is there; otherwise the state is replayed ([`lineage::state_at`]). Returns the
+/// branch a `branch` record made.
+pub(crate) fn absorb_imported(
+    conn: &Connection,
+    branch: &str,
+    seq: u64,
+    rec: &Record,
+    before: &fin_core::Project,
+) -> Result<Result<Option<String>, CoreError>, StoreError> {
+    if !matches!(rec.kind, RecordKind::Branch | RecordKind::BranchSet) {
+        return Ok(Ok(None));
+    }
+    let mut ix = load(conn)?;
+    let changed = match ix.absorb(branch, seq, rec) {
+        Ok(c) => c,
+        Err(e) => return Ok(Err(e)),
+    };
+    let Some(id) = changed else {
+        return Ok(Ok(None));
+    };
+    let Some(info) = ix.get(&id).cloned() else {
+        return Err(missing(&id));
+    };
+    if rec.kind == RecordKind::BranchSet {
+        save(conn, &info)?;
+        return Ok(Ok(None));
+    }
+    let at = lineage::hash_at(conn, branch, info.fork_seq)?;
+    if at != info.fork_hash {
+        let why = format!(
+            "branch {id} forks at seq {} of {branch} with forkHash {:?}, but that record is {at:?}",
+            info.fork_seq, info.fork_hash
+        );
+        return Ok(Err(CoreError::new(
+            "INVALID_FORMAT",
+            format!("record {} does not fit the branch index: {why}", rec.tx_id),
+        )
+        .with_details(
+            serde_json::json!({ "kind": "record", "txId": rec.tx_id, "reason": why }),
+        )));
+    }
+    let state = if info.fork_seq + 1 == seq {
+        before.clone()
+    } else {
+        lineage::state_at(conn, branch, info.fork_seq)?
+    };
+    save(conn, &info)?;
+    conn.execute(
+        "DELETE FROM snapshots WHERE branch = ?1 AND seq = ?2",
+        params![id, to_i64(info.fork_seq)?],
+    )?;
+    db::insert_snapshot(conn, &id, info.fork_seq, &state)?;
+    Ok(Ok(Some(id)))
 }
 
 /// The branch reference `r` names (Decision 12): an id, an active display name, or

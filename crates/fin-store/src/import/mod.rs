@@ -14,8 +14,10 @@
 //!    passes them in as seeds ([`Seed`], [`apply`] step 3).
 //! 4. **One DB transaction** (`BEGIN IMMEDIATE`) for the whole pass, so a pass lands
 //!    completely or not at all and nothing else commits between building [`Known`] and
-//!    acting on the [`Resolution`]. Per branch the DB knows (folder branches it does not know
-//!    are 4B's):
+//!    acting on the [`Resolution`]. Per branch the DB knows, parents before children (a
+//!    worklist, [`pass`]: a `branch` record applied on the way adds its child, so a child
+//!    whose segments came with its parent's record is followed in the same pass; plan 4B
+//!    Decision 15):
 //!    - the DB line ([`known`]): `head` = the highest exported row, `tail` = the unexported
 //!      rows, which must follow every exported row (else `DB_ERROR`);
 //!    - **skip:** when the branch's segment set, `head`, `tail`, lease and storage kind are
@@ -30,9 +32,18 @@
 //!      highest epoch is read before `BEGIN` (never under the database lock) whenever the
 //!      folder's segments or our lease changed or the last pass left such a fork, and it is
 //!      part of the skip key.
+//!    - a branch's segments must start at its fork point (`Known::fork`, from the index);
+//!    - folder directories the worklist never reaches ([`aside`]): one whose `branch` record
+//!      is set aside has every record quarantined with that record's reason (recursively);
+//!      any other waits for its `branch` record ([`ImportReport::unknown_branches`], never
+//!      read-only). A live branch whose id a set-aside `branch` record also made (two
+//!      servers across a takeover) loses the segments below its own record's epoch the same
+//!      way.
 //! 5. **Id counters** are raised past every id in the log ([`Counters::raise_to_log`])
 //!    whenever rows were added or removed, and on the store's first pass (which repairs a DB
-//!    whose counters fell behind for any reason).
+//!    whose counters fell behind for any reason); and on every pass past the ids of
+//!    quarantine rows added since the last ([`Counters::raise_to_quarantine`], plan 4B
+//!    Decision 28).
 //! 6. **Quarantine** ([`quarantine`]): rows are keyed by `txHash`, so a record reported on
 //!    every poll (a stale line) or by two sources (a stale line and a conflict copy of it) is
 //!    one row. `current` says whether this pass's verdicts still set it aside; status counts
@@ -55,6 +66,7 @@
 //! entry (scan does not enter it) with `conflict_copy` set: read-only too.
 
 mod apply;
+mod aside;
 mod ctx;
 mod hydrate;
 mod known;
@@ -92,6 +104,10 @@ struct Key {
     /// The highest epoch in `lease.json` and the claims ([`rewind::lease_top`]).
     lease_top: Option<u64>,
     kind: StorageKind,
+    /// Where the branch starts (the graph's start check).
+    fork: Option<crate::chain::ForkPoint>,
+    /// The set-aside `branch` records of the same id ([`aside::collisions`]).
+    aside: Vec<String>,
 }
 
 /// The per-poll verdict of one branch, reused while its [`Key`] is unchanged.
@@ -319,6 +335,7 @@ impl Store {
             resolves,
             applied,
             rewound,
+            leftover,
         } = pass::resolve_branches(
             &txn,
             &mut ctx,
@@ -354,9 +371,14 @@ impl Store {
         for (_, v) in cache.values() {
             current.extend(v.quarantined.iter().cloned());
         }
+        // Folder branch directories no known branch took (Decision 8).
+        let (taken, unknown) = aside::leftovers(&mut ctx, leftover, &current)?;
+        current.extend(taken);
+        report.unknown_branches = unknown;
         if ctx.changed || import.flagged.as_ref() != Some(&current) {
             quarantine::flag_current(&txn, &current)?;
         }
+        Counters::raise_to_quarantine(&txn)?;
         report.quarantined = quarantine::count(&txn)?;
         let seeded = ctx.seeded;
         drop(ctx);
