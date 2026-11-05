@@ -16,7 +16,8 @@ use fin_core::{CommittedTx, CoreError};
 use fin_core::{MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
 use serde_json::{Value, json};
 
-use crate::backend::{Backend, Snapshot};
+use crate::backend::{Backend, Snapshot, TxLookup};
+use crate::client::IN_FLIGHT_CODES;
 use crate::output::{VALIDATION, exit_code, usage};
 
 /// Flags accepted by every command.
@@ -161,8 +162,28 @@ impl<'a> Builder<'a> {
                 "resolved": resolved,
             }));
         }
-        let committed = match (self.backend.commit(&tx), self.deferred) {
+        // A retry (`--idem-key`): ask what became of the key first. Already committed: that
+        // commit is the answer. Set aside (lost to another server's history, salvaged): it is
+        // reported, never sent again blindly.
+        let earlier = match &globals.idem_key {
+            Some(_) => lookup(self.backend, &tx.tx_id)?,
+            None => None,
+        };
+        let generation = self.base.generation.as_ref();
+        let sent = match earlier {
+            Some(c) => Ok(c),
+            None => self.backend.commit(&tx, generation),
+        };
+        let committed = match (sent, self.deferred) {
             (Ok(committed), _) => committed,
+            // The answer was lost (timeout, dropped connection): ask whether it landed.
+            (Err(e), _) if IN_FLIGHT_CODES.contains(&e.code.as_str()) => {
+                match lookup(self.backend, &tx.tx_id) {
+                    Ok(Some(c)) => c,
+                    Err(aside) if aside.code == "TX_SET_ASIDE" => return Err(aside),
+                    _ => return Err(e),
+                }
+            }
             // The server also rejected it as invalid, so it was not a retry after all: report the
             // local error, which names the failing input. Any other server answer (conflict,
             // shutting down, internal, transport) is the more useful one and keeps its exit code.
@@ -181,6 +202,26 @@ impl<'a> Builder<'a> {
             "diff": committed.diff,
             "resolved": resolved,
         }))
+    }
+}
+
+/// `tx.get`: `Some` when `tx_id` committed, `None` when the server never saw it, and
+/// `TX_SET_ASIDE` (exit 4) when it was set aside.
+fn lookup(backend: &dyn Backend, tx_id: &str) -> Result<Option<CommittedTx>, CoreError> {
+    match backend.tx_get(tx_id)? {
+        TxLookup::Committed(c) => Ok(Some(*c)),
+        TxLookup::Unknown => Ok(None),
+        TxLookup::SetAside(aside) => {
+            let reason = aside["reason"].as_str().unwrap_or("UNKNOWN").to_string();
+            Err(CoreError::new(
+                "TX_SET_ASIDE",
+                format!("transaction {tx_id} was committed once but set aside ({reason})"),
+            )
+            .with_details(aside)
+            .with_fix(
+                "its edit is no longer in the project (fin project status counts the quarantine): read the project again and, if the edit is still wanted, run the command with a new --idem-key",
+            ))
+        }
     }
 }
 
@@ -340,102 +381,4 @@ pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Va
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use fin_core::{CommittedTx, Rational, new_project};
-
-    use super::*;
-    use crate::backend::Probed;
-
-    /// An empty project at rev 1 whose server rejects every commit with `answer`.
-    struct Rejecting {
-        answer: CoreError,
-    }
-
-    impl Backend for Rejecting {
-        fn snapshot(&self) -> Result<Snapshot, CoreError> {
-            let rate: Rational = "30".parse()?;
-            Ok(Snapshot {
-                rev: 1,
-                project: new_project("p".into(), "P".into(), rate)?,
-            })
-        }
-        fn commit(&self, _tx: &Tx) -> Result<CommittedTx, CoreError> {
-            Err(self.answer.clone())
-        }
-        fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
-            unreachable!()
-        }
-        fn create_project(
-            &self,
-            _dir: &Path,
-            _name: &str,
-            _rate: Rational,
-        ) -> Result<Value, CoreError> {
-            unreachable!()
-        }
-        fn open_project(&self, _dir: &Path) -> Result<Value, CoreError> {
-            unreachable!()
-        }
-    }
-
-    fn delete_missing_with_key(answer: CoreError) -> CoreError {
-        let globals = Globals {
-            idem_key: Some("k".into()),
-            ..Globals::default()
-        };
-        let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
-        write(&Rejecting { answer }, &globals, step).unwrap_err()
-    }
-
-    #[test]
-    fn a_deferred_local_error_only_replaces_server_validation_errors() {
-        let server_invalid = CoreError::new("NOT_FOUND", "server says no");
-        let local = delete_missing_with_key(server_invalid);
-        assert_eq!(local.code, "NOT_FOUND");
-        assert_ne!(local.message, "server says no");
-        assert_eq!(local.details["opIndex"], 0);
-        for code in [
-            "CONFLICT",
-            "BASE_REV_AHEAD",
-            "SERVER_SHUTTING_DOWN",
-            "ENGINE_CLOSED",
-            "INTERNAL",
-            "SERVER_TIMEOUT",
-        ] {
-            let e = delete_missing_with_key(CoreError::new(code, "server"));
-            assert_eq!((e.code.as_str(), e.message.as_str()), (code, "server"));
-        }
-        let no_key = write(
-            &Rejecting {
-                answer: CoreError::new("CONFLICT", "server"),
-            },
-            &Globals::default(),
-            Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() }),
-        );
-        assert_eq!(no_key.unwrap_err().code, "NOT_FOUND");
-    }
-
-    #[test]
-    fn a_rebased_commit_is_the_same_command_but_another_kind_or_clip_is_not() {
-        let r = |s: &str| s.parse::<Rational>().unwrap();
-        let insert = |at: &str| Op::ClipInsert {
-            id: "$clip".into(),
-            track: "t1".into(),
-            at: r(at),
-            asset: "a1".into(),
-            source_in: r("0"),
-            duration: r("2"),
-        };
-        let delete = |clip: &str| Op::ClipDelete { clip: clip.into() };
-        assert!(same_command(&[insert("0")], &[insert("4")]));
-        assert!(same_command(&[delete("c1")], &[delete("c1")]));
-        assert!(!same_command(&[insert("0")], &[delete("c1")]));
-        assert!(!same_command(&[delete("c1")], &[delete("c2")]));
-        assert!(!same_command(
-            &[delete("c1")],
-            &[delete("c1"), delete("c2")]
-        ));
-    }
-}
+mod tests;

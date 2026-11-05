@@ -66,8 +66,8 @@ export class Engine {
     return new Engine(await call(native.Engine.create(serverData, projectDir, name, rate)));
   }
 
-  static async open(serverData, projectDir) {
-    return new Engine(await call(native.Engine.open(serverData, projectDir)));
+  static async open(serverData, projectDir, options = {}) {
+    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true)));
   }
 
   get projectId() {

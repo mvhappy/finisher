@@ -5,6 +5,7 @@ import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { attemptJson, toFinError } from "./errors.ts";
 import { ProjectRegistry } from "./projects.ts";
+import { RECOVER_MANUAL } from "./recover.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -24,15 +25,28 @@ export const HandlersLive = FinRpcs.toLayer(
           capabilities: CAPABILITIES,
         }),
       "project.create": ({ dir, name, rate }) => guard(registry.create(dir, name, rate)),
-      "project.open": ({ dir }) => guard(registry.open(dir)),
+      "project.open": ({ dir, relocate }) => guard(registry.open(dir, relocate)),
       "asset.probe": ({ path }) => guard(attemptJson<unknown>(() => probe(path))),
-      "tx.commit": ({ projectId, tx }) => guard(registry.commit(projectId, tx)),
+      "tx.commit": ({ projectId, tx, generation }) => guard(registry.commit(projectId, tx, generation)),
       "snapshot.get": ({ projectId, branch }) => guard(registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
       "ops.subscribe": ({ projectId, branch, fromRev }) =>
         registry
           .subscribe(projectId, branch, fromRev)
           .pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),
+      "project.events": ({ projectId }) =>
+        registry.events(projectId).pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),
+      "project.status": ({ projectId }) => guard(registry.status(projectId)),
+      "project.takeover": ({ projectId, confirm }) => guard(registry.takeover(projectId, confirm)),
+      "project.verify": ({ projectId }) => guard(registry.verify(projectId)),
+      "project.rebuild": ({ projectId }) => guard(registry.rebuild(projectId)),
+      "project.compact": ({ projectId }) => guard(registry.compact(projectId)),
+      "project.recover": ({ projectId }) => guard(Effect.as(registry.ensure(projectId), { manual: RECOVER_MANUAL })),
+      "project.acknowledgeRewind": ({ projectId, branch, generation }) =>
+        guard(Effect.map(registry.acknowledgeRewind(projectId, branch, generation), (acknowledged) => ({ acknowledged }))),
+      "project.acknowledgeSalvage": ({ projectId, copy }) =>
+        guard(Effect.map(registry.acknowledgeSalvage(projectId, copy), (acknowledged) => ({ acknowledged }))),
+      "tx.get": ({ projectId, txId }) => guard(registry.txGet(projectId, txId)),
     };
   }),
 );

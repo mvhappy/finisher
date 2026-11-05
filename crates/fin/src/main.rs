@@ -143,6 +143,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
             commands::project::create(backend()?.as_ref(), g, &a)
         }
         Some(Cmd::Project(ProjectCmd::Open(a))) => commands::project::open(backend()?.as_ref(), &a),
+        Some(Cmd::Project(cmd)) => commands::project::storage(backend()?.as_ref(), &cmd),
         Some(Cmd::Asset(AssetCmd::Add(a))) => {
             commands::write(backend()?.as_ref(), g, Write::AssetAdd(a))
         }
@@ -193,7 +194,14 @@ mod tests {
     fn every_registry_command_parses() {
         let samples = [
             "project create d --name n",
-            "project open d",
+            "project open d --relocate",
+            "project status",
+            "project takeover --confirm",
+            "project verify",
+            "project rebuild",
+            "project compact",
+            "project recover",
+            "project acknowledge --rewind 2 --branch main",
             "status",
             "view",
             "asset add f.mp4",

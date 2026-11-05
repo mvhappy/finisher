@@ -18,11 +18,24 @@ use crate::{endpoint, paths};
 pub const SNAPSHOT_ENV: &str = "FIN_OFFLINE_SNAPSHOT";
 const PROJECT_FILE: &str = "finisher.project.json";
 
-/// A project at a revision.
+/// A project at a revision. `generation` (`{incarnation, n}`, read together with `rev`) is
+/// sent back with the commit, so a branch rewound or a database rebuilt in between refuses it
+/// with `HISTORY_REWOUND` instead of rebasing it over a history this command never saw.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub rev: u64,
     pub project: Project,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<Value>,
+}
+
+/// What became of a tx id (`tx.get`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TxLookup {
+    Committed(Box<CommittedTx>),
+    /// Set aside in quarantine: `{txId, branch, reason, origin}`.
+    SetAside(Value),
+    Unknown,
 }
 
 /// What the server's probe reports about a media file (the `asset.add` fields).
@@ -41,13 +54,21 @@ pub trait Backend {
     /// The current project state on `main`.
     fn snapshot(&self) -> Result<Snapshot, CoreError>;
     /// Commits `tx`; the server rebases it over anything newer than `tx.base_rev`.
-    fn commit(&self, tx: &Tx) -> Result<CommittedTx, CoreError>;
+    /// `generation`: the snapshot's (see [`Snapshot`]).
+    fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError>;
+    /// What became of `tx_id`.
+    fn tx_get(&self, tx_id: &str) -> Result<TxLookup, CoreError>;
+    /// A project-scoped RPC (`project.status`, …): `payload` gains the project's id.
+    fn project_call(&self, tag: &str, payload: Value) -> Result<Value, CoreError>;
+    /// Rebuilds the project database: through the server when one runs (it holds the
+    /// database), else in this process. `Ok((report, offline))`.
+    fn rebuild(&self) -> Result<(Value, bool), CoreError>;
     /// Probes a media file for `asset add`.
     fn probe(&self, path: &Path) -> Result<Probed, CoreError>;
     /// Creates a project folder; returns the server's description of it.
     fn create_project(&self, dir: &Path, name: &str, rate: Rational) -> Result<Value, CoreError>;
-    /// Opens (registers) an existing project folder.
-    fn open_project(&self, dir: &Path) -> Result<Value, CoreError>;
+    /// Opens (registers) an existing project folder; `relocate`: see `fin project open`.
+    fn open_project(&self, dir: &Path, relocate: bool) -> Result<Value, CoreError>;
     /// True when writes can only be dry runs (no server to commit to).
     fn dry_run_only(&self) -> bool {
         false
@@ -85,8 +106,20 @@ impl Backend for Offline {
         Ok(self.snapshot.clone())
     }
 
-    fn commit(&self, _tx: &Tx) -> Result<CommittedTx, CoreError> {
+    fn commit(&self, _tx: &Tx, _generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
         Err(offline_only("commit"))
+    }
+
+    fn tx_get(&self, _tx_id: &str) -> Result<TxLookup, CoreError> {
+        Err(offline_only("tx.get"))
+    }
+
+    fn project_call(&self, tag: &str, _payload: Value) -> Result<Value, CoreError> {
+        Err(offline_only(tag))
+    }
+
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        Err(offline_only("project.rebuild"))
     }
 
     fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
@@ -102,7 +135,7 @@ impl Backend for Offline {
         Err(offline_only("project.create"))
     }
 
-    fn open_project(&self, _dir: &Path) -> Result<Value, CoreError> {
+    fn open_project(&self, _dir: &Path, _relocate: bool) -> Result<Value, CoreError> {
         Err(offline_only("project.open"))
     }
 
@@ -184,7 +217,14 @@ impl Online {
                 crate::client::TIMEOUT,
             )?),
         };
-        f(client)
+        let result = f(client);
+        // A transport failure leaves the connection unusable: the next call reconnects.
+        if let Err(e) = &result
+            && crate::client::IN_FLIGHT_CODES.contains(&e.code.as_str())
+        {
+            *slot = None;
+        }
+        result
     }
 
     fn call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
@@ -230,14 +270,54 @@ impl Backend for Online {
         )
     }
 
-    fn commit(&self, tx: &Tx) -> Result<CommittedTx, CoreError> {
+    fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
         let project_id = self.project_id()?;
         if let Some(gate) = std::env::var_os(COMMIT_GATE_ENV).filter(|g| !g.is_empty()) {
             commit_gate(Path::new(&gate))?;
         }
-        let payload = json!({ "projectId": project_id, "tx": tx });
+        let mut payload = json!({ "projectId": project_id, "tx": tx });
+        if let Some(g) = generation {
+            payload["generation"] = g.clone();
+        }
         let value = self.with_client(|c| c.commit(payload, &tx.tx_id))?;
         serde_json::from_value(value.clone()).map_err(|e| unexpected("tx.commit", e, &value))
+    }
+
+    fn tx_get(&self, tx_id: &str) -> Result<TxLookup, CoreError> {
+        let value = self.project_call("tx.get", json!({ "txId": tx_id }))?;
+        if value.is_null() {
+            return Ok(TxLookup::Unknown);
+        }
+        if let Some(aside) = value.get("setAside") {
+            return Ok(TxLookup::SetAside(aside.clone()));
+        }
+        serde_json::from_value(value.clone())
+            .map(|c| TxLookup::Committed(Box::new(c)))
+            .map_err(|e| unexpected("tx.get", e, &value))
+    }
+
+    fn project_call(&self, tag: &str, mut payload: Value) -> Result<Value, CoreError> {
+        let project_id = self.project_id()?;
+        payload["projectId"] = json!(project_id);
+        self.call(tag, payload)
+    }
+
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        // Only "nobody listens" means no server holds the database; any other failure to
+        // reach one is reported, never answered with a rebuild behind its back.
+        match self.with_client(|_| Ok(())) {
+            Ok(()) => Ok((self.project_call("project.rebuild", json!({}))?, false)),
+            Err(e) if e.code == "SERVER_UNAVAILABLE" => {
+                let dir = self.project.as_ref().ok_or_else(no_project)?;
+                let sd = endpoint::server_data().ok_or(e)?;
+                let report = fin_store::rebuild_project(&sd, dir).map_err(CoreError::from)?;
+                let report = serde_json::to_value(report).map_err(|e| {
+                    internal(format!("cannot encode the rebuild report: {e}"), json!({}))
+                })?;
+                Ok((report, true))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn probe(&self, path: &Path) -> Result<Probed, CoreError> {
@@ -265,8 +345,12 @@ impl Backend for Online {
         )
     }
 
-    fn open_project(&self, dir: &Path) -> Result<Value, CoreError> {
-        self.call("project.open", json!({ "dir": dir }))
+    fn open_project(&self, dir: &Path, relocate: bool) -> Result<Value, CoreError> {
+        let mut payload = json!({ "dir": dir });
+        if relocate {
+            payload["relocate"] = json!(true);
+        }
+        self.call("project.open", payload)
     }
 }
 

@@ -23,7 +23,7 @@ use std::sync::mpsc;
 
 use fin_core::{CoreError, Rational};
 
-use fin_store::Store;
+use fin_store::{OpenOptions, Store};
 use napi::bindgen_prelude::*;
 
 use crate::engine::{Engine, Shared, State, lock};
@@ -68,13 +68,14 @@ impl Worker {
     }
 }
 
-/// `Engine.create` (`create` = `(name, rate)`) or `Engine.open`, on a new worker thread that
-/// then serves the engine.
+/// `Engine.create` (`create` = `(name, rate)`) or `Engine.open` (`relocate`:
+/// [`OpenOptions::relocate`]), on a new worker thread that then serves the engine.
 pub(crate) fn open<'e>(
     env: &'e Env,
     server_data: PathBuf,
     project_dir: PathBuf,
     create: Option<(String, String)>,
+    relocate: bool,
 ) -> Result<Object<'e>> {
     let worker = Worker::spawn()?;
     let (deferred, promise) = env.create_deferred::<Engine, _>()?;
@@ -87,7 +88,14 @@ pub(crate) fn open<'e>(
                         let rate: Rational = rate.parse().map_err(reject)?;
                         Store::create(&server_data, &project_dir, name, rate)
                     }
-                    None => Store::open(&server_data, &project_dir),
+                    None => Store::open_with(
+                        &server_data,
+                        &project_dir,
+                        OpenOptions {
+                            relocate,
+                            ..OpenOptions::default()
+                        },
+                    ),
                 };
                 let store = store.map_err(reject)?;
                 let status = serde_json::to_value(store.status()).ok();

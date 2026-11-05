@@ -172,8 +172,9 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         }
         Call::Snapshot { branch } => with_store(store, |s| {
             let (rev, project) = s.snapshot(&branch).map_err(reject)?;
+            let generation = s.generation_token(&branch);
             Ok(Reply::Json(encode(
-                &json!({ "rev": rev, "project": project }),
+                &json!({ "rev": rev, "project": project, "generation": generation }),
             )?))
         }),
         Call::OpsSince { branch, after } => {

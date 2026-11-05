@@ -276,6 +276,7 @@ dependencies = [
  "clap",
  "fin-core",
  "fin-probe",
+ "fin-store",
  "interprocess",
  "schemars",
  "serde",

@@ -114,40 +114,58 @@ impl Server {
         }
         let (tmp, root) = real_tempdir();
         let sd = root.join("server-data");
-        let log = std::fs::File::create(root.join("finisherd.log")).unwrap();
+        let mut server = Server {
+            child: None,
+            _tmp: tmp,
+            root,
+            sd,
+            socket: String::new(),
+        };
+        server.spawn();
+        Some(server)
+    }
+
+    /// Starts the server again on the same server data (after [`Server::stop`]).
+    pub fn restart(&mut self) {
+        self.stop();
+        self.spawn();
+    }
+
+    fn spawn(&mut self) {
+        let info = self.sd.join("finisherd.json");
+        // A killed server leaves its finisherd.json behind: wait for the new one.
+        let _ = std::fs::remove_file(&info);
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("finisherd.log"))
+            .unwrap();
         let child = Command::new("node")
-            .arg(repo.join("apps/finisherd/src/main.ts"))
+            .arg(repo_root().join("apps/finisherd/src/main.ts"))
             .arg("--server-data")
-            .arg(&sd)
+            .arg(&self.sd)
             .env_remove("FIN_SERVER")
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
             .expect("spawn finisherd");
-        let mut server = Server {
-            child: Some(child),
-            _tmp: tmp,
-            root,
-            sd,
-            socket: String::new(),
-        };
-        let info = server.sd.join("finisherd.json");
+        self.child = Some(child);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if let Ok(text) = std::fs::read_to_string(&info)
                 && let Ok(json) = serde_json::from_str::<Value>(&text)
             {
-                server.socket = json["socket"].as_str().unwrap().to_string();
-                return Some(server);
+                self.socket = json["socket"].as_str().unwrap().to_string();
+                return;
             }
-            if let Some(status) = server.child.as_mut().unwrap().try_wait().unwrap() {
-                panic!("finisherd exited with {status}: {}", server.log());
+            if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+                panic!("finisherd exited with {status}: {}", self.log());
             }
             assert!(
                 Instant::now() < deadline,
                 "finisherd did not start: {}",
-                server.log()
+                self.log()
             );
             std::thread::sleep(Duration::from_millis(25));
         }

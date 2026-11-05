@@ -201,14 +201,28 @@ impl Engine {
             server_data.into(),
             project_dir.into(),
             Some((name, rate)),
+            false,
         )
     }
 
     /// Opens the project whose `finisher.project.json` is in `project_dir` (acquiring the
-    /// lease or following, importing, rebuilding a missing or damaged database).
+    /// lease or following, importing, rebuilding a missing or damaged database). `relocate`:
+    /// the user says the project now lives here although its recorded folder cannot be
+    /// reached (`PROJECT_ORIGINAL_UNREACHABLE` otherwise).
     #[napi(catch_unwind, ts_return_type = "Promise<Engine>")]
-    pub fn open<'e>(env: &'e Env, server_data: String, project_dir: String) -> Result<Object<'e>> {
-        worker::open(env, server_data.into(), project_dir.into(), None)
+    pub fn open<'e>(
+        env: &'e Env,
+        server_data: String,
+        project_dir: String,
+        relocate: Option<bool>,
+    ) -> Result<Object<'e>> {
+        worker::open(
+            env,
+            server_data.into(),
+            project_dir.into(),
+            None,
+            relocate.unwrap_or(false),
+        )
     }
 
     #[napi(getter, catch_unwind)]
@@ -233,7 +247,8 @@ impl Engine {
         })
     }
 
-    /// Resolves to `{"rev": n, "project": {...}}` JSON for the head of `branch`.
+    /// Resolves to `{"rev": n, "project": {...}, "generation": {incarnation, n}}` JSON for the
+    /// head of `branch`, read together (the generation to commit against what was read).
     #[napi(catch_unwind)]
     pub fn snapshot(&self, branch: String) -> AsyncTask<StoreTask> {
         self.task(Call::Snapshot { branch })

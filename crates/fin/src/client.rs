@@ -174,7 +174,7 @@ fn timeout_error(endpoint: &Endpoint, what: &str, timeout: Duration) -> CoreErro
 
 /// Codes for which a sent commit may or may not have landed. `CANCELLED`: the server interrupted
 /// the request (e.g. while stopping), possibly after the commit was written.
-const IN_FLIGHT_CODES: &[&str] = &[
+pub const IN_FLIGHT_CODES: &[&str] = &[
     "SERVER_TIMEOUT",
     "SERVER_UNAVAILABLE",
     "PROTOCOL_ERROR",

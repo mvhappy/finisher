@@ -42,6 +42,8 @@ const VALIDATION_CODES: &[&str] = &[
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
+    // A project file or segment naming a hash algorithm this build does not know.
+    "UNSUPPORTED_HASH",
     // A damaged database with no way to rebuild it (no rev 0 anywhere).
     "DB_CORRUPT",
     // A manual rebuild that would drop records the folder no longer holds; a project
@@ -77,6 +79,8 @@ const VALIDATION_CODES: &[&str] = &[
 /// `HISTORY_REWOUND`: history the caller saw on `details.branch` from `details.rev` on was
 /// set aside (an applied line lost to a newer lease epoch, or a local tail diverged); read
 /// the branch again from before `details.rev`.
+/// `TX_SET_ASIDE`: an `--idem-key` names a transaction that committed once but was set aside
+/// since (`details.reason`); its edit is not in the project now.
 const CONFLICT_CODES: &[&str] = &[
     "CONFLICT",
     "BASE_REV_AHEAD",
@@ -85,6 +89,7 @@ const CONFLICT_CODES: &[&str] = &[
     "LEASE_TAKEOVER_REFUSED",
     "LEASE_LOST",
     "HISTORY_REWOUND",
+    "TX_SET_ASIDE",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
@@ -195,6 +200,9 @@ mod tests {
         assert_eq!(exit_code("LEASE_TAKEOVER_REFUSED"), 4);
         assert_eq!(exit_code("LEASE_LOST"), 4);
         assert_eq!(exit_code("HISTORY_REWOUND"), 4);
+        assert_eq!(exit_code("TX_SET_ASIDE"), 4);
+        assert_eq!(exit_code("UNSUPPORTED_HASH"), 3);
+        assert_eq!(exit_code("DB_IN_USE"), 5);
         for code in [
             "SERVER_UNAVAILABLE",
             "SERVER_RUNNING",

@@ -98,6 +98,44 @@ try {
     const sub = c.stream("ops.subscribe", { projectId: "nope", branch: "main", fromRev: 0 }, () => undefined);
     await sub.done;
   });
+
+  // Storage RPCs (plan 4A Task 15). Unary ones: one request, one answer.
+  const unary = (name: string, tag: string, payload: Record<string, unknown>, code?: string) =>
+    scenario(name, async (c) => {
+      const exit = await c.call(tag, { projectId, ...payload });
+      if (code === undefined) ok(exit);
+      else if (exit.ok || exit.error.code !== code) throw new Error(`${name}: expected ${code}, got ${JSON.stringify(exit)}`);
+    });
+  await unary("snapshot-get", "snapshot.get", { branch: "main" });
+  await unary("project-status", "project.status", {});
+  await unary("project-takeover", "project.takeover", { confirm: false });
+  await unary("project-verify", "project.verify", {});
+  await unary("project-compact", "project.compact", {});
+  await unary("project-recover", "project.recover", {});
+  await unary("project-acknowledge-rewind", "project.acknowledgeRewind", { branch: "main", generation: 1 });
+  await unary("project-acknowledge-salvage", "project.acknowledgeSalvage", { copy: "project.fdb.corrupt-0" });
+  await unary("tx-get", "tx.get", { txId: "tx-1" });
+  await unary("tx-get-unknown", "tx.get", { txId: "tx-never" });
+  await unary(
+    "tx-commit-stale",
+    "tx.commit",
+    { tx: tx("tx-stale", 4, [addAsset("$s")]), generation: { incarnation: "an-older-database", n: 0 } },
+    "HISTORY_REWOUND",
+  );
+
+  // The status now, then the client interrupts.
+  await scenario("project-events", async (c) => {
+    let first!: () => void;
+    const got = new Promise<void>((r) => (first = r));
+    const sub = c.stream("project.events", { projectId }, () => first());
+    await got;
+    await new Promise((r) => setTimeout(r, 50));
+    c.interrupt(sub.id);
+    await sub.done;
+  });
+
+  // Last: it changes the database's incarnation.
+  await unary("project-rebuild", "project.rebuild", {});
 } finally {
   const code = await server?.stop();
   rmSync(tmp, { recursive: true, force: true });

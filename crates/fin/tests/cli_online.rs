@@ -470,6 +470,172 @@ fn concurrent_inserts_on_one_snapshot_both_commit_rebased() {
 }
 
 #[test]
+fn project_status_prints_json() {
+    let Some((server, dir)) = project("project_status_prints_json") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&server.sd, &dir, args);
+    ok(run(&["asset", "add", "clip.mp4"]));
+    let status = ok(run(&["project", "status"]));
+    let st = &status["status"];
+    assert_eq!(st["lease"]["state"], "held", "{status}");
+    assert_eq!(st["readOnly"], Value::Null);
+    assert_eq!(st["busy"], Value::Null);
+    assert_eq!(st["storage"], "local");
+    assert_eq!(st["branches"][0]["head"], 1);
+    assert!(st["incarnation"].as_str().is_some_and(|i| !i.is_empty()));
+    // From outside the folder too.
+    let outside = ok(fin(
+        &server.sd,
+        &server.root,
+        &["project", "status", "--project", "film"],
+    ));
+    assert_eq!(outside["status"]["projectId"], st["projectId"]);
+
+    let held = ok(run(&["project", "takeover"]));
+    assert_eq!(held["status"]["lease"]["state"], "held");
+    let verify = ok(run(&["project", "verify"]));
+    assert_eq!(verify["report"]["ok"], true, "{verify}");
+    assert!(ok(run(&["project", "compact"]))["report"].is_object());
+    let manual = ok(run(&["project", "recover"]));
+    assert!(manual["manual"].as_str().unwrap().contains("CHAIN_FORK"));
+    let ack = ok(run(&["project", "acknowledge", "--rewind", "1"]));
+    assert_eq!(ack, json!({ "acknowledged": false }));
+    let ack = ok(run(&["project", "acknowledge", "--salvage", "nope"]));
+    assert_eq!(ack, json!({ "acknowledged": false }));
+    assert_error(&run(&["project", "acknowledge"]), 2, "USAGE");
+    // Online, the rebuild goes through the server (it holds the database).
+    let rebuilt = ok(run(&["project", "rebuild"]));
+    assert_eq!(rebuilt["offline"], false, "{rebuilt}");
+    assert_eq!(ok(run(&["status"]))["rev"], 1);
+}
+
+#[test]
+fn read_only_commit_exits_4() {
+    let Some((server, dir)) = project("read_only_commit_exits_4") else {
+        return;
+    };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    // A second server (its own server data) on the same folder follows, read-only.
+    let Some(follower) = Server::start("read_only_commit_exits_4 (follower)") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&follower.sd, &dir, args);
+    let status = ok(run(&["project", "status"]));
+    assert_eq!(
+        status["status"]["lease"]["state"], "heldElsewhere",
+        "{status}"
+    );
+    assert_eq!(status["status"]["readOnly"]["reason"], "LEASE_HELD");
+    // It imports the writer's edit once exported (2 s), then refuses edits of its own.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while ok(run(&["status"]))["assets"] != json!(["a1"]) {
+        assert!(Instant::now() < deadline, "the follower never imported a1");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let refused = run(&[
+        "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s",
+    ]);
+    assert_error(&refused, 4, "PROJECT_READ_ONLY");
+    assert_eq!(refused.json["error"]["details"]["reason"], "LEASE_HELD");
+    // The holder is alive: no takeover, confirmed or not.
+    assert_error(
+        &run(&["project", "takeover", "--confirm"]),
+        4,
+        "LEASE_TAKEOVER_REFUSED",
+    );
+    // Reads work on the follower.
+    assert_eq!(ok(run(&["status"]))["assets"], json!(["a1"]));
+}
+
+#[test]
+fn a_commit_against_a_rebuilt_database_exits_4() {
+    let Some((server, dir)) = project("a_commit_against_a_rebuilt_database_exits_4") else {
+        return;
+    };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    // The writer reads the snapshot (and its generation), then waits at the gate...
+    let gate = server.root.join("gate");
+    let args = [
+        "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s",
+    ];
+    let writer = fin_cmd(&server.sd, &dir, &args)
+        .env("FIN_TEST_COMMIT_GATE", &gate)
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_dir(&server.root)
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("gate.ready."))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "writer never reached the commit gate"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // ...while the database is rebuilt: what it read may not be what is there now.
+    ok(fin(&server.sd, &dir, &["project", "rebuild"]));
+    std::fs::write(&gate, b"").unwrap();
+    let run = finish(&args, writer.wait_with_output().unwrap());
+    assert_error(&run, 4, "HISTORY_REWOUND");
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 1);
+    // Read again, it commits.
+    ok(fin(&server.sd, &dir, &args));
+}
+
+#[test]
+fn offline_rebuild_salvages_and_an_idem_key_retry_reports_the_set_aside_tx() {
+    let Some((mut server, dir)) =
+        project("offline_rebuild_salvages_and_an_idem_key_retry_reports_the_set_aside_tx")
+    else {
+        return;
+    };
+    // The folder takes no segments, so the commit stays in the database only.
+    let segments = dir.join(".finisher").join("segments");
+    std::fs::create_dir_all(&segments).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&segments, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    let args = ["asset", "add", "clip.mp4", "--idem-key", "add-1"];
+    let first = ok(fin(&server.sd, &dir, &args));
+    assert_eq!(first["rev"], 1);
+    server.stop();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&segments, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // No server: fin rebuilds in-process. The unexported commit is salvaged into quarantine.
+    let rebuilt = ok(fin(&server.sd, &dir, &["project", "rebuild"]));
+    assert_eq!(rebuilt["offline"], true, "{rebuilt}");
+    if cfg!(unix) {
+        assert_eq!(rebuilt["report"]["salvaged"], 1, "{rebuilt}");
+    }
+
+    server.restart();
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 0);
+    if cfg!(unix) {
+        // The retry finds its tx set aside: reported, not committed again.
+        let retry = fin(&server.sd, &dir, &args);
+        assert_error(&retry, 4, "TX_SET_ASIDE");
+        assert_eq!(retry.json["error"]["details"]["txId"], "add-1");
+        assert_eq!(retry.json["error"]["details"]["reason"], "SALVAGED");
+        assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 0);
+    }
+    // While a server has the project open, an in-process rebuild is never attempted: it goes
+    // through the server.
+    assert_eq!(
+        ok(fin(&server.sd, &dir, &["project", "rebuild"]))["offline"],
+        false
+    );
+}
+
+#[test]
 fn server_tests_ran_or_explicitly_skipped() {
     support::server_tests_ran_or_explicitly_skipped();
 }

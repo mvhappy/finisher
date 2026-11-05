@@ -26,8 +26,12 @@ export declare class Engine {
   private constructor();
   /** Creates a project; `rate` is a rational string such as `"30"` or `"30000/1001"`. */
   static create(serverData: string, projectDir: string, name: string, rate: string): Promise<Engine>;
-  /** Opens a project: acquires the lease or follows, imports, rebuilds a missing or damaged DB. */
-  static open(serverData: string, projectDir: string): Promise<Engine>;
+  /**
+   * Opens a project: acquires the lease or follows, imports, rebuilds a missing or damaged DB.
+   * `relocate`: the project now lives in `projectDir` although the folder it was recorded at
+   * cannot be reached (otherwise `PROJECT_ORIGINAL_UNREACHABLE`). Never set it automatically.
+   */
+  static open(serverData: string, projectDir: string, options?: { relocate?: boolean }): Promise<Engine>;
   readonly projectId: string;
   /** Head revision of `branch` (0 when it does not exist). */
   head(branch: string): Promise<number>;
@@ -37,7 +41,7 @@ export declare class Engine {
    * `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
    */
   commit(txJson: string, generationJson?: string): Promise<string>;
-  /** Resolves to `{ rev, project }` JSON. */
+  /** Resolves to `{ rev, project, generation: { incarnation, n } }` JSON, read together. */
   snapshot(branch: string): Promise<string>;
   /** Resolves to the `CommittedTx[]` JSON with `rev > rev`. */
   opsSince(branch: string, rev: number): Promise<string>;

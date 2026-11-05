@@ -27,6 +27,16 @@ fn fixture(name: &str) -> Vec<String> {
 
 /// `_tag` and `code` values are kept; every other leaf becomes its JSON type.
 fn shape(v: &Value) -> Value {
+    shape_to(v, usize::MAX)
+}
+
+/// [`shape`] down to `depth` levels; anything deeper is `"any"` (fin-store reports whose
+/// fields are `null` or a value depending on timing, such as `lastExportMs`).
+fn shape_to(v: &Value, depth: usize) -> Value {
+    if depth == 0 {
+        return json!("any");
+    }
+    let shape = |v: &Value| shape_to(v, depth - 1);
     match v {
         Value::Object(m) => Value::Object(
             m.iter()
@@ -98,6 +108,11 @@ impl Conn {
 
     /// Replays a unary scenario: every request line, then one answer per line.
     fn replay(&mut self, name: &str) -> Value {
+        self.replay_to(name, usize::MAX)
+    }
+
+    /// [`Conn::replay`] comparing frames down to `depth` levels only.
+    fn replay_to(&mut self, name: &str, depth: usize) -> Value {
         let requests = fixture(&format!("{name}.request.ndjson"));
         let expected = fixture(&format!("{name}.response.ndjson"));
         for line in &requests {
@@ -107,7 +122,11 @@ impl Conn {
         for want in &expected {
             let got = self.frame();
             let want: Value = serde_json::from_str(want).unwrap();
-            assert_eq!(shape(&got), shape(&want), "{name}: got {got}");
+            assert_eq!(
+                shape_to(&got, depth),
+                shape_to(&want, depth),
+                "{name}: got {got}"
+            );
             last = got;
         }
         last
@@ -167,6 +186,79 @@ fn captured_frames_replay_against_a_live_server() {
 
     replay_subscribe(&server, &subst, &project_id);
     Conn::open(&server, &subst).replay("subscribe-error");
+    replay_storage(&server, &subst);
+}
+
+/// Frame → exit → value → the value's keys: what a storage report's shape is checked to.
+const REPORT_KEYS: usize = 4;
+
+/// The storage RPCs (plan 4A Task 15), in the capture script's order.
+fn replay_storage(server: &Server, subst: &[(String, String)]) {
+    let snap = Conn::open(server, subst).replay("snapshot-get");
+    assert_eq!(snap["exit"]["value"]["generation"]["n"], 0, "{snap}");
+    let status = Conn::open(server, subst).replay_to("project-status", REPORT_KEYS);
+    assert_eq!(
+        status["exit"]["value"]["lease"]["state"], "held",
+        "{status}"
+    );
+    assert_eq!(status["exit"]["value"]["busy"], Value::Null);
+    Conn::open(server, subst).replay_to("project-takeover", REPORT_KEYS);
+    let verify = Conn::open(server, subst).replay_to("project-verify", REPORT_KEYS);
+    assert_eq!(verify["exit"]["value"]["ok"], true, "{verify}");
+    Conn::open(server, subst).replay_to("project-compact", REPORT_KEYS);
+    Conn::open(server, subst).replay("project-recover");
+    for name in ["project-acknowledge-rewind", "project-acknowledge-salvage"] {
+        let ack = Conn::open(server, subst).replay(name);
+        assert_eq!(
+            ack["exit"]["value"],
+            json!({ "acknowledged": false }),
+            "{ack}"
+        );
+    }
+    let got = Conn::open(server, subst).replay("tx-get");
+    assert_eq!(got["exit"]["value"]["tx"]["txId"], "tx-1", "{got}");
+    let unknown = Conn::open(server, subst).replay("tx-get-unknown");
+    assert_eq!(unknown["exit"]["value"], Value::Null);
+    let stale = Conn::open(server, subst).replay("tx-commit-stale");
+    assert_eq!(
+        stale["exit"]["cause"][0]["error"]["code"],
+        "HISTORY_REWOUND"
+    );
+    replay_events(server, subst);
+    let rebuilt = Conn::open(server, subst).replay_to("project-rebuild", REPORT_KEYS);
+    assert_eq!(rebuilt["exit"]["value"]["reason"], "manual", "{rebuilt}");
+}
+
+/// `project-events`: the first chunk (the status now), its ack, then the interrupt. Status
+/// changes may add chunks before the interrupt lands; each is acked.
+fn replay_events(server: &Server, subst: &[(String, String)]) {
+    let requests: Vec<String> = fixture("project-events.request.ndjson");
+    let expected: Vec<Value> = fixture("project-events.response.ndjson")
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let tags: Vec<Value> = requests
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()["_tag"].clone())
+        .collect();
+    assert_eq!(tags, [json!("Request"), json!("Ack"), json!("Interrupt")]);
+    let mut c = Conn::open(server, subst);
+    c.send_line(&requests[0]);
+    let first = c.frame();
+    // Chunk → values → item → its keys.
+    assert_eq!(shape_to(&first, 4), shape_to(&expected[0], 4), "{first}");
+    assert_eq!(first["values"][0]["type"], "status");
+    assert_eq!(first["values"][0]["status"]["lease"]["state"], "held");
+    c.send_line(&requests[1]);
+    c.send_line(&requests[2]);
+    let exit = loop {
+        let frame = c.frame();
+        if frame["_tag"] != "Chunk" {
+            break frame;
+        }
+        c.send_line(&requests[1]);
+    };
+    assert_eq!(shape(&exit), shape(expected.last().unwrap()), "{exit}");
 }
 
 /// `ops-subscribe` is a stream: the backlog may arrive in fewer chunks than captured, so the

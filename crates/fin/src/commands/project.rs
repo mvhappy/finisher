@@ -1,6 +1,8 @@
-//! `fin project create|open`. Both need the server; `create --dry-run` validates locally.
-//! `open` only registers the folder with the server: it is not a write, so `--dry-run` does not
-//! apply to it.
+//! `fin project create|open|status|takeover|verify|rebuild|compact|recover|acknowledge`.
+//! All need the server, except `create --dry-run` (validated locally) and `rebuild` while no
+//! server runs (done in-process). `open` only registers the folder with the server: it is not
+//! a write, so `--dry-run` does not apply to it; nor does it to the storage commands, which
+//! never change the edit history.
 
 use clap::{Args, Subcommand};
 use fin_core::{CoreError, Rational, frame_duration, new_project};
@@ -16,6 +18,54 @@ use crate::paths;
 pub enum ProjectCmd {
     Create(CreateArgs),
     Open(OpenArgs),
+    Status(NoArgs),
+    Takeover(TakeoverArgs),
+    Verify(NoArgs),
+    Rebuild(NoArgs),
+    Compact(NoArgs),
+    Recover(NoArgs),
+    Acknowledge(AcknowledgeArgs),
+}
+
+/// No input besides the global flags.
+#[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoArgs {}
+
+/// Take the project's lease over from a server that stopped.
+#[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TakeoverArgs {
+    /// Say the other server really is stopped: needed on sync folders, which never take over
+    /// on their own.
+    #[arg(long)]
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// Stop `fin project status` warning about a rewind or an incomplete salvage you have dealt
+/// with. Exactly one of --rewind and --salvage.
+#[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcknowledgeArgs {
+    /// The generation a rewind started (the REWOUND / SPLIT_BRAIN_SUSPECTED warning's
+    /// `details.generation`).
+    #[arg(
+        long,
+        value_name = "n",
+        conflicts_with = "salvage",
+        required_unless_present = "salvage"
+    )]
+    #[serde(default)]
+    pub rewind: Option<u64>,
+    /// The branch of that rewind.
+    #[arg(long, value_name = "b", default_value = "main", requires = "rewind")]
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The kept database copy of a SALVAGE_INCOMPLETE warning (`details.copy`).
+    #[arg(long, value_name = "copy")]
+    #[serde(default)]
+    pub salvage: Option<String>,
 }
 
 /// Create a project folder with a video track t1 and an audio track t2.
@@ -42,6 +92,12 @@ pub struct OpenArgs {
     /// Project folder.
     #[arg(value_name = "dir")]
     pub dir: String,
+    /// The project now lives here, although the folder it was recorded at cannot be reached
+    /// (PROJECT_ORIGINAL_UNREACHABLE). Only when you know it moved: a copy opened this way
+    /// takes the original's place on this server.
+    #[arg(long)]
+    #[serde(default)]
+    pub relocate: bool,
 }
 
 pub fn create(
@@ -68,6 +124,42 @@ pub fn create(
 
 pub fn open(backend: &dyn Backend, a: &OpenArgs) -> Result<Value, CoreError> {
     let dir = paths::resolve_str(&a.dir);
-    let project = backend.open_project(&dir)?;
+    let project = backend.open_project(&dir, a.relocate)?;
     Ok(json!({ "project": project, "resolved": { "dir": dir.display().to_string() } }))
+}
+
+/// The storage commands (`status` … `acknowledge`). `create` and `open` are handled above.
+pub fn storage(backend: &dyn Backend, cmd: &ProjectCmd) -> Result<Value, CoreError> {
+    let call = |tag: &str, payload: Value| backend.project_call(tag, payload);
+    Ok(match cmd {
+        ProjectCmd::Status(_) => json!({ "status": call("project.status", json!({}))? }),
+        ProjectCmd::Takeover(a) => {
+            json!({ "status": call("project.takeover", json!({ "confirm": a.confirm }))? })
+        }
+        ProjectCmd::Verify(_) => json!({ "report": call("project.verify", json!({}))? }),
+        ProjectCmd::Rebuild(_) => {
+            let (report, offline) = backend.rebuild()?;
+            json!({ "report": report, "offline": offline })
+        }
+        ProjectCmd::Compact(_) => json!({ "report": call("project.compact", json!({}))? }),
+        ProjectCmd::Recover(_) => call("project.recover", json!({}))?,
+        ProjectCmd::Acknowledge(a) => match (&a.rewind, &a.salvage) {
+            (Some(n), None) => {
+                let branch = a.branch.clone().unwrap_or_else(|| "main".to_string());
+                call(
+                    "project.acknowledgeRewind",
+                    json!({ "branch": branch, "generation": n }),
+                )?
+            }
+            (None, Some(copy)) => call("project.acknowledgeSalvage", json!({ "copy": copy }))?,
+            _ => {
+                return Err(crate::output::usage(
+                    "give exactly one of --rewind <n> and --salvage <copy>",
+                    json!({ "field": "rewind" }),
+                    "fin project acknowledge --rewind <n> [--branch <b>] | --salvage <copy>",
+                ));
+            }
+        },
+        ProjectCmd::Create(_) | ProjectCmd::Open(_) => unreachable!("handled by create/open"),
+    })
 }

@@ -1,0 +1,227 @@
+//! Unit tests of the write path (`Builder::finish`): deferred errors, idempotency keys and
+//! `tx.get`.
+
+use std::path::Path;
+
+use fin_core::{CommittedTx, Rational, new_project};
+
+use super::*;
+use crate::backend::Probed;
+
+/// An empty project at rev 1 (generation `g1`) whose server rejects every commit with
+/// `answer` and answers every `tx.get` with `lookup`; it records the generation sent.
+struct Rejecting {
+    answer: CoreError,
+    lookup: TxLookup,
+    sent: std::cell::RefCell<Option<Value>>,
+}
+
+fn rejecting(answer: CoreError) -> Rejecting {
+    Rejecting {
+        answer,
+        lookup: TxLookup::Unknown,
+        sent: Default::default(),
+    }
+}
+
+impl Backend for Rejecting {
+    fn snapshot(&self) -> Result<Snapshot, CoreError> {
+        let rate: Rational = "30".parse()?;
+        Ok(Snapshot {
+            rev: 1,
+            project: new_project("p".into(), "P".into(), rate)?,
+            generation: Some(json!({ "incarnation": "g1", "n": 0 })),
+        })
+    }
+    fn commit(&self, _tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
+        *self.sent.borrow_mut() = generation.cloned();
+        Err(self.answer.clone())
+    }
+    fn tx_get(&self, _tx_id: &str) -> Result<TxLookup, CoreError> {
+        Ok(self.lookup.clone())
+    }
+    fn project_call(&self, _tag: &str, _payload: Value) -> Result<Value, CoreError> {
+        unreachable!()
+    }
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        unreachable!()
+    }
+    fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
+        unreachable!()
+    }
+    fn create_project(
+        &self,
+        _dir: &Path,
+        _name: &str,
+        _rate: Rational,
+    ) -> Result<Value, CoreError> {
+        unreachable!()
+    }
+    fn open_project(&self, _dir: &Path, _relocate: bool) -> Result<Value, CoreError> {
+        unreachable!()
+    }
+}
+
+/// What the server committed for `tx_id`: the delete of c9, at rev 2.
+fn landed(tx_id: &str) -> CommittedTx {
+    serde_json::from_value(json!({
+        "rev": 2,
+        "tx": { "txId": tx_id, "author": "fin", "branch": "main", "baseRev": 1, "schemaVersion": 1,
+                "ops": [{ "op": "clip.delete", "clip": "c9" }] },
+        "bindings": {},
+        "diff": { "changes": [], "shifts": [] },
+    }))
+    .unwrap()
+}
+
+/// Like [`Rejecting`], but `tx.get` finds the tx only after the commit was sent.
+struct LostAnswer(Rejecting);
+
+impl Backend for LostAnswer {
+    fn snapshot(&self) -> Result<Snapshot, CoreError> {
+        self.0.snapshot()
+    }
+    fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
+        self.0.commit(tx, generation)
+    }
+    fn tx_get(&self, tx_id: &str) -> Result<TxLookup, CoreError> {
+        Ok(match &*self.0.sent.borrow() {
+            Some(_) => TxLookup::Committed(Box::new(landed(tx_id))),
+            None => TxLookup::Unknown,
+        })
+    }
+    fn project_call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+        self.0.project_call(tag, payload)
+    }
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        self.0.rebuild()
+    }
+    fn probe(&self, path: &Path) -> Result<Probed, CoreError> {
+        self.0.probe(path)
+    }
+    fn create_project(&self, d: &Path, n: &str, r: Rational) -> Result<Value, CoreError> {
+        self.0.create_project(d, n, r)
+    }
+    fn open_project(&self, d: &Path, relocate: bool) -> Result<Value, CoreError> {
+        self.0.open_project(d, relocate)
+    }
+}
+
+#[test]
+fn a_commit_whose_answer_was_lost_is_found_with_tx_get() {
+    // Not known before: the commit is sent, its answer lost; tx.get then finds it.
+    let lost = LostAnswer(rejecting(CoreError::new("SERVER_TIMEOUT", "slow")));
+    let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let globals = Globals {
+        idem_key: Some("k2".into()),
+        ..Globals::default()
+    };
+    let doc = write(&lost, &globals, step).unwrap();
+    assert_eq!(doc["rev"], 2);
+    assert!(lost.0.sent.borrow().is_some());
+}
+
+#[test]
+fn a_retry_with_an_idem_key_is_answered_by_tx_get() {
+    let step = || Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let globals = Globals {
+        idem_key: Some("k".into()),
+        ..Globals::default()
+    };
+    // The commit's answer was lost, but tx.get finds it: the command succeeds.
+    let mut backend = rejecting(CoreError::new("SERVER_TIMEOUT", "slow"));
+    backend.lookup = TxLookup::Committed(Box::new(landed("k")));
+    let doc = write(&backend, &globals, step()).unwrap();
+    assert_eq!(
+        (doc["rev"].clone(), doc["txId"].clone()),
+        (json!(2), json!("k"))
+    );
+    // Found before sending (a retry): nothing is committed again.
+    assert!(backend.sent.borrow().is_none());
+
+    // Not known yet: the commit is sent, with the snapshot's generation. Its answer is
+    // lost and tx.get still does not know it: the transport error stands.
+    let backend = rejecting(CoreError::new("SERVER_UNAVAILABLE", "gone"));
+    let e = write(&backend, &globals, step()).unwrap_err();
+    assert_eq!(e.code, "SERVER_UNAVAILABLE");
+    assert_eq!(
+        *backend.sent.borrow(),
+        Some(json!({ "incarnation": "g1", "n": 0 }))
+    );
+}
+
+#[test]
+fn an_idem_key_whose_tx_was_set_aside_is_reported_not_resent() {
+    let mut backend = rejecting(CoreError::new("CONFLICT", "unused"));
+    backend.lookup = TxLookup::SetAside(
+        json!({ "txId": "k", "branch": "main", "reason": "SUPERSEDED", "origin": "local" }),
+    );
+    let globals = Globals {
+        idem_key: Some("k".into()),
+        ..Globals::default()
+    };
+    let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let e = write(&backend, &globals, step).unwrap_err();
+    assert_eq!(e.code, "TX_SET_ASIDE");
+    assert_eq!(exit_code(&e.code), 4);
+    assert_eq!(e.details["reason"], "SUPERSEDED");
+    assert!(e.fix.unwrap().contains("new --idem-key"));
+    assert!(backend.sent.borrow().is_none(), "never sent again");
+}
+
+fn delete_missing_with_key(answer: CoreError) -> CoreError {
+    let globals = Globals {
+        idem_key: Some("k".into()),
+        ..Globals::default()
+    };
+    let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    write(&rejecting(answer), &globals, step).unwrap_err()
+}
+
+#[test]
+fn a_deferred_local_error_only_replaces_server_validation_errors() {
+    let server_invalid = CoreError::new("NOT_FOUND", "server says no");
+    let local = delete_missing_with_key(server_invalid);
+    assert_eq!(local.code, "NOT_FOUND");
+    assert_ne!(local.message, "server says no");
+    assert_eq!(local.details["opIndex"], 0);
+    for code in [
+        "CONFLICT",
+        "BASE_REV_AHEAD",
+        "SERVER_SHUTTING_DOWN",
+        "ENGINE_CLOSED",
+        "INTERNAL",
+        "SERVER_TIMEOUT",
+    ] {
+        let e = delete_missing_with_key(CoreError::new(code, "server"));
+        assert_eq!((e.code.as_str(), e.message.as_str()), (code, "server"));
+    }
+    let no_key = write(
+        &rejecting(CoreError::new("CONFLICT", "server")),
+        &Globals::default(),
+        Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() }),
+    );
+    assert_eq!(no_key.unwrap_err().code, "NOT_FOUND");
+}
+
+#[test]
+fn a_rebased_commit_is_the_same_command_but_another_kind_or_clip_is_not() {
+    let r = |s: &str| s.parse::<Rational>().unwrap();
+    let insert = |at: &str| Op::ClipInsert {
+        id: "$clip".into(),
+        track: "t1".into(),
+        at: r(at),
+        asset: "a1".into(),
+        source_in: r("0"),
+        duration: r("2"),
+    };
+    let delete = |clip: &str| Op::ClipDelete { clip: clip.into() };
+    assert!(same_command(&[insert("0")], &[insert("4")]));
+    assert!(same_command(&[delete("c1")], &[delete("c1")]));
+    assert!(!same_command(&[insert("0")], &[delete("c1")]));
+    assert!(!same_command(&[delete("c1")], &[delete("c2")]));
+    assert!(!same_command(
+        &[delete("c1")],
+        &[delete("c1"), delete("c2")]
+    ));
+}
