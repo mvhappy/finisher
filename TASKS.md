@@ -140,6 +140,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] Linux NFS: directory attribute cache (`acdirmax`, 60 s by default) exceeds the 10 s ordering-rule wait; NFS is classified `network` but untested. Measure, and use a longer wait or a listing refresh there
 - [ ] Windows: `PROJECT_NOT_FOUND` for ~2.5 s right after another host creates the project (Windows directory cache hides `.finisher/` too; the 15 s project-file retry doesn't cover it)
 - [ ] macOS smbfs: whether the lease probe can read a client-set mtime (no `AT_STATX_FORCE_SYNC`); untested
+- [ ] Locked files: no test for the pending-deletion path (first sighting without metadata); a verify right after open shows `SEGMENT_LOCKED`, not `unreadable`, until the store has been open 60 s
 - [ ] A segment held open by another SMB client slows compaction to one 60 s retry per file
 - [ ] Clean close could write a "released" lease record so other servers need not wait out 45 s of staleness
 - [ ] `fin project verify` / `rebuild` / `compact` have no progress or cancellation (only `ENGINE_BUSY {operation, sinceMs}`)
