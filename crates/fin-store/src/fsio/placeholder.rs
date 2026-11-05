@@ -84,8 +84,9 @@ fn hydrating_with<T>(
             Some(placeholder) => (Err(io::Error::from(io::ErrorKind::TimedOut)), placeholder),
             None => {
                 let r = read();
-                // Only on a timeout: the file's metadata from its directory entry, which
-                // does not open it.
+                // Only on a timeout: `symlink_metadata`, which never reads data (on Windows an
+                // open with `FILE_FLAG_OPEN_REPARSE_POINT` and no data access, which does not
+                // hydrate a Cloud Files placeholder).
                 let placeholder = r.as_ref().is_err_and(is_timeout)
                     && fs::symlink_metadata(path).is_ok_and(|m| is_placeholder(path, &m));
                 (r, placeholder)
@@ -107,8 +108,9 @@ thread_local! {
 }
 
 /// Test hook: on this thread, the next `n` reads through [`hydrating`] (every
-/// `read_uncached`, project-file and rebuild-seed read) time out without reading, the file
-/// counting as a placeholder if `placeholder`.
+/// `read_uncached`, the retrying project-file read and rebuild-seed reads; not
+/// `read_uncached_once` or the once-only project-file reread) time out without reading, the
+/// file counting as a placeholder if `placeholder`.
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub fn time_out_next_reads_for_test(n: u32, placeholder: bool) {
@@ -161,6 +163,9 @@ mod tests {
         time_out_next_reads_for_test(2, false);
         let e = super::super::read_uncached(&path).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(left(), 1);
+        // The lease's reads never wait for a download: no hook, no retry.
+        assert_eq!(super::super::read_uncached_once(&path).unwrap(), b"bytes");
         assert_eq!(left(), 1);
         time_out_next_reads_for_test(0, false);
         // A real timeout of a file that is no placeholder (this OS has none here).

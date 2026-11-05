@@ -64,7 +64,7 @@ pub(super) fn create_record(dir: &Path, path: &Path, bytes: &[u8]) -> io::Result
         }
         Err(e) if e.kind() == ErrorKind::Unsupported => create_in_place(path, bytes),
         // The name is decided; whether it is ours, the content tells (our epoch is ours alone).
-        Err(_) if fsio::read_uncached(path).is_ok_and(|now| now == bytes) => Ok(()),
+        Err(_) if fsio::read_uncached_once(path).is_ok_and(|now| now == bytes) => Ok(()),
         Err(e) => Err(e),
     }
 }

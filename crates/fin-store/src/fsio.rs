@@ -396,7 +396,14 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
     hydrating(path, || read_uncached_os(path))
 }
 
-/// [`read_uncached`] without the placeholder retry:
+/// [`read_uncached`] without the placeholder retry, for reads that must stay fast whatever
+/// the file: the lease's record, claim and read-back reads (a failed one is a failed beat or an
+/// unreadable record, which the lease handles by its own rules).
+pub fn read_uncached_once(path: &Path) -> io::Result<Vec<u8>> {
+    read_uncached_os(path)
+}
+
+/// [`read_uncached_once`] per OS:
 ///
 /// - macOS: `F_NOCACHE`.
 /// - Linux: `O_DIRECT` with an aligned buffer. Filesystems that refuse it (tmpfs, some network
