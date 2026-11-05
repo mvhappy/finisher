@@ -16,6 +16,7 @@ impl Contender {
     pub(super) fn take(&mut self, expected: Expected) -> Result<Lease, LeaseState> {
         self.evidence = None;
         let leftover = std::mem::take(&mut self.leftover);
+        let own_claim = self.own_claim.take();
         // 0. The server-data lock. Busy: another process of this server data holds a lease
         // here, unless the record is one this process wrote (then it is our own lost lease's
         // thread, still stuck in I/O, that keeps it).
@@ -60,7 +61,7 @@ impl Contender {
         if let Some(rival) = claims
             .iter()
             .rev()
-            .find(|c| c.epoch > floor && in_progress(c))
+            .find(|c| c.epoch > floor && Some(c.epoch) != own_claim && in_progress(c))
         {
             let who = claim::owner(&self.dir, rival.epoch)
                 .unwrap_or_else(|| "another server (acquiring)".to_string());

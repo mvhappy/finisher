@@ -785,11 +785,42 @@ fn a_deleted_record_loses_the_lease_in_a_beat_at_once() {
         Err(LeaseState::Lost { reason }) => assert!(reason.contains("epoch 1"), "{reason}"),
         other => panic!("{other:?}"),
     }
+    // A takeover is refused as for any live-looking holder, but says what happened.
+    let e = a2.takeover(false).unwrap_err();
+    assert_eq!(e.details["reason"], "HELD");
+    assert!(
+        e.message
+            .contains("this server's lease at epoch 1 was lost"),
+        "{e:?}"
+    );
     // Re-acquired like by anyone once the claim is stale, at a fresh epoch.
     c.advance(s(46));
     assert!(matches!(a2.try_acquire(), Err(LeaseState::Lost { .. })));
     c.advance(s(5));
     assert_eq!(a2.try_acquire().unwrap().epoch(), 2);
+}
+
+/// On a sync folder our own lost claim is re-taken only by a confirmed takeover.
+#[test]
+fn a_deleted_record_on_a_sync_folder_is_re_taken_by_a_confirmed_takeover() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, sync(&c));
+    fs::remove_file(dir.join("lease.json")).unwrap();
+    c.advance(s(5));
+    a.hooks().wait_exited();
+    let mut a2 = contender(&dir, A, sync(&c));
+    match a2.try_acquire() {
+        Err(LeaseState::Lost { reason }) => assert!(reason.contains("--confirm"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    let e = a2.takeover(false).unwrap_err();
+    assert_eq!(e.details["reason"], "CONFIRM_REQUIRED");
+    assert!(
+        e.message.contains("this server's lease at epoch 1"),
+        "{e:?}"
+    );
+    assert_eq!(a2.takeover(true).unwrap().epoch(), 2);
 }
 
 /// The first `lease.json` is staged whole in a temp file and published without replacing: a

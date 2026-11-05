@@ -427,3 +427,31 @@ fn a_deleted_lease_json_is_lost_to_its_holder_and_held_to_others() {
         other => panic!("{other:?}"),
     }
 }
+
+/// The same after a restart: our own claim is all that is left and the server-data lock is
+/// free, so no process of ours holds a lease: lost, not held by ourselves. While another
+/// process of this server data still holds the lock, it stays held.
+#[test]
+fn a_deleted_lease_json_is_lost_to_a_restarted_holder_and_held_while_another_process_runs() {
+    let e = env();
+    let a = e.create("a");
+    fs::remove_file(e.dir.join(".finisher").join("lease.json")).unwrap();
+    restart(&e); // "another process" from here on; the first still holds the lock
+    let mut a2 = e.open("a");
+    assert_eq!(a2.read_only(), Some(ReadOnlyReason::LeaseHeld));
+    drop(a);
+    e.poll(&mut a2);
+    assert_eq!(
+        a2.read_only(),
+        Some(ReadOnlyReason::LeaseLost),
+        "{:?}",
+        a2.lease_state()
+    );
+    match a2.lease_state() {
+        LeaseState::Lost { reason } => assert!(reason.contains("earlier run"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    let mut b = e.open("b");
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::LeaseHeld));
+}
