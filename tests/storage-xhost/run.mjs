@@ -2,6 +2,7 @@
 //
 //   node tests/storage-xhost/run.mjs <scenario> [--rounds N] [--storage share|local]
 //        [--nodes a,b[,c]] [--out DIR] [--secs S] [--stall-for-ms U] [--stall-mode M]
+//        [--skew-ms K] [--b-delay-ms D]
 //   node tests/storage-xhost/run.mjs analyse <results dir>
 //
 // Scenarios: race, race-stale, stall, stall-short, stall-check, stall-sigstop, follow, skew.
@@ -125,11 +126,15 @@ function plan(scenario, nodes, o, dir, round) {
     case "race":
     case "race-stale": {
       const secs = Number(o.secs ?? (scenario === "race" ? 12 : 110));
+      // `--skew-ms K` (opt-in here): racer `a` sees the share's clock K ms off, as a client
+      // whose mtimes are its own skewed clock would. `--b-delay-ms D`: racer `b` starts D ms
+      // later (to let `a` claim first).
+      const skew = o["skew-ms"] === undefined ? [] : ["--skew-ms", Number(o["skew-ms"])];
       return {
         create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", ...(scenario === "race" ? ["--free"] : [])] },
         procs: [
-          { node: a, role: "holder", args: ["holder", ...base(a, "a", "a", secs), "--commit-every-ms", 300], delayMs: 0 },
-          { node: b, role: "holder", args: ["holder", ...base(b, "b", "b", secs), "--commit-every-ms", 300], delayMs: 0 },
+          { node: a, role: "holder", args: ["holder", ...base(a, "a", "a", secs), "--commit-every-ms", 300, ...skew], delayMs: 0 },
+          { node: b, role: "holder", args: ["holder", ...base(b, "b", "b", secs), "--commit-every-ms", 300], delayMs: Number(o["b-delay-ms"] ?? 0) },
         ],
       };
     }

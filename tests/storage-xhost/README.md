@@ -81,7 +81,9 @@ node tests/storage-xhost/run.mjs analyse <results dir>        # re-analyse saved
 
 - `race`: `create --free` makes the project and removes the creator's lease files. Two holders
   then start at one wall-clock instant (`--start-at-ms`), commit every 300 ms for 12 s, and a
-  verifier reads the result.
+  verifier reads the result. `--b-delay-ms D` starts racer `b` D ms later (one OS may reach its
+  claim first every time); `--skew-ms K` gives racer `a` an emulated server-time skew, as with a
+  client whose mtimes come from its own skewed clock.
 - `stall*`: holder `a`, contender `b` (starts 3 s later) and passive follower `f` (another node
   if there are three). The holder stalls at 10 s. `--stall-mode`:
   - `freeze`: one last commit, then no ticks or commits, and every heartbeat fails;
