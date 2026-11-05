@@ -276,7 +276,7 @@ describe("engine events in the registry", () => {
     const got = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const sub = yield* PubSub.subscribe(hubs.ops("p", "main").pubsub);
+          const sub = yield* PubSub.subscribe(hubs.acquireOps("p", "main").pubsub);
           // The new history's rev 2 can be published before its rewind is known.
           hubs.publishTx("p", committed(3));
           hubs.publishTx("p", committed(2));
@@ -305,5 +305,47 @@ describe("engine events in the registry", () => {
     const again = subscribe(r, projectId, 0);
     await until(() => (again.revs.length === 1 ? true : undefined), 5_000, "rev 1 again");
     expect(r.engineOf(projectId)).not.toBe(engine);
+  });
+
+  test("subscribe beyond head fails BASE_REV_AHEAD", async () => {
+    const r = await registry();
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const sub = subscribe(r, projectId, 2);
+    const e = failureOf(await sub.exit());
+    expect(e?.code).toBe("BASE_REV_AHEAD");
+    expect(e?.details).toMatchObject({ branch: "main", fromRev: 2, head: 1 });
+    expect(sub.revs).toEqual([]);
+    // At the head is fine: it just waits.
+    const at = subscribe(r, projectId, 1);
+    await run(r.commit(projectId, tx("tx-1", 1, [addAsset("$a1")])));
+    await until(() => (at.revs.length === 1 ? true : undefined), 5_000, "rev 2");
+  });
+
+  test("hub removed after last unsubscribe", async () => {
+    const r = await registry();
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    for (let i = 0; i < 3; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    expect(r.hubCount()).toEqual({ ops: 0, events: 0 });
+    const fibers = [0, 0].map(() => Effect.runFork(Stream.runDrain(r.subscribe(projectId, "main", 0))));
+    const events = Effect.runFork(Stream.runDrain(r.events(projectId)));
+    await until(() => (r.hubCount().ops === 1 && r.hubCount().events === 1 ? true : undefined), 5_000, "the hubs");
+    await Effect.runPromise(Fiber.interrupt(fibers[0]!));
+    expect(r.hubCount().ops).toBe(1);
+    await Effect.runPromise(Fiber.interrupt(fibers[1]!));
+    await Effect.runPromise(Fiber.interrupt(events));
+    expect(r.hubCount()).toEqual({ ops: 0, events: 0 });
+    // Commits and engine events with no hub publish nothing and create nothing.
+    await run(r.commit(projectId, tx("tx-3", 3, [addAsset("$a3")])));
+    r.engineOf(projectId)!.emitRewoundForTest("main", 2);
+    await new Promise((res) => setTimeout(res, 100));
+    expect(r.hubCount()).toEqual({ ops: 0, events: 0 });
+    // A subscriber that arrives after the removal still gets rewinds.
+    const again = subscribe(r, projectId, 0);
+    await until(() => (again.revs.length === 4 ? true : undefined), 5_000, "the backlog");
+    expect(r.hubCount().ops).toBe(1);
+    r.engineOf(projectId)!.emitRewoundForTest("main", 2);
+    expect(failureOf(await again.exit())?.code).toBe("HISTORY_REWOUND");
+    expect(r.hubCount().ops).toBe(0);
   });
 });

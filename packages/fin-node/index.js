@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { nativeFileNames } from "./loader.js";
 
 const require = createRequire(import.meta.url);
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -13,16 +14,24 @@ const ERROR_PREFIX = "FIN_CORE_ERROR:";
 
 function loadNative() {
   const base = `${process.platform}-${process.arch}`;
-  // `napi build --platform` appends an ABI on Linux (gnu/musl) and Windows (msvc).
-  const names = [base, `${base}-gnu`, `${base}-musl`, `${base}-msvc`].map((s) => `fin-node.${s}.node`);
-  const file = names.map((n) => binaryDir + n).find((p) => existsSync(p));
-  if (!file) {
+  const names = nativeFileNames(process.platform, process.arch);
+  const files = names.map((n) => binaryDir + n).filter((p) => existsSync(p));
+  if (files.length === 0) {
     throw new Error(
       `@finisher/fin-node: no native binary for ${base} in ${binaryDir} (looked for ${names.join(", ")}); ` +
         "run `pnpm --filter @finisher/fin-node build`",
     );
   }
-  return require(file);
+  // The libc-matching binary is first; one that is present but does not load (the other libc) is skipped.
+  let failure;
+  for (const file of files) {
+    try {
+      return require(file);
+    } catch (e) {
+      failure ??= e;
+    }
+  }
+  throw failure;
 }
 
 const native = loadNative();

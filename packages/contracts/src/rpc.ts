@@ -1,4 +1,4 @@
-import type { CommittedTx, EngineEvent, Project, Tx, TxSetAside } from "@finisher/core-types";
+import type { CommittedTx, EngineEvent, Probe, Project, Tx, TxSetAside } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { FinError } from "./errors.ts";
@@ -47,7 +47,20 @@ export const ProjectRefSuccess = Schema.Struct({
 });
 
 export const AssetProbePayload = Schema.Struct({ path: Schema.String });
-export const AssetProbeSuccess = Schema.Unknown;
+/** What `asset.probe` answers: fin-core's `Probe` (the generated type; `envelopes.test.ts` checks the fields). */
+export const ProbeSchema = Schema.Struct({
+  audio: Schema.optionalKey(Schema.NullOr(Schema.Struct({ channels: Schema.Number, sampleRate: Schema.Number }))),
+  duration: Schema.String,
+  fingerprint: Schema.String,
+  size: Schema.Number,
+  video: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ height: Schema.Number, rate: Schema.String, width: Schema.Number })),
+  ),
+});
+export const AssetProbeSuccess = ProbeSchema;
+// The schema's type and the generated `Probe` must stay assignable to each other.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+export const probeMatchesGenerated: Same<typeof ProbeSchema.Type, Probe> = true;
 
 /**
  * What a client read a branch at: the database's `incarnation` (new after every rebuild) and

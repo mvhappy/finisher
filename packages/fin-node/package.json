@@ -20,6 +20,7 @@
     "build:test": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir test/native --no-js --features test-hooks"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.10.9"
+    "@napi-rs/cli": "3.10.9",
+    "@types/node": "26.6.5"
   }
 }

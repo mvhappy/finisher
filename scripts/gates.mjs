@@ -6,6 +6,7 @@ const steps = [
   ["node", ["scripts/check-action-pins.mjs"]],
   ["node", ["scripts/check-js-licenses.mjs"]],
   ["node", ["scripts/check-generated-types.mjs"]],
+  ["node", ["scripts/check-typecheck.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],
   ["cargo", ["build", "-q", "-p", "fin-core", "--target", "wasm32-unknown-unknown"]],
 ];

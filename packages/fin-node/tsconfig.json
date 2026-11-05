@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "allowImportingTsExtensions": true, "noEmit": true, "types": ["node"] },
+  "include": ["index.d.ts", "loader.d.ts", "test"],
+  "exclude": ["test/native"]
+}

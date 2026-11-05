@@ -57,6 +57,8 @@ export interface ProjectRegistryShape {
   readonly acknowledgeSalvage: (projectId: string, copy: string) => Effect.Effect<boolean, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
+  /** @internal Tests only: how many live fan-out channels exist. */
+  readonly hubCount: () => { ops: number; events: number };
   /** @internal Tests only: the engine currently registered for `projectId`. */
   readonly engineOf: (projectId: string) => Engine | undefined;
 }
@@ -351,8 +353,11 @@ export function makeProjectRegistry(
       subscribe: (projectId, branch, fromRev, generation) =>
         Stream.unwrap(
           Effect.gen(function* () {
-            yield* get(projectId);
-            const channel = hubs.ops(projectId, branch);
+            const p = yield* get(projectId);
+            const channel = yield* Effect.acquireRelease(
+              Effect.sync(() => hubs.acquireOps(projectId, branch)),
+              () => Effect.sync(() => hubs.releaseOps(projectId, branch)),
+            );
             // Before subscribing: an ending published from now on is seen, as its marker or
             // through the `seq` of any later item. One whose engine event lands after the
             // backlog below already reads the new history ends this subscriber needlessly
@@ -368,6 +373,17 @@ export function makeProjectRegistry(
             ) {
               return yield* Effect.fail(
                 historyRewound({ branch, rev: 0, reason: "GENERATION", generation: read.generation, expected: generation }),
+              );
+            }
+            const head = yield* call<number>(p, async (e) => String(await e.head(branch)));
+            if (fromRev > head) {
+              return yield* Effect.fail(
+                finError(
+                  "BASE_REV_AHEAD",
+                  `fromRev ${fromRev} is ahead of the head of ${branch} (rev ${head})`,
+                  { branch, fromRev, head },
+                  `subscribe from a rev at most ${head} (snapshot.get reports the head)`,
+                ),
               );
             }
             let last = fromRev;
@@ -399,7 +415,10 @@ export function makeProjectRegistry(
         Stream.unwrap(
           Effect.gen(function* () {
             const p = yield* get(projectId);
-            const channel = hubs.events(projectId);
+            const channel = yield* Effect.acquireRelease(
+              Effect.sync(() => hubs.acquireEvents(projectId)),
+              () => Effect.sync(() => hubs.releaseEvents(projectId)),
+            );
             const check = follower(channel, "");
             // Subscribe first: a change landing while the status is read is then not missed.
             const live = yield* PubSub.subscribe(channel.pubsub);
@@ -427,6 +446,7 @@ export function makeProjectRegistry(
       acknowledgeSalvage: (projectId, copy) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy))),
       ensure: (projectId) => Effect.asVoid(get(projectId)),
 
+      hubCount: () => hubs.size,
       engineOf: (projectId) => byId.get(projectId)?.engine,
     } satisfies ProjectRegistryShape;
   });

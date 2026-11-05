@@ -37,9 +37,12 @@ test("ops.subscribe and project.events are streaming rpcs and the others are not
   }
 });
 
+/** The RPC schemas here use no services; `Schema.Top` leaves the requirements open. */
+type PlainSchema = Schema.Codec<unknown, unknown, never, never>;
+
 test("tx.get encodes a committed tx, a set-aside record and null", async () => {
   const success = FinRpcs.requests.get("tx.get")!.successSchema;
-  const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(success as Schema.Top)(v));
+  const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(success as PlainSchema)(v));
   const setAside = { setAside: { txId: "t", branch: "main", reason: "SUPERSEDED", origin: "local" } };
   expect(await encode(setAside)).toEqual(setAside);
   const committed = { rev: 1, tx: { txId: "t" }, bindings: {}, diff: {} };
@@ -50,7 +53,7 @@ test("tx.get encodes a committed tx, a set-aside record and null", async () => {
 test("project.events items keep every field of each event kind", async () => {
   const success = FinRpcs.requests.get("project.events")!.successSchema;
   const item = RpcSchema.isStreamSchema(success) ? success.success : success;
-  const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(item as Schema.Top)(v));
+  const encode = (v: unknown) => Effect.runPromise(Schema.encodeUnknownEffect(item as PlainSchema)(v));
   const rewound = { type: "rewound", branch: "main", fromRev: 3, quarantined: 2, own: false, generation: 1, incarnation: "i" };
   expect(await encode(rewound)).toEqual(rewound);
   expect(await encode({ type: "status", status: { lease: { state: "held" } } })).toEqual({

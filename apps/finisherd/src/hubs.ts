@@ -1,6 +1,7 @@
 // Live fan-out for subscribers: per-(project, branch) op channels and per-project event
 // channels. They outlive engine reopens, so a live `ops.subscribe` or `project.events` keeps
-// going when an evicted engine is reopened (unless the eviction ended it).
+// going when an evicted engine is reopened (unless the eviction ended it). A channel is
+// removed when its last subscriber leaves (see `Hubs`).
 //
 // A channel is a sliding PubSub (a slow subscriber loses the oldest items, never blocks a
 // commit) plus a short log of *endings*: a rewind, a rebuild, an engine eviction. Endings
@@ -86,23 +87,65 @@ export function follower<T>(channel: Channel<T>, branch: string) {
 
 const key = (projectId: string, branch: string) => `${projectId}\u0000${branch}`;
 
+/** A channel and the subscribers holding it. */
+interface Held<T> {
+  readonly channel: Channel<T>;
+  holders: number;
+}
+
+/**
+ * Channels exist while a subscriber holds them. The last release removes the channel: nothing
+ * else refers to it (engine events and commits look channels up by name when they publish, and
+ * publish nothing when there is none).
+ *
+ * Dropping a channel (with its log of endings) cannot make a later subscriber miss an ending.
+ * A subscriber always acquires its channel first and only then reads the backlog and the
+ * branch's generation from the engine (`opsSinceAt`), so what it reads is the history as it
+ * stands after every ending published before it acquired; an ending published later reaches
+ * the channel it holds. A fresh channel starts at `seq` 0 with no log, and `follower` starts
+ * from that `seq`, so nothing older is replayed to it.
+ */
 export class Hubs {
   readonly #capacity: number;
-  readonly #ops = new Map<string, Channel<CommittedTx>>();
-  readonly #events = new Map<string, Channel<ProjectEvent>>();
+  readonly #ops = new Map<string, Held<CommittedTx>>();
+  readonly #events = new Map<string, Held<ProjectEvent>>();
 
   constructor(capacity: number) {
     this.#capacity = capacity;
   }
 
-  ops(projectId: string, branch: string): Channel<CommittedTx> {
-    const k = key(projectId, branch);
-    let ch = this.#ops.get(k);
-    if (!ch) {
-      ch = new Channel<CommittedTx>(this.#capacity);
-      this.#ops.set(k, ch);
+  /** @internal Tests: how many channels exist (ops, events). */
+  get size(): { ops: number; events: number } {
+    return { ops: this.#ops.size, events: this.#events.size };
+  }
+
+  #acquire<T>(map: Map<string, Held<T>>, k: string): Channel<T> {
+    let held = map.get(k);
+    if (!held) {
+      held = { channel: new Channel<T>(this.#capacity), holders: 0 };
+      map.set(k, held);
     }
-    return ch;
+    held.holders += 1;
+    return held.channel;
+  }
+
+  #release<T>(map: Map<string, Held<T>>, k: string): void {
+    const held = map.get(k);
+    if (!held) return;
+    held.holders -= 1;
+    if (held.holders <= 0) {
+      map.delete(k);
+      Effect.runSync(PubSub.shutdown(held.channel.pubsub));
+    }
+  }
+
+  /** The op channel of the branch, held until `releaseOps`. */
+  acquireOps(projectId: string, branch: string): Channel<CommittedTx> {
+    return this.#acquire(this.#ops, key(projectId, branch));
+  }
+
+  releaseOps(projectId: string, branch: string): void {
+    this.#release(this.#ops, key(projectId, branch));
   }
 
   /**
@@ -111,37 +154,37 @@ export class Hubs {
    * new-history rev published before its rewind is known).
    */
   publishTx(projectId: string, tx: CommittedTx): void {
-    this.ops(projectId, tx.tx.branch).publish(tx);
+    this.#ops.get(key(projectId, tx.tx.branch))?.channel.publish(tx);
   }
 
   /** `branch` lost its history from `fromRev` on. */
   rewind(projectId: string, branch: string, fromRev: number, error: FinError): void {
-    this.ops(projectId, branch).end(fromRev, error);
+    this.#ops.get(key(projectId, branch))?.channel.end(fromRev, error);
   }
 
   /** Every op channel of the project ends `error` for subscribers that reported rev ≥ `fromRev`. */
   endAll(projectId: string, fromRev: number, error: (branch: string) => FinError): void {
     const prefix = key(projectId, "");
-    for (const [k, ch] of this.#ops) {
-      if (k.startsWith(prefix)) ch.end(fromRev, error(k.slice(prefix.length)));
+    for (const [k, held] of this.#ops) {
+      if (k.startsWith(prefix)) held.channel.end(fromRev, error(k.slice(prefix.length)));
     }
   }
 
-  events(projectId: string): Channel<ProjectEvent> {
-    let ch = this.#events.get(projectId);
-    if (!ch) {
-      ch = new Channel<ProjectEvent>(this.#capacity);
-      this.#events.set(projectId, ch);
-    }
-    return ch;
+  /** The event channel of the project, held until `releaseEvents`. */
+  acquireEvents(projectId: string): Channel<ProjectEvent> {
+    return this.#acquire(this.#events, projectId);
+  }
+
+  releaseEvents(projectId: string): void {
+    this.#release(this.#events, projectId);
   }
 
   publishEvent(projectId: string, event: ProjectEvent): void {
-    this.events(projectId).publish(event);
+    this.#events.get(projectId)?.channel.publish(event);
   }
 
   /** Ends every `project.events` subscriber of the project. */
   endEvents(projectId: string, error: FinError): void {
-    this.events(projectId).end(0, error);
+    this.#events.get(projectId)?.channel.end(0, error);
   }
 }

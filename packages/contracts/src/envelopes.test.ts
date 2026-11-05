@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { expect, test } from "vitest";
-import { GenerationSchema, ProjectEventSchema, TxSetAsideSchema } from "./rpc.ts";
+import { GenerationSchema, ProbeSchema, ProjectEventSchema, TxSetAsideSchema } from "./rpc.ts";
 
 type Json = { [k: string]: unknown };
 const defs = JSON.parse(readFileSync(new URL("../../core-types/schema/fin-core.schema.json", import.meta.url), "utf8"))
@@ -56,6 +56,24 @@ test("TxSetAsideSchema is fin-store's TxSetAside", () => {
   const ours = effect(TxSetAsideSchema) as { props: Json };
   expect(ours.props.setAside).toEqual(rust("SetAside"));
   expect({ ...ours, props: { setAside: "unknown" } }).toEqual(rust("TxSetAside"));
+});
+
+test("ProbeSchema is fin-core's Probe, with its audio and video info", () => {
+  const ours = Schema.toJsonSchemaDocument(ProbeSchema).schema as { properties: Json; required?: string[] };
+  const theirs = defs.Probe as { properties: Json; required: string[] };
+  expect(Object.keys(ours.properties).sort()).toEqual(Object.keys(theirs.properties).sort());
+  expect([...(ours.required ?? [])].sort()).toEqual([...theirs.required].sort());
+  const info = (v: unknown) => {
+    const s = (v as { anyOf: Json[] }).anyOf.find((a) => a.properties) as { properties: Json; required: string[] };
+    return { keys: Object.keys(s.properties).sort(), required: [...s.required].sort() };
+  };
+  for (const [ours_, rust_] of [
+    [ours.properties.audio, "AudioInfo"],
+    [ours.properties.video, "VideoInfo"],
+  ] as const) {
+    const d = defs[rust_] as { properties: Json; required: string[] };
+    expect(info(ours_)).toEqual({ keys: Object.keys(d.properties).sort(), required: [...d.required].sort() });
+  }
 });
 
 test("ProjectEventSchema is fin-store's EngineEvent less what finisherd keeps to itself", () => {
