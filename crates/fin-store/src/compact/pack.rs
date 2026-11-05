@@ -45,8 +45,9 @@ pub(super) struct Plan {
 
 /// What may be packed: every non-pack segment wholly on the resolved chain and exported in
 /// the database (so never a stale, malformed, quarantined or pending one), that `protected`
-/// (an abandoned compaction's segments) does not hold, and whose predecessor is a present
-/// segment or one a present pack replaces (the branch start for the first).
+/// (an abandoned compaction's segments) does not hold, that no malformed file names as its
+/// predecessor, and whose predecessor is a present segment or one a present pack replaces
+/// (the branch start for the first).
 fn eligible<'v>(
     v: &'v View,
     protected: &HashSet<String>,
@@ -65,6 +66,7 @@ fn eligible<'v>(
                 && linked
                 && !v.off_chain.contains(s.hash())
                 && !protected.contains(s.hash())
+                && !v.malformed_prevs.contains(s.hash())
                 && seg_name(s).is_some_and(|n| !protected_names.contains(&n))
                 && v.all_exported(s)
         })

@@ -204,19 +204,27 @@ fn fresh_reader_after_deletion_resolves_through_pack() {
     let mut a = e.create("a");
     short_grace(&mut a);
     segs(&e, &mut a, "t", 4);
+    let last = segments(&e.dir).pop().unwrap().2.hash;
     a.compact(true).unwrap();
-    after_grace(&e, &mut a);
-    assert!(originals(&e.dir).is_empty());
-    // A segment exported after the compaction continues from the pack.
+    // Exported during the grace period, a segment continues from the original (readers
+    // that do not see the pack yet need not wait)…
     segs(&e, &mut a, "u", 1);
-    let next = &segments(&e.dir)[1].2;
+    after_grace(&e, &mut a);
+    assert_eq!(originals(&e.dir).len(), 1, "u0 is not packed yet");
+    // …and after the deletion too: the original resolves through the pack's `replaces`.
+    segs(&e, &mut a, "v", 1);
+    let all = segments(&e.dir);
     assert_eq!(
-        next.header.prev_segment_hash.as_deref(),
-        Some(packs(&e.dir)[0].hash.as_str())
+        all[1].2.header.prev_segment_hash.as_deref(),
+        Some(last.as_str())
+    );
+    assert_eq!(
+        all[2].2.header.prev_segment_hash.as_deref(),
+        Some(all[1].2.hash.as_str())
     );
 
     let g = e.open("g");
-    assert_eq!(g.head(MAIN), 5);
+    assert_eq!(g.head(MAIN), 6);
     assert_eq!(g.snapshot(MAIN).unwrap(), a.snapshot(MAIN).unwrap());
     assert_eq!(g.read_only(), Some(ReadOnlyReason::LeaseHeld));
     assert_verifies(&g.verify());
@@ -385,14 +393,18 @@ fn stale_and_malformed_segments_are_never_deleted() {
     assert_eq!(a.read_only(), None);
     segs(&e, &mut a, "u", 2);
 
+    let t2 = s[2].0.clone();
     let r = a.compact(true).unwrap();
-    assert_eq!(r.replaced, 5, "{r:?}");
+    // t2's segment is the malformed file's named predecessor: it stays (and so the packs
+    // are t0..t1 and u0..u1).
+    assert_eq!((r.replaced, r.packs_written), (4, 2), "{r:?}");
     let listed = manifest(&e.dir)["replaced"].to_string();
-    for p in [&stale, &bad] {
+    for p in [&stale, &bad, &t2] {
         assert!(!listed.contains(p.file_name().unwrap().to_str().unwrap()));
     }
     let r = after_grace(&e, &mut a);
-    assert_eq!(r.deleted, 5, "{r:?}");
+    assert_eq!(r.deleted, 4, "{r:?}");
+    assert!(t2.exists());
     assert!(
         stale.exists() && bad.exists(),
         "set-aside segments are kept"
@@ -763,4 +775,344 @@ fn a_follower_knows_a_moved_folder_by_its_packs() {
     fs::rename(&parent, &renamed).unwrap();
     let moved = e.try_open_at("f", &renamed.join("My Project")).unwrap();
     assert_eq!(moved.head(MAIN), 3);
+}
+
+/// A pack of `segs` (in order) labelled `epoch`, written into the folder by "another
+/// version"; returns its name.
+fn forge_pack(
+    dir: &Path,
+    s: &Store,
+    segs: &[&Segment],
+    epoch: u64,
+    replaces: Vec<String>,
+) -> (String, String) {
+    let recs: Vec<&[u8]> = segs
+        .iter()
+        .flat_map(|x| x.records.iter().map(Vec::as_slice))
+        .collect();
+    let (first, last) = (
+        segs[0].header.first_seq,
+        segs[segs.len() - 1].header.last_seq,
+    );
+    let header = Header {
+        format_version: segment::FORMAT_VERSION,
+        min_reader_version: segment::MIN_READER_VERSION,
+        project_id: s.project_id().to_string(),
+        branch: MAIN.to_string(),
+        writer_id: "01jstalewriter000000000000".to_string(),
+        epoch,
+        first_seq: first,
+        last_seq: last,
+        prev_segment_hash: segs[0].header.prev_segment_hash.clone(),
+        op_schema_versions: [SCHEMA_VERSION, SCHEMA_VERSION],
+        created_at: 0,
+        genesis_hash: s.genesis_hash(),
+        pack: true,
+        replaces,
+    };
+    let (bytes, hash) = segment::encode(&header, &recs);
+    let name = fin_store::names::SegmentName::new(
+        epoch,
+        first,
+        last,
+        fin_store::names::hash12(&hash).unwrap(),
+    )
+    .unwrap()
+    .to_string();
+    fs::write(seg_dir(dir).join(&name), bytes).unwrap();
+    (name, hash)
+}
+
+fn forge_manifest(
+    dir: &Path,
+    s: &Store,
+    epoch: u64,
+    replaced: &[String],
+    packs: &[String],
+) -> PathBuf {
+    let m = serde_json::json!({
+        "magic": "finisher-compaction", "formatVersion": 1, "minReaderVersion": 1,
+        "projectId": s.project_id(), "writerId": "01jstalewriter000000000000", "epoch": epoch,
+        "branch": MAIN, "replaced": replaced, "packs": packs, "snapshot": null,
+        "createdMs": 0, "kind": "local",
+    });
+    fs::create_dir_all(compaction_dir(dir)).unwrap();
+    let path = compaction_dir(dir).join(ManifestName::new().to_string());
+    fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
+    path
+}
+
+fn name_of(p: &Path) -> String {
+    p.file_name().unwrap().to_str().unwrap().to_string()
+}
+
+fn reasons(s: &Store) -> Vec<(String, String)> {
+    s.quarantined_for_test()
+        .into_iter()
+        .map(|q| (q.0, q.1))
+        .collect()
+}
+
+/// A file that names t2's segment as predecessor but continues t0 (seq 2): malformed while
+/// t2's segment is there. Deleting it would let the file link through the pack.
+fn plant_misnamed(e: &Env, a: &Store) -> PathBuf {
+    let s: Vec<_> = segments(&e.dir)
+        .into_iter()
+        .filter(|x| !x.2.header.pack)
+        .collect();
+    plant(
+        &e.dir,
+        a,
+        &s[2].2,
+        2,
+        2,
+        edited(&s[1].2.records[0], |m| {
+            m.insert("txId".into(), "bad".into());
+        }),
+    )
+}
+
+#[test]
+fn phase_one_leaves_the_predecessor_of_a_malformed_file_alone() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(2, true);
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 3);
+    let t2 = segments(&e.dir)[2].0.clone();
+    let bad = plant_misnamed(&e, &a);
+    e.poll(&mut a);
+    let aside = reasons(&a);
+    assert_eq!(aside.len(), 1);
+    assert_eq!(aside[0].1, "MALFORMED");
+    segs(&e, &mut a, "u", 2);
+    a.compact(true).unwrap();
+    let r = after_grace(&e, &mut a);
+    assert!(r.abandoned.is_empty(), "{r:?}");
+    assert!(t2.exists() && bad.exists(), "the named predecessor stays");
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    assert_eq!(reasons(&a), aside);
+    let g = e.open("g");
+    assert_eq!(
+        (g.head(MAIN), g.read_only()),
+        (5, Some(ReadOnlyReason::LeaseHeld))
+    );
+    assert_eq!(reasons(&g), aside);
+}
+
+#[test]
+fn a_malformed_file_landing_between_phases_abandons_the_deletion() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(2, true);
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 3);
+    segs(&e, &mut a, "u", 2);
+    a.compact(true).unwrap();
+    let bad = plant_misnamed(&e, &a);
+    e.poll(&mut a);
+    let aside = reasons(&a);
+    let r = after_grace(&e, &mut a);
+    assert_eq!((r.abandoned.len(), r.deleted), (1, 0), "{r:?}");
+    assert!(r.abandoned[0].1.contains("would change"), "{r:?}");
+    assert_eq!(
+        originals(&e.dir).len(),
+        6,
+        "five segments and the misnamed file"
+    );
+    assert!(bad.exists());
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    assert_eq!(reasons(&a), aside);
+    let g = e.open("g");
+    assert_eq!(
+        (g.head(MAIN), g.read_only()),
+        (5, Some(ReadOnlyReason::LeaseHeld))
+    );
+}
+
+#[test]
+fn a_late_stale_segment_between_phases_keeps_its_verdict() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(2, true);
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 3);
+    a.compact(true).unwrap();
+    let s: Vec<_> = segments(&e.dir)
+        .into_iter()
+        .filter(|x| !x.2.header.pack)
+        .collect();
+    let stale = plant(
+        &e.dir,
+        &a,
+        &s[1].2,
+        1,
+        3,
+        edited(&s[2].2.records[0], |m| {
+            m.insert("txId".into(), "stale".into());
+        }),
+    );
+    e.poll(&mut a);
+    let aside = reasons(&a);
+    assert_eq!(aside.len(), 1);
+    assert_eq!(aside[0].1, "STALE_EPOCH");
+    let r = after_grace(&e, &mut a);
+    assert_eq!((r.finished.len(), r.deleted), (1, 3), "{r:?}");
+    assert!(stale.exists());
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    assert_eq!(
+        reasons(&a),
+        aside,
+        "the same verdict before and after the deletion"
+    );
+    let g = e.open("g");
+    assert_eq!(g.head(MAIN), 3);
+    assert_eq!(reasons(&g), aside);
+}
+
+#[test]
+fn a_pack_labelled_below_a_segment_it_replaces_is_abandoned() {
+    let e = env();
+    let mut a = e.create("a");
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 1);
+    a.set_test_lease(3, true);
+    segs(&e, &mut a, "u", 1);
+    let s = segments(&e.dir);
+    let hashes = vec![s[0].2.hash.clone(), s[1].2.hash.clone()];
+    let (pack, _) = forge_pack(&e.dir, &a, &[&s[0].2, &s[1].2], 1, hashes);
+    forge_manifest(
+        &e.dir,
+        &a,
+        1,
+        &[name_of(&s[0].0), name_of(&s[1].0)],
+        &[pack],
+    );
+    e.poll(&mut a);
+    let r = after_grace(&e, &mut a);
+    assert_eq!((r.abandoned.len(), r.deleted), (1, 0), "{r:?}");
+    assert!(r.abandoned[0].1.contains("epoch"), "{r:?}");
+    assert_eq!(originals(&e.dir).len(), 2);
+}
+
+#[test]
+fn a_lying_pack_is_never_chained_from() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(2, true);
+    segs(&e, &mut a, "t", 3);
+    let s = segments(&e.dir);
+    // A stale sibling the pack lists without holding it: the pack is malformed.
+    let stale = plant(
+        &e.dir,
+        &a,
+        &s[1].2,
+        1,
+        3,
+        edited(&s[2].2.records[0], |m| {
+            m.insert("txId".into(), "stale".into());
+        }),
+    );
+    let stale_hash = segment::decode(&fs::read(&stale).unwrap()).unwrap().hash;
+    let mut replaces: Vec<String> = s.iter().map(|x| x.2.hash.clone()).collect();
+    replaces.push(stale_hash);
+    let all: Vec<&Segment> = s.iter().map(|x| &x.2).collect();
+    let (_, lying) = forge_pack(&e.dir, &a, &all, 2, replaces);
+    e.poll(&mut a);
+    segs(&e, &mut a, "u", 1);
+    let newest = segments(&e.dir)
+        .into_iter()
+        .find(|x| x.2.header.first_seq == 4)
+        .unwrap();
+    assert_ne!(
+        newest.2.header.prev_segment_hash.as_deref(),
+        Some(lying.as_str())
+    );
+    e.poll(&mut a);
+    assert_eq!((a.read_only(), a.head(MAIN)), (None, 4));
+    let g = e.open("g");
+    assert_eq!(
+        (g.head(MAIN), g.read_only()),
+        (4, Some(ReadOnlyReason::LeaseHeld))
+    );
+}
+
+#[test]
+fn sync_grace_starts_once_the_packs_are_in() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(1, true);
+    a.set_test_storage_kind(StorageKind::Sync(Provider::Dropbox));
+    segs(&e, &mut a, "t", 3);
+    a.compact(true).unwrap();
+    // As if the manifest reached this machine before the pack: move the pack away and let a
+    // fresh process see the folder.
+    let pack = segments(&e.dir)
+        .into_iter()
+        .find(|s| s.2.header.pack)
+        .unwrap()
+        .0;
+    let away = e.root.join("pack-in-transit");
+    fs::rename(&pack, &away).unwrap();
+    drop(a);
+    let mut a = e.open("a");
+    a.set_test_lease(2, true);
+    a.set_test_storage_kind(StorageKind::Sync(Provider::Dropbox));
+    a.compact(false).unwrap();
+    e.clock.advance(Duration::from_secs(25 * 3600));
+    assert_eq!(
+        a.compact(false).unwrap().deleted,
+        0,
+        "no pack, no grace yet"
+    );
+    fs::rename(&away, &pack).unwrap();
+    a.compact(false).unwrap();
+    e.clock.advance(Duration::from_secs(23 * 3600));
+    assert_eq!(
+        a.compact(false).unwrap().deleted,
+        0,
+        "24 h from the pack's arrival"
+    );
+    e.clock.advance(Duration::from_secs(2 * 3600));
+    assert_eq!(a.compact(false).unwrap().deleted, 3);
+}
+
+#[test]
+fn an_unreadable_manifest_holds_off_new_compactions() {
+    let e = env();
+    let mut a = e.create("a");
+    segs(&e, &mut a, "t", 3);
+    fs::create_dir_all(compaction_dir(&e.dir)).unwrap();
+    let junk = compaction_dir(&e.dir).join(ManifestName::new().to_string());
+    fs::write(&junk, b"{\"magic\":\"finisher-comp").unwrap();
+    assert!(a.compact(true).unwrap().manifests.is_empty());
+    assert_eq!(a.compaction_status().pending[0].state, "unreadable");
+    fs::remove_file(&junk).unwrap();
+    assert_eq!(a.compact(true).unwrap().manifests.len(), 1);
+}
+
+#[test]
+fn an_abandoned_manifest_stays_abandoned_across_restarts() {
+    let e = env();
+    let mut a = e.create("a");
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 2);
+    let s = segments(&e.dir);
+    // Names a pack that is not a pack.
+    forge_manifest(&e.dir, &a, 1, &[name_of(&s[0].0)], &[name_of(&s[1].0)]);
+    e.poll(&mut a);
+    assert_eq!(after_grace(&e, &mut a).abandoned.len(), 1);
+    drop(a);
+    let mut a = e.open("a");
+    e.poll(&mut a);
+    let st = a.status();
+    assert_eq!(
+        st.compaction.pending[0].state, "abandoned",
+        "{:?}",
+        st.compaction
+    );
+    assert!(st.warnings.iter().any(|w| w.code == "COMPACTION_ABANDONED"));
 }

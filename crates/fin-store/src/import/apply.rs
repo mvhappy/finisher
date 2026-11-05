@@ -28,8 +28,9 @@
 //! 4. A `segments` row (`imported`) for each segment touched whose last record is now in
 //!    the DB with the same hash, so the next export chains `prevSegmentHash` from it.
 //!    Segments only partly in the DB (a fork or a stop inside one) get none. Every present
-//!    pack ending on the DB line gets one too, touched or not: once compaction deletes the
-//!    segments it replaces, the pack is what the DB knows the folder by (project copies,
+//!    pack ending on the DB line gets one too, touched or not, unless the resolution sets
+//!    any of it aside (a malformed, lying pack): once compaction deletes the segments it
+//!    replaces, the pack is what the DB knows the folder by (project copies,
 //!    `crate::copies`).
 //! 5. `quarantine` (stale or malformed folder records), keyed by `txHash`, skipping records
 //!    the DB holds.
@@ -341,8 +342,14 @@ pub(super) fn branch(
         head = Some(h);
     }
 
-    // 4. Segment rows (and every pack that ends on the DB line).
-    touched.extend(segs.iter().filter(|s| s.header().pack).cloned());
+    // 4. Segment rows (and every pack that ends on the DB line, unless this resolution sets
+    //    any of it aside: a lying pack must never be chained from).
+    let aside: HashSet<&str> = res.quarantine.iter().map(|(s, _)| s.hash()).collect();
+    touched.extend(
+        segs.iter()
+            .filter(|s| s.header().pack && !aside.contains(s.hash()))
+            .cloned(),
+    );
     touched.sort_by(|a, b| a.hash().cmp(b.hash()));
     touched.dedup_by(|a, b| a.hash() == b.hash());
     for s in &touched {

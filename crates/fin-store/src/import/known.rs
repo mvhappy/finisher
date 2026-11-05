@@ -117,8 +117,8 @@ pub(super) fn build(
     })
 }
 
-/// A known segment (exported or imported) whose last record is `seq`; packs first, as for
-/// the export's `prevSegmentHash`.
+/// A known segment (exported or imported) whose last record is `seq`; originals before
+/// packs, as for the export's `prevSegmentHash`.
 pub(super) fn segment_ending_at(
     conn: &Connection,
     branch: &str,
@@ -127,9 +127,25 @@ pub(super) fn segment_ending_at(
     Ok(conn
         .query_row(
             "SELECT hash FROM segments WHERE branch = ?1 AND last_seq = ?2
-             AND state IN ('exported', 'imported') ORDER BY pack DESC, hash LIMIT 1",
+             AND state IN ('exported', 'imported') ORDER BY pack ASC, hash LIMIT 1",
             params![branch, to_i64(seq)?],
             |r| r.get(0),
         )
         .optional()?)
+}
+
+/// [`Known`] for `branch` as an import pass builds it from the database now (compaction
+/// resolves with it to check that a deletion changes no verdict).
+pub(crate) fn known_now(
+    conn: &Connection,
+    branch: &str,
+    holds_lease: bool,
+    kind: StorageKind,
+) -> Result<Known, StoreError> {
+    let line = line(conn, branch)?;
+    let mut stmt = conn.prepare("SELECT tx_id, tx_hash FROM txs")?;
+    let all = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    build(conn, branch, &line, all, holds_lease, kind)
 }

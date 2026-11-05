@@ -38,7 +38,12 @@ pub(super) struct View {
     pub(super) off_chain: HashSet<String>,
     /// Every hash some present pack that is not malformed lists in `replaces`.
     pub(super) pack_replaced: HashSet<String>,
+    /// The predecessors malformed files name (`prevSegmentHash`). Deleting one could let the
+    /// file link through a pack's `replaces`, so phase 1 never packs them.
+    pub(super) malformed_prevs: HashSet<String>,
     pub(super) present: HashSet<String>,
+    /// The fresh resolution (`Known::empty`) of `segs`.
+    pub(super) res: Resolution,
 }
 
 impl View {
@@ -178,6 +183,11 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
         .filter(|s| s.header().pack && !malformed.contains(s.hash()))
         .flat_map(|s| s.header().replaces.iter().cloned())
         .collect();
+    let malformed_prevs = segs
+        .iter()
+        .filter(|s| malformed.contains(s.hash()))
+        .filter_map(|s| s.header().prev_segment_hash.clone())
+        .collect();
     let by_name = segs
         .iter()
         .filter_map(|s| Some((seg_name(s)?, s.clone())))
@@ -193,7 +203,9 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
         exported_through,
         off_chain,
         pack_replaced,
+        malformed_prevs,
         present,
+        res,
     }))
 }
 

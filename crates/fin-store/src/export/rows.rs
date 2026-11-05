@@ -98,7 +98,9 @@ pub(super) fn broken(branch: &str, why: String) -> StoreError {
 }
 
 /// The hash of the segment whose last record is the one before `first`; `None` when no record
-/// precedes it on the branch.
+/// precedes it on the branch. An original segment wins over a compaction pack ending there:
+/// it is always a valid predecessor (once deleted, it resolves through the pack's
+/// `replaces`), while a pack makes readers that have not received it yet wait.
 pub(super) fn prev_segment(
     conn: &Connection,
     branch: &str,
@@ -115,7 +117,7 @@ pub(super) fn prev_segment(
     let hash: Option<String> = conn
         .query_row(
             "SELECT hash FROM segments WHERE branch = ?1 AND last_seq = ?2
-             AND state IN ('exported', 'imported') ORDER BY pack DESC, hash LIMIT 1",
+             AND state IN ('exported', 'imported') ORDER BY pack ASC, hash LIMIT 1",
             params![branch, to_i64(first - 1)?],
             |r| r.get(0),
         )
