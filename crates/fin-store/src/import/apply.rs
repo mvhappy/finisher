@@ -182,7 +182,7 @@ pub(super) fn branch(
         let mut h = head
             .clone()
             .ok_or_else(|| broken(branch, "the branch has no head to import onto".into()))?;
-        let mut tip_hash = db::tip_hash(txn, branch)?;
+        let mut tip_hash = crate::branch::lineage::tip_hash(txn, branch)?;
         let seed = if h.rev == 0 {
             seed_for(ctx, branch, res)
         } else {

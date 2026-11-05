@@ -9,6 +9,7 @@
 //! single writer for its project database.
 
 mod backup;
+mod branch;
 pub mod chain;
 mod commit;
 mod compact;
@@ -36,12 +37,12 @@ pub mod scan;
 pub mod segment;
 pub mod server_id;
 pub mod snapfile;
-mod state;
 mod status;
 pub mod storage_kind;
 mod tick;
 mod verify;
 pub mod wire;
+mod write;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -281,12 +282,13 @@ impl Store {
         Ok((head.rev, head.project.clone()))
     }
 
-    /// Committed txs on `branch` with `rev > after`, in rev order.
+    /// Committed txs on `branch` with `rev > after`, in rev order. Below the branch's fork
+    /// they are its ancestors' (each `tx.branch` names the branch that holds it).
     pub fn ops_since(&self, branch: &str, after: u64) -> Result<Vec<CommittedTx>, StoreError> {
         if db::latest_rev(&self.conn, branch)?.is_none() {
             return Err(branch_not_found(branch).into());
         }
-        db::txs_since(&self.conn, branch, after)
+        branch::lineage::records_since(&self.conn, branch, after)
     }
 
     /// Committed txs on `branch` with `rev > after`, with the branch's generation, read
@@ -376,7 +378,8 @@ impl Store {
 /// committed since the cached rev, or loads the latest snapshot plus its tail when there is no
 /// usable cache. The cache is usable only while the row at its rev still has the hash it was
 /// built from: an import (here or through another `Store` on the same database) may have
-/// replaced rows. Drops the cache entry when the branch does not exist.
+/// replaced rows. A branch at its fork has no row there: its tip is the fork hash
+/// ([`branch::lineage::hash_at`]). Drops the cache entry when the branch does not exist.
 pub(crate) fn refresh(
     conn: &rusqlite::Connection,
     heads: &mut HashMap<String, Head>,
@@ -388,7 +391,7 @@ pub(crate) fn refresh(
     };
     if let Some(head) = heads.get_mut(branch)
         && head.rev <= latest
-        && db::hash_at(conn, branch, head.rev)? == head.tip
+        && branch::lineage::hash_at(conn, branch, head.rev)? == head.tip
     {
         for row in db::record_rows(conn, branch, head.rev)? {
             head.project = db::replay_row(&head.project, branch, &row)?.project;
@@ -399,7 +402,7 @@ pub(crate) fn refresh(
     }
     let (mut rev, mut project) =
         db::latest_snapshot(conn, branch)?.ok_or_else(|| branch_not_found(branch))?;
-    let mut tip = db::hash_at(conn, branch, rev)?;
+    let mut tip = branch::lineage::hash_at(conn, branch, rev)?;
     for row in db::record_rows(conn, branch, rev)? {
         project = db::replay_row(&project, branch, &row)?.project;
         rev = row.0;

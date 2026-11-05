@@ -4,8 +4,9 @@
 //! replaying them: the snapshot is the state after `S`. Their `txs.diff` (which only a
 //! replay computes) is stored as [`NOT_STORED`] and `meta` `diffsPending.<branch>` = `S`,
 //! and so are the database snapshots at multiples of [`SNAPSHOT_EVERY`] below `S`. The first
-//! read that needs one of those diffs ([`crate::db::txs_since`] with `after < S`,
-//! [`crate::db::find_tx`] of such a row) runs [`fill`]: one replay from rev 0 through `S`
+//! read that needs one of those diffs ([`crate::branch::lineage::records_since`] reaching
+//! below `S` on that branch, also from a descendant branch; [`crate::db::find_tx`] of such a
+//! row) runs [`fill`]: one replay from the branch's start (rev 0, or its fork) through `S`
 //! that writes the diffs and those snapshots, and drops the seed's own snapshot row when it
 //! is not at a multiple of [`SNAPSHOT_EVERY`] and holds the replayed state. The database is
 //! then exactly what a full replay would have built (tested). A seed whose state differs
@@ -41,11 +42,18 @@ pub(crate) fn fill(conn: &Connection, branch: &str) -> Result<(), StoreError> {
     };
     conn.execute_batch("SAVEPOINT fill_diffs")?;
     let run = || -> Result<(), StoreError> {
-        let mut project =
-            db::snapshot_at(conn, branch, 0)?.ok_or_else(|| crate::branch_not_found(branch))?;
+        // A branch's own rows start after its fork, from the parent's state there.
+        let start = crate::branch::lineage::lineage(conn, branch)?
+            .first()
+            .map_or(0, |s| s.after);
+        let mut project = match db::snapshot_at(conn, branch, start)? {
+            Some(p) => p,
+            None if start > 0 => crate::branch::lineage::state_at(conn, branch, start)?,
+            None => return Err(crate::branch_not_found(branch).into()),
+        };
         let mut update = conn
             .prepare("UPDATE txs SET diff = ?3 WHERE branch = ?1 AND seq = ?2 AND diff = 'null'")?;
-        for row in db::record_rows(conn, branch, 0)? {
+        for row in db::record_rows(conn, branch, start)? {
             if row.0 > through {
                 break;
             }

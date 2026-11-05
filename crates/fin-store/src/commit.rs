@@ -1,17 +1,16 @@
 //! `Store::commit`: dedupe by `txId`, rebase a stale tx over what was committed since its base,
-//! apply it, and append it in one SQLite transaction together with the id counters it used.
+//! apply it, and append it in one SQLite transaction together with the id counters it used,
+//! through the shared write path ([`Store::write`]).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fin_core::{CommittedTx, CoreError, Tx, apply_tx, rebase_tx};
-use rusqlite::TransactionBehavior;
+use fin_core::{CommittedTx, CoreError, Link, Tx, apply_tx, rebase_tx};
 use serde_json::{Value, json};
 
-use crate::db::{self, Counters, SNAPSHOT_EVERY};
-use crate::{Head, Store, StoreError, branch_not_found, refresh};
-
-/// How old a passed lease check a commit may rely on (see [`Store::commit`]).
-const COMMIT_TRUSTS_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+use crate::branch::lineage;
+use crate::db::{self, Counters};
+use crate::write::{Draft, WriteCtx};
+use crate::{Generation, Store, StoreError};
 
 impl Store {
     /// Commits `tx` to its branch and returns it as committed.
@@ -33,7 +32,7 @@ impl Store {
     ///   after acquiring it): `PROJECT_READ_ONLY` with `details.reason` and `fix`.
     /// - Without a held lease: `PROJECT_READ_ONLY` with `details.reason` `LEASE_LOST`. The full
     ///   fence (`lease.check()`, folder I/O) runs before the database lock is taken; under the
-    ///   lock, right before the rows are written, only the in-memory part
+    ///   lock, right before the SQLite commit, only the in-memory part
     ///   (`lease.quick_check()`). The row records the epoch the fence returned (`txs.epoch`).
     ///
     /// The stored tx is the rebased one (`baseRev` = the head it was applied to), with the diff,
@@ -60,128 +59,81 @@ impl Store {
     pub fn commit_at_generation(
         &mut self,
         tx: Tx,
-        generation: Option<&crate::Generation>,
+        generation: Option<&Generation>,
     ) -> Result<CommittedTx, StoreError> {
-        // Everything below runs under the write lock, against the head as stored: another
-        // `Store` on this database may have committed since our cache was filled.
-        check_shape(&tx)?;
-        // A retry of a committed tx is answered whatever the state (it writes nothing).
-        if let Some(existing) = db::find_tx(&self.conn, &tx.tx_id)? {
-            return same_args(&tx, existing);
-        }
-        if let Some(reason) = self.read_only() {
-            return Err(crate::import::read_only_error(&self.project_id, reason));
-        }
-        // The full fence reads the folder (uncached; seconds on a slow share, longer on a
-        // hung one), so it runs before the database write lock is taken. Its answer is applied
-        // after the dedupe below, so a retry of a committed tx is answered without the lease.
-        //
-        // A full check that passed within the last [`COMMIT_TRUSTS_CHECK`] is trusted (the
-        // in-memory part still runs, here and under the lock). That is safe because a commit
-        // only writes the local database: every write to the folder (each segment export)
-        // takes its own full check. The cost is bounded: a commit made in the last second
-        // of a lease that another server has already taken over becomes a diverged tail,
-        // which import sets aside (spec §3.6 step 7), as it does for a commit made just
-        // before the loss.
-        let fenced = self.export.lease.check_recent(COMMIT_TRUSTS_CHECK);
-        let txn = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = db::find_tx(&txn, &tx.tx_id)? {
-            return same_args(&tx, existing);
-        }
-        let epoch = fenced.map_err(|e| crate::import::lease_lost_error(&self.project_id, &e))?;
-        let heads = self.heads.get_mut();
-        refresh(&txn, heads, &tx.branch)?;
-        let head = heads
-            .get(&tx.branch)
-            .ok_or_else(|| branch_not_found(&tx.branch))?;
-        if let Some(g) = generation {
-            crate::history::check(&txn, &tx.branch, g, tx.base_rev)?;
-        }
-        if tx.base_rev > head.rev {
-            return Err(CoreError::new("BASE_REV_AHEAD", format!("baseRev {} is ahead of head {}", tx.base_rev, head.rev))
-                .with_details(json!({ "txId": tx.tx_id, "baseRev": tx.base_rev, "head": head.rev, "branch": tx.branch }))
-                .with_fix("read the project head and send its rev as baseRev")
-                .into());
-        }
-        let rev = head.rev + 1;
-        let mut ids = Counters::load(&txn)?;
-        // A stale tx is rebased by the engine in the frame of its base: the tx applied there
-        // gives the maps of its own ops, and the re-run at the head is the apply.
-        let (tx, applied) = if tx.base_rev < head.rev {
-            // `txs_since` fills pending diffs first (a seeded rebuild), and the snapshots that
-            // writes then serve `state_near_head`.
-            let since = db::txs_since(&txn, &tx.branch, tx.base_rev)?;
-            let base = crate::state::state_near_head(
-                &txn,
-                &tx.branch,
-                tx.base_rev,
-                head.rev,
-                &head.project,
-            )?;
-            let rebased = rebase_tx(&base, &head.project, &tx, &since, &mut ids)
-                .map_err(|e| with_tx_id(e, &tx.tx_id))?;
-            (rebased.tx, rebased.applied)
-        } else {
-            let applied = apply_tx(&head.project, &tx, &mut ids)?;
-            (tx, applied)
-        };
-        ids.save(&txn)?;
-        let parent = db::tip_hash(&txn, &tx.branch)?;
-        // In memory only, under the lock: still the same lease, not lost since (the heartbeat
-        // or another check may have seen a newer claim) and not past its self-fence deadline.
-        match self.export.lease.quick_check() {
-            Ok(e) if e == epoch => {}
-            Ok(e) => {
-                let cause = CoreError::new(
-                    "LEASE_LOST",
-                    format!("the lease changed from epoch {epoch} to {e} during the commit"),
-                );
-                return Err(crate::import::lease_lost_error(&self.project_id, &cause));
-            }
-            Err(e) => return Err(crate::import::lease_lost_error(&self.project_id, &e)),
-        }
-        let record = db::new_record(
-            rev,
-            fin_core::Link::Edit,
-            tx.clone(),
-            applied.inverse.clone(),
-            applied.bindings.clone(),
-            parent,
-            now_ms(),
-        )?;
-        let tip = db::insert_tx(&txn, &tx.branch, &record, &applied.diff, epoch)?;
-        if rev % SNAPSHOT_EVERY == 0 {
-            db::insert_snapshot(&txn, &tx.branch, rev, &applied.project)?;
-        }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if std::mem::take(&mut self.fail_after_apply) {
-            // Dropping `txn` rolls back, exactly as a crash before the commit would.
-            return Err(CoreError::new(
-                "TEST_FAULT",
-                "injected failure after apply, before the SQLite commit",
-            )
-            .into());
-        }
-        txn.commit()?;
-
-        heads.insert(
-            tx.branch.clone(),
-            Head {
-                rev,
-                tip: Some(tip),
-                project: applied.project,
-            },
-        );
-        Ok(CommittedTx {
-            rev,
-            tx,
-            diff: applied.diff,
-            bindings: applied.bindings,
-            link: None,
-        })
+        self.commit_in(tx, generation, false)
     }
+
+    /// [`Store::commit_at_generation`], or with `dry_run` its plan: the commit as it would be
+    /// made, against the local database, rolled back, with no read-only or lease check (so on
+    /// a follower too; Decision 26).
+    pub(crate) fn commit_in(
+        &mut self,
+        tx: Tx,
+        generation: Option<&Generation>,
+        dry_run: bool,
+    ) -> Result<CommittedTx, StoreError> {
+        check_shape(&tx)?;
+        // Everything in `plan` runs under the write lock, against the head as stored: another
+        // `Store` on this database may have committed since our cache was filled.
+        loop {
+            if let Some(c) = self.write(&tx.tx_id, dry_run, |ctx| plan(ctx, &tx, generation))? {
+                return Ok(c);
+            }
+            // Deduped: answer with the committed tx. Gone again (rewound by an import between
+            // the two reads): it is not committed any more, so the commit runs again.
+            if let Some(existing) = db::find_tx(&self.conn, &tx.tx_id)? {
+                return same_args(&tx, existing);
+            }
+        }
+    }
+}
+
+/// The commit of `tx` inside a write: the head, the generation and base checks, the rebase of
+/// a stale tx (or the apply of a fresh one), the ids it used, and the record.
+fn plan(
+    ctx: &mut WriteCtx<'_>,
+    tx: &Tx,
+    generation: Option<&Generation>,
+) -> Result<CommittedTx, StoreError> {
+    let txn = ctx.txn;
+    let head_rev = ctx.head(&tx.branch)?.rev;
+    if let Some(g) = generation {
+        crate::history::check(txn, &tx.branch, g, tx.base_rev)?;
+    }
+    if tx.base_rev > head_rev {
+        return Err(CoreError::new("BASE_REV_AHEAD", format!("baseRev {} is ahead of head {}", tx.base_rev, head_rev))
+            .with_details(json!({ "txId": tx.tx_id, "baseRev": tx.base_rev, "head": head_rev, "branch": tx.branch }))
+            .with_fix("read the project head and send its rev as baseRev")
+            .into());
+    }
+    let mut ids = Counters::load(txn)?;
+    // A stale tx is rebased by the engine in the frame of its base: the tx applied there
+    // gives the maps of its own ops, and the re-run at the head is the apply. Below a
+    // branch's fork, the frame and the records since come from its ancestors.
+    let (tx, applied) = if tx.base_rev < head_rev {
+        // `records_since` fills pending diffs first (a seeded rebuild), and the snapshots
+        // that writes then serve `state_near_head`.
+        let since = lineage::records_since(txn, &tx.branch, tx.base_rev)?;
+        let head = ctx.head(&tx.branch)?;
+        let base = lineage::state_near_head(txn, &tx.branch, tx.base_rev, head.rev, &head.project)?;
+        let rebased = rebase_tx(&base, &head.project, tx, &since, &mut ids)
+            .map_err(|e| with_tx_id(e, &tx.tx_id))?;
+        (rebased.tx, rebased.applied)
+    } else {
+        let applied = apply_tx(&ctx.head(&tx.branch)?.project, tx, &mut ids)?;
+        (tx.clone(), applied)
+    };
+    ids.save(txn)?;
+    ctx.append(Draft {
+        branch: tx.branch.clone(),
+        link: Link::Edit,
+        intent: tx,
+        inverse: applied.inverse,
+        bindings: applied.bindings,
+        diff: applied.diff,
+        project: applied.project,
+    })
 }
 
 pub(crate) fn now_ms() -> i64 {

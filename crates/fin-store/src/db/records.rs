@@ -227,10 +227,22 @@ pub(crate) fn record_rows(
     branch: &str,
     after: u64,
 ) -> Result<Vec<RecordRow>, StoreError> {
-    let mut stmt = conn.prepare(
-        "SELECT seq, tx_id, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq",
+    record_rows_in(conn, branch, after, None)
+}
+
+/// The raw rows of `branch` with `after < seq <= through` (`None`: no upper bound), in order.
+pub(crate) fn record_rows_in(
+    conn: &Connection,
+    branch: &str,
+    after: u64,
+    through: Option<u64>,
+) -> Result<Vec<RecordRow>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT seq, tx_id, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 AND seq <= ?3
+         ORDER BY seq",
     )?;
-    let rows = stmt.query_map(params![branch, to_i64(after)?], |r| {
+    let through = through.map_or(Ok(i64::MAX), to_i64)?;
+    let rows = stmt.query_map(params![branch, to_i64(after)?, through], |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
@@ -307,18 +319,21 @@ pub(crate) fn find_tx(conn: &Connection, tx_id: &str) -> Result<Option<Committed
     row.map(|(r, _)| decode(r)).transpose()
 }
 
-/// Committed txs on `branch` with `rev > after`, in rev order.
-pub(crate) fn txs_since(
+/// Committed txs of `branch`'s own rows with `after < rev <= through` (`None`: no upper
+/// bound), in rev order, as stored: the caller fills pending diffs first
+/// ([`crate::branch::lineage::records_since`], which reads a branch's whole lineage).
+pub(crate) fn txs_in(
     conn: &Connection,
     branch: &str,
     after: u64,
+    through: Option<u64>,
 ) -> Result<Vec<CommittedTx>, StoreError> {
-    if crate::diffs::pending(conn, branch)?.is_some_and(|through| through > after) {
-        crate::diffs::fill(conn, branch)?;
-    }
-    let sql = format!("SELECT {TX_COLUMNS} FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![branch, to_i64(after)?], committed_from_row)?;
+    let sql = format!(
+        "SELECT {TX_COLUMNS} FROM txs WHERE branch = ?1 AND seq > ?2 AND seq <= ?3 ORDER BY seq"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let through = through.map_or(Ok(i64::MAX), to_i64)?;
+    let rows = stmt.query_map(params![branch, to_i64(after)?, through], committed_from_row)?;
     rows.map(|r| decode(r?)).collect()
 }
 

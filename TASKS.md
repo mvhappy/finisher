@@ -167,6 +167,7 @@ Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md` (branch `sp4
 - [x] Task 4: exact per-track shift maps (`rebase::map`: `StepMap`, `Mapping` with mirrors; ProseMirror recover rule, Decision 16)
 - [x] Task 5: per-track, per-entity conflict footprints (`rebase::footprint`, one `footprint` per op module; `Conflict` with reason codes, `Conflicts` → `CONFLICT` with `details.conflicts`)
 - [x] Task 6: rebase engine rewrite (`rebase_apply`: map op by op through mirrored inverses, judge unmirrored steps, re-run with full policy; `rebase_tx` in the frame at the base, `state::state_at` in commit), `clip.restore` placeholders. Proptest budget, first measure: `rebase_props` + `shift_map` 0.15 s wall in a debug build on the Linux VM (tests 0.05 s + 0.02 s; budget < 8 s). Review fixes: undo/redo mirrors from `CommittedTx.link` (`steps_from`), `Conflict.details` and re-run blame, `details.baseRev` on a base failure, commit frame by rewind or replay (`state_near_head`); unchanged timing
+- [x] Task 7: one write path (`Store::write`: dedupe, read-only, fence, IMMEDIATE txn, in-memory lease re-check, commit; dry runs in a rolled-back DEFERRED txn with no read-only or lease check, so on followers too) used by commit; lineage reads from the `branches` index (`branch::lineage`: `state_at`, `state_near_head`, `records_since` filling pending diffs per ancestor, `hash_at`/`tip_hash` with the fork-hash fallback in `refresh`); `state.rs` removed
 
 ## Blocked on hardware or accounts
 

@@ -586,16 +586,17 @@ impl Store {
 ```
 `WriteCtx::append` does: `new_record` → `insert_tx` (at `epoch`; in a dry run, at 0, then rolled back) → `record_links` → snapshot every 200 → staged head. It updates the index from Task 8 on.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - `commit_through_write_keeps_4a_order` (the documented check order: dedupe before read-only, `BASE_REV_AHEAD`, `HISTORY_REWOUND`);
   - `write_dry_run_on_follower_plans_and_rolls_back`;
   - `write_failure_after_apply_rolls_back` (the `fail_next_commit_after_apply` hook moves into `write`);
   - `refresh_tip_falls_back_to_fork_hash` (a unit test with a hand-made index row);
   - `records_since_fills_pending_ancestor_diffs`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-store`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `commit.rs` keeps its public signatures and docs, now through `Store::write`.
-- [ ] **Step 4: Run** the three gates. Expected: PASS.
-- [ ] **Step 5: Commit** `refactor(store): one write path (dry runs on followers) and lineage reads`.
+- [x] **Step 2: Run** `rtk cargo test -p fin-store`. Expected: FAIL.
+- [x] **Step 3: Implement.** `commit.rs` keeps its public signatures and docs, now through `Store::write`.
+- [x] **Step 4: Run** the three gates. Expected: PASS.
+- [x] **Step 5: Commit** `refactor(store): one write path (dry runs on followers) and lineage reads`.
+- As built: `LineageSeg` gains `fork_hash`, and `lineage` already reads the `branches` index (parent, fork seq, fork hash; own first; each ancestor's `through` is the lowest fork below it, so a fork below the parent's own fork reads the grandparent; a branch without a row is a root; a parent loop is `DB_ERROR`), so Task 8 only has to write the rows. `state_at` replays from the latest snapshot on the lineage branch that covers the seq (else from that branch's fork state, recursively); `state_near_head` and its rewind also run through the lineage. `db::txs_since` is gone: `lineage::records_since` reads each branch's range with `db::txs_in` and fills pending diffs only on the branches it reaches; `diffs::fill` on a child starts at its fork. Below the fork, `ops_since` returns the ancestors' records with their own `tx.branch`. `WriteCtx` also holds `now` (one `committedAt` per write) and stages heads; `head()` refreshes the store cache only before the write's first row (committed state), later on the side. `append` takes the parent hash from the staged head's tip (the fork hash at a branch's start) and returns `CommittedTx.link`, so Task 12's undo/redo records carry it. The in-memory lease re-check runs after `f`, right before the SQLite commit (it ran before the inserts), inside the same transaction. `Store::commit_in(tx, generation, dry_run)` (crate-private) is the commit with a dry run, for tests and the history operations; `commit` loops once more if a deduped tx vanished between the dedupe and the read (an import rewound it). `import::apply` takes its parent hash from `lineage::tip_hash`. Tests: `write_dry_run_on_follower_plans_and_rolls_back`, `write_failure_after_apply_rolls_back` and the lineage unit tests (`refresh_tip_falls_back_to_fork_hash`, `lineage_walks_parents_and_clamps_to_the_lowest_fork`, `reads_below_fork_read_the_parent`, `records_since_fills_pending_ancestor_diffs`, the moved `rewind_from_head_equals_replay`) are unit tests in `src/write_tests.rs` and `src/branch/lineage_tests.rs` (they need `Store::write` and hand-made index rows); `tests/lineage.rs` covers the public reads (`ops_since_below_fork_reads_parent`, `stale_commit_below_fork_rebases_over_lineage`, `ops_since_fills_pending_ancestor_diffs`); `tests/store.rs` has `commit_through_write_keeps_4a_order`.
 
 ### Task 8: Branch index, branch create/set, names — tier: opus
 

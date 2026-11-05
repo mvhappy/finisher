@@ -732,3 +732,44 @@ fn sp2_fixture_opens_and_replays_to_expected_state() {
     assert_eq!(replayed, head);
     assert_eq!(fold_history(zero, &history), head);
 }
+
+/// The checks a commit runs through `Store::write`, in 4A's order: the dedupe answers before
+/// the read-only state, the read-only state before `BASE_REV_AHEAD`, and the generation
+/// (`HISTORY_REWOUND`) before `BASE_REV_AHEAD`.
+#[test]
+fn commit_through_write_keeps_4a_order() {
+    let e = env();
+    let mut a = with_asset(&e);
+    let first = a
+        .commit(tx("tx-1", 1, vec![insert("$c", 0, "a1", 5)]))
+        .unwrap();
+    let mut b = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(b.read_only(), Some(fin_store::ReadOnlyReason::LeaseHeld));
+    // A retry of a committed tx is answered on a follower.
+    assert_eq!(b.commit(tx("tx-1", 0, vec![asset("$x")])).unwrap(), first);
+    // Read-only before a bad base.
+    let err = code(b.commit(tx("tx-2", 9, vec![asset("$x")])).unwrap_err());
+    assert_eq!(err.code, "PROJECT_READ_ONLY", "{err:?}");
+    // The generation before a bad base; the dedupe before the generation.
+    let other = fin_store::Generation {
+        incarnation: "another-db".into(),
+        n: 0,
+    };
+    let err = code(
+        a.commit_at_generation(tx("tx-2", 9, vec![asset("$x")]), Some(&other))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "HISTORY_REWOUND", "{err:?}");
+    assert_eq!(
+        a.commit_at_generation(tx("tx-1", 9, vec![asset("$x")]), Some(&other))
+            .unwrap(),
+        first
+    );
+    let current = a.generation_token(MAIN);
+    let err = code(
+        a.commit_at_generation(tx("tx-2", 9, vec![asset("$x")]), Some(&current))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "BASE_REV_AHEAD", "{err:?}");
+    assert_eq!((a.head(MAIN), b.head(MAIN)), (2, 2));
+}

@@ -213,5 +213,5 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
 
 /// The state of `branch` after `seq`, from the database.
 pub(super) fn state_at(store: &Store, branch: &str, seq: u64) -> Result<Project, StoreError> {
-    crate::state::state_at(&store.conn, branch, seq)
+    crate::branch::lineage::state_at(&store.conn, branch, seq)
 }
