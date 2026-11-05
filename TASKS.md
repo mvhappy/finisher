@@ -111,7 +111,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
   - NAS matrix per host pair: lease races (0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse), network loss with writes in flight, real or emulated skew, follow latency ≤ 3 s + cache window
     - [x] Windows↔Linux: all rows 0 critical on the final code (spec §3.13 item 2)
     - [x] Mac↔Linux before the fix: found the macOS smbfs 30–60 s directory cache (unsafe 10 s ordering-rule wait); fixed (65 s wait + listing refresh, 3e284dc); network poll 1 s, churn export delay 5 s
-    - [ ] Mac↔Linux and Mac↔Windows on the final code (needs the rebuilt Mac binary)
+    - [x] Mac↔Linux and Mac↔Windows on the final code: all rows 0 critical (spec §3.13 item 2)
   - [x] items 4, 5, 7, 8, 13, 14, 15 and most of 10 on Linux↔Windows SMB (spec §3.13); fixed the cifs cached-mtime probe read and verify flagging locked segments as corrupt
   - mtime source on SMB (server- vs client-set; Samba 2 s write-time delay; cifs deferred close); claims judged by client-set mtime under skew > 45 s
   - clock skew; suspend/resume of a holder (wakes fenced); Windows claim invisibility race (up to 9.9 s)
@@ -140,7 +140,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] `BASE_REV_AHEAD` vs `HISTORY_REWOUND` precision for a subscriber whose `fromRev` is beyond a rewound head
 - [ ] `tx.commit.generation` and `ops.subscribe.generation` optional in protocol 1 → required in protocol 2
 - [ ] Linux NFS: directory attribute cache (`acdirmax`, 60 s by default) exceeds the 10 s ordering-rule wait; NFS is classified `network` but untested. Measure, and use a longer wait or a listing refresh there
-- [ ] Windows: `PROJECT_NOT_FOUND` for ~2.5 s right after another host creates the project (Windows directory cache hides `.finisher/` too; the 15 s project-file retry doesn't cover it)
+- [ ] Windows (~2.5 s) and macOS smbfs: `PROJECT_NOT_FOUND` right after another host creates the project; retry with a listing refresh on network shares (Windows directory cache hides `.finisher/` too; the 15 s project-file retry doesn't cover it)
 - [ ] macOS smbfs: whether the lease probe can read a client-set mtime (no `AT_STATX_FORCE_SYNC`); untested
 - [ ] Locked files: no test for the pending-deletion path (first sighting without metadata); a verify right after open shows `SEGMENT_LOCKED`, not `unreadable`, until the store has been open 60 s
 - [ ] A segment held open by another SMB client slows compaction to one 60 s retry per file
