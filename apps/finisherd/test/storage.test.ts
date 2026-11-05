@@ -8,7 +8,7 @@ import type { FinError } from "@finisher/contracts";
 import type { CommittedTx } from "@finisher/core-types";
 import { Effect, Exit, Fiber, PubSub, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { Hubs } from "../src/hubs.ts";
+import { Channel, follower, Hubs } from "../src/hubs.ts";
 import { makeProjectRegistry, type ProjectRegistryShape, type RegistryOptions } from "../src/projects.ts";
 import { addAsset, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
@@ -269,6 +269,26 @@ describe("engine events in the registry", () => {
     expect(failureOf(exit!)?.code).toBe("HISTORY_REWOUND");
     expect(revs.every((rev) => rev <= 3)).toBe(true);
   }, 15_000);
+
+  test("an ending is skipped by a subscriber that already read the generation it produces", () => {
+    const err = (reason: string): FinError => ({ code: "HISTORY_REWOUND", message: reason, details: {} }) as FinError;
+    const channel = new Channel<number>(8);
+    // Attached and read after an open that rebuilt the database (incarnation b), before the
+    // rebuilt event reached the hub: the ending must not end it.
+    const fresh = follower(channel, "main");
+    const stale = follower(channel, "main");
+    const rewoundLater = follower(channel, "main");
+    channel.end(1, err("REBUILT"), { incarnation: "b" });
+    channel.end(3, err("REWOUND"), { incarnation: "b", n: 2 });
+    channel.publish(7);
+    const item = { seq: 2, value: 7 };
+    expect(fresh(item, 5, { incarnation: "b", n: 2 })).toBeUndefined();
+    expect(stale(item, 5, { incarnation: "a", n: 9 })?.message).toBe("REBUILT");
+    // Same incarnation, read before the rewind (n 1 < 2) and past its fromRev: ended.
+    expect(rewoundLater(item, 5, { incarnation: "b", n: 1 })?.message).toBe("REWOUND");
+    // No generation known (project.events): every applicable ending applies.
+    expect(follower(channel, "main")({ seq: 3, value: 1 }, 5)).toBeUndefined();
+  });
 
   test("the hub publishes every rev, also one below a rev it published before", async () => {
     const hubs = new Hubs(8);

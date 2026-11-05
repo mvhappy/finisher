@@ -189,13 +189,18 @@ export function makeProjectRegistry(
           break;
         case "rewound": {
           const generation = { incarnation: e.incarnation, n: e.generation };
-          hubs.rewind(id, e.branch, e.fromRev, historyRewound({ branch: e.branch, rev: e.fromRev, generation }));
+          hubs.rewind(id, e.branch, e.fromRev, historyRewound({ branch: e.branch, rev: e.fromRev, generation }), generation);
           hubs.publishEvent(id, e);
           break;
         }
         case "rebuilt":
           // `rev: 0` as on fin-store's own `HISTORY_REWOUND` (`REBUILT`): read from the start.
-          hubs.endAll(id, 1, (branch) => historyRewound({ branch, rev: 0, reason: "REBUILT", incarnation: e.incarnation }));
+          hubs.endAll(
+            id,
+            1,
+            (branch) => historyRewound({ branch, rev: 0, reason: "REBUILT", incarnation: e.incarnation }),
+            { incarnation: e.incarnation },
+          );
           hubs.publishEvent(id, e);
           break;
         case "lagged":
@@ -359,8 +364,8 @@ export function makeProjectRegistry(
             );
             // Before subscribing: an ending published from now on is seen, as its marker or
             // through the `seq` of any later item. One whose engine event lands after the
-            // backlog below already reads the new history ends this subscriber needlessly
-            // (it is told to re-read what it has): conservative, never silent.
+            // backlog below was read at its new generation is skipped (`check` gets that
+            // generation): the subscriber already reads the new history.
             const check = follower(channel, branch);
             // Subscribe before reading the backlog: a commit landing in between is then
             // both in the backlog and on the hub, and the rev filter below drops the copy.
@@ -390,7 +395,7 @@ export function makeProjectRegistry(
             }
             let last = fromRev;
             const emit = (item: Stamped<CommittedTx>): Effect.Effect<ReadonlyArray<CommittedTx>, FinError> => {
-              const ended = check(item, last);
+              const ended = check(item, last, read.generation);
               if (ended !== undefined) return Effect.fail(ended);
               const c = item.value;
               if (c === undefined || c.rev <= last) return Effect.succeed([]);
