@@ -8,6 +8,11 @@
 //! Every line, the trailer included, ends with `\n`. Snapshots ([`crate::snapfile`]) use the
 //! same frame, so the frame code here is shared.
 //!
+//! The version follows content (plan 4B Decision 4): a segment or pack whose records are all
+//! `edit` is written as format 1 (`minReaderVersion` 1, readable by 4A), one holding any 4B kind
+//! as format 2 ([`version_for`]). So a re-export is byte-identical, and a 4A follower keeps
+//! following until a 4B kind is used. Readers accept both.
+//!
 //! Decoding tells a file that has not fully arrived ([`SegError::Incomplete`]: retried on the
 //! next poll) from a damaged one ([`SegError::Corrupt`]). A truncated file is always
 //! `Incomplete`; any single damaged byte of a complete file is always `Corrupt`.
@@ -15,12 +20,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// The segment format written by this code.
-pub const FORMAT_VERSION: u32 = 1;
-/// The oldest reader that can read what this code writes.
-pub const MIN_READER_VERSION: u32 = 1;
-/// This code reads any file whose `minReaderVersion` is at most this.
-pub const READER_VERSION: u32 = 1;
+/// The segment format this code writes for a file holding any 4B record kind
+/// ([`version_for`]).
+pub const FORMAT_VERSION: u32 = 2;
+/// The oldest reader that can read such a file.
+pub const MIN_READER_VERSION: u32 = 2;
+/// This code reads any segment whose `minReaderVersion` is at most this (versions 1 and 2).
+pub const READER_VERSION: u32 = 2;
+/// The format of a file whose records are all `edit`: what sub-project 4A writes and reads.
+const EDIT_ONLY_VERSION: u32 = 1;
 /// A segment holds at most this many records…
 pub const MAX_RECORDS: usize = 1_000;
 /// …or this many bytes. One transaction is never split, so no record may be larger than
@@ -105,8 +113,33 @@ pub fn encode(header: &Header, records: &[&[u8]]) -> (Vec<u8>, String) {
     encode_frame(MAGIC, header, records)
 }
 
+/// `(formatVersion, minReaderVersion)` for a segment holding `records`: `(1, 1)` when every
+/// record's `kind` is `edit`, else `(2, 2)`. The kind is read from each record's bytes; bytes
+/// whose kind cannot be read count as needing format 2.
+pub fn version_for(records: &[&[u8]]) -> (u32, u32) {
+    #[derive(Deserialize)]
+    struct Kind {
+        kind: fin_core::RecordKind,
+    }
+    let edit_only = records
+        .iter()
+        .all(|r| serde_json::from_slice::<Kind>(r).is_ok_and(|k| k.kind.is_4a()));
+    if edit_only {
+        (EDIT_ONLY_VERSION, EDIT_ONLY_VERSION)
+    } else {
+        (FORMAT_VERSION, MIN_READER_VERSION)
+    }
+}
+
+/// Decodes and verifies a segment of any format this code reads.
 pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
-    let frame = decode_frame(bytes, MAGIC, FORMAT_VERSION)?;
+    decode_with_reader(bytes, READER_VERSION)
+}
+
+/// [`decode`] as a reader of `reader_version` would: a file whose `minReaderVersion` is above
+/// it is [`SegError::Newer`]. Shows what an older Finisher makes of a file.
+pub fn decode_with_reader(bytes: &[u8], reader_version: u32) -> Result<Segment, SegError> {
+    let frame = decode_frame(bytes, MAGIC, FORMAT_VERSION, reader_version)?;
     let header: Header = serde_json::from_value(Value::Object(frame.header))
         .map_err(|e| corrupt(format!("header: {e}")))?;
     check_nonempty("projectId", &header.project_id)?;
@@ -212,7 +245,9 @@ pub(crate) fn encode_frame(
 }
 
 /// Splits, verifies and version-checks a frame. `format_version` is the newest format this
-/// code writes: within it the hash is always BLAKE3, so another algorithm is damage.
+/// code writes for the file kind: within it the hash is always BLAKE3, so another algorithm is
+/// damage. `reader_version` is this code's reader version for the file kind (each file kind
+/// has its own): a higher `minReaderVersion` is [`SegError::Newer`].
 ///
 /// Order: completeness, trailer shape, CRC, header and `minReaderVersion`, then the hash. The
 /// CRC comes before the version check so a damaged version digit is `Corrupt`, not `Newer`.
@@ -220,6 +255,7 @@ pub(crate) fn decode_frame<'a>(
     bytes: &'a [u8],
     magic: &str,
     format_version: u32,
+    reader_version: u32,
 ) -> Result<Frame<'a>, SegError> {
     let Some((&end, _)) = bytes.split_last() else {
         return Err(SegError::Incomplete);
@@ -286,7 +322,7 @@ pub(crate) fn decode_frame<'a>(
     if min_reader > format {
         return Err(corrupt("minReaderVersion is above formatVersion"));
     }
-    if min_reader > READER_VERSION {
+    if min_reader > reader_version {
         return Err(SegError::Newer { min_reader });
     }
     if trailer.alg != HASH_ALG {

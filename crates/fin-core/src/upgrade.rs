@@ -23,8 +23,9 @@ const SNAPSHOT_STEPS: &[Step] = &[];
 
 /// A record value of any known schema version, upgraded to `SCHEMA_VERSION`. Upgrading also
 /// stamps `intent.schemaVersion`, which follows the record's. Above `SCHEMA_VERSION`, or an
-/// unknown string `kind`, is `NEWER_FORMAT`; an older version with no step is `SCHEMA_VERSION`; a value that is not a
-/// record is `INVALID_FORMAT`.
+/// unknown string `kind`, is `NEWER_FORMAT`; an older version with no step is `SCHEMA_VERSION`;
+/// a value that is not a record, or whose kind fields do not match its kind
+/// ([`Record::link`]), is `INVALID_FORMAT`.
 pub fn upcast_record(v: Value) -> Result<Record, CoreError> {
     let v = upcast(v, RECORD_STEPS, SCHEMA_VERSION, "record")?;
     // An unknown kind was written by a newer Finisher; a non-string kind is damage.
@@ -38,7 +39,10 @@ pub fn upcast_record(v: Value) -> Result<Record, CoreError> {
         .with_details(json!({ "kind": "record", "recordKind": name }))
         .with_fix("update Finisher to open this project"));
     }
-    decode_record(v)
+    let record = decode_record(v)?;
+    // The kind fields must match the kind (`INVALID_FORMAT`).
+    record.link()?;
+    Ok(record)
 }
 
 /// A snapshot (model state) value of any known schema version, upgraded to `SCHEMA_VERSION`.

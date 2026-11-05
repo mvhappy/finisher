@@ -84,6 +84,58 @@ export type Edge = "start" | "end";
  */
 export type TrackKind = "video" | "audio";
 /**
+ * A record's kind and what it points at (spec §4.2). Serialised (in `CommittedTx.link`) as
+ * `{"kind": "<kind>", …fields}`, camelCase, absent optional fields omitted.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Link".
+ */
+export type Link =
+  | {
+      kind: "edit";
+    }
+  | {
+      kind: "undo";
+      undoes: string[];
+    }
+  | {
+      kind: "redo";
+      redoes: string;
+    }
+  | {
+      from: string;
+      kind: "merge";
+      mergeId: string;
+      origin: string;
+    }
+  | {
+      from: string;
+      kind: "cherryPick";
+      origin: string;
+      originHash?: string | null;
+    }
+  | {
+      kind: "revert";
+      reverts: string;
+    }
+  | {
+      kind: "checkpoint";
+      name: string;
+    }
+  | {
+      branchId: string;
+      forkHash?: string | null;
+      forkSeq: number;
+      kind: "branch";
+      name: string;
+    }
+  | {
+      archived?: boolean | null;
+      branchId: string;
+      kind: "branchSet";
+      name?: string | null;
+    };
+/**
  * One engine event (`Engine.onEvent`), tagged by `type`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -254,6 +306,11 @@ export interface CommittedTx {
     [k: string]: string;
   };
   diff: Diff;
+  /**
+   * The record's kind and links; omitted for an `edit`. Boxed: most txs are edits, and a
+   * link would double the size of every `CommittedTx`.
+   */
+  link?: Link | null;
   rev: number;
   tx: Tx;
 }

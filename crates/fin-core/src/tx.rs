@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Project;
 pub use crate::ops::Op;
+use crate::record::Link;
 use crate::time::Rational;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -88,4 +89,8 @@ pub struct CommittedTx {
     pub tx: Tx,
     pub diff: Diff,
     pub bindings: BTreeMap<String, String>,
+    /// The record's kind and links; omitted for an `edit`. Boxed: most txs are edits, and a
+    /// link would double the size of every `CommittedTx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Box<Link>>,
 }

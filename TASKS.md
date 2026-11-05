@@ -162,6 +162,8 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md` (branch `sp4b-history`).
 
 - [x] Task 1: make room (split db, import, export, apply and status modules; pure refactor)
+- [x] Task 2: scrubbed 4A fixture (`crates/fin-store/tests/fixtures/4a`), generated from 4A code
+- [x] Task 3: record kinds with typed links, content-versioned segments (edit-only v1, any 4B kind v2), per-kind reader versions, DB migration 0002 (`branches`, `record_links`)
 
 ## Blocked on hardware or accounts
 

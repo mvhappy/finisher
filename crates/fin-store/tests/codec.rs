@@ -10,10 +10,11 @@ use fin_store::names::{self, SegmentName, SnapName};
 use fin_store::segment::{self, Header, SegError};
 use fin_store::snapfile::{self, SnapHeader};
 
+/// A format-1 header: what an edit-only segment carries (4B writes 2 only for its kinds).
 fn header() -> Header {
     Header {
-        format_version: segment::FORMAT_VERSION,
-        min_reader_version: segment::MIN_READER_VERSION,
+        format_version: 1,
+        min_reader_version: 1,
         project_id: "01jbz8k3x4y5z6a7b8c9d0e1f2".into(),
         branch: "main".into(),
         writer_id: "01JBZ8K3X4Y5Z6A7B8C9D0E1F3".into(),
@@ -124,17 +125,17 @@ fn truncated_is_incomplete_not_corrupt() {
 #[test]
 fn newer_min_reader_is_reported() {
     let mut h = header();
-    h.format_version = 2;
-    h.min_reader_version = 2;
+    h.format_version = 3;
+    h.min_reader_version = 3;
     let (bytes, _) = segment::encode(&h, &RECORDS);
     assert!(matches!(
         segment::decode(&bytes),
-        Err(SegError::Newer { min_reader: 2 })
+        Err(SegError::Newer { min_reader: 3 })
     ));
 
     // Readable by us although written by a newer format revision.
     let mut h = header();
-    h.format_version = 2;
+    h.format_version = 3;
     let (bytes, hash) = segment::encode(&h, &RECORDS);
     assert_eq!(segment::decode(&bytes).unwrap().hash, hash);
 }
@@ -143,13 +144,17 @@ fn newer_min_reader_is_reported() {
 fn unknown_hash_prefix_is_unsupported() {
     let other = format!("sha256:{}", "cd".repeat(32));
     let mut h = header();
-    h.format_version = 2;
+    h.format_version = 3;
     let bytes = with_trailer_hash(&segment::encode(&h, &RECORDS).0, &other);
     assert!(matches!(
         segment::decode(&bytes),
         Err(SegError::UnsupportedHash)
     ));
-    // Format 1 always uses BLAKE3, so another algorithm there is damage.
+    // Formats 1 and 2 always use BLAKE3, so another algorithm there is damage.
+    let mut h = header();
+    h.format_version = 2;
+    let bytes = with_trailer_hash(&segment::encode(&h, &RECORDS).0, &other);
+    assert!(matches!(segment::decode(&bytes), Err(SegError::Corrupt(_))));
     let bytes = with_trailer_hash(&small_segment(), &other);
     assert!(matches!(segment::decode(&bytes), Err(SegError::Corrupt(_))));
     // A wrong BLAKE3 digest with a good CRC is damage too.

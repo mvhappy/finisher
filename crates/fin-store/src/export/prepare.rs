@@ -49,9 +49,12 @@ pub(super) fn prepare(
             ));
         }
         let created_at = chunk.iter().map(|r| r.committed_at).max().unwrap_or(0) + salt;
+        let lines: Vec<&[u8]> = chunk.iter().map(|r| r.bytes.as_slice()).collect();
+        // From content, so a re-export is byte-identical (an edit-only segment stays v1).
+        let (format_version, min_reader_version) = segment::version_for(&lines);
         let header = Header {
-            format_version: segment::FORMAT_VERSION,
-            min_reader_version: segment::MIN_READER_VERSION,
+            format_version,
+            min_reader_version,
             project_id: store.project_id.clone(),
             branch: branch.to_string(),
             writer_id: store.server_id.clone(),
@@ -68,7 +71,6 @@ pub(super) fn prepare(
             pack: false,
             replaces: Vec::new(),
         };
-        let lines: Vec<&[u8]> = chunk.iter().map(|r| r.bytes.as_slice()).collect();
         let (bytes, hash) = segment::encode(&header, &lines);
         if bytes.len() > segment::MAX_BYTES {
             if n > 1 {

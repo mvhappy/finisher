@@ -193,9 +193,11 @@ fn encode(
         .collect();
     replaces.sort();
     let lines: Vec<&[u8]> = primaries.iter().flat_map(|s| s.records()).collect();
+    // The highest its records need: v1 while they are all edits.
+    let (format_version, min_reader_version) = segment::version_for(&lines);
     let header = Header {
-        format_version: segment::FORMAT_VERSION,
-        min_reader_version: segment::MIN_READER_VERSION,
+        format_version,
+        min_reader_version,
         project_id: store.project_id.clone(),
         branch: branch.to_string(),
         writer_id: store.server_id.clone(),

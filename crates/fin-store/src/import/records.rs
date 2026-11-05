@@ -177,6 +177,7 @@ pub(super) fn one(
     ctx.added(&meta.tx_id, &meta.tx_hash);
     let tx = CommittedTx {
         rev: meta.seq,
+        link: db::committed_link(&record).map_err(StoreError::from)?,
         tx: record.intent,
         diff: applied.diff,
         bindings: record.bindings,

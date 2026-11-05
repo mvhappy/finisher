@@ -356,7 +356,7 @@ None open. The fork-resolution question was answered: manual move-out plus `--im
   ```
   It then runs `INSERT INTO branches VALUES ('main','main',NULL,0,NULL,NULL,'',0,0,0)` and `UPDATE meta SET value = '2' WHERE key IN ('formatVersion','minReaderVersion')`. Literals only.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `edit_record_bytes_unchanged_from_4a`: each record line of the fixture's segments re-encodes byte-equal.
   - `every_kind_roundtrips_byte_stable`, `kind_names_are_camel_case`.
   - `link_fields_must_match_kind`: a table of bad shapes, each `INVALID_FORMAT`.
@@ -370,10 +370,10 @@ None open. The fork-resolution question was answered: manual move-out plus `--im
   - `sp2_fixture_migrates_through_0002`.
   - `fresh_and_migrated_schemas_match` and the m0001 pins: unchanged expectations.
   - `v1_segment_written_before_upgrade_is_adopted`: in a fixture copy, set `exported = 0` on the last segment's rows; open and tick. The v1 file is adopted, with no new file.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core -p fin-store`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `kind_text` yields the camelCase name.
-- [ ] **Step 4: Run** the three gates, after regenerating types (`Link`, `CommittedTx.link`). Expected: PASS.
-- [ ] **Step 5: Commit** `feat(format): record kinds, content-versioned segments, DB migration 0002`.
+- [x] **Step 2: Run** `rtk cargo test -p fin-core -p fin-store`. Expected: FAIL.
+- [x] **Step 3: Implement.** `kind_text` yields the camelCase name.
+- [x] **Step 4: Run** the three gates, after regenerating types (`Link`, `CommittedTx.link`). Expected: PASS.
+- [x] **Step 5: Commit** `feat(format): record kinds, content-versioned segments, DB migration 0002`.
 
 ### Task 4: Shift maps and mirrored mappings (fin-core) — tier: opus
 

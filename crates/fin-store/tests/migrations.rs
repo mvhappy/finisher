@@ -149,8 +149,9 @@ fn sp2_fixture_migrates_to_identical_state() {
     assert_eq!(pragma(&conn, "user_version"), i64::from(DB_VERSION));
     assert_eq!(pragma(&conn, "application_id"), i64::from(APPLICATION_ID));
     assert!(!columns(&conn, "txs").contains(&"json".to_string()));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("1"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("1"));
+    // Migration 0002 runs after 0001.
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("2"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("2"));
     assert!(
         meta(&conn, "lastOpenedBy")
             .unwrap()
@@ -291,8 +292,8 @@ fn fresh_and_migrated_schemas_match() {
     for table in ["segments", "lease_state", "quarantine"] {
         assert!(!columns(&a, table).is_empty(), "{table}");
     }
-    assert_eq!(meta(&a, "formatVersion").as_deref(), Some("1"));
-    assert_eq!(meta(&a, "minReaderVersion").as_deref(), Some("1"));
+    assert_eq!(meta(&a, "formatVersion").as_deref(), Some("2"));
+    assert_eq!(meta(&a, "minReaderVersion").as_deref(), Some("2"));
     let created_by = meta(&a, "createdBy").unwrap();
     assert_eq!(
         created_by,
@@ -308,7 +309,7 @@ fn migration_backs_up_first() {
     drop(sp2.open().unwrap());
     let names = backup_names(&sp2.backups());
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-1-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-2-"), "{names:?}");
     assert!(names[0].ends_with(".fdb"), "{names:?}");
     // The backup is the database as it was before the first step.
     let conn = read_only(&sp2.backups().join(&names[0]));
@@ -625,19 +626,19 @@ fn migration_0001_matches_encode_record() {
             let intent: Tx = serde_json::from_str(&json).unwrap();
             let bindings: std::collections::BTreeMap<String, String> =
                 serde_json::from_str(&bindings).unwrap();
-            let record = Record {
-                tx_id: intent.tx_id.clone(),
-                seq: rev as u64,
-                kind: RecordKind::Edit,
-                schema_version: intent.schema_version,
-                parent_hash: parent.clone(),
-                author: intent.author.clone(),
+            let resolved = resolve_ops(&intent.ops, &bindings).unwrap();
+            let record = Record::new_edit(
+                intent.tx_id.clone(),
+                rev as u64,
+                intent.schema_version,
+                parent.clone(),
+                intent.author.clone(),
                 committed_at,
-                resolved: resolve_ops(&intent.ops, &bindings).unwrap(),
                 intent,
-                inverse: serde_json::from_str(&inverse).unwrap(),
+                resolved,
+                serde_json::from_str(&inverse).unwrap(),
                 bindings,
-            };
+            );
             let bytes = fin_core::encode_record(&record);
             parent = Some(hash(&bytes));
             bytes

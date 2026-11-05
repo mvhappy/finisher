@@ -9,6 +9,7 @@ use fin_store::{EngineEvent, Generation, TxSetAside};
 
 fn main() {
     let schema = fin_core::json_schema_with(|g| {
+        g.subschema_for::<fin_core::Link>();
         g.subschema_for::<Generation>();
         g.subschema_for::<EngineEvent>();
         g.subschema_for::<TxSetAside>();

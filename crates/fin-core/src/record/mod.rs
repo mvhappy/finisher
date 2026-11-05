@@ -1,0 +1,217 @@
+//! Commit records: one committed transaction as stored and exported (sub-project 4 spec §3.3,
+//! §3.4, §4.2). A record is serialised once at commit; those exact bytes are hashed, stored and
+//! exported, and never re-encoded.
+//!
+//! A record's kind and its kind fields (4B, [`Link`]) are flat, optional fields right after
+//! `kind`, each omitted when absent, so an `edit` record is byte-identical to what 4A wrote.
+
+mod link;
+
+use std::collections::BTreeMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::error::CoreError;
+use crate::ops::Op;
+use crate::tx::Tx;
+
+pub use link::Link;
+
+/// Version of the record line format written by this code (4B: record kinds).
+pub const RECORD_FORMAT: u32 = 2;
+/// The oldest reader that can read every record this code writes. Files holding only `edit`
+/// records stay readable by version 1 (`fin_store::segment::version_for`).
+pub const MIN_READER: u32 = 2;
+
+/// What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum RecordKind {
+    Edit,
+    Undo,
+    Redo,
+    Merge,
+    CherryPick,
+    Revert,
+    Checkpoint,
+    Branch,
+    BranchSet,
+}
+
+impl RecordKind {
+    /// A change its author made on the branch: `edit`, `undo`, `redo`, `cherryPick`, `revert`.
+    /// A `merge` copy belongs to its merge group instead.
+    pub fn is_content(self) -> bool {
+        matches!(
+            self,
+            RecordKind::Edit
+                | RecordKind::Undo
+                | RecordKind::Redo
+                | RecordKind::CherryPick
+                | RecordKind::Revert
+        )
+    }
+
+    /// Whether the record carries ops: not `checkpoint`, `branch` or `branchSet`.
+    pub fn has_ops(self) -> bool {
+        !matches!(
+            self,
+            RecordKind::Checkpoint | RecordKind::Branch | RecordKind::BranchSet
+        )
+    }
+
+    /// Whether a sub-project 4A reader knows the kind: only `edit`.
+    pub fn is_4a(self) -> bool {
+        self == RecordKind::Edit
+    }
+}
+
+/// One committed transaction. Fields serialise in declaration order.
+///
+/// - `intent`: the `Tx` as applied (after any rebase), still holding `$placeholders`.
+/// - `resolved`: `intent.ops` with `bindings` substituted ([`resolve_ops`]).
+/// - `inverse`: the ops that undo it, with bound ids.
+/// - `parent_hash`: the previous record's hash on the branch, `None` for the first.
+/// - `undoes` … `archived`: the kind's fields, read as a [`Link`] ([`Record::link`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Record {
+    pub tx_id: String,
+    pub seq: u64,
+    pub kind: RecordKind,
+    /// `undo`: the units it undoes, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undoes: Option<Vec<String>>,
+    /// `redo`: the `undo` record it reverses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redoes: Option<String>,
+    /// `merge`: the merge group (the caller's txId).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_id: Option<String>,
+    /// `merge`, `cherryPick`: the source branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// `merge`, `cherryPick`: the txId of the copied record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// `cherryPick`: the copied record's txHash, when known (recovered records).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_hash: Option<String>,
+    /// `revert`: the merge group it reverts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverts: Option<String>,
+    /// `checkpoint`, `branch`, `branchSet`: a checkpoint or branch name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `branch`, `branchSet`: the branch id (`br<n>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// `branch`: the parent's seq the branch forks at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_seq: Option<u64>,
+    /// `branch`: the parent's txHash at `forkSeq`; absent when `forkSeq` is 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_hash: Option<String>,
+    /// `branchSet`: archive (`true`) or restore (`false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
+    pub schema_version: u32,
+    pub parent_hash: Option<String>,
+    pub author: String,
+    pub committed_at: i64,
+    pub intent: Tx,
+    pub resolved: Vec<Op>,
+    pub inverse: Vec<Op>,
+    pub bindings: BTreeMap<String, String>,
+}
+
+impl Record {
+    /// An `edit` record (no kind fields). [`Record::set_link`] makes it another kind.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_edit(
+        tx_id: String,
+        seq: u64,
+        schema_version: u32,
+        parent_hash: Option<String>,
+        author: String,
+        committed_at: i64,
+        intent: Tx,
+        resolved: Vec<Op>,
+        inverse: Vec<Op>,
+        bindings: BTreeMap<String, String>,
+    ) -> Record {
+        Record {
+            tx_id,
+            seq,
+            kind: RecordKind::Edit,
+            undoes: None,
+            redoes: None,
+            merge_id: None,
+            from: None,
+            origin: None,
+            origin_hash: None,
+            reverts: None,
+            name: None,
+            branch_id: None,
+            fork_seq: None,
+            fork_hash: None,
+            archived: None,
+            schema_version,
+            parent_hash,
+            author,
+            committed_at,
+            intent,
+            resolved,
+            inverse,
+            bindings,
+        }
+    }
+}
+
+/// The record's bytes: compact JSON, no trailing newline. These are the bytes that are hashed.
+pub fn encode_record(r: &Record) -> Vec<u8> {
+    serde_json::to_vec(r)
+        .expect("a Record holds only structs, strings, numbers and string-keyed maps, which always serialise")
+}
+
+/// `ops` with every `$placeholder` reference replaced by its binding. A placeholder without a
+/// binding is `UNBOUND_PLACEHOLDER` (`details {placeholder, opIndex}`).
+pub fn resolve_ops(ops: &[Op], bindings: &BTreeMap<String, String>) -> Result<Vec<Op>, CoreError> {
+    ops.iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let mut op = op.clone();
+            for r in op.refs_mut() {
+                if !r.starts_with('$') {
+                    continue;
+                }
+                let Some(id) = bindings.get(r.as_str()) else {
+                    return Err(CoreError::new(
+                        "UNBOUND_PLACEHOLDER",
+                        format!("placeholder {r} has no recorded binding"),
+                    )
+                    .with_details(json!({ "placeholder": r, "opIndex": i })));
+                };
+                *r = id.clone();
+            }
+            Ok(op)
+        })
+        .collect()
+}
+
+/// `INVALID_FORMAT`: stored data that does not have the shape its version promises.
+pub(crate) fn invalid_format(what: &str, why: impl std::fmt::Display) -> CoreError {
+    CoreError::new(
+        "INVALID_FORMAT",
+        format!("the {what} does not decode: {why}"),
+    )
+    .with_details(json!({ "kind": what, "reason": why.to_string() }))
+}
+
+/// Decodes an already upcast record value.
+pub(crate) fn decode_record(v: Value) -> Result<Record, CoreError> {
+    serde_json::from_value(v).map_err(|e| invalid_format("record", e))
+}

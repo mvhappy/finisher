@@ -46,7 +46,7 @@ pub(super) fn read(project_dir: &Path, project_id: &str, genesis_hash: &str) -> 
                 || h.project_id != project_id
                 || h.seq != name.seq()
                 || hash12(&snap.hash) != Some(name.hash12())
-                || h.min_reader_version > snapfile::FORMAT_VERSION
+                || h.min_reader_version > snapfile::READER_VERSION
                 || h.genesis_hash != genesis_hash
             {
                 continue;

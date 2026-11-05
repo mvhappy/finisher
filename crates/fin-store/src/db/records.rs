@@ -3,37 +3,123 @@
 use std::collections::BTreeMap;
 
 use fin_core::{
-    Applied, CommittedTx, CoreError, Diff, Op, Project, Record, RecordKind, Tx, apply_committed,
-    encode_record, resolve_ops, upcast_record,
+    Applied, CommittedTx, CoreError, Diff, Link, Op, Project, Record, RecordKind, Tx,
+    apply_committed, encode_record, resolve_ops, upcast_record,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{hash_bytes, to_i64, to_u64};
 use crate::StoreError;
 
-/// The record a commit of `intent` at `seq` stores (spec §3.3). Migration 0001 builds the
-/// records of sub-project 2 history with this too, so both are the same for the same tx.
+/// The record a commit of `intent` at `seq` stores (spec §3.3), of kind `link`. For an edit
+/// these are the bytes migration 0001 wrote for sub-project 2 history
+/// (`migration_0001_matches_encode_record`).
 pub(crate) fn new_record(
     seq: u64,
+    link: Link,
     intent: Tx,
     inverse: Vec<Op>,
     bindings: BTreeMap<String, String>,
     parent_hash: Option<String>,
     committed_at: i64,
 ) -> Result<Record, StoreError> {
-    Ok(Record {
-        tx_id: intent.tx_id.clone(),
+    let resolved = resolve_ops(&intent.ops, &bindings)?;
+    let mut record = Record::new_edit(
+        intent.tx_id.clone(),
         seq,
-        kind: RecordKind::Edit,
-        schema_version: intent.schema_version,
+        intent.schema_version,
         parent_hash,
-        author: intent.author.clone(),
+        intent.author.clone(),
         committed_at,
-        resolved: resolve_ops(&intent.ops, &bindings)?,
         intent,
+        resolved,
         inverse,
         bindings,
-    })
+    );
+    record.set_link(link);
+    Ok(record)
+}
+
+/// `record`'s link for its [`CommittedTx`]: `None` for an edit.
+pub(crate) fn committed_link(record: &Record) -> Result<Option<Box<Link>>, CoreError> {
+    if record.kind == RecordKind::Edit {
+        return Ok(None);
+    }
+    record.link().map(|l| Some(Box::new(l)))
+}
+
+/// The `record_links` row of a non-`edit` record (none for an edit).
+///
+/// - `origin`, `origin_hash`, `from_branch`, `merge_id`: as in the record (`merge`,
+///   `cherryPick`);
+/// - `targets`: a JSON array of what the record acts on: the units of an `undo`, the `undo` of a
+///   `redo`, the merge group of a `revert`, the branch of a `branch` or `branchSet`;
+/// - `name`: of a `checkpoint`, `branch` or `branchSet`.
+fn insert_link(conn: &Connection, branch: &str, record: &Record) -> Result<(), StoreError> {
+    let Some(link) = committed_link(record)? else {
+        return Ok(());
+    };
+    let link = *link;
+    let (mut origin, mut origin_hash, mut from, mut merge_id, mut name) =
+        (None, None, None, None, None);
+    let targets: Option<Vec<String>> = match link {
+        Link::Edit => None,
+        Link::Undo { undoes } => Some(undoes),
+        Link::Redo { redoes } => Some(vec![redoes]),
+        Link::Merge {
+            merge_id: m,
+            from: f,
+            origin: o,
+        } => {
+            (merge_id, from, origin) = (Some(m), Some(f), Some(o));
+            None
+        }
+        Link::CherryPick {
+            origin: o,
+            from: f,
+            origin_hash: h,
+        } => {
+            (origin, from, origin_hash) = (Some(o), Some(f), h);
+            None
+        }
+        Link::Revert { reverts } => Some(vec![reverts]),
+        Link::Checkpoint { name: n } => {
+            name = Some(n);
+            None
+        }
+        Link::Branch {
+            branch_id, name: n, ..
+        } => {
+            name = Some(n);
+            Some(vec![branch_id])
+        }
+        Link::BranchSet {
+            branch_id, name: n, ..
+        } => {
+            name = n;
+            Some(vec![branch_id])
+        }
+    };
+    let targets = targets.map(|t| serde_json::to_string(&t)).transpose()?;
+    conn.execute(
+        "INSERT INTO record_links (tx_id, branch, seq, kind, author, origin, origin_hash,
+                                   from_branch, merge_id, targets, name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            record.tx_id,
+            branch,
+            to_i64(record.seq)?,
+            kind_text(record.kind)?,
+            record.author,
+            origin,
+            origin_hash,
+            from,
+            merge_id,
+            targets,
+            name,
+        ],
+    )?;
+    Ok(())
 }
 
 /// Appends `record` (committed at `epoch`, not exported) on `branch`. The stored bytes are the record's
@@ -86,6 +172,7 @@ pub(crate) fn insert_tx(
             to_i64(epoch)?,
         ],
     )?;
+    insert_link(conn, branch, record)?;
     Ok(tx_hash)
 }
 
@@ -127,6 +214,7 @@ pub(crate) fn insert_imported(
             record.committed_at,
         ],
     )?;
+    insert_link(conn, branch, record)?;
     Ok(())
 }
 
@@ -156,8 +244,8 @@ pub(crate) fn record_rows(
     .collect()
 }
 
-/// The `kind` column: the record's serialised kind (`"edit"` → `edit`).
-fn kind_text(kind: RecordKind) -> Result<String, StoreError> {
+/// The `kind` column: the record's serialised, camelCase kind (`edit`, `cherryPick`).
+pub(crate) fn kind_text(kind: RecordKind) -> Result<String, StoreError> {
     match serde_json::to_value(kind)? {
         serde_json::Value::String(s) => Ok(s),
         other => {
@@ -198,6 +286,7 @@ fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, Sto
     let record = parse_record(Some(seq), &bytes)?;
     Ok(CommittedTx {
         rev: seq,
+        link: committed_link(&record)?,
         tx: record.intent,
         diff: serde_json::from_str(&diff)?,
         bindings: record.bindings,

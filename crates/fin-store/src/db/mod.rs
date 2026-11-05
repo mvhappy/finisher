@@ -6,7 +6,8 @@
 //! full project at rev 0 and every [`SNAPSHOT_EVERY`] revs so opening replays at most that many
 //! txs; `ids` is the project-global id counter table, updated in the same SQLite transaction as
 //! the `txs` insert so a failed commit never consumes ids. `segments`, `lease_state` and
-//! `quarantine` belong to the project-folder export (sub-project 4A).
+//! `quarantine` belong to the project-folder export (sub-project 4A). `branches` and
+//! `record_links` are 4B's derived history tables, rebuildable from `txs`.
 
 use std::path::Path;
 
@@ -76,7 +77,24 @@ CREATE TABLE IF NOT EXISTS quarantine (
     seen_at INTEGER NOT NULL,
     current INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS branches (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, fork_seq INTEGER NOT NULL,
+    fork_hash TEXT, created_seq INTEGER, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
+    archived INTEGER NOT NULL, merged INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS record_links (
+    tx_id TEXT PRIMARY KEY, branch TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
+    author TEXT NOT NULL, origin TEXT, origin_hash TEXT, from_branch TEXT, merge_id TEXT,
+    targets TEXT, name TEXT, UNIQUE (branch, seq)
+);
+CREATE INDEX IF NOT EXISTS record_links_origin ON record_links (origin) WHERE origin IS NOT NULL;
+CREATE INDEX IF NOT EXISTS record_links_origin_hash ON record_links (origin_hash) WHERE origin_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS record_links_merge ON record_links (merge_id) WHERE merge_id IS NOT NULL;
 ";
+
+/// The `main` row of `branches`, as migration 0002 writes it.
+const MAIN_BRANCH_ROW: &str =
+    "INSERT INTO branches VALUES ('main','main',NULL,0,NULL,NULL,'',0,0,0)";
 
 /// Opens (`create`: creates) the database and sets WAL, `synchronous=FULL` and foreign keys.
 pub(crate) fn connect(path: &Path, create: bool) -> Result<Connection, StoreError> {
@@ -112,7 +130,8 @@ pub(crate) fn connect(path: &Path, create: bool) -> Result<Connection, StoreErro
 }
 
 /// Creates the tables at [`DB_VERSION`] (header `application_id` and `user_version`, the
-/// version `meta` keys) and stores the rev-0 state of `project` on `branch`.
+/// version `meta` keys, the `main` row of `branches`) and stores the rev-0 state of `project`
+/// on `branch`.
 pub(crate) fn init(
     conn: &mut Connection,
     project: &Project,
@@ -120,6 +139,7 @@ pub(crate) fn init(
 ) -> Result<(), StoreError> {
     let txn = conn.transaction()?;
     txn.execute_batch(SCHEMA)?;
+    txn.execute(MAIN_BRANCH_ROW, [])?;
     txn.pragma_update(None, "application_id", APPLICATION_ID)?;
     txn.pragma_update(None, "user_version", DB_VERSION)?;
     let version = DB_VERSION.to_string();

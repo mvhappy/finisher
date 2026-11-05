@@ -12,6 +12,9 @@ use crate::segment::{self, SegError, check_hash, check_nonempty, corrupt};
 pub const FORMAT_VERSION: u32 = 1;
 /// The oldest reader that can read what this code writes.
 pub const MIN_READER_VERSION: u32 = 1;
+/// This code reads any snapshot whose `minReaderVersion` is at most this. Snapshots have their
+/// own version, independent of [`segment::READER_VERSION`].
+pub const READER_VERSION: u32 = 1;
 
 const MAGIC: &str = "finisher-snapshot";
 
@@ -51,7 +54,7 @@ pub fn encode(header: &SnapHeader, project: &Project) -> (Vec<u8>, String) {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Snapshot, SegError> {
-    let frame = segment::decode_frame(bytes, MAGIC, FORMAT_VERSION)?;
+    let frame = segment::decode_frame(bytes, MAGIC, FORMAT_VERSION, READER_VERSION)?;
     let header: SnapHeader = serde_json::from_value(Value::Object(frame.header))
         .map_err(|e| corrupt(format!("header: {e}")))?;
     check_nonempty("projectId", &header.project_id)?;

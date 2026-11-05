@@ -29,6 +29,7 @@ fn commit_with(
             tx: t,
             diff: a.diff,
             bindings: a.bindings,
+            link: None,
         },
     )
 }

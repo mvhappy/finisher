@@ -2,6 +2,8 @@
 //!
 //! - The header carries `application_id` = [`APPLICATION_ID`] and `user_version` = the schema
 //!   version; `meta` carries `formatVersion` and `minReaderVersion`.
+//! - Version 1 is sub-project 4A ([`m0001_records`]); version 2 adds 4B's derived history
+//!   tables ([`m0002_history`]).
 //! - The sub-project 2 layout predates both: `application_id` 0, `user_version` 0, a `meta`
 //!   table and a `txs.json` column. It is version 0.
 //! - [`check`] reads all of this through a read-only connection, so a database this code
@@ -11,6 +13,7 @@
 //!   A failed step rolls back whole; earlier steps stay committed.
 
 mod m0001_records;
+mod m0002_history;
 
 use std::path::{Path, PathBuf};
 
@@ -25,9 +28,9 @@ use crate::{StoreError, backup};
 /// `PRAGMA application_id` of a Finisher project database: "FIN1".
 pub const APPLICATION_ID: i32 = 0x4649_4E31;
 /// The database schema version this code writes (`PRAGMA user_version`).
-pub const DB_VERSION: u32 = 1;
+pub const DB_VERSION: u32 = 2;
 /// The oldest code (by `DB_VERSION`) that can read what this code writes.
-pub(crate) const MIN_READER_VERSION: u32 = 1;
+pub(crate) const MIN_READER_VERSION: u32 = 2;
 
 /// One migration: the database at `from` → `from + 1`. `run` must not touch `user_version`.
 struct Step {
@@ -35,10 +38,16 @@ struct Step {
     run: fn(&Transaction<'_>) -> Result<(), StoreError>,
 }
 
-const STEPS: &[Step] = &[Step {
-    from: 0,
-    run: m0001_records::run,
-}];
+const STEPS: &[Step] = &[
+    Step {
+        from: 0,
+        run: m0001_records::run,
+    },
+    Step {
+        from: 1,
+        run: m0002_history::run,
+    },
+];
 
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {

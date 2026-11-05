@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fin_core::{
-    CoreError, MemIds, Op, Rational, Record, RecordKind, SCHEMA_VERSION, Tx, VideoInfo, apply_tx,
+    CoreError, MemIds, Op, Rational, Record, SCHEMA_VERSION, Tx, VideoInfo, apply_tx,
     encode_record, resolve_ops,
 };
 use fin_store::chain::ForkReason;
@@ -315,19 +315,19 @@ fn half_frame_record(a: &Store, seq: u64, parent: &str) -> Vec<u8> {
         "INVALID_RANGE",
         "the edit path refuses it"
     );
-    let record = Record {
-        tx_id: "policy".into(),
+    let resolved = resolve_ops(&ops, &bindings).unwrap();
+    let record = Record::new_edit(
+        "policy".into(),
         seq,
-        kind: RecordKind::Edit,
-        schema_version: SCHEMA_VERSION,
-        parent_hash: Some(parent.into()),
-        author: "test".into(),
-        committed_at: 1,
-        resolved: resolve_ops(&ops, &bindings).unwrap(),
+        SCHEMA_VERSION,
+        Some(parent.into()),
+        "test".into(),
+        1,
         intent,
-        inverse: vec![],
+        resolved,
+        vec![],
         bindings,
-    };
+    );
     let bytes = String::from_utf8(encode_record(&record)).unwrap();
     let odd = bytes.replacen(&format!("\"seq\":{seq}"), &format!("\"seq\": {seq}"), 1);
     assert_ne!(odd, bytes);
@@ -468,8 +468,9 @@ fn newer_segment_makes_read_only_newer_format() {
     export(&mut a);
     let prev = segments(&e.dir)[0].1.hash.clone();
     let mut h = header(&a, 0, 2, 2, Some(prev.clone()));
-    h.format_version = 2;
-    h.min_reader_version = 2;
+    // 4B reads formats 1 and 2: 3 is newer.
+    h.format_version = 3;
+    h.min_reader_version = 3;
     let path = {
         let (bytes, hash) = segment::encode(&h, &[b"{\"future\":true}".as_slice()]);
         let name = SegmentName::new(0, 2, 2, hash12(&hash).unwrap()).unwrap();
@@ -905,19 +906,18 @@ fn an_import_that_replaces_a_tail_invalidates_another_store_on_the_db() {
 fn raw_record(s: &Store, tx_id: &str, seq: u64, parent: &str, ops: Vec<Op>) -> Vec<u8> {
     let mut intent = tx(s, tx_id, ops.clone());
     intent.base_rev = seq - 1;
-    encode_record(&Record {
-        tx_id: tx_id.into(),
+    encode_record(&Record::new_edit(
+        tx_id.into(),
         seq,
-        kind: RecordKind::Edit,
-        schema_version: SCHEMA_VERSION,
-        parent_hash: Some(parent.into()),
-        author: "test".into(),
-        committed_at: 1,
-        resolved: ops,
+        SCHEMA_VERSION,
+        Some(parent.into()),
+        "test".into(),
+        1,
         intent,
-        inverse: vec![],
-        bindings: BTreeMap::new(),
-    })
+        ops,
+        vec![],
+        BTreeMap::new(),
+    ))
 }
 
 #[test]

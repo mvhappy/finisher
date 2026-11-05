@@ -128,6 +128,7 @@ impl Store {
         }
         let record = db::new_record(
             rev,
+            fin_core::Link::Edit,
             tx.clone(),
             applied.inverse.clone(),
             applied.bindings.clone(),
@@ -162,6 +163,7 @@ impl Store {
             tx,
             diff: applied.diff,
             bindings: applied.bindings,
+            link: None,
         })
     }
 }

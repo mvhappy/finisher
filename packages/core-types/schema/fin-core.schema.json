@@ -160,6 +160,17 @@
         "diff": {
           "$ref": "#/$defs/Diff"
         },
+        "link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Link"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The record's kind and links; omitted for an `edit`. Boxed: most txs are edits, and a\nlink would double the size of every `CommittedTx`."
+        },
         "rev": {
           "format": "uint64",
           "minimum": 0,
@@ -399,6 +410,207 @@
         "n"
       ],
       "type": "object"
+    },
+    "Link": {
+      "description": "A record's kind and what it points at (spec §4.2). Serialised (in `CommittedTx.link`) as\n`{\"kind\": \"<kind>\", …fields}`, camelCase, absent optional fields omitted.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "edit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Undoes `undoes` (unit txIds, newest first).",
+          "properties": {
+            "kind": {
+              "const": "undo",
+              "type": "string"
+            },
+            "undoes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "undoes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Reverses the `undo` record `redoes`.",
+          "properties": {
+            "kind": {
+              "const": "redo",
+              "type": "string"
+            },
+            "redoes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "redoes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A copy of `origin` from branch `from`, in merge group `merge_id`.",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "merge",
+              "type": "string"
+            },
+            "mergeId": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "mergeId",
+            "from",
+            "origin"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A copy of `origin` from branch `from`; `origin_hash` names the exact record when known.",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "cherryPick",
+              "type": "string"
+            },
+            "origin": {
+              "type": "string"
+            },
+            "originHash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "origin",
+            "from"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Reverts the merge group `reverts`.",
+          "properties": {
+            "kind": {
+              "const": "revert",
+              "type": "string"
+            },
+            "reverts": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reverts"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "checkpoint",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0).",
+          "properties": {
+            "branchId": {
+              "type": "string"
+            },
+            "forkHash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "forkSeq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "branch",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "branchId",
+            "name",
+            "forkSeq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Renames, archives or restores branch `branch_id`.",
+          "properties": {
+            "archived": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "branchId": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "branchSet",
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "branchId"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Op": {
       "description": "A primitive edit operation, tagged by `op`.",
