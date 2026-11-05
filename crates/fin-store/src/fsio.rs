@@ -16,7 +16,13 @@ use std::time::Duration;
 
 use crate::names;
 
+mod placeholder;
 mod transient;
+
+pub(crate) use placeholder::hydrating;
+pub use placeholder::is_placeholder;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use placeholder::time_out_next_reads_for_test;
 
 /// [`write_in_place`] (and the Windows rename) retry a transient failure this many times…
 pub const RETRIES: u32 = 60;
@@ -184,41 +190,6 @@ fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
             }
             result => return result,
         }
-    }
-}
-
-/// Whether the file is a cloud-sync placeholder whose data has not been downloaded. Pass the
-/// metadata from `DirEntry::metadata()`: on Windows that comes from the directory listing,
-/// while `fs::metadata` opens the file, which can trigger the download.
-///
-/// - Windows: `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`, `RECALL_ON_OPEN` or `OFFLINE`.
-/// - macOS: the `SF_DATALESS` flag (the legacy `.<name>.icloud` stubs are matched by name in
-///   the scan).
-/// - Elsewhere: never.
-pub fn is_placeholder(_path: &Path, meta: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
-            FILE_ATTRIBUTE_RECALL_ON_OPEN,
-        };
-        let mask = FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
-            | FILE_ATTRIBUTE_RECALL_ON_OPEN
-            | FILE_ATTRIBUTE_OFFLINE;
-        meta.file_attributes() & mask != 0
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::macos::fs::MetadataExt;
-        /// `<sys/stat.h>`: the file's data is not local.
-        const SF_DATALESS: u32 = 0x4000_0000;
-        meta.st_flags() & SF_DATALESS != 0
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        let _ = meta;
-        false
     }
 }
 
@@ -419,7 +390,13 @@ fn note_fallback() {
 const ALIGN: usize = 4096;
 
 /// Reads the whole file bypassing the OS cache, so a change made on another host is seen as
-/// soon as the server has it.
+/// soon as the server has it. A placeholder's first read that times out is retried
+/// ([`hydrating`]).
+pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
+    hydrating(path, || read_uncached_os(path))
+}
+
+/// [`read_uncached`] without the placeholder retry:
 ///
 /// - macOS: `F_NOCACHE`.
 /// - Linux: `O_DIRECT` with an aligned buffer. Filesystems that refuse it (tmpfs, some network
@@ -429,7 +406,7 @@ const ALIGN: usize = 4096;
 ///   falls back to a buffered read.
 /// - Elsewhere: a plain read.
 #[cfg(target_os = "macos")]
-pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
+fn read_uncached_os(path: &Path) -> io::Result<Vec<u8>> {
     use std::os::fd::AsRawFd;
     let mut file = File::open(path)?;
     // SAFETY: `file` owns the descriptor for the whole call; F_NOCACHE takes an int.
@@ -442,7 +419,7 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
+fn read_uncached_os(path: &Path) -> io::Result<Vec<u8>> {
     use std::os::unix::fs::OpenOptionsExt;
     let refused = |e: &io::Error| matches!(e.raw_os_error(), Some(libc::EINVAL | libc::EOPNOTSUPP));
     let direct = OpenOptions::new()
@@ -471,7 +448,7 @@ fn read_dropping_cache(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(windows)]
-pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
+fn read_uncached_os(path: &Path) -> io::Result<Vec<u8>> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -507,7 +484,7 @@ pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
     target_os = "android",
     windows
 )))]
-pub fn read_uncached(path: &Path) -> io::Result<Vec<u8>> {
+fn read_uncached_os(path: &Path) -> io::Result<Vec<u8>> {
     fs::read(path)
 }
 
