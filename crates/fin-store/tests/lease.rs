@@ -7,6 +7,7 @@
 //! pass without waiting.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
@@ -14,7 +15,11 @@ use std::time::{Duration, Instant};
 use fin_core::{Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
 use fin_store::lease::claim::{self, claim_name};
 use fin_store::lease::record::{self, LeaseRecord, RECORD_SIZE};
-use fin_store::lease::{Contender, FakeClock, Lease, LeaseState, Params};
+use fin_store::lease::{
+    Contender, FakeClock, Lease, LeaseState, Params, ReadFault,
+    crash_before_publishing_record_for_test, deny_claim_creates_for_test,
+    fault_record_reads_for_test, no_hard_links_for_test,
+};
 use fin_store::storage_kind::StorageKind;
 use fin_store::{MAIN, Store};
 use tempfile::TempDir;
@@ -251,7 +256,7 @@ fn missing_record_with_claim_is_held() {
 }
 
 #[test]
-fn bad_crc_is_held_on_acquire_and_lost_on_fence() {
+fn bad_crc_is_held_on_acquire_and_lost_on_fence_at_the_deadline() {
     let (_t, dir) = folder();
     let c = FakeClock::new();
     let a = acquire(&dir, A, local(&c));
@@ -259,9 +264,20 @@ fn bad_crc_is_held_on_acquire_and_lost_on_fence() {
     let mut bytes = fs::read(&path).unwrap();
     bytes[20] ^= 0x20;
     fin_store::fsio::write_in_place(&path, &bytes).unwrap();
+    // The holder cannot tell (a torn read looks the same): the write is refused, the lease
+    // stands until the self-fence deadline, and nothing is written over the damaged record.
+    let refused = a.check().unwrap_err();
+    assert!(refused.reason.contains("checksum"), "{refused:?}");
+    assert!(refused.transient, "{refused:?}");
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    c.advance(s(19));
+    eventually("failed beats", || a.failed_heartbeats() >= 1);
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    c.advance(s(1));
     let lost = a.check().unwrap_err();
-    assert!(lost.reason.contains("checksum"), "{lost:?}");
+    assert!(lost.reason.contains("self-fenced"), "{lost:?}");
     assert!(matches!(a.state(), LeaseState::Lost { .. }));
+    assert_eq!(fs::read(&path).unwrap(), bytes, "never written over");
     let mut b = contender(&dir, B, local(&c));
     held_elsewhere(b.try_acquire());
     // Never taken over automatically, however long it stays damaged…
@@ -276,13 +292,16 @@ fn bad_crc_is_held_on_acquire_and_lost_on_fence() {
 }
 
 #[test]
-fn unreadable_record_is_lost_on_fence() {
+fn unreadable_record_is_lost_on_fence_at_the_deadline() {
     let (_t, dir) = folder();
     let c = FakeClock::new();
     let a = acquire(&dir, A, local(&c));
     fs::remove_file(dir.join("lease.json")).unwrap();
     fs::create_dir(dir.join("lease.json")).unwrap();
-    assert!(a.check().is_err());
+    assert!(a.check().unwrap_err().transient);
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    c.advance(s(20));
+    assert!(a.check().unwrap_err().reason.contains("self-fenced"));
     assert!(matches!(a.state(), LeaseState::Lost { .. }));
     held_elsewhere(Lease::acquire(&dir, B, "b", local(&c)));
 }
@@ -570,6 +589,265 @@ fn a_rival_claim_in_progress_backs_off() {
     assert_eq!(epoch, 2);
     assert_eq!(read_record(&dir).server_id, A, "B wrote nothing");
     assert_eq!(claims(&dir), [1, 2], "B left no claim behind");
+}
+
+/// `.~fin-*.tmp` files directly in `dir`.
+fn temps(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| {
+            let name = e.as_ref().unwrap().file_name();
+            fin_store::names::is_temp(name.to_str().unwrap())
+        })
+        .count()
+}
+
+/// A read of the holder's own record that fails (a Linux cifs `soft` mount returns `EIO`
+/// while it reconnects) is a failed beat, retried: nothing is lost, nothing is written.
+#[test]
+fn a_failed_read_in_a_beat_is_retried_not_lost() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    fault_record_reads_for_test(&dir, 0, ReadFault::Error(ErrorKind::Other), 1);
+    c.advance(s(5));
+    eventually("the failed beat", || a.failed_heartbeats() == 1);
+    assert_eq!(a.heartbeats(), 0);
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    assert_eq!(read_record(&dir).heartbeat, 0, "nothing written");
+    c.advance(s(1));
+    eventually("the retry", || a.heartbeats() == 1);
+    assert_eq!(a.check(), Ok(1));
+    assert_eq!(read_record(&dir).heartbeat, 1);
+}
+
+/// Reads that keep failing lose the lease at the self-fence deadline (2×TTL after the last
+/// successful beat), not before; a check meanwhile refuses its write without losing it.
+#[test]
+fn reads_failing_until_the_deadline_lose_the_lease_only_then() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    fault_record_reads_for_test(&dir, 0, ReadFault::Error(ErrorKind::Other), 10_000);
+    c.advance(s(5));
+    eventually("a failed beat", || a.failed_heartbeats() >= 1);
+    c.advance(s(14));
+    eventually("another failed beat", || a.failed_heartbeats() >= 2);
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    let refused = a.check().unwrap_err();
+    assert!(
+        refused.transient && refused.reason.contains("unreadable"),
+        "{refused:?}"
+    );
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    c.advance(s(1));
+    match a.state() {
+        LeaseState::Lost { reason } => assert!(reason.contains("self-fenced"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(a.heartbeats(), 0);
+    assert_eq!(read_record(&dir).heartbeat, 0, "nothing written");
+    fault_record_reads_for_test(&dir, 0, ReadFault::Real, 0);
+}
+
+/// A torn read-back (SMB) is re-read; one that settles within the re-reads is no failure, one
+/// that outlasts them is a failed beat that counts for nothing (the write landed: the next
+/// beat adopts it).
+#[test]
+fn a_torn_read_back_settles_or_is_retried() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    // The fence reads for real, then the read-back is torn three times.
+    fault_record_reads_for_test(&dir, 1, ReadFault::Torn, 3);
+    c.advance(s(5));
+    eventually("a heartbeat", || a.heartbeats() == 1);
+    assert_eq!(a.failed_heartbeats(), 0);
+    // Torn for the first read and all ten re-reads.
+    fault_record_reads_for_test(&dir, 1, ReadFault::Torn, 11);
+    c.advance(s(5));
+    eventually("the failed beat", || a.failed_heartbeats() == 1);
+    assert_eq!(a.heartbeats(), 1, "a retried beat is no success");
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    assert_eq!(read_record(&dir).heartbeat, 2, "its write landed");
+    c.advance(s(1));
+    eventually("the retry", || a.heartbeats() == 2);
+    assert_eq!(read_record(&dir).heartbeat, 3);
+    assert_eq!(a.check(), Ok(1));
+}
+
+/// A commit may trust a full check up to 1 s old, but not across a beat that could not read
+/// the record: that commit runs a full check of its own.
+#[test]
+fn a_doubtful_beat_makes_the_next_commit_check_in_full() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    c.advance(ms(4_500));
+    assert_eq!(a.check(), Ok(1));
+    let full = a.hooks().full_checks();
+    assert_eq!(a.check_recent(s(1)), Ok(1));
+    assert_eq!(a.hooks().full_checks(), full, "a fresh check is trusted");
+    fault_record_reads_for_test(&dir, 0, ReadFault::Torn, 10_000);
+    c.advance(ms(500));
+    eventually("the failed beat", || a.failed_heartbeats() == 1);
+    let refused = a.check_recent(s(1)).unwrap_err();
+    assert!(refused.transient, "{refused:?}");
+    assert_eq!(
+        a.hooks().full_checks(),
+        full + 1,
+        "not trusted after the beat"
+    );
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    fault_record_reads_for_test(&dir, 0, ReadFault::Real, 0);
+}
+
+/// A beat that doubts while a check is running (after the check read the record, before it
+/// finished) wins: the commit after them runs a full check rather than trusting that one.
+#[test]
+fn a_beat_doubting_during_a_check_is_not_overridden_by_it() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    c.advance(ms(4_500));
+    let hooks = a.hooks();
+    hooks.hang(HangPoint::CheckAfterVerify);
+    // The check's read is real; the beat's fails.
+    fault_record_reads_for_test(&dir, 1, ReadFault::Error(ErrorKind::Other), 1);
+    std::thread::scope(|sc| {
+        let check = sc.spawn(|| a.check());
+        hooks.wait_hung();
+        c.advance(ms(500));
+        eventually("the failed beat", || a.failed_heartbeats() == 1);
+        hooks.release();
+        assert_eq!(check.join().unwrap(), Ok(1));
+    });
+    let full = hooks.full_checks();
+    assert_eq!(a.check_recent(s(1)), Ok(1));
+    assert_eq!(hooks.full_checks(), full + 1, "the check was not trusted");
+}
+
+/// A read-back showing an older heartbeat of ours (the write did not land, or not visibly)
+/// is a failed beat: it must not move the self-fence deadline.
+#[test]
+fn a_read_back_of_an_older_heartbeat_is_no_success() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    fault_record_reads_for_test(&dir, 1, ReadFault::Stale, 1);
+    c.advance(s(5));
+    eventually("the failed beat", || a.failed_heartbeats() == 1);
+    assert_eq!(a.heartbeats(), 0);
+    assert_eq!(a.state(), LeaseState::Held { epoch: 1 });
+    c.advance(s(1));
+    eventually("the retry", || a.heartbeats() == 1);
+    assert_eq!(
+        read_record(&dir).heartbeat,
+        2,
+        "the retry adopted the landed write"
+    );
+}
+
+/// Without hard links the first record falls back to `create_new` and writing in place.
+#[test]
+fn without_hard_links_the_first_record_is_created_in_place() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    no_hard_links_for_test(&dir);
+    let a = acquire(&dir, A, local(&c));
+    assert_eq!(a.epoch(), 1);
+    assert_eq!(read_record(&dir).server_id, A);
+    assert_eq!(temps(&dir), 0, "the staged temp file is removed");
+    assert_eq!(a.check(), Ok(1));
+}
+
+/// Evidence still loses the lease at once in a beat: `lease.json` deleted (and never
+/// recreated).
+#[test]
+fn a_deleted_record_loses_the_lease_in_a_beat_at_once() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let a = acquire(&dir, A, local(&c));
+    fs::remove_file(dir.join("lease.json")).unwrap();
+    c.advance(s(5));
+    a.hooks().wait_exited();
+    match a.state() {
+        LeaseState::Lost { reason } => assert!(reason.contains("missing"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!dir.join("lease.json").exists());
+}
+
+/// The first `lease.json` is staged whole in a temp file and published without replacing: a
+/// crash before publishing leaves a claim without a record (taken over automatically once
+/// stale), never a short record (which only `takeover --confirm` could clear).
+#[test]
+fn a_crash_before_publishing_the_first_record_leaves_no_damaged_record() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    claim::keep_backed_off_claims_for_test(&dir);
+    crash_before_publishing_record_for_test(&dir);
+    match Lease::acquire(&dir, A, "holder a", local(&c)) {
+        Err(LeaseState::Lost { reason }) => assert!(reason.contains("lease.json"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(!dir.join("lease.json").exists());
+    assert_eq!(claims(&dir), [1]);
+    assert_eq!(temps(&dir), 1, "the crash left its temp file");
+    let mut b = contender(&dir, B, local(&c));
+    let (holder, epoch, _) = held_elsewhere(b.try_acquire());
+    assert_eq!((holder.as_str(), epoch), (A, 1));
+    c.advance(s(46));
+    held_elsewhere(b.try_acquire());
+    c.advance(s(5));
+    let l = b.try_acquire().unwrap();
+    assert_eq!(l.epoch(), 2);
+    assert_eq!(read_record(&dir).server_id, B);
+    assert_eq!(temps(&dir), 0, "swept once the lease is held");
+}
+
+/// Creating a claim whose name is still pending deletion fails on Windows with
+/// `ERROR_ACCESS_DENIED`: retried briefly, not lost.
+#[test]
+fn a_claim_name_pending_deletion_is_retried() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    deny_claim_creates_for_test(&dir, 3);
+    let a = acquire(&dir, A, local(&c));
+    assert_eq!(a.epoch(), 1);
+    assert_eq!(claims(&dir), [1]);
+    assert_eq!(a.check(), Ok(1));
+}
+
+/// Still denied after the retries (1.5 s): this attempt fails without creating anything, and
+/// the next one succeeds.
+#[test]
+fn a_claim_denied_past_the_retries_is_tried_again_later() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    deny_claim_creates_for_test(&dir, 61);
+    match Lease::acquire(&dir, A, "holder a", local(&c)) {
+        Err(LeaseState::Lost { reason }) => assert!(reason.contains("claim"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(claims(&dir).is_empty());
+    assert!(!dir.join("lease.json").exists());
+    assert_eq!(acquire(&dir, A, local(&c)).epoch(), 1);
+}
+
+/// Retrying never gives a claim name two owners: once the name stops being denied, another
+/// server's claim still wins (`AlreadyExists`), even one our listing cannot see yet.
+#[test]
+fn retrying_a_denied_claim_never_takes_anothers_name() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    claim::hide_young_claims(&dir, s(60));
+    fs::write(dir.join(claim_name(1)), C).unwrap();
+    deny_claim_creates_for_test(&dir, 2);
+    let (_, epoch, _) = held_elsewhere(Lease::acquire(&dir, A, "holder a", local(&c)));
+    assert_eq!(epoch, 1);
+    assert_eq!(fs::read_to_string(dir.join(claim_name(1))).unwrap(), C);
+    assert!(!dir.join("lease.json").exists());
 }
 
 #[test]

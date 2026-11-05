@@ -4,8 +4,9 @@
 //!
 //! Files in `.finisher/` (the lease never creates that directory: a project folder that
 //! vanished must not come back empty):
-//! - `lease.json`: the 512-byte checksummed record ([`record`]), created once with
-//!   `create_new`, then only ever rewritten in place;
+//! - `lease.json`: the 512-byte checksummed record ([`record`]), created once (staged in a temp
+//!   file, then published without replacing: `acquire::take`), then only ever rewritten in
+//!   place;
 //! - `lease.claim-<epoch:08>`: one per acquisition, created with `create_new` ([`claim`]);
 //! - `lease.probe-<serverId>`: each server's probe file, whose mtime is server time
 //!   ([`clock`]).
@@ -23,7 +24,8 @@
 //! | Every acquisition takes a fresh epoch through a claim | spec §3.5 "Claims and epochs" |
 //! | After acquiring, claims below the epoch are deleted | spec §3.5 "Claims and epochs" |
 //! | Missing `lease.json` beside any claim = held | spec §3.5 "Record"; §27.9 (Windows not-found cache) |
-//! | Unreadable or bad checksum: held when acquiring, lost when fencing | spec §3.5 "Record" |
+//! | Unreadable or bad checksum: held when acquiring; when fencing, the write is refused and the lease lost at the self-fence deadline (`fence`) | spec §3.5 "Record", "nothing is lost until the self-fence deadline"; spike comparison (§3.13 item 3) |
+//! | A record naming a lower epoch (or another server) over ours: lost, never rewritten (the spike rewrote) | spec §3.5 "Heartbeat and fencing" |
 //! | The epoch is checked before every write and after every heartbeat | spec §3.5 "Fencing" |
 //! | Self-fence at last successful heartbeat + 2×TTL, monotonic | spec §3.5 "Fencing" |
 //! | The monotonic clock counts time asleep ([`SystemClock`]) | review of Task 9 (a sleeping Mac must wake fenced) |
@@ -55,6 +57,7 @@
 mod acquire;
 pub mod claim;
 pub mod clock;
+mod fence;
 mod heartbeat;
 #[cfg(any(test, feature = "test-hooks"))]
 mod hooks;
@@ -79,8 +82,12 @@ pub use acquire::Contender;
 pub use clock::FakeClock;
 use clock::lock;
 pub use clock::{MonoClock, ServerClock, SystemClock};
+use fence::Fence;
 #[cfg(any(test, feature = "test-hooks"))]
-pub use hooks::{HangPoint, LeaseHooks};
+pub use hooks::{
+    HangPoint, LeaseHooks, ReadFault, crash_before_publishing_record_for_test,
+    deny_claim_creates_for_test, fault_record_reads_for_test, no_hard_links_for_test,
+};
 pub use previous::Previous;
 use record::LeaseRecord;
 pub use server_lock::ServerLock;
@@ -165,8 +172,8 @@ pub enum LeaseState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseLost {
     pub reason: String,
-    /// Only this check failed (the folder could not be listed): the write is refused but the
-    /// lease is not lost.
+    /// Only this check failed (the folder could not be listed, or `lease.json` could not be
+    /// read as one valid record): the write is refused but the lease is not lost.
     pub transient: bool,
 }
 
@@ -240,15 +247,6 @@ pub(crate) struct Inner {
     hang: hooks::Hang,
 }
 
-/// Why [`Inner::no_newer_claim`] refused.
-pub(crate) enum ClaimFence {
-    /// A newer claim: the lease is lost.
-    Lost(String),
-    /// The folder could not be listed (after retrying transient errors): this write is
-    /// refused, the lease stands. The self-fence deadline bounds how long that can last.
-    Unlisted(String),
-}
-
 struct Io {
     clock: ServerClock,
     /// What this lease last wrote and verified (or adopted, see [`Inner::verify`]).
@@ -262,6 +260,9 @@ struct Status {
     heartbeats: u64,
     /// When the last full check that passed started (monotonic).
     last_checked: Option<Instant>,
+    /// Looks that could not tell so far ([`Inner::doubt`]): a check stores `last_checked`
+    /// only if none happened while it ran.
+    doubts: u64,
     failed: u64,
     fail_next: u32,
 }
@@ -308,6 +309,7 @@ impl Lease {
                 last_ok: stamped,
                 heartbeats: 0,
                 last_checked: None,
+                doubts: 0,
                 failed: 0,
                 fail_next: 0,
             }),
@@ -363,8 +365,9 @@ impl Lease {
     /// 1. Lost before → lost.
     /// 2. The self-fence deadline (last successful heartbeat + 2×TTL, monotonic, counting
     ///    sleep) passed → lost.
-    /// 3. `lease.json`, read uncached: missing, unreadable or a bad checksum → lost; a record
-    ///    naming another server or another epoch → lost.
+    /// 3. `lease.json`, read uncached: missing, or a record naming another server or another
+    ///    epoch → lost. Unreadable, or a bad checksum after re-reading → this write is refused
+    ///    with [`LeaseLost::transient`] set, and the lease is **not** lost (`fence` module).
     /// 4. A claim file above our epoch, younger than 45 s of server time → lost. If `.finisher`
     ///    cannot be listed (after retrying transient errors), this write is refused with
     ///    [`LeaseLost::transient`] set, and the lease is **not** lost.
@@ -484,6 +487,7 @@ impl Inner {
 
     fn check(&self) -> Result<u64, LeaseLost> {
         let started = self.now();
+        let doubts = lock(&self.status).doubts;
         self.deadline()?;
         #[cfg(any(test, feature = "test-hooks"))]
         {
@@ -492,18 +496,19 @@ impl Inner {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.hang.at(HangPoint::CheckBeforeRead);
         }
-        let server_now = {
+        let looked = {
             let mut io = lock(&self.io);
-            if let Err(reason) = self.verify(&mut io) {
-                return Err(self.set_lost(reason));
-            }
-            io.clock.now_server_ms(self.now())
+            self.verify(&mut io)
+                .map(|()| io.clock.now_server_ms(self.now()))
         };
-        match self.no_newer_claim(server_now) {
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.hang.at(HangPoint::CheckAfterVerify);
+        match looked.and_then(|server_now| self.no_newer_claim(server_now)) {
             Ok(()) => {}
-            Err(ClaimFence::Lost(reason)) => return Err(self.set_lost(reason)),
-            // This write is refused; the lease stands (the next check lists again).
-            Err(ClaimFence::Unlisted(reason)) => {
+            Err(Fence::Lost(reason)) => return Err(self.set_lost(reason)),
+            // This write is refused; the lease stands (the next check looks again).
+            Err(Fence::Unsure(reason)) => {
+                self.doubt();
                 return Err(LeaseLost {
                     reason,
                     transient: true,
@@ -511,69 +516,13 @@ impl Inner {
             }
         }
         self.deadline()?;
-        lock(&self.status).last_checked = Some(started);
+        // A beat that doubted while this check ran (after its record read) outranks it: a
+        // commit must not trust this check then.
+        let mut s = lock(&self.status);
+        if s.doubts == doubts {
+            s.last_checked = Some(started);
+        }
         Ok(self.epoch)
-    }
-
-    /// Claims are the authority on epochs (parent spec §27.9, fenced design: "no newer epoch
-    /// claim"): a `lease.claim-<e>` above our epoch means another server is acquiring or has
-    /// acquired, even before its record is visible (or after our record overwrote theirs).
-    /// A claim hidden by Windows' readdir lag only delays this extra protection.
-    ///
-    /// Only while the claim is younger than stale-after (45 s) of server time, though, an
-    /// unknown age counting as young: an acquirer that crashed right after claiming must not
-    /// lock the holder out for good. If it was merely slow, its record write is still caught
-    /// by the record compare. Old claims are left in place (deleting one would let a later
-    /// acquirer reuse its epoch).
-    ///
-    /// `server_now`: our server time ([`ServerClock::now_server_ms`]).
-    fn no_newer_claim(&self, server_now: Option<i64>) -> Result<(), ClaimFence> {
-        let claims = claim::list(&self.dir).map_err(|e| {
-            ClaimFence::Unlisted(format!("cannot list {}: {e}", self.dir.display()))
-        })?;
-        let stale_ms = i64::try_from(self.params.stale_after.as_millis()).unwrap_or(i64::MAX);
-        let young = |c: &claim::ClaimFile| match (server_now, c.server_ms) {
-            (Some(now), Some(m)) => now - m <= stale_ms,
-            _ => true,
-        };
-        match claims
-            .iter()
-            .rev()
-            .find(|c| c.epoch > self.epoch && young(c))
-        {
-            Some(c) => Err(ClaimFence::Lost(format!(
-                "a newer claim {} exists; this lease was epoch {}",
-                claim::claim_name(c.epoch),
-                self.epoch
-            ))),
-            None => Ok(()),
-        }
-    }
-
-    /// Whether `lease.json` still names this lease: our server id **and** our epoch. Claims
-    /// make the epoch ours alone, so any heartbeat counter will do; a later one (a heartbeat
-    /// write that landed after its retry was given up) is adopted.
-    fn verify(&self, io: &mut Io) -> Result<(), String> {
-        match record::read(&self.path()) {
-            Err(e) => Err(format!("lease.json is unreadable: {e}")),
-            Ok(record::Seen::Missing) => Err("lease.json is missing".to_string()),
-            Ok(record::Seen::Corrupt(_)) => Err(
-                "lease.json fails its checksum (damaged or being rewritten by another server)"
-                    .to_string(),
-            ),
-            Ok(record::Seen::Valid(r))
-                if r.server_id == io.last.server_id && r.epoch == self.epoch =>
-            {
-                if r.heartbeat > io.last.heartbeat {
-                    io.last = r;
-                }
-                Ok(())
-            }
-            Ok(record::Seen::Valid(r)) => Err(format!(
-                "lease.json now names server {} at epoch {} (heartbeat {}); this lease was epoch {}",
-                r.server_id, r.epoch, r.heartbeat, self.epoch
-            )),
-        }
     }
 
     /// Marks the lease lost (the first reason stays) and returns why it is lost.

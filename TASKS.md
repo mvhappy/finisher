@@ -144,6 +144,10 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [x] Pack headers record replaced segments' last records (`replaces: [{hash, lastTxHash}]`, exact stand-in rule) — done in Task 13
 - [x] finisherd hubs removed with their last subscriber — done in Task 17
 - [ ] fin-node untested paths: `lagged` (needs > 1,024 events before registration), close on GC drop
+- [ ] Warn (status) on Linux mount options that break the lease's assumptions: cifs `cache=loose`, `actimeo`/`closetimeo` > 1, SMB1 (`vers=1.0`)
+- [ ] Lease: a failed in-place write of our own record could leave it torn; the holder then self-fences and the folder needs `takeover --confirm`. Consider rewriting a torn record in the heartbeat when no claim above ours exists, as `take` does after its own write
+- [ ] Lease: `create_new`-only fallback for the first `lease.json` (Unix without hard links: FAT/exFAT, macOS smbfs as far as known, NAS shares refusing `link` with `EACCES`) still leaves a short record after a crash; Task 19 should record which mounts take that path
+- [ ] Lease: a claim `create_new` that landed but reported a transient error leaves our own orphan claim (status names it as this server's); it holds acquisition off for 45 s
 
 ## Blocked on hardware or accounts
 

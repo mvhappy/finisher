@@ -1,13 +1,13 @@
 //! [`Contender::take`]: claiming a fresh epoch and writing our record (module docs of
 //! [`super`], "Taking").
 
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::Path;
 
 use super::super::record::{self, LeaseRecord, Seen};
 use super::super::registry;
 use super::super::{Lease, LeaseState, Previous, claim, server_lock};
+use super::publish::{create_record, remove_temps};
 use super::{Contender, Expected};
 use crate::fsio;
 
@@ -78,9 +78,17 @@ impl Contender {
         .unwrap_or(0);
         let claimed = match claim::claim_next(&self.dir, base, &self.server_id) {
             Ok(c) => c,
-            // Someone else claimed it from the same view: back off, creating nothing.
+            // Someone else claimed it from the same view: back off, creating nothing. (Or an
+            // earlier attempt of ours landed although it reported a transient error: then the
+            // claim names us, and it ages out like any orphan claim.)
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                return Err(busy("another server (acquiring)".into(), base + 1));
+                let who = match claim::owner(&self.dir, base + 1) {
+                    Some(id) if id == self.server_id => {
+                        "this server (a claim left by its own retried attempt)".to_string()
+                    }
+                    _ => "another server (acquiring)".to_string(),
+                };
+                return Err(busy(who, base + 1));
             }
             Err(e) => return Err(lost(format!("cannot create a lease claim: {e}"))),
         };
@@ -98,7 +106,7 @@ impl Contender {
         let path = self.record_path();
         // 3. Unchanged since judged? 4. Then write.
         let wrote = match (&expected, record::read(&path)) {
-            (Expected::Missing, Ok(Seen::Missing)) => create_record(&path, &bytes),
+            (Expected::Missing, Ok(Seen::Missing)) => create_record(&self.dir, &path, &bytes),
             (Expected::Record(r), Ok(Seen::Valid(now))) if now == *r => {
                 fsio::write_in_place(&path, &bytes)
             }
@@ -119,7 +127,8 @@ impl Contender {
                 // An in-place write that failed may have landed in part. Put back what was
                 // there, so the folder is as it was judged (a torn record would read as
                 // damaged to everyone, and damaged records need a confirmed takeover).
-                // A record we created is already removed by `create_record`.
+                // A record we were creating is not in place when `create_record` fails (a
+                // publish that landed despite an error is recognised there as success).
                 restore(&path, &expected);
                 return back_off(lost(format!("cannot write lease.json: {e}")));
             }
@@ -160,6 +169,7 @@ impl Contender {
                 .collect(),
         };
         claim::remove_below(&self.dir, epoch);
+        remove_temps(&self.dir);
         Ok(Lease::start(
             &self.dir,
             registry::key(&self.dir, &self.server_id),
@@ -194,18 +204,4 @@ fn changed(seen: Seen) -> LeaseState {
         epoch,
         age_server_ms: None,
     }
-}
-
-/// Creates `lease.json` exclusively, the only time it is ever created. If the write fails the
-/// file is removed again: a partial record would read as damaged to everyone, and a damaged
-/// record is never taken over automatically. It is ours and was never valid, so nobody holds
-/// it.
-fn create_record(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    let result = file.write_all(bytes).and_then(|()| fsio::sync_file(&file));
-    if result.is_err() {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-    }
-    result
 }

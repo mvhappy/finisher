@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use crate::names;
 
+mod transient;
+
 /// [`write_in_place`] (and the Windows rename) retry a transient failure this many times…
 pub const RETRIES: u32 = 60;
 /// …this far apart.
@@ -113,57 +115,7 @@ pub fn sync_file(file: &File) -> io::Result<()> {
     file.sync_all()
 }
 
-/// The OS error codes worth retrying, in one place. These are judgement calls from first
-/// principles (the spike's own lists were not ported) and need validating in the cross-host
-/// run (Task 19).
-///
-/// - `EINTR`: a signal interrupted the call.
-/// - `EAGAIN`/`EWOULDBLOCK`: the resource is momentarily unavailable (also what Linux CIFS
-///   returns while it reconnects a session).
-/// - `EBUSY`: the file or device is momentarily in use.
-/// - `ESTALE`: an NFS handle went stale; every attempt reopens by path, which revalidates it.
-///
-/// Deliberately not retried: `ETXTBSY` (only for running executables, never our files), and
-/// `ETIMEDOUT`/`EHOSTDOWN`/`ECONNRESET`/`EIO` (a real outage outlasts 1.5 s; the caller
-/// decides).
-#[cfg(unix)]
-const TRANSIENT: &[i32] = &[
-    libc::EINTR,
-    libc::EAGAIN,
-    libc::EWOULDBLOCK,
-    libc::EBUSY,
-    libc::ESTALE,
-];
-
-/// - `ERROR_ACCESS_DENIED` (5): a rename or open races a reader, a pending delete or an
-///   antivirus scan (parent spec §27.9). Also a real permission error, which then costs one
-///   1.5 s retry.
-/// - `ERROR_SHARING_VIOLATION` (32): another process opened the file without sharing.
-/// - `ERROR_LOCK_VIOLATION` (33): another process holds a byte-range lock on it.
-/// - `ERROR_NETNAME_DELETED` (64): the SMB session dropped; reopening after the redirector
-///   reconnects succeeds.
-#[cfg(windows)]
-const TRANSIENT: &[i32] = {
-    use windows_sys::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_NETNAME_DELETED, ERROR_SHARING_VIOLATION,
-    };
-    &[
-        ERROR_ACCESS_DENIED as i32,
-        ERROR_SHARING_VIOLATION as i32,
-        ERROR_LOCK_VIOLATION as i32,
-        ERROR_NETNAME_DELETED as i32,
-    ]
-};
-
-#[cfg(not(any(unix, windows)))]
-const TRANSIENT: &[i32] = &[];
-
-/// Whether `e` is worth retrying shortly (see the `TRANSIENT` lists above).
-pub fn is_transient(e: &io::Error) -> bool {
-    matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock)
-        || e.raw_os_error()
-            .is_some_and(|code| TRANSIENT.contains(&code))
-}
+pub use transient::is_transient;
 
 fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let mut attempt = 0;

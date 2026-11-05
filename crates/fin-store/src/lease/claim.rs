@@ -140,6 +140,14 @@ pub struct Claimed {
 /// at `base + 2` could never lead to an acquisition (the winner's record changes what it
 /// judged), but it would fence the winner, since a claim above a holder's epoch loses it the
 /// lease.
+///
+/// Transient errors ([`fsio::is_transient`]) are retried as listings are. On Windows that
+/// covers a name still pending deletion (a claimant that backed off, or `remove_below`,
+/// deleting it while a handle is open), whose `create_new` fails with `ERROR_ACCESS_DENIED`
+/// rather than `AlreadyExists`. Every attempt is a `create_new` of that one name, which the
+/// file server decides, so retrying never gives the name two owners: once the delete is done
+/// one claimant creates it and any other gets `AlreadyExists`. Still failing after the
+/// retries is an error, and the caller tries again on its next attempt.
 pub fn claim_next(dir: &Path, base: u64, server_id: &str) -> io::Result<Claimed> {
     let epoch = base + 1;
     if epoch > MAX_EPOCH {
@@ -147,11 +155,30 @@ pub fn claim_next(dir: &Path, base: u64, server_id: &str) -> io::Result<Claimed>
             "lease epoch {epoch} is above {MAX_EPOCH}"
         )));
     }
-    create(&dir.join(claim_name(epoch)), server_id)?;
-    Ok(Claimed { epoch })
+    let path = dir.join(claim_name(epoch));
+    let mut attempt = 0;
+    loop {
+        match create(dir, &path, server_id) {
+            Err(e) if attempt < fsio::RETRIES && fsio::is_transient(&e) => {
+                attempt += 1;
+                std::thread::sleep(fsio::RETRY_DELAY);
+            }
+            result => return result.map(|()| Claimed { epoch }),
+        }
+    }
 }
 
-fn create(path: &Path, server_id: &str) -> io::Result<()> {
+fn create(dir: &Path, path: &Path, server_id: &str) -> io::Result<()> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if super::hooks::faults(dir, |f| {
+        let deny = f.deny_claims > 0;
+        f.deny_claims = f.deny_claims.saturating_sub(1);
+        deny
+    }) {
+        return Err(super::hooks::delete_pending());
+    }
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    let _ = dir;
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     let result = file
         .write_all(server_id.as_bytes())

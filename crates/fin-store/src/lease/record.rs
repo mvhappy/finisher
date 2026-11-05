@@ -1,5 +1,6 @@
 //! `lease.json` (spec §3.5 "Record"; parent spec §27.9 v3 "Record"): a fixed 512-byte record,
-//! created once and then always rewritten **in place**, never renamed over (after a Mac
+//! created once (published whole, never replacing) and then always rewritten **in place**,
+//! never renamed over (after a Mac
 //! rename-over, Windows reported the file missing for up to 5 s).
 //!
 //! Layout: compact JSON body, `\n`, the CRC-32C of the body as 8 lowercase hex digits, `\n`,
@@ -113,10 +114,14 @@ pub(crate) enum Seen {
 
 /// Reads `path` uncached ([`fsio::read_uncached`], with delete sharing on Windows), retrying
 /// transient errors ([`fsio::is_transient`]) for up to [`fsio::RETRIES`] × [`fsio::RETRY_DELAY`].
-/// `Err` is "unreadable": held when acquiring, lost when fencing.
+/// `Err` is "unreadable": held when acquiring; when fencing, that look cannot tell (`fence`).
 pub(crate) fn read(path: &Path) -> io::Result<Seen> {
     let mut attempt = 0;
     loop {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(seen) = injected(path) {
+            return seen;
+        }
         match fsio::read_uncached(path) {
             Ok(bytes) => {
                 return Ok(match decode(&bytes) {
@@ -130,6 +135,49 @@ pub(crate) fn read(path: &Path) -> io::Result<Seen> {
                 std::thread::sleep(fsio::RETRY_DELAY);
             }
             Err(e) => return Err(e),
+        }
+    }
+}
+
+/// A holder's look at its own record re-reads one that does not decode this many more
+/// times…
+const SETTLE_READS: u32 = 10;
+/// …this far apart (the S10 spike's values): a torn or short SMB read, or another server's
+/// in-place write caught halfway, settles into one valid record.
+const SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// [`read`], re-reading a [`Seen::Corrupt`] up to [`SETTLE_READS`] times. Still corrupt
+/// after that is returned as such; the holder then cannot tell, and retries (the self-fence
+/// deadline bounds it).
+pub(crate) fn read_settled(path: &Path) -> io::Result<Seen> {
+    let mut seen = read(path);
+    for _ in 0..SETTLE_READS {
+        if !matches!(seen, Ok(Seen::Corrupt(_))) {
+            break;
+        }
+        std::thread::sleep(SETTLE_DELAY);
+        seen = read(path);
+    }
+    seen
+}
+
+/// A read scripted by [`super::hooks::fault_record_reads_for_test`], if any.
+#[cfg(any(test, feature = "test-hooks"))]
+fn injected(path: &Path) -> Option<io::Result<Seen>> {
+    use super::hooks::{ReadFault, faults};
+    let dir = path.parent()?;
+    match faults(dir, |f| f.reads.pop_front())? {
+        ReadFault::Real => None,
+        ReadFault::Error(kind) => Some(Err(io::Error::new(kind, "injected read failure"))),
+        ReadFault::Torn => {
+            let mut bytes = fsio::read_uncached(path).unwrap_or_default();
+            bytes.truncate(bytes.len() / 2);
+            Some(Ok(Seen::Corrupt(bytes)))
+        }
+        ReadFault::Stale => {
+            let mut r = decode(&fsio::read_uncached(path).ok()?)?;
+            r.heartbeat = r.heartbeat.checked_sub(1)?;
+            Some(Ok(Seen::Valid(r)))
         }
     }
 }

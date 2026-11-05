@@ -39,10 +39,14 @@
 //!    that claim would fence the winner.
 //! 3. Re-read `lease.json`: it must be exactly what was judged (still missing, the same
 //!    record, the same damaged bytes); else delete our claim and back off.
-//! 4. Write ours (epoch, heartbeat 0, stamped with server time): `create_new` when it was
-//!    missing (the file server decides, so a `lease.json` hidden by Windows' not-found cache
-//!    still wins), else in place. If the write fails, put back what was there (a record we
-//!    created is removed), delete our claim and back off.
+//! 4. Write ours (epoch, heartbeat 0, stamped with server time). When it was missing: staged
+//!    whole in a temp file, then published without replacing ([`publish`]: a hard link, or
+//!    `MoveFileExW` on Windows, else `create_new`; the file server decides, so a `lease.json`
+//!    hidden by Windows' not-found cache still wins, and where hard links work a crash never
+//!    leaves a partial record). Else in place.
+//!    If the write fails, put back what was there (a record we created is removed), delete
+//!    our claim and back off. A claim name still pending deletion (Windows) is retried
+//!    briefly ([`claim::claim_next`]).
 //! 5. Read it back: it must be ours. Torn while no claim above ours exists → rewrite once.
 //!    Anything else → delete our claim and back off.
 //! 6. Delete claims below our epoch (spec §3.5), register, start the heartbeat.
@@ -52,6 +56,7 @@ use std::time::Instant;
 
 use fin_core::CoreError;
 
+mod publish;
 mod take;
 
 use super::clock::{ProbeSample, ServerClock};

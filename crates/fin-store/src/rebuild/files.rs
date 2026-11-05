@@ -163,6 +163,11 @@ pub(super) fn swap(db_path: &Path, tmp: &Path, kept: Option<&Path>) -> Result<bo
             Err(e) => return Err(StoreError::io(&side(db_path, "-shm"))(e)),
         }
     }
+    // A closure so the test hook can return early; without the hook it is called at once.
+    #[cfg_attr(
+        not(any(test, feature = "test-hooks")),
+        allow(clippy::redundant_closure_call)
+    )]
     let linked = (|| -> Result<(), StoreError> {
         #[cfg(any(test, feature = "test-hooks"))]
         if FAIL_SWAP.with(|f| f.replace(false)) {
