@@ -136,7 +136,7 @@ impl WriteCtx<'_> {
             &d.diff,
             self.epoch.unwrap_or(0),
         )?;
-        crate::branch::index::absorb(self.txn, &d.branch, seq, &record)?;
+        crate::branch::index::absorb(self.txn, &d.branch, seq, &record, &tip)?;
         if seq.is_multiple_of(SNAPSHOT_EVERY) {
             db::insert_snapshot(self.txn, &d.branch, seq, &d.project)?;
         }

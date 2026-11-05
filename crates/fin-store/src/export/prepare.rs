@@ -22,6 +22,21 @@ pub(super) fn prepare(
         _ => 0,
     };
     let genesis_hash = crate::project_file::db_genesis_hash(&store.conn)?;
+    // A 4B branch's segments name the `branch` record that made it (Decision 33).
+    let branch_record = if branch == crate::MAIN {
+        None
+    } else {
+        let info = crate::branch::index::get(&store.conn, branch)?;
+        match info.and_then(|i| i.record) {
+            Some(r) => Some(r),
+            None => {
+                return Err(broken(
+                    branch,
+                    "the branch has no branch record in the index".into(),
+                ));
+            }
+        }
+    };
     let mut n = 0;
     let mut body = 0;
     for row in rows {
@@ -51,7 +66,7 @@ pub(super) fn prepare(
         let created_at = chunk.iter().map(|r| r.committed_at).max().unwrap_or(0) + salt;
         let lines: Vec<&[u8]> = chunk.iter().map(|r| r.bytes.as_slice()).collect();
         // From content, so a re-export is byte-identical (an edit-only segment stays v1).
-        let (format_version, min_reader_version) = segment::version_for(&lines);
+        let (format_version, min_reader_version) = segment::version_for_branch(branch, &lines);
         let header = Header {
             format_version,
             min_reader_version,
@@ -68,6 +83,7 @@ pub(super) fn prepare(
             ],
             created_at,
             genesis_hash: genesis_hash.clone(),
+            branch_record: branch_record.clone(),
             pack: false,
             replaces: Vec::new(),
         };

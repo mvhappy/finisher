@@ -45,6 +45,9 @@ impl Store {
         for (code, m) in rewind_warnings(&self.conn, &self.server_id).unwrap_or_default() {
             warn(code, m);
         }
+        if let Some(m) = ignored_records(&self.conn).ok().flatten() {
+            warn("BRANCH_RECORDS_IGNORED", m);
+        }
         if !f.foreign.is_empty() {
             warn(
                 "FOREIGN_FILES",
@@ -228,4 +231,36 @@ fn rewind_warnings(
         }
     }
     Ok(out)
+}
+
+/// `BRANCH_RECORDS_IGNORED`: `branch` and `branchSet` records in the log that took no effect
+/// (plan 4B Decision 33): a `branch` record that lost its id to another server's (its
+/// branch's records are set aside as `ID_COLLISION`), or one the branch index refuses.
+fn ignored_records(conn: &rusqlite::Connection) -> Result<Option<String>, crate::StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT tx_id, branch, ignored FROM record_links WHERE ignored IS NOT NULL
+         ORDER BY branch, seq",
+    )?;
+    let rows: Vec<(String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let list: Vec<String> = rows
+        .iter()
+        .take(5)
+        .map(|(tx, b, why)| format!("{tx} on {b} ({why})"))
+        .collect();
+    let more = rows.len().saturating_sub(list.len());
+    Ok(Some(format!(
+        "{} branch record(s) took no effect: {}{}",
+        rows.len(),
+        list.join("; "),
+        if more > 0 {
+            format!("; and {more} more")
+        } else {
+            String::new()
+        }
+    )))
 }

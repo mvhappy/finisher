@@ -5,8 +5,9 @@
 //! then numeric id; [`fin_core::branch::BranchIndex::parents_first`]), then any branch with
 //! rows but no index row (a root). A `branch` record applied on the way adds its child at the
 //! end, so a child whose segments arrived with its parent's record is followed in the same
-//! pass. Folder directories the worklist never reaches are handed back
-//! ([`PassOut::leftover`], classified by [`super::aside::leftovers`]).
+//! pass. A 4B branch is resolved from the segments that name its `branch` record
+//! (`branchRecord`, Decision 33); every other segment is classified after the worklist
+//! ([`super::aside::leftovers`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -16,7 +17,7 @@ use fin_core::CoreError;
 use rusqlite::Transaction;
 
 use super::ctx::Ctx;
-use super::{Key, Verdict, apply, aside, cascade, known, rewind};
+use super::{Key, Verdict, apply, cascade, known, rewind};
 use crate::branch::index;
 use crate::chain::{SegRef, resolve};
 use crate::storage_kind::StorageKind;
@@ -29,8 +30,8 @@ pub(super) struct PassOut {
     pub(super) resolves: u64,
     pub(super) applied: Vec<CommittedTx>,
     pub(super) rewound: Vec<Rewind>,
-    /// Folder branch directories no branch of the worklist took.
-    pub(super) leftover: HashMap<String, Vec<SegRef>>,
+    /// Every folder segment by branch directory (the leftovers are classified from it).
+    pub(super) dirs: HashMap<String, Vec<SegRef>>,
 }
 
 /// Resolves and applies every branch the DB knows, inside the pass's transaction.
@@ -59,6 +60,7 @@ pub(super) fn resolve_branches(
             work.push_back(b);
         }
     }
+    ctx.dirs = by_branch.clone();
     let mut seen = HashSet::new();
     let mut born_now = HashSet::new();
     while let Some(branch) = work.pop_front() {
@@ -69,14 +71,20 @@ pub(super) fn resolve_branches(
             continue;
         }
         seen.insert(branch.clone());
-        let segs = by_branch.remove(&branch).unwrap_or_default();
+        // A 4B branch takes the segments that name its `branch` record (Decision 33); the
+        // others are classified after the worklist (`aside::leftovers`).
+        let record = index::get(txn, &branch)?.and_then(|i| i.record);
+        let segs: Vec<SegRef> = by_branch
+            .get(&branch)
+            .map(|all| {
+                all.iter()
+                    .filter(|s| record.is_none() || s.header().branch_record == record)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         let line = known::line(txn, &branch)?;
         let fork = known::fork_point(txn, &branch)?;
-        let set_aside = if branch == crate::MAIN {
-            vec![]
-        } else {
-            aside::records_for(ctx, &branch)?
-        };
         let key = Key {
             segs: segs.iter().map(|s| s.hash().to_string()).collect(),
             line,
@@ -84,7 +92,7 @@ pub(super) fn resolve_branches(
             lease_top,
             kind,
             fork: fork.clone(),
-            aside: set_aside.iter().map(|(h, _)| h.clone()).collect(),
+            record,
         };
         if let Some((k, v)) = prior.get(&branch)
             && *k == key
@@ -93,7 +101,6 @@ pub(super) fn resolve_branches(
             continue;
         }
         let mut key = key;
-        let (segs, collided) = aside::collisions(ctx, &branch, segs, &set_aside)?;
         let build = |ctx: &mut Ctx, line: &known::Line| -> Result<_, StoreError> {
             known::build(txn, &branch, line, ctx.all_tx()?, holds, kind, fork.clone())
         };
@@ -123,9 +130,10 @@ pub(super) fn resolve_branches(
             heads.get(&branch).cloned()
         };
         let mut out = apply::branch(ctx, &branch, &key.line, &segs, &res, head, by_branch)?;
-        out.verdict.quarantined.extend(collided);
         let changed = out.changed || !rewound.is_empty() || born_now.contains(&branch);
         rewound.append(&mut out.rewound);
+        // Branches an imported `branch` record took the id from (`branches::fold`).
+        rewound.append(&mut ctx.rewound);
         // A cascaded branch leaves the head cache (a later record may make its id again).
         for w in rewound.iter().filter(|w| w.branch != branch) {
             new_heads.push((w.branch.clone(), None));
@@ -136,6 +144,8 @@ pub(super) fn resolve_branches(
             new_heads.push((branch.clone(), out.head));
         }
         for child in std::mem::take(&mut ctx.born) {
+            // A branch made again (its id taken by a winning record) is resolved again.
+            seen.remove(&child);
             born_now.insert(child.clone());
             work.push_back(child);
         }
@@ -147,6 +157,6 @@ pub(super) fn resolve_branches(
         resolves,
         applied,
         rewound: out_rewound,
-        leftover: std::mem::take(by_branch),
+        dirs: std::mem::take(by_branch),
     })
 }

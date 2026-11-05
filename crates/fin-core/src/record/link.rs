@@ -49,13 +49,14 @@ pub enum Link {
         name: String,
     },
     /// Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose
-    /// txHash is `fork_hash`, absent at 0).
+    /// txHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`.
     Branch {
         branch_id: String,
         name: String,
         fork_seq: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fork_hash: Option<String>,
+        epoch: u64,
     },
     /// Renames, archives or restores branch `branch_id`.
     BranchSet {
@@ -97,6 +98,7 @@ struct Fields {
     branch_id: Option<String>,
     fork_seq: Option<u64>,
     fork_hash: Option<String>,
+    epoch: Option<u64>,
     archived: Option<bool>,
 }
 
@@ -132,11 +134,13 @@ impl Fields {
                 name,
                 fork_seq,
                 fork_hash,
+                epoch,
             } => {
                 f.branch_id = Some(branch_id);
                 f.name = Some(name);
                 f.fork_seq = Some(fork_seq);
                 f.fork_hash = fork_hash;
+                f.epoch = Some(epoch);
             }
             Link::BranchSet {
                 branch_id,
@@ -165,6 +169,7 @@ impl Fields {
             ("branchId", self.branch_id.is_some()),
             ("forkSeq", self.fork_seq.is_some()),
             ("forkHash", self.fork_hash.is_some()),
+            ("epoch", self.epoch.is_some()),
             ("archived", self.archived.is_some()),
         ]
         .into_iter()
@@ -187,6 +192,7 @@ impl Record {
             branch_id: self.branch_id.clone(),
             fork_seq: self.fork_seq,
             fork_hash: self.fork_hash.clone(),
+            epoch: self.epoch,
             archived: self.archived,
         }
     }
@@ -232,6 +238,7 @@ impl Record {
                 name: f.name.clone().ok_or_else(|| need("name"))?,
                 fork_seq: f.fork_seq.ok_or_else(|| need("forkSeq"))?,
                 fork_hash: f.fork_hash.clone(),
+                epoch: f.epoch.ok_or_else(|| need("epoch"))?,
             },
             RecordKind::BranchSet => Link::BranchSet {
                 branch_id: f.branch_id.clone().ok_or_else(|| need("branchId"))?,
@@ -298,6 +305,7 @@ impl Record {
         self.branch_id = f.branch_id;
         self.fork_seq = f.fork_seq;
         self.fork_hash = f.fork_hash;
+        self.epoch = f.epoch;
         self.archived = f.archived;
     }
 }

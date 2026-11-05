@@ -133,6 +133,12 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
             _ => {}
         }
     }
+    // A 4B branch is the segments that name its `branch` record (plan 4B Decision 33): the
+    // others (another server's branch under the same id) are never packed or deleted here.
+    if branch != crate::MAIN {
+        let record = crate::branch::index::get(&store.conn, branch)?.and_then(|i| i.record);
+        segs.retain(|s| record.is_some() && s.header().branch_record == record);
+    }
     segs.sort_by(|a, b| a.hash().cmp(b.hash()));
     let res: Resolution = resolve(&segs, &Known::empty(store.import.kind));
     if let Some(f) = &res.fork {

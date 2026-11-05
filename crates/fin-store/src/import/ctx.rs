@@ -22,9 +22,12 @@ pub(super) struct Ctx<'a> {
     pub(super) seeded: Option<u64>,
     /// Branches an applied `branch` record made, not yet resolved this pass (the worklist).
     pub(super) born: Vec<String>,
-    /// The set-aside `branch` records by branch id, read on first use and dropped whenever
-    /// this pass sets more records aside ([`super::aside`]).
-    pub(super) aside: Option<super::aside::AsideMap>,
+    /// Every folder segment by branch directory, as this pass listed them (a cascade reads
+    /// the segments of the branches it takes out, for the origin rule).
+    pub(super) dirs: HashMap<String, Vec<crate::chain::SegRef>>,
+    /// Branches an imported `branch` record took out (it won their id, [`super::branches`]),
+    /// not yet reported by the worklist.
+    pub(super) rewound: Vec<crate::Rewind>,
 }
 
 impl<'a> Ctx<'a> {
@@ -44,7 +47,8 @@ impl<'a> Ctx<'a> {
             seeds,
             seeded: None,
             born: vec![],
-            aside: None,
+            dirs: HashMap::new(),
+            rewound: vec![],
         }
     }
 

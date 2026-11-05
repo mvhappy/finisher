@@ -115,6 +115,11 @@ pub struct Record {
     /// `branch`: the parent's txHash at `forkSeq`; absent when `forkSeq` is 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_hash: Option<String>,
+    /// `branch`: the lease epoch the record was committed at (the fence epoch). Two `branch`
+    /// records that make the same id (two servers across a takeover) are ordered by it, then
+    /// by txHash (plan 4B Decision 33).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
     /// `branchSet`: archive (`true`) or restore (`false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
@@ -158,6 +163,7 @@ impl Record {
             branch_id: None,
             fork_seq: None,
             fork_hash: None,
+            epoch: None,
             archived: None,
             schema_version,
             parent_hash,

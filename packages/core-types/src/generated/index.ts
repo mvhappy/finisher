@@ -129,6 +129,7 @@ export type Link =
     }
   | {
       branchId: string;
+      epoch: number;
       forkHash?: string | null;
       forkSeq: number;
       kind: "branch";

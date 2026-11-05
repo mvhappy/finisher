@@ -342,6 +342,7 @@ fn plant(dir: &Path, s: &Store, prev: &Segment, epoch: u64, seq: u64, record: Ve
         op_schema_versions: [SCHEMA_VERSION, SCHEMA_VERSION],
         created_at: 0,
         genesis_hash: s.genesis_hash(),
+        branch_record: None,
         pack: false,
         replaces: vec![],
     };
@@ -821,6 +822,7 @@ fn forge_pack(
         op_schema_versions: [SCHEMA_VERSION, SCHEMA_VERSION],
         created_at: 0,
         genesis_hash: s.genesis_hash(),
+        branch_record: None,
         pack: true,
         replaces,
     };
@@ -970,6 +972,7 @@ fn a_deletion_that_would_unmask_a_lying_pack_is_abandoned() {
         op_schema_versions: [SCHEMA_VERSION, SCHEMA_VERSION],
         created_at: 0,
         genesis_hash: a.genesis_hash(),
+        branch_record: None,
         pack: true,
         replaces: vec![
             rep(&s[0].2),

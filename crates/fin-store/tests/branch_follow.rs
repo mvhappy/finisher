@@ -620,16 +620,20 @@ fn same_branch_id_on_two_servers_across_a_takeover() {
 }
 
 /// A `branch` or `branchSet` record in the folder that does not fit the index (made by hand
-/// or by a bug) is set aside as `MALFORMED`, with what descends from it; the pass goes on.
+/// or by a bug) is an inert row on its parent's chain (plan 4B Decision 33): the parent
+/// keeps following, the index ignores it, status warns; never an error of the pass.
 #[test]
-fn unfit_branch_records_are_set_aside_not_errors() {
+fn unfit_branch_records_are_inert_rows() {
     type Edit = fn(&mut serde_json::Value);
     // (A `forkHash` against `forkSeq` does not decode at all, `Record::link`: as any record
     // that cannot be read, it stops the branch with an import error, as in 4A.)
+    // (A known id is an id collision: `tests/branch_collide.rs`.)
     let edits: [(&str, Edit); 3] = [
         ("an id name", |v| v["name"] = "br9".into()),
         ("a reference name", |v| v["name"] = "a#br1".into()),
-        ("a known id", |v| v["branchId"] = "br1".into()),
+        ("a fork hash not of the parent's record", |v| {
+            v["forkSeq"] = 1.into()
+        }),
     ];
     for (what, edit) in edits {
         let t = tenv();
@@ -643,6 +647,7 @@ fn unfit_branch_records_are_set_aside_not_errors() {
         new_branch(&mut a, "b2", "other", MAIN);
         let mut v: serde_json::Value = serde_json::from_slice(&row_bytes(&a, "b2")).unwrap();
         v["txId"] = "b2-edited".into();
+        v["intent"]["txId"] = "b2-edited".into();
         edit(&mut v);
         let bad = serde_json::to_vec(&v).unwrap();
         let prev = segment::decode(&fs::read(&files(&t.dir, MAIN)[0]).unwrap())
@@ -661,6 +666,7 @@ fn unfit_branch_records_are_set_aside_not_errors() {
             op_schema_versions: [1, 1],
             created_at: 0,
             genesis_hash: a.genesis_hash(),
+            branch_record: None,
             pack: false,
             replaces: Vec::new(),
         };
@@ -669,21 +675,25 @@ fn unfit_branch_records_are_set_aside_not_errors() {
         fs::write(branch_dir(&t.dir, MAIN).join(name.to_string()), bytes).unwrap();
 
         let r = f.import().unwrap();
-        assert!(r.applied.is_empty(), "{what}");
+        let ids: Vec<&str> = r.applied.iter().map(|c| c.tx.tx_id.as_str()).collect();
+        assert_eq!(ids, ["b2-edited"], "{what}");
         assert_eq!(r.error, None, "{what}");
-        assert_eq!(r.quarantined, 1, "{what}");
+        assert_eq!(r.quarantined, 0, "{what}");
         assert_eq!(f.read_only(), None, "{what}");
-        let q = quarantine(&f);
+        assert_eq!(f.head(MAIN), 3, "{what}: main keeps following");
         assert_eq!(
-            (q[0].0.as_str(), q[0].2.as_str()),
-            ("b2-edited", "MALFORMED"),
-            "{what}"
+            f.branches(true).unwrap().len(),
+            2,
+            "{what}: the index ignores it"
         );
-        assert!(q[0].4.contains("does not fit"), "{what}: {}", q[0].4);
-        assert_eq!(f.head(MAIN), 2, "{what}");
-        assert_eq!(f.branches(true).unwrap().len(), 2, "{what}");
-        // Re-reported, not re-counted.
-        assert_eq!(f.import().unwrap().quarantined, 1, "{what}");
+        let st = f.status();
+        let w = st
+            .warnings
+            .iter()
+            .find(|w| w.code == "BRANCH_RECORDS_IGNORED")
+            .unwrap_or_else(|| panic!("{what}: {:?}", st.warnings));
+        assert!(w.message.contains("b2-edited"), "{what}: {}", w.message);
+        assert!(f.import().unwrap().applied.is_empty(), "{what}");
     }
 }
 

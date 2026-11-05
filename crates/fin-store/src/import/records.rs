@@ -20,9 +20,6 @@ use crate::{Head, StoreError};
 pub(super) enum Stop {
     Newer,
     Failed(CoreError),
-    /// A `branch` or `branchSet` record that does not fit the branch index: set aside with
-    /// everything after it on the resolved chain (`MALFORMED`), never an error of the pass.
-    Aside(CoreError),
     Db(StoreError),
 }
 
@@ -40,9 +37,9 @@ pub(super) struct Version {
 
 /// The highest seed of `branch` that this resolution reaches from the branch's start (seq
 /// `start + 1`: 1 on `main`, its fork seq + 1 on a branch) and whose records up to it all
-/// read as this branch's and are no `branch` or `branchSet` record (those are absorbed, and
-/// a `branch` record's fork state is replayed, so they are never stored unreplayed) (module
-/// docs, step 3).
+/// read as this branch's, below the first `branch` or `branchSet` record (those are folded
+/// into the index and a `branch` record's fork state is replayed, so they are never stored
+/// unreplayed; replay goes on from the seed) (module docs, step 3).
 pub(super) fn seed_for<'s>(
     ctx: &Ctx<'s>,
     branch: &str,
@@ -55,21 +52,32 @@ pub(super) fn seed_for<'s>(
             on_chain.insert(meta.seq, (meta.tx_hash.as_str(), bytes, meta, slice));
         }
     }
+    // Seeds stop below the first branch-index record on the chain.
+    let mut below = u64::MAX;
+    let mut seqs: Vec<&u64> = on_chain.keys().collect();
+    seqs.sort();
+    for seq in seqs {
+        let (_, bytes, meta, slice) = &on_chain[seq];
+        if read(branch, slice, bytes, meta).is_ok_and(|r| {
+            matches!(
+                r.kind,
+                fin_core::RecordKind::Branch | fin_core::RecordKind::BranchSet
+            )
+        }) {
+            below = *seq;
+            break;
+        }
+    }
     let readable = |through: u64| {
         (start + 1..=through).all(|seq| {
-            on_chain.get(&seq).is_some_and(|(_, bytes, meta, slice)| {
-                read(branch, slice, bytes, meta).is_ok_and(|r| {
-                    !matches!(
-                        r.kind,
-                        fin_core::RecordKind::Branch | fin_core::RecordKind::BranchSet
-                    )
-                })
-            })
+            on_chain
+                .get(&seq)
+                .is_some_and(|(_, bytes, meta, slice)| read(branch, slice, bytes, meta).is_ok())
         })
     };
     ctx.seeds
         .iter()
-        .filter(|s| s.branch == branch && s.seq > start)
+        .filter(|s| s.branch == branch && s.seq > start && s.seq < below)
         .filter(|s| on_chain.get(&s.seq).is_some_and(|(h, ..)| *h == s.tx_hash))
         .max_by_key(|s| s.seq)
         .filter(|s| readable(s.seq))
@@ -165,11 +173,6 @@ pub(super) fn one(
     let record = read(branch, slice, bytes, meta)?;
     let applied = apply_committed(&h.project, &record.intent, &record.bindings)
         .map_err(|e| Stop::Failed(with(e)))?;
-    match crate::branch::index::absorb_imported(txn, branch, meta.seq, &record, &h.project)? {
-        Ok(Some(child)) => ctx.born.push(child),
-        Ok(None) => {}
-        Err(e) => return Err(Stop::Aside(with(e))),
-    }
     let version = serde_json::from_slice::<Version>(bytes)
         .map(|v| v.schema_version)
         .unwrap_or(record.schema_version);
@@ -183,6 +186,7 @@ pub(super) fn one(
         Some(&applied.diff),
         slice.header().epoch,
     )?;
+    super::branches::fold(ctx, branch, meta.seq, &record, &meta.tx_hash, &h.project)?;
     if meta.seq.is_multiple_of(SNAPSHOT_EVERY) {
         txn.execute(
             "DELETE FROM snapshots WHERE branch = ?1 AND seq = ?2",

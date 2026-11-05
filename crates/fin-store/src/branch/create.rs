@@ -300,6 +300,9 @@ fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated
         name,
         fork_seq,
         fork_hash,
+        // The fence epoch (0 in a dry run, which keeps nothing): it orders an id collision
+        // with another server's record (Decision 33).
+        epoch: ctx.epoch.unwrap_or(0),
     };
     let draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
     let record = ctx.append(draft)?;

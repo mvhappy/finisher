@@ -35,12 +35,13 @@
 //!      database lock) whenever the folder's segments or our lease changed or the last pass
 //!      left such a fork, and it is part of the skip key.
 //!    - a branch's segments must start at its fork point (`Known::fork`, from the index);
-//!    - folder directories the worklist never reaches ([`aside`]): one whose `branch` record
-//!      is set aside has every record quarantined with that record's reason (recursively);
-//!      any other waits for its `branch` record ([`ImportReport::unknown_branches`], never
-//!      read-only). A live branch whose id a set-aside `branch` record also made (two
-//!      servers across a takeover) loses the segments below its own record's epoch the same
-//!      way.
+//!    - a 4B branch is resolved from the segments that name its `branch` record
+//!      (`branchRecord`); `branch` and `branchSet` records fold into the index as they are
+//!      stored ([`branches`]: an id two servers made goes to the higher epoch, then the lower
+//!      `txHash`; a losing or unfit record is an inert row);
+//!    - every other branch segment ([`aside`]): one whose record is set aside or inert goes
+//!      to quarantine with that record's reason (recursively); one whose record is unknown
+//!      waits ([`ImportReport::unknown_branches`], never read-only).
 //! 5. **Id counters** are raised past every id in the log ([`Counters::raise_to_log`])
 //!    whenever rows were added or removed, and on the store's first pass (which repairs a DB
 //!    whose counters fell behind for any reason); and on every pass past the ids of
@@ -69,6 +70,7 @@
 
 mod apply;
 mod aside;
+mod branches;
 mod cascade;
 mod ctx;
 mod hydrate;
@@ -109,8 +111,8 @@ struct Key {
     kind: StorageKind,
     /// Where the branch starts (the graph's start check).
     fork: Option<crate::chain::ForkPoint>,
-    /// The set-aside `branch` records of the same id ([`aside::collisions`]).
-    aside: Vec<String>,
+    /// The `branch` record the index holds for the branch (its segments name it).
+    record: Option<String>,
 }
 
 /// The per-poll verdict of one branch, reused while its [`Key`] is unchanged.
@@ -338,7 +340,7 @@ impl Store {
             resolves,
             applied,
             rewound,
-            leftover,
+            dirs,
         } = pass::resolve_branches(
             &txn,
             &mut ctx,
@@ -375,7 +377,7 @@ impl Store {
             current.extend(v.quarantined.iter().cloned());
         }
         // Folder branch directories no known branch took (Decision 8).
-        let (taken, unknown) = aside::leftovers(&mut ctx, leftover, &current)?;
+        let (taken, unknown) = aside::leftovers(&mut ctx, &dirs, &current)?;
         current.extend(taken);
         report.unknown_branches = unknown;
         if ctx.changed || import.flagged.as_ref() != Some(&current) {

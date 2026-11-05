@@ -98,7 +98,7 @@ fn forked(e: &Env) -> (Store, Project) {
     let conn = Connection::open(s.db_path()).unwrap();
     let fork_hash = hash_at(&conn, MAIN, 2);
     conn.execute(
-        "INSERT INTO branches VALUES ('br1', 'feature', 'main', 2, ?1, 3, 'test', 0, 0, 0)",
+        "INSERT INTO branches VALUES ('br1', 'feature', 'main', 2, ?1, 3, 'test', 0, NULL, 0, 0, 0)",
         params![fork_hash],
     )
     .unwrap();

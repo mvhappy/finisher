@@ -72,7 +72,7 @@ fn main_with(s: &mut Store, n: u64) {
 fn fork(conn: &Connection, id: &str, parent: &str, fork_seq: u64) -> Option<String> {
     let fork_hash = hash_at(conn, parent, fork_seq).unwrap();
     conn.execute(
-        "INSERT INTO branches VALUES (?1, ?1, ?2, ?3, ?4, NULL, 'test', 0, 0, 0)",
+        "INSERT INTO branches VALUES (?1, ?1, ?2, ?3, ?4, NULL, 'test', 0, NULL, 0, 0, 0)",
         params![id, parent, fork_seq as i64, fork_hash],
     )
     .unwrap();
@@ -198,7 +198,7 @@ fn lineage_walks_parents_and_clamps_to_the_lowest_fork() {
     for (id, parent) in [("br8", "br9"), ("br9", "br8")] {
         s.conn
             .execute(
-                "INSERT INTO branches VALUES (?1, ?1, ?2, 1, 'h', NULL, 't', 0, 0, 0)",
+                "INSERT INTO branches VALUES (?1, ?1, ?2, 1, 'h', NULL, 't', 0, NULL, 0, 0, 0)",
                 params![id, parent],
             )
             .unwrap();
@@ -319,7 +319,7 @@ fn parent_short_of_the_fork_is_db_error() {
     let (_, head) = s.snapshot(MAIN).unwrap();
     s.conn
         .execute(
-            "INSERT INTO branches VALUES ('br1', 'br1', 'main', 5, 'h5', NULL, 't', 0, 0, 0)",
+            "INSERT INTO branches VALUES ('br1', 'br1', 'main', 5, 'h5', NULL, 't', 0, NULL, 0, 0, 0)",
             [],
         )
         .unwrap();

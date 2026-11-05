@@ -6,7 +6,10 @@
 //!   [`DIVERGED_TAIL`] (this server's unexported records that lost), [`SUPERSEDED`] (applied
 //!   records whose line lost to a newer epoch and were rewound, `super::rewind`, with the
 //!   rows of the descendant branches that cascaded with them, `super::cascade`),
-//!   [`CONFLICT_COPY`] (records of a foreign file that the DB does not hold). Rebuild
+//!   [`CONFLICT_COPY`] (records of a foreign file that the DB does not hold),
+//!   [`ID_COLLISION`] (the records of a branch whose `branch` record lost its id to another
+//!   server's, `super::branches` and `super::aside`; sticky and current like a diverged
+//!   tail: the decision is final once both records are in the log). Rebuild
 //!   adds `SALVAGED` (origin `salvage`): the unexported records of the database it
 //!   replaced, which exist nowhere else; the old database's own quarantine rows come along
 //!   with their reason, origin `salvage`. `DIVERGED_TAIL` and `SUPERSEDED` are kept as reason, origin and
@@ -20,7 +23,10 @@
 //!   bytes, but is not counted. A diverged tail exists nowhere else, so it stays current until
 //!   its record is in `txs` again. A `SUPERSEDED` row is current while the folder's verdicts
 //!   still set its record aside (as for every other follower, which never applied it).
-//!   Rows are never deleted by import.
+//!   Rows are never deleted by import (nor by anything else but a rebuild, which starts a
+//!   new table), so `id` (`INTEGER PRIMARY KEY`, frozen in migration 0001 without
+//!   `AUTOINCREMENT`) only grows: `crate::counters::Counters::raise_to_quarantine` relies on
+//!   it as its watermark.
 //! - A record the DB holds in `txs` is never quarantined (a harmless duplicate).
 
 use std::collections::BTreeSet;
@@ -41,6 +47,10 @@ pub(super) const MALFORMED: &str = "MALFORMED";
 pub(super) const DIVERGED_TAIL: &str = "DIVERGED_TAIL";
 pub(super) const SUPERSEDED: &str = "SUPERSEDED";
 pub(super) const CONFLICT_COPY: &str = "CONFLICT_COPY";
+/// The records of a branch whose `branch` record lost its id to another server's (plan 4B
+/// Decision 33). Like `DIVERGED_TAIL`, current until the record is in `txs` again, and kept
+/// once set.
+pub(super) const ID_COLLISION: &str = "ID_COLLISION";
 
 pub(super) struct Quarantined<'a> {
     pub(super) tx_hash: &'a str,
@@ -63,14 +73,14 @@ pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreErro
          ON CONFLICT(tx_hash) DO UPDATE SET
              current = 1,
              seen_at = excluded.seen_at,
-             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
+             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
                            THEN quarantine.origin ELSE excluded.origin END,
-             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
+             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
                            THEN quarantine.detail ELSE excluded.detail END,
-             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
+             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
                            THEN quarantine.reason ELSE excluded.reason END
          WHERE quarantine.current = 0
-            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
+            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
                 AND (quarantine.reason != excluded.reason OR quarantine.origin != excluded.origin))",
         params![q.tx_hash, q.branch, q.origin, q.reason, q.detail, q.bytes, q.now],
     )?;
@@ -85,8 +95,8 @@ pub(super) fn flag_current(
     current: &BTreeSet<String>,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED'))
-         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED'))",
+        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED', 'ID_COLLISION'))
+         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED', 'ID_COLLISION'))",
         [],
     )?;
     let mut stmt =

@@ -380,6 +380,7 @@ fn a_visible_file_under_our_segment_name_makes_read_only() {
             op_schema_versions: [1, 1],
             created_at: 0,
             genesis_hash: a.genesis_hash(),
+            branch_record: None,
             pack: false,
             replaces: vec![],
         };

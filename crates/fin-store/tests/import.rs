@@ -220,6 +220,7 @@ fn header(s: &Store, epoch: u64, first: u64, last: u64, prev: Option<String>) ->
         op_schema_versions: [1, 1],
         created_at: 0,
         genesis_hash: s.genesis_hash(),
+        branch_record: None,
         pack: false,
         replaces: Vec::new(),
     }

@@ -82,12 +82,12 @@ CREATE TABLE IF NOT EXISTS quarantine (
 CREATE TABLE IF NOT EXISTS branches (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, fork_seq INTEGER NOT NULL,
     fork_hash TEXT, created_seq INTEGER, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
-    archived INTEGER NOT NULL, merged INTEGER NOT NULL
+    record TEXT, epoch INTEGER NOT NULL, archived INTEGER NOT NULL, merged INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS record_links (
     tx_id TEXT PRIMARY KEY, branch TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
     author TEXT NOT NULL, origin TEXT, origin_hash TEXT, from_branch TEXT, merge_id TEXT,
-    targets TEXT, name TEXT, UNIQUE (branch, seq)
+    targets TEXT, name TEXT, ignored TEXT, UNIQUE (branch, seq)
 );
 CREATE INDEX IF NOT EXISTS record_links_origin ON record_links (origin) WHERE origin IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_origin_hash ON record_links (origin_hash) WHERE origin_hash IS NOT NULL;
@@ -96,7 +96,7 @@ CREATE INDEX IF NOT EXISTS record_links_merge ON record_links (merge_id) WHERE m
 
 /// The `main` row of `branches`, as migration 0002 writes it.
 const MAIN_BRANCH_ROW: &str =
-    "INSERT INTO branches VALUES ('main','main',NULL,0,NULL,NULL,'',0,0,0)";
+    "INSERT INTO branches VALUES ('main','main',NULL,0,NULL,NULL,'',0,NULL,0,0,0)";
 
 /// Opens (`create`: creates) the database and sets WAL, `synchronous=FULL` and foreign keys.
 pub(crate) fn connect(path: &Path, create: bool) -> Result<Connection, StoreError> {

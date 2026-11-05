@@ -175,6 +175,7 @@ fn encode(
         if h.first_seq >= first.first_seq
             && h.last_seq <= last.last_seq
             && h.epoch <= epoch
+            && h.branch_record == first.branch_record
             && !replaced.iter().any(|r| r.hash() == s.hash())
         {
             replaced.push(s);
@@ -194,7 +195,7 @@ fn encode(
     replaces.sort();
     let lines: Vec<&[u8]> = primaries.iter().flat_map(|s| s.records()).collect();
     // The highest its records need: v1 while they are all edits.
-    let (format_version, min_reader_version) = segment::version_for(&lines);
+    let (format_version, min_reader_version) = segment::version_for_branch(branch, &lines);
     let header = Header {
         format_version,
         min_reader_version,
@@ -224,6 +225,8 @@ fn encode(
             .max()
             .unwrap_or(0),
         genesis_hash: genesis.to_string(),
+        // A branch's pack names the same `branch` record as the segments it replaces.
+        branch_record: first.branch_record.clone(),
         pack: true,
         replaces,
     };

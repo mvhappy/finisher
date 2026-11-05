@@ -164,6 +164,7 @@ fn create_branch_appends_branch_record_on_parent() {
             name: "feature".into(),
             fork_seq: 2,
             fork_hash: Some(fork_hash.clone()),
+            epoch: 1,
         })
     );
     assert_eq!(s.head(MAIN), 3);
@@ -301,6 +302,7 @@ fn from_older_seq_forks_there() {
             name: "early".into(),
             fork_seq: 1,
             fork_hash: Some(hash_at(&s, MAIN, 1)),
+            epoch: 1,
         })
     );
     assert_eq!(c.branch.head, 1);
@@ -345,6 +347,7 @@ fn fork_at_zero_has_null_fork_hash() {
             name: "blank".into(),
             fork_seq: 0,
             fork_hash: None,
+            epoch: 1,
         })
     );
     let (rev, p) = s.snapshot("br1").unwrap();

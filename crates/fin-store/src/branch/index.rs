@@ -1,20 +1,23 @@
 //! The `branches` table: the branch index (plan 4B Decision 6). It is kept from `branch` and
-//! `branchSet` records as they are appended ([`absorb`], from [`crate::write::WriteCtx::append`]),
-//! and [`crate::derived::recompute`] rebuilds it from the log. Branch references resolve
+//! `branchSet` records as they are appended ([`absorb`], from [`crate::write::WriteCtx::append`])
+//! and imported (`crate::import::branches`), and [`crate::derived::recompute`] rebuilds it
+//! from the log. A record that takes no effect (a `branch` record that lost an id collision,
+//! one the index refuses) stays in the log as an inert row, marked in `record_links.ignored`. Branch references resolve
 //! against it ([`resolve`]).
 
-use fin_core::branch::{BranchIndex, BranchInfo};
+use fin_core::branch::{Absorbed, BranchIndex, BranchInfo};
 use fin_core::{CoreError, Record, RecordKind};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use super::lineage;
 use crate::db::{self, to_i64, to_u64};
 use crate::{StoreError, branch_not_found};
 
 const COLUMNS: &str = "id, name, parent, fork_seq, fork_hash, created_seq, created_by, \
-                       created_at, archived, merged";
+                       created_at, record, epoch, archived, merged";
 
-fn from_row(r: &Row<'_>) -> rusqlite::Result<(BranchInfo, i64, Option<i64>)> {
+type RawRow = (BranchInfo, i64, Option<i64>, i64);
+
+fn from_row(r: &Row<'_>) -> rusqlite::Result<RawRow> {
     let info = BranchInfo {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -24,17 +27,18 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<(BranchInfo, i64, Option<i64>)> {
         created_seq: None,
         created_by: r.get(6)?,
         created_at: r.get(7)?,
-        archived: r.get::<_, i64>(8)? != 0,
-        merged: r.get::<_, i64>(9)? != 0,
+        record: r.get(8)?,
+        epoch: 0,
+        archived: r.get::<_, i64>(10)? != 0,
+        merged: r.get::<_, i64>(11)? != 0,
     };
-    Ok((info, r.get(3)?, r.get(5)?))
+    Ok((info, r.get(3)?, r.get(5)?, r.get(9)?))
 }
 
-fn finish(
-    (mut info, fork, created): (BranchInfo, i64, Option<i64>),
-) -> Result<BranchInfo, StoreError> {
+fn finish((mut info, fork, created, epoch): RawRow) -> Result<BranchInfo, StoreError> {
     info.fork_seq = to_u64(fork)?;
     info.created_seq = created.map(to_u64).transpose()?;
+    info.epoch = to_u64(epoch)?;
     Ok(info)
 }
 
@@ -61,7 +65,8 @@ pub(crate) fn get(conn: &Connection, id: &str) -> Result<Option<BranchInfo>, Sto
 /// Writes `info` as its row (insert or replace).
 pub(crate) fn save(conn: &Connection, info: &BranchInfo) -> Result<(), StoreError> {
     conn.prepare_cached(&format!(
-        "INSERT OR REPLACE INTO branches ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+        "INSERT OR REPLACE INTO branches ({COLUMNS})
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
     ))?
     .execute(params![
         info.id,
@@ -72,6 +77,8 @@ pub(crate) fn save(conn: &Connection, info: &BranchInfo) -> Result<(), StoreErro
         info.created_seq.map(to_i64).transpose()?,
         info.created_by,
         info.created_at,
+        info.record,
+        to_i64(info.epoch)?,
         i64::from(info.archived),
         i64::from(info.merged),
     ])?;
@@ -87,84 +94,105 @@ pub(crate) fn replace_all(conn: &Connection, ix: &BranchIndex) -> Result<(), Sto
     Ok(())
 }
 
-/// Folds the record at `seq` of `branch` into the table ([`BranchIndex::absorb`]); returns
-/// the branch it changed. Other kinds than `branch` and `branchSet` read nothing.
+/// Folds the record at `seq` of `branch` (its bytes hash to `tx_hash`) into the table as a
+/// write appends it ([`BranchIndex::absorb`]). A write makes only new ids (the counters are
+/// past every id the log and the quarantine hold), so an id collision here is damage.
 pub(crate) fn absorb(
     conn: &Connection,
     branch: &str,
     seq: u64,
     rec: &Record,
-) -> Result<Option<String>, StoreError> {
+    tx_hash: &str,
+) -> Result<(), StoreError> {
     if !matches!(rec.kind, RecordKind::Branch | RecordKind::BranchSet) {
-        return Ok(None);
+        return Ok(());
     }
     let mut ix = load(conn)?;
-    let changed = ix.absorb(branch, seq, rec)?;
-    if let Some(info) = changed.as_deref().and_then(|id| ix.get(id)) {
-        save(conn, info)?;
+    match ix.absorb(branch, seq, rec, tx_hash)? {
+        Absorbed::Nothing => Ok(()),
+        Absorbed::Made(id) | Absorbed::Set(id) => {
+            let info = ix.get(&id).ok_or_else(|| missing(&id))?;
+            save(conn, info)
+        }
+        Absorbed::Replaced { id, .. } | Absorbed::Lost { id, .. } => Err(CoreError::new(
+            "DB_ERROR",
+            format!("record {} makes branch {id}, which exists", rec.tx_id),
+        )
+        .with_details(serde_json::json!({ "branch": id, "txId": rec.tx_id }))
+        .into()),
     }
-    Ok(changed)
 }
 
-/// Folds a record import is about to store at `seq` of `branch` into the table, before the
-/// row is inserted (plan 4B Decision 15): `Ok(Err(why))` when it does not fit the index
-/// ([`BranchIndex::absorb`]), or when a `branch` record's `forkHash` is not the parent's
-/// record at `forkSeq`: the caller sets it aside and writes nothing. A `branch` record also
-/// stores the child's fork state as its snapshot at `forkSeq` (Decision 14), as
-/// [`crate::Store::create_branch`] does: `before` is `branch`'s state at `seq - 1`, used when
-/// the fork is there; otherwise the state is replayed ([`lineage::state_at`]). Returns the
-/// branch a `branch` record made.
-pub(crate) fn absorb_imported(
+/// The `txHash` at `seq` on `branch`'s lineage as `ix` knows it (`None` at 0, or when that
+/// row is missing): the branch's own row above its fork, an ancestor's below.
+pub(crate) fn hash_on(
     conn: &Connection,
+    ix: &BranchIndex,
     branch: &str,
     seq: u64,
-    rec: &Record,
-    before: &fin_core::Project,
-) -> Result<Result<Option<String>, CoreError>, StoreError> {
-    if !matches!(rec.kind, RecordKind::Branch | RecordKind::BranchSet) {
-        return Ok(Ok(None));
+) -> Result<Option<String>, StoreError> {
+    let mut at = branch.to_string();
+    for _ in 0..=ix.list().len() {
+        if seq == 0 {
+            return Ok(None);
+        }
+        match ix.get(&at) {
+            Some(i) if i.parent.is_some() && seq <= i.fork_seq => {
+                at = i.parent.clone().unwrap_or_default();
+            }
+            _ => break,
+        }
     }
-    let mut ix = load(conn)?;
-    let changed = match ix.absorb(branch, seq, rec) {
-        Ok(c) => c,
-        Err(e) => return Ok(Err(e)),
-    };
-    let Some(id) = changed else {
-        return Ok(Ok(None));
-    };
-    let Some(info) = ix.get(&id).cloned() else {
-        return Err(missing(&id));
-    };
-    if rec.kind == RecordKind::BranchSet {
-        save(conn, &info)?;
-        return Ok(Ok(None));
-    }
-    let at = lineage::hash_at(conn, branch, info.fork_seq)?;
-    if at != info.fork_hash {
-        let why = format!(
-            "branch {id} forks at seq {} of {branch} with forkHash {:?}, but that record is {at:?}",
-            info.fork_seq, info.fork_hash
-        );
-        return Ok(Err(CoreError::new(
-            "INVALID_FORMAT",
-            format!("record {} does not fit the branch index: {why}", rec.tx_id),
+    Ok(conn
+        .prepare_cached("SELECT tx_hash FROM txs WHERE branch = ?1 AND seq = ?2")?
+        .query_row(params![at, to_i64(seq)?], |r| r.get(0))
+        .optional()?)
+}
+
+/// Why the branch `info` (just folded from its `branch` record) cannot start where the
+/// record says: its `forkHash` is not the parent's record at `forkSeq` (on the lineage of
+/// `ix`, the index before the record). `None` when it can.
+pub(crate) fn bad_fork(
+    conn: &Connection,
+    ix: &BranchIndex,
+    info: &BranchInfo,
+) -> Result<Option<String>, StoreError> {
+    let parent = info.parent.as_deref().unwrap_or(fin_core::branch::MAIN);
+    let at = hash_on(conn, ix, parent, info.fork_seq)?;
+    Ok((at != info.fork_hash).then(|| {
+        format!(
+            "branch {} forks at seq {} of {parent} with forkHash {:?}, but that record is {at:?}",
+            info.id, info.fork_seq, info.fork_hash
         )
-        .with_details(
-            serde_json::json!({ "kind": "record", "txId": rec.tx_id, "reason": why }),
-        )));
-    }
-    let state = if info.fork_seq + 1 == seq {
-        before.clone()
-    } else {
-        lineage::state_at(conn, branch, info.fork_seq)?
-    };
-    save(conn, &info)?;
-    conn.execute(
-        "DELETE FROM snapshots WHERE branch = ?1 AND seq = ?2",
-        params![id, to_i64(info.fork_seq)?],
-    )?;
-    db::insert_snapshot(conn, &id, info.fork_seq, &state)?;
-    Ok(Ok(Some(id)))
+    }))
+}
+
+/// Marks the `record_links` row of the record with `tx_hash` inert (`why`) or live (`None`):
+/// a `branch` or `branchSet` record that took no effect on the index (status warns).
+pub(crate) fn set_ignored(
+    conn: &Connection,
+    tx_hash: &str,
+    why: Option<&str>,
+) -> Result<(), StoreError> {
+    conn.prepare_cached(
+        "UPDATE record_links SET ignored = ?2
+         WHERE tx_id IN (SELECT tx_id FROM txs WHERE tx_hash = ?1)",
+    )?
+    .execute(params![tx_hash, why])?;
+    Ok(())
+}
+
+/// `ignored` for a `branch` record that lost id `id` to the record `winner`.
+pub(crate) fn collision(id: &str, winner: &str) -> String {
+    format!(
+        "ID_COLLISION: branch {id} is held by branch record {}",
+        crate::names::hash12(winner).unwrap_or(winner)
+    )
+}
+
+/// `ignored` for a record the index refuses.
+pub(crate) fn unfit(why: &str) -> String {
+    format!("INVALID_FORMAT: {why}")
 }
 
 /// The branch reference `r` names (Decision 12): an id, an active display name, or

@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use fin_core::branch::{
-    BranchIndex, BranchInfo, BranchState, id_number, validate_branch_name, validate_checkpoint_name,
+    Absorbed, BranchIndex, BranchInfo, BranchState, id_number, validate_branch_name,
+    validate_checkpoint_name,
 };
 use fin_core::{Link, Record, SCHEMA_VERSION, Tx};
 
@@ -39,6 +40,7 @@ fn branch(id: &str, name: &str, fork_seq: u64) -> Link {
         name: name.into(),
         fork_seq,
         fork_hash: (fork_seq > 0).then(|| format!("h{fork_seq}")),
+        epoch: 1,
     }
 }
 
@@ -60,6 +62,8 @@ fn info(id: &str, name: &str) -> BranchInfo {
         created_seq: Some(1),
         created_by: "ann".into(),
         created_at: 0,
+        record: None,
+        epoch: 0,
         archived: false,
         merged: false,
     }
@@ -133,9 +137,14 @@ fn index_folds_branch_and_branch_set() {
     let mut ix = BranchIndex::with_main();
     assert_eq!(ix.list().len(), 1);
     assert_eq!(
-        ix.absorb("main", 3, &record("main", 3, branch("br1", "feature", 2)))
-            .unwrap(),
-        Some("br1".to_string())
+        ix.absorb(
+            "main",
+            3,
+            &record("main", 3, branch("br1", "feature", 2)),
+            "h"
+        )
+        .unwrap(),
+        Absorbed::Made("br1".to_string())
     );
     let b = ix.get("br1").unwrap();
     assert_eq!(
@@ -149,6 +158,8 @@ fn index_folds_branch_and_branch_set() {
             created_seq: Some(3),
             created_by: "ann".into(),
             created_at: 1_003,
+            record: Some("h".into()),
+            epoch: 1,
             archived: false,
             merged: false,
         }
@@ -156,17 +167,23 @@ fn index_folds_branch_and_branch_set() {
     assert_eq!(b.state(), BranchState::Active);
 
     // A child of br1, then a rename and an archive of it, on br1's log.
-    ix.absorb("br1", 4, &record("br1", 4, branch("br2", "deep", 3)))
+    ix.absorb("br1", 4, &record("br1", 4, branch("br2", "deep", 3)), "h")
         .unwrap();
     ix.absorb(
         "br1",
         5,
         &record("br1", 5, set("br2", Some("deeper"), None)),
+        "h",
     )
     .unwrap();
     assert_eq!(ix.get("br2").unwrap().name, "deeper");
-    ix.absorb("br1", 6, &record("br1", 6, set("br2", None, Some(true))))
-        .unwrap();
+    ix.absorb(
+        "br1",
+        6,
+        &record("br1", 6, set("br2", None, Some(true))),
+        "h",
+    )
+    .unwrap();
     assert_eq!(ix.get("br2").unwrap().state(), BranchState::Archived);
     assert!(ix.is_descendant("br2", "main"));
     assert!(ix.is_descendant("br2", "br1"));
@@ -176,7 +193,7 @@ fn index_folds_branch_and_branch_set() {
 
     // Records of other kinds leave the index alone.
     let edit = record("br1", 7, Link::Edit);
-    assert_eq!(ix.absorb("br1", 7, &edit).unwrap(), None);
+    assert_eq!(ix.absorb("br1", 7, &edit, "h").unwrap(), Absorbed::Nothing);
 
     // Shapes the log never holds: a known id again, a branchSet off the parent's log or
     // of an unknown branch, a fork at or above the branch record.
@@ -200,6 +217,7 @@ fn index_folds_branch_and_branch_set() {
                 name: "x".into(),
                 fork_seq: 0,
                 fork_hash: Some("h0".into()),
+                epoch: 1,
             },
         ),
         (
@@ -210,11 +228,12 @@ fn index_folds_branch_and_branch_set() {
                 name: "x".into(),
                 fork_seq: 2,
                 fork_hash: None,
+                epoch: 1,
             },
         ),
     ] {
         let e = ix
-            .absorb(on, seq, &record(on, seq, link.clone()))
+            .absorb(on, seq, &record(on, seq, link.clone()), "h")
             .unwrap_err();
         assert_eq!(e.code, "INVALID_FORMAT", "{link:?} on {on}");
     }
@@ -223,13 +242,13 @@ fn index_folds_branch_and_branch_set() {
 #[test]
 fn parents_first_is_depth_then_numeric_id() {
     let mut ix = BranchIndex::with_main();
-    ix.absorb("main", 1, &record("main", 1, branch("br10", "a", 0)))
+    ix.absorb("main", 1, &record("main", 1, branch("br10", "a", 0)), "h")
         .unwrap();
-    ix.absorb("main", 2, &record("main", 2, branch("br9", "b", 0)))
+    ix.absorb("main", 2, &record("main", 2, branch("br9", "b", 0)), "h")
         .unwrap();
-    ix.absorb("br9", 3, &record("br9", 3, branch("br11", "c", 2)))
+    ix.absorb("br9", 3, &record("br9", 3, branch("br11", "c", 2)), "h")
         .unwrap();
-    ix.absorb("br10", 4, &record("br10", 4, branch("br2", "d", 1)))
+    ix.absorb("br10", 4, &record("br10", 4, branch("br2", "d", 1)), "h")
         .unwrap();
     assert_eq!(
         ix.parents_first(),
@@ -243,9 +262,9 @@ fn parents_first_is_depth_then_numeric_id() {
 fn duplicate_names_lower_numeric_id_keeps_name() {
     // Arriving through import: both are active under one name (case-insensitively).
     let mut ix = BranchIndex::with_main();
-    ix.absorb("main", 1, &record("main", 1, branch("br10", "Cut", 0)))
+    ix.absorb("main", 1, &record("main", 1, branch("br10", "Cut", 0)), "h")
         .unwrap();
-    ix.absorb("main", 2, &record("main", 2, branch("br9", "cut", 0)))
+    ix.absorb("main", 2, &record("main", 2, branch("br9", "cut", 0)), "h")
         .unwrap();
     assert_eq!(ix.resolve("cut").unwrap().id, "br9");
     assert_eq!(ix.resolve("CUT").unwrap().id, "br9");
@@ -266,8 +285,13 @@ fn duplicate_names_lower_numeric_id_keeps_name() {
     );
 
     // Archiving the holder hands the name to the other one.
-    ix.absorb("main", 3, &record("main", 3, set("br9", None, Some(true))))
-        .unwrap();
+    ix.absorb(
+        "main",
+        3,
+        &record("main", 3, set("br9", None, Some(true))),
+        "h",
+    )
+    .unwrap();
     assert_eq!(ix.resolve("cut").unwrap().id, "br10");
     let display: Vec<String> = ix.list().into_iter().map(|(d, _)| d).collect();
     assert_eq!(display, vec!["main", "cut#br9", "Cut"]);
@@ -276,12 +300,22 @@ fn duplicate_names_lower_numeric_id_keeps_name() {
 #[test]
 fn resolve_forms() {
     let mut ix = BranchIndex::with_main();
-    ix.absorb("main", 1, &record("main", 1, branch("br1", "feature", 0)))
+    ix.absorb(
+        "main",
+        1,
+        &record("main", 1, branch("br1", "feature", 0)),
+        "h",
+    )
+    .unwrap();
+    ix.absorb("main", 2, &record("main", 2, branch("br2", "old", 0)), "h")
         .unwrap();
-    ix.absorb("main", 2, &record("main", 2, branch("br2", "old", 0)))
-        .unwrap();
-    ix.absorb("main", 3, &record("main", 3, set("br2", None, Some(true))))
-        .unwrap();
+    ix.absorb(
+        "main",
+        3,
+        &record("main", 3, set("br2", None, Some(true))),
+        "h",
+    )
+    .unwrap();
     assert_eq!(ix.resolve("main").unwrap().id, "main");
     assert_eq!(ix.resolve("br1").unwrap().id, "br1");
     assert_eq!(ix.resolve("feature").unwrap().id, "br1");
@@ -327,4 +361,61 @@ fn branch_state_serialises_camel_case() {
         .unwrap(),
         serde_json::json!(["active", "archived", "merged"])
     );
+}
+
+fn branch_at(id: &str, name: &str, fork_seq: u64, epoch: u64) -> Link {
+    Link::Branch {
+        branch_id: id.into(),
+        name: name.into(),
+        fork_seq,
+        fork_hash: (fork_seq > 0).then(|| format!("h{fork_seq}")),
+        epoch,
+    }
+}
+
+// Decision 33: the same id made by two `branch` records (two servers across a takeover) is
+// held by the higher epoch, then the lower txHash, whatever order they are folded in; the
+// loser's descendants go with it.
+#[test]
+fn id_collision_is_held_by_higher_epoch_then_lower_hash() {
+    let x = ("main", 2, branch_at("br1", "x-side", 1, 1), "hx");
+    let y = ("main", 3, branch_at("br1", "y-side", 1, 2), "hy");
+    let fold = |order: &[&(&str, u64, Link, &str)]| {
+        let mut ix = BranchIndex::with_main();
+        let mut out = vec![];
+        for (on, seq, link, hash) in order {
+            out.push(
+                ix.absorb(on, *seq, &record(on, *seq, link.clone()), hash)
+                    .unwrap(),
+            );
+        }
+        (ix, out)
+    };
+    let (a, out) = fold(&[&x, &y]);
+    assert!(
+        matches!(&out[1], Absorbed::Replaced { id, old } if id == "br1" && old.name == "x-side")
+    );
+    let (b, out) = fold(&[&y, &x]);
+    assert_eq!(
+        out[1],
+        Absorbed::Lost {
+            id: "br1".into(),
+            winner: "hy".into()
+        }
+    );
+    assert_eq!(a, b);
+    assert_eq!(a.get("br1").unwrap().name, "y-side");
+    assert_eq!(a.get("br1").unwrap().record.as_deref(), Some("hy"));
+
+    // Equal epochs: the lower txHash holds it.
+    let p = ("main", 2, branch_at("br1", "p", 1, 2), "hb");
+    let q = ("main", 3, branch_at("br1", "q", 1, 2), "ha");
+    assert_eq!(fold(&[&p, &q]).0, fold(&[&q, &p]).0);
+    assert_eq!(fold(&[&p, &q]).0.get("br1").unwrap().name, "q");
+
+    // A replaced branch's children are gone from the index with it.
+    let child = ("br1", 3, branch_at("br2", "kid", 2, 1), "hk");
+    let x2 = ("main", 2, branch_at("br1", "x-side", 1, 1), "hx");
+    let (ix, _) = fold(&[&x2, &child, &y]);
+    assert!(ix.get("br2").is_none());
 }

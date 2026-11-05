@@ -128,6 +128,7 @@ fn header(version: (u32, u32)) -> segment::Header {
         op_schema_versions: [1, 1],
         created_at: 1,
         genesis_hash: format!("blake3:{}", "0".repeat(64)),
+        branch_record: None,
         pack: false,
         replaces: vec![],
     }
@@ -209,6 +210,7 @@ fn branch_link() -> Link {
         name: "alt".into(),
         fork_seq: 0,
         fork_hash: None,
+        epoch: 1,
     }
 }
 

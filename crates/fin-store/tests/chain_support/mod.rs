@@ -63,6 +63,7 @@ pub fn build_on(
         op_schema_versions: [1, 1],
         created_at,
         genesis_hash: format!("blake3:{}", "0".repeat(64)),
+        branch_record: (branch != "main").then(|| format!("blake3:{}", "b".repeat(64))),
         pack: !replaces.is_empty(),
         replaces,
     };

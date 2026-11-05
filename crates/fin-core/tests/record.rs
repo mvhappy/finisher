@@ -220,12 +220,14 @@ fn every_link() -> Vec<Link> {
             name: "alt".into(),
             fork_seq: 4,
             fork_hash: Some(H.into()),
+            epoch: 1,
         },
         Link::Branch {
             branch_id: "br4".into(),
             name: "empty".into(),
             fork_seq: 0,
             fork_hash: None,
+            epoch: 1,
         },
         Link::BranchSet {
             branch_id: "br3".into(),

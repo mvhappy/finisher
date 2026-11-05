@@ -49,8 +49,31 @@ pub struct BranchInfo {
     pub created_by: String,
     /// The `branch` record's `committedAt` (0 for `main`).
     pub created_at: i64,
+    /// The `txHash` of the `branch` record that made it (`None` for `main`). Every segment of
+    /// the branch names it (`branchRecord`).
+    pub record: Option<String>,
+    /// That record's lease epoch (0 for `main`).
+    pub epoch: u64,
     pub archived: bool,
     pub merged: bool,
+}
+
+/// What folding one record into the index did ([`BranchIndex::absorb`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Absorbed {
+    /// Not a `branch` or `branchSet` record.
+    Nothing,
+    /// A `branch` record made branch `0`.
+    Made(String),
+    /// A `branchSet` record changed branch `0`.
+    Set(String),
+    /// A `branch` record made an id another `branch` record had made, and wins (higher
+    /// `epoch`, then lower `txHash`): the index now holds it, and `old`'s branch (with its
+    /// descendants) no longer exists.
+    Replaced { id: String, old: Box<BranchInfo> },
+    /// A `branch` record made an id another `branch` record had made, and loses: the index
+    /// is unchanged and the record is inert (`winner`: the holder's `txHash`).
+    Lost { id: String, winner: String },
 }
 
 impl BranchInfo {
@@ -76,8 +99,20 @@ impl BranchInfo {
             created_seq: None,
             created_by: String::new(),
             created_at: 0,
+            record: None,
+            epoch: 0,
             archived: false,
             merged: false,
+        }
+    }
+
+    /// Whether the `branch` record `(epoch, hash)` wins the id over this branch's own
+    /// (Decision 33): the higher epoch, then the lower `txHash`.
+    pub fn loses_to(&self, epoch: u64, hash: &str) -> bool {
+        match epoch.cmp(&self.epoch) {
+            std::cmp::Ordering::Greater => true,
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => self.record.as_deref().is_some_and(|r| hash < r),
         }
     }
 }
@@ -204,27 +239,33 @@ impl BranchIndex {
         self.by_id.get(id)
     }
 
-    /// Folds the record at `seq` of `branch` into the index: a `branch` record adds its
-    /// branch (a child of `branch`), a `branchSet` renames, archives or restores a child of
-    /// `branch`; other kinds change nothing. Returns the id of the branch it changed. A
-    /// record the log of a project never holds (an id already known, a branch record on an
-    /// unknown branch or forking at or above its own seq, a `forkHash` present when
-    /// `forkSeq` is 0 or absent when it is not (Decision 3), a name the name rules refuse
-    /// ([`validate_branch_name`]: it would not resolve or list back), a `branchSet` of a
-    /// branch that is not a child of `branch`) is `INVALID_FORMAT`, and the index is left as
-    /// it was.
+    /// Folds the record at `seq` of `branch`, whose bytes hash to `tx_hash`, into the index:
+    /// a `branch` record adds its branch (a child of `branch`), a `branchSet` renames,
+    /// archives or restores a child of `branch`; other kinds change nothing. A `branch`
+    /// record for an id the index holds is an id collision (two servers across a takeover,
+    /// Decision 33): the higher `epoch`, then the lower `txHash`, holds the id
+    /// ([`Absorbed::Replaced`] or [`Absorbed::Lost`]); the same record again is refused.
+    ///
+    /// A record the log of a project never holds is `INVALID_FORMAT`, and the index is left
+    /// as it was: a `branch` record on an unknown branch or forking at or above its own seq,
+    /// a `forkHash` present when `forkSeq` is 0 or absent when it is not (Decision 3), a
+    /// name the name rules refuse ([`validate_branch_name`]: it would not resolve or list
+    /// back), a non-`br<n>` id, a `branchSet` of an unknown branch or of a branch that is not
+    /// a child of `branch`.
     pub fn absorb(
         &mut self,
         branch: &str,
         seq: u64,
         rec: &Record,
-    ) -> Result<Option<String>, CoreError> {
+        tx_hash: &str,
+    ) -> Result<Absorbed, CoreError> {
         match rec.link()? {
             Link::Branch {
                 branch_id,
                 name,
                 fork_seq,
                 fork_hash,
+                epoch,
             } => {
                 if !self.by_id.contains_key(branch) {
                     return Err(malformed(
@@ -234,9 +275,6 @@ impl BranchIndex {
                 }
                 if id_number(&branch_id).is_none() {
                     return Err(malformed(rec, format!("{branch_id:?} is not a branch id")));
-                }
-                if self.by_id.contains_key(&branch_id) {
-                    return Err(malformed(rec, format!("branch {branch_id} already exists")));
                 }
                 if fork_seq >= seq {
                     return Err(malformed(
@@ -260,11 +298,42 @@ impl BranchIndex {
                     created_seq: Some(seq),
                     created_by: rec.author.clone(),
                     created_at: rec.committed_at,
+                    record: Some(tx_hash.to_string()),
+                    epoch,
                     archived: false,
                     merged: false,
                 };
-                self.by_id.insert(branch_id.clone(), info);
-                Ok(Some(branch_id))
+                match self.by_id.get(&branch_id) {
+                    None => {
+                        self.by_id.insert(branch_id.clone(), info);
+                        Ok(Absorbed::Made(branch_id))
+                    }
+                    Some(old) if old.record.as_deref() == Some(tx_hash) => {
+                        Err(malformed(rec, format!("branch {branch_id} already exists")))
+                    }
+                    Some(old) if old.parent.is_none() => {
+                        Err(malformed(rec, format!("branch {branch_id} already exists")))
+                    }
+                    Some(old) if old.loses_to(epoch, tx_hash) => {
+                        let old = Box::new(old.clone());
+                        // The old branch's descendants go with it.
+                        let gone: Vec<String> = self
+                            .by_id
+                            .keys()
+                            .filter(|k| self.is_descendant(k, &branch_id))
+                            .cloned()
+                            .collect();
+                        for k in gone {
+                            self.by_id.remove(&k);
+                        }
+                        self.by_id.insert(branch_id.clone(), info);
+                        Ok(Absorbed::Replaced { id: branch_id, old })
+                    }
+                    Some(old) => Ok(Absorbed::Lost {
+                        id: branch_id,
+                        winner: old.record.clone().unwrap_or_default(),
+                    }),
+                }
             }
             Link::BranchSet {
                 branch_id,
@@ -289,9 +358,9 @@ impl BranchIndex {
                 if let Some(archived) = archived {
                     info.archived = archived;
                 }
-                Ok(Some(branch_id))
+                Ok(Absorbed::Set(branch_id))
             }
-            _ => Ok(None),
+            _ => Ok(Absorbed::Nothing),
         }
     }
 

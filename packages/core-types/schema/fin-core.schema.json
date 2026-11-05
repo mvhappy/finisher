@@ -660,10 +660,15 @@
           "type": "object"
         },
         {
-          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0).",
+          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`.",
           "properties": {
             "branchId": {
               "type": "string"
+            },
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             },
             "forkHash": {
               "type": [
@@ -688,7 +693,8 @@
             "kind",
             "branchId",
             "name",
-            "forkSeq"
+            "forkSeq",
+            "epoch"
           ],
           "type": "object"
         },

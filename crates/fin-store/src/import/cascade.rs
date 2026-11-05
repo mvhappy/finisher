@@ -24,8 +24,7 @@
 //!   whatever its base (`HISTORY_REWOUND`), and a `Rewound` event ends its subscribers;
 //! - then (also when no child was lost) [`crate::derived::recompute`] drops the
 //!   `record_links` rows whose record is gone and rebuilds the branch index, so a lost
-//!   `branchSet` is forgotten and the child's index row goes; and the set-aside `branch`
-//!   records read by [`super::aside::records_for`] are read again.
+//!   `branchSet` is forgotten and the child's index row goes.
 //!
 //! Why: followers must converge whatever the arrival order. A follower that never applied the
 //! lost line sets the child's folder directory aside with its `branch` record
@@ -85,7 +84,6 @@ impl Cause {
 
     /// The `branch` record stays, but no longer makes its branch (e.g. it lost an id
     /// collision): every row of the subtree goes to quarantine as `reason`.
-    #[allow(dead_code)] // the same-id rule's follow-up calls it
     pub(super) fn voided(kind: &'static str, winner_epoch: u64, reason: &'static str) -> Cause {
         Cause {
             kind,
@@ -123,7 +121,6 @@ pub(super) fn lost_children(
 
 /// Branch `id` and all its descendants, parents first: the subtree a voided `branch` record
 /// takes with it (pass it to [`cascade`]). Empty when the index does not know `id`.
-#[allow(dead_code)] // the same-id rule's follow-up calls it
 pub(super) fn subtree(conn: &Connection, id: &str) -> Result<Vec<Child>, StoreError> {
     let root: Option<Child> = conn
         .query_row(&format!("{CHILD} WHERE b.id = ?1"), params![id], |r| {
@@ -196,6 +193,5 @@ pub(super) fn cascade(
         });
     }
     crate::derived::recompute(ctx.txn)?;
-    ctx.aside = None;
     Ok(out)
 }

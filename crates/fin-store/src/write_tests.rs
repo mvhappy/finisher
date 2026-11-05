@@ -271,7 +271,7 @@ fn heads_after_uncommitted_rows_stay_out_of_the_cache() {
     let head = s
         .write("dry-branch", true, |ctx| {
             ctx.txn.execute(
-                "INSERT INTO branches VALUES ('br1', 'br1', 'main', 2, NULL, NULL, 't', 0, 0, 0)",
+                "INSERT INTO branches VALUES ('br1', 'br1', 'main', 2, NULL, NULL, 't', 0, NULL, 0, 0, 0)",
                 [],
             )?;
             db_snapshot(ctx, "br1", 2, &at_head)?;

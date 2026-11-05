@@ -80,6 +80,7 @@ fn cases() -> Vec<(Link, [Option<String>; 6])> {
                 name: "alt".into(),
                 fork_seq: 0,
                 fork_hash: None,
+                epoch: 1,
             },
             [none(), none(), none(), none(), s(r#"["br1"]"#), s("alt")],
         ),

@@ -25,6 +25,7 @@ fn header() -> Header {
         op_schema_versions: [1, 2],
         created_at: 1_793_787_330_042,
         genesis_hash: format!("blake3:{}", "0".repeat(64)),
+        branch_record: None,
         pack: false,
         replaces: vec![],
     }

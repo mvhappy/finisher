@@ -15,6 +15,9 @@
 //!   [`Store::acknowledge_rewind`]. `SPLIT_BRAIN_SUSPECTED` instead when the lost records
 //!   span more than one segment or more than 30 s of commits (not one late rename, but two
 //!   servers writing at once): shown until acknowledged;
+//! - `BRANCH_RECORDS_IGNORED`: `branch` or `branchSet` records in the log that took no effect
+//!   (an id collision lost to another server's record, or a record the branch index
+//!   refuses; plan 4B Decision 33);
 //! - `FOREIGN_FILES`: files under `.finisher/` that are not ours;
 //! - `INCOMPLETE_FILES`: a file seen incomplete for more than [`INCOMPLETE_POLLS`] polls on a
 //!   local or network root, where every write is atomic, so it cannot be in transit: a crashed

@@ -64,6 +64,11 @@ pub struct Header {
     pub created_at: i64,
     /// `blake3:` of the project's genesis ([`crate::project_file::genesis_hash`]).
     pub genesis_hash: String,
+    /// On a 4B branch (any branch but `main`): the `txHash` of the `branch` record that made
+    /// it, so a reader tells two branches made under one id apart (plan 4B Decision 33).
+    /// Absent on `main`. A segment that has it is format 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_record: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pack: bool,
     /// For a pack: the segments it replaces.
@@ -131,6 +136,16 @@ pub fn version_for(records: &[&[u8]]) -> (u32, u32) {
     }
 }
 
+/// [`version_for`] on `branch`: a segment of a 4B branch (not `main`) names its `branch`
+/// record ([`Header::branch_record`]), which needs format 2 whatever its records hold.
+pub fn version_for_branch(branch: &str, records: &[&[u8]]) -> (u32, u32) {
+    if branch == crate::MAIN {
+        version_for(records)
+    } else {
+        (FORMAT_VERSION, MIN_READER_VERSION)
+    }
+}
+
 /// Decodes and verifies a segment of any format this code reads.
 pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
     decode_with_reader(bytes, READER_VERSION)
@@ -170,6 +185,17 @@ pub fn decode_with_reader(bytes: &[u8], reader_version: u32) -> Result<Segment, 
         if has_4b {
             return Err(corrupt("a format 1 segment holds a record of a 4B kind"));
         }
+    }
+    match (&header.branch_record, header.branch == crate::MAIN) {
+        (Some(_), true) => return Err(corrupt("a main segment names a branch record")),
+        (None, false) => return Err(corrupt("a branch segment names no branch record")),
+        (Some(r), false) => {
+            check_hash("branchRecord", r)?;
+            if header.format_version == EDIT_ONLY_VERSION {
+                return Err(corrupt("a format 1 segment names a branch record"));
+            }
+        }
+        (None, true) => {}
     }
     let [low, high] = header.op_schema_versions;
     if low > high {
