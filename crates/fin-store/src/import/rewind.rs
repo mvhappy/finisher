@@ -257,7 +257,7 @@ impl Taken {
 /// Takes the rows of `branch` from `from_seq` on out (module docs, "What", steps 1–2):
 /// quarantined with the 4A origin rule (exported: `SUPERSEDED` with detail
 /// `superseded(seq, epoch)`; unexported: `DIVERGED_TAIL`; `reason`, when given, replaces
-/// both), then the rows, the snapshots at or above `from_seq` and the `segments` rows reaching
+/// the first: an unexported row exists nowhere else and stays a diverged tail), then the rows, the snapshots at or above `from_seq` and the `segments` rows reaching
 /// it are deleted. `segs` are the branch's folder segments.
 pub(super) fn take_rows(
     ctx: &mut Ctx,
@@ -381,9 +381,10 @@ pub(super) fn take_rows(
                 branch,
                 origin: if mine { "local" } else { "folder" },
                 reason: match reason {
-                    Some(why) => why,
+                    Some(why) if r.exported => why,
                     None if r.exported => quarantine::SUPERSEDED,
-                    None => quarantine::DIVERGED_TAIL,
+                    // Exists nowhere else, whatever took the branch out.
+                    _ => quarantine::DIVERGED_TAIL,
                 },
                 detail: &detail,
                 bytes: &r.bytes,

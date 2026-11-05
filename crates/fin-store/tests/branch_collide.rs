@@ -370,6 +370,113 @@ fn same_id_on_different_parents_converges_in_every_order() {
     all_orders_converge(&e, 6, 1);
 }
 
+fn new_files(dir: &Path, had: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
+    all_segments(dir)
+        .into_iter()
+        .filter(|p| !had.contains(p))
+        .collect()
+}
+
+/// Re-review of 9b (H1): the record that won an id collision is set aside later (its parent
+/// line loses to a third holder), so the loser holds the id again. A (epoch 1) makes `br1`;
+/// A's late `br2` on `main` with an edit; B (epoch 2) makes its own `br2` on `br1` with an
+/// edit, exported late; C (epoch 3) takes over without B's files and writes on `br1` at the
+/// seq of B's record. The follower sees A, then B, then C: B's record wins `br2` first, then
+/// C's line takes it out, and A's `br2` comes back with its edit, as on a follower that saw
+/// everything at once; in every arrival order.
+#[test]
+fn winner_record_later_superseded_gives_the_id_back() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t0", vec![asset("/m/0.mov")]);
+    assert_eq!(branch(&mut a, "xs", "side", MAIN), "br1");
+    e.flush(&mut a);
+    let mut f = e.open("f");
+    let mut b = e.open("b");
+    let mut c = e.open("c");
+    freeze(&a);
+    poll_until_held(&e, &mut b, 80);
+    assert_eq!(held_epoch(&b), Some(2));
+    e.advance(10);
+    e.poll(&mut b);
+    e.poll(&mut c);
+
+    a.set_test_lease(1, true);
+    let had: BTreeSet<PathBuf> = all_segments(&e.dir).into_iter().collect();
+    assert_eq!(branch(&mut a, "xb", "x-two", MAIN), "br2");
+    on(&mut a, "x2", "br2", vec![insert(0, "a1")]);
+    e.flush(&mut a);
+    let late_a = new_files(&e.dir, &had);
+    drop(a);
+    e.poll(&mut f);
+    assert_eq!(f.head("br2"), 3, "F applied A's br2");
+    for p in &late_a {
+        fin_store::scan::hide_for_test(p);
+    }
+    assert_eq!(branch(&mut b, "yb", "y-two", "br1"), "br2");
+    on(&mut b, "y2", "br2", vec![insert(4, "a1")]);
+    for p in &late_a {
+        fin_store::scan::unhide_for_test(p);
+    }
+    freeze(&b);
+    poll_until_held(&e, &mut c, 80);
+    assert_eq!(held_epoch(&c), Some(3));
+    e.advance(10);
+    e.poll(&mut c);
+    b.set_test_lease(2, true);
+    let had: BTreeSet<PathBuf> = all_segments(&e.dir).into_iter().collect();
+    e.flush(&mut b);
+    let late_b = new_files(&e.dir, &had);
+    drop(b);
+    e.poll(&mut f);
+    assert_eq!(
+        f.branches(true).unwrap()[2].name,
+        "y-two",
+        "B's br2 won on F"
+    );
+    assert_eq!(
+        reasons(&f),
+        [("x2".to_string(), "ID_COLLISION".to_string())]
+    );
+    let held = f.generation_token("br2");
+    for p in &late_b {
+        fin_store::scan::hide_for_test(p);
+    }
+    on(&mut c, "c1", "br1", vec![insert(9, "a1")]);
+    e.flush(&mut c);
+    for p in &late_b {
+        fin_store::scan::unhide_for_test(p);
+    }
+    e.poll(&mut c);
+    e.poll(&mut f);
+    let g = e.open("g");
+    for s in [&c, &f] {
+        assert_eq!(states(s), states(&g));
+        assert_eq!(names(s), names(&g));
+        assert_eq!(aside(s), aside(&g));
+        assert_eq!(links(s), links(&g));
+    }
+    assert_eq!(f.head("x-two"), 3, "A's br2 holds the id again, with x2");
+    assert!(
+        !reasons(&f).iter().any(|r| r.1 == "ID_COLLISION"),
+        "{:?}",
+        reasons(&f)
+    );
+    // The id's old rewinds were B's branch's: not reported under A's; its generation moved
+    // on, so a caller holding B's is refused (`HISTORY_REWOUND`, from rev 0).
+    assert!(
+        !f.status()
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("\"br2\"")),
+        "{:?}",
+        f.status().warnings
+    );
+    assert!(f.generation_token("br2").n > held.n);
+    drop(g);
+    all_orders_converge(&e, 6, 2);
+}
+
 // ---- test lease ------------------------------------------------------------------------
 
 struct T {

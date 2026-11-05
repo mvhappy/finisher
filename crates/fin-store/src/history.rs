@@ -181,6 +181,18 @@ pub(crate) fn rewinds(conn: &Connection, branch: &str) -> Result<Vec<RewindInfo>
         .unwrap_or_default())
 }
 
+/// Forgets the rewinds recorded under `branch` (a new branch takes the id of one that was
+/// taken out whole): status no longer reports them under it. The generation stays, so a
+/// caller holding one from before is still refused from rev 0 ([`check`]: its rewinds are
+/// no longer all recorded).
+pub(crate) fn forget_rewinds(conn: &Connection, branch: &str) -> Result<(), StoreError> {
+    conn.execute(
+        "DELETE FROM meta WHERE key = ?1",
+        params![rewinds_key(branch)],
+    )?;
+    Ok(())
+}
+
 /// Bumps the generation of `branch` and records `info` under it; returns the new generation.
 pub(crate) fn record(
     conn: &Connection,

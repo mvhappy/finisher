@@ -16,8 +16,8 @@
 //!
 //! Each pass looks up each named record once by its hash (primary keys); nothing is scanned.
 //! Whether a quarantine row is current comes from this pass's verdicts (`current`, plus what
-//! this classification takes), and for the reasons that stay current on their own
-//! (`DIVERGED_TAIL`, `ID_COLLISION`) from the row.
+//! this classification takes), and for the reason that stays current on its own
+//! (`DIVERGED_TAIL`) from the row.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -89,9 +89,7 @@ fn named(
     Ok(match row {
         Some(reason)
             if REASONS.contains(&reason.as_str())
-                && (reason == quarantine::DIVERGED_TAIL
-                    || reason == quarantine::ID_COLLISION
-                    || current(record)) =>
+                && (reason == quarantine::DIVERGED_TAIL || current(record)) =>
         {
             Named::Aside(reason)
         }

@@ -82,11 +82,43 @@ pub(super) fn fold(
     } else {
         index::save(txn, &info)?;
     }
+    born(ctx, &id, info.fork_seq, &state)
+}
+
+/// Branch `id` starts (again) here: its fork state is stored as its snapshot at `fork_seq`,
+/// the rewinds recorded under the id are forgotten (they were another branch's; its
+/// generation stays, so a caller holding the old one is refused, `crate::history`), and it
+/// joins the pass's worklist.
+fn born(ctx: &mut Ctx, id: &str, fork_seq: u64, state: &Project) -> Result<(), StoreError> {
+    let txn = ctx.txn;
     txn.execute(
         "DELETE FROM snapshots WHERE branch = ?1 AND seq = ?2",
-        params![id, to_i64(info.fork_seq)?],
+        params![id, to_i64(fork_seq)?],
     )?;
-    db::insert_snapshot(txn, &id, info.fork_seq, &state)?;
-    ctx.born.push(id);
+    db::insert_snapshot(txn, id, fork_seq, state)?;
+    crate::history::forget_rewinds(txn, id)?;
+    if !ctx.born.iter().any(|b| b == id) {
+        ctx.born.push(id.to_string());
+    }
+    Ok(())
+}
+
+/// After [`crate::derived::recompute`]: every branch the index holds without any state (its
+/// `branch` record holds the id again because the record that took it is gone, re-review of
+/// 9b) gets its fork state back and joins the worklist, parents first, so the same pass
+/// resolves it from the folder as a follower that saw everything at once would.
+pub(super) fn restore_stateless(ctx: &mut Ctx) -> Result<(), StoreError> {
+    let ix = index::load(ctx.txn)?;
+    for id in ix.parents_first() {
+        let Some(info) = ix.get(id) else { continue };
+        let Some(parent) = info.parent.as_deref() else {
+            continue;
+        };
+        if db::latest_rev(ctx.txn, id)?.is_some() {
+            continue;
+        }
+        let state = lineage::state_at(ctx.txn, parent, info.fork_seq)?;
+        born(ctx, id, info.fork_seq, &state)?;
+    }
     Ok(())
 }

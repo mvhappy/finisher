@@ -13,8 +13,8 @@
 //! The child, and recursively every descendant, is rewound whole, parents first:
 //! - every row goes to quarantine by the 4A origin rule (exported: `SUPERSEDED`, unexported:
 //!   `DIVERGED_TAIL`; origin `local` when this server wrote it, [`super::rewind::take_rows`]),
-//!   or under the [`Cause`]'s own reason (a `branch` record voided by another rule: the
-//!   entry point is [`subtree`] then [`cascade`], whatever decided the loss);
+//!   or, exported rows, under the [`Cause`]'s own reason (a `branch` record voided by another
+//!   rule: the entry point is [`subtree`] then [`cascade`], whatever decided the loss);
 //! - its snapshots (the fork snapshot included) and `segments` rows are deleted, and so are
 //!   its `meta` `idsScannedThrough` and `diffsPending` (a later branch under the same id is
 //!   another branch); the id counters stay where they are;
@@ -24,7 +24,10 @@
 //!   whatever its base (`HISTORY_REWOUND`), and a `Rewound` event ends its subscribers;
 //! - then (also when no child was lost) [`crate::derived::recompute`] drops the
 //!   `record_links` rows whose record is gone and rebuilds the branch index, so a lost
-//!   `branchSet` is forgotten and the child's index row goes.
+//!   `branchSet` is forgotten and the child's index row goes. A branch the recomputed index
+//!   holds without any state (a `branch` record that holds its id again, because the record
+//!   that had taken it is among the lost rows) gets its fork state back and joins the
+//!   pass's worklist ([`super::branches::restore_stateless`]).
 //!
 //! Why: followers must converge whatever the arrival order. A follower that never applied the
 //! lost line sets the child's folder directory aside with its `branch` record
@@ -83,7 +86,8 @@ impl Cause {
     }
 
     /// The `branch` record stays, but no longer makes its branch (e.g. it lost an id
-    /// collision): every row of the subtree goes to quarantine as `reason`.
+    /// collision): every exported row of the subtree goes to quarantine as `reason` (an
+    /// unexported one as `DIVERGED_TAIL`).
     pub(super) fn voided(kind: &'static str, winner_epoch: u64, reason: &'static str) -> Cause {
         Cause {
             kind,
@@ -193,5 +197,6 @@ pub(super) fn cascade(
         });
     }
     crate::derived::recompute(ctx.txn)?;
+    super::branches::restore_stateless(ctx)?;
     Ok(out)
 }

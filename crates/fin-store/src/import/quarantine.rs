@@ -8,8 +8,10 @@
 //!   rows of the descendant branches that cascaded with them, `super::cascade`),
 //!   [`CONFLICT_COPY`] (records of a foreign file that the DB does not hold),
 //!   [`ID_COLLISION`] (the records of a branch whose `branch` record lost its id to another
-//!   server's, `super::branches` and `super::aside`; sticky and current like a diverged
-//!   tail: the decision is final once both records are in the log). Rebuild
+//!   server's, `super::branches` and `super::aside`; kept as reason once set, and current
+//!   while the folder's verdicts set the record aside, like `SUPERSEDED`: the record that
+//!   holds the id can itself be set aside later, and the loser's branch comes back; an
+//!   unexported row of such a branch, which exists nowhere else, is a `DIVERGED_TAIL`). Rebuild
 //!   adds `SALVAGED` (origin `salvage`): the unexported records of the database it
 //!   replaced, which exist nowhere else; the old database's own quarantine rows come along
 //!   with their reason, origin `salvage`. `DIVERGED_TAIL` and `SUPERSEDED` are kept as reason, origin and
@@ -48,8 +50,8 @@ pub(super) const DIVERGED_TAIL: &str = "DIVERGED_TAIL";
 pub(super) const SUPERSEDED: &str = "SUPERSEDED";
 pub(super) const CONFLICT_COPY: &str = "CONFLICT_COPY";
 /// The records of a branch whose `branch` record lost its id to another server's (plan 4B
-/// Decision 33). Like `DIVERGED_TAIL`, current until the record is in `txs` again, and kept
-/// once set.
+/// Decision 33). Like `SUPERSEDED`: kept once set, current while this pass's verdicts set
+/// the record aside.
 pub(super) const ID_COLLISION: &str = "ID_COLLISION";
 
 pub(super) struct Quarantined<'a> {
@@ -95,8 +97,8 @@ pub(super) fn flag_current(
     current: &BTreeSet<String>,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED', 'ID_COLLISION'))
-         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED', 'ID_COLLISION'))",
+        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED'))
+         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED'))",
         [],
     )?;
     let mut stmt =
