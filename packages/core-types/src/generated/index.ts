@@ -1,7 +1,7 @@
 /* eslint-disable */
 /**
  * Generated from schema/fin-core.schema.json by scripts/generate.mjs.
- * Do not edit by hand: change fin-core and run `pnpm --filter @finisher/core-types generate`.
+ * Do not edit by hand: change the Rust types and run `pnpm --filter @finisher/core-types generate`.
  */
 
 /**
@@ -15,7 +15,7 @@ export type ChangeKind = "added" | "removed" | "updated";
  */
 export type EntityKind = "asset" | "track" | "clip" | "timeline";
 /**
- * Exact rational seconds: "n/d" in lowest terms, or "n" when d is 1.
+ * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Rational".
@@ -83,6 +83,43 @@ export type Edge = "start" | "end";
  * via the `definition` "TrackKind".
  */
 export type TrackKind = "video" | "audio";
+/**
+ * One engine event (`Engine.onEvent`), tagged by `type`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EngineEvent".
+ */
+export type EngineEvent =
+  | {
+      tx: CommittedTx;
+      type: "applied";
+    }
+  | {
+      status: unknown;
+      type: "status";
+    }
+  | {
+      branch: string;
+      fromRev: number;
+      generation: number;
+      incarnation: string;
+      own: boolean;
+      quarantined: number;
+      type: "rewound";
+    }
+  | {
+      incarnation: string;
+      type: "rebuilt";
+    }
+  | {
+      error: CoreError;
+      fatal: boolean;
+      type: "error";
+    }
+  | {
+      dropped: number;
+      type: "lagged";
+    };
 
 export interface FinCore {
   [k: string]: unknown;
@@ -225,6 +262,15 @@ export interface CommittedTx {
  * via the `definition` "Tx".
  */
 export interface Tx {
+  /**
+   * What produced the tx, for a client that sends an idempotency key as `txId`:
+   * `blake3:<64 hex>` of the command input (op kinds and canonical args, before they were
+   * resolved against a snapshot). A retry rebuilds `ops` against a newer head (positions
+   * move; the stored tx is rebased), so `ops` cannot tell a retry from another command;
+   * this can. The store refuses a `txId` it holds with another `argsHash`
+   * (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
+   */
+  argsHash?: string | null;
   author: string;
   baseRev: number;
   branch: string;
@@ -243,4 +289,52 @@ export interface CoreError {
   details: unknown;
   fix?: string | null;
   message: string;
+}
+/**
+ * A branch generation as a caller holds it: the database's incarnation and the branch's
+ * rewind count in it (module docs).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Generation".
+ */
+export interface Generation {
+  incarnation: string;
+  n: number;
+}
+/**
+ * What the server needs to register a media asset. Its serde form is what `asset.probe`
+ * answers (`@finisher/core-types` exports it as `Probe`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Probe".
+ */
+export interface Probe {
+  audio?: AudioInfo | null;
+  duration: Rational;
+  fingerprint: string;
+  size: number;
+  video?: VideoInfo | null;
+}
+/**
+ * A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:
+ * `SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,
+ * `MALFORMED`, `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SetAside".
+ */
+export interface SetAside {
+  branch: string;
+  origin: string;
+  reason: string;
+  txId: string;
+}
+/**
+ * `tx.get` for a transaction that is not (or no longer) on its branch.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TxSetAside".
+ */
+export interface TxSetAside {
+  setAside: SetAside;
 }

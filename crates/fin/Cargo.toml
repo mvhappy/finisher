@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 # No `color` or `help` features: fin never renders clap's own help or ANSI output.
+# `--idem-key` commits carry the blake3 hash of the command input (`Tx.argsHash`).
+blake3 = "1"
 clap = { version = "4", default-features = false, features = ["std", "derive", "error-context", "suggestions", "usage"] }
 fin-core = { path = "../fin-core" }
 # `fin project rebuild` with no server running rebuilds the database in-process.

@@ -461,3 +461,26 @@ fn project_create_dry_run_validates_locally() {
         .is_empty()
     );
 }
+
+#[test]
+fn project_create_empty_name_is_invalid_name() {
+    let env = Env::no_server();
+    for name in ["", "  "] {
+        let run = env.run(&["project", "create", "f", "--name", name, "--dry-run"]);
+        assert_error(&run, 3, "INVALID_NAME");
+        assert_eq!(run.json["error"]["details"]["field"], "name");
+    }
+    // A rate that is not in canonical form names the canonical one.
+    let run = env.run(&[
+        "project",
+        "create",
+        "f",
+        "--name",
+        "F",
+        "--rate",
+        "60/2",
+        "--dry-run",
+    ]);
+    assert_error(&run, 3, "INVALID_TIME");
+    assert_eq!(run.json["error"]["details"]["canonical"], "30");
+}

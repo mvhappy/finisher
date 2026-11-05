@@ -26,6 +26,7 @@ pub fn tx(ops: Vec<Op>) -> Tx {
         branch: "main".into(),
         base_rev: 0,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     }
 }

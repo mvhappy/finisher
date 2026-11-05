@@ -172,13 +172,38 @@ fn all_digits(s: &str) -> bool {
 
 impl FromStr for Rational {
     type Err = CoreError;
-    /// Accepts `n` or `n/d` (integers only; floats are rejected).
+    /// Accepts only the canonical form that `Display` writes: `n`, or `n/d` in lowest terms
+    /// with `d > 1`; no sign but a leading `-` on a non-zero numerator, no leading zeros
+    /// (floats are rejected). Anything else that reads as a rational (`2/4`, `-0`, `+1`,
+    /// `01`, `0/5`, `3/1`) is `INVALID_TIME` naming the canonical form (`details.canonical`):
+    /// one value has one spelling, so stored and hashed data compare byte for byte.
     fn from_str(s: &str) -> Result<Self, CoreError> {
         parse_rational(s).map_err(|e| overflow_at(s, e))
     }
 }
 
+/// `INVALID_TIME` for a rational written in another form than its canonical one.
+fn noncanonical(input: &str, canonical: Rational) -> CoreError {
+    CoreError::new(
+        "INVALID_TIME",
+        format!("time {input:?} is not in canonical form (\"{canonical}\")"),
+    )
+    .with_details(json!({ "input": input, "canonical": canonical.to_string() }))
+    .with_fix(format!(
+        "write it as \"{canonical}\" (lowest terms, no sign but a leading -, no leading zeros)"
+    ))
+}
+
 fn parse_rational(s: &str) -> Result<Rational, CoreError> {
+    let unsigned = s.strip_prefix('+').filter(|rest| !rest.starts_with('-'));
+    let r = parse_rational_lenient(unsigned.unwrap_or(s))?;
+    if r.to_string() != s {
+        return Err(noncanonical(s, r));
+    }
+    Ok(r)
+}
+
+fn parse_rational_lenient(s: &str) -> Result<Rational, CoreError> {
     let (n, d) = match s.split_once('/') {
         Some((n, d)) => (n, Some(d)),
         None => (s, None),
@@ -216,8 +241,8 @@ impl JsonSchema for Rational {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "type": "string",
-            "pattern": r"^-?\d+(/[1-9]\d*)?$",
-            "description": "Exact rational seconds: \"n/d\" in lowest terms, or \"n\" when d is 1."
+            "pattern": r"^(0|-?[1-9]\d*)(/[1-9]\d*)?$",
+            "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\"."
         })
     }
 }
@@ -259,9 +284,13 @@ fn parse_time_inner(input: &str, rate: Rational) -> Result<Rational, CoreError> 
     if input.contains(':') {
         return parse_clock(input);
     }
-    if input.contains('/') || all_digits(input.strip_prefix('-').unwrap_or(input)) {
+    let unsigned = input
+        .strip_prefix('-')
+        .or_else(|| input.strip_prefix('+'))
+        .unwrap_or(input);
+    if input.contains('/') || all_digits(unsigned) {
         return input.parse().map_err(|e: CoreError| {
-            if e.code == "INVALID_TIME" {
+            if e.code == "INVALID_TIME" && e.details.get("canonical").is_none() {
                 bad("invalid rational")
             } else {
                 e

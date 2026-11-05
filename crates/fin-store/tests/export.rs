@@ -40,7 +40,7 @@ fn env() -> Env {
 }
 
 fn create(e: &Env) -> Store {
-    Store::create(&e.data, &e.dir, "Demo", Rational::from_int(30)).unwrap()
+    Store::create(&e.data, &e.dir, "Demo", Rational::from_int(30), None).unwrap()
 }
 
 fn asset_op(path: &str) -> Op {
@@ -71,6 +71,7 @@ fn commit_ops(s: &mut Store, id: &str, ops: Vec<Op>) {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     })
     .unwrap();
@@ -800,6 +801,7 @@ fn oversized_tx_is_refused_at_commit() {
             branch: MAIN.into(),
             base_rev,
             schema_version: SCHEMA_VERSION,
+            args_hash: None,
             ops: vec![sized_op(1, 1100), sized_op(2, 1100)],
         })
         .unwrap_err();

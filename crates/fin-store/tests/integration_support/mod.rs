@@ -57,6 +57,7 @@ impl Env {
             &self.dir,
             "Demo",
             Rational::from_int(30),
+            None,
             self.opts(),
         )
         .unwrap()
@@ -126,6 +127,7 @@ pub fn try_commit(s: &mut Store, id: &str, ops: Vec<Op>) -> Result<CommittedTx, 
         branch: MAIN.into(),
         base_rev: s.head(MAIN),
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     })
     .map_err(CoreError::from)

@@ -23,7 +23,7 @@ try {
     for (const file of FILES) {
       const committed = existsSync(join(root, file)) ? readFileSync(join(root, file), "utf8") : null;
       if (committed !== readFileSync(join(tmp, file), "utf8")) {
-        violations.push(`GENERATED_TYPES_DRIFT: ${file} differs from fin-core output; run \`pnpm --filter @finisher/core-types generate\``);
+        violations.push(`GENERATED_TYPES_DRIFT: ${file} differs from the Rust types' output; run \`pnpm --filter @finisher/core-types generate\``);
       }
     }
     report(violations);

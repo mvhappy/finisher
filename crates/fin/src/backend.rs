@@ -65,8 +65,15 @@ pub trait Backend {
     fn rebuild(&self) -> Result<(Value, bool), CoreError>;
     /// Probes a media file for `asset add`.
     fn probe(&self, path: &Path) -> Result<Probed, CoreError>;
-    /// Creates a project folder; returns the server's description of it.
-    fn create_project(&self, dir: &Path, name: &str, rate: Rational) -> Result<Value, CoreError>;
+    /// Creates a project folder; returns the server's description of it. `idem`: a retry
+    /// with the same key returns the project that create made.
+    fn create_project(
+        &self,
+        dir: &Path,
+        name: &str,
+        rate: Rational,
+        idem: Option<&str>,
+    ) -> Result<Value, CoreError>;
     /// Opens (registers) an existing project folder; `relocate`: see `fin project open`.
     fn open_project(&self, dir: &Path, relocate: bool) -> Result<Value, CoreError>;
     /// True when writes can only be dry runs (no server to commit to).
@@ -131,6 +138,7 @@ impl Backend for Offline {
         _dir: &Path,
         _name: &str,
         _rate: Rational,
+        _idem: Option<&str>,
     ) -> Result<Value, CoreError> {
         Err(offline_only("project.create"))
     }
@@ -338,11 +346,18 @@ impl Backend for Online {
         })
     }
 
-    fn create_project(&self, dir: &Path, name: &str, rate: Rational) -> Result<Value, CoreError> {
-        self.call(
-            "project.create",
-            json!({ "dir": dir, "name": name, "rate": rate }),
-        )
+    fn create_project(
+        &self,
+        dir: &Path,
+        name: &str,
+        rate: Rational,
+        idem: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        let mut payload = json!({ "dir": dir, "name": name, "rate": rate });
+        if let Some(key) = idem {
+            payload["idemKey"] = json!(key);
+        }
+        self.call("project.create", payload)
     }
 
     fn open_project(&self, dir: &Path, relocate: bool) -> Result<Value, CoreError> {

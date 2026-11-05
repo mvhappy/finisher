@@ -6,7 +6,7 @@ mod integration_support;
 use std::fs;
 
 use fin_store::lease::LeaseState;
-use fin_store::{MAIN, ReadOnlyReason, StoreEvent};
+use fin_store::{MAIN, ReadOnlyReason, Store, StoreEvent};
 use integration_support::*;
 
 #[test]
@@ -401,4 +401,39 @@ fn a_visible_file_under_our_segment_name_makes_read_only() {
         1,
         "nothing exported"
     );
+}
+
+/// The args hash of an `--idem-key` commit travels with its record: another server that
+/// imported it (or rebuilt its database from the folder) refuses the same key with other args.
+#[test]
+fn idem_args_hash_is_checked_on_other_servers() {
+    let hash = |c: char| Some(format!("blake3:{}", c.to_string().repeat(64)));
+    let tx = |s: &Store, h: Option<String>| fin_core::Tx {
+        tx_id: "key-1".into(),
+        author: "test".into(),
+        branch: MAIN.into(),
+        base_rev: s.head(MAIN),
+        schema_version: fin_core::SCHEMA_VERSION,
+        ops: vec![asset("/m/a.mov")],
+        args_hash: h,
+    };
+    let e = env();
+    let mut a = e.create("a");
+    let first = a.commit(tx(&a, hash('a'))).unwrap();
+    assert_eq!(e.flush(&mut a), 1);
+    let mut b = e.open("b");
+    e.poll(&mut b);
+    assert_eq!(b.head(MAIN), 1);
+    let reused = fin_core::CoreError::from(b.commit(tx(&b, hash('b'))).unwrap_err());
+    assert_eq!(reused.code, "IDEM_KEY_REUSED", "{reused:?}");
+    assert_eq!(b.commit(tx(&b, hash('a'))).unwrap(), first);
+
+    // B's database rebuilt from the folder.
+    let id = b.project_id().to_string();
+    b.close().unwrap();
+    fs::remove_file(fin_store::db_path(&e.data("b"), &id)).unwrap();
+    let mut b = e.open("b");
+    assert_eq!(b.head(MAIN), 1);
+    let reused = fin_core::CoreError::from(b.commit(tx(&b, hash('b'))).unwrap_err());
+    assert_eq!(reused.code, "IDEM_KEY_REUSED", "{reused:?}");
 }

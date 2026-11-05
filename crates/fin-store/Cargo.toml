@@ -15,6 +15,7 @@ blake3 = "1.8.7"
 crc32c = "0.6.9"
 fin-core = { path = "../fin-core" }
 rusqlite = { version = "0.37", features = ["bundled"] }
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
@@ -27,6 +28,8 @@ libc = "0.2.191"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
+# Only for `examples/export_schema.rs`, which puts `fin_probe::Probe` in the TS contract.
+fin-probe = { path = "../fin-probe" }
 fin-store = { path = ".", features = ["test-hooks"] }
 proptest = "1"
 tempfile = "3"

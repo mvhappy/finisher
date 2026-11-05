@@ -1,4 +1,4 @@
-//! `Store::create` and `Store::open` (plan Task 11).
+//! `Store::open` (plan Task 11); `Store::create` is in `crate::create`.
 //!
 //! # Open, in order
 //!
@@ -43,15 +43,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fin_core::{CoreError, Rational, new_project};
+use fin_core::CoreError;
 use serde_json::json;
 
 use crate::lease::{MonoClock, Params, ServerLock, SystemClock};
-use crate::project_file::{self, Genesis, ProjectFile, read_project_file};
+use crate::project_file::{self, ProjectFile, read_project_file};
 use crate::storage_kind::{self, StorageKind};
 use crate::{
-    Head, MAIN, Store, StoreError, copies, db, db_path, export, import, migrations, paths,
-    project_file as pf, rebuild, refresh, server_identity, status, tick, unwritable,
+    Head, MAIN, Store, StoreError, copies, db, db_path, export, import, migrations,
+    project_file as pf, rebuild, refresh, server_identity, status, tick,
 };
 
 /// How a store is opened. [`OpenOptions::default`] is production: the system's monotonic
@@ -84,90 +84,6 @@ impl OpenOptions {
 }
 
 impl Store {
-    /// Creates a project: a new lowercase-ULID id, the database at
-    /// `<server_data>/projects/<id>/project.fdb` with `main` at rev 0, `.finisher/`, then
-    /// `<project_dir>/finisher.project.json` with the project's [`Genesis`] (written via an
-    /// fsync'd temp file and rename), and acquires the lease. Fails with `PROJECT_EXISTS`
-    /// when the project file is already there.
-    pub fn create(
-        server_data: &Path,
-        project_dir: &Path,
-        name: &str,
-        rate: Rational,
-    ) -> Result<Store, StoreError> {
-        Store::create_with(server_data, project_dir, name, rate, OpenOptions::default())
-    }
-
-    /// [`Store::create`] with [`OpenOptions`].
-    pub fn create_with(
-        server_data: &Path,
-        project_dir: &Path,
-        name: &str,
-        rate: Rational,
-        opts: OpenOptions,
-    ) -> Result<Store, StoreError> {
-        let file_path = paths::project_file(project_dir);
-        if fs::symlink_metadata(&file_path).is_ok() {
-            return Err(CoreError::new(
-                "PROJECT_EXISTS",
-                format!("{} already holds a project", project_dir.display()),
-            )
-            .with_details(json!({ "path": file_path.to_string_lossy() }))
-            .with_fix("open the existing project, or choose another folder")
-            .into());
-        }
-        let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
-        let project = new_project(id.clone(), name.to_string(), rate)?;
-        fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
-        let dot = project_dir.join(".finisher");
-        fs::create_dir_all(&dot).map_err(unwritable(&dot))?;
-        let identity = server_identity(server_data)?;
-        let db_path = db_path(server_data, &id);
-        let db_dir = db_path.parent().unwrap_or(server_data);
-        fs::create_dir_all(db_dir).map_err(StoreError::io(db_dir))?;
-        if db_path.exists() {
-            return Err(CoreError::new(
-                "DB_ERROR",
-                format!("{} already exists", db_path.display()),
-            )
-            .into());
-        }
-        let db_lock = crate::dblock::shared(db_dir)?;
-        let mut conn = db::connect(&db_path, true)?;
-        db::init(&mut conn, &project, MAIN)?;
-        copies::record(&conn, project_dir)?;
-        let (kind, warning) = storage_kind::resolve(project_dir, None);
-        let genesis = Genesis {
-            name: name.to_string(),
-            rate,
-        };
-        pf::write(
-            project_dir,
-            &ProjectFile::new(&id, genesis, kind.to_string()),
-        )?;
-        let heads = HashMap::from([(
-            MAIN.to_string(),
-            Head {
-                rev: 0,
-                tip: None,
-                project,
-            },
-        )]);
-        let mut store = Store::new(
-            conn,
-            id,
-            db_path,
-            project_dir,
-            identity,
-            heads,
-            (kind, warning),
-            &opts,
-        );
-        store.db_lock = Some(db_lock);
-        store.start(None)?;
-        Ok(store)
-    }
-
     /// Opens the project whose `finisher.project.json` is in `project_dir` (module docs for
     /// the order of work).
     ///
@@ -290,7 +206,7 @@ impl Store {
 
     /// Steps 6–8 of the module docs; `file` is the project file read at open (`None` at
     /// create, whose file is complete).
-    fn start(&mut self, file: Option<ProjectFile>) -> Result<(), StoreError> {
+    pub(crate) fn start(&mut self, file: Option<ProjectFile>) -> Result<(), StoreError> {
         let dot = self.project_dir.join(".finisher");
         // A folder from before sub-project 4 has none yet. Failing to make it (a read-only
         // share) only means the lease cannot be acquired: the store follows.

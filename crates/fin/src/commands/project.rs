@@ -107,18 +107,43 @@ pub fn create(
 ) -> Result<Value, CoreError> {
     let rate_input = a.rate.as_deref().unwrap_or("30");
     let rate: Rational = rate_input.parse().map_err(|mut e: CoreError| {
+        // A rational in another form than its canonical one keeps the fix naming that form.
+        let canonical = e.details.get("canonical").cloned();
         e.details = json!({ "input": rate_input, "field": "rate" });
-        e.fix = Some("give the rate as frames per second: 30, 25, 24000/1001".to_string());
+        match canonical {
+            Some(c) => e.details["canonical"] = c,
+            None => {
+                e.fix = Some("give the rate as frames per second: 30, 25, 24000/1001".to_string())
+            }
+        }
         e
     })?;
     frame_duration(rate)?;
+    fin_store::validate_name(&a.name)?;
+    let idem = match globals.idem_key.as_deref() {
+        Some(key) if key.trim().is_empty() => {
+            return Err(crate::output::usage(
+                "--idem-key must not be empty",
+                json!({ "field": "idem-key" }),
+                "pass a non-empty key",
+            ));
+        }
+        key => key,
+    };
     let dir = paths::resolve_str(&a.dir);
     let resolved = json!({ "dir": dir.display().to_string(), "name": a.name, "rate": rate });
     if globals.dry_run || backend.dry_run_only() {
         let project = new_project("$project".to_string(), a.name.clone(), rate)?;
         return Ok(json!({ "dryRun": true, "project": project, "resolved": resolved }));
     }
-    let project = backend.create_project(&dir, &a.name, rate)?;
+    // With a key, a create whose answer was lost (timeout, dropped connection) is sent once
+    // more: the server answers a retry with the project the first one made.
+    let project = match backend.create_project(&dir, &a.name, rate, idem) {
+        Err(e) if idem.is_some() && crate::client::IN_FLIGHT_CODES.contains(&e.code.as_str()) => {
+            backend.create_project(&dir, &a.name, rate, idem)?
+        }
+        other => other?,
+    };
     Ok(json!({ "project": project, "resolved": resolved }))
 }
 

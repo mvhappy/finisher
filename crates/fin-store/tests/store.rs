@@ -28,7 +28,7 @@ fn env() -> Env {
 }
 
 fn create(e: &Env) -> Store {
-    Store::create(&e.data, &e.dir, "Demo", secs(30)).unwrap()
+    Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap()
 }
 
 fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
@@ -38,6 +38,7 @@ fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     }
 }
@@ -147,7 +148,7 @@ fn create_then_open_round_trips() {
 fn create_refuses_an_existing_project() {
     let e = env();
     create(&e);
-    let err = code(Store::create(&e.data, &e.dir, "Again", secs(30)).unwrap_err());
+    let err = code(Store::create(&e.data, &e.dir, "Again", secs(30), None).unwrap_err());
     assert_eq!(err.code, "PROJECT_EXISTS");
 }
 
@@ -158,7 +159,7 @@ fn create_under_a_file_is_project_dir_unwritable() {
     let file = e.dir.join("not-a-dir");
     std::fs::write(&file, b"x").unwrap();
     let dir = file.join("film");
-    let err = code(Store::create(&e.data, &dir, "Film", secs(30)).unwrap_err());
+    let err = code(Store::create(&e.data, &dir, "Film", secs(30), None).unwrap_err());
     assert_eq!(err.code, "PROJECT_DIR_UNWRITABLE");
     assert_eq!(err.details["path"], dir.to_string_lossy().as_ref());
     assert!(
@@ -172,7 +173,7 @@ fn create_under_a_file_is_project_dir_unwritable() {
 #[test]
 fn create_rejects_a_bad_rate_without_touching_disk() {
     let e = env();
-    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(0)).unwrap_err());
+    let err = code(Store::create(&e.data, &e.dir, "Demo", secs(0), None).unwrap_err());
     assert_eq!(err.code, "INVALID_RANGE");
     assert!(!e.dir.exists() && !e.data.exists());
 }
@@ -310,6 +311,45 @@ fn duplicate_tx_id_returns_the_committed_tx() {
         "dedupe survives reopen"
     );
     assert_eq!(s.head(MAIN), 2);
+}
+
+fn hash(c: char) -> Option<String> {
+    Some(format!("blake3:{}", c.to_string().repeat(64)))
+}
+
+#[test]
+fn idem_key_same_key_different_args_rejected() {
+    let e = env();
+    let mut s = with_asset(&e);
+    let mut t = tx("key-1", 1, vec![insert("$c", 0, "a1", 5)]);
+    t.args_hash = hash('a');
+    let first = s.commit(t.clone()).unwrap();
+    assert_eq!(first.tx.args_hash, hash('a'));
+    // The same command again (even rebuilt against a newer base): the commit.
+    let mut retry = t.clone();
+    retry.ops = vec![insert("$c", 5, "a1", 5)];
+    assert_eq!(s.commit(retry).unwrap(), first);
+    // No hash (a client that does not send one): the commit, as before.
+    let mut bare = t.clone();
+    bare.args_hash = None;
+    assert_eq!(s.commit(bare).unwrap(), first);
+    // Another command under the same key.
+    let mut other = t.clone();
+    other.args_hash = hash('b');
+    let err = code(s.commit(other.clone()).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED", "{err:?}");
+    assert_eq!(err.details["txId"], "key-1");
+    assert_eq!(err.details["rev"], 2);
+    assert!(err.fix.is_some());
+    assert_eq!(s.head(MAIN), 2);
+    // The hash is stored with the record: it survives a reopen.
+    drop(s);
+    let mut s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(code(s.commit(other).unwrap_err()).code, "IDEM_KEY_REUSED");
+    // A malformed hash is refused before anything else.
+    let mut bad = tx("key-2", 2, vec![asset("$b")]);
+    bad.args_hash = Some("md5:abc".into());
+    assert_eq!(code(s.commit(bad).unwrap_err()).code, "INVALID_OP");
 }
 
 #[test]
@@ -493,7 +533,7 @@ fn ukrainian_name_and_dir_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("дані сервера");
     let dir: &Path = &tmp.path().join("Проєкти").join("Мій фільм — ґанок");
-    let s = Store::create(&data, dir, "Літній відпочинок у Львові", secs(25)).unwrap();
+    let s = Store::create(&data, dir, "Літній відпочинок у Львові", secs(25), None).unwrap();
     let id = s.project_id().to_string();
     drop(s);
     let raw = std::fs::read_to_string(dir.join("finisher.project.json")).unwrap();

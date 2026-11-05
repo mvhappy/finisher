@@ -15,6 +15,8 @@ bytes = { version = "1", optional = true }
 dunce = "1"
 fin-core = { path = "../fin-core" }
 mp4 = "0.14"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]

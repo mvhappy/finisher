@@ -18,6 +18,14 @@ pub struct Tx {
     pub base_rev: u64,
     pub schema_version: u32,
     pub ops: Vec<Op>,
+    /// What produced the tx, for a client that sends an idempotency key as `txId`:
+    /// `blake3:<64 hex>` of the command input (op kinds and canonical args, before they were
+    /// resolved against a snapshot). A retry rebuilds `ops` against a newer head (positions
+    /// move; the stored tx is rebased), so `ops` cannot tell a retry from another command;
+    /// this can. The store refuses a `txId` it holds with another `argsHash`
+    /// (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

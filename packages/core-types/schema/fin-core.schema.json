@@ -230,6 +230,149 @@
       ],
       "type": "string"
     },
+    "EngineEvent": {
+      "description": "One engine event (`Engine.onEvent`), tagged by `type`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A record imported from the folder.",
+          "properties": {
+            "tx": {
+              "$ref": "#/$defs/CommittedTx"
+            },
+            "type": {
+              "const": "applied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tx"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The status changed (fin-store's `ProjectStatus`).",
+          "properties": {
+            "status": true,
+            "type": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An import took `branch`'s revs from `from_rev` on out of its history: `quarantined`\nrecords were set aside (`own`: some were this server's) and the branch is at\n`generation` of database `incarnation` now.",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "fromRev": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "own": {
+              "type": "boolean"
+            },
+            "quarantined": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "rewound",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "branch",
+            "fromRev",
+            "quarantined",
+            "own",
+            "generation",
+            "incarnation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The database was rebuilt: a new `incarnation`, and every rev read before may hold\nsomething else now.",
+          "properties": {
+            "incarnation": {
+              "type": "string"
+            },
+            "type": {
+              "const": "rebuilt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "incarnation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A background tick, backup or compaction failed (`fatal`: the engine is gone).",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/CoreError"
+            },
+            "fatal": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "error",
+            "fatal"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The first event after registration when the buffer overflowed: `dropped` events\nwere lost.",
+          "properties": {
+            "dropped": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "lagged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "dropped"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "EntityKind": {
       "enum": [
         "asset",
@@ -238,6 +381,24 @@
         "timeline"
       ],
       "type": "string"
+    },
+    "Generation": {
+      "description": "A branch generation as a caller holds it: the database's incarnation and the branch's\nrewind count in it (module docs).",
+      "properties": {
+        "incarnation": {
+          "type": "string"
+        },
+        "n": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "incarnation",
+        "n"
+      ],
+      "type": "object"
     },
     "Op": {
       "description": "A primitive edit operation, tagged by `op`.",
@@ -435,6 +596,48 @@
         }
       ]
     },
+    "Probe": {
+      "description": "What the server needs to register a media asset. Its serde form is what `asset.probe`\nanswers (`@finisher/core-types` exports it as `Probe`).",
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "video": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "duration",
+        "fingerprint",
+        "size"
+      ],
+      "type": "object"
+    },
     "Project": {
       "properties": {
         "assets": {
@@ -472,9 +675,34 @@
       "type": "object"
     },
     "Rational": {
-      "description": "Exact rational seconds: \"n/d\" in lowest terms, or \"n\" when d is 1.",
-      "pattern": "^-?\\d+(/[1-9]\\d*)?$",
+      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\".",
+      "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
       "type": "string"
+    },
+    "SetAside": {
+      "additionalProperties": false,
+      "description": "A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:\n`SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,\n`MALFORMED`, `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "txId",
+        "branch",
+        "reason",
+        "origin"
+      ],
+      "type": "object"
     },
     "Shift": {
       "description": "Items on `track` at or after `from` moved by `by` (ripple).",
@@ -546,6 +774,13 @@
     },
     "Tx": {
       "properties": {
+        "argsHash": {
+          "description": "What produced the tx, for a client that sends an idempotency key as `txId`:\n`blake3:<64 hex>` of the command input (op kinds and canonical args, before they were\nresolved against a snapshot). A retry rebuilds `ops` against a newer head (positions\nmove; the stored tx is rebased), so `ops` cannot tell a retry from another command;\nthis can. The store refuses a `txId` it holds with another `argsHash`\n(`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "author": {
           "type": "string"
         },
@@ -579,6 +814,19 @@
         "baseRev",
         "schemaVersion",
         "ops"
+      ],
+      "type": "object"
+    },
+    "TxSetAside": {
+      "additionalProperties": false,
+      "description": "`tx.get` for a transaction that is not (or no longer) on its branch.",
+      "properties": {
+        "setAside": {
+          "$ref": "#/$defs/SetAside"
+        }
+      },
+      "required": [
+        "setAside"
       ],
       "type": "object"
     },

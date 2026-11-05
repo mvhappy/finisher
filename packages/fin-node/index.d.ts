@@ -24,8 +24,13 @@ export interface FinNodeError extends Error {
  */
 export declare class Engine {
   private constructor();
-  /** Creates a project; `rate` is a rational string such as `"30"` or `"30000/1001"`. */
-  static create(serverData: string, projectDir: string, name: string, rate: string): Promise<Engine>;
+  /**
+   * Creates a project; `rate` is a rational string such as `"30"` or `"30000/1001"`.
+   * `idemKey`: a retry with the same key returns the project this create made (opened again)
+   * instead of `PROJECT_EXISTS`; with another name or rate it is `IDEM_KEY_REUSED`. An empty or
+   * whitespace-only name is `INVALID_NAME`.
+   */
+  static create(serverData: string, projectDir: string, name: string, rate: string, options?: { idemKey?: string | undefined }): Promise<Engine>;
   /**
    * Opens a project: acquires the lease or follows, imports, rebuilds a missing or damaged DB.
    * `relocate`: the project now lives in `projectDir` although the folder it was recorded at

@@ -48,11 +48,20 @@ fn freq_index(rate: u32) -> SampleFreqIndex {
 }
 
 pub fn write_fixture_mp4(path: &Path, opts: FixtureOpts) {
+    write(path, opts, "isom", &["isom", "mp41"]);
+}
+
+/// [`write_fixture_mp4`] as a QuickTime file: `ftyp` major brand `qt  `.
+pub fn write_fixture_mov(path: &Path, opts: FixtureOpts) {
+    write(path, opts, "qt  ", &["qt  "]);
+}
+
+fn write(path: &Path, opts: FixtureOpts, brand: &str, compatible: &[&str]) {
     let file = BufWriter::new(File::create(path).unwrap());
     let config = Mp4Config {
-        major_brand: "isom".parse().unwrap(),
+        major_brand: brand.parse().unwrap(),
         minor_version: 512,
-        compatible_brands: vec!["isom".parse().unwrap(), "mp41".parse().unwrap()],
+        compatible_brands: compatible.iter().map(|b| b.parse().unwrap()).collect(),
         timescale: 1000,
     };
     let mut w = Mp4Writer::write_start(file, &config).unwrap();

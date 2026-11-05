@@ -36,7 +36,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
 use fin_core::CoreError;
-use fin_probe::Probe;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
@@ -110,7 +109,8 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// Probes an MP4/MOV file; resolves to `{duration, video, audio, fingerprint, size}` JSON.
+/// Probes an MP4/MOV file; resolves to `Probe` JSON (`{duration, video, audio, fingerprint,
+/// size}`).
 #[napi(catch_unwind)]
 pub fn probe(path: String) -> AsyncTask<ProbeTask> {
     AsyncTask::new(ProbeTask { path: path.into() })
@@ -120,16 +120,6 @@ pub struct ProbeTask {
     path: PathBuf,
 }
 
-fn probe_json(p: &Probe) -> serde_json::Value {
-    json!({
-        "duration": p.duration,
-        "video": p.video,
-        "audio": p.audio,
-        "fingerprint": p.fingerprint,
-        "size": p.size,
-    })
-}
-
 impl Task for ProbeTask {
     type Output = String;
     type JsValue = String;
@@ -137,7 +127,8 @@ impl Task for ProbeTask {
     fn compute(&mut self) -> Result<String> {
         let path = &self.path;
         guarded(
-            || encode(&probe_json(&fin_probe::probe(path).map_err(reject)?)),
+            // `Probe`'s serde form: the `Probe` type of `@finisher/core-types`.
+            || encode(&fin_probe::probe(path).map_err(reject)?),
             || {},
         )
     }

@@ -26,7 +26,8 @@ pub struct Globals {
     /// Project folder; default: the nearest ancestor holding finisher.project.json.
     #[arg(long, global = true, value_name = "dir")]
     pub project: Option<PathBuf>,
-    /// Idempotency key; becomes the transaction id.
+    /// Idempotency key; becomes the transaction id (for `project create`: a retry returns the
+    /// project that create made).
     #[arg(long = "idem-key", global = true, value_name = "key")]
     pub idem_key: Option<String>,
     /// Validate and compute the result without committing.
@@ -57,6 +58,8 @@ pub struct Builder<'a> {
     lenient: bool,
     /// The first local validation error a lenient build let through.
     deferred: Option<CoreError>,
+    /// Each planned step's command input, `{cmd, args}` ([`args_hash`]).
+    inputs: Vec<Value>,
 }
 
 fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
@@ -80,6 +83,7 @@ impl<'a> Builder<'a> {
             ops: Vec::new(),
             lenient,
             deferred: None,
+            inputs: Vec::new(),
         })
     }
 
@@ -129,6 +133,7 @@ impl<'a> Builder<'a> {
             branch: "main".to_string(),
             base_rev: self.base.rev,
             schema_version: SCHEMA_VERSION,
+            args_hash: None,
             ops,
         }
     }
@@ -148,6 +153,9 @@ impl<'a> Builder<'a> {
         };
         let mut tx = self.tx(self.ops.clone());
         tx.tx_id = tx_id;
+        if globals.idem_key.is_some() {
+            tx.args_hash = Some(args_hash(&self.inputs));
+        }
         if globals.dry_run || self.backend.dry_run_only() {
             let applied = apply_tx(
                 &self.base.project,
@@ -190,7 +198,13 @@ impl<'a> Builder<'a> {
             (Err(e), Some(local)) if exit_code(&e.code) == VALIDATION => return Err(local),
             (Err(e), _) => return Err(e),
         };
-        if !same_command(&tx.ops, &committed.tx.ops) {
+        // The command input's hash decides when both have one; a commit without one (an older
+        // fin, another client) is compared by its ops.
+        let reused = match (&tx.args_hash, &committed.tx.args_hash) {
+            (Some(ours), Some(theirs)) => ours != theirs,
+            _ => !same_command(&tx.ops, &committed.tx.ops),
+        };
+        if reused {
             return Err(idem_key_reused(&committed));
         }
         let mut resolved = resolved;
@@ -295,9 +309,36 @@ fn echo_committed(resolved: &mut Value, ops: &[Op]) {
     }
 }
 
+/// `blake3:<hex>` of the command input `inputs` (`[{cmd, args}]`, keys sorted): what
+/// `Tx.argsHash` carries for an `--idem-key` commit. It hashes what the user asked for, not
+/// the ops: a retry plans its ops against a newer snapshot (`end`, `after:` and rebases move
+/// positions), and must still count as the same command.
+pub fn args_hash(inputs: &[Value]) -> String {
+    // `serde_json::Map` keeps keys sorted (no `preserve_order`), so this is canonical.
+    let bytes = serde_json::to_vec(inputs).expect("JSON values serialize");
+    format!("blake3:{}", blake3::hash(&bytes).to_hex())
+}
+
+/// One step's command input for [`args_hash`]: its args as given, defaults left out, except
+/// that a media path is the resolved absolute one (the same words from another directory
+/// name another file).
+fn input(step: &Write) -> Value {
+    let (cmd, args) = match step {
+        Write::AssetAdd(a) => (
+            "asset.add",
+            json!({ "path": crate::paths::resolve_str(&a.path).display().to_string() }),
+        ),
+        Write::ClipInsert(a) => ("clip.insert", json!(a)),
+        Write::ClipTrim(a) => ("clip.trim", json!(a)),
+        Write::ClipDelete(a) => ("clip.delete", json!(a)),
+    };
+    json!({ "cmd": cmd, "args": args })
+}
+
 /// Plans one write step; `n` numbers placeholders in a batch (`$clip3`), `None` for a single
 /// command (`$clip`). Returns the step's resolved values.
 pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value, CoreError> {
+    b.inputs.push(input(step));
     let suffix = n.map(|n| n.to_string()).unwrap_or_default();
     match step {
         Write::AssetAdd(a) => asset::plan_add(b, a, &format!("$asset{suffix}")),

@@ -124,7 +124,7 @@ fn fresh() -> (TempDir, PathBuf, PathBuf, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("server-data");
     let dir = tmp.path().join("Проект 1");
-    let store = Store::create(&data, &dir, "Demo", Rational::from_int(30)).unwrap();
+    let store = Store::create(&data, &dir, "Demo", Rational::from_int(30), None).unwrap();
     let db = store.db_path().to_path_buf();
     drop(store);
     (tmp, data, dir, db)
@@ -241,6 +241,7 @@ fn commit_after_migration_continues_the_chain() {
             branch: MAIN.into(),
             base_rev: rev,
             schema_version: SCHEMA_VERSION,
+            args_hash: None,
             ops: vec![Op::AssetAdd {
                 id: "$a".into(),
                 path: "media/b.mov".into(),
@@ -673,7 +674,7 @@ fn check_handles_awkward_paths() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("Sërver data #1 %41 Мой");
     let dir = tmp.path().join("Проект 1");
-    let db = Store::create(&data, &dir, "Demo", Rational::from_int(30))
+    let db = Store::create(&data, &dir, "Demo", Rational::from_int(30), None)
         .unwrap()
         .db_path()
         .to_path_buf();

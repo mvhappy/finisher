@@ -15,6 +15,7 @@ mod compact;
 pub mod conflict_names;
 mod copies;
 mod counters;
+mod create;
 mod db;
 mod dblock;
 mod diffs;
@@ -39,6 +40,7 @@ mod status;
 pub mod storage_kind;
 mod tick;
 mod verify;
+pub mod wire;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -56,6 +58,9 @@ pub use compact::{
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use copies::mount_root_for_test as copies_mount_root_for_test;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use create::fail_next_create_marker_for_test;
+pub use create::validate_name;
 pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
@@ -78,6 +83,7 @@ pub use status::{
 };
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
+pub use wire::{EngineEvent, SetAside, TxSetAside};
 
 /// The only branch sub-project 2 creates.
 pub const MAIN: &str = "main";

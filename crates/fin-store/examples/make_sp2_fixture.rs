@@ -35,6 +35,7 @@ fn tx(n: u64, base_rev: u64, ops: Vec<Op>) -> Tx {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     }
 }
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let folder = root.join("folder");
     let data = root.join("server-data");
 
-    let mut store = Store::create(&data, &folder, "SP2 fixture", secs(30))?;
+    let mut store = Store::create(&data, &folder, "SP2 fixture", secs(30), None)?;
     let mut n = 0;
     let mut next = || {
         n += 1;

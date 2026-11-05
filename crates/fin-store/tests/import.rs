@@ -50,7 +50,7 @@ impl Env {
 
 /// Server `a` creates the project.
 fn create(e: &Env) -> Store {
-    Store::create(&e.data("a"), &e.dir, "Demo", Rational::from_int(30)).unwrap()
+    Store::create(&e.data("a"), &e.dir, "Demo", Rational::from_int(30), None).unwrap()
 }
 
 /// Another server whose DB is a copy of `a`'s at rev 0. `a` holds the real lease, so this one
@@ -102,6 +102,7 @@ fn tx(s: &Store, id: &str, ops: Vec<Op>) -> Tx {
         branch: MAIN.into(),
         base_rev: s.head(MAIN),
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     }
 }

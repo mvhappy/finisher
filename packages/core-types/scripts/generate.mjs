@@ -1,4 +1,5 @@
-// Regenerates schema/fin-core.schema.json (from fin-core) and src/generated/index.ts (from the schema).
+// Regenerates schema/fin-core.schema.json (fin-core's types plus the envelope types of fin-store and
+// fin-probe: fin-store's `export_schema` example) and src/generated/index.ts (from the schema).
 // `--out <dir>` writes both files under <dir> instead of the package, for the drift gate.
 // Deterministic: no timestamps, sorted keys, fixed banner. Needs no network.
 import { spawnSync } from "node:child_process";
@@ -12,7 +13,7 @@ const repo = resolve(pkg, "../..");
 const i = process.argv.indexOf("--out");
 const out = i === -1 ? pkg : resolve(process.argv[i + 1]);
 
-const cargo = spawnSync("cargo", ["run", "-q", "-p", "fin-core", "--example", "export_schema"], {
+const cargo = spawnSync("cargo", ["run", "-q", "-p", "fin-store", "--example", "export_schema"], {
   cwd: repo,
   encoding: "utf8",
   maxBuffer: 64 * 1024 * 1024,
@@ -23,7 +24,7 @@ if (cargo.status !== 0) {
 }
 
 const banner =
-  "/* eslint-disable */\n/**\n * Generated from schema/fin-core.schema.json by scripts/generate.mjs.\n * Do not edit by hand: change fin-core and run `pnpm --filter @finisher/core-types generate`.\n */";
+  "/* eslint-disable */\n/**\n * Generated from schema/fin-core.schema.json by scripts/generate.mjs.\n * Do not edit by hand: change the Rust types and run `pnpm --filter @finisher/core-types generate`.\n */";
 const schema = JSON.parse(cargo.stdout);
 const ts = await compile(schema, "FinCore", {
   bannerComment: banner,

@@ -3,7 +3,7 @@
 use clap::{Args, Subcommand};
 use fin_core::{CoreError, Edge, Op, Rational};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Builder;
@@ -18,7 +18,7 @@ pub enum ClipCmd {
 }
 
 /// Insert a clip, rippling later clips on the track. Give exactly one of `dur` and `out`.
-#[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InsertArgs {
     /// Track id, e.g. "t1".
@@ -33,7 +33,7 @@ pub struct InsertArgs {
     pub asset: String,
     /// Offset into the asset where the clip starts; default 0.
     #[arg(long = "in", value_name = "time")]
-    #[serde(rename = "in", default)]
+    #[serde(rename = "in", default, skip_serializing_if = "Option::is_none")]
     pub source_in: Option<String>,
     /// Clip length.
     #[arg(
@@ -42,17 +42,17 @@ pub struct InsertArgs {
         required_unless_present = "out",
         conflicts_with = "out"
     )]
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dur: Option<String>,
     /// Asset time where the clip ends; length = out - in.
     #[arg(long, value_name = "time")]
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<String>,
 }
 
 /// Move one edge of a clip by a signed delta, rippling later clips. Give exactly one of
 /// `start` and `end`.
-#[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TrimArgs {
     /// Clip id, e.g. "c3".
@@ -66,16 +66,16 @@ pub struct TrimArgs {
         required_unless_present = "end",
         conflicts_with = "end"
     )]
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
     /// Signed delta for the end edge: "+1s" extends, "-0.5s" trims in.
     #[arg(long, value_name = "±time", allow_hyphen_values = true)]
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<String>,
 }
 
 /// Delete a clip and close the gap (ripple).
-#[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteArgs {
     /// Clip id, e.g. "c3".

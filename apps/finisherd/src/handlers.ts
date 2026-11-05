@@ -1,5 +1,5 @@
 // `FinRpcs` handlers. Every failure reaches the client as `FinError { code, message, details, fix }`.
-import { FinRpcs, PROTOCOL_VERSION } from "@finisher/contracts";
+import { FinRpcs, PROTOCOL_VERSION, type Probe } from "@finisher/contracts";
 import { probe } from "@finisher/fin-node";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
@@ -24,9 +24,9 @@ export const HandlersLive = FinRpcs.toLayer(
           serverVersion: SERVER_VERSION,
           capabilities: CAPABILITIES,
         }),
-      "project.create": ({ dir, name, rate }) => guard(registry.create(dir, name, rate)),
+      "project.create": ({ dir, name, rate, idemKey }) => guard(registry.create(dir, name, rate, idemKey)),
       "project.open": ({ dir, relocate }) => guard(registry.open(dir, relocate)),
-      "asset.probe": ({ path }) => guard(attemptJson<unknown>(() => probe(path))),
+      "asset.probe": ({ path }) => guard(attemptJson<Probe>(() => probe(path))),
       "tx.commit": ({ projectId, tx, generation }) => guard(registry.commit(projectId, tx, generation)),
       "snapshot.get": ({ projectId, branch }) => guard(registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.

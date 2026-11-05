@@ -46,7 +46,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fin_core::CoreError;
-use fin_store::{StoreEvent, TickOptions};
+use fin_store::{EngineEvent, StoreEvent, TickOptions};
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use serde_json::json;
@@ -106,7 +106,9 @@ impl EventSink {
     pub(crate) fn set(&self, callback: EventFn) {
         let mut s = lock(&self.sink);
         if s.dropped > 0 {
-            let lagged = json!({ "type": "lagged", "dropped": s.dropped }).to_string();
+            let lagged = to_json(&EngineEvent::Lagged {
+                dropped: s.dropped as u64,
+            });
             callback.call(lagged, ThreadsafeFunctionCallMode::NonBlocking);
             s.dropped = 0;
         }
@@ -257,33 +259,20 @@ fn tick(inner: &Shared) -> bool {
     }
 }
 
+/// `e` as its [`EngineEvent`] JSON (the generated `EngineEvent` type of
+/// `@finisher/core-types`).
 pub(crate) fn event_json(e: &StoreEvent, incarnation: Option<&str>) -> String {
-    let v = match e {
-        StoreEvent::Applied(tx) => json!({ "type": "applied", "tx": tx }),
-        StoreEvent::Status(status) => json!({ "type": "status", "status": status }),
-        StoreEvent::Rewound {
-            branch,
-            from_rev,
-            quarantined,
-            own,
-            generation,
-        } => json!({
-            "type": "rewound",
-            "branch": branch,
-            "fromRev": from_rev,
-            "quarantined": quarantined,
-            "own": own,
-            "generation": generation,
-            "incarnation": incarnation.unwrap_or_default(),
-        }),
-        StoreEvent::Rebuilt { incarnation } => {
-            json!({ "type": "rebuilt", "incarnation": incarnation })
-        }
-    };
-    v.to_string()
+    to_json(&EngineEvent::from_store(e, incarnation))
 }
 
 /// An `error` event; `e` is the `CoreError` JSON.
 pub(crate) fn error_json(e: &serde_json::Value, fatal: bool) -> String {
-    json!({ "type": "error", "error": e, "fatal": fatal }).to_string()
+    to_json(&EngineEvent::Error {
+        error: e.clone(),
+        fatal,
+    })
+}
+
+fn to_json(e: &EngineEvent) -> String {
+    serde_json::to_string(e).expect("an engine event always serialises")
 }

@@ -18,7 +18,9 @@ impl Store {
     ///
     /// - An empty `txId` or empty `ops` is `INVALID_OP`, checked before anything else.
     /// - A `txId` that is already committed returns that `CommittedTx` unchanged (idempotent
-    ///   retries); the head does not move.
+    ///   retries); the head does not move. When both carry an `argsHash` and they differ, the
+    ///   key was reused for another command: `IDEM_KEY_REUSED` (`details {txId, rev,
+    ///   committedOps}`). A malformed `argsHash` (not `blake3:<64 hex>`) is `INVALID_OP`.
     /// - `baseRev` behind the head: the tx is rebased over the txs committed since; a conflict
     ///   is `CONFLICT` with `details.againstTx` (committed) and `details.txId` (incoming).
     /// - `baseRev` ahead of the head is `BASE_REV_AHEAD`.
@@ -61,7 +63,7 @@ impl Store {
         check_shape(&tx)?;
         // A retry of a committed tx is answered whatever the state (it writes nothing).
         if let Some(existing) = db::find_tx(&self.conn, &tx.tx_id)? {
-            return Ok(existing);
+            return same_args(&tx, existing);
         }
         if let Some(reason) = self.read_only() {
             return Err(crate::import::read_only_error(&self.project_id, reason));
@@ -82,7 +84,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) = db::find_tx(&txn, &tx.tx_id)? {
-            return Ok(existing);
+            return same_args(&tx, existing);
         }
         let epoch = fenced.map_err(|e| crate::import::lease_lost_error(&self.project_id, &e))?;
         let heads = self.heads.get_mut();
@@ -178,6 +180,27 @@ fn with_tx_id(mut e: CoreError, tx_id: &str) -> CoreError {
     e
 }
 
+/// `existing`, the commit `tx`'s id names, unless both hold an `argsHash` and they differ.
+fn same_args(tx: &Tx, existing: CommittedTx) -> Result<CommittedTx, StoreError> {
+    match (&tx.args_hash, &existing.tx.args_hash) {
+        (Some(ours), Some(theirs)) if ours != theirs => Err(CoreError::new(
+            "IDEM_KEY_REUSED",
+            format!(
+                "txId {} already committed a different command at rev {}",
+                existing.tx.tx_id, existing.rev
+            ),
+        )
+        .with_details(json!({
+            "txId": existing.tx.tx_id,
+            "rev": existing.rev,
+            "committedOps": existing.tx.ops,
+        }))
+        .with_fix("use a new idempotency key (txId) for a different command")
+        .into()),
+        _ => Ok(existing),
+    }
+}
+
 /// A tx needs an id to dedupe on and at least one op to be worth a rev.
 fn check_shape(tx: &Tx) -> Result<(), CoreError> {
     if tx.tx_id.trim().is_empty() {
@@ -189,6 +212,23 @@ fn check_shape(tx: &Tx) -> Result<(), CoreError> {
         return Err(CoreError::new("INVALID_OP", "transaction has no ops")
             .with_details(json!({ "field": "ops", "txId": tx.tx_id }))
             .with_fix("send at least one op"));
+    }
+    if let Some(h) = &tx.args_hash {
+        let hex = h.strip_prefix("blake3:").unwrap_or_default();
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(CoreError::new(
+                "INVALID_OP",
+                "transaction argsHash is not blake3:<64 lowercase hex>",
+            )
+            .with_details(json!({ "field": "argsHash", "txId": tx.tx_id }))
+            .with_fix(
+                "send the blake3 hash of the command input as blake3:<hex>, or no argsHash",
+            ));
+        }
     }
     Ok(())
 }

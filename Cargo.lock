@@ -273,6 +273,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "fin"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "clap",
  "fin-core",
  "fin-probe",
@@ -320,6 +321,8 @@ dependencies = [
  "fin-core",
  "fin-probe",
  "mp4",
+ "schemars",
+ "serde",
  "serde_json",
  "tempfile",
 ]
@@ -331,10 +334,12 @@ dependencies = [
  "blake3",
  "crc32c",
  "fin-core",
+ "fin-probe",
  "fin-store",
  "libc",
  "proptest",
  "rusqlite",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

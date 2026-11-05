@@ -1,13 +1,14 @@
-import type { CommittedTx, Project, Tx } from "@finisher/core-types";
+import type { CommittedTx, EngineEvent, Project, Tx, TxSetAside } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { FinError } from "./errors.ts";
 
 /**
- * TODO(sub-project 4): generate Probe from fin-probe's schema. Until then it is
- * opaque here; Rust validates it.
+ * Envelope types generated from the Rust types they carry (`@finisher/core-types`). The Effect
+ * schemas below that validate them at runtime are checked against the same generated schema
+ * (`envelopes.test.ts`).
  */
-export type Probe = unknown;
+export type { EngineEvent, Generation, Probe, TxSetAside } from "@finisher/core-types";
 
 /** Narrowed views of the `Schema.Unknown` payloads; runtime validation is Rust's job. */
 export type TxPayload = Tx;
@@ -21,10 +22,15 @@ export const ServerHelloSuccess = Schema.Struct({
   capabilities: Schema.Array(Schema.String),
 });
 
+/**
+ * `idemKey`: makes a retry of this create (its answer lost) return the project it made rather
+ * than `PROJECT_EXISTS`; the same key with another name or rate is `IDEM_KEY_REUSED`.
+ */
 export const ProjectCreatePayload = Schema.Struct({
   dir: Schema.String,
   name: Schema.String,
   rate: Schema.String,
+  idemKey: Schema.optional(Schema.String),
 });
 /**
  * `relocate`: the project now lives in `dir` although the folder it was recorded at cannot be
@@ -52,7 +58,6 @@ export const GenerationSchema = Schema.Struct({
   incarnation: Schema.String,
   n: Schema.Number,
 });
-export type Generation = typeof GenerationSchema.Type;
 
 /**
  * `generation`: the generation the client read the branch at (from `snapshot.get`). With it
@@ -123,7 +128,8 @@ export const ProjectEventSchema = Schema.Union([
   /** A background tick, backup or compaction failed (`fatal`: the engine is gone). */
   Schema.Struct({ type: Schema.Literal("error"), error: Schema.Unknown, fatal: Schema.Boolean }),
 ]);
-export type ProjectEvent = typeof ProjectEventSchema.Type;
+/** fin-store's `EngineEvent` less `applied` (fed to `ops.subscribe`) and `lagged` (ends subscribers). */
+export type ProjectEvent = Exclude<EngineEvent, { type: "applied" } | { type: "lagged" }>;
 
 export const TxGetPayload = Schema.Struct({ projectId: Schema.String, txId: Schema.String });
 /**
@@ -139,7 +145,6 @@ export const TxSetAsideSchema = Schema.Struct({
     origin: Schema.String,
   }),
 });
-export type TxSetAside = typeof TxSetAsideSchema.Type;
 /** `tx.get`: the `CommittedTx`, a set-aside record, or `null` when the server never saw it. */
 export const TxGetSuccess = Schema.NullOr(Schema.Union([TxSetAsideSchema, CommittedTxSchema]));
 export type TxGetResult = CommittedTx | TxSetAside | null;

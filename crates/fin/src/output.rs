@@ -39,6 +39,8 @@ const VALIDATION_CODES: &[&str] = &[
     "SERVER_DATA_UNSAFE",
     "IDEM_KEY_REUSED",
     "PROJECT_DIR_UNWRITABLE",
+    // An empty or whitespace-only project name.
+    "INVALID_NAME",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -237,6 +239,7 @@ mod tests {
             "PROJECT_DB_MISMATCH",
             "SERVER_DATA_UNSAFE",
             "PROJECT_DIR_UNWRITABLE",
+            "INVALID_NAME",
             "IDEM_KEY_REUSED",
             "DB_TOO_NEW",
             "NOT_A_PROJECT_DB",

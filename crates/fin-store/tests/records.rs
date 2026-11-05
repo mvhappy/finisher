@@ -35,6 +35,7 @@ fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops,
     }
 }
@@ -81,7 +82,7 @@ fn rows(conn: &Connection) -> Vec<(i64, Vec<u8>, String, Option<String>)> {
 }
 
 fn store_with_three(e: &Env) -> Store {
-    let mut s = Store::create(&e.data, &e.dir, "Demo", secs(30)).unwrap();
+    let mut s = Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap();
     s.commit(tx("tx-1", 0, vec![asset()])).unwrap();
     s.commit(tx("tx-2", 1, vec![insert("$c", 0)])).unwrap();
     s.commit(tx("tx-3", 2, vec![insert("$d", 2)])).unwrap();

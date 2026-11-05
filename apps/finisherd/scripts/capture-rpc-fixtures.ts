@@ -57,7 +57,14 @@ try {
   });
 
   await scenario("project-create", async (c) => {
-    projectId = ok<{ projectId: string }>(await c.call("project.create", { dir, name: "Demo", rate: "30000/1001" })).projectId;
+    projectId = ok<{ projectId: string }>(
+      await c.call("project.create", { dir, name: "Demo", rate: "30000/1001", idemKey: "create-1" }),
+    ).projectId;
+  });
+
+  // The same create again (its answer lost): the project it made, not PROJECT_EXISTS.
+  await scenario("project-create-retry", async (c) => {
+    ok(await c.call("project.create", { dir, name: "Demo", rate: "30000/1001", idemKey: "create-1" }));
   });
 
   await scenario("tx-commit", async (c) => {

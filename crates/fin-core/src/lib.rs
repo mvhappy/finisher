@@ -21,7 +21,7 @@ pub use ops::{Edge, Op};
 pub use rebase::{Conflict, rebase_tx};
 pub use record::{MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, resolve_ops};
 pub use replay::{BoundIds, apply_committed};
-pub use schema::json_schema;
+pub use schema::{json_schema, json_schema_with};
 pub use time::{Rational, frame_duration, parse_time};
 pub use tx::*;
 pub use upgrade::{upcast_record, upcast_snapshot};

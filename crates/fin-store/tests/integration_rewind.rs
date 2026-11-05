@@ -250,6 +250,7 @@ fn own_lost_records_are_rewound_too_and_reported_as_own() {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops: vec![asset(&format!("/m/{id}.mov"))],
     };
     let e1: CoreError = a
@@ -520,6 +521,7 @@ fn a_second_store_on_the_database_sees_the_rewind() {
         branch: MAIN.into(),
         base_rev: 2,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops: vec![asset("/m/x1.mov")],
     };
     let err: CoreError = f

@@ -187,7 +187,8 @@ impl Drop for Engine {
 #[napi]
 impl Engine {
     /// Creates a project in `project_dir`, its database under `server_data`. `rate` is a
-    /// rational string such as `"30"` or `"30000/1001"`. Resolves to an `Engine`.
+    /// rational string such as `"30"` or `"30000/1001"`; `idem_key`: a retry with it returns
+    /// the project this create made (`Store::create`). Resolves to an `Engine`.
     #[napi(catch_unwind, ts_return_type = "Promise<Engine>")]
     pub fn create<'e>(
         env: &'e Env,
@@ -195,12 +196,13 @@ impl Engine {
         project_dir: String,
         name: String,
         rate: String,
+        idem_key: Option<String>,
     ) -> Result<Object<'e>> {
         worker::open(
             env,
             server_data.into(),
             project_dir.into(),
-            Some((name, rate)),
+            Some((name, rate, idem_key)),
             false,
         )
     }

@@ -54,6 +54,7 @@ impl Backend for Rejecting {
         _dir: &Path,
         _name: &str,
         _rate: Rational,
+        _idem: Option<&str>,
     ) -> Result<Value, CoreError> {
         unreachable!()
     }
@@ -99,8 +100,14 @@ impl Backend for LostAnswer {
     fn probe(&self, path: &Path) -> Result<Probed, CoreError> {
         self.0.probe(path)
     }
-    fn create_project(&self, d: &Path, n: &str, r: Rational) -> Result<Value, CoreError> {
-        self.0.create_project(d, n, r)
+    fn create_project(
+        &self,
+        d: &Path,
+        n: &str,
+        r: Rational,
+        k: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        self.0.create_project(d, n, r, k)
     }
     fn open_project(&self, d: &Path, relocate: bool) -> Result<Value, CoreError> {
         self.0.open_project(d, relocate)
@@ -224,4 +231,59 @@ fn a_rebased_commit_is_the_same_command_but_another_kind_or_clip_is_not() {
         &[delete("c1")],
         &[delete("c1"), delete("c2")]
     ));
+}
+
+/// [`landed`] with `argsHash` `hash`.
+fn landed_with(tx_id: &str, hash: Option<String>) -> CommittedTx {
+    let mut c = landed(tx_id);
+    c.tx.args_hash = hash;
+    c
+}
+
+#[test]
+fn idem_key_same_key_different_args_rejected() {
+    let globals = Globals {
+        idem_key: Some("k".into()),
+        ..Globals::default()
+    };
+    let delete = |clip: &str| Write::ClipDelete(clip::DeleteArgs { clip: clip.into() });
+    let ours = args_hash(&[input(&delete("c9"))]);
+    // Committed by this same command: answered.
+    let mut backend = rejecting(CoreError::new("CONFLICT", "unused"));
+    backend.lookup = TxLookup::Committed(Box::new(landed_with("k", Some(ours.clone()))));
+    assert_eq!(write(&backend, &globals, delete("c9")).unwrap()["rev"], 2);
+    // The key's commit has the same ops but came from another command input (an insert
+    // planned `--at end` and one `--at 0` can resolve to the same ops): refused.
+    let other = args_hash(&[json!({ "cmd": "clip.delete", "args": { "clip": "c10" } })]);
+    backend.lookup = TxLookup::Committed(Box::new(landed_with("k", Some(other))));
+    let e = write(&backend, &globals, delete("c9")).unwrap_err();
+    assert_eq!(e.code, "IDEM_KEY_REUSED");
+    assert_eq!(exit_code(&e.code), 3);
+    // A commit without a hash (an older fin): compared by its ops, as before.
+    backend.lookup = TxLookup::Committed(Box::new(landed_with("k", None)));
+    assert_eq!(write(&backend, &globals, delete("c9")).unwrap()["rev"], 2);
+    assert_eq!(
+        write(&backend, &globals, delete("c8")).unwrap_err().code,
+        "IDEM_KEY_REUSED"
+    );
+}
+
+#[test]
+fn args_hash_is_of_the_command_input() {
+    let insert = |json: Value| Write::ClipInsert(serde_json::from_value(json).unwrap());
+    let a = input(&insert(
+        json!({ "track": "t1", "at": "end", "asset": "a1", "dur": "2s" }),
+    ));
+    // Key order and absent defaults do not matter; the values do.
+    let b = input(&insert(
+        json!({ "dur": "2s", "asset": "a1", "at": "end", "track": "t1", "in": null }),
+    ));
+    assert_eq!(args_hash(&[a.clone()]), args_hash(&[b]));
+    let c = input(&insert(
+        json!({ "track": "t1", "at": "0", "asset": "a1", "dur": "2s" }),
+    ));
+    assert_ne!(args_hash(&[a.clone()]), args_hash(&[c.clone()]));
+    assert_ne!(args_hash(&[a.clone(), c.clone()]), args_hash(&[c, a]));
+    let h = args_hash(&[]);
+    assert!(h.starts_with("blake3:") && h.len() == 71, "{h}");
 }

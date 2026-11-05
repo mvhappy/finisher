@@ -161,6 +161,11 @@ fn captured_frames_replay_against_a_live_server() {
         .unwrap()
         .to_string();
     subst.push((FIXTURE_PROJECT.to_string(), project_id.clone()));
+    let retried = Conn::open(&server, &subst).replay("project-create-retry");
+    assert_eq!(
+        retried["exit"]["value"]["projectId"], project_id,
+        "{retried}"
+    );
     let committed = Conn::open(&server, &subst).replay("tx-commit");
     assert_eq!(
         committed["exit"]["value"]["bindings"],

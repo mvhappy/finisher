@@ -42,7 +42,7 @@ pub(crate) const SPLIT_BRAIN_SPAN_MS: i64 = 30_000;
 
 /// A branch generation as a caller holds it: the database's incarnation and the branch's
 /// rewind count in it (module docs).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Generation {
     pub incarnation: String,

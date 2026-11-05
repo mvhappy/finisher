@@ -28,7 +28,7 @@ fn set_override(dir: &Path, value: Option<Value>) {
 }
 
 fn make(server: &Path, proj: &Path) {
-    Store::create(server, proj, "P", Rational::new(24, 1).unwrap())
+    Store::create(server, proj, "P", Rational::new(24, 1).unwrap(), None)
         .unwrap()
         .close()
         .unwrap();
@@ -42,6 +42,7 @@ fn detected_then_overridden_then_ignored() {
         proj.path(),
         "P",
         Rational::new(24, 1).unwrap(),
+        None,
     )
     .unwrap();
     assert_eq!(created.storage_kind(), StorageKind::Local);

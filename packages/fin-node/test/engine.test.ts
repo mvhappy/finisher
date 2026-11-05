@@ -110,7 +110,8 @@ describe("Engine", () => {
     for (const rev of [-1, 1.5, Number.NaN]) {
       const err = await rejection(engine.opsSince("main", rev));
       expect(err.code, String(rev)).toBe("INVALID_RANGE");
-      expect(err.details.rev).toBe(String(rev));
+      // Numeric, as every `details.rev` is; JSON has no NaN.
+      expect(err.details.rev).toBe(Number.isNaN(rev) ? null : rev);
     }
     expect((await rejection(engine.snapshot("nope"))).code).toBe("BRANCH_NOT_FOUND");
     expect((await rejection(Engine.open(serverData, join(tmp, "empty")))).code).toBe("PROJECT_NOT_FOUND");

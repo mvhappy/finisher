@@ -478,6 +478,7 @@ fn a_rebuilt_database_refuses_callers_of_the_old_one() {
         branch: MAIN.into(),
         base_rev: 1,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops: vec![asset(&format!("/m/{id}.mov"))],
     };
     let err: CoreError = a

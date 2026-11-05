@@ -10,14 +10,18 @@ pub mod fixtures;
 
 use fin_core::{AudioInfo, CoreError, Rational, VideoInfo};
 use mp4::{Mp4Reader, Mp4Track, TrackType};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const SAMPLE: u64 = 64 * 1024;
 /// Files smaller than this are hashed whole instead of as head/middle/tail samples.
 const WHOLE_FILE_LIMIT: u64 = 3 * SAMPLE;
 
-/// What the server needs to register a media asset.
-#[derive(Debug, Clone, PartialEq)]
+/// What the server needs to register a media asset. Its serde form is what `asset.probe`
+/// answers (`@finisher/core-types` exports it as `Probe`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Probe {
     pub duration: Rational,
     pub video: Option<VideoInfo>,

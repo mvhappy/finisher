@@ -68,13 +68,13 @@ impl Worker {
     }
 }
 
-/// `Engine.create` (`create` = `(name, rate)`) or `Engine.open` (`relocate`:
+/// `Engine.create` (`create` = `(name, rate, idem key)`) or `Engine.open` (`relocate`:
 /// [`OpenOptions::relocate`]), on a new worker thread that then serves the engine.
 pub(crate) fn open<'e>(
     env: &'e Env,
     server_data: PathBuf,
     project_dir: PathBuf,
-    create: Option<(String, String)>,
+    create: Option<(String, String, Option<String>)>,
     relocate: bool,
 ) -> Result<Object<'e>> {
     let worker = Worker::spawn()?;
@@ -84,9 +84,9 @@ pub(crate) fn open<'e>(
         let opened = guarded(
             || {
                 let store = match &create {
-                    Some((name, rate)) => {
+                    Some((name, rate, idem)) => {
                         let rate: Rational = rate.parse().map_err(reject)?;
-                        Store::create(&server_data, &project_dir, name, rate)
+                        Store::create(&server_data, &project_dir, name, rate, idem.as_deref())
                     }
                     None => Store::open_with(
                         &server_data,

@@ -13,8 +13,8 @@ fn code(e: Result<Rational, CoreError>) -> String {
 
 #[test]
 fn reduces() {
-    assert_eq!(r("2/4").to_string(), "1/2");
-    assert_eq!(r("4/2").to_string(), "2");
+    assert_eq!(Rational::new(2, 4).unwrap().to_string(), "1/2");
+    assert_eq!(Rational::new(4, 2).unwrap().to_string(), "2");
     assert_eq!(Rational::new(3, -6).unwrap().to_string(), "-1/2");
 }
 
@@ -48,6 +48,50 @@ fn rejects_bad_input_with_details() {
         let e = parse_time(bad, rate(30)).unwrap_err();
         assert_eq!(e.code, "INVALID_TIME", "{bad}");
         assert_eq!(e.details["input"], bad);
+    }
+}
+
+#[test]
+fn noncanonical_rationals_rejected() {
+    // (input, canonical form the fix names)
+    for (bad, canonical) in [
+        ("2/4", "1/2"),
+        ("4/2", "2"),
+        ("1/1", "1"),
+        ("-0", "0"),
+        ("+1", "1"),
+        ("01", "1"),
+        ("-01/2", "-1/2"),
+        ("0/5", "0"),
+        ("1/02", "1/2"),
+        ("00", "0"),
+    ] {
+        for e in [
+            bad.parse::<Rational>().unwrap_err(),
+            parse_time(bad, rate(30)).unwrap_err(),
+        ] {
+            assert_eq!(e.code, "INVALID_TIME", "{bad}");
+            assert_eq!(e.details["input"], bad, "{bad}");
+            assert_eq!(e.details["canonical"], canonical, "{bad}");
+            let fix = e.fix.clone().unwrap_or_default();
+            assert!(fix.contains(&format!("\"{canonical}\"")), "{bad}: {fix}");
+        }
+        let stored = serde_json::from_str::<Rational>(&format!("\"{bad}\"")).unwrap_err();
+        assert!(stored.to_string().contains("canonical"), "{bad}: {stored}");
+    }
+    // Canonical forms still parse.
+    for good in [
+        "0",
+        "1",
+        "-1",
+        "1/2",
+        "-1/2",
+        "1001/30000",
+        "30000/1001",
+        "62/5",
+    ] {
+        assert_eq!(good.parse::<Rational>().unwrap().to_string(), good);
+        assert_eq!(parse_time(good, rate(30)).unwrap().to_string(), good);
     }
 }
 

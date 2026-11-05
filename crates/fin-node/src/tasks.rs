@@ -95,10 +95,9 @@ fn parse_count(name: &str, n: f64) -> Result<u64> {
                 "INVALID_RANGE",
                 format!("{name} must be a non-negative integer, got {n}"),
             )
+            // Numeric like every other `details.rev` (`null` for NaN/±∞, which JSON lacks).
             .with_details(serde_json::Value::Object(
-                [(name.to_string(), n.to_string().into())]
-                    .into_iter()
-                    .collect(),
+                [(name.to_string(), json!(n))].into_iter().collect(),
             )),
         ))
     }
@@ -112,9 +111,14 @@ fn tx_json(tx_id: &str, status: TxStatus) -> Result<Reply> {
             branch,
             reason,
             origin,
-        } => Reply::Json(encode(&json!({ "setAside": {
-            "txId": tx_id, "branch": branch, "reason": reason, "origin": origin,
-        }}))?),
+        } => Reply::Json(encode(&fin_store::TxSetAside {
+            set_aside: fin_store::SetAside {
+                tx_id: tx_id.to_string(),
+                branch,
+                reason,
+                origin,
+            },
+        })?),
         TxStatus::Unknown => Reply::Null,
     })
 }

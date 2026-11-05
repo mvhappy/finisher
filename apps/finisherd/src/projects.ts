@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { CommittedTx } from "@finisher/core-types";
-import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
+import type { EngineEvent, FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
@@ -24,7 +24,8 @@ interface OpenProject {
 }
 
 export interface ProjectRegistryShape {
-  readonly create: (dir: string, name: string, rate: string) => Effect.Effect<ProjectRef, FinError>;
+  /** `idemKey`: a retry with the same key returns the project that create made. */
+  readonly create: (dir: string, name: string, rate: string, idemKey?: string) => Effect.Effect<ProjectRef, FinError>;
   readonly open: (dir: string, relocate?: boolean) => Effect.Effect<ProjectRef, FinError>;
   /** With `generation`, refused with `HISTORY_REWOUND` when the branch moved under the caller. */
   readonly commit: (projectId: string, tx: unknown, generation?: Generation) => Effect.Effect<CommittedTx, FinError>;
@@ -125,13 +126,6 @@ function engineEvicted(projectId: string): FinError {
   );
 }
 
-type EngineEvent =
-  | { type: "applied"; tx: CommittedTx }
-  | { type: "status"; status: unknown }
-  | { type: "rewound"; branch: string; fromRev: number; quarantined: number; own: boolean; generation: number; incarnation: string }
-  | { type: "rebuilt"; incarnation: string }
-  | { type: "error"; error: unknown; fatal: boolean }
-  | { type: "lagged"; dropped: number };
 
 export function makeProjectRegistry(
   serverData: string,
@@ -301,12 +295,14 @@ export function makeProjectRegistry(
       on<CommittedTx[]>(projectId, (e) => e.opsSince(branch, rev));
 
     return {
-      create: (dir, name, rate) =>
+      create: (dir, name, rate, idemKey) =>
         Effect.suspend(() => {
           if (closed) return Effect.fail(shuttingDown());
           const abs = resolve(dir);
           return Effect.flatMap(
-            attempt(async () => register(await Engine.create(serverData, abs, name, rate), abs)),
+            // A retry of a create whose engine is still open here opens a second (following)
+            // engine; `register` keeps the first.
+            attempt(async () => register(await Engine.create(serverData, abs, name, rate, { idemKey }), abs)),
             ref,
           );
         }),

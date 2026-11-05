@@ -189,6 +189,47 @@ fn project_create_under_a_file_is_project_dir_unwritable() {
 }
 
 #[test]
+fn project_create_retry_with_idem_key_returns_the_project() {
+    let Some(server) = Server::start("project_create_retry_with_idem_key_returns_the_project")
+    else {
+        return;
+    };
+    let args = [
+        "project",
+        "create",
+        "film",
+        "--name",
+        "Film",
+        "--idem-key",
+        "create-1",
+    ];
+    let first = ok(fin(&server.sd, &server.root, &args));
+    let again = ok(fin(&server.sd, &server.root, &args));
+    assert_eq!(
+        again["project"]["projectId"], first["project"]["projectId"],
+        "{again}"
+    );
+    // Without the key, or with the key and another name: not a retry.
+    assert_error(
+        &fin(&server.sd, &server.root, &args[..5]),
+        3,
+        "PROJECT_EXISTS",
+    );
+    let other = [
+        "project",
+        "create",
+        "film",
+        "--name",
+        "Other",
+        "--idem-key",
+        "create-1",
+    ];
+    assert_error(&fin(&server.sd, &server.root, &other), 3, "IDEM_KEY_REUSED");
+    let empty = ["project", "create", "x", "--name", " ", "--idem-key", "k"];
+    assert_error(&fin(&server.sd, &server.root, &empty), 3, "INVALID_NAME");
+}
+
+#[test]
 fn server_down_is_exit_5() {
     let Some((mut server, dir)) = project("server_down_is_exit_5") else {
         return;
@@ -351,6 +392,47 @@ fn idem_key_reused_for_a_different_command_is_rejected() {
     assert_eq!(again.code, 0, "{}", again.stdout);
     assert_eq!(first.stdout, again.stdout);
     assert_eq!(ok(run(&["status"]))["rev"], 5);
+}
+
+/// Same op kind, other args: the ops alone cannot tell (a retry's positions move), the stored
+/// command-input hash can. A retry of `--at end` after another commit is still the same command.
+#[test]
+fn idem_key_same_key_different_args_rejected() {
+    let Some((server, dir)) = project("idem_key_same_key_different_args_rejected") else {
+        return;
+    };
+    let run = |args: &[&str]| fin(&server.sd, &dir, args);
+    ok(run(&["asset", "add", "clip.mp4"]));
+    let at_end = [
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "end",
+        "--asset",
+        "a1",
+        "--dur",
+        "2s",
+        "--idem-key",
+        "k1",
+    ];
+    let first = run(&at_end);
+    assert_eq!(first.code, 0, "{}", first.stdout);
+    ok(run(&[
+        "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s",
+    ]));
+    // The retry plans `end` at 3s now, yet it is the command that committed.
+    let again = run(&at_end);
+    assert_eq!(again.code, 0, "{}", again.stdout);
+    assert_eq!(again.json["rev"], first.json["rev"]);
+    let mut at_zero = at_end;
+    at_zero[5] = "0";
+    assert_error(&run(&at_zero), 3, "IDEM_KEY_REUSED");
+    let mut longer = at_end;
+    longer[9] = "3s";
+    assert_error(&run(&longer), 3, "IDEM_KEY_REUSED");
+    assert_eq!(ok(run(&["status"]))["rev"], 3);
 }
 
 #[test]

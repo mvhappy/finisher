@@ -593,7 +593,7 @@ fn store_with(data: &Path, proj: &Path, c: &Arc<FakeClock>) -> Store {
         poll: Some(ms(2)),
         ..fin_store::OpenOptions::default()
     };
-    Store::create_with(data, proj, "P", Rational::from_int(30), opts).unwrap()
+    Store::create_with(data, proj, "P", Rational::from_int(30), None, opts).unwrap()
 }
 
 fn tx(id: &str, base_rev: u64) -> Tx {
@@ -603,6 +603,7 @@ fn tx(id: &str, base_rev: u64) -> Tx {
         branch: MAIN.into(),
         base_rev,
         schema_version: SCHEMA_VERSION,
+        args_hash: None,
         ops: vec![Op::AssetAdd {
             id: "$a".into(),
             path: format!("/media/{id}.mov"),

@@ -62,8 +62,8 @@ export class Engine {
     this.#native = nativeEngine;
   }
 
-  static async create(serverData, projectDir, name, rate) {
-    return new Engine(await call(native.Engine.create(serverData, projectDir, name, rate)));
+  static async create(serverData, projectDir, name, rate, options = {}) {
+    return new Engine(await call(native.Engine.create(serverData, projectDir, name, rate, options.idemKey ?? null)));
   }
 
   static async open(serverData, projectDir, options = {}) {
