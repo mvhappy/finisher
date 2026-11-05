@@ -7,6 +7,7 @@
 // Scenarios: race, race-stale, stall, stall-short, stall-check, stall-sigstop, follow, skew.
 // Host and share access come only from XHOST_* variables (README.md); nothing about hosts is
 // written into this repository.
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, createWriteStream } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -48,7 +49,10 @@ function node(name, storage) {
 
 const sep = (n) => (n.os === "windows" ? "\\" : "/");
 const pjoin = (n, ...parts) => parts.join(sep(n));
-const quote = (n, s) => (n.os === "windows" ? `"${String(s).replaceAll('"', '\\"')}"` : `'${String(s).replaceAll("'", "'\\''")}'`);
+// cmd.exe strips the first and last quote of a line with more than two, so on Windows only
+// arguments that need it are quoted.
+const winQuote = (s) => (/^[\w:\\.\-=,+/]+$/.test(s) ? s : `"${s.replaceAll('"', '\\"')}"`);
+const quote = (n, s) => (n.os === "windows" ? winQuote(String(s)) : `'${String(s).replaceAll("'", "'\\''")}'`);
 
 /** Runs `argv` on a node; resolves with the JSONL events it printed and its exit code. */
 function exec(n, argv, outFile, { onEvent } = {}) {
@@ -241,7 +245,8 @@ async function main() {
   const storage = o.storage ?? "share";
   const names = (o.nodes ?? env.XHOST_NODES ?? "a,b").split(",");
   const nodes = names.map((n) => node(n, storage));
-  const runId = new Date().toISOString().replace(/[:.]/g, "-");
+  // Time-sortable, plus a random suffix so controllers started in the same millisecond differ.
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const outDir = o.out ?? join(REPO, "archive/spike/sp4a-xhost", `${runId}-${storage}`);
   const rounds = Number(o.rounds ?? (scenario === "race" ? 20 : 1));
   const results = [];

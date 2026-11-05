@@ -138,7 +138,7 @@ impl Emitter {
         let r = (|| -> io::Result<SystemTime> {
             let mut f = File::create(&path)?;
             f.write_all(format!("{} {}\n", self.label, self.clock_seq).as_bytes())?;
-            f.sync_all()?;
+            fin_store::fsio::sync_file(&f)?; // sync_all is ENOTSUP on macOS smbfs
             drop(f);
             File::open(&path)?.metadata()?.modified()
         })();

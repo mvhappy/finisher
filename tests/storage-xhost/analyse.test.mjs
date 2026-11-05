@@ -135,3 +135,17 @@ test("a commit accepted at an older epoch after a newer epoch's commit is stale"
   const r = analyseRound([a, b, f, v]);
   assert.equal(r.counts.staleAcceptedAfterNewerEpoch, 1);
 });
+
+test("a node that cannot write the share is a non-critical problem, once per node and kind", () => {
+  const [a, b, f, v] = clean();
+  f.events.splice(1, 0, { ev: "opened", t: 0.4, lease: "lost", leaseDetail: "cannot write the probe file: denied" });
+  f.events.splice(2, 0, at(0.5, { ev: "lease", lease: "lost", leaseDetail: "cannot write the probe file: denied again" }));
+  for (const t of [5, 10]) f.events.push(at(t, { ev: "clock", error: `os error ${t}` }));
+  const r = analyseRound([a, b, f, v]);
+  const mine = r.problems.filter((p) => p.startsWith("f "));
+  assert.equal(mine.length, 2);
+  assert.ok(mine[0].includes("denied") && !mine[0].includes("again"));
+  assert.ok(mine[1].includes("os error 5"));
+  assert.equal(r.critical, false);
+  assert.deepEqual(analyseRound(clean()).problems, []);
+});

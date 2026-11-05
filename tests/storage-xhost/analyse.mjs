@@ -269,6 +269,11 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
     }),
   );
   for (const p of procs) {
+    // A node that cannot write to the share: first error text per node and kind.
+    const cant = p.events.find((e) => (e.ev === "opened" || e.ev === "lease") && JSON.stringify([e.reason, e.leaseDetail]).includes("cannot write the probe file"));
+    if (cant) r.problems.push(`${p.label} (${p.role}) cannot write the probe file: ${JSON.stringify(cant.leaseDetail ?? cant.reason)}`);
+    const clk = p.events.find((e) => e.ev === "clock" && e.error);
+    if (clk) r.problems.push(`${p.label} (${p.role}) clock sample failed: ${clk.error}`);
     const end = p.events.find((e) => e.ev === "end");
     if (!end?.ok) r.problems.push(`${p.label} (${p.role}) did not end ok: ${end?.error ?? `exit ${p.exit}`}`);
     for (const w of p.events.filter((e) => e.ev === "warning")) r.notes.push(`${p.label}: ${w.what}`);
