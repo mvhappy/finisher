@@ -17,7 +17,10 @@
 //! whose branch is unknown):
 //! 1. **Read afresh** ([`view::read`]): an uncached scan, a fresh resolution (no fork, nothing
 //!    waiting or pending, every file under `segments/<branch>/` settled), and the database's
-//!    exported rows exactly the chain's prefix. Otherwise wait (retried after [`RETRY`]).
+//!    exported rows exactly the chain's prefix. Otherwise wait (retried after [`RETRY`]). A
+//!    4B branch is the segments naming its index record, resolved from its fork point
+//!    (plan 4B Decision 33); the directory's other segments are never packed or deleted, and
+//!    a manifest naming one is abandoned.
 //! 2. **Eligible**: non-pack segments wholly on the resolved chain and exported in the
 //!    database, not set aside (a losing, stale, malformed or quarantined segment never is:
 //!    it is what lets a late follower reach the same verdict, and 4B's `recovered-*` branches

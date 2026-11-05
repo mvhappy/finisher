@@ -19,14 +19,14 @@ const LIST: usize = 20;
 
 pub(super) struct Folder {
     entries: Result<Vec<Entry>, String>,
-    branches: Vec<BranchChain>,
+    pub(super) branches: Vec<BranchChain>,
     /// Damaged files seen unchanged for `super::SETTLED`.
     settled: HashSet<PathBuf>,
     /// Files unreadable right now (`NotArrivedWhy::Locked`) for `super::SETTLED` already.
     locked_long: HashSet<PathBuf>,
     /// Files under `segments/` that are still arriving or were not read (placeholders,
     /// incomplete or damaged files not settled): what lies beyond the chain cannot be told.
-    arriving: bool,
+    pub(super) arriving: bool,
 }
 
 /// How many of the folder's segments name another genesis than `expected`.
@@ -38,9 +38,15 @@ pub(super) fn genesis_disagree(project_dir: &Path, expected: &str) -> usize {
         .count()
 }
 
-struct BranchChain {
-    branch: String,
+pub(super) struct BranchChain {
+    pub(super) branch: String,
+    /// The segments that make the branch: all of `main`'s; a 4B branch's that name its
+    /// index record (`branchRecord`).
     segs: Vec<SegRef>,
+    /// The other segments of the branch's directory (another `branch` record's).
+    pub(super) others: Vec<SegRef>,
+    /// `(forkSeq, forkHash)` from the index (`None`: `main`, or a root).
+    start: Option<(u64, Option<String>)>,
     res: Resolution,
     /// `(seq, txHash)` of the resolved chain, in order.
     chain: Vec<(u64, String)>,
@@ -126,12 +132,31 @@ impl Folder {
         });
         let mut names: BTreeSet<String> = by_branch.keys().cloned().collect();
         names.extend(db::branches(s.conn).unwrap_or_default());
+        let ix = crate::branch::index::load(s.conn).unwrap_or_default();
         let branches = names
             .into_iter()
             .map(|branch| {
-                let mut segs = by_branch.remove(&branch).unwrap_or_default();
-                segs.sort_by(|a, b| a.hash().cmp(b.hash()));
-                let res = resolve(&segs, &Known::empty(s.kind));
+                let mut all = by_branch.remove(&branch).unwrap_or_default();
+                all.sort_by(|a, b| a.hash().cmp(b.hash()));
+                // A 4B branch is the segments naming its index record (Decision 33); every
+                // other segment of its directory is `others` (`branch_index` classifies them).
+                let info = ix.get(&branch).filter(|i| i.parent.is_some());
+                let rows = db::latest_rev(s.conn, &branch).ok().flatten().is_some();
+                let (segs, others): (Vec<SegRef>, Vec<SegRef>) = match info {
+                    _ if branch == MAIN => (all, vec![]),
+                    Some(i) => all
+                        .into_iter()
+                        .partition(|g| i.record.is_some() && g.header().branch_record == i.record),
+                    // A root made by hand (rows, no index row) reads as `main` does.
+                    None if rows && ix.get(&branch).is_none() => (all, vec![]),
+                    None => (vec![], all),
+                };
+                let fork = info.map(|i| crate::chain::ForkPoint {
+                    seq: i.fork_seq,
+                    hash: i.fork_hash.clone(),
+                });
+                let start = info.map(|i| (i.fork_seq, i.fork_hash.clone()));
+                let res = resolve(&segs, &Known::for_branch(s.kind, fork));
                 let chain = res
                     .apply
                     .iter()
@@ -147,6 +172,8 @@ impl Folder {
                 BranchChain {
                     branch,
                     segs,
+                    others,
+                    start,
                     res,
                     chain,
                     epoch_of,
@@ -317,14 +344,21 @@ impl Folder {
                  WHERE branch = ?1 ORDER BY seq",
             )?;
             let mut rows = stmt.query(params![b.branch])?;
-            let first: Option<i64> = s.conn.query_row(
-                "SELECT MIN(seq) FROM snapshots WHERE branch = ?1",
-                params![b.branch],
-                |r| r.get(0),
-            )?;
-            let mut prev_seq = first.map_or(Ok(0), db::to_u64)?;
-            let mut prev_hash: Option<String> = None;
-            let mut checked_parent = b.branch == MAIN;
+            // A 4B branch continues its parent at its fork point (spec §4.1): its first row
+            // is `forkSeq + 1` and links to `forkHash`. A root made by hand starts at its
+            // first snapshot, its first parent unchecked.
+            let (mut prev_seq, mut prev_hash, mut checked_parent) = match &b.start {
+                Some((seq, hash)) => (*seq, hash.clone(), true),
+                None => {
+                    let first: Option<i64> = s.conn.query_row(
+                        "SELECT MIN(seq) FROM snapshots WHERE branch = ?1",
+                        params![b.branch],
+                        |r| r.get(0),
+                    )?;
+                    (first.map_or(Ok(0), db::to_u64)?, None, b.branch == MAIN)
+                }
+            };
+            let first_row = prev_seq + 1;
             let (mut n, mut exported_through, mut unexported_seen) = (0u64, 0u64, false);
             while let Some(row) = rows.next()? {
                 n += 1;
@@ -339,7 +373,11 @@ impl Folder {
                     report(at("seq is not the next one"));
                 }
                 if checked_parent && parent != prev_hash {
-                    report(at("parent_hash is not the previous row's tx_hash"));
+                    report(at(if seq == first_row && b.start.is_some() {
+                        "parent_hash is not the branch's forkHash"
+                    } else {
+                        "parent_hash is not the previous row's tx_hash"
+                    }));
                 }
                 checked_parent = true;
                 if hash_bytes(&bytes) != tx_hash {

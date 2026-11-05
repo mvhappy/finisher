@@ -127,6 +127,34 @@ fn warns(s: &Store, code: &str) -> bool {
     s.status().warnings.iter().any(|w| w.code == code)
 }
 
+fn assert_verifies(s: &Store) {
+    let v = s.verify();
+    assert!(
+        v.ok,
+        "{:#?}",
+        v.checks.iter().filter(|c| !c.ok).collect::<Vec<_>>()
+    );
+}
+
+/// The follower `f` rebuilt from the folder (plan 4B Task 11) ends where it was: the same
+/// states, index, links and quarantine set; and so does a server with no database. The
+/// reasons are those of a follower that saw everything at once (`f`'s own `SUPERSEDED`
+/// rows say what its old database did; the rebuilt one never applied them: `STALE_EPOCH`).
+fn rebuild_matches(e: &Env, f: &mut Store) {
+    let want = |s: &Store| (states(s), names(s), links(s), aside(s));
+    let before = want(f);
+    let rep = f.rebuild().unwrap();
+    assert_eq!(rep.import_error, None);
+    assert!(rep.verify.ok, "{:#?}", rep.verify);
+    e.poll(f);
+    assert_eq!(want(f), before);
+    assert_verifies(f);
+    let fresh = e.open("rebuilt");
+    assert_eq!(want(&fresh), before);
+    assert_eq!(reasons(f), reasons(&fresh));
+    assert_verifies(&fresh);
+}
+
 // ---- real lease ----------------------------------------------------------------------------
 
 fn freeze(s: &Store) {
@@ -226,6 +254,7 @@ fn all_orders_converge(e: &Env, n_files: usize, n_aside: usize) {
     let g = e.open("g");
     let want = |s: &Store| (states(s), aside(s), names(s), links(s));
     let target = want(&g);
+    assert_verifies(&g);
     assert_eq!(target.1.len(), n_aside, "{:?}", reasons(&g));
 
     let mut orders: Vec<Vec<usize>> = vec![vec![]];
@@ -367,6 +396,9 @@ fn same_id_on_different_parents_converges_in_every_order() {
     e.flush(&mut b);
     e.poll(&mut f);
     assert_eq!(states(&f), states(&b));
+    assert_verifies(&f);
+    assert_verifies(&b);
+    rebuild_matches(&e, &mut f);
     all_orders_converge(&e, 6, 1);
 }
 
@@ -473,7 +505,11 @@ fn winner_record_later_superseded_gives_the_id_back() {
         f.status().warnings
     );
     assert!(f.generation_token("br2").n > held.n);
+    assert_verifies(&f);
+    assert_verifies(&c);
+    assert_verifies(&g);
     drop(g);
+    rebuild_matches(&e, &mut f);
     all_orders_converge(&e, 6, 2);
 }
 
@@ -601,6 +637,93 @@ fn reacquired_holder_keeps_its_branch_on_followers() {
     g.import().unwrap();
     assert_eq!(states(&g), states(&y));
     assert_eq!(aside(&g), aside(&f));
+}
+
+/// Plan 4B Task 11: compaction packs only the segments naming the branch's `branch` record.
+/// `segments/br1` holds X's segments (its `br1` lost on `main`, `STALE_EPOCH`) and Y's; Y's
+/// are packed and deleted after the grace period, X's are never packed or deleted, and
+/// followers read the same before and after.
+#[test]
+fn compaction_never_packs_across_branch_records() {
+    let t = tenv();
+    let a = tcreate(&t);
+    let mut x = server(&t, &a, "x");
+    let mut y = server(&t, &a, "y");
+    let mut f = server(&t, &a, "f");
+    x.set_test_lease(1, true);
+    on(&mut x, "r1", MAIN, vec![asset("/m/a.mov")]);
+    export(&mut x);
+    y.import().unwrap();
+    assert_eq!(branch(&mut x, "xb", "x-side", MAIN), "br1");
+    export(&mut x);
+    for i in 0..2 {
+        on(&mut x, &format!("x{i}"), "br1", vec![insert(i, "a1")]);
+        export(&mut x);
+    }
+    y.set_test_lease(2, true);
+    assert_eq!(branch(&mut y, "yb", "y-side", MAIN), "br1");
+    export(&mut y);
+    for i in 0..2 {
+        on(&mut y, &format!("y{i}"), "br1", vec![insert(5 + i, "a1")]);
+        export(&mut y);
+    }
+    y.import().unwrap();
+    f.import().unwrap();
+    assert_eq!(states(&f), states(&y));
+    let br1 = t.dir.join(".finisher").join("segments").join("br1");
+    let named = |rec: &str| -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = fs::read_dir(&br1)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                fin_store::segment::decode(&fs::read(p).unwrap())
+                    .unwrap()
+                    .header
+                    .branch_record
+                    .as_deref()
+                    == Some(rec)
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let xb = aside(&y)
+        .into_iter()
+        .find(|h| named(h).len() == 2)
+        .expect("X's br1 record is set aside, its two segments name it");
+    let yb = row_hash(&y, "yb");
+    let theirs = named(&xb);
+    assert_eq!(named(&yb).len(), 2);
+
+    y.set_compaction_grace_for_test(Duration::from_secs(1));
+    let r = y.compact(true).unwrap();
+    assert!(r.packs_written >= 1, "{r:?}");
+    for _ in 0..4 {
+        if named(&yb).len() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1100));
+        y.compact(true).unwrap();
+    }
+    let ours = named(&yb);
+    assert_eq!(ours.len(), 1, "Y's two segments became one pack");
+    assert!(
+        fin_store::segment::decode(&fs::read(&ours[0]).unwrap())
+            .unwrap()
+            .header
+            .pack
+    );
+    assert_eq!(named(&xb), theirs, "X's segments are left alone");
+    f.import().unwrap();
+    let mut g = server(&t, &a, "g");
+    g.import().unwrap();
+    for s in [&f, &g] {
+        assert_eq!(states(s), states(&y));
+        assert_eq!(aside(s), aside(&y));
+        assert_verifies(s);
+    }
+    assert_verifies(&y);
 }
 
 /// Review E1 on the test lease: X's `br2` on `br1` lands first and alone on F2; Y's `br2` on

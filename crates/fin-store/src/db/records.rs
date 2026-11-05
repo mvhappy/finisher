@@ -56,8 +56,52 @@ pub(crate) fn committed_link(record: &Record) -> Result<Option<Box<Link>>, CoreE
 ///   `redo`, the merge group of a `revert`, the branch of a `branch` or `branchSet`;
 /// - `name`: of a `checkpoint`, `branch` or `branchSet`.
 fn insert_link(conn: &Connection, branch: &str, record: &Record) -> Result<(), StoreError> {
-    let Some(link) = committed_link(record)? else {
+    let Some(l) = link_row(branch, record)? else {
         return Ok(());
+    };
+    conn.execute(
+        "INSERT INTO record_links (tx_id, branch, seq, kind, author, origin, origin_hash,
+                                   from_branch, merge_id, targets, name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            l.tx_id,
+            l.branch,
+            l.seq,
+            l.kind,
+            l.author,
+            l.origin,
+            l.origin_hash,
+            l.from_branch,
+            l.merge_id,
+            l.targets,
+            l.name,
+        ],
+    )?;
+    Ok(())
+}
+
+/// A `record_links` row, without its `ignored` mark ([`insert_link`] has the columns).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LinkRow {
+    pub(crate) tx_id: String,
+    pub(crate) branch: String,
+    pub(crate) seq: i64,
+    pub(crate) kind: String,
+    pub(crate) author: String,
+    pub(crate) origin: Option<String>,
+    pub(crate) origin_hash: Option<String>,
+    pub(crate) from_branch: Option<String>,
+    pub(crate) merge_id: Option<String>,
+    pub(crate) targets: Option<String>,
+    pub(crate) name: Option<String>,
+}
+
+/// The `record_links` row `record` on `branch` gets (none for an edit), as [`insert_link`]
+/// writes it.
+pub(crate) fn link_row(branch: &str, record: &Record) -> Result<Option<LinkRow>, StoreError> {
+    let Some(link) = committed_link(record)? else {
+        return Ok(None);
     };
     let link = *link;
     let (mut origin, mut origin_hash, mut from, mut merge_id, mut name) =
@@ -100,26 +144,19 @@ fn insert_link(conn: &Connection, branch: &str, record: &Record) -> Result<(), S
             Some(vec![branch_id])
         }
     };
-    let targets = targets.map(|t| serde_json::to_string(&t)).transpose()?;
-    conn.execute(
-        "INSERT INTO record_links (tx_id, branch, seq, kind, author, origin, origin_hash,
-                                   from_branch, merge_id, targets, name)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            record.tx_id,
-            branch,
-            to_i64(record.seq)?,
-            kind_text(record.kind)?,
-            record.author,
-            origin,
-            origin_hash,
-            from,
-            merge_id,
-            targets,
-            name,
-        ],
-    )?;
-    Ok(())
+    Ok(Some(LinkRow {
+        tx_id: record.tx_id.clone(),
+        branch: branch.to_string(),
+        seq: to_i64(record.seq)?,
+        kind: kind_text(record.kind)?,
+        author: record.author.clone(),
+        origin,
+        origin_hash,
+        from_branch: from,
+        merge_id,
+        targets: targets.map(|t| serde_json::to_string(&t)).transpose()?,
+        name,
+    }))
 }
 
 /// Appends `record` (committed at `epoch`, not exported) on `branch`. The stored bytes are the record's

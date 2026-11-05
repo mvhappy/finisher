@@ -1,6 +1,7 @@
 //! A fresh view of one branch, as both compaction phases need it: an uncached scan (every file
 //! read and verified again), the chain a fresh reader resolves from it, and the database
-//! checked against that chain.
+//! checked against that chain. A 4B branch is the segments of its directory that name its
+//! index record (`branchRecord`, plan 4B Decision 33), resolved from its fork point.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 use fin_core::Project;
 use rusqlite::params;
 
-use crate::chain::{Known, QuarantineReason, Resolution, SegRef, resolve};
+use crate::chain::{ForkPoint, Known, QuarantineReason, Resolution, SegRef, resolve};
 use crate::db::to_u64;
 use crate::names::{SegmentName, SnapName, hash12};
 use crate::scan::{Entry, NotArrivedWhy};
@@ -42,8 +43,13 @@ pub(super) struct View {
     /// file link through a pack's `replaces`, so phase 1 never packs them.
     pub(super) malformed_prevs: HashSet<String>,
     pub(super) present: HashSet<String>,
-    /// The fresh resolution (`Known::empty`) of `segs`.
+    /// The fresh resolution of `segs` (`Known::for_branch` at the branch's fork point).
     pub(super) res: Resolution,
+    /// Where the branch starts on its parent (`None`: `main`).
+    pub(super) fork: Option<ForkPoint>,
+    /// File names of the directory's segments that name another `branch` record than the
+    /// index's (Decision 33): never packed, deleted or counted as the branch's.
+    pub(super) other_record: HashSet<String>,
 }
 
 impl View {
@@ -135,12 +141,19 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
     }
     // A 4B branch is the segments that name its `branch` record (plan 4B Decision 33): the
     // others (another server's branch under the same id) are never packed or deleted here.
+    let mut other_record = HashSet::new();
     if branch != crate::MAIN {
         let record = crate::branch::index::get(&store.conn, branch)?.and_then(|i| i.record);
-        segs.retain(|s| record.is_some() && s.header().branch_record == record);
+        let (own, others): (Vec<SegRef>, Vec<SegRef>) = segs
+            .into_iter()
+            .partition(|s| record.is_some() && s.header().branch_record == record);
+        other_record = others.iter().filter_map(seg_name).collect();
+        segs = own;
     }
     segs.sort_by(|a, b| a.hash().cmp(b.hash()));
-    let res: Resolution = resolve(&segs, &Known::empty(store.import.kind));
+    // A branch resolves from its fork point, as a fresh follower that knows the index would.
+    let fork = crate::import::fork_point(&store.conn, branch)?;
+    let res: Resolution = resolve(&segs, &Known::for_branch(store.import.kind, fork.clone()));
     if let Some(f) = &res.fork {
         return Ok(Err(format!("the branch has forked ({:?})", f.reason)));
     }
@@ -214,6 +227,8 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
         malformed_prevs,
         present,
         res,
+        fork,
+        other_record,
     }))
 }
 

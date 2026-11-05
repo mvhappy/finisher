@@ -124,6 +124,70 @@ fn corrupt_rebuild_salvages_exported_records_the_folder_lacks() {
     );
 }
 
+/// Plan 4B Task 11: exported records of a branch whose segments are gone from the folder are
+/// what a manual rebuild refuses to lose, and what a corrupt rebuild salvages as
+/// `MISSING_FROM_FOLDER`; the branch itself comes back from its `branch` record on `main`.
+#[test]
+fn salvage_marks_missing_branch_rows() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    let id = a
+        .create_branch(fin_store::BranchCreate {
+            tx_id: "b1".into(),
+            author: "test".into(),
+            name: Some("feature".into()),
+            from: MAIN.into(),
+            at: None,
+            dry_run: false,
+        })
+        .unwrap()
+        .branch
+        .id;
+    e.flush(&mut a);
+    for c in ["c1", "c2"] {
+        let base = a.head(&id);
+        a.commit(fin_core::Tx {
+            tx_id: c.into(),
+            author: "test".into(),
+            branch: id.clone(),
+            base_rev: base,
+            schema_version: fin_core::SCHEMA_VERSION,
+            args_hash: None,
+            ops: vec![insert(0, "a1")],
+        })
+        .unwrap();
+        e.flush(&mut a);
+    }
+    let branch_dir = e.dir.join(".finisher").join("segments").join(&id);
+    fs::remove_dir_all(&branch_dir).unwrap();
+    let err: CoreError = a.rebuild().unwrap_err().into();
+    assert_eq!(err.code, "REBUILD_WOULD_LOSE", "{err:?}");
+    assert_eq!(err.details["missing"], 2);
+    assert_eq!(a.head(&id), 3, "nothing changed");
+
+    let db = a.db_path().to_path_buf();
+    drop(a);
+    damage_segments_table(&db);
+    let a = e.open("a");
+    let r = a.last_rebuild().unwrap();
+    assert_eq!(r.reason, "corrupt");
+    assert_eq!(r.missing_from_folder, 2);
+    for c in ["c1", "c2"] {
+        assert_eq!(
+            a.tx_status(c).unwrap(),
+            TxStatus::SetAside {
+                branch: id.clone(),
+                reason: "MISSING_FROM_FOLDER".into(),
+                origin: "salvage".into()
+            }
+        );
+    }
+    assert_eq!(a.head(&id), 1, "the branch is back, at its fork");
+    assert_eq!(a.branches(true).unwrap()[1].name, "feature");
+    assert!(check(&r.verify, "branch_index").ok, "{:#?}", r.verify);
+}
+
 #[test]
 fn salvage_failure_is_reported_loudly() {
     let e = env();

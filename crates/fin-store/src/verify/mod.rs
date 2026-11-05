@@ -15,7 +15,8 @@
 //!   looked the same for 60 s, then unreadable. Unreadable files fail; files needing a newer Finisher are
 //!   listed (`newer`). A `segments` row of the database whose file is not listed at all (by
 //!   name) and that no present pack replaces fails (`missing`).
-//! - `chain_continuity`: per branch, the database's rows are dense from seq 1, each
+//! - `chain_continuity`: per branch, the database's rows are dense from seq 1 (a 4B branch:
+//!   from its fork), each
 //!   `parent_hash` is the previous row's `tx_hash`, each `tx_hash` is the BLAKE3 of its
 //!   `record_bytes`, each record reads as that row (seq, txId, parentHash), and exported rows
 //!   are a prefix. The folder, resolved from scratch as a fresh reader would, must hold every
@@ -42,7 +43,22 @@
 //!   rebuild. A file without a genesis checks the segments against the database's rev 0.
 //! - `record_size`: no stored record is larger than `segment::MAX_RECORD_BYTES` (only a
 //!   migrated sub-project 2 record can be; export stops at it, `RECORD_TOO_LARGE`).
+//! - `branch_index` (plan 4B Decision 6): the `branches` table equals the index
+//!   `crate::derived::compute` derives from the log (`index`), and `record_links` the rows its
+//!   records give, inert marks included (`links`); every non-`main` index row has state
+//!   (`stateless`: such a branch cannot be read) and every branch with rows an index row
+//!   (`unindexed`: it refuses writes). Each branch directory's segments that do not name the
+//!   index's `branch` record (Decision 33) name one that is set aside here (an inert row or
+//!   a quarantine row; its records not held yet are `pending`, not a failure) or one unknown
+//!   here (`waiting`, listed but not a failure while files arrive), never a live record the
+//!   index does not hold or a record of another branch (`segments`).
+//!
+//! Per branch, the folder checks read the segments that make it: all of `main`'s, and a 4B
+//! branch's that name its index record, resolved from its fork point
+//! (`Known::for_branch`); `chain_continuity` starts a branch at `forkSeq + 1` with
+//! `forkHash` as its first parent.
 
+mod branches;
 mod folder;
 mod replay;
 
@@ -202,6 +218,7 @@ pub(crate) fn run(s: &Subject) -> VerifyReport {
     }
     checks.push(guarded("genesis", || genesis(s)));
     checks.push(guarded("record_size", || record_size(s.conn)));
+    checks.push(guarded("branch_index", || branches::check(s, &f)));
     VerifyReport {
         ok: checks.iter().all(|c| c.ok),
         checks,

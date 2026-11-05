@@ -102,6 +102,11 @@ fn check(store: &Store, m: &Manifest, v: &View) -> Result<Checked, StoreError> {
     // Replaced hash → the highest epoch of a listed pack that replaces it.
     let mut replaces: HashMap<&str, u64> = HashMap::new();
     for p in &m.packs {
+        if v.other_record.contains(p) {
+            return Ok(Checked::Abandon(format!(
+                "pack {p} names another branch record than the branch's"
+            )));
+        }
         let Some(s) = v.by_name.get(p) else {
             return Ok(Checked::Wait(format!("pack {p} is not in the folder")));
         };
@@ -151,6 +156,11 @@ fn check(store: &Store, m: &Manifest, v: &View) -> Result<Checked, StoreError> {
     }
     let mut delete = vec![];
     for r in &m.replaced {
+        if v.other_record.contains(r) {
+            return Ok(Checked::Abandon(format!(
+                "{r} names another branch record than the branch's"
+            )));
+        }
         let Some(s) = v.by_name.get(r) else {
             continue;
         };
@@ -250,7 +260,8 @@ fn verdicts(res: &Resolution) -> Verdicts {
 }
 
 /// Why deleting `files` would change what a reader decides, if it would: the branch resolved
-/// without them must give the same verdicts as with them, for a fresh reader (`Known::empty`)
+/// without them must give the same verdicts as with them, for a fresh reader
+/// (`Known::for_branch` at the branch's fork point)
 /// and for this database. (A file that is malformed only because its named predecessor is
 /// present could otherwise link through a pack once it is gone; a replaced segment at a
 /// higher epoch than its pack would lower a line's epoch.)
@@ -277,7 +288,7 @@ fn verdict_changes(
     // that only it sees.
     let ours = crate::import::known_now(&store.conn, branch, true, kind)?;
     for (who, known) in [
-        ("a fresh reader", Known::empty(kind)),
+        ("a fresh reader", Known::for_branch(kind, v.fork.clone())),
         ("this database", ours),
     ] {
         let before = if who == "a fresh reader" {

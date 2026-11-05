@@ -75,9 +75,10 @@ fn eligible<'v>(
     out
 }
 
-/// Runs of segments that follow one another by seq with non-decreasing epochs: a pack never
-/// mixes an epoch below one before it, so its label (the highest it replaces, that of its
-/// last segment) changes no epoch-rule verdict.
+/// Runs of segments that follow one another by seq with non-decreasing epochs and name the
+/// same `branch` record: a pack never mixes an epoch below one before it, so its label (the
+/// highest it replaces, that of its last segment) changes no epoch-rule verdict, and never
+/// spans two branch records (Decision 33; the view holds one record's segments already).
 fn runs<'v>(elig: &[&'v SegRef]) -> Vec<Vec<&'v SegRef>> {
     let mut runs: Vec<Vec<&SegRef>> = vec![];
     let mut cur: Vec<&SegRef> = vec![];
@@ -87,7 +88,10 @@ fn runs<'v>(elig: &[&'v SegRef]) -> Vec<Vec<&'v SegRef>> {
             if h.first_seq <= last.last_seq {
                 continue; // a duplicate of a range already covered: considered below
             }
-            if h.first_seq == last.last_seq + 1 && h.epoch >= last.epoch {
+            if h.first_seq == last.last_seq + 1
+                && h.epoch >= last.epoch
+                && h.branch_record == last.branch_record
+            {
                 cur.push(s);
                 continue;
             }

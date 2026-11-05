@@ -93,7 +93,7 @@ use crate::counters::Counters;
 use crate::scan::{Entry, ForeignContent, NotArrivedWhy, Scanner};
 use crate::storage_kind::StorageKind;
 use crate::{Store, StoreError, db, refresh};
-pub(crate) use known::known_now;
+pub(crate) use known::{fork_point, known_now};
 use pass::PassOut;
 
 pub(crate) use report::Seed;

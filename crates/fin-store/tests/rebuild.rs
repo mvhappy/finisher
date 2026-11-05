@@ -372,6 +372,7 @@ fn verify_reports_each_check() {
             "diffs_match",
             "genesis",
             "record_size",
+            "branch_index",
         ]
     );
     assert!(v.ok, "{v:?}");
