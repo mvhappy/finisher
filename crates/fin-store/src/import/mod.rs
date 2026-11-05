@@ -10,8 +10,8 @@
 //!    segment hash (segments are write-once, so a `SegRef`, which hashes every record, is
 //!    built once). `Newer` and `UnsupportedHash` files set [`ImportReport::newer`]. Foreign
 //!    files are listed; those that decode as segments are imported to quarantine (step 6).
-//!    Snapshots are not used: seeding a fresh DB from one is rebuild's (Task 12), and an
-//!    import always has a DB to continue.
+//!    Snapshots are not used, except by a rebuild: it reads the folder's snapshots and
+//!    passes them in as seeds ([`Seed`], [`apply`] step 3).
 //! 4. **One DB transaction** (`BEGIN IMMEDIATE`) for the whole pass, so a pass lands
 //!    completely or not at all and nothing else commits between building [`Known`] and
 //!    acting on the [`Resolution`]. Per branch the DB knows (folder branches it does not know
@@ -117,6 +117,16 @@ pub struct Rewind {
     pub own: bool,
     /// The branch's generation after the rewind.
     pub generation: u64,
+}
+
+/// A folder snapshot a rebuild offers to seed a fresh branch from (spec §3.4: it seeds only
+/// if its `txHash` lies on the resolved chain).
+#[derive(Debug, Clone)]
+pub(crate) struct Seed {
+    pub(crate) branch: String,
+    pub(crate) seq: u64,
+    pub(crate) tx_hash: String,
+    pub(crate) project: fin_core::Project,
 }
 
 /// A foreign file (spec §3.7).
@@ -240,6 +250,10 @@ pub(crate) struct ImportState {
     lease_top: Option<u64>,
     /// The last pass left an `AppliedLineLost` fork: read the lease files on every pass.
     forked: bool,
+    /// Folder snapshots the next pass may seed from (a rebuild's fresh database only).
+    pub(crate) seeds: Vec<Seed>,
+    /// The highest seq a pass seeded a branch at.
+    pub(crate) seeded: Option<u64>,
     /// Test hook: the next rewind fails after taking the rows out.
     #[cfg(any(test, feature = "test-hooks"))]
     fail_rewind: bool,
@@ -381,7 +395,7 @@ impl Store {
         let heads = heads.get_mut();
         let txn = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = crate::commit::now_ms();
-        let mut ctx = apply::Ctx::new(&txn, server_id, now);
+        let mut ctx = apply::Ctx::new(&txn, server_id, now, &import.seeds);
         let mut cache = HashMap::new();
         let mut new_heads: Vec<(String, Option<Head>)> = vec![];
         let mut resolves = 0;
@@ -453,7 +467,10 @@ impl Store {
             quarantine::flag_current(&txn, &current)?;
         }
         report.quarantined = quarantine::count(&txn)?;
+        let seeded = ctx.seeded;
+        drop(ctx);
         txn.commit()?;
+        import.seeded = import.seeded.max(seeded);
 
         // Committed: adopt the new state.
         for (branch, head) in new_heads {

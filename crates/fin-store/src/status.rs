@@ -127,6 +127,9 @@ pub struct ProjectStatus {
     /// Segments neither imported nor set aside yet (beyond a fork, behind a gap).
     pub pending: Vec<String>,
     pub warnings: Vec<Warning>,
+    /// The database's incarnation: with a branch's `generation`, what a caller passes to
+    /// commit against what it read (`Generation`). New whenever the database is rebuilt.
+    pub incarnation: String,
 }
 
 /// What the import passes found, kept for status.
@@ -305,6 +308,25 @@ impl Store {
         if let Some(e) = &self.ctl.check_error {
             warn("LEASE_CHECK", e.clone());
         }
+        if let Some(r) = self.last_rebuild() {
+            let mut m = format!(
+                "the database was rebuilt from the project folder ({}): {} record(s)",
+                r.reason, r.records
+            );
+            if r.salvaged > 0 {
+                m.push_str(&format!(
+                    ", {} row(s) salvaged from the old database into quarantine (SALVAGED: edits that never reached the folder)",
+                    r.salvaged
+                ));
+            }
+            if let Some(p) = &r.corrupt_copy {
+                m.push_str(&format!("; the old database is kept as {}", p.display()));
+            }
+            if !r.verify.ok {
+                m.push_str("; fin project verify reports problems");
+            }
+            warn("DB_REBUILT", m);
+        }
         if self.storage_kind().is_sync() && f.arriving() {
             warn(
                 "SYNC_ARRIVING",
@@ -344,6 +366,7 @@ impl Store {
             waiting: f.waiting.clone(),
             pending: f.pending.clone(),
             warnings,
+            incarnation: crate::history::incarnation(&self.conn).unwrap_or_default(),
         }
     }
 

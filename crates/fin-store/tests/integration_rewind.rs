@@ -15,6 +15,14 @@ use fin_store::storage_kind::StorageKind;
 use fin_store::{MAIN, ReadOnlyReason, Store, StoreEvent, TxStatus};
 use integration_support::*;
 
+/// Generation `n` of `s`'s database.
+fn gen_of(s: &Store, n: u64) -> fin_store::Generation {
+    fin_store::Generation {
+        incarnation: s.incarnation(),
+        n,
+    }
+}
+
 /// Lets `s`'s lease look stopped to others: every heartbeat fails from now on.
 fn freeze(s: &Store) {
     s.lease().expect("holding").fail_heartbeats(u32::MAX);
@@ -245,19 +253,23 @@ fn own_lost_records_are_rewound_too_and_reported_as_own() {
         ops: vec![asset(&format!("/m/{id}.mov"))],
     };
     let e1: CoreError = a
-        .commit_at_generation(tx("x1", 2), Some(0))
+        .commit_at_generation(tx("x1", 2), Some(&gen_of(&a, 0)))
         .unwrap_err()
         .into();
     assert_eq!(e1.code, "HISTORY_REWOUND", "{e1:?}");
     assert_eq!(e1.details["rev"], 2);
     assert_eq!(e1.details["branch"], MAIN);
-    let ok = a.commit_at_generation(tx("x2", 1), Some(0)).unwrap();
+    let ok = a
+        .commit_at_generation(tx("x2", 1), Some(&gen_of(&a, 0)))
+        .unwrap();
     assert_eq!(ok.rev, 3, "a base before the rewind point rebases");
     assert_eq!(ok.bindings["$a"], "a3", "a2 belonged to a lost record");
-    let ok = a.commit_at_generation(tx("x3", 3), Some(1)).unwrap();
+    let ok = a
+        .commit_at_generation(tx("x3", 3), Some(&gen_of(&a, 1)))
+        .unwrap();
     assert_eq!(ok.rev, 4);
     let e2: CoreError = a
-        .commit_at_generation(tx("x4", 0), Some(7))
+        .commit_at_generation(tx("x4", 0), Some(&gen_of(&a, 7)))
         .unwrap_err()
         .into();
     assert_eq!(e2.code, "HISTORY_REWOUND", "an unknown generation");
@@ -510,6 +522,9 @@ fn a_second_store_on_the_database_sees_the_rewind() {
         schema_version: SCHEMA_VERSION,
         ops: vec![asset("/m/x1.mov")],
     };
-    let err: CoreError = f.commit_at_generation(tx, Some(0)).unwrap_err().into();
+    let err: CoreError = f
+        .commit_at_generation(tx, Some(&gen_of(&f, 0)))
+        .unwrap_err()
+        .into();
     assert_eq!(err.code, "HISTORY_REWOUND", "{err:?}");
 }

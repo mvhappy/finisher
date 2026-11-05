@@ -19,6 +19,12 @@
 //!    epoch in the epoch rule), and imported rows are exported, so the bound is never used
 //!    as a commit epoch. A record that cannot be read stops the branch there:
 //!    `NEWER_FORMAT` sets `newer`, anything else is the branch's `error`.
+//!    **Seeding** (a rebuild only, `crate::rebuild`): on a branch whose DB holds only rev 0,
+//!    a folder snapshot ([`super::Seed`]) whose `(seq, txHash)` is a record of this
+//!    resolution (so on the resolved chain, from seq 1) and whose records up to it all read
+//!    as this branch's is the state after that seq: those records are stored without being
+//!    replayed (their diffs are filled later, `crate::diffs`), and replay continues from the
+//!    snapshot. The highest such snapshot wins; any other is ignored.
 //! 4. A `segments` row (`imported`) for each segment touched whose last record is now in
 //!    the DB with the same hash, so the next export chains `prevSegmentHash` from it.
 //!    Segments only partly in the DB (a fork or a stop inside one) get none.
@@ -52,10 +58,19 @@ pub(super) struct Ctx<'a> {
     hashes: HashSet<String>,
     /// `txs` rows were added or removed.
     pub(super) changed: bool,
+    /// Folder snapshots a rebuild may seed from.
+    seeds: &'a [super::Seed],
+    /// The seq a branch was seeded at, this pass.
+    pub(super) seeded: Option<u64>,
 }
 
 impl<'a> Ctx<'a> {
-    pub(super) fn new(txn: &'a Connection, server_id: &'a str, now: i64) -> Self {
+    pub(super) fn new(
+        txn: &'a Connection,
+        server_id: &'a str,
+        now: i64,
+        seeds: &'a [super::Seed],
+    ) -> Self {
         Ctx {
             txn,
             server_id,
@@ -63,6 +78,8 @@ impl<'a> Ctx<'a> {
             all: None,
             hashes: HashSet::new(),
             changed: false,
+            seeds,
+            seeded: None,
         }
     }
 
@@ -258,6 +275,11 @@ pub(super) fn branch(
             .clone()
             .ok_or_else(|| broken(branch, "the branch has no head to import onto".into()))?;
         let mut tip_hash = db::tip_hash(txn, branch)?;
+        let seed = if h.rev == 0 {
+            seed_for(ctx, branch, res)
+        } else {
+            None
+        };
         'slices: for slice in &res.apply {
             for (bytes, meta) in slice.records().zip(slice.txs()) {
                 if h.rev.checked_add(1) != Some(meta.seq) || meta.parent_hash != tip_hash {
@@ -268,6 +290,26 @@ pub(super) fn branch(
                             meta.tx_id, meta.seq, h.rev
                         ),
                     ));
+                }
+                if let Some(seed) = seed
+                    && meta.seq <= seed.seq
+                {
+                    unreplayed(ctx, branch, slice, bytes, meta)?;
+                    h.rev = meta.seq;
+                    h.tip = Some(meta.tx_hash.clone());
+                    tip_hash = Some(meta.tx_hash.clone());
+                    if meta.seq == seed.seq {
+                        h.project = seed.project.clone();
+                        txn.execute(
+                            "DELETE FROM snapshots WHERE branch = ?1 AND seq = ?2",
+                            params![branch, to_i64(seed.seq)?],
+                        )?;
+                        db::insert_snapshot(txn, branch, seed.seq, &h.project)?;
+                        crate::diffs::set_pending(txn, branch, seed.seq)?;
+                        ctx.seeded = Some(seed.seq);
+                    }
+                    changed = true;
+                    continue;
                 }
                 match one(ctx, branch, &h, slice, bytes, meta) {
                     Ok((project, tx)) => {
@@ -340,16 +382,72 @@ pub(super) fn branch(
     })
 }
 
-/// Upcasts, replays and stores one record.
-fn one(
+/// The highest seed of `branch` that this resolution reaches from seq 1 and whose records up
+/// to it all read as this branch's (module docs, step 3).
+fn seed_for<'s>(ctx: &Ctx<'s>, branch: &str, res: &Resolution) -> Option<&'s super::Seed> {
+    let mut on_chain = HashMap::new();
+    for slice in &res.apply {
+        for (bytes, meta) in slice.records().zip(slice.txs()) {
+            on_chain.insert(meta.seq, (meta.tx_hash.as_str(), bytes, meta, slice));
+        }
+    }
+    let readable = |through: u64| {
+        (1..=through).all(|seq| {
+            on_chain
+                .get(&seq)
+                .is_some_and(|(_, bytes, meta, slice)| read(branch, slice, bytes, meta).is_ok())
+        })
+    };
+    ctx.seeds
+        .iter()
+        .filter(|s| s.branch == branch && s.seq > 0)
+        .filter(|s| on_chain.get(&s.seq).is_some_and(|(h, ..)| *h == s.tx_hash))
+        .max_by_key(|s| s.seq)
+        .filter(|s| readable(s.seq))
+}
+
+/// Stores one record of a seeded range: read, not replayed (no diff yet).
+fn unreplayed(
     ctx: &mut Ctx,
     branch: &str,
-    h: &Head,
     slice: &SegRef,
     bytes: &[u8],
     meta: &crate::chain::RecMeta,
-) -> Result<(fin_core::Project, CommittedTx), Stop> {
-    let txn = ctx.txn;
+) -> Result<(), StoreError> {
+    let record = match read(branch, slice, bytes, meta) {
+        Ok(r) => r,
+        Err(Stop::Db(e)) => return Err(e),
+        Err(_) => {
+            return Err(broken(
+                branch,
+                format!("seeded record {} does not read", meta.tx_id),
+            ));
+        }
+    };
+    let version = serde_json::from_slice::<Version>(bytes)
+        .map(|v| v.schema_version)
+        .unwrap_or(record.schema_version);
+    db::insert_imported(
+        ctx.txn,
+        branch,
+        &record,
+        bytes,
+        &meta.tx_hash,
+        version,
+        None,
+        slice.header().epoch,
+    )?;
+    ctx.added(&meta.tx_id, &meta.tx_hash);
+    Ok(())
+}
+
+/// Upcasts one record and checks it is the one the chain says, on `branch`.
+fn read(
+    branch: &str,
+    slice: &SegRef,
+    bytes: &[u8],
+    meta: &crate::chain::RecMeta,
+) -> Result<fin_core::Record, Stop> {
     let with = |mut e: CoreError| {
         if let serde_json::Value::Object(map) = &mut e.details {
             map.insert("seq".into(), json!(meta.seq));
@@ -375,6 +473,27 @@ fn one(
                                   "recordBranch": record.intent.branch })),
         )));
     }
+    Ok(record)
+}
+
+/// Upcasts, replays and stores one record.
+fn one(
+    ctx: &mut Ctx,
+    branch: &str,
+    h: &Head,
+    slice: &SegRef,
+    bytes: &[u8],
+    meta: &crate::chain::RecMeta,
+) -> Result<(fin_core::Project, CommittedTx), Stop> {
+    let txn = ctx.txn;
+    let with = |mut e: CoreError| {
+        if let serde_json::Value::Object(map) = &mut e.details {
+            map.insert("seq".into(), json!(meta.seq));
+            map.insert("segment".into(), json!(slice.hash()));
+        }
+        e
+    };
+    let record = read(branch, slice, bytes, meta)?;
     let applied = apply_committed(&h.project, &record.intent, &record.bindings)
         .map_err(|e| Stop::Failed(with(e)))?;
     let version = serde_json::from_slice::<Version>(bytes)
@@ -387,7 +506,7 @@ fn one(
         bytes,
         &meta.tx_hash,
         version,
-        &applied.diff,
+        Some(&applied.diff),
         slice.header().epoch,
     )?;
     if meta.seq.is_multiple_of(SNAPSHOT_EVERY) {

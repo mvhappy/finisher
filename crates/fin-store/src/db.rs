@@ -125,7 +125,9 @@ pub(crate) fn init(
     let version = DB_VERSION.to_string();
     let min_reader = MIN_READER_VERSION.to_string();
     let by = written_by();
+    let incarnation = crate::history::new_incarnation();
     for (key, value) in [
+        ("incarnation", incarnation.as_str()),
         ("projectId", project.id.as_str()),
         ("schemaVersion", &project.schema_version.to_string()),
         ("formatVersion", &version),
@@ -363,7 +365,8 @@ pub(crate) fn insert_tx(
 
 /// Appends a record taken from the project folder: its exact `bytes` (whose hash is
 /// `tx_hash`), already exported, at `epoch`. `schema_version` is the version the bytes were
-/// written with (`record` is upcast).
+/// written with (`record` is upcast). `diff` `None`: not computed yet (a rebuild seeded from a
+/// snapshot, [`crate::diffs`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_imported(
     conn: &Connection,
@@ -372,9 +375,13 @@ pub(crate) fn insert_imported(
     bytes: &[u8],
     tx_hash: &str,
     schema_version: u32,
-    diff: &Diff,
+    diff: Option<&Diff>,
     epoch: u64,
 ) -> Result<(), StoreError> {
+    let diff = match diff {
+        Some(d) => serde_json::to_string(d)?,
+        None => crate::diffs::NOT_STORED.to_string(),
+    };
     conn.execute(
         "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
                           exported, diff, schema_version, author, committed_at)
@@ -388,7 +395,7 @@ pub(crate) fn insert_imported(
             tx_hash,
             record.parent_hash,
             to_i64(epoch)?,
-            serde_json::to_string(diff)?,
+            diff,
             schema_version,
             record.author,
             record.committed_at,
@@ -472,11 +479,22 @@ fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, Sto
 }
 
 pub(crate) fn find_tx(conn: &Connection, tx_id: &str) -> Result<Option<CommittedTx>, StoreError> {
-    let sql = format!("SELECT {TX_COLUMNS} FROM txs WHERE tx_id = ?1");
-    conn.query_row(&sql, params![tx_id], committed_from_row)
-        .optional()?
-        .map(decode)
-        .transpose()
+    let sql = format!("SELECT {TX_COLUMNS}, branch FROM txs WHERE tx_id = ?1");
+    let read = || -> Result<Option<_>, StoreError> {
+        Ok(conn
+            .query_row(&sql, params![tx_id], |r| {
+                Ok((committed_from_row(r)?, r.get::<_, String>(3)?))
+            })
+            .optional()?)
+    };
+    let mut row = read()?;
+    if let Some(((_, _, diff), branch)) = &row
+        && diff == crate::diffs::NOT_STORED
+    {
+        crate::diffs::fill(conn, branch)?;
+        row = read()?;
+    }
+    row.map(|(r, _)| decode(r)).transpose()
 }
 
 /// Committed txs on `branch` with `rev > after`, in rev order.
@@ -485,6 +503,9 @@ pub(crate) fn txs_since(
     branch: &str,
     after: u64,
 ) -> Result<Vec<CommittedTx>, StoreError> {
+    if crate::diffs::pending(conn, branch)?.is_some_and(|through| through > after) {
+        crate::diffs::fill(conn, branch)?;
+    }
     let sql = format!("SELECT {TX_COLUMNS} FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![branch, to_i64(after)?], committed_from_row)?;

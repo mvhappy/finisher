@@ -42,6 +42,8 @@ const VALIDATION_CODES: &[&str] = &[
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
+    // A damaged database with no way to rebuild it (no rev 0 anywhere).
+    "DB_CORRUPT",
     "NEWER_FORMAT",
     "INVALID_FORMAT",
     "REPLAY_FAILED",

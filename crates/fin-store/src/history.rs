@@ -15,8 +15,13 @@
 //!   acknowledged ([`acknowledge`]); one that looks like two writers at once
 //!   (`SPLIT_BRAIN_SUSPECTED`) stays until acknowledged.
 //!
-//! Generations live in the database: a database rebuilt from the folder starts again at 0,
-//! and a caller's generation above the current one is treated as stale too.
+//! Generations live in the database: a database rebuilt from the folder (`crate::rebuild`)
+//! starts again at 0. So a generation is only meaningful together with the database it was
+//! read from: every database has a random **incarnation** (`meta` `incarnation`, minted when
+//! it is created, or at the first open of one made before it existed), and a caller holds a
+//! [`Generation`] `{incarnation, n}`. A caller whose incarnation is not the database's is
+//! refused (`HISTORY_REWOUND`, `details.reason` `REBUILT`, from rev 0) whatever its `n`; a
+//! caller's `n` above the current one is treated as stale too.
 
 use fin_core::CoreError;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -34,6 +39,46 @@ pub(crate) const WARN_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Lost records spanning more commit time than this suggest two writers at once.
 pub(crate) const SPLIT_BRAIN_SPAN_MS: i64 = 30_000;
+
+/// A branch generation as a caller holds it: the database's incarnation and the branch's
+/// rewind count in it (module docs).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Generation {
+    pub incarnation: String,
+    pub n: u64,
+}
+
+const INCARNATION: &str = "incarnation";
+
+/// The database's incarnation, minted (and stored) when it has none yet.
+pub(crate) fn ensure_incarnation(conn: &Connection) -> Result<String, StoreError> {
+    if let Some(i) = meta(conn, INCARNATION)? {
+        return Ok(i);
+    }
+    let i = new_incarnation();
+    set_meta(conn, INCARNATION, &i)?;
+    Ok(i)
+}
+
+/// A fresh incarnation id (a lowercase ULID).
+pub(crate) fn new_incarnation() -> String {
+    ulid::Ulid::new().to_string().to_ascii_lowercase()
+}
+
+/// The database's incarnation (empty before [`ensure_incarnation`] ran: never at a caller's
+/// hands, since `open` mints it).
+pub(crate) fn incarnation(conn: &Connection) -> Result<String, StoreError> {
+    Ok(meta(conn, INCARNATION)?.unwrap_or_default())
+}
+
+/// The [`Generation`] of `branch` now.
+pub(crate) fn generation(conn: &Connection, branch: &str) -> Result<Generation, StoreError> {
+    Ok(Generation {
+        incarnation: incarnation(conn)?,
+        n: current(conn, branch)?,
+    })
+}
 
 /// What was rewound, as recorded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,16 +199,34 @@ pub(crate) fn record(
 }
 
 /// `HISTORY_REWOUND` unless a commit read at generation `expected` with `base_rev` is still
-/// valid: no rewind since `expected` starts at or below `base_rev`. A generation that is not
-/// the current one and whose rewinds are no longer all recorded (or a future one) is stale
+/// valid: `expected` belongs to this database (else `details.reason` `REBUILT`, rev 0), and no
+/// rewind since `expected.n` starts at or below `base_rev`. A generation that is not the
+/// current one and whose rewinds are no longer all recorded (or a future one) is stale
 /// whatever its base.
 pub(crate) fn check(
     conn: &Connection,
     branch: &str,
-    expected: u64,
+    expected: &Generation,
     base_rev: u64,
 ) -> Result<(), StoreError> {
     let now = current(conn, branch)?;
+    let incarnation = incarnation(conn)?;
+    if expected.incarnation != incarnation {
+        return Err(CoreError::new(
+            "HISTORY_REWOUND",
+            format!(
+                "the database of branch {branch:?} was rebuilt since the caller read it: the transaction was made against history this database may not hold"
+            ),
+        )
+        .with_details(json!({
+            "branch": branch, "rev": 0, "generation": now, "expected": expected.n,
+            "incarnation": incarnation, "expectedIncarnation": expected.incarnation,
+            "baseRev": base_rev, "reason": "REBUILT",
+        }))
+        .with_fix("read the branch again (its head and generation) and redo the edit on top of it")
+        .into());
+    }
+    let expected = expected.n;
     if expected == now {
         return Ok(());
     }
@@ -188,6 +251,7 @@ pub(crate) fn check(
     )
     .with_details(json!({
         "branch": branch, "rev": rev, "generation": now, "expected": expected, "baseRev": base_rev,
+        "incarnation": incarnation, "reason": "REWOUND",
     }))
     .with_fix("read the branch again (its head and generation) and redo the edit on top of it")
     .into())
@@ -264,10 +328,21 @@ mod tests {
         c.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             .unwrap();
         assert_eq!(current(&c, "main").unwrap(), 0);
-        check(&c, "main", 0, 99).unwrap();
+        let inc = ensure_incarnation(&c).unwrap();
+        let g = |n| Generation {
+            incarnation: inc.clone(),
+            n,
+        };
+        check(&c, "main", &g(0), 99).unwrap();
+        let other = Generation {
+            incarnation: new_incarnation(),
+            n: 0,
+        };
+        let e = check(&c, "main", &other, 0).unwrap_err();
+        assert_eq!(e.code(), "HISTORY_REWOUND");
         assert_eq!(record(&c, "main", info(10)).unwrap(), 1);
         assert_eq!(record(&c, "main", info(7)).unwrap(), 2);
-        let code = |g, base| check(&c, "main", g, base).map_err(|e| e.code().to_string());
+        let code = |n, base| check(&c, "main", &g(n), base).map_err(|e| e.code().to_string());
         assert_eq!(code(2, 50), Ok(()));
         assert_eq!(code(1, 6), Ok(()), "below the rewind since 1");
         assert_eq!(code(1, 7), Err("HISTORY_REWOUND".into()));

@@ -15,12 +15,14 @@ pub mod conflict_names;
 mod copies;
 mod counters;
 mod db;
+mod diffs;
 mod export;
 pub mod fsio;
 mod history;
 pub mod identity;
 mod import;
 pub mod lease;
+mod localdate;
 mod migrations;
 pub mod names;
 mod open;
@@ -34,6 +36,7 @@ pub mod snapfile;
 mod status;
 pub mod storage_kind;
 mod tick;
+mod verify;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -49,6 +52,7 @@ pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
+pub use history::Generation;
 pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
@@ -56,11 +60,13 @@ pub use migrations::{APPLICATION_ID, DB_VERSION};
 pub use open::OpenOptions;
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
 pub use project_file::{Genesis, ProjectFile, read_project_file};
+pub use rebuild::RebuildReport;
 pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
 };
 pub use tick::TickReport;
+pub use verify::{Check, VerifyReport};
 
 /// The only branch sub-project 2 creates.
 pub const MAIN: &str = "main";
@@ -182,6 +188,11 @@ pub struct Store {
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,
+    /// The rebuild this store's open (or `Store::rebuild`) ran.
+    rebuilt: Option<rebuild::RebuildReport>,
+    /// The local date of the last daily backup taken or found, or `(date, ms)` of the last
+    /// failed attempt (retried after [`tick::BACKUP_RETRY_MS`]).
+    daily: tick::DailyState,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
@@ -257,18 +268,45 @@ impl Store {
         &self,
         branch: &str,
         after: u64,
-    ) -> Result<(u64, Vec<CommittedTx>), StoreError> {
+    ) -> Result<(Generation, Vec<CommittedTx>), StoreError> {
         let txn = self.conn.unchecked_transaction()?;
         let ops = self.ops_since(branch, after)?;
-        let generation = history::current(&txn, branch)?;
+        let generation = history::generation(&txn, branch)?;
         txn.commit()?;
         Ok((generation, ops))
     }
 
-    /// The generation of `branch`: bumped whenever an import takes records out of its history
-    /// (module `history`). 0 when it cannot be read.
+    /// The rewind count of `branch` in this database: bumped whenever an import takes
+    /// records out of its history (module `history`). 0 when it cannot be read. Callers that
+    /// commit against it hold [`Store::generation_token`], which names the database too.
     pub fn generation(&self, branch: &str) -> u64 {
         history::current(&self.conn, branch).unwrap_or(0)
+    }
+
+    /// The [`Generation`] of `branch` (this database's incarnation and the rewind count), as
+    /// [`Store::commit_at_generation`] takes it.
+    pub fn generation_token(&self, branch: &str) -> Generation {
+        history::generation(&self.conn, branch).unwrap_or(Generation {
+            incarnation: String::new(),
+            n: 0,
+        })
+    }
+
+    /// This database's incarnation (module `history`): new whenever it is rebuilt.
+    pub fn incarnation(&self) -> String {
+        history::incarnation(&self.conn).unwrap_or_default()
+    }
+
+    /// Takes today's daily backup (`<project-data>/backups/daily-YYYY-MM-DD.fdb`, the local
+    /// calendar day of unix ms `now_ms`) unless that day has one, keeping the last 7. `tick`
+    /// calls it; returns the new backup.
+    pub fn daily_backup(&mut self, now_ms: i64) -> Result<Option<PathBuf>, StoreError> {
+        let dir = self
+            .db_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        backup::daily(&self.conn, &dir, now_ms)
     }
 
     /// What became of `tx_id` (`tx.get`): committed, set aside (a superseded record is

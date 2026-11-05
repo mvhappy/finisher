@@ -6,7 +6,9 @@
 //!   [`DIVERGED_TAIL`] (this server's unexported records that lost), [`SUPERSEDED`] (applied
 //!   records whose line lost to a newer epoch and were rewound, `super::rewind`),
 //!   [`CONFLICT_COPY`] (records of a foreign file that the DB does not hold). Rebuild
-//!   (Task 12) adds salvage. `DIVERGED_TAIL` and `SUPERSEDED` are kept as reason, origin and
+//!   adds `SALVAGED` (origin `salvage`): the unexported records of the database it
+//!   replaced, which exist nowhere else; the old database's own quarantine rows come along
+//!   with their reason, origin `salvage`. `DIVERGED_TAIL` and `SUPERSEDED` are kept as reason, origin and
 //!   detail once set: they say what this database did with the record, which a later verdict
 //!   on the same bytes (`STALE_EPOCH` for the losing line in the folder) does not change.
 //! - `origin`: `folder`, `local` or `foreign`; `detail`: the segment hash (and why it is
@@ -60,14 +62,14 @@ pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreErro
          ON CONFLICT(tx_hash) DO UPDATE SET
              current = 1,
              seen_at = excluded.seen_at,
-             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED')
+             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
                            THEN quarantine.origin ELSE excluded.origin END,
-             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED')
+             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
                            THEN quarantine.detail ELSE excluded.detail END,
-             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED')
+             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
                            THEN quarantine.reason ELSE excluded.reason END
          WHERE quarantine.current = 0
-            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED')
+            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED')
                 AND (quarantine.reason != excluded.reason OR quarantine.origin != excluded.origin))",
         params![q.tx_hash, q.branch, q.origin, q.reason, q.detail, q.bytes, q.now],
     )?;
@@ -75,14 +77,15 @@ pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreErro
 }
 
 /// Sets `current` from this pass's verdicts: the rows in `current` (folder and foreign
-/// records reported now) and every diverged tail, minus records `txs` holds.
+/// records reported now) and every diverged tail and salvaged record, minus records `txs`
+/// holds.
 pub(super) fn flag_current(
     conn: &Connection,
     current: &BTreeSet<String>,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE quarantine SET current = (reason = 'DIVERGED_TAIL')
-         WHERE current != (reason = 'DIVERGED_TAIL')",
+        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED'))
+         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED'))",
         [],
     )?;
     let mut stmt =

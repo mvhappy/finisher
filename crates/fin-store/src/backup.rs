@@ -1,6 +1,15 @@
 //! Database backups (sub-project 4 spec §3.1, §3.8): `VACUUM INTO` a temp file in
-//! `<project-data>/backups/`, fsync it, rename it into place. Never a raw file copy, which
-//! would miss the WAL.
+//! `<project-data>/backups/`, fsync it, move it into place without replacing anything. Never
+//! a raw file copy, which would miss the WAL.
+//!
+//! - Pre-migration: `pre-migrate-<from>-<to>-<UTC ts>Z.fdb`, the last 3 kept.
+//! - Daily ([`daily`]): `daily-YYYY-MM-DD.fdb` (the **local** calendar date), at most one per
+//!   day while the project is open, the last 7 kept. Every server backs up its own
+//!   database, holder or follower: it is local state either way (a follower's is a rebuild
+//!   it need not redo), and the folder is not touched.
+//!
+//! Both: only strictly named files are pruned, the new backup is never pruned, and once it
+//! is durable a failure to clean up or prune is ignored (an extra old file is harmless).
 
 use std::fs::{self, File};
 use std::path::Path;
@@ -14,12 +23,14 @@ use crate::fsio::sync_dir;
 
 /// How many `pre-migrate-*` backups are kept.
 const KEEP_PRE_MIGRATION: usize = 3;
+/// How many `daily-*` backups are kept.
+const KEEP_DAILY: usize = 7;
 /// A backup temp file older than this was left by a crash (a live backup takes seconds).
 const STALE_TEMP: Duration = Duration::from_secs(10 * 60);
 
-/// A consistent copy of the database behind `conn` at `dest` (which must not exist), durable
-/// once this returns.
-pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<(), StoreError> {
+/// A consistent copy of the database behind `conn` at `dest`, durable once this returns.
+/// `false` (nothing written) when `dest` already exists.
+pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<bool, StoreError> {
     let dir = dest.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(".~fin-{}.tmp", ulid::Ulid::new()));
     let result = (|| {
@@ -36,20 +47,51 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<(), StoreError
             .open(&tmp)
             .and_then(|f| crate::fsio::sync_file(&f))
             .map_err(StoreError::io(&tmp))?;
-        if dest.exists() {
-            return Err(CoreError::new(
-                "IO_ERROR",
-                format!("backup {} already exists", dest.display()),
-            )
-            .into());
+        match crate::fsio::rename_noreplace(&tmp, dest) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) => return Err(StoreError::io(dest)(e)),
         }
-        fs::rename(&tmp, dest).map_err(StoreError::io(dest))?;
-        sync_dir(dir).map_err(StoreError::io(dir))
+        sync_dir(dir).map_err(StoreError::io(dir))?;
+        Ok(true)
     })();
-    if result.is_err() {
+    if !matches!(result, Ok(true)) {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// The daily backup for the local calendar day of unix ms `now_ms`
+/// (`<project_data>/backups/daily-YYYY-MM-DD.fdb`), unless that day has one; keeps the
+/// newest [`KEEP_DAILY`]. Returns the new backup's path.
+pub(crate) fn daily(
+    conn: &Connection,
+    project_data: &Path,
+    now_ms: i64,
+) -> Result<Option<std::path::PathBuf>, StoreError> {
+    let (y, m, d) = crate::localdate::local_ymd(now_ms);
+    let name = format!("daily-{y:04}-{m:02}-{d:02}.fdb");
+    let dir = project_data.join("backups");
+    let dest = dir.join(&name);
+    if dest.exists() {
+        return Ok(None);
+    }
+    fs::create_dir_all(&dir).map_err(StoreError::io(&dir))?;
+    remove_stale_temps(&dir);
+    if !backup_to(conn, &dest)? {
+        return Ok(None);
+    }
+    let _ = prune(&dir, &name, KEEP_DAILY, daily_date);
+    Ok(Some(dest))
+}
+
+/// The date of a strict `daily-YYYY-MM-DD.fdb` name.
+fn daily_date(name: &str) -> Option<&str> {
+    let date = name.strip_prefix("daily-")?.strip_suffix(".fdb")?;
+    let b = date.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    (b.len() == 10 && digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10))
+        .then_some(date)
 }
 
 /// Backs the database up to `<project_data>/backups/pre-migrate-<from>-<to>-<ts>.fdb` and
@@ -77,7 +119,7 @@ pub(crate) fn pre_migration(
         ms += 1;
     };
     backup_to(conn, &dest)?;
-    let _ = prune(&dir, &name, KEEP_PRE_MIGRATION);
+    let _ = prune(&dir, &name, KEEP_PRE_MIGRATION, pre_migration_ts);
     Ok(())
 }
 
@@ -120,15 +162,21 @@ fn pre_migration_ts(name: &str) -> Option<&str> {
     ok.then_some(ts)
 }
 
-/// Deletes all but the newest `keep` pre-migration backups in `dir` (by timestamp), never
-/// `new` (the one just taken, which counts towards `keep`). Other names are left alone.
-fn prune(dir: &Path, new: &str, keep: usize) -> Result<(), StoreError> {
+/// Deletes all but the newest `keep` backups in `dir` whose names `key` accepts (sorted by
+/// that key), never `new` (the one just taken, which counts towards `keep`). Other names are
+/// left alone.
+fn prune(
+    dir: &Path,
+    new: &str,
+    keep: usize,
+    key: fn(&str) -> Option<&str>,
+) -> Result<(), StoreError> {
     let mut others: Vec<(String, String)> = fs::read_dir(dir)
         .map_err(StoreError::io(dir))?
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|name| name != new)
-        .filter_map(|name| Some((pre_migration_ts(&name)?.to_string(), name)))
+        .filter_map(|name| Some((key(&name)?.to_string(), name)))
         .collect();
     others.sort();
     let excess = others.len().saturating_sub(keep.saturating_sub(1));
@@ -163,7 +211,7 @@ pub(crate) fn timestamp(ms: i64) -> String {
 }
 
 /// Proleptic Gregorian (year, month, day) of `days` since 1970-01-01 (H. Hinnant's algorithm).
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -209,6 +257,19 @@ mod tests {
     }
 
     #[test]
+    fn strict_daily_names_only() {
+        assert_eq!(daily_date("daily-2026-11-04.fdb"), Some("2026-11-04"));
+        for name in [
+            "daily-2026-11-4.fdb",
+            "daily-2026-11-04.fdb.tmp",
+            "daily-notes.fdb",
+            "daily-2026_11_04.fdb",
+        ] {
+            assert_eq!(daily_date(name), None, "{name}");
+        }
+    }
+
+    #[test]
     fn prune_keeps_the_newest() {
         let dir = tempfile::tempdir().unwrap();
         for name in [
@@ -220,7 +281,13 @@ mod tests {
         ] {
             fs::write(dir.path().join(name), b"").unwrap();
         }
-        prune(dir.path(), "pre-migrate-0-1-20261105T000000000Z.fdb", 3).unwrap();
+        prune(
+            dir.path(),
+            "pre-migrate-0-1-20261105T000000000Z.fdb",
+            3,
+            pre_migration_ts,
+        )
+        .unwrap();
         let mut left: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())

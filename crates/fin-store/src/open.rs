@@ -3,11 +3,13 @@
 //! # Open, in order
 //!
 //! 1. Read `finisher.project.json` (retrying a briefly missing file, [`read_project_file`]).
-//! 2. No database: create it from the file's [`Genesis`](crate::Genesis) at rev 0
-//!    ([`rebuild::fresh_db`]); step 7 then imports the whole folder. Without a genesis:
-//!    `PROJECT_DB_MISSING`.
-//! 3. Check the database read-only (`DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `PROJECT_DB_MISMATCH`),
-//!    then refuse a copy of the project folder (`PROJECT_COPY`) or a folder whose original
+//! 2. No database: rebuild it from the folder ([`rebuild`]: the file's
+//!    [`Genesis`](crate::Genesis) at rev 0, then the whole folder, seeded from a snapshot on
+//!    the chain when there is one). Without a genesis: `PROJECT_DB_MISSING`.
+//! 3. Check the database read-only (`DB_TOO_NEW`, `NOT_A_PROJECT_DB`), then `PRAGMA
+//!    quick_check`: a damaged database is rebuilt from the folder, its readable unexported
+//!    records salvaged into quarantine, and kept as `project.fdb.corrupt-<ts>` ([`rebuild`];
+//!    status warns `DB_REBUILT`). Then `PROJECT_DB_MISMATCH`, and refuse a copy of the project folder (`PROJECT_COPY`) or a folder whose original
 //!    cannot be reached to tell (`PROJECT_ORIGINAL_UNREACHABLE`; [`copies`]).
 //! 4. Migrate; record `lastOpenedBy` and `projectDir`.
 //! 5. Detect the storage kind (`storageOverride` wins).
@@ -181,12 +183,26 @@ impl Store {
     ) -> Result<Store, StoreError> {
         let file = read_project_file(project_dir)?;
         let db_path = db_path(server_data, &file.id);
+        let identity = server_identity(server_data)?;
+        let kind = storage_kind::resolve(project_dir, file.storage_override.as_ref());
+        let plan = rebuild::Plan {
+            db_path: &db_path,
+            project_dir,
+            file: &file,
+            identity: &identity,
+            kind: kind.0,
+            opts: &opts,
+        };
+        let mut rebuilt = None;
         if !db_path.is_file() {
-            let genesis = rebuild::genesis(&file, &db_path)?;
-            rebuild::fresh_db(&db_path, &file.id, &genesis)?;
+            rebuild::genesis(&file, &db_path)?;
+            rebuilt = rebuild::rebuild(&plan, rebuild::Why::Missing)?;
         }
         migrations::check(&db_path)?;
-        let identity = server_identity(server_data)?;
+        if let Some(problem) = rebuild::quick_check(&db_path)? {
+            rebuilt = rebuild::rebuild(&plan, rebuild::Why::Corrupt(problem))?.or(rebuilt);
+            migrations::check(&db_path)?;
+        }
         let mut conn = db::connect(&db_path, false)?;
         let stored = db::meta(&conn, "projectId")?;
         if stored.as_deref() != Some(file.id.as_str()) {
@@ -202,7 +218,6 @@ impl Store {
         for branch in db::branches(&conn)? {
             refresh(&conn, &mut heads, &branch)?;
         }
-        let kind = storage_kind::resolve(project_dir, file.storage_override.as_ref());
         let mut store = Store::new(
             conn,
             file.id.clone(),
@@ -214,12 +229,13 @@ impl Store {
             &opts,
         );
         store.file_newer = file.is_newer();
+        store.rebuilt = rebuilt;
         store.start(Some(file))?;
         Ok(store)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub(crate) fn new(
         conn: rusqlite::Connection,
         project_id: String,
         db_path: PathBuf,
@@ -253,6 +269,8 @@ impl Store {
             follow: status::Follow::default(),
             file_newer: false,
             heads: RefCell::new(heads),
+            rebuilt: None,
+            daily: tick::DailyState::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }
@@ -266,6 +284,7 @@ impl Store {
         // share) only means the lease cannot be acquired: the store follows.
         let _ = fs::create_dir_all(&dot);
         crate::history::note_server_id(&self.conn, &self.server_id)?;
+        crate::history::ensure_incarnation(&self.conn)?;
         self.try_acquire();
         self.import_pass()?;
         if let Some(file) = file

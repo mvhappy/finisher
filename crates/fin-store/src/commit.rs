@@ -38,7 +38,9 @@ impl Store {
     }
 
     /// [`Store::commit`], for a caller that read the branch at `generation`
-    /// ([`Store::generation`], [`Store::ops_since_at`]). When an import has rewound the branch
+    /// ([`Store::generation_token`], [`Store::ops_since_at`]). A generation of another
+    /// database (this one was rebuilt since) is refused with `HISTORY_REWOUND`
+    /// (`details.reason` `REBUILT`, `rev` 0) whatever its base. When an import has rewound the branch
     /// since then from a rev at or below `baseRev` (the caller built the tx on records that
     /// are gone), the commit is refused with `HISTORY_REWOUND` (`details {branch, rev,
     /// generation, expected, baseRev}`) instead of being rebased onto other history; a
@@ -52,7 +54,7 @@ impl Store {
     pub fn commit_at_generation(
         &mut self,
         tx: Tx,
-        generation: Option<u64>,
+        generation: Option<&crate::Generation>,
     ) -> Result<CommittedTx, StoreError> {
         // Everything below runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.

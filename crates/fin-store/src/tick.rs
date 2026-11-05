@@ -17,8 +17,10 @@
 //!    over where `auto_takeover`; a sync folder needs [`Store::takeover`]). After any
 //!    acquisition the ordering rule applies (below), and when it needs no wait an import pass
 //!    runs at once;
-//! 5. temp-file cleanup runs inside the export; daily backups (Task 12) and compaction
-//!    (Task 13) go at the marked call point.
+//! 5. temp-file cleanup runs inside the export; then the daily backup of the database
+//!    ([`Store::daily_backup`], on every server: it is a copy of local state; checked once per
+//!    poll, taken once per local calendar day, a failure retried after
+//!    [`BACKUP_RETRY_MS`]); compaction (Task 13) goes at the marked call point.
 //!
 //! (The plan lists the retry before the re-check; re-checking first lets a loss found by
 //! this poll be retried by the same poll.)
@@ -68,6 +70,18 @@ pub fn poll_every(kind: StorageKind) -> Duration {
         StorageKind::Network => Duration::from_secs(3),
         StorageKind::Sync(_) => Duration::from_secs(10),
     }
+}
+
+/// How long after a failed daily backup the next attempt waits.
+pub(crate) const BACKUP_RETRY_MS: i64 = 10 * 60 * 1000;
+
+/// What the daily backup last did (by unix ms, local date).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DailyState {
+    /// The local date that has its backup.
+    done: Option<(i64, i64, i64)>,
+    /// When the last attempt failed.
+    failed_at: Option<i64>,
 }
 
 /// Whether commits and exports wait for an import (module docs, "The ordering rule").
@@ -169,7 +183,8 @@ impl Store {
                     out.imports.push(r);
                 }
             }
-            // Task 12: daily backup. Task 13: compaction when triggered (holder only).
+            self.daily_tick(crate::commit::now_ms());
+            // Task 13: compaction when triggered (holder only).
         }
         if let Some(status) = self.status_if_changed() {
             out.events.push(StoreEvent::Status(Box::new(status)));
@@ -207,6 +222,27 @@ impl Store {
             self.import_pass()?;
         }
         Ok(self.status())
+    }
+
+    /// The daily backup of a poll (module docs, step 5); failures are retried later, never
+    /// raised.
+    fn daily_tick(&mut self, now_ms: i64) {
+        let today = crate::localdate::local_ymd(now_ms);
+        if self.daily.done == Some(today)
+            || self
+                .daily
+                .failed_at
+                .is_some_and(|t| now_ms.saturating_sub(t) < BACKUP_RETRY_MS)
+        {
+            return;
+        }
+        match self.daily_backup(now_ms) {
+            Ok(_) => {
+                self.daily.done = Some(today);
+                self.daily.failed_at = None;
+            }
+            Err(_) => self.daily.failed_at = Some(now_ms),
+        }
     }
 
     /// Whether this store holds the lease now (in memory, no folder I/O).
