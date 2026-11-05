@@ -11,7 +11,7 @@ the current plan is in [docs/plans/](docs/plans/).
 ## Development
 
 ```bash
-rtk corepack enable
+rtk npm install -g pnpm@12.15.0   # Node 26 ships no corepack; CI does the same
 rtk pnpm install
 rtk cargo test --workspace
 rtk pnpm test
@@ -21,9 +21,10 @@ rtk pnpm e2e    # slow: builds fin and fin-node, then runs the end-to-end check
 
 ## Run it
 
-Sub-project 2 ships a minimal core: `finisherd` (the local server) and `fin` (the agent CLI,
-JSON on stdout). Build both, start the server, then edit through `fin`. Node 26 and the Rust
-toolchain from `rust-toolchain.toml` are required.
+Sub-projects 2 and 4A ship a minimal core with durable storage: `finisherd` (the local server)
+and `fin` (the agent CLI, JSON on stdout). Build both, start the server, then edit through `fin`.
+Node 26, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
+`rust-toolchain.toml` are required.
 
 macOS / Linux:
 
@@ -70,6 +71,25 @@ fin view
 
 Run `fin` with no arguments for the command map, and `fin help clip` for details.
 
+**Project storage** (run in the project folder, like the other commands):
+
+```bash
+fin project status                   # lease, read-only reason, branches, export, warnings
+fin project takeover [--confirm]     # take the lease from a stopped server (--confirm on sync folders)
+fin project verify                   # check database and folder, change nothing (VERIFY_FAILED, exit 3)
+fin project rebuild                  # rebuild the database from the folder (works with no server running)
+fin project compact                  # pack old segment files now (history is kept)
+fin project recover                  # the manual steps out of CHAIN_FORK / CONFLICT_COPY
+fin project acknowledge --rewind 2 --branch main   # clear a REWOUND / SPLIT_BRAIN_SUSPECTED warning
+fin project acknowledge --salvage project.fdb.corrupt-<ts>   # clear SALVAGE_INCOMPLETE
+fin project open <dir> --relocate    # the project moved and its old folder cannot be reached
+```
+
+A second server (its own server data, e.g. another machine on the same NAS share) that opens the
+same folder follows read-only (`readOnly.reason` `LEASE_HELD`) and takes over automatically once
+the first one has been stopped for about a minute; on a sync folder only `fin project takeover
+--confirm` does. `fin project status` explains any read-only state and its fix.
+
 **Server data** (the project databases, `finisherd.json` with the server's pid, socket and
 WebSocket port, and the lock file) lives in:
 
@@ -78,8 +98,11 @@ WebSocket port, and the lock file) lives in:
 - Windows: `%LOCALAPPDATA%\Finisher`
 
 Set `FIN_SERVER_DATA` (read by both `finisherd` and `fin`), or pass
-`finisherd --server-data <dir>`, to use another directory. Project folders hold only
-`finisher.project.json`; the live database stays in server data.
+`finisherd --server-data <dir>`, to use another directory. The live database always stays in
+server data. The project folder holds `finisher.project.json` and `.finisher/`: the lease and a
+write-once, hash-chained export of every edit (`segments/`), from which any server can rebuild
+the database. A project folder can therefore live on a NAS or in a sync folder and be opened
+by several servers: one writes, the others follow read-only.
 
 **Stop the server** with Ctrl+C in its terminal, or from elsewhere:
 

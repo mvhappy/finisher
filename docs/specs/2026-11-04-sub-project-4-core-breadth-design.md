@@ -1,6 +1,6 @@
 # Sub-project 4: Core breadth — Design
 
-- **Status:** draft for review (2026-11-04)
+- **Status:** draft for review (2026-11-04). Stage 4A implemented (2026-11-05, branch `sp4a-durable-storage`); §3 describes it as built. Its cross-host validation (§3.13) is pending.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §6, §7, §9, §12.3–12.7 and §27.9 for sub-project 4. Where the two disagree, this document wins for sub-project 4, and arch §27 gets a pointer when the stage merges.
 - **Builds on:** sub-project 2 (merged `382b344`): `fin-core` with `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`; `fin-store` SQLite op log; `fin-node`; `@finisher/contracts`; `finisherd`; `fin`.
 
@@ -35,16 +35,16 @@ These follow the research summarised in §7.
    - Old records are upgraded **in memory, on read**, by pure, total, deterministic one-step converters ("upcasters").
 2. **Replay applies; it never re-judges.**
    - Replaying committed history runs only structural checks: the referenced entity exists, and no clips overlap on a track.
-   - Policy checks run only when an edit is made. Examples of policy checks: minimum durations, `INSERT_INSIDE_CLIP`, safe-zone overflow.
+   - Policy checks run only when an edit is made. Examples of policy-only checks: the one-frame minimum duration, `sourceIn + duration` within the asset (assets can be relinked), trim-delta limits, safe-zone overflow. (`INSERT_INSIDE_CLIP` is a policy check but not a good example: with ripple an insert strictly inside a clip always overlaps, so replay rejects it structurally anyway. §3.2 lists both sets.)
    - A rule added later never rejects an existing project.
 3. **Intent and result are both stored.**
    - Each record keeps the command as submitted (with `$placeholders`) and the resolved ops (bindings substituted), plus the inverse.
-   - Replay uses the resolved ops.
+   - Replay applies the stored intent with the recorded bindings feeding id allocation, which is equivalent to applying the resolved ops (plan Decision 2, §3.2).
    - Rebase, merge, cherry-pick and undo create *new* edits: they re-run intent through the rebase engine with full policy checks.
 4. **Single writer, fenced on both sides.**
    - The lease (v3) decides who writes; epochs are per project.
-   - Every file written to the project folder carries the writer's epoch.
-   - Where two lines of history continue from the same point, readers keep the higher-epoch one and set the other aside. §3.6 step 5 is the exact rule.
+   - Every segment carries an epoch: the highest lease epoch its records were committed at (§3.4 "Export").
+   - Where two lines of history continue from the same point, readers keep the higher-epoch one and set the other aside. §3.6.2 step 6 is the exact rule.
    - The storage can't enforce a token, so writer-side fencing alone can always race.
 5. **The local DB is a cache of the folder plus the not-yet-exported tail.**
    - It can always be rebuilt from the project folder's files.
@@ -58,57 +58,100 @@ These follow the research summarised in §7.
 
 ## 3. Stage 4A — durable storage
 
+**State (2026-11-05):** implemented on branch `sp4a-durable-storage` (plan `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`, Tasks 1–18). The cross-host and sync-folder validation (Task 19) has not run yet: see §3.13. This section describes 4A **as built**. The crate module docs in `crates/fin-store/src/` hold the exact rules, and this section names them where they matter.
+
+**Decisions taken by the 4A plan** (the earlier draft left these open):
+
+| # | Decision | Where |
+|---|---|---|
+| 1 | The DB column is `seq`. APIs keep the name `rev` for the same number (`CommittedTx.rev`, `opsSince(rev)`, `fromRev`). | §3.1 |
+| 2 | `intent` is the `Tx` as applied (after any rebase, still with `$placeholders`). `resolved` is stored for readers and 4B. Replay applies `intent` with the recorded bindings feeding id allocation. | §3.2 |
+| 3 | Following **polls** (local 2 s, network 3 s, sync 10 s) and does not use file-system events. *Deviation from the earlier §3.6.* | §3.6 |
+| 4 | Status and history events go on a separate stream RPC, `project.events`. `ops.subscribe` does not change shape. *Deviation from the earlier §3.10.* | §3.10 |
+| 5 | The server id is a lowercase ULID in `<server-data>/server-id`, created on first use (written atomically, mode 0600 on unix). | §3.5 |
+| 6 | Project copies: the DB `meta` records `projectDir`. A folder whose project id is registered to another folder that still exists is refused (`PROJECT_COPY`). | §3.7 |
+| 7 | Long native calls (open with import, takeover, verify, rebuild, compact, close) run on a per-engine worker thread, never on the libuv pool. | §3.10 |
+
 ### 3.1 Local database
 
-- **Header:** `PRAGMA application_id = 0x46494E31` ("FIN1"); `PRAGMA user_version` = DB schema version.
-- **Version fields:** the `meta` table adds `formatVersion`, `minReaderVersion`, `createdBy` (app version) and `lastOpenedBy`.
-- **Migrations:**
-  - ordered steps `crates/fin-store/src/migrations/NNNN_<name>.rs`;
-  - each step is SQL and/or Rust, runs inside its own transaction, and bumps `user_version` by exactly 1;
-  - before the first step, the DB is backed up with `VACUUM INTO` to `<project-data>/backups/pre-migrate-<from>-<to>-<ts>.fdb`. Raw file copies are never used, because they miss the WAL.
-- **Refusals:**
-  - a DB with `user_version` above what the code knows fails with `DB_TOO_NEW`;
-  - a DB whose `minReaderVersion` is above the code's version fails with `DB_TOO_NEW` (`fix`: update Finisher);
-  - a file without the application id fails with `NOT_A_PROJECT_DB`.
-- **Migration from the SP2 layout.** Migration `0001` converts the sub-project 2 schema in place:
-  - each existing tx gets `seq` = its `rev`;
-  - `intent` = its stored JSON;
-  - each record is serialised **once** into its segment line, stored in `record_bytes`, and hashed in rev order (§3.3).
+- **Location:** `<server-data>/projects/<id>/project.fdb` (WAL, `synchronous=FULL`). The folder beside it holds `backups/`, `db.lock`, `lease.lock` and the kept copies from rebuilds (§3.8).
+- **Header:** `PRAGMA application_id = 0x46494E31` ("FIN1"); `PRAGMA user_version` = the DB schema version (**1** at the end of 4A).
+- **`meta`:** `formatVersion`, `minReaderVersion`, `createdBy` (app version; DBs migrated from sub-project 2 have none), `lastOpenedBy`, `projectId`, `projectDir` (§3.7), `incarnation` (§3.6.3), `genesisHash` (§3.4), `serverIds` (every server id that opened this DB, so "own records" survive a `SERVER_ID_RENEWED`), plus per-branch `generation.<b>`, `rewinds.<b>`, `diffsPending.<b>`, and `salvagedFrom`, `salvageIncomplete`, `compactionAbandoned`, `createKey` (§3.11).
+- **Schema v1 tables:**
+  - `meta (key, value)`, `ids (kind, next)`. `ids` is keyed by kind name, so a kind added later (`branch`) needs no migration;
+  - `txs`: `branch`, `seq` (PK `(branch, seq)`), `tx_id` (unique), `kind`, `record_bytes` (the exact segment line, §3.3), `tx_hash`, `parent_hash`, `epoch` (the lease epoch it was committed at, or for an imported row its segment's epoch, an upper bound), `exported`, `diff`, plus the derived `schema_version`, `author` and `committed_at`. A partial index `txs_unexported` covers `exported = 0`;
+  - `snapshots (branch, seq, json)`: rev 0 and every 200 revs;
+  - `segments (branch, hash, name, epoch, first_seq, last_seq, pack, replaces, state)`. `state` is `exported` (written by this server and verified by read-back) or `imported` (taken from the folder; packs are always `imported`, because they carry other writers' records);
+  - `lease_state (key, value)`;
+  - `quarantine (tx_hash UNIQUE, branch, origin, reason, detail, record_bytes, added_at, seen_at, current)` (§3.6.2).
+- **Migrations** (`crates/fin-store/src/migrations/`):
+  - ordered steps. Each runs in its own `IMMEDIATE` transaction, which also sets `user_version` to the step's target, so a failed step rolls back whole and earlier steps stay committed;
+  - `migrations::check` reads the header and `meta` through a read-only connection first, so a DB this code refuses is never written to;
+  - before the first step, one backup is taken for the whole run (§3.8 "Backups").
+- **Migration 0001 (sub-project 2 → v1)** is **frozen at schema v1**. It uses no current `fin-core` types (`RawValue`, `REFS_V1`) and pins its output with a test, so later model changes cannot alter what it writes. Its steps:
+  - each old tx becomes a v1 record line: `seq` = its `rev`, and `intent`/`inverse`/`bindings` are its stored JSON verbatim;
+  - `resolved` = `intent.ops` with the v1 reference fields substituted;
+  - the records are hashed and chained in rev order at epoch 0, not exported;
+  - `txs` and `snapshots` are rebuilt (`snapshots.rev` → `seq`);
+  - it adds the 4A tables, `application_id`, `formatVersion` and `minReaderVersion`.
 
-  This migration is the first thing 4A builds (TASKS follow-up "migrations before any op or model change").
-- **Tables, at the end of 4A:**
-  - `meta`, `ids`;
-  - `txs`: `branch`, `seq`, `tx_id`, `kind`, `record_bytes` (the exact segment line, §3.3), `tx_hash`, `parent_hash`, `epoch`, `exported`, `diff`. The typed columns (`schema_version`, `author`, `committed_at`, …) are derived from `record_bytes` for indexing only;
-  - `snapshots`;
-  - `segments` (files known to exist in the folder, with hash, epoch and state);
-  - `lease_state`;
-  - `quarantine` (records set aside, §3.6).
-- **Integrity on open:**
-  - every open runs `PRAGMA quick_check`;
-  - `fin project verify` runs `integrity_check` plus the checks in §3.8.
+  A sub-project 2 project opens after migration with identical state (fixture `crates/fin-store/tests/fixtures/sp2/`, `expected.json` = `{rev, project}`).
+- **Refusals** (exit 3):
+  - `user_version` above what the code knows, or `meta.minReaderVersion` above the code's version → `DB_TOO_NEW` (`fix`: update Finisher);
+  - a foreign non-zero `application_id` → `NOT_A_PROJECT_DB`. Neither is ever rebuilt over (§3.8).
+- **Integrity on open:** `rebuild::damaged` checks the header, schema and `meta`, then runs `PRAGMA quick_check(20)` read-only. Damage triggers an automatic rebuild (§3.8). `fin project verify` runs `integrity_check` and the other checks in §3.8.
+- **`db.lock`:** every open `Store` holds a shared OS lock on `<project-data>/db.lock`; a rebuild holds it exclusively (§3.8). OS locks are reliable here because server data is local. They are never used in the project folder.
 
 ### 3.2 Versioning of ops and snapshots
 
 - **`schemaVersion`:** each committed record carries the op-schema version it was written with. Snapshots carry the model-schema version.
-- **Upcasters:**
-  - they live in `fin-core::upgrade` (pure, no I/O, WASM-safe) as one function per step, operating on `serde_json::Value`, so old Rust types need not be kept;
-  - they cover records (intent, resolved and inverse) and snapshots;
-  - they must not change ids, timestamps or bindings;
-  - each step has a golden test: frozen fixtures of the old shape go in, the expected new shape comes out.
-- **Replay:** `fin-core::apply_committed(project, resolved_ops) -> Result<Project, StructuralError>` performs structural checks only. `apply_tx` (the edit path) keeps full validation.
-- **Open no longer fails on any diff.** The current sub-project 2 open path, which "replays the tail and fails `DB_ERROR` on any diff", is replaced: open uses the latest snapshot plus `apply_committed`. Comparing stored diffs is moved to `fin project verify`, where a mismatch is reported, not fatal.
+- **Record format** (`fin-core::record`): `RECORD_FORMAT = 1`, `MIN_READER = 1`. A record is `{"txId","seq","kind","schemaVersion","parentHash","author","committedAt","intent","resolved","inverse","bindings"}` in that field order, compact JSON, encoded once at commit (`encode_record`).
+  - `intent` is the `Tx` as applied (Decision 2): the rebased one, still with its `$placeholders`.
+  - `resolved` = `intent.ops` with bindings substituted (`resolve_ops`).
+  - `Tx` gains an optional `argsHash` (§3.11), omitted when absent so that older records stay byte-identical.
+  - An unknown `kind` is `NEWER_FORMAT`.
+- **Upcasters** (`fin-core::upgrade`):
+  - one pure step per version on `serde_json::Value`, covering records (intent, resolved, inverse) and snapshots;
+  - steps must not change ids, timestamps or bindings;
+  - upcasting a record also stamps `intent.schemaVersion` with the current version;
+  - an older version with no step is `SCHEMA_VERSION`; a newer one is `NEWER_FORMAT`;
+  - each step needs a golden test (frozen old shape in, expected new shape out). Version 1 is the first, so 4A has no steps yet.
+- **Replay** (`fin-core::apply_committed(project, intent, bindings)`):
+  - applies `intent` with the recorded bindings feeding id allocation (`BoundIds`). With every id fixed this is the same as applying `resolved`, and it reuses one apply path;
+  - the bindings must equal what the intent allocates, else `BINDINGS_MISMATCH`;
+  - `apply_tx` (the edit path) keeps full validation;
+  - a structural failure is `REPLAY_FAILED {txId, cause}`.
+- **Structural checks (run by replay):**
+  - `NOT_FOUND`, `DUPLICATE_ID`, `TRACK_KIND_MISMATCH`, `ASSET_IN_USE`, `UNBOUND_PLACEHOLDER`, `DUPLICATE_PLACEHOLDER`, `TIME_OVERFLOW`;
+  - asset duration > 0 (`INVALID_RANGE`, in every mode);
+  - literal ids must be a kind prefix plus digits, and `clip.restore` takes no `$` ids (`INVALID_ID`, replay only);
+  - per shifted track after each op: `CLIP_OVERLAP`, `CLIP_EMPTY`, `CLIP_NEGATIVE` (start and `sourceIn` ≥ 0);
+  - the record's `schemaVersion` must be current after upcasting.
+- **Policy checks (skipped by replay):**
+  - the one-frame minimum;
+  - `sourceIn + duration` within the asset (assets can be relinked);
+  - trim-delta limits;
+  - a negative insert/restore start (replay catches it anyway as `CLIP_NEGATIVE`);
+  - `INSERT_INSIDE_CLIP` (replay catches it anyway: with ripple, an insert strictly inside a clip always overlaps, so it fails `CLIP_OVERLAP`);
+  - a no-ripple restore overlap (caught as `CLIP_OVERLAP`);
+  - a bare `$`, and client-only rules.
+
+  The examples in principle 2 (§2) therefore use the first three. `INSERT_INSIDE_CLIP` is a policy check, but not a *policy-only* one.
+- **New codes (exit 3):** `NEWER_FORMAT`, `REPLAY_FAILED`, `INVALID_FORMAT`, `BINDINGS_MISMATCH`, `CLIP_OVERLAP`, `CLIP_EMPTY`, `CLIP_NEGATIVE`, `INVALID_ID`.
+- **Open no longer fails on any diff.** Open uses the latest snapshot plus `apply_committed`. Stored diffs are not re-checked on open or import; they are served by `ops_since` and used by rebase, so **the stored diff wins until `fin project verify`** reports a mismatch (`diffs_match`, §3.8).
 
 ### 3.3 Hashes and identity
 
-- **`txId`:** the ULID the client sends (unchanged). It is stable across upcasts.
-- **`seq`:** dense per branch (§4.1 for how branches number).
-- **`txHash`:** `blake3:<64 hex>`, computed over the record's JSON line **exactly as written** (§3.4).
-  - Commit serialises the record once, stores those bytes in `txs.record_bytes`, hashes them, and export writes the same bytes. Nothing is ever re-serialised for hashing or export.
+- **`txId`:** the ULID the client sends (unchanged). It is stable across upcasts and unique across branches.
+- **`seq`:** dense per branch (§4.1 for how branches number). APIs call it `rev` (Decision 1).
+- **`txHash`:** `blake3:<64 lowercase hex>` over the record's bytes **exactly as written**. Commit serialises the record once, stores the bytes in `txs.record_bytes`, hashes them, and export writes the same bytes. Nothing is re-serialised for hashing or export.
   - The record contains `parentHash`: the previous record's `txHash` on that branch, the branch's fork-point hash (4B), or `null` for the first record of `main`.
-  - The record does **not** contain its own `txHash` or the epoch.
-- **Algorithm prefix:** every hash is written `<alg>:<hex>`, so the algorithm can change later. Readers reject unknown prefixes with `UNSUPPORTED_HASH`.
+  - The record contains neither its own `txHash` nor the epoch.
+- **Other hashes:** file hashes are BLAKE3 too; `<hash12>` is the first 12 hex characters. The CRC is CRC-32C, written as 8 lowercase hex.
+- **Algorithm prefix:** every hash is written `<alg>:<hex>`. A reader that meets an unknown prefix reports `UNSUPPORTED_HASH` (exit 3) only when the file's `formatVersion` is newer than its own; otherwise the file is corrupt.
 - **Canonical encoding:** stored bytes are never re-encoded, so the hash needs no canonical-JSON rules. Times stay rational strings, never floats.
-- **Entity ids after import:** replay doesn't mint ids, so after every import each `ids` counter (including branch ids) is raised to max(id seen in the log) + 1. Otherwise the first edit after a takeover would reuse another machine's ids.
+- **Genesis:** the rev-0 project is built from `genesis = {name, rate}` (in `finisher.project.json`, §3.4). Its hash, `genesisHash` (BLAKE3 of that JSON), is in `meta`, in every segment header and in every snapshot header. A segment written under another genesis is never imported (`GENESIS_MISMATCH`, §3.6) and never used by a rebuild (§3.8): an edited `genesis.rate` would otherwise silently change a rebuilt history.
+- **Entity ids after import:** replay doesn't mint ids. After every import that adds or removes rows, and on each store's first pass, every `ids` counter (including branch ids) is raised past the highest id in the log. Counters never go down: ids used by records that were later set aside (a diverged tail, a rewind) are never handed out again.
 
 ### 3.4 Project folder layout and file formats
 
@@ -117,258 +160,640 @@ MyProject/
   finisher.project.json
   .finisher/
     lease.json                     v3 lease record (§3.5)
-    lease.claim-<epoch>            v3 claim files (server id inside; §3.5)
+    lease.claim-<epoch:08>         v3 claim files (server id inside; §3.5)
     lease.probe-<serverId>         server-clock probe file
     segments/<branch>/<epoch:08>-<firstSeq:012>-<lastSeq:012>-<hash12>.fseg
     snapshots/<branch>/<seq:012>-<hash12>.fsnap
-    compaction/<id>.json           two-phase compaction manifests (§3.9)
+    compaction/<ulid>.json         two-phase compaction manifests (§3.9)
 ```
 
 **Names and temp files**
-- `<branch>` is the branch id (`main`, or `br<n>` from 4B). `<hash12>` is the first 12 hex characters of the file hash.
-- Names are strict: anything under `.finisher/` that does not match these patterns is a *foreign file* (§3.7).
-- Every file is written to `.~fin-<random>.tmp` in the same directory, fsynced, renamed, then the directory is fsynced (a no-op on Windows, arch §27.9).
-- The lease holder deletes `.~fin-*.tmp` files older than 2×TTL. It is the only writer, so these are crash leftovers.
-- A finished `.fseg`/`.fsnap` is never modified or overwritten.
+- `<branch>` is `main` or `br<digits>` (4B). Names are strict (`fin-store::names`), and only the canonical spelling parses (`lease.claim-12` does not). Anything else under `.finisher/` is a *foreign file* (§3.7). Segment names stay ASCII whatever the folder path.
+- Every file is written to `.~fin-<ulid>.tmp` in its destination directory, fsynced (`F_FULLFSYNC` on Apple with a plain `fsync` fallback, which smbfs needs), renamed **without replacing**, then the directory is fsynced (a no-op on Windows, where it is ACCESS_DENIED). This is `fsio::write_once`. A finished `.fseg`, `.fsnap` or manifest is never modified or overwritten.
+- The exceptions are `lease.json` and the probe files: they are rewritten in place (`write_in_place`, which never creates a file), never renamed over.
+- Lease and verification reads bypass the client cache (`read_uncached`).
+- Errors treated as transient and retried (`fsio::is_transient`): unix `EINTR`, `EAGAIN`, `EBUSY`, `ESTALE`; Windows 5 (access denied), 32 (sharing violation), 33 (lock violation), 64 (network name deleted). §3.13 validates this list.
+- **Temp sweep:** the export removes this server's leftover `.~fin-*.tmp` files under `segments/*`, `snapshots/*` and `compaction/`. A file is removed once this server has seen it unchanged (same length and mtime) for 2×TTL (20 s) on its own monotonic clock, checked at most every 10 s. The sweep never compares the file's mtime with the local clock.
 
-**Segment (`.fseg`).** UTF-8 JSON lines.
-1. **Header line:** `{"magic":"finisher-segment","formatVersion":1,"minReaderVersion":1,"projectId","branch","writerId","epoch","firstSeq","lastSeq","prevSegmentHash","opSchemaVersions":[min,max],"createdAt"}`.
-   - `prevSegmentHash` is the hash of the previous segment on this branch, or `null` for the first.
-   - `createdAt` is informational only and never used for ordering.
-2. **Record lines:** one transaction each: `{"txId","seq","kind","schemaVersion","parentHash","author","committedAt","intent","resolved","inverse","bindings", …kind fields}`. `kind` is `edit` in 4A; 4B adds kinds.
-3. **Trailer line:** `{"crc32c":"<8 hex>","hash":"blake3:<hex>"}`, both over every byte before the trailer line. The CRC is a cheap corruption check; the BLAKE3 hash is the identity used in names and `prevSegmentHash`.
+**Segment (`.fseg`).** UTF-8 JSON lines, each ending in `\n`:
+1. **Header:** `{"magic":"finisher-segment","formatVersion":1,"minReaderVersion":1,"projectId","branch","writerId","epoch","firstSeq","lastSeq","prevSegmentHash","opSchemaVersions":[min,max],"createdAt","genesisHash"}`, plus on packs only `"pack":true,"replaces":[{"hash","lastTxHash"},…]`.
+   - `epoch` is the **highest commit epoch** (`txs.epoch`) of the segment's records, not the lease epoch at export time (§3.4 "Export").
+   - `prevSegmentHash` is the hash of the segment whose last record precedes this one's first, or `null` for the first.
+   - `createdAt` (unix ms) is the latest `committedAt` of the records, so a re-export after a crash is byte-identical. It is informational only, never used for ordering.
+2. **Records:** one per line, the exact `record_bytes`.
+3. **Trailer:** `{"crc32c":"<8 hex>","hash":"blake3:<64 hex>"}`, both over every byte before the trailer line. The CRC is the cheap corruption check; the BLAKE3 hash is the identity used in names and `prevSegmentHash`.
+
+A truncated file always decodes as *incomplete* (not arrived); any single damaged byte of a complete file always decodes as *corrupt*.
 
 **Snapshot (`.fsnap`).**
-- Same three-part shape.
-- Header: `{"magic":"finisher-snapshot","formatVersion","minReaderVersion","projectId","branch","seq","txHash","modelSchemaVersion","writerId","epoch"}`.
-- Body: one line holding the model state.
-- Snapshots are derived and can be regenerated.
-- In 4A, folder snapshots are written only by compaction (§3.9).
-- A snapshot may seed an import or rebuild only if its `txHash` lies on the resolved chain.
+- The same frame. Header: `{"magic":"finisher-snapshot","formatVersion","minReaderVersion","projectId","branch","seq","txHash","modelSchemaVersion","writerId","epoch","genesisHash"}`. The body is one line holding the model state.
+- Snapshots are derived. In 4A only compaction writes them (§3.9), and a rebuild may seed from one (§3.8) only if its `(seq, txHash)` lies on the resolved chain and its `genesisHash` matches.
 
 **`finisher.project.json`.**
-- Adds `formatVersion`, `minReaderVersion` and `storage` (detected kind, informational).
-- It is written temp-then-rename and rewritten only on settings changes.
-- Windows can report it missing for about 5 s after such a rename, so openers retry for up to 15 s before reporting `NOT_A_PROJECT`.
+- Fields: `id`, `name`, `schemaVersion` (sub-project 2), plus:
+  - `formatVersion`, `minReaderVersion`. A file whose `minReaderVersion` is above ours opens read-only (`NEWER_FORMAT`); this is re-read on every poll;
+  - `storage`: the kind detected when the file was written (informational; every open detects again);
+  - `storageOverride`: the user's choice of kind (§3.5);
+  - `genesis`: `{name, rate}`, what rev 0 is built from. Without it a server with no DB could not rebuild the project, because the rate is in no segment.
+- Fields this version does not know are kept when the file is rewritten.
+- It is the one folder file that is replaced, not written once. It is written temp-then-rename at create and on settings changes. One more rewrite exists: a holder opening a sub-project 2 project backfills `genesis` from the DB's rev-0 snapshot, together with the version fields and `storage`.
+- Reading retries a missing file for up to 15 s, but only when `.finisher/` exists: Windows can report a just-renamed file missing for about 5 s. A folder without `.finisher/` fails at once. Transient errors are retried for the same 15 s.
+- A sync conflict copy of this file is a warning (`PROJECT_FILE_CONFLICT`); the copy is never read.
 
-**Export cadence**
-- The writer exports after commits, debounced to 2 s, and on close or shutdown.
-- A segment holds at most 1,000 records or 4 MiB; a transaction is never split.
-- A record is marked `exported` only after the rename succeeds and a read-back of the file's trailer verifies.
-- **Crash between the rename and the marking:** on the next import, a folder record whose `txId` **and** `txHash` already exist in the DB marks that record exported from that file and is never re-applied. The same `txId` with a different `txHash` is a fork.
+**Export** (`fin-store::export`)
+- **Cadence:** the holder exports 2 s after the first unexported commit is seen, or 30 s once more than 30 segments have been written in the last 10 minutes. `close` flushes; dropping a `Store` does not, because folder I/O can block for seconds and a drop must not.
+- **Gate:** export runs only while this server holds the lease and the project is writable (§3.7). The full lease check runs again right before every write (the fence).
+- **Epoch label = highest commit epoch** of the segment's records, which must not exceed the current lease epoch. Labelling with the epoch at export time would launder records committed under a lost lease into a newer epoch. Example: B commits t1 at epoch 2 and loses the lease; C exports u at 3; B re-acquires at 4. Labelled 4, t1 would beat u, which other servers have already applied. Labelled 2, it loses, as the epoch rule intends (§3.6.2 step 6).
+- **Sizes:** at most 1,000 records or 4 MiB per segment, and a transaction is never split. Commit refuses a record above 4 MiB − 1 KiB with `TX_TOO_LARGE` (exit 2), so every segment fits. A stored record that is already too large (only a migrated sub-project 2 record can be) stops the export at it with `RECORD_TOO_LARGE` (exit 3); verify reports it (`record_size`).
+- **Write and read back.** A record is marked `exported` only after the segment's rename *and* an uncached read-back that decodes to our hash.
+  - The read-back covers write-once outcomes that lie: `AlreadyExists` after an NFS link retransmit, `NotFound` after a Windows rename that succeeded on the server, and a failed directory fsync after the rename.
+  - A file missing on read-back is retried briefly in place, then on a later pass with the same bytes.
+  - Another valid file under our name → `SEGMENT_COLLISION` (exit 4). It is never overwritten; the next attempt adds 1 ms to `createdAt` for a different name. A file that is present but cannot be verified after repeated reads is treated as a collision.
+- **Retries** reuse the exact bytes (and so the name) of the failed attempt while the lease is held. A file already in the folder that starts at the same seq, continues the same predecessor and holds exactly our next records is adopted rather than written twice.
+- **Crash between the rename and the marking:** the next import finds folder records whose `txId` **and** `txHash` the DB holds unexported. It marks them exported from that file and never applies them again. The same `txId` with a different `txHash` is a fork (`TxIdReused`, §3.6).
+- **Failures:** folder failures (unwritable, disk full, collision) don't fail the pass. They show as the status's `exportError`, the records stay unexported, and the export retries once per delay.
 
 ### 3.5 Lease v3
 
-This implements arch §27.9 "v3" in `fin-store::lease`, with the changes from the research:
+This implements arch §27.9 "v3" in `fin-store::lease`. The module docs there hold a table mapping every rule to its source. The spike code was not available, so the lease was written from §27.9 and this section; §3.13 lists what the cross-host runs must still confirm.
 
 | Parameter | NAS / network | Local disk | Sync folder |
 |---|---|---|---|
 | TTL / heartbeat | 10 s / 5 s | 10 s / 5 s | 10 s / 5 s (advisory) |
-| Stale after (server time) | **45 s** (was 30 s) | 45 s | never automatic |
-| Takeover | automatic after stale, observed by **two probes ≥ 5 s apart**, each with probe round trip ≤ TTL/4 | same | only with explicit confirmation (`--confirm`) |
+| Stale after (server time) | **45 s** (arch §27.9 said 30 s) | 45 s | never automatic |
+| Takeover | automatic: two stale probes ≥ 5 s apart, each with round trip ≤ TTL/4 (2.5 s), **and** the record unchanged for ≥ 25 s by the observer's monotonic clock | same | only with `--confirm` |
+| Self-fence | last successful heartbeat + 2×TTL (20 s), suspend-aware monotonic clock | same | same |
 
-**Why 45 s.** Windows documents three client-side cache windows: `FileNotFoundCacheLifetime` 5 s, `DirectoryCacheLifetime` 10 s, `FileInfoCacheLifetime` 10 s. Our measured client skew was about 10 s, and the heartbeat interval is 5 s. Those add up to about 40 s, so 30 s was too tight.
+**Why 45 s.** Windows documents three client-side cache windows: `FileNotFoundCacheLifetime` 5 s, `DirectoryCacheLifetime` 10 s and `FileInfoCacheLifetime` 10 s. Add the measured client skew of about 10 s and the 5 s heartbeat, and the total is about 40 s, so 30 s was too tight.
 
-**Claims and epochs**
-- To acquire, a server creates `lease.claim-<epoch>` with `create_new` (exclusive create), with its server id as the content. The exclusivity of that name is what makes epochs unique. This is the proven spike design.
-- **Every** acquisition takes a fresh epoch, including automatic re-acquisition after `LEASE_LOST`.
-- After acquiring, the holder deletes claim files below its own epoch. Otherwise "missing `lease.json` plus a claim" would mean "held" forever.
+**Server identity (Decision 5)**
+- The server id is a lowercase ULID in `<server-data>/server-id`, created on first use: a temp file (0600) moved into place without replacing, so racing processes both read the winner's id.
+- `server-id.origin` records the server-data directory's identity and the OS machine id beside the id: `/etc/machine-id` (or `/var/lib/dbus/machine-id`), macOS `gethostuuid`, Windows `MachineGuid`.
+- When either differs, the server data is a clone (`cp -a`, a restored backup, a cloned VM). It mints a **new** id (status `SERVER_ID_RENEWED`) and follows like any other server. Without a readable identity the restart shortcut below is off.
 
-**Record**
-- `lease.json` is a fixed 512-byte record, rewritten in place, holding: magic, version, `serverId`, `epoch`, heartbeat counter, holder description (machine name, app version), last probe server-time, and a CRC-32C.
-- **Missing** `lease.json` while any claim file exists = held.
-- **Unreadable or bad checksum** = held when acquiring, **lost** when fencing.
-- **Probe file:**
-  - each server rewrites its own probe file in place and reads its mtime, uncached, as "server now";
-  - the probe must move forward between reads; if it doesn't, staleness is not decided that round.
+**Files**
+- `lease.json`: a fixed 512-byte record. Compact JSON `{magic, version, serverId, epoch, heartbeat, holder, probeServerMs}`, then `\n`, the body's CRC-32C as 8 hex and `\n`, then spaces up to 512 bytes. `holder` is the machine name and app version, for people; `probeServerMs` is the holder's server time when it wrote the record. The record is created once with `create_new`, then only rewritten in place, so an in-place rewrite always covers the whole previous record.
+- `lease.claim-<epoch:08>`: one per acquisition, created with `create_new`, holding the claimant's server id. The exclusivity of the name is what makes epochs unique. Claims are a secondary signal: a new one can stay invisible to Windows for up to 9.9 s. The record's epoch is authoritative.
+- `lease.probe-<serverId>`: each server's own probe file.
+- The lease never creates `.finisher/`, so a project folder that vanished cannot come back empty.
 
-**Fencing (writer side)**
-- The epoch is checked before every segment write and after every heartbeat.
-- The holder self-fences, switching to read-only, at its last successful heartbeat + 2×TTL by its monotonic clock.
+**Time** (arch §27.9 "Clock skew", "Time")
+- The lease never compares the local wall clock with a server mtime.
+- **Server time** is the mtime of our own probe file, read uncached right after rewriting it, then carried forward by monotonic elapsed time. Every server time in the lease (the holder's stamp, an observer's "now", a claim's age) comes from the same file server.
+- A probe sample is used only if it moved forward and lands no more than 1 s (plus the previous round trip) below the extrapolated server time. A sample older than 60 s is not used; the heartbeat re-probes every 30 s.
+- **The monotonic clock counts time asleep:** `CLOCK_BOOTTIME` on Linux, `CLOCK_MONOTONIC` on macOS, `QueryInterruptTimePrecise` on Windows. The source is fixed at start-up. A sleeping machine therefore wakes already fenced. If no such clock is available, status warns `CLOCK_IGNORES_SLEEP`; the record compare and the claims still fence that machine.
+
+**Acquiring** (`Contender::observe`, `take`)
+- Reading `lease.json` uncached gives one of these states:
+  - missing with no claims → free;
+  - missing beside a claim → **held**, aged by the newest claim's server-time mtime, so an acquirer that crashed between claim and record cannot hold the folder forever;
+  - unreadable or bad checksum → held, and taken over only by a confirmed takeover;
+  - ours and still heartbeating in this process → held;
+  - ours at an epoch this process held whose lease is lost or dropped → ours to re-take at once (in-process registry);
+  - otherwise held, aged by this round's server time − the record's stamp.
+- **Staleness needs all of:**
+  - age > 45 s in two counting rounds ≥ 5 s apart, with no non-stale round between them;
+  - the identical record (or claim set) seen for ≥ 25 s (self-fence + heartbeat) by our own monotonic clock. A running holder rewrites it within 20 s or fences itself, so it is never taken over, however wrong either clock is;
+  - observations no more than 90 s apart (older evidence is discarded).
+
+  A round whose probe doesn't move forward, or whose round trip exceeds 2.5 s, counts for nothing.
+- **Take:**
+  1. Back off if a claim above the record's epoch is younger than 45 s of server time (or its age is unknown): another acquisition is in progress.
+  2. Claim exactly `base + 1`. `base` is the highest of the record's epoch, every claim, every segment name's epoch and the last epoch this process held here, so epochs never repeat even with every lease file gone or the record damaged. If that claim is taken, back off without creating anything: stepping on to `base + 2` could never win and would fence the winner.
+  3. Re-read `lease.json`; it must be exactly what was judged.
+  4. Write our record: `create_new` when it was missing (the file server decides, so a record hidden by Windows' not-found cache still wins), else in place.
+  5. Read it back.
+  6. Delete the claims below our epoch, then start the heartbeat.
+
+  Any failure puts back what was there, deletes our claim and backs off.
+- Every acquisition takes a fresh epoch, including automatic re-acquisition after `LEASE_LOST`, a restart, and a manual takeover.
+
+**Heartbeat and fencing**
+- One beat every 5 s:
+  1. re-probe if due;
+  2. **fence**: `lease.json` must still name our id and epoch, and no claim above our epoch younger than 45 s may exist (claims are the authority on epochs);
+  3. right before writing, in memory: not dropped, not lost, deadline not passed (a beat can stall for any time on a hung share or a sleeping machine);
+  4. rewrite in place with `heartbeat + 1`;
+  5. read back and list claims again.
+
+  A beat that finishes past the deadline revives nothing.
+- A failed beat is retried after 1 s. Nothing is lost until the self-fence deadline, but evidence of another writer loses the lease at once. A listing error is transient, not a loss (status `LEASE_CHECK`).
+- A leftover claim from a crashed acquirer makes the holder lose its lease. It re-acquires once the claim is 45 s old: old claims are ignored, never deleted by others.
+- `Lease::check` (the fence) is run before every segment write, every compaction write or delete, and every commit. A commit runs the full check before taking the DB lock and only the in-memory part under it. It trusts a full check that passed within the last **1 s**: a commit writes only the local DB, and every folder write takes its own full check. A commit in that last second of a lost lease becomes a diverged tail (§3.6.2 step 7).
+- Once lost, a lease stays lost; re-acquiring makes a new one. Dropping or closing does not release it: others wait out staleness. (A "released" record on clean close is a follow-up.)
+
+**Restart shortcut** (`<server-data>/projects/<id>/lease.lock`)
+- A lease holds an OS lock (`File::try_lock`) on this server-data file for its whole life, even while its heartbeat thread is stuck in I/O.
+- On open, the folder's record may name our own server id. Then:
+  - the lock is free, the record's holder host is this host, the server data is on a local disk (an allow-list: ext2/3/4, XFS, Btrfs, ZFS, F2FS, bcachefs, tmpfs, ramfs and overlayfs on Linux; APFS and HFS+ on macOS; NTFS and ReFS on a fixed drive on Windows), and the server id is not a clone → the previous process is gone. Re-take at once, at a fresh epoch through a claim;
+  - the lock is held → another process of this server data holds the lease: follow.
+- Without the shortcut, a restarted server would wait about a minute.
+
+**Takeover** (`fin project takeover [--confirm]`)
+- Like an automatic acquisition, plus:
+  - with `--confirm` on a sync folder: takes the lease whatever its state (the lease is advisory there, and the user has said the other machine stopped);
+  - with `--confirm` anywhere: replaces a damaged `lease.json`.
+- A live holder on local or network storage is **never** taken over, even with `--confirm`.
+- Refusals are `LEASE_TAKEOVER_REFUSED` (exit 4) with `details.reason`: `CONFIRM_REQUIRED`, `HELD`, `STALE_UNCONFIRMED` (it looks stopped; the confirming probe comes ≥ 5 s later), `CONTENDED` or `UNAVAILABLE`.
 
 **Ownership**
-- A `Lease` object is owned by the open project in `fin-store`, with its own heartbeat thread.
-- `fin-node` exposes `leaseStatus()` and `takeover({confirm})`.
-- `finisherd` broadcasts lease state changes on the op stream as status events.
+- The `Lease` is owned by the open `Store`, with its own heartbeat thread (stopped and joined on drop).
+- `fin-node` exposes it through `status()` and `takeover(confirm)`. `finisherd` publishes lease changes as `status` events on `project.events` (§3.10).
 
-**Storage kind detection** (`fin-store::storage_kind`) returns `local | network | sync(provider)`.
-- **Sync:**
-  - macOS: path under `~/Library/Mobile Documents` (iCloud) or `~/Library/CloudStorage/*`;
-  - Windows: the Dropbox `info.json` roots, the `OneDrive*` environment roots, and cloud-file placeholder attributes on the folder;
-  - Linux: known Dropbox/Syncthing markers.
-- **Network:** filesystem type (`statfs` f_type / `GetVolumeInformation` / `GetDriveType`).
-- **Override:** the user can set it per project in settings, written to `finisher.project.json`.
+**Storage kind** (`fin-store::storage_kind`: `local | network | sync(provider)`)
+- The kind picks the lease parameters, the poll cadence, the compaction grace and whether the epoch rule may decide.
+- **Principle:** taking a sync folder for local or network storage is the dangerous mistake, because it enables automatic takeover on what is only an advisory lease. The reverse is merely annoying. Ambiguous evidence therefore **leans to sync**, and a failed probe yields `network` unless a sync signal was already seen.
+- **macOS:**
+  - sync: `<x>/Library/Mobile Documents/**` (iCloud), `<x>/Library/CloudStorage/<Provider>-*/**`, iCloud "Desktop & Documents" (reached through links into `com~apple~CloudDocs`), well-known sync folder names in the home folder, a dataless (`SF_DATALESS`) folder or ancestor, and any FUSE file system;
+  - network: `smbfs`, `nfs`, `afpfs`, `webdav`.
+- **Windows** (sync evidence first):
+  - sync: a registered Cloud Files sync root (`CfGetSyncRootInfoByPath`; the binary imports `cldapi.dll`, Windows 10 1709+), the `OneDrive*` environment roots, Dropbox `info.json` roots, Google Drive (volume label, `DriveFS`, `%LOCALAPPDATA%\Google\DriveFS`), well-known sync folders in the profile, and recall or pin attributes on the folder or an ancestor;
+  - network: UNC paths, and remote or undeterminable drives.
+- **Linux:**
+  - sync: markers on the path or an ancestor. These are Syncthing (`.stfolder`, `.stignore`, `.stversions`), Dropbox (a regular `.dropbox` file; the `~/.dropbox` config directory doesn't count), Nextcloud/ownCloud (`.sync_<hex>.db`, `._sync_<hex>.db`, `.csync_journal.db`), Resilio (`.sync/`) and MEGA (`.megaignore`, `.debris`). Any FUSE mount except those below is sync too, including one whose subtype can't be read;
+  - network: SMB/CIFS, NFS, 9p, Ceph, AFS and `fuse.sshfs`;
+  - local: `fuseblk` (ntfs-3g, exfat);
+  - WSL: `/mnt/<drive>/Users/<user>/…` gets the Windows home-folder rules.
+- **Override:** `storageOverride` in `finisher.project.json` is honoured. An override that weakens a detected sync folder to local or network warns (`STORAGE_OVERRIDE`), and one that doesn't parse is ignored with that warning.
 
 **On sync folders**
-- The lease only warns: another holder makes the project read-only with "take over?".
-- Two offline writers can legitimately hold different epochs, so the epoch rule (§3.6 step 5) **never auto-resolves** there. Diverged lines are always `CHAIN_FORK`, and the user chooses.
-- A sync conflict copy *of `lease.json`* puts the project read-only as a suspected split brain.
+- The lease is advisory: another holder makes the project read-only with "take over?" (`--confirm`).
+- Two offline writers can legitimately hold different epochs, so the epoch rule **never decides** there. Any two lines are a `SyncFolder` fork (`CHAIN_FORK`), the local unexported tail included. Nothing is set aside, and the user chooses. A rewind (§3.6.2 step 6a) can therefore never happen on a sync folder.
+- A conflict copy of any Finisher file, `lease.json` included, makes the project read-only (`CONFLICT_COPY`) as a suspected split brain.
 
 ### 3.6 Opening, importing and following
 
-**Opening** (and every poll while following):
-1. Scan `.finisher/`.
-2. Classify each entry:
-   - **valid:** the name parses, the file is fully present, and the trailer verifies;
-   - **not arrived yet:** a placeholder (Windows `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`/`RECALL_ON_OPEN`/`OFFLINE`; macOS dataless `SF_DATALESS` or legacy `.<name>.icloud` stubs), a short file, a missing trailer, or a temp file;
-   - **foreign:** anything else, including conflict copies (§3.7).
-3. **Not arrived:**
-   - placeholders are hydrated by reading them, with progress events;
-   - everything else is retried on the next poll, never reported as corruption;
-   - a gap in a chain (a missing predecessor) waits too.
-4. **Build each branch's chain** from the DB's last known segment hash. Then compare:
-   - folder ahead → upcast and `apply_committed` the new records in order (the import);
-   - DB ahead (unexported records) and this server holds the lease → export them;
-   - both diverged → steps 5–7.
-5. **Resolve packs and duplicates first.**
-   - A segment listed in a present pack's replaced list is equivalent to the pack.
-   - A segment whose records' `txHash`es all already exist adds nothing.
-   - Both are skipped before the epoch rule.
-   - A chain predecessor is valid if it is the hash of a present segment **or** a hash in a present pack's replaced list.
-6. **Epoch rule** (network and local roots; on sync roots see §3.5). Two different segments continue from the same predecessor:
-   - The higher-epoch line wins.
-   - Before this server has exported anything at its epoch, its unexported DB tail counts as that higher-epoch successor. A lower-epoch segment landing after a takeover is therefore stale, not a fork.
-   - The losing segment's records go to `quarantine` and are never applied. 4B offers them as a `recovered-<server>-<time>` branch.
-   - Equal epochs are a `CHAIN_FORK`. That can only happen through a bug or a manual copy.
-7. **Diverged local tail without the lease.** If this server has unexported records but doesn't hold the lease, and the folder has moved on, the tail goes to `quarantine`. The project stays usable read-only.
-8. **Quarantine is never silent.** A non-empty quarantine is a warning in `fin project status` from 4A on, with its count and origin.
+**Opening** (`Store::open`, in order):
+1. Read `finisher.project.json` (15 s retry, §3.4).
+2. No DB: rebuild it from the folder (§3.8, "Missing"), using the file's `genesis`. Without a genesis → `PROJECT_DB_MISSING`.
+3. Take the shared `db.lock`. Check the DB read-only: refuse `NOT_A_PROJECT_DB` or `DB_TOO_NEW`, and rebuild a damaged DB (§3.8). Then check `PROJECT_DB_MISMATCH` and project copies (`PROJECT_COPY`, `PROJECT_ORIGINAL_UNREACHABLE`, §3.7).
+4. Migrate. Record `lastOpenedBy`, `projectDir` and the server id in `serverIds`.
+5. Detect the storage kind (`storageOverride` wins, §3.5).
+6. Try once to acquire the lease. A follower keeps its contender for `tick`.
+7. Run an import pass. The read-only state is therefore in place before `open` returns, so no commit can slip in after a restart.
+8. If this server holds the lease and the file has no genesis (a sub-project 2 project), backfill it (§3.4).
 
-**Following.** A read-only server re-scans and imports:
-- every 3 s on network roots;
-- on file-system events plus a 30 s poll locally;
-- on events plus a 10 s poll on sync roots.
+Open writes no segments; the first `tick` exports, and `close` flushes. Open's folder I/O is a lease probe, a record read, perhaps a claim, one scan and one lease check: tens of milliseconds locally. A rebuild inside open takes longer, so `fin-node` runs open on the worker thread (Decision 7).
+
+**One import pass** (`Store::import`; module docs of `import`, `scan`, `chain`):
+1. **Scan** `.finisher/` (§3.6.1).
+2. **Hydrate** cloud placeholders under `segments/` by reading each whole file, at most 16 MiB per pass, round-robin from where the last pass stopped, so one slow placeholder cannot starve the others. The *next* scan sees the real file. Legacy `.<name>.icloud` stubs are skipped, because reading doesn't hydrate them.
+3. **Classify:** verified segments go per branch. Newer and unsupported-hash files set `NEWER_FORMAT`. Foreign files are listed; any that decode as segments are imported to quarantine (`CONFLICT_COPY`, deduplicated by `txHash`).
+4. **Genesis check:** segments whose header `genesisHash` differs from the DB's are not imported. The branch reports `GENESIS_MISMATCH {expected, files}` as its import error (read-only `IMPORT_ERROR`). They are not our history, so they are not quarantined.
+5. **Resolve** each branch the DB knows (§3.6.2), all in one `BEGIN IMMEDIATE` transaction for the whole pass, so a pass lands completely or not at all. Folder branches the DB doesn't know are 4B's. When a branch's segment set, `head`, tail, lease and kind are what the last resolution saw, its verdict is reused without running again (`resolve` is pure). The lease files' highest epoch, needed for rewind rule (c), is read **before** `BEGIN`, never under the DB lock.
+6. **Act** (`import::apply`), in order:
+   1. mark exported;
+   2. set a diverged tail aside;
+   3. apply new records through `apply_committed` (upcast first). The rows are stored with their exact bytes, already exported, at the segment's epoch. A record that can't be read stops the branch there (`NEWER_FORMAT`, or the branch's import error);
+   4. add `segments` rows (`imported`) for every segment whose last record is now in the DB, and for every present pack ending on the DB line unless the resolution sets any of it aside;
+   5. quarantine.
+7. **Raise id counters** (§3.3).
+
+**Following (Decision 3).** `Store::tick` runs the folder work once per poll, at the storage kind's cadence: **local 2 s, network 3 s, sync 10 s**. No file-system events are used. This deviates from the earlier text (events plus a 30 s poll locally, events plus 10 s on sync). Listing `.finisher/segments/<branch>` is cheap, polling needs no watcher dependency, and events can be added later without a format change. A poll:
+1. import (queuing `Rewound` then `Applied` events);
+2. export, if holding and writable;
+3. the fencing re-check while holding (a lost lease is dropped → `LEASE_LOST`);
+4. one acquisition attempt when not holding (right after a loss too), always at a fresh epoch. After an acquisition the ordering rule applies, and an import runs at once when it needs no wait;
+5. the daily backup (§3.8);
+6. compaction (§3.9).
+
+The plan put the retry before the re-check; re-checking first lets the same poll retry a loss it found. Calls between polls only export and report status changes. Every call ends with a `Status` event if the status changed (lease ages ignored).
+
+**The ordering rule** (after **every** acquisition: at open, automatic re-acquisition, takeover)
+- Commits and exports are blocked, read-only reason **`CATCHING_UP`**, until an import pass that started at the new epoch has resolved every branch with nothing `waiting` and no import error.
+- Without it, a stale local tail, or a new commit on top of it, would be written at the new epoch. It would beat records another server exported meanwhile, laundering them: export labels by commit epoch, but a new commit raises the tail's epoch.
+- **Directory-cache wait.** The pass that lifts the block must start at least **10 s** (monotonic; the Windows SMB directory cache) after the acquisition when any of these holds:
+  - the replaced `lease.json` named another server, or was damaged;
+  - a claim above the highest epoch in our DB belongs to another server;
+  - `lease.json` was missing while the folder holds a segment by another writer or above our epochs.
+
+  Passes before then still import.
+- **Sync gate.** On a sync folder the block also stays while any file under `segments/` has not arrived (`SYNC_ARRIVING`). The 10 s bound only a directory cache, not propagation: after a confirmed takeover on a sync folder, the other machine's last edits may still be on their way, and nothing bounds what hasn't started arriving.
+
+#### 3.6.1 Scan classification
+
+`fin-store::scan` lists `.finisher/` and classifies each entry (`Entry`):
+
+| Entry | Meaning |
+|---|---|
+| `Segment`, `Snapshot` | verified (CRC and BLAKE3 trailer), with name, directory and header agreeing |
+| `Manifest` | `compaction/<ulid>.json`, listed by name (compaction reads it) |
+| `NotArrived {Placeholder, Incomplete, Temp, …}` | a cloud placeholder (Windows `RECALL_ON_DATA_ACCESS`/`RECALL_ON_OPEN`/`OFFLINE`; macOS `SF_DATALESS` or a `.<name>.icloud` stub), a short file or missing trailer, our temp files, sync temp files (`.syncthing.*.tmp`, `~syncthing~*.tmp`). Retried on the next poll, never reported as corruption. A placeholder is never read by the scan |
+| `Damaged {reason, len, modified}` | a canonically named file that decodes as corrupt, or exceeds its size cap |
+| `Newer` | `minReaderVersion` above ours (`NEWER_FORMAT`) |
+| `UnsupportedHash` | a newer format with an unknown hash prefix |
+| `Unreadable` | a non-transient read error (permissions, I/O, a cloud file that cannot be fetched); the rest of the scan is unaffected |
+| `Foreign {conflict_copy, content}` | anything else. `conflict_copy` is the provider when a known pattern matches, or `Unknown` for a Finisher file under a name not its own; `content` is the decoded file, if it is one, for quarantine |
+
+- **Layout read:** `.finisher/*` regular files (our own lease files are skipped, so a copy of `lease.json` is foreign); `segments/<branch>/*`, `snapshots/<branch>/*` with `<branch>` = `main` or `br<digits>`; `compaction/*`.
+  - A directory with any other name is **one** `Foreign` entry and is not entered. A sync client's copy of a branch directory gets `conflict_copy`, so it is `CONFLICT_COPY`.
+  - Files directly in `segments/` or `snapshots/` are foreign.
+  - Other directories are not scanned.
+- **Never followed:** a path that is not a regular file (symlink, FIFO, socket, device) is `Foreign` and never opened.
+- **Litter skipped:** `.DS_Store`, AppleDouble `._*`, `desktop.ini`, `Thumbs.db`, `.dropbox`, `.dropbox.attr`, `.nfs*`, `.fuse_hidden*`, `.smbdelete*`.
+- **Size caps** (from metadata, before reading): a segment above 2×4 MiB + 64 KiB or a snapshot above 256 MiB is `Damaged("too large")`; a foreign file above the segment cap is listed without decoding.
+- **Cache:** only verified segments and snapshots are cached, keyed by path and `(len, mtime)`. Names are content-addressed and files write-once, so a hit needs no read. `NotArrived`, `Damaged`, `Foreign` and `Unreadable` are never cached, because sync roots hydrate out of order.
+- **Conflict-copy names** (`conflict_names`): a name is a conflict copy of provider P only if removing P's marker leaves one of our canonical names. Litter that merely looks like a marker (`notes 2`) therefore doesn't count. Matching is case-insensitive.
+  - Dropbox: a parenthesised group containing `conflicted copy`, `Case Conflict` or `Selective Sync Conflict`;
+  - Syncthing: `.sync-conflict-<date>-<time>-<id>`;
+  - iCloud: ` <n>` before the extension;
+  - OneDrive: `-<hostname>` (every `-` split of the stem is tried);
+  - Google Drive (unverified): `(<n>)` or `[Conflict]`.
+
+  A conflict copy of a `lease.probe-*` file is listed only, because each server writes only its own.
+- **Stuck files:** on local and network roots every write is atomic, so a file seen incomplete for more than 5 polls can't be in transit: status warns `INCOMPLETE_FILES` (a crashed foreign writer, or damage).
+
+#### 3.6.2 Chain resolution
+
+`fin-store::chain` is pure (no I/O, no clock). Its result depends only on the *set* of segments and on what the DB holds (`Known`). Code comments cite this section by the step numbers of the earlier text, which are kept as labels: steps 4–5 (chain building, packs and duplicates), 6 (epoch rule), 6a (rewind), 7 (diverged local tail), 8 (quarantine is never silent).
+
+**Steps 4–5 — model.** History is a tree of **records** keyed by `txHash` and linked by `parentHash`; segments are only containers. Steps 4–5 of the earlier text fall out of content addressing:
+- a pack and the segments it replaces hold the same records, so they are one line, not two successors;
+- a re-exported duplicate adds nothing;
+- a follower whose DB stops inside a pack resumes inside it;
+- links can't form cycles.
+
+**Segment-level checks** (`chain::graph`):
+- A segment is *malformed* when its records don't parse, its seqs don't run `firstSeq..=lastSeq`, its `parentHash`es don't chain, or a `txId` repeats.
+- A segment's first record must continue its predecessor, else the segment is malformed:
+  - `prevSegmentHash` `null`: it starts the branch (on `main` the first record has no parent);
+  - `prevSegmentHash` a present segment: its parent is that segment's last record, seq + 1;
+  - `prevSegmentHash` only in an honoured pack's `replaces`: its parent is exactly that entry's `lastTxHash` (**the exact stand-in rule**: a pack stands in for a deleted segment only as that segment's last record);
+  - anything else: a gap. The segment waits, and its predecessor's hash is reported in `waiting`.
+- A pack is honoured only if it holds the `lastTxHash` of every `replaces` entry and every record of each present segment it lists, whose last record must be that `lastTxHash`.
+- A record's epoch is the highest epoch of the segments holding it.
+
+**`Known`** (what the DB holds per branch; `import::known`): `{head, last_hash, known_tx, tail, tail_epoch, holds_lease, kind}`.
+- `head`: the `txHash` of the highest exported row;
+- `last_hash`: its segment;
+- `known_tx`: every `txId → txHash` in the DB, on any branch, the tail included;
+- `tail`: the unexported rows in seq order, which must follow every exported row;
+- `tail_epoch`: the highest commit epoch of the tail.
+
+This replaces "build each branch's chain from the DB's last known segment hash". Keying the DB line on records instead of a segment hash is what makes three cases work: a holder's old tail after it re-acquires, a live holder on a stale line, and re-exports whose segment boundaries differ from the first export.
+
+**Step 6 — epoch rule** (local and network roots)
+- Where two or more lines continue from one record (or from the branch start), **each line's epoch is the highest epoch anywhere on it**, and the unique highest line wins ("the latest holder's line wins"). The losers' records are quarantined (`STALE_EPOCH`) and never applied. A tie is a fork (`EqualEpoch`).
+- The DB's unexported tail is a line too, **at its commit epoch** (`tail_epoch`). It competes **only while this server holds the lease** (`holds_lease`).
+- This corrects the earlier step 6 wording ("before this server has exported anything at its epoch, its tail counts as that higher-epoch successor"). The tail counts at the epoch its records were committed at, not at the current lease epoch. That is what makes a lower-epoch segment landing after a takeover stale, and an old tail of a lost lease lose.
+
+**The walk** (`chain::walk`):
+1. Follow `head` to the branch start. If the folder doesn't hold `head`, wait and decide nothing.
+2. Extend with tail records the folder already holds in order (a crash after rename): these are `mark_exported`.
+3. Down the DB line, each record with siblings is a competition:
+   - the DB line wins → the siblings are quarantined;
+   - a sibling wins at or above `head` → **`AppliedLineLost`** fork (step 6a may rewind);
+   - a sibling wins inside the exported part of the tail → the tail diverged;
+   - a tie, or any two lines on sync storage → fork.
+4. At the end, the unexported tail competes the same way. Without the lease it doesn't compete: once the folder has moved on from where the tail starts, the tail is set aside (step 7), or on sync storage the branch forks with the tail as one side.
+5. New records follow the unique child or the winner until a leaf, a fork, or a record whose `txId` the DB holds with other bytes (**`TxIdReused`** fork).
+
+**Fork kinds:** `EqualEpoch`, `SyncFolder`, `AppliedLineLost` and `TxIdReused`, each with its sides. Every fork is read-only `CHAIN_FORK` unless step 6a rewinds an `AppliedLineLost`.
+
+**Nothing is dropped.** Every record of a usable segment ends up in exactly one of `apply`, `mark_exported`, `quarantine`, `pending` (beyond a fork, behind a gap; shown in status), or the DB's own line. Records descending from a malformed file are quarantined as `MALFORMED`.
+
+**Verdicts are per poll.** Every verdict (quarantine, diverged tail, fork, waiting, newer) is recomputed on every pass and never persisted as final. A lying pack, for instance, is honoured until the segment it falsely lists arrives.
+
+**Step 6a — rewinding a lost applied line** (`import::rewind`)
+- **Why:** a holder exports with fence → `write_once`, and nothing makes the rename conditional on still holding the lease. A holder paused between the two can land a segment arbitrarily late, after another server took over and wrote the same seqs at a higher epoch. A follower that applied the late segment before the winner's arrived would be `CHAIN_FORK` forever, while a follower that saw both at once follows the winner: the two would never agree. Fencing makes this rare, but it is a legitimate path, not only a bug. Rewinding makes every follower converge whatever the arrival order. The ordering rule is still required (laundering), but it is not enough on its own.
+- **When** (all must hold, else `CHAIN_FORK`):
+  - (a) the storage isn't a sync folder (there `AppliedLineLost` can't occur; checked anyway);
+  - (b) this server doesn't hold the lease, **or** holds it at epoch `E` and every lost row is below `E`. The relaxation for a holder: a server that applied a late line and then acquired the lease, before the winner's files reached it, rewinds rather than freezing the project while heartbeating;
+  - (c) the winner's epoch is backed by the lease state: `lease.json`'s epoch or a claim is at or above it. A higher epoch nobody claimed looks like a hand copy or a bug;
+  - (d) no other branch is based inside the lost range (4A has only `main`; 4B records bases in `meta` `branchBase.<b>`).
+- **What:**
+  1. Lost exported rows go to quarantine as **`SUPERSEDED`**: origin `local` when this server wrote them (judged by its `segments` rows or by `writerId` ∈ `serverIds`; packs never count), else `folder`. Lost unexported rows go as `DIVERGED_TAIL`.
+  2. The rows, the DB snapshots at or above the fork seq, and the `segments` rows whose last record is lost are deleted. This includes a pack spanning the fork; the pack *file* stays, and the winner resolves through its `replaces`.
+  3. The head is rebuilt from the latest snapshot below the fork. Id counters are not lowered.
+  4. The branch's generation is bumped and the rewind recorded.
+  5. The branch is resolved once more in the same transaction.
+
+  At most one rewind per branch per pass.
+**Step 7 — diverged local tail without the lease.** If this server has unexported records, doesn't hold the lease, and the folder has moved on from where they start, they go to quarantine (`DIVERGED_TAIL`, origin `local`) and the head is rebuilt; the project stays usable read-only. This happens before applying, so a retried tx that the folder holds under the same `txId` can take it. It uses the same history machinery as a rewind: it bumps the generation and emits `Rewound`.
+
+**Step 8 — quarantine** (`import::quarantine`)
+- One row per `txHash`, so a stale line re-reported every poll, or a diverged tail overlapping a conflict copy, is one row.
+- Reasons: `STALE_EPOCH`, `MALFORMED`, `DIVERGED_TAIL`, `SUPERSEDED`, `CONFLICT_COPY`, and from rebuilds `SALVAGED` and `MISSING_FROM_FOLDER` (§3.8). Origins: `folder`, `local`, `foreign`, `salvage`.
+- `current` says whether this pass's verdicts still set the row aside; status counts only current rows. A `DIVERGED_TAIL` (or salvaged) record exists nowhere else, so it stays current until its record is in `txs` again. A `SUPERSEDED` row's `current` follows the folder's verdicts, so two followers have the same current set.
+- `DIVERGED_TAIL` and `SUPERSEDED` keep their reason, origin and detail once set. Bytes are kept forever, and import never deletes rows. A record the DB holds is never quarantined.
+- **Never silent:** status warns `QUARANTINE` with the count per reason and origin. 4B offers quarantined records as a `recovered-<server>-<time>` branch.
+
+#### 3.6.3 Generations and rewound history
+
+- Each branch has a **generation**, bumped by every rewind or diverged tail (`meta` `generation.<b>`; the last 32 rewinds in `rewinds.<b>`).
+- A DB rebuilt from the folder starts again at 0, so every DB also has a random **incarnation** (`meta` `incarnation`). It is minted at creation, by a rebuild, in a backup copy, and at the first open of a DB made before it existed.
+- Callers hold a `Generation {incarnation, n}` (`ProjectStatus.incarnation`, `snapshot.get`, `opsSinceAt`).
+- `Store::commit_at_generation(tx, Some(gen))` refuses with **`HISTORY_REWOUND`** (exit 4):
+  - another incarnation → `details.reason` `REBUILT`, `rev` 0, whatever the base;
+  - a stale `n`, when a rewind since then reaches `baseRev` → `{branch, rev, generation, expected, baseRev}`, reason `REWOUND`. A `baseRev` below every such rewind rebases as usual;
+  - an `n` above the current one, or rewinds no longer in the history → refused.
+- A superseded tx is in quarantine, not `txs`, so its `txId` is not deduplicated: a retry without a generation is committed again on top of the winner. Callers that must not re-apply a lost edit pass the generation or ask `tx.get` first.
+- **`tx.get`** (`Store::tx_status`) answers with the `CommittedTx`, `{setAside: {txId, branch, reason, origin}}` (from quarantine), or `null`.
+- **Warnings:** `REWOUND` (count, writers, epochs, winner epoch; louder when own records were rewound) lasts 24 h or until acknowledged. When the lost records span more than one segment or more than 30 s of commits, it is **`SPLIT_BRAIN_SUSPECTED`** instead (two writers at once, not one late rename), shown until acknowledged. `Store::acknowledge_rewind(branch, generation)` / `fin project acknowledge --rewind <n>` clears them.
 
 ### 3.7 Conflicts and read-only states
 
-**Read-only reasons.** The project is read-only with one of these reasons, shown in `fin project status` and as `details.reason` on write errors (`PROJECT_READ_ONLY`, exit 4):
+**Read-only reasons.** The project is read-only with one reason, shown in `fin project status` (`readOnly`) and as `details.reason` on write errors (`PROJECT_READ_ONLY`, exit 4). In **precedence order**, highest first:
 
 | Reason | Trigger | Recovery (`fix`) |
 |---|---|---|
+| `CHAIN_FORK` | a fork the import cannot settle (§3.6.2) | `fin project recover`: in 4A the manual procedure (move one history's segment files out of the folder); 4B makes the other side a `recovered-*` branch |
+| `CONFLICT_COPY` | a foreign file matching a conflict-copy pattern, a Finisher file under a name not its own, or a conflicted branch directory (any storage kind) | the same; the copy's records go to quarantine |
+| `NEWER_FORMAT` | a segment, snapshot or project file with `minReaderVersion` above ours, or an unknown record kind | update Finisher |
+| `IMPORT_ERROR` | the last import could not apply a record (`REPLAY_FAILED`, `GENESIS_MISMATCH`, …) | per the error; `fin project rebuild` when the DB is at fault |
+| `LEASE_LOST` | self-fenced, or a failed fencing check | re-acquired automatically when possible; else takeover |
 | `LEASE_HELD` | another live holder | wait, or `fin project takeover` (§3.5 rules) |
-| `LEASE_LOST` | self-fenced or failed fencing check | re-acquire automatically when possible; else takeover |
-| `CHAIN_FORK` | two segments on one branch claim the same predecessor | `fin project recover`: keep one side as the branch, the other becomes `recovered-*` (needs 4B; until then manual, documented) |
-| `CONFLICT_COPY` | a foreign file matches a known conflict-copy pattern or parses as a Finisher file under a non-matching name | the same recovery; the copy's contents are imported to quarantine |
-| `NEWER_FORMAT` | any file with `minReaderVersion` above ours | update Finisher |
+| `CATCHING_UP` | the ordering rule after an acquisition (§3.6) | wait (seconds; on a sync folder until files arrive) |
 
-**Conflict-copy patterns** (case-insensitive, matched after the strict-name check fails):
-- `conflicted copy` (Dropbox);
-- `.sync-conflict-` (Syncthing);
-- `" <n>"` before the extension (iCloud);
-- `-<hostname>` suffix (OneDrive);
-- `(<n>)` and `[Conflict]` (Google Drive, unverified).
+The first four come from the folder's content and need a person or an update, whoever holds the lease. The last three are the lease's and resolve by waiting or a takeover. Commits answer a retry of an already committed `txId` before the read-only check, so a follower answers retries.
 
-Other foreign files are listed as warnings and otherwise ignored.
+**Status** (`Store::status` → `fin project status`, `project.status`):
+- **Fields:** `projectId`, `storage`, `storageWarning`, `lease` (tagged by `state`: `held {epoch}` / `heldElsewhere {holder, epoch, ageServerMs}` / `stale {holder, epoch}` / `lost {reason}`), `leaseCheck`, `readOnly {reason, fix}`, `branches [{branch, head, exportedThrough, generation}]`, `lastExportMs`, `exportError`, `importError`, `quarantine {count, origins, reasons}`, `foreign`, `waiting`, `pending`, `warnings [{code, message}]`, `incarnation`, and `compaction` (§3.9). `fin-node` adds `busy {operation, sinceMs}` (§3.10).
+- **Warnings:** `STORAGE_OVERRIDE`, `CLOCK_IGNORES_SLEEP`, `LEASE_CHECK`, `QUARANTINE`, `REWOUND`, `SPLIT_BRAIN_SUSPECTED`, `FOREIGN_FILES`, `INCOMPLETE_FILES`, `SERVER_ID_RENEWED`, `SYNC_ARRIVING`, `COMPACTION_ABANDONED`, `PROJECT_FILE_CONFLICT`, `DB_REBUILT`, `SALVAGE_INCOMPLETE`, `MISSING_FROM_FOLDER`.
+
+Other foreign files are listed (`FOREIGN_FILES`) and otherwise ignored. The conflict-copy patterns are in §3.6.1.
+
+**Project copies (Decision 6)** (`fin-store::copies`)
+- A copy of a project folder must never share the original's DB. Opening a folder whose project id this server data knows from a *different, existing* folder that still holds the project → **`PROJECT_COPY`** (exit 3).
+- Two spellings of one folder (a symlink, a second mount) are the same folder when they canonicalise alike or are one directory by identity: device + inode, or on Windows the volume serial + `FileIdInfo` (ReFS) or file index. Files are not compared, so a hard-linked copy (`cp -al`, rsnapshot) is still a copy.
+- The recorded folder **moved** (and `projectDir` is updated) only if both:
+  - its absence can be trusted: the nearest existing ancestor isn't a mount root, a mount base (`/Volumes`, `/mnt`, `/media`, `/run/media`, `/net`, `/Network`) or an empty mount point right below one, and can be listed. A renamed parent folder is a move;
+  - the folder being opened holds, per branch, the newest segment the DB knows from the folder (original or pack), so it isn't an older copy.
+- Otherwise **`PROJECT_ORIGINAL_UNREACHABLE`** (exit 3), unless the caller says it moved: `fin project open --relocate`, `project.open {relocate: true}`. That is a person's decision, never automatic.
+- `projectDir` is stored losslessly for any OS path (`{"utf8"}`, `{"unix": hex}`, `{"wide": hex}`).
+- Known limit: a folder on a share that is unmounted while its copy is opened counts as moved. Once the share is back, opening the original is refused as the copy.
 
 ### 3.8 Integrity, rebuild, backups
 
-**Rebuild**
-- **Automatic:** if `quick_check` fails, or the DB is missing while the folder has segments, the server rebuilds from the folder into a new DB and verifies it.
-- **Salvage before the swap:** readable unexported records are copied from the old DB into the new DB's `quarantine`, and their count is reported.
-- The new DB is then swapped in. The old file is kept as `project.fdb.corrupt-<ts>`.
-- **Manual:** `fin project rebuild` forces the same.
+**Rebuild** (`fin-store::rebuild`, under the **exclusive** `db.lock`)
+- **When:**
+  - **Missing:** no DB, and the project file carries a genesis;
+  - **Corrupt** (`rebuild::damaged`): a bad header, an unreadable schema or `meta` under our `application_id`, a foreign `application_id` whose `meta.projectId` is ours (only the header is damaged), or a failing `quick_check`. A foreign or newer DB is never rebuilt over;
+  - **Manual:** `fin project rebuild` (`Store::rebuild`, or `rebuild_project` with no server running).
+- **Locking:** a manual rebuild while another store holds the DB is `DB_IN_USE` (exit 5). Open's automatic rebuild waits ≤ 30 s for a racing open, then uses that open's DB.
+- **Steps:**
+  1. Re-check under the lock (another open may have rebuilt meanwhile).
+  2. **Rev 0:** the old DB's rev-0 snapshot when it reads, else `new_project(genesis)`; neither → `DB_CORRUPT` (exit 3). Any folder segment whose `genesisHash` differs from that rev 0 → `GENESIS_MISMATCH` (exit 3), and nothing is built. A file genesis that doesn't match a readable old rev 0 is reported.
+  3. Build `project.fdb.rebuild-<ulid>`: fresh incarnation, rev 0, then one import pass of the whole folder through a store that holds no lease.
+     - **Seeding:** on a branch at rev 0, the highest folder snapshot whose `(seq, txHash)` is on the resolved chain, whose `genesisHash` matches, and whose records up to it all read as this branch's is the state after that seq. Those records are stored unreplayed with diff `null`, and replay continues from the snapshot.
+     - Their diffs are filled lazily (`diffs::fill`, `meta` `diffsPending.<b>`) by one replay the first time a read needs them. The DB then equals a full replay (tested).
+     - Seeding saves time only by deferring diffs, because in 4A the history is always in the folder. A lying on-chain seed is trusted, and verify's `replay_matches_live` catches it.
+  4. **Salvage** (`rebuild::salvage`) reads every old `txs` row the new DB lacks:
+     - unexported → `SALVAGED`; exported but no longer yielded by the folder → `MISSING_FROM_FOLDER`. Both have origin `salvage` and stay current;
+     - old quarantine rows come along (origin `salvage`, reason kept); id counters are MAX-merged; `projectDir`, `serverIds`, `createKey` and `salvageIncomplete` carry over;
+     - the sources are the old DB, every kept `corrupt-*`/`replaced-*` copy not listed in its `meta` `salvagedFrom`, and stale `rebuild-*` builds;
+     - tables are read by rowid ranges, skipping past bad pages, so one bad page loses only its rows. Anything unread is reported (`salvageComplete: false`, warning **`SALVAGE_INCOMPLETE`** naming the kept copy, persisted in `meta`).
+  5. A **manual** rebuild that would drop exported records the folder no longer holds is refused: **`REBUILD_WOULD_LOSE`** `{missing, exportedThrough, rebuiltThrough}` (exit 3), nothing swapped. An automatic (corrupt) rebuild proceeds and warns `MISSING_FROM_FOLDER`.
+  6. Verify the new DB with the checks that need no replay.
+  7. **Swap.** The old DB is renamed with its `-wal`/`-shm`, so SQLite never replays that WAL onto the new file and the kept copy still opens:
+     - a damaged DB → `project.fdb.corrupt-<UTC ts>`;
+     - a healthy DB replaced by a manual rebuild → `project.fdb.replaced-<UTC ts>`;
+     - with no old DB, an orphan `-wal` → `project.fdb.orphan-<ts>-wal`.
 
-**Verify.** `fin project verify` reports, without changing anything:
-- `integrity_check`;
-- every segment's CRC and hash;
-- chain continuity per branch;
-- epoch order;
-- replaying from scratch versus the live state (§4.6 property 5);
-- stored diffs versus recomputed ones.
+     The new file is linked in without replacing anything; if that fails, the old one is moved back. The newest 3 of each kept kind are kept. A copy with incomplete salvage is never pruned until `fin project acknowledge --salvage <copy>`.
+- **Results:** status warns `DB_REBUILT`, and `StoreEvent::Rebuilt {incarnation}` is emitted. A crash at any step leaves the old DB, the new one, or neither with the old one kept as `corrupt-*`; the next open rebuilds again and salvages that copy. Other stores on the same DB keep the old file (documented; `db.lock` prevents this for stores of one server data).
 
-**Backups**
-- `VACUUM INTO <project-data>/backups/daily-<date>.fdb` once a day while the project is open; the last 7 are kept.
-- Pre-migration backups: the last 3 are kept.
+**Verify** (`fin project verify`, `fin-store::verify`). It changes nothing, and runs inside one read transaction. The report is `{ok, checks[{name, ok, details}]}`; a failed report is `VERIFY_FAILED {report, failed}` (exit 3), and a check whose own reads fail reports `ok: false` with `details.error`. The checks, in order:
+1. `integrity_check`: `PRAGMA integrity_check` is `ok`.
+2. `segment_checksums`: a fresh scan decodes every segment and snapshot (CRC, BLAKE3, name and header agreeing).
+   - A damaged canonical file is `SEGMENT_CORRUPT` (`details.corrupt`). Off sync folders this is immediate (writes are atomic). On sync folders it needs the same length and mtime for 60 s of this store's monotonic clock (every import and verify observes), or the mtime already ≥ 60 s old at first sighting; until then the file is `unsettled`.
+   - Placeholders are not hydrated (`unchecked`, not a failure).
+   - A `segments` row whose file isn't listed and that no present pack replaces is `missing`.
+3. `chain_continuity`: the DB rows are dense from seq 1, each `parent_hash` and `tx_hash` checks out, each record reads as its row, and exported rows are a prefix. A fresh resolution of the folder must hold every exported row at its seq with the same hash, with no fork and nothing waiting. A folder ahead of the DB is reported, not a failure; rows beyond the chain while files are arriving are `unchecked`.
+4. `epoch_order`: along the fresh chain, each record's epoch (the lowest of the present segments holding it, so originals beat packs) never decreases. A pack's label must equal the highest epoch of the present segments it replaces. Unexported commit epochs are non-decreasing and at least the highest exported epoch.
+5. `replay_matches_live`: replaying each branch from its first snapshot gives every stored snapshot and the live head.
+6. `diffs_match`: stored diffs equal recomputed ones; diffs not yet filled are counted (`notStored`).
+7. `genesis`: `new_project(file genesis)` equals the DB's rev 0, and every segment's `genesisHash` matches (`segmentsDisagree`).
+8. `record_size`: no stored record exceeds the segment record limit (a migrated record can; §3.4).
+
+`SEGMENT_CORRUPT` is a verify finding, not an error code. Import treats a damaged file as not usable (and keeps observing it); it never fails on one.
+
+**Backups** (`fin-store::backup`; `VACUUM INTO` a temp file in `<project-data>/backups/`, fsync, rename without replacing; never a raw copy, which would miss the WAL)
+- **Pre-migration:** `pre-migrate-<from>-<to>-<UTC ts>Z.fdb`, one per migration run (covering the whole range), the last 3 kept.
+- **Daily:** `daily-YYYY-MM-DD.fdb`, by the **local** calendar date (`localtime_r` after one `tzset` on unix, `FileTimeToLocalFileTime` on Windows; UTC fallback), at most one per day while open, the last 7 kept.
+  - Taken by **every** server, holder or follower: it is a copy of local state, and no folder I/O is involved.
+  - Checked once per poll; a failure is retried after 10 min.
+  - Names dated after tomorrow sort oldest when pruning.
+- Both kinds: only strictly named files are pruned, the new backup is never pruned, and prune errors are ignored. A backup copy gets a fresh incarnation, so a restored backup is a new incarnation. Stale `.~fin-*.tmp` files older than 10 min are removed.
 - The folder export is itself the off-machine backup when the project lives on a NAS or sync folder.
 
 ### 3.9 Compaction (history is kept)
 
-- **Runs only on the lease holder.**
-- **Trigger:** more than 200 **non-pack** segment files on a branch, or on demand (`fin project compact`).
-  - With 2 s export debouncing, an active editing session reaches that in a few hours, not minutes.
-  - The export debounce grows with the session: 2 s at first, then up to 30 s while edits keep coming, plus a final flush on idle or close.
-- **Phase 1:**
-  - write a new snapshot at the branch head;
-  - write **pack segments** (each within the normal 1,000-record / 4 MiB cap) containing every record of the replaced segments, byte-for-byte as they were written, so all `txHash`/`parentHash` values still verify;
-  - each pack's header lists the hashes it replaces. A pack's `prevSegmentHash` is the predecessor of the first segment it replaces. The segment after the last replaced one keeps its original `prevSegmentHash`, which resolves through the pack's replaced list (§3.6 step 5);
-  - packs are never re-packed in sub-project 4;
-  - write a manifest `compaction/<id>.json` listing the replaced files.
-- **Phase 2:**
-  - after the pack and snapshot are read back and verified, and a grace period has passed, delete the replaced files and then the manifest;
-  - grace period: 10 min local/NAS, 24 h on sync folders.
-- **Readers:** they treat a pack and the segments it replaces as equivalent; duplicates are skipped by `txHash`.
+`fin-store::compact` is the only code that deletes from the project folder, and what it deletes may be another machine's only copy of history, so every step re-checks from a fresh read.
+
+- **Who and when:** only the lease holder; only while `read_only()` is `None` (so not while `CATCHING_UP`, forked, conflicted, newer or failing to import); a full lease check before every write and every delete. Followers never compact. Losing the lease forgets every grace period observed. `tick` checks on every poll (cheap when idle); `fin project compact` forces a run.
+- **Trigger:** more than **200** non-pack segments on a branch that no present pack replaces, or `--force`/`fin project compact`. With the 2 s export debounce, an active session reaches that in hours. Export's 30 s churn delay (§3.4) keeps it there.
+- **Phase 1** (per branch; one pending manifest per branch at a time):
+  1. **Fresh view:** an uncached scan; a fresh resolution (`Known::empty`) with no fork, nothing waiting or pending, and every file under `segments/<b>` settled; the DB's exported rows exactly the chain's prefix. Otherwise wait 60 s.
+  2. **Eligible segments:** non-pack segments wholly on the resolved chain, exported in the DB, not set aside, not held by an abandoned manifest, not named as predecessor by a malformed file (once gone, that file could link through the pack), and linked to a present predecessor. **Never a segment off the resolved chain:** losing segments are what let a late follower reach the same verdict, and 4B's `recovered-*` branches need them.
+  3. **Packs:** runs of consecutive eligible segments with **non-decreasing epochs**, cut at 1,000 records / 4 MiB with whole segments, at least 2 segments each. A pack holds the records byte for byte and carries:
+     - `"pack": true` and `"replaces": [{"hash", "lastTxHash"}]`;
+     - `prevSegmentHash` = its first segment's;
+     - **epoch label = the highest epoch it replaces** (its last segment's). Duplicates inside its range at a higher epoch are left alone, so no verdict of the epoch rule can change;
+     - `createdAt` = the latest it replaces, so a re-planned pack is the same file and is adopted;
+     - our `writerId` and `genesisHash`.
+
+     Packs are never re-packed in sub-project 4.
+  4. **Write**, each fenced, write-once and read back:
+     - the snapshot at the branch's exported head (or a verified one already there);
+     - each pack, then its `segments` row (state `imported`);
+     - the manifest `compaction/<ulid>.json`: `{"magic":"finisher-compaction","formatVersion":1,"minReaderVersion":1,"projectId","writerId","epoch","branch","replaced":[names],"packs":[names],"snapshot":name|null,"createdMs","kind"}`. `kind` is the writer's storage kind; `createdMs` is informational.
+
+     Interrupted before the manifest, the packs are duplicates that readers skip by `txHash`.
+- **Phase 2** (per manifest, ours or another server's):
+  1. **Grace:** 10 min (local/network) or 24 h (sync), the longer of this server's kind and the manifest's (an unparsable kind counts as sync). It is measured on this server's suspend-aware monotonic lease clock from the first poll that, holding the lease, found **all the manifest's packs and its snapshot present** (status `arriving` until then). Never from `createdMs` or a file time.
+  2. After the grace: fence at the manifest's epoch, re-read the manifest (it must be unchanged), and take a fresh view. Then check:
+     - each pack is present (else wait), not set aside, and all its records are on the chain and exported (ahead of the DB → wait; off the chain → abandon);
+     - the snapshot is present, on the chain, and its body equals the DB state;
+     - each present replaced segment is not a pack, is in some listed pack's `replaces`, is not set aside, has every record byte-equal in the packs, and has an epoch no higher than its packs' label. Absent replaced files are skipped (an interrupted phase 2).
+  3. **Equivalence re-resolve:** resolve the branch again **without** the files to be deleted, both for a fresh reader (`Known::empty`) and for this DB. The verdicts (chain, set-aside records and reasons, fork, waiting, pending, diverged) must equal those with the files; any difference abandons the manifest ("would change what … resolves").
+  4. Delete the replaced files (a full lease check before each), `sync_dir`, fence, then delete the manifest.
+- **Wait vs abandon:** a file or check that isn't settled waits and retries in 60 s. Anything that contradicts the manifest **abandons** it:
+  - nothing more is deleted for it, and it stays in the folder;
+  - status warns `COMPACTION_ABANDONED`;
+  - the DB remembers it (`meta` `compactionAbandoned`, across restarts) until a forced run re-checks it.
+
+  Abandoning is per server: another holder checks the manifest afresh after its own grace. An invalid manifest (other project, newer format, bad names, overlap) is abandoned at first sight. Abandoned manifests are never deleted automatically (a person removes them; status says so).
+- **Readers:** a pack and the segments it replaces are one line (§3.6.2). Every server records a `segments` row for each present pack ending on its DB line, so project-copy checks and export chaining still work after the originals are deleted. Export and import prefer an original over a pack ending at the same seq.
+- **Folder scan:** `compaction/` is listed; a conflict copy of a manifest is `CONFLICT_COPY`. The temp sweep covers `compaction/` and `snapshots/*` too.
+- **Status:** `compaction {pending [{manifest, branch, writerId, state: arriving|grace|waiting|abandoned|unreadable, reason, graceEndsMs}], lastRunMs, lastError}`. An unreadable manifest blocks phase 1 on every branch.
 - **History is never discarded in sub-project 4.** Squashing archived branches is deferred (§4.5).
 
-### 3.10 RPC and `fin`
+### 3.10 Engine, RPC and `fin`
 
-**New RPCs:**
-- `project.status`;
-- `project.takeover {confirm}`;
-- `project.verify`;
-- `project.rebuild`;
-- `project.compact`;
-- `project.recover` (stub in 4A that reports the manual procedure; real in 4B);
-- `tx.get {txId}`, which completes the SP2 idempotency follow-up.
+**`fin-node` threading (Decision 7)**
+- **Short calls** (`head`, `commit`, `snapshot`, `opsSince`, `opsSinceAt`, `status`, `txGet`, `acknowledgeRewind`, `acknowledgeSalvage`) are napi `AsyncTask`s.
+- **Long calls** (`create`/`open`, `takeover`, `verify`, `rebuild`, `compact`, `close`) run one at a time, FIFO, on a **per-engine worker thread** and resolve a napi deferred promise. They never occupy the libuv pool.
+- A long call moves the store out of the engine's mutex (`Busy {operation, sinceMs}`). Short calls wait up to **250 ms** for it (so the daily backup of a small DB doesn't fail commits), then reject with **`ENGINE_BUSY`** `{operation, sinceMs}` (exit 5, transient).
+- `status()` never waits: while busy it returns the cached status plus `busy`.
+- There is no cancellation mid-operation. Long calls after close are `ENGINE_CLOSED`.
+- **Maintenance thread:** a light `tick` every 500 ms under the mutex. Due daily backups and compactions are queued as long calls on the worker (`backup (auto)`, `compaction (auto)`), so they don't hold the mutex. Still under the mutex today: import passes, so a large follower import delays short calls (follow-up in TASKS).
+- A panic in a tick is a fatal `error` event and stops the thread.
+- `close` stops and joins maintenance, then flushes the export (`Store::close`). A dropped engine queues a fire-and-forget close on the worker.
+- **Events** (`engine.onEvent`; the newest 1,024 are buffered until a callback registers): `applied {tx}`, `status {status}`, `rewound {branch, fromRev, quarantined, own, generation, incarnation}`, `rebuilt {incarnation}`, `lagged`, `error {error, fatal}`. Every import pass (open, takeover and rebuild included) queues `rewound` then `applied`, and the tick appends them before `status`. The JSON types are generated from `fin-store::wire` (`EngineEvent`, `TxSetAside`, `Generation`).
 
-**Op stream:** `ops.subscribe` adds `status` events (lease, read-only reason, import progress).
+**`finisherd` routing** (`apps/finisherd/src/hubs.ts`)
+- Each (project, branch) has an op channel, and each project an events channel. A channel is a sliding PubSub (a slow subscriber loses the oldest items and never blocks a commit) plus a log of **endings** (the last 64).
+- **Endings:** a rewind (from its `fromRev`), a rebuild or lag (`fromRev` 1), an eviction (`fromRev` 0). Each bumps the channel's `seq`, and every item carries the `seq` it was published at.
+- A subscriber records the `seq` before subscribing. An item with a higher `seq` replays the endings in between, so a marker lost in an overflow is never missed. If the log has been pruned, the subscriber ends with `HISTORY_REWOUND {rev 0, reason TOO_FAR_BEHIND}`.
+- How subscribers end:
+  - a rewind or rebuild ends a subscriber whose last rev ≥ `fromRev` with `HISTORY_REWOUND`: `{branch, rev: fromRev, generation}` for a rewind; `{rev 0, reason REBUILT, incarnation}` for a rebuild; reason `EVENTS_LAGGED` for lag;
+  - an eviction (fatal engine error) ends every stream with `ENGINE_CLOSED {projectId, reason: evicted}`.
+- Each ending carries the generation it **produces**. A subscriber whose backlog was already read at that generation or later isn't ended (found by the e2e storage scenario: an open that rebuilt the DB queues `rebuilt` for its first tick, after a subscriber could already attach).
+- The hub does not deduplicate. Channels are removed with their last subscriber.
 
-**`fin` commands:** `fin project status|takeover|verify|rebuild|compact`. Output follows the existing one-JSON-document rule and exit codes.
+**RPCs** (`@finisher/contracts`; protocol 1, additive):
 
-**New error codes:**
-- `DB_TOO_NEW`
-- `NOT_A_PROJECT_DB`
-- `PROJECT_READ_ONLY`
-- `UNSUPPORTED_HASH`
-- `SEGMENT_CORRUPT` (verify only; import treats corruption as "not arrived" until the file stops changing for 60 s, then reports it)
-- `LEASE_TAKEOVER_REFUSED`
+| RPC | Payload | Result |
+|---|---|---|
+| `project.create` | `{dir, name, rate, idemKey?}` | `{projectId, rev}` |
+| `project.open` | `{dir, relocate?}` | `{projectId, rev}` |
+| `tx.commit` | `{projectId, tx, generation?}` | `CommittedTx` |
+| `snapshot.get` | `{projectId, branch}` | `{rev, project, generation?}` (read under one lock) |
+| `ops.subscribe` (stream) | `{projectId, branch, fromRev, generation?}` | `CommittedTx` items. `fromRev` beyond the head → `BASE_REV_AHEAD`; a `generation` that no longer matches → `HISTORY_REWOUND {rev 0, reason GENERATION}` at once |
+| `project.status` | `{projectId}` | `ProjectStatus` (+ `busy`) |
+| `project.takeover` | `{projectId, confirm}` | `ProjectStatus` |
+| `project.verify` | `{projectId}` | verify report |
+| `project.rebuild` | `{projectId}` | `RebuildReport` |
+| `project.compact` | `{projectId}` | `CompactReport {skipped, manifests, packsWritten, replaced, finished, deleted, waiting, abandoned}` |
+| `project.recover` | `{projectId}` | `{manual}`: the documented steps (§3.7) |
+| `project.acknowledgeRewind` | `{projectId, branch, generation}` | `{acknowledged}` |
+| `project.acknowledgeSalvage` | `{projectId, copy}` | `{acknowledged}` |
+| `project.events` (stream) | `{projectId}` | first `{type: status}`, then `status`, `rewound`, `rebuilt` and `error` events |
+| `tx.get` | `{projectId, txId}` | `CommittedTx`, `{setAside: {txId, branch, reason, origin}}`, or `null` |
+
+- **Decision 4 (deviation from the earlier text, which put `status` events on `ops.subscribe`):** status and history events go on `project.events`, and `ops.subscribe` keeps its item type. A second item type would break existing clients and the protocol.
+- **Generation in protocol 1:** `tx.commit.generation` and `ops.subscribe.generation` are **optional**, so protocol-1 clients keep working; `fin` always sends the snapshot's generation. A future protocol 2 should make both required.
+- **Still hand-declared:** the verify, rebuild and compact results are `Schema.Unknown`, and so is `ProjectStatus` (generating it is a follow-up).
+
+**`fin` commands** (run in the project folder; one JSON document out):
+- `fin project status` → `{status}`;
+- `fin project takeover [--confirm]` → `{status}`;
+- `fin project verify` → `{report}`; a failed report is `VERIFY_FAILED` (exit 3);
+- `fin project rebuild` → `{report, offline}`. With no server running (`SERVER_UNAVAILABLE` at connect), it rebuilds in process: `Store::open` + `Store::rebuild` (exports first) + close, or `rebuild_project` when the DB can't open (`DB_ERROR`, `DB_CORRUPT`, `REPLAY_FAILED`). `DB_IN_USE` (exit 5) if a server holds the DB anyway;
+- `fin project compact` → `{report}`;
+- `fin project recover` → `{manual}`;
+- `fin project acknowledge --rewind <n> [--branch <b>] | --salvage <copy>` → `{acknowledged}`;
+- `fin project open <dir> [--relocate]`.
+
+**`--idem-key`** asks `tx.get` before sending:
+- committed → that commit (with the `argsHash` check, §3.11);
+- set aside → **`TX_SET_ASIDE`** (exit 4), never resent;
+- unknown → commit.
+
+A commit whose answer was lost in flight is looked up once with `tx.get` on a fresh connection.
+
+**Error codes added in 4A, and their exit codes** (`crates/fin/src/output.rs` is authoritative):
+
+| Exit | Codes |
+|---|---|
+| 2 (usage: can never succeed as sent) | `TX_TOO_LARGE` |
+| 3 (validation, refused data) | `DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `UNSUPPORTED_HASH`, `NEWER_FORMAT`, `INVALID_FORMAT`, `REPLAY_FAILED`, `BINDINGS_MISMATCH`, `CLIP_OVERLAP`, `CLIP_EMPTY`, `CLIP_NEGATIVE`, `INVALID_ID`, `RECORD_TOO_LARGE`, `DB_CORRUPT`, `REBUILD_WOULD_LOSE`, `GENESIS_MISMATCH`, `VERIFY_FAILED`, `PROJECT_COPY`, `PROJECT_ORIGINAL_UNREACHABLE`, `INVALID_NAME` |
+| 4 (the project moved under you) | `PROJECT_READ_ONLY` (`details.reason` per §3.7), `LEASE_LOST`, `LEASE_TAKEOVER_REFUSED`, `SEGMENT_COLLISION`, `HISTORY_REWOUND`, `TX_SET_ASIDE` |
+| 5 (unavailable, transient) | `ENGINE_BUSY`, `DB_IN_USE` |
+
+`SEGMENT_CORRUPT` is a verify finding (§3.8), not an error code.
 
 ### 3.11 SP2 follow-ups that land in 4A
 
-- `project create`: idempotent retry, reject empty `--name`, atomic create (write the DB and JSON under temp names, then rename; no orphans).
-- `ops.subscribe` with `fromRev` above head → `BASE_REV_AHEAD`.
-- Typecheck gate (`tsc --noEmit`) for all TS packages, tests included.
-- Idempotency:
-  - `tx.get`;
-  - a stored hash of the arguments, so the same key with a different op or arguments → `IDEM_KEY_REUSED`.
-- Rational parsing: reject non-canonical input (`2/4`, `-0`); `details.rev` stays numeric.
-- `fin-node`:
-  - Linux loader libc detection;
-  - libuv pool use under many projects;
-  - finisherd hubs removed when their last subscriber and handle close.
-- Generate the `Probe` TS type from `fin-probe`; add a MOV fixture test.
+All landed (plan Tasks 16–17):
+- **`project create`** (`fin-store::create`): atomic and idempotent.
+  - An empty or whitespace name → `INVALID_NAME` (exit 3; `fin` checks on `--dry-run` too).
+  - The DB is built as `project.fdb.creating-<ulid>`, closed and renamed into place. The project file is then written **write-once**; that rename is the commit point, and `.finisher/` is made only after it.
+  - Any failure removes the DB, and the folder if create made it. A crash between the DB rename and the file write leaves an unreferenced DB in server data (a sweep is a follow-up).
+  - A retry with the same `idemKey` (`meta.createKey`) and the same name and rate opens the project; the same key with another name or rate → `IDEM_KEY_REUSED`; anything else → `PROJECT_EXISTS`.
+  - A retry waits ≤ 10 s for the creator's `lease.json`, so it follows rather than taking the lease. `finisherd` serialises creates per folder.
+  - `createKey` survives a rebuild that can read the old DB, and is lost when the DB is missing (it isn't in the folder).
+- **`ops.subscribe`** with `fromRev` above the head → `BASE_REV_AHEAD`, before streaming.
+- **Typecheck gate:** `tsc --noEmit` for finisherd, contracts, core-types and fin-node (`scripts/check-typecheck.mjs`, part of `pnpm gates`).
+- **Idempotency:** `tx.get`, and **`Tx.argsHash`**: `fin` hashes the command input (BLAKE3 of `[{cmd, args}]`, with `asset.add` paths canonicalised), only with `--idem-key`.
+  - The store refuses a stored `txId` whose `argsHash` differs → `IDEM_KEY_REUSED {txId, rev, committedOps}`; a malformed hash → `INVALID_OP`.
+  - The hash is not derivable from the stored intent, because a retry plans ops against a newer snapshot and the stored tx is rebased.
+  - It survives export, import and rebuild.
+- **Rationals:**
+  - `FromStr` accepts only the canonical form (`2/4`, `-0`, `+1`, `01` → `INVALID_TIME` with `details.canonical`);
+  - stored data deserialises leniently (normalising), and `check_canonical_times` reports `INVALID_TIME {input, canonical, path}` over RPC;
+  - `details.rev` is always numeric.
+- **`fin-node`:**
+  - the Linux loader picks `-gnu` or `-musl` from the diagnostic report, falling back to the other;
+  - long calls are off the libuv pool (Decision 7);
+  - finisherd hubs are removed with their last subscriber.
+- **`Probe`** has a JSON Schema and a generated TS type. There is a MOV fixture test (`qt` brand).
+- **Schema export** moved to `crates/fin-store/examples/export_schema.rs`, so it can include `fin-store`'s wire types and `Probe`. The contracts' Effect envelope schemas are compared with the generated `$defs` by a vitest test (`packages/contracts/src/envelopes.test.ts`).
 
 ### 3.12 Tests and acceptance (4A)
 
-**Unit and property tests**
-- **Classification:** valid, not-arrived, foreign and conflict-copy, for every pattern in §3.7.
-- **Chain building and the epoch rule:** randomised sets of segments, including duplicates, gaps, forks, stale epochs, packs during their grace window, and a stale segment landing after a takeover but before the new holder's first export.
+**Unit and property tests** (all in `cargo test --workspace`; 550+ Rust tests at Task 16):
+- **Classification:** valid, not-arrived, foreign and conflict-copy, for every pattern in §3.6.1.
+- **Chain building and the epoch rule:**
+  - reference-model property tests over random segment sets (duplicates, gaps, forks, stale epochs, packs in grace, a stale segment landing after a takeover but before the new holder's first export);
+  - scenario tests for malformed files, `txId` reuse, partial-overlap re-exports and lying packs;
+  - an exhaustive arrival-order test (every order of three segments, one poll per arrival) for rewind convergence.
+
+  The reference models restate the decision procedure, so they can't catch a rule that both share wrongly; the scenario tests cover that.
 - **Export crash** between rename and marking: no fork, no double apply.
-- **Id counters** after import: no reuse after a takeover (also in the cross-host run).
-- **Migrations:**
-  - SP2 database fixture → current;
-  - newer-DB refusal;
-  - the backup is created before migrating.
-- **Upcaster golden tests.**
+- **Id counters** after import: no reuse after a takeover.
+- **Migrations:** the SP2 fixture → current with identical state; newer-DB refusal; the backup is taken before migrating; m0001's output is pinned.
+- **Upcaster golden tests** (none yet: there is no step).
+- **Rewind:**
+  - followers F and G converge (same state and quarantine);
+  - own records are rewound too;
+  - an unbacked winner stays read-only, and sync never rewinds;
+  - rewinds across a snapshot boundary, and inside and right after a pack;
+  - a subscriber gets `HISTORY_REWOUND`, and a stale-generation commit is refused;
+  - compaction keeps the losing segment.
 
-**Fault injection** (in-process, every OS):
-- kill during export at each step (temp written, renamed, DB not yet marked);
-- truncated files, bad CRC, placeholders (simulated attributes on Windows, `SF_DATALESS` via `chflags` on macOS where permitted, otherwise mocked);
-- DB deleted or corrupted, then rebuilt.
+**Fault injection** (in process, every OS):
+- kill during export at each step;
+- truncated files, bad CRC, simulated placeholders;
+- the DB deleted, corrupted (header, pages) or replaced, then rebuilt with salvage;
+- crashes between the rebuild swap's renames;
+- compaction interrupted after the snapshot, pack, manifest and deletes (`CompactFail` hooks);
+- the folder vanishing and returning, unwritable folders, Unicode and space paths.
 
-**Cross-host on the NAS** (macOS + Windows + Linux VM; harness from the S10 spike, ported into `tests/storage-xhost/`, not shipped):
-1. Lease races: 100 per host pair. Required: 0 double holders, 0 early takeovers, 0 applied stale writes.
-2. Network loss (firewall block on the Linux VM; Wi-Fi off on the Mac) with writes in flight. Required: the stale writer's segments are quarantined, never applied.
-3. Real clock skew, if any host is naturally off by ≥ 5 s at run time. Otherwise emulated, with the run noted as such.
-4. Follow mode: edits from host A appear on read-only host B within 3 s plus the cache window.
+**Integration** (`finisherd` + `fin`):
+- a follower is a second `finisherd` with its own server data on one folder;
+- lease changes, stale generations, set-aside records, and offline rebuild;
+- the RPC fixtures cover every new scenario.
 
-**Sync folders (macOS, owner's accounts; blocked on the owner if not installed):**
-- temp-then-rename upload on iCloud Drive and OneDrive/Dropbox;
-- conflict-copy naming per provider;
-- placeholder hydration.
+`pnpm e2e` has a storage scenario: edit, export, delete the DB, rebuild from the folder with an identical snapshot, and a follower.
 
-**Acceptance:**
-- all of the above pass, or are recorded as blocked with a reason;
-- an SP2-era project opens after migration with identical state;
-- `pnpm e2e` gains a scenario: edit, export, delete the DB, rebuild, identical snapshot.
+**Cross-host on the NAS and sync folders:** plan Task 19 (§3.13), harness `tests/storage-xhost/` (not shipped):
+1. lease races, 100 per host pair: 0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse;
+2. network loss with writes in flight: the stale writer's segments are quarantined or superseded, never left applied;
+3. real clock skew if any host is naturally off by ≥ 5 s, else emulated and noted;
+4. follow latency: edits from host A appear on read-only host B within 3 s plus the cache window;
+5. sync folders (macOS, owner's accounts; blocked on the owner if not installed): temp-then-rename upload, conflict-copy naming per provider, placeholder hydration.
+
+**Acceptance:** all of the above pass, or are recorded as blocked with a reason; an SP2-era project opens after migration with identical state (done); the e2e storage scenario passes (done).
+
+### 3.13 Validation results (Task 19) — pending
+
+Task 19 has not run. 4A is not mergeable until it has. Each item below was written from the spec and §27.9 without being exercised on the real systems, and Task 19 must measure or confirm it. Results go here as durable conclusions; raw runs stay in `archive/`.
+
+1. **Full suites** on Windows 11 and the Linux VM: `cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e`. The Windows and macOS code paths have so far only been type-checked from Linux.
+2. **NAS matrix** (§3.12 rows 1–4) for Mac↔Windows, Mac↔Linux and Windows↔Linux.
+3. **Lease against the spike:** diff the lease's behaviour against the S10 spike's v3 when its code is available.
+4. **mtime source on SMB:** whether the probe file's mtime is set by the server or by the client. Covers Samba's 2 s write-time delay and the Linux cifs deferred close. Claims are judged old by server time. Under a client-set mtime with skew above 45 s, two racers should both lose (no double write); confirm this.
+5. **Clock skew:** real skew if available, else emulated, under the takeover rules (25 s unchanged-record rule, probe rejection > 1 s below extrapolation).
+6. **Suspend/resume of a holder:** a sleeping Mac or Windows holder wakes fenced (suspend-aware clocks: `CLOCK_MONOTONIC` on macOS, `QueryInterruptTimePrecise` on Windows), and a takeover it slept through is not overwritten.
+7. **Windows claim invisibility:** a fresh `lease.claim-*` can stay invisible to Windows for up to 9.9 s. Check the race with the single `base + 1` claim and the 45 s claim authority.
+8. **OS lock behaviour** of `File::try_lock` / `lock_shared` (`lease.lock`, `db.lock`, `server-id.lock`) on Linux, Windows and macOS, including the restart shortcut. The shortcut compares the holder host by `describe_holder`'s `"<host> (finisher …)"` prefix.
+9. **Machine-id sources:** `/etc/machine-id`, `gethostuuid`, `MachineGuid`. Also directory identity: `FileIdInfo` on ReFS, the file index on NTFS, and a zero serial on FAT/exFAT.
+10. **Mount-root rules for copies:** macOS `/Volumes`, Linux `/mnt`/`/media`, Windows mapped drives and UNC paths, and unmounted shares.
+11. **Storage-kind detection on real installs:**
+    - macOS: iCloud Drive including Desktop & Documents, Dropbox File Provider, Google Drive, OneDrive;
+    - Windows: OneDrive Known Folder Move and SharePoint libraries, Google Drive `G:`;
+    - Linux: rclone/FUSE mounts, WSL2 `/mnt/c`.
+
+    Also check the Linux `fuseblk` = local rule and the `~/.dropbox` false positive.
+12. **Conflict-copy names:** Dropbox `(… conflicted copy …)`, `(Case Conflict)` and `(Selective Sync Conflict)` (from memory), Google Drive `(<n>)` / `[Conflict]` (unverified), iCloud and OneDrive.
+13. **Transient error lists** (`fsio::is_transient`): unix `EINTR`/`EAGAIN`/`EBUSY`/`ESTALE`, Windows 5/32/33/64. Also SQLite `immutable=1` URI forms (drive, UNC, `\\?\`) and the backup fsync through a write handle on Windows.
+14. **Export on SMB/NFS:** read-back after `AlreadyExists`/`NotFound`; the 15 s project-file retry on Windows.
+15. **Compaction on SMB:** deleting a file another client has open (`ACCESS_DENIED` or a pending delete on Windows should be reported as wait and retried); sync folders delivering deletions before the pack (readers wait; 24 h grace).
+16. **Sync folders:** temp-then-rename upload, placeholder hydration (Windows attributes, `SF_DATALESS`, `.icloud` stubs), and the sync gate after a confirmed takeover.
+17. **Daily backups:** the macOS local date (`localtime_r` after `tzset`), and Windows `FileTimeToLocalFileTime` around DST changes.
+18. **Lease after `lease.json` is deleted under a holder:** status reported the lease as held elsewhere and `LEASE_HELD` rather than `LEASE_LOST` (seen in Task 15 tests). Confirm the intended reading.
 
 ---
 
@@ -627,12 +1052,12 @@ Added to the segment format; the format version is bumped via the 4A migration p
 
 | Crate / package | 4A | 4B | 4C |
 |---|---|---|---|
-| `fin-core` | `upgrade/`, `apply_committed` | `branch/`, rebase rewrite, undo derivation | `model` growth, `ops/*`, `params/`, `eval/`, `layout/` (via `TextMeasurer`), `captions/` |
-| `fin-store` | `migrations/`, `segment/`, `snapshot_file/`, `lease/`, `storage_kind/`, `import/`, `compact/`, `backup/` | branch table, record kinds, quarantine → recovered | — |
+| `fin-core` | `record`, `upgrade`, `replay` (`apply_committed`) | `branch/`, rebase rewrite, undo derivation | `model` growth, `ops/*`, `params/`, `eval/`, `layout/` (via `TextMeasurer`), `captions/` |
+| `fin-store` | as built: `migrations/`, `segment`, `snapfile`, `names`, `fsio`, `scan/`, `chain/`, `import/`, `export/`, `lease/`, `storage_kind/`, `open`, `tick`, `status`, `copies`, `history`, `rebuild/`, `verify/`, `compact/`, `backup`, `create`, `wire` | branch table, record kinds, quarantine → recovered | — |
 | `fin-text` (new) | — | — | shaping and measurement |
 | `fin-probe` | `Probe` TS type, MOV fixture | — | image/SVG/Lottie/font/LUT/audio probes |
-| `fin-node` | lease/status/verify/rebuild bindings | branch/merge/undo bindings | eval bindings |
-| `@finisher/contracts`, `finisherd` | new RPCs, status events | branch RPCs | edit RPCs (generated from the registry where possible) |
+| `fin-node` | worker thread, maintenance tick, events; status/takeover/verify/rebuild/compact/txGet bindings | branch/merge/undo bindings | eval bindings |
+| `@finisher/contracts`, `finisherd` | new RPCs, `project.events`, hub endings | branch RPCs | edit RPCs (generated from the registry where possible) |
 | `fin` | `project *` commands | `branch`, `merge`, `cherry-pick`, `revert`, `undo`, `redo`, `checkpoint`, `try` | edit commands, `view`, `status`, `schema param` |
 
 ## 7. Research basis (summary)
@@ -650,6 +1075,9 @@ Added to the segment format; the format version is bumped via the 4A migration p
 | Risk | Mitigation |
 |---|---|
 | Lease v3 still split-brains on a host pair not yet tested (Linux SMB client, real skew) | 4A cross-host matrix gates the merge; reader-side epoch fencing caps the damage to quarantine |
+| The lease was written from the spec, not the spike code, and its Windows/macOS paths are only type-checked from Linux | Task 19 (§3.13) runs every OS and host pair before merge; a late write that slips past fencing is rewound by followers (§3.6.2 step 6a) |
+| Storage-kind detection misses a sync setup, enabling automatic takeover on an advisory lease | Detection leans to sync on ambiguous evidence; real installs checked in Task 19; `storageOverride` for the rest |
+| Compaction deletes another machine's only copy of a record | Holder-only, fenced deletes; grace from the packs' arrival; equivalence re-resolve before deleting; never deletes off-chain segments; abandons on any contradiction |
 | Sync providers break temp-then-rename | Sync-folder test rows; fall back to unique final names written directly (always valid names, verified by trailer) |
 | The rebase rewrite introduces subtle position bugs | Property 3 with a multi-track reference model; keep SP2 rebase tests as regression |
 | The settings registry is too generic for good errors | Every `ParamSpec` carries unit, range and a `fix` template; contract tests on error text |

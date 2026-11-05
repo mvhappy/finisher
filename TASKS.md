@@ -64,17 +64,17 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
 - [x] Final whole-branch review; fix wave (idem-key reuse → `IDEM_KEY_REUSED`, `PROJECT_DIR_UNWRITABLE`, `CANCELLED` exit 5, empty tx rejected, clock field ranges, rustfmt gate); merged to `main`
 
 ### Follow-ups for sub-project 4 (core breadth)
-- Lease: implement spec §27.9 "v3" (in-place checksummed record, missing+claims = held, server-time staleness with periodic re-probe); validate with Linux clients, network loss and real skew
-- Store open replays the tail through the current `fin-core` and fails `DB_ERROR` on any diff/schema change: add migrations and rebuild-from-segments **before any op or model change**
-- `project create`: idempotent retry, reject empty `--name`, atomic create (orphan db when the JSON write fails, check-then-rename race)
-- `ops.subscribe` with `fromRev` > head should return `BASE_REV_AHEAD`
-- Typecheck gate (`tsc`) for all TS packages, tests included (`@types/node`)
-- Idempotency: `tx.get` RPC (asset add retry after the file moved) and a stored-args hash (same key, same op kind, different args)
-- Rebase: per-track (not per-tx) conservatism; stale insert vs committed `asset.remove` → `CONFLICT`; stronger proptest oracle (positions, multi-track); `clip.restore` placeholders
-- fin output: trim echoes the resulting edge; `project open` ignores `--dry-run`; `--out < --in` fix wording; negative `details.max` text when `sourceIn` ≥ asset duration
-- Rational parsing: reject non-canonical input ("2/4", "-0"); `details.rev` should stay numeric
-- `fin-node`: Linux loader libc detection; libuv pool use under many projects; hubs never removed in finisherd
-- Generate `Probe` TS type from `fin-probe`; MOV fixture test
+- [x] Lease: implement spec §27.9 "v3" (in-place checksummed record, missing+claims = held, server-time staleness with periodic re-probe) — 4A Tasks 9–11; validation with Linux clients, network loss and real skew is 4A Task 19 (pending)
+- [x] Store open replays the tail through the current `fin-core` and fails `DB_ERROR` on any diff/schema change: add migrations and rebuild-from-segments **before any op or model change** — 4A Tasks 1–3, 12
+- [x] `project create`: idempotent retry, reject empty `--name`, atomic create (orphan db when the JSON write fails, check-then-rename race) — 4A Task 16 (an orphan DB after a crash mid-create remains: see 4A follow-ups)
+- [x] `ops.subscribe` with `fromRev` > head should return `BASE_REV_AHEAD` — 4A Task 17
+- [x] Typecheck gate (`tsc`) for all TS packages, tests included (`@types/node`) — 4A Task 17 (core-types tests not yet included: see 4A follow-ups)
+- [x] Idempotency: `tx.get` RPC (asset add retry after the file moved) and a stored-args hash (same key, same op kind, different args) — 4A Tasks 15–16
+- [ ] Rebase: per-track (not per-tx) conservatism; stale insert vs committed `asset.remove` → `CONFLICT`; stronger proptest oracle (positions, multi-track); `clip.restore` placeholders (4B)
+- [ ] fin output: trim echoes the resulting edge; `project open` ignores `--dry-run`; `--out < --in` fix wording; negative `details.max` text when `sourceIn` ≥ asset duration (4C)
+- [x] Rational parsing: reject non-canonical input ("2/4", "-0"); `details.rev` should stay numeric — 4A Task 16
+- [x] `fin-node`: Linux loader libc detection; libuv pool use under many projects (long calls on a per-engine worker thread); hubs never removed in finisherd (removed with their last subscriber) — 4A Tasks 14, 17
+- [x] Generate `Probe` TS type from `fin-probe`; MOV fixture test — 4A Task 16
 
 ### Follow-ups for sub-project 5 (control plane, auth)
 - Windows: named-pipe DACL and pipe-squatting protection; server-data ACL check; graceful stop (no SIGTERM)
@@ -82,10 +82,73 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
 - Client hardening: overall deadline and frame-size cap; test hooks (`FIN_TEST_COMMIT_GATE`, `FIN_OFFLINE_SNAPSHOT`, `FIN_NODE_BINARY_DIR`) out of release builds
 - `childEnv`: pass provider auth/config dir variables when providers arrive
 
+## Sub-project 4A: durable storage (implemented; cross-host validation pending)
+
+Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spec: `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §3 (as built). Branch `sp4a-durable-storage`, not merged: merging waits for Task 19.
+
+- [x] Task 1: versioned commit records, upcasters, policy-free replay (`apply_committed`); SP2 fixture
+- [x] Task 2: DB schema v1, migrations (frozen m0001), pre-migration backups
+- [x] Task 3: commit stores exact record bytes; open no longer re-checks diffs
+- [x] Task 4: write-once file primitives, segment and snapshot codecs
+- [x] Task 5: folder scan and classification (not arrived, foreign, conflict copies, caps, cache)
+- [x] Task 6: pure chain resolution (record tree, line-max epoch rule, packs, fork kinds)
+- [x] Task 7: export (commit-epoch labels, read-back, `TX_TOO_LARGE`, `SEGMENT_COLLISION`, `RECORD_TOO_LARGE`)
+- [x] Task 8: import with quarantine, diverged tail, id-counter repair
+- [x] Task 9: lease v3 (in-place record, single claim, server-clock probe, suspend-aware fencing)
+- [x] Task 10: storage-kind detection (leans to sync), override warnings
+- [x] Task 11: open/tick integration, ordering rule (`CATCHING_UP`), read-only precedence, project copies, restart shortcut, server-id clones, auto-rewind with generations and `HISTORY_REWOUND`
+- [x] Task 12: rebuild from folder with salvage, verify report, daily backups, incarnation, `db.lock`, genesis hash
+- [x] Task 13: two-phase compaction into packs (exact stand-in rule, equivalence re-resolve before deleting)
+- [x] Task 14: fin-node worker thread, maintenance tick, events, `ENGINE_BUSY`
+- [x] Task 15: storage RPCs, `project.events`, `fin project status|takeover|verify|rebuild|compact|recover|acknowledge`, `tx.get` set-aside, `--idem-key` via `tx.get`
+- [x] Tasks 16–17: SP2 follow-ups (atomic idempotent create, canonical rationals, `Tx.argsHash`, `Probe` type, generated envelope types, `BASE_REV_AHEAD`, hub cleanup, loader libc detection, typecheck gate)
+- [x] Task 18: `pnpm e2e` storage scenario (rebuild from folder, follower)
+- [x] Task 20: spec, tracker and README record the decisions (spec §3.13 holds the Task 19 checklist)
+- [ ] **Task 19: cross-host and sync-folder validation** (spec §3.13). Must measure or confirm:
+  - full suites on Windows 11 and the Linux VM (`cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e`); Windows/macOS code so far only type-checked from Linux
+  - NAS matrix per host pair: lease races (0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse), network loss with writes in flight, real or emulated skew, follow latency ≤ 3 s + cache window
+  - mtime source on SMB (server- vs client-set; Samba 2 s write-time delay; cifs deferred close); claims judged by client-set mtime under skew > 45 s
+  - clock skew; suspend/resume of a holder (wakes fenced); Windows claim invisibility race (up to 9.9 s)
+  - `File::try_lock`/`lock_shared` behaviour on Linux, Windows, macOS (`lease.lock`, `db.lock`, `server-id.lock`, restart shortcut)
+  - machine-id sources (`/etc/machine-id`, `gethostuuid`, `MachineGuid`); `FileIdInfo` on ReFS; mount-root rules (macOS `/Volumes`, Windows mapped drives)
+  - storage-kind detection on real iCloud (incl. Desktop & Documents), OneDrive (KFM, SharePoint), Google Drive (`G:`), Dropbox (File Provider), rclone/FUSE, WSL2
+  - Dropbox conflict names (`conflicted copy`, `Case Conflict`, `Selective Sync Conflict`), Google Drive patterns
+  - transient error lists (`fsio::is_transient`); SQLite `immutable=1` URI forms and backup fsync on Windows
+  - compaction deletes on SMB (open handles), sync folders delivering deletions before packs
+  - sync rows: temp-then-rename upload, placeholder hydration, sync gate after a confirmed takeover
+  - daily backups: macOS local date (`localtime_r`/`tzset`), Windows `FileTimeToLocalFileTime` around DST
+  - status after `lease.json` is deleted under a holder (`LEASE_HELD` vs `LEASE_LOST`)
+
+### Follow-ups from 4A
+- [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside; `VACUUM INTO` on a second connection). A big follower import delays short calls today
+- [ ] `ProjectStatus` (and the verify, rebuild and compact reports) still `Schema.Unknown` in contracts: generate them
+- [ ] Sweep orphan databases left in server data by a crash between create's DB rename and its project-file write
+- [ ] `meta.createKey` is lost when a rebuild has no old DB (the key is not in the folder)
+- [ ] Rational schema pattern `^(0|-?[1-9]\d*)(/[1-9]\d*)?$` accepts non-canonical `0/5` and `3/1` (the parser rejects them)
+- [ ] `Probe` TS type: optional fields vs `null` mismatch
+- [ ] RPC envelope check vs generated schema is a vitest test (`envelopes.test.ts`), not a `pnpm gates` gate
+- [ ] Typecheck gate: project list hardcoded in `scripts/check-typecheck.mjs`; core-types tests not typechecked
+- [ ] fin-node `loadNative` untested
+- [ ] No e2e or RPC fixture for `tx.get` set-aside / `TX_SET_ASIDE` (unit tests only; a live server cannot produce `SALVAGED`/`SUPERSEDED` without fake clocks)
+- [ ] `BASE_REV_AHEAD` vs `HISTORY_REWOUND` precision for a subscriber whose `fromRev` is beyond a rewound head
+- [ ] `tx.commit.generation` and `ops.subscribe.generation` optional in protocol 1 → required in protocol 2
+- [ ] Clean close could write a "released" lease record so other servers need not wait out 45 s of staleness
+- [ ] `fin project verify` / `rebuild` / `compact` have no progress or cancellation (only `ENGINE_BUSY {operation, sinceMs}`)
+- [ ] `diffs::fill` loads a whole branch's rows; restore tooling for daily backups should mint a new incarnation (backups already do; a hand-copied DB does not)
+- [ ] Abandoned compaction manifests are never deleted automatically; orphan packs from a crash before the manifest stay as harmless duplicates; one manifest per branch at a time
+- [ ] Conflict copies are re-read on every pass (scanner never caches foreign files); a conflicted branch directory is listed, not entered (its segments are not quarantined)
+- [ ] A sync folder with losing segments re-reports the fork on every poll until 4B `recover`
+- [ ] A copy opened while the original's share is unmounted counts as a move; the original is then refused as the copy
+- [ ] Rewind rule (d) needs 4B to record branch bases (`meta` `branchBase.<b>`)
+- [x] Pack headers record replaced segments' last records (`replaces: [{hash, lastTxHash}]`, exact stand-in rule) — done in Task 13
+- [x] finisherd hubs removed with their last subscriber — done in Task 17
+- [ ] fin-node untested paths: `lagged` (needs > 1,024 events before registration), close on GC drop
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
-- E2 GitHub repo (CI), E6 sync services, E9 Windows signing cert
+- E6 sync services, E9 Windows signing cert
+- E2 GitHub repo: no longer blocked (the repo exists), but CI has not yet completed a run on GitHub
 
 ## Open
 

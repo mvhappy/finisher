@@ -1019,3 +1019,16 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     4. **Editing semantics (sub-project 2):** all three clip ops are **ripple** edits on one track (later items on the same track shift; other tracks untouched). Inserting strictly inside a clip is rejected (`INSERT_INSIDE_CLIP`, fix: insert at the clip's start or end). Minimum clip duration is one frame at the timeline rate.
     5. **Local transport:** Effect RPC with NDJSON serialization on a Unix socket `<server-data>/fin.sock` (mode 0600) or the Windows named pipe `\\.\pipe\finisher-<username>` (for the default server-data; any other server-data uses `finisher-<username>-<hash>`, 12 hex chars of SHA-256 of its lower-cased path, because pipe names are machine-global — clients read the name from `finisherd.json`); WebSocket on `127.0.0.1` (port written to `<server-data>/finisherd.json`, mode 0600, with a random bearer token the WS client must send). Pairing/remote auth is sub-project 5.
     6. **Server data dir:** `FIN_SERVER_DATA` if set; else macOS `~/Library/Application Support/Finisher`, Linux `${XDG_DATA_HOME:-~/.local/share}/finisher`, Windows `%LOCALAPPDATA%\Finisher`.
+
+13. **Sub-project 4A, durable storage (as built, 2026-11-05):** the design of §6.7 and §6.8 as implemented is recorded in `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §3, which wins over this document where they differ.
+    - **The §27.9 "v3" lease is implemented** (`fin-store::lease`), with these amendments (sub-project 4 spec §3.5):
+      - stale after 45 s of server time on every storage kind, not 30 s;
+      - takeover needs two stale probes ≥ 5 s apart, each with a round trip ≤ TTL/4, *and* the identical record seen for ≥ 25 s on the observer's monotonic clock. A live NAS holder is never taken over, even with `--confirm`;
+      - probe samples landing more than 1 s below the extrapolated server time are rejected;
+      - the monotonic clock counts time asleep;
+      - a claim above the holder's epoch that is younger than 45 s loses the lease (claims are the authority on epochs), and each acquisition creates a single claim at `base + 1`;
+      - a commit trusts a full check that passed within the last 1 s;
+      - a restart re-takes its own lease at once through an OS lock in server data, never in the project folder.
+    - **The folder:** hash-chained, write-once segments labelled by commit epoch; reader-side epoch rule with rewind of a lost applied line; quarantine instead of deletion; rebuild with salvage; verify; daily and pre-migration backups; two-phase compaction into packs that keep full history.
+    - **§6.7 polling:** project folders are polled (local 2 s, network 3 s, sync 10 s), not watched, and the heartbeat is 5 s, not 15 s.
+    - **Still outstanding:** cross-host and sync-folder validation (sub-project 4 spec §3.13). This replaces the "Still to validate" line of item 9 for the lease.
