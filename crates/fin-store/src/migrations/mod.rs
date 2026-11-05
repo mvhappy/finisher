@@ -267,3 +267,47 @@ fn merge(into: &mut serde_json::Value, extra: serde_json::Value) {
         a.extend(b);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `immutable=1` URI opens the database itself for every spelling of its path (spec
+    /// §3.13 item 13): characters that need encoding, and on Windows the verbatim `\\?\` form
+    /// `canonicalize` returns and a UNC path (the admin share of the same file, where enabled).
+    /// A URI that failed would only fall back to a plain read-only open, silently.
+    #[test]
+    fn immutable_uris_open_every_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a b%c#d");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("p.fdb");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (42);")
+            .unwrap();
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut spellings = vec![path.clone(), std::fs::canonicalize(&path).unwrap()];
+        #[cfg(windows)]
+        {
+            let abs = std::path::absolute(&path).unwrap();
+            let s = abs.to_str().unwrap();
+            let unc = PathBuf::from(format!(r"\\localhost\{}${}", &s[..1], &s[2..]));
+            if unc.exists() {
+                spellings.push(unc);
+            } else {
+                eprintln!("no admin share: UNC spelling not checked");
+            }
+        }
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        for p in spellings {
+            let uri = immutable_uri(&p).unwrap();
+            let c = Connection::open_with_flags(&uri, flags)
+                .unwrap_or_else(|e| panic!("{} as {uri}: {e}", p.display()));
+            let x: i64 = c
+                .query_row("SELECT x FROM t", [], |r| r.get(0))
+                .unwrap_or_else(|e| panic!("{} as {uri}: {e}", p.display()));
+            assert_eq!(x, 42, "{uri}");
+        }
+    }
+}
