@@ -280,7 +280,9 @@ pub enum ForkReason {
     EqualEpoch,
     /// Two lines on a sync folder, where the epoch rule never decides.
     SyncFolder,
-    /// A line the DB has already applied (or exported) lost the epoch rule.
+    /// A line the DB has already applied (or exported) lost the epoch rule. Never on sync
+    /// storage (there any two lines are `SyncFolder` first). Import may rewind the DB to the
+    /// fork point and resolve again (`import::rewind`); otherwise it is a `CHAIN_FORK`.
     AppliedLineLost,
     /// A record to import carries a `txId` the DB already holds with a different `txHash`.
     TxIdReused { tx_id: String },

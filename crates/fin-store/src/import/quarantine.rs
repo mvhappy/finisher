@@ -3,15 +3,21 @@
 //! - One row per `txHash` (`UNIQUE`): a stale line is re-reported on every poll, a diverged
 //!   tail can overlap a stale slice, and a conflict copy can repeat either; each is one row.
 //! - `reason`: [`STALE_EPOCH`], [`MALFORMED`] (folder records, from chain resolution),
-//!   [`DIVERGED_TAIL`] (this server's unexported records that lost), [`CONFLICT_COPY`] (records
-//!   of a foreign file that the DB does not hold). Rebuild (Task 12) adds salvage.
+//!   [`DIVERGED_TAIL`] (this server's unexported records that lost), [`SUPERSEDED`] (applied
+//!   records whose line lost to a newer epoch and were rewound, `super::rewind`),
+//!   [`CONFLICT_COPY`] (records of a foreign file that the DB does not hold). Rebuild
+//!   (Task 12) adds salvage. `DIVERGED_TAIL` and `SUPERSEDED` are kept as reason, origin and
+//!   detail once set: they say what this database did with the record, which a later verdict
+//!   on the same bytes (`STALE_EPOCH` for the losing line in the folder) does not change.
 //! - `origin`: `folder`, `local` or `foreign`; `detail`: the segment hash (and why it is
 //!   malformed), the tail's commit epoch and seq, or the foreign file's path.
 //! - `current`: the row is set aside *now*. Folder and foreign verdicts are per poll, so each
 //!   pass recomputes it from that pass's verdicts ([`flag_current`]); a row whose record is
 //!   no longer reported (the file was removed, or a later poll applied it) stays, with its
 //!   bytes, but is not counted. A diverged tail exists nowhere else, so it stays current until
-//!   its record is in `txs` again. Rows are never deleted by import.
+//!   its record is in `txs` again. A `SUPERSEDED` row is current while the folder's verdicts
+//!   still set its record aside (as for every other follower, which never applied it).
+//!   Rows are never deleted by import.
 //! - A record the DB holds in `txs` is never quarantined (a harmless duplicate).
 
 use std::collections::BTreeSet;
@@ -30,6 +36,7 @@ use crate::segment::Segment;
 pub(super) const STALE_EPOCH: &str = "STALE_EPOCH";
 pub(super) const MALFORMED: &str = "MALFORMED";
 pub(super) const DIVERGED_TAIL: &str = "DIVERGED_TAIL";
+pub(super) const SUPERSEDED: &str = "SUPERSEDED";
 pub(super) const CONFLICT_COPY: &str = "CONFLICT_COPY";
 
 pub(super) struct Quarantined<'a> {
@@ -42,8 +49,8 @@ pub(super) struct Quarantined<'a> {
     pub(super) now: i64,
 }
 
-/// Inserts `q`, or marks its row current again. A `DIVERGED_TAIL` row keeps its reason (its
-/// bytes exist nowhere else); otherwise the latest reason wins. Writes nothing when the row
+/// Inserts `q`, or marks its row current again. A `DIVERGED_TAIL` or `SUPERSEDED` row keeps
+/// its reason, origin and detail (module docs); otherwise the latest reason wins. Writes nothing when the row
 /// is already current with the same reason and origin.
 pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreError> {
     conn.execute(
@@ -53,14 +60,14 @@ pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreErro
          ON CONFLICT(tx_hash) DO UPDATE SET
              current = 1,
              seen_at = excluded.seen_at,
-             origin = CASE WHEN quarantine.reason = 'DIVERGED_TAIL' THEN quarantine.origin
-                           ELSE excluded.origin END,
-             detail = CASE WHEN quarantine.reason = 'DIVERGED_TAIL' THEN quarantine.detail
-                           ELSE excluded.detail END,
-             reason = CASE WHEN quarantine.reason = 'DIVERGED_TAIL' THEN quarantine.reason
-                           ELSE excluded.reason END
+             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED')
+                           THEN quarantine.origin ELSE excluded.origin END,
+             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED')
+                           THEN quarantine.detail ELSE excluded.detail END,
+             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED')
+                           THEN quarantine.reason ELSE excluded.reason END
          WHERE quarantine.current = 0
-            OR (quarantine.reason != 'DIVERGED_TAIL'
+            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED')
                 AND (quarantine.reason != excluded.reason OR quarantine.origin != excluded.origin))",
         params![q.tx_hash, q.branch, q.origin, q.reason, q.detail, q.bytes, q.now],
     )?;

@@ -5,7 +5,9 @@
 //! Folder work runs once per poll, at the storage kind's cadence (plan Decision 3: local 2 s,
 //! network 3 s, sync 10 s); calls in between only export (the export has its own delay) and
 //! report status changes. A poll:
-//! 1. **import** ([`Store::import`]); applied records become [`StoreEvent::Applied`];
+//! 1. **import** ([`Store::import`]); records taken out of a branch's history become
+//!    [`StoreEvent::Rewound`] (with those of passes run outside `tick`, at open or a
+//!    takeover, first), then applied records [`StoreEvent::Applied`];
 //! 2. **export** if holding and writable;
 //! 3. **fencing re-check** while holding ([`Lease::check`]): a lost lease is dropped (the
 //!    store is `LEASE_LOST`); a check that only could not list the folder is reported in
@@ -148,8 +150,7 @@ impl Store {
         if due {
             self.ctl.last_poll = Some(now);
             let r = self.import_pass()?;
-            out.events
-                .extend(r.applied.iter().cloned().map(StoreEvent::Applied));
+            self.push_events(&mut out.events, &r);
             out.imports.push(r);
         }
         out.export = export::export_pending(self, now, false)?;
@@ -164,8 +165,7 @@ impl Store {
                 self.release_lost();
                 if self.try_acquire() && self.ctl.gate_needs_no_wait() {
                     let r = self.import_pass()?;
-                    out.events
-                        .extend(r.applied.iter().cloned().map(StoreEvent::Applied));
+                    self.push_events(&mut out.events, &r);
                     out.imports.push(r);
                 }
             }
@@ -307,11 +307,28 @@ impl Store {
         }
     }
 
+    /// The events of import pass `r`: every `Rewound` not yet reported (this pass's and those
+    /// of passes outside `tick`), then its applied records.
+    fn push_events(&mut self, events: &mut Vec<StoreEvent>, r: &ImportReport) {
+        events.append(&mut self.follow.rewound);
+        events.extend(r.applied.iter().cloned().map(StoreEvent::Applied));
+    }
+
     /// An import pass that also lifts the ordering rule's block when it may (module docs).
+    /// Its rewinds are queued for the next `tick`'s events.
     pub(crate) fn import_pass(&mut self) -> Result<ImportReport, StoreError> {
         let started = self.ctl.now();
         self.reread_project_file();
         let r = self.import()?;
+        self.follow
+            .rewound
+            .extend(r.rewound.iter().map(|w| StoreEvent::Rewound {
+                branch: w.branch.clone(),
+                from_rev: w.from_rev,
+                quarantined: w.quarantined,
+                own: w.own,
+                generation: w.generation,
+            }));
         let kind = self.storage_kind();
         self.follow.observe(&r, kind, &self.project_dir);
         if let Gate::Pending { wait_until } = self.ctl.gate

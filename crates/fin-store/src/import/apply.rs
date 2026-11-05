@@ -25,7 +25,7 @@
 //! 5. `quarantine` (stale or malformed folder records), keyed by `txHash`, skipping records
 //!    the DB holds.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use fin_core::{CommittedTx, CoreError, apply_committed};
 use rusqlite::{Connection, params};
@@ -38,8 +38,9 @@ use super::quarantine::{self, Quarantined};
 use crate::chain::{QuarantineReason, Resolution, SegRef};
 use crate::counters::rewind_scan;
 use crate::db::{self, SNAPSHOT_EVERY, hash_bytes, to_i64, to_u64};
+use crate::history::{self, RewindInfo};
 use crate::names::{SegmentName, hash12};
-use crate::{Head, StoreError, refresh};
+use crate::{Head, Rewind, StoreError, refresh};
 
 /// Pass-wide state shared by the branches.
 pub(super) struct Ctx<'a> {
@@ -86,6 +87,10 @@ impl<'a> Ctx<'a> {
         Ok(self.hashes.contains(hash))
     }
 
+    pub(super) fn server_id(&self) -> &str {
+        self.server_id
+    }
+
     fn added(&mut self, tx_id: &str, hash: &str) {
         if let Some(all) = &mut self.all {
             all.insert(tx_id.to_string(), hash.to_string());
@@ -94,7 +99,7 @@ impl<'a> Ctx<'a> {
         self.changed = true;
     }
 
-    fn removed(&mut self, tx_id: &str, hash: &str) {
+    pub(super) fn removed(&mut self, tx_id: &str, hash: &str) {
         if let Some(all) = &mut self.all {
             all.remove(tx_id);
             self.hashes.remove(hash);
@@ -110,6 +115,8 @@ pub(super) struct Outcome {
     /// `txs` rows of this branch changed.
     pub(super) changed: bool,
     pub(super) verdict: Verdict,
+    /// The diverged tail that was set aside.
+    pub(super) rewound: Option<Rewind>,
 }
 
 enum Stop {
@@ -175,6 +182,7 @@ pub(super) fn branch(
 
     // 2. A diverged tail moves to quarantine.
     let mut head = head;
+    let mut rewound = None;
     if res.local_tail_diverged {
         let mut stmt = txn.prepare(
             "SELECT seq, tx_id, tx_hash, record_bytes, epoch FROM txs
@@ -186,7 +194,9 @@ pub(super) fn branch(
             })?
             .collect::<Result<_, _>>()?;
         if let Some(first) = rows.first().map(|r| r.0) {
+            let mut epochs = BTreeSet::new();
             for (seq, tx_id, tx_hash, bytes, epoch) in &rows {
+                epochs.insert(to_u64(*epoch)?);
                 quarantine::upsert(
                     txn,
                     &Quarantined {
@@ -211,6 +221,28 @@ pub(super) fn branch(
             )?;
             let tip = to_u64(first)?.saturating_sub(1);
             rewind_scan(txn, branch, tip)?;
+            let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+            let info = RewindInfo {
+                generation: 0,
+                from_rev: tip + 1,
+                kind: "divergedTail".into(),
+                count,
+                own: count,
+                writers: vec![ctx.server_id.to_string()],
+                epochs: epochs.into_iter().collect(),
+                winner_epoch: 0,
+                segments: 0,
+                span_ms: 0,
+                at: ctx.now,
+            };
+            let generation = history::record(txn, branch, info)?;
+            rewound = Some(Rewind {
+                branch: branch.to_string(),
+                from_rev: tip + 1,
+                quarantined: count,
+                own: true,
+                generation,
+            });
             let mut fresh = HashMap::new();
             refresh(txn, &mut fresh, branch)?;
             head = fresh.remove(branch);
@@ -303,6 +335,7 @@ pub(super) fn branch(
         head,
         changed,
         verdict,
+        rewound,
     })
 }
 

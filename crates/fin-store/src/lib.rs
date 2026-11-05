@@ -17,6 +17,7 @@ mod counters;
 mod db;
 mod export;
 pub mod fsio;
+mod history;
 pub mod identity;
 mod import;
 pub mod lease;
@@ -48,7 +49,7 @@ pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
-pub use import::{ForeignFile, ImportReport, ReadOnlyReason};
+pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
 pub use migrations::{APPLICATION_ID, DB_VERSION};
@@ -129,6 +130,23 @@ pub(crate) fn unwritable(path: &Path) -> impl FnOnce(std::io::Error) -> StoreErr
         .with_fix("choose a writable folder for the project")
         .into()
     }
+}
+
+/// What became of a `txId` ([`Store::tx_status`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TxStatus {
+    /// On its branch's history.
+    Committed(CommittedTx),
+    /// Set aside in quarantine (`reason`: `SUPERSEDED` for an applied record whose line lost
+    /// to a newer lease epoch, `DIVERGED_TAIL`, `STALE_EPOCH`, `MALFORMED`, `CONFLICT_COPY`;
+    /// `origin`: `local`, `folder`, `foreign`). Its bytes are kept.
+    SetAside {
+        branch: String,
+        reason: String,
+        origin: String,
+    },
+    /// Not known here.
+    Unknown,
 }
 
 /// A branch head, cached in memory.
@@ -231,6 +249,48 @@ impl Store {
             return Err(branch_not_found(branch).into());
         }
         db::txs_since(&self.conn, branch, after)
+    }
+
+    /// Committed txs on `branch` with `rev > after`, with the branch's generation, read
+    /// together: a caller that later commits with [`Store::commit_at_generation`] passes it.
+    pub fn ops_since_at(
+        &self,
+        branch: &str,
+        after: u64,
+    ) -> Result<(u64, Vec<CommittedTx>), StoreError> {
+        let txn = self.conn.unchecked_transaction()?;
+        let ops = self.ops_since(branch, after)?;
+        let generation = history::current(&txn, branch)?;
+        txn.commit()?;
+        Ok((generation, ops))
+    }
+
+    /// The generation of `branch`: bumped whenever an import takes records out of its history
+    /// (module `history`). 0 when it cannot be read.
+    pub fn generation(&self, branch: &str) -> u64 {
+        history::current(&self.conn, branch).unwrap_or(0)
+    }
+
+    /// What became of `tx_id` (`tx.get`): committed, set aside (a superseded record is
+    /// `SetAside { reason: "SUPERSEDED" }`), or unknown.
+    pub fn tx_status(&self, tx_id: &str) -> Result<TxStatus, StoreError> {
+        history::tx_status(&self.conn, tx_id)
+    }
+
+    /// Test hook: `(txHash, reason, origin)` of the records set aside now, by `txHash`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn quarantined_for_test(&self) -> Vec<(String, String, String)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT tx_hash, reason, origin FROM quarantine WHERE current = 1 ORDER BY tx_hash",
+            )
+            .expect("prepare");
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows")
     }
 
     /// Test hook: the next `commit` fails after applying and writing its rows but before the

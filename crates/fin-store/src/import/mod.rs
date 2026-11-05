@@ -23,7 +23,11 @@
 //!      running it again. The pass right after a change resolves once more against the new
 //!      DB state;
 //!    - otherwise `resolve` and act on it ([`apply`]): mark exported, set a diverged tail
-//!      aside, apply, quarantine.
+//!      aside, apply, quarantine;
+//!    - an applied line that lost (`AppliedLineLost`) is first rewound when [`rewind`]'s
+//!      conditions hold, and the branch resolved once more against the rewound DB (at most
+//!      once per branch per pass). Such a verdict is never reused by the skip: whether it can
+//!      be rewound depends on the lease files too.
 //! 5. **Id counters** are raised past every id in the log ([`Counters::raise_to_log`])
 //!    whenever rows were added or removed, and on the store's first pass (which repairs a DB
 //!    whose counters fell behind for any reason).
@@ -52,6 +56,7 @@ mod apply;
 mod hydrate;
 mod known;
 mod quarantine;
+mod rewind;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -93,6 +98,23 @@ pub struct ImportReport {
     /// A record on the resolved chain that cannot be applied (`REPLAY_FAILED`,
     /// `INVALID_FORMAT`, `SCHEMA_VERSION`): its branch stops before it; retried every pass.
     pub error: Option<CoreError>,
+    /// Records taken out of a branch's history this pass (a rewound applied line, a diverged
+    /// tail), before `applied` was applied.
+    pub rewound: Vec<Rewind>,
+}
+
+/// Records taken out of `branch`'s history by an import ([`crate::StoreEvent::Rewound`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rewind {
+    pub branch: String,
+    /// The first rev that no longer holds what it held.
+    pub from_rev: u64,
+    /// Records set aside.
+    pub quarantined: u32,
+    /// Some of them were this server's own.
+    pub own: bool,
+    /// The branch's generation after the rewind.
+    pub generation: u64,
 }
 
 /// A foreign file (spec §3.7).
@@ -190,6 +212,8 @@ struct Verdict {
     quarantined: BTreeSet<String>,
     newer: bool,
     error: Option<CoreError>,
+    /// Resolve again next pass even if nothing changed (an `AppliedLineLost` fork).
+    retry: bool,
 }
 
 /// Import state held by the `Store`.
@@ -353,20 +377,37 @@ impl Store {
             };
             if let Some((k, v)) = import.cache.get(&branch)
                 && *k == key
+                && !v.retry
             {
                 cache.insert(branch, (key, v.clone()));
                 continue;
             }
+            let mut key = key;
             let known = known::build(&txn, &branch, &key.line, ctx.all_tx()?, holds, kind)?;
-            let res = resolve(&segs, &known);
+            let mut res = resolve(&segs, &known);
             resolves += 1;
+            let mut rewound = None;
+            if let Some(lost) = rewind::eligible(&ctx, &branch, &res, holds, kind, project_dir)? {
+                rewound = Some(rewind::run(&mut ctx, &branch, lost, &segs)?);
+                key.line = known::line(&txn, &branch)?;
+                let known = known::build(&txn, &branch, &key.line, ctx.all_tx()?, holds, kind)?;
+                res = resolve(&segs, &known);
+                resolves += 1;
+            }
             refresh(&txn, heads, &branch)?;
             let head = heads.get(&branch).cloned();
-            let out = apply::branch(&mut ctx, &branch, &key.line, &segs, &res, head)?;
+            let mut out = apply::branch(&mut ctx, &branch, &key.line, &segs, &res, head)?;
+            report.rewound.extend(rewound.iter().cloned());
+            report.rewound.extend(out.rewound.take());
             report.applied.extend(out.applied);
-            if out.changed {
+            if out.changed || rewound.is_some() {
                 new_heads.push((branch.clone(), out.head));
             }
+            out.verdict.retry = out
+                .verdict
+                .fork
+                .as_ref()
+                .is_some_and(|f| f.reason == crate::chain::ForkReason::AppliedLineLost);
             cache.insert(branch, (key, out.verdict));
         }
         let foreign = quarantine::foreign(&mut ctx, project_dir, foreign)?;

@@ -8,7 +8,8 @@
 //! 2. **Down the DB line**, every record with siblings is a competition between the DB's line
 //!    and each sibling line:
 //!    - the DB's line wins → the siblings are quarantined;
-//!    - a sibling wins above or at `head` → `AppliedLineLost` fork (nothing can be un-applied);
+//!    - a sibling wins above or at `head` → `AppliedLineLost` fork (the walk un-applies
+//!      nothing; import may rewind the DB and resolve again, `import::rewind`);
 //!    - a sibling wins inside the exported part of the tail → the tail diverged; continue on
 //!      the winner;
 //!    - a tie (or any two lines on sync storage) → fork.

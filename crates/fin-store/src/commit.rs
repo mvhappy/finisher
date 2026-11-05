@@ -34,6 +34,21 @@ impl Store {
     /// inverse and bindings of that same apply. Ids are allocated from the `ids` table inside the
     /// same SQLite transaction as the `txs` insert, so a failed commit consumes none.
     pub fn commit(&mut self, tx: Tx) -> Result<CommittedTx, StoreError> {
+        self.commit_at_generation(tx, None)
+    }
+
+    /// [`Store::commit`], for a caller that read the branch at `generation`
+    /// ([`Store::generation`], [`Store::ops_since_at`]). When an import has rewound the branch
+    /// since then from a rev at or below `baseRev` (the caller built the tx on records that
+    /// are gone), the commit is refused with `HISTORY_REWOUND` (`details {branch, rev,
+    /// generation, expected, baseRev}`) instead of being rebased onto other history; a
+    /// `baseRev` before every such rewind rebases as usual. `None` skips the check. Checked
+    /// after the dedupe, the read-only state and the fence, under the database lock.
+    pub fn commit_at_generation(
+        &mut self,
+        tx: Tx,
+        generation: Option<u64>,
+    ) -> Result<CommittedTx, StoreError> {
         // Everything below runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.
         check_shape(&tx)?;
@@ -68,6 +83,9 @@ impl Store {
         let head = heads
             .get(&tx.branch)
             .ok_or_else(|| branch_not_found(&tx.branch))?;
+        if let Some(g) = generation {
+            crate::history::check(&txn, &tx.branch, g, tx.base_rev)?;
+        }
         if tx.base_rev > head.rev {
             return Err(CoreError::new("BASE_REV_AHEAD", format!("baseRev {} is ahead of head {}", tx.base_rev, head.rev))
                 .with_details(json!({ "txId": tx.tx_id, "baseRev": tx.base_rev, "head": head.rev, "branch": tx.branch }))

@@ -68,6 +68,9 @@ const VALIDATION_CODES: &[&str] = &[
 /// `--confirm`, or a holder not yet confirmed stopped (`details.reason`).
 /// `LEASE_LOST`: this server's lease failed its fencing check (writes surface it as
 /// `PROJECT_READ_ONLY` with reason `LEASE_LOST`).
+/// `HISTORY_REWOUND`: history the caller saw on `details.branch` from `details.rev` on was
+/// set aside (an applied line lost to a newer lease epoch, or a local tail diverged); read
+/// the branch again from before `details.rev`.
 const CONFLICT_CODES: &[&str] = &[
     "CONFLICT",
     "BASE_REV_AHEAD",
@@ -75,6 +78,7 @@ const CONFLICT_CODES: &[&str] = &[
     "PROJECT_READ_ONLY",
     "LEASE_TAKEOVER_REFUSED",
     "LEASE_LOST",
+    "HISTORY_REWOUND",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
@@ -179,6 +183,7 @@ mod tests {
         assert_eq!(exit_code("PROJECT_READ_ONLY"), 4);
         assert_eq!(exit_code("LEASE_TAKEOVER_REFUSED"), 4);
         assert_eq!(exit_code("LEASE_LOST"), 4);
+        assert_eq!(exit_code("HISTORY_REWOUND"), 4);
         for code in [
             "SERVER_UNAVAILABLE",
             "SERVER_RUNNING",
