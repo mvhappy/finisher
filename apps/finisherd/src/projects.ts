@@ -353,7 +353,6 @@ export function makeProjectRegistry(
       subscribe: (projectId, branch, fromRev, generation) =>
         Stream.unwrap(
           Effect.gen(function* () {
-            const p = yield* get(projectId);
             const channel = yield* Effect.acquireRelease(
               Effect.sync(() => hubs.acquireOps(projectId, branch)),
               () => Effect.sync(() => hubs.releaseOps(projectId, branch)),
@@ -366,6 +365,10 @@ export function makeProjectRegistry(
             // Subscribe before reading the backlog: a commit landing in between is then
             // both in the backlog and on the hub, and the rev filter below drops the copy.
             const live = yield* PubSub.subscribe(channel.pubsub);
+            // Every engine call re-resolves the engine (`on`): an eviction between calls must
+            // not leave this stream talking to a closed engine. The head is read before the
+            // backlog; a rewind landing in between is caught by the generation check below.
+            const head = yield* on<number>(projectId, async (e) => String(await e.head(branch)));
             const read = yield* on<{ generation: Generation; ops: CommittedTx[] }>(projectId, (e) => e.opsSinceAt(branch, fromRev));
             if (
               generation !== undefined &&
@@ -375,7 +378,6 @@ export function makeProjectRegistry(
                 historyRewound({ branch, rev: 0, reason: "GENERATION", generation: read.generation, expected: generation }),
               );
             }
-            const head = yield* call<number>(p, async (e) => String(await e.head(branch)));
             if (fromRev > head) {
               return yield* Effect.fail(
                 finError(
@@ -414,7 +416,6 @@ export function makeProjectRegistry(
       events: (projectId) =>
         Stream.unwrap(
           Effect.gen(function* () {
-            const p = yield* get(projectId);
             const channel = yield* Effect.acquireRelease(
               Effect.sync(() => hubs.acquireEvents(projectId)),
               () => Effect.sync(() => hubs.releaseEvents(projectId)),
@@ -422,7 +423,7 @@ export function makeProjectRegistry(
             const check = follower(channel, "");
             // Subscribe first: a change landing while the status is read is then not missed.
             const live = yield* PubSub.subscribe(channel.pubsub);
-            const status = yield* call<unknown>(p, (e) => e.status());
+            const status = yield* on<unknown>(projectId, (e) => e.status());
             const first: ProjectEvent = { type: "status", status };
             const items = Stream.fromSubscription(live).pipe(
               Stream.mapEffect((item) => {
