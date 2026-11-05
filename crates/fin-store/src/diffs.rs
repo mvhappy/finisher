@@ -20,18 +20,19 @@ use crate::db::{self, SNAPSHOT_EVERY, to_i64};
 /// The `txs.diff` of a row whose diff is not computed yet (JSON `null`, never a diff).
 pub(crate) const NOT_STORED: &str = "null";
 
-fn key(branch: &str) -> String {
+/// `meta` key: the highest seq of `branch` whose diff may not be stored yet.
+pub(crate) fn pending_key(branch: &str) -> String {
     format!("diffsPending.{branch}")
 }
 
 /// The highest seq of `branch` whose diff may not be stored yet.
 pub(crate) fn pending(conn: &Connection, branch: &str) -> Result<Option<u64>, StoreError> {
-    Ok(db::meta(conn, &key(branch))?.and_then(|v| v.parse().ok()))
+    Ok(db::meta(conn, &pending_key(branch))?.and_then(|v| v.parse().ok()))
 }
 
 /// Records that the diffs of `branch` through `seq` are not stored.
 pub(crate) fn set_pending(conn: &Connection, branch: &str, seq: u64) -> Result<(), StoreError> {
-    db::set_meta(conn, &key(branch), &seq.to_string())
+    db::set_meta(conn, &pending_key(branch), &seq.to_string())
 }
 
 /// Computes and stores the missing diffs of `branch` (module docs), inside a savepoint, so it
@@ -81,7 +82,10 @@ pub(crate) fn fill(conn: &Connection, branch: &str) -> Result<(), StoreError> {
                 params![branch, to_i64(through)?],
             )?;
         }
-        conn.execute("DELETE FROM meta WHERE key = ?1", params![key(branch)])?;
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            params![pending_key(branch)],
+        )?;
         Ok(())
     };
     match run() {

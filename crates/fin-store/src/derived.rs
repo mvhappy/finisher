@@ -1,12 +1,12 @@
 //! The derived history tables, recomputed from the log (plan 4B Decision 6): after any row
-//! deletion (a rewind, a diverged tail, a cascade; Task 10) the incremental updates no longer
+//! deletion (a rewind, a diverged tail, a cascade) the incremental updates no longer
 //! hold, so [`recompute`] runs in the same transaction.
 
 use std::collections::VecDeque;
 
 use fin_core::RecordKind;
 use fin_core::branch::{BranchIndex, MAIN};
-use rusqlite::{Transaction, params};
+use rusqlite::{Connection, params};
 
 use crate::StoreError;
 use crate::branch::index;
@@ -15,8 +15,9 @@ use crate::db::{self, to_u64};
 /// Drops the `record_links` rows whose record is gone, and rebuilds the branch index from
 /// the `branch` and `branchSet` records reachable from `main`, parents before children.
 /// (`merged` is recomputed from `merge` records from Task 14 on; until then nothing sets it.)
-#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
-pub(crate) fn recompute(txn: &Transaction) -> Result<(), StoreError> {
+/// Runs inside the caller's transaction (`import::cascade` after every rewind, diverged tail
+/// or cascade).
+pub(crate) fn recompute(txn: &Connection) -> Result<(), StoreError> {
     txn.execute(
         "DELETE FROM record_links WHERE tx_id NOT IN (SELECT tx_id FROM txs)",
         [],

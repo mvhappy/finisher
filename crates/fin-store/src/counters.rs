@@ -42,7 +42,7 @@ fn suffix(id: &str, prefix: &str) -> Option<u64> {
 }
 
 /// `meta` key: the highest seq of `branch` whose bindings [`Counters::raise_to_log`] has seen.
-fn scanned_key(branch: &str) -> String {
+pub(crate) fn scanned_key(branch: &str) -> String {
     format!("idsScannedThrough.{branch}")
 }
 

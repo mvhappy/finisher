@@ -4,7 +4,8 @@
 //!   tail can overlap a stale slice, and a conflict copy can repeat either; each is one row.
 //! - `reason`: [`STALE_EPOCH`], [`MALFORMED`] (folder records, from chain resolution),
 //!   [`DIVERGED_TAIL`] (this server's unexported records that lost), [`SUPERSEDED`] (applied
-//!   records whose line lost to a newer epoch and were rewound, `super::rewind`),
+//!   records whose line lost to a newer epoch and were rewound, `super::rewind`, with the
+//!   rows of the descendant branches that cascaded with them, `super::cascade`),
 //!   [`CONFLICT_COPY`] (records of a foreign file that the DB does not hold). Rebuild
 //!   adds `SALVAGED` (origin `salvage`): the unexported records of the database it
 //!   replaced, which exist nowhere else; the old database's own quarantine rows come along

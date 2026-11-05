@@ -50,6 +50,7 @@ use fin_core::{CommittedTx, CoreError};
 use rusqlite::params;
 
 use super::Verdict;
+use super::cascade;
 use super::ctx::Ctx;
 use super::known::{self, broken};
 use super::quarantine::{self, Quarantined};
@@ -67,11 +68,12 @@ pub(super) struct Outcome {
     /// `txs` rows of this branch changed.
     pub(super) changed: bool,
     pub(super) verdict: Verdict,
-    /// The diverged tail that was set aside.
-    pub(super) rewound: Option<Rewind>,
+    /// The diverged tail that was set aside, then the children it cascaded to.
+    pub(super) rewound: Vec<Rewind>,
 }
 
-/// Acts on `res` for `branch` (module docs). `head` is the branch head as committed.
+/// Acts on `res` for `branch` (module docs). `head` is the branch head as committed; `dirs`
+/// are the folder segments of the branches not resolved yet (a diverged tail's cascade).
 pub(super) fn branch(
     ctx: &mut Ctx,
     branch: &str,
@@ -79,6 +81,7 @@ pub(super) fn branch(
     segs: &[SegRef],
     res: &Resolution,
     head: Option<Head>,
+    dirs: &HashMap<String, Vec<SegRef>>,
 ) -> Result<Outcome, StoreError> {
     let txn = ctx.txn;
     let mut verdict = Verdict {
@@ -116,7 +119,7 @@ pub(super) fn branch(
 
     // 2. A diverged tail moves to quarantine.
     let mut head = head;
-    let mut rewound = None;
+    let mut rewound = vec![];
     if res.local_tail_diverged {
         let mut stmt = txn.prepare(
             "SELECT seq, tx_id, tx_hash, record_bytes, epoch FROM txs
@@ -128,6 +131,7 @@ pub(super) fn branch(
             })?
             .collect::<Result<_, _>>()?;
         if let Some(first) = rows.first().map(|r| r.0) {
+            let children = cascade::lost_children(txn, branch, to_u64(first)?)?;
             let mut epochs = BTreeSet::new();
             for (seq, tx_id, tx_hash, bytes, epoch) in &rows {
                 epochs.insert(to_u64(*epoch)?);
@@ -171,13 +175,15 @@ pub(super) fn branch(
                 acknowledged: false,
             };
             let generation = history::record(txn, branch, info)?;
-            rewound = Some(Rewind {
+            rewound.push(Rewind {
                 branch: branch.to_string(),
                 from_rev: tip + 1,
                 quarantined: count,
                 own: true,
                 generation,
             });
+            let cause = cascade::Cause::diverged_tail();
+            rewound.extend(cascade::cascade(ctx, dirs, &children, &cause)?);
             let mut fresh = HashMap::new();
             refresh(txn, &mut fresh, branch)?;
             head = fresh.remove(branch);

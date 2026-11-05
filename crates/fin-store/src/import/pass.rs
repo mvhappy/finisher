@@ -16,7 +16,7 @@ use fin_core::CoreError;
 use rusqlite::Transaction;
 
 use super::ctx::Ctx;
-use super::{Key, Verdict, apply, aside, known, rewind};
+use super::{Key, Verdict, apply, aside, cascade, known, rewind};
 use crate::branch::index;
 use crate::chain::{SegRef, resolve};
 use crate::storage_kind::StorageKind;
@@ -62,10 +62,13 @@ pub(super) fn resolve_branches(
     let mut seen = HashSet::new();
     let mut born_now = HashSet::new();
     while let Some(branch) = work.pop_front() {
-        if !seen.insert(branch.clone()) || db::latest_rev(txn, &branch)?.is_none() {
-            // An index row without any state is damage; its directory waits (leftover).
+        if seen.contains(&branch) || db::latest_rev(txn, &branch)?.is_none() {
+            // An index row without any state is damage; its directory waits (leftover). A
+            // branch a cascade took out has none either; it is not marked seen, so a `branch`
+            // record later in the pass that makes the same id again is followed.
             continue;
         }
+        seen.insert(branch.clone());
         let segs = by_branch.remove(&branch).unwrap_or_default();
         let line = known::line(txn, &branch)?;
         let fork = known::fork_point(txn, &branch)?;
@@ -96,9 +99,11 @@ pub(super) fn resolve_branches(
         };
         let mut res = resolve(&segs, &build(ctx, &key.line)?);
         resolves += 1;
-        let mut rewound = None;
+        let mut rewound = vec![];
         if let Some(lost) = rewind::eligible(ctx, &branch, &res, held, lease_top, kind)? {
-            rewound = Some(rewind::run(ctx, &branch, lost, &segs)?);
+            rewound.push(rewind::run(ctx, &branch, &lost, &segs)?);
+            let cause = cascade::Cause::applied_line(lost.winner_epoch());
+            rewound.extend(cascade::cascade(ctx, by_branch, lost.children(), &cause)?);
             #[cfg(any(test, feature = "test-hooks"))]
             if std::mem::take(&mut *fail_rewind) {
                 // Dropping `txn` rolls the rewind back, as a crash before the commit.
@@ -117,12 +122,17 @@ pub(super) fn resolve_branches(
             refresh(txn, heads, &branch)?;
             heads.get(&branch).cloned()
         };
-        let mut out = apply::branch(ctx, &branch, &key.line, &segs, &res, head)?;
+        let mut out = apply::branch(ctx, &branch, &key.line, &segs, &res, head, by_branch)?;
         out.verdict.quarantined.extend(collided);
-        out_rewound.extend(rewound.iter().cloned());
-        out_rewound.extend(out.rewound.take());
+        let changed = out.changed || !rewound.is_empty() || born_now.contains(&branch);
+        rewound.append(&mut out.rewound);
+        // A cascaded branch leaves the head cache (a later record may make its id again).
+        for w in rewound.iter().filter(|w| w.branch != branch) {
+            new_heads.push((w.branch.clone(), None));
+        }
+        out_rewound.append(&mut rewound);
         applied.extend(out.applied);
-        if out.changed || rewound.is_some() || born_now.contains(&branch) {
+        if changed {
             new_heads.push((branch.clone(), out.head));
         }
         for child in std::mem::take(&mut ctx.born) {

@@ -29,10 +29,12 @@
 //!     `lease.claim-*` file, is at or above it. A higher epoch nobody claimed looks like a
 //!     hand copy or a bug, not a takeover. The caller reads both before the pass takes the
 //!     database lock ([`lease_top`]) and passes the highest.
-//! (d) No other branch is based inside the lost range: the range holds no `branch` or
-//!     `branchSet` record (until plan 4B Task 10 cascades the rewind to the children those
-//!     records made), and a branch without an index row (a root made by hand) is based
-//!     where `meta` `branchBase.<branch>` = `{"branch", "seq"}` says, else inside.
+//! (d) No branch without an index row (a root made by hand) is based inside the lost range:
+//!     it is based where `meta` `branchBase.<branch>` = `{"branch", "seq"}` says, else
+//!     inside. A branch with an index row is never "based inside" in that sense: a child
+//!     whose `branch` record is among the lost rows is rewound whole with it (plan 4B
+//!     Decision 7, [`super::cascade`]); one whose `branch` record survives forks below the
+//!     lost range and is untouched. For (b) the cascaded children's rows count as lost rows.
 //!
 //! # What ([`run`])
 //!
@@ -53,7 +55,9 @@
 //!    through the pack's `replaces` (it holds the shared record);
 //! 3. the id counters stay where they are (ids the lost records used are never handed out
 //!    again); `idsScannedThrough` moves back so the winner's ids are scanned;
-//! 4. the branch's generation is bumped and the rewind recorded ([`crate::history`]).
+//! 4. the branch's generation is bumped and the rewind recorded ([`crate::history`]);
+//! 5. the children whose `branch` record was lost are rewound whole, recursively
+//!    ([`super::cascade`]), and the derived tables are recomputed (`crate::derived`).
 //!
 //! The caller then rebuilds `Known` (its `known_tx` no longer holds the lost `txId`s, so a
 //! winner that reuses one is no `TxIdReused`) and resolves once more in the same
@@ -68,6 +72,7 @@ use std::path::Path;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 
+use super::cascade::{self, Child};
 use super::ctx::Ctx;
 use super::quarantine::{self, Quarantined};
 use crate::chain::{ForkReason, ForkSide, Resolution, SegRef};
@@ -92,11 +97,23 @@ pub(super) fn lease_top(dot: &Path) -> Option<u64> {
 use crate::{Rewind, StoreError};
 
 /// A rewind that may go ahead.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct Lost {
     /// The first seq that is rewound.
     from_seq: u64,
     winner_epoch: u64,
+    /// The descendants rewound with it ([`cascade::lost_children`]), parents first.
+    children: Vec<Child>,
+}
+
+impl Lost {
+    pub(super) fn winner_epoch(&self) -> u64 {
+        self.winner_epoch
+    }
+
+    pub(super) fn children(&self) -> &[Child] {
+        &self.children
+    }
 }
 
 #[derive(Deserialize)]
@@ -152,34 +169,29 @@ pub(super) fn eligible(
         })
         .max()
         .unwrap_or(0);
-    // (b)
+    let children = cascade::lost_children(txn, branch, from_seq)?;
+    // (b), the cascaded children's rows included.
     if let Some(e) = held {
-        let at_ours: i64 = txn.query_row(
+        let e = to_i64(e)?;
+        let mut at_ours: i64 = txn.query_row(
             "SELECT COUNT(*) FROM txs WHERE branch = ?1 AND seq >= ?2 AND epoch >= ?3",
-            params![branch, to_i64(from_seq)?, to_i64(e)?],
+            params![branch, to_i64(from_seq)?, e],
             |r| r.get(0),
         )?;
+        for c in &children {
+            at_ours += txn.query_row(
+                "SELECT COUNT(*) FROM txs WHERE branch = ?1 AND epoch >= ?2",
+                params![c.id, e],
+                |r| r.get::<_, i64>(0),
+            )?;
+        }
         if at_ours > 0 {
             return Ok(None);
         }
     }
-    // (d) Until the cascade (plan 4B Task 10): a lost `branch` or `branchSet` record would
-    // leave the index (and a child's fork state) behind, so such a range is not rewound.
-    let indexed: i64 = txn.query_row(
-        "SELECT COUNT(*) FROM txs WHERE branch = ?1 AND seq >= ?2 AND kind IN (?3, ?4)",
-        params![
-            branch,
-            to_i64(from_seq)?,
-            db::kind_text(fin_core::RecordKind::Branch)?,
-            db::kind_text(fin_core::RecordKind::BranchSet)?
-        ],
-        |r| r.get(0),
-    )?;
-    if indexed > 0 {
-        return Ok(None);
-    }
-    // A branch with an index row is based where its `branch` record says (checked above);
-    // one without (a root made by hand) counts as based inside unless `meta` records it.
+    // (d) A branch with an index row is based where its `branch` record says (cascaded with
+    // it when that record is lost); one without (a root made by hand) counts as based inside
+    // unless `meta` records it.
     for other in db::branches(txn)? {
         if other == branch || crate::branch::index::get(txn, &other)?.is_some() {
             continue;
@@ -198,6 +210,7 @@ pub(super) fn eligible(
     Ok(Some(Lost {
         from_seq,
         winner_epoch,
+        children,
     }))
 }
 
@@ -211,15 +224,51 @@ struct Row {
     committed_at: i64,
 }
 
-/// Takes the lost rows of `branch` out (module docs, "What").
-pub(super) fn run(
+/// What [`take_rows`] took out of a branch, for its [`RewindInfo`].
+pub(super) struct Taken {
+    pub(super) count: u32,
+    pub(super) own: u32,
+    writers: BTreeSet<String>,
+    epochs: BTreeSet<u64>,
+    segments: u32,
+    span_ms: i64,
+}
+
+impl Taken {
+    /// The record of this rewind (`kind`: `appliedLine` or `divergedTail`).
+    pub(super) fn info(self, from_rev: u64, kind: &str, winner_epoch: u64, at: i64) -> RewindInfo {
+        RewindInfo {
+            generation: 0,
+            from_rev,
+            kind: kind.into(),
+            count: self.count,
+            own: self.own,
+            writers: self.writers.into_iter().collect(),
+            epochs: self.epochs.into_iter().collect(),
+            winner_epoch,
+            segments: self.segments,
+            span_ms: self.span_ms,
+            at,
+            acknowledged: false,
+        }
+    }
+}
+
+/// Takes the rows of `branch` from `from_seq` on out (module docs, "What", steps 1–2):
+/// quarantined with the 4A origin rule (exported: `SUPERSEDED` with detail
+/// `superseded(seq, epoch)`; unexported: `DIVERGED_TAIL`; `reason`, when given, replaces
+/// both), then the rows, the snapshots at or above `from_seq` and the `segments` rows reaching
+/// it are deleted. `segs` are the branch's folder segments.
+pub(super) fn take_rows(
     ctx: &mut Ctx,
     branch: &str,
-    lost: Lost,
+    from_seq: u64,
     segs: &[SegRef],
-) -> Result<Rewind, StoreError> {
+    reason: Option<&str>,
+    superseded: &dyn Fn(u64, u64) -> String,
+) -> Result<Taken, StoreError> {
     let txn = ctx.txn;
-    let from = to_i64(lost.from_seq)?;
+    let from = to_i64(from_seq)?;
     let rows: Vec<Row> = {
         let mut stmt = txn.prepare(
             "SELECT seq, tx_id, tx_hash, record_bytes, epoch, exported, committed_at FROM txs
@@ -321,10 +370,7 @@ pub(super) fn run(
             epochs.insert(r.epoch);
         }
         let detail = if r.exported {
-            format!(
-                "seq {} (epoch {}) superseded by a line at epoch {}",
-                r.seq, r.epoch, lost.winner_epoch
-            )
+            superseded(r.seq, r.epoch)
         } else {
             format!("committed at epoch {} as seq {}", r.epoch, r.seq)
         };
@@ -334,10 +380,10 @@ pub(super) fn run(
                 tx_hash: &r.tx_hash,
                 branch,
                 origin: if mine { "local" } else { "folder" },
-                reason: if r.exported {
-                    quarantine::SUPERSEDED
-                } else {
-                    quarantine::DIVERGED_TAIL
+                reason: match reason {
+                    Some(why) => why,
+                    None if r.exported => quarantine::SUPERSEDED,
+                    None => quarantine::DIVERGED_TAIL,
                 },
                 detail: &detail,
                 bytes: &r.bytes,
@@ -358,7 +404,6 @@ pub(super) fn run(
         "DELETE FROM segments WHERE branch = ?1 AND last_seq >= ?2",
         params![branch, from],
     )?;
-    rewind_scan(txn, branch, lost.from_seq - 1)?;
 
     let committed: Vec<i64> = rows
         .iter()
@@ -369,27 +414,38 @@ pub(super) fn run(
         (Some(a), Some(b)) => b - a,
         _ => 0,
     };
-    let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     let segments = if plain.is_empty() {
         packs.len()
     } else {
         plain.len()
     };
-    let info = RewindInfo {
-        generation: 0,
-        from_rev: lost.from_seq,
-        kind: "appliedLine".into(),
-        count,
+    Ok(Taken {
+        count: u32::try_from(rows.len()).unwrap_or(u32::MAX),
         own,
-        writers: writers.into_iter().collect(),
-        epochs: epochs.into_iter().collect(),
-        winner_epoch: lost.winner_epoch,
+        writers,
+        epochs,
         segments: u32::try_from(segments).unwrap_or(u32::MAX),
         span_ms,
-        at: ctx.now,
-        acknowledged: false,
+    })
+}
+
+/// Takes the lost rows of `branch` out (module docs, "What", steps 1–4). The caller cascades
+/// to [`Lost::children`] next.
+pub(super) fn run(
+    ctx: &mut Ctx,
+    branch: &str,
+    lost: &Lost,
+    segs: &[SegRef],
+) -> Result<Rewind, StoreError> {
+    let winner = lost.winner_epoch;
+    let superseded = |seq: u64, epoch: u64| {
+        format!("seq {seq} (epoch {epoch}) superseded by a line at epoch {winner}")
     };
-    let generation = history::record(txn, branch, info)?;
+    let taken = take_rows(ctx, branch, lost.from_seq, segs, None, &superseded)?;
+    rewind_scan(ctx.txn, branch, lost.from_seq - 1)?;
+    let (count, own) = (taken.count, taken.own);
+    let info = taken.info(lost.from_seq, "appliedLine", winner, ctx.now);
+    let generation = history::record(ctx.txn, branch, info)?;
     Ok(Rewind {
         branch: branch.to_string(),
         from_rev: lost.from_seq,

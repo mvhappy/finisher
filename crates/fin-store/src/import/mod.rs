@@ -28,10 +28,12 @@
 //!      aside, apply, quarantine;
 //!    - an applied line that lost (`AppliedLineLost`) is first rewound when [`rewind`]'s
 //!      conditions hold, and the branch resolved once more against the rewound DB (at most
-//!      once per branch per pass). Whether it may depends on the lease files too: their
-//!      highest epoch is read before `BEGIN` (never under the database lock) whenever the
-//!      folder's segments or our lease changed or the last pass left such a fork, and it is
-//!      part of the skip key.
+//!      once per branch per pass); a child whose `branch` record was among the lost rows (of
+//!      a rewind or a diverged tail) is rewound whole with it, recursively, and the derived
+//!      tables are recomputed ([`cascade`], plan 4B Decisions 6–7). Whether it may depends
+//!      on the lease files too: their highest epoch is read before `BEGIN` (never under the
+//!      database lock) whenever the folder's segments or our lease changed or the last pass
+//!      left such a fork, and it is part of the skip key.
 //!    - a branch's segments must start at its fork point (`Known::fork`, from the index);
 //!    - folder directories the worklist never reaches ([`aside`]): one whose `branch` record
 //!      is set aside has every record quarantined with that record's reason (recursively);
@@ -67,6 +69,7 @@
 
 mod apply;
 mod aside;
+mod cascade;
 mod ctx;
 mod hydrate;
 mod known;
