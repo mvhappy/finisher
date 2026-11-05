@@ -4,11 +4,12 @@
 use std::collections::{BTreeMap, HashSet};
 
 use fin_core::history::{
-    Lineage, LogRec, LogView, Planned, Stacks, derive_stacks, plan_redo, plan_undo,
+    Lineage, LogRec, LogView, MergePlan, Planned, Stacks, derive_stacks, plan_merge, plan_redo,
+    plan_undo,
 };
 use fin_core::{
-    Applied, ApplyMode, CoreError, Diff, Link, MemIds, Op, Project, Record, SCHEMA_VERSION, Tx,
-    apply_tx_mode, rebase_tx, resolve_ops,
+    Applied, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
+    SCHEMA_VERSION, Tx, apply_tx_mode, rebase_tx, resolve_ops,
 };
 
 struct Br {
@@ -142,6 +143,45 @@ impl MemLog {
         let p = plan_redo(self, b, author, tx_id, &mut ids)?;
         self.ids = ids;
         Ok(self.append(b, p))
+    }
+
+    /// Merges `from` into `into` and appends the planned copies.
+    pub fn merge(
+        &mut self,
+        from: &str,
+        into: &str,
+        author: &str,
+        merge_id: &str,
+        skip_conflicting: bool,
+    ) -> Result<MergePlan, CoreError> {
+        let plan = plan_merge(self, from, into, author, merge_id, skip_conflicting)?;
+        for p in plan.planned.clone() {
+            self.append(into, p);
+        }
+        Ok(plan)
+    }
+
+    /// A copy of `origin` at the head of `b` with kind `link`: its intent re-run as a client
+    /// tx at the head, binding the origin's ids (a cherry-pick without a rebase).
+    pub fn copy(
+        &mut self,
+        b: &str,
+        tx_id: &str,
+        author: &str,
+        link: Link,
+        origin: &LogRec,
+    ) -> LogRec {
+        let tx = self.tx(
+            b,
+            tx_id,
+            author,
+            self.head_seq(b),
+            origin.record.intent.ops.clone(),
+        );
+        let mut ids = BoundIds::new(&tx.ops, &origin.record.bindings).unwrap();
+        let applied = apply_tx_mode(&self.state(b), &tx, &mut ids, ApplyMode::Client)
+            .unwrap_or_else(|e| panic!("{tx_id}: {e:?}"));
+        self.push(b, link, tx, applied)
     }
 
     pub fn stacks(&self, b: &str, author: &str) -> Stacks {

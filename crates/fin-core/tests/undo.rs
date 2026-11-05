@@ -346,3 +346,22 @@ fn stale_edit_over_an_undo_pair_is_mirrored() {
         ]
     );
 }
+
+#[test]
+fn merged_away_drops_the_redo_stack_too() {
+    // On br1: e1, e2, undo e2; all three merged into main. Both of br1's stacks are dropped
+    // (arch §6.4), so the redo of e2 is gone on br1 as well.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.commit("br1", "e1", "alice", vec![delete("c1")]);
+    log.commit("br1", "e2", "alice", vec![delete("c2")]);
+    log.undo("br1", "alice", "u1").unwrap();
+    let s = log.stacks("br1", "alice");
+    assert_eq!((ids(&s.undo), ids(&s.redo)), (vec!["e1"], vec!["u1"]));
+    let plan = log.merge("br1", "main", "carol", "m", false).unwrap();
+    assert_eq!(plan.merged, ["e1", "e2", "u1"]);
+    assert_eq!(log.state("main"), log.state("br1"));
+    let s = log.stacks("br1", "alice");
+    assert!(s.undo.is_empty() && s.redo.is_empty(), "{s:?}");
+    assert_eq!(code(log.redo("br1", "alice", "r1")).code, "NOTHING_TO_REDO");
+}

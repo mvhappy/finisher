@@ -4,7 +4,7 @@
 //! `finisherd` and `@finisher/contracts` read generated types, never hand-written mirrors.
 
 use fin_core::branch::BranchState;
-use fin_core::{CommittedTx, CoreError};
+use fin_core::{CommittedTx, Conflict, CoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -138,5 +138,25 @@ pub struct BranchCreated {
 pub struct HistoryResult {
     pub committed: Vec<CommittedTx>,
     pub undone: Vec<String>,
+    pub dry_run: bool,
+}
+
+/// The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
+/// the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
+/// they copy; `skipped`: the candidates that conflict and were left on the source (with
+/// `skipConflicting`; they are offered again by the next merge); `excluded`: source records
+/// never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
+/// the merge. A retry of a committed merge answers from the log: its records and their
+/// origins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an
+/// empty answer, not an error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MergeReport {
+    pub merge_id: String,
+    pub committed: Vec<CommittedTx>,
+    pub merged: Vec<String>,
+    pub skipped: Vec<Conflict>,
+    pub excluded: Vec<Conflict>,
+    pub source_state: BranchState,
     pub dry_run: bool,
 }

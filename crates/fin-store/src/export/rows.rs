@@ -43,7 +43,7 @@ pub(super) fn pending_branches(conn: &Connection) -> Result<Vec<String>, StoreEr
     Ok(out)
 }
 
-/// The next (at most [`segment::MAX_RECORDS`]) unexported rows of `branch`, in seq order,
+/// The next (at most [`segment::max_records`]) unexported rows of `branch`, in seq order,
 /// after checking that the exported rows are a seq prefix and the rows are consecutive.
 pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, StoreError> {
     let (max_exported, min_pending): (Option<i64>, Option<i64>) = conn.query_row(
@@ -67,7 +67,7 @@ pub(super) fn pending_rows(conn: &Connection, branch: &str) -> Result<Vec<Row>, 
         "SELECT seq, record_bytes, tx_hash, schema_version, epoch, committed_at, tx_id FROM txs
          WHERE branch = ?1 AND exported = 0 ORDER BY seq LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![branch, segment::MAX_RECORDS as i64], |r| {
+    let rows = stmt.query_map(params![branch, segment::max_records() as i64], |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, Vec<u8>>(1)?,

@@ -128,7 +128,7 @@ pub(super) fn plan(
                 // Room for the header's `replaces` list (one hash per replaced file).
                 let reserve = segment::FRAME_RESERVE + 80 * (take.len() + 1);
                 if !take.is_empty()
-                    && (n + rn > segment::MAX_RECORDS || body + rb + reserve > segment::MAX_BYTES)
+                    && (n + rn > segment::max_records() || body + rb + reserve > segment::MAX_BYTES)
                 {
                     break;
                 }

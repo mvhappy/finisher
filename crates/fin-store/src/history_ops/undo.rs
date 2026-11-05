@@ -5,11 +5,12 @@
 //! other record: nothing is re-planned there.
 
 use fin_core::history::{LogView, Stacks, derive_stacks, plan_redo, plan_undo};
-use fin_core::{CommittedTx, Link};
+use fin_core::{CommittedTx, Link, Tx};
 
 use super::{SqlLog, targets};
 use crate::branch::create::{check_key, key_reused};
 use crate::branch::index;
+use crate::commit::{check_args_hash, same_args_hash};
 use crate::db::{self, Counters};
 use crate::write::{Draft, WriteCtx, writable};
 use crate::{HistoryResult, Store, StoreError};
@@ -19,13 +20,17 @@ use crate::{HistoryResult, Store, StoreError};
 /// - `tx_id`: the idempotency key, the record's txId (Decision 26);
 /// - `author`: whose stacks (Decision 25), and the record's author;
 /// - `branch`: a branch reference (an id, an active name or `<name>#<id>`);
-/// - `dry_run`: plan against the local database and keep nothing, on a follower too.
+/// - `dry_run`: plan against the local database and keep nothing, on a follower too;
+/// - `args_hash`: the command input's hash (`blake3:<hex>`, as for edits), stored on the
+///   record's intent; a retry of the txId with another hash is `IDEM_KEY_REUSED`
+///   (Decision 26).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryReq {
     pub tx_id: String,
     pub author: String,
     pub branch: String,
     pub dry_run: bool,
+    pub args_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +76,7 @@ impl Store {
 
     fn history(&mut self, r: &HistoryReq, which: Which) -> Result<HistoryResult, StoreError> {
         check_key(&r.tx_id)?;
+        check_args_hash(r.args_hash.as_deref(), &r.tx_id)?;
         loop {
             if let Some(c) = self.write(&r.tx_id, r.dry_run, |ctx| plan(ctx, r, which))? {
                 return Ok(result(c, r.dry_run));
@@ -79,7 +85,10 @@ impl Store {
             if let Some(existing) = db::find_tx(&self.conn, &r.tx_id)? {
                 return match (which, existing.link.as_deref()) {
                     (Which::Undo, Some(Link::Undo { .. }))
-                    | (Which::Redo, Some(Link::Redo { .. })) => Ok(result(existing, false)),
+                    | (Which::Redo, Some(Link::Redo { .. })) => Ok(result(
+                        same_args_hash(r.args_hash.as_deref(), existing)?,
+                        false,
+                    )),
                     _ => Err(key_reused(&existing)),
                 };
             }
@@ -109,7 +118,10 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &HistoryReq, which: Which) -> Result<Committe
     ctx.append(Draft {
         branch,
         link: planned.link,
-        intent: planned.intent,
+        intent: Tx {
+            args_hash: r.args_hash.clone(),
+            ..planned.intent
+        },
         inverse: planned.applied.inverse,
         bindings: planned.applied.bindings,
         diff: planned.applied.diff,

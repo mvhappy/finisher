@@ -3,7 +3,9 @@
 //! one write path ([`crate::Store::write`]).
 //!
 //! - [`undo`]: `Store::undo`, `Store::redo`, `Store::undo_stacks`.
+//! - [`merge`] holds `Store::merge`.
 
+pub(crate) mod merge;
 pub(crate) mod undo;
 
 use std::collections::{HashMap, HashSet};

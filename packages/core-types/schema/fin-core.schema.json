@@ -756,6 +756,55 @@
         }
       ]
     },
+    "MergeReport": {
+      "additionalProperties": false,
+      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after\nthe merge. A retry of a committed merge answers from the log: its records and their\norigins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an\nempty answer, not an error.",
+      "properties": {
+        "committed": {
+          "items": {
+            "$ref": "#/$defs/CommittedTx"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "excluded": {
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          },
+          "type": "array"
+        },
+        "mergeId": {
+          "type": "string"
+        },
+        "merged": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "skipped": {
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          },
+          "type": "array"
+        },
+        "sourceState": {
+          "$ref": "#/$defs/BranchState"
+        }
+      },
+      "required": [
+        "mergeId",
+        "committed",
+        "merged",
+        "skipped",
+        "excluded",
+        "sourceState",
+        "dryRun"
+      ],
+      "type": "object"
+    },
     "Op": {
       "description": "A primitive edit operation, tagged by `op`.",
       "oneOf": [

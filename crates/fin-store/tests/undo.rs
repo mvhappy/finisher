@@ -87,6 +87,7 @@ fn req(id: &str, author: &str, branch: &str) -> HistoryReq {
         author: author.into(),
         branch: branch.into(),
         dry_run: false,
+        args_hash: None,
     }
 }
 
@@ -533,4 +534,27 @@ fn undo_replays_on_follower() {
     assert_eq!(state(&b, MAIN), state(&a, MAIN));
     let v = b.verify();
     assert!(v.ok, "{v:?}");
+}
+
+#[test]
+fn undo_args_hash_is_stored_and_checked_on_retry() {
+    let e = env();
+    let mut s = project(&e);
+    edit(&mut s, "e1", "alice", vec![delete("c2")]);
+    let h = |c: char| Some(format!("blake3:{}", c.to_string().repeat(64)));
+    let with = |id: &str, hash: Option<String>| HistoryReq {
+        args_hash: hash,
+        ..req(id, "alice", MAIN)
+    };
+    let first = s.undo(with("u1", h('a'))).unwrap();
+    assert_eq!(first.committed[0].tx.args_hash, h('a'));
+    // The same key and hash (or no hash) is a retry; another hash is a reused key.
+    assert_eq!(s.undo(with("u1", h('a'))).unwrap(), first);
+    assert_eq!(s.undo(with("u1", None)).unwrap(), first);
+    let err = code(s.undo(with("u1", h('b'))).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED");
+    let err = code(s.redo(with("r1", Some("md5:x".into()))).unwrap_err());
+    assert_eq!(err.code, "INVALID_OP");
+    let r = s.redo(with("r1", h('c'))).unwrap();
+    assert_eq!(r.committed[0].tx.args_hash, h('c'));
 }

@@ -6,7 +6,11 @@
 //!
 //! - [`undo`]: the per-author undo and redo stacks derived from a branch's own records
 //!   ([`derive_stacks`]), and the `undo` / `redo` planners.
+//! - [`merge`] and [`candidates`]: the merge planner ([`plan_merge`]) and which source records
+//!   it copies.
 
+pub mod candidates;
+pub mod merge;
 pub mod undo;
 
 use std::collections::HashSet;
@@ -16,6 +20,8 @@ use crate::model::Project;
 use crate::record::{Link, Record, RecordKind};
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
+pub use candidates::{Candidates, candidates};
+pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
 pub use undo::{Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
 
 /// One stored record with its place in the log and its diff (the store's `txs` row).

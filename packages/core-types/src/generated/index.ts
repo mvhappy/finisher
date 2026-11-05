@@ -447,6 +447,28 @@ export interface HistoryResult {
   undone: string[];
 }
 /**
+ * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
+ * the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
+ * they copy; `skipped`: the candidates that conflict and were left on the source (with
+ * `skipConflicting`; they are offered again by the next merge); `excluded`: source records
+ * never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
+ * the merge. A retry of a committed merge answers from the log: its records and their
+ * origins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an
+ * empty answer, not an error.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MergeReport".
+ */
+export interface MergeReport {
+  committed: CommittedTx[];
+  dryRun: boolean;
+  excluded: Conflict[];
+  mergeId: string;
+  merged: string[];
+  skipped: Conflict[];
+  sourceState: BranchState;
+}
+/**
  * What the server needs to register a media asset. Its serde form is what `asset.probe`
  * answers (`@finisher/core-types` exports it as `Probe`).
  *

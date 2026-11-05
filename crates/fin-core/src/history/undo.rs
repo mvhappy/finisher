@@ -11,7 +11,8 @@
 //!   unit of its own, `source = Redo` (Decision 23);
 //! - everything else (other authors, `checkpoint`, `branch`, `branchSet`) is skipped;
 //! - last, a unit with a record that was merged away ([`LogView::merged_away`]) drops the undo
-//!   stack from that unit down (Decision 22).
+//!   stack from that unit down, and an undo record merged away drops the redo stack from it
+//!   down (Decision 22; arch §6.4 drops both stacks when the branch is merged).
 //!
 //! **Planning** an undo takes the top unit's stored inverses (its records newest first, or the
 //! redo record's), in the frame right after the unit (the state at its last seq), and rebases
@@ -138,12 +139,15 @@ pub fn derive_stacks(own: &[LogRec], author: &str, merged_away: &HashSet<String>
             _ => {}
         }
     }
-    if let Some(i) = s
-        .undo
-        .iter()
-        .rposition(|u| u.records.iter().any(|t| merged_away.contains(t)))
-    {
-        s.undo.drain(..=i);
+    // Merged away: each stack drops from its top-most entry with such a record down (an
+    // entry on the redo stack is an undo record, merged with the rest).
+    for stack in [&mut s.undo, &mut s.redo] {
+        if let Some(i) = stack
+            .iter()
+            .rposition(|u| u.records.iter().any(|t| merged_away.contains(t)))
+        {
+            stack.drain(..=i);
+        }
     }
     s
 }

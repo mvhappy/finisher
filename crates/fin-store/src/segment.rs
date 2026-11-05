@@ -29,8 +29,32 @@ pub const MIN_READER_VERSION: u32 = 2;
 pub const READER_VERSION: u32 = 2;
 /// The format of a file whose records are all `edit`: what sub-project 4A writes and reads.
 const EDIT_ONLY_VERSION: u32 = 1;
-/// A segment holds at most this many records…
+/// A segment holds at most this many records ([`max_records`])…
 pub const MAX_RECORDS: usize = 1_000;
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static MAX_RECORDS_FOR_TEST: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The most records export and compaction put in one segment: [`MAX_RECORDS`], or what
+/// [`set_max_records_for_test`] set on this thread.
+pub fn max_records() -> usize {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(n) = MAX_RECORDS_FOR_TEST.with(std::cell::Cell::get) {
+        return n;
+    }
+    MAX_RECORDS
+}
+
+/// Test hook: export and compaction on the calling thread cut segments after `n` records
+/// (at least 1), so a few records span several segments. Thread-local: tests running in
+/// parallel keep the real limit. Readers never check the count.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn set_max_records_for_test(n: usize) {
+    MAX_RECORDS_FOR_TEST.with(|c| c.set(Some(n.max(1))));
+}
 /// …or this many bytes. One transaction is never split, so no record may be larger than
 /// [`MAX_RECORD_BYTES`]: then every segment fits.
 pub const MAX_BYTES: usize = 4 << 20;

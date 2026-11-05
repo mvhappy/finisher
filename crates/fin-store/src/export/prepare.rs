@@ -42,7 +42,7 @@ pub(super) fn prepare(
     for row in rows {
         let line = row.bytes.len() + 1;
         if n > 0
-            && (n == segment::MAX_RECORDS
+            && (n == segment::max_records()
                 || body + line + segment::FRAME_RESERVE > segment::MAX_BYTES)
         {
             break;

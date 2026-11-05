@@ -159,7 +159,16 @@ fn with_tx_id(mut e: CoreError, tx_id: &str) -> CoreError {
 
 /// `existing`, the commit `tx`'s id names, unless both hold an `argsHash` and they differ.
 fn same_args(tx: &Tx, existing: CommittedTx) -> Result<CommittedTx, StoreError> {
-    match (&tx.args_hash, &existing.tx.args_hash) {
+    same_args_hash(tx.args_hash.as_deref(), existing)
+}
+
+/// `existing` (the record a request's idempotency key names), unless the request and the
+/// record's intent both hold an `argsHash` and they differ: `IDEM_KEY_REUSED` (Decision 26).
+pub(crate) fn same_args_hash(
+    args_hash: Option<&str>,
+    existing: CommittedTx,
+) -> Result<CommittedTx, StoreError> {
+    match (args_hash, existing.tx.args_hash.as_deref()) {
         (Some(ours), Some(theirs)) if ours != theirs => Err(CoreError::new(
             "IDEM_KEY_REUSED",
             format!(
@@ -190,7 +199,12 @@ fn check_shape(tx: &Tx) -> Result<(), CoreError> {
             .with_details(json!({ "field": "ops", "txId": tx.tx_id }))
             .with_fix("send at least one op"));
     }
-    if let Some(h) = &tx.args_hash {
+    check_args_hash(tx.args_hash.as_deref(), &tx.tx_id)
+}
+
+/// A request's `argsHash`, when present, is `blake3:<64 lowercase hex>` (`INVALID_OP`).
+pub(crate) fn check_args_hash(args_hash: Option<&str>, tx_id: &str) -> Result<(), CoreError> {
+    if let Some(h) = args_hash {
         let hex = h.strip_prefix("blake3:").unwrap_or_default();
         if hex.len() != 64
             || !hex
@@ -201,7 +215,7 @@ fn check_shape(tx: &Tx) -> Result<(), CoreError> {
                 "INVALID_OP",
                 "transaction argsHash is not blake3:<64 lowercase hex>",
             )
-            .with_details(json!({ "field": "argsHash", "txId": tx.tx_id }))
+            .with_details(json!({ "field": "argsHash", "txId": tx_id }))
             .with_fix(
                 "send the blake3 hash of the command input as blake3:<hex>, or no argsHash",
             ));
