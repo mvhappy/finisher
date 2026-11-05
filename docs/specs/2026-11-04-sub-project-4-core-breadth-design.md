@@ -784,20 +784,25 @@ Task 19 has not run. 4A is not mergeable until it has. Each item below was writt
 1. **Full suites** on Windows 11 and the Linux VM: `cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e`. macOS code paths have so far only been type-checked from Linux.
    - *Linux VM, 2026-11-05:* all pass (555 Rust, 85 JS, 32 gate tests, `pnpm gates`, both e2e scenarios).
    - *Windows 11 (MSVC toolchain, NTFS), 2026-11-05:* `cargo test --workspace --release` with `FIN_REQUIRE_SERVER=1` 542 pass (the rest are Unix-only), `pnpm test` 85 pass, `pnpm test:gates` and `pnpm e2e` pass. `pnpm gates` was not run there; its checks don't depend on the OS. The first run found 5 failures: 4 were test-only (`\` separators in expected paths; `Main` and `main` are one folder on a case-insensitive volume). The fifth was a real bug: the Windows storage probe never looked for sync-folder marker files, so a Syncthing (or Resilio, `.dropbox`) folder was classified `local`. It now checks markers first, as on Unix.
+   - *macOS (APFS, case-insensitive), 2026-11-05:* `cargo test --workspace --release` with `FIN_REQUIRE_SERVER=1` 550 pass, `pnpm test` 85, `pnpm test:gates` 32, `pnpm e2e` and `pnpm gates` pass. One test-only failure: APFS refuses non-UTF-8 names (EILSEQ), so the non-UTF-8 scan test skips there. After the lease fixes (item 3) the suites were re-run on Linux (568) and Windows; macOS has not re-run them.
 2. **NAS matrix** (§3.12 rows 1–4) for Mac↔Windows, Mac↔Linux and Windows↔Linux.
 3. **Lease against the spike:** diff the lease's behaviour against the S10 spike's v3 when its code is available.
    - *Comparison with an archive copy, 2026-11-05:* four differences. Fixed: (a) a failed or torn read of the holder's own record lost the lease at once; it is now a failed beat, bounded by the self-fence deadline, with the spike's 10 × 20 ms re-read (§3.5 "Heartbeat and fencing"); (b) creating `lease.json` with `create_new` and then writing left a short record after a crash, which only `takeover --confirm` cleared; it is now staged and published with a server-decided hard link (`MoveFileExW` on Windows), falling back to `create_new` only where there are no hard links (§3.5 "Files"); (c) a Windows claim name pending deletion (ACCESS_DENIED) failed the acquisition; it is now retried (§3.5 "Take" step 2). Kept: (d) a lower-epoch record over ours gives the lease up where the spike rewrote (§3.5). The spike's transient error lists were reviewed and not adopted wholesale (§3.4 "Names and temp files"). Still to run on real systems with the rest of Task 19.
 4. **mtime source on SMB:** whether the probe file's mtime is set by the server or by the client. Covers Samba's 2 s write-time delay and the Linux cifs deferred close. Claims are judged old by server time. Under a client-set mtime with skew above 45 s, two racers should both lose (no double write); confirm this.
 5. **Clock skew:** real skew if available, else emulated, under the takeover rules (25 s unchanged-record rule, probe rejection > 1 s below extrapolation).
 6. **Suspend/resume of a holder:** a sleeping Mac or Windows holder wakes fenced (suspend-aware clocks: `CLOCK_MONOTONIC` on macOS, `QueryInterruptTimePrecise` on Windows), and a takeover it slept through is not overwritten.
+   - *macOS, 2026-11-05:* `counts_sleep()` is true and the code uses `CLOCK_MONOTONIC`, which Apple documents as counting sleep. A real sleep/wake was not tested (the Mac stays awake for other work).
 7. **Windows claim invisibility:** a fresh `lease.claim-*` can stay invisible to Windows for up to 9.9 s. Check the race with the single `base + 1` claim and the 45 s claim authority.
 8. **OS lock behaviour** of `File::try_lock` / `lock_shared` (`lease.lock`, `db.lock`, `server-id.lock`) on Linux, Windows and macOS, including the restart shortcut. The shortcut compares the holder host by `describe_holder`'s `"<host> (finisher …)"` prefix.
+   - *macOS APFS, 2026-11-05:* exclusive/shared `try_lock` behave as `dblock.rs` and `server_lock.rs` assume, within a process and across processes. Not yet run on SMB. The restart shortcut compares `gethostname()`, which macOS can change with the network when no `HostName` is set: the shortcut then misses (slower, not unsafe).
 9. **Machine-id sources:** `/etc/machine-id`, `gethostuuid`, `MachineGuid`. Also directory identity: `FileIdInfo` on ReFS, the file index on NTFS, and a zero serial on FAT/exFAT.
+   - *macOS, 2026-11-05:* `gethostuuid` matches `IOPlatformUUID`.
 10. **Mount-root rules for copies:** macOS `/Volumes`, Linux `/mnt`/`/media`, Windows mapped drives and UNC paths, and unmounted shares.
 11. **Storage-kind detection on real installs:**
     - macOS: iCloud Drive including Desktop & Documents, Dropbox File Provider, Google Drive, OneDrive;
     - Windows: OneDrive Known Folder Move and SharePoint libraries, Google Drive `G:`;
     - Linux: rclone/FUSE mounts, WSL2 `/mnt/c`.
+    - *macOS, 2026-11-05:* iCloud Drive → `sync:icloud`; a File Provider sync client under `~/Library/CloudStorage` → `sync:unknown`; APFS → `local`; smbfs and NFS → `network`. Dropbox, Google Drive, OneDrive and Desktop & Documents were not installed or enabled.
 
     Also check the Linux `fuseblk` = local rule and the `~/.dropbox` false positive.
 12. **Conflict-copy names:** Dropbox `(… conflicted copy …)`, `(Case Conflict)` and `(Selective Sync Conflict)` (from memory), Google Drive `(<n>)` / `[Conflict]` (unverified), iCloud and OneDrive.
@@ -806,6 +811,7 @@ Task 19 has not run. 4A is not mergeable until it has. Each item below was writt
 15. **Compaction on SMB:** deleting a file another client has open (`ACCESS_DENIED` or a pending delete on Windows should be reported as wait and retried); sync folders delivering deletions before the pack (readers wait; 24 h grace).
 16. **Sync folders:** temp-then-rename upload, placeholder hydration (Windows attributes, `SF_DATALESS`, `.icloud` stubs), and the sync gate after a confirmed takeover.
 17. **Daily backups:** the macOS local date (`localtime_r` after `tzset`), and Windows `FileTimeToLocalFileTime` around DST changes.
+    - *macOS, 2026-11-05:* `local_ymd` is right under five zones (including UTC+14) and both 2026 European DST days.
 18. **Lease after `lease.json` is deleted under a holder:** status reported the lease as held elsewhere and `LEASE_HELD` rather than `LEASE_LOST` (seen in Task 15 tests). Confirm the intended reading.
 
 ---

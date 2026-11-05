@@ -105,7 +105,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [x] Task 18: `pnpm e2e` storage scenario (rebuild from folder, follower)
 - [x] Task 20: spec, tracker and README record the decisions (spec §3.13 holds the Task 19 checklist)
 - [ ] **Task 19: cross-host and sync-folder validation** (spec §3.13). Must measure or confirm:
-  - [x] full suites on Windows 11 and the Linux VM — pass on both (2026-11-05; Windows 542 Rust, 85 JS, gate tests, e2e); fixed the Windows probe ignoring sync markers. macOS still only type-checked
+  - [x] full suites on Windows 11 and the Linux VM — pass on both (2026-11-05; Windows 542 Rust, 85 JS, gate tests, e2e); fixed the Windows probe ignoring sync markers. macOS 550 Rust, 85 JS, gates, e2e pass (one APFS test-only fix)
   - NAS matrix per host pair: lease races (0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse), network loss with writes in flight, real or emulated skew, follow latency ≤ 3 s + cache window
   - mtime source on SMB (server- vs client-set; Samba 2 s write-time delay; cifs deferred close); claims judged by client-set mtime under skew > 45 s
   - clock skew; suspend/resume of a holder (wakes fenced); Windows claim invisibility race (up to 9.9 s)
