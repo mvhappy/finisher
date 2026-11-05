@@ -232,3 +232,60 @@ fn takeover_on_a_sync_folder_needs_confirmation() {
     assert_eq!(b.read_only(), None);
     commit(&mut b, "b1", vec![insert(0, "a1")]);
 }
+
+// ---- Review of 546b7f6: a restarted process re-takes its own lease (server-data lock) ----
+
+/// Forgets what this process knows about its leases on the project folder, as a new process
+/// would.
+fn restart(e: &Env) {
+    fin_store::lease::forget_process_for_test(&e.dir.join(".finisher"));
+}
+
+#[test]
+fn a_restarted_server_retakes_its_own_lease_at_once() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    a.close().unwrap();
+    restart(&e);
+    let mut a = e.open("a");
+    assert_eq!(held_epoch(&a), Some(2), "{:?}", a.lease_state());
+    assert_eq!(a.read_only(), None);
+    commit(&mut a, "t2", vec![insert(0, "a1")]);
+}
+
+#[test]
+fn a_second_process_on_the_same_server_data_follows() {
+    let e = env();
+    let a = e.create("a");
+    restart(&e); // "another process" from here on
+    let mut a2 = e.open("a");
+    assert_eq!(
+        a2.read_only(),
+        Some(ReadOnlyReason::LeaseHeld),
+        "{:?}",
+        a2.lease_state()
+    );
+    assert_eq!(refused(&mut a2, "x"), "LEASE_HELD");
+    // The first process stops: its lock goes with it, and the second re-takes at once.
+    drop(a);
+    e.poll(&mut a2);
+    assert_eq!(held_epoch(&a2), Some(2));
+    assert_eq!(a2.read_only(), None);
+}
+
+#[test]
+fn a_server_data_lock_held_by_someone_else_means_follow() {
+    let e = env();
+    let a = e.create("a");
+    let lock_path = a.db_path().with_file_name("lease.lock");
+    drop(a);
+    restart(&e);
+    let other = fs::File::open(&lock_path).unwrap();
+    other.try_lock().unwrap();
+    let mut a = e.open("a");
+    assert_eq!(a.read_only(), Some(ReadOnlyReason::LeaseHeld));
+    other.unlock().unwrap();
+    e.poll(&mut a);
+    assert_eq!(held_epoch(&a), Some(2));
+}

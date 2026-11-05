@@ -47,19 +47,18 @@
 //!    Anything else → delete our claim and back off.
 //! 6. Delete claims below our epoch (spec §3.5), register, start the heartbeat.
 
-use std::fs::OpenOptions;
-use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use fin_core::CoreError;
 
+mod take;
+
 use super::clock::{ProbeSample, ServerClock};
 use super::record::{self, LeaseRecord, Seen};
 use super::refusal::refused;
 use super::registry::{self, Mine};
-use super::{Lease, LeaseState, Params, Previous, claim, valid_server_id};
-use crate::fsio;
+use super::{Lease, LeaseState, Params, ServerLock, claim, server_lock, valid_server_id};
 
 /// A server that wants the lease of one folder. Keep one across attempts: staleness needs two
 /// observations ≥ 5 s apart.
@@ -82,6 +81,12 @@ pub struct Contender {
     /// The last probe that counted (moved forward, round trip ≤ TTL/4); used to age rival
     /// claims.
     counted: Option<ProbeSample>,
+    /// The server-data lock, if this server uses one ([`ServerLock`]).
+    server_lock: Option<ServerLock>,
+    /// Taken by the observation that found our own record left by a stopped process.
+    locked: Option<server_lock::Held>,
+    /// The record to re-take is one this process wrote (registry).
+    leftover: bool,
     #[cfg(any(test, feature = "test-hooks"))]
     after_write: Option<AfterWrite>,
 }
@@ -153,9 +158,19 @@ impl Contender {
             params,
             evidence: None,
             counted: None,
+            server_lock: None,
+            locked: None,
+            leftover: false,
             #[cfg(any(test, feature = "test-hooks"))]
             after_write: None,
         }
+    }
+
+    /// Uses the server-data lock at `lock` (module docs of [`super::server_lock`]): every
+    /// acquisition holds it, and our own record left by a stopped process is re-taken at once.
+    pub fn with_server_lock(mut self, lock: ServerLock) -> Contender {
+        self.server_lock = Some(lock);
+        self
     }
 
     /// One attempt: takes a free lease, our own stopped one, or (where
@@ -168,7 +183,10 @@ impl Contender {
             .map_err(|reason| LeaseState::Lost { reason })?
         {
             Verdict::Free => self.take(Expected::Missing),
-            Verdict::Leftover(r) => self.take(Expected::Record(r)),
+            Verdict::Leftover(r) => {
+                self.leftover = true;
+                self.take(Expected::Record(r))
+            }
             Verdict::Stale { expected, .. } if self.params.auto_takeover => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => Err(LeaseState::Stale { holder, epoch }),
             Verdict::Held {
@@ -335,7 +353,11 @@ impl Contender {
                             self.evidence = None;
                             return Ok(Verdict::Leftover(r));
                         }
-                        Mine::Unknown => {}
+                        Mine::Unknown => {
+                            if let Some(v) = self.own_record_elsewhere(&r) {
+                                return Ok(v);
+                            }
+                        }
                     }
                 }
                 let age = server_now.map(|n| n - r.probe_server_ms);
@@ -350,6 +372,32 @@ impl Contender {
                     Expected::Record(r),
                 ))
             }
+        }
+    }
+
+    /// Our own record, not written by this process: the server-data lock decides
+    /// ([`super::server_lock`]). `None`: judge it like anyone's.
+    fn own_record_elsewhere(&mut self, r: &LeaseRecord) -> Option<Verdict> {
+        let cfg = self.server_lock.as_ref()?;
+        match server_lock::try_lock(&cfg.path) {
+            server_lock::Attempt::Locked(held)
+                if cfg.shortcut && server_lock::same_host(&r.holder) =>
+            {
+                self.evidence = None;
+                self.locked = Some(held);
+                Some(Verdict::Leftover(r.clone()))
+            }
+            server_lock::Attempt::Busy => {
+                self.evidence = None;
+                Some(Verdict::Held {
+                    holder: r.holder.clone(),
+                    epoch: r.epoch,
+                    age: None,
+                    expected: None,
+                    why: "HELD",
+                })
+            }
+            _ => None,
         }
     }
 
@@ -416,180 +464,4 @@ impl Contender {
             held("STALE_UNCONFIRMED")
         }
     }
-
-    /// Claims a fresh epoch and writes our record over `expected` (module docs).
-    fn take(&mut self, expected: Expected) -> Result<Lease, LeaseState> {
-        self.evidence = None;
-        let mono = self.params.clock.clone();
-        let lost = |reason: String| LeaseState::Lost { reason };
-        let busy = |holder: String, epoch| LeaseState::HeldElsewhere {
-            holder,
-            epoch,
-            age_server_ms: None,
-        };
-        let claims = claim::list(&self.dir)
-            .map_err(|e| lost(format!("cannot list {}: {e}", self.dir.display())))?;
-        let floor = match &expected {
-            Expected::Record(r) => r.epoch,
-            Expected::Missing | Expected::Corrupt(_) => 0,
-        };
-        // 1. Another acquisition in progress.
-        let server_now = self
-            .counted
-            .and_then(|p| super::clock::counted_server_ms(&p, mono.now()));
-        let stale_ms = i64::try_from(self.params.stale_after.as_millis()).unwrap_or(i64::MAX);
-        let in_progress = |c: &claim::ClaimFile| match (server_now, c.server_ms) {
-            (Some(now), Some(m)) => now - m <= stale_ms,
-            _ => true,
-        };
-        if let Some(rival) = claims
-            .iter()
-            .rev()
-            .find(|c| c.epoch > floor && in_progress(c))
-        {
-            let who = claim::owner(&self.dir, rival.epoch)
-                .unwrap_or_else(|| "another server (acquiring)".to_string());
-            return Err(busy(who, rival.epoch));
-        }
-        // 2. Claim the one epoch after everything ever used here.
-        let base = [
-            floor,
-            claims.last().map_or(0, |c| c.epoch),
-            claim::highest_segment_epoch(&self.dir),
-            registry::last_epoch(&registry::key(&self.dir, &self.server_id)).unwrap_or(0),
-        ]
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-        let claimed = match claim::claim_next(&self.dir, base, &self.server_id) {
-            Ok(c) => c,
-            // Someone else claimed it from the same view: back off, creating nothing.
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                return Err(busy("another server (acquiring)".into(), base + 1));
-            }
-            Err(e) => return Err(lost(format!("cannot create a lease claim: {e}"))),
-        };
-        let epoch = claimed.epoch;
-        let back_off = |state: LeaseState| {
-            claim::remove(&self.dir, epoch);
-            Err(state)
-        };
-        let stamped = mono.now();
-        let Some(stamp) = self.clock.now_server_ms(stamped) else {
-            return back_off(lost("no server time: the probe file cannot be read".into()));
-        };
-        let mine = LeaseRecord::new(&self.server_id, epoch, 0, &self.holder, stamp);
-        let bytes = record::encode(&mine);
-        let path = self.record_path();
-        // 3. Unchanged since judged? 4. Then write.
-        let wrote = match (&expected, record::read(&path)) {
-            (Expected::Missing, Ok(Seen::Missing)) => create_record(&path, &bytes),
-            (Expected::Record(r), Ok(Seen::Valid(now))) if now == *r => {
-                fsio::write_in_place(&path, &bytes)
-            }
-            (Expected::Corrupt(b), Ok(Seen::Corrupt(now))) if now == *b => {
-                fsio::write_in_place(&path, &bytes)
-            }
-            (_, Ok(seen)) => return back_off(changed(seen)),
-            (_, Err(e)) => {
-                return back_off(busy(format!("unknown (lease.json is unreadable: {e})"), 0));
-            }
-        };
-        match wrote {
-            Ok(()) => {}
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                return back_off(busy("another server".into(), epoch));
-            }
-            Err(e) => {
-                // An in-place write that failed may have landed in part. Put back what was
-                // there, so the folder is as it was judged (a torn record would read as
-                // damaged to everyone, and damaged records need a confirmed takeover).
-                // A record we created is already removed by `create_record`.
-                restore(&path, &expected);
-                return back_off(lost(format!("cannot write lease.json: {e}")));
-            }
-        }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(f) = self.after_write.take() {
-            f(&self.dir);
-        }
-        // 5. Read back. Anything but our record: remove our claim (a young orphan claim
-        // would hold others off for 45 s). A torn read-back, while no claim above ours exists,
-        // is our write landing badly: rewrite it once rather than leave a damaged record,
-        // which would need a confirmed takeover. Another server cannot be writing it then:
-        // it would hold a claim above ours.
-        let mut seen = record::read(&path);
-        if matches!(seen, Ok(Seen::Corrupt(_)))
-            && claim::list(&self.dir).is_ok_and(|c| c.iter().all(|c| c.epoch <= epoch))
-            && fsio::write_in_place(&path, &bytes).is_ok()
-        {
-            seen = record::read(&path);
-        }
-        match seen {
-            Ok(Seen::Valid(r)) if r == mine => {}
-            Ok(seen) => return back_off(changed(seen)),
-            Err(e) => return back_off(lost(format!("lease.json is unreadable: {e}"))),
-        }
-        // 6. What this acquisition replaced, for the owner's ordering rule (module docs of
-        // [`super`]), before the claims below ours are gone.
-        let previous = Previous {
-            record: match &expected {
-                Expected::Record(r) => Some(r.server_id.clone()),
-                Expected::Missing | Expected::Corrupt(_) => None,
-            },
-            damaged: matches!(expected, Expected::Corrupt(_)),
-            claims: claims
-                .iter()
-                .filter(|c| c.epoch < epoch)
-                .map(|c| (c.epoch, claim::owner(&self.dir, c.epoch)))
-                .collect(),
-        };
-        claim::remove_below(&self.dir, epoch);
-        Ok(Lease::start(
-            &self.dir,
-            registry::key(&self.dir, &self.server_id),
-            self.params.clone(),
-            self.clock.clone(),
-            mine,
-            stamped,
-            previous,
-        ))
-    }
-}
-
-/// Best effort: `lease.json` back to what it was before our failed in-place write.
-fn restore(path: &Path, expected: &Expected) {
-    let _ = match expected {
-        Expected::Record(r) => fsio::write_in_place(path, &record::encode(r)),
-        Expected::Corrupt(b) => fsio::write_in_place(path, b),
-        Expected::Missing => Ok(()),
-    };
-}
-
-/// `lease.json` changed between judging and writing.
-fn changed(seen: Seen) -> LeaseState {
-    let (holder, epoch) = match seen {
-        Seen::Valid(r) => (r.holder, r.epoch),
-        Seen::Missing => ("unknown (lease.json is missing)".to_string(), 0),
-        Seen::Corrupt(_) => ("unknown (lease.json is damaged)".to_string(), 0),
-    };
-    LeaseState::HeldElsewhere {
-        holder,
-        epoch,
-        age_server_ms: None,
-    }
-}
-
-/// Creates `lease.json` exclusively, the only time it is ever created. If the write fails the
-/// file is removed again: a partial record would read as damaged to everyone, and a damaged
-/// record is never taken over automatically. It is ours and was never valid, so nobody holds
-/// it.
-fn create_record(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    let result = file.write_all(bytes).and_then(|()| fsio::sync_file(&file));
-    if result.is_err() {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-    }
-    result
 }

@@ -24,7 +24,10 @@
 //!
 //! `open` never blocks on the ordering rule's directory-cache wait: when it applies, the store
 //! is `CATCHING_UP` until a `tick` after the wait (at open it practically never does: a
-//! single acquisition attempt only takes a free lease or this process's own stopped one).
+//! single acquisition attempt only takes a free lease, this process's own stopped one, or
+//! this server's own record left by a process that stopped: the server-data lock
+//! `<server-data>/projects/<id>/lease.lock` proves no process of this server data still holds
+//! it, so a restart is writable at once, at a fresh epoch).
 //! The folder I/O is a lease probe, the record read, a claim create, one scan and, while
 //! holding, one lease check: tens of milliseconds on a local disk.
 
@@ -38,7 +41,7 @@ use std::time::Duration;
 use fin_core::{CoreError, Rational, new_project};
 use serde_json::json;
 
-use crate::lease::{MonoClock, Params, SystemClock};
+use crate::lease::{MonoClock, Params, ServerLock, SystemClock};
 use crate::project_file::{self, Genesis, ProjectFile, read_project_file};
 use crate::storage_kind::{self, StorageKind};
 use crate::{
@@ -221,7 +224,14 @@ impl Store {
         (kind, storage_warning): (StorageKind, Option<String>),
         opts: &OpenOptions,
     ) -> Store {
-        let ctl = tick::LeaseCtl::new(opts.params(kind));
+        let mut ctl = tick::LeaseCtl::new(opts.params(kind));
+        // `<server-data>/projects/<id>/lease.lock`; the restart shortcut only where an OS lock
+        // means something (local storage).
+        let data_dir = db_path.parent().unwrap_or(Path::new("."));
+        ctl.server_lock = Some(ServerLock {
+            path: data_dir.join("lease.lock"),
+            shortcut: storage_kind::detect(data_dir, None) == StorageKind::Local,
+        });
         Store {
             conn,
             project_id,

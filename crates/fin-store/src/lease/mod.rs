@@ -62,6 +62,7 @@ mod previous;
 pub mod record;
 mod refusal;
 mod registry;
+mod server_lock;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -82,7 +83,11 @@ pub use clock::{MonoClock, ServerClock, SystemClock};
 pub use hooks::{HangPoint, LeaseHooks};
 pub use previous::Previous;
 use record::LeaseRecord;
+pub use server_lock::ServerLock;
 
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use registry::forget_process_for_test;
 /// A heartbeat that failed is tried again this soon (monotonic).
 pub const RETRY_AFTER: Duration = Duration::from_secs(1);
 /// Dropping a lease waits this long for its heartbeat thread (blocked in folder I/O on a
@@ -187,7 +192,7 @@ pub fn describe_holder(app_version: &str) -> String {
     format!("{} (finisher {app_version})", host_name())
 }
 
-fn host_name() -> String {
+pub(crate) fn host_name() -> String {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
@@ -220,6 +225,9 @@ pub(crate) struct Inner {
     key: registry::Key,
     epoch: u64,
     previous: Previous,
+    /// The server-data lock, held as long as anything of this lease (its heartbeat thread
+    /// included) lives.
+    _server_lock: Option<server_lock::Held>,
     params: Params,
     /// All `lease.json` I/O of this lease, so a fence never reads half of its own heartbeat.
     io: Mutex<Io>,
@@ -272,6 +280,7 @@ impl Lease {
         Contender::new(dir, server_id, holder, params).try_acquire()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start(
         dir: &Path,
         key: registry::Key,
@@ -280,6 +289,7 @@ impl Lease {
         record: LeaseRecord,
         stamped: Instant,
         previous: Previous,
+        server_lock: Option<server_lock::Held>,
     ) -> Lease {
         registry::started(&key, &record);
         let inner = Arc::new(Inner {
@@ -287,6 +297,7 @@ impl Lease {
             key,
             epoch: record.epoch,
             previous,
+            _server_lock: server_lock,
             params,
             io: Mutex::new(Io {
                 clock,

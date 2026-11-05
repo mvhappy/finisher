@@ -44,7 +44,7 @@ use fin_core::CoreError;
 
 use crate::export::{self, ExportReport, StoreLease};
 use crate::import::ImportReport;
-use crate::lease::{Contender, Lease, LeaseState, Params, describe_holder};
+use crate::lease::{Contender, Lease, LeaseState, Params, ServerLock, describe_holder};
 use crate::status::StoreEvent;
 use crate::storage_kind::StorageKind;
 use crate::{Store, StoreError};
@@ -86,6 +86,8 @@ pub(crate) struct LeaseCtl {
     last_poll: Option<Instant>,
     /// A test lease is in force: no acquisition, no re-check.
     fixed: bool,
+    /// The server-data lock every acquisition takes (`lease::ServerLock`).
+    pub(crate) server_lock: Option<ServerLock>,
 }
 
 impl LeaseCtl {
@@ -101,6 +103,7 @@ impl LeaseCtl {
             check_error: None,
             last_poll: None,
             fixed: false,
+            server_lock: None,
         }
     }
 
@@ -210,10 +213,16 @@ impl Store {
             contender,
             params,
             holder,
+            server_lock,
             ..
         } = &mut self.ctl;
-        contender
-            .get_or_insert_with(|| Contender::new(&dir, &self.server_id, holder, params.clone()))
+        contender.get_or_insert_with(|| {
+            let c = Contender::new(&dir, &self.server_id, holder, params.clone());
+            match server_lock {
+                Some(l) => c.with_server_lock(l.clone()),
+                None => c,
+            }
+        })
     }
 
     /// One acquisition attempt. Never creates `.finisher/`: a project folder that vanished

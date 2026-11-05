@@ -99,3 +99,11 @@ pub(super) fn lookup(key: &Key, record: &LeaseRecord) -> Mine {
         _ => Mine::Unknown,
     }
 }
+
+/// Test hook: this process forgets its leases on `dir` (`.finisher/`), as a new process
+/// would know nothing of them.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn forget_process_for_test(dir: &Path) {
+    let k = key(dir, "");
+    lock(table()).retain(|key, _| key.0 != k.0);
+}
