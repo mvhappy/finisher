@@ -124,7 +124,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
   - compaction deletes on SMB (open handles), sync folders delivering deletions before packs
   - sync rows: temp-then-rename upload, placeholder hydration, sync gate after a confirmed takeover
   - [x] daily backups: macOS local date right in five zones; Windows `FileTimeToLocalFileTime` used today's bias for any date (2 of 6 DST-day instants a day off) → `SystemTimeToTzSpecificLocalTimeEx`, tested with injected zones (bdc94e5, spec §3.13 item 17)
-  - [x] status after `lease.json` is deleted under a holder: the holder now reports `LEASE_LOST`, others `LEASE_HELD` (947aad5, spec §3.13 item 18)
+  - [x] status after `lease.json` is deleted under a holder: the holder now reports `LEASE_LOST`, others `LEASE_HELD` (947aad5; also after a restart with the server-data lock free, takeover wording, sync `--confirm`: 34bd3c7; spec §3.13 item 18)
 
 ### Follow-ups from 4A
 - [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside; `VACUUM INTO` on a second connection). A big follower import delays short calls today
@@ -141,11 +141,11 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] `BASE_REV_AHEAD` vs `HISTORY_REWOUND` precision for a subscriber whose `fromRev` is beyond a rewound head
 - [ ] `tx.commit.generation` and `ops.subscribe.generation` optional in protocol 1 → required in protocol 2
 - [ ] Linux NFS: directory attribute cache (`acdirmax`, 60 s by default) exceeds the 10 s ordering-rule wait; NFS is classified `network` but untested. Measure, and use a longer wait or a listing refresh there
-- [x] Windows (~4.9 s, not-found cache) and macOS smbfs (1.5–2.4 s): `PROJECT_NOT_FOUND` right after another host creates the project → 12 s retry on network storage, listing refresh first on macOS (7716b8a; spec §3.13 item 14). Linux cifs/NFS take the same retry, unmeasured
+- [x] Windows (~4.9 s, not-found cache) and macOS smbfs (1.5–2.4 s): `PROJECT_NOT_FOUND` right after another host creates the project → 12 s retry on network storage, listing refresh first on macOS (7716b8a; only under an existing parent, leftover probes swept: 145d137; spec §3.13 item 14). Linux cifs/NFS take the same retry, unmeasured
 - [ ] macOS smbfs: whether the lease probe can read a client-set mtime (no `AT_STATX_FORCE_SYNC`); untested
 - [ ] Locked files: no test for the pending-deletion path (first sighting without metadata); a verify right after open shows `SEGMENT_LOCKED`, not `unreadable`, until the store has been open 60 s
 - [ ] A segment held open by another SMB client slows compaction to one 60 s retry per file
-- [x] iCloud: a first read of a dataless file can fail `ETIMEDOUT` (1 in ~25) → placeholder reads that time out are retried 3 × 1 s (`fsio::hydrating`, b23a522); unit-tested via a hook, not re-run on iCloud
+- [x] iCloud: a first read of a dataless file can fail `ETIMEDOUT` (1 in ~25) → placeholder reads that time out are retried 3 × 1 s (`fsio::hydrating`, b23a522; not the lease's reads or the per-poll project-file reread, d022fc3/145d137); unit-tested via a hook, not re-run on iCloud
 - [ ] iCloud conflict-copy names and second-device mid-upload view: need a second device
 - [ ] Clean close could write a "released" lease record so other servers need not wait out 45 s of staleness
 - [ ] `fin project verify` / `rebuild` / `compact` have no progress or cancellation (only `ENGINE_BUSY {operation, sinceMs}`)
