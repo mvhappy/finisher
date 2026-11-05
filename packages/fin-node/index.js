@@ -78,8 +78,8 @@ export class Engine {
     return call(this.#native.head(branch));
   }
 
-  commit(txJson) {
-    return call(this.#native.commit(txJson));
+  commit(txJson, generationJson) {
+    return call(generationJson === undefined ? this.#native.commit(txJson) : this.#native.commit(txJson, generationJson));
   }
 
   snapshot(branch) {
@@ -90,14 +90,74 @@ export class Engine {
     return call(this.#native.opsSince(branch, rev));
   }
 
+  opsSinceAt(branch, rev) {
+    return call(this.#native.opsSinceAt(branch, rev));
+  }
+
+  status() {
+    return call(this.#native.status());
+  }
+
+  txGet(txId) {
+    return call(this.#native.txGet(txId));
+  }
+
+  acknowledgeRewind(branch, generation) {
+    return call(this.#native.acknowledgeRewind(branch, generation));
+  }
+
+  acknowledgeSalvage(copy) {
+    return call(this.#native.acknowledgeSalvage(copy));
+  }
+
+  takeover(confirm) {
+    return call(this.#native.takeover(confirm));
+  }
+
+  verify() {
+    return call(this.#native.verify());
+  }
+
+  rebuild() {
+    return call(this.#native.rebuild());
+  }
+
+  compact() {
+    return call(this.#native.compact());
+  }
+
+  onEvent(cb) {
+    if (typeof cb !== "function") throw new TypeError("onEvent needs a function");
+    this.#native.onEvent(cb);
+  }
+
   async close() {
     await call(this.#native.close());
   }
 
+  #hook(name) {
+    if (!this.#native[name]) throw new Error("fin-node was built without the test-hooks feature");
+    return this.#native[name].bind(this.#native);
+  }
+
   /** @internal Test builds only: panics inside the native store call. */
   panicForTest() {
-    if (!this.#native.panicForTest) throw new Error("fin-node was built without the test-hooks feature");
-    return call(this.#native.panicForTest());
+    return call(this.#hook("panicForTest")());
+  }
+
+  /** @internal Test builds only: the next maintenance tick panics. */
+  panicNextTickForTest() {
+    this.#hook("panicNextTickForTest")();
+  }
+
+  /** @internal Test builds only: the next long call keeps the store `ms` longer. */
+  delayNextLongCallForTest(ms) {
+    this.#hook("delayNextLongCallForTest")(ms);
+  }
+
+  /** @internal Test builds only: whether the maintenance thread runs. */
+  maintenanceRunningForTest() {
+    return this.#hook("maintenanceRunningForTest")();
   }
 }
 

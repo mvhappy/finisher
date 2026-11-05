@@ -8,27 +8,85 @@ export interface FinNodeError extends Error {
 }
 
 /**
- * One project's op log. Every method runs on the libuv thread pool and rejects with a
- * `FinNodeError`. JSON payloads follow the fin-core schema (`@finisher/core-types`).
+ * One project's op log. Short calls run on the libuv thread pool; long calls (`create`,
+ * `open`, `takeover`, `verify`, `rebuild`, `compact`, `close`) run one at a time, in call
+ * order, on the engine's own worker thread. While a long call runs, short calls reject at once
+ * with `ENGINE_BUSY` (`details: { operation, sinceMs }`, transient). Every method rejects with a
+ * `FinNodeError`. JSON payloads follow the fin-core schema (`@finisher/core-types`) and the
+ * fin-store `ProjectStatus` / report shapes (camelCase).
+ *
+ * A maintenance thread ticks the store every 500 ms (following the folder, exporting, driving
+ * the lease, daily backups, compaction) until `close`.
  */
 export declare class Engine {
   private constructor();
   /** Creates a project; `rate` is a rational string such as `"30"` or `"30000/1001"`. */
   static create(serverData: string, projectDir: string, name: string, rate: string): Promise<Engine>;
+  /** Opens a project: acquires the lease or follows, imports, rebuilds a missing or damaged DB. */
   static open(serverData: string, projectDir: string): Promise<Engine>;
   readonly projectId: string;
   /** Head revision of `branch` (0 when it does not exist). */
   head(branch: string): Promise<number>;
-  /** Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. */
-  commit(txJson: string): Promise<string>;
+  /**
+   * Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generationJson`
+   * (`{"incarnation": string, "n": number}`, from `opsSinceAt` or `status`), rejects with
+   * `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
+   */
+  commit(txJson: string, generationJson?: string): Promise<string>;
   /** Resolves to `{ rev, project }` JSON. */
   snapshot(branch: string): Promise<string>;
   /** Resolves to the `CommittedTx[]` JSON with `rev > rev`. */
   opsSince(branch: string, rev: number): Promise<string>;
-  /** Closes the database; later calls reject with `ENGINE_CLOSED`. */
+  /** Resolves to `{ generation: { incarnation, n }, ops: CommittedTx[] }` JSON, read together. */
+  opsSinceAt(branch: string, rev: number): Promise<string>;
+  /** Resolves to the `ProjectStatus` JSON (`fin project status`). */
+  status(): Promise<string>;
+  /**
+   * What became of `txId`: the `CommittedTx` JSON; or, when it was set aside,
+   * `{ "setAside": { txId, branch, reason, origin } }` JSON (`reason`: `SUPERSEDED`,
+   * `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`, `MALFORMED`,
+   * `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`); or `null` when unknown.
+   */
+  txGet(txId: string): Promise<string | null>;
+  /** Stops status reporting the rewind of `branch` that started `generation`; `false` if none. */
+  acknowledgeRewind(branch: string, generation: number): Promise<boolean>;
+  /** Acknowledges the incomplete salvage of kept copy `copy`; `false` if none is listed. */
+  acknowledgeSalvage(copy: string): Promise<boolean>;
+  /** Long call: takes the lease over; resolves to the `ProjectStatus` JSON. */
+  takeover(confirm: boolean): Promise<string>;
+  /** Long call: resolves to the `VerifyReport` JSON (`{ ok, checks: [{ name, ok, details }] }`). */
+  verify(): Promise<string>;
+  /** Long call: rebuilds the database from the folder; resolves to the `RebuildReport` JSON. */
+  rebuild(): Promise<string>;
+  /**
+   * Long call: compacts now (forced); resolves to `{ skipped, manifests, packsWritten, replaced,
+   * finished, deleted, waiting: [{ name, why }], abandoned: [{ name, why }] }` JSON.
+   */
+  compact(): Promise<string>;
+  /**
+   * Delivers every later store event to `cb` (replacing an earlier callback); events from
+   * before the first registration are buffered (the newest 1024). Does not keep the process
+   * alive. Events (JSON):
+   * - `{ type: "applied", tx: CommittedTx }`: a record imported from the folder;
+   * - `{ type: "status", status: ProjectStatus }`: the status changed;
+   * - `{ type: "rewound", branch, fromRev, quarantined, own, generation, incarnation }`;
+   * - `{ type: "error", error: { code, message, details, fix? }, fatal: boolean }`: a tick
+   *   failed (`fatal`: it panicked and the engine is dead).
+   */
+  onEvent(cb: (json: string) => void): void;
+  /**
+   * Stops maintenance, flushes the export and closes the database (after long calls queued
+   * before it); later calls reject with `ENGINE_CLOSED`. Idempotent.
+   */
   close(): Promise<void>;
   /** @internal Test builds only (`test-hooks`): rejects with `INTERNAL` and kills the engine. */
   panicForTest(): Promise<void>;
+  /** @internal Test builds only: the next maintenance tick panics. */
+  panicNextTickForTest(): void;
+  /** @internal Test builds only: the next long call keeps the store `ms` longer. */
+  delayNextLongCallForTest(ms: number): void;
+  /** @internal Test builds only: whether the maintenance thread runs. */
+  maintenanceRunningForTest(): boolean;
 }
 
 /** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */

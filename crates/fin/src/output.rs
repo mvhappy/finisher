@@ -94,7 +94,8 @@ const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE"];
 /// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
 /// a resource another process holds (`DB_IN_USE`: a rebuild needs the project database to
 /// itself). `SERVER_TIMEOUT` is fin's own: the server
-/// accepted the connection but did not answer in time. `ENGINE_CLOSED`,
+/// accepted the connection but did not answer in time. `ENGINE_CLOSED`, `ENGINE_BUSY` (a
+/// verify, rebuild, compaction or takeover has the project for now),
 /// `SERVER_SHUTTING_DOWN` and `CANCELLED` (the server interrupted the request, e.g. while
 /// stopping) are transient: retrying against a (re)started server can succeed.
 const UNAVAILABLE_CODES: &[&str] = &[
@@ -103,6 +104,7 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "SERVER_START_FAILED",
     "SERVER_TIMEOUT",
     "ENGINE_CLOSED",
+    "ENGINE_BUSY",
     "SERVER_SHUTTING_DOWN",
     "CANCELLED",
     "DB_IN_USE",
@@ -199,6 +201,7 @@ mod tests {
             "SERVER_START_FAILED",
             "SERVER_TIMEOUT",
             "ENGINE_CLOSED",
+            "ENGINE_BUSY",
             "SERVER_SHUTTING_DOWN",
             "CANCELLED",
         ] {
