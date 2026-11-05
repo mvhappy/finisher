@@ -16,7 +16,9 @@ pub mod footprint;
 pub mod map;
 
 pub use conflict::{Conflict, Conflicts, reasons};
-pub use footprint::{Footprint, Touch, entity_conflict, footprint};
+pub use footprint::{
+    Footprint, Touch, committed_footprints, committed_ops, entity_conflict, footprint, split_diff,
+};
 pub use map::{Assoc, MapResult, Mapping, Recover, StepMap, Unmapped};
 
 use serde_json::json;
@@ -149,21 +151,8 @@ pub fn rebase_tx(tx: &Tx, since: &[CommittedTx]) -> Result<Tx, LegacyConflict> {
 
 /// Pairs each committed op (placeholders resolved) with its own shift.
 fn split(committed: &CommittedTx) -> Result<Vec<(Op, Diff)>, LegacyConflict> {
-    let mismatch = || LegacyConflict::new("committed diff does not match its ops");
-    let mut shifts = committed.diff.shifts.iter();
-    let mut out = Vec::with_capacity(committed.tx.ops.len());
-    for op in &committed.tx.ops {
-        let mut diff = Diff::default();
-        if op.records_shift() {
-            diff.shifts
-                .push(shifts.next().ok_or_else(mismatch)?.clone());
-        }
-        out.push((op.resolved(&committed.bindings), diff));
-    }
-    if shifts.next().is_some() {
-        return Err(mismatch());
-    }
-    Ok(out)
+    footprint::committed_ops(committed)
+        .map_err(|_| LegacyConflict::new("committed diff does not match its ops"))
 }
 
 fn rebase_over(ops: &[Op], committed: &CommittedTx) -> Result<Vec<Op>, LegacyConflict> {

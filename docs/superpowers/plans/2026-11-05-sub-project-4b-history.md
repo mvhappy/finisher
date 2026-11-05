@@ -462,7 +462,7 @@ pub struct Conflict { pub tx_id: String, pub op_index: usize, pub reason: String
                       pub against_tx: Option<String>, pub fix: String }
 pub mod reasons { /* REMOVED, SAME_EDGE, SAME_PARAM, DEPENDS_ON_SKIPPED, ALREADY_PRESENT,
                      ID_COLLISION, UNDOES_TARGET_RECORDS */ }
-pub struct Conflicts(pub Vec<Conflict>);
+pub struct Conflicts(Vec<Conflict>); // non-empty: new(Vec) -> Option, one, push, first, as_slice
 impl From<Conflicts> for CoreError; // CONFLICT; first conflict's 4A fields + details.conflicts
 impl Conflict { pub fn from_rerun(e: &CoreError, tx_id: &str, op_index: usize, against: Option<String>) -> Conflict; }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,13 +471,17 @@ pub enum Touch { Exists, Edge(Edge), Param(String) }
 pub struct Footprint { pub tracks: BTreeSet<String>, pub touches: Vec<(String, Touch)>,
     pub removes: Vec<String>, pub creates: Vec<String>, pub uses: Vec<String> }
 pub fn footprint(op: &Op, op_diff: &Diff) -> Footprint;
-pub fn entity_conflict(ours: &Footprint, theirs: &[(&str, Footprint)]) -> Option<(&'static str, String)>;
+pub fn entity_conflict(ours: &Footprint, own: &BTreeSet<String>, theirs: &[(&str, Footprint)])
+    -> Option<(&'static str, String)>;
+pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError>;
+pub fn committed_ops(c: &CommittedTx) -> Result<Vec<(Op, Diff)>, CoreError>;
+pub fn committed_footprints(c: &CommittedTx) -> Result<Vec<Footprint>, CoreError>;
 impl Op { pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)>; }
 ```
 Rules:
 - touching or using X when an unmirrored intervening record removed X → `REMOVED`. This covers a stale insert of an asset that `asset.remove` removed (closes the TASKS follow-up).
 - the same `Edge` of X → `SAME_EDGE`; the same `Param` → `SAME_PARAM`.
-- disjoint track sets never conflict.
+- disjoint track sets never conflict (entities live on one track; entity rules themselves ignore tracks, so a 4C move between tracks still meets the other track's edits).
 
 - [x] **Step 1: Write failing tests** (table: committed op, our op, expected):
   - an insert on `t2` against every op on `t1` → none;
@@ -488,6 +492,7 @@ Rules:
   - `conflict_into_core_error_keeps_4a_fields`;
   - also: `removed_then_restored_is_not_removed` (the last removal or creation of X decides), `removed_wins_over_same_edge`, `same_param_conflicts_and_disjoint_tracks_never_do` (a footprint with no track, an asset op, is judged by entities alone), `rerun_conflict_takes_the_policy_code`, `conflict_without_against_tx`; `positions_mut_lists_placements` (unit).
   - Until Task 6 the 4A struct is `rebase::LegacyConflict` (fields unchanged), so `Conflict` names the new type; Task 6 deletes it with the per-op `rebase` fns.
+  - After review: `entity_conflict(ours, own, theirs)` takes `own`, the entities earlier ops of our tx created (at a stale base our placeholders bind the ids the intervening records allocated, so they are never judged); entity rules ignore tracks (an item may move between tracks in 4C); `Conflicts` is non-empty (`new` → `Option`, `one`, `push`); `split_diff`, `committed_ops` and `committed_footprints` are public for Task 6. Tests: `own_new_clip_is_not_their_removed_clip`, `own_new_clip_is_not_their_trimmed_clip`, `own_new_asset_is_not_their_removed_asset`, `an_existing_entity_ours_names_is_still_judged`, `entity_rules_ignore_tracks`, `remove_restore_remove_names_the_last_removal`, `earliest_standing_removal_is_named_across_entities`, `of_two_same_edge_records_the_earliest_is_named`, `split_diff_pairs_each_op_with_its_shift`.
 - [x] **Step 2: Run** `rtk cargo test -p fin-core --test conflict_rules`. Expected: FAIL.
 - [x] **Step 3: Implement.** Footprints come from the resolved op plus its own diff, never from a project.
 - [x] **Step 4: Run** the three gates (types regenerated). Expected: PASS.

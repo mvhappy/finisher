@@ -3,14 +3,20 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use common::*;
 use fin_core::rebase::{
-    Conflict, Conflicts, Footprint, Touch, entity_conflict, footprint, reasons,
+    Conflict, Conflicts, Footprint, Touch, committed_footprints, entity_conflict, reasons,
+    split_diff,
 };
-use fin_core::{Clip, CoreError, Edge, MemIds, Op, Project, Rational, apply_internal, apply_tx};
+use fin_core::{
+    CommittedTx, CoreError, Diff, Edge, MemIds, Op, Project, Rational, apply_internal, apply_tx,
+    resolve_ops,
+};
 use serde_json::json;
+
+type Verdict = Option<(&'static str, String)>;
 
 fn trim(clip: &str, edge: Edge, delta: Rational) -> Op {
     Op::ClipTrim {
@@ -24,54 +30,70 @@ fn delete(clip: &str) -> Op {
     Op::ClipDelete { clip: clip.into() }
 }
 
-/// `op` with its new-entity placeholder replaced by the id it bound.
-fn resolved(op: &Op, bindings: &BTreeMap<String, String>) -> Op {
-    let mut op = op.clone();
-    let bind = |id: &mut String| {
-        if let Some(b) = bindings.get(id.as_str()) {
-            *id = b.clone();
-        }
-    };
-    match &mut op {
-        Op::AssetAdd { id, .. } => bind(id),
-        Op::ClipInsert { id, asset, .. } => {
-            bind(id);
-            bind(asset);
-        }
-        _ => {}
-    }
-    op
-}
-
-/// Applies `op` alone to `p` (internal ops internally) and returns its footprint, from the
-/// resolved op and its own diff, plus the project after it.
-fn fp(p: &Project, op: Op) -> (Footprint, Project) {
-    let t = tx(vec![op.clone()]);
+/// Commits `ops` at `p` (internally when any op is internal) as `tx_id`.
+fn commit(p: &Project, ops: Vec<Op>, tx_id: &str) -> (CommittedTx, Project) {
+    let mut t = tx(ops);
+    t.tx_id = tx_id.into();
     let mut ids = MemIds::after(p);
-    let a = if op.is_internal() {
+    let a = if t.ops.iter().any(Op::is_internal) {
         apply_internal(p, &t, &mut ids)
     } else {
         apply_tx(p, &t, &mut ids)
     }
-    .unwrap_or_else(|e| panic!("{} does not apply: {e}", op.name()));
-    (footprint(&resolved(&op, &a.bindings), &a.diff), a.project)
+    .unwrap_or_else(|e| panic!("{tx_id} does not apply: {e}"));
+    let c = CommittedTx {
+        rev: 1,
+        tx: t,
+        diff: a.diff,
+        bindings: a.bindings,
+        link: None,
+    };
+    (c, a.project)
 }
 
-/// The conflict `ours` (judged at `p`) has with `committed` (applied in order from `p`).
-fn judge(p: &Project, committed: Vec<Op>, ours: Op) -> Option<(&'static str, String)> {
+/// Applies `op` alone to `p`: the op resolved, its footprint and the project after it.
+fn fp(p: &Project, op: Op) -> (Op, Footprint, Project) {
+    let (c, next) = commit(p, vec![op], "tx-1");
+    let resolved = resolve_ops(&c.tx.ops, &c.bindings).unwrap().remove(0);
+    (resolved, committed_footprints(&c).unwrap().remove(0), next)
+}
+
+/// Per op of `ours` (a stale tx based at `p`, its ids allocated as at `p`), its conflict with
+/// the records `committed` (applied in order from `p`, named `tx-1`, `tx-2`, ...). Entities an
+/// earlier op of ours created are ours.
+fn judge_tx(p: &Project, committed: Vec<Vec<Op>>, ours: Vec<Op>) -> Vec<Verdict> {
     let mut cur = p.clone();
     let mut theirs = Vec::new();
-    for (i, op) in committed.into_iter().enumerate() {
-        let (f, next) = fp(&cur, op);
-        theirs.push((format!("tx-{}", i + 1), f));
+    for (i, ops) in committed.into_iter().enumerate() {
+        let id = format!("tx-{}", i + 1);
+        let (c, next) = commit(&cur, ops, &id);
+        for f in committed_footprints(&c).unwrap() {
+            theirs.push((id.clone(), f));
+        }
         cur = next;
     }
-    let ours = fp(p, ours).0;
     let theirs: Vec<(&str, Footprint)> = theirs
         .iter()
         .map(|(t, f)| (t.as_str(), f.clone()))
         .collect();
-    entity_conflict(&ours, &theirs)
+    let (c, _) = commit(p, ours, "tx-ours");
+    let mut own = BTreeSet::new();
+    let mut out = Vec::new();
+    for f in committed_footprints(&c).unwrap() {
+        out.push(entity_conflict(&f, &own, &theirs));
+        own.extend(f.creates);
+    }
+    out
+}
+
+/// `judge_tx` with one op per committed record and a single op of ours.
+fn judge(p: &Project, committed: Vec<Op>, ours: Op) -> Verdict {
+    judge_tx(
+        p,
+        committed.into_iter().map(|o| vec![o]).collect(),
+        vec![ours],
+    )
+    .remove(0)
 }
 
 /// `a1` (100 s) with c1 [0, 5) and c2 [5, 10) on t1 and c3 [0, 5) on t2.
@@ -114,10 +136,10 @@ fn insert_on_another_track_never_conflicts() {
     ];
     for (at, op) in committed {
         let name = op.name();
-        let ours_fp = fp(&at, ours.clone()).0;
-        let theirs = fp(&at, op).0;
+        let ours_fp = fp(&at, ours.clone()).1;
+        let theirs = fp(&at, op).1;
         assert_eq!(
-            entity_conflict(&ours_fp, &[("tx-1", theirs)]),
+            entity_conflict(&ours_fp, &BTreeSet::new(), &[("tx-1", theirs)]),
             None,
             "insert on t2 vs {name} on t1"
         );
@@ -242,10 +264,10 @@ fn insert_of_a_removed_asset_conflicts() {
 #[test]
 fn asset_ops_bind_no_track() {
     let p = apply(&project(), vec![av_asset("$a", secs(100))]).project;
-    let (add, _) = fp(&project(), av_asset("$a", secs(100)));
+    let (_, add, _) = fp(&project(), av_asset("$a", secs(100)));
     assert!(add.tracks.is_empty());
     assert_eq!(add.creates, vec!["a1".to_string()]);
-    let (remove, _) = fp(&p, Op::AssetRemove { id: "a1".into() });
+    let (_, remove, _) = fp(&p, Op::AssetRemove { id: "a1".into() });
     assert!(remove.tracks.is_empty());
     assert_eq!(remove.removes, vec!["a1".to_string()]);
 }
@@ -253,68 +275,108 @@ fn asset_ops_bind_no_track() {
 #[test]
 fn trim_footprint_comes_from_its_diff() {
     let p = base();
-    let (f, _) = fp(&p, trim("c3", Edge::End, secs(-1)));
+    let (_, f, _) = fp(&p, trim("c3", Edge::End, secs(-1)));
     assert_eq!(f.tracks.iter().collect::<Vec<_>>(), vec!["t2"]);
     assert_eq!(f.touches, vec![("c3".to_string(), Touch::Edge(Edge::End))]);
 }
 
-/// One op of every kind, with a check that the match stays exhaustive: a new op must get a
-/// footprint (and a case here) before this compiles.
+/// One op of every kind, applied for real so each footprint comes from its own diff, with a
+/// check that the match stays exhaustive: a new op must get a footprint (and a case here)
+/// before this compiles.
 #[test]
 fn every_op_has_a_footprint() {
-    let r = Rational::from_int;
-    let clip = Clip {
-        id: "c9".into(),
-        asset: "a1".into(),
-        start: r(0),
-        source_in: r(0),
-        duration: r(1),
-    };
-    let ops = [
-        av_asset("a9", r(1)),
-        Op::AssetRemove { id: "a1".into() },
-        insert("c9", "t1", r(0), "a1", r(0), r(1)),
-        trim("c1", Edge::End, r(1)),
-        delete("c1"),
-        Op::ClipRemove {
-            id: "c1".into(),
-            ripple: true,
-        },
-        Op::ClipRestore {
-            clip,
-            track: "t1".into(),
-            ripple: true,
-        },
+    let p = base();
+    let spare = apply(&p, vec![av_asset("$b", secs(10))]).project;
+    let deleted = apply(&p, vec![delete("c3")]);
+    let cases = [
+        (p.clone(), av_asset("$b", secs(10)), vec![]),
+        (spare, Op::AssetRemove { id: "a2".into() }, vec![]),
+        (
+            p.clone(),
+            insert("$n", "t1", secs(10), "a1", secs(0), secs(1)),
+            vec!["t1"],
+        ),
+        (p.clone(), trim("c3", Edge::End, secs(-1)), vec!["t2"]),
+        (p.clone(), delete("c3"), vec!["t2"]),
+        (
+            p.clone(),
+            Op::ClipRemove {
+                id: "c2".into(),
+                ripple: true,
+            },
+            vec!["t1"],
+        ),
+        (
+            deleted.project.clone(),
+            deleted.inverse[0].clone(),
+            vec!["t2"],
+        ),
     ];
-    for op in ops {
-        let f = footprint(&op, &Default::default());
+    let mut seen = BTreeSet::new();
+    for (at, op, tracks) in cases {
+        let (op, f, _) = fp(&at, op);
+        seen.insert(op.name());
+        assert_eq!(
+            f.tracks.iter().map(String::as_str).collect::<Vec<_>>(),
+            tracks,
+            "{}",
+            op.name()
+        );
         let want = match &op {
-            Op::AssetAdd { id, .. } => f.creates == [id.clone()],
+            Op::AssetAdd { id, .. } => f.creates == [id.clone()] && f.touches.is_empty(),
             Op::AssetRemove { id } => {
                 f.removes == [id.clone()] && f.touches == [(id.clone(), Touch::Exists)]
             }
             Op::ClipInsert {
                 id, track, asset, ..
-            } => f.creates == [id.clone()] && f.uses.contains(asset) && f.tracks.contains(track),
+            } => f.creates == [id.clone()] && f.uses == [asset.clone(), track.clone()],
             Op::ClipTrim { clip, edge, .. } => f.touches == [(clip.clone(), Touch::Edge(*edge))],
             Op::ClipDelete { clip } | Op::ClipRemove { id: clip, .. } => {
                 f.removes == [clip.clone()] && f.touches == [(clip.clone(), Touch::Exists)]
             }
             Op::ClipRestore { clip, track, .. } => {
-                f.creates == [clip.id.clone()]
-                    && f.uses.contains(&clip.asset)
-                    && f.tracks.contains(track)
+                f.creates == [clip.id.clone()] && f.uses == [clip.asset.clone(), track.clone()]
             }
         };
         assert!(want, "{}: {f:?}", op.name());
+        assert!(
+            !f.creates.iter().chain(&f.uses).any(|x| x.starts_with('$')),
+            "{f:?}"
+        );
     }
+    assert_eq!(seen.len(), 7);
+}
+
+#[test]
+fn split_diff_pairs_each_op_with_its_shift() {
+    let p = base();
+    let ops = vec![
+        av_asset("$b", secs(10)),
+        trim("c1", Edge::End, secs(-1)),
+        delete("c3"),
+    ];
+    let a = apply(&p, ops.clone());
+    let diffs = split_diff(&ops, &a.diff).unwrap();
+    assert_eq!(diffs.len(), 3);
+    assert!(diffs[0].shifts.is_empty());
+    assert_eq!(diffs[1].shifts, a.diff.shifts[..1]);
+    assert_eq!(diffs[2].shifts, a.diff.shifts[1..]);
+    let short = Diff {
+        shifts: a.diff.shifts[..1].to_vec(),
+        ..Diff::default()
+    };
+    assert_eq!(split_diff(&ops, &short).unwrap_err().code, "INVALID_FORMAT");
+    assert_eq!(
+        split_diff(&ops[..1], &a.diff).unwrap_err().code,
+        "INVALID_FORMAT"
+    );
 }
 
 #[test]
 fn conflict_into_core_error_keeps_4a_fields() {
     let first = Conflict::new("tx-late", 1, reasons::REMOVED, Some("tx-3".into()));
     let second = Conflict::new("tx-late", 2, reasons::SAME_EDGE, Some("tx-4".into()));
-    let e = CoreError::from(Conflicts(vec![first.clone(), second.clone()]));
+    let e = CoreError::from(Conflicts::new(vec![first.clone(), second.clone()]).unwrap());
     assert_eq!(e.code, "CONFLICT");
     assert_eq!(e.details["reason"], "REMOVED");
     assert_eq!(e.details["opIndex"], 1);
@@ -338,7 +400,7 @@ fn conflict_into_core_error_keeps_4a_fields() {
 #[test]
 fn conflict_without_against_tx() {
     let c = Conflict::new("m-1", 0, reasons::ALREADY_PRESENT, None);
-    let e = CoreError::from(Conflicts(vec![c]));
+    let e = CoreError::from(Conflicts::one(c));
     assert_eq!(e.details["againstTx"], serde_json::Value::Null);
     assert_eq!(
         e.details["conflicts"][0]["againstTx"],
@@ -401,39 +463,161 @@ fn on(tracks: &[&str], touches: Vec<(&str, Touch)>) -> Footprint {
     }
 }
 
+fn none() -> BTreeSet<String> {
+    BTreeSet::new()
+}
+
 #[test]
-fn same_param_conflicts_and_disjoint_tracks_never_do() {
+fn same_param_conflicts() {
     let gain = || Touch::Param("gain".into());
     let ours = on(&["t1"], vec![("c1", gain())]);
     assert_eq!(
-        entity_conflict(&ours, &[("tx-1", on(&["t1"], vec![("c1", gain())]))]),
+        entity_conflict(
+            &ours,
+            &none(),
+            &[("tx-1", on(&["t1"], vec![("c1", gain())]))]
+        ),
         Some((reasons::SAME_PARAM, "tx-1".into()))
     );
+    let pan = on(&["t1"], vec![("c1", Touch::Param("pan".into()))]);
+    assert_eq!(entity_conflict(&ours, &none(), &[("tx-1", pan)]), None);
+}
+
+/// An entity's edits meet wherever it is: once items move between tracks (4C), an edit on t1
+/// and one on t2 can share an entity, and the entity rules still apply.
+#[test]
+fn entity_rules_ignore_tracks() {
+    let gain = || Touch::Param("gain".into());
+    let ours = on(&["t1"], vec![("c1", gain())]);
     assert_eq!(
         entity_conflict(
             &ours,
-            &[(
-                "tx-1",
-                on(&["t1"], vec![("c1", Touch::Param("pan".into()))])
-            )]
+            &none(),
+            &[("tx-1", on(&["t2"], vec![("c1", gain())]))]
         ),
-        None
-    );
-    // Disjoint track sets never conflict, whatever the entities.
-    assert_eq!(
-        entity_conflict(&ours, &[("tx-1", on(&["t2"], vec![("c1", gain())]))]),
-        None
+        Some((reasons::SAME_PARAM, "tx-1".into()))
     );
     let mut gone = on(&["t2"], vec![("c1", Touch::Exists)]);
     gone.removes = vec!["c1".into()];
-    assert_eq!(entity_conflict(&ours, &[("tx-1", gone)]), None);
-    // An op bound to no track (an asset op) is judged by its entities alone.
+    assert_eq!(
+        entity_conflict(&ours, &none(), &[("tx-1", gone)]),
+        removed("tx-1")
+    );
+    // An op bound to no track (an asset op) is judged by its entities too.
     let mut asset_gone = on(&[], vec![("a1", Touch::Exists)]);
     asset_gone.removes = vec!["a1".into()];
     let mut uses = on(&["t1"], vec![]);
     uses.uses = vec!["a1".into()];
     assert_eq!(
-        entity_conflict(&uses, &[("tx-9", asset_gone)]),
+        entity_conflict(&uses, &none(), &[("tx-9", asset_gone)]),
         removed("tx-9")
+    );
+}
+
+#[test]
+fn earliest_standing_removal_is_named_across_entities() {
+    let ours = on(&["t1"], vec![("c1", Touch::Exists), ("c2", Touch::Exists)]);
+    let gone = |x: &str| {
+        let mut f = on(&["t1"], vec![(x, Touch::Exists)]);
+        f.removes = vec![x.into()];
+        f
+    };
+    // c2 went first, though ours names c1 first.
+    assert_eq!(
+        entity_conflict(
+            &ours,
+            &none(),
+            &[("tx-1", gone("c2")), ("tx-2", gone("c1"))]
+        ),
+        removed("tx-1")
+    );
+}
+
+#[test]
+fn remove_restore_remove_names_the_last_removal() {
+    let p = base();
+    let deleted = apply(&p, vec![delete("c1")]);
+    let restore = deleted.inverse[0].clone();
+    assert_eq!(
+        judge(
+            &p,
+            vec![delete("c1"), restore, delete("c1")],
+            trim("c1", Edge::End, secs(-1))
+        ),
+        removed("tx-3")
+    );
+}
+
+#[test]
+fn of_two_same_edge_records_the_earliest_is_named() {
+    let p = base();
+    assert_eq!(
+        judge(
+            &p,
+            vec![
+                trim("c1", Edge::End, secs(-1)),
+                trim("c1", Edge::End, secs(-1))
+            ],
+            trim("c1", Edge::End, secs(-1))
+        ),
+        Some((reasons::SAME_EDGE, "tx-1".into()))
+    );
+}
+
+/// At a stale base our placeholders bind the ids the intervening records allocated (the same
+/// counters): `$n` binds c4 there, as their insert did. Our own entity is never judged against
+/// theirs.
+#[test]
+fn own_new_clip_is_not_their_removed_clip() {
+    let p = base();
+    let theirs_insert = vec![insert("$x", "t1", secs(10), "a1", secs(0), secs(3))];
+    let undo = apply(&p, theirs_insert.clone()).inverse;
+    let ours = vec![
+        insert("$n", "t1", secs(0), "a1", secs(0), secs(4)),
+        trim("$n", Edge::End, secs(-1)),
+    ];
+    assert_eq!(
+        judge_tx(&p, vec![theirs_insert, undo], ours),
+        vec![None, None]
+    );
+}
+
+#[test]
+fn own_new_clip_is_not_their_trimmed_clip() {
+    let p = base();
+    let theirs = vec![
+        insert("$x", "t1", secs(10), "a1", secs(0), secs(3)),
+        trim("$x", Edge::End, secs(-1)),
+    ];
+    let ours = vec![
+        insert("$n", "t1", secs(0), "a1", secs(0), secs(4)),
+        trim("$n", Edge::End, secs(-1)),
+    ];
+    assert_eq!(judge_tx(&p, vec![theirs], ours), vec![None, None]);
+}
+
+#[test]
+fn own_new_asset_is_not_their_removed_asset() {
+    let p = base();
+    let theirs_add = vec![av_asset("$b", secs(10))];
+    let undo = apply(&p, theirs_add.clone()).inverse;
+    let ours = vec![
+        av_asset("$a", secs(10)),
+        insert("$n", "t1", secs(10), "$a", secs(0), secs(4)),
+    ];
+    assert_eq!(judge_tx(&p, vec![theirs_add, undo], ours), vec![None, None]);
+}
+
+#[test]
+fn an_existing_entity_ours_names_is_still_judged() {
+    let p = base();
+    // Ours inserts c4 and then trims c1 (not ours): c1's removal still counts.
+    let ours = vec![
+        insert("$n", "t1", secs(10), "a1", secs(0), secs(4)),
+        trim("c1", Edge::End, secs(-1)),
+    ];
+    assert_eq!(
+        judge_tx(&p, vec![vec![delete("c1")]], ours),
+        vec![None, removed("tx-1")]
     );
 }

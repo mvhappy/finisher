@@ -90,19 +90,43 @@ fn fix_for(reason: &str) -> &'static str {
     }
 }
 
-/// Every conflict of one operation, in op order. Converts to one `CONFLICT` error.
+/// Every conflict of one operation, in op order; never empty. Converts to one `CONFLICT`
+/// error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Conflicts(pub Vec<Conflict>);
+pub struct Conflicts(Vec<Conflict>);
+
+impl Conflicts {
+    /// `None` for an empty list.
+    pub fn new(all: Vec<Conflict>) -> Option<Conflicts> {
+        (!all.is_empty()).then_some(Conflicts(all))
+    }
+
+    pub fn one(c: Conflict) -> Conflicts {
+        Conflicts(vec![c])
+    }
+
+    pub fn push(&mut self, c: Conflict) {
+        self.0.push(c);
+    }
+
+    pub fn first(&self) -> &Conflict {
+        &self.0[0]
+    }
+
+    pub fn as_slice(&self) -> &[Conflict] {
+        &self.0
+    }
+
+    pub fn into_vec(self) -> Vec<Conflict> {
+        self.0
+    }
+}
 
 /// `CONFLICT`: the 4A detail fields (`reason`, `opIndex`, `againstTx`, `txId`), message and fix
 /// come from the first conflict; `details.conflicts` lists them all.
 impl From<Conflicts> for CoreError {
-    fn from(Conflicts(all): Conflicts) -> Self {
-        let Some(first) = all.first() else {
-            return CoreError::new("CONFLICT", "conflicts with committed history")
-                .with_details(json!({ "conflicts": [] }))
-                .with_fix(fix_for(""));
-        };
+    fn from(all: Conflicts) -> Self {
+        let first = all.first();
         let against = first.against_tx.as_deref().map_or_else(
             || "the current head".to_string(),
             |t| format!("committed tx {t}"),
@@ -116,7 +140,7 @@ impl From<Conflicts> for CoreError {
             "opIndex": first.op_index,
             "againstTx": first.against_tx,
             "txId": first.tx_id,
-            "conflicts": all,
+            "conflicts": all.as_slice(),
         });
         let fix = first.fix.clone();
         CoreError::new("CONFLICT", message)

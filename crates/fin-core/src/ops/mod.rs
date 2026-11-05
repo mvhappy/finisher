@@ -182,17 +182,6 @@ impl Op {
             Op::ClipRestore { .. } => clip_restore::positions_mut(self),
         }
     }
-
-    /// Replaces `$name` references with their bound ids (unbound ones are left as they are).
-    pub(crate) fn resolved(&self, bindings: &BTreeMap<String, String>) -> Op {
-        let mut op = self.clone();
-        for r in op.refs_mut() {
-            if let Some(id) = bindings.get(r.as_str()) {
-                *r = id.clone();
-            }
-        }
-        op
-    }
 }
 
 /// `$name` placeholders bound during one transaction, in op order.
@@ -338,8 +327,8 @@ pub(crate) fn apply(
     }
 }
 
-/// The conflict footprint of `op` (placeholders resolved) from its own diff (`op_diff`: its
-/// single shift, if any).
+/// The conflict footprint of `op` from its own diff (`op_diff`: its single shift, if any). A
+/// committed op comes with its placeholders resolved; one of ours may keep its `$name`s.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     match op {
         Op::AssetAdd { .. } => asset_add::footprint(op, op_diff),
