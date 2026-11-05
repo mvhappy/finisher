@@ -217,10 +217,18 @@ pub(super) fn run(src: &Path, new: &Connection, now: i64) -> Result<Outcome, Sto
         )?;
     }
 
-    match db::meta(&c, "projectDir") {
-        Ok(Some(dir)) => db::set_meta(new, "projectDir", &dir)?,
-        Ok(None) => {}
-        Err(e) => out.errors.push(format!("{name}: meta: {e}")),
+    // Facts about the project, not its history: its folder (each copy overwrites, as before)
+    // and the key it was created with (`create`'s retries), which never changes.
+    for (key, overwrite) in [("projectDir", true), (crate::create::CREATE_KEY, false)] {
+        match db::meta(&c, key) {
+            Ok(Some(v)) => {
+                if overwrite || db::meta(new, key)?.is_none() {
+                    db::set_meta(new, key, &v)?;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => out.errors.push(format!("{name}: meta: {e}")),
+        }
     }
     if let Ok(ids) = crate::history::server_ids(&c) {
         for id in ids {

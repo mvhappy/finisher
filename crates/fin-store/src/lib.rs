@@ -58,9 +58,9 @@ pub use compact::{
 #[cfg(any(test, feature = "test-hooks"))]
 #[doc(hidden)]
 pub use copies::mount_root_for_test as copies_mount_root_for_test;
-#[cfg(any(test, feature = "test-hooks"))]
-pub use create::fail_next_create_marker_for_test;
 pub use create::validate_name;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use create::{delay_next_create_start_for_test, fail_next_create_marker_for_test};
 pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]

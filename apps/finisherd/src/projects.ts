@@ -140,6 +140,10 @@ export function makeProjectRegistry(
     const byDir = new Map<string, string>();
     /** In-flight opens, so concurrent `open(dir)` calls share one Engine. */
     const opening = new Map<string, Promise<OpenProject>>();
+    /** In-flight creates by folder: creates of one folder run one after another. */
+    const creating = new Map<string, Promise<OpenProject>>();
+    /** Creates with an idempotency key this process made, by folder (`create`'s retries). */
+    const created = new Map<string, { idemKey: string; name: string; rate: string; projectId: string }>();
     const hubs = new Hubs(hubCapacity);
     /** Set once shutdown starts: engines that finish opening later are closed at once. */
     let closed = false;
@@ -299,10 +303,29 @@ export function makeProjectRegistry(
         Effect.suspend(() => {
           if (closed) return Effect.fail(shuttingDown());
           const abs = resolve(dir);
+          const once = async (): Promise<OpenProject> => {
+            // A retry of a create this process made, its engine still open: that engine is the
+            // answer (no second engine opened). Anything else goes to fin-store, which opens
+            // the project for a matching key or refuses (PROJECT_EXISTS, IDEM_KEY_REUSED).
+            const made = created.get(abs);
+            const open = made === undefined ? undefined : byId.get(made.projectId);
+            if (open && idemKey !== undefined && made?.idemKey === idemKey && made.name === name && made.rate === rate) {
+              return open;
+            }
+            const p = register(await Engine.create(serverData, abs, name, rate, { idemKey }), abs);
+            if (idemKey !== undefined) created.set(abs, { idemKey, name, rate, projectId: p.engine.projectId });
+            return p;
+          };
+          // One create per folder at a time, so a concurrent retry finds the first one's engine.
+          const next = (creating.get(abs) ?? Promise.resolve()).catch(() => undefined).then(once);
+          creating.set(abs, next);
+          next
+            .finally(() => {
+              if (creating.get(abs) === next) creating.delete(abs);
+            })
+            .catch(() => undefined);
           return Effect.flatMap(
-            // A retry of a create whose engine is still open here opens a second (following)
-            // engine; `register` keeps the first.
-            attempt(async () => register(await Engine.create(serverData, abs, name, rate, { idemKey }), abs)),
+            attempt(() => next),
             ref,
           );
         }),

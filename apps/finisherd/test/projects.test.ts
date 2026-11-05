@@ -63,6 +63,22 @@ describe("ProjectRegistry", () => {
     expect(r.engineOf(projectId)).toBe(engine);
   });
 
+  test("create retries with one idemKey (even concurrent) share one writable engine", async () => {
+    const r = await registry();
+    const dir = join(tmp, "p");
+    const [a, b] = await Promise.all([run(r.create(dir, "Demo", "30", "k1")), run(r.create(dir, "Demo", "30", "k1"))]);
+    expect(b.projectId).toBe(a.projectId);
+    const engine = r.engineOf(a.projectId);
+    // A later retry is answered by the open engine.
+    expect((await run(r.create(`${dir}/.`, "Demo", "30", "k1"))).projectId).toBe(a.projectId);
+    expect(r.engineOf(a.projectId)).toBe(engine);
+    // The kept engine holds the lease: it can commit.
+    await run(r.commit(a.projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    expect((await failure(r.create(dir, "Other", "30", "k1"))).code).toBe("IDEM_KEY_REUSED");
+    expect((await failure(r.create(dir, "Demo", "30", "k2"))).code).toBe("PROJECT_EXISTS");
+    expect((await failure(r.create(dir, "Demo", "30"))).code).toBe("PROJECT_EXISTS");
+  });
+
   test("a dead engine is evicted and the project reopens on the next call", async () => {
     const r = await registry();
     const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));

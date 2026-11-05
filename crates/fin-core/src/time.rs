@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::error::CoreError;
 
@@ -226,10 +226,67 @@ impl Serialize for Rational {
     }
 }
 
+/// Decoding is lenient: a rational in another form than its canonical one (`"30/1"`, `"2/4"`,
+/// `"+1"`) is read and normalised, so stored data a person edited by hand (a project file's
+/// genesis rate) stays readable. Input from users and clients is strict: `FromStr` for typed
+/// values, [`check_canonical_times`] for decoded documents (an RPC `tx.commit`).
 impl<'de> Deserialize<'de> for Rational {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        s.parse().map_err(serde::de::Error::custom)
+        parse_lenient(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Any rational form `n` or `n/d` (a leading `+` too), reduced.
+fn parse_lenient(s: &str) -> Result<Rational, CoreError> {
+    let unsigned = s.strip_prefix('+').filter(|rest| !rest.starts_with('-'));
+    parse_rational_lenient(unsigned.unwrap_or(s)).map_err(|e| overflow_at(s, e))
+}
+
+/// `INVALID_TIME` (with `details {input, canonical, path}` and a fix) for the first string in
+/// `input` (a client's JSON) that `decoded` (the same document decoded and encoded again)
+/// holds in another, canonical, rational form: the strict check for documents, since decoding
+/// itself normalises. `path` is a JSON pointer into `input`. Fields only one side has are
+/// skipped.
+pub fn check_canonical_times(input: &Value, decoded: &Value) -> Result<(), CoreError> {
+    walk(input, decoded, &mut String::new())
+}
+
+fn walk(input: &Value, decoded: &Value, path: &mut String) -> Result<(), CoreError> {
+    let len = path.len();
+    let mut at = |path: &mut String, key: &str, a: &Value, b: &Value| {
+        path.push('/');
+        path.push_str(&key.replace('~', "~0").replace('/', "~1"));
+        let r = walk(a, b, path);
+        path.truncate(len);
+        r
+    };
+    match (input, decoded) {
+        (Value::String(x), Value::String(y)) if x != y => {
+            if let (Ok(canonical), Ok(read)) = (y.parse::<Rational>(), parse_lenient(x))
+                && canonical == read
+            {
+                let mut e = noncanonical(x, canonical);
+                e.details["path"] = Value::String(path.clone());
+                return Err(e);
+            }
+            Ok(())
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            for (k, va) in a {
+                if let Some(vb) = b.get(k) {
+                    at(path, k, va, vb)?;
+                }
+            }
+            Ok(())
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            for (i, (va, vb)) in a.iter().zip(b).enumerate() {
+                at(path, &i.to_string(), va, vb)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 

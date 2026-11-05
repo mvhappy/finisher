@@ -202,3 +202,65 @@ fn concurrent_retries_with_one_key_return_one_project() {
     }
     assert_eq!(databases(&e.data), [format!("projects/{id}/project.fdb")]);
 }
+
+/// A retry that lands between the creator's project file and its lease must not take the
+/// lease: the creator keeps it.
+#[test]
+fn a_concurrent_retry_does_not_take_the_creators_lease() {
+    let e = env();
+    let (creator, retry) = std::thread::scope(|s| {
+        let creator = s.spawn(|| {
+            fin_store::delay_next_create_start_for_test(std::time::Duration::from_millis(400));
+            Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k")).unwrap()
+        });
+        let retry = s.spawn(|| {
+            while !e.dir.join("finisher.project.json").exists() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k")).unwrap()
+        });
+        (creator.join().unwrap(), retry.join().unwrap())
+    });
+    assert_eq!(retry.project_id(), creator.project_id());
+    assert_eq!(creator.read_only(), None);
+    assert_eq!(
+        retry.read_only(),
+        Some(fin_store::ReadOnlyReason::LeaseHeld)
+    );
+}
+
+#[test]
+fn create_key_survives_a_rebuild() {
+    let e = env();
+    let mut s = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    let id = s.project_id().to_string();
+    s.rebuild().unwrap();
+    s.close().unwrap();
+    let again = Store::create(&e.data, &e.dir, "Demo", secs(30), Some("k1")).unwrap();
+    assert_eq!(again.project_id(), id);
+}
+
+/// Stored rationals are read leniently: a hand-edited `"rate": "30/1"` is 30, not an
+/// unreadable project.
+#[test]
+fn a_hand_edited_noncanonical_rate_still_opens() {
+    let e = env();
+    let s = Store::create(&e.data, &e.dir, "Demo", secs(30), None).unwrap();
+    let id = s.project_id().to_string();
+    s.close().unwrap();
+    let path = e.dir.join("finisher.project.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"rate\": \"30\""), "{text}");
+    std::fs::write(
+        &path,
+        text.replace("\"rate\": \"30\"", "\"rate\": \"30/1\""),
+    )
+    .unwrap();
+    let file = read_project_file(&e.dir).unwrap();
+    assert_eq!(file.genesis.unwrap().rate, secs(30));
+    // A database rebuilt from that file is the same project (same genesis hash).
+    std::fs::remove_file(db_path(&e.data, &id)).unwrap();
+    let s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(s.snapshot(MAIN).unwrap().1.rate, secs(30));
+    assert!(s.read_only().is_none(), "{:?}", s.read_only());
+}

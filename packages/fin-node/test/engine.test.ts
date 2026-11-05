@@ -107,6 +107,13 @@ describe("Engine", () => {
     expect(typeof exists.fix).toBe("string");
 
     expect((await rejection(engine.commit("{not json"))).code).toBe("INVALID_OP");
+    // A time not in canonical form is named, with the form to send instead.
+    const noncanonical = await rejection(engine.commit(tx("tx-nc", 0, [{ ...addAsset, duration: "1200/2" }])));
+    expect(noncanonical.code).toBe("INVALID_TIME");
+    expect(noncanonical.details.input).toBe("1200/2");
+    expect(noncanonical.details.canonical).toBe("600");
+    expect(noncanonical.details.path).toBe("/ops/0/duration");
+    expect(noncanonical.fix).toContain('"600"');
     for (const rev of [-1, 1.5, Number.NaN]) {
       const err = await rejection(engine.opsSince("main", rev));
       expect(err.code, String(rev)).toBe("INVALID_RANGE");

@@ -21,6 +21,10 @@
 //!    wait for a project file that is late to appear (Windows), so it must not exist
 //!    without one.
 //!
+//! A retry (step 2) can land between another create's step 4 and its lease: it waits up to
+//! [`CREATOR_LEASE_WAIT`] for the folder's `lease.json` before it opens, so it follows the
+//! creator rather than taking the lease from under it.
+//!
 //! A crash between steps 3 and 4 leaves a database in server data that no project file names;
 //! it is never opened, and costs only its space (a later sweep can remove it).
 
@@ -39,8 +43,11 @@ use crate::{
     storage_kind, unwritable,
 };
 
-/// `meta` key holding the key a project was created with.
-const CREATE_KEY: &str = "createKey";
+/// `meta` key holding the key a project was created with (carried across rebuilds).
+pub(crate) const CREATE_KEY: &str = "createKey";
+
+/// How long a retry waits for the creator's lease (module docs).
+const CREATOR_LEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `INVALID_NAME` for an empty or whitespace-only project name.
 pub fn validate_name(name: &str) -> Result<(), CoreError> {
@@ -55,6 +62,15 @@ pub fn validate_name(name: &str) -> Result<(), CoreError> {
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static FAIL_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DELAY_START: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test hook: the next create on this thread pauses for `d` after writing its project file,
+/// before it opens the database and takes the lease.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn delay_next_create_start_for_test(d: std::time::Duration) {
+    DELAY_START.with(|c| c.set(Some(d)));
 }
 
 /// Test hook: the next create on this thread fails to write its project file, after its
@@ -186,6 +202,10 @@ impl Store {
                 return Err(unwritable(&paths::project_file(project_dir))(e));
             }
         }
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(d) = DELAY_START.with(|c| c.take()) {
+            std::thread::sleep(d);
+        }
         let db_lock = crate::dblock::shared(&db_dir)?;
         let conn = db::connect(&db_path, false)?;
         let heads = HashMap::from([(
@@ -268,7 +288,21 @@ fn existing(
         .with_fix("use a new key for a different project, or retry with the same name and rate")
         .into());
     }
+    wait_for_creator_lease(project_dir);
     Store::open_with(server_data, project_dir, opts)
+}
+
+/// Until the folder holds `lease.json` (the creator took its lease), at most
+/// [`CREATOR_LEASE_WAIT`]. Then the lease is the creator's, or the creator is gone and this
+/// retry may take it.
+fn wait_for_creator_lease(project_dir: &Path) {
+    let lease = project_dir
+        .join(".finisher")
+        .join(crate::lease::record::FILE);
+    let started = std::time::Instant::now();
+    while !lease.exists() && started.elapsed() < CREATOR_LEASE_WAIT {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// `meta.createKey` of the database at `path`, read without writing to it.

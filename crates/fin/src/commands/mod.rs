@@ -320,14 +320,16 @@ pub fn args_hash(inputs: &[Value]) -> String {
 }
 
 /// One step's command input for [`args_hash`]: its args as given, defaults left out, except
-/// that a media path is the resolved absolute one (the same words from another directory
-/// name another file).
+/// that a media path is the file it names: canonical (`..` and symlinks resolved) when it
+/// exists, else absolute. The same words from another directory name another file, and
+/// other words (`../media/a.mov` inside `media/`) the same one.
 fn input(step: &Write) -> Value {
     let (cmd, args) = match step {
-        Write::AssetAdd(a) => (
-            "asset.add",
-            json!({ "path": crate::paths::resolve_str(&a.path).display().to_string() }),
-        ),
+        Write::AssetAdd(a) => {
+            let path = crate::paths::resolve_str(&a.path);
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
+            ("asset.add", json!({ "path": path.display().to_string() }))
+        }
         Write::ClipInsert(a) => ("clip.insert", json!(a)),
         Write::ClipTrim(a) => ("clip.trim", json!(a)),
         Write::ClipDelete(a) => ("clip.delete", json!(a)),

@@ -65,14 +65,21 @@ impl StoreTask {
     }
 }
 
+/// A client's tx. Decoding normalises rationals (stored data is read leniently), so times
+/// not in canonical form are refused here: `INVALID_TIME` naming the canonical form.
 fn parse_tx(json: &str) -> Result<Tx> {
-    serde_json::from_str(json).map_err(|e| {
+    let bad = |e: serde_json::Error| {
         reject(
             CoreError::new("INVALID_OP", format!("transaction does not decode: {e}"))
                 .with_details(json!({ "reason": e.to_string() }))
                 .with_fix("send a transaction matching the fin-core Tx schema"),
         )
-    })
+    };
+    let input: serde_json::Value = serde_json::from_str(json).map_err(bad)?;
+    let tx: Tx = serde_json::from_value(input.clone()).map_err(bad)?;
+    let decoded = serde_json::to_value(&tx).map_err(bad)?;
+    fin_core::check_canonical_times(&input, &decoded).map_err(reject)?;
+    Ok(tx)
 }
 
 fn parse_generation(json: &str) -> Result<Generation> {

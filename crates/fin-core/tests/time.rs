@@ -76,8 +76,9 @@ fn noncanonical_rationals_rejected() {
             let fix = e.fix.clone().unwrap_or_default();
             assert!(fix.contains(&format!("\"{canonical}\"")), "{bad}: {fix}");
         }
-        let stored = serde_json::from_str::<Rational>(&format!("\"{bad}\"")).unwrap_err();
-        assert!(stored.to_string().contains("canonical"), "{bad}: {stored}");
+        // Stored data is read leniently and normalised (a hand-edited file stays readable).
+        let stored: Rational = serde_json::from_str(&format!("\"{bad}\"")).unwrap();
+        assert_eq!(stored.to_string(), canonical, "{bad}");
     }
     // Canonical forms still parse.
     for good in [
@@ -192,4 +193,20 @@ fn frame_duration_rejects_non_positive_rates() {
         let e = frame_duration(bad).unwrap_err();
         assert_eq!(e.code, "INVALID_RANGE");
     }
+}
+
+#[test]
+fn strict_check_names_the_noncanonical_input() {
+    use serde_json::json;
+    let input = json!({ "a": [{ "at": "2/4" }], "b": "x", "c": "1/2" });
+    let decoded = json!({ "a": [{ "at": "1/2" }], "b": "x", "c": "1/2" });
+    let e = fin_core::check_canonical_times(&input, &decoded).unwrap_err();
+    assert_eq!(e.code, "INVALID_TIME");
+    assert_eq!(e.details["input"], "2/4");
+    assert_eq!(e.details["canonical"], "1/2");
+    assert_eq!(e.details["path"], "/a/0/at");
+    assert!(e.fix.unwrap().contains("\"1/2\""));
+    assert!(fin_core::check_canonical_times(&decoded, &decoded).is_ok());
+    // Fields the decoder drops or adds are not times.
+    assert!(fin_core::check_canonical_times(&json!({ "x": "y" }), &json!({})).is_ok());
 }

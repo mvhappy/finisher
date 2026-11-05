@@ -287,3 +287,32 @@ fn args_hash_is_of_the_command_input() {
     let h = args_hash(&[]);
     assert!(h.starts_with("blake3:") && h.len() == 71, "{h}");
 }
+
+#[test]
+fn args_hash_uses_the_canonical_media_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let media = tmp.path().join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    std::fs::write(media.join("a.mov"), b"x").unwrap();
+    let add = |p: &Path| {
+        input(&Write::AssetAdd(asset::AddArgs {
+            path: p.display().to_string(),
+        }))
+    };
+    let direct = add(&media.join("a.mov"));
+    // `media/../media/a.mov`, as `asset add ../media/a.mov` typed inside `media/` gives.
+    let dotted = add(&media.join("..").join("media").join("a.mov"));
+    assert_eq!(args_hash(&[direct.clone()]), args_hash(&[dotted]));
+    #[cfg(unix)]
+    {
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&media, &link).unwrap();
+        assert_eq!(
+            args_hash(&[direct.clone()]),
+            args_hash(&[add(&link.join("a.mov"))])
+        );
+    }
+    // A missing file still hashes (by its absolute path).
+    let missing = add(&media.join("gone.mov"));
+    assert_ne!(args_hash(&[direct]), args_hash(&[missing]));
+}
