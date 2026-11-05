@@ -55,6 +55,10 @@ fn local(ms: i64) -> Option<(i64, i64, i64)> {
 
 /// The date of unix ms `ms` in zone `tz`, by that zone's rules for that date (also its
 /// dynamic, per-year rules): `SystemTimeToTzSpecificLocalTimeEx`.
+///
+/// Not tested: with "Adjust for daylight saving time automatically" turned off, the current
+/// zone comes with `DynamicDaylightTimeDisabled` set, and Windows then applies the standard
+/// bias all year (documented), so the date follows the clock the user sees.
 #[cfg(windows)]
 fn local_in(
     ms: i64,
@@ -71,8 +75,7 @@ fn local_in(
         dwLowDateTime: ticks as u32,
         dwHighDateTime: (ticks >> 32) as u32,
     };
-    // SAFETY: an all-zero SYSTEMTIME is a valid value of that plain struct.
-    let (mut utc, mut local): (SYSTEMTIME, SYSTEMTIME) = unsafe { std::mem::zeroed() };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
     // SAFETY: every pointer is to a live struct of the right type.
     let ok = unsafe {
         FileTimeToSystemTime(&ft, &mut utc) != 0
@@ -120,7 +123,8 @@ mod tests {
 
     /// Windows zones by registry key name, 30 minutes either side of local midnight around
     /// the 2026 DST changes (EU: 29 March and 25 October, 01:00 UTC; US: 8 March and
-    /// 1 November), without touching the system's zone.
+    /// 1 November, 2:00 local), and one date under another year's rules (US 2006: DST from
+    /// 2 April), without touching the system's zone.
     #[cfg(windows)]
     #[test]
     fn local_dates_follow_each_zones_rules_for_the_date() {
@@ -190,16 +194,33 @@ mod tests {
                 utc(2026, 10, 25, 21, 30),
                 (2026, 10, 25),
             ),
-            // PST/PDT.
+            // PST/PDT: the nights after the 2026 changes (each date differs under the other
+            // bias), and 2006, when DST began on 2 April (under 2026 rules 20 March would be
+            // PDT and 00:30 on the 20th).
             (
                 "Pacific Standard Time",
-                utc(2026, 3, 30, 6, 30),
-                (2026, 3, 29),
+                utc(2026, 3, 8, 7, 30),
+                (2026, 3, 7),
             ),
             (
                 "Pacific Standard Time",
-                utc(2026, 11, 4, 7, 30),
-                (2026, 11, 3),
+                utc(2026, 3, 9, 7, 30),
+                (2026, 3, 9),
+            ),
+            (
+                "Pacific Standard Time",
+                utc(2026, 11, 1, 7, 30),
+                (2026, 11, 1),
+            ),
+            (
+                "Pacific Standard Time",
+                utc(2026, 11, 2, 7, 30),
+                (2026, 11, 1),
+            ),
+            (
+                "Pacific Standard Time",
+                utc(2006, 3, 20, 7, 30),
+                (2006, 3, 19),
             ),
             // No DST, far from UTC.
             (
