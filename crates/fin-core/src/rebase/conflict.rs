@@ -27,8 +27,9 @@ pub mod reasons {
 }
 
 /// One op that cannot be carried to the head: which op of which tx, why (a reason code), the
-/// record to blame when there is one (else null), and what to do.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// record to blame when there is one (else null), and what to do. A re-run failure keeps its
+/// error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Conflict {
     pub tx_id: String,
@@ -36,6 +37,9 @@ pub struct Conflict {
     pub reason: String,
     pub against_tx: Option<String>,
     pub fix: String,
+    /// Boxed: rarely present, and it keeps `Result<_, Conflict>` small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<Value>>,
 }
 
 impl Conflict {
@@ -53,11 +57,13 @@ impl Conflict {
             op_index,
             reason,
             against_tx,
+            details: None,
         }
     }
 
     /// An op whose re-run at the head failed with `e`: the reason is the policy code (or, for a
-    /// `CONFLICT`, its `details.reason`), and the fix is the error's own when it has one.
+    /// `CONFLICT`, its `details.reason`), and the fix and details are the error's own when it
+    /// has them.
     pub fn from_rerun(
         e: &CoreError,
         tx_id: &str,
@@ -71,6 +77,12 @@ impl Conflict {
         let mut c = Conflict::new(tx_id, op_index, reason, against);
         if let Some(fix) = &e.fix {
             c.fix = fix.clone();
+        }
+        // The error's own details, without the op index the conflict carries already.
+        if let Value::Object(map) = &e.details {
+            let mut map = map.clone();
+            map.remove("opIndex");
+            c.details = (!map.is_empty()).then(|| Box::new(Value::Object(map)));
         }
         c
     }
@@ -92,7 +104,7 @@ fn fix_for(reason: &str) -> &'static str {
 
 /// Every conflict of one operation, in op order; never empty. Converts to one `CONFLICT`
 /// error.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Conflicts(Vec<Conflict>);
 
 impl Conflicts {

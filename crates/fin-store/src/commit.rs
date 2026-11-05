@@ -110,8 +110,16 @@ impl Store {
         // A stale tx is rebased by the engine in the frame of its base: the tx applied there
         // gives the maps of its own ops, and the re-run at the head is the apply.
         let (tx, applied) = if tx.base_rev < head.rev {
-            let base = crate::state::state_at(&txn, &tx.branch, tx.base_rev)?;
+            // `txs_since` fills pending diffs first (a seeded rebuild), and the snapshots that
+            // writes then serve `state_near_head`.
             let since = db::txs_since(&txn, &tx.branch, tx.base_rev)?;
+            let base = crate::state::state_near_head(
+                &txn,
+                &tx.branch,
+                tx.base_rev,
+                head.rev,
+                &head.project,
+            )?;
             let rebased = rebase_tx(&base, &head.project, &tx, &since, &mut ids)
                 .map_err(|e| with_tx_id(e, &tx.tx_id))?;
             (rebased.tx, rebased.applied)

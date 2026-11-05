@@ -179,6 +179,8 @@ Everything is driven and tested through `fin` → `finisherd`.
     - a merge or cherry-pick copy with its inverted original.
 
     Mirrored pairs are excluded from entity-conflict checks.
+
+    For a stale commit the pairs inside the interval are wired in Task 6 (`rebase::steps_from`, from `CommittedTx.link`): an undo whose units are each one record in the interval is cut into one part per unit, each mirroring its unit; a redo mirrors its undo when that undo is one unmirrored step there. Merge units and `revert` (Tasks 13–14) still stand alone until those tasks extend `steps_from`.
 25. **Author.** Stacks are keyed by `Tx.author`. `fin` sends `$FIN_AUTHOR` when set and not empty, else `"fin"`. Every history RPC carries `author`.
 26. **History RPCs take `txId` and `dryRun`.**
     - `txId` is the idempotency key: the store dedupes on the first record's txId (`<key>-1` for a merge).
@@ -547,6 +549,7 @@ pub fn rebase_tx(base: &Project, head: &Project, tx: &Tx, since: &[CommittedTx],
 - [x] **Step 5:** Regenerate `crates/fin/tests/fixtures/rpc/conflict.response.ndjson` with `apps/finisherd/scripts/capture-rpc-fixtures.ts`. Run the three gates. Expected: PASS.
 - [x] **Step 6: Commit** `feat(core): exact rebase engine; per-track conflicts; restore placeholders`.
 - As built: `Step::from_committed` returns `Result` (resolving the record's placeholders can fail) and `Step.ops` are resolved; `invert` steps map through the inverse of `diff` and swap `creates`/`removes` in their footprints. `Rebase` gains `same_origin: &BTreeSet<String>` (ids on the head bound by records of the same origin chain; Task 13/14 fill it, `Rebase::new` leaves it empty), which decides `ALREADY_PRESENT` vs `ID_COLLISION` for a re-run `DUPLICATE_ID`. A bad `mirror_of` is a conflict with code `INVALID_OP`. `rebase_tx` returns a tx's own error when it does not apply at its base. Ops are re-run through a stepwise `apply::Applier`, which `apply_tx_mode` now uses too. Tests added beyond the list: `mirrored_steps_are_not_judged`; the SP2 props now also check that the stored intent replays.
+- After review: `rebase_tx` builds its steps with `steps_from`, so an undo or redo inside the interval mirrors its unit or undo (`undo_in_since_mirrors_its_unit`, `undo_of_several_units_mirrors_each`, `redo_mirrors_its_undo`). A tx that fails at its base (with no conflict) carries `details.baseRev` and a fix to resend against the head. `Conflict` gains optional `details` (a re-run error's own), and a re-run failure blames the one unmirrored step that changed an entity the op changes or the error names. The commit frame comes from `state::state_near_head`: a rewind from the head through stored inverses, or a replay from the nearest snapshot, whichever touches fewer records, after `txs_since` has filled pending diffs. Prop 3 also generates asset ops and an undo pair, and requires a stale refusal where the fresh edit applies to be `SAME_EDGE` or `REMOVED`.
 
 ### Task 7: Shared write path and lineage reads — tier: opus
 
@@ -777,6 +780,8 @@ pub(super) fn cascade(ctx: &mut Ctx<'_>, lost: &[(String /*child id*/, u64)]) ->
 - [ ] **Step 5: Commit** `feat(store): branch-aware verify, rebuild and compaction`.
 
 ### Task 12: Undo and redo — tier: opus
+
+> Stale-commit mirrors for undo and redo records are already wired (Task 6, `rebase::steps_from`, from `CommittedTx.link`); this task's real `undo`/`redo` records must carry their `Link` in `CommittedTx.link` (`ops_since`, `txs_since`) and keep each undo's ops as its units' inverses, newest unit first, one op per op. Undo and redo planning reuses `steps_from` for its own intervals.
 
 **Files:**
 - Create: `crates/fin-core/src/history/mod.rs` (`LogView`, `Planned`), `crates/fin-core/src/history/undo.rs`, `crates/fin-core/tests/common/memlog.rs` (an in-memory `LogView` with `commit`/`append` helpers)

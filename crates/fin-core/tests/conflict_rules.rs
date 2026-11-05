@@ -410,7 +410,9 @@ fn conflict_without_against_tx() {
 
 #[test]
 fn rerun_conflict_takes_the_policy_code() {
-    let e = CoreError::new("INSERT_INSIDE_CLIP", "inside c2").with_fix("insert at a boundary");
+    let e = CoreError::new("INSERT_INSIDE_CLIP", "inside c2")
+        .with_details(json!({ "clip": "c2", "opIndex": 3 }))
+        .with_fix("insert at a boundary");
     let c = Conflict::from_rerun(&e, "tx-b", 3, Some("tx-2".into()));
     assert_eq!(
         c,
@@ -420,7 +422,16 @@ fn rerun_conflict_takes_the_policy_code() {
             reason: "INSERT_INSIDE_CLIP".into(),
             against_tx: Some("tx-2".into()),
             fix: "insert at a boundary".into(),
+            details: Some(Box::new(json!({ "clip": "c2" }))),
         }
+    );
+    // Entity conflicts carry no details, and none are serialised.
+    let removed = Conflict::new("tx-b", 0, reasons::REMOVED, None);
+    assert!(
+        serde_json::to_value(&removed)
+            .unwrap()
+            .get("details")
+            .is_none()
     );
     // Without a fix of its own, the conflict still says what to do.
     let bare = Conflict::from_rerun(&CoreError::new("NOT_FOUND", "gone"), "tx-b", 0, None);

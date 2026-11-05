@@ -337,13 +337,20 @@ export interface Tx {
 }
 /**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
- * record to blame when there is one (else null), and what to do.
+ * record to blame when there is one (else null), and what to do. A re-run failure keeps its
+ * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Conflict".
  */
 export interface Conflict {
   againstTx?: string | null;
+  /**
+   * Boxed: rarely present, and it keeps `Result<_, Conflict>` small.
+   */
+  details?: {
+    [k: string]: unknown;
+  };
   fix: string;
   opIndex: number;
   reason: string;

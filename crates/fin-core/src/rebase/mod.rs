@@ -13,10 +13,12 @@ pub mod conflict;
 mod engine;
 pub mod footprint;
 pub mod map;
+mod steps;
 
 pub use conflict::{Conflict, Conflicts, reasons};
-pub use engine::{Rebase, Rebased, Step, rebase_apply, rebase_tx};
+pub use engine::{Rebase, Rebased, rebase_apply, rebase_tx};
 pub use footprint::{
     Footprint, Touch, committed_footprints, committed_ops, entity_conflict, footprint, split_diff,
 };
 pub use map::{Assoc, MapResult, Mapping, Recover, StepMap, Unmapped};
+pub use steps::{Step, steps_from};

@@ -6,14 +6,19 @@
 //! as an op against a state: at the base (the stale op) and at the head (the fresh op). A
 //! position at the base is a clip start or a track end, so ties at one point resolve as
 //! "before the clip that was at p".
+//!
+//! Intentions also add assets (an insert may use the newest one its own tx added), and the
+//! committed side is sometimes a record followed by its undo (a mirrored pair, Decision 24).
 
 mod common;
 
 use std::collections::BTreeMap;
 
 use common::*;
+use fin_core::rebase::reasons;
 use fin_core::{
-    CommittedTx, Edge, MemIds, Op, Project, Rational, Track, TrackKind, Tx, apply_tx, rebase_tx,
+    CommittedTx, Edge, Link, MemIds, Op, Project, Rational, Track, TrackKind, Tx, apply_internal,
+    apply_tx, rebase_tx,
 };
 use proptest::prelude::*;
 
@@ -66,11 +71,14 @@ fn base(lens: &[Vec<i64>]) -> Project {
 /// A generated intention: clips are picked by index on the track when realised at the base.
 #[derive(Debug, Clone)]
 enum Intent {
+    /// `own_asset`: the clip uses the newest asset this tx added (else `a1`).
     Insert {
         track: usize,
         before: Option<usize>,
         len: i64,
+        own_asset: bool,
     },
+    Asset,
     Trim {
         track: usize,
         clip: usize,
@@ -85,8 +93,19 @@ enum Intent {
 
 fn intent() -> impl Strategy<Value = Intent> {
     prop_oneof![
-        (0usize..3, prop::option::of(0usize..6), 1i64..60)
-            .prop_map(|(track, before, len)| { Intent::Insert { track, before, len } }),
+        (
+            0usize..3,
+            prop::option::of(0usize..6),
+            1i64..60,
+            any::<bool>()
+        )
+            .prop_map(|(track, before, len, own_asset)| Intent::Insert {
+                track,
+                before,
+                len,
+                own_asset
+            }),
+        Just(Intent::Asset),
         (0usize..3, 0usize..6, any::<bool>(), -12i64..12)
             .prop_filter("a trim moves", |t| t.3 != 0)
             .prop_map(|(track, clip, start, frames)| Intent::Trim {
@@ -114,6 +133,11 @@ enum Keyed {
         track: &'static str,
         before: Option<Key>,
         len: i64,
+        /// The placeholder of an asset this tx added, else `a1`.
+        asset: Option<String>,
+    },
+    Asset {
+        name: String,
     },
     Trim {
         clip: Key,
@@ -131,6 +155,8 @@ struct Realiser {
     ids: MemIds,
     /// Placeholder → id, for the clips our earlier ops created in this realisation.
     bound: BTreeMap<String, String>,
+    /// Placeholders of the assets our earlier ops added, oldest first.
+    assets: Vec<String>,
     ops: Vec<Op>,
 }
 
@@ -146,6 +172,7 @@ impl Realiser {
             state: state.clone(),
             ids,
             bound: BTreeMap::new(),
+            assets: Vec::new(),
             ops: Vec::new(),
         }
     }
@@ -177,6 +204,7 @@ impl Realiser {
                 track,
                 before,
                 len,
+                asset,
             } => {
                 let t = self.state.timeline.tracks.iter().find(|t| t.id == *track)?;
                 let at = match before {
@@ -189,8 +217,10 @@ impl Realiser {
                         .last()
                         .map_or(Rational::zero(), |c| (c.start + c.duration).unwrap()),
                 };
-                insert(name, track, at, "a1", secs(10), frames(*len))
+                let asset = asset.as_deref().unwrap_or("a1");
+                insert(name, track, at, asset, secs(10), frames(*len))
             }
+            Keyed::Asset { name } => av_asset(name, secs(100)),
             Keyed::Trim {
                 clip,
                 edge,
@@ -211,13 +241,18 @@ impl Realiser {
             }
         };
         let mut resolved = op.clone();
-        if let Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } = &mut resolved
-            && let Some(id) = self.bound.get(clip.as_str())
+        if let Op::ClipTrim { clip: r, .. }
+        | Op::ClipDelete { clip: r }
+        | Op::ClipInsert { asset: r, .. } = &mut resolved
+            && let Some(id) = self.bound.get(r.as_str())
         {
-            *clip = id.clone();
+            *r = id.clone();
         }
         let a = apply_tx(&self.state, &tx(vec![resolved]), &mut self.ids).ok()?;
         self.bound.extend(a.bindings);
+        if let Keyed::Asset { name } = k {
+            self.assets.push(name.clone());
+        }
         self.state = a.project;
         self.ops.push(op);
         Some(())
@@ -235,7 +270,16 @@ impl Realiser {
                 Some(own.map_or_else(|| Key::Id(id.clone()), |p| Key::Own(p.clone())))
             };
             let k = match *intent {
-                Intent::Insert { track, before, len } => Keyed::Insert {
+                Intent::Asset => Keyed::Asset {
+                    name: format!("${prefix}{i}"),
+                },
+                Intent::Insert {
+                    track,
+                    before,
+                    len,
+                    own_asset,
+                } => Keyed::Insert {
+                    asset: own_asset.then(|| self.assets.last().cloned()).flatten(),
                     name: format!("${prefix}{i}"),
                     track: TRACKS[track],
                     before: match before {
@@ -274,13 +318,14 @@ impl Realiser {
     }
 }
 
-/// `intents` realised at `p` as one committed record at `rev`, with ids from `ids`.
+/// `intents` realised at `p` as one committed record at `rev`, with ids from `ids`; also its
+/// inverse ops.
 fn commit(
     p: &Project,
     intents: &[Intent],
     rev: u64,
     ids: &mut MemIds,
-) -> Option<(Project, CommittedTx)> {
+) -> Option<(Project, CommittedTx, Vec<Op>)> {
     let mut r = Realiser::new(p);
     r.keyed(intents, &format!("t{rev}_"));
     if r.ops.is_empty() {
@@ -297,7 +342,25 @@ fn commit(
         bindings: a.bindings,
         link: None,
     };
-    Some((a.project, c))
+    Some((a.project, c, a.inverse))
+}
+
+/// The undo of `unit` (its stored inverse, applied at `p`) as the record at `rev`.
+fn undo(p: &Project, unit: &CommittedTx, inverse: Vec<Op>, rev: u64) -> (Project, CommittedTx) {
+    let mut t = tx(inverse);
+    t.tx_id = format!("tx-{rev}");
+    t.base_rev = rev - 1;
+    let a = apply_internal(p, &t, &mut MemIds::after(p)).unwrap();
+    let c = CommittedTx {
+        rev,
+        tx: t,
+        diff: a.diff,
+        bindings: a.bindings,
+        link: Some(Box::new(Link::Undo {
+            undoes: vec![unit.tx.tx_id.clone()],
+        })),
+    };
+    (a.project, c)
 }
 
 fn ours(ops: Vec<Op>) -> Tx {
@@ -321,7 +384,9 @@ proptest! {
         let p = base(&lens);
         let mut r = Realiser::new(&p);
         r.keyed(&intents, "o");
-        prop_assume!(!r.ops.is_empty());
+        if r.ops.is_empty() {
+            return Ok(());
+        }
         let t = ours(r.ops);
         let ids = MemIds::after(&p);
         let fresh = apply_tx(&p, &t, &mut ids.clone()).unwrap();
@@ -339,30 +404,48 @@ proptest! {
     fn stale_and_fresh_agree_multi_track(
         lens in lens(),
         first in prop::collection::vec(intent(), 1..3),
+        undo_first in any::<bool>(),
         second in prop::collection::vec(intent(), 0..3),
         mine in prop::collection::vec(intent(), 1..4),
     ) {
         let p = base(&lens);
         let mut ids = MemIds::after(&p);
-        let Some((p1, c1)) = commit(&p, &first, 1, &mut ids) else { return Ok(()) };
+        let Some((mut head, c1, inverse)) = commit(&p, &first, 1, &mut ids) else { return Ok(()) };
         let mut since = vec![c1];
-        let head = match commit(&p1, &second, 2, &mut ids) {
-            Some((p2, c2)) => {
-                since.push(c2);
-                p2
-            }
-            None => p1,
-        };
+        // The first record and its undo (a mirrored pair), sometimes.
+        if undo_first {
+            let (p2, u) = undo(&head, &since[0], inverse, 2);
+            since.push(u);
+            head = p2;
+        }
+        let rev = since.len() as u64 + 1;
+        if let Some((p3, c, _)) = commit(&head, &second, rev, &mut ids) {
+            since.push(c);
+            head = p3;
+        }
         let mut at_base = Realiser::new(&p);
         let keyed = at_base.keyed(&mine, "o");
-        prop_assume!(!at_base.ops.is_empty());
+        if at_base.ops.is_empty() {
+            return Ok(());
+        }
         let mut at_head = Realiser::with_ids(&head, ids.clone());
         let fresh_ok = keyed.iter().all(|k| at_head.realise(k).is_some());
         let stale = rebase_tx(&p, &head, &ours(at_base.ops), &since, &mut ids.clone());
-        if let (true, Ok(stale)) = (fresh_ok, stale) {
-            let fresh = apply_tx(&head, &ours(at_head.ops), &mut ids.clone()).unwrap();
-            assert_well_formed(&stale.applied.project);
-            prop_assert_eq!(&stale.applied.project, &fresh.project, "stale {:?}", stale.tx.ops);
+        match (fresh_ok, stale) {
+            (true, Ok(stale)) => {
+                let fresh = apply_tx(&head, &ours(at_head.ops), &mut ids.clone()).unwrap();
+                assert_well_formed(&stale.applied.project);
+                prop_assert_eq!(&stale.applied.project, &fresh.project, "stale {:?}", stale.tx.ops);
+            }
+            // Where the fresh edit applies, the stale one may refuse only by the entity rules.
+            (true, Err(e)) => {
+                let reason = e.details["reason"].as_str().unwrap_or(&e.code).to_string();
+                prop_assert!(
+                    [reasons::SAME_EDGE, reasons::REMOVED].contains(&reason.as_str()),
+                    "{e:?}"
+                );
+            }
+            (false, _) => {}
         }
     }
 }

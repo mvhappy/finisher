@@ -7,12 +7,13 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::*;
-use fin_core::rebase::{Rebase, Rebased, Step, reasons, rebase_apply};
+use fin_core::rebase::{Rebase, Rebased, Step, reasons, rebase_apply, steps_from};
 use fin_core::{
-    ApplyMode, BoundIds, Clip, CommittedTx, CoreError, Edge, MemIds, Op, Project, Rational, Tx,
-    apply_committed, apply_internal, apply_tx, rebase_tx,
+    ApplyMode, BoundIds, Clip, CommittedTx, CoreError, Edge, Link, MemIds, Op, Project, Rational,
+    Tx, apply_committed, apply_internal, apply_tx, rebase_tx,
 };
 use proptest::prelude::*;
+use serde_json::json;
 
 /// Applies `ops` to `p` and returns the result with its committed record at `rev`.
 fn commit(p: &Project, ops: Vec<Op>, rev: u64, tx_id: &str) -> (Project, CommittedTx) {
@@ -342,6 +343,8 @@ fn invalid_at_base_but_removed_since_is_conflict() {
         (e.code.as_str(), e.details["opIndex"].as_u64()),
         ("INVALID_RANGE", Some(0))
     );
+    assert_eq!(e.details["baseRev"], 0);
+    assert!(e.fix.as_deref().unwrap().contains("current head"), "{e:?}");
     // An earlier op of ours that conflicts is named first.
     let b = stale(vec![Op::ClipDelete { clip: "c1".into() }, too_far]);
     let e = rebase(&p, &pa, &b, &[a]).unwrap_err();
@@ -372,8 +375,53 @@ fn insert_inside_committed_clip_is_policy_conflict() {
     );
     let b = stale(vec![insert("$y", "t1", secs(7), "a1", secs(0), secs(1))]);
     let e = rebase(&p, &pa, &b, &[a]).unwrap_err();
-    assert_eq!(conflict(&e), ("INSERT_INSIDE_CLIP".to_string(), 0, None));
-    assert!(e.details["againstTx"].is_null());
+    // The step that placed c9 is blamed, and the policy error's details are kept.
+    assert_eq!(
+        conflict(&e),
+        (
+            "INSERT_INSIDE_CLIP".to_string(),
+            0,
+            Some("tx-a".to_string())
+        )
+    );
+    assert_eq!(e.details["conflicts"][0]["details"]["clip"], "c9");
+    assert!(
+        e.details["conflicts"][0]["details"]
+            .get("opIndex")
+            .is_none()
+    );
+}
+
+/// A re-run that fails policy keeps the error's details; the one step that changed the clip
+/// is blamed.
+#[test]
+fn rerun_policy_conflict_keeps_details_and_blames_the_step() {
+    let p = with_clips(&[5, 3]);
+    let mut ids = MemIds::after(&p);
+    let (p1, a) = commit_with(
+        &p,
+        vec![trim("c1", Edge::Start, secs(2))],
+        1,
+        "tx-a",
+        &mut ids,
+    );
+    let (p2, other) = commit_with(
+        &p1,
+        vec![insert("$x", "t2", secs(0), "a1", secs(0), secs(1))],
+        2,
+        "tx-other",
+        &mut ids,
+    );
+    // Valid at the base (c1 is 5 s), too far at the head (c1 is 3 s).
+    let b = stale(vec![trim("c1", Edge::End, secs(-3))]);
+    let e = rebase_tx(&p, &p2, &b, &[a, other], &mut ids).unwrap_err();
+    assert_eq!(
+        conflict(&e),
+        ("INVALID_RANGE".to_string(), 0, Some("tx-a".to_string()))
+    );
+    let details = &e.details["conflicts"][0]["details"];
+    assert_eq!(details["clip"], "c1");
+    assert!(details.get("min").is_some() && details.get("max").is_some());
 }
 
 #[test]
@@ -539,6 +587,125 @@ fn mirrored_steps_are_not_judged() {
     assert_eq!(clip(&done.applied.project, "c1").duration, secs(4));
 }
 
+/// A stale tx that names an entity added since fails at its base: the error says which base
+/// rev it was judged at and to send the edit again against the head.
+#[test]
+fn stale_insert_of_asset_added_since_names_the_base() {
+    let p = with_clips(&[5]);
+    let (p1, add) = commit(&p, vec![av_asset("$b", secs(50))], 1, "tx-add");
+    let b = stale(vec![insert("$y", "t1", secs(5), "a2", secs(0), secs(1))]);
+    let e = rebase(&p, &p1, &b, &[add]).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), &e.details["baseRev"]),
+        ("NOT_FOUND", &json!(0))
+    );
+    assert!(e.fix.as_deref().unwrap().contains("current head"), "{e:?}");
+}
+
+/// `committed` with a link, as an undo or redo record carries it.
+fn linked(mut c: CommittedTx, link: Link) -> CommittedTx {
+    c.link = Some(Box::new(link));
+    c
+}
+
+fn undo_of(units: &[&str]) -> Link {
+    Link::Undo {
+        undoes: units.iter().map(|u| u.to_string()).collect(),
+    }
+}
+
+/// The inverse ops of `ops` applied at `p` (the record an undo of them writes).
+fn inverse(p: &Project, ops: &[Op]) -> Vec<Op> {
+    apply_internal(p, &tx(ops.to_vec()), &mut MemIds::after(p))
+        .unwrap()
+        .inverse
+}
+
+/// The reviewer's counter-example: a delete and its undo between the base and the head. The
+/// undo mirrors the delete, so "before c2" stays before c2, as at the head.
+#[test]
+fn undo_in_since_mirrors_its_unit() {
+    let p = with_clips(&[5, 3]);
+    let del = vec![Op::ClipDelete { clip: "c2".into() }];
+    let (p1, u) = commit(&p, del.clone(), 1, "tx-del");
+    let (p2, undo) = commit(&p1, inverse(&p, &del), 2, "tx-undo");
+    assert_eq!(p2, p);
+    let undo = linked(undo, undo_of(&["tx-del"]));
+    let b = stale(vec![insert("$y", "t1", secs(5), "a1", secs(0), secs(1))]);
+    let out = rebase(&p, &p2, &b, &[u, undo]).unwrap();
+    let fresh = apply_tx(&p2, &b, &mut MemIds::after(&p2)).unwrap();
+    assert_eq!(at_of(&out.tx.ops[0]), secs(5));
+    assert_eq!(out.applied.project, fresh.project);
+}
+
+/// An `undo --to` of two units is cut into one part per unit, each mirroring its unit.
+#[test]
+fn undo_of_several_units_mirrors_each() {
+    let p = with_clips(&[5, 3]);
+    let del = vec![Op::ClipDelete { clip: "c2".into() }];
+    let (p1, u1) = commit(&p, del.clone(), 1, "tx-1");
+    let ins = vec![insert("$z", "t1", secs(0), "a1", secs(0), secs(1))];
+    let (p2, u2) = commit(&p1, ins, 2, "tx-2");
+    // Newest unit first: remove z, then restore c2.
+    let resolved = fin_core::resolve_ops(&u2.tx.ops, &u2.bindings).unwrap();
+    let mut ops = inverse(&p1, &resolved);
+    ops.extend(inverse(&p, &del));
+    let (p3, undo) = commit(&p2, ops, 3, "tx-undo");
+    assert_eq!(p3, p);
+    let undo = linked(undo, undo_of(&["tx-2", "tx-1"]));
+    let since = [u1, u2, undo];
+    let refs: Vec<&CommittedTx> = since.iter().collect();
+    let steps = steps_from(&refs).unwrap();
+    let mirrors: Vec<Option<usize>> = steps.iter().map(|s| s.mirror_of).collect();
+    assert_eq!(mirrors, vec![None, None, Some(1), Some(0)]);
+    let b = stale(vec![insert("$y", "t1", secs(5), "a1", secs(0), secs(1))]);
+    let out = rebase(&p, &p3, &b, &since).unwrap();
+    assert_eq!(at_of(&out.tx.ops[0]), secs(5));
+}
+
+/// The undo's unit is before the base; the redo mirrors the undo. Without the mirror, "before
+/// x" (the start edge of x, removed then restored) would land after x.
+#[test]
+fn redo_mirrors_its_undo() {
+    let p = with_clips(&[5, 3]);
+    let ins = vec![insert("$x", "t1", secs(5), "a1", secs(0), secs(2))];
+    let (base, u) = commit(&p, ins, 1, "tx-ins");
+    let resolved = fin_core::resolve_ops(&u.tx.ops, &u.bindings).unwrap();
+    let removal = inverse(&p, &resolved);
+    let (p2, undo) = commit(&base, removal.clone(), 2, "tx-undo");
+    let (head, redo) = commit(&p2, inverse(&base, &removal), 3, "tx-redo");
+    assert_eq!(head, base);
+    let since = [
+        linked(undo, undo_of(&["tx-ins"])),
+        linked(
+            redo,
+            Link::Redo {
+                redoes: "tx-undo".into(),
+            },
+        ),
+    ];
+    let refs: Vec<&CommittedTx> = since.iter().collect();
+    let mirrors: Vec<Option<usize>> = steps_from(&refs)
+        .unwrap()
+        .iter()
+        .map(|s| s.mirror_of)
+        .collect();
+    assert_eq!(mirrors, vec![None, Some(0)]);
+    let mut b = stale(vec![insert("$y", "t1", secs(5), "a1", secs(0), secs(1))]);
+    b.base_rev = 1;
+    let out = rebase(&base, &head, &b, &since).unwrap();
+    assert_eq!(at_of(&out.tx.ops[0]), secs(5), "before x");
+    // An undo whose unit is not here, or a link of another kind, stands alone.
+    let lone = [linked(
+        since[1].clone(),
+        Link::Redo {
+            redoes: "tx-elsewhere".into(),
+        },
+    )];
+    let refs: Vec<&CommittedTx> = lone.iter().collect();
+    assert_eq!(steps_from(&refs).unwrap()[0].mirror_of, None);
+}
+
 #[derive(Debug, Clone)]
 enum Edit {
     Insert {
@@ -618,7 +785,10 @@ proptest! {
     ) {
         let p = with_clips(&lens);
         let (oa, ob) = (to_op(&p, &ea, "$a"), to_op(&p, &eb, "$b"));
-        prop_assume!(try_apply(&p, vec![oa.clone()]).is_ok() && try_apply(&p, vec![ob.clone()]).is_ok());
+        // Skipped, not rejected: proptest aborts after too many global rejects at high counts.
+        if try_apply(&p, vec![oa.clone()]).is_err() || try_apply(&p, vec![ob.clone()]).is_err() {
+            return Ok(());
+        }
         // One allocator for both, like the store's durable counter (ids are never reused).
         let mut ids = MemIds::after(&p);
         let (pa, a) = commit_with(&p, vec![oa.clone()], 1, "tx-a", &mut ids);
@@ -686,7 +856,9 @@ proptest! {
     ) {
         let p = with_clips(&lens);
         let (Some(oa), Some(ob)) = (stale_sequence(&p, &ea), stale_sequence(&p, &eb)) else { return Ok(()) };
-        prop_assume!(!oa.is_empty() && try_apply(&p, ob.clone()).is_ok());
+        if oa.is_empty() || try_apply(&p, ob.clone()).is_err() {
+            return Ok(());
+        }
         let mut ids = MemIds::after(&p);
         let (pa, a) = commit_with(&p, oa, 1, "tx-a", &mut ids);
         match rebase_tx(&p, &pa, &stale(ob.clone()), std::slice::from_ref(&a), &mut ids) {

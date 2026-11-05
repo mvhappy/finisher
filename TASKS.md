@@ -166,7 +166,7 @@ Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md` (branch `sp4
 - [x] Task 3: record kinds with typed links, content-versioned segments (edit-only v1, any 4B kind v2), per-kind reader versions, DB migration 0002 (`branches`, `record_links`)
 - [x] Task 4: exact per-track shift maps (`rebase::map`: `StepMap`, `Mapping` with mirrors; ProseMirror recover rule, Decision 16)
 - [x] Task 5: per-track, per-entity conflict footprints (`rebase::footprint`, one `footprint` per op module; `Conflict` with reason codes, `Conflicts` → `CONFLICT` with `details.conflicts`)
-- [x] Task 6: rebase engine rewrite (`rebase_apply`: map op by op through mirrored inverses, judge unmirrored steps, re-run with full policy; `rebase_tx` in the frame at the base, `state::state_at` in commit), `clip.restore` placeholders. Proptest budget, first measure: `rebase_props` + `shift_map` 0.15 s wall in a debug build on the Linux VM (tests 0.05 s + 0.02 s; budget < 8 s)
+- [x] Task 6: rebase engine rewrite (`rebase_apply`: map op by op through mirrored inverses, judge unmirrored steps, re-run with full policy; `rebase_tx` in the frame at the base, `state::state_at` in commit), `clip.restore` placeholders. Proptest budget, first measure: `rebase_props` + `shift_map` 0.15 s wall in a debug build on the Linux VM (tests 0.05 s + 0.02 s; budget < 8 s). Review fixes: undo/redo mirrors from `CommittedTx.link` (`steps_from`), `Conflict.details` and re-run blame, `details.baseRev` on a base failure, commit frame by rewind or replay (`state_near_head`); unchanged timing
 
 ## Blocked on hardware or accounts
 
