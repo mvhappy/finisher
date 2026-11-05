@@ -537,7 +537,7 @@ fn different_file_under_our_name_is_an_error_and_not_overwritten() {
         prev_segment_hash: None,
         op_schema_versions: [1, 1],
         created_at: 0,
-        genesis_hash: format!("blake3:{}", "0".repeat(64)),
+        genesis_hash: s.genesis_hash(),
         pack: false,
         replaces: Vec::new(),
     };
@@ -826,7 +826,7 @@ fn plant(s: &Store, dir: &Path, seq: u64, prev: Option<String>, record: &[u8]) -
         prev_segment_hash: prev,
         op_schema_versions: [1, 1],
         created_at: 0,
-        genesis_hash: format!("blake3:{}", "0".repeat(64)),
+        genesis_hash: s.genesis_hash(),
         pack: false,
         replaces: Vec::new(),
     };

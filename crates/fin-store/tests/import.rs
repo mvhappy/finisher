@@ -218,7 +218,7 @@ fn header(s: &Store, epoch: u64, first: u64, last: u64, prev: Option<String>) ->
         prev_segment_hash: prev,
         op_schema_versions: [1, 1],
         created_at: 0,
-        genesis_hash: format!("blake3:{}", "0".repeat(64)),
+        genesis_hash: s.genesis_hash(),
         pack: false,
         replaces: Vec::new(),
     }

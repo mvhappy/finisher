@@ -7,8 +7,12 @@ use std::path::{Path, PathBuf};
 
 use crate::{StoreError, fsio};
 
-/// How many `project.fdb.corrupt-*` copies are kept (each with its `-wal`/`-shm`).
-const KEEP_CORRUPT: usize = 3;
+/// How many copies of each kind are kept (each with its `-wal`/`-shm`).
+const KEEP: usize = 3;
+/// A damaged database, kept.
+pub(super) const CORRUPT: &str = "project.fdb.corrupt-";
+/// A healthy database replaced by a manual rebuild, kept.
+pub(super) const REPLACED: &str = "project.fdb.replaced-";
 
 fn side(p: &Path, ext: &str) -> PathBuf {
     PathBuf::from(format!("{}{ext}", p.display()))
@@ -22,14 +26,11 @@ fn ts_of<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
     (b.len() == 19 && digits(0..8) && b[8] == b'T' && digits(9..18) && b[18] == b'Z').then_some(ts)
 }
 
-/// A free `project.fdb.corrupt-<UTC ts>` name in `dir`.
-pub(super) fn corrupt_name(dir: &Path) -> PathBuf {
+/// A free `<prefix><UTC ts>` name in `dir`.
+pub(super) fn kept_name(dir: &Path, prefix: &str) -> PathBuf {
     let mut ms = crate::commit::now_ms();
     loop {
-        let c = dir.join(format!(
-            "project.fdb.corrupt-{}",
-            crate::backup::timestamp(ms)
-        ));
+        let c = dir.join(format!("{prefix}{}", crate::backup::timestamp(ms)));
         if !c.exists() && !side(&c, "-wal").exists() {
             return c;
         }
@@ -37,15 +38,15 @@ pub(super) fn corrupt_name(dir: &Path) -> PathBuf {
     }
 }
 
-/// The kept damaged copies in `dir`, oldest first.
-pub(super) fn corrupt_copies(dir: &Path) -> Vec<PathBuf> {
+/// The kept copies named `<prefix><ts>` in `dir`, oldest first.
+pub(super) fn copies(dir: &Path, prefix: &str) -> Vec<PathBuf> {
     let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            let ts = ts_of(&name, "project.fdb.corrupt-")?.to_string();
+            let ts = ts_of(&name, prefix)?.to_string();
             Some((ts, e.path()))
         })
         .collect();
@@ -78,13 +79,26 @@ pub(super) fn remove_with_sides(p: &Path) {
     }
 }
 
-/// Keeps the newest [`KEEP_CORRUPT`] damaged copies, never `new`.
-pub(super) fn prune_corrupt(dir: &Path, new: Option<&Path>) {
-    let all: Vec<PathBuf> = corrupt_copies(dir)
+/// Keeps the newest [`KEEP`] `<prefix>` copies, never `new` and never one in `protected`
+/// (an incomplete salvage nobody acknowledged); those do not count towards [`KEEP`].
+pub(super) fn prune(dir: &Path, prefix: &str, new: Option<&Path>, protected: &[String]) {
+    let all: Vec<PathBuf> = copies(dir, prefix)
         .into_iter()
         .filter(|p| Some(p.as_path()) != new)
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| protected.iter().any(|x| *x == n.to_string_lossy()))
+        })
         .collect();
-    let keep_others = KEEP_CORRUPT.saturating_sub(usize::from(new.is_some()));
+    let new_here = new.is_some_and(|n| {
+        n.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(prefix))
+            && !protected
+                .iter()
+                .any(|x| Some(x.as_str()) == n.file_name().and_then(|n| n.to_str()))
+    });
+    let keep_others = KEEP.saturating_sub(usize::from(new_here));
     let excess = all.len().saturating_sub(keep_others);
     for p in all.into_iter().take(excess) {
         remove_with_sides(&p);
@@ -120,8 +134,22 @@ pub(super) fn swap(db_path: &Path, tmp: &Path, kept: Option<&Path>) -> Result<bo
     let mut moved = false;
     if let Some(kept) = kept {
         moved = rename_if_present(db_path, kept)?;
+        let mut sides = vec![];
         for ext in ["-wal", "-shm"] {
-            rename_if_present(&side(db_path, ext), &side(kept, ext))?;
+            match rename_if_present(&side(db_path, ext), &side(kept, ext)) {
+                Ok(true) => sides.push(ext),
+                Ok(false) => {}
+                Err(e) => {
+                    // Never leave the main file apart from its WAL: put back what moved.
+                    for ext in sides {
+                        let _ = fsio::rename_noreplace(&side(kept, ext), &side(db_path, ext));
+                    }
+                    if moved {
+                        let _ = fsio::rename_noreplace(kept, db_path);
+                    }
+                    return Err(e);
+                }
+            }
         }
     } else {
         let wal = side(db_path, "-wal");

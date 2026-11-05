@@ -5,7 +5,6 @@ mod integration_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use fin_core::{CoreError, Project, SCHEMA_VERSION, Tx};
 use fin_store::names::{SnapName, hash12};
@@ -398,17 +397,13 @@ fn verify_reports_each_check() {
         }
     }
 
-    // A damaged segment: still settling (just written), then unchanged for 60 s.
+    // A damaged segment on local storage (written atomically there): corrupt at once (the
+    // sync-folder rule is in rebuild_safety.rs).
     let bad = seg_dir(&e.dir).join(format!(
         "{:08}-{:012}-{:012}-{}.fseg",
         1, 4, 4, "0123456789ab"
     ));
     fs::write(&bad, b"{\"magic\":\"finisher-segment\"}\nnot a segment\n").unwrap();
-    let v = a.verify();
-    let s = check(&v, "segment_checksums");
-    assert!(s.ok, "a file still changing may be arriving: {s:?}");
-    assert_eq!(s.details["unsettled"].as_array().unwrap().len(), 1);
-    e.clock.advance(Duration::from_secs(61));
     let v = a.verify();
     let s = check(&v, "segment_checksums");
     assert!(!s.ok);
@@ -509,7 +504,7 @@ fn manual_rebuild_flushes_first_and_keeps_the_old_database() {
     assert_eq!(report.records, 3);
     assert_eq!(a.snapshot(MAIN).unwrap(), before);
     let dir = a.db_path().parent().unwrap().to_path_buf();
-    let kept: Vec<String> = files_starting(&dir, "project.fdb.corrupt-")
+    let kept: Vec<String> = files_starting(&dir, "project.fdb.replaced-")
         .into_iter()
         .filter(|n| !n.ends_with("-wal") && !n.ends_with("-shm"))
         .collect();

@@ -331,13 +331,22 @@ impl Store {
         };
         report.hydrated = hydrate::run(&self.project_dir, &entries, &mut self.import.hydrate_from);
 
-        // Classify.
+        // Classify. A segment written under another genesis (`genesisHash`) is another
+        // project's history under this id (a hand-made copy, an edited project): it is not
+        // imported, and the pass reports `GENESIS_MISMATCH` (read-only `IMPORT_ERROR`) until it
+        // is moved out. It is not quarantined: its records belong to no history of ours.
+        let genesis = crate::project_file::db_genesis_hash(&self.conn)?;
+        let mut foreign_genesis: Vec<String> = vec![];
         let mut by_branch: HashMap<String, Vec<SegRef>> = HashMap::new();
         let mut present = HashMap::new();
         let mut foreign = vec![];
         let mut newer = false;
         for entry in &entries {
             match entry {
+                Entry::Segment { branch, seg, name } if seg.header.genesis_hash != genesis => {
+                    let path = dot.join("segments").join(branch).join(name.to_string());
+                    foreign_genesis.push(path.to_string_lossy().into_owned());
+                }
                 Entry::Segment { branch, seg, .. } => {
                     let r = self
                         .import
@@ -534,6 +543,12 @@ impl Store {
         report.pending = pending.into_iter().collect();
         report.foreign = foreign.files;
         report.newer = newer;
+        if !foreign_genesis.is_empty() && report.error.is_none() {
+            report.error = Some(crate::project_file::genesis_mismatch(
+                &genesis,
+                foreign_genesis,
+            ));
+        }
         let conflict_copy = report.foreign.iter().any(|f| {
             f.conflict_copy.is_some()
                 && !f

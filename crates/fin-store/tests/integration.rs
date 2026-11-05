@@ -378,7 +378,7 @@ fn a_visible_file_under_our_segment_name_makes_read_only() {
             prev_segment_hash: None,
             op_schema_versions: [1, 1],
             created_at: 0,
-            genesis_hash: format!("blake3:{}", "0".repeat(64)),
+            genesis_hash: a.genesis_hash(),
             pack: false,
             replaces: vec![],
         };

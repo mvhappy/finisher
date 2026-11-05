@@ -34,6 +34,39 @@ pub(super) struct Outcome {
     pub(super) errors: Vec<String>,
     /// `salvagedFrom` of the source: damaged copies already salvaged into it.
     pub(super) salvaged_from: Vec<String>,
+    /// The source's own record of incomplete salvages.
+    pub(super) incomplete: Vec<Incomplete>,
+}
+
+/// A kept copy whose salvage could not read everything (`meta` `salvageIncomplete`): never
+/// pruned, and reported by status (`SALVAGE_INCOMPLETE`), until acknowledged
+/// (`Store::acknowledge_salvage`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Incomplete {
+    /// The copy's file name in the project's server data.
+    pub(crate) copy: String,
+    /// The first read errors.
+    pub(crate) errors: Vec<String>,
+    /// Unix ms of the salvage.
+    pub(crate) at: i64,
+    #[serde(default)]
+    pub(crate) acknowledged: bool,
+}
+
+const INCOMPLETE: &str = "salvageIncomplete";
+
+/// The incomplete salvages recorded in `conn`.
+pub(crate) fn incomplete(conn: &Connection) -> Vec<Incomplete> {
+    db::meta(conn, INCOMPLETE)
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn set_incomplete(conn: &Connection, all: &[Incomplete]) -> Result<(), StoreError> {
+    db::set_meta(conn, INCOMPLETE, &serde_json::to_string(all)?)
 }
 
 fn open(src: &Path) -> Result<Connection, String> {
@@ -194,6 +227,7 @@ pub(super) fn run(src: &Path, new: &Connection, now: i64) -> Result<Outcome, Sto
             crate::history::note_server_id(new, &id)?;
         }
     }
+    out.incomplete = incomplete(&c);
     out.salvaged_from = db::meta(&c, "salvagedFrom")
         .ok()
         .flatten()

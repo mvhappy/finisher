@@ -91,7 +91,9 @@ const CONFLICT_CODES: &[&str] = &[
 /// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
 const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE"];
 
-/// Codes that mean "no usable server" (exit 5). `SERVER_TIMEOUT` is fin's own: the server
+/// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
+/// a resource another process holds (`DB_IN_USE`: a rebuild needs the project database to
+/// itself). `SERVER_TIMEOUT` is fin's own: the server
 /// accepted the connection but did not answer in time. `ENGINE_CLOSED`,
 /// `SERVER_SHUTTING_DOWN` and `CANCELLED` (the server interrupted the request, e.g. while
 /// stopping) are transient: retrying against a (re)started server can succeed.
@@ -103,7 +105,6 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "ENGINE_CLOSED",
     "SERVER_SHUTTING_DOWN",
     "CANCELLED",
-    // A rebuild needs the project database to itself; transient.
     "DB_IN_USE",
 ];
 

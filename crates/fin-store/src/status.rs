@@ -308,6 +308,15 @@ impl Store {
         if let Some(e) = &self.ctl.check_error {
             warn("LEASE_CHECK", e.clone());
         }
+        for (copy, errors) in self.unacknowledged_salvages() {
+            warn(
+                "SALVAGE_INCOMPLETE",
+                format!(
+                    "a rebuild could not read all of the old database {copy} ({}), so edits that never reached the project folder may be missing from quarantine; it is kept for recovery until acknowledged",
+                    errors.first().cloned().unwrap_or_default()
+                ),
+            );
+        }
         if let Some(r) = self.last_rebuild() {
             let mut m = format!(
                 "the database was rebuilt from the project folder ({}): {} record(s)",
@@ -326,20 +335,6 @@ impl Store {
                 m.push_str("; fin project verify reports problems");
             }
             warn("DB_REBUILT", m);
-            if !r.salvage_complete {
-                let kept = r.corrupt_copy.as_ref().map_or_else(
-                    || "the kept copies".to_string(),
-                    |p| p.display().to_string(),
-                );
-                warn(
-                    "SALVAGE_INCOMPLETE",
-                    format!(
-                        "parts of the old database could not be read, so edits that never reached the project folder may be missing from quarantine ({} problem(s): {}); keep {kept} for recovery",
-                        r.salvage_errors.len(),
-                        r.salvage_errors.first().cloned().unwrap_or_default()
-                    ),
-                );
-            }
             if r.missing_from_folder > 0 {
                 warn(
                     "MISSING_FROM_FOLDER",

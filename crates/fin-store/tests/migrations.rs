@@ -385,9 +385,21 @@ fn min_reader_too_new_is_refused() {
 
 #[test]
 fn foreign_application_id_is_refused() {
-    for e in refused("PRAGMA application_id = 1234") {
+    // Another application's database that happens to have our tables: refused untouched.
+    for e in refused(
+        "PRAGMA application_id = 1234; UPDATE meta SET value = 'someone-else' WHERE key = 'projectId'",
+    ) {
         assert_eq!(e.code, "NOT_A_PROJECT_DB");
     }
+    // Our own database whose 4 application-id header bytes are damaged (its meta still says
+    // it is this project's): rebuilt, the old file kept (plan Task 12 re-review).
+    let (_tmp, data, dir, db) = fresh();
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("PRAGMA application_id = 1234")
+        .unwrap();
+    let s = Store::open(&data, &dir).unwrap();
+    assert_eq!(s.last_rebuild().unwrap().reason, "corrupt");
 }
 
 #[test]

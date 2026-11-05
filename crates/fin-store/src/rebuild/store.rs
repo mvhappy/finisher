@@ -97,7 +97,7 @@ impl Store {
         // Whatever happened, a database must be in place before reconnecting: a swap that
         // failed moves the old one back; should it not have, the newest kept copy returns.
         if !db_path.exists()
-            && let Some(newest) = files::corrupt_copies(&dir).pop()
+            && let Some(newest) = files::copies(&dir, files::REPLACED).pop()
         {
             for ext in ["", "-wal", "-shm"] {
                 let _ = crate::fsio::rename_noreplace(
@@ -141,5 +141,30 @@ impl Store {
         }
         self.rebuilt = report;
         Ok(())
+    }
+}
+
+impl Store {
+    /// Stops status reporting `SALVAGE_INCOMPLETE` for the kept copy named `copy` (its file
+    /// name in the project's server data); from the next rebuild on it is pruned like any
+    /// other copy. `false` when no such incomplete salvage is recorded.
+    pub fn acknowledge_salvage(&mut self, copy: &str) -> Result<bool, StoreError> {
+        let mut all = super::incomplete(&self.conn);
+        let Some(i) = all.iter_mut().find(|i| i.copy == copy && !i.acknowledged) else {
+            return Ok(false);
+        };
+        i.acknowledged = true;
+        super::set_incomplete(&self.conn, &all)?;
+        Ok(true)
+    }
+
+    /// The kept copies whose salvage was incomplete and not acknowledged, with their first
+    /// errors (status `SALVAGE_INCOMPLETE`).
+    pub(crate) fn unacknowledged_salvages(&self) -> Vec<(String, Vec<String>)> {
+        super::incomplete(&self.conn)
+            .into_iter()
+            .filter(|i| !i.acknowledged)
+            .map(|i| (i.copy, i.errors))
+            .collect()
     }
 }

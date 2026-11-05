@@ -2,7 +2,8 @@
 //!
 //! - Not an SQLite header (short, or bad magic): damaged.
 //! - A valid header with a foreign, non-zero `application_id`: refused (`NOT_A_PROJECT_DB`,
-//!   by `migrations::check`), never rebuilt over.
+//!   by `migrations::check`), never rebuilt over, unless its `meta.projectId` reads and is
+//!   this project's: then only those 4 header bytes are damaged.
 //! - Our `application_id`: `DB_TOO_NEW` is refused; any other failure to read the schema or
 //!   `meta` (`NOT_A_PROJECT_DB` included: the header says it is ours) is damage.
 //! - `application_id` 0 (a sub-project 2 database, or any SQLite file): refused unless SQLite
@@ -13,7 +14,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use rusqlite::{Connection, ErrorCode, OpenFlags};
+use rusqlite::{Connection, ErrorCode};
 
 use crate::StoreError;
 use crate::migrations::{self, APPLICATION_ID};
@@ -22,7 +23,7 @@ const MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
 /// `Some(problem)`: the database at `path` is ours and damaged. `Err`: refused, or the file
 /// cannot be read at all.
-pub(crate) fn damaged(path: &Path) -> Result<Option<String>, StoreError> {
+pub(crate) fn damaged(path: &Path, project_id: &str) -> Result<Option<String>, StoreError> {
     let mut head = [0u8; 100];
     let n = {
         let mut f = std::fs::File::open(path).map_err(StoreError::io(path))?;
@@ -40,6 +41,19 @@ pub(crate) fn damaged(path: &Path) -> Result<Option<String>, StoreError> {
     }
     let app = u32::from_be_bytes([head[68], head[69], head[70], head[71]]);
     let ours = i64::from(app) == i64::from(APPLICATION_ID);
+    if app != 0 && !ours {
+        let id = open_read_only(path).ok().and_then(|c| {
+            c.query_row("SELECT value FROM meta WHERE key = 'projectId'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()
+        });
+        if id.as_deref() == Some(project_id) {
+            return Ok(Some(format!(
+                "the header's application_id is {app:#x}, but meta.projectId is this project's"
+            )));
+        }
+    }
     match migrations::check(path) {
         Ok(_) => {}
         Err(e) if e.code() == "DB_TOO_NEW" => return Err(e),
@@ -75,14 +89,10 @@ pub(crate) fn quick_check(path: &Path) -> Result<Option<String>, StoreError> {
     }
 }
 
-/// A read-only connection (never checkpoints, never switches the journal mode).
+/// A read-only connection that never checkpoints, switches the journal mode or creates
+/// `-wal`/`-shm` beside the file ([`migrations::open_inspect`]).
 pub(crate) fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
-    let c = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    c.busy_timeout(std::time::Duration::from_secs(5))?;
-    Ok(c)
+    migrations::open_inspect(path)
 }
 
 /// SQLite says the file is damaged.

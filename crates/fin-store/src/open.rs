@@ -204,7 +204,7 @@ impl Store {
             rebuilt = rebuild::rebuild(&plan, rebuild::Why::Missing, None)?;
         }
         let mut db_lock = crate::dblock::shared(data_dir)?;
-        if let Some(problem) = rebuild::damaged(&db_path)? {
+        if let Some(problem) = rebuild::damaged(&db_path, &file.id)? {
             drop(db_lock);
             rebuilt = rebuild::rebuild(&plan, rebuild::Why::Corrupt(problem), None)?.or(rebuilt);
             db_lock = crate::dblock::shared(data_dir)?;

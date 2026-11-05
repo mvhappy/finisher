@@ -59,6 +59,20 @@ pub fn genesis_hash(g: &Genesis) -> String {
     crate::db::hash_bytes(&serde_json::to_vec(g).expect("a genesis always serialises"))
 }
 
+/// `GENESIS_MISMATCH` for segment `files` written under another genesis than `expected`
+/// (an import error: they are not imported, and writes wait until they are moved out).
+pub(crate) fn genesis_mismatch(expected: &str, files: Vec<String>) -> CoreError {
+    CoreError::new(
+        "GENESIS_MISMATCH",
+        format!(
+            "{} segment file(s) in the project folder were written under another genesis than this project's",
+            files.len()
+        ),
+    )
+    .with_details(json!({ "expected": expected, "files": files }))
+    .with_fix("move these segment files out of .finisher/segments: they are not this project's history")
+}
+
 /// The genesis of a rev-0 project (its creation name and rate).
 pub(crate) fn genesis_of(rev0: &fin_core::Project) -> Genesis {
     Genesis {

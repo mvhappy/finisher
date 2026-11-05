@@ -46,7 +46,10 @@
 //!    kept copy still opens with it); without an old database an orphan `-wal` is renamed to
 //!    `project.fdb.orphan-<ts>-wal`. The new file is then linked into place without replacing
 //!    anything; if that fails, the old file is moved back. Then unfinished builds are
-//!    removed and the newest 3 damaged copies kept.
+//!    removed. Kept copies: `corrupt-*` (a damaged database) and `replaced-*` (a healthy one
+//!    replaced by a manual rebuild), the newest 3 of each; a copy whose salvage could not read
+//!    everything is never pruned and status reports it (`SALVAGE_INCOMPLETE`, persisted in
+//!    `meta` `salvageIncomplete`) until `Store::acknowledge_salvage`.
 //!
 //! A crash at any step leaves the old database in place, or the new one, or neither with
 //! the old one kept as `corrupt-*`: the next open rebuilds again and salvages that copy.
@@ -71,6 +74,7 @@ use serde_json::json;
 pub(crate) use check::damaged;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use files::fail_next_rebuild_swap_for_test;
+pub(crate) use salvage::{incomplete, set_incomplete};
 pub use store::rebuild_project;
 
 use crate::open::OpenOptions;
@@ -105,10 +109,14 @@ pub struct RebuildReport {
     pub salvage_errors: Vec<String>,
     /// The seq of the folder snapshot the rebuild was seeded from.
     pub seeded_from_snapshot: Option<u64>,
-    /// Where the old database was kept (`project.fdb.corrupt-<ts>`).
+    /// Where the old database was kept (`project.fdb.corrupt-<ts>`, or
+    /// `project.fdb.replaced-<ts>` after a manual rebuild).
     pub corrupt_copy: Option<PathBuf>,
-    /// Earlier damaged copies salvaged too.
+    /// Earlier kept copies salvaged too.
     pub salvaged_copies: Vec<String>,
+    /// Kept copies whose salvage could not read everything and that are not acknowledged:
+    /// never pruned (`Store::acknowledge_salvage`).
+    pub kept_for_recovery: Vec<String>,
     /// The project file's genesis does not describe the old database's rev 0 (that rev 0
     /// was used).
     pub genesis_mismatch: bool,
@@ -223,7 +231,7 @@ pub(crate) fn rebuild(
     let old = match &why {
         Why::Missing if plan.db_path.exists() => return Ok(None),
         Why::Missing => None,
-        Why::Corrupt(_) if damaged(plan.db_path)?.is_none() => return Ok(None),
+        Why::Corrupt(_) if damaged(plan.db_path, &plan.file.id)?.is_none() => return Ok(None),
         Why::Corrupt(_) | Why::Manual => Some(plan.db_path),
     };
     let old_rev0 = old.and_then(|p| salvage::rev0(p, &plan.file.id));
@@ -255,11 +263,17 @@ pub(crate) fn rebuild(
     };
     let ulid = ulid::Ulid::new().to_string().to_ascii_lowercase();
     let tmp = dir.join(format!("project.fdb.rebuild-{ulid}"));
-    let kept = old.map(|_| files::corrupt_name(dir));
+    // A healthy database replaced by hand is `replaced-*`; a damaged one `corrupt-*`.
+    let prefix = match why {
+        Why::Manual => files::REPLACED,
+        _ => files::CORRUPT,
+    };
+    let kept = old.map(|_| files::kept_name(dir, prefix));
     // Salvage sources: the old database, kept copies it has not salvaged, unfinished builds.
     let listed = old.map(salvage::salvaged_from).unwrap_or_default();
-    let copies: Vec<PathBuf> = files::corrupt_copies(dir)
+    let copies: Vec<PathBuf> = files::copies(dir, files::CORRUPT)
         .into_iter()
+        .chain(files::copies(dir, files::REPLACED))
         .filter(|c| {
             let name = c.file_name().map(|n| n.to_string_lossy().into_owned());
             !name.is_some_and(|n| listed.contains(&n))
@@ -295,7 +309,9 @@ pub(crate) fn rebuild(
             for s in &stale {
                 files::remove_with_sides(s);
             }
-            files::prune_corrupt(dir, r.corrupt_copy.as_deref());
+            for p in [files::CORRUPT, files::REPLACED] {
+                files::prune(dir, p, r.corrupt_copy.as_deref(), &r.kept_for_recovery);
+            }
             Ok(Some(r))
         }
         Err(e) => {
@@ -373,6 +389,7 @@ fn build(
         seeded_from_snapshot: store.import.seeded,
         corrupt_copy: None,
         salvaged_copies: vec![],
+        kept_for_recovery: vec![],
         genesis_mismatch: false,
         import_error: imported.error,
         verify: VerifyReport {
@@ -384,6 +401,7 @@ fn build(
     // exist, those salvaged now, and the old database once it is kept.
     let mut salvaged_from: Vec<String> = listed.to_vec();
     let mut exported_through = 0;
+    let mut incomplete: Vec<salvage::Incomplete> = vec![];
     let sources = old
         .into_iter()
         .map(|p| (p.to_path_buf(), true))
@@ -396,7 +414,25 @@ fn build(
             report.missing_from_folder += out.lost_exported;
             exported_through = out.exported_through;
         }
-        if counted {
+        if Some(src.as_path()) == old {
+            incomplete.extend(out.incomplete.iter().cloned());
+        }
+        let copy = if Some(src.as_path()) == old {
+            kept.and_then(Path::file_name)
+        } else {
+            src.file_name()
+        }
+        .map(|n| n.to_string_lossy().into_owned());
+        if counted && !out.errors.is_empty() {
+            if let Some(copy) = copy {
+                incomplete.retain(|i| i.copy != copy);
+                incomplete.push(salvage::Incomplete {
+                    copy,
+                    errors: out.errors.iter().take(5).cloned().collect(),
+                    at: now,
+                    acknowledged: false,
+                });
+            }
             report.salvage_errors.extend(out.errors);
         }
         if copies.contains(&src)
@@ -413,6 +449,12 @@ fn build(
     }
     salvaged_from.sort();
     salvaged_from.dedup();
+    salvage::set_incomplete(&store.conn, &incomplete)?;
+    report.kept_for_recovery = incomplete
+        .iter()
+        .filter(|i| !i.acknowledged)
+        .map(|i| i.copy.clone())
+        .collect();
     db::set_meta(
         &store.conn,
         "salvagedFrom",

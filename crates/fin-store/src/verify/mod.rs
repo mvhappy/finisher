@@ -79,31 +79,52 @@ pub struct VerifyReport {
 /// damaged is forgotten.
 #[derive(Debug, Default)]
 pub(crate) struct DamageSeen {
-    files: HashMap<PathBuf, (u64, Option<SystemTime>, Instant)>,
+    /// `(len, mtime, first seen so, its mtime was already SETTLED old then)`.
+    files: HashMap<PathBuf, (u64, Option<SystemTime>, Instant, bool)>,
 }
 
 /// How long a damaged file must look unchanged to be corrupt rather than arriving.
 pub(crate) const SETTLED: Duration = Duration::from_secs(60);
+
+/// Whether `mtime` is at least [`SETTLED`] old by the wall clock.
+fn old_mtime(mtime: Option<SystemTime>) -> bool {
+    mtime
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .is_some_and(|age| age >= SETTLED)
+}
+
+/// Whether a damaged file is corrupt rather than arriving. Off sync folders every finished
+/// file was written atomically (temp file + rename), so damage under a canonical name is
+/// corrupt at once. On a sync folder a file can be mid-download: it is corrupt once seen
+/// unchanged for [`SETTLED`], or, at its first sighting, when its mtime is already that old.
+pub(crate) fn settled(
+    seen: Option<&DamageSeen>,
+    path: &Path,
+    mtime: Option<SystemTime>,
+    now: Instant,
+    kind: StorageKind,
+) -> bool {
+    if !kind.is_sync() {
+        return true;
+    }
+    match seen.and_then(|s| s.files.get(path)) {
+        Some((_, _, since, old)) => *old || now.saturating_duration_since(*since) >= SETTLED,
+        None => old_mtime(mtime),
+    }
+}
 
 impl DamageSeen {
     /// Records one scan's damaged files (`(path, len, mtime)`) at `now`; forgets the others.
     pub(crate) fn observe(&mut self, seen: &[(PathBuf, u64, Option<SystemTime>)], now: Instant) {
         let mut next = HashMap::new();
         for (path, len, mtime) in seen {
-            let since = match self.files.get(path) {
-                Some((l, m, since)) if l == len && m == mtime => *since,
-                _ => now,
+            let entry = match self.files.get(path) {
+                Some((l, m, since, old)) if l == len && m == mtime => (*len, *mtime, *since, *old),
+                _ => (*len, *mtime, now, old_mtime(*mtime)),
             };
-            next.insert(path.clone(), (*len, *mtime, since));
+            next.insert(path.clone(), entry);
         }
         self.files = next;
-    }
-
-    /// Whether `path` has looked unchanged for [`SETTLED`] at `now`.
-    pub(crate) fn settled(&self, path: &Path, now: Instant) -> bool {
-        self.files
-            .get(path)
-            .is_some_and(|(_, _, since)| now.saturating_duration_since(*since) >= SETTLED)
     }
 }
 

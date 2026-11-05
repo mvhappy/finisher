@@ -300,6 +300,12 @@ impl Store {
         })
     }
 
+    /// The `genesisHash` every segment and snapshot of this project names
+    /// ([`project_file::genesis_hash`] of the rev-0 genesis).
+    pub fn genesis_hash(&self) -> String {
+        project_file::db_genesis_hash(&self.conn).unwrap_or_default()
+    }
+
     /// This database's incarnation (module `history`): new whenever it is rebuilt.
     pub fn incarnation(&self) -> String {
         history::incarnation(&self.conn).unwrap_or_default()

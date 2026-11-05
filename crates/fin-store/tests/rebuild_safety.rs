@@ -337,33 +337,148 @@ fn verify_on_a_sync_folder_does_not_fail_on_placeholders() {
     assert_eq!(s.details["unchecked"].as_array().unwrap().len(), 1, "{s:?}");
 }
 
+fn plant_damaged(dir: &Path, seq: u64) -> PathBuf {
+    let bad = seg_dir(dir).join(format!(
+        "{:08}-{:012}-{:012}-{}.fseg",
+        1, seq, seq, "0123456789ab"
+    ));
+    fs::write(&bad, b"{\"magic\":\"finisher-segment\"}\nnot a segment\n").unwrap();
+    bad
+}
+
+fn age(path: &Path, secs: u64) {
+    let f = fs::File::options().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - Duration::from_secs(secs))
+        .unwrap();
+}
+
 #[test]
-fn a_damaged_segment_is_corrupt_only_once_seen_unchanged_for_60s() {
+fn on_local_storage_a_damaged_segment_is_corrupt_at_once() {
+    // Writes there are atomic (temp + rename): a damaged canonical file is not arriving.
     let e = env();
     let mut a = e.create("a");
     commit(&mut a, "t1", vec![asset("/m/a.mov")]);
     e.flush(&mut a);
-    let bad = seg_dir(&e.dir).join(format!(
-        "{:08}-{:012}-{:012}-{}.fseg",
-        1, 2, 2, "0123456789ab"
+    plant_damaged(&e.dir, 2);
+    drop(a);
+    let fresh = e.open("a"); // a one-shot verify, no observation history
+    let s = check(&fresh.verify(), "segment_checksums").clone();
+    assert!(!s.ok, "{s:?}");
+    assert_eq!(s.details["corrupt"][0]["code"], "SEGMENT_CORRUPT");
+}
+
+#[test]
+fn on_a_sync_folder_damage_is_corrupt_once_settled() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    a.set_test_storage_kind(fin_store::storage_kind::StorageKind::Sync(
+        fin_store::conflict_names::Provider::Dropbox,
     ));
-    fs::write(&bad, b"{\"magic\":\"finisher-segment\"}\nnot a segment\n").unwrap();
-    // An old mtime alone is not enough.
-    let f = fs::File::options().write(true).open(&bad).unwrap();
-    f.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
-        .unwrap();
-    drop(f);
-    let s = check(&a.verify(), "segment_checksums").clone();
-    assert!(s.ok, "first sighting: {s:?}");
+    let bad = plant_damaged(&e.dir, 2);
+    // Just written: may still be syncing.
+    assert!(check(&a.verify(), "segment_checksums").ok);
     e.clock.advance(Duration::from_secs(30));
     assert!(check(&a.verify(), "segment_checksums").ok);
     e.clock.advance(Duration::from_secs(31));
     let s = check(&a.verify(), "segment_checksums").clone();
-    assert!(!s.ok, "{s:?}");
-    assert_eq!(s.details["corrupt"][0]["code"], "SEGMENT_CORRUPT");
+    assert!(!s.ok, "seen unchanged for 61 s: {s:?}");
     // A change restarts the clock.
     fs::write(&bad, b"{\"magic\":\"finisher-segment\"}\nstill not\n").unwrap();
     assert!(check(&a.verify(), "segment_checksums").ok);
+    // No history (a fresh observation) of a file whose mtime is older than 60 s: corrupt.
+    let old = plant_damaged(&e.dir, 3);
+    age(&old, 3600);
+    let s = check(&a.verify(), "segment_checksums").clone();
+    assert_eq!(s.details["corrupt"].as_array().unwrap().len(), 1, "{s:?}");
+}
+
+#[test]
+fn import_refuses_segments_of_another_genesis() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let mut b = e.open("b");
+    assert_eq!(b.head(MAIN), 1);
+    // A segment of the same project id written under another genesis.
+    let (_, name, seg) = segments(&e.dir).pop().unwrap();
+    let mut h = seg.header.clone();
+    h.genesis_hash = format!("blake3:{}", "ee".repeat(32));
+    h.first_seq = 2;
+    h.last_seq = 2;
+    h.prev_segment_hash = Some(seg.hash.clone());
+    let rec = b"{\"txId\":\"x\",\"seq\":2}".to_vec();
+    let (bytes, hash) = fin_store::segment::encode(&h, &[rec.as_slice()]);
+    let n = fin_store::names::SegmentName::new(1, 2, 2, fin_store::names::hash12(&hash).unwrap())
+        .unwrap();
+    let _ = name;
+    fs::write(seg_dir(&e.dir).join(n.to_string()), bytes).unwrap();
+    let r = e.poll(&mut b);
+    let err = r.imports[0].error.clone().expect("an import error");
+    assert_eq!(err.code, "GENESIS_MISMATCH", "{err:?}");
+    assert_eq!(err.details["files"].as_array().unwrap().len(), 1);
+    assert_eq!(b.read_only(), Some(fin_store::ReadOnlyReason::ImportError));
+    assert_eq!(b.head(MAIN), 1);
+}
+
+#[test]
+fn damaged_application_id_of_our_own_database_is_rebuilt() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    let db = a.db_path().to_path_buf();
+    a.close().unwrap();
+    checkpoint(&db);
+    damage(&db, 68, 72);
+    let s = e.open("a");
+    assert_eq!(s.last_rebuild().unwrap().reason, "corrupt");
+    assert_eq!(s.head(MAIN), 1);
+}
+
+#[test]
+fn an_incompletely_salvaged_copy_is_kept_and_reported_until_acknowledged() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    commit(&mut a, "u1", vec![asset("/m/u1.mov")]);
+    let db = a.db_path().to_path_buf();
+    drop(a);
+    checkpoint(&db);
+    let (root, ps) = page_of(&db, "txs");
+    damage(&db, (root - 1) * ps, root * ps);
+    let mut a = e.open("a");
+    let kept = a.last_rebuild().unwrap().corrupt_copy.clone().unwrap();
+    let kept_name = kept.file_name().unwrap().to_string_lossy().into_owned();
+    let dir = db.parent().unwrap().to_path_buf();
+    // Healthy manual rebuilds keep their own copies, apart from the damaged ones.
+    for _ in 0..4 {
+        a.rebuild().unwrap();
+    }
+    assert!(
+        kept.is_file(),
+        "never pruned while its salvage is incomplete"
+    );
+    let replaced: Vec<String> = names(&dir, "project.fdb.replaced-")
+        .into_iter()
+        .filter(|n| !n.ends_with("-wal") && !n.ends_with("-shm"))
+        .collect();
+    assert_eq!(replaced.len(), 3, "{replaced:?}");
+    // The warning survives a reopen.
+    drop(a);
+    let mut a = e.open("a");
+    let warned = |s: &Store| {
+        s.status()
+            .warnings
+            .iter()
+            .any(|w| w.code == "SALVAGE_INCOMPLETE" && w.message.contains(&kept_name))
+    };
+    assert!(warned(&a));
+    assert!(a.acknowledge_salvage(&kept_name).unwrap());
+    assert!(!warned(&a));
+    assert!(!a.acknowledge_salvage("project.fdb.corrupt-nope").unwrap());
 }
 
 #[test]

@@ -93,16 +93,21 @@ impl Folder {
             }
         }
         let mut settled = HashSet::new();
-        if let Some((seen, now)) = s.damage {
+        let now = s
+            .damage
+            .map_or_else(std::time::Instant::now, |(_, now)| now);
+        let seen = s.damage.map(|(seen, now)| {
             let mut seen = seen.borrow_mut();
             seen.observe(&damaged, now);
-            settled.extend(
-                damaged
-                    .iter()
-                    .filter(|(p, ..)| seen.settled(p, now))
-                    .map(|(p, ..)| p.clone()),
-            );
-        }
+            seen
+        });
+        settled.extend(
+            damaged
+                .iter()
+                .filter(|(p, _, m)| super::settled(seen.as_deref(), p, *m, now, s.kind))
+                .map(|(p, ..)| p.clone()),
+        );
+        drop(seen);
         arriving |= damaged
             .iter()
             .any(|(p, ..)| p.starts_with(&segments_root) && !settled.contains(p));

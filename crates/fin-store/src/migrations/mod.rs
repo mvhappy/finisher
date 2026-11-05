@@ -90,6 +90,34 @@ pub(crate) fn check(path: &Path) -> Result<u32, StoreError> {
     version(&conn, path)
 }
 
+/// A read-only connection that writes nothing beside the file: with `immutable=1` when there
+/// is no `-wal` or `-journal` to read (a plain read-only open of a WAL database creates
+/// `-wal`/`-shm`), else a plain read-only open.
+pub(crate) fn open_inspect(path: &Path) -> rusqlite::Result<Connection> {
+    let side = |ext: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(ext);
+        PathBuf::from(name).exists()
+    };
+    if !side("-wal")
+        && !side("-journal")
+        && let Some(uri) = immutable_uri(path)
+    {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if let Ok(c) = Connection::open_with_flags(&uri, flags) {
+            return Ok(c);
+        }
+    }
+    let c = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    c.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(c)
+}
+
 /// `file:` URI for the absolute `path` with `immutable=1`, every byte outside `[A-Za-z0-9-._~/:]`
 /// percent-encoded; Windows separators become `/` (`C:/x` → `file:///C:/x`, UNC `//h/s` →
 /// `file:////h/s`). `None` for a path that is not UTF-8.
