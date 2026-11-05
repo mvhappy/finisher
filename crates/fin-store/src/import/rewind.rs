@@ -250,6 +250,7 @@ impl Taken {
             span_ms: self.span_ms,
             at,
             acknowledged: false,
+            retired: false,
         }
     }
 }
@@ -257,8 +258,9 @@ impl Taken {
 /// Takes the rows of `branch` from `from_seq` on out (module docs, "What", steps 1–2):
 /// quarantined with the 4A origin rule (exported: `SUPERSEDED` with detail
 /// `superseded(seq, epoch)`; unexported: `DIVERGED_TAIL`; `reason`, when given, replaces
-/// the first: an unexported row exists nowhere else and stays a diverged tail), then the rows, the snapshots at or above `from_seq` and the `segments` rows reaching
-/// it are deleted. `segs` are the branch's folder segments.
+/// the first: an unexported row exists nowhere else and stays a diverged tail), then the
+/// rows, the snapshots at or above `from_seq` and the `segments` rows reaching it are
+/// deleted. `segs` are the branch's folder segments.
 pub(super) fn take_rows(
     ctx: &mut Ctx,
     branch: &str,

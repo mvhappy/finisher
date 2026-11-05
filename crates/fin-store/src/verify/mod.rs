@@ -49,9 +49,11 @@
 //!   (`stateless`: such a branch cannot be read) and every branch with rows an index row
 //!   (`unindexed`: it refuses writes). Each branch directory's segments that do not name the
 //!   index's `branch` record (Decision 33) name one that is set aside here (an inert row or
-//!   a quarantine row; its records not held yet are `pending`, not a failure) or one unknown
-//!   here (`waiting`, listed but not a failure while files arrive), never a live record the
-//!   index does not hold or a record of another branch (`segments`).
+//!   a current quarantine row that sets directories aside, as import's; its records not held
+//!   yet are `pending`, not a failure) or one unknown here: on a folder chain this verify
+//!   resolved, or made by such a record, it is the folder ahead of the database (`ahead`,
+//!   not a failure); otherwise `waiting` (not a failure while files arrive). Never a live
+//!   record the index does not hold or a record of another branch (`segments`).
 //!
 //! Per branch, the folder checks read the segments that make it: all of `main`'s, and a 4B
 //! branch's that name its index record, resolved from its fork point

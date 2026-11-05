@@ -123,6 +123,15 @@ fn ignored(s: &Store) -> Vec<String> {
         .collect()
 }
 
+/// The `BRANCH_RECORDS_IGNORED` warning's text, if any.
+fn ignored_warning(s: &Store) -> Option<String> {
+    s.status()
+        .warnings
+        .into_iter()
+        .find(|w| w.code == "BRANCH_RECORDS_IGNORED")
+        .map(|w| w.message)
+}
+
 fn warns(s: &Store, code: &str) -> bool {
     s.status().warnings.iter().any(|w| w.code == code)
 }
@@ -141,7 +150,7 @@ fn assert_verifies(s: &Store) {
 /// reasons are those of a follower that saw everything at once (`f`'s own `SUPERSEDED`
 /// rows say what its old database did; the rebuilt one never applied them: `STALE_EPOCH`).
 fn rebuild_matches(e: &Env, f: &mut Store) {
-    let want = |s: &Store| (states(s), names(s), links(s), aside(s));
+    let want = |s: &Store| (states(s), names(s), links(s), aside(s), ignored_warning(s));
     let before = want(f);
     let rep = f.rebuild().unwrap();
     assert_eq!(rep.import_error, None);
@@ -252,7 +261,7 @@ fn all_orders_converge(e: &Env, n_files: usize, n_aside: usize) {
         .to_path_buf();
     let rest: Vec<&PathBuf> = files.iter().filter(|p| **p != first).collect();
     let g = e.open("g");
-    let want = |s: &Store| (states(s), aside(s), names(s), links(s));
+    let want = |s: &Store| (states(s), aside(s), names(s), links(s), ignored_warning(s));
     let target = want(&g);
     assert_verifies(&g);
     assert_eq!(target.1.len(), n_aside, "{:?}", reasons(&g));
@@ -294,6 +303,7 @@ fn all_orders_converge(e: &Env, n_files: usize, n_aside: usize) {
         assert_eq!(want(&x), target, "order {seen:?}");
         assert_ne!(x.read_only(), Some(ReadOnlyReason::ChainFork), "{seen:?}");
         assert!(x.status().unknown_branches.is_empty(), "{seen:?}");
+        assert_verifies(&x);
     }
 }
 
@@ -494,15 +504,22 @@ fn winner_record_later_superseded_gives_the_id_back() {
         "{:?}",
         reasons(&f)
     );
-    // The id's old rewinds were B's branch's: not reported under A's; its generation moved
-    // on, so a caller holding B's is refused (`HISTORY_REWOUND`, from rev 0).
+    // The id's old rewinds were B's branch's: reported as an earlier branch's, never as
+    // rewinds of A's; its generation moved on, so a caller holding B's is refused
+    // (`HISTORY_REWOUND`, from rev 0).
+    let about: Vec<String> = f
+        .status()
+        .warnings
+        .into_iter()
+        .map(|w| w.message)
+        .filter(|m| m.contains("\"br2\""))
+        .collect();
+    assert!(!about.is_empty(), "the cascade of B's br2 is reported");
     assert!(
-        !f.status()
-            .warnings
+        about
             .iter()
-            .any(|w| w.message.contains("\"br2\"")),
-        "{:?}",
-        f.status().warnings
+            .all(|m| m.starts_with("an earlier branch \"br2\"")),
+        "{about:?}"
     );
     assert!(f.generation_token("br2").n > held.n);
     assert_verifies(&f);
@@ -511,6 +528,86 @@ fn winner_record_later_superseded_gives_the_id_back() {
     drop(g);
     rebuild_matches(&e, &mut f);
     all_orders_converge(&e, 6, 2);
+}
+
+/// Review of 008c6ba (rv_x4): as above, with a grandchild on A's `br2`. When A's `br2`
+/// holds the id again, its child comes back with it; the follower, the holder, a fresh
+/// server and a rebuild agree and verify.
+#[test]
+fn restored_branch_brings_back_its_child() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t0", vec![asset("/m/0.mov")]);
+    assert_eq!(branch(&mut a, "xs", "side", MAIN), "br1");
+    e.flush(&mut a);
+    let mut f = e.open("f");
+    let mut b = e.open("b");
+    let mut c = e.open("c");
+    freeze(&a);
+    poll_until_held(&e, &mut b, 80);
+    e.advance(10);
+    e.poll(&mut b);
+    e.poll(&mut c);
+    a.set_test_lease(1, true);
+    let had: BTreeSet<PathBuf> = all_segments(&e.dir).into_iter().collect();
+    assert_eq!(branch(&mut a, "xb", "x-two", MAIN), "br2");
+    on(&mut a, "x2", "br2", vec![insert(0, "a1")]);
+    assert_eq!(branch(&mut a, "xg", "x-grand", "br2"), "br3");
+    on(&mut a, "g3", "br3", vec![insert(2, "a1")]);
+    e.flush(&mut a);
+    let late_a = new_files(&e.dir, &had);
+    drop(a);
+    e.poll(&mut f);
+    assert_eq!(f.head("br3"), 4);
+    for p in &late_a {
+        fin_store::scan::hide_for_test(p);
+    }
+    assert_eq!(branch(&mut b, "yb", "y-two", "br1"), "br2");
+    on(&mut b, "y2", "br2", vec![insert(4, "a1")]);
+    for p in &late_a {
+        fin_store::scan::unhide_for_test(p);
+    }
+    freeze(&b);
+    poll_until_held(&e, &mut c, 80);
+    e.advance(10);
+    e.poll(&mut c);
+    b.set_test_lease(2, true);
+    let had: BTreeSet<PathBuf> = all_segments(&e.dir).into_iter().collect();
+    e.flush(&mut b);
+    let late_b = new_files(&e.dir, &had);
+    drop(b);
+    e.poll(&mut f);
+    assert_eq!(
+        names(&f).len(),
+        3,
+        "B's br2 holds the id, A's br3 went with A's br2"
+    );
+    for p in &late_b {
+        fin_store::scan::hide_for_test(p);
+    }
+    on(&mut c, "c1", "br1", vec![insert(9, "a1")]);
+    e.flush(&mut c);
+    for p in &late_b {
+        fin_store::scan::unhide_for_test(p);
+    }
+    e.poll(&mut c);
+    e.poll(&mut f);
+    let g = e.open("g");
+    for s in [&c, &f] {
+        assert_eq!(states(s), states(&g));
+        assert_eq!(names(s), names(&g));
+        assert_eq!(aside(s), aside(&g));
+        assert_eq!(links(s), links(&g));
+        assert_eq!(ignored_warning(s), ignored_warning(&g));
+        assert_verifies(s);
+    }
+    assert_eq!(
+        names(&f)[3],
+        ("br3".into(), "x-grand".into(), Some("br2".into()))
+    );
+    assert_eq!(f.head("br3"), 4, "with g3");
+    drop(g);
+    rebuild_matches(&e, &mut f);
 }
 
 // ---- test lease ------------------------------------------------------------------------
@@ -819,4 +916,203 @@ fn rebuild_seeds_below_the_first_branch_record() {
     assert_eq!(rep.seeded_from_snapshot, Some(2));
     assert_eq!(states(&f), states(&x));
     assert_eq!(names(&f), names(&x));
+}
+
+/// Opens a server on `dir` that holds no database yet (a rebuild of what `dir` holds), on
+/// the test lease at epoch 0.
+fn fresh_at(t: &T, name: &str, dir: &Path) -> Store {
+    let mut s = Store::open(&t.root.join(format!("server-{name}")), dir).unwrap();
+    s.set_test_lease(0, true);
+    s
+}
+
+/// Test-lease version of [`all_orders_converge`]: the segments after `main`'s first reach a
+/// fresh follower in every order (a fixed sample of 60 beyond 5 files), one import per
+/// arrival; each ends as `g`, which imported everything at once (states, quarantine set,
+/// index, links, the `BRANCH_RECORDS_IGNORED` text), and verifies.
+fn t_all_orders(t: &T, g: &Store) {
+    let root = t.dir.join(".finisher").join("segments");
+    let files: Vec<PathBuf> = all_segments(&t.dir)
+        .into_iter()
+        .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
+        .collect();
+    let first = files
+        .iter()
+        .find(|p| {
+            p.starts_with(MAIN)
+                && fin_store::segment::decode(&fs::read(root.join(p)).unwrap())
+                    .unwrap()
+                    .header
+                    .first_seq
+                    == 1
+        })
+        .unwrap()
+        .clone();
+    let rest: Vec<&PathBuf> = files.iter().filter(|p| **p != first).collect();
+    let want = |s: &Store| (states(s), aside(s), names(s), links(s), ignored_warning(s));
+    let target = want(g);
+    let n = rest.len();
+    let mut orders: Vec<Vec<usize>> = vec![vec![]];
+    for _ in 0..n {
+        orders = orders
+            .into_iter()
+            .flat_map(|o| {
+                (0..n)
+                    .filter(|i| !o.contains(i))
+                    .map(|i| [o.clone(), vec![i]].concat())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    }
+    if orders.len() > 60 {
+        // A fixed sample: every k-th order, first and last included.
+        let k = orders.len() / 59;
+        let last = orders.last().cloned().unwrap();
+        orders = orders.into_iter().step_by(k).take(59).collect();
+        orders.push(last);
+    }
+    for (k, order) in orders.iter().enumerate() {
+        let dir = t.root.join(format!("order-{k}")).join("My Project");
+        copy_dir(&t.dir, &dir);
+        for p in all_segments(&dir) {
+            fs::remove_file(p).unwrap();
+        }
+        let put = |rel: &Path| {
+            let to = dir.join(".finisher").join("segments").join(rel);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(root.join(rel), to).unwrap();
+        };
+        put(&first);
+        let mut x = fresh_at(t, &format!("x{k}"), &dir);
+        for &i in order {
+            put(rest[i]);
+            x.import().unwrap();
+        }
+        let seen: Vec<&PathBuf> = order.iter().map(|&i| rest[i]).collect();
+        assert_eq!(want(&x), target, "order {seen:?}");
+        assert!(x.status().unknown_branches.is_empty(), "{seen:?}");
+        assert_verifies(&x);
+    }
+}
+
+/// Test-lease version of [`rebuild_matches`].
+fn t_rebuild_matches(t: &T, f: &mut Store, g: &Store) {
+    let want = |s: &Store| (states(s), names(s), links(s), aside(s), ignored_warning(s));
+    let before = want(f);
+    assert_eq!(before, want(g));
+    let rep = f.rebuild().unwrap();
+    assert_eq!(rep.import_error, None);
+    assert!(rep.verify.ok, "{:#?}", rep.verify);
+    f.import().unwrap();
+    assert_eq!(want(f), before);
+    assert_verifies(f);
+    let _ = t;
+}
+
+/// Review of b6fdab8 (rv_x3): three `branch` records for `br3` on three parents (epochs 1,
+/// 2, 3: X's on `main`, Y's on `br1`, Z's on `br2`). F sees Z's (the holder) first, then
+/// X's, then Y's; every record that lost names the final holder, whatever it lost to first,
+/// on F, on a server that saw everything at once, after a rebuild and in every order.
+#[test]
+fn three_way_collision_marks_name_the_final_holder() {
+    let t = tenv();
+    let a = tcreate(&t);
+    let mut x = server(&t, &a, "x");
+    let mut y = server(&t, &a, "y");
+    let mut z = server(&t, &a, "z");
+    let mut f = server(&t, &a, "f");
+    x.set_test_lease(1, true);
+    on(&mut x, "r1", MAIN, vec![asset("/m/a.mov")]);
+    assert_eq!(branch(&mut x, "b1", "one", MAIN), "br1");
+    assert_eq!(branch(&mut x, "b2", "two", MAIN), "br2");
+    export(&mut x);
+    for s in [&mut y, &mut z, &mut f] {
+        s.import().unwrap();
+    }
+    y.set_test_lease(2, true);
+    z.set_test_lease(3, true);
+    assert_eq!(branch(&mut z, "zb", "zed", "br2"), "br3");
+    on(&mut z, "z4", "br3", vec![insert(1, "a1")]);
+    export(&mut z);
+    f.import().unwrap();
+    assert_eq!(branch(&mut x, "xb", "ex", MAIN), "br3");
+    on(&mut x, "x4", "br3", vec![insert(2, "a1")]);
+    export(&mut x);
+    f.import().unwrap();
+    assert_eq!(branch(&mut y, "yb", "why", "br1"), "br3");
+    on(&mut y, "y4", "br3", vec![insert(3, "a1")]);
+    export(&mut y);
+    f.import().unwrap();
+    let mut g = server(&t, &a, "g");
+    g.import().unwrap();
+    let zb = row_hash(&g, "zb");
+    let holder = format!(
+        "ID_COLLISION: branch br3 is held by branch record {}",
+        &zb[7..19]
+    );
+    for s in [&f, &g] {
+        assert_eq!(states(s), states(&g));
+        let marks: Vec<(String, Option<String>)> =
+            links(s).into_iter().map(|l| (l.0, l.4)).collect();
+        for id in ["xb", "yb"] {
+            assert!(
+                marks.contains(&(id.to_string(), Some(holder.clone()))),
+                "{id}: {marks:?}"
+            );
+        }
+        assert!(marks.contains(&("zb".to_string(), None)));
+        assert_verifies(s);
+    }
+    assert_eq!(links(&f), links(&g));
+    t_rebuild_matches(&t, &mut f, &g);
+    t_all_orders(&t, &g);
+}
+
+/// Review of b6fdab8 (rv_x5): X's `br2` (on `main`) loses to Y's (on `br1`, epoch 2), then
+/// X renames and archives its `br2` (a `branchSet` on `main`). The `branchSet` is inert on
+/// every follower, in either order, and after a rebuild: its branch lost the id.
+#[test]
+fn branch_set_after_a_lost_collision_is_inert() {
+    let t = tenv();
+    let a = tcreate(&t);
+    let mut x = server(&t, &a, "x");
+    let mut y = server(&t, &a, "y");
+    let mut f = server(&t, &a, "f");
+    x.set_test_lease(1, true);
+    on(&mut x, "r1", MAIN, vec![asset("/m/a.mov")]);
+    assert_eq!(branch(&mut x, "b1", "one", MAIN), "br1");
+    export(&mut x);
+    for s in [&mut y, &mut f] {
+        s.import().unwrap();
+    }
+    y.set_test_lease(2, true);
+    assert_eq!(branch(&mut y, "yb", "why", "br1"), "br2");
+    export(&mut y);
+    f.import().unwrap();
+    assert_eq!(branch(&mut x, "xb", "ex", MAIN), "br2");
+    x.set_branch(fin_store::BranchSet {
+        tx_id: "xs".into(),
+        author: "test".into(),
+        branch: "br2".into(),
+        name: Some("ex-renamed".into()),
+        archived: Some(true),
+        dry_run: false,
+    })
+    .unwrap();
+    export(&mut x);
+    f.import().unwrap();
+    let mut g = server(&t, &a, "g");
+    g.import().unwrap();
+    for s in [&f, &g] {
+        assert_eq!(
+            names(s)[2],
+            ("br2".into(), "why".into(), Some("br1".into()))
+        );
+        assert_eq!(ignored(s), ["xb", "xs"], "{:?}", links(s));
+        assert!(warns(s, "BRANCH_RECORDS_IGNORED"));
+        assert_verifies(s);
+    }
+    assert_eq!(links(&f), links(&g));
+    t_rebuild_matches(&t, &mut f, &g);
+    t_all_orders(&t, &g);
 }

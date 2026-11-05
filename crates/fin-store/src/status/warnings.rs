@@ -196,14 +196,26 @@ fn rewind_warnings(
 ) -> Result<Vec<(&'static str, String)>, StoreError> {
     let now = crate::commit::now_ms();
     let mut out = vec![];
-    for branch in db::branches(conn)? {
+    let listed: std::collections::HashSet<String> = db::branches(conn)?.into_iter().collect();
+    // Every recorded rewind, also of a branch taken out whole since (a cascade): it was
+    // that branch's, whatever holds the id now.
+    for branch in crate::history::rewound_ids(conn)? {
         for r in crate::history::rewinds(conn, &branch)? {
             if !r.shown(now) {
                 continue;
             }
             let list = |v: Vec<String>| v.join(", ");
+            let which = if r.retired {
+                format!(
+                    "an earlier branch {branch:?} (taken out whole; the id names another branch now)"
+                )
+            } else if !listed.contains(&branch) {
+                format!("branch {branch:?} (taken out whole)")
+            } else {
+                format!("branch {branch:?}")
+            };
             let mut m = format!(
-                "branch {branch:?} was rewound from rev {} (generation {}): {} record(s) written by {} at epoch {} lost to a line at epoch {} and are set aside (SUPERSEDED)",
+                "{which} was rewound from rev {} (generation {}): {} record(s) written by {} at epoch {} lost to a line at epoch {} and are set aside (SUPERSEDED)",
                 r.from_rev,
                 r.generation,
                 r.count,

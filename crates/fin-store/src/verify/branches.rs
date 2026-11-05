@@ -11,12 +11,22 @@ use super::Subject;
 use super::folder::Folder;
 use crate::chain::SegRef;
 use crate::db::{self, LinkRow, hash_bytes};
-use crate::{MAIN, StoreError, branch, derived};
+use crate::derived::{self, Derived};
+use crate::{MAIN, StoreError, branch};
 
 const LIST: usize = 20;
 
 /// Three lists of findings.
 type Lists = (Vec<Value>, Vec<Value>, Vec<Value>);
+
+/// The reasons that set a `branch` record aside with its directories (`import::aside`).
+const ASIDE: [&str; 5] = [
+    "STALE_EPOCH",
+    "SUPERSEDED",
+    "DIVERGED_TAIL",
+    "MALFORMED",
+    "ID_COLLISION",
+];
 
 /// Pushes `v` while fewer than [`LIST`] are listed; counts every one.
 fn push(list: &mut Vec<Value>, count: &mut u64, v: Value) {
@@ -28,21 +38,22 @@ fn push(list: &mut Vec<Value>, count: &mut u64, v: Value) {
 
 pub(super) fn check(s: &Subject, f: &Folder) -> Result<(bool, Value), StoreError> {
     let mut count = 0u64;
-    let (index, stateless, unindexed) = index(s, &mut count)?;
-    let links = links(s, &mut count)?;
-    let (segments, waiting, pending) = segments(s, f, &mut count)?;
+    let d = derived::compute(s.conn)?;
+    let (index, stateless, unindexed) = index(s, &d, &mut count)?;
+    let links = links(s, &d, &mut count)?;
+    let (segments, (waiting, pending, ahead)) = segments(s, f, &mut count)?;
     Ok((
         count == 0,
         json!({ "index": index, "stateless": stateless, "unindexed": unindexed,
                 "links": links, "segments": segments, "waiting": waiting,
-                "pending": pending, "problemCount": count }),
+                "pending": pending, "ahead": ahead, "problemCount": count }),
     ))
 }
 
 /// The `branches` table against [`derived::compute`]; index rows without any state (the
 /// branch cannot be read); branches with rows but no index row (they refuse writes).
-fn index(s: &Subject, count: &mut u64) -> Result<Lists, StoreError> {
-    let want: BTreeMap<String, BranchInfo> = derived::compute(s.conn)?
+fn index(s: &Subject, d: &Derived, count: &mut u64) -> Result<Lists, StoreError> {
+    let want: BTreeMap<String, BranchInfo> = d
         .index
         .list()
         .into_iter()
@@ -81,8 +92,8 @@ fn index(s: &Subject, count: &mut u64) -> Result<Lists, StoreError> {
 
 /// `record_links` against the rows the log gives (one per non-`edit` record, its `ignored`
 /// mark from [`derived::compute`]).
-fn links(s: &Subject, count: &mut u64) -> Result<Vec<Value>, StoreError> {
-    let ignored = derived::compute(s.conn)?.ignored;
+fn links(s: &Subject, d: &Derived, count: &mut u64) -> Result<Vec<Value>, StoreError> {
+    let ignored = &d.ignored;
     let mut want: BTreeMap<String, (LinkRow, Option<String>)> = BTreeMap::new();
     let mut stmt = s.conn.prepare(
         "SELECT branch, seq, tx_hash, record_bytes FROM txs WHERE kind != 'edit' ORDER BY rowid",
@@ -175,25 +186,34 @@ fn named(s: &Subject, dir: &str, record: &str) -> Result<Result<bool, String>, S
             Ok(true)
         });
     }
-    let aside: Option<i64> = s
+    // As import's `aside::named`: a current row with a reason that sets a directory aside
+    // (a diverged tail always is); anything else waits.
+    let row: Option<(String, bool)> = s
         .conn
         .query_row(
-            "SELECT 1 FROM quarantine WHERE tx_hash = ?1",
+            "SELECT reason, current FROM quarantine WHERE tx_hash = ?1",
             params![record],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    Ok(Ok(aside.is_some()))
+    Ok(Ok(row.is_some_and(|(reason, current)| {
+        ASIDE.contains(&reason.as_str()) && (current || reason == "DIVERGED_TAIL")
+    })))
 }
 
 /// The segments of each branch directory that do not make its branch (they name another
 /// `branch` record than the index's, Decision 33): each must name a record that is set
 /// aside here (its records then are too, by the next import: `pending` lists those not yet)
-/// or unknown (`waiting`, a failure unless files are still arriving), never a live record or
-/// one of another branch.
-fn segments(s: &Subject, f: &Folder, count: &mut u64) -> Result<Lists, StoreError> {
-    let (mut bad, mut waiting, mut pending) = (vec![], vec![], vec![]);
-    let (mut waits, mut pends) = (0u64, 0u64);
+/// or unknown here, never a live record or one of another branch. An unknown record that
+/// lies on a folder chain this verify resolved (or in a segment that names such a record,
+/// recursively) is the folder ahead of the database, as `chain_continuity`'s `folderAhead`:
+/// listed (`ahead`), not a failure. Any other unknown record is `waiting`: a failure unless
+/// files are still arriving.
+fn segments(s: &Subject, f: &Folder, count: &mut u64) -> Result<(Vec<Value>, Lists), StoreError> {
+    let (mut bad, mut waiting, mut pending, mut ahead) = (vec![], vec![], vec![], vec![]);
+    let (mut uncounted, mut pends) = (0u64, 0u64);
+    // Unknown records: (directory, record, segments).
+    let mut unknown: Vec<(&str, &str, Vec<&SegRef>)> = vec![];
     for b in &f.branches {
         let mut groups: BTreeMap<Option<&str>, Vec<&SegRef>> = BTreeMap::new();
         for g in &b.others {
@@ -219,16 +239,7 @@ fn segments(s: &Subject, f: &Folder, count: &mut u64) -> Result<Lists, StoreErro
                     count,
                     json!({ "branch": b.branch, "segments": hashes, "problem": why }),
                 ),
-                Ok(false) if f.arriving => push(
-                    &mut waiting,
-                    &mut waits,
-                    json!({ "branch": b.branch, "record": record, "segments": hashes }),
-                ),
-                Ok(false) => push(
-                    &mut waiting,
-                    count,
-                    json!({ "branch": b.branch, "record": record, "segments": hashes }),
-                ),
+                Ok(false) => unknown.push((&b.branch, record, segs)),
                 Ok(true) => {
                     let mut seen = HashSet::new();
                     for g in &segs {
@@ -248,7 +259,40 @@ fn segments(s: &Subject, f: &Folder, count: &mut u64) -> Result<Lists, StoreErro
             }
         }
     }
-    Ok((bad, waiting, pending))
+    // The folder ahead of the database: the resolved chains, then what they make.
+    let mut on_folder: HashSet<String> = f
+        .branches
+        .iter()
+        .flat_map(|b| b.chain.iter().map(|(_, h)| h.clone()))
+        .collect();
+    let mut grew = true;
+    while grew {
+        grew = false;
+        unknown.retain(|(dir, record, segs)| {
+            if !on_folder.contains(*record) {
+                return true;
+            }
+            on_folder.extend(segs.iter().flat_map(|g| g.records().map(hash_bytes)));
+            let hashes: Vec<&str> = segs.iter().map(|g| g.hash()).collect();
+            push(
+                &mut ahead,
+                &mut uncounted,
+                json!({ "branch": dir, "record": record, "segments": hashes }),
+            );
+            grew = true;
+            false
+        });
+    }
+    for (dir, record, segs) in unknown {
+        let hashes: Vec<&str> = segs.iter().map(|g| g.hash()).collect();
+        let v = json!({ "branch": dir, "record": record, "segments": hashes });
+        if f.arriving {
+            push(&mut waiting, &mut uncounted, v);
+        } else {
+            push(&mut waiting, count, v);
+        }
+    }
+    Ok((bad, (waiting, pending, ahead)))
 }
 
 /// Whether the database holds the record `hash`, in `txs` or in quarantine.

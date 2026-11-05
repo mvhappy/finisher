@@ -109,6 +109,10 @@ pub(crate) struct RewindInfo {
     /// A person acknowledged it ([`acknowledge`]): status no longer reports it.
     #[serde(default)]
     pub(crate) acknowledged: bool,
+    /// The branch it rewound was taken out whole, and another branch holds the id now
+    /// ([`retire_rewinds`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) retired: bool,
 }
 
 impl RewindInfo {
@@ -181,16 +185,32 @@ pub(crate) fn rewinds(conn: &Connection, branch: &str) -> Result<Vec<RewindInfo>
         .unwrap_or_default())
 }
 
-/// Forgets the rewinds recorded under `branch` (a new branch takes the id of one that was
-/// taken out whole): status no longer reports them under it. The generation stays, so a
-/// caller holding one from before is still refused from rev 0 ([`check`]: its rewinds are
-/// no longer all recorded).
-pub(crate) fn forget_rewinds(conn: &Connection, branch: &str) -> Result<(), StoreError> {
-    conn.execute(
-        "DELETE FROM meta WHERE key = ?1",
-        params![rewinds_key(branch)],
-    )?;
-    Ok(())
+/// Marks the rewinds recorded under `branch` as an earlier branch's (a new branch takes the
+/// id of one that was taken out whole): status reports them as such, never as rewinds of the
+/// branch that holds the id now. They stay recorded with the generation, so [`check`] still
+/// refuses a caller holding a generation from before.
+pub(crate) fn retire_rewinds(conn: &Connection, branch: &str) -> Result<(), StoreError> {
+    let mut all = rewinds(conn, branch)?;
+    if all.iter().all(|r| r.retired) {
+        return Ok(());
+    }
+    for r in &mut all {
+        r.retired = true;
+    }
+    set_meta(conn, &rewinds_key(branch), &serde_json::to_string(&all)?)
+}
+
+/// Every branch id with recorded rewinds, also of branches taken out since.
+pub(crate) fn rewound_ids(conn: &Connection) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare("SELECT key FROM meta WHERE key LIKE 'rewinds.%' ORDER BY key")?;
+    let keys = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut out = vec![];
+    for k in keys {
+        if let Some(id) = k?.strip_prefix("rewinds.") {
+            out.push(id.to_string());
+        }
+    }
+    Ok(out)
 }
 
 /// Bumps the generation of `branch` and records `info` under it; returns the new generation.
@@ -313,6 +333,7 @@ mod tests {
             span_ms: 0,
             at: 0,
             acknowledged: false,
+            retired: false,
         }
     }
 

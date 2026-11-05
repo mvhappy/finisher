@@ -170,6 +170,7 @@ pub(super) fn branch(
                 span_ms: 0,
                 at: ctx.now,
                 acknowledged: false,
+                retired: false,
             };
             let generation = history::record(txn, branch, info)?;
             rewound.push(Rewind {

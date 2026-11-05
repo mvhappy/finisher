@@ -28,6 +28,9 @@ pub(super) struct Ctx<'a> {
     /// Branches an imported `branch` record took out (it won their id, [`super::branches`]),
     /// not yet reported by the worklist.
     pub(super) rewound: Vec<crate::Rewind>,
+    /// A `branch` or `branchSet` record was folded this pass (its inert mark is derived
+    /// again before the pass ends, `crate::derived::remark`).
+    pub(super) folded: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -49,6 +52,7 @@ impl<'a> Ctx<'a> {
             born: vec![],
             dirs: HashMap::new(),
             rewound: vec![],
+            folded: false,
         }
     }
 

@@ -399,3 +399,34 @@ fn compaction_packs_branch_segments() {
         "the branch keeps following after its pack"
     );
 }
+
+/// Review of b6fdab8 (rv_x1): a follower whose database is just behind the folder, with new
+/// branches (one made on a new branch) it has not imported, verifies: those directories are
+/// the folder ahead of it (`ahead`), as `main`'s new records are `folderAhead`.
+#[test]
+fn verify_behind_the_folder_with_new_branches() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let mut f = e.open("f");
+    e.poll(&mut f);
+    assert_eq!(branch(&mut a, "b1", "feature", MAIN, None), "br1");
+    on(&mut a, "c1", "br1", vec![insert(1, "a1")]);
+    assert_eq!(branch(&mut a, "b2", "deep", "br1", None), "br2");
+    on(&mut a, "d1", "br2", vec![insert(2, "a1")]);
+    e.flush(&mut a);
+    let v = f.verify();
+    assert_verifies(&v);
+    let ahead = check(&v, "branch_index").details["ahead"].clone();
+    let dirs: BTreeSet<&str> = ahead
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["branch"].as_str().unwrap())
+        .collect();
+    assert_eq!(dirs, BTreeSet::from(["br1", "br2"]), "{ahead:#}");
+    e.poll(&mut f);
+    assert_verifies(&f.verify());
+    assert_eq!(dump(&f).0, dump(&a).0);
+}

@@ -49,7 +49,7 @@ pub(super) struct BranchChain {
     start: Option<(u64, Option<String>)>,
     res: Resolution,
     /// `(seq, txHash)` of the resolved chain, in order.
-    chain: Vec<(u64, String)>,
+    pub(super) chain: Vec<(u64, String)>,
     /// Lowest epoch of the present segments holding each record.
     epoch_of: HashMap<String, u64>,
 }

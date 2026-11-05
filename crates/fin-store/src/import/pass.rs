@@ -53,6 +53,10 @@ pub(super) fn resolve_branches(
     let mut resolves = 0;
     let mut applied = vec![];
     let mut out_rewound = vec![];
+    // A branch the index holds without any state (a database from before restored fork
+    // states, 008c6ba) gets it back first; the worklist below then resolves it.
+    super::branches::restore_stateless(ctx)?;
+    let mut born_now: HashSet<String> = std::mem::take(&mut ctx.born).into_iter().collect();
     let ix = index::load(txn)?;
     let mut work: VecDeque<String> = ix.parents_first().into_iter().map(String::from).collect();
     for b in db::branches(txn)? {
@@ -62,7 +66,6 @@ pub(super) fn resolve_branches(
     }
     ctx.dirs = by_branch.clone();
     let mut seen = HashSet::new();
-    let mut born_now = HashSet::new();
     while let Some(branch) = work.pop_front() {
         if seen.contains(&branch) || db::latest_rev(txn, &branch)?.is_none() {
             // An index row without any state is damage; its directory waits (leftover). A

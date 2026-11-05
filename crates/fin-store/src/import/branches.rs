@@ -45,6 +45,7 @@ pub(super) fn fold(
     if !matches!(rec.kind, RecordKind::Branch | RecordKind::BranchSet) {
         return Ok(());
     }
+    ctx.folded = true;
     let txn = ctx.txn;
     let ix = index::load(txn)?;
     let mut next = ix.clone();
@@ -86,9 +87,9 @@ pub(super) fn fold(
 }
 
 /// Branch `id` starts (again) here: its fork state is stored as its snapshot at `fork_seq`,
-/// the rewinds recorded under the id are forgotten (they were another branch's; its
-/// generation stays, so a caller holding the old one is refused, `crate::history`), and it
-/// joins the pass's worklist.
+/// the rewinds recorded under the id are marked as an earlier branch's
+/// (`crate::history::retire_rewinds`: status says so; the generation and the records stay,
+/// so a caller holding the old one is refused), and it joins the pass's worklist.
 fn born(ctx: &mut Ctx, id: &str, fork_seq: u64, state: &Project) -> Result<(), StoreError> {
     let txn = ctx.txn;
     txn.execute(
@@ -96,7 +97,7 @@ fn born(ctx: &mut Ctx, id: &str, fork_seq: u64, state: &Project) -> Result<(), S
         params![id, to_i64(fork_seq)?],
     )?;
     db::insert_snapshot(txn, id, fork_seq, state)?;
-    crate::history::forget_rewinds(txn, id)?;
+    crate::history::retire_rewinds(txn, id)?;
     if !ctx.born.iter().any(|b| b == id) {
         ctx.born.push(id.to_string());
     }
@@ -117,7 +118,10 @@ pub(super) fn restore_stateless(ctx: &mut Ctx) -> Result<(), StoreError> {
         if db::latest_rev(ctx.txn, id)?.is_some() {
             continue;
         }
-        let state = lineage::state_at(ctx.txn, parent, info.fork_seq)?;
+        // A parent short of the fork is damage verify reports (`stateless`); the pass goes on.
+        let Ok(state) = lineage::state_at(ctx.txn, parent, info.fork_seq) else {
+            continue;
+        };
         born(ctx, id, info.fork_seq, &state)?;
     }
     Ok(())

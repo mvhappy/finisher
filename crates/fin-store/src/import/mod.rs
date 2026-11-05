@@ -356,6 +356,10 @@ impl Store {
         )?;
         report.rewound.extend(rewound);
         report.applied.extend(applied);
+        if ctx.folded {
+            // Inert marks from the log alone, before the leftovers read them.
+            crate::derived::remark(&txn)?;
+        }
         let foreign = quarantine::foreign(&mut ctx, project_dir, foreign)?;
         if !import.ids_checked {
             // First pass: every branch head, so ids without a binding count too.

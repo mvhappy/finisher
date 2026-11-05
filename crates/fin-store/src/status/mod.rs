@@ -14,7 +14,9 @@
 //!   the records, their writers and epochs; one per rewind, for 24 h or until
 //!   [`Store::acknowledge_rewind`]. `SPLIT_BRAIN_SUSPECTED` instead when the lost records
 //!   span more than one segment or more than 30 s of commits (not one late rename, but two
-//!   servers writing at once): shown until acknowledged;
+//!   servers writing at once): shown until acknowledged. A descendant branch taken out
+//!   whole with it (a cascade, plan 4B Decision 7) is reported too, as taken out, and as
+//!   an earlier branch once another branch holds its id;
 //! - `BRANCH_RECORDS_IGNORED`: `branch` or `branchSet` records in the log that took no effect
 //!   (an id collision lost to another server's record, or a record the branch index
 //!   refuses; plan 4B Decision 33);
