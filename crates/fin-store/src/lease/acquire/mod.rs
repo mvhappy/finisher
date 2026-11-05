@@ -351,6 +351,7 @@ impl Contender {
     /// One observation (module docs). `Err`: the folder cannot be reached.
     fn observe(&mut self) -> Result<Verdict, String> {
         self.own_lost = None;
+        self.own_claim = None;
         if !valid_server_id(&self.server_id) {
             return Err(format!("{:?} is not a valid server id", self.server_id));
         }
@@ -465,7 +466,9 @@ impl Contender {
         if registry::live(&key) {
             return None;
         }
-        let cfg = self.server_lock.as_ref()?;
+        // As for the restart shortcut: a free OS lock proves nothing when the server data is
+        // on network or sync storage.
+        let cfg = self.server_lock.as_ref().filter(|c| c.shortcut)?;
         match server_lock::try_lock(&cfg.path) {
             server_lock::Attempt::Locked(held) => {
                 drop(held);
