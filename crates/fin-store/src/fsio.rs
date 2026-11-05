@@ -117,6 +117,61 @@ pub fn sync_file(file: &File) -> io::Result<()> {
 
 pub use transient::is_transient;
 
+/// The mtime of the open `file` as the file server keeps it.
+///
+/// On Linux, `statx(AT_STATX_FORCE_SYNC)`, which makes cifs (and NFS) fetch the attributes from
+/// the server: a plain `fstat` there can be answered from the client's attribute cache, which a
+/// cifs deferred close (`closetimeo`, default 1 s) stamps with the client's own clock when
+/// another handle was open meanwhile. Measured on a Samba share: 3 s off the server's mtime
+/// (spec §3.13 item 4). Elsewhere, and where `statx` gives nothing, the handle's metadata.
+pub(crate) fn modified_on_server(file: &File) -> io::Result<std::time::SystemTime> {
+    #[cfg(target_os = "linux")]
+    if let Some(t) = forced_statx_mtime(file)? {
+        return Ok(t);
+    }
+    file.metadata()?.modified()
+}
+
+/// `statx(fd, AT_EMPTY_PATH | AT_STATX_FORCE_SYNC, STATX_MTIME)`. `None` where `statx` is
+/// unavailable (`ENOSYS`, a kernel before 4.11) or gave no mtime.
+#[cfg(target_os = "linux")]
+pub(crate) fn forced_statx_mtime(file: &File) -> io::Result<Option<std::time::SystemTime>> {
+    use std::os::fd::AsRawFd;
+    use std::time::UNIX_EPOCH;
+    // SAFETY: `statx` is plain data; all-zero is a valid value.
+    let mut buf: libc::statx = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` owns the descriptor for the whole call, the path is a NUL-terminated
+    // empty string (with AT_EMPTY_PATH, the descriptor itself), and `buf` outlives the call.
+    let rc = unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_STATX_FORCE_SYNC,
+            libc::STATX_MTIME,
+            &mut buf,
+        )
+    };
+    if rc != 0 {
+        let e = io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ENOSYS) => Ok(None),
+            _ => Err(e),
+        };
+    }
+    if buf.stx_mask & libc::STATX_MTIME == 0 {
+        return Ok(None);
+    }
+    let t = buf.stx_mtime;
+    let secs = Duration::from_secs(t.tv_sec.unsigned_abs());
+    // tv_nsec counts forward from tv_sec, also before 1970.
+    let sub = Duration::from_nanos(u64::from(t.tv_nsec));
+    Ok(Some(if t.tv_sec >= 0 {
+        UNIX_EPOCH + secs + sub
+    } else {
+        UNIX_EPOCH - secs + sub
+    }))
+}
+
 fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let mut attempt = 0;
     loop {

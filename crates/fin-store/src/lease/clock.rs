@@ -347,6 +347,10 @@ impl ServerClock {
 /// The mtime of `path` from a newly opened handle (`fstat` / `GetFileInformationByHandle`),
 /// not a path lookup, which Windows answers from its 10 s file-info cache. Opened with full
 /// sharing on Windows so writers are never blocked.
+///
+/// The mtime is the server's even where the client caches attributes
+/// ([`fsio::modified_on_server`]): a client-set one would make a skewed Linux client read its
+/// own clock as server time.
 fn fresh_mtime(path: &Path) -> io::Result<SystemTime> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -359,7 +363,7 @@ fn fresh_mtime(path: &Path) -> io::Result<SystemTime> {
         options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
     }
     let file: File = options.open(path)?;
-    file.metadata()?.modified()
+    fsio::modified_on_server(&file)
 }
 
 /// Server time at `now` from a counting probe, extrapolated from the end of its round trip,
@@ -513,6 +517,51 @@ mod tests {
         assert!(
             y.saturating_duration_since(x) < Duration::from_millis(50),
             "Instant throughout"
+        );
+    }
+
+    /// The mtime the probe reads is the file server's, not one the client set in its own
+    /// cache. A Linux cifs mount with deferred close (`closetimeo`, default 1 s) stamps a file
+    /// it modified with the local clock at close if another handle was open on it meanwhile,
+    /// and answers `fstat` from that cache (measured on a Samba share: 3 s off the server's
+    /// mtime, spec §3.13 item 4), so a skewed client would read its own clock as server time.
+    /// On a share (`FIN_TEST_SHARE_DIR`, e.g. a directory on a cifs mount; skipped without
+    /// it): write and sync (the server sets the mtime then), wait 3 s, look at the file through
+    /// a second handle, close, then the probe's read must match what the server keeps.
+    #[test]
+    fn the_probe_reads_the_servers_mtime_on_a_share() {
+        let Some(dir) = std::env::var_os("FIN_TEST_SHARE_DIR") else {
+            eprintln!("skipped: FIN_TEST_SHARE_DIR is not set");
+            return;
+        };
+        let dir = Path::new(&dir).join(format!("probe-mtime-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f");
+        std::fs::write(&path, b"x").unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        {
+            use std::io::Write;
+            let mut f = OpenOptions::new().write(true).open(&path).unwrap();
+            f.write_all(b"written, then held open").unwrap();
+            f.sync_all().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            let _ = fresh_mtime(&path).unwrap();
+        }
+        let probed = fresh_mtime(&path).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        // What the server keeps. A plain stat would not do on Linux: while cifs holds a lease
+        // on the file it never revalidates, so it would repeat the cached value.
+        #[cfg(target_os = "linux")]
+        let kept = fsio::forced_statx_mtime(&File::open(&path).unwrap())
+            .unwrap()
+            .unwrap();
+        #[cfg(not(target_os = "linux"))]
+        let kept = fresh_mtime(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let gap = unix_ms(probed) - unix_ms(kept);
+        assert!(
+            gap.abs() < 100,
+            "the probe read an mtime {gap} ms off the server's"
         );
     }
 
