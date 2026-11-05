@@ -423,7 +423,7 @@ impl Mapping {
 }
 ```
 
-- [ ] **Step 1: Write failing tests** (props use 256 cases):
+- [x] **Step 1: Write failing tests** (props use 256 cases):
   - `empty_mapping_is_identity`, `invert_is_involution`, `map_then_inverse_is_identity_outside_changed_ranges`;
   - `mirror_restores_positions_inside_inserts`;
   - `start_edge_of_inverted_insert_recovers_offset_zero` (After: a position at `s` of the inverse range resumes at `mirror.from + 0`);
@@ -431,10 +431,10 @@ impl Mapping {
   - `mirror_requires_equal_size` (unequal `|by|` → `Deleted`);
   - `after_assoc_matches_4a_shift_position` (prop, forward maps);
   - `other_tracks_are_untouched`, `overflow_is_reported`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test shift_map`. Expected: FAIL.
-- [ ] **Step 3: Implement** `map.rs` (< 300 lines, checked `Rational` arithmetic only).
-- [ ] **Step 4: Run** `rtk cargo test --workspace`, `rtk pnpm gates`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(core): exact per-track shift maps with mirrored mappings`.
+- [x] **Step 2: Run** `rtk cargo test -p fin-core --test shift_map`. Expected: FAIL.
+- [x] **Step 3: Implement** `map.rs` (< 300 lines, checked `Rational` arithmetic only).
+- [x] **Step 4: Run** `rtk cargo test --workspace`, `rtk pnpm gates`. Expected: PASS.
+- [x] **Step 5: Commit** `feat(core): exact per-track shift maps with mirrored mappings`.
 
 ### Task 5: Per-track, per-entity conflict rules — tier: opus
 

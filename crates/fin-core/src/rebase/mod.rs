@@ -11,6 +11,10 @@
 //! amounts only the project knows, so a later position on a track the committed side rippled is
 //! reported as a conflict rather than guessed.
 
+pub mod map;
+
+pub use map::{Assoc, MapResult, Mapping, Recover, StepMap, Unmapped};
+
 use serde_json::json;
 
 use crate::error::CoreError;
