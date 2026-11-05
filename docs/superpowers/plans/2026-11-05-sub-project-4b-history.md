@@ -139,8 +139,9 @@ Everything is driven and tested through `fin` → `finisherd`.
 
 16. **The rebase engine is a mapping with mirrors** (ProseMirror `Mapping` semantics).
     - **Maps:** each record's `Diff.shifts` is its map. The inverse of `Shift {from, by}` is `{from: from + by, by: -by}`.
-    - **Recover rule:** a position inside a removed range `[s, e)` is recorded as deleted with `offset = pos − s`, *except* at the edge on the assoc side: `e` for `After`, `s` for `Before`. So with `After`, a position at the start edge of our own earlier insert is recorded with offset 0 and resumes at `A'.from + 0`. That keeps "insert before our own earlier insert" in order.
-    - **Mirrors:** recovery goes through a mirror only when the two shifts are on the same track and have equal `|by|`. Otherwise the position is `Unmapped::Deleted`.
+    - **Recover rule:** a position in a removed range `[s, e]` collapses to `s` and is recorded as deleted with `offset = pos − s`, *except* at the edge on the assoc side: `e` for `After`, `s` for `Before`. So with `After`, a position at the start edge of our own earlier insert is recorded with offset 0 and resumes at `A'.from + 0`. That keeps "insert before our own earlier insert" in order.
+    - **Mirrors:** recovery goes through a mirror only when the two shifts are on the same track and have equal `|by|`. Mirrored maps pair shifts in reverse order, so each side is one op's map (one inverse `StepMap` per earlier op of ours).
+    - **Without a mirror** (ProseMirror `deletedAfter` / `deletedBefore` / `deletedAcross`): only a position strictly inside `(s, e)` is `Unmapped::Deleted`. One at the deleted edge (`s` with `After`, `e` with `Before`) is a boundary, not an entity reference (§4.3), and carries on from `s`, as in 4A: an insert at the end of a clip whose neighbour was deleted still maps.
     - **Mapping order:** ops are mapped one at a time over `[inverse(our earlier ops), intervening steps, our rebased earlier ops]` and re-run at the head with full policy. The 4A "blind after our own trim/delete" conflict is gone.
 17. **Conflict reasons are codes:** `REMOVED`, `SAME_EDGE`, `SAME_PARAM` (4C), `DEPENDS_ON_SKIPPED`, `ALREADY_PRESENT`, `ID_COLLISION`, `UNDOES_TARGET_RECORDS`, or the policy code a re-run raised.
     - `CONFLICT` (exit 4) keeps the 4A detail fields, taken from the first conflict, and adds `details.conflicts: [{txId, opIndex, reason, againstTx, fix}]`.
@@ -394,20 +395,21 @@ pub enum Assoc { Before, After }
 pub struct StepMap { shifts: Vec<Shift> } // op order; each in the frame after the previous
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Recover { pub shift: usize, pub offset: Rational }
-pub struct MapResult { pub pos: Rational, pub deleted: Option<Recover> }
+// `deleted`: the first shift that deleted it, edges included; `across`: strictly inside some range
+pub struct MapResult { pub pos: Rational, pub deleted: Option<Recover>, pub across: bool }
 impl StepMap {
     pub fn from_shifts(shifts: Vec<Shift>) -> StepMap;
     pub fn from_diff(diff: &Diff) -> StepMap;
     pub fn shifts(&self) -> &[Shift];
-    pub fn invert(&self) -> StepMap; // reverse order, {from, by} → {from + by, -by}
+    pub fn invert(&self) -> Result<StepMap, CoreError>; // reverse order, {from, by} → {from + by, -by}
     /// `by >= 0` inserts `[from, from+by)`: positions at or after `from` (After), or after
     /// `from` (Before), move by `by`. `by < 0` removes `[s, e)` = `[from+by, from)`: positions
-    /// at or after `e` move by `by`; positions in `[s, e)` collapse to `s` and are `deleted`
-    /// with `offset = pos − s`, except at the assoc edge (After: `e` is never deleted; Before:
-    /// `s` is never deleted) (Decision 16).
+    /// after `e` move by `by`; positions in `[s, e]` collapse to `s` and are `deleted` with
+    /// `offset = pos − s`, except at the assoc edge (After: `e` is never deleted; Before: `s`
+    /// is never deleted) (Decision 16); strictly inside `(s, e)` also sets `across`.
     pub fn map(&self, track: &str, pos: Rational, assoc: Assoc) -> Result<MapResult, CoreError>;
-    /// The position `offset` into shift `r.shift`'s range, if that shift has `|by| == size`.
-    pub fn recover(&self, r: Recover, size: Rational) -> Option<Rational>;
+    /// The position `offset` into shift `r.shift`'s inserted range, if it inserts `by == size`.
+    pub fn recover(&self, r: Recover, size: Rational) -> Result<Option<Rational>, CoreError>;
 }
 #[derive(Debug, Clone, Default)]
 pub struct Mapping { maps: Vec<StepMap>, mirror: Vec<Option<usize>> }
@@ -416,12 +418,17 @@ pub enum Unmapped { Deleted { step: usize }, Overflow }
 impl Mapping {
     pub fn new() -> Mapping;
     pub fn push(&mut self, map: StepMap) -> usize;
-    pub fn set_mirror(&mut self, a: usize, b: usize); // a < b, b inverts a
+    pub fn set_mirror(&mut self, a: usize, b: usize); // a < b, b inverts a; neither mirrored yet
     pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
     /// ProseMirror `Mapping.map`: a deletion at step i with mirror j > i resumes at
     /// `maps[j].recover(..)` when the two shifts have equal |by| on the same track; otherwise
-    /// `Unmapped::Deleted { step: i }`.
+    /// a position strictly inside the range is `Unmapped::Deleted { step: i }`, and one at its
+    /// edge carries on from the range start.
     pub fn map(&self, track: &str, pos: Rational, assoc: Assoc) -> Result<Rational, Unmapped>;
+    /// `map` through `maps[start..]` only (ProseMirror `slice(start)`), for per-op mappings.
+    pub fn map_from(&self, start: usize, track: &str, pos: Rational, assoc: Assoc)
+        -> Result<Rational, Unmapped>;
 }
 ```
 
@@ -432,7 +439,8 @@ impl Mapping {
   - `end_edge_with_after_is_not_deleted`;
   - `mirror_requires_equal_size` (unequal `|by|` → `Deleted`);
   - `after_assoc_matches_4a_shift_position` (prop, forward maps);
-  - `other_tracks_are_untouched`, `overflow_is_reported`.
+  - `other_tracks_are_untouched`, `overflow_is_reported`;
+  - after review: `start_edge_without_mirror_carries_on` (a ripple delete of the next clip leaves an insert at its start edge mapped, as 4A did), `mirrored_inverse_then_map_is_identity` (prop), `map_from_skips_earlier_maps`, `recover_overflow_is_reported`.
 - [x] **Step 2: Run** `rtk cargo test -p fin-core --test shift_map`. Expected: FAIL.
 - [x] **Step 3: Implement** `map.rs` (< 300 lines, checked `Rational` arithmetic only).
 - [x] **Step 4: Run** `rtk cargo test --workspace`, `rtk pnpm gates`. Expected: PASS.

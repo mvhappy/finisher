@@ -106,7 +106,9 @@ fn removal_collapses_inside_and_records_offsets() {
     assert_eq!(at(9, Assoc::After).deleted, None);
     assert_eq!(at(14, Assoc::Before).pos, q(11));
     assert_eq!(at(14, Assoc::Before).deleted, None);
+    assert!(!at(10, Assoc::After).across && !at(13, Assoc::Before).across);
     let inside = at(12, Assoc::After);
+    assert!(inside.across);
     assert_eq!(inside.pos, q(10));
     assert_eq!(
         inside.deleted,
@@ -176,6 +178,54 @@ fn overflow_is_reported() {
     );
 }
 
+#[test]
+fn start_edge_without_mirror_carries_on() {
+    // c1 [0, 5), c2 [5, 10); a committed ripple delete of c2 removes [5, 10). A stale insert at
+    // the end of c1 (= the start of c2) is a boundary, not a reference to c2: as in 4A, it maps
+    // to 5, like one at 10. Only a position strictly inside c2 is lost.
+    let m = mapping(vec![step(&[("t1", 10, -5)])], &[]);
+    for a in [Assoc::Before, Assoc::After] {
+        assert_eq!(m.map("t1", q(5), a), Ok(q(5)));
+        assert_eq!(m.map("t1", q(10), a), Ok(q(5)));
+        assert_eq!(m.map("t1", q(7), a), Err(Unmapped::Deleted { step: 0 }));
+    }
+    assert_eq!(m.map("t1", q(12), Assoc::After), Ok(q(7)));
+}
+
+#[test]
+fn map_from_skips_earlier_maps() {
+    let m = mapping(vec![step(&[("t1", 0, 5)]), step(&[("t1", 10, -3)])], &[]);
+    assert_eq!(m.map("t1", q(12), Assoc::After), Ok(q(14)));
+    assert_eq!(m.map_from(1, "t1", q(12), Assoc::After), Ok(q(9)));
+    assert_eq!(m.map_from(2, "t1", q(12), Assoc::After), Ok(q(12)));
+    // A mirror before `start` is never followed: 11 just moves with A.
+    let m = mapping(
+        vec![step(&[("t1", 13, -3)]), step(&[("t1", 10, 3)])],
+        &[(0, 1)],
+    );
+    assert_eq!(m.map_from(1, "t1", q(11), Assoc::After), Ok(q(14)));
+}
+
+#[test]
+#[should_panic(expected = "already mirrored")]
+fn set_mirror_refuses_a_second_mirror() {
+    let mut m = mapping(vec![StepMap::default(); 3], &[(0, 1)]);
+    m.set_mirror(1, 2);
+}
+
+#[test]
+fn recover_overflow_is_reported() {
+    let rec = Recover {
+        shift: 0,
+        offset: q(1),
+    };
+    let ins = step(&[("t1", i64::MAX, 2)]);
+    assert_eq!(ins.recover(rec, q(2)).unwrap_err().code, "TIME_OVERFLOW");
+    // Removes [1, 3); 2 is recovered one into the mirror at i64::MAX.
+    let m = mapping(vec![step(&[("t1", 3, -2)]), ins], &[(0, 1)]);
+    assert_eq!(m.map("t1", q(2), Assoc::After), Err(Unmapped::Overflow));
+}
+
 // ---- Mirrors (Decision 16) ----
 
 #[test]
@@ -211,11 +261,9 @@ fn start_edge_of_inverted_insert_recovers_offset_zero() {
         mapping(maps.clone(), &[(0, 2)]).map("t1", q(10), Assoc::After),
         Ok(q(7))
     );
-    // Without the mirror it is deleted at step 0.
-    assert_eq!(
-        mapping(maps, &[]).map("t1", q(10), Assoc::After),
-        Err(Unmapped::Deleted { step: 0 })
-    );
+    // Without the mirror the edge is a boundary, not a reference: it carries on from 10, so
+    // the (unmirrored) A' at 7 then pushes it past A' with After.
+    assert_eq!(mapping(maps, &[]).map("t1", q(10), Assoc::After), Ok(q(11)));
 }
 
 #[test]
@@ -368,13 +416,33 @@ proptest! {
 
     #[test]
     fn after_assoc_matches_4a_shift_position(
-        m in step_map(&["t1", "t2"]),
+        maps in prop::collection::vec(step_map(&["t1", "t2"]), 1..4),
         pos in rational(-10, 150),
     ) {
-        let r = m.map("t1", pos, Assoc::After).unwrap();
-        if r.deleted.is_none() {
-            prop_assert_eq!(r.pos, shift_position_4a("t1", pos, m.shifts()));
+        // Equal to 4A unless strictly inside a removed range (edges included).
+        let first = maps[0].map("t1", pos, Assoc::After).unwrap();
+        if !first.across {
+            prop_assert_eq!(first.pos, shift_position_4a("t1", pos, maps[0].shifts()));
         }
+        let all: Vec<Shift> = maps.iter().flat_map(|m| m.shifts().to_vec()).collect();
+        let joined = StepMap::from_shifts(all.clone()).map("t1", pos, Assoc::After).unwrap();
+        let mapped = mapping(maps, &[]).map("t1", pos, Assoc::After);
+        if joined.across {
+            let is_deleted = matches!(mapped, Err(Unmapped::Deleted { .. }));
+            prop_assert!(is_deleted);
+        } else {
+            prop_assert_eq!(mapped, Ok(shift_position_4a("t1", pos, &all)));
+        }
+    }
+
+    #[test]
+    fn mirrored_inverse_then_map_is_identity(
+        a in step_map(&["t1", "t2"]),
+        pos in rational(-10, 150),
+        assoc in assoc(),
+    ) {
+        let m = mapping(vec![a.invert().unwrap(), a], &[(0, 1)]);
+        prop_assert_eq!(m.map("t1", pos, assoc), Ok(pos));
     }
 
     #[test]
