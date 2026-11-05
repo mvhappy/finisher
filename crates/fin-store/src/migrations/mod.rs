@@ -85,6 +85,8 @@ pub(crate) fn check(path: &Path) -> Result<u32, StoreError> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| classify(e, path))?;
+    // Another open may be switching the database to WAL right now.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     version(&conn, path)
 }
 

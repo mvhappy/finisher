@@ -289,3 +289,66 @@ fn a_server_data_lock_held_by_someone_else_means_follow() {
     e.poll(&mut a);
     assert_eq!(held_epoch(&a), Some(2));
 }
+
+// ---- Review of 546b7f6: catch-up gate on sync folders and after a missing lease.json ----
+
+#[test]
+fn on_a_sync_folder_catching_up_waits_for_files_still_arriving() {
+    let e = env();
+    drop(e.create("a"));
+    edit_project_file(&e.dir, |f| {
+        f.insert("storageOverride".into(), "sync:dropbox".into());
+    });
+    let mut a = e.open("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let mut b = e.open("b");
+    drop(a);
+    // A segment the sync client is still writing.
+    let arriving = seg_dir(&e.dir).join("00000001-000000000002-000000000002-abcdefabcdef.fseg");
+    fs::write(&arriving, br#"{"magic":"finisher-segment""#).unwrap();
+    b.takeover(true).unwrap();
+    e.advance(12);
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::CatchingUp));
+    let st = b.status();
+    assert!(
+        st.warnings.iter().any(|w| w.code == "SYNC_ARRIVING"),
+        "{st:?}"
+    );
+    fs::remove_file(&arriving).unwrap();
+    e.advance(2);
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), None);
+}
+
+#[test]
+fn a_missing_lease_json_still_waits_when_another_server_wrote() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    drop(a);
+    let dot = e.dir.join(".finisher");
+    for f in fs::read_dir(&dot).unwrap() {
+        let p = f.unwrap().path();
+        if p.file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("lease.")
+        {
+            fs::remove_file(p).unwrap();
+        }
+    }
+    let mut b = e.open("b");
+    assert_eq!(
+        held_epoch(&b),
+        Some(2),
+        "free: taken, above the segment epoch"
+    );
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::CatchingUp));
+    e.advance(10);
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), None);
+}

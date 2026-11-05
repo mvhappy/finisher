@@ -53,8 +53,9 @@ const VALIDATION_CODES: &[&str] = &[
     // A stored (migrated) record too large for a segment: export stops at it.
     "RECORD_TOO_LARGE",
     // A copy of a project folder opened by the server that uses the original (plan
-    // Decision 6).
+    // Decision 6), or one whose original cannot be reached to tell.
     "PROJECT_COPY",
+    "PROJECT_ORIGINAL_UNREACHABLE",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -220,6 +221,7 @@ mod tests {
             "INVALID_ID",
             "BINDINGS_MISMATCH",
             "PROJECT_COPY",
+            "PROJECT_ORIGINAL_UNREACHABLE",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

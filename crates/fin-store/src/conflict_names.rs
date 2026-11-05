@@ -57,10 +57,32 @@ pub fn classify(name: &str) -> Option<Provider> {
     if is_own_name(name) {
         return None;
     }
+    classify_with(name, is_canonical)
+}
+
+/// A branch directory's conflict copy (`main (conflicted copy …)`, `main 2`, …): removing the
+/// marker leaves a branch name (`main`, `br<digits>`).
+pub fn classify_branch_dir(name: &str) -> Option<Provider> {
+    if crate::scan::valid_branch(name) {
+        return None;
+    }
+    classify_with(name, crate::scan::valid_branch)
+}
+
+/// A conflict copy of the project file (`finisher.project (… conflicted copy …).json`, …).
+pub fn classify_project_file(name: &str) -> Option<Provider> {
+    if name == crate::PROJECT_FILE {
+        return None;
+    }
+    classify_with(name, |c| c == crate::PROJECT_FILE)
+}
+
+/// The first provider whose marker, removed from `name`, leaves a name `ours` accepts.
+fn classify_with(name: &str, ours: impl Fn(&str) -> bool) -> Option<Provider> {
     // ASCII lowering keeps byte offsets; our canonical names are lowercase (lease probe ids
     // are alphanumeric either way).
     let s = name.to_ascii_lowercase();
-    let any = |c: Vec<String>| c.iter().any(|c| is_canonical(c));
+    let any = |c: Vec<String>| c.iter().any(|c| ours(c));
     if any(dropbox(&s)) {
         Some(Provider::Dropbox)
     } else if any(syncthing(&s)) {
@@ -74,6 +96,12 @@ pub fn classify(name: &str) -> Option<Provider> {
     } else {
         None
     }
+}
+
+/// A conflict copy of a lease probe file: each server writes only its own probe, so a copy
+/// is harmless (listed, never read-only).
+pub fn is_probe_copy(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("lease.probe-") && !is_lease_name(name)
 }
 
 /// `s` without `s[start..end]`, widening `start` over one preceding space.

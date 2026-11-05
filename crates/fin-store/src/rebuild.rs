@@ -36,8 +36,9 @@ pub(crate) fn genesis(file: &ProjectFile, db_path: &Path) -> Result<Genesis, Sto
 }
 
 /// Creates the database at `db_path` holding the rev-0 project of `genesis` on `main`: built
-/// as `project.fdb.rebuild-<ulid>` beside it, closed, then renamed into place, so a crash never
-/// leaves a half-made `project.fdb`.
+/// as `project.fdb.rebuild-<ulid>` beside it, closed, then moved into place without replacing
+/// anything (`fsio::rename_noreplace`), so a crash never leaves a half-made `project.fdb` and
+/// two opens racing to rebuild share the first one's database.
 pub(crate) fn fresh_db(db_path: &Path, id: &str, genesis: &Genesis) -> Result<(), StoreError> {
     let project = new_project(id.to_string(), genesis.name.clone(), genesis.rate)?;
     let dir = db_path.parent().unwrap_or(Path::new("."));
@@ -47,11 +48,21 @@ pub(crate) fn fresh_db(db_path: &Path, id: &str, genesis: &Genesis) -> Result<()
     let built = (|| {
         let mut conn: Connection = db::connect(&tmp, true)?;
         db::init(&mut conn, &project, MAIN)?;
-        // Back to a single file before the rename.
+        // Everything into the main file; closing the last connection removes `-wal` and
+        // `-shm`. The file stays in WAL mode, so later opens need not switch it (a switch takes
+        // an exclusive lock, which two racing opens would fight over).
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-        conn.query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))?;
         drop(conn);
-        std::fs::rename(&tmp, db_path).map_err(StoreError::io(db_path))?;
+        // Never over a database another open made meanwhile (a replaced file under a live
+        // connection loses its writes): the first one in place wins and is used.
+        match crate::fsio::rename_noreplace(&tmp, db_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&tmp);
+                return Ok(());
+            }
+            Err(e) => return Err(StoreError::io(db_path)(e)),
+        }
         crate::fsio::sync_dir(dir).map_err(StoreError::io(dir))
     })();
     if built.is_err() {

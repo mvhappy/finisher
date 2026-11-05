@@ -591,6 +591,7 @@ fn store_with(data: &Path, proj: &Path, c: &Arc<FakeClock>) -> Store {
     let opts = fin_store::OpenOptions {
         clock: Some(c.clone()),
         poll: Some(ms(2)),
+        ..fin_store::OpenOptions::default()
     };
     Store::create_with(data, proj, "P", Rational::from_int(30), opts).unwrap()
 }

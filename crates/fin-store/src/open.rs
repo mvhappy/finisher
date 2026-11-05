@@ -7,7 +7,8 @@
 //!    ([`rebuild::fresh_db`]); step 7 then imports the whole folder. Without a genesis:
 //!    `PROJECT_DB_MISSING`.
 //! 3. Check the database read-only (`DB_TOO_NEW`, `NOT_A_PROJECT_DB`, `PROJECT_DB_MISMATCH`),
-//!    then refuse a copy of the project folder (`PROJECT_COPY`, [`copies`]).
+//!    then refuse a copy of the project folder (`PROJECT_COPY`) or a folder whose original
+//!    cannot be reached to tell (`PROJECT_ORIGINAL_UNREACHABLE`; [`copies`]).
 //! 4. Migrate; record `lastOpenedBy` and `projectDir`.
 //! 5. Detect the storage kind (`storageOverride` wins).
 //! 6. Try to acquire the lease ([`Contender::try_acquire`](crate::lease::Contender)); a
@@ -58,6 +59,10 @@ pub struct OpenOptions {
     pub clock: Option<Arc<dyn MonoClock>>,
     /// How often the heartbeat thread looks at the clock ([`Params::poll`]).
     pub poll: Option<Duration>,
+    /// The user says this folder is where the project now lives: the database is moved to
+    /// it even though its recorded folder cannot be reached (`PROJECT_ORIGINAL_UNREACHABLE`).
+    /// Never set automatically.
+    pub relocate: bool,
 }
 
 impl OpenOptions {
@@ -189,7 +194,7 @@ impl Store {
                 .with_details(json!({ "projectId": file.id, "dbProjectId": stored, "path": db_path.to_string_lossy() }))
                 .into());
         }
-        copies::check(&conn, project_dir, &file.id)?;
+        copies::check(&conn, project_dir, &file.id, opts.relocate)?;
         migrations::migrate(&mut conn, db_path.parent().unwrap_or(server_data))?;
         db::set_meta(&conn, "lastOpenedBy", &db::written_by())?;
         copies::record(&conn, project_dir)?;

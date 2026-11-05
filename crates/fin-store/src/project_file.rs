@@ -18,6 +18,9 @@
 //! Reading retries a missing file for up to [`READ_RETRY`] (15 s) once the folder holds
 //! `.finisher/`: Windows can report a just-renamed file missing for about 5 s (spec §3.4). A
 //! folder without `.finisher/` (never opened by sub-project 4, or not a project) fails at once.
+//! Transient errors ([`crate::fsio::is_transient`]: Windows sharing violations and access
+//! denied while another process replaces the file, `EINTR`/`EAGAIN`/`EBUSY`/`ESTALE`) are
+//! retried for the same 15 s.
 
 use std::fs;
 use std::path::Path;
@@ -140,9 +143,10 @@ fn read(project_dir: &Path, retry: Duration) -> Result<ProjectFile, StoreError> 
         match fs::read(&path) {
             Ok(b) => break b,
             Err(e)
-                if e.kind() == std::io::ErrorKind::NotFound
-                    && project_dir.join(".finisher").is_dir()
-                    && started.elapsed() < retry =>
+                if started.elapsed() < retry
+                    && ((e.kind() == std::io::ErrorKind::NotFound
+                        && project_dir.join(".finisher").is_dir())
+                        || crate::fsio::is_transient(&e)) =>
             {
                 std::thread::sleep(RETRY_EVERY);
             }

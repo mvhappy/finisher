@@ -5,7 +5,8 @@
 //!   skipped; anything else is foreign, so a conflict copy of `lease.json` shows up.
 //! - `.finisher/segments/<branch>/*` and `.finisher/snapshots/<branch>/*`, where `<branch>`
 //!   is `main` or `br<digits>`. A directory with any other name is one `Foreign` entry and is
-//!   not entered.
+//!   not entered (with `conflict_copy` set when it is a sync client's copy of a branch
+//!   directory).
 //! - Files directly in `segments/` or `snapshots/` are foreign.
 //! - Not scanned: `compaction/` (manifests belong to compaction, spec §3.9) and any other
 //!   directory.
@@ -187,9 +188,15 @@ impl Scanner {
                     .and_then(|n| n.to_str())
                     .filter(|b| valid_branch(b))
                 else {
+                    // A sync client's copy of a branch directory (`main (conflicted copy)`)
+                    // is a conflict copy; it is not entered.
+                    let conflict_copy = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(crate::conflict_names::classify_branch_dir);
                     w.out.push(Entry::Foreign {
                         path,
-                        conflict_copy: None,
+                        conflict_copy,
                         content: None,
                     });
                     continue;
@@ -217,7 +224,7 @@ pub fn scan(project_dir: &Path) -> io::Result<Vec<Entry>> {
 }
 
 /// `main` or `br<digits>` (spec §3.3).
-fn valid_branch(b: &str) -> bool {
+pub(crate) fn valid_branch(b: &str) -> bool {
     b == "main"
         || b.strip_prefix("br")
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))

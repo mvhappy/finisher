@@ -165,3 +165,83 @@ fn project_file_missing_briefly_is_retried() {
     assert_eq!(fin_core::CoreError::from(err).code, "PROJECT_NOT_FOUND");
     assert!(t.elapsed() < Duration::from_millis(150));
 }
+
+// ---- Review of 546b7f6: copies whose original cannot be reached; concurrent rebuilds ----
+
+#[test]
+fn a_copy_whose_original_share_is_unmounted_is_refused_until_relocated() {
+    // The original lives on a share; the share is unmounted (its mount point is gone), and a
+    // copy of the folder is opened: not "moved", since the original may come back.
+    let mut e = env();
+    let share = e.root.join("share");
+    e.dir = share.join("My Project");
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    a.close().unwrap();
+    let copy = e.root.join("Copy of My Project");
+    copy_dir(&e.dir, &copy);
+    let hidden = e.root.join("share-unmounted");
+    fs::rename(&share, &hidden).unwrap();
+
+    let err = e.try_open_at("a", &copy).unwrap_err();
+    assert_eq!(err.code, "PROJECT_ORIGINAL_UNREACHABLE", "{err:?}");
+    assert!(err.fix.as_deref().unwrap().contains("relocate"));
+    // Explicitly relocated: the database now belongs to the copy.
+    let opts = fin_store::OpenOptions {
+        relocate: true,
+        ..e.opts()
+    };
+    drop(Store::open_with(&e.data("a"), &copy, opts).unwrap());
+    drop(e.try_open_at("a", &copy).unwrap());
+    // The share returns: its folder is now the copy.
+    fs::rename(&hidden, &share).unwrap();
+    assert_eq!(e.try_open_at("a", &e.dir).unwrap_err().code, "PROJECT_COPY");
+}
+
+#[test]
+fn a_stale_copy_of_a_deleted_original_is_not_taken_for_a_move() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let copy = e.root.join("Old copy");
+    copy_dir(&e.dir, &copy);
+    commit(&mut a, "t2", vec![insert(0, "a1")]);
+    a.close().unwrap(); // exports t2: the copy lacks the newest segment
+    fs::remove_dir_all(&e.dir).unwrap();
+    let err = e.try_open_at("a", &copy).unwrap_err();
+    assert_eq!(err.code, "PROJECT_ORIGINAL_UNREACHABLE", "{err:?}");
+}
+
+#[test]
+fn concurrent_opens_without_a_database_share_one() {
+    for round in 0..12 {
+        let e = env();
+        let mut a = e.create("a");
+        commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+        e.flush(&mut a);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let opened: Vec<Store> = (0..2)
+            .map(|_| {
+                let (data, dir, opts, b) = (e.data("b"), e.dir.clone(), e.opts(), barrier.clone());
+                std::thread::spawn(move || {
+                    b.wait();
+                    Store::open_with(&data, &dir, opts).unwrap()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        let [mut b1, b2] = <[Store; 2]>::try_from(opened).unwrap();
+        commit(&mut a, "t2", vec![insert(0, "a1")]);
+        e.flush(&mut a);
+        e.poll(&mut b1);
+        assert_eq!(b1.head(MAIN), 2, "round {round}");
+        assert_eq!(
+            b2.head(MAIN),
+            2,
+            "round {round}: both stores use one database"
+        );
+    }
+}

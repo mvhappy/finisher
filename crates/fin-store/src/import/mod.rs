@@ -44,8 +44,9 @@
 //!
 //! A foreign file matching a conflict-copy pattern, or a Finisher file under a name that is
 //! not its own (`conflict_copy` is `Some`), makes the project `CONFLICT_COPY` (spec §3.7);
-//! other foreign files are listed only. A conflicted *branch directory* is one foreign
-//! entry without `conflict_copy` (scan does not enter it), so it is listed only.
+//! other foreign files are listed only, and so is a conflict copy of a `lease.probe-*` file
+//! (each server writes only its own probe). A conflicted *branch directory* is one foreign
+//! entry (scan does not enter it) with `conflict_copy` set: read-only too.
 
 mod apply;
 mod hydrate;
@@ -194,7 +195,7 @@ struct Verdict {
 /// Import state held by the `Store`.
 #[derive(Default)]
 pub(crate) struct ImportState {
-    scanner: Scanner,
+    pub(crate) scanner: Scanner,
     segrefs: HashMap<String, SegRef>,
     cache: HashMap<String, (Key, Verdict)>,
     /// The `current` set last written to `quarantine`; `None` before the first pass.
@@ -425,7 +426,14 @@ impl Store {
         report.pending = pending.into_iter().collect();
         report.foreign = foreign.files;
         report.newer = newer;
-        let conflict_copy = report.foreign.iter().any(|f| f.conflict_copy.is_some());
+        let conflict_copy = report.foreign.iter().any(|f| {
+            f.conflict_copy.is_some()
+                && !f
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(crate::conflict_names::is_probe_copy)
+        });
         import.read_only = if report.fork.is_some() {
             Some(ReadOnlyReason::ChainFork)
         } else if conflict_copy {

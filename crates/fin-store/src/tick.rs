@@ -33,10 +33,17 @@
 //! the commit epoch, but a new commit raises the tail's epoch).
 //!
 //! When the replaced `lease.json` names another server (or was damaged), or a claim above the
-//! highest epoch in our database belongs to another server, that server may have exported
-//! files our directory listing does not show yet. Then the pass that lifts the block must
+//! highest epoch in our database belongs to another server, or `lease.json` was missing while
+//! the folder holds a segment by another writer or above our epochs, that server may have
+//! exported files our directory listing does not show yet. Then the pass that lifts the block must
 //! start at least [`DIR_CACHE_WINDOW`] (10 s, monotonic: the Windows SMB directory cache)
 //! after the acquisition. Passes before that still import.
+//!
+//! On a sync folder the block also stays while any file under `segments/` has not arrived
+//! (a placeholder, or incomplete). The 10 s are a directory-cache bound, not a propagation
+//! bound: after a confirmed takeover on a sync folder the other machine's last edits may
+//! still be on their way; status lists what is arriving (`SYNC_ARRIVING`), and nothing
+//! bounds what has not started arriving.
 
 use std::time::{Duration, Instant};
 
@@ -250,7 +257,10 @@ impl Store {
     fn acquired(&mut self, lease: Lease) {
         // A database that cannot say counts as knowing nothing: wait.
         let known = crate::db::max_epoch(&self.conn).unwrap_or(0);
-        let wait = lease.previous().other_writer_since(&self.server_id, known);
+        let previous = lease.previous();
+        let missing = previous.record.is_none() && !previous.damaged;
+        let wait = previous.other_writer_since(&self.server_id, known)
+            || (missing && self.folder_has_other_writes(known));
         let now = self.ctl.now();
         self.ctl.gate = Gate::Pending {
             wait_until: wait.then(|| now + DIR_CACHE_WINDOW),
@@ -259,6 +269,19 @@ impl Store {
         self.ctl.check_error = None;
         self.ctl.seen = lease.state();
         self.export.lease = StoreLease::Lease(lease);
+    }
+
+    /// `lease.json` was missing (deleted, or not synced yet): whether the folder still shows
+    /// another server's writes (a segment by another writer, or above the epochs we know).
+    /// A folder that cannot be listed counts as yes.
+    fn folder_has_other_writes(&mut self, known: u64) -> bool {
+        match self.import.scanner.scan(&self.project_dir) {
+            Ok(entries) => entries.iter().any(|e| {
+                matches!(e, crate::scan::Entry::Segment { seg, .. }
+                    if seg.header.writer_id != self.server_id || seg.header.epoch > known)
+            }),
+            Err(_) => true,
+        }
     }
 
     /// The fencing re-check of a poll (module docs, step 3).
@@ -287,17 +310,28 @@ impl Store {
     /// An import pass that also lifts the ordering rule's block when it may (module docs).
     pub(crate) fn import_pass(&mut self) -> Result<ImportReport, StoreError> {
         let started = self.ctl.now();
+        self.reread_project_file();
         let r = self.import()?;
-        self.follow.observe(&r, self.storage_kind());
+        let kind = self.storage_kind();
+        self.follow.observe(&r, kind, &self.project_dir);
         if let Gate::Pending { wait_until } = self.ctl.gate
             && wait_until.is_none_or(|t| started >= t)
             && r.waiting.is_empty()
             && r.error.is_none()
+            && !(kind.is_sync() && self.follow.arriving())
             && self.holding()
         {
             self.ctl.gate = Gate::Open;
         }
         Ok(r)
+    }
+
+    /// What the project file says now: a newer `minReaderVersion` (another machine upgraded)
+    /// makes the project `NEWER_FORMAT`; a file that cannot be read changes nothing.
+    fn reread_project_file(&mut self) {
+        if let Ok(f) = crate::project_file::read_project_file_once(&self.project_dir) {
+            self.file_newer = f.is_newer();
+        }
     }
 
     /// The lease state as status reports it.

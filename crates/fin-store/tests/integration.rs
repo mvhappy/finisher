@@ -287,3 +287,117 @@ fn a_file_incomplete_for_long_on_a_local_root_is_a_warning() {
         .expect("warned");
     assert!(w.message.contains("abcdefabcdef"), "{}", w.message);
 }
+
+// ---- Review of 546b7f6: which conflict copies make the project read-only ----
+
+#[test]
+fn a_probe_conflict_copy_is_only_listed() {
+    let e = env();
+    let mut a = e.create("a");
+    let probe = format!("lease.probe-{}", a.server_id());
+    fs::write(
+        e.dir
+            .join(".finisher")
+            .join(format!("{probe} (conflicted copy 2026-11-04)")),
+        b"x",
+    )
+    .unwrap();
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    assert_eq!(a.status().foreign.len(), 1);
+}
+
+#[test]
+fn a_conflicted_branch_directory_makes_read_only() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    e.flush(&mut a);
+    let seg = e.dir.join(".finisher").join("segments");
+    copy_dir(
+        &seg.join(MAIN),
+        &seg.join("main (conflicted copy 2026-11-04)"),
+    );
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), Some(ReadOnlyReason::ConflictCopy));
+}
+
+#[test]
+fn a_conflict_copy_of_the_project_file_is_a_warning() {
+    let e = env();
+    let mut a = e.create("a");
+    fs::copy(
+        e.dir.join("finisher.project.json"),
+        e.dir
+            .join("finisher.project (Bob's conflicted copy 2026-11-04).json"),
+    )
+    .unwrap();
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    assert!(
+        a.status()
+            .warnings
+            .iter()
+            .any(|w| w.code == "PROJECT_FILE_CONFLICT")
+    );
+}
+
+#[test]
+fn a_newer_project_file_is_noticed_at_the_next_poll() {
+    let e = env();
+    let mut a = e.create("a");
+    edit_project_file(&e.dir, |f| {
+        f.insert("minReaderVersion".into(), 99.into());
+    });
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), Some(ReadOnlyReason::NewerFormat));
+    edit_project_file(&e.dir, |f| {
+        f.insert("minReaderVersion".into(), 1.into());
+    });
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+}
+
+#[test]
+fn a_visible_file_under_our_segment_name_makes_read_only() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    let planned = a.planned_segment_name(MAIN).unwrap().unwrap();
+    let (_, _, ours) = {
+        // Another server's valid segment, written under our planned name.
+        let mut h = fin_store::segment::Header {
+            format_version: 1,
+            min_reader_version: 1,
+            project_id: a.project_id().into(),
+            branch: MAIN.into(),
+            writer_id: "someoneelse".into(),
+            epoch: 1,
+            first_seq: 1,
+            last_seq: 1,
+            prev_segment_hash: None,
+            op_schema_versions: [1, 1],
+            created_at: 0,
+            pack: false,
+            replaces: vec![],
+        };
+        h.created_at = 7;
+        let (bytes, _) =
+            fin_store::segment::encode(&h, &[b"{\"txId\":\"x\",\"seq\":1}".as_slice()]);
+        fs::create_dir_all(seg_dir(&e.dir)).unwrap();
+        fs::write(seg_dir(&e.dir).join(&planned), &bytes).unwrap();
+        ((), (), bytes)
+    };
+    e.flush(&mut a);
+    assert_eq!(a.read_only(), Some(ReadOnlyReason::ConflictCopy));
+    assert_eq!(
+        fs::read(seg_dir(&e.dir).join(&planned)).unwrap(),
+        ours,
+        "untouched"
+    );
+    assert_eq!(
+        fs::read_dir(seg_dir(&e.dir)).unwrap().count(),
+        1,
+        "nothing exported"
+    );
+}

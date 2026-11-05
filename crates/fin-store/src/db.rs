@@ -85,7 +85,21 @@ pub(crate) fn connect(path: &Path, create: bool) -> Result<Connection, StoreErro
         flags |= OpenFlags::SQLITE_OPEN_CREATE;
     }
     let conn = Connection::open_with_flags(path, flags)?;
-    let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+    // First: switching to WAL takes an exclusive lock, and two opens may race to do it.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // The busy handler does not cover a journal-mode switch: retry it briefly by hand.
+    let mut tries = 0;
+    let mode: String = loop {
+        match conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0)) {
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && tries < 100 =>
+            {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => break other?,
+        }
+    };
     if !mode.eq_ignore_ascii_case("wal") {
         return Err(CoreError::new(
             "DB_ERROR",
@@ -94,7 +108,6 @@ pub(crate) fn connect(path: &Path, create: bool) -> Result<Connection, StoreErro
         .into());
     }
     conn.execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     Ok(conn)
 }
 

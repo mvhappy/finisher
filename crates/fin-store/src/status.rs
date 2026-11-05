@@ -14,10 +14,14 @@
 //! - `INCOMPLETE_FILES`: a file seen incomplete for more than [`INCOMPLETE_POLLS`] polls on a
 //!   local or network root, where every write is atomic, so it cannot be in transit: a crashed
 //!   foreign writer or damage;
-//! - `LEASE_CHECK`: the last fencing check could not list `.finisher/` (the lease stands).
+//! - `LEASE_CHECK`: the last fencing check could not list `.finisher/` (the lease stands);
+//! - `SYNC_ARRIVING`: on a sync folder, segment files are placeholders or incomplete (they
+//!   also hold `CATCHING_UP` after an acquisition);
+//! - `PROJECT_FILE_CONFLICT`: a sync conflict copy of `finisher.project.json` sits in the
+//!   project folder (warning only: the copy is never read).
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fin_core::{CommittedTx, CoreError};
 use rusqlite::params;
@@ -113,13 +117,31 @@ pub(crate) struct Follow {
     /// Incomplete files and the consecutive polls each was seen so.
     incomplete: HashMap<PathBuf, u32>,
     stuck: Vec<String>,
+    /// Placeholders and incomplete files under `segments/`.
+    arriving_files: Vec<String>,
+    /// Conflict copies of `finisher.project.json` in the project folder.
+    project_file_copies: Vec<String>,
     pub(crate) last_export_ms: Option<i64>,
     last_status: Option<ProjectStatus>,
 }
 
 impl Follow {
-    pub(crate) fn observe(&mut self, r: &ImportReport, kind: StorageKind) {
+    pub(crate) fn arriving(&self) -> bool {
+        !self.arriving_files.is_empty()
+    }
+
+    pub(crate) fn observe(&mut self, r: &ImportReport, kind: StorageKind, project_dir: &Path) {
         self.import_error = r.error.clone();
+        self.project_file_copies = std::fs::read_dir(project_dir)
+            .map(|rd| {
+                let mut v: Vec<String> = rd
+                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .filter(|n| crate::conflict_names::classify_project_file(n).is_some())
+                    .collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default();
         if r.error.as_ref().is_some_and(|e| e.code == "IO_ERROR") {
             return; // the folder could not be listed: what it held before still stands
         }
@@ -130,6 +152,16 @@ impl Follow {
             .collect();
         self.waiting = r.waiting.clone();
         self.pending = r.pending.clone();
+        let segments = project_dir.join(".finisher").join("segments");
+        self.arriving_files = r
+            .not_arrived
+            .iter()
+            .filter(|(p, why)| {
+                matches!(why, NotArrivedWhy::Placeholder | NotArrivedWhy::Incomplete)
+                    && p.starts_with(&segments)
+            })
+            .map(|(p, _)| p.to_string_lossy().into_owned())
+            .collect();
         let mut seen = HashMap::new();
         for (path, why) in &r.not_arrived {
             if *why == NotArrivedWhy::Incomplete {
@@ -239,6 +271,24 @@ impl Store {
         }
         if let Some(e) = &self.ctl.check_error {
             warn("LEASE_CHECK", e.clone());
+        }
+        if self.storage_kind().is_sync() && f.arriving() {
+            warn(
+                "SYNC_ARRIVING",
+                format!(
+                    "{} segment file(s) are still arriving from the sync client; after taking the lease the project stays CATCHING_UP until they are in (on a sync folder the 10 s wait does not bound how late another machine's edits arrive)",
+                    f.arriving_files.len()
+                ),
+            );
+        }
+        if !f.project_file_copies.is_empty() {
+            warn(
+                "PROJECT_FILE_CONFLICT",
+                format!(
+                    "a sync client made a conflict copy of finisher.project.json: {} (this file is used; compare and delete the copy)",
+                    f.project_file_copies.join(", ")
+                ),
+            );
         }
         let rel = |p: &String| {
             std::path::Path::new(p)

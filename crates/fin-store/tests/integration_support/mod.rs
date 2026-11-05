@@ -46,6 +46,7 @@ impl Env {
         OpenOptions {
             clock: Some(self.clock.clone()),
             poll: Some(Duration::from_millis(2)),
+            ..OpenOptions::default()
         }
     }
 
