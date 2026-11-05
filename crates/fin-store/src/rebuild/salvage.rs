@@ -1,121 +1,182 @@
-//! What a rebuild keeps from the database it replaces (`super`, step 4). The old file may be
-//! damaged anywhere: every read is tolerated failing, and what was read before a failure is
-//! kept.
+//! What a rebuild keeps from the databases it replaces (`super`, step 4): the old database,
+//! damaged copies kept by earlier rebuilds that it has not salvaged, and unfinished builds.
+//!
+//! - Every `txs` row whose record the new database does not hold goes to `quarantine`
+//!   (origin `salvage`, bytes kept): `SALVAGED` when it was never exported, and
+//!   `MISSING_FROM_FOLDER` when it was exported but the folder no longer yields it (a
+//!   damaged or deleted segment file). Both stay current (nothing else holds them).
+//! - Its quarantine rows, with their reason; its id counters (never lowered); its
+//!   `projectDir`, server ids and `salvagedFrom`.
+//!
+//! The old file may be damaged anywhere. Tables are read by rowid ranges: after a read error
+//! the reader probes further rowids and resumes past the bad page (a binary search finds the
+//! first readable rowid), so one bad page loses only its own rows. Every error is reported
+//! ([`Outcome::errors`]); `complete` is false whenever anything could not be read.
+//! Sources are opened read-only, so a kept copy's WAL is never checkpointed into it.
 
 use std::path::Path;
 
 use fin_core::Project;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, Row, params};
 
+use super::check::open_read_only;
 use crate::StoreError;
 use crate::db::{self, hash_bytes};
 
-/// Opens `old` for reading only (no journal-mode switch; `query_only`).
-fn open(old: &Path) -> Option<Connection> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let c = Connection::open_with_flags(old, flags).ok()?;
-    c.busy_timeout(std::time::Duration::from_secs(5)).ok()?;
-    c.execute_batch("PRAGMA query_only = 1").ok()?;
-    Some(c)
+/// What one source gave.
+#[derive(Debug, Default)]
+pub(super) struct Outcome {
+    pub(super) added: u32,
+    /// Exported rows of the source that the new database lacks.
+    pub(super) lost_exported: u32,
+    /// The highest exported seq of `main` in the source.
+    pub(super) exported_through: u64,
+    pub(super) errors: Vec<String>,
+    /// `salvagedFrom` of the source: damaged copies already salvaged into it.
+    pub(super) salvaged_from: Vec<String>,
 }
 
-/// The old database's rev-0 snapshot of `main`, if it reads and belongs to `project_id`.
-pub(super) fn rev0(old: &Path, project_id: &str) -> Option<Project> {
-    let c = open(old)?;
+fn open(src: &Path) -> Result<Connection, String> {
+    let c = match open_read_only(src) {
+        Ok(c) if c.query_row("SELECT 1", [], |_| Ok(())).is_ok() => c,
+        _ => {
+            // A WAL database without a writable `-shm` may refuse a read-only open.
+            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let c = Connection::open_with_flags(src, flags).map_err(|e| e.to_string())?;
+            c.execute_batch("PRAGMA query_only = 1")
+                .map_err(|e| e.to_string())?;
+            c
+        }
+    };
+    Ok(c)
+}
+
+/// The rev-0 snapshot of `main` in `src`, if it reads and belongs to `project_id`.
+pub(super) fn rev0(src: &Path, project_id: &str) -> Option<Project> {
+    let c = open(src).ok()?;
     let p = db::snapshot_at(&c, crate::MAIN, 0).ok()??;
     (p.id == project_id).then_some(p)
 }
 
-/// Copies what can be read from `old` into `new` (module docs of `super`, step 4); returns
-/// the quarantine rows added. Fails only when `new` cannot be written.
-pub(super) fn run(old: &Path, new: &Connection, now: i64) -> Result<u32, StoreError> {
-    let Some(c) = open(old) else {
-        return Ok(0);
-    };
-    let file = old
+/// `salvagedFrom` of `src` (empty when unreadable).
+pub(super) fn salvaged_from(src: &Path) -> Vec<String> {
+    open(src)
+        .ok()
+        .and_then(|c| db::meta(&c, "salvagedFrom").ok().flatten())
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+/// Salvages `src` into `new` (module docs). Fails only when `new` cannot be written.
+pub(super) fn run(src: &Path, new: &Connection, now: i64) -> Result<Outcome, StoreError> {
+    let mut out = Outcome::default();
+    let name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let c = match open(src) {
+        Ok(c) => c,
+        Err(e) => {
+            out.errors.push(format!("{name}: cannot open: {e}"));
+            return Ok(out);
+        }
+    };
     let in_txs = |hash: &str| -> Result<bool, StoreError> {
-        Ok(new
-            .query_row(
-                "SELECT 1 FROM txs WHERE tx_hash = ?1",
-                params![hash],
-                |_| Ok(()),
-            )
-            .map(|()| true)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(false),
-                e => Err(e),
-            })?)
+        let n: i64 = new.query_row(
+            "SELECT COUNT(*) FROM txs WHERE tx_hash = ?1",
+            params![hash],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
     };
     let mut insert = new.prepare(
         "INSERT INTO quarantine (tx_hash, branch, origin, reason, detail, record_bytes,
                                  added_at, seen_at, current)
          VALUES (?1, ?2, 'salvage', ?3, ?4, ?5, ?6, ?6, ?7) ON CONFLICT(tx_hash) DO NOTHING",
     )?;
-    let mut added = 0u32;
 
-    // Unexported records: they exist nowhere else. A table scan, not the partial index,
-    // which may be the damaged part.
-    for (branch, seq, epoch, bytes) in rows(
+    let (txs, errs) = rows(
         &c,
-        "SELECT branch, seq, epoch, record_bytes FROM txs NOT INDEXED WHERE exported = 0",
+        "txs",
+        "branch, seq, epoch, exported, record_bytes",
         |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
+                r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
-                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, bool>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
             ))
         },
-    ) {
+    );
+    out.errors
+        .extend(errs.into_iter().map(|e| format!("{name}: txs: {e}")));
+    for (branch, seq, epoch, exported, bytes) in txs {
+        if exported && branch == crate::MAIN {
+            out.exported_through = out.exported_through.max(u64::try_from(seq).unwrap_or(0));
+        }
         let hash = hash_bytes(&bytes);
         if in_txs(&hash)? {
             continue;
         }
-        let detail = format!("unexported seq {seq}, committed at epoch {epoch}, in {file}");
-        added += u32::try_from(
-            insert.execute(params![hash, branch, "SALVAGED", detail, bytes, now, 1])?,
-        )
-        .unwrap_or(0);
+        let (reason, detail) = if exported {
+            out.lost_exported += 1;
+            (
+                "MISSING_FROM_FOLDER",
+                format!(
+                    "exported seq {seq} (epoch {epoch}) in {name}; the project folder no longer yields it"
+                ),
+            )
+        } else {
+            (
+                "SALVAGED",
+                format!("unexported seq {seq}, committed at epoch {epoch}, in {name}"),
+            )
+        };
+        out.added +=
+            u32::try_from(insert.execute(params![hash, branch, reason, detail, bytes, now, 1])?)
+                .unwrap_or(0);
     }
 
-    // The old quarantine, with its reasons.
-    for (hash, branch, origin, reason, detail, bytes, current) in rows(
+    let (rows_q, errs) = rows(
         &c,
-        "SELECT tx_hash, branch, origin, reason, detail, record_bytes, current FROM quarantine",
+        "quarantine",
+        "tx_hash, branch, origin, reason, detail, record_bytes, current",
         |r| {
             Ok((
-                r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
-                r.get::<_, Vec<u8>>(5)?,
-                r.get::<_, i64>(6)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         },
-    ) {
+    );
+    out.errors
+        .extend(errs.into_iter().map(|e| format!("{name}: quarantine: {e}")));
+    for (hash, branch, origin, reason, detail, bytes, current) in rows_q {
         if in_txs(&hash)? {
             continue;
         }
-        added += u32::try_from(insert.execute(params![
-            hash,
-            branch,
-            reason,
-            format!("{origin}: {detail}"),
-            bytes,
-            now,
-            current
-        ])?)
+        let detail = if origin == "salvage" {
+            detail
+        } else {
+            format!("{origin}: {detail}")
+        };
+        out.added += u32::try_from(
+            insert.execute(params![hash, branch, reason, detail, bytes, now, current])?,
+        )
         .unwrap_or(0);
     }
 
-    // Id counters, never lowered.
-    for (kind, next) in rows(&c, "SELECT kind, next FROM ids", |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    }) {
+    let (ids, errs) = rows(&c, "ids", "kind, next", |r| {
+        Ok((r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    });
+    out.errors
+        .extend(errs.into_iter().map(|e| format!("{name}: ids: {e}")));
+    for (kind, next) in ids {
         new.execute(
             "INSERT INTO ids (kind, next) VALUES (?1, ?2)
              ON CONFLICT(kind) DO UPDATE SET next = MAX(next, excluded.next)",
@@ -123,36 +184,106 @@ pub(super) fn run(old: &Path, new: &Connection, now: i64) -> Result<u32, StoreEr
         )?;
     }
 
-    // Where the project lives (copies), and every server id that opened it.
-    if let Ok(Some(dir)) = db::meta(&c, "projectDir") {
-        db::set_meta(new, "projectDir", &dir)?;
+    match db::meta(&c, "projectDir") {
+        Ok(Some(dir)) => db::set_meta(new, "projectDir", &dir)?,
+        Ok(None) => {}
+        Err(e) => out.errors.push(format!("{name}: meta: {e}")),
     }
     if let Ok(ids) = crate::history::server_ids(&c) {
         for id in ids {
             crate::history::note_server_id(new, &id)?;
         }
     }
-    Ok(added)
+    out.salvaged_from = db::meta(&c, "salvagedFrom")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default();
+    Ok(out)
 }
 
-/// The rows of `sql` that could be read before any failure.
+/// The rows of `table` (`SELECT rowid, <cols>`), in rowid order, reading past damaged pages
+/// (module docs). Returns them and the errors met.
 fn rows<T>(
     c: &Connection,
-    sql: &str,
-    f: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
-) -> Vec<T> {
-    let Ok(mut stmt) = c.prepare(sql) else {
-        return vec![];
-    };
-    let Ok(mut rows) = stmt.query([]) else {
-        return vec![];
-    };
+    table: &str,
+    cols: &str,
+    f: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
+) -> (Vec<T>, Vec<String>) {
+    let sql =
+        format!("SELECT rowid, {cols} FROM {table} NOT INDEXED WHERE rowid > ?1 ORDER BY rowid");
     let mut out = vec![];
-    while let Ok(Some(row)) = rows.next() {
-        match f(row) {
-            Ok(v) => out.push(v),
-            Err(_) => continue,
+    let mut errors = vec![];
+    // Reads from `after` on; `Err((last rowid read, error))` on a failure.
+    let read = |after: i64, out: &mut Vec<T>| -> Result<(), (i64, String)> {
+        let mut stmt = c.prepare(&sql).map_err(|e| (after, e.to_string()))?;
+        let mut rs = stmt
+            .query(params![after])
+            .map_err(|e| (after, e.to_string()))?;
+        let mut last = after;
+        loop {
+            match rs.next() {
+                Ok(Some(row)) => {
+                    let id: i64 = row.get(0).map_err(|e| (last, e.to_string()))?;
+                    last = id;
+                    // A row whose columns do not decode is skipped like a bad page's.
+                    let v = f(row).map_err(|e| (last, e.to_string()))?;
+                    out.push(v);
+                }
+                Ok(None) => return Ok(()),
+                Err(e) => return Err((last, e.to_string())),
+            }
+        }
+    };
+    // Whether reading the first row after `after` works (`Some(false)`: nothing after it).
+    let probe = |after: i64| -> Option<bool> {
+        let mut stmt = c.prepare(&sql).ok()?;
+        let mut rs = stmt.query(params![after]).ok()?;
+        match rs.next() {
+            Ok(Some(_)) => Some(true),
+            Ok(None) => Some(false),
+            Err(_) => None,
+        }
+    };
+    let mut after = i64::MIN;
+    loop {
+        match read(after, &mut out) {
+            Ok(()) => break,
+            Err((last, e)) => {
+                if errors.len() < 20 {
+                    errors.push(format!("after rowid {last}: {e}"));
+                }
+                // Find a readable start beyond the bad page: double the step, then narrow.
+                let mut lo = last;
+                let mut step: i64 = 1;
+                let hi = loop {
+                    let Some(at) = lo.checked_add(step) else {
+                        break None;
+                    };
+                    match probe(at) {
+                        Some(true) => break Some(at),
+                        Some(false) => break None,
+                        None => {
+                            lo = at;
+                            step = step.saturating_mul(2);
+                            if step > 1 << 40 {
+                                break None;
+                            }
+                        }
+                    }
+                };
+                let Some(mut hi) = hi else { break };
+                while hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    if probe(mid) == Some(true) {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                after = hi;
+            }
         }
     }
-    out
+    (out, errors)
 }

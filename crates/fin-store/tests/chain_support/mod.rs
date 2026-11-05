@@ -52,6 +52,7 @@ pub fn build_on(
         prev_segment_hash: prev,
         op_schema_versions: [1, 1],
         created_at,
+        genesis_hash: format!("blake3:{}", "0".repeat(64)),
         pack: !replaces.is_empty(),
         replaces,
     };

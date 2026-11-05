@@ -54,6 +54,8 @@ pub struct Header {
     pub op_schema_versions: [u32; 2],
     /// Unix milliseconds; informational, never used for ordering.
     pub created_at: i64,
+    /// `blake3:` of the project's genesis ([`crate::project_file::genesis_hash`]).
+    pub genesis_hash: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pack: bool,
     /// For a pack: the hashes of the segments it replaces.
@@ -100,6 +102,7 @@ pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
     check_nonempty("projectId", &header.project_id)?;
     check_nonempty("branch", &header.branch)?;
     check_nonempty("writerId", &header.writer_id)?;
+    check_hash("genesisHash", &header.genesis_hash)?;
     // One record per seq: `lastSeq - firstSeq + 1` records (no overflow at `u64::MAX`).
     let span = header.last_seq.checked_sub(header.first_seq);
     if span.and_then(|d| d.checked_add(1)) != Some(frame.lines.len() as u64) {

@@ -370,6 +370,32 @@ impl Store {
             }
         }
         self.import.segrefs = present;
+        // Damaged and incomplete files, for verify's "unchanged for 60 s" rule.
+        let damaged: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Damaged {
+                    path,
+                    len,
+                    modified,
+                    ..
+                } => Some((path.clone(), *len, *modified)),
+                Entry::NotArrived {
+                    path,
+                    why: NotArrivedWhy::Incomplete,
+                } => {
+                    let m = std::fs::metadata(path).ok();
+                    Some((
+                        path.clone(),
+                        m.as_ref().map_or(0, |m| m.len()),
+                        m.and_then(|m| m.modified().ok()),
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        let now_mono = self.ctl.now();
+        self.damage.get_mut().observe(&damaged, now_mono);
         for segs in by_branch.values_mut() {
             segs.sort_by(|a, b| a.hash().cmp(b.hash()));
         }

@@ -407,10 +407,14 @@ fn foreign_sqlite_is_refused() {
     assert!(fs::read(&db).unwrap() == before, "file changed");
     assert_eq!(sidecars(&db), Vec::<String>::new());
 
-    // Not SQLite at all.
-    fs::write(&db, b"definitely not a database, just some bytes in a file").unwrap();
-    assert_eq!(code(Store::open(&data, &dir)), "NOT_A_PROJECT_DB");
-    assert_eq!(sidecars(&db), Vec::<String>::new());
+    // Not SQLite at all, at our own database path: damage, so it is rebuilt from the folder
+    // and the file kept as it was (plan Task 12 review).
+    let junk = b"definitely not a database, just some bytes in a file";
+    fs::write(&db, junk).unwrap();
+    let s = Store::open(&data, &dir).unwrap();
+    let r = s.last_rebuild().expect("rebuilt");
+    assert_eq!(r.reason, "corrupt");
+    assert_eq!(fs::read(r.corrupt_copy.as_ref().unwrap()).unwrap(), junk);
 }
 
 /// A database another connection holds open in WAL mode (its `-wal` has frames not yet in the

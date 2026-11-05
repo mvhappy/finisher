@@ -51,6 +51,35 @@ pub struct Genesis {
     pub rate: Rational,
 }
 
+/// The genesis every segment and snapshot header names (`genesisHash`): BLAKE3 of the
+/// genesis's JSON (`{"name","rate"}`, field order fixed by the struct). A rebuild refuses a
+/// project file whose genesis does not hash to it (`GENESIS_MISMATCH`), and verify reports
+/// it: an edited `genesis.rate` would otherwise silently change a rebuilt history.
+pub fn genesis_hash(g: &Genesis) -> String {
+    crate::db::hash_bytes(&serde_json::to_vec(g).expect("a genesis always serialises"))
+}
+
+/// The genesis of a rev-0 project (its creation name and rate).
+pub(crate) fn genesis_of(rev0: &fin_core::Project) -> Genesis {
+    Genesis {
+        name: rev0.name.clone(),
+        rate: rev0.rate,
+    }
+}
+
+/// The database's `genesisHash` (`meta`), computed from its rev-0 snapshot of `main` and
+/// stored the first time.
+pub(crate) fn db_genesis_hash(conn: &rusqlite::Connection) -> Result<String, StoreError> {
+    if let Some(h) = crate::db::meta(conn, "genesisHash")? {
+        return Ok(h);
+    }
+    let rev0 = crate::db::snapshot_at(conn, crate::MAIN, 0)?
+        .ok_or_else(|| CoreError::new("DB_ERROR", "the database has no rev-0 snapshot of main"))?;
+    let h = genesis_hash(&genesis_of(&rev0));
+    crate::db::set_meta(conn, "genesisHash", &h)?;
+    Ok(h)
+}
+
 /// `finisher.project.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

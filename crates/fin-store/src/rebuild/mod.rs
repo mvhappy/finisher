@@ -4,60 +4,83 @@
 //!
 //! - **Missing:** a server with no database for a project whose file carries its [`Genesis`]
 //!   (`Store::open`).
-//! - **Corrupt:** `PRAGMA quick_check` fails on open ([`quick_check`]). A file that is not a
-//!   project database at all (`NOT_A_PROJECT_DB`, `DB_TOO_NEW`, checked first) is never
-//!   rebuilt over.
-//! - **Manual:** [`Store::rebuild`] (`fin project rebuild`).
+//! - **Corrupt:** the file at our own database path is damaged ([`check::damaged`]: a bad
+//!   header, an unreadable schema or `meta` under our `application_id`, or a failing
+//!   `PRAGMA quick_check`). A file that is someone else's (a foreign `application_id`,
+//!   `NOT_A_PROJECT_DB`) or newer (`DB_TOO_NEW`) is never rebuilt over.
+//! - **Manual:** [`Store::rebuild`], or [`rebuild_project`] without an open store
+//!   (`fin project rebuild`).
 //!
-//! # How ([`rebuild`]), under `<project-data>/rebuild.lock`
+//! # How ([`rebuild`]), holding `<project-data>/db.lock` exclusively
 //!
-//! 1. Re-check under the lock: another open of this server data may have rebuilt meanwhile
-//!    (the database now exists, or passes `quick_check`); then its database is used.
-//! 2. The rev-0 state: the old database's rev-0 snapshot when it can be read (the history
-//!    was built on it), else `new_project` of the file's genesis; neither is
-//!    `DB_CORRUPT`. A genesis that does not match a readable rev 0 is reported
+//! Every open store holds that lock shared (`crate::dblock`), so no other store has the file
+//! open while it is replaced: a manual rebuild is refused with `DB_IN_USE`, an open's
+//! automatic rebuild waits briefly for a racing open first.
+//! 1. Re-check under the lock: another open may have rebuilt meanwhile (the database exists,
+//!    or is no longer damaged); then its database is used.
+//! 2. The rev-0 state: the old database's rev-0 snapshot when it reads (the history was built
+//!    on it), else `new_project` of the file's genesis; neither is `DB_CORRUPT`. Every
+//!    segment in the folder names the genesis it was written under (`genesisHash`): one that
+//!    does not match the rev 0 used is `GENESIS_MISMATCH`, and nothing is built. A file
+//!    genesis that does not describe a readable old rev 0 is reported
 //!    ([`RebuildReport::genesis_mismatch`]).
 //! 3. Build `project.fdb.rebuild-<ulid>` beside the database: the schema with a fresh
 //!    incarnation (`crate::history`), rev 0, then one import pass of the whole folder
 //!    ([`Store::import`], through a store on the new file that holds no lease), offered the
-//!    folder's snapshots as seeds: one seeds only if its `txHash` is on the resolved chain
-//!    (`import::apply`, step 3; the others are ignored). An import error or a fork stops
-//!    the branch where the folder does: the database holds what the folder holds, and the
-//!    store reports it as it would on any open.
-//! 4. Salvage from the old database ([`salvage`]): its unexported records into
-//!    `quarantine` (`SALVAGED`, origin `salvage`, bytes kept), its quarantine rows (origin
-//!    `salvage`), its id counters (never lowered: ids those records used are never handed out
-//!    again), its `projectDir` and server ids. Whatever cannot be read is skipped.
-//! 5. Verify the new database with the checks that need no replay (`crate::verify`): the
+//!    folder's snapshots as seeds: one seeds only if its `txHash` is on the resolved chain and
+//!    its `genesisHash` matches (`import::apply`, step 3; others are ignored). An import error
+//!    or a fork stops the branch where the folder does, as on any open.
+//! 4. Salvage ([`salvage`]) from the old database, from every kept damaged copy
+//!    (`project.fdb.corrupt-*`) that the old database does not list as salvaged already
+//!    (`meta` `salvagedFrom`; a crash between the swap's two renames leaves the old database
+//!    only there), and from unfinished builds. Every record the new database lacks goes to
+//!    quarantine (`SALVAGED`, or `MISSING_FROM_FOLDER` for exported ones). Whatever could not
+//!    be read is reported ([`RebuildReport::salvage_complete`], status `SALVAGE_INCOMPLETE`).
+//! 5. A manual rebuild of a database the folder no longer fully holds (it exported records
+//!    the new database lacks) is refused, `REBUILD_WOULD_LOSE`: nothing is swapped.
+//! 6. Verify the new database with the checks that need no replay (`crate::verify`): the
 //!    import just replayed everything a seed did not cover. Mismatches are reported, never
 //!    fatal.
-//! 6. Swap: the old database is renamed to `project.fdb.corrupt-<UTC ts>` together with its
-//!    `-wal` and `-shm` (renamed alongside, so SQLite never replays that WAL onto the new
-//!    file, and the kept copy still opens with it); without an old database, stale
-//!    `-wal`/`-shm` files are removed. The new file is then moved into place without
-//!    replacing anything (`fsio::rename_noreplace`) and the directory synced.
+//! 7. Swap ([`files::swap`]): the old database is renamed to `project.fdb.corrupt-<UTC ts>`
+//!    with its `-wal` and `-shm` (so SQLite never replays that WAL onto the new file, and the
+//!    kept copy still opens with it); without an old database an orphan `-wal` is renamed to
+//!    `project.fdb.orphan-<ts>-wal`. The new file is then linked into place without replacing
+//!    anything; if that fails, the old file is moved back. Then unfinished builds are
+//!    removed and the newest 3 damaged copies kept.
 //!
-//! A crash at any step leaves either the old database in place (plus a `rebuild-` file that
-//! is never used again) or the new one. Two opens racing share the first one's database.
+//! A crash at any step leaves the old database in place, or the new one, or neither with
+//! the old one kept as `corrupt-*`: the next open rebuilds again and salvages that copy.
+//! Two opens racing share the first one's database.
 //!
 //! Long-running (it imports the whole folder): `fin-node` runs it, and [`Store::verify`], on
 //! the per-engine worker thread (plan Decision 7, Task 14).
 
+mod check;
+mod files;
 mod salvage;
 mod seeds;
+mod store;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fin_core::{CoreError, Project, new_project};
-use rusqlite::{Connection, ErrorCode};
 use serde::Serialize;
 use serde_json::json;
 
+pub(crate) use check::damaged;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use files::fail_next_rebuild_swap_for_test;
+pub use store::rebuild_project;
+
 use crate::open::OpenOptions;
-use crate::project_file::{Genesis, ProjectFile};
+use crate::project_file::{Genesis, ProjectFile, genesis_hash, genesis_of};
 use crate::storage_kind::StorageKind;
 use crate::verify::VerifyReport;
-use crate::{Head, MAIN, ServerIdentity, Store, StoreError, copies, db, export, fsio, history};
+use crate::{Head, MAIN, ServerIdentity, Store, StoreError, copies, db, dblock, export, history};
+
+/// How long an open's automatic rebuild waits for another store to let go of the database.
+const OPEN_WAITS: Duration = Duration::from_secs(30);
 
 /// What a rebuild did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -65,17 +88,27 @@ use crate::{Head, MAIN, ServerIdentity, Store, StoreError, copies, db, export, f
 pub struct RebuildReport {
     /// `missing`, `corrupt` or `manual`.
     pub reason: String,
-    /// What `quick_check` reported (`corrupt`).
+    /// What made the old database count as damaged (`corrupt`).
     pub problem: Option<String>,
     /// Records in the new database.
     pub records: u64,
-    /// Rows salvaged from the old database into quarantine: its unexported records
-    /// (`SALVAGED`) and its own quarantine rows.
+    /// Rows salvaged into quarantine: records the new database lacks (`SALVAGED`,
+    /// `MISSING_FROM_FOLDER`) and the old databases' own quarantine rows.
     pub salvaged: u32,
+    /// Of those, exported records the folder no longer yields (`MISSING_FROM_FOLDER`).
+    pub missing_from_folder: u32,
+    /// The head of `main` in the new database.
+    pub rebuilt_through: u64,
+    /// Everything in the old databases could be read.
+    pub salvage_complete: bool,
+    /// What could not be read.
+    pub salvage_errors: Vec<String>,
     /// The seq of the folder snapshot the rebuild was seeded from.
     pub seeded_from_snapshot: Option<u64>,
     /// Where the old database was kept (`project.fdb.corrupt-<ts>`).
     pub corrupt_copy: Option<PathBuf>,
+    /// Earlier damaged copies salvaged too.
+    pub salvaged_copies: Vec<String>,
     /// The project file's genesis does not describe the old database's rev 0 (that rev 0
     /// was used).
     pub genesis_mismatch: bool,
@@ -91,6 +124,16 @@ pub(crate) enum Why {
     Missing,
     Corrupt(String),
     Manual,
+}
+
+impl Why {
+    fn name(&self) -> &'static str {
+        match self {
+            Why::Missing => "missing",
+            Why::Corrupt(_) => "corrupt",
+            Why::Manual => "manual",
+        }
+    }
 }
 
 /// What a rebuild works from.
@@ -119,93 +162,6 @@ fn missing(file: &ProjectFile, db_path: &Path) -> StoreError {
     .into()
 }
 
-/// `Some(problem)` when `PRAGMA quick_check` fails on the database at `path` (or SQLite
-/// reports it corrupt while checking); `None` when it passes.
-pub(crate) fn quick_check(path: &Path) -> Result<Option<String>, StoreError> {
-    let flags =
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let checked = Connection::open_with_flags(path, flags).and_then(|c| {
-        c.busy_timeout(std::time::Duration::from_secs(5))?;
-        let mut stmt = c.prepare("PRAGMA quick_check(20)")?;
-        let rows: Vec<String> = stmt
-            .query_map([], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
-        Ok(rows)
-    });
-    match checked {
-        Ok(rows) if rows == ["ok"] => Ok(None),
-        Ok(rows) => Ok(Some(rows.join("; "))),
-        Err(e) if is_corruption(&e) => Ok(Some(e.to_string())),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// SQLite says the file is damaged.
-pub(crate) fn is_corruption(e: &rusqlite::Error) -> bool {
-    matches!(e, rusqlite::Error::SqliteFailure(f, _)
-        if matches!(f.code, ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase))
-}
-
-/// Rebuilds the database at `plan.db_path` (module docs). `None`: another open rebuilt it
-/// meanwhile, and that database is used.
-pub(crate) fn rebuild(plan: &Plan, why: Why) -> Result<Option<RebuildReport>, StoreError> {
-    let dir = plan.db_path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).map_err(StoreError::io(dir))?;
-    let lock_path = dir.join("rebuild.lock");
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(StoreError::io(&lock_path))?;
-    lock.lock().map_err(StoreError::io(&lock_path))?;
-    let old = match &why {
-        Why::Missing if plan.db_path.exists() => return Ok(None),
-        Why::Missing => None,
-        Why::Corrupt(_) if quick_check(plan.db_path)?.is_none() => return Ok(None),
-        Why::Corrupt(_) | Why::Manual => Some(plan.db_path),
-    };
-    let old_rev0 = old.and_then(|p| salvage::rev0(p, &plan.file.id));
-    let rev0 = match (&old_rev0, &plan.file.genesis) {
-        (Some(p), _) => p.clone(),
-        (None, Some(g)) => new_project(plan.file.id.clone(), g.name.clone(), g.rate)?,
-        (None, None) if old.is_none() => return Err(missing(plan.file, plan.db_path)),
-        (None, None) => return Err(corrupt_unrecoverable(plan, &why)),
-    };
-    let genesis_mismatch = match (&old_rev0, &plan.file.genesis) {
-        (Some(p), Some(g)) => new_project(plan.file.id.clone(), g.name.clone(), g.rate)
-            .map_or(true, |fresh| fresh != *p),
-        _ => false,
-    };
-    let ulid = ulid::Ulid::new().to_string().to_ascii_lowercase();
-    let tmp = dir.join(format!("project.fdb.rebuild-{ulid}"));
-    let result = build(plan, &tmp, rev0, old).and_then(|mut report| {
-        report.reason = match &why {
-            Why::Missing => "missing",
-            Why::Corrupt(_) => "corrupt",
-            Why::Manual => "manual",
-        }
-        .to_string();
-        report.problem = match &why {
-            Why::Corrupt(p) => Some(p.clone()),
-            _ => None,
-        };
-        report.genesis_mismatch = genesis_mismatch;
-        report.corrupt_copy = swap(plan.db_path, &tmp, old.is_some())?;
-        Ok(report)
-    });
-    match result {
-        Ok(r) => Ok(Some(r)),
-        Err(e) => {
-            for ext in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(format!("{}{ext}", tmp.display()));
-            }
-            Err(e)
-        }
-    }
-}
-
 fn corrupt_unrecoverable(plan: &Plan, why: &Why) -> StoreError {
     let problem = match why {
         Why::Corrupt(p) => p.clone(),
@@ -223,13 +179,161 @@ fn corrupt_unrecoverable(plan: &Plan, why: &Why) -> StoreError {
     .into()
 }
 
-/// Steps 3–5 of the module docs, into `tmp`.
+/// The `genesisHash`es of the folder's segments that are not `expected` (step 2).
+fn foreign_genesis(project_dir: &Path, expected: &str) -> Vec<String> {
+    let mut found: Vec<String> = crate::scan::scan(project_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|e| match e {
+            crate::scan::Entry::Segment { seg, .. } if seg.header.genesis_hash != expected => {
+                Some(seg.header.genesis_hash.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Rebuilds the database at `plan.db_path` (module docs). `held`: the exclusive `db.lock`,
+/// when the caller already took it. `None`: another open rebuilt it meanwhile, and that
+/// database is used.
+pub(crate) fn rebuild(
+    plan: &Plan,
+    why: Why,
+    held: Option<std::fs::File>,
+) -> Result<Option<RebuildReport>, StoreError> {
+    let dir = plan.db_path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(StoreError::io(dir))?;
+    let _lock = match held {
+        Some(l) => l,
+        None => match why {
+            Why::Manual => dblock::exclusive_now(dir)?,
+            Why::Missing => {
+                match dblock::exclusive_within(dir, OPEN_WAITS, || plan.db_path.exists())? {
+                    Some(l) => l,
+                    None => return Ok(None),
+                }
+            }
+            Why::Corrupt(_) => dblock::exclusive_within(dir, OPEN_WAITS, || false)?
+                .expect("only `done` gives None"),
+        },
+    };
+    let old = match &why {
+        Why::Missing if plan.db_path.exists() => return Ok(None),
+        Why::Missing => None,
+        Why::Corrupt(_) if damaged(plan.db_path)?.is_none() => return Ok(None),
+        Why::Corrupt(_) | Why::Manual => Some(plan.db_path),
+    };
+    let old_rev0 = old.and_then(|p| salvage::rev0(p, &plan.file.id));
+    let rev0 = match (&old_rev0, &plan.file.genesis) {
+        (Some(p), _) => p.clone(),
+        (None, Some(g)) => new_project(plan.file.id.clone(), g.name.clone(), g.rate)?,
+        (None, None) if old.is_none() => return Err(missing(plan.file, plan.db_path)),
+        (None, None) => return Err(corrupt_unrecoverable(plan, &why)),
+    };
+    let expected = genesis_hash(&genesis_of(&rev0));
+    let foreign = foreign_genesis(plan.project_dir, &expected);
+    if !foreign.is_empty() {
+        let g = genesis_of(&rev0);
+        return Err(CoreError::new(
+            "GENESIS_MISMATCH",
+            "the project folder's history was written under another genesis than the one this rebuild would start from",
+        )
+        .with_details(json!({
+            "expected": expected, "found": foreign,
+            "genesis": { "name": g.name, "rate": g.rate.to_string() },
+            "from": if old_rev0.is_some() { "database" } else { "projectFile" },
+        }))
+        .with_fix("restore the genesis in finisher.project.json (name and rate at creation) to the one the project was created with, then retry")
+        .into());
+    }
+    let genesis_mismatch = match (&old_rev0, &plan.file.genesis) {
+        (Some(p), Some(g)) => genesis_of(p) != *g,
+        _ => false,
+    };
+    let ulid = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let tmp = dir.join(format!("project.fdb.rebuild-{ulid}"));
+    let kept = old.map(|_| files::corrupt_name(dir));
+    // Salvage sources: the old database, kept copies it has not salvaged, unfinished builds.
+    let listed = old.map(salvage::salvaged_from).unwrap_or_default();
+    let copies: Vec<PathBuf> = files::corrupt_copies(dir)
+        .into_iter()
+        .filter(|c| {
+            let name = c.file_name().map(|n| n.to_string_lossy().into_owned());
+            !name.is_some_and(|n| listed.contains(&n))
+        })
+        .collect();
+    let stale = files::stale_builds(dir, &tmp);
+    let result = (|| {
+        let (mut report, exported_through) = build(
+            plan,
+            &tmp,
+            rev0,
+            old,
+            &copies,
+            &stale,
+            kept.as_deref(),
+            &listed,
+        )?;
+        report.reason = why.name().to_string();
+        report.problem = match &why {
+            Why::Corrupt(p) => Some(p.clone()),
+            _ => None,
+        };
+        report.genesis_mismatch = genesis_mismatch;
+        if matches!(why, Why::Manual) && report.missing_from_folder > 0 {
+            return Err(would_lose(&report, exported_through));
+        }
+        let moved = files::swap(plan.db_path, &tmp, kept.as_deref())?;
+        report.corrupt_copy = kept.filter(|_| moved);
+        Ok(report)
+    })();
+    match result {
+        Ok(r) => {
+            for s in &stale {
+                files::remove_with_sides(s);
+            }
+            files::prune_corrupt(dir, r.corrupt_copy.as_deref());
+            Ok(Some(r))
+        }
+        Err(e) => {
+            files::remove_with_sides(&tmp);
+            Err(e)
+        }
+    }
+}
+
+fn would_lose(r: &RebuildReport, exported_through: u64) -> StoreError {
+    CoreError::new(
+        "REBUILD_WOULD_LOSE",
+        format!(
+            "the project folder no longer holds {} record(s) this database exported: a rebuild from it would lose them",
+            r.missing_from_folder
+        ),
+    )
+    .with_details(json!({
+        "missing": r.missing_from_folder,
+        "exportedThrough": exported_through,
+        "rebuiltThrough": r.rebuilt_through,
+    }))
+    .with_fix("restore the missing segment files under .finisher/segments (fin project verify lists them), or keep this database: it is intact")
+    .into()
+}
+
+/// Steps 3, 4 and 6 of the module docs, into `tmp`.
+#[allow(clippy::too_many_arguments)]
 fn build(
     plan: &Plan,
     tmp: &Path,
     rev0: Project,
     old: Option<&Path>,
-) -> Result<RebuildReport, StoreError> {
+    copies: &[PathBuf],
+    stale: &[PathBuf],
+    kept: Option<&Path>,
+    listed: &[String],
+) -> Result<(RebuildReport, u64), StoreError> {
     let mut conn = db::connect(tmp, true)?;
     db::init(&mut conn, &rev0, MAIN)?;
     copies::record(&conn, plan.project_dir)?;
@@ -253,151 +357,83 @@ fn build(
         plan.opts,
     );
     store.export.lease = export::StoreLease::NotHeld;
-    store.import.seeds = seeds::read(plan.project_dir, &plan.file.id);
+    let expected = db::meta(&store.conn, "genesisHash")?.unwrap_or_default();
+    store.import.seeds = seeds::read(plan.project_dir, &plan.file.id, &expected);
     let imported = store.import()?;
-    let salvaged = match old {
-        Some(old) => salvage::run(old, &store.conn, crate::commit::now_ms())?,
-        None => 0,
+    let now = crate::commit::now_ms();
+    let mut report = RebuildReport {
+        reason: String::new(),
+        problem: None,
+        records: 0,
+        salvaged: 0,
+        missing_from_folder: 0,
+        rebuilt_through: 0,
+        salvage_complete: true,
+        salvage_errors: vec![],
+        seeded_from_snapshot: store.import.seeded,
+        corrupt_copy: None,
+        salvaged_copies: vec![],
+        genesis_mismatch: false,
+        import_error: imported.error,
+        verify: VerifyReport {
+            ok: true,
+            checks: vec![],
+        },
     };
+    // Kept copies the new database will list as salvaged: those listed before that still
+    // exist, those salvaged now, and the old database once it is kept.
+    let mut salvaged_from: Vec<String> = listed.to_vec();
+    let mut exported_through = 0;
+    let sources = old
+        .into_iter()
+        .map(|p| (p.to_path_buf(), true))
+        .chain(copies.iter().map(|p| (p.clone(), true)))
+        .chain(stale.iter().map(|p| (p.clone(), false)));
+    for (src, counted) in sources {
+        let out = salvage::run(&src, &store.conn, now)?;
+        report.salvaged += out.added;
+        if Some(src.as_path()) == old {
+            report.missing_from_folder += out.lost_exported;
+            exported_through = out.exported_through;
+        }
+        if counted {
+            report.salvage_errors.extend(out.errors);
+        }
+        if copies.contains(&src)
+            && let Some(n) = src.file_name()
+        {
+            let n = n.to_string_lossy().into_owned();
+            report.salvaged_copies.push(n.clone());
+            salvaged_from.push(n);
+        }
+    }
+    report.salvage_complete = report.salvage_errors.is_empty();
+    if let Some(k) = kept.and_then(Path::file_name) {
+        salvaged_from.push(k.to_string_lossy().into_owned());
+    }
+    salvaged_from.sort();
+    salvaged_from.dedup();
+    db::set_meta(
+        &store.conn,
+        "salvagedFrom",
+        &serde_json::to_string(&salvaged_from)?,
+    )?;
     let records: i64 = store
         .conn
         .query_row("SELECT COUNT(*) FROM txs", [], |r| r.get(0))?;
-    let verify = crate::verify::run(&crate::verify::Subject {
+    report.records = db::to_u64(records)?;
+    report.rebuilt_through = db::latest_rev(&store.conn, MAIN)?.unwrap_or(0);
+    report.verify = crate::verify::run(&crate::verify::Subject {
         conn: &store.conn,
         project_dir: plan.project_dir,
         project_id: &plan.file.id,
         kind: plan.kind,
         live: None,
+        damage: None,
     });
-    let seeded = store.import.seeded;
     store
         .conn
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
     drop(store);
-    Ok(RebuildReport {
-        reason: String::new(),
-        problem: None,
-        records: db::to_u64(records)?,
-        salvaged,
-        seeded_from_snapshot: seeded,
-        corrupt_copy: None,
-        genesis_mismatch: false,
-        import_error: imported.error,
-        verify,
-    })
-}
-
-/// Step 6 of the module docs. Returns where the old database went.
-fn swap(db_path: &Path, tmp: &Path, had_old: bool) -> Result<Option<PathBuf>, StoreError> {
-    let dir = db_path.parent().unwrap_or(Path::new("."));
-    let side = |p: &Path, ext: &str| PathBuf::from(format!("{}{ext}", p.display()));
-    let mut kept = None;
-    if had_old {
-        let mut ms = crate::commit::now_ms();
-        let corrupt = loop {
-            let c = dir.join(format!(
-                "project.fdb.corrupt-{}",
-                crate::backup::timestamp(ms)
-            ));
-            if !c.exists() && !side(&c, "-wal").exists() {
-                break c;
-            }
-            ms += 1;
-        };
-        match fsio::rename_noreplace(db_path, &corrupt) {
-            Ok(()) => kept = Some(corrupt.clone()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(StoreError::io(db_path)(e)),
-        }
-        for ext in ["-wal", "-shm"] {
-            match fsio::rename_noreplace(&side(db_path, ext), &side(&corrupt, ext)) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(StoreError::io(&side(db_path, ext))(e)),
-            }
-        }
-    } else {
-        for ext in ["-wal", "-shm"] {
-            let s = side(db_path, ext);
-            match std::fs::remove_file(&s) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(StoreError::io(&s)(e)),
-            }
-        }
-    }
-    match fsio::rename_noreplace(tmp, db_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Only an open that does not take `rebuild.lock` could have made it: theirs wins.
-            for ext in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(side(tmp, ext));
-            }
-            return Ok(kept);
-        }
-        Err(e) => return Err(StoreError::io(db_path)(e)),
-    }
-    fsio::sync_dir(dir).map_err(StoreError::io(dir))?;
-    Ok(kept)
-}
-
-impl Store {
-    /// Rebuilds this project's database from the folder (`fin project rebuild`; module
-    /// docs). When this store holds the lease and may write, what is not exported yet is
-    /// exported first, so only what cannot be exported is salvaged. The old database is kept
-    /// as `project.fdb.corrupt-<ts>`. Afterwards an import pass runs, as at open; callers
-    /// holding a generation of the old database are refused (`HISTORY_REWOUND`, `REBUILT`).
-    ///
-    /// This store's connection is closed for the swap: other connections to the old file (a
-    /// second `Store` on it) keep using the old file.
-    pub fn rebuild(&mut self) -> Result<RebuildReport, StoreError> {
-        let now = self.ctl.now();
-        export::export_pending(self, now, true)?;
-        let file = crate::project_file::read_project_file(&self.project_dir)?;
-        let identity = ServerIdentity {
-            id: self.server_id.clone(),
-            renewed: None,
-            shortcut_ok: false,
-        };
-        let opts = OpenOptions::default();
-        let plan = Plan {
-            db_path: &self.db_path.clone(),
-            project_dir: &self.project_dir.clone(),
-            file: &file,
-            identity: &identity,
-            kind: self.storage_kind(),
-            opts: &opts,
-        };
-        // Close our connection: the file is renamed (Windows cannot rename it while open).
-        let conn = std::mem::replace(&mut self.conn, Connection::open_in_memory()?);
-        drop(conn);
-        let rebuilt = rebuild(&plan, Why::Manual);
-        self.conn = db::connect(&self.db_path, false)?;
-        let report = rebuilt?.ok_or_else(|| {
-            StoreError::from(CoreError::new("DB_ERROR", "the rebuild did not run"))
-        })?;
-        self.adopt_rebuilt(Some(report.clone()))?;
-        self.import_pass()?;
-        Ok(report)
-    }
-
-    /// The rebuild that this store's open (or [`Store::rebuild`]) ran, if any.
-    pub fn last_rebuild(&self) -> Option<&RebuildReport> {
-        self.rebuilt.as_ref()
-    }
-
-    /// After the database file was replaced: forget what was cached about the old one.
-    fn adopt_rebuilt(&mut self, report: Option<RebuildReport>) -> Result<(), StoreError> {
-        history::note_server_id(&self.conn, &self.server_id)?;
-        history::ensure_incarnation(&self.conn)?;
-        let kind = self.import.kind;
-        self.import = crate::import::ImportState::with_kind(kind);
-        let heads = self.heads.get_mut();
-        heads.clear();
-        for branch in db::branches(&self.conn)? {
-            crate::refresh(&self.conn, heads, &branch)?;
-        }
-        self.rebuilt = report;
-        Ok(())
-    }
+    Ok((report, exported_through))
 }

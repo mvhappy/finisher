@@ -2,9 +2,8 @@
 //! scan of `.finisher/`, and per branch the chain a fresh reader resolves from it.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -16,13 +15,25 @@ use crate::scan::{Entry, NotArrivedWhy};
 use crate::segment::Segment;
 use crate::{MAIN, StoreError};
 
-/// A damaged file unchanged this long is corrupt, not arriving.
-const SETTLED: Duration = Duration::from_secs(60);
 const LIST: usize = 20;
 
 pub(super) struct Folder {
     entries: Result<Vec<Entry>, String>,
     branches: Vec<BranchChain>,
+    /// Damaged files seen unchanged for `super::SETTLED`.
+    settled: HashSet<PathBuf>,
+    /// Files under `segments/` that are still arriving or were not read (placeholders,
+    /// incomplete or damaged files not settled): what lies beyond the chain cannot be told.
+    arriving: bool,
+}
+
+/// How many of the folder's segments name another genesis than `expected`.
+pub(super) fn genesis_disagree(project_dir: &Path, expected: &str) -> usize {
+    crate::scan::scan(project_dir)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| matches!(e, Entry::Segment { seg, .. } if seg.header.genesis_hash != expected))
+        .count()
 }
 
 struct BranchChain {
@@ -46,16 +57,55 @@ impl Folder {
     pub(super) fn read(s: &Subject) -> Folder {
         let entries = crate::scan::scan(s.project_dir).map_err(|e| e.to_string());
         let mut by_branch: HashMap<String, Vec<SegRef>> = HashMap::new();
+        let mut damaged = vec![];
+        let mut arriving = false;
+        let segments_root = s.project_dir.join(".finisher").join("segments");
         if let Ok(es) = &entries {
             for e in es {
-                if let Entry::Segment { branch, seg, .. } = e {
-                    by_branch
+                match e {
+                    Entry::Segment { branch, seg, .. } => by_branch
                         .entry(branch.clone())
                         .or_default()
-                        .push(SegRef::new(seg.clone()));
+                        .push(SegRef::new(seg.clone())),
+                    Entry::Damaged {
+                        path,
+                        len,
+                        modified,
+                        ..
+                    } => damaged.push((path.clone(), *len, *modified)),
+                    Entry::NotArrived {
+                        path,
+                        why: NotArrivedWhy::Incomplete,
+                    } => {
+                        let m = std::fs::metadata(path).ok();
+                        damaged.push((
+                            path.clone(),
+                            m.as_ref().map_or(0, |m| m.len()),
+                            m.and_then(|m| m.modified().ok()),
+                        ));
+                    }
+                    Entry::NotArrived {
+                        path,
+                        why: NotArrivedWhy::Placeholder,
+                    } if path.starts_with(&segments_root) => arriving = true,
+                    _ => {}
                 }
             }
         }
+        let mut settled = HashSet::new();
+        if let Some((seen, now)) = s.damage {
+            let mut seen = seen.borrow_mut();
+            seen.observe(&damaged, now);
+            settled.extend(
+                damaged
+                    .iter()
+                    .filter(|(p, ..)| seen.settled(p, now))
+                    .map(|(p, ..)| p.clone()),
+            );
+        }
+        arriving |= damaged
+            .iter()
+            .any(|(p, ..)| p.starts_with(&segments_root) && !settled.contains(p));
         let mut names: BTreeSet<String> = by_branch.keys().cloned().collect();
         names.extend(db::branches(s.conn).unwrap_or_default());
         let branches = names
@@ -85,7 +135,12 @@ impl Folder {
                 }
             })
             .collect();
-        Folder { entries, branches }
+        Folder {
+            entries,
+            branches,
+            settled,
+            arriving,
+        }
     }
 
     fn listed(&self) -> Result<&[Entry], StoreError> {
@@ -98,11 +153,7 @@ impl Folder {
     pub(super) fn checksums(&self, s: &Subject) -> Result<(bool, Value), StoreError> {
         let entries = self.listed()?;
         let dir = s.project_dir;
-        let now = SystemTime::now();
-        let settled = |m: Option<SystemTime>| {
-            m.and_then(|m| now.duration_since(m).ok())
-                .is_some_and(|age| age >= SETTLED)
-        };
+        let settled = |p: &Path| self.settled.contains(p);
         let kind_of = |p: &Path| {
             if p.extension().is_some_and(|e| e == "fsnap") {
                 "snapshot"
@@ -114,6 +165,23 @@ impl Folder {
         let (mut corrupt, mut unsettled, mut unreadable, mut newer, mut placeholders) =
             (vec![], vec![], vec![], vec![], vec![]);
         let mut present: HashSet<String> = HashSet::new();
+        // Every canonical name listed, whatever its state (a placeholder is there).
+        let mut listed_names: HashSet<String> = HashSet::new();
+        for e in entries {
+            let path = match e {
+                Entry::Segment { name, .. } => {
+                    listed_names.insert(name.to_string());
+                    continue;
+                }
+                Entry::NotArrived { path, .. }
+                | Entry::Damaged { path, .. }
+                | Entry::Unreadable { path, .. } => path,
+                _ => continue,
+            };
+            if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+                listed_names.insert(n.to_string());
+            }
+        }
         let mut replaced: HashSet<String> = HashSet::new();
         for e in entries {
             match e {
@@ -123,15 +191,10 @@ impl Folder {
                     replaced.extend(seg.header.replaces.iter().cloned());
                 }
                 Entry::Snapshot { .. } => snapshots += 1,
-                Entry::Damaged {
-                    path,
-                    reason,
-                    modified,
-                    ..
-                } => {
+                Entry::Damaged { path, reason, .. } => {
                     let v = json!({ "code": "SEGMENT_CORRUPT", "path": rel(dir, path),
                                     "kind": kind_of(path), "reason": reason });
-                    if settled(*modified) {
+                    if settled(path) {
                         corrupt.push(v);
                     } else {
                         unsettled.push(v);
@@ -141,10 +204,9 @@ impl Folder {
                     path,
                     why: NotArrivedWhy::Incomplete,
                 } => {
-                    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
                     let v = json!({ "code": "SEGMENT_CORRUPT", "path": rel(dir, path),
                                     "kind": kind_of(path), "reason": "incomplete" });
-                    if settled(modified) {
+                    if settled(path) {
                         corrupt.push(v);
                     } else {
                         unsettled.push(v);
@@ -171,7 +233,10 @@ impl Folder {
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
             let (hash, name) = row?;
-            if !present.contains(&hash) && !replaced.contains(&hash) {
+            if !present.contains(&hash)
+                && !replaced.contains(&hash)
+                && !listed_names.contains(&name)
+            {
                 missing.push(json!({ "hash": hash, "name": name }));
             }
         }
@@ -181,7 +246,7 @@ impl Folder {
             json!({
                 "segments": segments, "snapshots": snapshots, "corrupt": corrupt,
                 "unsettled": unsettled, "unreadable": unreadable, "newer": newer,
-                "notHydrated": placeholders, "missing": missing,
+                "unchecked": placeholders, "missing": missing,
             }),
         ))
     }
@@ -197,6 +262,7 @@ impl Folder {
             }
         };
         let mut branches = vec![];
+        let mut unchecked: Vec<Value> = vec![];
         for b in &self.branches {
             let chain: HashMap<u64, &str> = b.chain.iter().map(|(s, h)| (*s, h.as_str())).collect();
             if let Some(f) = &b.res.fork {
@@ -204,10 +270,15 @@ impl Folder {
                                "reason": format!("{:?}", f.reason), "after": f.after }));
             }
             if !b.res.waiting.is_empty() {
-                report(
-                    json!({ "branch": b.branch, "problem": "waiting", "segments": b.res.waiting }),
-                );
+                let w =
+                    json!({ "branch": b.branch, "problem": "waiting", "segments": b.res.waiting });
+                if self.arriving {
+                    unchecked.push(w);
+                } else {
+                    report(w);
+                }
             }
+            let chain_end = b.chain.last().map_or(0, |c| c.0);
             let mut stmt = s.conn.prepare(
                 "SELECT seq, tx_id, tx_hash, parent_hash, exported, record_bytes FROM txs
                  WHERE branch = ?1 ORDER BY seq",
@@ -252,8 +323,14 @@ impl Folder {
                         report(at("an exported row follows an unexported one"));
                     }
                     exported_through = seq;
-                    if chain.get(&seq) != Some(&tx_hash.as_str()) {
-                        report(at("an exported row is not on the folder's chain"));
+                    match chain.get(&seq) {
+                        Some(h) if *h == tx_hash => {}
+                        None if self.arriving && seq > chain_end => {
+                            if unchecked.len() < LIST {
+                                unchecked.push(at("beyond the folder's chain while files arrive"));
+                            }
+                        }
+                        _ => report(at("an exported row is not on the folder's chain")),
                     }
                 } else {
                     unexported_seen = true;
@@ -270,7 +347,8 @@ impl Folder {
         }
         Ok((
             count == 0,
-            json!({ "branches": branches, "problems": problems, "problemCount": count }),
+            json!({ "branches": branches, "problems": problems, "problemCount": count,
+                    "unchecked": unchecked }),
         ))
     }
 

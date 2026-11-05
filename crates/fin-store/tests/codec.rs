@@ -23,6 +23,7 @@ fn header() -> Header {
         prev_segment_hash: Some(format!("blake3:{}", "ab".repeat(32))),
         op_schema_versions: [1, 2],
         created_at: 1_793_787_330_042,
+        genesis_hash: format!("blake3:{}", "0".repeat(64)),
         pack: false,
         replaces: vec![],
     }
@@ -210,6 +211,7 @@ fn snap_header() -> SnapHeader {
         model_schema_version: fin_core::SCHEMA_VERSION,
         writer_id: "01JBZ8K3X4Y5Z6A7B8C9D0E1F3".into(),
         epoch: 3,
+        genesis_hash: format!("blake3:{}", "0".repeat(64)),
     }
 }
 

@@ -6,8 +6,10 @@
 //! 2. No database: rebuild it from the folder ([`rebuild`]: the file's
 //!    [`Genesis`](crate::Genesis) at rev 0, then the whole folder, seeded from a snapshot on
 //!    the chain when there is one). Without a genesis: `PROJECT_DB_MISSING`.
-//! 3. Check the database read-only (`DB_TOO_NEW`, `NOT_A_PROJECT_DB`), then `PRAGMA
-//!    quick_check`: a damaged database is rebuilt from the folder, its readable unexported
+//! 3. Take the shared `db.lock` (`crate::dblock`), then check the database read-only:
+//!    refused when it is someone else's or newer (`NOT_A_PROJECT_DB`, `DB_TOO_NEW`); a bad
+//!    header, an unreadable schema or `meta` of ours, or a failing `PRAGMA quick_check`
+//!    means damage (`rebuild::damaged`): a damaged database is rebuilt from the folder, its readable unexported
 //!    records salvaged into quarantine, and kept as `project.fdb.corrupt-<ts>` ([`rebuild`];
 //!    status warns `DB_REBUILT`). Then `PROJECT_DB_MISMATCH`, and refuse a copy of the project folder (`PROJECT_COPY`) or a folder whose original
 //!    cannot be reached to tell (`PROJECT_ORIGINAL_UNREACHABLE`; [`copies`]).
@@ -130,6 +132,7 @@ impl Store {
             )
             .into());
         }
+        let db_lock = crate::dblock::shared(db_dir)?;
         let mut conn = db::connect(&db_path, true)?;
         db::init(&mut conn, &project, MAIN)?;
         copies::record(&conn, project_dir)?;
@@ -160,6 +163,7 @@ impl Store {
             (kind, warning),
             &opts,
         );
+        store.db_lock = Some(db_lock);
         store.start(None)?;
         Ok(store)
     }
@@ -193,14 +197,17 @@ impl Store {
             kind: kind.0,
             opts: &opts,
         };
+        let data_dir = db_path.parent().unwrap_or(server_data);
         let mut rebuilt = None;
         if !db_path.is_file() {
             rebuild::genesis(&file, &db_path)?;
-            rebuilt = rebuild::rebuild(&plan, rebuild::Why::Missing)?;
+            rebuilt = rebuild::rebuild(&plan, rebuild::Why::Missing, None)?;
         }
-        migrations::check(&db_path)?;
-        if let Some(problem) = rebuild::quick_check(&db_path)? {
-            rebuilt = rebuild::rebuild(&plan, rebuild::Why::Corrupt(problem))?.or(rebuilt);
+        let mut db_lock = crate::dblock::shared(data_dir)?;
+        if let Some(problem) = rebuild::damaged(&db_path)? {
+            drop(db_lock);
+            rebuilt = rebuild::rebuild(&plan, rebuild::Why::Corrupt(problem), None)?.or(rebuilt);
+            db_lock = crate::dblock::shared(data_dir)?;
             migrations::check(&db_path)?;
         }
         let mut conn = db::connect(&db_path, false)?;
@@ -230,6 +237,7 @@ impl Store {
         );
         store.file_newer = file.is_newer();
         store.rebuilt = rebuilt;
+        store.db_lock = Some(db_lock);
         store.start(Some(file))?;
         Ok(store)
     }
@@ -271,6 +279,8 @@ impl Store {
             heads: RefCell::new(heads),
             rebuilt: None,
             daily: tick::DailyState::default(),
+            db_lock: None,
+            damage: RefCell::new(crate::verify::DamageSeen::default()),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }
@@ -285,6 +295,7 @@ impl Store {
         let _ = fs::create_dir_all(&dot);
         crate::history::note_server_id(&self.conn, &self.server_id)?;
         crate::history::ensure_incarnation(&self.conn)?;
+        crate::project_file::db_genesis_hash(&self.conn)?;
         self.try_acquire();
         self.import_pass()?;
         if let Some(file) = file

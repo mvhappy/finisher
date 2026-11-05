@@ -41,6 +41,22 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<bool, StoreErr
             )
         })?;
         conn.execute("VACUUM INTO ?1", params![target])?;
+        // A backup restored by hand is another database than the live one: callers holding
+        // the live one's generations must not be accepted by it.
+        {
+            let copy = Connection::open(&tmp)?;
+            let has_meta: i64 = copy.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has_meta > 0 {
+                copy.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'incarnation'",
+                    params![crate::history::new_incarnation()],
+                )?;
+            }
+        }
         // Windows' FlushFileBuffers needs a handle with write access.
         File::options()
             .write(true)
@@ -81,7 +97,19 @@ pub(crate) fn daily(
     if !backup_to(conn, &dest)? {
         return Ok(None);
     }
-    let _ = prune(&dir, &name, KEEP_DAILY, daily_date);
+    // A name dated after tomorrow (the clock was wrong when it was taken) must not hold a
+    // slot for ever: it sorts as the oldest.
+    let (ty, tm, td) = crate::localdate::local_ymd(now_ms + 86_400_000);
+    let tomorrow = format!("{ty:04}-{tm:02}-{td:02}");
+    let _ = prune(&dir, &name, KEEP_DAILY, &|n: &str| {
+        daily_date(n).map(|d| {
+            if d > tomorrow.as_str() {
+                format!("0000-00-00 {d}")
+            } else {
+                d.to_string()
+            }
+        })
+    });
     Ok(Some(dest))
 }
 
@@ -119,7 +147,9 @@ pub(crate) fn pre_migration(
         ms += 1;
     };
     backup_to(conn, &dest)?;
-    let _ = prune(&dir, &name, KEEP_PRE_MIGRATION, pre_migration_ts);
+    let _ = prune(&dir, &name, KEEP_PRE_MIGRATION, &|n: &str| {
+        pre_migration_ts(n).map(str::to_string)
+    });
     Ok(())
 }
 
@@ -169,14 +199,14 @@ fn prune(
     dir: &Path,
     new: &str,
     keep: usize,
-    key: fn(&str) -> Option<&str>,
+    key: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), StoreError> {
     let mut others: Vec<(String, String)> = fs::read_dir(dir)
         .map_err(StoreError::io(dir))?
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|name| name != new)
-        .filter_map(|name| Some((key(&name)?.to_string(), name)))
+        .filter_map(|name| Some((key(&name)?, name)))
         .collect();
     others.sort();
     let excess = others.len().saturating_sub(keep.saturating_sub(1));
@@ -285,7 +315,7 @@ mod tests {
             dir.path(),
             "pre-migrate-0-1-20261105T000000000Z.fdb",
             3,
-            pre_migration_ts,
+            &|n: &str| pre_migration_ts(n).map(str::to_string),
         )
         .unwrap();
         let mut left: Vec<_> = fs::read_dir(dir.path())

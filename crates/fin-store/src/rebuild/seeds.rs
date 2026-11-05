@@ -1,6 +1,7 @@
 //! The folder snapshots a rebuild offers as seeds (`.finisher/snapshots/<branch>/*.fsnap`,
 //! spec §3.4). Only files that verify, whose name, directory and header agree, that belong
-//! to this project and whose state upcasts are offered; whether one seeds is decided against
+//! to this project, name the genesis the rebuild starts from (`genesisHash`) and whose
+//! state upcasts are offered; whether one seeds is decided against
 //! the resolved chain (`import::apply`, step 3).
 
 use std::fs;
@@ -11,7 +12,7 @@ use crate::names::{SnapName, hash12};
 use crate::scan::SNAPSHOT_CAP;
 use crate::snapfile;
 
-pub(super) fn read(project_dir: &Path, project_id: &str) -> Vec<Seed> {
+pub(super) fn read(project_dir: &Path, project_id: &str, genesis_hash: &str) -> Vec<Seed> {
     let root = project_dir.join(".finisher").join("snapshots");
     let Ok(dirs) = fs::read_dir(&root) else {
         return vec![];
@@ -46,6 +47,7 @@ pub(super) fn read(project_dir: &Path, project_id: &str) -> Vec<Seed> {
                 || h.seq != name.seq()
                 || hash12(&snap.hash) != Some(name.hash12())
                 || h.min_reader_version > snapfile::FORMAT_VERSION
+                || h.genesis_hash != genesis_hash
             {
                 continue;
             }

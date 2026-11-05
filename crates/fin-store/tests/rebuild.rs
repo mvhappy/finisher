@@ -5,7 +5,7 @@ mod integration_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use fin_core::{CoreError, Project, SCHEMA_VERSION, Tx};
 use fin_store::names::{SnapName, hash12};
@@ -93,6 +93,9 @@ fn write_snapshot(dir: &Path, project_id: &str, seq: u64, tx_hash: &str, project
         model_schema_version: project.schema_version,
         writer_id: "test".to_string(),
         epoch: 1,
+        genesis_hash: fin_store::project_file::genesis_hash(
+            &fin_store::read_project_file(dir).unwrap().genesis.unwrap(),
+        ),
     };
     let (bytes, hash) = snapfile::encode(&header, project);
     let name = SnapName::new(seq, hash12(&hash).unwrap()).unwrap();
@@ -405,10 +408,7 @@ fn verify_reports_each_check() {
     let s = check(&v, "segment_checksums");
     assert!(s.ok, "a file still changing may be arriving: {s:?}");
     assert_eq!(s.details["unsettled"].as_array().unwrap().len(), 1);
-    let f = fs::File::options().write(true).open(&bad).unwrap();
-    f.set_modified(SystemTime::now() - Duration::from_secs(61))
-        .unwrap();
-    drop(f);
+    e.clock.advance(Duration::from_secs(61));
     let v = a.verify();
     let s = check(&v, "segment_checksums");
     assert!(!s.ok);
@@ -509,7 +509,11 @@ fn manual_rebuild_flushes_first_and_keeps_the_old_database() {
     assert_eq!(report.records, 3);
     assert_eq!(a.snapshot(MAIN).unwrap(), before);
     let dir = a.db_path().parent().unwrap().to_path_buf();
-    assert_eq!(files_starting(&dir, "project.fdb.corrupt-").len(), 1);
+    let kept: Vec<String> = files_starting(&dir, "project.fdb.corrupt-")
+        .into_iter()
+        .filter(|n| !n.ends_with("-wal") && !n.ends_with("-shm"))
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
     assert!(files_starting(&dir, "project.fdb.rebuild-").is_empty());
     commit(&mut a, "t9", vec![asset("/m/t9.mov")]);
     assert_eq!(a.head(MAIN), 4);

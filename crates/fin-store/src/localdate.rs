@@ -9,7 +9,17 @@ pub(crate) fn local_ymd(ms: i64) -> (i64, i64, i64) {
 }
 
 #[cfg(unix)]
+unsafe extern "C" {
+    fn tzset();
+}
+
+#[cfg(unix)]
 fn local(ms: i64) -> Option<(i64, i64, i64)> {
+    // POSIX does not require `localtime_r` to read `TZ`; `tzset` does (once is enough: a
+    // zone change while running is picked up at the next start).
+    static TZ: std::sync::Once = std::sync::Once::new();
+    // SAFETY: `tzset` only initialises the C library's zone state.
+    TZ.call_once(|| unsafe { tzset() });
     // `time_t` is 32 bits on some targets.
     #[allow(clippy::useless_conversion)]
     let t: libc::time_t = ms.div_euclid(1000).try_into().ok()?;

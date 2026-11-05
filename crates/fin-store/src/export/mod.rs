@@ -419,6 +419,7 @@ fn prepare(
         Some((b, f, ms)) if b == branch && Some(*f) == rows.first().map(|r| r.seq) => *ms,
         _ => 0,
     };
+    let genesis_hash = crate::project_file::db_genesis_hash(&store.conn)?;
     let mut n = 0;
     let mut body = 0;
     for row in rows {
@@ -461,6 +462,7 @@ fn prepare(
                 versions.max().unwrap_or(0),
             ],
             created_at,
+            genesis_hash: genesis_hash.clone(),
             pack: false,
             replaces: Vec::new(),
         };

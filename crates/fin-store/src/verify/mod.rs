@@ -5,17 +5,23 @@
 //! - `integrity_check`: `PRAGMA integrity_check` of the database says `ok`.
 //! - `segment_checksums`: a fresh scan of `.finisher/` (every segment and snapshot is decoded
 //!   again: CRC-32C and BLAKE3 over all bytes before the trailer, and name, directory and
-//!   header agree). A canonically named file that does not verify, or stays incomplete, and
-//!   has not changed for 60 s is `SEGMENT_CORRUPT` (`details.corrupt`); younger ones may still
-//!   be arriving (`details.unsettled`, not a failure). Unreadable files fail; files needing a
-//!   newer Finisher are listed (`newer`). A `segments` row of the database whose file is gone
-//!   and that no present pack replaces fails (`missing`).
+//!   header agree). A canonically named file that does not verify, or stays incomplete, is
+//!   `SEGMENT_CORRUPT` (`details.corrupt`) once this store has seen it with the same length
+//!   and mtime for 60 s of its monotonic clock ([`DamageSeen`]: every import pass and every
+//!   verify observes); before that it may still be arriving (`details.unsettled`, not a
+//!   failure). Cloud placeholders are not read (`details.unchecked`, not a failure: verify
+//!   does not force a download). Unreadable files fail; files needing a newer Finisher are
+//!   listed (`newer`). A `segments` row of the database whose file is not listed at all (by
+//!   name) and that no present pack replaces fails (`missing`).
 //! - `chain_continuity`: per branch, the database's rows are dense from seq 1, each
 //!   `parent_hash` is the previous row's `tx_hash`, each `tx_hash` is the BLAKE3 of its
 //!   `record_bytes`, each record reads as that row (seq, txId, parentHash), and exported rows
 //!   are a prefix. The folder, resolved from scratch as a fresh reader would, must hold every
 //!   exported row at its seq with the same hash, with no fork and nothing waiting; a folder
-//!   ahead of the database (not imported yet) is reported, not a failure.
+//!   ahead of the database (not imported yet) is reported, not a failure. While files under
+//!   `segments/` are still arriving or unchecked (placeholders, unsettled damage), what lies
+//!   beyond the folder's chain cannot be told: such rows and `waiting` are listed
+//!   (`unchecked`), not failures; a different hash at a seq the chain does hold always fails.
 //! - `epoch_order`: along the chain resolved from scratch, each record's epoch, taken as the
 //!   lowest epoch of the present segments holding it (so an original wins over the pack that
 //!   replaces it), never decreases. Per segment labels, not per `txs.epoch` row: imported rows
@@ -29,16 +35,19 @@
 //!   stored diff wins until this check reports it. Diffs a seeded rebuild has not computed
 //!   yet are counted (`notStored`), not failures.
 //! - `genesis`: `new_project` of the project file's genesis equals the database's rev-0
-//!   snapshot (an edited `genesis.rate` would otherwise silently change a rebuild). A file
-//!   without a genesis is skipped.
+//!   snapshot, and every segment's `genesisHash` is the hash of that genesis
+//!   (`segmentsDisagree`): an edited `genesis.rate` would otherwise silently change a
+//!   rebuild. A file without a genesis checks the segments against the database's rev 0.
 //! - `record_size`: no stored record is larger than `segment::MAX_RECORD_BYTES` (only a
 //!   migrated sub-project 2 record can be; export stops at it, `RECORD_TOO_LARGE`).
 
 mod folder;
 mod replay;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use fin_core::{Project, new_project};
 use rusqlite::Connection;
@@ -65,6 +74,39 @@ pub struct VerifyReport {
     pub checks: Vec<Check>,
 }
 
+/// Damaged files under `.finisher/` and since when (this store's monotonic clock) each has
+/// looked the same (`len`, `mtime`). A file that changes starts again; one that is no longer
+/// damaged is forgotten.
+#[derive(Debug, Default)]
+pub(crate) struct DamageSeen {
+    files: HashMap<PathBuf, (u64, Option<SystemTime>, Instant)>,
+}
+
+/// How long a damaged file must look unchanged to be corrupt rather than arriving.
+pub(crate) const SETTLED: Duration = Duration::from_secs(60);
+
+impl DamageSeen {
+    /// Records one scan's damaged files (`(path, len, mtime)`) at `now`; forgets the others.
+    pub(crate) fn observe(&mut self, seen: &[(PathBuf, u64, Option<SystemTime>)], now: Instant) {
+        let mut next = HashMap::new();
+        for (path, len, mtime) in seen {
+            let since = match self.files.get(path) {
+                Some((l, m, since)) if l == len && m == mtime => *since,
+                _ => now,
+            };
+            next.insert(path.clone(), (*len, *mtime, since));
+        }
+        self.files = next;
+    }
+
+    /// Whether `path` has looked unchanged for [`SETTLED`] at `now`.
+    pub(crate) fn settled(&self, path: &Path, now: Instant) -> bool {
+        self.files
+            .get(path)
+            .is_some_and(|(_, _, since)| now.saturating_duration_since(*since) >= SETTLED)
+    }
+}
+
 /// What is verified.
 pub(crate) struct Subject<'a> {
     pub(crate) conn: &'a Connection,
@@ -74,6 +116,9 @@ pub(crate) struct Subject<'a> {
     /// The live heads `(rev, state)` per branch; `None` skips the replay checks (a rebuild,
     /// which just replayed).
     pub(crate) live: Option<HashMap<String, (u64, Project)>>,
+    /// The store's damage observations and its clock's now; `None` (a rebuild): nothing is
+    /// settled.
+    pub(crate) damage: Option<(&'a RefCell<DamageSeen>, Instant)>,
 }
 
 /// A check from `f`; an error inside it is reported, not raised.
@@ -133,18 +178,29 @@ fn integrity(conn: &Connection) -> Result<(bool, Value), StoreError> {
 
 fn genesis(s: &Subject) -> Result<(bool, Value), StoreError> {
     let file = crate::project_file::read_project_file_once(s.project_dir)?;
-    let Some(g) = file.genesis else {
-        return Ok((
-            true,
-            json!({ "skipped": "the project file records no genesis (backfilled by the lease holder's next open)" }),
-        ));
-    };
-    let fresh = new_project(s.project_id.to_string(), g.name.clone(), g.rate)?;
     let rev0 = db::snapshot_at(s.conn, MAIN, 0)?;
-    let ok = rev0.as_ref() == Some(&fresh);
+    let mut ok = true;
+    let expected = match (&file.genesis, &rev0) {
+        (Some(g), _) => {
+            let fresh = new_project(s.project_id.to_string(), g.name.clone(), g.rate)?;
+            ok &= rev0.as_ref() == Some(&fresh);
+            Some(crate::project_file::genesis_hash(g))
+        }
+        (None, Some(p)) => Some(crate::project_file::genesis_hash(
+            &crate::project_file::genesis_of(p),
+        )),
+        (None, None) => None,
+    };
+    let disagree = match &expected {
+        Some(h) => folder::genesis_disagree(s.project_dir, h),
+        None => 0,
+    };
+    ok &= disagree == 0;
     let details = json!({
-        "file": { "name": g.name, "rate": g.rate.to_string() },
+        "file": file.genesis.as_ref().map(|g| json!({ "name": g.name, "rate": g.rate.to_string() })),
         "rev0": rev0.map(|p| json!({ "name": p.name, "rate": p.rate.to_string() })),
+        "genesisHash": expected,
+        "segmentsDisagree": disagree,
     });
     Ok((ok, details))
 }
@@ -170,24 +226,43 @@ impl Store {
     /// Verifies the database against itself and the project folder (module docs), changing
     /// nothing. Mismatches are reported, never fatal. Long-running (it replays every
     /// branch): `fin-node` runs it on the per-engine worker thread (plan Decision 7).
+    ///
+    /// Every check reads inside one read transaction, so they see one state of the database.
     pub fn verify(&self) -> VerifyReport {
+        let txn = match self.conn.unchecked_transaction() {
+            Ok(t) => t,
+            Err(e) => {
+                let e = fin_core::CoreError::from(StoreError::from(e));
+                return VerifyReport {
+                    ok: false,
+                    checks: vec![Check {
+                        name: "integrity_check".into(),
+                        ok: false,
+                        details: json!({ "error": e }),
+                    }],
+                };
+            }
+        };
         let mut live = HashMap::new();
         {
             let mut heads = self.heads.borrow_mut();
-            for branch in db::branches(&self.conn).unwrap_or_default() {
-                if crate::refresh(&self.conn, &mut heads, &branch).is_ok()
+            for branch in db::branches(&txn).unwrap_or_default() {
+                if crate::refresh(&txn, &mut heads, &branch).is_ok()
                     && let Some(h) = heads.get(&branch)
                 {
                     live.insert(branch, (h.rev, h.project.clone()));
                 }
             }
         }
-        run(&Subject {
-            conn: &self.conn,
+        let report = run(&Subject {
+            conn: &txn,
             project_dir: &self.project_dir,
             project_id: &self.project_id,
             kind: self.storage_kind(),
             live: Some(live),
-        })
+            damage: Some((&self.damage, self.ctl.now())),
+        });
+        drop(txn); // read only: rolled back
+        report
     }
 }

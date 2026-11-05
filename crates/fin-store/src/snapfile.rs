@@ -31,6 +31,8 @@ pub struct SnapHeader {
     pub model_schema_version: u32,
     pub writer_id: String,
     pub epoch: u64,
+    /// `blake3:` of the project's genesis ([`crate::project_file::genesis_hash`]).
+    pub genesis_hash: String,
 }
 
 /// A decoded, verified snapshot.
@@ -56,6 +58,7 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, SegError> {
     check_nonempty("branch", &header.branch)?;
     check_nonempty("writerId", &header.writer_id)?;
     check_hash("txHash", &header.tx_hash)?;
+    check_hash("genesisHash", &header.genesis_hash)?;
     let [body] = frame.lines.as_slice() else {
         return Err(corrupt("a snapshot holds exactly one body line"));
     };

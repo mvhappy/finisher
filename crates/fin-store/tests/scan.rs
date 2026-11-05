@@ -23,6 +23,7 @@ fn header(branch: &str, epoch: u64, first: u64, last: u64) -> Header {
         prev_segment_hash: None,
         op_schema_versions: [1, 1],
         created_at: 0,
+        genesis_hash: format!("blake3:{}", "0".repeat(64)),
         pack: false,
         replaces: vec![],
     }
@@ -51,6 +52,7 @@ fn snap_bytes(branch: &str) -> (Vec<u8>, String) {
         model_schema_version: fin_core::SCHEMA_VERSION,
         writer_id: "w1".into(),
         epoch: 1,
+        genesis_hash: format!("blake3:{}", "0".repeat(64)),
     };
     snapfile::encode(&h, &project)
 }

@@ -126,8 +126,10 @@ pub(crate) fn init(
     let min_reader = MIN_READER_VERSION.to_string();
     let by = written_by();
     let incarnation = crate::history::new_incarnation();
+    let genesis = crate::project_file::genesis_hash(&crate::project_file::genesis_of(project));
     for (key, value) in [
         ("incarnation", incarnation.as_str()),
+        ("genesisHash", genesis.as_str()),
         ("projectId", project.id.as_str()),
         ("schemaVersion", &project.schema_version.to_string()),
         ("formatVersion", &version),

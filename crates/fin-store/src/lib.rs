@@ -15,6 +15,7 @@ pub mod conflict_names;
 mod copies;
 mod counters;
 mod db;
+mod dblock;
 mod diffs;
 mod export;
 pub mod fsio;
@@ -60,7 +61,10 @@ pub use migrations::{APPLICATION_ID, DB_VERSION};
 pub use open::OpenOptions;
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
 pub use project_file::{Genesis, ProjectFile, read_project_file};
-pub use rebuild::RebuildReport;
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use rebuild::fail_next_rebuild_swap_for_test;
+pub use rebuild::{RebuildReport, rebuild_project};
 pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
@@ -193,6 +197,10 @@ pub struct Store {
     /// The local date of the last daily backup taken or found, or `(date, ms)` of the last
     /// failed attempt (retried after [`tick::BACKUP_RETRY_MS`]).
     daily: tick::DailyState,
+    /// The shared `db.lock` this store holds while it has the database open (`dblock`).
+    db_lock: Option<std::fs::File>,
+    /// Damaged folder files and since when they look unchanged (verify's 60 s rule).
+    damage: RefCell<verify::DamageSeen>,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }

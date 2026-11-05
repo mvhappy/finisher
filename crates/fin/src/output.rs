@@ -44,6 +44,10 @@ const VALIDATION_CODES: &[&str] = &[
     "NOT_A_PROJECT_DB",
     // A damaged database with no way to rebuild it (no rev 0 anywhere).
     "DB_CORRUPT",
+    // A manual rebuild that would drop records the folder no longer holds; a project
+    // folder written under another genesis than the project file's.
+    "REBUILD_WOULD_LOSE",
+    "GENESIS_MISMATCH",
     "NEWER_FORMAT",
     "INVALID_FORMAT",
     "REPLAY_FAILED",
@@ -99,6 +103,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "ENGINE_CLOSED",
     "SERVER_SHUTTING_DOWN",
     "CANCELLED",
+    // A rebuild needs the project database to itself; transient.
+    "DB_IN_USE",
 ];
 
 /// The one place error codes become exit codes.
