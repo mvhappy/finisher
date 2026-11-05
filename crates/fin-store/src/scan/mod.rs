@@ -56,8 +56,13 @@ pub const SNAPSHOT_CAP: u64 = 256 << 20;
 pub enum NotArrivedWhy {
     /// A cloud-sync placeholder; hydrate it by reading it (the caller decides when).
     Placeholder,
-    /// Short, no trailer yet, or momentarily locked by a sync client.
+    /// Short, or no trailer yet.
     Incomplete,
+    /// Momentarily unreadable: a transient error ([`crate::fsio::is_transient`]), as a sync
+    /// client or another app holding it open without sharing (Windows 32), or a file deleted
+    /// while another SMB client still holds it open (pending deletion: Windows 5) (spec §3.13
+    /// items 13, 15).
+    Locked,
     /// A `.~fin-*.tmp` or sync-client temp file.
     Temp,
 }
@@ -327,6 +332,7 @@ fn list(dir: &Path) -> io::Result<Vec<(PathBuf, fs::Metadata)>> {
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static HOOKED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LOCKED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
     static READS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static REFRESHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
@@ -339,6 +345,32 @@ fn hooked_placeholder(path: &Path) -> bool {
         let _ = path;
         false
     }
+}
+
+/// Whether a read of `path` fails as with a transient error (test hook [`lock_for_test`]).
+fn hooked_locked(path: &Path) -> bool {
+    #[cfg(any(test, feature = "test-hooks"))]
+    return LOCKED.with(|h| h.borrow().iter().any(|p| p == path));
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Test hook: on this thread, scans read `path` as momentarily locked (a transient error, as
+/// a Windows sharing violation or a file pending deletion that another client holds open);
+/// `false` undoes it.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn lock_for_test(path: &Path, locked: bool) {
+    LOCKED.with(|h| {
+        let mut h = h.borrow_mut();
+        h.retain(|p| p != path);
+        if locked {
+            h.push(path.to_path_buf());
+        }
+    });
 }
 
 fn note_read() {

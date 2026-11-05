@@ -410,6 +410,26 @@ fn verify_reports_each_check() {
     assert_eq!(s.details["corrupt"][0]["code"], "SEGMENT_CORRUPT", "{s:?}");
     fs::remove_file(&bad).unwrap();
 
+    // A segment that is momentarily unreadable (a Windows sharing violation, or deleted by
+    // compaction while another client holds it open: spec §3.13 item 15) is not corrupt: it is
+    // listed as unsettled, and the check passes.
+    let held = seg_dir(&e.dir)
+        .read_dir()
+        .unwrap()
+        .map(|d| d.unwrap().path())
+        .min()
+        .unwrap();
+    fin_store::scan::lock_for_test(&held, true);
+    let v = a.verify();
+    fin_store::scan::lock_for_test(&held, false);
+    let s = check(&v, "segment_checksums");
+    assert!(s.ok, "{s:?}");
+    assert_eq!(s.details["corrupt"], serde_json::json!([]), "{s:?}");
+    assert_eq!(s.details["unsettled"][0]["reason"], "locked", "{s:?}");
+    for c in &v.checks {
+        assert!(c.ok || c.name == "diffs_match", "{c:?}");
+    }
+
     // Never fatal: the store still opens.
     drop(a);
     let a = e.open("a");

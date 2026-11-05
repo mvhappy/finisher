@@ -21,6 +21,9 @@ enum Read {
 
 fn read(path: &Path) -> Read {
     super::note_read();
+    if super::hooked_locked(path) {
+        return Read::Transient;
+    }
     match fsio::read_uncached(path) {
         Ok(b) => Read::Bytes(b),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Read::Gone,
@@ -192,7 +195,7 @@ fn canonical(w: &mut Walk, path: &Path, name: &str, branch: &str, seg: bool, met
         Read::Transient => {
             return w.out.push(Entry::NotArrived {
                 path: path.to_path_buf(),
-                why: NotArrivedWhy::Incomplete,
+                why: NotArrivedWhy::Locked,
             });
         }
         Read::Failed(e) => return unreadable(w, path, &e),

@@ -84,9 +84,10 @@ impl Folder {
                             m.and_then(|m| m.modified().ok()),
                         ));
                     }
+                    // Not readable now: what it holds cannot be checked (as a placeholder).
                     Entry::NotArrived {
                         path,
-                        why: NotArrivedWhy::Placeholder,
+                        why: NotArrivedWhy::Placeholder | NotArrivedWhy::Locked,
                     } if path.starts_with(&segments_root) => arriving = true,
                     _ => {}
                 }
@@ -217,6 +218,13 @@ impl Folder {
                         unsettled.push(v);
                     }
                 }
+                // Locked or pending deletion right now, not damaged.
+                Entry::NotArrived {
+                    path,
+                    why: NotArrivedWhy::Locked,
+                } => unsettled.push(
+                    json!({ "path": rel(dir, path), "kind": kind_of(path), "reason": "locked" }),
+                ),
                 Entry::NotArrived {
                     path,
                     why: NotArrivedWhy::Placeholder,

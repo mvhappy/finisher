@@ -194,8 +194,10 @@ impl Follow {
             .not_arrived
             .iter()
             .filter(|(p, why)| {
-                matches!(why, NotArrivedWhy::Placeholder | NotArrivedWhy::Incomplete)
-                    && p.starts_with(&segments)
+                matches!(
+                    why,
+                    NotArrivedWhy::Placeholder | NotArrivedWhy::Incomplete | NotArrivedWhy::Locked
+                ) && p.starts_with(&segments)
             })
             .map(|(p, _)| p.to_string_lossy().into_owned())
             .collect();
