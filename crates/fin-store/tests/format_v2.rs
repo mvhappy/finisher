@@ -527,3 +527,14 @@ fn v1_segment_written_before_upgrade_is_adopted() {
     assert_eq!(unexported, 0);
     assert_eq!(s.head(MAIN), expected["rev"].as_u64().unwrap());
 }
+
+#[test]
+fn v1_segment_with_a_4b_kind_is_corrupt() {
+    let record = encode_record(&linked_record("b1", 1, None, branch_link()));
+    let (bytes, _) = segment::encode(&header((1, 1)), &[&record]);
+    assert!(matches!(segment::decode(&bytes), Err(SegError::Corrupt(_))));
+    assert!(matches!(
+        segment::decode_with_reader(&bytes, 1),
+        Err(SegError::Corrupt(_))
+    ));
+}

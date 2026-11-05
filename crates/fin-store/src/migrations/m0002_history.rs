@@ -35,7 +35,7 @@ CREATE INDEX IF NOT EXISTS record_links_merge ON record_links (merge_id) WHERE m
 pub(super) fn run(txn: &Transaction<'_>) -> Result<(), StoreError> {
     txn.execute_batch(V2_TABLES)?;
     txn.execute_batch(
-        "INSERT INTO branches VALUES ('main','main',NULL,0,NULL,NULL,'',0,0,0);
+        "INSERT OR IGNORE INTO branches VALUES ('main','main',NULL,0,NULL,NULL,'',0,0,0);
          UPDATE meta SET value = '2' WHERE key IN ('formatVersion','minReaderVersion');",
     )?;
     Ok(())

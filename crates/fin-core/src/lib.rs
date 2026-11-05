@@ -19,7 +19,9 @@ pub use ids::{ID_KINDS, IdAlloc, IdKind, MemIds};
 pub use model::*;
 pub use ops::{Edge, Op};
 pub use rebase::{Conflict, rebase_tx};
-pub use record::{Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, resolve_ops};
+pub use record::{
+    Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,
+};
 pub use replay::{BoundIds, apply_committed};
 pub use schema::{json_schema, json_schema_with};
 pub use time::{Rational, check_canonical_times, frame_duration, parse_time};

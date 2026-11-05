@@ -288,6 +288,8 @@ None open. The fork-resolution question was answered: manual move-out plus `--im
 - Modify: `crates/fin-store/examples/export_schema.rs` (`Link`)
 - Test: `crates/fin-core/tests/record.rs`, `crates/fin-store/tests/migrations.rs` (the constructor edit only), `crates/fin-store/tests/codec.rs`, new `crates/fin-store/tests/format_v2.rs`
 
+> Implementation notes (review of 1b69eeb): `tests/migrations.rs` changed beyond the constructor edit: its expectations moved with the version bump (meta `formatVersion`/`minReaderVersion` "1" -> "2", backup name `pre-migrate-0-1-` -> `0-2-`). `v1_segment_written_before_upgrade_is_adopted` tests adoption of the file, not content versioning. A format 1 segment holding a 4B kind is `Corrupt` (a v1 label implies edit-only). `record_links` rows per kind are covered by `crates/fin-store/src/db/link_tests.rs`.
+
 **Interfaces:**
 - **`fin_core::record`:**
   - `pub const RECORD_FORMAT: u32 = 2; pub const MIN_READER: u32 = 2;`

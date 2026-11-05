@@ -18,6 +18,8 @@ use crate::StoreError;
 pub(crate) use crate::counters::Counters;
 use crate::migrations::{APPLICATION_ID, DB_VERSION, MIN_READER_VERSION};
 
+#[cfg(test)]
+mod link_tests;
 mod records;
 pub use records::replay_record;
 pub(crate) use records::*;

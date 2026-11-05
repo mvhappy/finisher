@@ -246,12 +246,7 @@ pub(crate) fn record_rows(
 
 /// The `kind` column: the record's serialised, camelCase kind (`edit`, `cherryPick`).
 pub(crate) fn kind_text(kind: RecordKind) -> Result<String, StoreError> {
-    match serde_json::to_value(kind)? {
-        serde_json::Value::String(s) => Ok(s),
-        other => {
-            Err(CoreError::new("DB_ERROR", format!("record kind {other} is not a string")).into())
-        }
-    }
+    Ok(fin_core::kind_name(kind))
 }
 
 const TX_COLUMNS: &str = "seq, record_bytes, diff";

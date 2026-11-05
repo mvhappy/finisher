@@ -17,7 +17,7 @@ use crate::error::CoreError;
 use crate::ops::Op;
 use crate::tx::Tx;
 
-pub use link::Link;
+pub use link::{Link, kind_name};
 
 /// Version of the record line format written by this code (4B: record kinds).
 pub const RECORD_FORMAT: u32 = 2;

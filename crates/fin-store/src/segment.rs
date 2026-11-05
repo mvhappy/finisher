@@ -137,9 +137,11 @@ pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
 }
 
 /// [`decode`] as a reader of `reader_version` would: a file whose `minReaderVersion` is above
-/// it is [`SegError::Newer`]. Shows what an older Finisher makes of a file.
+/// it is [`SegError::Newer`]. Shows what an older Finisher makes of a file (its newest format
+/// is its reader version). For tests.
+#[doc(hidden)]
 pub fn decode_with_reader(bytes: &[u8], reader_version: u32) -> Result<Segment, SegError> {
-    let frame = decode_frame(bytes, MAGIC, FORMAT_VERSION, reader_version)?;
+    let frame = decode_frame(bytes, MAGIC, reader_version, reader_version)?;
     let header: Header = serde_json::from_value(Value::Object(frame.header))
         .map_err(|e| corrupt(format!("header: {e}")))?;
     check_nonempty("projectId", &header.project_id)?;
@@ -155,6 +157,19 @@ pub fn decode_with_reader(bytes: &[u8], reader_version: u32) -> Result<Segment, 
             header.first_seq,
             header.last_seq
         )));
+    }
+    if header.format_version == EDIT_ONLY_VERSION {
+        // A format 1 label means edit-only (what 4A reads): a 4B kind in it is damage.
+        #[derive(Deserialize)]
+        struct Kind {
+            kind: Option<fin_core::RecordKind>,
+        }
+        let has_4b = frame.lines.iter().any(|l| {
+            serde_json::from_slice::<Kind>(l).is_ok_and(|k| k.kind.is_some_and(|k| !k.is_4a()))
+        });
+        if has_4b {
+            return Err(corrupt("a format 1 segment holds a record of a 4B kind"));
+        }
     }
     let [low, high] = header.op_schema_versions;
     if low > high {

@@ -197,7 +197,12 @@ impl Record {
     pub fn link(&self) -> Result<Link, CoreError> {
         let f = self.fields();
         let kind = kind_name(self.kind);
-        let need = |field: &str| invalid_format("record", format!("a {kind} record needs {field}"));
+        let need = |field: &str| {
+            invalid_format(
+                "record",
+                format!("{} {kind} record needs {field}", article(&kind)),
+            )
+        };
         let link = match self.kind {
             RecordKind::Edit => Link::Edit,
             RecordKind::Undo => Link::Undo {
@@ -244,7 +249,11 @@ impl Record {
                 .collect();
             return Err(invalid_format(
                 "record",
-                format!("a {kind} record has no {}", extra.join(", ")),
+                format!(
+                    "{} {kind} record must not have {}",
+                    article(&kind),
+                    extra.join(", ")
+                ),
             ));
         }
         match &link {
@@ -268,7 +277,7 @@ impl Record {
         {
             return Err(invalid_format(
                 "record",
-                format!("a {kind} record carries no ops"),
+                format!("{} {kind} record carries no ops", article(&kind)),
             ));
         }
         Ok(link)
@@ -293,8 +302,17 @@ impl Record {
     }
 }
 
-/// `kind`'s serialised name (`cherryPick`).
-fn kind_name(kind: RecordKind) -> String {
+/// "an" before a vowel, else "a".
+fn article(word: &str) -> &'static str {
+    if word.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    }
+}
+
+/// `kind`'s serialised name (`cherryPick`): the one source of the camelCase kind text.
+pub fn kind_name(kind: RecordKind) -> String {
     match serde_json::to_value(kind) {
         Ok(serde_json::Value::String(s)) => s,
         _ => format!("{kind:?}"),
