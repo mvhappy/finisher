@@ -352,3 +352,49 @@ fn a_missing_lease_json_still_waits_when_another_server_wrote() {
     e.poll(&mut b);
     assert_eq!(b.read_only(), None);
 }
+
+// ---- Re-review: a cloned server data is another server ----
+
+#[test]
+fn a_cloned_server_data_is_another_server_and_follows() {
+    // `cp -a` of a live holder's server data on the same host (or a cloned VM): the clone
+    // must not take the lease as "its own" and ping-pong it with the original.
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    copy_dir(&e.data("a"), &e.data("clone"));
+    let mut c = e.open("clone");
+    assert_ne!(
+        c.server_id(),
+        a.server_id(),
+        "the clone gets a server id of its own"
+    );
+    assert_eq!(
+        c.read_only(),
+        Some(ReadOnlyReason::LeaseHeld),
+        "{:?}",
+        c.lease_state()
+    );
+    assert!(
+        c.status()
+            .warnings
+            .iter()
+            .any(|w| w.code == "SERVER_ID_RENEWED"),
+        "{:?}",
+        c.status().warnings
+    );
+    for _ in 0..3 {
+        e.advance(2);
+        e.poll(&mut a);
+        e.poll(&mut c);
+    }
+    assert_eq!((held_epoch(&a), held_epoch(&c)), (Some(1), None));
+    commit(&mut a, "t2", vec![insert(0, "a1")]);
+    // The original keeps its id across reopens.
+    let id = a.server_id().to_string();
+    drop(a);
+    restart(&e);
+    let a = e.open("a");
+    assert_eq!(a.server_id(), id);
+    assert_eq!(held_epoch(&a), Some(2));
+}

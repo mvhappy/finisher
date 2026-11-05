@@ -14,6 +14,8 @@
 //! - `INCOMPLETE_FILES`: a file seen incomplete for more than [`INCOMPLETE_POLLS`] polls on a
 //!   local or network root, where every write is atomic, so it cannot be in transit: a crashed
 //!   foreign writer or damage;
+//! - `SERVER_ID_RENEWED`: the server data was found to be a copy (another directory or
+//!   machine than its id was made in), so this server took a new id at open;
 //! - `LEASE_CHECK`: the last fencing check could not list `.finisher/` (the lease stands);
 //! - `SYNC_ARRIVING`: on a sync folder, segment files are placeholders or incomplete (they
 //!   also hold `CATCHING_UP` after an acquisition);
@@ -267,6 +269,12 @@ impl Store {
                     self.storage_kind(),
                     f.stuck.join(", ")
                 ),
+            );
+        }
+        if let Some(why) = &self.identity_note {
+            warn(
+                "SERVER_ID_RENEWED",
+                format!("this server has a new server id: {why}"),
             );
         }
         if let Some(e) = &self.ctl.check_error {

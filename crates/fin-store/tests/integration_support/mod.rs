@@ -207,3 +207,18 @@ pub fn edit_project_file(
     f(v.as_object_mut().unwrap());
     fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
 }
+
+/// Copies `from` to `to` recursively with hard links, as `cp -al`, rsnapshot or
+/// `rsync --link-dest` do: new directories, the same files.
+pub fn link_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let target = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            link_dir(&e.path(), &target);
+        } else {
+            fs::hard_link(e.path(), target).unwrap();
+        }
+    }
+}

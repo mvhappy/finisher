@@ -47,7 +47,7 @@ use crate::project_file::{self, Genesis, ProjectFile, read_project_file};
 use crate::storage_kind::{self, StorageKind};
 use crate::{
     Head, MAIN, Store, StoreError, copies, db, db_path, export, import, migrations, paths,
-    project_file as pf, rebuild, refresh, server_id, status, tick, unwritable,
+    project_file as pf, rebuild, refresh, server_identity, status, tick, unwritable,
 };
 
 /// How a store is opened. [`OpenOptions::default`] is production: the system's monotonic
@@ -117,7 +117,7 @@ impl Store {
         fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
         let dot = project_dir.join(".finisher");
         fs::create_dir_all(&dot).map_err(unwritable(&dot))?;
-        let server_id = server_id(server_data)?;
+        let identity = server_identity(server_data)?;
         let db_path = db_path(server_data, &id);
         let db_dir = db_path.parent().unwrap_or(server_data);
         fs::create_dir_all(db_dir).map_err(StoreError::io(db_dir))?;
@@ -153,7 +153,7 @@ impl Store {
             id,
             db_path,
             project_dir,
-            server_id,
+            identity,
             heads,
             (kind, warning),
             &opts,
@@ -186,7 +186,7 @@ impl Store {
             rebuild::fresh_db(&db_path, &file.id, &genesis)?;
         }
         migrations::check(&db_path)?;
-        let server_id = server_id(server_data)?;
+        let identity = server_identity(server_data)?;
         let mut conn = db::connect(&db_path, false)?;
         let stored = db::meta(&conn, "projectId")?;
         if stored.as_deref() != Some(file.id.as_str()) {
@@ -208,7 +208,7 @@ impl Store {
             file.id.clone(),
             db_path,
             project_dir,
-            server_id,
+            identity,
             heads,
             kind,
             &opts,
@@ -224,7 +224,7 @@ impl Store {
         project_id: String,
         db_path: PathBuf,
         project_dir: &Path,
-        server_id: String,
+        identity: crate::ServerIdentity,
         heads: HashMap<String, Head>,
         (kind, storage_warning): (StorageKind, Option<String>),
         opts: &OpenOptions,
@@ -235,14 +235,17 @@ impl Store {
         let data_dir = db_path.parent().unwrap_or(Path::new("."));
         ctl.server_lock = Some(ServerLock {
             path: data_dir.join("lease.lock"),
-            shortcut: storage_kind::detect(data_dir, None) == StorageKind::Local,
+            shortcut: identity.shortcut_ok
+                && storage_kind::detect(data_dir, None) == StorageKind::Local
+                && storage_kind::local_disk::is_local_disk(data_dir),
         });
         Store {
             conn,
             project_id,
             db_path,
             project_dir: project_dir.to_path_buf(),
-            server_id,
+            server_id: identity.id,
+            identity_note: identity.renewed,
             export: export::ExportState::default(),
             import: import::ImportState::with_kind(kind),
             storage_warning,

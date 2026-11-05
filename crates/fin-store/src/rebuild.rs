@@ -12,7 +12,7 @@
 //!
 //! [`Store::import`]: crate::Store::import
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fin_core::{CoreError, new_project};
 use rusqlite::Connection;
@@ -53,8 +53,32 @@ pub(crate) fn fresh_db(db_path: &Path, id: &str, genesis: &Genesis) -> Result<()
         // an exclusive lock, which two racing opens would fight over).
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         drop(conn);
-        // Never over a database another open made meanwhile (a replaced file under a live
-        // connection loses its writes): the first one in place wins and is used.
+        // Under `rebuild.lock`, so no other open of this server data is between its own
+        // check and link: never over a database another open made meanwhile (a replaced file
+        // under a live connection loses its writes; the first one in place wins and is used),
+        // and stale `-wal`/`-shm` files of a deleted database go first (SQLite would replay
+        // that WAL onto the new file).
+        let lock_path = dir.join("rebuild.lock");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(StoreError::io(&lock_path))?;
+        lock.lock().map_err(StoreError::io(&lock_path))?;
+        if db_path.exists() {
+            let _ = std::fs::remove_file(&tmp);
+            return Ok(());
+        }
+        for ext in ["-wal", "-shm"] {
+            let side = PathBuf::from(format!("{}{ext}", db_path.display()));
+            match std::fs::remove_file(&side) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(StoreError::io(&side)(e)),
+            }
+        }
         match crate::fsio::rename_noreplace(&tmp, db_path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {

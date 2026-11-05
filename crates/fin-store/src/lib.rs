@@ -17,6 +17,7 @@ mod counters;
 mod db;
 mod export;
 pub mod fsio;
+pub mod identity;
 mod import;
 pub mod lease;
 mod migrations;
@@ -40,6 +41,9 @@ use std::path::{Path, PathBuf};
 use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use copies::mount_root_for_test as copies_mount_root_for_test;
 pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
@@ -51,7 +55,7 @@ pub use migrations::{APPLICATION_ID, DB_VERSION};
 pub use open::OpenOptions;
 pub use paths::{PROJECT_FILE, db_path, project_file, server_data_dir};
 pub use project_file::{Genesis, ProjectFile, read_project_file};
-pub use server_id::server_id;
+pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
 };
@@ -146,6 +150,8 @@ pub struct Store {
     project_dir: PathBuf,
     /// This server's id ([`server_id()`]), the `writerId` of exported segments.
     server_id: String,
+    /// Why this server's id was renewed at open (its server data is a clone).
+    identity_note: Option<String>,
     export: export::ExportState,
     import: import::ImportState,
     storage_warning: Option<String>,

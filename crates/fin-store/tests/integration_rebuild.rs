@@ -87,7 +87,7 @@ fn deleted_db_rebuilds_from_the_folder() {
     let leftovers: Vec<_> = fs::read_dir(db.parent().unwrap())
         .unwrap()
         .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n.contains("rebuild"))
+        .filter(|n| n.starts_with("project.fdb.rebuild-"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
@@ -182,6 +182,8 @@ fn a_copy_whose_original_share_is_unmounted_is_refused_until_relocated() {
     copy_dir(&e.dir, &copy);
     let hidden = e.root.join("share-unmounted");
     fs::rename(&share, &hidden).unwrap();
+    // `root` stands for the mount base (/Volumes, /mnt) the share was mounted under.
+    fin_store::copies_mount_root_for_test(&e.root);
 
     let err = e.try_open_at("a", &copy).unwrap_err();
     assert_eq!(err.code, "PROJECT_ORIGINAL_UNREACHABLE", "{err:?}");
@@ -244,4 +246,88 @@ fn concurrent_opens_without_a_database_share_one() {
             "round {round}: both stores use one database"
         );
     }
+}
+
+// ---- Re-review: directory identity, stale WAL, renamed parents, newer project file ----
+
+#[test]
+fn a_hard_linked_copy_is_a_copy() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    a.close().unwrap();
+    let copy = e.root.join("Snapshot of My Project");
+    link_dir(&e.dir, &copy);
+    assert_eq!(e.try_open_at("a", &copy).unwrap_err().code, "PROJECT_COPY");
+}
+
+#[test]
+fn a_stale_wal_is_not_replayed_onto_a_rebuilt_database() {
+    let e = env();
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    commit(&mut a, "t2", vec![insert(0, "a1")]);
+    let expected = a.snapshot(MAIN).unwrap();
+    let db = a.db_path().to_path_buf();
+    a.close().unwrap();
+    // An old database's WAL, left behind when project.fdb itself was deleted.
+    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    {
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.query_row("PRAGMA wal_autocheckpoint=0", [], |_| Ok(()))
+            .unwrap();
+        for i in 0..50 {
+            c.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, 'x')",
+                [format!("junk{i}")],
+            )
+            .unwrap();
+        }
+        c.execute("DELETE FROM txs", []).unwrap();
+        fs::copy(&wal, e.root.join("old.wal")).unwrap();
+    }
+    fs::remove_file(&db).unwrap();
+    let _ = fs::remove_file(PathBuf::from(format!("{}-shm", db.display())));
+    fs::copy(e.root.join("old.wal"), &wal).unwrap();
+
+    let a = e.open("a");
+    assert_eq!(a.snapshot(MAIN).unwrap(), expected);
+    let c = rusqlite::Connection::open(&db).unwrap();
+    let ok: String = c
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(ok, "ok");
+    let junk: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key LIKE 'junk%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(junk, 0, "the old WAL was not replayed");
+}
+
+#[test]
+fn renaming_the_projects_parent_folder_is_a_move() {
+    let mut e = env();
+    let parent = e.root.join("Projects");
+    e.dir = parent.join("My Project");
+    let mut a = e.create("a");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    a.close().unwrap();
+    let renamed = e.root.join("Projects 2025");
+    fs::rename(&parent, &renamed).unwrap();
+    let moved = e.try_open_at("a", &renamed.join("My Project")).unwrap();
+    assert_eq!(moved.head(MAIN), 1);
+}
+
+#[test]
+fn a_project_file_with_a_newer_schema_makes_read_only_at_the_next_poll() {
+    let e = env();
+    let mut a = e.create("a");
+    edit_project_file(&e.dir, |f| {
+        f.insert("schemaVersion".into(), 99.into());
+    });
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), Some(fin_store::ReadOnlyReason::NewerFormat));
 }

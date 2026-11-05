@@ -5,8 +5,9 @@
 //!
 //! The recorded folder no longer holds the project: it **moved** (and `projectDir` is updated)
 //! only if both
-//! - the recorded folder's parent can be listed (so its absence is real, not an unmounted
-//!   share or a drive that is not connected), and
+//! - its absence can be trusted: the nearest existing ancestor is not a mount root, a mount
+//!   base or an empty mount point right below one, and can be listed (so it is not an
+//!   unmounted share or a disconnected drive; a renamed parent folder is a move), and
 //! - the folder being opened holds, per branch, the newest segment the database knows from
 //!   the folder (so it is not an older copy).
 //!
@@ -14,8 +15,9 @@
 //! ([`OpenOptions::relocate`](crate::OpenOptions::relocate)).
 //!
 //! Two spellings of one folder (a symlink, a second mount of the same share) are the same
-//! folder when they canonicalise alike or their project files are the same file: device and
-//! inode on Unix, volume serial number and file index on Windows.
+//! folder when they canonicalise alike or the project *directories* are one directory
+//! (`identity::dir_identity`). Files are not compared: a hard-linked copy (`cp -al`,
+//! rsnapshot, `rsync --link-dest`) shares them.
 //!
 //! `projectDir` is JSON, lossless for any OS path: `{"utf8": "<path>"}`, or for a path that is
 //! not valid Unicode `{"unix": "<hex bytes>"}` / `{"wide": "<hex of UTF-16 units>"}`.
@@ -32,33 +34,6 @@ use serde_json::{Value, json};
 use crate::{StoreError, db, project_file};
 
 const KEY: &str = "projectDir";
-
-/// The same file on disk, if the OS can say: `(device, inode)` / `(volume serial, index)`.
-#[cfg(unix)]
-fn file_identity(p: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
-}
-
-#[cfg(windows)]
-fn file_identity(p: &Path) -> Option<(u64, u64)> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-    };
-    let f = std::fs::File::open(p).ok()?;
-    // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is a valid value of that plain struct.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: the handle is open for the duration of the call and `info` is writable.
-    let ok = unsafe { GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) };
-    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
-    (ok != 0).then_some((u64::from(info.dwVolumeSerialNumber), index))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn file_identity(_p: &Path) -> Option<(u64, u64)> {
-    None
-}
 
 /// The folder as recorded: canonical while it exists, else absolute.
 fn canonical(dir: &Path) -> PathBuf {
@@ -140,7 +115,8 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     if canonical(a) == canonical(b) {
         return true;
     }
-    let id = |d: &Path| file_identity(&crate::project_file(d));
+    // The directories themselves: a hard-linked copy shares the files, never the directories.
+    let id = crate::identity::dir_identity;
     matches!((id(a), id(b)), (Some(x), Some(y)) if x == y)
 }
 
@@ -171,6 +147,54 @@ fn holds_newest_segments(conn: &Connection, dir: &Path) -> bool {
     by_branch.values().all(|p| *p)
 }
 
+/// Directories a share is typically mounted under: a missing folder right below one is an
+/// unmounted share.
+const MOUNT_BASES: [&str; 6] = [
+    "/Volumes",
+    "/mnt",
+    "/media",
+    "/run/media",
+    "/net",
+    "/Network",
+];
+
+/// Whether `dir` is a mount root: its device differs from its parent's, or it has no parent
+/// (`/`, a drive root `C:\`, a share root `\\host\share\`).
+fn is_mount_root(dir: &Path) -> bool {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if MOUNT_ROOTS.with(|m| m.borrow().contains(&canonical(dir))) {
+        return true;
+    }
+    let Some(parent) = dir.parent() else {
+        return true;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(dir), std::fs::metadata(parent)) {
+            return a.dev() != b.dev();
+        }
+    }
+    let _ = parent;
+    false
+}
+
+/// Whether the absence of `recorded` (a folder that no longer holds the project) can be
+/// trusted: walk up to the nearest ancestor that exists. It is unreachable (perhaps an
+/// unmounted share, a disconnected drive) when that ancestor is a mount root, a mount base
+/// (`/Volumes`, `/mnt`, …) or right below one (an empty mount point), or cannot be listed;
+/// otherwise the folder (or a parent of it) was renamed or deleted, so the project moved.
+fn reachable(recorded: &Path) -> bool {
+    let Some(ancestor) = recorded.ancestors().skip(1).find(|a| a.exists()) else {
+        return false; // nothing of the path exists: a missing drive or volume
+    };
+    if std::fs::read_dir(ancestor).is_err() || is_mount_root(ancestor) {
+        return false;
+    }
+    let base = |p: &Path| MOUNT_BASES.iter().any(|b| p == Path::new(b));
+    !(base(ancestor) || ancestor.parent().is_some_and(base))
+}
+
 /// Refuses `project_dir` if the database belongs to another copy of the project, or to a
 /// folder that cannot be reached to tell (module docs). `relocate`: the caller says the project
 /// moved here. Reads only.
@@ -192,9 +216,7 @@ pub(crate) fn check(
     let still_there = project_file::read_project_file_once(&recorded).is_ok_and(|f| f.id == id);
     let here = canonical(project_dir);
     if !still_there {
-        let reachable = recorded
-            .parent()
-            .is_some_and(|p| std::fs::read_dir(p).is_ok());
+        let reachable = reachable(&recorded);
         if relocate || (reachable && holds_newest_segments(conn, project_dir)) {
             return Ok(()); // moved
         }
@@ -256,4 +278,16 @@ mod tests {
         assert!(e.contains("unix"), "{e}");
         assert_eq!(decode(&e), Some(p));
     }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static MOUNT_ROOTS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test hook: on this thread, `dir` counts as a mount root (a share's mount base).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn mount_root_for_test(dir: &Path) {
+    MOUNT_ROOTS.with(|m| m.borrow_mut().push(canonical(dir)));
 }

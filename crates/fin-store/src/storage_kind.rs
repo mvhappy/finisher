@@ -28,6 +28,7 @@ use crate::conflict_names::Provider;
 
 mod classify;
 mod classify_win;
+pub mod local_disk;
 mod probe;
 #[cfg(test)]
 mod tests;

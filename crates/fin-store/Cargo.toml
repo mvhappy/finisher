@@ -24,7 +24,7 @@ ulid = "1"
 libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
 fin-store = { path = ".", features = ["test-hooks"] }
