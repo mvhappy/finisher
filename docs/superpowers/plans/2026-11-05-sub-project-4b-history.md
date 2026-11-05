@@ -253,7 +253,7 @@ None open. The fork-resolution question was answered: manual move-out plus `--im
 - Create: `crates/fin-store/tests/fixtures/4a/folder/finisher.project.json`, `crates/fin-store/tests/fixtures/4a/folder/.finisher/segments/main/*.fseg`, `crates/fin-store/tests/fixtures/4a/project.fdb`, `crates/fin-store/tests/fixtures/4a/expected.json` (`{rev, project}`), `crates/fin-store/tests/fixtures/4a/README.md` (how it was made: the 4A commit hash, the scrub steps)
 - The generator is **not** committed to 4B. It lives in a 4A worktree under `archive/` (git-ignored), so no later `cargo test` compiles it.
 
-- [ ] **Step 1: Generate from 4A code.**
+- [x] **Step 1: Generate from 4A code.**
   - `rtk git worktree add archive/wt-4a ef6f3ca`.
   - In it, write `crates/fin-store/examples/make_4a_fixture.rs` against that API:
     1. create a project in a temp dir;
@@ -262,21 +262,21 @@ None open. The fork-resolution question was answered: manual move-out plus `--im
     4. `close`;
     5. `PRAGMA wal_checkpoint(TRUNCATE)`.
   - Run it there with `rtk cargo run -p fin-store --example make_4a_fixture -- <out>`.
-- [ ] **Step 2: Scrub.**
+- [x] **Step 2: Scrub.**
   - Copy only `finisher.project.json`, the `.fseg` files and `project.fdb`. Never copy `lease.json`, `lease.claim-*`, `lease.probe-*`, `server-id`, `server-id.origin`, backups or locks.
   - On the DB copy: `DELETE FROM meta WHERE key IN ('projectDir','serverIds','createKey'); DELETE FROM lease_state; VACUUM;`.
   - Write `expected.json` from `snapshot("main")`.
-- [ ] **Step 3: Check for leaks.**
+- [x] **Step 3: Check for leaks.**
   - `rtk proxy bash -c 'grep -rIl -e "$(hostname)" -e "$USER" crates/fin-store/tests/fixtures/4a || echo clean'`, plus `strings project.fdb | grep -e "$(hostname)" -e "$USER"`. Expected: clean.
   - Segment headers hold only the random `writerId` ULID.
-- [ ] **Step 4: Add the test helper** `fixture_4a(tmp) -> (server_data, folder)` to `crates/fin-store/tests/integration_support/mod.rs`:
+- [x] **Step 4: Add the test helper** `fixture_4a(tmp) -> (server_data, folder)` to `crates/fin-store/tests/integration_support/mod.rs`:
   1. copy the folder;
   2. place `project.fdb` at `<server_data>/projects/<id>/project.fdb`;
   3. open with `OpenOptions { relocate: true, .. }`.
 
   Add a smoke test, `fixture_4a_opens_with_relocate`, with the current (4A) code: the state equals `expected.json`.
-- [ ] **Step 5: Run** `rtk cargo test -p fin-store`, `rtk pnpm gates`. Remove the worktree with `rtk git worktree remove archive/wt-4a`.
-- [ ] **Step 6: Commit** `test(fin-store): scrubbed 4A fixture for 4B upgrade tests`.
+- [x] **Step 5: Run** `rtk cargo test -p fin-store`, `rtk pnpm gates`. Remove the worktree with `rtk git worktree remove archive/wt-4a`.
+- [x] **Step 6: Commit** `test(fin-store): scrubbed 4A fixture for 4B upgrade tests`.
 
 ### Task 3: Record kinds, content-versioned segments, per-kind reader versions, migration 0002 — tier: opus
 
