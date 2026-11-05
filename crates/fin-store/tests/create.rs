@@ -40,7 +40,13 @@ fn files(dir: &Path) -> Vec<String> {
             if p.is_dir() {
                 stack.push(p);
             } else {
-                out.push(p.strip_prefix(dir).unwrap().to_string_lossy().into_owned());
+                // `/` on every platform, so the expectations read the same on Windows.
+                out.push(
+                    p.strip_prefix(dir)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
             }
         }
     }

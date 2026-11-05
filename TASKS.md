@@ -105,7 +105,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [x] Task 18: `pnpm e2e` storage scenario (rebuild from folder, follower)
 - [x] Task 20: spec, tracker and README record the decisions (spec §3.13 holds the Task 19 checklist)
 - [ ] **Task 19: cross-host and sync-folder validation** (spec §3.13). Must measure or confirm:
-  - full suites on Windows 11 and the Linux VM (`cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e`); Windows/macOS code so far only type-checked from Linux
+  - [x] full suites on Windows 11 and the Linux VM — pass on both (2026-11-05; Windows 542 Rust, 85 JS, gate tests, e2e); fixed the Windows probe ignoring sync markers. macOS still only type-checked
   - NAS matrix per host pair: lease races (0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse), network loss with writes in flight, real or emulated skew, follow latency ≤ 3 s + cache window
   - mtime source on SMB (server- vs client-set; Samba 2 s write-time delay; cifs deferred close); claims judged by client-set mtime under skew > 45 s
   - clock skew; suspend/resume of a holder (wakes fenced); Windows claim invisibility race (up to 9.9 s)
@@ -122,6 +122,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 ### Follow-ups from 4A
 - [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside; `VACUUM INTO` on a second connection). A big follower import delays short calls today
 - [ ] `ProjectStatus` (and the verify, rebuild and compact reports) still `Schema.Unknown` in contracts: generate them
+- [ ] `cargo clippy --all-targets -D warnings` is not clean (`fin`, `fin-node` tests; a Windows-only `chunks_exact` lint in fin-store) and CI does not run clippy: clean up, then add it to CI
 - [ ] Sweep orphan databases left in server data by a crash between create's DB rename and its project-file write
 - [ ] `meta.createKey` is lost when a rebuild has no old DB (the key is not in the folder)
 - [ ] Rational schema pattern `^(0|-?[1-9]\d*)(/[1-9]\d*)?$` accepts non-canonical `0/5` and `3/1` (the parser rejects them)

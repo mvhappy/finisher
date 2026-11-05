@@ -87,7 +87,7 @@ fn unix_path_provider(cands: &[PathBuf], fold: bool) -> Option<crate::conflict_n
     None
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn markers(real: &Path) -> super::SyncMarkers {
     super::find_markers(
         real,
@@ -225,6 +225,11 @@ pub(super) fn probe(dir: &Path) -> StorageKind {
     }
 
     let real = plain(&real_path(dir));
+    // Marker files first, as on Unix: Syncthing, Resilio and similar tools register no
+    // Cloud Files sync root, so nothing below would see them.
+    if let Some(p) = markers(&real).provider() {
+        return StorageKind::Sync(p);
+    }
     let text = real.to_string_lossy().into_owned();
     let mut facts = WinFacts::default();
 

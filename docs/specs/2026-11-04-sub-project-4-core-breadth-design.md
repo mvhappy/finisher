@@ -771,7 +771,9 @@ All landed (plan Tasks 16–17):
 
 Task 19 has not run. 4A is not mergeable until it has. Each item below was written from the spec and §27.9 without being exercised on the real systems, and Task 19 must measure or confirm it. Results go here as durable conclusions; raw runs stay in `archive/`.
 
-1. **Full suites** on Windows 11 and the Linux VM: `cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e`. The Windows and macOS code paths have so far only been type-checked from Linux.
+1. **Full suites** on Windows 11 and the Linux VM: `cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e`. macOS code paths have so far only been type-checked from Linux.
+   - *Linux VM, 2026-11-05:* all pass (555 Rust, 85 JS, 32 gate tests, `pnpm gates`, both e2e scenarios).
+   - *Windows 11 (MSVC toolchain, NTFS), 2026-11-05:* `cargo test --workspace --release` with `FIN_REQUIRE_SERVER=1` 542 pass (the rest are Unix-only), `pnpm test` 85 pass, `pnpm test:gates` and `pnpm e2e` pass. `pnpm gates` was not run there; its checks don't depend on the OS. The first run found 5 failures: 4 were test-only (`\` separators in expected paths; `Main` and `main` are one folder on a case-insensitive volume). The fifth was a real bug: the Windows storage probe never looked for sync-folder marker files, so a Syncthing (or Resilio, `.dropbox`) folder was classified `local`. It now checks markers first, as on Unix.
 2. **NAS matrix** (§3.12 rows 1–4) for Mac↔Windows, Mac↔Linux and Windows↔Linux.
 3. **Lease against the spike:** diff the lease's behaviour against the S10 spike's v3 when its code is available.
 4. **mtime source on SMB:** whether the probe file's mtime is set by the server or by the client. Covers Samba's 2 s write-time delay and the Linux cifs deferred close. Claims are judged old by server time. Under a client-set mtime with skew above 45 s, two racers should both lose (no double write); confirm this.

@@ -542,7 +542,14 @@ fn only_main_and_br_digits_are_branches() {
     let bytes = fs::read(&good).unwrap();
     let name = good.file_name().unwrap().to_owned();
     let seg_root = d.path().join(".finisher/segments");
-    for b in ["br12", "br", "br1x", "Main", "other"] {
+    // On a case-insensitive volume (Windows, default macOS) `Main` is the `main` folder
+    // itself, so it can only be a foreign sibling where case is significant.
+    let case_sensitive = !seg_root.join("MAIN").exists();
+    let mut dirs = vec!["br12", "br", "br1x", "other"];
+    if case_sensitive {
+        dirs.push("Main");
+    }
+    for b in dirs {
         fs::create_dir_all(seg_root.join(b)).unwrap();
         fs::write(seg_root.join(b).join(&name), &bytes).unwrap();
     }
@@ -558,7 +565,12 @@ fn only_main_and_br_digits_are_branches() {
             _ => None,
         })
         .collect();
-    assert_eq!(foreign_dirs, ["Main", "br", "br1x", "other"]);
+    let expected: &[&str] = if case_sensitive {
+        &["Main", "br", "br1x", "other"]
+    } else {
+        &["br", "br1x", "other"]
+    };
+    assert_eq!(foreign_dirs, expected);
     // `br12` is valid but its header says `main`: a mismatch, not a segment.
     assert!(entries.iter().any(|e| matches!(e, Entry::Foreign { path, conflict_copy: Some(Provider::Unknown), .. } if path.parent().unwrap().ends_with("br12"))));
     assert_eq!(

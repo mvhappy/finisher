@@ -254,7 +254,7 @@ pub fn check_canonical_times(input: &Value, decoded: &Value) -> Result<(), CoreE
 
 fn walk(input: &Value, decoded: &Value, path: &mut String) -> Result<(), CoreError> {
     let len = path.len();
-    let mut at = |path: &mut String, key: &str, a: &Value, b: &Value| {
+    let at = |path: &mut String, key: &str, a: &Value, b: &Value| {
         path.push('/');
         path.push_str(&key.replace('~', "~0").replace('/', "~1"));
         let r = walk(a, b, path);

@@ -238,9 +238,14 @@ pub fn mount_fstype(mountinfo: &str, path: &Path) -> Option<String> {
 pub fn classify_wsl_path(path: &Path) -> Option<Provider> {
     let c = comps(path, true);
     let c: Vec<&str> = c.iter().map(String::as_str).collect();
-    // Skip the root component: ["/", "mnt", "c", "users", "<user>", ...].
+    // Skip the root component: ["/", "mnt", "c", "users", "<user>", ...]. Windows spells the
+    // root `\`; matching both keeps this pure function testable on every platform.
     let rest = match c.as_slice() {
-        ["/", "mnt", d, "users", _user, rest @ ..] if d.len() == 1 => rest,
+        [root, "mnt", d, "users", _user, rest @ ..]
+            if matches!(*root, "/" | "\\") && d.len() == 1 =>
+        {
+            rest
+        }
         _ => return None,
     };
     let originals = comps(path, false);
