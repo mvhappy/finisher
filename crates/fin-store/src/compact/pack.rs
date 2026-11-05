@@ -12,7 +12,7 @@ use super::{Fence, Step, fence, fsio_write, hit};
 use crate::chain::SegRef;
 use crate::db::to_i64;
 use crate::names::{ManifestName, SegmentName, SnapName, hash12};
-use crate::segment::{self, Header};
+use crate::segment::{self, Header, Replaced};
 use crate::snapfile::{self, SnapHeader};
 use crate::{Store, StoreError};
 
@@ -180,7 +180,17 @@ fn encode(
             replaced.push(s);
         }
     }
-    let mut replaces: Vec<String> = replaced.iter().map(|s| s.hash().to_string()).collect();
+    let mut replaces: Vec<Replaced> = replaced
+        .iter()
+        .map(|s| Replaced {
+            hash: s.hash().to_string(),
+            last_tx_hash: s
+                .txs()
+                .last()
+                .map(|m| m.tx_hash.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
     replaces.sort();
     let lines: Vec<&[u8]> = primaries.iter().flat_map(|s| s.records()).collect();
     let header = Header {

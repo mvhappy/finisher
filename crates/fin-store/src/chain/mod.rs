@@ -17,7 +17,9 @@
 //!
 //! Segment-level fields are still checked and used where the spec says so:
 //! - a segment's `prevSegmentHash` must resolve to a present segment or to a hash listed in a
-//!   present pack's `replaces`; otherwise the segment waits (a gap);
+//!   present pack's `replaces`; otherwise the segment waits (a gap). Each `replaces` entry
+//!   names the replaced segment's last record (`lastTxHash`), and a successor must continue
+//!   exactly that record, as it would the segment itself;
 //! - the segment's first record must continue that predecessor (its `parentHash` is the
 //!   predecessor's last record, `seq` is one more), else the segment is malformed;
 //! - a record's epoch is the highest epoch of the segments that hold it.

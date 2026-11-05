@@ -83,7 +83,10 @@ fn segment_roundtrip_preserves_record_bytes() {
     let mut pack = header();
     pack.pack = true;
     pack.prev_segment_hash = None;
-    pack.replaces = vec![format!("blake3:{}", "01".repeat(32))];
+    pack.replaces = vec![segment::Replaced {
+        hash: format!("blake3:{}", "01".repeat(32)),
+        last_tx_hash: format!("blake3:{}", "02".repeat(32)),
+    }];
     let (bytes, hash) = segment::encode(&pack, &RECORDS);
     let seg = segment::decode(&bytes).unwrap();
     assert_eq!((seg.header, seg.hash), (pack, hash));

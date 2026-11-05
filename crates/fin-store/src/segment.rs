@@ -58,9 +58,19 @@ pub struct Header {
     pub genesis_hash: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pack: bool,
-    /// For a pack: the hashes of the segments it replaces.
+    /// For a pack: the segments it replaces.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub replaces: Vec<String>,
+    pub replaces: Vec<Replaced>,
+}
+
+/// One segment a pack replaces: its hash and the `txHash` of its last record. A segment that
+/// names a replaced segment as its predecessor must continue exactly that record, so a pack
+/// can stand in for the segment once it is deleted without letting a misnamed file link.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Replaced {
+    pub hash: String,
+    pub last_tx_hash: String,
 }
 
 /// A decoded, verified segment.
@@ -120,8 +130,9 @@ pub fn decode(bytes: &[u8]) -> Result<Segment, SegError> {
     if let Some(prev) = &header.prev_segment_hash {
         check_hash("prevSegmentHash", prev)?;
     }
-    for h in &header.replaces {
-        check_hash("replaces", h)?;
+    for r in &header.replaces {
+        check_hash("replaces.hash", &r.hash)?;
+        check_hash("replaces.lastTxHash", &r.last_tx_hash)?;
     }
     if header.pack == header.replaces.is_empty() {
         return Err(corrupt(

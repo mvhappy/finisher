@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 pub use fin_store::chain::{ForkReason, ForkSide, Known, QuarantineReason, Resolution, SegRef};
 use fin_store::conflict_names::Provider;
-use fin_store::segment::{self, Header};
+use fin_store::segment::{self, Header, Replaced};
 use fin_store::storage_kind::StorageKind;
 use serde_json::json;
 
@@ -18,12 +18,20 @@ pub fn rec(tx: &str, seq: u64, parent: Option<&str>, salt: &str) -> Vec<u8> {
     serde_json::to_vec(&json!({ "txId": tx, "seq": seq, "parentHash": parent, "v": salt })).unwrap()
 }
 
+/// The `replaces` entry for `s`: its hash and its last record.
+pub fn rep(s: &SegRef) -> Replaced {
+    Replaced {
+        hash: s.hash().to_string(),
+        last_tx_hash: s.txs().last().unwrap().tx_hash.clone(),
+    }
+}
+
 /// A verified segment built through the real codec.
 pub fn build(
     epoch: u64,
     prev: Option<String>,
     records: Vec<Vec<u8>>,
-    replaces: Vec<String>,
+    replaces: Vec<Replaced>,
     created_at: i64,
 ) -> SegRef {
     build_on("main", epoch, prev, records, replaces, created_at)
@@ -35,7 +43,7 @@ pub fn build_on(
     epoch: u64,
     prev: Option<String>,
     records: Vec<Vec<u8>>,
-    replaces: Vec<String>,
+    replaces: Vec<Replaced>,
     created_at: i64,
 ) -> SegRef {
     let first: serde_json::Value = serde_json::from_slice(&records[0]).unwrap();
@@ -102,7 +110,7 @@ pub fn pack(epoch: u64, run: &[&SegRef]) -> SegRef {
         .iter()
         .flat_map(|s| s.records().map(<[u8]>::to_vec))
         .collect();
-    let replaces = run.iter().map(|s| s.hash().to_string()).collect();
+    let replaces = run.iter().map(|s| rep(s)).collect();
     build(
         epoch,
         run[0].header().prev_segment_hash.clone(),

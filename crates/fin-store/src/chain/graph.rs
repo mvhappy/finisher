@@ -4,9 +4,11 @@
 //! 2. Per segment (local checks): records parse, seqs run `firstSeq..=lastSeq`, each record's
 //!    `parentHash` is the previous record's `txHash`, no `txId` repeats, and a segment with a
 //!    predecessor starts with a record that has a parent. Failing → malformed.
-//! 3. Packs: a pack is honoured only if it holds every record of each present segment it
-//!    lists in `replaces`; otherwise it is malformed. (A pack can therefore never stand for a
-//!    segment it does not contain: not itself, not its successor, not a different line.)
+//! 3. Packs: a pack is honoured only if it holds the `lastTxHash` record of every entry in
+//!    `replaces`, and every record of each present segment it lists, whose last record must
+//!    be that entry's `lastTxHash`; otherwise it is malformed. (A pack can therefore never
+//!    stand for a segment it does not contain: not itself, not its successor, not a
+//!    different line.)
 //! 4. Records become nodes keyed by `txHash`.
 //! 5. Per segment (link checks), its first record:
 //!    - `prevSegmentHash` null: a child of the branch start, unless its `parentHash` names a
@@ -15,9 +17,10 @@
 //!      branches start at a fork point;
 //!    - `prevSegmentHash` a present segment: the `parentHash` must be its last record, with
 //!      `seq` one less; else malformed;
-//!    - `prevSegmentHash` only in an honoured pack's `replaces`: the pack stands in only if
-//!      it holds the `parentHash` record (`seq` must then continue, else malformed);
-//!      otherwise the segment waits for the real predecessor;
+//!    - `prevSegmentHash` only in an honoured pack's `replaces`: the pack stands in only
+//!      for that replaced segment's last record (`lastTxHash` in the entry, which the pack
+//!      holds): the `parentHash` must be exactly that record and `seq` must continue, else
+//!      malformed (as when the real predecessor is present);
 //!    - anything else: the segment waits (a gap) and its first record is not linked through
 //!      it.
 //!
@@ -94,10 +97,14 @@ impl<'a> Graph<'a> {
             .enumerate()
             .map(|(i, s)| (s.hash(), i))
             .collect();
-        let mut alias: HashMap<&str, Vec<usize>> = HashMap::new();
+        // Replaced segment hash → `(pack, the replaced segment's last record)`.
+        let mut alias: HashMap<&str, Vec<(usize, &str)>> = HashMap::new();
         for (i, s) in segs.iter().enumerate() {
             for r in &s.header().replaces {
-                alias.entry(r.as_str()).or_default().push(i);
+                alias
+                    .entry(r.hash.as_str())
+                    .or_default()
+                    .push((i, r.last_tx_hash.as_str()));
             }
         }
 
@@ -144,21 +151,21 @@ impl<'a> Graph<'a> {
                             Some(x) if seq_ok(x) && last == m0.parent_hash.as_ref() => Ok(parent),
                             _ => bad(),
                         }
-                    } else {
-                        // A pack stands in for `q` only if it holds the parent record.
-                        let held = parent.filter(|&x| {
-                            alias
-                                .get(q)
-                                .is_some_and(|ps| ps.iter().any(|pi| all_occ[x].contains(pi)))
+                    } else if let Some(ps) = alias.get(q) {
+                        // A pack stands in for `q` only for `q`'s own last record: the
+                        // parent must be exactly that record (which the pack holds).
+                        let exact = parent.filter(|&x| {
+                            ps.iter().any(|&(pi, last)| {
+                                all_occ[x].contains(&pi) && nodes[x].meta.tx_hash == last
+                            })
                         });
-                        match held {
-                            Some(x) if seq_ok(x) => Ok(held),
-                            Some(_) => bad(),
-                            None => {
-                                gaps.push((si, q));
-                                Ok(None)
-                            }
+                        match exact {
+                            Some(x) if seq_ok(x) => Ok(exact),
+                            _ => bad(),
                         }
+                    } else {
+                        gaps.push((si, q));
+                        Ok(None)
                     }
                 }
             };
@@ -289,23 +296,33 @@ fn honest_packs<'a>(
     for (i, s) in valid.iter().enumerate() {
         let lie = s.header().pack.then(|| {
             let mine: HashSet<&str> = s.all_txs().iter().map(|m| m.tx_hash.as_str()).collect();
-            s.header().replaces.iter().find(|r| {
-                idx.get(r.as_str()).is_some_and(|&j| {
-                    j == i
-                        || !valid[j]
-                            .all_txs()
-                            .iter()
-                            .all(|m| mine.contains(m.tx_hash.as_str()))
-                })
+            s.header().replaces.iter().find_map(|r| {
+                if !mine.contains(r.last_tx_hash.as_str()) {
+                    return Some(format!(
+                        "replaces {} without holding its last record",
+                        short(&r.hash)
+                    ));
+                }
+                let &j = idx.get(r.hash.as_str())?;
+                let txs = valid[j].all_txs();
+                let holds = j != i && txs.iter().all(|m| mine.contains(m.tx_hash.as_str()));
+                let last = txs.last().map(|m| m.tx_hash.as_str());
+                if !holds {
+                    Some(format!(
+                        "replaces {} without holding its records",
+                        short(&r.hash)
+                    ))
+                } else if last != Some(r.last_tx_hash.as_str()) {
+                    Some(format!("names the wrong last record of {}", short(&r.hash)))
+                } else {
+                    None
+                }
             })
         });
         match lie.flatten() {
-            Some(r) => {
+            Some(why) => {
                 malformed_hashes.insert(s.hash());
-                malformed.push((
-                    s.whole(),
-                    format!("replaces {} without holding its records", short(r)),
-                ));
+                malformed.push((s.whole(), why));
             }
             None => keep.push(*s),
         }

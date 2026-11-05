@@ -828,7 +828,16 @@ fn follower_imports_across_a_pack() {
         .collect();
     let mut h = header(&a, 0, 1, 4, None);
     h.pack = true;
-    h.replaces = vec![segs[0].1.hash.clone(), segs[1].1.hash.clone()];
+    h.replaces = segs[..2]
+        .iter()
+        .map(|s| fin_store::segment::Replaced {
+            hash: s.1.hash.clone(),
+            last_tx_hash: format!(
+                "blake3:{}",
+                blake3::hash(s.1.records.last().unwrap()).to_hex()
+            ),
+        })
+        .collect();
     let pack = plant(&e.dir, &h, &records);
     fs::remove_file(&segs[0].0).unwrap();
     fs::remove_file(&segs[1].0).unwrap();

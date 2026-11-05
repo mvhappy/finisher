@@ -128,7 +128,7 @@ fn check(store: &Store, m: &Manifest, v: &View) -> Result<Checked, StoreError> {
             records.insert(meta.tx_hash.clone(), bytes);
         }
         for r in &s.header().replaces {
-            let e = replaces.entry(r.as_str()).or_insert(0);
+            let e = replaces.entry(r.hash.as_str()).or_insert(0);
             *e = (*e).max(s.header().epoch);
         }
     }
@@ -271,6 +271,10 @@ fn verdict_changes(
         .cloned()
         .collect();
     let kind = store.import.kind;
+    // These two suffice: the record graph is built from the files alone (no DB input), and
+    // only epochs, malformed files or lying packs can change with the file set, all of which
+    // show in the verdicts of a fresh reader; this DB's line and tail add the competitions
+    // that only it sees.
     let ours = crate::import::known_now(&store.conn, branch, true, kind)?;
     for (who, known) in [
         ("a fresh reader", Known::empty(kind)),

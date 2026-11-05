@@ -27,6 +27,8 @@
 //! 3. **Packs**: runs of consecutive eligible segments with non-decreasing epochs, cut at
 //!    [`crate::segment::MAX_RECORDS`] / [`crate::segment::MAX_BYTES`] (whole segments, so a transaction is
 //!    never split), at least two segments each. A pack holds the records byte for byte,
+//!    lists each replaced segment as `{"hash", "lastTxHash"}` (its last record: a pack
+//!    stands in for a deleted segment only as that record, `crate::chain`),
 //!    `prevSegmentHash` = its first segment's, epoch = the highest it replaces (its last
 //!    segment's; duplicates inside its range at a higher epoch are left alone), `createdAt`
 //!    = the latest it replaces (so a re-planned pack is the same file), our `writerId` and
@@ -56,7 +58,9 @@
 //! is not settled waits ([`RETRY`]); anything that contradicts the manifest abandons it:
 //! nothing more is deleted for it, it stays in the folder and in status, the database
 //! remembers it (`meta` `compactionAbandoned`, across restarts), and its segments are not
-//! compacted again, until `force` checks it again.
+//! compacted again, until `force` checks it again. Abandoning is per server: the manifest
+//! stays in the folder, and another server that later holds the lease checks it afresh
+//! after its own grace period.
 //!
 //! Export and import chain a new segment from an original segment rather than a pack ending
 //! at the same seq, and import never records a pack the resolution sets aside.
@@ -199,7 +203,7 @@ fn unpacked(store: &Store, branch: &str) -> usize {
     let replaced: HashSet<&str> = segs
         .iter()
         .filter(|s| s.header().pack)
-        .flat_map(|s| s.header().replaces.iter().map(String::as_str))
+        .flat_map(|s| s.header().replaces.iter().map(|r| r.hash.as_str()))
         .collect();
     segs.iter()
         .filter(|s| !s.header().pack && !replaced.contains(s.hash()))
@@ -373,7 +377,7 @@ fn phase1(
             protected_names.extend(m.replaced.iter().cloned());
             for p in &m.packs {
                 if let Some(seg) = v.by_name.get(p) {
-                    protected.extend(seg.header().replaces.iter().cloned());
+                    protected.extend(seg.header().replaces.iter().map(|r| r.hash.clone()));
                 }
             }
         }

@@ -193,7 +193,7 @@ impl Folder {
                 Entry::Segment { seg, .. } => {
                     segments += 1;
                     present.insert(seg.hash.clone());
-                    replaced.extend(seg.header.replaces.iter().cloned());
+                    replaced.extend(seg.header.replaces.iter().map(|r| r.hash.clone()));
                 }
                 Entry::Snapshot { .. } => snapshots += 1,
                 Entry::Damaged { path, reason, .. } => {
@@ -388,7 +388,7 @@ impl Folder {
                     .header()
                     .replaces
                     .iter()
-                    .filter_map(|h| by_hash.get(h.as_str()))
+                    .filter_map(|h| by_hash.get(h.hash.as_str()))
                     .map(|s| s.header.epoch)
                     .max();
                 if let Some(max) = max

@@ -326,7 +326,7 @@ fn pack_that_does_not_hold_what_it_replaces_is_malformed() {
         3,
         None,
         s1.records().map(<[u8]>::to_vec).collect(),
-        vec![s1.hash().to_string(), x.hash().to_string()],
+        vec![rep(&s1), rep(&x)],
         5,
     );
     let r = resolve(
@@ -495,11 +495,67 @@ fn pack_listing_its_own_successor_is_malformed() {
         2,
         None,
         s1.records().map(<[u8]>::to_vec).collect(),
-        vec![s1.hash().to_string(), s2.hash().to_string()],
+        vec![rep(&s1), rep(&s2)],
         3,
     );
     let r = resolve(&[s1, s2, liar.clone()], &Known::empty(LOCAL));
     assert_eq!(applied(&r), ids(&["a", "b"]));
     assert!(matches!(&r.quarantine[..], [(s, QuarantineReason::Malformed(_))] if s == &liar));
     no_fork(&r);
+}
+
+#[test]
+fn a_pack_stands_in_only_for_the_last_record_of_a_replaced_segment() {
+    let s1 = next(None, 2, &["a", "b"]);
+    let s2 = next(Some(&s1), 2, &["c"]);
+    let s3 = next(Some(&s2), 2, &["d"]);
+    let p = pack(2, &[&s1, &s2]);
+    let b = s1.txs().last().unwrap().clone();
+    // Names s2 but continues b, s1's last record: malformed with s2 present, and still
+    // malformed once only the pack is left (the pack says s2 ended at c).
+    let misnamed = build(
+        2,
+        Some(s2.hash().to_string()),
+        vec![rec("x", 3, Some(&b.tx_hash), "")],
+        vec![],
+        0,
+    );
+    // Names s1 and continues b: a genuine (stale) fork from inside the pack.
+    let fork = build(
+        1,
+        Some(s1.hash().to_string()),
+        vec![rec("y", 3, Some(&b.tx_hash), "")],
+        vec![],
+        0,
+    );
+    for files in [
+        vec![
+            s1.clone(),
+            s2.clone(),
+            p.clone(),
+            s3.clone(),
+            misnamed.clone(),
+            fork.clone(),
+        ],
+        vec![p.clone(), s3.clone(), misnamed.clone(), fork.clone()],
+    ] {
+        let r = resolve(&files, &Known::empty(LOCAL));
+        assert_eq!(applied(&r), ids(&["a", "b", "c", "d"]));
+        no_fork(&r);
+        assert!(
+            r.quarantine.contains(&(
+                misnamed.clone(),
+                QuarantineReason::Malformed(format!(
+                    "does not continue its predecessor {}",
+                    &s2.hash()[7..19]
+                ))
+            )),
+            "{r:#?}"
+        );
+        assert!(
+            r.quarantine
+                .contains(&(fork.clone(), QuarantineReason::StaleEpoch)),
+            "{r:#?}"
+        );
+    }
 }

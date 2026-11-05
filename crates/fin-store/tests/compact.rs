@@ -11,12 +11,23 @@ use std::time::Duration;
 use fin_core::SCHEMA_VERSION;
 use fin_store::conflict_names::Provider;
 use fin_store::names::ManifestName;
-use fin_store::segment::{self, Header, Segment};
+use fin_store::segment::{self, Header, Replaced, Segment};
 use fin_store::storage_kind::StorageKind;
 use fin_store::{CompactFail, MAIN, ReadOnlyReason, Store, VerifyReport};
 use integration_support::*;
 
 const GRACE: Duration = Duration::from_secs(5);
+
+/// The `replaces` entry for `s`.
+fn rep(s: &Segment) -> Replaced {
+    Replaced {
+        hash: s.hash.clone(),
+        last_tx_hash: format!(
+            "blake3:{}",
+            blake3::hash(s.records.last().unwrap()).to_hex()
+        ),
+    }
+}
 
 fn short_grace(s: &mut Store) {
     s.set_compaction_grace_for_test(GRACE);
@@ -135,9 +146,12 @@ fn compaction_preserves_every_record_and_hash() {
     assert_eq!((h.first_seq, h.last_seq, h.epoch), (1, 5, 1));
     assert_eq!(h.prev_segment_hash, None);
     assert_eq!(h.genesis_hash, a.genesis_hash());
-    let mut hashes: Vec<String> = old.iter().map(|s| s.hash.clone()).collect();
-    hashes.sort();
-    assert_eq!(h.replaces, hashes);
+    let mut want: Vec<Replaced> = old.iter().map(rep).collect();
+    want.sort();
+    assert_eq!(
+        h.replaces, want,
+        "each replaced segment with its last record"
+    );
     let concat: Vec<Vec<u8>> = old.iter().flat_map(|s| s.records.clone()).collect();
     assert_eq!(p[0].records, concat, "byte for byte");
     let m = manifest(&e.dir);
@@ -784,7 +798,7 @@ fn forge_pack(
     s: &Store,
     segs: &[&Segment],
     epoch: u64,
-    replaces: Vec<String>,
+    replaces: Vec<Replaced>,
 ) -> (String, String) {
     let recs: Vec<&[u8]> = segs
         .iter()
@@ -902,7 +916,7 @@ fn phase_one_leaves_the_predecessor_of_a_malformed_file_alone() {
 }
 
 #[test]
-fn a_malformed_file_landing_between_phases_abandons_the_deletion() {
+fn a_malformed_file_landing_between_phases_stays_malformed() {
     let e = env();
     let mut a = e.create("a");
     a.set_test_lease(2, true);
@@ -913,14 +927,10 @@ fn a_malformed_file_landing_between_phases_abandons_the_deletion() {
     let bad = plant_misnamed(&e, &a);
     e.poll(&mut a);
     let aside = reasons(&a);
+    assert_eq!(aside[0].1, "MALFORMED");
+    // The pack names t2's segment's last record, so the deletion changes nothing.
     let r = after_grace(&e, &mut a);
-    assert_eq!((r.abandoned.len(), r.deleted), (1, 0), "{r:?}");
-    assert!(r.abandoned[0].1.contains("would change"), "{r:?}");
-    assert_eq!(
-        originals(&e.dir).len(),
-        6,
-        "five segments and the misnamed file"
-    );
+    assert_eq!((r.finished.len(), r.deleted), (1, 5), "{r:?}");
     assert!(bad.exists());
     e.poll(&mut a);
     assert_eq!(a.read_only(), None);
@@ -930,6 +940,62 @@ fn a_malformed_file_landing_between_phases_abandons_the_deletion() {
         (g.head(MAIN), g.read_only()),
         (5, Some(ReadOnlyReason::LeaseHeld))
     );
+    assert_eq!(reasons(&g), aside);
+}
+
+#[test]
+fn a_deletion_that_would_unmask_a_lying_pack_is_abandoned() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(2, true);
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 3);
+    let s = segments(&e.dir);
+    // Q holds t0 and a record z after t0 at epoch 3, and claims to replace t1's segment
+    // (ending at z). While t1's segment is there the lie shows and Q is malformed; with it
+    // gone Q would be honoured, and z would beat t1.
+    let z = edited(&s[1].2.records[0], |m| {
+        m.insert("txId".into(), "z".into());
+    });
+    let header = Header {
+        format_version: segment::FORMAT_VERSION,
+        min_reader_version: segment::MIN_READER_VERSION,
+        project_id: a.project_id().to_string(),
+        branch: MAIN.to_string(),
+        writer_id: "01jstalewriter000000000000".to_string(),
+        epoch: 3,
+        first_seq: 1,
+        last_seq: 2,
+        prev_segment_hash: None,
+        op_schema_versions: [SCHEMA_VERSION, SCHEMA_VERSION],
+        created_at: 0,
+        genesis_hash: a.genesis_hash(),
+        pack: true,
+        replaces: vec![
+            rep(&s[0].2),
+            Replaced {
+                hash: s[1].2.hash.clone(),
+                last_tx_hash: format!("blake3:{}", blake3::hash(&z).to_hex()),
+            },
+        ],
+    };
+    let (bytes, hash) = segment::encode(&header, &[&s[0].2.records[0], &z]);
+    let name =
+        fin_store::names::SegmentName::new(3, 1, 2, fin_store::names::hash12(&hash).unwrap())
+            .unwrap();
+    fs::write(seg_dir(&e.dir).join(name.to_string()), bytes).unwrap();
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    let aside = reasons(&a);
+    assert!(aside.iter().all(|r| r.1 == "MALFORMED"), "{aside:?}");
+    let r = a.compact(true).unwrap();
+    assert_eq!(r.replaced, 3, "{r:?}");
+    let r = after_grace(&e, &mut a);
+    assert_eq!((r.abandoned.len(), r.deleted), (1, 0), "{r:?}");
+    assert!(r.abandoned[0].1.contains("would change"), "{r:?}");
+    assert_eq!(originals(&e.dir).len(), 3);
+    e.poll(&mut a);
+    assert_eq!((a.read_only(), reasons(&a)), (None, aside));
 }
 
 #[test]
@@ -982,7 +1048,7 @@ fn a_pack_labelled_below_a_segment_it_replaces_is_abandoned() {
     a.set_test_lease(3, true);
     segs(&e, &mut a, "u", 1);
     let s = segments(&e.dir);
-    let hashes = vec![s[0].2.hash.clone(), s[1].2.hash.clone()];
+    let hashes = vec![rep(&s[0].2), rep(&s[1].2)];
     let (pack, _) = forge_pack(&e.dir, &a, &[&s[0].2, &s[1].2], 1, hashes);
     forge_manifest(
         &e.dir,
@@ -1016,9 +1082,9 @@ fn a_lying_pack_is_never_chained_from() {
             m.insert("txId".into(), "stale".into());
         }),
     );
-    let stale_hash = segment::decode(&fs::read(&stale).unwrap()).unwrap().hash;
-    let mut replaces: Vec<String> = s.iter().map(|x| x.2.hash.clone()).collect();
-    replaces.push(stale_hash);
+    let stale_seg = segment::decode(&fs::read(&stale).unwrap()).unwrap();
+    let mut replaces: Vec<Replaced> = s.iter().map(|x| rep(&x.2)).collect();
+    replaces.push(rep(&stale_seg));
     let all: Vec<&Segment> = s.iter().map(|x| &x.2).collect();
     let (_, lying) = forge_pack(&e.dir, &a, &all, 2, replaces);
     e.poll(&mut a);
@@ -1115,4 +1181,39 @@ fn an_abandoned_manifest_stays_abandoned_across_restarts() {
         st.compaction
     );
     assert!(st.warnings.iter().any(|w| w.code == "COMPACTION_ABANDONED"));
+}
+
+#[test]
+fn a_malformed_file_arriving_after_deletion_stays_malformed() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(2, true);
+    short_grace(&mut a);
+    segs(&e, &mut a, "t", 5);
+    let s = segments(&e.dir);
+    a.compact(true).unwrap();
+    assert_eq!(after_grace(&e, &mut a).deleted, 5);
+    // Names t2's (deleted) segment as predecessor but continues t0: the pack records that
+    // t2's segment ended at t2, so the file cannot stand in through it.
+    plant(
+        &e.dir,
+        &a,
+        &s[2].2,
+        2,
+        2,
+        edited(&s[1].2.records[0], |m| {
+            m.insert("txId".into(), "bad".into());
+        }),
+    );
+    e.poll(&mut a);
+    assert_eq!(a.read_only(), None);
+    let aside = reasons(&a);
+    assert_eq!(aside.len(), 1);
+    assert_eq!(aside[0].1, "MALFORMED");
+    let g = e.open("g");
+    assert_eq!(
+        (g.head(MAIN), g.read_only()),
+        (5, Some(ReadOnlyReason::LeaseHeld))
+    );
+    assert_eq!(reasons(&g), aside);
 }

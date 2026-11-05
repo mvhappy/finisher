@@ -181,7 +181,7 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
     let pack_replaced = segs
         .iter()
         .filter(|s| s.header().pack && !malformed.contains(s.hash()))
-        .flat_map(|s| s.header().replaces.iter().cloned())
+        .flat_map(|s| s.header().replaces.iter().map(|r| r.hash.clone()))
         .collect();
     let malformed_prevs = segs
         .iter()

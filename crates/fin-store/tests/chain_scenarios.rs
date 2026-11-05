@@ -190,7 +190,8 @@ fn divergence_inside_the_exported_tail() {
 }
 
 // R8 and the planted "any pack stands in for its predecessor" bug: a pack that lists an
-// absent segment without holding its records must not stand in for it.
+// absent segment without holding its records must not stand in for it. (Its `replaces`
+// entry names the segment's last record, which it does not hold: malformed at once.)
 #[test]
 fn pack_that_lacks_a_replaced_record_does_not_stand_in() {
     let s1 = next(None, 1, &["a", "b"]);
@@ -200,14 +201,16 @@ fn pack_that_lacks_a_replaced_record_does_not_stand_in() {
         2,
         None,
         s1.records().map(<[u8]>::to_vec).collect(),
-        vec![s1.hash().to_string(), s2.hash().to_string()],
+        vec![rep(&s1), rep(&s2)],
         5,
     );
     let r = resolve(&[liar.clone(), s3.clone()], &Known::empty(LOCAL));
-    assert_eq!(applied(&r), ids(&["a", "b"]));
+    assert!(applied(&r).is_empty(), "{r:#?}");
     assert_eq!(r.waiting, vec![s2.hash().to_string()]);
     assert_eq!(pending(&r), ids(&["d"]));
-    assert!(r.quarantine.is_empty(), "{r:#?}");
+    assert!(
+        matches!(&r.quarantine[..], [(s, QuarantineReason::Malformed(_))] if s.hash() == liar.hash())
+    );
 
     // s2's record is present, but only in another file (a re-export): the pack lists s2 and
     // does not hold it, so s3 still waits for s2 itself.
@@ -219,9 +222,9 @@ fn pack_that_lacks_a_replaced_record_does_not_stand_in() {
         9,
     );
     let r = resolve(&[liar, s2b, s3], &Known::empty(LOCAL));
-    assert_eq!(applied(&r), ids(&["a", "b", "c"]));
-    assert_eq!(r.waiting, vec![s2.hash().to_string()]);
-    assert_eq!(pending(&r), ids(&["d"]));
+    assert!(r.waiting.contains(&s2.hash().to_string()));
+    assert!(!applied(&r).contains(&"d".to_string()) && pending(&r).contains(&"d".to_string()));
+    no_fork(&r);
 }
 
 // R9 and the planted "tail unexported whenever non-empty" bug: a fully exported tail is no
