@@ -7,7 +7,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{asset, record, wrong_op};
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Footprint, LegacyConflict, Touch};
+use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -59,22 +59,6 @@ pub(crate) fn apply(
         audio: a.audio,
         fingerprint: a.fingerprint,
     }])
-}
-
-/// Conflicts when the committed op placed a clip using the asset.
-pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    let Op::AssetRemove { id } = op else {
-        return Ok(op.clone());
-    };
-    let used = match over {
-        Op::ClipInsert { asset, .. } => asset == id,
-        Op::ClipRestore { clip, .. } => &clip.asset == id,
-        _ => false,
-    };
-    if used {
-        return Err(LegacyConflict::new("asset in use"));
-    }
-    Ok(op.clone())
 }
 
 /// Removes the asset; binds no track.

@@ -243,9 +243,10 @@ fn replay_rejects_literal_ids_that_do_not_fit_their_kind() {
         track: "t1".into(),
         ripple: true,
     };
+    // A placeholder restore (spec §4.3) needs its recorded binding.
     assert_eq!(
         cause(&p, vec![restore(c.clone())], &BTreeMap::new()),
-        "INVALID_ID"
+        "UNBOUND_PLACEHOLDER"
     );
     c.id = "x5".into();
     assert_eq!(

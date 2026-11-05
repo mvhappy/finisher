@@ -1,12 +1,12 @@
 //! Primitive edit operations, one module per op (schema, validate, apply, invert, conflict
-//! footprint, positions, rebase).
+//! footprint, positions).
 //!
 //! Client ops: `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`. Internal ops exist only
 //! as inverses (`asset.remove`, `clip.remove`, `clip.restore`); clients sending them get
 //! `INVALID_OP`.
 //!
 //! Every clip op records exactly one `Shift` in the diff (possibly `by: 0`) and asset ops record
-//! none. `rebase` relies on that to pair a committed transaction's shifts with its ops.
+//! none. The rebase engine relies on that to pair a transaction's shifts with its ops.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +18,7 @@ use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{AudioInfo, Clip, Project, VideoInfo};
-use crate::rebase::{Footprint, LegacyConflict};
+use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::Diff;
 
@@ -159,18 +159,19 @@ impl Op {
     }
 
     /// The placeholder this op binds to a newly allocated id, if any (in op order these are
-    /// the order ids are allocated in).
+    /// the order ids are allocated in). `clip.restore` binds one when its clip id is a
+    /// placeholder (spec §4.3).
     pub(crate) fn allocates(&self) -> Option<&str> {
-        match self {
-            Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } if id.starts_with('$') => Some(id),
-            _ => None,
-        }
+        let id = match self {
+            Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } => id,
+            Op::ClipRestore { clip, .. } => &clip.id,
+            _ => return None,
+        };
+        id.starts_with('$').then_some(id.as_str())
     }
 
     /// Every timeline position the op carries, with its track, mutably, so a rebase can map
     /// them (`clip.insert` `at`, `clip.restore` `clip.start`).
-    // The rebase engine (plan Task 6) is the caller; until then only the unit test uses it.
-    #[allow(dead_code)]
     pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)> {
         match self {
             Op::AssetAdd { .. } => asset_add::positions_mut(self),
@@ -338,20 +339,6 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         Op::AssetRemove { .. } => asset_remove::footprint(op, op_diff),
         Op::ClipRemove { .. } => clip_remove::footprint(op, op_diff),
         Op::ClipRestore { .. } => clip_restore::footprint(op, op_diff),
-    }
-}
-
-/// Rebases `op` over one committed op `over` whose own diff (its single shift, if any) is
-/// `over_diff`. `over` must already have its placeholders resolved.
-pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    match op {
-        Op::AssetAdd { .. } => asset_add::rebase(op, over, over_diff),
-        Op::ClipInsert { .. } => clip_insert::rebase(op, over, over_diff),
-        Op::ClipTrim { .. } => clip_trim::rebase(op, over, over_diff),
-        Op::ClipDelete { .. } => clip_delete::rebase(op, over, over_diff),
-        Op::AssetRemove { .. } => asset_remove::rebase(op, over, over_diff),
-        Op::ClipRemove { .. } => clip_remove::rebase(op, over, over_diff),
-        Op::ClipRestore { .. } => clip_restore::rebase(op, over, over_diff),
     }
 }
 

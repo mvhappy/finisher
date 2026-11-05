@@ -5,7 +5,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{clip_index, wrong_op};
 use crate::ops::{Bindings, Op, clip_remove};
-use crate::rebase::{Footprint, LegacyConflict, Touch, removed_clip};
+use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::Diff;
 
@@ -31,17 +31,6 @@ pub(crate) fn apply(
 ) -> Result<Vec<Op>, CoreError> {
     let id = validate(project, op, bindings)?;
     clip_remove::remove(project, &id, true, diff)
-}
-
-/// Conflicts when the committed op already removed the clip.
-pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    let Op::ClipDelete { clip } = op else {
-        return Ok(op.clone());
-    };
-    if removed_clip(over) == Some(clip.as_str()) {
-        return Err(LegacyConflict::new("clip removed"));
-    }
-    Ok(op.clone())
 }
 
 /// Removes the clip, on the track its shift names.

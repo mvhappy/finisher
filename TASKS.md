@@ -70,7 +70,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-2-minimal-core.md`.
 - [x] `ops.subscribe` with `fromRev` > head should return `BASE_REV_AHEAD` — 4A Task 17
 - [x] Typecheck gate (`tsc`) for all TS packages, tests included (`@types/node`) — 4A Task 17 (core-types tests not yet included: see 4A follow-ups)
 - [x] Idempotency: `tx.get` RPC (asset add retry after the file moved) and a stored-args hash (same key, same op kind, different args) — 4A Tasks 15–16
-- [ ] Rebase: per-track (not per-tx) conservatism; stale insert vs committed `asset.remove` → `CONFLICT`; stronger proptest oracle (positions, multi-track); `clip.restore` placeholders (4B)
+- [x] Rebase: per-track (not per-tx) conservatism; stale insert vs committed `asset.remove` → `CONFLICT`; stronger proptest oracle (positions, multi-track); `clip.restore` placeholders — 4B Tasks 5–6 (`stale_insert_of_removed_asset_conflicts_removed`, `stale_and_fresh_agree_multi_track`, `restore_with_placeholder_id_binds`)
 - [ ] fin output: trim echoes the resulting edge; `project open` ignores `--dry-run`; `--out < --in` fix wording; negative `details.max` text when `sourceIn` ≥ asset duration (4C)
 - [x] Rational parsing: reject non-canonical input ("2/4", "-0"); `details.rev` should stay numeric — 4A Task 16
 - [x] `fin-node`: Linux loader libc detection; libuv pool use under many projects (long calls on a per-engine worker thread); hubs never removed in finisherd (removed with their last subscriber) — 4A Tasks 14, 17
@@ -166,6 +166,7 @@ Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md` (branch `sp4
 - [x] Task 3: record kinds with typed links, content-versioned segments (edit-only v1, any 4B kind v2), per-kind reader versions, DB migration 0002 (`branches`, `record_links`)
 - [x] Task 4: exact per-track shift maps (`rebase::map`: `StepMap`, `Mapping` with mirrors; ProseMirror recover rule, Decision 16)
 - [x] Task 5: per-track, per-entity conflict footprints (`rebase::footprint`, one `footprint` per op module; `Conflict` with reason codes, `Conflicts` → `CONFLICT` with `details.conflicts`)
+- [x] Task 6: rebase engine rewrite (`rebase_apply`: map op by op through mirrored inverses, judge unmirrored steps, re-run with full policy; `rebase_tx` in the frame at the base, `state::state_at` in commit), `clip.restore` placeholders. Proptest budget, first measure: `rebase_props` + `shift_map` 0.15 s wall in a debug build on the Linux VM (tests 0.05 s + 0.02 s; budget < 8 s)
 
 ## Blocked on hardware or accounts
 

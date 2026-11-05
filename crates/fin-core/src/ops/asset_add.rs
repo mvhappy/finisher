@@ -7,7 +7,7 @@ use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, Project};
 use crate::ops::util::{invalid_range, record, wrong_op};
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Footprint, LegacyConflict};
+use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -58,11 +58,6 @@ pub(crate) fn apply(
     project.assets.insert(id.clone(), asset);
     record(diff, EntityKind::Asset, &id, ChangeKind::Added);
     Ok(vec![Op::AssetRemove { id }])
-}
-
-/// Adding an asset never conflicts and has no positions to move.
-pub(crate) fn rebase(op: &Op, _over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    Ok(op.clone())
 }
 
 /// Creates the asset; binds no track.

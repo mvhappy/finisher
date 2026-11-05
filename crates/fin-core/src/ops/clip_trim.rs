@@ -9,7 +9,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{asset, clip_index, end, invalid_range, record, ripple, shift, wrong_op};
 use crate::ops::{Bindings, Edge, Op};
-use crate::rebase::{Footprint, LegacyConflict, Touch, removed_clip};
+use crate::rebase::{Footprint, Touch};
 use crate::time::{Rational, frame_duration};
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -91,28 +91,6 @@ pub(crate) fn apply(
         edge: *edge,
         delta: delta.checked_neg()?,
     }])
-}
-
-/// Conflicts when the committed op removed the clip or trimmed the same edge of it. Trims carry
-/// no positions, so nothing moves.
-pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    let Op::ClipTrim { clip, edge, .. } = op else {
-        return Ok(op.clone());
-    };
-    if removed_clip(over) == Some(clip.as_str()) {
-        return Err(LegacyConflict::new("clip removed"));
-    }
-    if let Op::ClipTrim {
-        clip: other,
-        edge: other_edge,
-        ..
-    } = over
-        && other == clip
-        && other_edge == edge
-    {
-        return Err(LegacyConflict::new("clip trimmed on the same edge"));
-    }
-    Ok(op.clone())
 }
 
 /// Moves one edge of the clip, on the track its shift names.

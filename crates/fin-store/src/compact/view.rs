@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use fin_core::Project;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 
 use crate::chain::{Known, QuarantineReason, Resolution, SegRef, resolve};
-use crate::db::{self, to_i64, to_u64};
+use crate::db::to_u64;
 use crate::names::{SegmentName, SnapName, hash12};
 use crate::scan::{Entry, NotArrivedWhy};
 use crate::snapfile::SnapHeader;
@@ -211,31 +211,7 @@ pub(super) fn read(store: &Store, branch: &str) -> Result<Result<View, String>, 
     }))
 }
 
-/// The state of `branch` after `seq`, from the database (its latest snapshot at or below,
-/// then replay).
+/// The state of `branch` after `seq`, from the database.
 pub(super) fn state_at(store: &Store, branch: &str, seq: u64) -> Result<Project, StoreError> {
-    let row: Option<(i64, String)> = store
-        .conn
-        .query_row(
-            "SELECT seq, json FROM snapshots WHERE branch = ?1 AND seq <= ?2
-             ORDER BY seq DESC LIMIT 1",
-            params![branch, to_i64(seq)?],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let Some((base, json)) = row else {
-        return Err(fin_core::CoreError::new(
-            "DB_ERROR",
-            format!("branch {branch:?} has no snapshot at or below seq {seq}"),
-        )
-        .into());
-    };
-    let mut project = fin_core::upcast_snapshot(serde_json::from_str(&json)?)?;
-    for row in db::record_rows(&store.conn, branch, to_u64(base)?)? {
-        if row.0 > seq {
-            break;
-        }
-        project = db::replay_row(&project, branch, &row)?.project;
-    }
-    Ok(project)
+    crate::state::state_at(&store.conn, branch, seq)
 }

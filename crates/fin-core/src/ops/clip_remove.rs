@@ -5,7 +5,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::util::{clip_index, end, record, ripple, shift, wrong_op};
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Footprint, LegacyConflict, Touch, removed_clip};
+use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -60,16 +60,6 @@ pub(crate) fn apply(
         return Err(wrong_op(op));
     };
     remove(project, &id, *ripple, diff)
-}
-
-pub(crate) fn rebase(op: &Op, over: &Op, _over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    let Op::ClipRemove { id, .. } = op else {
-        return Ok(op.clone());
-    };
-    if removed_clip(over) == Some(id.as_str()) {
-        return Err(LegacyConflict::new("clip removed"));
-    }
-    Ok(op.clone())
 }
 
 /// Removes the clip, on the track its shift names.

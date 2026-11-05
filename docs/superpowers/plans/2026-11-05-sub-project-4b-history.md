@@ -525,7 +525,7 @@ pub fn rebase_tx(base: &Project, head: &Project, tx: &Tx, since: &[CommittedTx],
 ```
 `Store::commit_at_generation`: when `base_rev < head`, the frame is `state_at(txn, branch, base_rev)`. The `Rebased.applied` replaces the second `apply_tx`.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `tests/rebase.rs`:
     - keep every SP2 test;
     - replace `positions_after_our_own_trim_or_delete_conflict_when_the_track_moved` with `positions_after_our_own_trim_or_delete_follow_the_track`;
@@ -541,11 +541,12 @@ pub fn rebase_tx(base: &Project, head: &Project, tx: &Tx, since: &[CommittedTx],
     - `restore_with_placeholder_id_binds` (Client: `INVALID_OP`; Internal: binds `c<n>`; Replay with `BoundIds`: same id);
     - `copy_with_bound_ids_duplicate_is_already_present`.
   - `store.rs`: `commit_rebases_after_own_delete_exactly`, `conflict_details_list_conflicts`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core -p fin-store`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Delete `ops::rebase`, the per-op `rebase` fns, `inserted_range`, `removed_clip` and `blind`.
-- [ ] **Step 4: Measure the budget (first time):** `rtk proxy bash -c 'time cargo test -p fin-core --test rebase_props --test shift_map'`. Record the time in TASKS.md; it must be < 8 s.
-- [ ] **Step 5:** Regenerate `crates/fin/tests/fixtures/rpc/conflict.response.ndjson` with `apps/finisherd/scripts/capture-rpc-fixtures.ts`. Run the three gates. Expected: PASS.
-- [ ] **Step 6: Commit** `feat(core): exact rebase engine; per-track conflicts; restore placeholders`.
+- [x] **Step 2: Run** `rtk cargo test -p fin-core -p fin-store`. Expected: FAIL.
+- [x] **Step 3: Implement.** Delete `ops::rebase`, the per-op `rebase` fns, `inserted_range`, `removed_clip` and `blind`.
+- [x] **Step 4: Measure the budget (first time):** `rtk proxy bash -c 'time cargo test -p fin-core --test rebase_props --test shift_map'`. Record the time in TASKS.md; it must be < 8 s.
+- [x] **Step 5:** Regenerate `crates/fin/tests/fixtures/rpc/conflict.response.ndjson` with `apps/finisherd/scripts/capture-rpc-fixtures.ts`. Run the three gates. Expected: PASS.
+- [x] **Step 6: Commit** `feat(core): exact rebase engine; per-track conflicts; restore placeholders`.
+- As built: `Step::from_committed` returns `Result` (resolving the record's placeholders can fail) and `Step.ops` are resolved; `invert` steps map through the inverse of `diff` and swap `creates`/`removes` in their footprints. `Rebase` gains `same_origin: &BTreeSet<String>` (ids on the head bound by records of the same origin chain; Task 13/14 fill it, `Rebase::new` leaves it empty), which decides `ALREADY_PRESENT` vs `ID_COLLISION` for a re-run `DUPLICATE_ID`. A bad `mirror_of` is a conflict with code `INVALID_OP`. `rebase_tx` returns a tx's own error when it does not apply at its base. Ops are re-run through a stepwise `apply::Applier`, which `apply_tx_mode` now uses too. Tests added beyond the list: `mirrored_steps_are_not_judged`; the SP2 props now also check that the stored intent replays.
 
 ### Task 7: Shared write path and lineage reads — tier: opus
 

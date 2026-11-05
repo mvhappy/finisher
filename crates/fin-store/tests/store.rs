@@ -291,6 +291,95 @@ fn conflicting_stale_tx_is_conflict_with_both_tx_ids() {
     assert_eq!(s.head(MAIN), 3);
 }
 
+/// 4A refused a position after our own delete on a track the committed side moved; the frame
+/// at the base (`state_at`) lets the engine map it exactly.
+#[test]
+fn commit_rebases_after_own_delete_exactly() {
+    let e = env();
+    let mut s = with_asset(&e);
+    s.commit(tx(
+        "tx-base",
+        1,
+        vec![insert("$c", 0, "a1", 5), insert("$d", 5, "a1", 3)],
+    ))
+    .unwrap();
+    // A inserts 3 s at 0: x [0, 3), c1 [3, 8), c2 [8, 11).
+    s.commit(tx("tx-a", 2, vec![insert("$x", 0, "a1", 3)]))
+        .unwrap();
+    // B read rev 2: deletes c1, then inserts at c2's end, 3 s after the delete.
+    let b = s
+        .commit(tx(
+            "tx-b",
+            2,
+            vec![
+                Op::ClipDelete { clip: "c1".into() },
+                insert("$y", 3, "a1", 1),
+            ],
+        ))
+        .unwrap();
+    assert_eq!(b.tx.base_rev, 3);
+    match &b.tx.ops[1] {
+        Op::ClipInsert { at, .. } => assert_eq!(*at, secs(6)),
+        op => panic!("unexpected {op:?}"),
+    }
+    let (rev, p) = s.snapshot(MAIN).unwrap();
+    assert_eq!(rev, 4);
+    assert_eq!(
+        clips(&p),
+        vec![
+            ("c3".to_string(), secs(0), secs(3)),
+            ("c2".to_string(), secs(3), secs(3)),
+            ("c4".to_string(), secs(6), secs(1)),
+        ]
+    );
+    // The stored record replays to the same state.
+    let zero = fin_core::new_project(s.project_id().into(), "Demo".into(), secs(30)).unwrap();
+    assert_eq!(fold_history(zero, &s.ops_since(MAIN, 0).unwrap()), p);
+}
+
+#[test]
+fn conflict_details_list_conflicts() {
+    let e = env();
+    let mut s = with_asset(&e);
+    s.commit(tx("tx-base", 1, vec![insert("$c", 0, "a1", 5)]))
+        .unwrap();
+    s.commit(tx(
+        "tx-trim",
+        2,
+        vec![Op::ClipTrim {
+            clip: "c1".into(),
+            edge: fin_core::Edge::End,
+            delta: secs(1),
+        }],
+    ))
+    .unwrap();
+    let err = code(
+        s.commit(tx(
+            "tx-late",
+            2,
+            vec![Op::ClipTrim {
+                clip: "c1".into(),
+                edge: fin_core::Edge::End,
+                delta: secs(2),
+            }],
+        ))
+        .unwrap_err(),
+    );
+    assert_eq!(err.code, "CONFLICT");
+    assert_eq!(err.details["reason"], "SAME_EDGE");
+    assert_eq!(
+        err.details["conflicts"],
+        serde_json::json!([{
+            "txId": "tx-late",
+            "opIndex": 0,
+            "reason": "SAME_EDGE",
+            "againstTx": "tx-trim",
+            "fix": "the same edit was made since; read the project at the current head and decide",
+        }])
+    );
+    assert_eq!(s.head(MAIN), 3);
+}
+
 #[test]
 fn duplicate_tx_id_returns_the_committed_tx() {
     let e = env();

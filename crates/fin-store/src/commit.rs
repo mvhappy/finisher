@@ -21,8 +21,12 @@ impl Store {
     ///   retries); the head does not move. When both carry an `argsHash` and they differ, the
     ///   key was reused for another command: `IDEM_KEY_REUSED` (`details {txId, rev,
     ///   committedOps}`). A malformed `argsHash` (not `blake3:<64 hex>`) is `INVALID_OP`.
-    /// - `baseRev` behind the head: the tx is rebased over the txs committed since; a conflict
-    ///   is `CONFLICT` with `details.againstTx` (committed) and `details.txId` (incoming).
+    /// - `baseRev` behind the head: the tx is rebased over the txs committed since, in the
+    ///   frame of the state at `baseRev` (`fin_core::rebase_tx`); a conflict is `CONFLICT` with
+    ///   `details.txId` (incoming), `details.againstTx` (the committed tx to blame, or null when
+    ///   the re-run at the head failed) and `details.conflicts`. A tx that does not apply at
+    ///   its own base fails with that error, unless the op that failed there (or one before
+    ///   it) conflicts with what was committed since.
     /// - `baseRev` ahead of the head is `BASE_REV_AHEAD`.
     /// - While the project is read-only ([`Store::read_only`]: a fork, a conflict copy, a
     ///   newer format, an import error, the lease held elsewhere or lost, or not yet caught up
@@ -101,16 +105,20 @@ impl Store {
                 .with_fix("read the project head and send its rev as baseRev")
                 .into());
         }
-        let tx = if tx.base_rev < head.rev {
-            let since = db::txs_since(&txn, &tx.branch, tx.base_rev)?;
-            rebase_tx(&tx, &since).map_err(|c| with_tx_id(CoreError::from(c), &tx.tx_id))?
-        } else {
-            tx
-        };
         let rev = head.rev + 1;
-
         let mut ids = Counters::load(&txn)?;
-        let applied = apply_tx(&head.project, &tx, &mut ids)?;
+        // A stale tx is rebased by the engine in the frame of its base: the tx applied there
+        // gives the maps of its own ops, and the re-run at the head is the apply.
+        let (tx, applied) = if tx.base_rev < head.rev {
+            let base = crate::state::state_at(&txn, &tx.branch, tx.base_rev)?;
+            let since = db::txs_since(&txn, &tx.branch, tx.base_rev)?;
+            let rebased = rebase_tx(&base, &head.project, &tx, &since, &mut ids)
+                .map_err(|e| with_tx_id(e, &tx.tx_id))?;
+            (rebased.tx, rebased.applied)
+        } else {
+            let applied = apply_tx(&head.project, &tx, &mut ids)?;
+            (tx, applied)
+        };
         ids.save(&txn)?;
         let parent = db::tip_hash(&txn, &tx.branch)?;
         // In memory only, under the lock: still the same lease, not lost since (the heartbeat

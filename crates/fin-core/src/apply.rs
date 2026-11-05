@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::{Project, SCHEMA_VERSION};
-use crate::ops::{self, Bindings};
-use crate::tx::{Applied, Diff, Tx};
+use crate::ops::{self, Bindings, Op};
+use crate::tx::{Applied, Diff, Shift, Tx};
 
 /// Who is applying: clients may only send client ops; internal callers (undo, replaying
 /// inverses) may also send `asset.remove`, `clip.remove` and `clip.restore`, and may name new
@@ -48,23 +48,58 @@ pub fn apply_tx_mode(
     ids: &mut dyn IdAlloc,
     mode: ApplyMode,
 ) -> Result<Applied, CoreError> {
-    if tx.schema_version != SCHEMA_VERSION {
-        return Err(CoreError::new(
-            "SCHEMA_VERSION",
-            format!(
-                "transaction schema version {} is not supported",
-                tx.schema_version
-            ),
-        )
-        .with_details(json!({ "expected": SCHEMA_VERSION, "actual": tx.schema_version }))
-        .with_fix(format!("send schemaVersion {SCHEMA_VERSION}")));
-    }
-    let mut next = project.clone();
-    let mut bindings = Bindings::new(mode);
-    let mut diff = Diff::default();
-    let mut inverses = Vec::with_capacity(tx.ops.len());
+    let mut run = Applier::new(project, tx.schema_version, mode)?;
     for (i, op) in tx.ops.iter().enumerate() {
-        let applied = if mode == ApplyMode::Client && op.is_internal() {
+        run.op(i, op, ids)?;
+    }
+    Ok(run.finish())
+}
+
+/// One transaction applied op by op (the rebase engine re-runs each op as soon as its
+/// positions are mapped): the evolving project, bindings, diff and inverses. Dropped on error,
+/// like [`apply_tx_mode`]'s copy.
+pub(crate) struct Applier {
+    project: Project,
+    bindings: Bindings,
+    diff: Diff,
+    inverses: Vec<Vec<Op>>,
+    mode: ApplyMode,
+}
+
+impl Applier {
+    /// `SCHEMA_VERSION` when `schema_version` is not the current one.
+    pub(crate) fn new(
+        project: &Project,
+        schema_version: u32,
+        mode: ApplyMode,
+    ) -> Result<Applier, CoreError> {
+        if schema_version != SCHEMA_VERSION {
+            return Err(CoreError::new(
+                "SCHEMA_VERSION",
+                format!("transaction schema version {schema_version} is not supported"),
+            )
+            .with_details(json!({ "expected": SCHEMA_VERSION, "actual": schema_version }))
+            .with_fix(format!("send schemaVersion {SCHEMA_VERSION}")));
+        }
+        Ok(Applier {
+            project: project.clone(),
+            bindings: Bindings::new(mode),
+            diff: Diff::default(),
+            inverses: Vec::new(),
+            mode,
+        })
+    }
+
+    /// Applies op `index` of the transaction; returns the shifts it recorded. An error carries
+    /// `details.opIndex`.
+    pub(crate) fn op(
+        &mut self,
+        index: usize,
+        op: &Op,
+        ids: &mut dyn IdAlloc,
+    ) -> Result<&[Shift], CoreError> {
+        let before = self.diff.shifts.len();
+        let applied = if self.mode == ApplyMode::Client && op.is_internal() {
             Err(CoreError::new(
                 "INVALID_OP",
                 format!("{} is internal and cannot be sent by clients", op.name()),
@@ -72,23 +107,33 @@ pub fn apply_tx_mode(
             .with_details(json!({ "op": op.name() }))
             .with_fix("use asset.add, clip.insert, clip.trim or clip.delete"))
         } else {
-            let before = diff.shifts.len();
-            ops::apply(&mut next, op, &mut bindings, ids, &mut diff).and_then(|inverse| {
-                if mode == ApplyMode::Replay {
-                    ops::util::check_tracks(&next, &diff.shifts[before..])?;
+            ops::apply(
+                &mut self.project,
+                op,
+                &mut self.bindings,
+                ids,
+                &mut self.diff,
+            )
+            .and_then(|inverse| {
+                if self.mode == ApplyMode::Replay {
+                    ops::util::check_tracks(&self.project, &self.diff.shifts[before..])?;
                 }
                 Ok(inverse)
             })
         };
-        inverses.push(applied.map_err(|e| at_op(e, i))?);
+        self.inverses.push(applied.map_err(|e| at_op(e, index))?);
+        Ok(&self.diff.shifts[before..])
     }
-    let inverse = inverses.into_iter().rev().flatten().collect();
-    Ok(Applied {
-        project: next,
-        diff,
-        inverse,
-        bindings: bindings.map,
-    })
+
+    /// The result: the inverse lists each op's inverse in reverse op order.
+    pub(crate) fn finish(self) -> Applied {
+        Applied {
+            project: self.project,
+            diff: self.diff,
+            inverse: self.inverses.into_iter().rev().flatten().collect(),
+            bindings: self.bindings.map,
+        }
+    }
 }
 
 fn at_op(mut e: CoreError, index: usize) -> CoreError {

@@ -11,7 +11,7 @@ use crate::ops::util::{
     ripple, shift, track_index, wrong_op,
 };
 use crate::ops::{Bindings, Op};
-use crate::rebase::{Footprint, LegacyConflict, inserted_range, shift_position};
+use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -92,27 +92,6 @@ pub(crate) fn apply(
     record(diff, EntityKind::Clip, &id, ChangeKind::Added);
     shift(diff, &track.id, *at, *duration);
     Ok(vec![Op::ClipRemove { id, ripple: true }])
-}
-
-/// Moves `at` with the committed op's shift; conflicts when it lands strictly inside a clip the
-/// committed op placed.
-pub(crate) fn rebase(op: &Op, over: &Op, over_diff: &Diff) -> Result<Op, LegacyConflict> {
-    let Op::ClipInsert { track, at, .. } = op else {
-        return Ok(op.clone());
-    };
-    let moved = shift_position(track, *at, over_diff)?;
-    if let Some((t, start, end)) = inserted_range(over, over_diff)?
-        && &t == track
-        && start < moved
-        && moved < end
-    {
-        return Err(LegacyConflict::new("insert lands inside a clip"));
-    }
-    let mut out = op.clone();
-    if let Op::ClipInsert { at, .. } = &mut out {
-        *at = moved;
-    }
-    Ok(out)
 }
 
 /// Creates the clip on its track, using the track and the asset.

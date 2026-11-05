@@ -36,6 +36,7 @@ pub mod scan;
 pub mod segment;
 pub mod server_id;
 pub mod snapfile;
+mod state;
 mod status;
 pub mod storage_kind;
 mod tick;
