@@ -527,7 +527,9 @@ mod tests {
     /// mtime, spec §3.13 item 4), so a skewed client would read its own clock as server time.
     /// On a share (`FIN_TEST_SHARE_DIR`, e.g. a directory on a cifs mount; skipped without
     /// it): write and sync (the server sets the mtime then), wait 3 s, look at the file through
-    /// a second handle, close, then the probe's read must match what the server keeps.
+    /// a second handle, close, then the probe's read must match what the server keeps, and,
+    /// independently of how either is read, lie near this host's wall clock right after the
+    /// sync and well before the close (the share's clock must be within 1 s of this host's).
     #[test]
     fn the_probe_reads_the_servers_mtime_on_a_share() {
         let Some(dir) = std::env::var_os("FIN_TEST_SHARE_DIR") else {
@@ -539,18 +541,19 @@ mod tests {
         let path = dir.join("f");
         std::fs::write(&path, b"x").unwrap();
         std::thread::sleep(Duration::from_secs(2));
-        {
+        let (synced, closing) = {
             use std::io::Write;
             let mut f = OpenOptions::new().write(true).open(&path).unwrap();
             f.write_all(b"written, then held open").unwrap();
             f.sync_all().unwrap();
+            let synced = SystemTime::now();
             std::thread::sleep(Duration::from_secs(3));
             let _ = fresh_mtime(&path).unwrap();
-        }
+            (synced, SystemTime::now())
+        };
         let probed = fresh_mtime(&path).unwrap();
         std::thread::sleep(Duration::from_secs(3));
-        // What the server keeps. A plain stat would not do on Linux: while cifs holds a lease
-        // on the file it never revalidates, so it would repeat the cached value.
+        // What the server keeps (a plain stat would repeat cifs's cache while it holds a lease).
         #[cfg(target_os = "linux")]
         let kept = fsio::forced_statx_mtime(&File::open(&path).unwrap())
             .unwrap()
@@ -562,6 +565,16 @@ mod tests {
         assert!(
             gap.abs() < 100,
             "the probe read an mtime {gap} ms off the server's"
+        );
+        let after_sync = unix_ms(probed) - unix_ms(synced);
+        assert!(
+            after_sync.abs() < 1_000,
+            "the probe read an mtime {after_sync} ms off the wall clock at the sync"
+        );
+        let before_close = unix_ms(closing) - unix_ms(probed);
+        assert!(
+            before_close >= 2_000,
+            "the probe read an mtime only {before_close} ms before the close"
         );
     }
 

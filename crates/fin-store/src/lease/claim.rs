@@ -34,8 +34,12 @@ pub fn parse_claim(name: &str) -> Option<u64> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimFile {
     pub epoch: u64,
-    /// Its mtime in server time (claims are never modified, so even a cached stat is right),
-    /// `None` if it could not be read.
+    /// Its mtime in server time, `None` if it could not be read. A claim is never modified
+    /// after it is written, but a client's cached stat need not be the server's: a Linux cifs
+    /// deferred close can stamp the client's own clock on a file it wrote (spec §3.13 item
+    /// 4), so on Linux the mtime is asked of the server ([`fsio::modified_on_server`]).
+    /// Elsewhere it comes from the directory listing (Windows: without opening the file,
+    /// which a pending deletion would refuse).
     pub server_ms: Option<i64>,
 }
 
@@ -65,6 +69,11 @@ fn list_once(dir: &Path) -> io::Result<Vec<ClaimFile>> {
         let Some(epoch) = e.file_name().to_str().and_then(parse_claim) else {
             continue;
         };
+        #[cfg(target_os = "linux")]
+        let mtime = fs::File::open(e.path())
+            .and_then(|f| fsio::modified_on_server(&f))
+            .ok();
+        #[cfg(not(target_os = "linux"))]
         let mtime = e.metadata().and_then(|m| m.modified()).ok();
         #[cfg(any(test, feature = "test-hooks"))]
         if hidden(dir, mtime) {

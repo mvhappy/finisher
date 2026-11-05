@@ -133,7 +133,9 @@ pub(crate) fn modified_on_server(file: &File) -> io::Result<std::time::SystemTim
 }
 
 /// `statx(fd, AT_EMPTY_PATH | AT_STATX_FORCE_SYNC, STATX_MTIME)`. `None` where `statx` is
-/// unavailable (`ENOSYS`, a kernel before 4.11) or gave no mtime.
+/// unavailable or refused (`ENOSYS`: a kernel before 4.11; `EPERM`, `EINVAL`, `EOPNOTSUPP`:
+/// a seccomp sandbox or container that filters it) or gave no mtime. Other errors (`EIO`, a
+/// share that is reconnecting) are the caller's.
 #[cfg(target_os = "linux")]
 pub(crate) fn forced_statx_mtime(file: &File) -> io::Result<Option<std::time::SystemTime>> {
     use std::os::fd::AsRawFd;
@@ -154,7 +156,7 @@ pub(crate) fn forced_statx_mtime(file: &File) -> io::Result<Option<std::time::Sy
     if rc != 0 {
         let e = io::Error::last_os_error();
         return match e.raw_os_error() {
-            Some(libc::ENOSYS) => Ok(None),
+            Some(libc::ENOSYS | libc::EPERM | libc::EINVAL | libc::EOPNOTSUPP) => Ok(None),
             _ => Err(e),
         };
     }
