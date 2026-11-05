@@ -97,13 +97,14 @@ fn plan(
     generation: Option<&Generation>,
 ) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
-    let head_rev = ctx.head(&tx.branch)?.rev;
+    // One head for the whole plan (`txn` is a copy of the reference, so it reads beside it).
+    let head = ctx.head(&tx.branch)?;
     if let Some(g) = generation {
         crate::history::check(txn, &tx.branch, g, tx.base_rev)?;
     }
-    if tx.base_rev > head_rev {
-        return Err(CoreError::new("BASE_REV_AHEAD", format!("baseRev {} is ahead of head {}", tx.base_rev, head_rev))
-            .with_details(json!({ "txId": tx.tx_id, "baseRev": tx.base_rev, "head": head_rev, "branch": tx.branch }))
+    if tx.base_rev > head.rev {
+        return Err(CoreError::new("BASE_REV_AHEAD", format!("baseRev {} is ahead of head {}", tx.base_rev, head.rev))
+            .with_details(json!({ "txId": tx.tx_id, "baseRev": tx.base_rev, "head": head.rev, "branch": tx.branch }))
             .with_fix("read the project head and send its rev as baseRev")
             .into());
     }
@@ -111,18 +112,16 @@ fn plan(
     // A stale tx is rebased by the engine in the frame of its base: the tx applied there
     // gives the maps of its own ops, and the re-run at the head is the apply. Below a
     // branch's fork, the frame and the records since come from its ancestors.
-    let (tx, applied) = if tx.base_rev < head_rev {
+    let (tx, applied) = if tx.base_rev < head.rev {
         // `records_since` fills pending diffs first (a seeded rebuild), and the snapshots
         // that writes then serve `state_near_head`.
         let since = lineage::records_since(txn, &tx.branch, tx.base_rev)?;
-        let head = ctx.head(&tx.branch)?;
         let base = lineage::state_near_head(txn, &tx.branch, tx.base_rev, head.rev, &head.project)?;
         let rebased = rebase_tx(&base, &head.project, tx, &since, &mut ids)
             .map_err(|e| with_tx_id(e, &tx.tx_id))?;
         (rebased.tx, rebased.applied)
     } else {
-        let applied = apply_tx(&ctx.head(&tx.branch)?.project, tx, &mut ids)?;
-        (tx.clone(), applied)
+        (tx.clone(), apply_tx(&head.project, tx, &mut ids)?)
     };
     ids.save(txn)?;
     ctx.append(Draft {

@@ -236,3 +236,62 @@ fn write_failure_after_apply_rolls_back() {
         .is_none()
     );
 }
+
+/// A dry run takes the write lock up front (IMMEDIATE), so a leader committing beside a
+/// follower's dry run waits for it instead of failing the dry run's first write.
+#[test]
+fn dry_run_holds_the_write_lock_from_the_start() {
+    let (_tmp, mut s) = store();
+    let path = s.db_path().to_path_buf();
+    let other = rusqlite::Connection::open(&path).unwrap();
+    other.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let planned = s
+        .write("dry", true, |ctx| {
+            let _ = ctx.head(MAIN)?;
+            // Another connection cannot start a write while the dry run plans.
+            let err = other.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+            assert!(err.to_string().contains("locked"), "{err}");
+            let d = edit(ctx, "dry", vec![insert("$x", 5, 1)])?;
+            ctx.append(d)
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(planned.rev, 3);
+    // Released after the rollback.
+    other.execute_batch("BEGIN IMMEDIATE; ROLLBACK").unwrap();
+}
+
+/// Rows written through the transaction before any append (ids, Task 8's index row and fork
+/// snapshot) are uncommitted: heads read after them never reach the shared cache.
+#[test]
+fn heads_after_uncommitted_rows_stay_out_of_the_cache() {
+    let (_tmp, mut s) = store();
+    let main_before = s.heads.borrow()[MAIN].clone();
+    let (_, at_head) = s.snapshot(MAIN).unwrap();
+    let head = s
+        .write("dry-branch", true, |ctx| {
+            ctx.txn.execute(
+                "INSERT INTO branches VALUES ('br1', 'br1', 'main', 2, NULL, NULL, 't', 0, 0, 0)",
+                [],
+            )?;
+            db_snapshot(ctx, "br1", 2, &at_head)?;
+            // Main's cached head is still current in the transaction: used as it is.
+            assert_eq!(ctx.head(MAIN)?.rev, 2);
+            Ok(ctx.head("br1")?.clone())
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!((head.rev, head.project), (2, at_head));
+    let cache = s.heads.borrow();
+    assert!(!cache.contains_key("br1"), "uncommitted branch head cached");
+    assert_eq!(cache[MAIN].tip, main_before.tip);
+}
+
+fn db_snapshot(
+    ctx: &mut WriteCtx<'_>,
+    branch: &str,
+    seq: u64,
+    p: &fin_core::Project,
+) -> Result<(), StoreError> {
+    crate::db::insert_snapshot(ctx.txn, branch, seq, p)
+}

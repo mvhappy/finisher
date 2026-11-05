@@ -294,3 +294,47 @@ fn records_since_fills_pending_ancestor_diffs() {
         .unwrap();
     assert_eq!(nulls, 0);
 }
+
+/// A child seeded at its fork seq (a rebuild from a folder snapshot there) has no rows to
+/// replay: the fill keeps its fork snapshot, its start.
+#[test]
+fn fill_at_the_fork_keeps_the_fork_snapshot() {
+    let (_tmp, mut s) = store();
+    main_with(&mut s, 3);
+    fork(&s.conn, "br1", MAIN, 2);
+    crate::diffs::set_pending(&s.conn, "br1", 2).unwrap();
+    crate::diffs::fill(&s.conn, "br1").unwrap();
+    assert_eq!(crate::diffs::pending(&s.conn, "br1").unwrap(), None);
+    assert!(db::snapshot_at(&s.conn, "br1", 2).unwrap().is_some());
+    let mut heads = HashMap::new();
+    crate::refresh(&s.conn, &mut heads, "br1").unwrap();
+    assert_eq!(heads["br1"].rev, 2);
+}
+
+/// A parent that does not reach the fork is damage, not a shorter history.
+#[test]
+fn parent_short_of_the_fork_is_db_error() {
+    let (_tmp, mut s) = store();
+    main_with(&mut s, 3);
+    let (_, head) = s.snapshot(MAIN).unwrap();
+    s.conn
+        .execute(
+            "INSERT INTO branches VALUES ('br1', 'br1', 'main', 5, 'h5', NULL, 't', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+    db::insert_snapshot(&s.conn, "br1", 5, &head).unwrap();
+    for err in [
+        state_at(&s.conn, "br1", 4).unwrap_err(),
+        records_since(&s.conn, "br1", 0).unwrap_err(),
+    ] {
+        let e = fin_core::CoreError::from(err);
+        assert_eq!(
+            (e.code.as_str(), &e.details["seq"]),
+            ("DB_ERROR", &serde_json::json!(4))
+        );
+    }
+    // At and above the fork the branch's own rows are read.
+    assert!(records_since(&s.conn, "br1", 5).unwrap().is_empty());
+    assert_eq!(state_at(&s.conn, "br1", 5).unwrap(), head);
+}

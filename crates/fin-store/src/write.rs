@@ -6,14 +6,24 @@
 //! [`TRUSTS_CHECK`]), the dedupe again under the lock, the fence's answer; then runs the
 //! operation, re-checks the lease in memory at the same epoch, and commits. A **dry run**
 //! (Decision 26) plans against the local database in a transaction that is rolled back, with
-//! no read-only, lease or fence check, so it also works on a follower. Heads the write moved
-//! are staged in the context and adopted into the store's cache only after the commit.
+//! no read-only, lease or fence check, so it also works on a follower. It is IMMEDIATE too:
+//! planning writes (ids, filled diffs, index rows), and a DEFERRED transaction that read first
+//! fails at once with `SQLITE_BUSY` when another connection (a leader beside a follower on the
+//! same database) committed in between, where an IMMEDIATE one waits for the busy timeout.
+//! Heads the write moved are staged in the context and adopted into the store's cache only
+//! after the commit.
+//!
+//! Not everything a write reads stays inside it: the dedupe answer (`db::find_tx`) and plain
+//! reads (`Store::ops_since`) may fill pending diffs ([`crate::diffs`]) outside any write
+//! transaction, so those derived diffs persist even around a dry run on a follower. They are
+//! what a replay computes, so that changes no state.
 
 use std::collections::{BTreeMap, HashMap};
 
 use fin_core::{CommittedTx, CoreError, Diff, Link, Op, Project, Tx};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
+use crate::branch::lineage;
 use crate::db::{self, SNAPSHOT_EVERY};
 use crate::{Head, Store, StoreError, branch_not_found, refresh};
 
@@ -48,9 +58,10 @@ pub(crate) struct WriteCtx<'a> {
     pub now: i64,
     cache: &'a mut HashMap<String, Head>,
     staged: HashMap<String, Head>,
-    /// Whether this write has written rows: the cache then no longer matches what the
-    /// transaction reads, so heads are built on the side.
-    written: bool,
+    /// `total_changes()` of the connection when the write began: once the transaction has
+    /// changed rows (records, ids, filled diffs, index rows), what it reads is no longer
+    /// committed state, so heads are not refreshed into the shared cache any more.
+    changes_at_start: u64,
 }
 
 impl WriteCtx<'_> {
@@ -58,13 +69,21 @@ impl WriteCtx<'_> {
     /// database's (`BRANCH_NOT_FOUND` when there is none).
     pub(crate) fn head(&mut self, branch: &str) -> Result<&Head, StoreError> {
         if !self.staged.contains_key(branch) {
-            if !self.written {
+            if self.txn.total_changes() == self.changes_at_start {
                 // Committed state only: safe to keep in the cache whatever this write does.
                 refresh(self.txn, self.cache, branch)?;
                 return self
                     .cache
                     .get(branch)
                     .ok_or_else(|| branch_not_found(branch).into());
+            }
+            // The cached head still is the branch's head in this transaction (no row of it
+            // was added or replaced): use it without copying the project.
+            if let Some(h) = self.cache.get(branch)
+                && db::latest_rev(self.txn, branch)? == Some(h.rev)
+                && lineage::hash_at(self.txn, branch, h.rev)? == h.tip
+            {
+                return Ok(&self.cache[branch]);
             }
             let mut one = HashMap::new();
             if let Some(h) = self.cache.get(branch) {
@@ -93,6 +112,10 @@ impl WriteCtx<'_> {
             .into());
         }
         let head = self.head(&d.branch)?;
+        debug_assert_eq!(
+            d.intent.base_rev, head.rev,
+            "a draft's intent is applied at the head"
+        );
         let seq = head.rev + 1;
         let parent = head.tip.clone();
         let record = db::new_record(
@@ -115,7 +138,6 @@ impl WriteCtx<'_> {
         if seq.is_multiple_of(SNAPSHOT_EVERY) {
             db::insert_snapshot(self.txn, &d.branch, seq, &d.project)?;
         }
-        self.written = true;
         self.staged.insert(
             d.branch,
             Head {
@@ -146,8 +168,8 @@ impl Store {
     /// committed answers `Ok(None)` before anything else, without running `f`. Real writes:
     /// the read-only check (`PROJECT_READ_ONLY`), `lease.check_recent`, an IMMEDIATE
     /// transaction, `f`, `lease.quick_check()` at the same epoch (`PROJECT_READ_ONLY`,
-    /// reason `LEASE_LOST`), commit; then the heads `f` moved are cached. `dry_run`: a
-    /// DEFERRED transaction with no read-only, lease or fence check (`epoch: None`), `f`,
+    /// reason `LEASE_LOST`), commit; then the heads `f` moved are cached. `dry_run`: an
+    /// IMMEDIATE transaction with no read-only, lease or fence check (`epoch: None`), `f`,
     /// rollback; nothing is cached or consumed. Any error rolls everything back.
     pub(crate) fn write<R>(
         &mut self,
@@ -169,12 +191,10 @@ impl Store {
             // the database write lock is taken; its answer is applied after the dedupe below.
             Some(self.export.lease.check_recent(TRUSTS_CHECK))
         };
-        let behavior = if dry_run {
-            TransactionBehavior::Deferred
-        } else {
-            TransactionBehavior::Immediate
-        };
-        let txn = self.conn.transaction_with_behavior(behavior)?;
+        // IMMEDIATE for dry runs too (module docs).
+        let txn = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if committed(&txn, first_tx_id)? {
             return Ok(None);
         }
@@ -188,7 +208,7 @@ impl Store {
             now: crate::commit::now_ms(),
             cache: self.heads.get_mut(),
             staged: HashMap::new(),
-            written: false,
+            changes_at_start: txn.total_changes(),
         };
         let out = f(&mut ctx)?;
         let WriteCtx { staged, .. } = ctx;

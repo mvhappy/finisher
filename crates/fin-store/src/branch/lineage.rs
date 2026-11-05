@@ -103,10 +103,44 @@ fn state_in(conn: &Connection, segs: &[LineageSeg], seq: u64) -> Result<Project,
         None if i + 1 < segs.len() => (seg.after, state_in(conn, &segs[i + 1..], seg.after)?),
         None => return Err(no_state(segs, seq)),
     };
-    for row in db::record_rows_in(conn, &seg.branch, from, Some(seq))? {
+    let rows = db::record_rows_in(conn, &seg.branch, from, Some(seq))?;
+    check_contiguous(&seg.branch, from, Some(seq), rows.iter().map(|r| r.0))?;
+    for row in rows {
         project = db::replay_row(&project, &seg.branch, &row)?.project;
     }
     Ok(project)
+}
+
+/// `seqs` (of `branch`'s rows after `after`) must be `after + 1, after + 2, …`, through
+/// `through` when given: an ancestor that does not reach a child's fork, or a gap, is damage
+/// (`DB_ERROR`), never a state or a history labelled with seqs it does not have.
+fn check_contiguous(
+    branch: &str,
+    after: u64,
+    through: Option<u64>,
+    seqs: impl Iterator<Item = u64>,
+) -> Result<(), StoreError> {
+    let mut expected = after + 1;
+    for seq in seqs {
+        if seq != expected {
+            return Err(gap(branch, expected, Some(seq)));
+        }
+        expected += 1;
+    }
+    match through {
+        Some(t) if expected <= t => Err(gap(branch, expected, None)),
+        _ => Ok(()),
+    }
+}
+
+fn gap(branch: &str, expected: u64, found: Option<u64>) -> StoreError {
+    CoreError::new(
+        "DB_ERROR",
+        format!("branch {branch:?} has no record at seq {expected}, which its lineage needs"),
+    )
+    .with_details(serde_json::json!({ "branch": branch, "seq": expected, "found": found }))
+    .with_fix("rebuild the project database (fin project rebuild)")
+    .into()
 }
 
 fn no_state(segs: &[LineageSeg], seq: u64) -> StoreError {
@@ -246,7 +280,9 @@ pub(crate) fn records_since(
         if crate::diffs::pending(conn, &seg.branch)?.is_some_and(|through| through > lo) {
             crate::diffs::fill(conn, &seg.branch)?;
         }
-        out.extend(db::txs_in(conn, &seg.branch, lo, seg.through)?);
+        let txs = db::txs_in(conn, &seg.branch, lo, seg.through)?;
+        check_contiguous(&seg.branch, lo, seg.through, txs.iter().map(|c| c.rev))?;
+        out.extend(txs);
     }
     Ok(out)
 }

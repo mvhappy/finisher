@@ -70,7 +70,10 @@ pub(crate) fn fill(conn: &Connection, branch: &str) -> Result<(), StoreError> {
                 db::insert_snapshot(conn, branch, row.0, &project)?;
             }
         }
-        if !through.is_multiple_of(SNAPSHOT_EVERY)
+        // The seed's own snapshot goes, never a branch's fork snapshot (Decision 14): a
+        // child seeded at its fork seq has no rows to replay, and that row is its start.
+        if through > start
+            && !through.is_multiple_of(SNAPSHOT_EVERY)
             && db::snapshot_at(conn, branch, through)?.as_ref() == Some(&project)
         {
             conn.execute(
