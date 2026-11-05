@@ -310,7 +310,7 @@ impl Backend for Online {
             Err(e) if e.code == "SERVER_UNAVAILABLE" => {
                 let dir = self.project.as_ref().ok_or_else(no_project)?;
                 let sd = endpoint::server_data().ok_or(e)?;
-                let report = fin_store::rebuild_project(&sd, dir).map_err(CoreError::from)?;
+                let report = rebuild_here(&sd, dir)?;
                 let report = serde_json::to_value(report).map_err(|e| {
                     internal(format!("cannot encode the rebuild report: {e}"), json!({}))
                 })?;
@@ -351,6 +351,26 @@ impl Backend for Online {
             payload["relocate"] = json!(true);
         }
         self.call("project.open", payload)
+    }
+}
+
+/// `fin project rebuild` with no server: opened in-process as a server would, so commits the
+/// database holds but never exported are exported first (`Store::rebuild`) rather than set
+/// aside. Only a database that cannot be opened is rebuilt from the folder alone
+/// (`rebuild_project`, which salvages what it can read of the old one).
+fn rebuild_here(sd: &Path, dir: &Path) -> Result<fin_store::RebuildReport, CoreError> {
+    match fin_store::Store::open(sd, dir) {
+        Ok(mut store) => {
+            let report = store.rebuild();
+            let closed = store.close();
+            let report = report?;
+            closed?;
+            Ok(report)
+        }
+        Err(e) if matches!(e.code(), "DB_ERROR" | "DB_CORRUPT" | "REPLAY_FAILED") => {
+            Ok(fin_store::rebuild_project(sd, dir)?)
+        }
+        Err(e) => Err(e.into()),
     }
 }
 

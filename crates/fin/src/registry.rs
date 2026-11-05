@@ -107,7 +107,7 @@ pub const COMMANDS: &[Command] = &[
         name: "project.verify",
         group: "project",
         args: "",
-        summary: "check the database and folder, change nothing; report.ok",
+        summary: "check the database and folder, change nothing (VERIFY_FAILED, exit 3)",
         write: false,
         schema: || schema_of::<project::NoArgs>("project.verify"),
     },

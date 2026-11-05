@@ -586,13 +586,13 @@ fn a_commit_against_a_rebuilt_database_exits_4() {
 }
 
 #[test]
-fn offline_rebuild_salvages_and_an_idem_key_retry_reports_the_set_aside_tx() {
-    let Some((mut server, dir)) =
-        project("offline_rebuild_salvages_and_an_idem_key_retry_reports_the_set_aside_tx")
+fn offline_rebuild_exports_unexported_commits_first() {
+    let Some((mut server, dir)) = project("offline_rebuild_exports_unexported_commits_first")
     else {
         return;
     };
-    // The folder takes no segments, so the commit stays in the database only.
+    // The folder takes no segments while the server runs, so the commit stays in the
+    // database only (the server is killed: no flush either).
     let segments = dir.join(".finisher").join("segments");
     std::fs::create_dir_all(&segments).unwrap();
     #[cfg(unix)]
@@ -601,8 +601,8 @@ fn offline_rebuild_salvages_and_an_idem_key_retry_reports_the_set_aside_tx() {
         std::fs::set_permissions(&segments, std::fs::Permissions::from_mode(0o555)).unwrap();
     }
     let args = ["asset", "add", "clip.mp4", "--idem-key", "add-1"];
-    let first = ok(fin(&server.sd, &dir, &args));
-    assert_eq!(first["rev"], 1);
+    let first = fin(&server.sd, &dir, &args);
+    assert_eq!(first.json["rev"], 1, "{}", first.stdout);
     server.stop();
     #[cfg(unix)]
     {
@@ -610,28 +610,69 @@ fn offline_rebuild_salvages_and_an_idem_key_retry_reports_the_set_aside_tx() {
         std::fs::set_permissions(&segments, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    // No server: fin rebuilds in-process. The unexported commit is salvaged into quarantine.
+    // No server: fin opens the project in-process, exports what the database holds, then
+    // rebuilds. Nothing is set aside: the commit is in the folder and the new database.
     let rebuilt = ok(fin(&server.sd, &dir, &["project", "rebuild"]));
     assert_eq!(rebuilt["offline"], true, "{rebuilt}");
-    if cfg!(unix) {
-        assert_eq!(rebuilt["report"]["salvaged"], 1, "{rebuilt}");
-    }
+    assert_eq!(rebuilt["report"]["salvaged"], 0, "{rebuilt}");
+    assert_eq!(rebuilt["report"]["records"], 1, "{rebuilt}");
 
     server.restart();
-    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 0);
-    if cfg!(unix) {
-        // The retry finds its tx set aside: reported, not committed again.
-        let retry = fin(&server.sd, &dir, &args);
-        assert_error(&retry, 4, "TX_SET_ASIDE");
-        assert_eq!(retry.json["error"]["details"]["txId"], "add-1");
-        assert_eq!(retry.json["error"]["details"]["reason"], "SALVAGED");
-        assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 0);
-    }
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 1);
+    // The retry finds its commit: the same answer, nothing committed again.
+    let retry = fin(&server.sd, &dir, &args);
+    assert_eq!(retry.stdout, first.stdout);
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], 1);
     // While a server has the project open, an in-process rebuild is never attempted: it goes
     // through the server.
     assert_eq!(
         ok(fin(&server.sd, &dir, &["project", "rebuild"]))["offline"],
         false
+    );
+}
+
+#[test]
+fn a_failed_verify_exits_3() {
+    let Some((server, dir)) = project("a_failed_verify_exits_3") else {
+        return;
+    };
+    ok(fin(&server.sd, &dir, &["asset", "add", "clip.mp4"]));
+    let main = dir.join(".finisher").join("segments").join("main");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let segment = loop {
+        let found = std::fs::read_dir(&main).ok().and_then(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|x| x == "fseg"))
+        });
+        if let Some(p) = found {
+            break p;
+        }
+        assert!(Instant::now() < deadline, "no segment was exported");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // One byte of a record changes: its checksum no longer matches.
+    let mut bytes = std::fs::read(&segment).unwrap();
+    let i = bytes.iter().position(|b| *b == b'"').unwrap() + 1;
+    bytes[i] = if bytes[i] == b'x' { b'y' } else { b'x' };
+    std::fs::write(&segment, bytes).unwrap();
+    let run = fin(&server.sd, &dir, &["project", "verify"]);
+    assert_error(&run, 3, "VERIFY_FAILED");
+    let details = &run.json["error"]["details"];
+    assert_eq!(details["report"]["ok"], false, "{}", run.stdout);
+    assert!(
+        details["failed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("segment_checksums")),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.json["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("fin project rebuild")
     );
 }
 

@@ -42,6 +42,8 @@ const VALIDATION_CODES: &[&str] = &[
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
+    // `fin project verify` found a problem (`details.failed`, `details.report`).
+    "VERIFY_FAILED",
     // A project file or segment naming a hash algorithm this build does not know.
     "UNSUPPORTED_HASH",
     // A damaged database with no way to rebuild it (no rev 0 anywhere).
@@ -202,6 +204,7 @@ mod tests {
         assert_eq!(exit_code("HISTORY_REWOUND"), 4);
         assert_eq!(exit_code("TX_SET_ASIDE"), 4);
         assert_eq!(exit_code("UNSUPPORTED_HASH"), 3);
+        assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
         for code in [
             "SERVER_UNAVAILABLE",

@@ -128,6 +128,24 @@ pub fn open(backend: &dyn Backend, a: &OpenArgs) -> Result<Value, CoreError> {
     Ok(json!({ "project": project, "resolved": { "dir": dir.display().to_string() } }))
 }
 
+/// `VERIFY_FAILED` (exit 3): `details.failed` names the failed checks.
+fn verify_failed(report: Value) -> CoreError {
+    let failed: Vec<Value> = report["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["ok"] == json!(false))
+        .map(|c| c["name"].clone())
+        .collect();
+    let names: Vec<&str> = failed.iter().filter_map(Value::as_str).collect();
+    CoreError::new(
+        "VERIFY_FAILED",
+        format!("the project failed verification: {}", names.join(", ")),
+    )
+    .with_details(json!({ "report": report, "failed": failed }))
+    .with_fix("fin project rebuild rebuilds the database from the folder; if segment files are damaged, restore them from a backup first (the report names them)")
+}
+
 /// The storage commands (`status` … `acknowledge`). `create` and `open` are handled above.
 pub fn storage(backend: &dyn Backend, cmd: &ProjectCmd) -> Result<Value, CoreError> {
     let call = |tag: &str, payload: Value| backend.project_call(tag, payload);
@@ -136,7 +154,13 @@ pub fn storage(backend: &dyn Backend, cmd: &ProjectCmd) -> Result<Value, CoreErr
         ProjectCmd::Takeover(a) => {
             json!({ "status": call("project.takeover", json!({ "confirm": a.confirm }))? })
         }
-        ProjectCmd::Verify(_) => json!({ "report": call("project.verify", json!({}))? }),
+        ProjectCmd::Verify(_) => {
+            let report = call("project.verify", json!({}))?;
+            if report["ok"] == json!(false) {
+                return Err(verify_failed(report));
+            }
+            json!({ "report": report })
+        }
         ProjectCmd::Rebuild(_) => {
             let (report, offline) = backend.rebuild()?;
             json!({ "report": report, "offline": offline })
