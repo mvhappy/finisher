@@ -11,7 +11,9 @@
 //!   is refused with `HISTORY_REWOUND` when a rewind since then reaches its `baseRev`: it was
 //!   written against records that no longer exist, and rebasing it over other history would
 //!   silently change what it means;
-//! - status reports the latest rewind of an applied line while its records are set aside.
+//! - status reports each rewind of an applied line for [`WARN_FOR_MS`] (24 h), or until it is
+//!   acknowledged ([`acknowledge`]); one that looks like two writers at once
+//!   (`SPLIT_BRAIN_SUSPECTED`) stays until acknowledged.
 //!
 //! Generations live in the database: a database rebuilt from the folder starts again at 0,
 //! and a caller's generation above the current one is treated as stale too.
@@ -26,6 +28,9 @@ use crate::{StoreError, TxStatus};
 
 /// How many rewinds per branch `meta` keeps.
 pub(crate) const KEEP: usize = 32;
+
+/// How long status reports a rewind that is not acknowledged (unless it looks like split brain).
+pub(crate) const WARN_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Lost records spanning more commit time than this suggest two writers at once.
 pub(crate) const SPLIT_BRAIN_SPAN_MS: i64 = 30_000;
@@ -56,6 +61,9 @@ pub(crate) struct RewindInfo {
     pub(crate) span_ms: i64,
     /// Unix ms of the rewind.
     pub(crate) at: i64,
+    /// A person acknowledged it ([`acknowledge`]): status no longer reports it.
+    #[serde(default)]
+    pub(crate) acknowledged: bool,
 }
 
 impl RewindInfo {
@@ -63,6 +71,47 @@ impl RewindInfo {
     pub(crate) fn split_brain(&self) -> bool {
         self.segments > 1 || self.span_ms > SPLIT_BRAIN_SPAN_MS
     }
+
+    /// Whether status reports it at unix ms `now`.
+    pub(crate) fn shown(&self, now: i64) -> bool {
+        self.kind == "appliedLine"
+            && !self.acknowledged
+            && (self.split_brain() || now.saturating_sub(self.at) < WARN_FOR_MS)
+    }
+}
+
+/// Marks the rewind of `branch` that started `generation` acknowledged; `false` if none is
+/// recorded.
+pub(crate) fn acknowledge(
+    conn: &Connection,
+    branch: &str,
+    generation: u64,
+) -> Result<bool, StoreError> {
+    let mut all = rewinds(conn, branch)?;
+    let Some(r) = all.iter_mut().find(|r| r.generation == generation) else {
+        return Ok(false);
+    };
+    r.acknowledged = true;
+    set_meta(conn, &rewinds_key(branch), &serde_json::to_string(&all)?)?;
+    Ok(true)
+}
+
+/// Every server id that has opened this database (`meta` `serverIds`): a server whose id was
+/// renewed (`SERVER_ID_RENEWED`) still recognises the segments it wrote before as its own.
+pub(crate) fn server_ids(conn: &Connection) -> Result<Vec<String>, StoreError> {
+    Ok(meta(conn, "serverIds")?
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default())
+}
+
+/// Adds `id` to [`server_ids`].
+pub(crate) fn note_server_id(conn: &Connection, id: &str) -> Result<(), StoreError> {
+    let mut ids = server_ids(conn)?;
+    if !ids.iter().any(|i| i == id) {
+        ids.push(id.to_string());
+        set_meta(conn, "serverIds", &serde_json::to_string(&ids)?)?;
+    }
+    Ok(())
 }
 
 fn generation_key(branch: &str) -> String {
@@ -187,7 +236,26 @@ mod tests {
             segments: 1,
             span_ms: 0,
             at: 0,
+            acknowledged: false,
         }
+    }
+
+    #[test]
+    fn a_rewind_is_shown_for_a_day_and_split_brain_until_acknowledged() {
+        let mut r = info(1);
+        r.at = 1_000;
+        assert!(r.shown(1_000 + WARN_FOR_MS - 1));
+        assert!(!r.shown(1_000 + WARN_FOR_MS));
+        r.segments = 2;
+        assert!(r.shown(1_000 + 10 * WARN_FOR_MS), "split brain stays");
+        r.acknowledged = true;
+        assert!(!r.shown(1_000));
+        r.acknowledged = false;
+        r.kind = "divergedTail".into();
+        assert!(
+            !r.shown(1_000),
+            "a diverged tail has its own QUARANTINE warning"
+        );
     }
 
     #[test]

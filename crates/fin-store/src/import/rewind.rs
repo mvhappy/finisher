@@ -18,10 +18,17 @@
 //!     (the walk reports `SyncFolder` before any line can lose), so `AppliedLineLost` cannot
 //!     occur; a sync folder is checked anyway.
 //! (b) This server does not hold the lease now (the pass's fence check failed, or it never
-//!     held it). A holder whose applied line lost would contradict its own lease.
+//!     held it), or it holds it at epoch `E` and every lost row is below `E` (`txs.epoch`).
+//!     A holder at `E` meeting a winner above its lost line has itself lost if anything at
+//!     `E` is in the lost range (refuse: the folder decides who holds, not this pass);
+//!     otherwise the lost range holds only older epochs, as when a follower that applied a
+//!     late line takes the lease before the winner's files reach it. Without this a
+//!     holder would stay `CHAIN_FORK` while heartbeating and freeze the project. Its own
+//!     older unexported rows are set aside as a diverged tail.
 //! (c) The winner's epoch is backed by the lease state: `lease.json`'s epoch, or a
 //!     `lease.claim-*` file, is at or above it. A higher epoch nobody claimed looks like a
-//!     hand copy or a bug, not a takeover.
+//!     hand copy or a bug, not a takeover. The caller reads both before the pass takes the
+//!     database lock ([`lease_top`]) and passes the highest.
 //! (d) No other branch is based inside the lost range. (4A has only `main`; a branch whose
 //!     base is not recorded counts as based inside, until 4B records bases in `meta`
 //!     `branchBase.<branch>` = `{"branch", "seq"}`.)
@@ -31,7 +38,8 @@
 //! For the rows from the fork seq on (the first record after the fork's shared record):
 //! 1. exported rows move to quarantine as `SUPERSEDED`, origin `local` when this server wrote
 //!    them (a `segments` row in state `exported` covers the seq, or a folder segment holding
-//!    the record has our `writerId`), else `folder`; unexported rows (a tail that descends
+//!    the record has our `writerId` or one this database had before a `SERVER_ID_RENEWED`,
+//!    [`history::server_ids`]), else `folder`; unexported rows (a tail that descends
 //!    from a lost record) as `DIVERGED_TAIL`, origin `local`, as for any diverged tail;
 //! 2. the rows, the DB snapshots at or above the fork seq, and the `segments` rows whose last
 //!    record is lost are deleted (rev 0's snapshot always remains, so the head is rebuilt
@@ -61,6 +69,19 @@ use crate::db::{self, hash_bytes, to_i64, to_u64};
 use crate::history::{self, RewindInfo};
 use crate::lease::{claim, record};
 use crate::storage_kind::StorageKind;
+
+/// The highest epoch `lease.json` or any claim file names in `dot` (`None`: neither could be
+/// read). Folder I/O: called before the pass's transaction.
+pub(super) fn lease_top(dot: &Path) -> Option<u64> {
+    let rec = match record::read(&dot.join(record::FILE)) {
+        Ok(record::Seen::Valid(r)) => Some(r.epoch),
+        _ => None,
+    };
+    let claims = claim::list(dot)
+        .ok()
+        .and_then(|c| c.iter().map(|c| c.epoch).max());
+    rec.max(claims)
+}
 use crate::{Rewind, StoreError};
 
 /// A rewind that may go ahead.
@@ -82,9 +103,9 @@ pub(super) fn eligible(
     ctx: &Ctx,
     branch: &str,
     res: &Resolution,
-    holds: bool,
+    held: Option<u64>,
+    lease_top: Option<u64>,
     kind: StorageKind,
-    project_dir: &Path,
 ) -> Result<Option<Lost>, StoreError> {
     let Some(fork) = res.fork.as_ref() else {
         return Ok(None);
@@ -95,10 +116,6 @@ pub(super) fn eligible(
     // (a)
     debug_assert!(!kind.is_sync(), "AppliedLineLost on a sync folder");
     if kind.is_sync() {
-        return Ok(None);
-    }
-    // (b)
-    if holds {
         return Ok(None);
     }
     let txn = ctx.txn;
@@ -126,6 +143,17 @@ pub(super) fn eligible(
         })
         .max()
         .unwrap_or(0);
+    // (b)
+    if let Some(e) = held {
+        let at_ours: i64 = txn.query_row(
+            "SELECT COUNT(*) FROM txs WHERE branch = ?1 AND seq >= ?2 AND epoch >= ?3",
+            params![branch, to_i64(from_seq)?, to_i64(e)?],
+            |r| r.get(0),
+        )?;
+        if at_ours > 0 {
+            return Ok(None);
+        }
+    }
     // (d)
     for other in db::branches(txn)? {
         if other == branch {
@@ -138,24 +166,14 @@ pub(super) fn eligible(
             _ => return Ok(None),
         }
     }
-    // (c), last: it reads the folder.
-    if !backed(&project_dir.join(".finisher"), winner_epoch) {
+    // (c)
+    if lease_top.is_none_or(|top| top < winner_epoch) {
         return Ok(None);
     }
     Ok(Some(Lost {
         from_seq,
         winner_epoch,
     }))
-}
-
-/// Whether `lease.json` or a claim file is at or above `epoch`. Unreadable counts as no.
-fn backed(dot: &Path, epoch: u64) -> bool {
-    if let Ok(record::Seen::Valid(r)) = record::read(&dot.join(record::FILE))
-        && r.epoch >= epoch
-    {
-        return true;
-    }
-    claim::list(dot).is_ok_and(|claims| claims.iter().any(|c| c.epoch >= epoch))
 }
 
 struct Row {
@@ -228,6 +246,8 @@ pub(super) fn run(
     let mut writers = BTreeSet::new();
     let mut epochs = BTreeSet::new();
     let mut ours_in_folder: HashSet<String> = HashSet::new();
+    let mut our_ids: HashSet<String> = history::server_ids(txn)?.into_iter().collect();
+    our_ids.insert(ctx.server_id().to_string());
     let mut plain = BTreeSet::new();
     let mut packs = BTreeSet::new();
     for s in segs {
@@ -249,7 +269,7 @@ pub(super) fn run(
         } else {
             plain.insert(s.hash().to_string());
         }
-        if h.writer_id == ctx.server_id() {
+        if our_ids.contains(&h.writer_id) {
             ours_in_folder.extend(held);
         }
     }
@@ -333,6 +353,7 @@ pub(super) fn run(
         segments: u32::try_from(segments).unwrap_or(u32::MAX),
         span_ms,
         at: ctx.now,
+        acknowledged: false,
     };
     let generation = history::record(txn, branch, info)?;
     Ok(Rewind {

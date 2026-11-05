@@ -44,6 +44,11 @@ impl Store {
     /// generation, expected, baseRev}`) instead of being rebased onto other history; a
     /// `baseRev` before every such rewind rebases as usual. `None` skips the check. Checked
     /// after the dedupe, the read-only state and the fence, under the database lock.
+    ///
+    /// A superseded tx is in quarantine, not in `txs`, so its `txId` is not deduped: a retry
+    /// of it whose `baseRev` is below the fork (or one sent without a generation) is committed
+    /// again, rebased on top of the winning line. Callers that must not re-apply an edit the
+    /// project lost pass the generation, or ask [`Store::tx_status`] first.
     pub fn commit_at_generation(
         &mut self,
         tx: Tx,

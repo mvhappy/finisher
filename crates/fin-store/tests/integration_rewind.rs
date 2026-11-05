@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use fin_core::{CoreError, SCHEMA_VERSION, Tx};
 use fin_store::conflict_names::Provider;
+use fin_store::lease::MonoClock;
 use fin_store::storage_kind::StorageKind;
 use fin_store::{MAIN, ReadOnlyReason, Store, StoreEvent, TxStatus};
 use integration_support::*;
@@ -188,6 +189,12 @@ fn follower_that_applied_a_late_line_rewinds_and_converges() {
     assert!(matches!(f.tx_status("u1").unwrap(), TxStatus::Committed(_)));
     assert!(matches!(f.tx_status("nope").unwrap(), TxStatus::Unknown));
 
+    // Acknowledged, the warning goes; the records stay set aside.
+    assert!(!f.acknowledge_rewind(MAIN, 7).unwrap());
+    assert!(f.acknowledge_rewind(MAIN, 1).unwrap());
+    assert!(warning(&f.status(), "REWOUND").is_none());
+    assert_eq!(f.status().quarantine.count, 1);
+
     // Stable: the next poll rewinds nothing and changes nothing.
     let r = e.poll(&mut f);
     assert!(rewound(&r.events).is_empty());
@@ -201,6 +208,10 @@ fn own_lost_records_are_rewound_too_and_reported_as_own() {
     let Split { mut a, b, .. } = split(&e, 1, &["t1"], false, &["u1"], None);
     // A also has an unexported edit on top of its lost line.
     commit(&mut a, "t2", vec![insert(0, "a1")]);
+    // Still holding epoch 1, its lost line holds epoch 1: A has itself lost, no rewind.
+    let r = e.poll(&mut a);
+    assert!(rewound(&r.events).is_empty());
+    assert_eq!(a.read_only(), Some(ReadOnlyReason::ChainFork));
     a.set_test_lease(1, false); // A's fence catches up: it has lost the lease
     let r = e.poll(&mut a);
     assert_eq!(rewound(&r.events), [(MAIN.to_string(), 2, 2, true, 1)]);
@@ -322,6 +333,8 @@ fn a_long_lost_line_is_reported_as_split_brain() {
     let st = f.status();
     let w = warning(&st, "SPLIT_BRAIN_SUSPECTED").expect("escalated");
     assert!(w.contains("2 segment"), "{w}");
+    assert!(f.acknowledge_rewind(MAIN, 1).unwrap());
+    assert!(warning(&f.status(), "SPLIT_BRAIN_SUSPECTED").is_none());
 }
 
 #[test]
@@ -350,22 +363,15 @@ fn copy_without_segments(src: &Path, to: &Path) {
     }
 }
 
-#[test]
-fn every_arrival_order_ends_in_the_same_state() {
-    // Every order in which the segments of a split can arrive at a follower (one poll per
-    // arrival) ends with the state and quarantine of a follower that saw them all at once.
-    // Exhaustive over the 3! orders of the three segments after the first (a proptest
-    // would sample the same small space).
-    let e = env();
-    let Split { mut b, .. } = split(&e, 1, &["t1"], false, &["u1"], None);
-    commit(&mut b, "u2", vec![insert(2, "a1")]);
-    e.flush(&mut b);
-    let all = segments(&e.dir);
-    let names: Vec<String> = all
+/// Every order in which the segments after the first can arrive at a follower (one poll per
+/// arrival) ends with the state and quarantine of a follower that saw them all at once, and
+/// never in `CHAIN_FORK`. Exhaustive (the space is small; a proptest would sample it).
+fn all_orders_converge(e: &Env, n_segments: usize) {
+    let names: Vec<String> = segments(&e.dir)
         .iter()
         .map(|s| s.0.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names.len(), 4, "{names:?}");
+    assert_eq!(names.len(), n_segments, "{names:?}");
     let g = e.open("g");
     let want = (g.snapshot(MAIN).unwrap(), aside(&g));
 
@@ -386,7 +392,7 @@ fn every_arrival_order_ends_in_the_same_state() {
             })
             .collect();
     }
-    assert_eq!(orders.len(), 6);
+    assert_eq!(orders.len(), (1..n_segments).product::<usize>());
     for (k, order) in orders.iter().enumerate() {
         let dir = e.root.join(format!("order-{k}"));
         copy_without_segments(&e.dir, &dir);
@@ -397,12 +403,113 @@ fn every_arrival_order_ends_in_the_same_state() {
             fs::copy(seg_dir(&e.dir).join(&names[i]), seg.join(&names[i])).unwrap();
             e.poll(&mut x);
         }
+        let names_of = || order.iter().map(|&i| &names[i]).collect::<Vec<_>>();
         assert_eq!(
             (x.snapshot(MAIN).unwrap(), aside(&x)),
             want,
             "order {:?}",
-            order.iter().map(|&i| &names[i]).collect::<Vec<_>>()
+            names_of()
         );
-        assert_ne!(x.read_only(), Some(ReadOnlyReason::ChainFork));
+        assert_ne!(
+            x.read_only(),
+            Some(ReadOnlyReason::ChainFork),
+            "{:?}",
+            names_of()
+        );
     }
+}
+
+#[test]
+fn every_arrival_order_ends_in_the_same_state() {
+    let e = env();
+    let Split { mut b, .. } = split(&e, 1, &["t1"], false, &["u1"], None);
+    commit(&mut b, "u2", vec![insert(2, "a1")]);
+    e.flush(&mut b);
+    all_orders_converge(&e, 4);
+}
+
+#[test]
+fn every_arrival_order_of_two_lost_and_two_winning_segments_converges() {
+    let e = env();
+    let Split { mut b, .. } = split(&e, 1, &["t1", "t2"], true, &["u1"], None);
+    commit(&mut b, "u2", vec![insert(2, "a1")]);
+    e.flush(&mut b);
+    all_orders_converge(&e, 5);
+}
+
+#[test]
+fn a_follower_that_takes_the_lease_still_rewinds_an_older_lost_line() {
+    // F applied A's late epoch-1 line; B's epoch-2 line is not listed for F yet when B stops
+    // and F takes the lease (epoch 3). When B's files appear, F (holding) rewinds: the lost
+    // range holds only epoch 1, below its own.
+    let e = env();
+    let Split { b, mut f, .. } = split(&e, 1, &["t1"], false, &["u1"], None);
+    let won: Vec<PathBuf> = segments(&e.dir)
+        .iter()
+        .filter(|s| s.1.epoch() == 2)
+        .map(|s| s.0.clone())
+        .collect();
+    assert_eq!(won.len(), 1);
+    for p in &won {
+        fin_store::scan::hide_for_test(p);
+    }
+    let want = b.snapshot(MAIN).unwrap();
+    drop(b); // B stops
+    poll_until_held(&e, &mut f, 80);
+    assert_eq!(held_epoch(&f), Some(3));
+    assert_eq!(f.head(MAIN), 2, "still on the late line");
+    for p in &won {
+        fin_store::scan::unhide_for_test(p);
+    }
+    let r = e.poll(&mut f);
+    assert_eq!(rewound(&r.events), [(MAIN.to_string(), 2, 1, false, 1)]);
+    assert_ne!(f.read_only(), Some(ReadOnlyReason::ChainFork));
+    assert_eq!(f.snapshot(MAIN).unwrap(), want);
+    e.advance(10);
+    e.poll(&mut f);
+    assert_eq!(f.read_only(), None, "caught up");
+    assert_eq!(commit(&mut f, "f1", vec![insert(5, "a1")]).rev, 3);
+}
+
+#[test]
+fn a_failed_rewind_rolls_back_and_a_later_pass_rewinds() {
+    let e = env();
+    let Split { b, mut f, .. } = split(&e, 1, &["t1"], false, &["u1"], None);
+    f.fail_next_rewind_for_test();
+    f.poll_now_for_test();
+    let err: CoreError = f.tick_report(e.clock.now()).unwrap_err().into();
+    assert_eq!(err.code, "TEST_FAULT");
+    assert_eq!(f.head(MAIN), 2);
+    assert_eq!(f.generation(MAIN), 0);
+    assert!(aside(&f).is_empty());
+    assert!(matches!(f.tx_status("t1").unwrap(), TxStatus::Committed(_)));
+    let r = e.poll(&mut f);
+    assert_eq!(rewound(&r.events), [(MAIN.to_string(), 2, 1, false, 1)]);
+    assert_eq!(f.snapshot(MAIN).unwrap(), b.snapshot(MAIN).unwrap());
+}
+
+#[test]
+fn a_second_store_on_the_database_sees_the_rewind() {
+    let e = env();
+    let Split { b, mut f, .. } = split(&e, 1, &["t1"], false, &["u1"], None);
+    // Another Store on F's database (same server data) runs the rewind at its open.
+    let f2 = e.open("f");
+    assert_eq!(f2.generation(MAIN), 1);
+    assert_eq!(f.generation(MAIN), 1);
+    assert_eq!(f.snapshot(MAIN).unwrap(), b.snapshot(MAIN).unwrap());
+    let r = e.poll(&mut f);
+    assert!(rewound(&r.events).is_empty(), "rewound once");
+    assert_eq!(f.snapshot(MAIN).unwrap(), b.snapshot(MAIN).unwrap());
+    // F's caller read generation 0 at rev 2: its edit is refused, not rebased.
+    f.set_test_lease(9, true);
+    let tx = Tx {
+        tx_id: "x1".into(),
+        author: "test".into(),
+        branch: MAIN.into(),
+        base_rev: 2,
+        schema_version: SCHEMA_VERSION,
+        ops: vec![asset("/m/x1.mov")],
+    };
+    let err: CoreError = f.commit_at_generation(tx, Some(0)).unwrap_err().into();
+    assert_eq!(err.code, "HISTORY_REWOUND", "{err:?}");
 }

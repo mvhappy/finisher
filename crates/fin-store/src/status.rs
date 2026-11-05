@@ -11,10 +11,10 @@
 //!   edits that lost to the folder; their bytes exist nowhere else, so they stay counted
 //!   until recovered (4B: a `recovered-*` branch);
 //! - `REWOUND`: an applied line lost to a newer lease epoch and was rewound (`import::rewind`):
-//!   the records, their writers and epochs; shown while its `SUPERSEDED` records are still set
-//!   aside (the losing segments are in the folder). `SPLIT_BRAIN_SUSPECTED` instead when the
-//!   lost records span more than one segment or more than 30 s of commits: not one late
-//!   rename, but two servers writing at once;
+//!   the records, their writers and epochs; one per rewind, for 24 h or until
+//!   [`Store::acknowledge_rewind`]. `SPLIT_BRAIN_SUSPECTED` instead when the lost records
+//!   span more than one segment or more than 30 s of commits (not one late rename, but two
+//!   servers writing at once): shown until acknowledged;
 //! - `FOREIGN_FILES`: files under `.finisher/` that are not ours;
 //! - `INCOMPLETE_FILES`: a file seen incomplete for more than [`INCOMPLETE_POLLS`] polls on a
 //!   local or network root, where every write is atomic, so it cannot be in transit: a crashed
@@ -358,6 +358,17 @@ impl Store {
         Some(now)
     }
 
+    /// Stops status reporting the rewind of `branch` that started `generation` (the
+    /// `REWOUND` / `SPLIT_BRAIN_SUSPECTED` warning; the records stay set aside). `false` when
+    /// no such rewind is recorded.
+    pub fn acknowledge_rewind(
+        &mut self,
+        branch: &str,
+        generation: u64,
+    ) -> Result<bool, StoreError> {
+        crate::history::acknowledge(&self.conn, branch, generation)
+    }
+
     fn branch_status(&self) -> Result<Vec<BranchStatus>, StoreError> {
         let mut out = vec![];
         for branch in db::branches(&self.conn)? {
@@ -411,55 +422,46 @@ fn quarantine_summary(conn: &rusqlite::Connection) -> Result<QuarantineSummary, 
     Ok(s)
 }
 
-/// `REWOUND` / `SPLIT_BRAIN_SUSPECTED` per branch (module docs).
+/// `REWOUND` / `SPLIT_BRAIN_SUSPECTED`, one per rewind still shown (module docs).
 fn rewind_warnings(
     conn: &rusqlite::Connection,
     server_id: &str,
 ) -> Result<Vec<(&'static str, String)>, StoreError> {
+    let now = crate::commit::now_ms();
     let mut out = vec![];
     for branch in db::branches(conn)? {
-        let Some(r) = crate::history::rewinds(conn, &branch)?
-            .into_iter()
-            .rev()
-            .find(|r| r.kind == "appliedLine")
-        else {
-            continue;
-        };
-        let aside: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM quarantine
-             WHERE branch = ?1 AND reason = 'SUPERSEDED' AND current = 1",
-            params![branch],
-            |row| row.get(0),
-        )?;
-        if aside == 0 {
-            continue;
+        for r in crate::history::rewinds(conn, &branch)? {
+            if !r.shown(now) {
+                continue;
+            }
+            let list = |v: Vec<String>| v.join(", ");
+            let mut m = format!(
+                "branch {branch:?} was rewound from rev {} (generation {}): {} record(s) written by {} at epoch {} lost to a line at epoch {} and are set aside (SUPERSEDED)",
+                r.from_rev,
+                r.generation,
+                r.count,
+                list(r.writers.clone()),
+                list(r.epochs.iter().map(u64::to_string).collect()),
+                r.winner_epoch,
+            );
+            if r.own > 0 {
+                m.push_str(&format!(
+                    "; {} of them are this server's own edits ({server_id}), which other servers never applied",
+                    r.own
+                ));
+            }
+            let code = if r.split_brain() {
+                m.push_str(&format!(
+                    "; the lost records span {} segment(s) and {} s of commits: two servers may have written at once (shown until acknowledged)",
+                    r.segments,
+                    r.span_ms / 1000
+                ));
+                "SPLIT_BRAIN_SUSPECTED"
+            } else {
+                "REWOUND"
+            };
+            out.push((code, m));
         }
-        let list = |v: Vec<String>| v.join(", ");
-        let mut m = format!(
-            "branch {branch:?} was rewound from rev {}: {} record(s) written by {} at epoch {} lost to a line at epoch {} and are set aside (SUPERSEDED)",
-            r.from_rev,
-            r.count,
-            list(r.writers.clone()),
-            list(r.epochs.iter().map(u64::to_string).collect()),
-            r.winner_epoch,
-        );
-        if r.own > 0 {
-            m.push_str(&format!(
-                "; {} of them are this server's own edits ({server_id}), which other servers never applied",
-                r.own
-            ));
-        }
-        let code = if r.split_brain() {
-            m.push_str(&format!(
-                "; the lost records span {} segment(s) and {} s of commits: two servers may have written at once",
-                r.segments,
-                r.span_ms / 1000
-            ));
-            "SPLIT_BRAIN_SUSPECTED"
-        } else {
-            "REWOUND"
-        };
-        out.push((code, m));
     }
     Ok(out)
 }

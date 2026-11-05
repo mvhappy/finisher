@@ -234,6 +234,7 @@ pub(super) fn branch(
                 segments: 0,
                 span_ms: 0,
                 at: ctx.now,
+                acknowledged: false,
             };
             let generation = history::record(txn, branch, info)?;
             rewound = Some(Rewind {

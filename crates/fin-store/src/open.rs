@@ -265,6 +265,7 @@ impl Store {
         // A folder from before sub-project 4 has none yet. Failing to make it (a read-only
         // share) only means the lease cannot be acquired: the store follows.
         let _ = fs::create_dir_all(&dot);
+        crate::history::note_server_id(&self.conn, &self.server_id)?;
         self.try_acquire();
         self.import_pass()?;
         if let Some(file) = file

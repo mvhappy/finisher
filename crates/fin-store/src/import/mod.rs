@@ -26,8 +26,10 @@
 //!      aside, apply, quarantine;
 //!    - an applied line that lost (`AppliedLineLost`) is first rewound when [`rewind`]'s
 //!      conditions hold, and the branch resolved once more against the rewound DB (at most
-//!      once per branch per pass). Such a verdict is never reused by the skip: whether it can
-//!      be rewound depends on the lease files too.
+//!      once per branch per pass). Whether it may depends on the lease files too: their
+//!      highest epoch is read before `BEGIN` (never under the database lock) whenever the
+//!      folder's segments or our lease changed or the last pass left such a fork, and it is
+//!      part of the skip key.
 //! 5. **Id counters** are raised past every id in the log ([`Counters::raise_to_log`])
 //!    whenever rows were added or removed, and on the store's first pass (which repairs a DB
 //!    whose counters fell behind for any reason).
@@ -198,7 +200,10 @@ impl ReadOnlyReason {
 struct Key {
     segs: Vec<String>,
     line: known::Line,
-    holds: bool,
+    /// The epoch of the lease this server holds, if it holds one.
+    held: Option<u64>,
+    /// The highest epoch in `lease.json` and the claims ([`rewind::lease_top`]).
+    lease_top: Option<u64>,
     kind: StorageKind,
 }
 
@@ -212,8 +217,6 @@ struct Verdict {
     quarantined: BTreeSet<String>,
     newer: bool,
     error: Option<CoreError>,
-    /// Resolve again next pass even if nothing changed (an `AppliedLineLost` fork).
-    retry: bool,
 }
 
 /// Import state held by the `Store`.
@@ -232,6 +235,14 @@ pub(crate) struct ImportState {
     /// Storage kind for the epoch rule (detected or overridden at open).
     pub(crate) kind: StorageKind,
     resolves: u64,
+    /// What decided the last lease-file read: the segment hashes and the lease held then.
+    lease_seen: Option<(BTreeSet<String>, Option<u64>)>,
+    lease_top: Option<u64>,
+    /// The last pass left an `AppliedLineLost` fork: read the lease files on every pass.
+    forked: bool,
+    /// Test hook: the next rewind fails after taking the rows out.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fail_rewind: bool,
 }
 
 impl ImportState {
@@ -349,8 +360,16 @@ impl Store {
             segs.sort_by(|a, b| a.hash().cmp(b.hash()));
         }
 
-        let holds = self.export.lease.check().is_ok();
+        let held = self.export.lease.check().ok();
+        let holds = held.is_some();
         let kind = self.import.kind;
+        // Lease files for the rewind rule, before the database lock (module docs).
+        let seen = (self.import.segrefs.keys().cloned().collect(), held);
+        if self.import.forked || self.import.lease_seen.as_ref() != Some(&seen) {
+            self.import.lease_top = rewind::lease_top(&dot);
+            self.import.lease_seen = Some(seen);
+        }
+        let lease_top = self.import.lease_top;
         let Store {
             conn,
             heads,
@@ -372,12 +391,12 @@ impl Store {
             let key = Key {
                 segs: segs.iter().map(|s| s.hash().to_string()).collect(),
                 line,
-                holds,
+                held,
+                lease_top,
                 kind,
             };
             if let Some((k, v)) = import.cache.get(&branch)
                 && *k == key
-                && !v.retry
             {
                 cache.insert(branch, (key, v.clone()));
                 continue;
@@ -387,8 +406,13 @@ impl Store {
             let mut res = resolve(&segs, &known);
             resolves += 1;
             let mut rewound = None;
-            if let Some(lost) = rewind::eligible(&ctx, &branch, &res, holds, kind, project_dir)? {
+            if let Some(lost) = rewind::eligible(&ctx, &branch, &res, held, lease_top, kind)? {
                 rewound = Some(rewind::run(&mut ctx, &branch, lost, &segs)?);
+                #[cfg(any(test, feature = "test-hooks"))]
+                if std::mem::take(&mut import.fail_rewind) {
+                    // Dropping `txn` rolls the rewind back, as a crash before the commit.
+                    return Err(CoreError::new("TEST_FAULT", "injected failure in a rewind").into());
+                }
                 key.line = known::line(&txn, &branch)?;
                 let known = known::build(&txn, &branch, &key.line, ctx.all_tx()?, holds, kind)?;
                 res = resolve(&segs, &known);
@@ -403,11 +427,6 @@ impl Store {
             if out.changed || rewound.is_some() {
                 new_heads.push((branch.clone(), out.head));
             }
-            out.verdict.retry = out
-                .verdict
-                .fork
-                .as_ref()
-                .is_some_and(|f| f.reason == crate::chain::ForkReason::AppliedLineLost);
             cache.insert(branch, (key, out.verdict));
         }
         let foreign = quarantine::foreign(&mut ctx, project_dir, foreign)?;
@@ -462,6 +481,11 @@ impl Store {
                 report.error = v.error.clone();
             }
         }
+        import.forked = cache.values().any(|(_, v)| {
+            v.fork
+                .as_ref()
+                .is_some_and(|f| f.reason == crate::chain::ForkReason::AppliedLineLost)
+        });
         import.cache = cache;
         report.waiting = waiting.into_iter().collect();
         report.pending = pending.into_iter().collect();
@@ -494,6 +518,13 @@ impl Store {
     #[doc(hidden)]
     pub fn set_test_storage_kind(&mut self, kind: StorageKind) {
         self.import.kind = kind;
+    }
+
+    /// Test hook: the next rewind fails inside its transaction (after taking the rows out).
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn fail_next_rewind_for_test(&mut self) {
+        self.import.fail_rewind = true;
     }
 
     /// Test hook: how many times this store has run `chain::resolve`.
