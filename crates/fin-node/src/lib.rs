@@ -64,6 +64,14 @@ fn reject(e: impl Into<CoreError>) -> Error {
     Error::new(Status::GenericFailure, format!("{ERROR_PREFIX}{body}"))
 }
 
+/// The `CoreError` JSON a rejection made by [`reject`] carries (else an `INTERNAL` one).
+fn error_value(e: &Error) -> serde_json::Value {
+    e.reason
+        .strip_prefix(ERROR_PREFIX)
+        .and_then(|body| serde_json::from_str(body).ok())
+        .unwrap_or_else(|| json!({ "code": "INTERNAL", "message": e.reason, "details": {} }))
+}
+
 fn encode(value: &impl serde::Serialize) -> Result<String> {
     serde_json::to_string(value).map_err(|e| {
         reject(CoreError::new(

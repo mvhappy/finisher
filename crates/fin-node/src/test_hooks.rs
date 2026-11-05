@@ -57,6 +57,26 @@ impl Engine {
             .store(u64::from(ms), Ordering::SeqCst);
     }
 
+    /// Emits a `rewound` event as the maintenance thread would for an import that took `branch`
+    /// back to `from_rev` (the store's real rewinds are tested in fin-store).
+    #[napi(catch_unwind)]
+    pub fn emit_rewound_for_test(&self, branch: String, from_rev: u32) {
+        let incarnation = match &*lock(&self.inner.state) {
+            crate::engine::State::Open(s) => s.incarnation(),
+            _ => String::new(),
+        };
+        let event = fin_store::StoreEvent::Rewound {
+            branch,
+            from_rev: u64::from(from_rev),
+            quarantined: 1,
+            own: false,
+            generation: 1,
+        };
+        self.inner
+            .events
+            .emit(crate::maintenance::event_json(&event, Some(&incarnation)));
+    }
+
     /// Whether the maintenance thread runs.
     #[napi(catch_unwind)]
     pub fn maintenance_running_for_test(&self) -> bool {

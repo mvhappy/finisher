@@ -76,7 +76,7 @@ pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
 };
-pub use tick::TickReport;
+pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 
 /// The only branch sub-project 2 creates.
@@ -204,6 +204,9 @@ pub struct Store {
     /// The local date of the last daily backup taken or found, or `(date, ms)` of the last
     /// failed attempt (retried after [`tick::BACKUP_RETRY_MS`]).
     daily: tick::DailyState,
+    /// Heavy work a tick found due but left to [`Store::run_due_backup`] /
+    /// [`Store::run_due_compaction`] ([`TickOptions`]).
+    due: tick::DueWork,
     /// The shared `db.lock` this store holds while it has the database open (`dblock`).
     db_lock: Option<std::fs::File>,
     /// Damaged folder files and since when they look unchanged (verify's 60 s rule).

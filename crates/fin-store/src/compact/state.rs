@@ -18,8 +18,10 @@ use crate::{Store, StoreError, db, fsio};
 
 const ABANDONED_KEY: &str = "compactionAbandoned";
 
-/// What one compaction run did.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// What one compaction run did (serialised camelCase; `waiting` and `abandoned` as
+/// `[name, why]` pairs).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactReport {
     /// Why nothing ran (not holding the lease, read-only).
     pub skipped: Option<String>,

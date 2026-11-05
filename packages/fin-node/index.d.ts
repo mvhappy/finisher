@@ -10,13 +10,17 @@ export interface FinNodeError extends Error {
 /**
  * One project's op log. Short calls run on the libuv thread pool; long calls (`create`,
  * `open`, `takeover`, `verify`, `rebuild`, `compact`, `close`) run one at a time, in call
- * order, on the engine's own worker thread. While a long call runs, short calls reject at once
- * with `ENGINE_BUSY` (`details: { operation, sinceMs }`, transient). Every method rejects with a
+ * order, on the engine's own worker thread, as do the daily backup and compaction the
+ * maintenance thread finds due (operations `"backup (auto)"`, `"compaction (auto)"`). While a
+ * long call runs, a short call waits up to 250 ms and then rejects with `ENGINE_BUSY`
+ * (`details: { operation, sinceMs }`, transient); `status()` answers at once from a cached
+ * status with `busy` set. Every method rejects with a
  * `FinNodeError`. JSON payloads follow the fin-core schema (`@finisher/core-types`) and the
  * fin-store `ProjectStatus` / report shapes (camelCase).
  *
  * A maintenance thread ticks the store every 500 ms (following the folder, exporting, driving
- * the lease, daily backups, compaction) until `close`.
+ * the lease; scheduling backups and compaction) until `close`. An engine garbage-collected
+ * without `close` is closed (and flushed) on its worker thread.
  */
 export declare class Engine {
   private constructor();
@@ -39,7 +43,11 @@ export declare class Engine {
   opsSince(branch: string, rev: number): Promise<string>;
   /** Resolves to `{ generation: { incarnation, n }, ops: CommittedTx[] }` JSON, read together. */
   opsSinceAt(branch: string, rev: number): Promise<string>;
-  /** Resolves to the `ProjectStatus` JSON (`fin project status`). */
+  /**
+   * Resolves to the `ProjectStatus` JSON (`fin project status`) plus `busy`: `null`, or
+   * `{ operation, sinceMs }` while a long call runs (the status is then the one cached after the
+   * last tick or long call).
+   */
   status(): Promise<string>;
   /**
    * What became of `txId`: the `CommittedTx` JSON; or, when it was set aside,
@@ -60,18 +68,22 @@ export declare class Engine {
   rebuild(): Promise<string>;
   /**
    * Long call: compacts now (forced); resolves to `{ skipped, manifests, packsWritten, replaced,
-   * finished, deleted, waiting: [{ name, why }], abandoned: [{ name, why }] }` JSON.
+   * finished, deleted, waiting: [name, why][], abandoned: [name, why][] }` JSON.
    */
   compact(): Promise<string>;
   /**
    * Delivers every later store event to `cb` (replacing an earlier callback); events from
    * before the first registration are buffered (the newest 1024). Does not keep the process
-   * alive. Events (JSON):
-   * - `{ type: "applied", tx: CommittedTx }`: a record imported from the folder;
+   * alive. A callback that throws is reported with `process.emitWarning` (code
+   * `FIN_NODE_EVENT_CALLBACK`). Events (JSON):
+   * - `{ type: "applied", tx: CommittedTx }`: a record imported from the folder (by a tick, at
+   *   open, by a takeover or a rebuild);
    * - `{ type: "status", status: ProjectStatus }`: the status changed;
    * - `{ type: "rewound", branch, fromRev, quarantined, own, generation, incarnation }`;
-   * - `{ type: "error", error: { code, message, details, fix? }, fatal: boolean }`: a tick
-   *   failed (`fatal`: it panicked and the engine is dead).
+   * - `{ type: "rebuilt", incarnation }`: the database was rebuilt; earlier revs may differ now;
+   * - `{ type: "error", error: { code, message, details, fix? }, fatal: boolean }`: a tick or an
+   *   automatic backup/compaction failed (`fatal`: it panicked and the engine is dead);
+   * - `{ type: "lagged", dropped }`: first after registration when the buffer overflowed.
    */
   onEvent(cb: (json: string) => void): void;
   /**
@@ -85,6 +97,8 @@ export declare class Engine {
   panicNextTickForTest(): void;
   /** @internal Test builds only: the next long call keeps the store `ms` longer. */
   delayNextLongCallForTest(ms: number): void;
+  /** @internal Test builds only: emits a synthetic `rewound` event. */
+  emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */
   maintenanceRunningForTest(): boolean;
 }

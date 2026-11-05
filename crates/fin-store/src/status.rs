@@ -65,6 +65,10 @@ pub enum StoreEvent {
         own: bool,
         generation: u64,
     },
+    /// The database was rebuilt (at open or by [`Store::rebuild`]): it is a new
+    /// `incarnation`, and every rev read before may now hold something else. Reported before
+    /// the records imported after it.
+    Rebuilt { incarnation: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -152,8 +156,10 @@ pub(crate) struct Follow {
     project_file_copies: Vec<String>,
     pub(crate) last_export_ms: Option<i64>,
     last_status: Option<ProjectStatus>,
-    /// `Rewound` events not yet returned by `tick`.
-    pub(crate) rewound: Vec<StoreEvent>,
+    /// Events of import passes (and rebuilds) not yet returned by `tick`: every pass queues
+    /// its `Rewound` then its `Applied` events, also the passes run outside `tick` (open,
+    /// takeover, rebuild).
+    pub(crate) queued: Vec<StoreEvent>,
 }
 
 impl Follow {

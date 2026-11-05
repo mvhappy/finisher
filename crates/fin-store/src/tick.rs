@@ -6,8 +6,9 @@
 //! network 3 s, sync 10 s); calls in between only export (the export has its own delay) and
 //! report status changes. A poll:
 //! 1. **import** ([`Store::import`]); records taken out of a branch's history become
-//!    [`StoreEvent::Rewound`] (with those of passes run outside `tick`, at open or a
-//!    takeover, first), then applied records [`StoreEvent::Applied`];
+//!    [`StoreEvent::Rewound`], then applied records [`StoreEvent::Applied`]. Every import
+//!    pass queues its events, also those run outside `tick` (open, a takeover, a rebuild,
+//!    which also queues [`StoreEvent::Rebuilt`] first); each tick returns the queue;
 //! 2. **export** if holding and writable;
 //! 3. **fencing re-check** while holding ([`Lease::check`]): a lost lease is dropped (the
 //!    store is `LEASE_LOST`); a check that only could not list the folder is reported in
@@ -23,6 +24,9 @@
 //!    [`BACKUP_RETRY_MS`]);
 //! 6. compaction (`crate::compact`; holder only, writable and caught up), also under a test
 //!    lease.
+//!
+//! Step 5's backup and step 6 can take seconds: with [`TickOptions`] off, the tick only notes
+//! them as due ([`Store::due_work`]) for the caller to run outside its tick.
 //!
 //! (The plan lists the retry before the re-check; re-checking first lets a loss found by
 //! this poll be retried by the same poll.)
@@ -138,6 +142,34 @@ impl LeaseCtl {
     }
 }
 
+/// Which heavy steps a tick runs itself ([`Store::tick_with`]). Both default to `true`.
+///
+/// The daily backup (`VACUUM INTO`) and compaction can take seconds (minutes on a slow share).
+/// A caller that must not hold the store that long inside its tick turns them off: the tick
+/// then only notes that they are due ([`Store::due_work`]) and the caller runs them when it
+/// can ([`Store::run_due_backup`], [`Store::run_due_compaction`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickOptions {
+    pub backup: bool,
+    pub compaction: bool,
+}
+
+impl Default for TickOptions {
+    fn default() -> Self {
+        TickOptions {
+            backup: true,
+            compaction: true,
+        }
+    }
+}
+
+/// Heavy work found due by a tick that did not run it ([`TickOptions`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DueWork {
+    pub backup: bool,
+    pub compaction: bool,
+}
+
 /// What one tick did ([`Store::tick_report`]).
 #[derive(Debug, Clone, Default)]
 pub struct TickReport {
@@ -159,6 +191,12 @@ impl Store {
 
     /// [`Store::tick`], with what each step did.
     pub fn tick_report(&mut self, now: Instant) -> Result<TickReport, StoreError> {
+        self.tick_with(now, TickOptions::default())
+    }
+
+    /// [`Store::tick_report`], running the heavy steps only as `opts` says (else noting them
+    /// in [`Store::due_work`]).
+    pub fn tick_with(&mut self, now: Instant, opts: TickOptions) -> Result<TickReport, StoreError> {
         let mut out = TickReport::default();
         let every = poll_every(self.storage_kind());
         let due = self
@@ -168,7 +206,6 @@ impl Store {
         if due {
             self.ctl.last_poll = Some(now);
             let r = self.import_pass()?;
-            self.push_events(&mut out.events, &r);
             out.imports.push(r);
         }
         out.export = export::export_pending(self, now, false)?;
@@ -183,16 +220,26 @@ impl Store {
                 self.release_lost();
                 if self.try_acquire() && self.ctl.gate_needs_no_wait() {
                     let r = self.import_pass()?;
-                    self.push_events(&mut out.events, &r);
                     out.imports.push(r);
                 }
             }
-            self.daily_tick(crate::commit::now_ms());
+            let now_ms = crate::commit::now_ms();
+            if opts.backup {
+                self.daily_tick(now_ms);
+            } else if self.backup_due(now_ms) {
+                self.due.backup = true;
+            }
         }
         if due {
             // Holder only, writable, caught up (`compact`); after the export and lease steps.
-            out.compact = crate::compact::run(self, crate::commit::now_ms(), false)?;
+            let now_ms = crate::commit::now_ms();
+            if opts.compaction {
+                out.compact = crate::compact::run(self, now_ms, false)?;
+            } else if crate::compact::due(self)? {
+                self.due.compaction = true;
+            }
         }
+        out.events.append(&mut self.follow.queued);
         if let Some(status) = self.status_if_changed() {
             out.events.push(StoreEvent::Status(Box::new(status)));
         }
@@ -231,18 +278,46 @@ impl Store {
         Ok(self.status())
     }
 
-    /// The daily backup of a poll (module docs, step 5); failures are retried later, never
-    /// raised.
-    fn daily_tick(&mut self, now_ms: i64) {
+    /// The heavy work ticks under [`TickOptions`] found due and left for the caller.
+    pub fn due_work(&self) -> DueWork {
+        self.due
+    }
+
+    /// Takes the daily backup a tick found due (failures are retried later, never raised).
+    pub fn run_due_backup(&mut self) {
+        self.due.backup = false;
+        self.daily_tick(crate::commit::now_ms());
+    }
+
+    /// Runs the compaction a tick found due.
+    pub fn run_due_compaction(&mut self) -> Result<crate::CompactReport, StoreError> {
+        self.due.compaction = false;
+        crate::compact::run(self, crate::commit::now_ms(), false)
+    }
+
+    /// Whether the daily backup of unix ms `now_ms` is still to take.
+    fn backup_due(&self, now_ms: i64) -> bool {
         let today = crate::localdate::local_ymd(now_ms);
-        if self.daily.done == Some(today)
-            || self
+        self.daily.done != Some(today)
+            && !self
                 .daily
                 .failed_at
                 .is_some_and(|t| now_ms.saturating_sub(t) < BACKUP_RETRY_MS)
-        {
+    }
+
+    /// Queues [`StoreEvent::Rebuilt`] for the next tick.
+    pub(crate) fn queue_rebuilt(&mut self) {
+        let incarnation = self.incarnation();
+        self.follow.queued.push(StoreEvent::Rebuilt { incarnation });
+    }
+
+    /// The daily backup of a poll (module docs, step 5); failures are retried later, never
+    /// raised.
+    fn daily_tick(&mut self, now_ms: i64) {
+        if !self.backup_due(now_ms) {
             return;
         }
+        let today = crate::localdate::local_ymd(now_ms);
         match self.daily_backup(now_ms) {
             Ok(_) => {
                 self.daily.done = Some(today);
@@ -350,21 +425,14 @@ impl Store {
         }
     }
 
-    /// The events of import pass `r`: every `Rewound` not yet reported (this pass's and those
-    /// of passes outside `tick`), then its applied records.
-    fn push_events(&mut self, events: &mut Vec<StoreEvent>, r: &ImportReport) {
-        events.append(&mut self.follow.rewound);
-        events.extend(r.applied.iter().cloned().map(StoreEvent::Applied));
-    }
-
     /// An import pass that also lifts the ordering rule's block when it may (module docs).
-    /// Its rewinds are queued for the next `tick`'s events.
+    /// Its rewinds, then its applied records, are queued for the next `tick`'s events.
     pub(crate) fn import_pass(&mut self) -> Result<ImportReport, StoreError> {
         let started = self.ctl.now();
         self.reread_project_file();
         let r = self.import()?;
         self.follow
-            .rewound
+            .queued
             .extend(r.rewound.iter().map(|w| StoreEvent::Rewound {
                 branch: w.branch.clone(),
                 from_rev: w.from_rev,
@@ -372,6 +440,9 @@ impl Store {
                 own: w.own,
                 generation: w.generation,
             }));
+        self.follow
+            .queued
+            .extend(r.applied.iter().cloned().map(StoreEvent::Applied));
         let kind = self.storage_kind();
         self.follow.observe(&r, kind, &self.project_dir);
         if let Gate::Pending { wait_until } = self.ctl.gate

@@ -128,7 +128,19 @@ export class Engine {
 
   onEvent(cb) {
     if (typeof cb !== "function") throw new TypeError("onEvent needs a function");
-    this.#native.onEvent(cb);
+    // A throw here would reach the threadsafe-function trampoline and become an
+    // uncaughtException; it is reported as a process warning instead.
+    this.#native.onEvent((json) => {
+      try {
+        cb(json);
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        process.emitWarning(`an Engine.onEvent callback threw: ${err.message}`, {
+          code: "FIN_NODE_EVENT_CALLBACK",
+          detail: err.stack ?? err.message,
+        });
+      }
+    });
   }
 
   async close() {
@@ -153,6 +165,11 @@ export class Engine {
   /** @internal Test builds only: the next long call keeps the store `ms` longer. */
   delayNextLongCallForTest(ms) {
     this.#hook("delayNextLongCallForTest")(ms);
+  }
+
+  /** @internal Test builds only: emits a synthetic `rewound` event. */
+  emitRewoundForTest(branch, fromRev) {
+    this.#hook("emitRewoundForTest")(branch, fromRev);
   }
 
   /** @internal Test builds only: whether the maintenance thread runs. */

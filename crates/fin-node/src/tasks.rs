@@ -119,6 +119,38 @@ fn tx_json(tx_id: &str, status: TxStatus) -> Result<Reply> {
     })
 }
 
+/// `status()`: the store's status with `busy: null`; during a long call, at once, the status
+/// cached after the last tick or long call with `busy: {operation, sinceMs}`.
+fn status(store: &Shared) -> Result<Reply> {
+    let mut guard = lock(&store.state);
+    let (mut value, busy) = match &mut *guard {
+        State::Open(s) => {
+            let v = serde_json::to_value(s.status()).map_err(|e| {
+                reject(CoreError::new(
+                    "INTERNAL",
+                    format!("cannot encode result: {e}"),
+                ))
+            })?;
+            *lock(&store.status) = Some(v.clone());
+            (v, serde_json::Value::Null)
+        }
+        State::Busy {
+            operation,
+            since_ms,
+        } => {
+            let Some(v) = lock(&store.status).clone() else {
+                return Err(reject(guard.unavailable()));
+            };
+            (v, json!({ "operation": operation, "sinceMs": since_ms }))
+        }
+        other => return Err(reject(other.unavailable())),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("busy".to_string(), busy);
+    }
+    Ok(Reply::Json(encode(&value)?))
+}
+
 fn run(store: &Shared, call: Call) -> Result<Reply> {
     match call {
         Call::Head { branch } => with_store(store, |s| Ok(Reply::Number(s.head(&branch)))),
@@ -161,7 +193,7 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
                 )?))
             })
         }
-        Call::Status => with_store(store, |s| Ok(Reply::Json(encode(&s.status())?))),
+        Call::Status => status(store),
         Call::TxGet { tx_id } => with_store(store, |s| {
             tx_json(&tx_id, s.tx_status(&tx_id).map_err(reject)?)
         }),
@@ -192,7 +224,13 @@ impl Task for StoreTask {
         let store = &self.store;
         guarded(
             || run(store, call),
-            || *lock(&store.state) = State::Panicked,
+            || {
+                // Only an open store is given up: the panic happened while using it.
+                let mut g = lock(&store.state);
+                if matches!(*g, State::Open(_)) {
+                    *g = State::Panicked;
+                }
+            },
         )
     }
 

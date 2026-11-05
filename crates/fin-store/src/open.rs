@@ -279,6 +279,7 @@ impl Store {
             heads: RefCell::new(heads),
             rebuilt: None,
             daily: tick::DailyState::default(),
+            due: tick::DueWork::default(),
             db_lock: None,
             damage: RefCell::new(crate::verify::DamageSeen::default()),
             compact: crate::compact::CompactState::default(),
@@ -298,6 +299,9 @@ impl Store {
         crate::history::ensure_incarnation(&self.conn)?;
         crate::project_file::db_genesis_hash(&self.conn)?;
         self.try_acquire();
+        if self.rebuilt.is_some() {
+            self.queue_rebuilt();
+        }
         self.import_pass()?;
         if let Some(file) = file
             && file.genesis.is_none()

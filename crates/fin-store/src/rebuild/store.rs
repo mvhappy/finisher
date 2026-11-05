@@ -119,6 +119,7 @@ impl Store {
             }
         };
         self.adopt_rebuilt(Some(report.clone()))?;
+        self.queue_rebuilt();
         self.import_pass()?;
         Ok(report)
     }

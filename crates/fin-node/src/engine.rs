@@ -1,6 +1,8 @@
 //! The `Engine` class: one project's store, its worker thread and its maintenance thread.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use fin_core::CoreError;
 use fin_store::Store;
@@ -40,9 +42,20 @@ impl State {
     }
 }
 
+/// How long a short call waits for a long call to give the store back before it fails with
+/// `ENGINE_BUSY`: long enough for an automatic backup or compaction of a small project, short
+/// enough not to park a libuv thread.
+pub(crate) const BUSY_WAIT: Duration = Duration::from_millis(250);
+
 /// What an `Engine`, its in-flight calls and its threads share.
 pub(crate) struct Inner {
     pub(crate) state: Mutex<State>,
+    /// Notified whenever the state stops being `Busy`.
+    pub(crate) returned: Condvar,
+    /// The last `ProjectStatus` seen (JSON): what `status()` answers during a long call.
+    pub(crate) status: Mutex<Option<serde_json::Value>>,
+    /// An automatic backup or compaction is queued on the worker (or running).
+    pub(crate) auto_queued: AtomicBool,
     pub(crate) events: EventSink,
     /// The maintenance thread, until `close` (or the engine's drop) stops it.
     pub(crate) maintenance: Mutex<Option<Maintenance>>,
@@ -59,9 +72,27 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// The state, after waiting up to [`BUSY_WAIT`] for a long call to give the store back.
+pub(crate) fn lock_state(shared: &Shared, wait: Duration) -> MutexGuard<'_, State> {
+    let deadline = Instant::now() + wait;
+    let mut guard = lock(&shared.state);
+    while matches!(*guard, State::Busy { .. }) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        guard = shared
+            .returned
+            .wait_timeout(guard, left)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
+    }
+    guard
+}
+
 /// Runs `f` against the open store, or fails with `ENGINE_CLOSED` / `ENGINE_BUSY`.
 pub(crate) fn with_store<T>(shared: &Shared, f: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
-    let mut guard = lock(&shared.state);
+    let mut guard = lock_state(shared, BUSY_WAIT);
     match &mut *guard {
         State::Open(store) => f(store),
         other => Err(reject(other.unavailable())),
@@ -98,16 +129,23 @@ pub struct Engine {
 impl Engine {
     /// Wraps an opened store and starts its maintenance thread (on the JS thread, when the
     /// open resolves: an engine JS never receives never ticks).
-    pub(crate) fn start(store: Store, worker: Worker) -> Result<Engine> {
+    pub(crate) fn start(
+        store: Store,
+        status: Option<serde_json::Value>,
+        worker: Worker,
+    ) -> Result<Engine> {
         let project_id = store.project_id().to_string();
         let inner = Arc::new(Inner {
             state: Mutex::new(State::Open(Box::new(store))),
+            returned: Condvar::new(),
+            status: Mutex::new(status),
+            auto_queued: AtomicBool::new(false),
             events: EventSink::default(),
             maintenance: Mutex::new(None),
             #[cfg(feature = "test-hooks")]
             hooks: Default::default(),
         });
-        let m = Maintenance::start(&inner)?;
+        let m = Maintenance::start(&inner, worker.clone())?;
         *lock(&inner.maintenance) = Some(m);
         Ok(Engine {
             inner,
@@ -131,12 +169,17 @@ impl Engine {
 }
 
 impl Drop for Engine {
-    /// Garbage collected without `close`: the maintenance thread stops (waiting for a running
-    /// tick); the store is dropped, unflushed, once in-flight calls finish.
+    /// Garbage collected without `close`: a fire-and-forget close goes to the worker, which
+    /// stops the maintenance thread and flushes off the JS thread, after queued long calls.
     fn drop(&mut self) {
-        let m = lock(&self.inner.maintenance).take();
-        if let Some(m) = m {
-            m.stop();
+        let inner = self.inner.clone();
+        let sent = self.worker.submit(Box::new(move || {
+            let _ = crate::guarded(|| worker::close_now(&inner), || {});
+        }));
+        if sent.is_err()
+            && let Some(m) = lock(&self.inner.maintenance).take()
+        {
+            m.signal();
         }
     }
 }
@@ -259,7 +302,7 @@ impl Engine {
     #[napi(catch_unwind, ts_return_type = "Promise<string>")]
     pub fn compact<'e>(&self, env: &'e Env) -> Result<Object<'e>> {
         self.long(env, "compact", |s| {
-            encode(&worker::compact_json(&s.compact(true).map_err(reject)?))
+            encode(&s.compact(true).map_err(reject)?)
         })
     }
 

@@ -1,7 +1,7 @@
 // Storage bindings (plan 4A Task 14): status, takeover, verify, rebuild, compact, txGet, the
 // maintenance thread and its events. Real clocks: a local folder polls every 2 s and exports
 // after 2 s, so a follower sees a commit within ~4–6 s.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -61,10 +61,10 @@ function listen(engine: Engine): Event[] {
   return events;
 }
 
-async function until<T>(f: () => T | undefined, ms: number, what: string): Promise<T> {
+async function until<T>(f: () => T | undefined | Promise<T | undefined>, ms: number, what: string): Promise<T> {
   const end = Date.now() + ms;
   for (;;) {
-    const v = f();
+    const v = await f();
     if (v !== undefined) return v;
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 50));
@@ -72,6 +72,18 @@ async function until<T>(f: () => T | undefined, ms: number, what: string): Promi
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Polls `status()` until a long call named `operation` has the store; returns that status. */
+async function busyStatus(engine: Engine, operation: string) {
+  return until(
+    async () => {
+      const st = JSON.parse(await engine.status());
+      return st.busy?.operation === operation ? st : undefined;
+    },
+    3_000,
+    `${operation} to run`,
+  );
+}
 
 describe("storage", () => {
   test("status reports lease held and storage kind", async () => {
@@ -146,23 +158,42 @@ describe("storage", () => {
     expect(rebuilt.reason).toBe("manual");
     expect(rebuilt.rebuiltThrough).toBe(1);
     expect(await engine.head("main")).toBe(1);
+    const events = listen(engine);
+    const rebuiltEvent = await until(() => events.find((e) => e.type === "rebuilt"), 3_000, "a rebuilt event");
+    expect(rebuiltEvent.incarnation).toBe(JSON.parse(await engine.status()).incarnation);
     const compacted = JSON.parse(await engine.compact());
     expect(compacted).toMatchObject({ packsWritten: 0, deleted: 0 });
     expect(Array.isArray(compacted.manifests)).toBe(true);
   });
 
-  test("a commit while verify runs fails fast with ENGINE_BUSY", async () => {
+  test("a commit while verify runs fails with ENGINE_BUSY; status answers from its cache", async () => {
     const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
-    engine.delayNextLongCallForTest(600);
+    expect(JSON.parse(await engine.status()).busy).toBeNull();
+    engine.delayNextLongCallForTest(1_000);
     const verifying = engine.verify();
-    await sleep(100);
+    const during = await busyStatus(engine, "verify");
+    expect(during.projectId).toBe(engine.projectId);
+    expect(during.lease.state).toBe("held");
+    expect(typeof during.busy.sinceMs).toBe("number");
     const busy = await rejection(engine.commit(tx("tx-1", 0, [addAsset])));
     expect(busy.code).toBe("ENGINE_BUSY");
     expect(busy.details.operation).toBe("verify");
     expect(typeof busy.fix).toBe("string");
-    expect((await rejection(engine.status())).code).toBe("ENGINE_BUSY");
     expect(JSON.parse(await verifying).ok).toBe(true);
     expect(JSON.parse(await engine.commit(tx("tx-1", 0, [addAsset]))).rev).toBe(1);
+  });
+
+  test("the daily backup runs as a long call, off the tick", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    // The first poll finds today's backup due; it runs on the worker, store taken out.
+    engine.delayNextLongCallForTest(1_000);
+    await busyStatus(engine, "backup (auto)");
+    const busy = await rejection(engine.commit(tx("tx-1", 0, [addAsset])));
+    expect(busy.code).toBe("ENGINE_BUSY");
+    expect(busy.details.operation).toBe("backup (auto)");
+    await until(async () => (JSON.parse(await engine.status()).busy === null ? true : undefined), 3_000, "the backup");
+    expect(JSON.parse(await engine.commit(tx("tx-1", 0, [addAsset]))).rev).toBe(1);
+    expect(readdirSync(join(serverData, "projects", engine.projectId, "backups")).some((n) => n.startsWith("daily-"))).toBe(true);
   });
 
   test("restart with the same server data is writable at once", async () => {
@@ -222,6 +253,95 @@ describe("storage", () => {
     expect(engine.maintenanceRunningForTest()).toBe(false);
     // The project reopens intact.
     const again = keep(await Engine.open(serverData, projectDir));
+    expect(await again.head("main")).toBe(1);
+  });
+
+  test("records imported at open are announced as applied", async () => {
+    const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    await a.commit(tx("tx-1", 0, [addAsset]));
+    const otherData = join(tmp, "server-data-2");
+    // A first open builds B's database (announced as rebuilt).
+    const fresh = await Engine.open(otherData, projectDir);
+    const first = listen(fresh);
+    await until(() => first.find((e) => e.type === "rebuilt"), 3_000, "the rebuilt event");
+    await fresh.close();
+    await a.commit(tx("tx-2", 1, [addAsset]));
+    await a.close();
+    const b = keep(await Engine.open(otherData, projectDir));
+    expect(await b.head("main")).toBe(2);
+    const events = listen(b);
+    const ids = () => events.filter((e) => e.type === "applied").map((e) => (e.tx as { tx: { txId: string } }).tx.txId);
+    // tx-1 may not have been exported when the first open built B's database.
+    await until(() => (ids().includes("tx-2") ? true : undefined), 3_000, "tx-2 applied");
+    expect(ids().slice(-1)).toEqual(["tx-2"]);
+  });
+
+  test("events before onEvent are buffered", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    await until(async () => (engine.maintenanceRunningForTest() ? true : undefined), 1_000, "maintenance");
+    await sleep(1_200);
+    const events = listen(engine);
+    expect(events.length).toBe(0);
+    await until(() => events.find((e) => e.type === "status"), 1_000, "the buffered status event");
+    expect(events.some((e) => e.type === "lagged")).toBe(false);
+  });
+
+  test("rewound events carry the generation and incarnation", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    const events = listen(engine);
+    engine.emitRewoundForTest("main", 3);
+    const rewound = await until(() => events.find((e) => e.type === "rewound"), 1_000, "a rewound event");
+    expect(rewound).toEqual({
+      type: "rewound",
+      branch: "main",
+      fromRev: 3,
+      quarantined: 1,
+      own: false,
+      generation: 1,
+      incarnation: JSON.parse(await engine.status()).incarnation,
+    });
+  });
+
+  test("a throwing onEvent callback becomes a process warning", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    const warnings: Error[] = [];
+    const onWarning = (w: Error) => warnings.push(w);
+    process.on("warning", onWarning);
+    try {
+      engine.onEvent(() => {
+        throw new Error("callback bug");
+      });
+      engine.emitRewoundForTest("main", 1);
+      const w = await until(() => warnings.find((x) => x.message.includes("callback bug")), 2_000, "the warning");
+      expect((w as Error & { code?: string }).code).toBe("FIN_NODE_EVENT_CALLBACK");
+    } finally {
+      process.off("warning", onWarning);
+    }
+  });
+
+  test("close inside the onEvent callback", async () => {
+    const engine = await Engine.create(serverData, projectDir, "Demo", "30");
+    let closing: Promise<void> | undefined;
+    engine.onEvent(() => {
+      closing ??= engine.close();
+    });
+    await until(() => (closing ? true : undefined), 3_000, "an event");
+    await closing;
+    expect(engine.maintenanceRunningForTest()).toBe(false);
+    expect((await rejection(engine.head("main"))).code).toBe("ENGINE_CLOSED");
+  });
+
+  test("close during a long call waits for it; double close is a no-op", async () => {
+    const engine = await Engine.create(serverData, projectDir, "Demo", "30");
+    await engine.commit(tx("tx-1", 0, [addAsset]));
+    engine.delayNextLongCallForTest(500);
+    const verifying = engine.verify();
+    await busyStatus(engine, "verify");
+    await Promise.all([engine.close(), engine.close()]);
+    expect(JSON.parse(await verifying).ok).toBe(true);
+    expect((await rejection(engine.verify())).code).toBe("ENGINE_CLOSED");
+    // Flushed on close: a reopen finds the record in the folder too.
+    const again = keep(await Engine.open(join(tmp, "server-data-2"), projectDir));
     expect(await again.head("main")).toBe(1);
   });
 });

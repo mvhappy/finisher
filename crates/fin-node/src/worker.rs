@@ -2,11 +2,15 @@
 //!
 //! `create`/`open` (which may import a whole folder or rebuild the database), `takeover`,
 //! `verify`, `rebuild`, `compact` and `close` run here one at a time, in call order, and
-//! settle a napi deferred promise. They never occupy the libuv pool.
+//! settle a napi deferred promise. They never occupy the libuv pool. So do the daily backup
+//! and compaction the maintenance thread finds due ([`auto`]: operations `backup (auto)` and
+//! `compaction (auto)`), and the close an engine garbage-collected without `close` sends.
 //!
 //! A long call takes the store out of the shared state (which then reads `Busy`) and puts it
-//! back when done: short calls meanwhile fail at once with `ENGINE_BUSY`, and the maintenance
-//! thread skips its ticks. `close` queues behind running and queued long calls.
+//! back when done: a short call meanwhile waits up to [`crate::engine::BUSY_WAIT`] and then
+//! fails with `ENGINE_BUSY`; `status()` answers at once from the status cached after the last
+//! tick or long call, with `busy: {operation, sinceMs}`; the maintenance thread skips its
+//! ticks. `close` queues behind running and queued long calls.
 //!
 //! Cancellation: a running long call is not interrupted (`fin-store` has no cancellation
 //! points inside verify, rebuild or compaction; each is crash-safe on its own). A long call
@@ -14,12 +18,13 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use fin_core::{CoreError, Rational};
-use fin_store::{CompactReport, Store};
+
+use fin_store::Store;
 use napi::bindgen_prelude::*;
-use serde_json::json;
 
 use crate::engine::{Engine, Shared, State, lock};
 use crate::{guarded, now_ms, panic_error, reject};
@@ -53,7 +58,7 @@ impl Worker {
         Ok(Worker { jobs })
     }
 
-    fn submit(&self, job: Job) -> Result<()> {
+    pub(crate) fn submit(&self, job: Job) -> Result<()> {
         self.jobs.send(job).map_err(|_| {
             reject(CoreError::new(
                 "INTERNAL",
@@ -84,13 +89,15 @@ pub(crate) fn open<'e>(
                     }
                     None => Store::open(&server_data, &project_dir),
                 };
-                store.map_err(reject)
+                let store = store.map_err(reject)?;
+                let status = serde_json::to_value(store.status()).ok();
+                Ok((store, status))
             },
             || {},
         );
         match opened {
-            Ok(store) => {
-                deferred.resolve(move |_env| guarded(|| Engine::start(store, keep), || {}))
+            Ok((store, status)) => {
+                deferred.resolve(move |_env| guarded(|| Engine::start(store, status, keep), || {}))
             }
             Err(e) => deferred.reject(e),
         }
@@ -113,6 +120,49 @@ pub(crate) fn long<'e>(
         Err(e) => deferred.reject(e),
     }))?;
     Ok(promise)
+}
+
+/// Queues the backup or compaction a tick found due (`Store::due_work`) as a long call,
+/// unless one is queued already. Its failure is a non-fatal `error` event; a panic, a fatal one.
+pub(crate) fn auto(inner: &Shared, worker: &Worker) {
+    let due = {
+        let g = lock(&inner.state);
+        match &*g {
+            State::Open(s) => s.due_work(),
+            _ => return,
+        }
+    };
+    if !(due.backup || due.compaction) || inner.auto_queued.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let operation = if due.compaction {
+        "compaction (auto)"
+    } else {
+        "backup (auto)"
+    };
+    let job_inner = inner.clone();
+    let sent = worker.submit(Box::new(move || {
+        let inner = job_inner;
+        let done = run_long(&inner, operation, |s| {
+            let due = s.due_work();
+            if due.backup {
+                s.run_due_backup();
+            }
+            if due.compaction {
+                s.run_due_compaction().map_err(reject)?;
+            }
+            Ok(())
+        });
+        inner.auto_queued.store(false, Ordering::SeqCst);
+        if let Err(e) = done {
+            let fatal = matches!(*lock(&inner.state), State::Panicked);
+            let e = crate::error_value(&e);
+            inner.events.emit(crate::maintenance::error_json(&e, fatal));
+        }
+    }));
+    if sent.is_err() {
+        inner.auto_queued.store(false, Ordering::SeqCst);
+    }
 }
 
 fn run_long<T>(
@@ -138,19 +188,27 @@ fn run_long<T>(
     let result = catch_unwind(AssertUnwindSafe(|| {
         #[cfg(feature = "test-hooks")]
         inner.hooks.long_call_delay();
-        f(&mut store)
+        let r = f(&mut store);
+        if let Ok(status) = serde_json::to_value(store.status()) {
+            *lock(&inner.status) = Some(status);
+        }
+        r
     }));
-    match result {
-        Ok(r) => {
-            *lock(&inner.state) = State::Open(store);
-            r
-        }
+    let (back, out) = match result {
+        Ok(r) => (State::Open(store), r),
         Err(payload) => {
-            *lock(&inner.state) = State::Panicked;
             let _ = catch_unwind(AssertUnwindSafe(move || drop(store)));
-            Err(reject(panic_error(payload.as_ref())))
+            (State::Panicked, Err(reject(panic_error(payload.as_ref()))))
         }
+    };
+    let mut g = lock(&inner.state);
+    // Only our own `Busy` is replaced: a state set meanwhile (`Panicked`) stays.
+    if matches!(*g, State::Busy { .. }) {
+        *g = back;
     }
+    drop(g);
+    inner.returned.notify_all();
+    out
 }
 
 /// `close` (module docs): stops maintenance, then flushes the export and closes the store.
@@ -167,7 +225,7 @@ pub(crate) fn close<'e>(env: &'e Env, inner: &Shared, worker: &Worker) -> Result
     Ok(promise)
 }
 
-fn close_now(inner: &Shared) -> Result<()> {
+pub(crate) fn close_now(inner: &Shared) -> Result<()> {
     let m = lock(&inner.maintenance).take();
     if let Some(m) = m {
         m.stop();
@@ -189,23 +247,4 @@ fn close_now(inner: &Shared) -> Result<()> {
         Some(store) => store.close().map(drop).map_err(reject),
         None => Ok(()),
     }
-}
-
-/// `CompactReport` as JSON (camelCase, like the store's other reports).
-pub(crate) fn compact_json(r: &CompactReport) -> serde_json::Value {
-    let pairs = |v: &[(String, String)]| -> Vec<serde_json::Value> {
-        v.iter()
-            .map(|(name, why)| json!({ "name": name, "why": why }))
-            .collect()
-    };
-    json!({
-        "skipped": r.skipped,
-        "manifests": r.manifests,
-        "packsWritten": r.packs_written,
-        "replaced": r.replaced,
-        "finished": r.finished,
-        "deleted": r.deleted,
-        "waiting": pairs(&r.waiting),
-        "abandoned": pairs(&r.abandoned),
-    })
 }

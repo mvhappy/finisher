@@ -218,15 +218,8 @@ pub(crate) fn run(
     force: bool,
 ) -> Result<CompactReport, StoreError> {
     let mut report = CompactReport::default();
-    if let Some(r) = store.read_only() {
-        store.compact.seen.clear();
-        report.skipped = Some(format!("the project is read-only ({})", r.code()));
-        return Ok(report);
-    }
-    // In memory only: every write and delete below takes the full check first.
-    if let Err(e) = store.export.lease.quick_check() {
-        store.compact.seen.clear();
-        report.skipped = Some(e.message);
+    if let Some(why) = cannot_run(store) {
+        report.skipped = Some(why);
         return Ok(report);
     }
     let now = store.ctl.now();
@@ -253,15 +246,7 @@ pub(crate) fn run(
         return Ok(report);
     }
     for branch in db::branches(&store.conn)? {
-        let pending = store.compact.seen.values().any(|s| s.blocks(&branch));
-        let due = force
-            || (unpacked(store, &branch) > TRIGGER
-                && store
-                    .compact
-                    .retry_plan
-                    .get(&branch)
-                    .is_none_or(|t| now >= *t));
-        if pending || !due {
+        if !branch_due(store, &branch, now, force) {
             continue;
         }
         if phase1(store, &mut report, &branch, now, now_ms)? {
@@ -280,9 +265,64 @@ pub(crate) fn run(
     Ok(report)
 }
 
-/// Phase 2 of every manifest past its grace period. `true`: stop (the lease is lost).
-fn phase2(store: &mut Store, report: &mut CompactReport, now: Instant) -> Result<bool, StoreError> {
-    let due: Vec<(ManifestName, Manifest)> = store
+/// Why compaction cannot run now (read-only, not holding); forgets the manifests seen then.
+fn cannot_run(store: &mut Store) -> Option<String> {
+    if let Some(r) = store.read_only() {
+        store.compact.seen.clear();
+        return Some(format!("the project is read-only ({})", r.code()));
+    }
+    // In memory only: every write and delete takes the full check first.
+    if let Err(e) = store.export.lease.quick_check() {
+        store.compact.seen.clear();
+        return Some(e.message);
+    }
+    None
+}
+
+/// Whether phase 1 should plan `branch` now.
+fn branch_due(store: &Store, branch: &str, now: Instant, force: bool) -> bool {
+    let pending = store.compact.seen.values().any(|s| s.blocks(branch));
+    let due = force
+        || (unpacked(store, branch) > TRIGGER
+            && store
+                .compact
+                .retry_plan
+                .get(branch)
+                .is_none_or(|t| now >= *t));
+    !pending && due
+}
+
+/// The cheap part of a run (`Store::tick` under `TickOptions { compaction: false }`): observes
+/// the manifests (their grace periods start here as in a run) and tells whether a run would
+/// do anything: a manifest past its grace, or a branch to plan. Writes nothing to the folder.
+pub(crate) fn due(store: &mut Store) -> Result<bool, StoreError> {
+    if cannot_run(store).is_some() {
+        return Ok(false);
+    }
+    let now = store.ctl.now();
+    let dir = store.project_dir.join(".finisher").join("compaction");
+    let names = match manifest::list(&dir) {
+        Ok(n) => n,
+        Err(e) => {
+            store.compact.last_error = Some(format!("cannot list {}: {e}", dir.display()));
+            return Ok(false);
+        }
+    };
+    state::observe(store, &dir, &names, now, crate::commit::now_ms())?;
+    if !ready(store, now).is_empty() {
+        return Ok(true);
+    }
+    for branch in db::branches(&store.conn)? {
+        if branch_due(store, &branch, now, false) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The manifests whose grace period is over (and whose retry time has come).
+fn ready(store: &Store, now: Instant) -> Vec<(ManifestName, Manifest)> {
+    store
         .compact
         .seen
         .iter()
@@ -295,7 +335,12 @@ fn phase2(store: &mut Store, report: &mut CompactReport, now: Instant) -> Result
                 && s.retry_at.is_none_or(|t| now >= t);
             ready.then(|| (n.clone(), m.clone()))
         })
-        .collect();
+        .collect()
+}
+
+/// Phase 2 of every manifest past its grace period. `true`: stop (the lease is lost).
+fn phase2(store: &mut Store, report: &mut CompactReport, now: Instant) -> Result<bool, StoreError> {
+    let due = ready(store, now);
     for (name, m) in due {
         let label = name.to_string();
         let path = store
