@@ -29,7 +29,7 @@ use std::sync::Arc;
 use rusqlite::{Connection, params};
 
 use super::ForeignFile;
-use super::apply::Ctx;
+use super::ctx::Ctx;
 use crate::StoreError;
 use crate::conflict_names::Provider;
 use crate::db::hash_bytes;

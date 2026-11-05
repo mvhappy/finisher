@@ -1,0 +1,281 @@
+//! Row access for `txs`: building, inserting, reading and replaying commit records.
+
+use std::collections::BTreeMap;
+
+use fin_core::{
+    Applied, CommittedTx, CoreError, Diff, Op, Project, Record, RecordKind, Tx, apply_committed,
+    encode_record, resolve_ops, upcast_record,
+};
+use rusqlite::{Connection, OptionalExtension, Row, params};
+
+use super::{hash_bytes, to_i64, to_u64};
+use crate::StoreError;
+
+/// The record a commit of `intent` at `seq` stores (spec §3.3). Migration 0001 builds the
+/// records of sub-project 2 history with this too, so both are the same for the same tx.
+pub(crate) fn new_record(
+    seq: u64,
+    intent: Tx,
+    inverse: Vec<Op>,
+    bindings: BTreeMap<String, String>,
+    parent_hash: Option<String>,
+    committed_at: i64,
+) -> Result<Record, StoreError> {
+    Ok(Record {
+        tx_id: intent.tx_id.clone(),
+        seq,
+        kind: RecordKind::Edit,
+        schema_version: intent.schema_version,
+        parent_hash,
+        author: intent.author.clone(),
+        committed_at,
+        resolved: resolve_ops(&intent.ops, &bindings)?,
+        intent,
+        inverse,
+        bindings,
+    })
+}
+
+/// Appends `record` (committed at `epoch`, not exported) on `branch`. The stored bytes are the record's
+/// encoding and `tx_hash` is their hash, so what is hashed is exactly what is stored. Returns
+/// that hash.
+pub(crate) fn insert_tx(
+    conn: &Connection,
+    branch: &str,
+    record: &Record,
+    diff: &Diff,
+    epoch: u64,
+) -> Result<String, StoreError> {
+    let bytes = encode_record(record);
+    if bytes.len() > crate::segment::MAX_RECORD_BYTES {
+        // Exported, it could not fit a segment that every reader accepts.
+        return Err(CoreError::new(
+            "TX_TOO_LARGE",
+            format!(
+                "transaction {} is {} bytes as a record; the limit is {}",
+                record.tx_id,
+                bytes.len(),
+                crate::segment::MAX_RECORD_BYTES
+            ),
+        )
+        .with_details(serde_json::json!({
+            "txId": record.tx_id,
+            "bytes": bytes.len(),
+            "limit": crate::segment::MAX_RECORD_BYTES,
+        }))
+        .with_fix("split the edit into several smaller transactions")
+        .into());
+    }
+    let tx_hash = hash_bytes(&bytes);
+    conn.execute(
+        "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
+                          exported, diff, schema_version, author, committed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?12, 0, ?8, ?9, ?10, ?11)",
+        params![
+            to_i64(record.seq)?,
+            branch,
+            record.tx_id,
+            kind_text(record.kind)?,
+            bytes,
+            tx_hash,
+            record.parent_hash,
+            serde_json::to_string(diff)?,
+            record.schema_version,
+            record.author,
+            record.committed_at,
+            to_i64(epoch)?,
+        ],
+    )?;
+    Ok(tx_hash)
+}
+
+/// Appends a record taken from the project folder: its exact `bytes` (whose hash is
+/// `tx_hash`), already exported, at `epoch`. `schema_version` is the version the bytes were
+/// written with (`record` is upcast). `diff` `None`: not computed yet (a rebuild seeded from a
+/// snapshot, [`crate::diffs`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_imported(
+    conn: &Connection,
+    branch: &str,
+    record: &Record,
+    bytes: &[u8],
+    tx_hash: &str,
+    schema_version: u32,
+    diff: Option<&Diff>,
+    epoch: u64,
+) -> Result<(), StoreError> {
+    let diff = match diff {
+        Some(d) => serde_json::to_string(d)?,
+        None => crate::diffs::NOT_STORED.to_string(),
+    };
+    conn.execute(
+        "INSERT INTO txs (seq, branch, tx_id, kind, record_bytes, tx_hash, parent_hash, epoch,
+                          exported, diff, schema_version, author, committed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12)",
+        params![
+            to_i64(record.seq)?,
+            branch,
+            record.tx_id,
+            kind_text(record.kind)?,
+            bytes,
+            tx_hash,
+            record.parent_hash,
+            to_i64(epoch)?,
+            diff,
+            schema_version,
+            record.author,
+            record.committed_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// A `txs` row as stored: `(seq, tx_id, record_bytes)`.
+pub(crate) type RecordRow = (u64, String, Vec<u8>);
+
+/// The raw rows of `branch` with `seq > after`, in order.
+pub(crate) fn record_rows(
+    conn: &Connection,
+    branch: &str,
+    after: u64,
+) -> Result<Vec<RecordRow>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, tx_id, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq",
+    )?;
+    let rows = stmt.query_map(params![branch, to_i64(after)?], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    rows.map(|r| {
+        let (seq, tx_id, bytes) = r?;
+        Ok((to_u64(seq)?, tx_id, bytes))
+    })
+    .collect()
+}
+
+/// The `kind` column: the record's serialised kind (`"edit"` → `edit`).
+fn kind_text(kind: RecordKind) -> Result<String, StoreError> {
+    match serde_json::to_value(kind)? {
+        serde_json::Value::String(s) => Ok(s),
+        other => {
+            Err(CoreError::new("DB_ERROR", format!("record kind {other} is not a string")).into())
+        }
+    }
+}
+
+const TX_COLUMNS: &str = "seq, record_bytes, diff";
+
+fn committed_from_row(row: &Row<'_>) -> rusqlite::Result<(i64, Vec<u8>, String)> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+}
+
+/// Bytes to a [`Record`]: not JSON, or not a record, is `INVALID_FORMAT` with
+/// `details {kind: "record", reason}`, plus `seq` when the row is known.
+pub(crate) fn parse_record(seq: Option<u64>, bytes: &[u8]) -> Result<Record, CoreError> {
+    let with_seq = |mut e: CoreError| {
+        if let (Some(seq), serde_json::Value::Object(map)) = (seq, &mut e.details) {
+            map.insert("seq".into(), serde_json::json!(seq));
+        }
+        e
+    };
+    let value = serde_json::from_slice(bytes).map_err(|e| {
+        with_seq(
+            CoreError::new(
+                "INVALID_FORMAT",
+                format!("a stored record is not JSON: {e}"),
+            )
+            .with_details(serde_json::json!({ "kind": "record", "reason": e.to_string() })),
+        )
+    })?;
+    upcast_record(value).map_err(with_seq)
+}
+
+fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, StoreError> {
+    let seq = to_u64(seq)?;
+    let record = parse_record(Some(seq), &bytes)?;
+    Ok(CommittedTx {
+        rev: seq,
+        tx: record.intent,
+        diff: serde_json::from_str(&diff)?,
+        bindings: record.bindings,
+    })
+}
+
+pub(crate) fn find_tx(conn: &Connection, tx_id: &str) -> Result<Option<CommittedTx>, StoreError> {
+    let sql = format!("SELECT {TX_COLUMNS}, branch FROM txs WHERE tx_id = ?1");
+    let read = || -> Result<Option<_>, StoreError> {
+        Ok(conn
+            .query_row(&sql, params![tx_id], |r| {
+                Ok((committed_from_row(r)?, r.get::<_, String>(3)?))
+            })
+            .optional()?)
+    };
+    let mut row = read()?;
+    if let Some(((_, _, diff), branch)) = &row
+        && diff == crate::diffs::NOT_STORED
+    {
+        crate::diffs::fill(conn, branch)?;
+        row = read()?;
+    }
+    row.map(|(r, _)| decode(r)).transpose()
+}
+
+/// Committed txs on `branch` with `rev > after`, in rev order.
+pub(crate) fn txs_since(
+    conn: &Connection,
+    branch: &str,
+    after: u64,
+) -> Result<Vec<CommittedTx>, StoreError> {
+    if crate::diffs::pending(conn, branch)?.is_some_and(|through| through > after) {
+        crate::diffs::fill(conn, branch)?;
+    }
+    let sql = format!("SELECT {TX_COLUMNS} FROM txs WHERE branch = ?1 AND seq > ?2 ORDER BY seq");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![branch, to_i64(after)?], committed_from_row)?;
+    rows.map(|r| decode(r?)).collect()
+}
+
+/// Applies the stored record `bytes` to `project`: upcasts it and re-applies its intent with the
+/// recorded bindings fixing every id ([`apply_committed`]: structural checks only, no policy and
+/// no comparison with the stored diff), so history is never re-judged.
+///
+/// Structural damage is `REPLAY_FAILED` with `details {txId, cause}`. Bytes that are not JSON, or
+/// not a record (or newer than this Finisher), are the error of [`parse_record`].
+pub fn replay_record(project: &Project, bytes: &[u8]) -> Result<Applied, StoreError> {
+    let record = parse_record(None, bytes)?;
+    Ok(apply_committed(project, &record.intent, &record.bindings)?)
+}
+
+/// [`replay_record`] for the row `(seq, tx_id)` of `branch`. The record must be the row's own:
+/// a different `seq`, `txId` or branch is `REPLAY_FAILED` with `details {seq, txId, recordSeq,
+/// recordTxId, branch}` (damage, like any record that does not belong in the history). Failures
+/// carry `details.seq`.
+pub(crate) fn replay_row(
+    project: &Project,
+    branch: &str,
+    (seq, tx_id, bytes): &RecordRow,
+) -> Result<Applied, StoreError> {
+    let record = parse_record(Some(*seq), bytes)?;
+    if record.seq != *seq || record.tx_id != *tx_id || record.intent.branch != branch {
+        return Err(CoreError::new(
+            "REPLAY_FAILED",
+            format!("the record stored at seq {seq} (tx {tx_id}) is another record"),
+        )
+        .with_details(serde_json::json!({
+            "seq": seq, "txId": tx_id, "branch": branch,
+            "recordSeq": record.seq, "recordTxId": record.tx_id,
+            "recordBranch": record.intent.branch,
+        }))
+        .with_fix("the stored history is damaged; restore the project from a backup")
+        .into());
+    }
+    apply_committed(project, &record.intent, &record.bindings).map_err(|mut e| {
+        if let serde_json::Value::Object(map) = &mut e.details {
+            map.insert("seq".into(), serde_json::json!(seq));
+        }
+        e.into()
+    })
+}

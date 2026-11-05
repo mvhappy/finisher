@@ -157,6 +157,12 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] Lease: `create_new`-only fallback for the first `lease.json` (Unix without hard links: FAT/exFAT, macOS smbfs as far as known, NAS shares refusing `link` with `EACCES`) still leaves a short record after a crash. Task 19: macOS smbfs takes that path (no hard links); Linux cifs and Windows publish atomically
 - [ ] Lease: a claim `create_new` that landed but reported a transient error leaves our own orphan claim (status names it as this server's); it holds acquisition off for 45 s
 
+## Sub-project 4B: history
+
+Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md` (branch `sp4b-history`).
+
+- [x] Task 1: make room (split db, import, export, apply and status modules; pure refactor)
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency

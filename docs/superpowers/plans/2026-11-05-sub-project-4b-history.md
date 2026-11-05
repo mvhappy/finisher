@@ -242,10 +242,10 @@ None open. The fork-resolution question was answered: manual move-out plus `--im
 
 **Interfaces:** none new. All items keep their names and visibility (`pub(crate) use records::*;` and so on), so call sites don't change.
 
-- [ ] **Step 1:** Move the code with no logic changes. Doc comments move with their items.
-- [ ] **Step 2:** `rtk wc -l` the touched files: each must be ≤ 450.
-- [ ] **Step 3: Run** `rtk cargo test --workspace`, `rtk pnpm test`, `rtk pnpm gates`. Expected: PASS with the same test count (record it in the commit body).
-- [ ] **Step 4: Commit** `refactor(fin-store): split db, import, export, apply and status modules ahead of 4B`.
+- [x] **Step 1:** Move the code with no logic changes. Doc comments move with their items.
+- [x] **Step 2:** `rtk wc -l` the touched files: each must be ≤ 450.
+- [x] **Step 3: Run** `rtk cargo test --workspace`, `rtk pnpm test`, `rtk pnpm gates`. Expected: PASS with the same test count (record it in the commit body).
+- [x] **Step 4: Commit** `refactor(fin-store): split db, import, export, apply and status modules ahead of 4B`.
 
 ### Task 2: Scrubbed 4A fixture, generated from 4A code — tier: sonnet
 
