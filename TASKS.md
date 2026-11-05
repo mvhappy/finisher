@@ -107,6 +107,9 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] **Task 19: cross-host and sync-folder validation** (spec §3.13). Must measure or confirm:
   - [x] full suites on Windows 11 and the Linux VM — pass on both (2026-11-05; Windows 542 Rust, 85 JS, gate tests, e2e); fixed the Windows probe ignoring sync markers. macOS 550 Rust, 85 JS, gates, e2e pass (one APFS test-only fix)
   - NAS matrix per host pair: lease races (0 double holders, 0 early takeovers, 0 applied stale writes, 0 id reuse), network loss with writes in flight, real or emulated skew, follow latency ≤ 3 s + cache window
+    - [x] Windows↔Linux: all rows 0 critical on the final code (spec §3.13 item 2)
+    - [x] Mac↔Linux before the fix: found the macOS smbfs 30–60 s directory cache (unsafe 10 s ordering-rule wait); fixed (65 s wait + listing refresh, 3e284dc); network poll 1 s, churn export delay 5 s
+    - [ ] Mac↔Linux and Mac↔Windows on the final code (needs the rebuilt Mac binary)
   - mtime source on SMB (server- vs client-set; Samba 2 s write-time delay; cifs deferred close); claims judged by client-set mtime under skew > 45 s
   - clock skew; suspend/resume of a holder (wakes fenced); Windows claim invisibility race (up to 9.9 s)
   - `File::try_lock`/`lock_shared` behaviour on Linux, Windows, macOS (`lease.lock`, `db.lock`, `server-id.lock`, restart shortcut)
@@ -122,7 +125,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 ### Follow-ups from 4A
 - [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside; `VACUUM INTO` on a second connection). A big follower import delays short calls today
 - [ ] `ProjectStatus` (and the verify, rebuild and compact reports) still `Schema.Unknown` in contracts: generate them
-- [ ] `cargo clippy --all-targets -D warnings` is not clean (`fin`, `fin-node` tests; a Windows-only `chunks_exact` lint in fin-store) and CI does not run clippy: clean up, then add it to CI
+- [ ] `cargo clippy --workspace --all-targets -D warnings` is clean (Linux, 2026-11-05) but CI does not run it: add it to CI
 - [ ] Sweep orphan databases left in server data by a crash between create's DB rename and its project-file write
 - [ ] `meta.createKey` is lost when a rebuild has no old DB (the key is not in the folder)
 - [ ] Rational schema pattern `^(0|-?[1-9]\d*)(/[1-9]\d*)?$` accepts non-canonical `0/5` and `3/1` (the parser rejects them)
@@ -133,6 +136,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] No e2e or RPC fixture for `tx.get` set-aside / `TX_SET_ASIDE` (unit tests only; a live server cannot produce `SALVAGED`/`SUPERSEDED` without fake clocks)
 - [ ] `BASE_REV_AHEAD` vs `HISTORY_REWOUND` precision for a subscriber whose `fromRev` is beyond a rewound head
 - [ ] `tx.commit.generation` and `ops.subscribe.generation` optional in protocol 1 → required in protocol 2
+- [ ] Linux NFS: directory attribute cache (`acdirmax`, 60 s by default) exceeds the 10 s ordering-rule wait; NFS is classified `network` but untested. Measure, and use a longer wait or a listing refresh there
 - [ ] Clean close could write a "released" lease record so other servers need not wait out 45 s of staleness
 - [ ] `fin project verify` / `rebuild` / `compact` have no progress or cancellation (only `ENGINE_BUSY {operation, sinceMs}`)
 - [ ] `diffs::fill` loads a whole branch's rows; restore tooling for daily backups should mint a new incarnation (backups already do; a hand-copied DB does not)
@@ -146,7 +150,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [ ] fin-node untested paths: `lagged` (needs > 1,024 events before registration), close on GC drop
 - [ ] Warn (status) on Linux mount options that break the lease's assumptions: cifs `cache=loose`, `actimeo`/`closetimeo` > 1, SMB1 (`vers=1.0`)
 - [ ] Lease: a failed in-place write of our own record could leave it torn; the holder then self-fences and the folder needs `takeover --confirm`. Consider rewriting a torn record in the heartbeat when no claim above ours exists, as `take` does after its own write
-- [ ] Lease: `create_new`-only fallback for the first `lease.json` (Unix without hard links: FAT/exFAT, macOS smbfs as far as known, NAS shares refusing `link` with `EACCES`) still leaves a short record after a crash; Task 19 should record which mounts take that path
+- [ ] Lease: `create_new`-only fallback for the first `lease.json` (Unix without hard links: FAT/exFAT, macOS smbfs as far as known, NAS shares refusing `link` with `EACCES`) still leaves a short record after a crash. Task 19: macOS smbfs takes that path (no hard links); Linux cifs and Windows publish atomically
 - [ ] Lease: a claim `create_new` that landed but reported a transient error leaves our own orphan claim (status names it as this server's); it holds acquisition off for 45 s
 
 ## Blocked on hardware or accounts
