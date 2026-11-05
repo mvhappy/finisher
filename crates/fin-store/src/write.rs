@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use fin_core::branch::BranchInfo;
 use fin_core::{CommittedTx, CoreError, Diff, Link, Op, Project, Tx};
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
@@ -51,8 +52,7 @@ pub(crate) struct WriteCtx<'a> {
     pub txn: &'a Transaction<'a>,
     /// The lease epoch rows are written at; `None` in a dry run (rows at 0, rolled back).
     pub epoch: Option<u64>,
-    /// Read by the history operations (Task 8 on) to shape their reports.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Read by the history operations to shape their reports.
     pub dry_run: bool,
     /// `committedAt` of every record of this write (unix ms).
     pub now: i64,
@@ -98,8 +98,9 @@ impl WriteCtx<'_> {
 
     /// Appends `d` at the head of its branch: the record (seq = head + 1, `parentHash` = the
     /// head's tip, the fork hash at a branch's start), its `txs` row at this write's epoch
-    /// and its `record_links` row, a snapshot every [`SNAPSHOT_EVERY`] seqs, and the staged
-    /// head. Returns the record as committed, with its link (`None` for an edit).
+    /// and its `record_links` row, the branch index row a `branch` or `branchSet` record
+    /// changes, a snapshot every [`SNAPSHOT_EVERY`] seqs, and the staged head. Returns the
+    /// record as committed, with its link (`None` for an edit).
     pub(crate) fn append(&mut self, d: Draft) -> Result<CommittedTx, StoreError> {
         if d.intent.branch != d.branch {
             return Err(CoreError::new(
@@ -135,6 +136,7 @@ impl WriteCtx<'_> {
             &d.diff,
             self.epoch.unwrap_or(0),
         )?;
+        crate::branch::index::absorb(self.txn, &d.branch, seq, &record)?;
         if seq.is_multiple_of(SNAPSHOT_EVERY) {
             db::insert_snapshot(self.txn, &d.branch, seq, &d.project)?;
         }
@@ -154,6 +156,23 @@ impl WriteCtx<'_> {
             link,
         })
     }
+}
+
+/// The branch a write appends content to, for reference `r` (Decision 12): `BRANCH_NOT_FOUND`,
+/// or `BRANCH_ARCHIVED` (`details {branch, name}`, `fix` to restore it) for an archived one
+/// (Decision 13). Resolved under the write lock, before the write reads a head.
+pub(crate) fn writable(conn: &Connection, r: &str) -> Result<BranchInfo, StoreError> {
+    let info = crate::branch::index::resolve(conn, r)?;
+    if info.archived {
+        return Err(CoreError::new(
+            "BRANCH_ARCHIVED",
+            format!("branch {}#{} is archived", info.name, info.id),
+        )
+        .with_details(serde_json::json!({ "branch": info.id, "name": info.name }))
+        .with_fix(format!("fin branch archive {} --restore", info.id))
+        .into());
+    }
+    Ok(info)
 }
 
 /// Whether a record with `tx_id` is committed.

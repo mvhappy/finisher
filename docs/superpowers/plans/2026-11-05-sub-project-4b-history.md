@@ -662,7 +662,7 @@ pub(crate) fn recompute(txn: &Transaction) -> Result<(), StoreError>; // record_
   5. Insert the index row and `snapshots(child, fork_seq) = state_at(parent, fork_seq)`.
 - **`set_branch`:** writes `branchSet` on the branch's parent. `main` → `INVALID_OP`. Restoring onto a taken name → `NAME_TAKEN` (`fix: fin branch archive <b> --restore --as <new>`).
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `fin-core/tests/branch.rs`:
     - `branch_names_table`, `checkpoint_names_table`;
     - `index_folds_branch_and_branch_set`;
@@ -689,10 +689,12 @@ pub(crate) fn recompute(txn: &Transaction) -> Result<(), StoreError>; // record_
     - `create_branch_dry_run_writes_nothing` (also on a follower);
     - `create_branch_retry_same_tx_id_returns_first`;
     - `default_try_name_uses_branch_id`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test branch` and `rtk cargo test -p fin-store --test branches`. Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the three gates (types regenerated). Expected: PASS.
-- [ ] **Step 5: Commit** `feat(store): branches derived from the log; create, rename, archive`.
+- [x] **Step 2: Run** `rtk cargo test -p fin-core --test branch` and `rtk cargo test -p fin-store --test branches`. Expected: FAIL.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** the three gates (types regenerated). Expected: PASS.
+- [x] **Step 5: Commit** `feat(store): branches derived from the log; create, rename, archive`.
+- As built: `fin_core::branch` also has `MAIN` (fin-store's `MAIN` aliases it), `NAME_MAX`, `BranchInfo::main()`, and on `BranchIndex` `from_infos` (the table, plus `main`), `get`, `holder` (the non-archived holder of a name, lowest numeric id first) and `display` (the name while it resolves to the branch, else `<name>#<id>`; archived branches list that way). `absorb` returns the id it changed (`Result<Option<String>, _>`) and refuses, `INVALID_FORMAT`, shapes the log never holds: a known id again, a non-`br<n>` id, a branch record on an unknown branch or with `forkSeq` ≥ its own seq, a `branchSet` of a branch that is not a child of the record's branch. `main` and `br\d+` are refused as names case-insensitively. `branch/index.rs` holds the table I/O, `absorb` (called by `WriteCtx::append` for every record; other kinds read nothing) and `resolve` (id, then index; a branch with rows but no index row is a root under its own id, as lineage reads take it). `write::writable` resolves a reference and refuses an archived branch (`BRANCH_ARCHIVED`, `details {branch, name}`, `fix: fin branch archive <id> --restore`); `commit::plan` calls it first under the lock, so the stored intent holds the id; `head`, `snapshot`, `ops_since`, `ops_since_at`, `generation` and `generation_token` resolve references too (`head` of an unknown one is still 0). `create_branch`: `at` past the parent's head is `INVALID_OP`; `At::Checkpoint` is `NOT_FOUND` (`details.kind` `checkpoint`) until Task 15; an archived parent is `BRANCH_ARCHIVED`; the id is allocated before the name check, inside the write, so a refused create consumes none. `set_branch`: nothing to set is `INVALID_OP`; `main` (any root) `INVALID_OP`; the record goes on the parent even when the parent is archived; an archived branch may be renamed without restoring it; `NAME_TAKEN` (`details {name, branch: holder id}`) is checked for the state after the set, and its `fix` is `fin branch archive <id> --restore --as <new>` for a plain restore. A retried txId answers from the log (a create with the branch as it is now and `dryRun: false`); a txId that holds another kind of record is `IDEM_KEY_REUSED`. `BranchView` and `BranchCreated` live in `wire.rs` (also `Deserialize`, `deny_unknown_fields`). `derived::recompute` collects `record_links` rows without a record and rebuilds the index breadth-first from `main` over `branch`/`branchSet` rows; `merged` stays false until Task 14; `Store::recompute_derived_for_test` is its test hook (`dead_code` allowed outside tests until Task 10 calls it). `BranchCreate`/`BranchSet` carry no `argsHash` yet (Tasks 17/19 add it for Decision 26). Tests added beyond the list: `id_numbers_order_numerically`, `parents_first_is_depth_then_numeric_id`, `branch_state_serialises_camel_case`.
+- For Task 9: import does not absorb yet. `insert_imported` must run `branch::index::absorb` per applied record in the import transaction and, for a `branch` record, insert the child's fork snapshot (`snapshots(child, forkSeq) = lineage::state_at(parent, forkSeq)`, Decision 14) as `create_branch` does, or the child has no head on the follower. `db::branches` lists branches from `snapshots`, so a child with only its fork snapshot is already listed by export, status, verify and compaction.
 
 ### Task 9: Branch-aware import, export, follow, counters, status — tier: opus
 

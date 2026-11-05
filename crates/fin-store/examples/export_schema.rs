@@ -5,13 +5,16 @@
 //! `fin-core` cannot depend on the crates above it.
 
 use fin_probe::Probe;
-use fin_store::{EngineEvent, Generation, TxSetAside};
+use fin_store::{BranchCreated, BranchView, EngineEvent, Generation, TxSetAside};
 
 fn main() {
     let schema = fin_core::json_schema_with(|g| {
         g.subschema_for::<fin_core::Link>();
         g.subschema_for::<fin_core::Conflict>();
         g.subschema_for::<Generation>();
+        g.subschema_for::<fin_core::branch::BranchState>();
+        g.subschema_for::<BranchView>();
+        g.subschema_for::<BranchCreated>();
         g.subschema_for::<EngineEvent>();
         g.subschema_for::<TxSetAside>();
         g.subschema_for::<Probe>();

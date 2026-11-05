@@ -84,6 +84,11 @@ export type Edge = "start" | "end";
  */
 export type TrackKind = "video" | "audio";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchState".
+ */
+export type BranchState = "active" | "archived" | "merged";
+/**
  * A record's kind and what it points at (spec §4.2). Serialised (in `CommittedTx.link`) as
  * `{"kind": "<kind>", …fields}`, camelCase, absent optional fields omitted.
  *
@@ -294,6 +299,38 @@ export interface Track {
    */
   items: Clip[];
   kind: TrackKind;
+}
+/**
+ * The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and
+ * its `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a
+ * retry of a committed create answers with that create, `dry_run` false).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchCreated".
+ */
+export interface BranchCreated {
+  branch: BranchView;
+  dryRun: boolean;
+  record: CommittedTx;
+}
+/**
+ * A branch as listings show it ([`Store::branches`](crate::Store::branches), `branch.list`):
+ * `display` is the reference that names it (its name, or `<name>#<id>` for an archived
+ * branch or the second holder of a duplicate name); `head` its head seq (its fork seq until
+ * its first record).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchView".
+ */
+export interface BranchView {
+  createdBy: string;
+  display: string;
+  forkSeq: number;
+  head: number;
+  id: string;
+  name: string;
+  parent?: string | null;
+  state: BranchState;
 }
 /**
  * A transaction as persisted: with its revision, resolved bindings and diff.

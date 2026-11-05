@@ -1,6 +1,7 @@
 //! Finisher edit domain: model, operations, evaluation, branches.
 
 pub mod apply;
+pub mod branch;
 pub mod error;
 pub mod ids;
 pub mod model;

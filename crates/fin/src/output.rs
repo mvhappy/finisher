@@ -68,6 +68,10 @@ const VALIDATION_CODES: &[&str] = &[
     // Decision 6), or one whose original cannot be reached to tell.
     "PROJECT_COPY",
     "PROJECT_ORIGINAL_UNREACHABLE",
+    // Branches (sub-project 4B): a display name an active or merged branch holds; a write to
+    // an archived branch (`fix`: restore it).
+    "NAME_TAKEN",
+    "BRANCH_ARCHIVED",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -253,6 +257,8 @@ mod tests {
             "BINDINGS_MISMATCH",
             "PROJECT_COPY",
             "PROJECT_ORIGINAL_UNREACHABLE",
+            "NAME_TAKEN",
+            "BRANCH_ARCHIVED",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

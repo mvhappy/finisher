@@ -94,6 +94,82 @@
       ],
       "type": "object"
     },
+    "BranchCreated": {
+      "additionalProperties": false,
+      "description": "The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and\nits `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a\nretry of a committed create answers with that create, `dry_run` false).",
+      "properties": {
+        "branch": {
+          "$ref": "#/$defs/BranchView"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "record": {
+          "$ref": "#/$defs/CommittedTx"
+        }
+      },
+      "required": [
+        "branch",
+        "record",
+        "dryRun"
+      ],
+      "type": "object"
+    },
+    "BranchState": {
+      "enum": [
+        "active",
+        "archived",
+        "merged"
+      ],
+      "type": "string"
+    },
+    "BranchView": {
+      "additionalProperties": false,
+      "description": "A branch as listings show it ([`Store::branches`](crate::Store::branches), `branch.list`):\n`display` is the reference that names it (its name, or `<name>#<id>` for an archived\nbranch or the second holder of a duplicate name); `head` its head seq (its fork seq until\nits first record).",
+      "properties": {
+        "createdBy": {
+          "type": "string"
+        },
+        "display": {
+          "type": "string"
+        },
+        "forkSeq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/BranchState"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "display",
+        "forkSeq",
+        "head",
+        "state",
+        "createdBy"
+      ],
+      "type": "object"
+    },
     "Change": {
       "properties": {
         "change": {

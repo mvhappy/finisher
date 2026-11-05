@@ -16,6 +16,9 @@ impl Store {
     /// Commits `tx` to its branch and returns it as committed.
     ///
     /// - An empty `txId` or empty `ops` is `INVALID_OP`, checked before anything else.
+    /// - `tx.branch` is a branch reference (an id, an active name or `<name>#<id>`); the
+    ///   stored intent holds the id. An unknown one is `BRANCH_NOT_FOUND`, an archived one
+    ///   `BRANCH_ARCHIVED` (both checked after the dedupe, the read-only state and the fence).
     /// - A `txId` that is already committed returns that `CommittedTx` unchanged (idempotent
     ///   retries); the head does not move. When both carry an `argsHash` and they differ, the
     ///   key was reused for another command: `IDEM_KEY_REUSED` (`details {txId, rev,
@@ -97,6 +100,11 @@ fn plan(
     generation: Option<&Generation>,
 ) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
+    // The branch by id (the stored intent holds it); an archived one takes no commits.
+    let tx = &Tx {
+        branch: crate::write::writable(txn, &tx.branch)?.id,
+        ..tx.clone()
+    };
     // One head for the whole plan (`txn` is a copy of the reference, so it reads beside it).
     let head = ctx.head(&tx.branch)?;
     if let Some(g) = generation {

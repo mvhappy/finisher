@@ -19,6 +19,7 @@ mod counters;
 mod create;
 mod db;
 mod dblock;
+mod derived;
 mod diffs;
 mod export;
 pub mod fsio;
@@ -51,6 +52,7 @@ use std::path::{Path, PathBuf};
 use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
+pub use branch::create::{At, BranchCreate, BranchSet};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use compact::CompactFail;
 pub use compact::{
@@ -85,10 +87,10 @@ pub use status::{
 };
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
-pub use wire::{EngineEvent, SetAside, TxSetAside};
+pub use wire::{BranchCreated, BranchView, EngineEvent, SetAside, TxSetAside};
 
-/// The only branch sub-project 2 creates.
-pub const MAIN: &str = "main";
+/// The root branch, which every project has.
+pub const MAIN: &str = fin_core::branch::MAIN;
 
 /// A store failure. Converts to the one `CoreError` shape: `PROJECT_EXISTS`,
 /// `PROJECT_NOT_FOUND`, `PROJECT_INVALID`, `PROJECT_DB_MISSING`, `PROJECT_DB_MISMATCH`,
@@ -265,30 +267,44 @@ impl Store {
         &self.server_id
     }
 
-    /// The head revision of `branch` (0 for a branch that does not exist). Catches up with
-    /// commits made through another `Store`; if the database cannot be read, the cached head is
-    /// returned.
-    pub fn head(&self, branch: &str) -> u64 {
-        let mut heads = self.heads.borrow_mut();
-        let _ = refresh(&self.conn, &mut heads, branch);
-        heads.get(branch).map_or(0, |h| h.rev)
+    /// The id a branch reference names ([`Store::resolve_branch`]), else `r` itself (for
+    /// reads that answer a default for an unknown branch).
+    fn branch_or_raw(&self, r: &str) -> String {
+        self.resolve_branch(r).unwrap_or_else(|_| r.to_string())
     }
 
-    /// The head revision of `branch` and the project at it.
-    pub fn snapshot(&self, branch: &str) -> Result<(u64, Project), StoreError> {
+    /// The head revision of `branch` (a branch reference: an id, an active name or
+    /// `<name>#<id>`; 0 for a branch that does not exist). Catches up with commits made
+    /// through another `Store`; if the database cannot be read, the cached head is returned.
+    pub fn head(&self, branch: &str) -> u64 {
+        self.head_of(&self.branch_or_raw(branch))
+    }
+
+    /// [`Store::head`] of a branch id.
+    pub(crate) fn head_of(&self, id: &str) -> u64 {
         let mut heads = self.heads.borrow_mut();
-        refresh(&self.conn, &mut heads, branch)?;
-        let head = heads.get(branch).ok_or_else(|| branch_not_found(branch))?;
+        let _ = refresh(&self.conn, &mut heads, id);
+        heads.get(id).map_or(0, |h| h.rev)
+    }
+
+    /// The head revision of `branch` (a reference) and the project at it.
+    pub fn snapshot(&self, branch: &str) -> Result<(u64, Project), StoreError> {
+        let id = self.resolve_branch(branch)?;
+        let mut heads = self.heads.borrow_mut();
+        refresh(&self.conn, &mut heads, &id)?;
+        let head = heads.get(&id).ok_or_else(|| branch_not_found(branch))?;
         Ok((head.rev, head.project.clone()))
     }
 
-    /// Committed txs on `branch` with `rev > after`, in rev order. Below the branch's fork
-    /// they are its ancestors' (each `tx.branch` names the branch that holds it).
+    /// Committed txs on `branch` (a reference) with `rev > after`, in rev order. Below the
+    /// branch's fork they are its ancestors' (each `tx.branch` names the branch that holds
+    /// it).
     pub fn ops_since(&self, branch: &str, after: u64) -> Result<Vec<CommittedTx>, StoreError> {
-        if db::latest_rev(&self.conn, branch)?.is_none() {
+        let id = self.resolve_branch(branch)?;
+        if db::latest_rev(&self.conn, &id)?.is_none() {
             return Err(branch_not_found(branch).into());
         }
-        branch::lineage::records_since(&self.conn, branch, after)
+        branch::lineage::records_since(&self.conn, &id, after)
     }
 
     /// Committed txs on `branch` with `rev > after`, with the branch's generation, read
@@ -299,8 +315,9 @@ impl Store {
         after: u64,
     ) -> Result<(Generation, Vec<CommittedTx>), StoreError> {
         let txn = self.conn.unchecked_transaction()?;
-        let ops = self.ops_since(branch, after)?;
-        let generation = history::generation(&txn, branch)?;
+        let id = self.resolve_branch(branch)?;
+        let ops = self.ops_since(&id, after)?;
+        let generation = history::generation(&txn, &id)?;
         txn.commit()?;
         Ok((generation, ops))
     }
@@ -309,13 +326,13 @@ impl Store {
     /// records out of its history (module `history`). 0 when it cannot be read. Callers that
     /// commit against it hold [`Store::generation_token`], which names the database too.
     pub fn generation(&self, branch: &str) -> u64 {
-        history::current(&self.conn, branch).unwrap_or(0)
+        history::current(&self.conn, &self.branch_or_raw(branch)).unwrap_or(0)
     }
 
     /// The [`Generation`] of `branch` (this database's incarnation and the rewind count), as
     /// [`Store::commit_at_generation`] takes it.
     pub fn generation_token(&self, branch: &str) -> Generation {
-        history::generation(&self.conn, branch).unwrap_or(Generation {
+        history::generation(&self.conn, &self.branch_or_raw(branch)).unwrap_or(Generation {
             incarnation: String::new(),
             n: 0,
         })
@@ -412,7 +429,7 @@ pub(crate) fn refresh(
     Ok(())
 }
 
-fn branch_not_found(branch: &str) -> CoreError {
+pub(crate) fn branch_not_found(branch: &str) -> CoreError {
     CoreError::new(
         "BRANCH_NOT_FOUND",
         format!("branch {branch:?} does not exist"),

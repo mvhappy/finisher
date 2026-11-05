@@ -3,6 +3,7 @@
 //! schema export (`examples/export_schema.rs`) puts them in `@finisher/core-types`, so
 //! `finisherd` and `@finisher/contracts` read generated types, never hand-written mirrors.
 
+use fin_core::branch::BranchState;
 use fin_core::{CommittedTx, CoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -97,4 +98,32 @@ pub struct SetAside {
     pub branch: String,
     pub reason: String,
     pub origin: String,
+}
+
+/// A branch as listings show it ([`Store::branches`](crate::Store::branches), `branch.list`):
+/// `display` is the reference that names it (its name, or `<name>#<id>` for an archived
+/// branch or the second holder of a duplicate name); `head` its head seq (its fork seq until
+/// its first record).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchView {
+    pub id: String,
+    pub name: String,
+    pub display: String,
+    pub parent: Option<String>,
+    pub fork_seq: u64,
+    pub head: u64,
+    pub state: BranchState,
+    pub created_by: String,
+}
+
+/// The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and
+/// its `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a
+/// retry of a committed create answers with that create, `dry_run` false).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchCreated {
+    pub branch: BranchView,
+    pub record: CommittedTx,
+    pub dry_run: bool,
 }
