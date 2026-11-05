@@ -9,7 +9,10 @@
 //!    - **missing**, no claims → free;
 //!    - **missing** beside claims → held (spec §3.5). Its age is the newest claim's mtime in
 //!      server time: an acquirer that crashed between claim and record would otherwise hold
-//!      the folder forever (inferred; see [`Contender`]);
+//!      the folder forever (inferred; see [`Contender`]). When the newest claim is our own,
+//!      at the epoch this process held and lost (`lease.json` was deleted under it), it is
+//!      judged the same way but reported as [`LeaseState::Lost`]: we hold nothing, and no
+//!      one else is shown as the holder;
 //!    - **unreadable or bad checksum** → held (spec §3.5). Never taken over automatically,
 //!      only by a confirmed takeover;
 //!    - **ours**: if one of our leases in this process still heartbeats it → held; if it is
@@ -92,6 +95,9 @@ pub struct Contender {
     locked: Option<server_lock::Held>,
     /// The record to re-take is one this process wrote (registry).
     leftover: bool,
+    /// This observation found `lease.json` missing beside our own claim at the epoch this
+    /// process held and lost: why, for [`LeaseState::Lost`].
+    own_lost: Option<String>,
     #[cfg(any(test, feature = "test-hooks"))]
     after_write: Option<AfterWrite>,
 }
@@ -166,6 +172,7 @@ impl Contender {
             server_lock: None,
             locked: None,
             leftover: false,
+            own_lost: None,
             #[cfg(any(test, feature = "test-hooks"))]
             after_write: None,
         }
@@ -194,6 +201,9 @@ impl Contender {
             }
             Verdict::Stale { expected, .. } if self.params.auto_takeover => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => Err(LeaseState::Stale { holder, epoch }),
+            Verdict::Held { .. } if self.own_lost.is_some() => Err(LeaseState::Lost {
+                reason: self.own_lost.take().unwrap_or_default(),
+            }),
             Verdict::Held {
                 holder, epoch, age, ..
             } => Err(LeaseState::HeldElsewhere {
@@ -282,6 +292,7 @@ impl Contender {
 
     /// One observation (module docs). `Err`: the folder cannot be reached.
     fn observe(&mut self) -> Result<Verdict, String> {
+        self.own_lost = None;
         if !valid_server_id(&self.server_id) {
             return Err(format!("{:?} is not a valid server id", self.server_id));
         }
@@ -323,6 +334,15 @@ impl Contender {
                 let holder =
                     claim::owner(&self.dir, newest.epoch).unwrap_or_else(|| "unknown".to_string());
                 let age = server_now.zip(newest.server_ms).map(|(n, m)| n - m);
+                // Our own claim at the epoch this process held and lost: to others the
+                // folder is held (by us), but this server knows it holds nothing.
+                let key = registry::key(&self.dir, &self.server_id);
+                if holder == self.server_id && registry::stopped_at(&key, newest.epoch) {
+                    self.own_lost = Some(format!(
+                        "lease.json is missing beside this server's claim at epoch {}, whose lease is lost; it is re-acquired once that claim is stale, as by any server",
+                        newest.epoch
+                    ));
+                }
                 let seen = Fingerprint::Claims(claims.iter().map(|c| c.epoch).collect());
                 Ok(self.judge(
                     seen,

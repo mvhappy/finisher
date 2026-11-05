@@ -776,6 +776,20 @@ fn a_deleted_record_loses_the_lease_in_a_beat_at_once() {
         other => panic!("{other:?}"),
     }
     assert!(!dir.join("lease.json").exists());
+    // Only our own claim is left. To another server the folder is held (by us: missing +
+    // claims); we know we hold nothing, so we report lost, not held by ourselves.
+    let (holder, epoch, _) = held_elsewhere(contender(&dir, B, local(&c)).try_acquire());
+    assert_eq!((holder.as_str(), epoch), (A, 1));
+    let mut a2 = contender(&dir, A, local(&c));
+    match a2.try_acquire() {
+        Err(LeaseState::Lost { reason }) => assert!(reason.contains("epoch 1"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    // Re-acquired like by anyone once the claim is stale, at a fresh epoch.
+    c.advance(s(46));
+    assert!(matches!(a2.try_acquire(), Err(LeaseState::Lost { .. })));
+    c.advance(s(5));
+    assert_eq!(a2.try_acquire().unwrap().epoch(), 2);
 }
 
 /// The first `lease.json` is staged whole in a temp file and published without replacing: a

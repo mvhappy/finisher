@@ -132,9 +132,10 @@ describe("storage RPCs", () => {
       15_000,
       "a status without the lease",
     );
-    // Read-only now: LEASE_LOST, or LEASE_HELD (this server's own claim, still fresh, is seen
-    // as another holder's until it goes stale).
-    expect(lost.status!.readOnly?.reason).toMatch(/^LEASE_(LOST|HELD)$/);
+    // Read-only now: this server knows it holds nothing (its own claim is all that is left;
+    // other servers see that as held).
+    expect(lost.status!.lease.state).toBe("lost");
+    expect(lost.status!.readOnly?.reason).toBe("LEASE_LOST");
     c.interrupt(sub.id);
     await sub.done;
   }, 30_000);
