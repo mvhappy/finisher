@@ -127,3 +127,16 @@ pub struct BranchCreated {
     pub record: CommittedTx,
     pub dry_run: bool,
 }
+
+/// The answer of a history operation ([`Store::undo`](crate::Store::undo),
+/// [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
+/// rolled back, `dry_run`; a retry of a committed operation answers with its records,
+/// `dry_run` false), and what they act on: the units an undo undoes, or the undo a redo
+/// reverses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryResult {
+    pub committed: Vec<CommittedTx>,
+    pub undone: Vec<String>,
+    pub dry_run: bool,
+}

@@ -3,6 +3,7 @@
 pub mod apply;
 pub mod branch;
 pub mod error;
+pub mod history;
 pub mod ids;
 pub mod model;
 pub mod ops;

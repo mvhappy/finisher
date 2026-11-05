@@ -1,6 +1,8 @@
 //! Shared fixtures for the op tests.
 #![allow(dead_code)]
 
+pub mod memlog;
+
 use fin_core::{
     Applied, AudioInfo, CoreError, MemIds, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo,
     apply_internal, apply_tx, new_project,

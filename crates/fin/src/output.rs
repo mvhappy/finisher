@@ -72,6 +72,9 @@ const VALIDATION_CODES: &[&str] = &[
     // an archived branch (`fix`: restore it).
     "NAME_TAKEN",
     "BRANCH_ARCHIVED",
+    // History (sub-project 4B): the author has nothing to undo or redo on the branch.
+    "NOTHING_TO_UNDO",
+    "NOTHING_TO_REDO",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -259,6 +262,8 @@ mod tests {
             "PROJECT_ORIGINAL_UNREACHABLE",
             "NAME_TAKEN",
             "BRANCH_ARCHIVED",
+            "NOTHING_TO_UNDO",
+            "NOTHING_TO_REDO",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

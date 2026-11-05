@@ -522,6 +522,33 @@
       ],
       "type": "object"
     },
+    "HistoryResult": {
+      "additionalProperties": false,
+      "description": "The answer of a history operation ([`Store::undo`](crate::Store::undo),\n[`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and\nrolled back, `dry_run`; a retry of a committed operation answers with its records,\n`dry_run` false), and what they act on: the units an undo undoes, or the undo a redo\nreverses.",
+      "properties": {
+        "committed": {
+          "items": {
+            "$ref": "#/$defs/CommittedTx"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "undone": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "committed",
+        "undone",
+        "dryRun"
+      ],
+      "type": "object"
+    },
     "Link": {
       "description": "A record's kind and what it points at (spec §4.2). Serialised (in `CommittedTx.link`) as\n`{\"kind\": \"<kind>\", …fields}`, camelCase, absent optional fields omitted.",
       "oneOf": [
@@ -1053,6 +1080,28 @@
       ],
       "type": "object"
     },
+    "Stacks": {
+      "description": "An author's undo and redo stacks on a branch, bottom first (the top is the last entry).",
+      "properties": {
+        "redo": {
+          "items": {
+            "$ref": "#/$defs/UnitEntry"
+          },
+          "type": "array"
+        },
+        "undo": {
+          "items": {
+            "$ref": "#/$defs/UnitEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "undo",
+        "redo"
+      ],
+      "type": "object"
+    },
     "Timeline": {
       "properties": {
         "id": {
@@ -1158,6 +1207,71 @@
         "setAside"
       ],
       "type": "object"
+    },
+    "UnitEntry": {
+      "description": "One entry of an undo or redo stack.\n\n- `id`: what an `undo` names in `undoes` (a record's txId, a merge group's `mergeId`, the\n  redo record's txId for a redo unit), or, on the redo stack, the undo record's txId;\n- `records`: the txIds of its records, oldest first: whose stored `inverse` an undo (or,\n  for an undo record, a redo) takes;\n- `last_seq`: the seq of its last record, the frame its inverses apply in.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "lastSeq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "records": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/UnitSource",
+          "description": "The record whose stored `inverse` an undo uses: the unit's records, or the redo\nrecord that recreated it (Decision 23)."
+        }
+      },
+      "required": [
+        "id",
+        "records",
+        "lastSeq",
+        "source"
+      ],
+      "type": "object"
+    },
+    "UnitSource": {
+      "description": "Where an undo takes a unit's inverse from ([`UnitEntry::source`]).",
+      "oneOf": [
+        {
+          "description": "The unit's own records.",
+          "properties": {
+            "kind": {
+              "const": "records",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The redo record `tx_id`, which recreated an undone unit.",
+          "properties": {
+            "kind": {
+              "const": "redo",
+              "type": "string"
+            },
+            "txId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "txId"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "VideoInfo": {
       "properties": {

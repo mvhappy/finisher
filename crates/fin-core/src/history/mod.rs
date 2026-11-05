@@ -1,0 +1,94 @@
+//! History planning (spec §4.4, §4.5; plan 4B Tasks 12–15): pure planners over a read-only
+//! view of the log ([`LogView`]). A planner reads the records it needs, decides the record
+//! to append (its [`Link`], its intent rebased to the head) and the result of applying it
+//! ([`Planned`]); the store appends it through its one write path. Nothing here does I/O, so
+//! the planners run in memory in the property tests and build for WASM.
+//!
+//! - [`undo`]: the per-author undo and redo stacks derived from a branch's own records
+//!   ([`derive_stacks`]), and the `undo` / `redo` planners.
+
+pub mod undo;
+
+use std::collections::HashSet;
+
+use crate::error::CoreError;
+use crate::model::Project;
+use crate::record::{Link, Record, RecordKind};
+use crate::tx::{Applied, CommittedTx, Diff, Tx};
+
+pub use undo::{Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
+
+/// One stored record with its place in the log and its diff (the store's `txs` row).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogRec {
+    pub branch: String,
+    pub seq: u64,
+    pub record: Record,
+    pub diff: Diff,
+}
+
+impl LogRec {
+    /// The record as a [`CommittedTx`] (with its link, `None` for an edit), as the rebase
+    /// engine's steps take it. `INVALID_FORMAT` when its kind fields do not match its kind.
+    pub fn committed(&self) -> Result<CommittedTx, CoreError> {
+        let link = match self.record.kind {
+            RecordKind::Edit => None,
+            _ => Some(Box::new(self.record.link()?)),
+        };
+        Ok(CommittedTx {
+            rev: self.seq,
+            tx: self.record.intent.clone(),
+            diff: self.diff.clone(),
+            bindings: self.record.bindings.clone(),
+            link,
+        })
+    }
+}
+
+/// Which branch holds which seqs of a branch's history, own branch first: `(branch, after,
+/// through)` holds the rows with `after < seq <= through` (`None`: up to its head). The own
+/// entry's `after` is the branch's fork seq (0 for a root).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lineage {
+    pub segs: Vec<(String, u64, Option<u64>)>,
+}
+
+impl Lineage {
+    /// The fork seq of the lineage's own branch: its own records are the seqs above it.
+    pub fn fork_seq(&self) -> u64 {
+        self.segs.first().map_or(0, |s| s.1)
+    }
+}
+
+/// A read-only view of a project's log, as the planners read it. Every method answers from
+/// the same state (the store implements it over its write transaction).
+pub trait LogView {
+    /// The lineage of `branch` ([`Lineage`]). `BRANCH_NOT_FOUND` for an unknown branch.
+    fn lineage(&self, branch: &str) -> Result<Lineage, CoreError>;
+    /// `branch`'s own records (not its ancestors') with `after < seq <= through`, oldest
+    /// first.
+    fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError>;
+    /// The head seq of `branch` and the project there.
+    fn head(&self, branch: &str) -> Result<(u64, Project), CoreError>;
+    /// The project on `branch` after `seq` (below its fork: its ancestors' state).
+    fn state_at(&self, branch: &str, seq: u64) -> Result<Project, CoreError>;
+    /// The record with `tx_id`, on whatever branch holds it.
+    fn find(&self, tx_id: &str) -> Result<Option<LogRec>, CoreError>;
+    /// The `merge` records of the group `merge_id`, in seq order.
+    fn merge_group(&self, merge_id: &str) -> Result<Vec<LogRec>, CoreError>;
+    /// Whether branch `a` descends from `of` (a child, grandchild, …; never itself).
+    fn is_descendant(&self, a: &str, of: &str) -> Result<bool, CoreError>;
+    /// txIds of `branch`'s own records that are the origin of a `merge` record with
+    /// `from = branch` on a branch that is not a descendant of `branch` (Decision 22).
+    /// Cherry-picks never count.
+    fn merged_away(&self, branch: &str) -> Result<HashSet<String>, CoreError>;
+}
+
+/// A planned record: its kind and links, its intent (at the head: `baseRev` = the head seq,
+/// positions rebased) and the result of applying that intent at the head.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Planned {
+    pub link: Link,
+    pub intent: Tx,
+    pub applied: Applied,
+}

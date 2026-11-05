@@ -24,6 +24,7 @@ mod diffs;
 mod export;
 pub mod fsio;
 mod history;
+mod history_ops;
 pub mod identity;
 mod import;
 pub mod lease;
@@ -70,6 +71,7 @@ pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
 pub use history::Generation;
+pub use history_ops::undo::HistoryReq;
 pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use migrations::fail_next_migration_step;
@@ -87,7 +89,7 @@ pub use status::{
 };
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
-pub use wire::{BranchCreated, BranchView, EngineEvent, SetAside, TxSetAside};
+pub use wire::{BranchCreated, BranchView, EngineEvent, HistoryResult, SetAside, TxSetAside};
 
 /// The root branch, which every project has.
 pub const MAIN: &str = fin_core::branch::MAIN;

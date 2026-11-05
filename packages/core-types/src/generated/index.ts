@@ -178,6 +178,20 @@ export type EngineEvent =
       dropped: number;
       type: "lagged";
     };
+/**
+ * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UnitSource".
+ */
+export type UnitSource =
+  | {
+      kind: "records";
+    }
+  | {
+      kind: "redo";
+      txId: string;
+    };
 
 export interface FinCore {
   [k: string]: unknown;
@@ -418,6 +432,21 @@ export interface Generation {
   n: number;
 }
 /**
+ * The answer of a history operation ([`Store::undo`](crate::Store::undo),
+ * [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
+ * rolled back, `dry_run`; a retry of a committed operation answers with its records,
+ * `dry_run` false), and what they act on: the units an undo undoes, or the undo a redo
+ * reverses.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HistoryResult".
+ */
+export interface HistoryResult {
+  committed: CommittedTx[];
+  dryRun: boolean;
+  undone: string[];
+}
+/**
  * What the server needs to register a media asset. Its serde form is what `asset.probe`
  * answers (`@finisher/core-types` exports it as `Probe`).
  *
@@ -444,6 +473,45 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
+}
+/**
+ * An author's undo and redo stacks on a branch, bottom first (the top is the last entry).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Stacks".
+ */
+export interface Stacks {
+  redo: UnitEntry[];
+  undo: UnitEntry[];
+}
+/**
+ * One entry of an undo or redo stack.
+ *
+ * - `id`: what an `undo` names in `undoes` (a record's txId, a merge group's `mergeId`, the
+ *   redo record's txId for a redo unit), or, on the redo stack, the undo record's txId;
+ * - `records`: the txIds of its records, oldest first: whose stored `inverse` an undo (or,
+ *   for an undo record, a redo) takes;
+ * - `last_seq`: the seq of its last record, the frame its inverses apply in.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UnitEntry".
+ */
+export interface UnitEntry {
+  id: string;
+  lastSeq: number;
+  records: string[];
+  /**
+   * The record whose stored `inverse` an undo uses: the unit's records, or the redo
+   * record that recreated it (Decision 23).
+   */
+  source:
+    | {
+        kind: "records";
+      }
+    | {
+        kind: "redo";
+        txId: string;
+      };
 }
 /**
  * `tx.get` for a transaction that is not (or no longer) on its branch.

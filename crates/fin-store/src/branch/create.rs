@@ -164,7 +164,7 @@ fn view(info: &BranchInfo, display: String, head: u64) -> BranchView {
     }
 }
 
-fn check_key(tx_id: &str) -> Result<(), CoreError> {
+pub(crate) fn check_key(tx_id: &str) -> Result<(), CoreError> {
     if tx_id.trim().is_empty() {
         return Err(CoreError::new("INVALID_OP", "the request's txId is empty")
             .with_details(json!({ "field": "txId" }))
@@ -173,7 +173,7 @@ fn check_key(tx_id: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn key_reused(existing: &CommittedTx) -> StoreError {
+pub(crate) fn key_reused(existing: &CommittedTx) -> StoreError {
     let kind = existing
         .link
         .as_deref()
