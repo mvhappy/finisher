@@ -19,11 +19,16 @@
 //! - `INCOMPLETE_FILES`: a file seen incomplete for more than [`INCOMPLETE_POLLS`] polls on a
 //!   local or network root, where every write is atomic, so it cannot be in transit: a crashed
 //!   foreign writer or damage;
+//! - `LOCKED_FILES`: a file under `.finisher/` that could not be read (held open by another
+//!   program, pending deletion while another client holds it, or no permission: a transient
+//!   error) and has looked the same for 60 s of this store's clock (`verify::locked_too_long`),
+//!   on any kind of folder. A segment that compaction deleted while another client briefly
+//!   held it stays quiet;
 //! - `SERVER_ID_RENEWED`: the server data was found to be a copy (another directory or
 //!   machine than its id was made in), so this server took a new id at open;
 //! - `LEASE_CHECK`: the last fencing check could not list `.finisher/` (the lease stands);
-//! - `SYNC_ARRIVING`: on a sync folder, segment files are placeholders or incomplete (they
-//!   also hold `CATCHING_UP` after an acquisition);
+//! - `SYNC_ARRIVING`: on a sync folder, segment files are placeholders, incomplete or locked
+//!   (they also hold `CATCHING_UP` after an acquisition);
 //! - `COMPACTION_ABANDONED`: a compaction manifest whose packs or segments do not check out
 //!   against the folder: nothing it names is deleted;
 //! - `PROJECT_FILE_CONFLICT`: a sync conflict copy of `finisher.project.json` sits in the
@@ -150,7 +155,9 @@ pub(crate) struct Follow {
     /// Incomplete files and the consecutive polls each was seen so.
     incomplete: HashMap<PathBuf, u32>,
     stuck: Vec<String>,
-    /// Placeholders and incomplete files under `segments/`.
+    /// Files that could not be read (`NotArrivedWhy::Locked`) in the last pass.
+    locked: Vec<PathBuf>,
+    /// Placeholders and incomplete or locked files under `segments/`.
     arriving_files: Vec<String>,
     /// Conflict copies of `finisher.project.json` in the project folder.
     project_file_copies: Vec<String>,
@@ -200,6 +207,12 @@ impl Follow {
                 ) && p.starts_with(&segments)
             })
             .map(|(p, _)| p.to_string_lossy().into_owned())
+            .collect();
+        self.locked = r
+            .not_arrived
+            .iter()
+            .filter(|(_, why)| *why == NotArrivedWhy::Locked)
+            .map(|(p, _)| p.clone())
             .collect();
         let mut seen = HashMap::new();
         for (path, why) in &r.not_arrived {
@@ -308,6 +321,23 @@ impl Store {
                     "incomplete for more than {INCOMPLETE_POLLS} polls on a {} folder, where writes are atomic: {}",
                     self.storage_kind(),
                     f.stuck.join(", ")
+                ),
+            );
+        }
+        let now = self.ctl.now();
+        let mut locked: Vec<String> = f
+            .locked
+            .iter()
+            .filter(|p| crate::verify::locked_too_long(Some(&self.damage.borrow()), p, now))
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        if !locked.is_empty() {
+            locked.sort();
+            warn(
+                "LOCKED_FILES",
+                format!(
+                    "unreadable for 60 s or more (held open by another program, pending deletion while another client holds it, or no permission): {}",
+                    locked.join(", ")
                 ),
             );
         }

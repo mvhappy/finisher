@@ -22,6 +22,8 @@ pub(super) struct Folder {
     branches: Vec<BranchChain>,
     /// Damaged files seen unchanged for `super::SETTLED`.
     settled: HashSet<PathBuf>,
+    /// Files unreadable right now (`NotArrivedWhy::Locked`) for `super::SETTLED` already.
+    locked_long: HashSet<PathBuf>,
     /// Files under `segments/` that are still arriving or were not read (placeholders,
     /// incomplete or damaged files not settled): what lies beyond the chain cannot be told.
     arriving: bool,
@@ -58,6 +60,7 @@ impl Folder {
         let entries = crate::scan::scan(s.project_dir).map_err(|e| e.to_string());
         let mut by_branch: HashMap<String, Vec<SegRef>> = HashMap::new();
         let mut damaged = vec![];
+        let mut locked = vec![];
         let mut arriving = false;
         let segments_root = s.project_dir.join(".finisher").join("segments");
         if let Ok(es) = &entries {
@@ -75,7 +78,7 @@ impl Folder {
                     } => damaged.push((path.clone(), *len, *modified)),
                     Entry::NotArrived {
                         path,
-                        why: NotArrivedWhy::Incomplete,
+                        why: why @ (NotArrivedWhy::Incomplete | NotArrivedWhy::Locked),
                     } => {
                         let m = std::fs::metadata(path).ok();
                         damaged.push((
@@ -83,11 +86,13 @@ impl Folder {
                             m.as_ref().map_or(0, |m| m.len()),
                             m.and_then(|m| m.modified().ok()),
                         ));
+                        if *why == NotArrivedWhy::Locked {
+                            locked.push(path.clone());
+                        }
                     }
-                    // Not readable now: what it holds cannot be checked (as a placeholder).
                     Entry::NotArrived {
                         path,
-                        why: NotArrivedWhy::Placeholder | NotArrivedWhy::Locked,
+                        why: NotArrivedWhy::Placeholder,
                     } if path.starts_with(&segments_root) => arriving = true,
                     _ => {}
                 }
@@ -105,13 +110,20 @@ impl Folder {
         settled.extend(
             damaged
                 .iter()
+                .filter(|(p, ..)| !locked.contains(p))
                 .filter(|(p, _, m)| super::settled(seen.as_deref(), p, *m, now, s.kind))
                 .map(|(p, ..)| p.clone()),
         );
-        drop(seen);
-        arriving |= damaged
+        let locked_long: HashSet<PathBuf> = locked
             .iter()
-            .any(|(p, ..)| p.starts_with(&segments_root) && !settled.contains(p));
+            .filter(|p| super::locked_too_long(seen.as_deref(), p, now))
+            .cloned()
+            .collect();
+        drop(seen);
+        // Not readable now, and not for long: what it holds cannot be checked yet.
+        arriving |= damaged.iter().any(|(p, ..)| {
+            p.starts_with(&segments_root) && !settled.contains(p) && !locked_long.contains(p)
+        });
         let mut names: BTreeSet<String> = by_branch.keys().cloned().collect();
         names.extend(db::branches(s.conn).unwrap_or_default());
         let branches = names
@@ -145,6 +157,7 @@ impl Folder {
             entries,
             branches,
             settled,
+            locked_long,
             arriving,
         }
     }
@@ -218,13 +231,20 @@ impl Folder {
                         unsettled.push(v);
                     }
                 }
-                // Locked or pending deletion right now, not damaged.
+                // Locked or pending deletion right now: not damaged, and only a failure once
+                // it has stayed so (`super::locked_too_long`).
                 Entry::NotArrived {
                     path,
                     why: NotArrivedWhy::Locked,
-                } => unsettled.push(
-                    json!({ "path": rel(dir, path), "kind": kind_of(path), "reason": "locked" }),
-                ),
+                } => {
+                    if self.locked_long.contains(path) {
+                        unreadable.push(json!({ "path": rel(dir, path),
+                            "error": "unreadable for 60 s or more: held open by another program, pending deletion while another client holds it, or no permission" }));
+                    } else {
+                        unsettled.push(json!({ "code": "SEGMENT_LOCKED", "path": rel(dir, path),
+                                               "kind": kind_of(path), "reason": "locked" }));
+                    }
+                }
                 Entry::NotArrived {
                     path,
                     why: NotArrivedWhy::Placeholder,

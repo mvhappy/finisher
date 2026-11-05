@@ -386,7 +386,7 @@ impl Store {
             }
         }
         self.import.segrefs = present;
-        // Damaged and incomplete files, for verify's "unchanged for 60 s" rule.
+        // Damaged, incomplete and locked files, for the "unchanged for 60 s" rules (verify).
         let damaged: Vec<_> = entries
             .iter()
             .filter_map(|e| match e {
@@ -398,7 +398,7 @@ impl Store {
                 } => Some((path.clone(), *len, *modified)),
                 Entry::NotArrived {
                     path,
-                    why: NotArrivedWhy::Incomplete,
+                    why: NotArrivedWhy::Incomplete | NotArrivedWhy::Locked,
                 } => {
                     let m = std::fs::metadata(path).ok();
                     Some((

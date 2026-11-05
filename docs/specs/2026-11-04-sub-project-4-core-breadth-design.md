@@ -414,7 +414,7 @@ The plan put the retry before the re-check; re-checking first lets the same poll
   - Google Drive (unverified): `(<n>)` or `[Conflict]`.
 
   A conflict copy of a `lease.probe-*` file is listed only, because each server writes only its own.
-- **Stuck files:** on local and network roots every write is atomic, so a file seen incomplete for more than 5 polls can't be in transit: status warns `INCOMPLETE_FILES` (a crashed foreign writer, or damage).
+- **Stuck files:** on local and network roots every write is atomic, so a file seen incomplete for more than 5 polls can't be in transit: status warns `INCOMPLETE_FILES` (a crashed foreign writer, or damage). A `Locked` file that has looked the same (length, mtime) for 60 s, on any kind of folder, is `LOCKED_FILES` in status and unreadable in verify (`SEGMENT_LOCKED` in `unsettled` before that); a segment deleted by compaction while another client briefly holds it stays quiet.
 
 #### 3.6.2 Chain resolution
 
@@ -522,7 +522,7 @@ The first four come from the folder's content and need a person or an update, wh
 
 **Status** (`Store::status` → `fin project status`, `project.status`):
 - **Fields:** `projectId`, `storage`, `storageWarning`, `lease` (tagged by `state`: `held {epoch}` / `heldElsewhere {holder, epoch, ageServerMs}` / `stale {holder, epoch}` / `lost {reason}`), `leaseCheck`, `readOnly {reason, fix}`, `branches [{branch, head, exportedThrough, generation}]`, `lastExportMs`, `exportError`, `importError`, `quarantine {count, origins, reasons}`, `foreign`, `waiting`, `pending`, `warnings [{code, message}]`, `incarnation`, and `compaction` (§3.9). `fin-node` adds `busy {operation, sinceMs}` (§3.10).
-- **Warnings:** `STORAGE_OVERRIDE`, `CLOCK_IGNORES_SLEEP`, `LEASE_CHECK`, `QUARANTINE`, `REWOUND`, `SPLIT_BRAIN_SUSPECTED`, `FOREIGN_FILES`, `INCOMPLETE_FILES`, `SERVER_ID_RENEWED`, `SYNC_ARRIVING`, `COMPACTION_ABANDONED`, `PROJECT_FILE_CONFLICT`, `DB_REBUILT`, `SALVAGE_INCOMPLETE`, `MISSING_FROM_FOLDER`.
+- **Warnings:** `STORAGE_OVERRIDE`, `CLOCK_IGNORES_SLEEP`, `LEASE_CHECK`, `QUARANTINE`, `REWOUND`, `SPLIT_BRAIN_SUSPECTED`, `FOREIGN_FILES`, `INCOMPLETE_FILES`, `LOCKED_FILES`, `SERVER_ID_RENEWED`, `SYNC_ARRIVING`, `COMPACTION_ABANDONED`, `PROJECT_FILE_CONFLICT`, `DB_REBUILT`, `SALVAGE_INCOMPLETE`, `MISSING_FROM_FOLDER`.
 
 Other foreign files are listed (`FOREIGN_FILES`) and otherwise ignored. The conflict-copy patterns are in §3.6.1.
 

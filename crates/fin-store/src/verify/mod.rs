@@ -10,7 +10,9 @@
 //!   and mtime for 60 s of its monotonic clock ([`DamageSeen`]: every import pass and every
 //!   verify observes); before that it may still be arriving (`details.unsettled`, not a
 //!   failure). Cloud placeholders are not read (`details.unchecked`, not a failure: verify
-//!   does not force a download). Unreadable files fail; files needing a newer Finisher are
+//!   does not force a download). A file that cannot be read right now (locked, or pending
+//!   deletion: [`locked_too_long`]) is `details.unsettled` (`SEGMENT_LOCKED`) until it has
+//!   looked the same for 60 s, then unreadable. Unreadable files fail; files needing a newer Finisher are
 //!   listed (`newer`). A `segments` row of the database whose file is not listed at all (by
 //!   name) and that no present pack replaces fails (`missing`).
 //! - `chain_continuity`: per branch, the database's rows are dense from seq 1, each
@@ -113,13 +115,31 @@ pub(crate) fn settled(
     }
 }
 
+/// Whether a file that cannot be read now (`NotArrivedWhy::Locked`: held by another program,
+/// pending deletion while another client holds it open, or a permission error that looks
+/// transient, as Windows `ACCESS_DENIED`) has looked the same for [`SETTLED`] of this store's
+/// monotonic clock, on any kind of folder. Then it is reported (verify: `unreadable`; status:
+/// `LOCKED_FILES`) rather than taken as arriving. Never at first sighting and never from an old
+/// mtime, so a segment that compaction deleted while another client briefly holds it stays
+/// quiet.
+pub(crate) fn locked_too_long(seen: Option<&DamageSeen>, path: &Path, now: Instant) -> bool {
+    seen.and_then(|s| s.files.get(path))
+        .is_some_and(|(_, _, since, _)| now.saturating_duration_since(*since) >= SETTLED)
+}
+
 impl DamageSeen {
-    /// Records one scan's damaged files (`(path, len, mtime)`) at `now`; forgets the others.
+    /// Records one scan's damaged, incomplete and locked files (`(path, len, mtime)`) at `now`;
+    /// forgets the others. A file whose metadata could not be read this time (`(0, None)`: on
+    /// Windows a file pending deletion refuses even a stat) keeps its earlier sighting, so one
+    /// that flips between incomplete and locked does not restart its time.
     pub(crate) fn observe(&mut self, seen: &[(PathBuf, u64, Option<SystemTime>)], now: Instant) {
         let mut next = HashMap::new();
         for (path, len, mtime) in seen {
+            let unknown = *len == 0 && mtime.is_none();
             let entry = match self.files.get(path) {
-                Some((l, m, since, old)) if l == len && m == mtime => (*len, *mtime, *since, *old),
+                Some(&(l, m, since, old)) if unknown || (l == *len && m == *mtime) => {
+                    (l, m, since, old)
+                }
                 _ => (*len, *mtime, now, old_mtime(*mtime)),
             };
             next.insert(path.clone(), entry);
