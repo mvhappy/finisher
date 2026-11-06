@@ -1,0 +1,23 @@
+[package]
+name = "fin-text"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Pure text shaping and measurement over font bytes looked up by SHA-256 (no I/O; builds for wasm32)."
+
+[dependencies]
+# `no_std` (libm everywhere, no system fonts, no locale lookup); no swash in 4C.
+cosmic-text = { version = "0.19", default-features = false, features = ["no_std"] }
+fin-core = { path = "../fin-core" }
+libm = "0.2"
+serde_json = "1"
+unicode-script = "0.5"
+
+[dev-dependencies]
+blake3 = "1"
+fin-testfonts = { path = "../fin-testfonts" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"

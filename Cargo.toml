@@ -10,6 +10,8 @@ default-members = [
     "crates/fin-node",
     "crates/fin-probe",
     "crates/fin-store",
+    "crates/fin-testfonts",
+    "crates/fin-text",
 ]
 
 [workspace.package]

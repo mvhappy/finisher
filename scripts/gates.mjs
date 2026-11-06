@@ -10,6 +10,7 @@ const steps = [
   ["node", ["scripts/check-rust-fmt.mjs"]],
   ["node", ["scripts/check-test-hooks.mjs"]],
   ["cargo", ["build", "-q", "-p", "fin-core", "--target", "wasm32-unknown-unknown"]],
+  ["cargo", ["build", "-q", "-p", "fin-text", "--target", "wasm32-unknown-unknown"]],
 ];
 const hasCargoDeny = spawnSync("cargo", ["deny", "--version"], { stdio: "ignore" }).status === 0;
 if (process.platform !== "win32" && hasCargoDeny) steps.push(["cargo", ["deny", "check", "licenses", "sources", "bans"]]);

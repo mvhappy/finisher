@@ -50,3 +50,16 @@ status: planned
 
 ## Codex (Apache-2.0) — bundled agent CLI
 status: planned
+
+## cosmic-text (MIT OR Apache-2.0) and its shaping stack — `fin-text`
+status: used (sub-project 4C), as Cargo dependencies; no code is copied.
+- `cosmic-text` 0.19 (MIT OR Apache-2.0), built `no_std` without `swash`;
+- `harfrust` 0.5 (MIT), `fontdb` 0.23 (MIT), `skrifa` 0.40 and `read-fonts` (MIT OR Apache-2.0),
+  `ttf-parser` (MIT OR Apache-2.0);
+- `unicode-bidi`, `unicode-script`, `unicode-segmentation` (MIT OR Apache-2.0),
+  `unicode-linebreak` (Apache-2.0), `libm` and `core_maths` (MIT);
+- **`self_cell`** 1.x is offered under Apache-2.0 OR GPL-2.0-only. **Finisher uses it under
+  Apache-2.0 only.**
+
+Fonts are never bundled; test fonts are generated at test time by the dev-only
+`fin-testfonts` crate (`write-fonts`, MIT OR Apache-2.0).

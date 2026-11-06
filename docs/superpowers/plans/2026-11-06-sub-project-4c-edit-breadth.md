@@ -550,8 +550,8 @@ pub fn build(spec: &Spec) -> Vec<u8>;            // deterministic TTF (glyf, cma
 pub fn test_sans() -> Vec<u8>; pub fn test_rtl() -> Vec<u8>; pub fn test_han() -> Vec<u8>; pub fn test_big(size: usize) -> Vec<u8>;
 ```
 
-- [ ] **Step 1: Licences.** Add `cosmic-text = { version = "0.19", default-features = false, features = ["no_std"] }` and `write-fonts` (dev). Run `rtk cargo deny check licenses`, and record the transitive licences in the commit body.
-- [ ] **Step 2: Write failing tests:**
+- [x] **Step 1: Licences.** Add `cosmic-text = { version = "0.19", default-features = false, features = ["no_std"] }` and `write-fonts` (dev). Run `rtk cargo deny check licenses`, and record the transitive licences in the commit body.
+- [x] **Step 2: Write failing tests:**
   - `measure.rs` (generated fonts, always run):
     - `same_bytes_same_layout` (two `Measurer`s, two providers);
     - `fallback_follows_face_order` (`TestSans` then `TestHan`; swapping the order changes which face is used);
@@ -567,14 +567,14 @@ pub fn test_sans() -> Vec<u8>; pub fn test_rtl() -> Vec<u8>; pub fn test_han() -
     - Bold; wrapping; `max_lines`.
 
   Hashes go in `expected.json`; the layouts in `layouts/` are for review.
-- [ ] **Step 3: Run** `rtk cargo test -p fin-text --test measure` → FAIL.
-- [ ] **Step 4: Implement.**
+- [x] **Step 3: Run** `rtk cargo test -p fin-text --test measure` → FAIL.
+- [x] **Step 4: Implement.**
   - `FontSystem::new_with_locale_and_db_and_fallback("en-US", db, FaceListFallback)`, with the faces loaded in request order into an empty `fontdb::Database`;
   - `Buffer` with `Shaping::Advanced` and `Wrap::Word`; `libm::roundf` to 1/64 px;
   - files < 400 lines.
-- [ ] **Step 5: Goldens.** Once Task 5's `warm_cache` exists (or by a one-off download into `archive/fonts/` checked against the catalog hashes), fill `expected.json` for the real corpus and review `layouts/` by eye.
-- [ ] **Step 6: Early cross-OS signal** (controller): run both test files on the macOS and Windows hosts with a warmed cache, and on wasm32-wasip1 locally (`wasmtime --dir`). Record the results in `archive/sp4c-text/`. Task 29 repeats it.
-- [ ] **Step 7: Run** the three gates → PASS. **Commit** `feat(text): fin-text measurement over fonts by hash; TextMeasurer contract; generated test fonts`.
+- [ ] **Step 5: Goldens.** *(Generated goldens done. The real corpus waits for Task 5: `real.json` pins are `null` until the catalog fills them.)* Once Task 5's `warm_cache` exists (or by a one-off download into `archive/fonts/` checked against the catalog hashes), fill `expected.json` for the real corpus and review `layouts/` by eye.
+- [x] **Step 6: Early cross-OS signal** (controller; generated corpus byte-identical on Linux, Windows 11, macOS arm64 and wasm32-wasip1; real fonts with Task 5): run both test files on the macOS and Windows hosts with a warmed cache, and on wasm32-wasip1 locally (`wasmtime --dir`). Record the results in `archive/sp4c-text/`. Task 29 repeats it.
+- [x] **Step 7: Run** the three gates → PASS. **Commit** `feat(text): fin-text measurement over fonts by hash; TextMeasurer contract; generated test fonts`.
 
 ### Task 5: The font catalog, the cache and the fetcher (`fin-fonts`) — tier: opus
 

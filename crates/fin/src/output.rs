@@ -76,6 +76,8 @@ const VALIDATION_CODES: &[&str] = &[
     // History (sub-project 4B): the author has nothing to undo or redo on the branch.
     "NOTHING_TO_UNDO",
     "NOTHING_TO_REDO",
+    // Fonts (sub-project 4C): a file `fin_text::font_info` cannot read as a font.
+    "FONT_INVALID",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -265,6 +267,7 @@ mod tests {
             "BRANCH_ARCHIVED",
             "NOTHING_TO_UNDO",
             "NOTHING_TO_REDO",
+            "FONT_INVALID",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }
