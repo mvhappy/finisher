@@ -71,7 +71,10 @@ fn cases() -> Vec<(Link, [Option<String>; 6])> {
             [none(), none(), none(), none(), s(r#"["m1"]"#), none()],
         ),
         (
-            Link::Checkpoint { name: "cut".into() },
+            Link::Checkpoint {
+                name: "cut".into(),
+                origin_hash: None,
+            },
             [none(), none(), none(), none(), none(), s("cut")],
         ),
         (
@@ -81,6 +84,7 @@ fn cases() -> Vec<(Link, [Option<String>; 6])> {
                 fork_seq: 0,
                 fork_hash: None,
                 epoch: 1,
+                origin_hash: None,
             },
             [none(), none(), none(), none(), s(r#"["br1"]"#), s("alt")],
         ),
@@ -89,6 +93,7 @@ fn cases() -> Vec<(Link, [Option<String>; 6])> {
                 branch_id: "br1".into(),
                 name: None,
                 archived: Some(true),
+                origin_hash: None,
             },
             [none(), none(), none(), none(), s(r#"["br1"]"#), none()],
         ),

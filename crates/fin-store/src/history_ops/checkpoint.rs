@@ -99,6 +99,7 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &CheckpointReq) -> Result<CommittedTx, StoreE
     }
     let link = Link::Checkpoint {
         name: r.name.clone(),
+        origin_hash: None,
     };
     let mut draft = metadata_draft(ctx, &branch, &r.tx_id, &r.author, link)?;
     draft.intent.args_hash = r.args_hash.clone();

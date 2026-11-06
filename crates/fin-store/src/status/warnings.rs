@@ -168,9 +168,9 @@ impl Store {
 pub(super) fn quarantine_summary(
     conn: &rusqlite::Connection,
 ) -> Result<QuarantineSummary, StoreError> {
-    // Recovered rows (a `recovered-*` branch holds their copies, plan 4B Decision 5) are
-    // not counted.
-    let recovered = crate::recover::recovered_hashes(conn)?;
+    // Recovered rows (a record in the log stands for them, plan 4B Decision 5) and rows
+    // dismissed here are not counted.
+    let recovered = crate::recover::uncounted(conn)?;
     let mut stmt = conn.prepare(
         "SELECT origin, reason, tx_hash FROM quarantine WHERE current = 1
          ORDER BY origin, reason",

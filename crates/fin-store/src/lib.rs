@@ -97,7 +97,7 @@ pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
     BranchCreated, BranchView, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, SetAside, TxSetAside,
+    RecoverReport, SetAside, SkippedFile, TxSetAside,
 };
 
 /// The root branch, which every project has.

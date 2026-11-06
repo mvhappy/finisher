@@ -41,6 +41,7 @@ fn branch(id: &str, name: &str, fork_seq: u64) -> Link {
         fork_seq,
         fork_hash: (fork_seq > 0).then(|| format!("h{fork_seq}")),
         epoch: 1,
+        origin_hash: None,
     }
 }
 
@@ -49,6 +50,7 @@ fn set(id: &str, name: Option<&str>, archived: Option<bool>) -> Link {
         branch_id: id.into(),
         name: name.map(String::from),
         archived,
+        origin_hash: None,
     }
 }
 
@@ -218,6 +220,7 @@ fn index_folds_branch_and_branch_set() {
                 fork_seq: 0,
                 fork_hash: Some("h0".into()),
                 epoch: 1,
+                origin_hash: None,
             },
         ),
         (
@@ -229,6 +232,7 @@ fn index_folds_branch_and_branch_set() {
                 fork_seq: 2,
                 fork_hash: None,
                 epoch: 1,
+                origin_hash: None,
             },
         ),
     ] {
@@ -370,6 +374,7 @@ fn branch_at(id: &str, name: &str, fork_seq: u64, epoch: u64) -> Link {
         fork_seq,
         fork_hash: (fork_seq > 0).then(|| format!("h{fork_seq}")),
         epoch,
+        origin_hash: None,
     }
 }
 

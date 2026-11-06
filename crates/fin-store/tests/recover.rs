@@ -154,6 +154,7 @@ fn req(tx_id: &str, create: Option<RecoverSel>) -> RecoverReq {
         author: "rec".into(),
         create,
         import_dir: None,
+        dismiss: None,
         dry_run: false,
     }
 }
@@ -748,8 +749,24 @@ fn set_aside_child_branch_recovers_as_child_group() {
     let groups = b.recover_groups().unwrap();
     assert_eq!(groups.len(), 2, "{groups:#?}");
     let (parent, child) = (&groups[0], &groups[1]);
-    assert_eq!((parent.branch.as_str(), parent.records), (MAIN, 2));
-    assert_eq!((child.branch.as_str(), child.records), ("br1", 1));
+    assert_eq!(
+        (
+            parent.records_branch.as_str(),
+            parent.branch.as_str(),
+            parent.records
+        ),
+        (MAIN, MAIN, 2)
+    );
+    assert_eq!((child.records_branch.as_str(), child.records), ("br1", 1));
+    // It forks from the branch its parent group makes, at the copy of x0.
+    assert_eq!(
+        (
+            child.branch.as_str(),
+            child.fork_seq,
+            child.fork_group.as_deref()
+        ),
+        (parent.name.as_str(), 2, Some(parent.id.as_str()))
+    );
     assert_eq!(parent.children, std::slice::from_ref(&child.id));
     assert_eq!(
         f.recover_groups().unwrap().len(),
@@ -982,4 +999,433 @@ fn undo_in_the_tail_names_the_fresh_id() {
     let (_, p) = a.snapshot(&r.created[0].id).unwrap();
     assert_eq!(clips(&p), [r.committed[1].bindings["$c"].clone()]);
     assert_verifies(&a);
+}
+
+// Review of Task 16: what stands for records without ops, and merges in a tail.
+
+/// As [`diverged`], with `before` committed and exported by A first.
+fn diverged_with(e: &Env, before: impl FnOnce(&mut Store), tail: impl FnOnce(&mut Store)) -> Split {
+    let mut s = split(e, before, |_| {}, winner);
+    tail(&mut s.a);
+    s.a.set_test_lease(1, false);
+    e.poll(&mut s.a);
+    s.a.set_test_lease(3, true);
+    s
+}
+
+fn rename(s: &mut Store, tx: &str, b: &str, name: &str) {
+    s.set_branch(fin_store::BranchSet {
+        tx_id: tx.into(),
+        author: "test".into(),
+        branch: b.into(),
+        name: Some(name.into()),
+        archived: None,
+        dry_run: false,
+    })
+    .unwrap();
+}
+
+fn merge(s: &mut Store, tx: &str, from: &str, into: &str) -> fin_store::MergeReport {
+    s.merge(fin_store::MergeReq {
+        tx_id: tx.into(),
+        author: "test".into(),
+        from: from.into(),
+        into: into.into(),
+        skip_conflicting: false,
+        dry_run: false,
+        args_hash: None,
+    })
+    .unwrap()
+}
+
+fn name_of(s: &Store, id: &str) -> String {
+    s.branches(true)
+        .unwrap()
+        .into_iter()
+        .find(|b| b.id == id)
+        .unwrap()
+        .name
+}
+
+/// The `originHash` of a record without ops (`checkpoint`, `branch`, `branchSet`).
+fn stands_for(c: &CommittedTx) -> Option<&str> {
+    match c.link.as_deref() {
+        Some(
+            Link::Checkpoint { origin_hash, .. }
+            | Link::Branch { origin_hash, .. }
+            | Link::BranchSet { origin_hash, .. },
+        ) => origin_hash.as_deref(),
+        _ => None,
+    }
+}
+
+/// B1: a rename of a live branch in the tail is made again, not dropped.
+#[test]
+fn branch_set_of_live_branch_in_tail_is_applied_again() {
+    let e = env();
+    let Split { mut a, mut f, .. } = diverged_with(
+        &e,
+        |a| {
+            branch(a, "mk", "side", MAIN);
+        },
+        |a| {
+            on(a, "x1", MAIN, vec![insert(0, "a1")]);
+            rename(a, "xr", "br1", "renamed");
+            on(a, "x2", MAIN, vec![insert(1, "a1")]);
+        },
+    );
+    assert_eq!(counted(&a), 3);
+    let r = create_all(&mut a, "rec");
+    assert_eq!(
+        kinds(&r.committed),
+        ["branch", "cherryPick", "other", "cherryPick"]
+    );
+    assert_eq!(
+        stands_for(&r.committed[2]),
+        Some(hash_of_quarantined(&a, "xr").as_str())
+    );
+    assert_eq!(name_of(&a, "br1"), "renamed");
+    assert_eq!(counted(&a), 0);
+    assert!(a.recover_groups().unwrap().is_empty());
+    assert_verifies(&a);
+    e.flush(&mut a);
+    e.poll(&mut f);
+    assert_eq!(name_of(&f, "br1"), "renamed");
+}
+
+/// B1: a tail of only a rename makes no branch; the rename is made again.
+#[test]
+fn lone_branch_set_tail_is_applied_again() {
+    let e = env();
+    let Split { mut a, .. } = diverged_with(
+        &e,
+        |a| {
+            branch(a, "mk", "side", MAIN);
+        },
+        |a| rename(a, "xr", "br1", "renamed"),
+    );
+    let g = a.recover_groups().unwrap();
+    assert_eq!(g.len(), 1);
+    assert!(g[0].recoverable && g[0].name.is_empty(), "{g:#?}");
+    let r = create_all(&mut a, "rec");
+    assert!(r.created.is_empty());
+    assert_eq!(r.committed.len(), 1);
+    assert_eq!(name_of(&a, "br1"), "renamed");
+    assert_eq!(counted(&a), 0);
+    // A retry answers from the log.
+    let again = create_all(&mut a, "rec");
+    assert_eq!(again.committed, r.committed);
+}
+
+/// B1: a rename whose name is taken now stays in quarantine with a fix, and is made once
+/// the name is free.
+#[test]
+fn branch_set_whose_name_is_taken_waits_then_applies() {
+    let e = env();
+    let mut s = split(
+        &e,
+        |a| {
+            branch(a, "mk", "side", MAIN);
+        },
+        |_| {},
+        |b| {
+            branch(b, "mk2", "other", MAIN);
+        },
+    );
+    on(&mut s.a, "x1", MAIN, vec![insert(0, "a1")]);
+    rename(&mut s.a, "xr", "br1", "other");
+    s.a.set_test_lease(1, false);
+    e.poll(&mut s.a);
+    s.a.set_test_lease(3, true);
+    let mut a = s.a;
+    let g = a.recover_groups().unwrap();
+    assert_eq!(g.len(), 1);
+    assert!(g[0].recoverable);
+    assert_eq!(g[0].notes[0].reason, "NAME_TAKEN", "{g:#?}");
+    assert!(
+        g[0].notes[0].fix.contains("fin branch rename br2"),
+        "{}",
+        g[0].notes[0].fix
+    );
+    create_all(&mut a, "rec");
+    assert_eq!(name_of(&a, "br1"), "side");
+    assert_eq!(counted(&a), 1, "the rename is still set aside");
+    let left = a.recover_groups().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(
+        (left[0].recoverable, left[0].problems[0].reason.as_str()),
+        (false, "NAME_TAKEN")
+    );
+    rename(&mut a, "free", "br2", "elsewhere");
+    let r = create_all(&mut a, "rec2");
+    assert_eq!(r.committed.len(), 1);
+    assert_eq!(name_of(&a, "br1"), "other");
+    assert_eq!(counted(&a), 0);
+    assert_verifies(&a);
+}
+
+/// B1: an empty branch made in the tail is made again on the recovered branch.
+#[test]
+fn empty_branch_in_tail_is_made_again() {
+    let e = env();
+    let Split { mut a, .. } = diverged(&e, |a| {
+        on(a, "x1", MAIN, vec![insert(0, "a1")]);
+        branch(a, "xb", "feature", MAIN);
+        on(a, "x2", MAIN, vec![insert(1, "a1")]);
+    });
+    let r = create_all(&mut a, "rec");
+    assert_eq!(
+        kinds(&r.committed),
+        ["branch", "cherryPick", "branch", "cherryPick"]
+    );
+    assert_eq!(r.created.len(), 2);
+    let (rec, feature) = (&r.created[0], &r.created[1]);
+    assert_eq!(feature.name, "feature");
+    assert_eq!(
+        (feature.parent.as_deref(), feature.fork_seq),
+        (Some(rec.id.as_str()), 2),
+        "forked at the copy of x1"
+    );
+    assert_eq!(
+        stands_for(&r.committed[2]),
+        Some(hash_of_quarantined(&a, "xb").as_str())
+    );
+    let (_, p) = a.snapshot(&feature.id).unwrap();
+    assert_eq!(clips(&p).len(), 1);
+    assert_eq!(counted(&a), 0);
+    assert_verifies(&a);
+}
+
+/// B1: a rename of a branch set aside with it comes back with that branch.
+#[test]
+fn branch_set_of_set_aside_branch_comes_back_with_it() {
+    let e = env();
+    let Split { mut a, .. } = diverged(&e, |a| {
+        branch(a, "xb", "feat", MAIN);
+        on(a, "x1", "br1", vec![insert(0, "a1")]);
+        rename(a, "xr", "br1", "feat2");
+    });
+    assert_eq!(counted(&a), 3);
+    let g = a.recover_groups().unwrap();
+    assert_eq!(g.len(), 2, "{g:#?}");
+    let r = create_all(&mut a, "rec");
+    assert_eq!(kinds(&r.committed), ["branch", "cherryPick"]);
+    assert_eq!(
+        stands_for(&r.committed[0]),
+        Some(hash_of_quarantined(&a, "xb").as_str())
+    );
+    assert_eq!(counted(&a), 0);
+    assert!(a.recover_groups().unwrap().is_empty());
+}
+
+/// B2: a merge in the tail is copied as its source's root with the source's ids, so merging
+/// the source again brings nothing twice.
+#[test]
+fn merge_in_tail_keeps_its_source_root_and_ids() {
+    let e = env();
+    let Split { mut a, .. } = diverged_with(
+        &e,
+        |a| {
+            let b = branch(a, "mk", "side", MAIN);
+            on(a, "s1", &b, vec![insert(0, "a1")]);
+        },
+        |a| {
+            merge(a, "xm", "br1", MAIN);
+        },
+    );
+    let r = create_all(&mut a, "rec");
+    let made = r.created[0].id.clone();
+    let copy = &r.committed[1];
+    match copy.link.as_deref() {
+        Some(Link::CherryPick {
+            origin,
+            from,
+            origin_hash,
+        }) => {
+            assert_eq!((origin.as_str(), from.as_str()), ("s1", "br1"));
+            assert_eq!(
+                origin_hash.as_deref(),
+                Some(hash_of_quarantined(&a, "xm-1").as_str())
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let s1 = a.ops_since("br1", 0).unwrap();
+    let s1 = s1.iter().find(|c| c.tx.tx_id == "s1").unwrap();
+    assert_eq!(copy.bindings, s1.bindings, "the source's ids");
+    assert!(r.groups[0].notes.is_empty());
+    let again = merge(&mut a, "m2", "br1", &made);
+    assert!(again.committed.is_empty(), "{again:?}");
+    let (_, p) = a.snapshot(&made).unwrap();
+    assert_eq!(clips(&p), clips(&a.snapshot("br1").unwrap().1));
+    assert_verifies(&a);
+}
+
+/// B2: the recovered branch merges back into a `main` that merged the source itself.
+#[test]
+fn recovered_merge_copy_merges_back_without_duplicates() {
+    let e = env();
+    let mut s = split(
+        &e,
+        |a| {
+            let b = branch(a, "mk", "side", MAIN);
+            on(a, "s1", &b, vec![insert(0, "a1")]);
+        },
+        |_| {},
+        |b| {
+            merge(b, "bm", "br1", MAIN);
+        },
+    );
+    merge(&mut s.a, "xm", "br1", MAIN);
+    s.a.set_test_lease(1, false);
+    e.poll(&mut s.a);
+    s.a.set_test_lease(3, true);
+    let mut a = s.a;
+    let r = create_all(&mut a, "rec");
+    let made = r.created[0].id.clone();
+    let before = clips(&a.snapshot(MAIN).unwrap().1);
+    let back = merge(&mut a, "back", &made, MAIN);
+    assert!(back.committed.is_empty(), "{back:?}");
+    assert_eq!(clips(&a.snapshot(MAIN).unwrap().1), before);
+}
+
+/// B2: a set-aside branch and a merge of it within one tail stay one entity on their
+/// recovered branches.
+#[test]
+fn set_aside_branch_and_its_merge_share_ids() {
+    let e = env();
+    let Split { mut a, .. } = diverged(&e, |a| {
+        branch(a, "xb", "feat", MAIN);
+        on(a, "s2", "br1", vec![insert(0, "a1")]);
+        merge(a, "xm", "br1", MAIN);
+    });
+    let r = create_all(&mut a, "rec");
+    assert_eq!(r.created.len(), 2, "{:?}", r.created);
+    let ids: Vec<(&str, &std::collections::BTreeMap<String, String>)> = r
+        .committed
+        .iter()
+        .filter(|c| matches!(c.link.as_deref(), Some(Link::CherryPick { .. })))
+        .map(|c| match c.link.as_deref() {
+            Some(Link::CherryPick { origin, .. }) => (origin.as_str(), &c.bindings),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0].0, "s2");
+    assert_eq!(ids[1].0, "s2");
+    assert_eq!(ids[0].1, ids[1].1, "one entity");
+    assert_ne!(ids[0].1["$c"], "c1");
+    let (main_copy, branch_copy) = (&r.created[0], &r.created[1]);
+    let m = merge(&mut a, "m3", &branch_copy.id, &main_copy.id);
+    assert!(m.committed.is_empty(), "{m:?}");
+    assert_eq!(counted(&a), 0);
+    assert_verifies(&a);
+}
+
+/// S1, S2: `--import` lists the files it did not read, and counts only rows it added or
+/// made current again.
+#[test]
+fn import_reports_skipped_files_and_counts_new_rows() {
+    let e = env();
+    let a = e.create("a");
+    let mut c = e.open("c");
+    let mut d = e.open("d");
+    let mut f = e.open("f");
+    c.set_test_lease(1, true);
+    commit(&mut c, "x", vec![asset("/m/x.mov")]);
+    commit(&mut c, "x2", vec![insert(0, "a1")]);
+    e.flush(&mut c);
+    let x_files = all_segments(&e.dir);
+    d.set_test_lease(1, true);
+    commit(&mut d, "z", vec![asset("/m/z.mov")]);
+    d.close().unwrap();
+    e.poll(&mut f);
+    let moved = e.root.join("moved");
+    fs::create_dir_all(moved.join("dup")).unwrap();
+    for p in &x_files {
+        fs::copy(p, moved.join("dup").join(p.file_name().unwrap())).unwrap();
+        fs::rename(p, moved.join(p.file_name().unwrap())).unwrap();
+    }
+    fs::write(moved.join("junk.fseg"), b"not a segment").unwrap();
+    let bytes = fs::read(moved.join(x_files[0].file_name().unwrap())).unwrap();
+    fs::write(moved.join("trunc.fseg"), &bytes[..bytes.len() / 2]).unwrap();
+    e.poll(&mut f);
+    let mut imp = req("imp", None);
+    imp.import_dir = Some(moved.clone());
+    let r = f.recover(imp.clone()).unwrap();
+    assert_eq!(r.imported, 2, "the duplicate file counts once");
+    let mut skipped: Vec<String> = r
+        .skipped_files
+        .iter()
+        .map(|s| {
+            assert!(s.reason.starts_with("not a segment"), "{s:?}");
+            Path::new(&s.path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    skipped.sort();
+    assert_eq!(skipped, ["junk.fseg", "trunc.fseg"]);
+    let r = f.recover(imp).unwrap();
+    assert_eq!(r.imported, 0, "nothing new the second time");
+    assert_eq!(counted(&f), 2);
+    let mut missing = req("imp", None);
+    missing.import_dir = Some(moved.join("nowhere"));
+    let err = fin_core::CoreError::from(f.recover(missing).unwrap_err());
+    assert_eq!(err.code, "IO_ERROR");
+    drop(a);
+}
+
+/// S3: a group that can never be recovered can be dismissed on this server; a recoverable
+/// one cannot.
+#[test]
+fn unrecoverable_group_can_be_dismissed() {
+    let e = env();
+    let Split { mut b, .. } = split(&e, |_| {}, |_| {}, winner);
+    let unknown = format!("blake3:{}", "0".repeat(64));
+    craft(
+        &b,
+        "x9",
+        7,
+        Some(unknown),
+        vec![asset("/m/9.mov")],
+        &[("$a", "a9")],
+        1,
+    );
+    let t0 = tx_hash(&b, "t0");
+    craft(
+        &b,
+        "y1",
+        2,
+        Some(t0),
+        vec![asset("/m/y.mov")],
+        &[("$a", "a70")],
+        2,
+    );
+    let groups = b.recover_groups().unwrap();
+    let bad = groups.iter().find(|g| !g.recoverable).unwrap();
+    let good = groups.iter().find(|g| g.recoverable).unwrap();
+    assert!(
+        bad.problems[0].fix.contains("dismiss"),
+        "{}",
+        bad.problems[0].fix
+    );
+    assert_eq!(counted(&b), 2);
+    let mut no = req("d", None);
+    no.dismiss = Some(good.id.clone());
+    let err = fin_core::CoreError::from(b.recover(no).unwrap_err());
+    assert_eq!(err.code, "INVALID_OP");
+    let mut yes = req("d", None);
+    yes.dismiss = Some(bad.id.clone());
+    yes.dry_run = true;
+    assert_eq!(b.recover(yes.clone()).unwrap().dismissed, 1);
+    assert_eq!(counted(&b), 2, "a dry run keeps nothing");
+    yes.dry_run = false;
+    let r = b.recover(yes).unwrap();
+    assert_eq!(r.dismissed, 1);
+    assert_eq!(r.groups.len(), 1);
+    assert_eq!(counted(&b), 1);
+    assert!(!b.status().warnings.iter().any(|w| w.message.contains("x9")));
 }

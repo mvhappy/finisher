@@ -211,6 +211,7 @@ fn branch_link() -> Link {
         fork_seq: 0,
         fork_hash: None,
         epoch: 1,
+        origin_hash: None,
     }
 }
 
@@ -287,7 +288,14 @@ fn reads_v1_and_v2_segments() {
     let mut a = e.create("a");
     commit(&mut a, "t1", vec![asset("/m/a.mov")]);
     assert_eq!(e.flush(&mut a), 1);
-    plant(&a, "k1", Link::Checkpoint { name: "cut".into() });
+    plant(
+        &a,
+        "k1",
+        Link::Checkpoint {
+            name: "cut".into(),
+            origin_hash: None,
+        },
+    );
     assert_eq!(e.flush(&mut a), 1);
     let all = segments(&e.dir);
     let got: Vec<(u32, u32)> = all.iter().map(|s| versions(&s.2)).collect();
@@ -320,7 +328,10 @@ fn reads_v1_and_v2_segments() {
     assert_eq!(txs[0].link, None);
     assert_eq!(
         txs[1].link.as_deref(),
-        Some(&Link::Checkpoint { name: "cut".into() })
+        Some(&Link::Checkpoint {
+            name: "cut".into(),
+            origin_hash: None
+        })
     );
 }
 
@@ -338,7 +349,14 @@ fn pack_version_is_highest_of_contents() {
             assert_eq!(e.flush(&mut a), 1);
         }
         if with_checkpoint {
-            plant(&a, "k1", Link::Checkpoint { name: "cut".into() });
+            plant(
+                &a,
+                "k1",
+                Link::Checkpoint {
+                    name: "cut".into(),
+                    origin_hash: None,
+                },
+            );
             assert_eq!(e.flush(&mut a), 1);
         }
         let r = a.compact(true).unwrap();

@@ -127,20 +127,29 @@ pub(crate) fn link_row(branch: &str, record: &Record) -> Result<Option<LinkRow>,
             None
         }
         Link::Revert { reverts } => Some(vec![reverts]),
-        Link::Checkpoint { name: n } => {
-            name = Some(n);
+        Link::Checkpoint {
+            name: n,
+            origin_hash: h,
+        } => {
+            (name, origin_hash) = (Some(n), h);
             None
         }
         Link::Branch {
-            branch_id, name: n, ..
+            branch_id,
+            name: n,
+            origin_hash: h,
+            ..
         } => {
-            name = Some(n);
+            (name, origin_hash) = (Some(n), h);
             Some(vec![branch_id])
         }
         Link::BranchSet {
-            branch_id, name: n, ..
+            branch_id,
+            name: n,
+            origin_hash: h,
+            ..
         } => {
-            name = n;
+            (name, origin_hash) = (n, h);
             Some(vec![branch_id])
         }
     };

@@ -3,22 +3,29 @@
 //!
 //! - [`Store::recover_groups`] lists the current quarantine rows not recovered yet as groups
 //!   ([`groups`]): `parentHash` chains, each forking at its last common record with the log,
-//!   with child groups for the branches set aside with them. Each is planned
-//!   ([`run`]) to tell whether it can be created (`problems`: `ID_COLLISION`,
-//!   `NO_COMMON_HISTORY`, a policy failure, `NOTHING_TO_RECOVER`, `DEPENDS_ON_SKIPPED`).
+//!   with child groups for the branches set aside with them. Each is planned ([`run`],
+//!   [`rows`]) to tell whether it can be created (`problems`: `ID_COLLISION`,
+//!   `NO_COMMON_HISTORY`, a policy failure, `NOTHING_TO_RECOVER`, `DEPENDS_ON_SKIPPED`, …)
+//!   and which rows it would leave (`notes`).
 //! - [`Store::recover`] with `create` makes branches in one write: per group, a `branch`
-//!   record on the parent, then each record re-run under fresh ids ([`remap`]) as a
-//!   `cherryPick` naming the quarantined record (`origin`, `from`, `originHash`), then its
-//!   child groups. The records are `<txId>-<n>`; a retry of the txId answers from the log.
-//!   `import_dir` first reads `.fseg` files moved out of the folder into quarantine
-//!   (`IMPORTED`, origin `foreign`; [`import_dir`]), also while the project is read-only.
+//!   record on the parent, then a record standing for each row (a `cherryPick` of the record's
+//!   origin root under fresh or kept ids, [`ids`], [`remap`]; a fresh checkpoint, `branch` or
+//!   `branchSet` record), then its child groups. The records are `<txId>-<n>`; a retry of the
+//!   txId answers from the log. `import_dir` first reads `.fseg` files moved out of the
+//!   folder into quarantine (`IMPORTED`, origin `foreign`; [`import_dir`]), and `dismiss`
+//!   sets a group that cannot be recovered aside from listing and counting on this server
+//!   ([`dismiss`]); both also while the project is read-only.
 //!
-//! A quarantine row is recovered while a `cherryPick` in the log names it (`originHash`):
+//! A quarantine row is recovered while a record in the log stands for it (`originHash`):
 //! derived on import and rebuild alike, and compared by verify through `record_links`.
 
+mod dismiss;
 mod groups;
+mod ids;
 mod import_dir;
+mod naming;
 mod remap;
+mod rows;
 mod run;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -26,12 +33,13 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use fin_core::{CommittedTx, Conflict, CoreError, Link};
+use fin_core::{CommittedTx, Conflict, CoreError, Link, RecordKind};
 use rusqlite::Connection;
 use serde_json::json;
 
-pub(crate) use groups::recovered_hashes;
-use groups::{Forest, Group, Row};
+pub(crate) use groups::uncounted;
+use groups::{Forest, Group};
+use naming::{Writers, server8, utc_stamp};
 use run::Runner;
 
 use crate::branch::create::{check_key, key_reused, view};
@@ -61,8 +69,9 @@ impl<'de> serde::Deserialize<'de> for RecoverSel {
 
 /// [`Store::recover`]'s request: `tx_id` (the idempotency key: the records are
 /// `<txId>-<n>`), `author` (the records' author), `create`, `import_dir` (a folder of `.fseg`
-/// files moved out of the project folder), `dry_run` (plan against the local database and
-/// keep nothing, on a follower too).
+/// files moved out of the project folder), `dismiss` (a group id: stop listing and counting
+/// a group that cannot be recovered, on this server), `dry_run` (plan against the local
+/// database and keep nothing, on a follower too).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecoverReq {
@@ -73,79 +82,9 @@ pub struct RecoverReq {
     pub create: Option<RecoverSel>,
     pub import_dir: Option<PathBuf>,
     #[serde(default)]
+    pub dismiss: Option<String>,
+    #[serde(default)]
     pub dry_run: bool,
-}
-
-/// The writer of each row's record, for names (Decision 27).
-pub(crate) struct Writers {
-    ours: String,
-    project_dir: PathBuf,
-    folder: Option<HashMap<String, String>>,
-}
-
-impl Writers {
-    fn of(&mut self, row: &Row) -> Option<String> {
-        match row.origin.as_str() {
-            "local" | "salvage" => Some(self.ours.clone()),
-            "foreign" => {
-                let path = PathBuf::from(&row.detail);
-                let path = if path.is_absolute() {
-                    path
-                } else {
-                    self.project_dir.join(path)
-                };
-                let seg = crate::segment::decode(&std::fs::read(path).ok()?).ok()?;
-                seg.records
-                    .iter()
-                    .any(|b| db::hash_bytes(b) == row.hash)
-                    .then_some(seg.header.writer_id)
-            }
-            _ => {
-                let dir = &self.project_dir;
-                self.folder
-                    .get_or_insert_with(|| {
-                        let mut m = HashMap::new();
-                        for e in crate::scan::scan(dir).unwrap_or_default() {
-                            if let crate::scan::Entry::Segment { seg, .. } = e {
-                                for b in &seg.records {
-                                    m.insert(db::hash_bytes(b), seg.header.writer_id.clone());
-                                }
-                            }
-                        }
-                        m
-                    })
-                    .get(&row.hash)
-                    .cloned()
-            }
-        }
-    }
-}
-
-/// `<server8>` of a writer id: its first 8 characters when they are letters or digits.
-fn server8(writer: Option<&str>) -> String {
-    match writer {
-        Some(w)
-            if w.len() >= 8
-                && w.is_char_boundary(8)
-                && w[..8].bytes().all(|b| b.is_ascii_alphanumeric()) =>
-        {
-            w[..8].to_ascii_lowercase()
-        }
-        _ => "unknown".to_string(),
-    }
-}
-
-/// `YYYYMMDD-HHMMSS` (UTC) of unix ms `ms`.
-fn utc_stamp(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    let (y, m, d) = crate::backup::civil_from_days(days);
-    format!(
-        "{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    )
 }
 
 /// What [`listing`] found.
@@ -158,24 +97,25 @@ struct Listing {
     out: Vec<RecoverGroup>,
 }
 
-fn has_ops(forest: &Forest, g: &Group) -> bool {
+/// Whether group `g` makes a branch: it has records with ops or checkpoints.
+fn makes_branch(forest: &Forest, g: &Group) -> bool {
     g.rows.iter().any(|&i| {
         forest.rows[i]
             .record
             .as_ref()
-            .is_some_and(|r| r.kind.has_ops())
+            .is_some_and(|r| r.kind.has_ops() || r.kind == RecordKind::Checkpoint)
     })
 }
 
 /// The groups over `conn`, planned, named (unique among the branches and each other, in
 /// listing order, for the recoverable ones), as listed.
-fn listing(conn: &Connection, writers: &mut Writers, author: &str) -> Result<Listing, StoreError> {
+fn listing(conn: &Connection, writers: &Writers, author: &str) -> Result<Listing, StoreError> {
     let forest = Forest::load(conn)?;
     let (groups, order) = forest.groups();
-    let problems = {
+    let (problems, notes, shown) = {
         let mut r = Runner::new(conn, &forest, &groups, author, "plan")?;
         r.run(&order)?;
-        r.problems
+        (r.problems, r.notes, r.shown)
     };
     let ix = index::load(conn)?;
     let mut reserved: HashSet<String> = HashSet::new();
@@ -186,7 +126,7 @@ fn listing(conn: &Connection, writers: &mut Writers, author: &str) -> Result<Lis
         let first = &forest.rows[group.rows[0]];
         let rec = first.record.as_ref();
         let writer = writers.of(first);
-        let name = if has_ops(&forest, group) {
+        let name = if makes_branch(&forest, group) {
             let base = format!(
                 "recovered-{}-{}",
                 server8(writer.as_deref()),
@@ -210,11 +150,22 @@ fn listing(conn: &Connection, writers: &mut Writers, author: &str) -> Result<Lis
         for &i in &group.rows {
             *reasons.entry(forest.rows[i].reason.clone()).or_default() += 1;
         }
+        let fork = &shown[g];
+        let fork_group = fork
+            .group
+            .map(|p| group_id(&forest.rows[groups[p].rows[0]].hash));
+        let branch = match fork.group {
+            // Listed before: its name is known.
+            Some(p) => names.get(&p).cloned().unwrap_or_default(),
+            None => fork.branch.clone(),
+        };
         out.push(RecoverGroup {
             id: group_id(&first.hash),
-            branch: first.branch.clone(),
-            fork_seq: rec.map_or(0, |r| r.seq.saturating_sub(1)),
-            fork_hash: rec.and_then(|r| r.parent_hash.clone()),
+            records_branch: first.branch.clone(),
+            branch,
+            fork_seq: fork.seq,
+            fork_hash: fork.hash.clone(),
+            fork_group,
             records: group.rows.len(),
             reasons,
             origin: first.origin.clone(),
@@ -228,6 +179,7 @@ fn listing(conn: &Connection, writers: &mut Writers, author: &str) -> Result<Lis
                 .collect(),
             recoverable: problems[g].is_empty(),
             problems: problems[g].clone(),
+            notes: notes[g].clone(),
         });
     }
     Ok(Listing {
@@ -275,89 +227,108 @@ fn manual(reason: Option<ReadOnlyReason>) -> Option<String> {
     ))
 }
 
+/// What a recovery wrote: the groups as found, the branches made, the records.
+type Created = (Vec<RecoverGroup>, Vec<BranchView>, Vec<CommittedTx>);
+
 impl Store {
-    /// The quarantined records not recovered yet, as groups (module docs), parents before
-    /// their children.
+    /// The quarantined records not recovered (nor dismissed) yet, as groups (module docs),
+    /// parents before their children.
     pub fn recover_groups(&self) -> Result<Vec<RecoverGroup>, StoreError> {
-        Ok(listing(&self.conn, &mut self.writers(), "")?.out)
+        Ok(listing(&self.conn, &self.writers()?, "")?.out)
     }
 
-    fn writers(&self) -> Writers {
-        Writers {
-            ours: self.server_id.clone(),
-            project_dir: self.project_dir.clone(),
-            folder: None,
-        }
+    fn writers(&self) -> Result<Writers, StoreError> {
+        Writers::new(&self.conn, &self.server_id, &self.project_dir)
     }
 
-    /// Recovers quarantined records (module docs): reads `import_dir` into quarantine, lists
-    /// the groups and, with `create`, makes their branches in one write.
+    /// Recovers quarantined records (module docs): reads `import_dir` into quarantine,
+    /// dismisses `dismiss`, lists the groups and, with `create`, makes their branches in one
+    /// write.
     ///
     /// Errors: `INVALID_OP` (empty txId with `create`; a group that cannot be created, with
-    /// `details.problems`; a child group whose parent group is not created); `NOT_FOUND`
-    /// (`details.kind` `group`); `IO_ERROR` (`import_dir`); for `create` as a commit: a
-    /// retried txId answers from the log (`IDEM_KEY_REUSED` when `<txId>-1` holds no
-    /// `branch` record), `PROJECT_READ_ONLY`; `IDEM_KEY_REUSED` when another record holds a
-    /// txId it would write. `import_dir` alone is allowed while read-only. A dry run plans
-    /// everything (the import included) and keeps nothing, on a follower too.
+    /// `details.problems`; a child group whose parent group is not created; dismissing a
+    /// group that can be recovered); `NOT_FOUND` (`details.kind` `group`); `IO_ERROR`
+    /// (`import_dir`); for `create` as a commit: a retried txId answers from the log
+    /// (`IDEM_KEY_REUSED` when `<txId>-1` holds no recovery record), `PROJECT_READ_ONLY`;
+    /// `IDEM_KEY_REUSED` when another record holds a txId it would write. `import_dir` and
+    /// `dismiss` are allowed while read-only. A dry run plans everything (the import
+    /// included) and keeps nothing, on a follower too.
     pub fn recover(&mut self, r: RecoverReq) -> Result<RecoverReport, StoreError> {
         let manual = manual(self.read_only());
         if r.create.is_some() {
             check_key(&r.tx_id)?;
         }
-        let mut imported = 0;
-        if !r.dry_run
-            && let Some(dir) = &r.import_dir
-        {
+        let mut imported = import_dir::Imported::default();
+        let mut dismissed = 0;
+        if !r.dry_run {
             let txn = self
                 .conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            imported = import_dir::run(&txn, &self.project_id, dir)?;
+            if let Some(dir) = &r.import_dir {
+                imported = import_dir::run(&txn, &self.project_id, dir)?;
+            }
+            if let Some(id) = &r.dismiss {
+                let writers = Writers::new(&txn, &self.server_id, &self.project_dir)?;
+                dismissed = dismiss_group(&txn, &writers, id)?;
+            }
             txn.commit()?;
         }
-        if r.create.is_none() && !(r.dry_run && r.import_dir.is_some()) {
-            return Ok(RecoverReport {
-                groups: self.recover_groups()?,
-                created: vec![],
-                committed: vec![],
+        let report = |(groups, created, committed): Created,
+                      imported: import_dir::Imported,
+                      dismissed,
+                      dry_run| RecoverReport {
+            groups,
+            created,
+            committed,
+            imported: imported.rows,
+            skipped_files: imported.skipped,
+            dismissed,
+            manual: manual.clone(),
+            dry_run,
+        };
+        let dry_extra = r.dry_run && (r.import_dir.is_some() || r.dismiss.is_some());
+        if r.create.is_none() && !dry_extra {
+            let groups = self.recover_groups()?;
+            return Ok(report(
+                (groups, vec![], vec![]),
                 imported,
-                manual,
-                dry_run: r.dry_run,
-            });
+                dismissed,
+                r.dry_run,
+            ));
         }
+        // Folder writers are read before the write lock is taken.
+        let writers = self.writers()?;
         let first = format!("{}-1", r.tx_id);
         let project_id = self.project_id.clone();
         loop {
-            let mut writers = self.writers();
             let wrote = self.write(&first, r.dry_run, |ctx| {
-                if r.dry_run
-                    && let Some(dir) = &r.import_dir
-                {
-                    imported = import_dir::run(ctx.txn, &project_id, dir)?;
+                let (mut imp, mut dis) = (import_dir::Imported::default(), 0);
+                if r.dry_run {
+                    if let Some(dir) = &r.import_dir {
+                        imp = import_dir::run(ctx.txn, &project_id, dir)?;
+                    }
+                    if let Some(id) = &r.dismiss {
+                        dis = dismiss_group(ctx.txn, &writers, id)?;
+                    }
                 }
-                create(ctx, &r, &mut writers)
+                Ok((create(ctx, &r, &writers)?, imp, dis))
             })?;
-            if let Some((groups, created, committed)) = wrote {
-                return Ok(RecoverReport {
-                    groups,
-                    created,
-                    committed,
-                    imported,
-                    manual,
-                    dry_run: r.dry_run,
-                });
+            if let Some((made, imp, dis)) = wrote {
+                if r.dry_run {
+                    (imported, dismissed) = (imp, dis);
+                }
+                return Ok(report(made, imported, dismissed, r.dry_run));
             }
             // Deduped; gone again (an import rewound it since): the recovery runs again.
             if db::find_tx(&self.conn, &first)?.is_some() {
                 let (created, committed) = self.recovered_before(&r.tx_id)?;
-                return Ok(RecoverReport {
-                    groups: self.recover_groups()?,
-                    created,
-                    committed,
+                let groups = self.recover_groups()?;
+                return Ok(report(
+                    (groups, created, committed),
                     imported,
-                    manual,
-                    dry_run: false,
-                });
+                    dismissed,
+                    false,
+                ));
             }
         }
     }
@@ -371,7 +342,15 @@ impl Store {
         while let Some(c) = db::find_tx(&self.conn, &format!("{key}-{}", committed.len() + 1))? {
             committed.push(c);
         }
-        if !matches!(committed[0].link.as_deref(), Some(Link::Branch { .. })) {
+        // A recovery writes a `branch` record first, or a record standing for a row.
+        let stands = |l: &Link| match l {
+            Link::Branch { .. } => true,
+            Link::CherryPick { origin_hash, .. }
+            | Link::Checkpoint { origin_hash, .. }
+            | Link::BranchSet { origin_hash, .. } => origin_hash.is_some(),
+            _ => false,
+        };
+        if !committed[0].link.as_deref().is_some_and(stands) {
             return Err(key_reused(&committed[0]));
         }
         let ix = index::load(&self.conn)?;
@@ -387,13 +366,34 @@ impl Store {
     }
 }
 
-type Created = (Vec<RecoverGroup>, Vec<BranchView>, Vec<CommittedTx>);
+/// Dismisses group `id` (it must not be recoverable); returns the rows newly dismissed.
+fn dismiss_group(conn: &Connection, writers: &Writers, id: &str) -> Result<usize, StoreError> {
+    let l = listing(conn, writers, "")?;
+    let (g, _) = find(&l, id)?;
+    if l.problems[g].is_empty() {
+        return Err(CoreError::new(
+            "INVALID_OP",
+            format!("recover group {id} can be recovered; only a group that cannot is dismissed"),
+        )
+        .with_details(json!({ "group": id }))
+        .with_fix(format!(
+            "fin project recover --create {id} (archive the branch it makes if it is not wanted)"
+        ))
+        .into());
+    }
+    let hashes: Vec<String> = l.groups[g]
+        .rows
+        .iter()
+        .map(|&i| l.forest.rows[i].hash.clone())
+        .collect();
+    dismiss::add(conn, &hashes)
+}
 
 /// The groups `r.create` selects, written through `ctx`.
 fn create(
     ctx: &mut WriteCtx<'_>,
     r: &RecoverReq,
-    writers: &mut Writers,
+    writers: &Writers,
 ) -> Result<Created, StoreError> {
     let txn = ctx.txn;
     let l = listing(txn, writers, &r.author)?;
@@ -430,32 +430,40 @@ fn create(
     Ok((l.out, created, committed))
 }
 
-/// The group `id` names, when `create` can make it, and the groups it forks from, which make
-/// no branch (it forks where they do).
-fn one(l: &Listing, id: &str) -> Result<(usize, Vec<usize>), StoreError> {
-    let Some(g) = l.out.iter().position(|g| g.id == id).map(|i| l.order[i]) else {
-        return Err(
+/// The group `id` names, and its listing position.
+fn find(l: &Listing, id: &str) -> Result<(usize, usize), StoreError> {
+    l.out
+        .iter()
+        .position(|g| g.id == id)
+        .map(|i| (l.order[i], i))
+        .ok_or_else(|| {
             CoreError::new("NOT_FOUND", format!("no recover group {id}"))
                 .with_details(json!({ "kind": "group", "group": id }))
                 .with_fix("list the groups with fin project recover")
-                .into(),
-        );
-    };
+                .into()
+        })
+}
+
+/// The group `id` names, when `create` can make it, and the groups it forks from, which make
+/// no branch (it forks where they do).
+fn one(l: &Listing, id: &str) -> Result<(usize, Vec<usize>), StoreError> {
+    let (g, _) = find(l, id)?;
     if !l.problems[g].is_empty() {
         return Err(CoreError::new(
             "INVALID_OP",
             format!("recover group {id} cannot be created"),
         )
         .with_details(json!({ "group": id, "problems": l.problems[g] }))
-        .with_fix("resolve its problems first; the records stay in quarantine")
+        .with_fix("resolve its problems first (each says how), or dismiss it: fin project recover --dismiss <group>; the records stay in quarantine")
         .into());
     }
     // Its parent groups must be made with it: only those that make no branch are.
     let mut above = vec![];
     let mut p = l.groups[g].parent;
     while let Some((pg, _)) = p {
-        if has_ops(&l.forest, &l.groups[pg]) {
-            let parent = &l.out[pos(l, pg)].id;
+        if makes_branch(&l.forest, &l.groups[pg]) {
+            let parent =
+                &l.out[find(l, &group_id(&l.forest.rows[l.groups[pg].rows[0]].hash))?.1].id;
             return Err(CoreError::new(
                 "INVALID_OP",
                 format!("recover group {id} forks from group {parent}, which is not created"),
@@ -468,9 +476,4 @@ fn one(l: &Listing, id: &str) -> Result<(usize, Vec<usize>), StoreError> {
         p = l.groups[pg].parent;
     }
     Ok((g, above))
-}
-
-/// The listing position of group `g`.
-fn pos(l: &Listing, g: usize) -> usize {
-    l.order.iter().position(|&x| x == g).unwrap_or(0)
 }

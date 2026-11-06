@@ -162,7 +162,7 @@ impl Op {
     /// The placeholder this op binds to a newly allocated id, if any (in op order these are
     /// the order ids are allocated in). `clip.restore` binds one when its clip id is a
     /// placeholder (spec §4.3).
-    pub(crate) fn allocates(&self) -> Option<&str> {
+    pub fn allocates(&self) -> Option<&str> {
         let id = match self {
             Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } => id,
             Op::ClipRestore { clip, .. } => &clip.id,

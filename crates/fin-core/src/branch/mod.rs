@@ -266,6 +266,7 @@ impl BranchIndex {
                 fork_seq,
                 fork_hash,
                 epoch,
+                ..
             } => {
                 if !self.by_id.contains_key(branch) {
                     return Err(malformed(
@@ -339,6 +340,7 @@ impl BranchIndex {
                 branch_id,
                 name,
                 archived,
+                ..
             } => {
                 if let Some(name) = &name {
                     validate_branch_name(name).map_err(|e| malformed(rec, e.message))?;

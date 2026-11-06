@@ -126,6 +126,10 @@ export type Link =
   | {
       kind: "checkpoint";
       name: string;
+      /**
+       * A recovered record's quarantined original (plan 4B Decision 27).
+       */
+      originHash?: string | null;
     }
   | {
       branchId: string;
@@ -134,12 +138,20 @@ export type Link =
       forkSeq: number;
       kind: "branch";
       name: string;
+      /**
+       * A recovered record's quarantined original (plan 4B Decision 27).
+       */
+      originHash?: string | null;
     }
   | {
       archived?: boolean | null;
       branchId: string;
       kind: "branchSet";
       name?: string | null;
+      /**
+       * A recovered record's quarantined original (plan 4B Decision 27).
+       */
+      originHash?: string | null;
     };
 /**
  * One engine event (`Engine.onEvent`), tagged by `type`.
@@ -489,15 +501,21 @@ export interface Probe {
  * One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).
  *
  * - `id`: the first record's `txHash`, 12 hex digits (stable on every server);
- * - `branch`: the branch the records were on; `fork_seq`, `fork_hash`: the seq and `txHash`
- *   the first record continues;
+ * - `records_branch`: the branch the records were on;
+ * - `branch`, `fork_seq`, `fork_hash`: the fork `create` uses: an existing branch, the seq
+ *   and its record; or, with `fork_group`, the branch that group makes (`branch` its name,
+ *   `fork_hash` absent: its record is written then); none for a group that cannot be made
+ *   for want of a fork (`NO_COMMON_HISTORY`);
  * - `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;
  * - `server`: the writer's server id (`unknown` when it cannot be told);
  * - `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group
- *   that makes none: it has only records without ops, and its child groups fork where it
- *   does);
+ *   that makes none: it has neither records with ops nor checkpoints, and its child groups
+ *   fork where it does);
  * - `children`: the groups forking from it, or made by its `branch` records;
- * - `recoverable`, `problems`: why `create` leaves it.
+ * - `recoverable`, `problems`: why `create` leaves it whole (fix each, or dismiss it);
+ * - `notes`: rows `create` leaves in quarantine while making the rest (`NAME_TAKEN`,
+ *   `BRANCH_NOT_FOUND`, …; they come back as a group of their own), and copies whose source
+ *   is not here (`SOURCE_NOT_FOUND`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "RecoverGroup".
@@ -506,25 +524,29 @@ export interface RecoverGroup {
   branch: string;
   children: string[];
   firstCommittedAt: number;
+  forkGroup?: string | null;
   forkHash?: string | null;
   forkSeq: number;
   id: string;
   name: string;
+  notes: Conflict[];
   origin: string;
   problems: Conflict[];
   reasons: {
     [k: string]: number;
   };
   records: number;
+  recordsBranch: string;
   recoverable: boolean;
   server: string;
 }
 /**
- * [`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`), the branches made and
- * every record written (`branch` records on the parents, the copies, checkpoints), in order,
- * for publishing; `imported`: records read from `import_dir` into quarantine; `manual`: the
- * procedure for a read-only state recovery cannot lift by itself (`CHAIN_FORK`,
- * `CONFLICT_COPY`).
+ * [`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`),
+ * the branches made and every record written (`branch` records on the parents, the copies,
+ * checkpoints, `branchSet` records), in order, for publishing; `imported`: quarantine rows
+ * `import_dir` added or made current again, and `skipped_files` the files it did not read;
+ * `dismissed`: rows `dismiss` set aside from listing and counting; `manual`: the procedure
+ * for a read-only state recovery cannot lift by itself (`CHAIN_FORK`, `CONFLICT_COPY`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "RecoverReport".
@@ -532,10 +554,23 @@ export interface RecoverGroup {
 export interface RecoverReport {
   committed: CommittedTx[];
   created: BranchView[];
+  dismissed: number;
   dryRun: boolean;
   groups: RecoverGroup[];
   imported: number;
   manual?: string | null;
+  skippedFiles: SkippedFile[];
+}
+/**
+ * A file `import_dir` did not read: its path and why (`not a segment: …`, `another
+ * project`, `unreadable: …`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SkippedFile".
+ */
+export interface SkippedFile {
+  path: string;
+  reason: string;
 }
 /**
  * A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:

@@ -97,7 +97,9 @@ pub struct Record {
     /// `merge`, `cherryPick`: the txId of the copied record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// `cherryPick`: the copied record's txHash, when known (recovered records).
+    /// `cherryPick`: the copied record's txHash, when known; for a recovered record, the
+    /// quarantined record it stands for. `checkpoint`, `branch`, `branchSet`: the quarantined
+    /// record a recovered one stands for (plan 4B Decision 27).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_hash: Option<String>,
     /// `revert`: the merge group it reverts.

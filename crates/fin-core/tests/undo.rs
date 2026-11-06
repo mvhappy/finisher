@@ -77,9 +77,16 @@ fn stack_simulation_table() {
             Edit(tx, a) => edit(&mut log, "main", tx, a),
             Undo(tx, a) => drop(log.undo("main", a, tx).unwrap()),
             Redo(tx, a) => drop(log.redo("main", a, tx).unwrap()),
-            Checkpoint(tx, a) => {
-                drop(log.append_link("main", tx, a, Link::Checkpoint { name: "k".into() }, vec![]))
-            }
+            Checkpoint(tx, a) => drop(log.append_link(
+                "main",
+                tx,
+                a,
+                Link::Checkpoint {
+                    name: "k".into(),
+                    origin_hash: None,
+                },
+                vec![],
+            )),
         }
         let s = log.stacks("main", "alice");
         assert_eq!(

@@ -3,16 +3,16 @@
 //! procedure) go into quarantine as `IMPORTED`, origin `foreign`, detail the file's path.
 //! They exist nowhere else, so they stay current until their record is in `txs`; recover
 //! then offers them as groups. Records the database holds are skipped; files that do not
-//! decode, or belong to another project, are left alone. Writes only the local database, so
+//! decode, or belong to another project, are left alone and listed (`skipped_files`). Writes only the local database, so
 //! it runs while the project is read-only.
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::hash_bytes;
 use crate::import::quarantine::IMPORTED;
-use crate::{StoreError, segment};
+use crate::{SkippedFile, StoreError, segment};
 
 /// Every `.fseg` file under `dir` (recursively), sorted.
 fn files(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
@@ -33,11 +33,19 @@ fn files(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
     Ok(out)
 }
 
-/// Reads the segments under `dir` into quarantine; returns how many records it set aside.
-pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<usize, StoreError> {
+/// What [`run`] did: rows added or made current again, and the files it did not read.
+#[derive(Debug, Default)]
+pub(super) struct Imported {
+    pub rows: usize,
+    pub skipped: Vec<SkippedFile>,
+}
+
+/// Reads the segments under `dir` into quarantine.
+pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<Imported, StoreError> {
     let now = crate::commit::now_ms();
-    let mut n = 0;
+    let mut out = Imported::default();
     let mut held = conn.prepare_cached("SELECT 1 FROM txs WHERE tx_hash = ?1")?;
+    let mut current = conn.prepare_cached("SELECT current FROM quarantine WHERE tx_hash = ?1")?;
     // A row already there is current again; one whose reason follows the folder's verdicts
     // becomes `IMPORTED`, since the folder no longer holds the record.
     let mut put = conn.prepare_cached(
@@ -55,13 +63,28 @@ pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<usi
                            THEN quarantine.reason ELSE excluded.reason END",
     )?;
     for path in files(dir)? {
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
+        let mut skip = |reason: String| {
+            out.skipped.push(SkippedFile {
+                path: path.to_string_lossy().into_owned(),
+                reason,
+            });
         };
-        let Ok(seg) = segment::decode(&bytes) else {
-            continue;
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                skip(format!("unreadable: {e}"));
+                continue;
+            }
+        };
+        let seg = match segment::decode(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                skip(format!("not a segment: {e}"));
+                continue;
+            }
         };
         if seg.header.project_id != project_id {
+            skip(format!("another project: {}", seg.header.project_id));
             continue;
         }
         let detail = std::path::absolute(&path).unwrap_or(path);
@@ -71,6 +94,12 @@ pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<usi
             if held.exists(params![tx_hash])? {
                 continue;
             }
+            let was: Option<bool> = current
+                .query_row(params![tx_hash], |r| r.get(0))
+                .optional()?;
+            if was != Some(true) {
+                out.rows += 1;
+            }
             put.execute(params![
                 tx_hash,
                 seg.header.branch,
@@ -79,9 +108,8 @@ pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<usi
                 rec,
                 now
             ])?;
-            n += 1;
         }
     }
     crate::db::Counters::raise_to_quarantine(conn)?;
-    Ok(n)
+    Ok(out)
 }

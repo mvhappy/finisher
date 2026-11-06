@@ -147,7 +147,10 @@ impl MemLog {
 
     /// A `checkpoint` record named `name` at the head of `b`; returns its seq.
     pub fn checkpoint(&mut self, b: &str, tx_id: &str, author: &str, name: &str) -> u64 {
-        let link = Link::Checkpoint { name: name.into() };
+        let link = Link::Checkpoint {
+            name: name.into(),
+            origin_hash: None,
+        };
         self.append_link(b, tx_id, author, link, vec![]).seq
     }
 

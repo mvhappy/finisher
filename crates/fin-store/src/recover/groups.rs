@@ -1,22 +1,23 @@
 //! Recover groups (plan 4B Decision 27) and the recovered marks (Decision 5), both derived from
 //! the current quarantine rows and the log alone, so a follower and a rebuild derive the same.
 //!
-//! - **Marks.** A content row (a record with ops) is recovered while a `cherryPick` record in
-//!   `txs` carries its `txHash` as `originHash` (`record_links.origin_hash`). A `checkpoint`,
-//!   `branch` or `branchSet` row is never copied as a pick (a recovered checkpoint is written
-//!   again as a fresh `checkpoint` record; a `branch` record's branch is its child group; a
-//!   `branchSet` names a branch that is set aside too): it is recovered when the content rows
-//!   around it are, that is the nearest content row above it and below it in the quarantine
-//!   chains, plus, for a `branch` row, the content rows of its branch. At least one must
-//!   exist, and all must be recovered.
+//! - **Marks.** A row is recovered while a record in `txs` stands for it: a record that names
+//!   its `txHash` as `originHash` (`record_links.origin_hash`). A row with ops is stood for by
+//!   its `cherryPick` copy; a `checkpoint` row by a fresh `checkpoint`, a `branch` row by the
+//!   `branch` record of its recovered branch (its child group's, or the empty branch made
+//!   again), a `branchSet` row of a live branch by a fresh `branchSet`, each carrying
+//!   `originHash`. A `branchSet` row of a branch that is set aside with it (a `branch` row here
+//!   makes it) is recovered with that `branch` row. Rows dismissed on this server (`meta`
+//!   `recoverDismissed`, [`super::dismiss`]) are neither listed nor counted.
 //! - **Groups** are made of the rows not recovered. Each is a run of `parentHash` links on one
 //!   branch. A row with two children on its branch ends its group, and so does a row whose
 //!   child is on another branch (a child branch forking there): each child starts a child
 //!   group, forked at that row. A root group forks where its first record's parent is: a
-//!   record in `txs`, the start (no parent), or, through rows already recovered, the copy of
-//!   the nearest recovered content row. A group whose first parent is none of these has no
-//!   common history. A root group whose rows are on the branch a `branch` row of another group
-//!   made (and that forks where that record says) is listed as that group's child too.
+//!   record in `txs`, the start (no parent), or, through rows already recovered, the record
+//!   that stands for the nearest one with ops. A group whose first parent is none of these has
+//!   no common history. A group whose rows are on the branch a `branch` row made, forking
+//!   where that record says, is that row's (`made_by`): its branch stands for it; a root one
+//!   is listed as the row's group's child too.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -38,10 +39,6 @@ pub(crate) struct Row {
 }
 
 impl Row {
-    fn has_ops(&self) -> bool {
-        self.record.as_ref().is_some_and(|r| r.kind.has_ops())
-    }
-
     fn parent(&self) -> Option<&str> {
         self.record.as_ref().and_then(|r| r.parent_hash.as_deref())
     }
@@ -56,22 +53,25 @@ pub(crate) struct Group {
     pub parent: Option<(usize, usize)>,
     pub children: Vec<usize>,
     pub under: Option<usize>,
+    /// The `branch` row whose branch this group's records are on.
+    pub made_by: Option<usize>,
 }
 
-/// The current quarantine rows, linked by `parentHash`.
+/// The current quarantine rows not dismissed, linked by `parentHash`.
 pub(crate) struct Forest {
     pub rows: Vec<Row>,
     by_hash: HashMap<String, usize>,
+    by_tx: HashMap<String, usize>,
     kids: HashMap<String, Vec<usize>>,
-    /// `txHash`es a `cherryPick` record names as `originHash`.
-    picked: HashSet<String>,
+    /// `txHash`es a record in `txs` stands for (`originHash`).
+    stood: HashSet<String>,
 }
 
-/// The `txHash`es of current quarantine rows that a `cherryPick` record copied.
-fn picked(conn: &Connection) -> Result<HashSet<String>, StoreError> {
+/// The `txHash`es of current quarantine rows a record in `txs` names as `originHash`.
+fn stood(conn: &Connection) -> Result<HashSet<String>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT DISTINCT q.tx_hash FROM quarantine q
-         JOIN record_links l ON l.origin_hash = q.tx_hash AND l.kind = 'cherryPick'
+         JOIN record_links l ON l.origin_hash = q.tx_hash
          WHERE q.current = 1",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
@@ -80,6 +80,7 @@ fn picked(conn: &Connection) -> Result<HashSet<String>, StoreError> {
 
 impl Forest {
     pub(crate) fn load(conn: &Connection) -> Result<Forest, StoreError> {
+        let dismissed = super::dismiss::load(conn)?;
         let mut stmt = conn.prepare_cached(
             "SELECT tx_hash, branch, origin, reason, detail, record_bytes FROM quarantine
              WHERE current = 1 ORDER BY id",
@@ -97,10 +98,18 @@ impl Forest {
                 })
             })?
             .collect::<Result<_, _>>()?;
+        let rows: Vec<Row> = rows
+            .into_iter()
+            .filter(|r| !dismissed.contains(&r.hash))
+            .collect();
         let mut by_hash = HashMap::new();
+        let mut by_tx = HashMap::new();
         let mut kids: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, row) in rows.iter().enumerate() {
             by_hash.insert(row.hash.clone(), i);
+            if let Some(r) = &row.record {
+                by_tx.entry(r.tx_id.clone()).or_insert(i);
+            }
             if let Some(p) = row.parent() {
                 kids.entry(p.to_string()).or_default().push(i);
             }
@@ -111,9 +120,26 @@ impl Forest {
         Ok(Forest {
             rows,
             by_hash,
+            by_tx,
             kids,
-            picked: picked(conn)?,
+            stood: stood(conn)?,
         })
+    }
+
+    /// The row holding the record with `tx_id`.
+    pub(crate) fn by_tx(&self, tx_id: &str) -> Option<usize> {
+        self.by_tx.get(tx_id).copied()
+    }
+
+    /// The `branch` rows that make branch `id`.
+    pub(crate) fn makers(&self, id: &str) -> Vec<usize> {
+        (0..self.rows.len())
+            .filter(|&j| {
+                self.rows[j].record.as_ref().is_some_and(|r| {
+                    r.kind == RecordKind::Branch && r.branch_id.as_deref() == Some(id)
+                })
+            })
+            .collect()
     }
 
     fn kids_of(&self, i: usize) -> &[usize] {
@@ -122,66 +148,20 @@ impl Forest {
 
     /// The rows recovered (module docs), by index.
     pub(crate) fn recovered(&self) -> HashSet<usize> {
-        let mut out = HashSet::new();
+        let mut out: HashSet<usize> = (0..self.rows.len())
+            .filter(|&i| self.stood.contains(&self.rows[i].hash))
+            .collect();
         for (i, row) in self.rows.iter().enumerate() {
-            if row.record.is_none() {
-                continue;
-            }
-            if row.has_ops() {
-                if self.picked.contains(&row.hash) {
-                    out.insert(i);
-                }
-                continue;
-            }
-            let around = self.around(i);
-            if !around.is_empty()
-                && around
+            if let Some(r) = &row.record
+                && r.kind == RecordKind::BranchSet
+                && let Some(b) = &r.branch_id
+                && self
+                    .makers(b)
                     .iter()
-                    .all(|&j| self.picked.contains(&self.rows[j].hash))
+                    .any(|j| self.stood.contains(&self.rows[*j].hash))
             {
                 out.insert(i);
             }
-        }
-        out
-    }
-
-    /// The content rows around no-op row `i` (module docs).
-    fn around(&self, i: usize) -> Vec<usize> {
-        let mut out = vec![];
-        let mut up = self.rows[i]
-            .parent()
-            .and_then(|p| self.by_hash.get(p))
-            .copied();
-        while let Some(j) = up {
-            if self.rows[j].has_ops() {
-                out.push(j);
-                break;
-            }
-            up = self.rows[j]
-                .parent()
-                .and_then(|p| self.by_hash.get(p))
-                .copied();
-        }
-        let mut down: Vec<usize> = self.kids_of(i).to_vec();
-        let mut seen = HashSet::new();
-        while let Some(j) = down.pop() {
-            if !seen.insert(j) {
-                continue;
-            }
-            if self.rows[j].has_ops() {
-                out.push(j);
-            } else {
-                down.extend_from_slice(self.kids_of(j));
-            }
-        }
-        if let Some(r) = &self.rows[i].record
-            && r.kind == RecordKind::Branch
-            && let Some(b) = &r.branch_id
-        {
-            out.extend(
-                (0..self.rows.len())
-                    .filter(|&j| self.rows[j].branch == *b && self.rows[j].has_ops()),
-            );
         }
         out
     }
@@ -204,28 +184,26 @@ impl Forest {
                 roots.push(self.build(i, None, &open, &mut groups));
             }
         }
-        // Root groups made by a `branch` row of another group: listed under it.
-        for p in 0..groups.len() {
-            let made: Vec<(String, Option<String>)> = groups[p]
-                .rows
-                .iter()
-                .filter_map(|&i| self.rows[i].record.as_ref())
-                .filter(|r| r.kind == RecordKind::Branch)
-                .filter_map(|r| Some((r.branch_id.clone()?, r.fork_hash.clone())))
-                .collect();
-            for (b, fork) in made {
-                for &g in &roots {
-                    let first = &self.rows[groups[g].rows[0]];
-                    if g != p
-                        && groups[g].under.is_none()
-                        && first.branch == b
-                        && first.record.is_some()
-                        && first.parent().map(str::to_string) == fork
-                    {
-                        groups[g].under = Some(p);
-                        groups[p].children.push(g);
-                    }
-                }
+        // Groups made by a `branch` row: stood for by its branch; a root one is listed under
+        // the row's group.
+        let row_group: HashMap<usize, usize> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(g, gr)| gr.rows.iter().map(move |&i| (i, g)))
+            .collect();
+        for g in 0..groups.len() {
+            let first = &self.rows[groups[g].rows[0]];
+            let Some(rec) = &first.record else { continue };
+            let maker = self.makers(&first.branch).into_iter().find(|&j| {
+                self.rows[j].record.as_ref().map(|r| &r.fork_hash) == Some(&rec.parent_hash)
+            });
+            groups[g].made_by = maker;
+            if let Some(p) = maker.and_then(|j| row_group.get(&j).copied())
+                && groups[g].parent.is_none()
+                && p != g
+            {
+                groups[g].under = Some(p);
+                groups[p].children.push(g);
             }
         }
         let mut order = vec![];
@@ -299,30 +277,26 @@ impl Forest {
     }
 }
 
-/// The rows recovered now, by `txHash` (status does not count them). Status asks on every
-/// poll, so the rows are read only when some are copied and a row without ops (whose mark
-/// depends on the rows around it) may be among them.
-pub(crate) fn recovered_hashes(conn: &Connection) -> Result<HashSet<String>, StoreError> {
-    let picked = picked(conn)?;
-    if picked.is_empty() {
-        return Ok(picked);
+/// The rows status does not count, by `txHash`: recovered or dismissed. Status asks on every
+/// poll, so the rows are read only when some are stood for and a `branchSet` row (whose mark
+/// depends on another row) may be among them.
+pub(crate) fn uncounted(conn: &Connection) -> Result<HashSet<String>, StoreError> {
+    let mut out = stood(conn)?;
+    out.extend(super::dismiss::load(conn)?);
+    if out.is_empty() {
+        return Ok(out);
     }
-    let no_ops: bool = conn
+    let sets: bool = conn
         .prepare_cached(
             "SELECT 1 FROM quarantine WHERE current = 1
-             AND (CAST(record_bytes AS TEXT) LIKE '%\"kind\":\"checkpoint\"%'
-                  OR CAST(record_bytes AS TEXT) LIKE '%\"kind\":\"branch%')
-             LIMIT 1",
+             AND CAST(record_bytes AS TEXT) LIKE '%\"kind\":\"branchSet\"%' LIMIT 1",
         )?
         .exists([])?;
-    if !no_ops {
-        return Ok(picked);
+    if sets {
+        let f = Forest::load(conn)?;
+        out.extend(f.recovered().into_iter().map(|i| f.rows[i].hash.clone()));
     }
-    let f = Forest::load(conn)?;
-    Ok(f.recovered()
-        .into_iter()
-        .map(|i| f.rows[i].hash.clone())
-        .collect())
+    Ok(out)
 }
 
 /// Where a root group forks, through rows already recovered (module docs).
@@ -342,7 +316,7 @@ pub(crate) enum Fork {
 }
 
 /// `(branch, seq)` of the `txs` row holding `hash`.
-fn txs_at(conn: &Connection, hash: &str) -> Result<Option<(String, u64)>, StoreError> {
+pub(super) fn txs_at(conn: &Connection, hash: &str) -> Result<Option<(String, u64)>, StoreError> {
     let row: Option<(String, i64)> = conn
         .prepare_cached("SELECT branch, seq FROM txs WHERE tx_hash = ?1 ORDER BY branch LIMIT 1")?
         .query_row(params![hash], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -353,13 +327,13 @@ fn txs_at(conn: &Connection, hash: &str) -> Result<Option<(String, u64)>, StoreE
 /// A copy's branch, seq and bindings.
 type Copy = (String, u64, BTreeMap<String, String>);
 
-/// The copy of quarantined record `hash`.
-fn copy_of(conn: &Connection, hash: &str) -> Result<Option<Copy>, StoreError> {
+/// The record standing for quarantined record `hash`.
+pub(super) fn copy_of(conn: &Connection, hash: &str) -> Result<Option<Copy>, StoreError> {
     let row: Option<(String, i64, Vec<u8>)> = conn
         .prepare_cached(
             "SELECT t.branch, t.seq, t.record_bytes FROM record_links l
              JOIN txs t ON t.tx_id = l.tx_id
-             WHERE l.kind = 'cherryPick' AND l.origin_hash = ?1 ORDER BY t.branch, t.seq LIMIT 1",
+             WHERE l.origin_hash = ?1 ORDER BY t.branch, t.seq LIMIT 1",
         )?
         .query_row(params![hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;
@@ -371,7 +345,7 @@ fn copy_of(conn: &Connection, hash: &str) -> Result<Option<Copy>, StoreError> {
 }
 
 /// Any quarantine row's record by `txHash` (current or not).
-fn quarantined(conn: &Connection, hash: &str) -> Result<Option<Record>, StoreError> {
+pub(super) fn quarantined(conn: &Connection, hash: &str) -> Result<Option<Record>, StoreError> {
     let bytes: Option<Vec<u8>> = conn
         .prepare_cached("SELECT record_bytes FROM quarantine WHERE tx_hash = ?1")?
         .query_row(params![hash], |r| r.get(0))
@@ -407,16 +381,20 @@ pub(crate) fn resolve_fork(conn: &Connection, parent: Option<&str>) -> Result<Fo
         let Some(rec) = quarantined(conn, &hash)? else {
             return Ok(Fork::NoCommonHistory);
         };
-        if rec.kind.has_ops() {
-            let Some((b, s, bindings)) = copy_of(conn, &hash)? else {
-                return Ok(Fork::NoCommonHistory);
-            };
-            at.get_or_insert((b, s));
-            h = rec.parent_hash.clone();
-            learn.push((rec, bindings));
-        } else {
+        // Copies and checkpoints stand in their row's place on the recovered branch; the
+        // records standing for `branch` and `branchSet` rows live on other branches.
+        let in_place = rec.kind.has_ops() || rec.kind == RecordKind::Checkpoint;
+        match copy_of(conn, &hash)? {
+            Some((b, s, bindings)) if in_place => {
+                at.get_or_insert((b, s));
+                if rec.kind.has_ops() {
+                    learn.push((rec.clone(), bindings));
+                }
+            }
             // A record without ops changes no state: the fork moves above it.
-            h = rec.parent_hash.clone();
+            _ if !rec.kind.has_ops() => {}
+            _ => return Ok(Fork::NoCommonHistory),
         }
+        h = rec.parent_hash.clone();
     }
 }

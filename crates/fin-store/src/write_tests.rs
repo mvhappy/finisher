@@ -76,7 +76,10 @@ fn checkpoint(ctx: &mut WriteCtx<'_>, id: &str, name: &str) -> Result<Draft, Sto
     let head = ctx.head(MAIN)?;
     Ok(Draft {
         branch: MAIN.into(),
-        link: Link::Checkpoint { name: name.into() },
+        link: Link::Checkpoint {
+            name: name.into(),
+            origin_hash: None,
+        },
         intent: tx(id, head.rev, vec![]),
         inverse: vec![],
         bindings: BTreeMap::new(),
@@ -156,7 +159,8 @@ fn write_dry_run_on_follower_plans_and_rolls_back() {
     assert_eq!(
         out.1.link.as_deref(),
         Some(&Link::Checkpoint {
-            name: "before".into()
+            name: "before".into(),
+            origin_hash: None,
         })
     );
     assert_eq!(rows(&b), before);

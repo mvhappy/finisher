@@ -8,7 +8,7 @@
 use fin_probe::Probe;
 use fin_store::{
     BranchCreated, BranchView, EngineEvent, Generation, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, TxSetAside,
+    RecoverReport, SkippedFile, TxSetAside,
 };
 
 fn main() {
@@ -22,6 +22,7 @@ fn main() {
         g.subschema_for::<HistoryResult>();
         g.subschema_for::<MergeReport>();
         g.subschema_for::<RecoverGroup>();
+        g.subschema_for::<SkippedFile>();
         g.subschema_for::<RecoverReport>();
         g.subschema_for::<fin_core::history::Stacks>();
         g.subschema_for::<EngineEvent>();

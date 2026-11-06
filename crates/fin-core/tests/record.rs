@@ -214,6 +214,7 @@ fn every_link() -> Vec<Link> {
         },
         Link::Checkpoint {
             name: "before-cut".into(),
+            origin_hash: None,
         },
         Link::Branch {
             branch_id: "br3".into(),
@@ -221,6 +222,7 @@ fn every_link() -> Vec<Link> {
             fork_seq: 4,
             fork_hash: Some(H.into()),
             epoch: 1,
+            origin_hash: None,
         },
         Link::Branch {
             branch_id: "br4".into(),
@@ -228,16 +230,38 @@ fn every_link() -> Vec<Link> {
             fork_seq: 0,
             fork_hash: None,
             epoch: 1,
+            origin_hash: None,
         },
         Link::BranchSet {
             branch_id: "br3".into(),
             name: Some("alt2".into()),
             archived: None,
+            origin_hash: None,
         },
         Link::BranchSet {
             branch_id: "br3".into(),
             name: None,
             archived: Some(true),
+            origin_hash: None,
+        },
+        // Recovered stand-ins name the quarantined record they stand for (Decision 27).
+        Link::Checkpoint {
+            name: "kept".into(),
+            origin_hash: Some(H.into()),
+        },
+        Link::Branch {
+            branch_id: "br5".into(),
+            name: "again".into(),
+            fork_seq: 0,
+            fork_hash: None,
+            epoch: 3,
+            origin_hash: Some(H.into()),
+        },
+        Link::BranchSet {
+            branch_id: "br3".into(),
+            name: Some("alt3".into()),
+            archived: None,
+            origin_hash: Some(H.into()),
         },
     ]
 }

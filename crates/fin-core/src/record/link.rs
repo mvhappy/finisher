@@ -45,11 +45,16 @@ pub enum Link {
     Revert {
         reverts: String,
     },
+    /// `origin_hash`: the quarantined record a recovered checkpoint stands for.
     Checkpoint {
         name: String,
+        /// A recovered record's quarantined original (plan 4B Decision 27).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin_hash: Option<String>,
     },
     /// Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose
-    /// txHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`.
+    /// txHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`. `origin_hash`:
+    /// the quarantined `branch` record a recovered branch stands for.
     Branch {
         branch_id: String,
         name: String,
@@ -57,14 +62,21 @@ pub enum Link {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fork_hash: Option<String>,
         epoch: u64,
+        /// A recovered record's quarantined original (plan 4B Decision 27).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin_hash: Option<String>,
     },
-    /// Renames, archives or restores branch `branch_id`.
+    /// Renames, archives or restores branch `branch_id`. `origin_hash`: the quarantined
+    /// `branchSet` record a recovered one stands for.
     BranchSet {
         branch_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         archived: Option<bool>,
+        /// A recovered record's quarantined original (plan 4B Decision 27).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin_hash: Option<String>,
     },
 }
 
@@ -128,28 +140,35 @@ impl Fields {
                 f.origin_hash = origin_hash;
             }
             Link::Revert { reverts } => f.reverts = Some(reverts),
-            Link::Checkpoint { name } => f.name = Some(name),
+            Link::Checkpoint { name, origin_hash } => {
+                f.name = Some(name);
+                f.origin_hash = origin_hash;
+            }
             Link::Branch {
                 branch_id,
                 name,
                 fork_seq,
                 fork_hash,
                 epoch,
+                origin_hash,
             } => {
                 f.branch_id = Some(branch_id);
                 f.name = Some(name);
                 f.fork_seq = Some(fork_seq);
                 f.fork_hash = fork_hash;
                 f.epoch = Some(epoch);
+                f.origin_hash = origin_hash;
             }
             Link::BranchSet {
                 branch_id,
                 name,
                 archived,
+                origin_hash,
             } => {
                 f.branch_id = Some(branch_id);
                 f.name = name;
                 f.archived = archived;
+                f.origin_hash = origin_hash;
             }
         }
         f
@@ -232,6 +251,7 @@ impl Record {
             },
             RecordKind::Checkpoint => Link::Checkpoint {
                 name: f.name.clone().ok_or_else(|| need("name"))?,
+                origin_hash: f.origin_hash.clone(),
             },
             RecordKind::Branch => Link::Branch {
                 branch_id: f.branch_id.clone().ok_or_else(|| need("branchId"))?,
@@ -239,11 +259,13 @@ impl Record {
                 fork_seq: f.fork_seq.ok_or_else(|| need("forkSeq"))?,
                 fork_hash: f.fork_hash.clone(),
                 epoch: f.epoch.ok_or_else(|| need("epoch"))?,
+                origin_hash: f.origin_hash.clone(),
             },
             RecordKind::BranchSet => Link::BranchSet {
                 branch_id: f.branch_id.clone().ok_or_else(|| need("branchId"))?,
                 name: f.name.clone(),
                 archived: f.archived,
+                origin_hash: f.origin_hash.clone(),
             },
         };
         let expected = Fields::of(link.clone());

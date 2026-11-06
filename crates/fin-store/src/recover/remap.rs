@@ -7,11 +7,14 @@
 //! against the database: when a record off the fork's lineage binds it (another server's
 //! entity under the same id, Decision 33), the group is not created (`ID_COLLISION`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use fin_core::{Conflict, Project, Record, Tx};
+use fin_core::{Conflict, Project, Record, RecordKind, Tx};
+use rusqlite::Connection;
 
 use crate::StoreError;
+use crate::branch::lineage::{self, LineageSeg};
+use crate::db::{parse_record, to_u64};
 
 /// The ids a group's records bound, old to new.
 #[derive(Debug, Clone, Default)]
@@ -81,6 +84,76 @@ impl Remap {
             }
         }
     }
+}
+
+/// Whether a record off the lineage up to a root binds an id (memoised).
+pub(crate) struct Bound<'a> {
+    pub(crate) conn: &'a Connection,
+    lineages: HashMap<String, Vec<LineageSeg>>,
+    memo: HashMap<(String, u64, String), bool>,
+}
+
+impl<'a> Bound<'a> {
+    pub(crate) fn new(conn: &'a Connection) -> Self {
+        Bound {
+            conn,
+            lineages: HashMap::new(),
+            memo: HashMap::new(),
+        }
+    }
+
+    /// A `txs` record that binds `id` and is not on `root`'s lineage at or below its seq: not
+    /// counting a `merge` or `cherryPick` copy whose origin binds the same id (copies keep
+    /// their source's ids, Decision 18).
+    pub(crate) fn elsewhere(&mut self, root: &(String, u64), id: &str) -> Result<bool, StoreError> {
+        let key = (root.0.clone(), root.1, id.to_string());
+        if let Some(b) = self.memo.get(&key) {
+            return Ok(*b);
+        }
+        if !self.lineages.contains_key(&root.0) {
+            let segs = lineage::lineage(self.conn, &root.0)?;
+            self.lineages.insert(root.0.clone(), segs);
+        }
+        let segs = &self.lineages[&root.0];
+        let on_lineage = |branch: &str, seq: u64| {
+            seq <= root.1
+                && segs.iter().any(|s| {
+                    s.branch == branch && seq > s.after && s.through.is_none_or(|t| seq <= t)
+                })
+        };
+        let pattern = format!("\"{id}\"").into_bytes();
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT branch, seq, record_bytes FROM txs WHERE instr(record_bytes, ?1) > 0",
+        )?;
+        let rows: Vec<(String, i64, Vec<u8>)> = stmt
+            .query_map([pattern], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut found = false;
+        for (branch, seq, bytes) in rows {
+            let seq = to_u64(seq)?;
+            if on_lineage(&branch, seq) {
+                continue;
+            }
+            let rec = parse_record(Some(seq), &bytes)?;
+            if !rec.bindings.values().any(|v| v == id) {
+                continue;
+            }
+            if matches!(rec.kind, RecordKind::Merge | RecordKind::CherryPick)
+                && let Some(origin) = &rec.origin
+                && origin_binds(self.conn, origin, id)?
+            {
+                continue;
+            }
+            found = true;
+            break;
+        }
+        self.memo.insert(key, found);
+        Ok(found)
+    }
+}
+
+fn origin_binds(conn: &Connection, origin: &str, id: &str) -> Result<bool, StoreError> {
+    Ok(crate::db::find_tx(conn, origin)?.is_some_and(|c| c.bindings.values().any(|v| v == id)))
 }
 
 #[cfg(test)]

@@ -677,6 +677,7 @@
           "type": "object"
         },
         {
+          "description": "`origin_hash`: the quarantined record a recovered checkpoint stands for.",
           "properties": {
             "kind": {
               "const": "checkpoint",
@@ -684,6 +685,13 @@
             },
             "name": {
               "type": "string"
+            },
+            "originHash": {
+              "description": "A recovered record's quarantined original (plan 4B Decision 27).",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -693,7 +701,7 @@
           "type": "object"
         },
         {
-          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`.",
+          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`. `origin_hash`:\nthe quarantined `branch` record a recovered branch stands for.",
           "properties": {
             "branchId": {
               "type": "string"
@@ -720,6 +728,13 @@
             },
             "name": {
               "type": "string"
+            },
+            "originHash": {
+              "description": "A recovered record's quarantined original (plan 4B Decision 27).",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -732,7 +747,7 @@
           "type": "object"
         },
         {
-          "description": "Renames, archives or restores branch `branch_id`.",
+          "description": "Renames, archives or restores branch `branch_id`. `origin_hash`: the quarantined\n`branchSet` record a recovered one stands for.",
           "properties": {
             "archived": {
               "type": [
@@ -748,6 +763,13 @@
               "type": "string"
             },
             "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "originHash": {
+              "description": "A recovered record's quarantined original (plan 4B Decision 27).",
               "type": [
                 "string",
                 "null"
@@ -1092,7 +1114,7 @@
     },
     "RecoverGroup": {
       "additionalProperties": false,
-      "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `branch`: the branch the records were on; `fork_seq`, `fork_hash`: the seq and `txHash`\n  the first record continues;\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has only records without ops, and its child groups fork where it\n  does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it.",
+      "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `records_branch`: the branch the records were on;\n- `branch`, `fork_seq`, `fork_hash`: the fork `create` uses: an existing branch, the seq\n  and its record; or, with `fork_group`, the branch that group makes (`branch` its name,\n  `fork_hash` absent: its record is written then); none for a group that cannot be made\n  for want of a fork (`NO_COMMON_HISTORY`);\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has neither records with ops nor checkpoints, and its child groups\n  fork where it does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it whole (fix each, or dismiss it);\n- `notes`: rows `create` leaves in quarantine while making the rest (`NAME_TAKEN`,\n  `BRANCH_NOT_FOUND`, …; they come back as a group of their own), and copies whose source\n  is not here (`SOURCE_NOT_FOUND`).",
       "properties": {
         "branch": {
           "type": "string"
@@ -1106,6 +1128,12 @@
         "firstCommittedAt": {
           "format": "int64",
           "type": "integer"
+        },
+        "forkGroup": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "forkHash": {
           "type": [
@@ -1123,6 +1151,12 @@
         },
         "name": {
           "type": "string"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          },
+          "type": "array"
         },
         "origin": {
           "type": "string"
@@ -1146,6 +1180,9 @@
           "minimum": 0,
           "type": "integer"
         },
+        "recordsBranch": {
+          "type": "string"
+        },
         "recoverable": {
           "type": "boolean"
         },
@@ -1155,6 +1192,7 @@
       },
       "required": [
         "id",
+        "recordsBranch",
         "branch",
         "forkSeq",
         "records",
@@ -1165,13 +1203,14 @@
         "name",
         "children",
         "recoverable",
-        "problems"
+        "problems",
+        "notes"
       ],
       "type": "object"
     },
     "RecoverReport": {
       "additionalProperties": false,
-      "description": "[`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`), the branches made and\nevery record written (`branch` records on the parents, the copies, checkpoints), in order,\nfor publishing; `imported`: records read from `import_dir` into quarantine; `manual`: the\nprocedure for a read-only state recovery cannot lift by itself (`CHAIN_FORK`,\n`CONFLICT_COPY`).",
+      "description": "[`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`),\nthe branches made and every record written (`branch` records on the parents, the copies,\ncheckpoints, `branchSet` records), in order, for publishing; `imported`: quarantine rows\n`import_dir` added or made current again, and `skipped_files` the files it did not read;\n`dismissed`: rows `dismiss` set aside from listing and counting; `manual`: the procedure\nfor a read-only state recovery cannot lift by itself (`CHAIN_FORK`, `CONFLICT_COPY`).",
       "properties": {
         "committed": {
           "items": {
@@ -1184,6 +1223,11 @@
             "$ref": "#/$defs/BranchView"
           },
           "type": "array"
+        },
+        "dismissed": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
         "dryRun": {
           "type": "boolean"
@@ -1204,6 +1248,12 @@
             "string",
             "null"
           ]
+        },
+        "skippedFiles": {
+          "items": {
+            "$ref": "#/$defs/SkippedFile"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1211,6 +1261,8 @@
         "created",
         "committed",
         "imported",
+        "skippedFiles",
+        "dismissed",
         "dryRun"
       ],
       "type": "object"
@@ -1257,6 +1309,23 @@
         "track",
         "from",
         "by"
+      ],
+      "type": "object"
+    },
+    "SkippedFile": {
+      "additionalProperties": false,
+      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `unreadable: …`).",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
       ],
       "type": "object"
     },
