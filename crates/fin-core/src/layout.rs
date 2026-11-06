@@ -6,8 +6,12 @@
 //! Units: every input length is in pixels at the timeline resolution (`f64`); every output
 //! length is an integer in 1/64 px.
 
+use std::collections::BTreeSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use unicode_script::{Script, UnicodeScript};
 
 use crate::error::CoreError;
 
@@ -48,9 +52,11 @@ pub struct FaceRef {
     pub italic: bool,
 }
 
-/// A text to lay out. `words` are joined by single spaces into one paragraph and wrap only
-/// between words. `faces` is the primary face first, then the fallbacks in the project's
-/// order; it is the only fallback list (the platform's is never used).
+/// A text to lay out. `words` are joined by single spaces into one paragraph; lines break
+/// only between words, never inside one (a word wider than `max_width` gets its own line and
+/// overflows). Words hold no control, line or paragraph separator characters
+/// ([`check_words`]). `faces` is the primary face first, then the fallbacks in the project's
+/// order; it is the only fallback list (the platform's is never used) and is never empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TextRequest {
@@ -121,9 +127,106 @@ pub trait TextMeasurer: Send + Sync {
     fn fingerprint(&self) -> String;
 }
 
+/// The pseudo-script (ISO 15924 `Zsye`) of emoji, which Unicode gives the `Common` script.
+pub const EMOJI_SCRIPT: &str = "Zsye";
+
+/// Whether `c` selects an emoji face: the pictographic blocks (U+1F000–U+1FAFF, which hold
+/// the regional indicators too), Miscellaneous Symbols and Dingbats (U+2600–U+27BF), the
+/// emoji in Miscellaneous Technical and Arrows (U+2300–U+23FF, U+2B00–U+2BFF), the CJK emoji
+/// U+3030, U+303D, U+3297, U+3299, and VS16 (U+FE0F). Text-default symbols such as © are not.
+pub fn is_emoji(c: char) -> bool {
+    matches!(u32::from(c),
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2300..=0x23FF | 0x2B00..=0x2BFF
+        | 0x3030 | 0x303D | 0x3297 | 0x3299 | 0xFE0F)
+}
+
+/// The scripts a text needs faces for (4C Decision 35): ISO 15924 codes from `unicode-script`,
+/// [`EMOJI_SCRIPT`] for emoji; `Common`, `Inherited` and `Unknown` are ignored. The one rule
+/// for every caller (pin planning, face resolution, measurement tests).
+pub fn scripts_of_text(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for c in text.chars() {
+        if is_emoji(c) {
+            out.insert(EMOJI_SCRIPT.to_string());
+            continue;
+        }
+        let script = c.script();
+        if !matches!(script, Script::Common | Script::Inherited | Script::Unknown) {
+            out.insert(script.short_name().to_string());
+        }
+    }
+    out
+}
+
+/// Characters a word may not hold: controls (`Cc`, which includes tab, LF, CR, VT, FF, NEL and
+/// the bidi paragraph separators U+001C–U+001E), U+2028 LINE SEPARATOR and U+2029 PARAGRAPH
+/// SEPARATOR. A caption breaks into lines only between words.
+pub fn is_forbidden_in_word(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// `INVALID_OP` naming the first word and character [`is_forbidden_in_word`] refuses.
+pub fn check_words(words: &[String]) -> Result<(), CoreError> {
+    for (i, w) in words.iter().enumerate() {
+        if let Some(c) = w.chars().find(|&c| is_forbidden_in_word(c)) {
+            let cp = format!("U+{:04X}", u32::from(c));
+            return Err(CoreError::new(
+                "INVALID_OP",
+                format!("word {i} holds the control character {cp}"),
+            )
+            .with_details(json!({ "path": "words", "word": i, "codePoint": cp }))
+            .with_fix(
+                "remove control, tab and line-break characters; lines break only between words",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripts_and_emoji() {
+        let s = scripts_of_text("Hi Привет 中文 かな 😀 1, ©");
+        let s: Vec<&str> = s.iter().map(String::as_str).collect();
+        assert_eq!(s, ["Cyrl", "Hani", "Hira", "Latn", "Zsye"]);
+        assert!(scripts_of_text("12 ,.!").is_empty());
+        assert!(is_emoji('\u{2764}') && is_emoji('\u{1F1FA}') && !is_emoji('©'));
+    }
+
+    #[test]
+    fn words_refuse_controls_and_separators() {
+        for bad in [
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\u{b}b",
+            "a\u{c}b",
+            "a\u{85}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{1d}b",
+        ] {
+            let err = check_words(&["ok".into(), bad.into()]).unwrap_err();
+            assert_eq!(
+                (err.code.as_str(), err.details["word"].as_u64()),
+                ("INVALID_OP", Some(1)),
+                "{bad:?}"
+            );
+            assert!(err.fix.is_some());
+        }
+        assert!(
+            check_words(&[
+                "a-b".into(),
+                "a b".into(),
+                "\u{200F}x".into(),
+                String::new()
+            ])
+            .is_ok()
+        );
+    }
 
     #[test]
     fn request_round_trips_in_camel_case() {

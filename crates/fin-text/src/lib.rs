@@ -27,14 +27,27 @@ pub trait FontBytes: Send + Sync {
     fn get(&self, sha256: &str) -> Option<Arc<[u8]>>;
 }
 
-/// The versions whose shaping this crate's layouts depend on (from `Cargo.lock`).
+/// Bumped whenever this crate changes a rule its layouts depend on (line breaking, bidi
+/// handling, rounding, coverage), so a plan or golden names the code that produced it.
+pub const FIN_TEXT_REVISION: u32 = 2;
+
+/// The code whose rules a layout depends on: this crate's version and [`FIN_TEXT_REVISION`],
+/// then the shaping crates' versions from `Cargo.lock` (`cosmic-text`, and the `harfrust`,
+/// `skrifa`, `read-fonts`, `unicode-bidi`, `unicode-linebreak`, `unicode-segmentation` and
+/// `unicode-script` it builds with).
 pub fn fingerprint() -> String {
     format!(
-        "fin-text/{} cosmic-text/{} harfrust/{} skrifa/{}",
+        "fin-text/{} rev/{FIN_TEXT_REVISION} cosmic-text/{} harfrust/{} skrifa/{} read-fonts/{} \
+         unicode-bidi/{} unicode-linebreak/{} unicode-segmentation/{} unicode-script/{}",
         env!("CARGO_PKG_VERSION"),
         env!("FIN_TEXT_COSMIC_TEXT"),
         env!("FIN_TEXT_HARFRUST"),
         env!("FIN_TEXT_SKRIFA"),
+        env!("FIN_TEXT_READ_FONTS"),
+        env!("FIN_TEXT_UNICODE_BIDI"),
+        env!("FIN_TEXT_UNICODE_LINEBREAK"),
+        env!("FIN_TEXT_UNICODE_SEGMENTATION"),
+        env!("FIN_TEXT_UNICODE_SCRIPT"),
     )
 }
 
@@ -91,17 +104,23 @@ fn validate(req: &TextRequest) -> Result<(), CoreError> {
     let st = &req.style;
     check("size", st.size, 0.25, 4096.0, "px")?;
     check("lineHeight", st.line_height, 0.25, 16.0, "em")?;
-    check("letterSpacing", st.letter_spacing, -4.0, 4.0, "em")?;
+    check("letterSpacing", st.letter_spacing, -0.5, 4.0, "em")?;
     check("weight", f64::from(st.weight), 1.0, 1000.0, "")?;
     if let Some(w) = req.max_width {
         check("maxWidth", w, 0.0, 1_000_000.0, "px")?;
     }
-    Ok(())
+    if req.faces.is_empty() {
+        return Err(CoreError::new("INVALID_OP", "a text request names no face")
+            .with_details(json!({ "path": "faces" }))
+            .with_fix("resolve the faces from the project's font pins (layout::faces_for) first"));
+    }
+    fin_core::layout::check_words(&req.words)
 }
 
 impl TextMeasurer for Measurer {
-    /// `Unavailable` lists, in request order, every face file the provider lacks; or the first
-    /// file whose bytes do not parse as the requested face; or nothing when `faces` is empty.
+    /// `Unavailable` lists, in request order, every face file the provider lacks, or else the
+    /// first file whose bytes do not parse as the requested face. `INVALID_RANGE` for a style
+    /// value out of range; `INVALID_OP` for no faces or a word with a control character.
     fn measure(&self, req: &TextRequest) -> Result<Measured, CoreError> {
         validate(req)?;
         let mut faces: Vec<(String, u32)> = Vec::with_capacity(req.faces.len());
@@ -110,11 +129,6 @@ impl TextMeasurer for Measurer {
             if !faces.contains(&key) {
                 faces.push(key);
             }
-        }
-        if faces.is_empty() {
-            return Ok(Measured::Unavailable {
-                missing: Vec::new(),
-            });
         }
         let key = system::Key {
             faces,

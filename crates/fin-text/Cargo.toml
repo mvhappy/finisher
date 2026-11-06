@@ -13,6 +13,7 @@ cosmic-text = { version = "0.19", default-features = false, features = ["no_std"
 fin-core = { path = "../fin-core" }
 libm = "0.2"
 serde_json = "1"
+unicode-bidi = { version = "0.3", default-features = false, features = ["hardcoded-data"] }
 unicode-script = "0.5"
 
 [dev-dependencies]

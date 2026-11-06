@@ -350,6 +350,163 @@
         "letterSpacing": 0.0,
         "align": "left"
       }
+    },
+    {
+      "id": "hyphen-word",
+      "what": "a hyphenated word is never split",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "aaaa-bbbb",
+        "c"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 150.0
+    },
+    {
+      "id": "url-word",
+      "what": "a URL is one word",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "see",
+        "https://example.com/a-b?c=d",
+        "now"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 200.0
+    },
+    {
+      "id": "cjk-long-word",
+      "what": "a long Han word takes its own overflowing line",
+      "fonts": [
+        "sans",
+        "han"
+      ],
+      "words": [
+        "中文中文中文中文",
+        "字"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 120.0
+    },
+    {
+      "id": "rtl-lines",
+      "what": "an RTL paragraph over two lines, right-aligned",
+      "fonts": [
+        "rtl",
+        "sans"
+      ],
+      "words": [
+        "אבג",
+        "דהו",
+        "זחט",
+        "יכל"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "right"
+      },
+      "maxWidth": 200.0
+    },
+    {
+      "id": "rtl-latin-line",
+      "what": "an RTL paragraph whose second line starts with Latin",
+      "fonts": [
+        "rtl",
+        "sans"
+      ],
+      "words": [
+        "שלום",
+        "עולם",
+        "abc",
+        "דהו"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 260.0
+    },
+    {
+      "id": "bidi-lines",
+      "what": "an LTR paragraph whose second line starts with Hebrew",
+      "fonts": [
+        "sans",
+        "rtl"
+      ],
+      "words": [
+        "Hello",
+        "שלום",
+        "עולם",
+        "end"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 250.0
+    },
+    {
+      "id": "variable-600",
+      "what": "a variable face at wght 600",
+      "fonts": [
+        "var"
+      ],
+      "words": [
+        "Variable",
+        "weight"
+      ],
+      "style": {
+        "family": "TestVar",
+        "weight": 600,
+        "italic": false,
+        "size": 50,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
     }
   ]
 }

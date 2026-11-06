@@ -1,17 +1,29 @@
-//! One layout from a built [`System`]: `Shaping::Advanced`, `Wrap::Word`, no hinting, every
-//! output length rounded with `libm::roundf` to 1/64 px.
+//! One layout from a built [`System`].
+//!
+//! **Lines break only between the request's words** (never inside one, whatever UAX #14
+//! allows there): a greedy breaker adds words to a line while the line still fits, and each
+//! candidate line is shaped on its own with `Wrap::None`, `Shaping::Advanced`, no hinting and
+//! the request's alignment inside `max_width`. A word wider than `max_width` takes a line of
+//! its own and overflows.
+//!
+//! **Bidi.** The paragraph direction comes from the whole paragraph (UAX #9 P2–P3, first
+//! strong character); each line is shaped behind a mark (LRM or RLM) forcing that direction,
+//! so a line that starts with a run of the other direction keeps the paragraph's order. The
+//! mark's own glyphs are ignored.
+//!
+//! Every output length is rounded with `libm::roundf` to 1/64 px; sums saturate.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
 
 use cosmic_text::fontdb::Weight;
 use cosmic_text::skrifa::MetadataProvider;
-use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping, Wrap};
+use cosmic_text::{Attrs, Buffer, Family, Hinting, Metrics, Shaping, Wrap};
 use fin_core::layout::{Align, LineBox, TextLayout, TextRequest, WordBox};
 
 use crate::system::System;
 
-/// `v` px in 1/64 px, rounded half away from zero.
+/// `v` px in 1/64 px, rounded half away from zero (saturating).
 pub(crate) fn to_64(v: f32) -> i32 {
     libm::roundf(v * 64.0) as i32
 }
@@ -24,24 +36,43 @@ fn align(a: Align) -> cosmic_text::Align {
     }
 }
 
-/// The joined paragraph and each word's byte range in it.
-fn paragraph(words: &[String]) -> (String, Vec<Range<usize>>) {
-    let mut text = String::new();
-    let mut ranges = Vec::with_capacity(words.len());
-    for (i, w) in words.iter().enumerate() {
-        if i > 0 {
-            text.push(' ');
-        }
-        let start = text.len();
-        text.push_str(w);
-        ranges.push(start..text.len());
+const LRM: &str = "\u{200E}";
+const RLM: &str = "\u{200F}";
+
+/// Horizontal extent `(lo, hi)` accumulated in px.
+#[derive(Clone, Copy)]
+struct Span(f32, f32);
+
+impl Span {
+    const EMPTY: Span = Span(f32::INFINITY, f32::NEG_INFINITY);
+    /// Both ends of a glyph: its advance may be negative (letter spacing).
+    fn add(&mut self, x: f32, w: f32) {
+        self.0 = self.0.min(x).min(x + w);
+        self.1 = self.1.max(x).max(x + w);
     }
-    (text, ranges)
+    /// `(x, width)` in 1/64 px; `(0, 0)` when nothing was added.
+    fn boxed(self) -> (i32, i32) {
+        if self.0 > self.1 {
+            return (0, 0);
+        }
+        let (lo, hi) = (to_64(self.0), to_64(self.1));
+        (lo, hi.saturating_sub(lo))
+    }
 }
 
-fn word_at(ranges: &[Range<usize>], at: usize) -> Option<usize> {
-    let i = ranges.partition_point(|r| r.end <= at);
-    ranges.get(i).filter(|r| r.start <= at).map(|_| i)
+/// One shaped line: its words `first..end`, ink box, word boxes and glyph facts.
+struct Line {
+    words: Range<usize>,
+    x: i32,
+    width: i32,
+    baseline: i32,
+    boxes: Vec<(i32, i32)>,
+    used: Vec<bool>,
+    missing: BTreeSet<u32>,
+}
+
+fn fits(line: &Line, max: Option<i32>) -> bool {
+    max.is_none_or(|m| line.x >= 0 && i64::from(line.x) + i64::from(line.width) <= i64::from(m))
 }
 
 fn mapped(sys: &System, c: char) -> bool {
@@ -51,28 +82,106 @@ fn mapped(sys: &System, c: char) -> bool {
     })
 }
 
-/// Horizontal extent `(lo, hi)` accumulated in px.
-#[derive(Clone, Copy)]
-struct Span(f32, f32);
+/// The paragraph is right-to-left when its first strong character is (UAX #9 P2–P3).
+fn paragraph_rtl(words: &[String]) -> bool {
+    let text = words.join(" ");
+    let bidi = unicode_bidi::BidiInfo::new(&text, None);
+    bidi.paragraphs.first().is_some_and(|p| p.level.is_rtl())
+}
 
-impl Span {
-    const EMPTY: Span = Span(f32::INFINITY, f32::NEG_INFINITY);
-    fn add(&mut self, lo: f32, hi: f32) {
-        self.0 = self.0.min(lo);
-        self.1 = self.1.max(hi);
-    }
-    /// `(x, width)` in 1/64 px; `(0, 0)` when nothing was added.
-    fn boxed(self) -> (i32, i32) {
-        if self.0 > self.1 {
-            return (0, 0);
+struct Shaper<'a> {
+    req: &'a TextRequest,
+    mark: &'static str,
+    metrics: Metrics,
+    max: Option<i32>,
+}
+
+impl Shaper<'_> {
+    fn shape(&self, sys: &mut System, words: Range<usize>) -> Line {
+        let mut text = String::from(self.mark);
+        let mut ranges = Vec::with_capacity(words.len());
+        for (k, w) in self.req.words[words.clone()].iter().enumerate() {
+            if k > 0 {
+                text.push(' ');
+            }
+            let start = text.len();
+            text.push_str(w);
+            ranges.push(start..text.len());
         }
-        let (lo, hi) = (to_64(self.0), to_64(self.1));
-        (lo, hi - lo)
+        let st = &self.req.style;
+        let mut buffer = Buffer::new_empty(self.metrics);
+        buffer.set_wrap(Wrap::None);
+        buffer.set_hinting(Hinting::Disabled);
+        buffer.set_size(self.req.max_width.map(|w| w as f32), None);
+        let attrs = Attrs::new()
+            .family(Family::Name(sys.primary))
+            .weight(Weight(st.weight))
+            .letter_spacing(st.letter_spacing as f32);
+        buffer.set_text(&text, &attrs, Shaping::Advanced, Some(align(st.align)));
+        buffer.shape_until_scroll(&mut sys.fs, false);
+
+        let mut line = Line {
+            words: words.clone(),
+            x: 0,
+            width: 0,
+            baseline: 0,
+            boxes: vec![(0, 0); words.len()],
+            used: vec![false; sys.faces.len()],
+            missing: BTreeSet::new(),
+        };
+        let mut ink = Span::EMPTY;
+        let mut spans = vec![Span::EMPTY; words.len()];
+        let lead = self.mark.len();
+        for run in buffer.layout_runs() {
+            line.baseline = to_64(run.line_y);
+            for g in run.glyphs {
+                if g.end <= lead {
+                    continue; // the direction mark
+                }
+                if let Some(face) = sys.faces.iter().position(|f| f.id == g.font_id) {
+                    line.used[face] = true;
+                }
+                let cluster = &text[g.start.max(lead)..g.end];
+                if g.glyph_id == 0 {
+                    let unmapped = cluster.chars().filter(|&c| !mapped(sys, c));
+                    line.missing.extend(unmapped.map(u32::from));
+                }
+                if cluster.chars().all(char::is_whitespace) {
+                    continue;
+                }
+                ink.add(g.x, g.w);
+                let at = g.start.max(lead);
+                let k = ranges.partition_point(|r| r.end <= at);
+                if ranges.get(k).is_some_and(|r| r.start <= at) {
+                    spans[k].add(g.x, g.w);
+                }
+            }
+        }
+        (line.x, line.width) = ink.boxed();
+        line.boxes = spans.into_iter().map(Span::boxed).collect();
+        line
+    }
+
+    /// Greedy: the longest run of words from `first` that fits, at least one word.
+    fn next_line(&self, sys: &mut System, first: usize) -> Line {
+        let n = self.req.words.len();
+        if self.max.is_none() {
+            return self.shape(sys, first..n);
+        }
+        let mut best = self.shape(sys, first..first + 1);
+        for end in first + 2..=n {
+            let candidate = self.shape(sys, first..end);
+            if !fits(&candidate, self.max) {
+                break;
+            }
+            best = candidate;
+        }
+        best
     }
 }
 
 pub(crate) fn layout(sys: &mut System, req: &TextRequest) -> TextLayout {
-    let (text, ranges) = paragraph(&req.words);
+    let n = req.words.len();
     let mut out = TextLayout {
         lines: Vec::new(),
         words: vec![
@@ -81,7 +190,7 @@ pub(crate) fn layout(sys: &mut System, req: &TextRequest) -> TextLayout {
                 x: 0,
                 width: 0
             };
-            ranges.len()
+            n
         ],
         width: 0,
         height: 0,
@@ -89,87 +198,52 @@ pub(crate) fn layout(sys: &mut System, req: &TextRequest) -> TextLayout {
         missing: Vec::new(),
         faces: Vec::new(),
     };
-    if text.is_empty() {
+    if n == 0 {
         return out;
     }
     let st = &req.style;
-    let metrics = Metrics::new(st.size as f32, (st.size * st.line_height) as f32);
-    let mut buffer = Buffer::new_empty(metrics);
-    buffer.set_wrap(Wrap::Word);
-    buffer.set_size(req.max_width.map(|w| w as f32), None);
-    let attrs = Attrs::new()
-        .family(Family::Name(sys.primary))
-        .weight(Weight(st.weight))
-        .letter_spacing(st.letter_spacing as f32);
-    buffer.set_text(&text, &attrs, Shaping::Advanced, Some(align(st.align)));
-    buffer.shape_until_scroll(&mut sys.fs, false);
-
+    let line_px = (st.size * st.line_height) as f32;
+    let rtl = paragraph_rtl(&req.words);
+    let shaper = Shaper {
+        req,
+        mark: if rtl { RLM } else { LRM },
+        metrics: Metrics::new(st.size as f32, line_px),
+        max: req.max_width.map(|w| to_64(w as f32)),
+    };
+    let height = to_64(line_px);
     let mut used = vec![false; sys.faces.len()];
     let mut missing = BTreeSet::new();
-    let mut word_span: Vec<Option<(u32, Span)>> = vec![None; ranges.len()];
-    let max_width = req.max_width.map(|w| to_64(w as f32));
-    for (line_i, run) in buffer.layout_runs().enumerate() {
-        let line_i = line_i as u32;
-        let mut ink = Span::EMPTY;
-        for g in run.glyphs {
-            if let Some(face) = sys.faces.iter().position(|f| f.id == g.font_id) {
-                used[face] = true;
-            }
-            let cluster = &text[g.start..g.end];
-            if g.glyph_id == 0 {
-                missing.extend(cluster.chars().filter(|&c| !mapped(sys, c)).map(u32::from));
-            }
-            if cluster.chars().all(char::is_whitespace) {
-                continue;
-            }
-            ink.add(g.x, g.x + g.w);
-            if let Some(w) = word_at(&ranges, g.start) {
-                let entry = word_span[w].get_or_insert((line_i, Span::EMPTY));
-                if entry.0 == line_i {
-                    entry.1.add(g.x, g.x + g.w);
-                }
-            }
+    let mut first = 0;
+    while first < n {
+        let line = shaper.next_line(sys, first);
+        let index = out.lines.len() as u32;
+        let top = (index as i32).saturating_mul(height);
+        out.overflow |= !fits(&line, shaper.max);
+        for (k, (x, width)) in line.words.clone().zip(line.boxes) {
+            out.words[k] = WordBox {
+                line: index,
+                x,
+                width,
+            };
         }
-        let (x, width) = ink.boxed();
-        if max_width.is_some_and(|m| x < 0 || x + width > m) {
-            out.overflow = true;
+        for (u, l) in used.iter_mut().zip(&line.used) {
+            *u |= *l;
         }
-        let top = to_64(run.line_top);
-        let height = to_64(run.line_height);
-        out.height = top + height;
-        out.width = out.width.max(width);
+        missing.extend(line.missing);
+        out.width = out.width.max(line.width);
         out.lines.push(LineBox {
-            x,
+            x: line.x,
             top,
-            width,
+            width: line.width,
             height,
-            baseline: to_64(run.line_y),
-            rtl: run.rtl,
-            first_word: 0,
-            end_word: 0,
+            baseline: top.saturating_add(line.baseline),
+            rtl,
+            first_word: line.words.start as u32,
+            end_word: line.words.end as u32,
         });
+        first = line.words.end;
     }
-
-    // Words without ink (empty strings) stay on the line of the word before them.
-    let mut line = 0;
-    for (w, span) in word_span.into_iter().enumerate() {
-        let (x, width) = match span {
-            Some((l, s)) => {
-                line = l;
-                s.boxed()
-            }
-            None => (0, 0),
-        };
-        out.words[w] = WordBox { line, x, width };
-    }
-    let mut next = 0u32;
-    for (i, line) in out.lines.iter_mut().enumerate() {
-        line.first_word = next;
-        while (next as usize) < out.words.len() && out.words[next as usize].line == i as u32 {
-            next += 1;
-        }
-        line.end_word = next;
-    }
+    out.height = (out.lines.len() as i32).saturating_mul(height);
     if req.max_lines.is_some_and(|m| out.lines.len() > m as usize) {
         out.overflow = true;
     }

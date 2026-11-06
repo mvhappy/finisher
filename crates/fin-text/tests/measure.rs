@@ -28,6 +28,7 @@ fn fonts() -> Fonts {
         ("rtl", tf::test_rtl()),
         ("han", tf::test_han()),
         ("latinBold", tf::build(&tf::LATIN_BOLD)),
+        ("var", tf::test_variable()),
     ] {
         let sha = bytes.add(data.clone());
         refs.insert(name.to_string(), face_ref(&sha, &data, 0));
@@ -175,10 +176,6 @@ fn missing_bytes_are_unavailable() {
             missing: vec![faces[1].sha256.clone(), faces[2].sha256.clone()]
         }
     );
-    assert_eq!(
-        m.measure(&req(&["Hi"], vec![], style(48.0))).unwrap(),
-        Measured::Unavailable { missing: vec![] }
-    );
     // A face index the file does not have is unusable bytes: unavailable, never an error.
     let mut bad = faces[0].clone();
     bad.face = 3;
@@ -285,6 +282,8 @@ fn platform_fallback_never_used() {
         ("system.rs", include_str!("../src/system.rs")),
         ("measure.rs", include_str!("../src/measure.rs")),
         ("fallback.rs", include_str!("../src/fallback.rs")),
+        ("info.rs", include_str!("../src/info.rs")),
+        ("intern.rs", include_str!("../src/intern.rs")),
     ] {
         for banned in [
             "PlatformFallback",
@@ -375,21 +374,41 @@ fn invalid_style_is_invalid_range() {
     );
     st.size = 20.0;
     st.line_height = 0.0;
-    let err = m.measure(&req(&["a"], faces, st)).unwrap_err();
+    let err = m
+        .measure(&req(&["a"], faces.clone(), st.clone()))
+        .unwrap_err();
     assert_eq!(err.details["path"], "lineHeight");
+    st.line_height = 1.0;
+    st.letter_spacing = -0.6;
+    let err = m.measure(&req(&["a"], faces, st.clone())).unwrap_err();
+    assert_eq!(err.details["path"], "letterSpacing");
+    st.letter_spacing = 0.0;
+    let err = m.measure(&req(&["a"], vec![], st)).unwrap_err();
+    assert_eq!(
+        (err.code.as_str(), err.details["path"].as_str()),
+        ("INVALID_OP", Some("faces"))
+    );
 }
 
 #[test]
 fn fingerprint_names_versions() {
     let fp = fin_text::fingerprint();
+    let rev = format!("rev/{}", fin_text::FIN_TEXT_REVISION);
     for part in [
         "fin-text/0.0.0",
+        rev.as_str(),
         "cosmic-text/0.19.",
         "harfrust/0.5.",
         "skrifa/0.40.",
+        "read-fonts/0.37.",
+        "unicode-bidi/0.3.",
+        "unicode-linebreak/0.1.",
+        "unicode-segmentation/1.",
+        "unicode-script/0.5.",
     ] {
         assert!(fp.contains(part), "{fp}");
     }
+    assert!(!fp.contains('\n') && !fp.contains("  "), "{fp}");
     let (m, _) = fonts().measurer();
     assert_eq!(m.fingerprint(), fp);
 }
@@ -436,6 +455,42 @@ fn font_info_reads_faces_and_scripts() {
     );
     assert_eq!(b.scripts, ["Latn"]);
 
+    // Every script a test font's text needs (the shared fin-core rule) is in its coverage.
+    for spec in [&tf::SANS, &tf::RTL, &tf::HAN] {
+        let covered = info(&tf::build(spec)).remove(0).scripts;
+        let needed = fin_core::layout::scripts_of_text(spec.chars);
+        let needed: Vec<String> = needed
+            .into_iter()
+            .filter(|s| !covered.contains(s))
+            .collect();
+        assert!(
+            needed.is_empty() || spec.family == "TestHan",
+            "{}: {needed:?}",
+            spec.family
+        );
+    }
+
     let err = fin_text::font_info(b"definitely not a font").unwrap_err();
     assert_eq!(err.code, "FONT_INVALID");
+}
+
+#[test]
+fn requested_weight_drives_wght() {
+    let data = tf::test_variable();
+    let mut bytes = MapBytes::default();
+    let sha = bytes.add(data.clone());
+    let face = face_ref(&sha, &data, 0);
+    assert_eq!((face.family.as_str(), face.weight), ("TestVar", 400));
+    let m = Measurer::new(Arc::new(bytes));
+    let width = |weight: u16| {
+        let mut st = style(100.0);
+        st.weight = weight;
+        layout(&m, &req(&["a"], vec![face.clone()], st)).words[0].width
+    };
+    // `a` is 550 units at the default; +200 units at wght 900, linearly from 400; at 100 px
+    // one unit is 6.4/64 px.
+    assert_eq!(width(400), 550 * 64 / 10);
+    assert_eq!(width(300), 550 * 64 / 10, "no deltas below the default");
+    assert_eq!(width(700), 670 * 64 / 10);
+    assert_eq!(width(900), 750 * 64 / 10);
 }

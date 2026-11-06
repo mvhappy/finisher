@@ -7,7 +7,9 @@
 
 use write_fonts::FontBuilder;
 use write_fonts::tables::cmap::Cmap;
+use write_fonts::tables::fvar::{AxisInstanceArrays, Fvar, VariationAxisRecord};
 use write_fonts::tables::glyf::{GlyfLocaBuilder, Glyph, SimpleGlyph};
+use write_fonts::tables::gvar::{GlyphDelta, GlyphDeltas, GlyphVariations, Gvar, Tent};
 use write_fonts::tables::head::{Head, MacStyle};
 use write_fonts::tables::hhea::Hhea;
 use write_fonts::tables::hmtx::{Hmtx, LongMetric};
@@ -15,7 +17,7 @@ use write_fonts::tables::maxp::Maxp;
 use write_fonts::tables::name::{Name, NameRecord};
 use write_fonts::tables::os2::{Os2, SelectionFlags};
 use write_fonts::tables::post::Post;
-use write_fonts::types::{FWord, Fixed, GlyphId, LongDateTime, NameId, Tag, UfWord};
+use write_fonts::types::{F2Dot14, FWord, Fixed, GlyphId, LongDateTime, NameId, Tag, UfWord};
 
 pub const UNITS_PER_EM: u16 = 1000;
 pub const ASCENDER: i16 = 800;
@@ -33,9 +35,9 @@ pub struct Spec {
     pub advance: fn(char) -> u16,
 }
 
-const LATIN: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'-";
+const LATIN: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'-/:=";
 const SANS_CHARS: &str = concat!(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'-",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'-/:=",
     "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюяЁё",
 );
 const RTL_CHARS: &str = "אבגדהוזחטיךכלםמןנסעףפץצקרשת 0123456789.,";
@@ -114,6 +116,20 @@ pub fn test_han() -> Vec<u8> {
     build(&HAN)
 }
 
+/// `TestVar`: Latin like `TestLatin` but Regular, variable on `wght` 100–900 (default 400);
+/// every advance grows linearly by 200 units from `wght` 400 to 900 (none below 400).
+pub fn test_variable() -> Vec<u8> {
+    let spec = Spec {
+        family: "TestVar",
+        weight: 400,
+        ..LATIN_BOLD
+    };
+    assemble_with(&spec, None, Some(VARIABLE_DELTA))
+}
+
+/// The advance gained at `wght` 900 by every `test_variable` glyph.
+pub const VARIABLE_DELTA: i16 = 200;
+
 /// `TestSans` padded with a private `zpad` table to at least `size` bytes (and fewer than
 /// `size + 4`), for size limits. Still a valid font.
 pub fn test_big(size: usize) -> Vec<u8> {
@@ -151,11 +167,18 @@ fn write_fonts_path(svg: &str) -> kurbo::BezPath {
 }
 
 fn assemble(spec: &Spec, pad: Option<usize>) -> Vec<u8> {
+    assemble_with(spec, pad, None)
+}
+
+/// `wght`: the advance delta (font units) every glyph gains at `wght` 900, making a variable
+/// font with one axis `wght` 100–900, default 400 (deltas on the right phantom point only).
+fn assemble_with(spec: &Spec, pad: Option<usize>, wght: Option<i16>) -> Vec<u8> {
     let chars = chars_of(spec);
     let mut advances = vec![NOTDEF_ADVANCE];
     let mut glyf = GlyfLocaBuilder::new();
-    glyf.add_glyph(&rect(50, NOTDEF_ADVANCE as i16 - 50))
-        .unwrap();
+    let notdef = rect(50, NOTDEF_ADVANCE as i16 - 50);
+    let mut points = vec![points_of(&notdef)];
+    glyf.add_glyph(&notdef).unwrap();
     for &c in &chars {
         let adv = (spec.advance)(c);
         advances.push(adv);
@@ -164,6 +187,7 @@ fn assemble(spec: &Spec, pad: Option<usize>) -> Vec<u8> {
         } else {
             rect(50, adv as i16 - 50)
         };
+        points.push(points_of(&glyph));
         glyf.add_glyph(&glyph).unwrap();
     }
     let (glyf, loca, loca_format) = glyf.build();
@@ -297,6 +321,9 @@ fn assemble(spec: &Spec, pad: Option<usize>) -> Vec<u8> {
         name_record(NameId::TYPOGRAPHIC_FAMILY_NAME, spec.family),
         name_record(NameId::TYPOGRAPHIC_SUBFAMILY_NAME, style),
     ];
+    if wght.is_some() {
+        records.push(name_record(NameId::new(256), "Weight"));
+    }
     records.sort_by_key(|r| r.name_id);
     let name = Name::new(records);
     let mut post = Post::new(
@@ -336,7 +363,47 @@ fn assemble(spec: &Spec, pad: Option<usize>) -> Vec<u8> {
     if let Some(pad) = pad {
         builder.add_raw(Tag::new(b"zpad"), vec![0u8; pad]);
     }
+    let fvar_gvar = wght.map(|delta| variations(delta, &points));
+    if let Some((fvar, gvar)) = &fvar_gvar {
+        builder.add_table(fvar).unwrap().add_table(gvar).unwrap();
+    }
     builder.build()
+}
+
+fn points_of(glyph: &Glyph) -> usize {
+    match glyph {
+        Glyph::Simple(g) => g.contours.iter().map(|c| c.len()).sum(),
+        _ => 0,
+    }
+}
+
+/// `fvar` (one `wght` axis) and `gvar` (each glyph's right phantom point moves by `delta`).
+fn variations(delta: i16, points: &[usize]) -> (Fvar, Gvar) {
+    let axis = VariationAxisRecord::new(
+        Tag::new(b"wght"),
+        Fixed::from_f64(100.0),
+        Fixed::from_f64(400.0),
+        Fixed::from_f64(900.0),
+        0,
+        NameId::new(256),
+    );
+    let fvar = Fvar::new(AxisInstanceArrays::new(vec![axis], vec![]));
+    let zero = GlyphDelta::new(0, 0, true);
+    let glyphs = points
+        .iter()
+        .enumerate()
+        .map(|(gid, &n)| {
+            let mut deltas = vec![zero; n];
+            // Phantom points: left side bearing, advance, top, bottom.
+            deltas.extend([zero, GlyphDelta::new(delta, 0, true), zero, zero]);
+            let peak = Tent::new(F2Dot14::from_f32(1.0), None);
+            GlyphVariations::new(
+                GlyphId::new(gid as u32),
+                vec![GlyphDeltas::new(vec![peak], deltas)],
+            )
+        })
+        .collect();
+    (fvar, Gvar::new(glyphs, 1).expect("valid glyph variations"))
 }
 
 /// A TrueType Collection (`ttcf` 1.0) holding `fonts` in order. Each font's tables are copied

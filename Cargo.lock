@@ -394,6 +394,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "unicode-script",
 ]
 
 [[package]]
@@ -480,6 +481,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "unicode-bidi",
  "unicode-script",
 ]
 

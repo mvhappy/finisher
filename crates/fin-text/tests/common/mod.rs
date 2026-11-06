@@ -82,6 +82,30 @@ pub fn face_ref(sha256: &str, bytes: &[u8], face: u32) -> FaceRef {
     }
 }
 
+/// The generated fonts by corpus name (`sans`, `rtl`, `han`, `latinBold`, `ttc#0`, `ttc#1`)
+/// and a provider holding them.
+pub fn generated_fonts() -> (MapBytes, BTreeMap<String, FaceRef>) {
+    use fin_testfonts as tf;
+    let mut bytes = MapBytes::default();
+    let mut refs = BTreeMap::new();
+    for (name, data) in [
+        ("sans", tf::test_sans()),
+        ("rtl", tf::test_rtl()),
+        ("han", tf::test_han()),
+        ("latinBold", tf::build(&tf::LATIN_BOLD)),
+        ("var", tf::test_variable()),
+    ] {
+        let sha = bytes.add(data.clone());
+        refs.insert(name.to_string(), face_ref(&sha, &data, 0));
+    }
+    let ttc = tf::collection(&[tf::test_sans(), tf::build(&tf::LATIN_BOLD)]);
+    let sha = bytes.add(ttc.clone());
+    for face in 0..2 {
+        refs.insert(format!("ttc#{face}"), face_ref(&sha, &ttc, face));
+    }
+    (bytes, refs)
+}
+
 /// `expected.json`: `{ "generated": {id: hash}, "real": {id: hash} }`.
 #[derive(Debug, Default, Deserialize, serde::Serialize)]
 pub struct Expected {

@@ -1,6 +1,7 @@
 //! Records the shaping crates' versions for `fin_text::fingerprint()` (4C Decision 38): the
-//! `cosmic-text` this crate resolves to, and the `harfrust` and `skrifa` that `cosmic-text`
-//! itself depends on, all read from the workspace `Cargo.lock`.
+//! `cosmic-text` this crate resolves to, the `harfrust`, `skrifa`, `unicode-bidi`,
+//! `unicode-linebreak`, `unicode-segmentation` and `unicode-script` it depends on, and the
+//! `read-fonts` of that `skrifa`, all read from the workspace `Cargo.lock`.
 
 use std::path::PathBuf;
 
@@ -71,9 +72,24 @@ fn main() {
         .iter()
         .find(|p| p.name == "cosmic-text" && p.version == cosmic_version)
         .expect("cosmic-text in Cargo.lock");
-    let harfrust = dep_version(&pkgs, cosmic, "harfrust");
-    let skrifa = dep_version(&pkgs, cosmic, "skrifa");
     println!("cargo:rustc-env=FIN_TEXT_COSMIC_TEXT={cosmic_version}");
-    println!("cargo:rustc-env=FIN_TEXT_HARFRUST={harfrust}");
-    println!("cargo:rustc-env=FIN_TEXT_SKRIFA={skrifa}");
+    for name in [
+        "harfrust",
+        "skrifa",
+        "unicode-bidi",
+        "unicode-linebreak",
+        "unicode-segmentation",
+        "unicode-script",
+    ] {
+        let version = dep_version(&pkgs, cosmic, name);
+        let var = name.to_uppercase().replace('-', "_");
+        println!("cargo:rustc-env=FIN_TEXT_{var}={version}");
+    }
+    let skrifa_version = dep_version(&pkgs, cosmic, "skrifa");
+    let skrifa = pkgs
+        .iter()
+        .find(|p| p.name == "skrifa" && p.version == skrifa_version)
+        .expect("skrifa in Cargo.lock");
+    let read_fonts = dep_version(&pkgs, skrifa, "read-fonts");
+    println!("cargo:rustc-env=FIN_TEXT_READ_FONTS={read_fonts}");
 }
