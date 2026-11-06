@@ -212,6 +212,12 @@ Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md`. Spec: `docs
 - [ ] Squashing archived branches (deferred out of sub-project 4; needs a two-phase delete)
 - [ ] `BranchCreated`, `HistoryResult`, `MergeReport`, `RecoverReport` are `Schema.Unknown` in contracts (narrowed to generated types); generate Effect schemas with `ProjectStatus`
 
+## Sub-project 4C: edit breadth (in progress)
+
+Plan: `docs/superpowers/plans/2026-11-06-sub-project-4c-edit-breadth.md`. Spec: `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §5. Branch `sp4c-edit-breadth`.
+
+- [x] Task 1: make room (pure refactor): `ops_table!` dispatch with per-module `NAME`/`INTERNAL`/`RECORDS_SHIFT`/`refs_mut`/`ids`/`allocates`, `Op` in `ops/defs.rs`, `model/mod.rs`, `ops/util/{lookup,ripple,check}.rs`, `Builder` in `commands/builder.rs` (placeholder substitution through `Op::refs_mut`), test helper `ids_cover_every_id_in_json`. Rust tests 948 → 950 (`ops_table_lists_every_variant`, `ids_json_helper_flags_an_unlisted_id`), JS 107 unchanged
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency

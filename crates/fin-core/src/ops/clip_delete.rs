@@ -47,3 +47,31 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
 pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
+
+/// The wire name.
+pub(crate) const NAME: &str = "clip.delete";
+/// Whether the op is produced only as an inverse and never accepted from clients.
+pub(crate) const INTERNAL: bool = false;
+/// Whether applying the op records exactly one `Shift`.
+pub(crate) const RECORDS_SHIFT: bool = true;
+
+/// Every id reference the op carries, mutably.
+pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
+    match op {
+        Op::ClipDelete { clip } => vec![clip],
+        _ => Vec::new(),
+    }
+}
+
+/// Every id the op names (the fields [`refs_mut`] lists).
+pub(crate) fn ids(op: &Op) -> Vec<&str> {
+    match op {
+        Op::ClipDelete { clip } => vec![clip],
+        _ => Vec::new(),
+    }
+}
+
+/// The placeholder the op binds to a newly allocated id, if any.
+pub(crate) fn allocates(_: &Op) -> Option<&str> {
+    None
+}

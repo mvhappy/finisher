@@ -382,12 +382,12 @@ None open. All five were answered and are recorded as Decisions 9, 30, 10, 21 an
 
 **Interfaces:** none new. All items keep their names and visibility.
 
-- [ ] **Step 1:** Move the code with no logic changes. Doc comments move with their items. Add:
+- [x] **Step 1:** Move the code with no logic changes. Doc comments move with their items. Add:
   - `ops_table_lists_every_variant` (every variant's `name()` equals its serde tag, round-tripped through JSON, and passes `ids_cover_every_id_in_json`);
   - `ids_json_helper_flags_an_unlisted_id` (a hand-made op JSON with an extra `"c9"` in an id field fails the helper).
-- [ ] **Step 2:** `rtk wc -l` the touched files: each must be ≤ 450.
-- [ ] **Step 3: Run** `rtk cargo test --workspace`, `rtk pnpm test`, `rtk pnpm gates`. Expected: PASS with the same test count plus two (record it in the commit body).
-- [ ] **Step 4: Commit** `refactor(core): one op table, split ops and model modules ahead of 4C`.
+- [x] **Step 2:** `rtk wc -l` the touched files: each must be ≤ 450.
+- [x] **Step 3: Run** `rtk cargo test --workspace`, `rtk pnpm test`, `rtk pnpm gates`. Expected: PASS with the same test count plus two (record it in the commit body).
+- [x] **Step 4: Commit** `refactor(core): one op table, split ops and model modules ahead of 4C`.
 
 ### Task 2: Scrubbed 4B fixture, generated from 4B code — tier: sonnet
 

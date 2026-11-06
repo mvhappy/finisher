@@ -10,14 +10,12 @@
 
 use std::collections::BTreeMap;
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{AudioInfo, Clip, Project, VideoInfo};
+use crate::model::Project;
 use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::Diff;
@@ -29,162 +27,10 @@ mod clip_insert;
 mod clip_remove;
 mod clip_restore;
 mod clip_trim;
+mod defs;
 pub(crate) mod util;
 
-/// A primitive edit operation, tagged by `op`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "op", rename_all_fields = "camelCase")]
-pub enum Op {
-    /// Adds a media asset. `id` is a `$name` placeholder bound to a new `a<n>` id.
-    #[serde(rename = "asset.add")]
-    AssetAdd {
-        id: String,
-        path: String,
-        // Asset length in seconds; must be positive.
-        duration: Rational,
-        video: Option<VideoInfo>,
-        audio: Option<AudioInfo>,
-        fingerprint: String,
-    },
-    /// Inserts a clip at `at` on `track`, rippling later clips by `duration`. `id` is a `$name`
-    /// placeholder; `asset` is an asset id or a placeholder bound earlier in the transaction.
-    #[serde(rename = "clip.insert")]
-    ClipInsert {
-        id: String,
-        track: String,
-        // Timeline position in seconds: a clip boundary, a gap, or at/after the track end.
-        at: Rational,
-        asset: String,
-        // Offset into the asset, in seconds.
-        source_in: Rational,
-        // Clip length in seconds; at least one frame.
-        duration: Rational,
-    },
-    /// Moves one edge of a clip by `delta` seconds, rippling later clips on the track.
-    #[serde(rename = "clip.trim")]
-    ClipTrim {
-        clip: String,
-        edge: Edge,
-        // Seconds; positive moves the edge later.
-        delta: Rational,
-    },
-    /// Removes a clip and closes the gap (ripple).
-    #[serde(rename = "clip.delete")]
-    ClipDelete { clip: String },
-    /// Internal (inverse of `asset.add`): removes an unused asset.
-    #[serde(rename = "asset.remove")]
-    AssetRemove { id: String },
-    /// Internal (inverse of `clip.insert`): removes a clip, rippling when `ripple`.
-    #[serde(rename = "clip.remove")]
-    ClipRemove { id: String, ripple: bool },
-    /// Internal (inverse of `clip.delete`/`clip.remove`): puts `clip` back at its `start`,
-    /// rippling later clips by its duration when `ripple`.
-    #[serde(rename = "clip.restore")]
-    ClipRestore {
-        clip: Clip,
-        track: String,
-        #[serde(default = "yes")]
-        ripple: bool,
-    },
-}
-
-fn yes() -> bool {
-    true
-}
-
-/// Which edge of a clip a trim moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum Edge {
-    Start,
-    End,
-}
-
-impl Op {
-    /// The wire name (`"clip.insert"`, ...).
-    pub fn name(&self) -> &'static str {
-        match self {
-            Op::AssetAdd { .. } => "asset.add",
-            Op::ClipInsert { .. } => "clip.insert",
-            Op::ClipTrim { .. } => "clip.trim",
-            Op::ClipDelete { .. } => "clip.delete",
-            Op::AssetRemove { .. } => "asset.remove",
-            Op::ClipRemove { .. } => "clip.remove",
-            Op::ClipRestore { .. } => "clip.restore",
-        }
-    }
-
-    /// Internal ops are produced as inverses and never accepted from clients.
-    pub fn is_internal(&self) -> bool {
-        matches!(
-            self,
-            Op::AssetRemove { .. } | Op::ClipRemove { .. } | Op::ClipRestore { .. }
-        )
-    }
-
-    /// Clip ops record exactly one `Shift` when applied; asset ops record none.
-    pub(crate) fn records_shift(&self) -> bool {
-        !matches!(self, Op::AssetAdd { .. } | Op::AssetRemove { .. })
-    }
-
-    /// Every id reference in the op (new-entity ids, tracks, assets, clips), mutably, so
-    /// placeholders can be substituted in one place, and ids renamed (a recovered record
-    /// re-run under fresh ids, plan 4B Decision 27).
-    pub fn refs_mut(&mut self) -> Vec<&mut String> {
-        match self {
-            Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => {
-                vec![id]
-            }
-            Op::ClipInsert {
-                id, track, asset, ..
-            } => vec![id, track, asset],
-            Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } => vec![clip],
-            Op::ClipRestore { clip, track, .. } => vec![&mut clip.id, &mut clip.asset, track],
-        }
-    }
-
-    /// Every id the op names (new-entity ids, tracks, assets, clips). After placeholders are
-    /// resolved these are real ids; replay accepts literal ones, which the store's id counters
-    /// must see too. Lists the same fields as `refs_mut`.
-    pub fn ids(&self) -> Vec<&str> {
-        match self {
-            Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => {
-                vec![id]
-            }
-            Op::ClipInsert {
-                id, track, asset, ..
-            } => vec![id, track, asset],
-            Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } => vec![clip],
-            Op::ClipRestore { clip, track, .. } => vec![&clip.id, &clip.asset, track],
-        }
-    }
-
-    /// The placeholder this op binds to a newly allocated id, if any (in op order these are
-    /// the order ids are allocated in). `clip.restore` binds one when its clip id is a
-    /// placeholder (spec §4.3).
-    pub fn allocates(&self) -> Option<&str> {
-        let id = match self {
-            Op::AssetAdd { id, .. } | Op::ClipInsert { id, .. } => id,
-            Op::ClipRestore { clip, .. } => &clip.id,
-            _ => return None,
-        };
-        id.starts_with('$').then_some(id.as_str())
-    }
-
-    /// Every timeline position the op carries, with its track, mutably, so a rebase can map
-    /// them (`clip.insert` `at`, `clip.restore` `clip.start`).
-    pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)> {
-        match self {
-            Op::AssetAdd { .. } => asset_add::positions_mut(self),
-            Op::ClipInsert { .. } => clip_insert::positions_mut(self),
-            Op::ClipTrim { .. } => clip_trim::positions_mut(self),
-            Op::ClipDelete { .. } => clip_delete::positions_mut(self),
-            Op::AssetRemove { .. } => asset_remove::positions_mut(self),
-            Op::ClipRemove { .. } => clip_remove::positions_mut(self),
-            Op::ClipRestore { .. } => clip_restore::positions_mut(self),
-        }
-    }
-}
+pub use defs::{Edge, Op};
 
 /// `$name` placeholders bound during one transaction, in op order.
 pub(crate) struct Bindings {
@@ -310,37 +156,85 @@ pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
     )
 }
 
-/// Applies one op to `project`, appending to `diff`; returns the op's inverse ops (in order).
-pub(crate) fn apply(
-    project: &mut Project,
-    op: &Op,
-    bindings: &mut Bindings,
-    ids: &mut dyn IdAlloc,
-    diff: &mut Diff,
-) -> Result<Vec<Op>, CoreError> {
-    match op {
-        Op::AssetAdd { .. } => asset_add::apply(project, op, bindings, ids, diff),
-        Op::ClipInsert { .. } => clip_insert::apply(project, op, bindings, ids, diff),
-        Op::ClipTrim { .. } => clip_trim::apply(project, op, bindings, ids, diff),
-        Op::ClipDelete { .. } => clip_delete::apply(project, op, bindings, ids, diff),
-        Op::AssetRemove { .. } => asset_remove::apply(project, op, bindings, ids, diff),
-        Op::ClipRemove { .. } => clip_remove::apply(project, op, bindings, ids, diff),
-        Op::ClipRestore { .. } => clip_restore::apply(project, op, bindings, ids, diff),
-    }
+/// Lists every op variant with its module once, and generates the dispatch from it. Each
+/// module provides `NAME`, `INTERNAL`, `RECORDS_SHIFT`, `refs_mut`, `ids`, `allocates`,
+/// `positions_mut`, `apply` and `footprint`.
+macro_rules! ops_table {
+    ($($variant:ident => $module:ident),* $(,)?) => {
+        impl Op {
+            /// The wire name (`"clip.insert"`, ...).
+            pub fn name(&self) -> &'static str {
+                match self { $(Op::$variant { .. } => $module::NAME,)* }
+            }
+
+            /// Internal ops are produced as inverses and never accepted from clients.
+            pub fn is_internal(&self) -> bool {
+                match self { $(Op::$variant { .. } => $module::INTERNAL,)* }
+            }
+
+            /// Clip ops record exactly one `Shift` when applied; asset ops record none.
+            pub(crate) fn records_shift(&self) -> bool {
+                match self { $(Op::$variant { .. } => $module::RECORDS_SHIFT,)* }
+            }
+
+            /// Every id reference in the op (new-entity ids, tracks, assets, clips), mutably,
+            /// so placeholders can be substituted in one place, and ids renamed (a recovered
+            /// record re-run under fresh ids, plan 4B Decision 27).
+            pub fn refs_mut(&mut self) -> Vec<&mut String> {
+                match self { $(Op::$variant { .. } => $module::refs_mut(self),)* }
+            }
+
+            /// Every id the op names (new-entity ids, tracks, assets, clips). After
+            /// placeholders are resolved these are real ids; replay accepts literal ones,
+            /// which the store's id counters must see too. Lists the same fields as
+            /// `refs_mut`.
+            pub fn ids(&self) -> Vec<&str> {
+                match self { $(Op::$variant { .. } => $module::ids(self),)* }
+            }
+
+            /// The placeholder this op binds to a newly allocated id, if any (in op order
+            /// these are the order ids are allocated in). `clip.restore` binds one when its
+            /// clip id is a placeholder (spec §4.3).
+            pub fn allocates(&self) -> Option<&str> {
+                match self { $(Op::$variant { .. } => $module::allocates(self),)* }
+            }
+
+            /// Every timeline position the op carries, with its track, mutably, so a rebase
+            /// can map them (`clip.insert` `at`, `clip.restore` `clip.start`).
+            pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)> {
+                match self { $(Op::$variant { .. } => $module::positions_mut(self),)* }
+            }
+        }
+
+        /// Applies one op to `project`, appending to `diff`; returns the op's inverse ops (in
+        /// order).
+        pub(crate) fn apply(
+            project: &mut Project,
+            op: &Op,
+            bindings: &mut Bindings,
+            ids: &mut dyn IdAlloc,
+            diff: &mut Diff,
+        ) -> Result<Vec<Op>, CoreError> {
+            match op { $(Op::$variant { .. } => $module::apply(project, op, bindings, ids, diff),)* }
+        }
+
+        /// The conflict footprint of `op` from its own diff (`op_diff`: its single shift, if
+        /// any). A committed op comes with its placeholders resolved; one of ours may keep its
+        /// `$name`s.
+        pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+            match op { $(Op::$variant { .. } => $module::footprint(op, op_diff),)* }
+        }
+    };
 }
 
-/// The conflict footprint of `op` from its own diff (`op_diff`: its single shift, if any). A
-/// committed op comes with its placeholders resolved; one of ours may keep its `$name`s.
-pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
-    match op {
-        Op::AssetAdd { .. } => asset_add::footprint(op, op_diff),
-        Op::ClipInsert { .. } => clip_insert::footprint(op, op_diff),
-        Op::ClipTrim { .. } => clip_trim::footprint(op, op_diff),
-        Op::ClipDelete { .. } => clip_delete::footprint(op, op_diff),
-        Op::AssetRemove { .. } => asset_remove::footprint(op, op_diff),
-        Op::ClipRemove { .. } => clip_remove::footprint(op, op_diff),
-        Op::ClipRestore { .. } => clip_restore::footprint(op, op_diff),
-    }
+ops_table! {
+    AssetAdd => asset_add,
+    ClipInsert => clip_insert,
+    ClipTrim => clip_trim,
+    ClipDelete => clip_delete,
+    AssetRemove => asset_remove,
+    ClipRemove => clip_remove,
+    ClipRestore => clip_restore,
 }
 
 #[cfg(test)]

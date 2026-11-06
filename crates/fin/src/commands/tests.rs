@@ -3,10 +3,11 @@
 
 use std::path::Path;
 
-use fin_core::{CommittedTx, Rational, new_project};
+use fin_core::{CommittedTx, Rational, Tx, new_project};
 
 use super::*;
-use crate::backend::Probed;
+use crate::backend::{Probed, Snapshot};
+use crate::output::exit_code;
 
 /// An empty project at rev 1 (generation `g1`) whose server rejects every commit with
 /// `answer` and answers every `tx.get` with `lookup`; it records the generation sent.

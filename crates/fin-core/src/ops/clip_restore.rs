@@ -122,3 +122,34 @@ pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
         _ => Vec::new(),
     }
 }
+
+/// The wire name.
+pub(crate) const NAME: &str = "clip.restore";
+/// Whether the op is produced only as an inverse and never accepted from clients.
+pub(crate) const INTERNAL: bool = true;
+/// Whether applying the op records exactly one `Shift`.
+pub(crate) const RECORDS_SHIFT: bool = true;
+
+/// Every id reference the op carries, mutably.
+pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
+    match op {
+        Op::ClipRestore { clip, track, .. } => vec![&mut clip.id, &mut clip.asset, track],
+        _ => Vec::new(),
+    }
+}
+
+/// Every id the op names (the fields [`refs_mut`] lists).
+pub(crate) fn ids(op: &Op) -> Vec<&str> {
+    match op {
+        Op::ClipRestore { clip, track, .. } => vec![&clip.id, &clip.asset, track],
+        _ => Vec::new(),
+    }
+}
+
+/// The placeholder the op binds to a newly allocated id, if any.
+pub(crate) fn allocates(op: &Op) -> Option<&str> {
+    match op {
+        Op::ClipRestore { clip, .. } => Some(clip.id.as_str()).filter(|id| id.starts_with('$')),
+        _ => None,
+    }
+}

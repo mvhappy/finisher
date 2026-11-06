@@ -1,6 +1,7 @@
 //! Shared fixtures for the op tests.
 #![allow(dead_code)]
 
+pub mod ids_json;
 pub mod memlog;
 
 use fin_core::{
