@@ -937,3 +937,35 @@ fn merged_state_converges_when_copies_arrive_first() {
         bad.join("\n")
     );
 }
+
+/// Review of plan 4B Task 20: br2 gets a copy of br1's edit by a merge, then main gets the
+/// edit too (br1 → main). br2 has nothing left to merge into main again, so it is merged: a
+/// new copy of a root rechecks every branch holding a copy of it, not only the root's chain.
+/// A follower importing the folder derives the same, and both verify.
+#[test]
+fn new_copy_of_a_root_settles_every_branch_holding_one() {
+    let e = is::env();
+    let mut s = e.create("a");
+    setup(&mut s);
+    let a = branch(&mut s, "b1", "one", MAIN);
+    edit(&mut s, &a, "ea", "alice", vec![insert("$p", 0, 1)]);
+    let b = branch(&mut s, "b2", "two", MAIN);
+    edit(&mut s, &b, "eb", "alice", vec![insert("$q", 0, 1)]);
+    merge(&mut s, "m1", &b, MAIN);
+    assert_eq!(branch_state(&s, &b), BranchState::Merged);
+    merge(&mut s, "m2", &a, &b);
+    assert_eq!(
+        branch_state(&s, &b),
+        BranchState::Active,
+        "main lacks br1's ea"
+    );
+    merge(&mut s, "m3", &a, MAIN);
+    assert_eq!(branch_state(&s, &b), BranchState::Merged);
+    assert_eq!(branch_state(&s, &a), BranchState::Merged);
+    assert_verifies(&s);
+    e.flush(&mut s);
+    let mut f = e.open("f");
+    e.poll(&mut f);
+    assert_eq!(states(&f), states(&s));
+    assert_verifies(&f);
+}

@@ -239,8 +239,9 @@ pub(crate) fn merged_branches(
 /// transaction. A branch's own new records never make it merged (a record added to a branch
 /// never takes one of its records off the list left to merge); only copies of its records
 /// elsewhere do. So, for a write, a merged branch that got records of its own is recomputed
-/// (an edit a write made just clears the flag: it is left to merge), and every branch on a new
-/// copy's origin chain is recomputed, with the copy's source branch. An import pass applies
+/// (an edit a write made just clears the flag: it is left to merge), and every branch holding a
+/// record of a new copy's origin root is recomputed ([`root_branches`]), with the copy's
+/// source branch. An import pass applies
 /// records in folder order, not in the order they were written: a copy may arrive before the
 /// records it copies, or before the `branch` record of their branch. So every branch an import
 /// gave records, and every branch an imported `branch` record makes, is recomputed whatever
@@ -314,7 +315,7 @@ impl Touched {
             }
         }
         for origin in &t.origins {
-            recheck.extend(chain_branches(conn, origin)?);
+            recheck.extend(root_branches(conn, origin)?);
         }
         let mut clear = BTreeSet::new();
         for id in &t.cleared {
@@ -348,23 +349,43 @@ fn set_merged(conn: &Connection, id: &str, merged: bool) -> Result<(), StoreErro
     Ok(())
 }
 
-/// The branches holding the records of `origin`'s chain (it, its origin, and so on, while
-/// this database holds them): a copy of one is a copy of each.
-fn chain_branches(conn: &Connection, origin: &str) -> Result<BTreeSet<String>, StoreError> {
+/// The branches holding a record of `origin`'s root: up its chain (it, its origin, and so on,
+/// while this database holds them) to the root, then every copy of the root, copies of copies
+/// included. A copy of one is a copy of each, so a new copy of the root can leave nothing to
+/// merge on any branch that holds one (a branch that got the root by another merge, plan 4B
+/// Task 20 review).
+fn root_branches(conn: &Connection, origin: &str) -> Result<BTreeSet<String>, StoreError> {
     let mut out = BTreeSet::new();
-    let mut next = Some(origin.to_string());
-    let mut stmt = conn.prepare_cached(
+    let mut up = conn.prepare_cached(
         "SELECT t.branch, l.origin FROM txs t LEFT JOIN record_links l ON l.tx_id = t.tx_id
          WHERE t.tx_id = ?1",
     )?;
+    let mut root = origin.to_string();
     for _ in 0..1_000 {
-        let Some(id) = next.take() else { break };
-        let row: Option<(String, Option<String>)> = stmt
-            .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        let row: Option<(String, Option<String>)> = up
+            .query_row(params![root], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
-        let Some((branch, origin)) = row else { break };
+        let Some((branch, next)) = row else { break };
         out.insert(branch);
-        next = origin;
+        match next {
+            Some(o) => root = o,
+            None => break,
+        }
+    }
+    let mut down =
+        conn.prepare_cached("SELECT tx_id, branch FROM record_links WHERE origin = ?1")?;
+    let mut seen = BTreeSet::from([root.clone()]);
+    let mut queue = VecDeque::from([root]);
+    while let Some(id) = queue.pop_front() {
+        let copies: Vec<(String, String)> = down
+            .query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        for (tx, branch) in copies {
+            out.insert(branch);
+            if seen.insert(tx.clone()) {
+                queue.push_back(tx);
+            }
+        }
     }
     Ok(out)
 }
@@ -406,9 +427,8 @@ impl LogView for IndexLog<'_> {
 
     fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError> {
         if self.links {
-            return Ok(crate::link_records::records(
-                self.conn, branch, after, through,
-            )?);
+            let recs = crate::link_records::records(self.conn, branch, after, through)?;
+            return Ok(recs.into_iter().map(|r| r.links_only()).collect());
         }
         let read = || -> Result<Vec<LogRec>, StoreError> {
             let mut stmt = self.conn.prepare_cached(
@@ -438,7 +458,7 @@ impl LogView for IndexLog<'_> {
     fn find(&self, tx_id: &str) -> Result<Option<LogRec>, CoreError> {
         let read = || -> Result<Option<LogRec>, StoreError> {
             if self.links {
-                return crate::link_records::find(self.conn, tx_id);
+                return Ok(crate::link_records::find(self.conn, tx_id)?.map(|r| r.links_only()));
             }
             let row: Option<(String, i64, Vec<u8>)> = self
                 .conn
