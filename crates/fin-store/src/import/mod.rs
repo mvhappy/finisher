@@ -136,6 +136,8 @@ pub(crate) struct ImportState {
     /// The `current` set last written to `quarantine`; `None` before the first pass.
     flagged: Option<BTreeSet<String>>,
     read_only: Option<ReadOnlyReason>,
+    /// The last pass found a file or record that needs a newer Finisher.
+    newer: bool,
     /// The last placeholder read: the next pass starts after it (hydration takes turns).
     hydrate_from: Option<PathBuf>,
     /// The counters were raised past the log by this store at least once.
@@ -167,6 +169,12 @@ impl ImportState {
 
     pub(crate) fn read_only(&self) -> Option<ReadOnlyReason> {
         self.read_only
+    }
+
+    /// Whether the last pass found a file or record that needs a newer Finisher (whatever
+    /// outranks it in [`ImportState::read_only`]).
+    pub(crate) fn newer(&self) -> bool {
+        self.newer
     }
 
     /// The verified segments the last pass listed (every branch).
@@ -438,6 +446,7 @@ impl Store {
         report.pending = pending.into_iter().collect();
         report.foreign = foreign.files;
         report.newer = newer;
+        import.newer = newer;
         if !foreign_genesis.is_empty() && report.error.is_none() {
             report.error = Some(crate::project_file::genesis_mismatch(
                 &genesis,

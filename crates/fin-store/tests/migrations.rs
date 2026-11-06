@@ -379,6 +379,22 @@ fn newer_db_is_refused() {
     }
 }
 
+/// A 4C database (its migration 0003 sets `user_version` 3 and the version `meta` keys to
+/// `"3"`, nothing else) is refused by this reader, untouched. A 4B-only test: on the merge into
+/// 4C (`DB_VERSION` 3) it gives way to 4C's `db_v3_is_refused_by_a_v2_reader`.
+#[test]
+fn db_v3_from_4c_is_refused() {
+    assert_eq!(DB_VERSION, 2);
+    let v3 = "PRAGMA user_version = 3; \
+              UPDATE meta SET value = '3' WHERE key IN ('formatVersion', 'minReaderVersion');";
+    for e in refused(v3) {
+        assert_eq!(e.code, "DB_TOO_NEW");
+        assert_eq!(e.details["dbVersion"], 3);
+        assert_eq!(e.details["supported"], 2);
+        assert!(e.fix.is_some());
+    }
+}
+
 #[test]
 fn min_reader_too_new_is_refused() {
     for e in refused("UPDATE meta SET value = '99' WHERE key = 'minReaderVersion'") {

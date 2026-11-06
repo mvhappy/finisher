@@ -32,6 +32,7 @@ mod link_records;
 mod localdate;
 mod migrations;
 pub mod names;
+mod newer;
 mod open;
 mod paths;
 pub mod project_file;
