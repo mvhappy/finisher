@@ -1340,7 +1340,8 @@ impl Store {
   - a cherry-pick of an undo, redo or revert whose unit's record the target does not hold is refused the same way (a redo whose undo is not on the target included), named by the picked record.
   - an undo whose clip is back already is `ID_COLLISION` (the undo planner does not judge origins); `ALREADY_PRESENT` would say it better.
   - a copy whose clip is gone may answer the re-run's `NOT_FOUND` with no blamed record, where an excluded inverted undo lies between a mirrored pair; naming the excluded record would be clearer.
-- [ ] **Step 1:** Write the edits. **Step 2: Run** `rtk pnpm gates` → ok. **Step 3: Commit** `docs: record 4B decisions, formats, RPCs and commands`.
+- [x] **Step 1:** Write the edits. **Step 2: Run** `rtk pnpm gates` → ok. **Step 3: Commit** `docs: record 4B decisions, formats, RPCs and commands`.
+- As built (commit `docs: record sub-project 4B as built`): spec §4 rewritten as built with the decision table (1–34), the §3 places 4B changed marked "4B", §3.10 RPC/`fin`/code tables, §4.8 the Task 23 checklist (pending); arch §27 item 14; README "Branches and history"; TASKS 4B section (ticked, duplicates merged, follow-ups from 4B). Found while checking the notes against the code: the Task 13 note "merge records never re-merged through an intermediate branch" is superseded by Decision 34 (merges are transitive); Task 9's "unfit records set aside `MALFORMED`" and Task 7's DEFERRED dry runs were superseded (inert rows, IMMEDIATE); `pick.rs`'s `NOT_FOUND` fix names a `fin log` command that does not exist; `fin/src/config.rs`'s module doc still shows flat `tries`.
 
 ### Task 23: Cross-platform and cross-host validation (controller-run; needs hosts) — tier: opus (controller)
 

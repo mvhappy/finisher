@@ -21,7 +21,7 @@ rtk pnpm e2e    # slow: builds fin and fin-node, then runs the end-to-end check
 
 ## Run it
 
-Sub-projects 2 and 4A ship a minimal core with durable storage: `finisherd` (the local server)
+Sub-projects 2, 4A and 4B ship a minimal core with durable storage and history: `finisherd` (the local server)
 and `fin` (the agent CLI, JSON on stdout). Build both, start the server, then edit through `fin`.
 Node 26, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
 `rust-toolchain.toml` are required.
@@ -71,6 +71,24 @@ fin view
 
 Run `fin` with no arguments for the command map, and `fin help clip` for details.
 
+**Branches and history** (every command takes `--branch <b>`, default `main` or the one
+`fin branch default` / `fin try` set; undo stacks are per `$FIN_AUTHOR`, default `fin`):
+
+```bash
+fin branch new feature                              # fork the current branch at its head
+fin --branch feature clip trim c1 --end +1s         # edit on the branch
+fin branch ls                                       # branches, heads and states (--all: archived too)
+fin merge feature                                   # into the current branch; CONFLICT (exit 4) lists conflicts
+fin merge feature --skip-conflicting                # merge the rest, leave conflicting records on the branch
+fin undo                                            # undo your last edit or merge (fin redo reverses it)
+fin checkpoint before-cut                           # name the head; fin undo --to before-cut
+fin cherry-pick <txId>                              # copy one record; fin revert <mergeId> undoes a merge
+fin try                                             # a throwaway branch; fin try keep | fin try drop
+fin branch rename feature main-cut                  # fin branch archive <b> [--restore [--as <new>]]
+```
+
+Every write takes `--dry-run` (it works on a follower too) and `--idem-key <key>`.
+
 **Project storage** (run in the project folder, like the other commands):
 
 ```bash
@@ -79,8 +97,10 @@ fin project takeover [--confirm]     # take the lease from a stopped server (--c
 fin project verify                   # check database and folder, change nothing (VERIFY_FAILED, exit 3)
 fin project rebuild                  # rebuild the database from the folder (works with no server running)
 fin project compact                  # pack old segment files now (history is kept)
-fin project recover                  # the manual steps out of CHAIN_FORK / CONFLICT_COPY
-fin project acknowledge --rewind 2 --branch main   # clear a REWOUND / SPLIT_BRAIN_SUSPECTED warning
+fin project recover                  # list set-aside records; the manual steps out of CHAIN_FORK / CONFLICT_COPY
+fin project recover --create all     # bring set-aside records back as recovered-* branches
+fin project recover --import <dir>   # read segment files moved out of the folder (after CHAIN_FORK)
+fin project acknowledge --rewind 2 --branch main   # clear a REWOUND / SPLIT_BRAIN_SUSPECTED warning (--branch is global)
 fin project acknowledge --salvage project.fdb.corrupt-<ts>   # clear SALVAGE_INCOMPLETE
 fin project open <dir> --relocate    # the project moved and its old folder cannot be reached
 ```
