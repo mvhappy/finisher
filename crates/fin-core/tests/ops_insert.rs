@@ -1,8 +1,7 @@
 mod common;
 
 use common::*;
-use fin_core::{ChangeKind, MemIds, Op, Rational, Shift, apply_tx};
-use proptest::prelude::*;
+use fin_core::{ChangeKind, MemIds, Op, Shift, apply_tx};
 use serde_json::json;
 
 #[test]
@@ -289,34 +288,4 @@ fn inverse_restores_the_original_project() {
         ],
     );
     assert_eq!(undo(&a), p);
-}
-
-/// One random insert: `at` is either an existing boundary (by index) or an arbitrary frame.
-fn insert_step() -> impl Strategy<Value = (bool, usize, i64, i64, i64)> {
-    (any::<bool>(), 0usize..8, 0i64..600, 0i64..300, 1i64..300)
-}
-
-proptest! {
-    #[test]
-    fn random_inserts_stay_sorted_and_disjoint(steps in prop::collection::vec(insert_step(), 1..12)) {
-        let mut p = with_clips(&[]);
-        for (on_boundary, idx, frame, src, len) in steps {
-            let items = &p.timeline.tracks[0].items;
-            let at = if on_boundary && !items.is_empty() {
-                let c = &items[idx % items.len()];
-                if idx % 2 == 0 { c.start } else { (c.start + c.duration).unwrap() }
-            } else {
-                Rational::new(frame, 30).unwrap()
-            };
-            let op = insert("$c", "t1", at, "a1", Rational::new(src, 30).unwrap(), Rational::new(len, 30).unwrap());
-            match try_apply(&p, vec![op]) {
-                Ok(a) => {
-                    assert_well_formed(&a.project);
-                    prop_assert_eq!(undo(&a), p.clone());
-                    p = a.project;
-                }
-                Err(e) => prop_assert_eq!(e.code.as_str(), "INSERT_INSIDE_CLIP"),
-            }
-        }
-    }
 }

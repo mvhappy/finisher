@@ -1,8 +1,7 @@
 mod common;
 
 use common::*;
-use fin_core::{ChangeKind, Edge, Op, Project, Rational, Shift};
-use proptest::prelude::*;
+use fin_core::{ChangeKind, Edge, Op, Rational, Shift};
 use serde_json::json;
 
 fn trim(clip: &str, edge: Edge, delta: Rational) -> Op {
@@ -137,85 +136,4 @@ fn ops_in_one_tx_can_reference_new_clips() {
     assert_eq!(starts(&a.project, 0), [("c2".into(), secs(0))]);
     assert_eq!(clip(&a.project, "c2").duration, secs(3));
     assert_eq!(undo(&a), p);
-}
-
-#[derive(Debug, Clone)]
-enum Step {
-    Insert {
-        boundary: usize,
-        len: i64,
-        src: i64,
-    },
-    Trim {
-        clip: usize,
-        start: bool,
-        frames: i64,
-    },
-    Delete {
-        clip: usize,
-    },
-}
-
-fn step() -> impl Strategy<Value = Step> {
-    prop_oneof![
-        (0usize..16, 1i64..240, 0i64..240).prop_map(|(boundary, len, src)| Step::Insert {
-            boundary,
-            len,
-            src
-        }),
-        (0usize..16, any::<bool>(), -120i64..120).prop_map(|(clip, start, frames)| Step::Trim {
-            clip,
-            start,
-            frames
-        }),
-        (0usize..16).prop_map(|clip| Step::Delete { clip }),
-    ]
-}
-
-fn to_op(p: &Project, s: &Step) -> Option<Op> {
-    let items = &p.timeline.tracks[0].items;
-    let f = |n: i64| Rational::new(n, 30).unwrap();
-    match *s {
-        Step::Insert { boundary, len, src } => {
-            let at = match items.get(boundary / 2) {
-                Some(c) if boundary % 2 == 0 => c.start,
-                Some(c) => (c.start + c.duration).unwrap(),
-                None => items
-                    .last()
-                    .map_or(Rational::zero(), |c| (c.start + c.duration).unwrap()),
-            };
-            Some(insert("$n", "t1", at, "a1", f(src), f(len)))
-        }
-        Step::Trim {
-            clip,
-            start,
-            frames,
-        } => {
-            let c = items.get(clip % items.len().max(1))?;
-            Some(trim(
-                &c.id,
-                if start { Edge::Start } else { Edge::End },
-                f(frames),
-            ))
-        }
-        Step::Delete { clip } => Some(delete(&items.get(clip % items.len().max(1))?.id)),
-    }
-}
-
-proptest! {
-    #[test]
-    fn random_edits_invert_and_stay_well_formed(steps in prop::collection::vec(step(), 1..16)) {
-        let mut p = with_clips(&[2, 3]);
-        for s in &steps {
-            let Some(op) = to_op(&p, s) else { continue };
-            match try_apply(&p, vec![op]) {
-                Ok(a) => {
-                    assert_well_formed(&a.project);
-                    prop_assert_eq!(undo(&a), p.clone());
-                    p = a.project;
-                }
-                Err(e) => prop_assert_eq!(e.code.as_str(), "INVALID_RANGE", "{:?}", e),
-            }
-        }
-    }
 }

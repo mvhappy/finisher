@@ -8,6 +8,19 @@ use fin_core::{
     apply_internal, apply_tx, new_project,
 };
 
+/// A proptest config with `default` cases; `PROPTEST_CASES` overrides it (plan 4B Global
+/// Constraints: every block sets its cases and honours the override).
+pub fn prop_config(default: u32) -> proptest::test_runner::Config {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    proptest::test_runner::Config {
+        cases,
+        ..proptest::test_runner::Config::default()
+    }
+}
+
 pub fn r(s: &str) -> Rational {
     s.parse().unwrap()
 }

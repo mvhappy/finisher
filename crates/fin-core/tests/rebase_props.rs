@@ -1,4 +1,5 @@
-//! Rebase properties (spec §4.6, props 2 and 3) over an anchor model on three tracks.
+//! Rebase properties (spec §4.6, props 2 and 3; plan 4B Task 20) over an anchor model on three
+//! tracks.
 //!
 //! An intention is "insert before clip k on track t", "insert at the end of track t", "trim
 //! clip k's edge e by d" or "delete clip k". Clips are named by identity: a base clip by its
@@ -399,29 +400,31 @@ proptest! {
 proptest! {
     #![proptest_config(config(128))]
     /// Prop 3: when the stale rebase and the fresh realisation at the head both succeed, they
-    /// produce the same state.
+    /// produce the same state. The interval holds 0–6 committed edits, each sometimes followed
+    /// by its undo (a mirrored pair).
     #[test]
     fn stale_and_fresh_agree_multi_track(
         lens in lens(),
-        first in prop::collection::vec(intent(), 1..3),
-        undo_first in any::<bool>(),
-        second in prop::collection::vec(intent(), 0..3),
+        committed in prop::collection::vec(
+            (prop::collection::vec(intent(), 1..3), any::<bool>()),
+            0..7,
+        ),
         mine in prop::collection::vec(intent(), 1..4),
     ) {
         let p = base(&lens);
         let mut ids = MemIds::after(&p);
-        let Some((mut head, c1, inverse)) = commit(&p, &first, 1, &mut ids) else { return Ok(()) };
-        let mut since = vec![c1];
-        // The first record and its undo (a mirrored pair), sometimes.
-        if undo_first {
-            let (p2, u) = undo(&head, &since[0], inverse, 2);
-            since.push(u);
-            head = p2;
-        }
-        let rev = since.len() as u64 + 1;
-        if let Some((p3, c, _)) = commit(&head, &second, rev, &mut ids) {
+        let mut head = p.clone();
+        let mut since: Vec<CommittedTx> = Vec::new();
+        for (intents, undo_it) in &committed {
+            let rev = since.len() as u64 + 1;
+            let Some((next, c, inverse)) = commit(&head, intents, rev, &mut ids) else { continue };
+            head = next;
             since.push(c);
-            head = p3;
+            if *undo_it {
+                let (next, u) = undo(&head, since.last().unwrap(), inverse, rev + 1);
+                since.push(u);
+                head = next;
+            }
         }
         let mut at_base = Realiser::new(&p);
         let keyed = at_base.keyed(&mine, "o");
