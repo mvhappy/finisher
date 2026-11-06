@@ -233,9 +233,9 @@ pub(crate) fn merged_branches(
 pub(crate) struct Touched {
     /// Branches a write gave an `edit`: always left to merge, so never `merged`.
     fresh: BTreeSet<String>,
-    /// Branches to recompute: the source of a `merge` or `cherryPick` copy, a branch that got
-    /// another content record (an undo tied to a merge's target is not a candidate), and a
-    /// branch an import gave any content record.
+    /// Branches to recompute: the source and target of a `merge` copy, the source of a
+    /// `cherryPick` copy, a branch that got another content record (an undo tied to a merge's
+    /// target is not a candidate), and a branch an import gave any content record.
     recheck: BTreeSet<String>,
 }
 
@@ -261,7 +261,10 @@ impl Touched {
                 self.recheck.insert(branch.to_string());
             }
             Some(Link::Merge { from, .. }) => {
+                // Merges are transitive: the copies are the target's own records, which it
+                // may still have to merge on.
                 self.recheck.insert(from.clone());
+                self.recheck.insert(branch.to_string());
             }
             Some(Link::CherryPick { from, .. }) => {
                 self.recheck.insert(from.clone());

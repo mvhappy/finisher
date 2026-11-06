@@ -100,6 +100,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - [x] Task 12: rebuild from folder with salvage, verify report, daily backups, incarnation, `db.lock`, genesis hash
 - [x] Task 13: two-phase compaction into packs (exact stand-in rule, equivalence re-resolve before deleting)
 - [x] Task 14: fin-node worker thread, maintenance tick, events, `ENGINE_BUSY`
+- [x] Task 13 review follow-up: transitive merges with presence by origin root (Decision 34: `origin::Roots`, same-root mirrors, `UNDOES_TARGET_RECORDS` through roots, dependents of excluded records `DEPENDS_ON_SKIPPED`, `ALREADY_PRESENT` per first binder's root), mergeId/txId guard on every write, `merged` state rechecked on a merge's target
 - [x] Task 15: storage RPCs, `project.events`, `fin project status|takeover|verify|rebuild|compact|recover|acknowledge`, `tx.get` set-aside, `--idem-key` via `tx.get`
 - [x] Tasks 16–17: SP2 follow-ups (atomic idempotent create, canonical rationals, `Tx.argsHash`, `Probe` type, generated envelope types, `BASE_REV_AHEAD`, hub cleanup, loader libc detection, typecheck gate)
 - [x] Task 18: `pnpm e2e` storage scenario (rebuild from folder, follower)

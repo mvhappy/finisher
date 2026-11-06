@@ -6,7 +6,7 @@ mod common;
 
 use common::memlog::MemLog;
 use common::*;
-use fin_core::history::{Lineage, LogView, candidate_steps, candidates, common_point};
+use fin_core::history::{Lineage, LogView, Roots, candidate_steps, candidates, common_point};
 use fin_core::rebase::reasons;
 use fin_core::{CommittedTx, Edge, Link, MemIds, Op, Project, Rational};
 
@@ -127,7 +127,11 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
 
     let source = path(&log, "br1", 0);
     let target = path(&log, "main", 0);
-    let c = candidates(&source, &target);
+    let (to_main, to_br1) = (log.lineage("main").unwrap(), log.lineage("br1").unwrap());
+    let c = candidates(
+        &source,
+        &Roots::new(&log, &to_main, &source, &target).unwrap(),
+    );
     let picked: Vec<&str> = c
         .picks
         .iter()
@@ -135,8 +139,12 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
         .collect();
     assert_eq!(picked, ["e3"]);
     assert!(c.excluded.is_empty());
-    // The other way: main's own edits only (its copies of br1's records are not content).
-    let c = candidates(&target, &source);
+    // The other way: main's own edits are on br1 already (picked, merged), and main's copies
+    // of br1's records come from br1.
+    let c = candidates(
+        &target,
+        &Roots::new(&log, &to_br1, &target, &source).unwrap(),
+    );
     let picked: Vec<&str> = c
         .picks
         .iter()
@@ -145,7 +153,7 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
     assert_eq!(
         picked,
         Vec::<&str>::new(),
-        "t1 picked, t2 merged; copies are not offered"
+        "t1 picked, t2 merged, mb-1 and cp2 from br1"
     );
 }
 
@@ -206,7 +214,8 @@ fn candidate_steps_mirror_restores_inside_positions() {
         bindings: copy.applied.bindings.clone(),
         link: Some(Box::new(copy.link.clone())),
     };
-    let steps = candidate_steps(&source, 1, &target, &[(0, committed)]).unwrap();
+    let to_main = log.lineage("main").unwrap();
+    let steps = candidate_steps(&log, &to_main, &source, 1, &target, &[(0, committed)]).unwrap();
     assert_eq!(steps.len(), 3);
     assert!(steps[0].invert, "e1 inverted first");
     assert_eq!(steps[0].tx_id, "e1");
@@ -217,7 +226,7 @@ fn candidate_steps_mirror_restores_inside_positions() {
         "the copy mirrors its inverted original"
     );
     // Without a copy to mirror, the inverse stands alone.
-    let alone = candidate_steps(&source, 1, &target, &[]).unwrap();
+    let alone = candidate_steps(&log, &to_main, &source, 1, &target, &[]).unwrap();
     assert!(alone.iter().all(|s| s.mirror_of.is_none()));
 
     log.merge("br1", "main", "carol", "m", false).unwrap();
@@ -337,23 +346,26 @@ fn merge_copies_keep_ids_and_take_merging_author() {
 
 #[test]
 fn duplicate_id_is_already_present_or_id_collision() {
-    // ALREADY_PRESENT: br2 and main both picked br1's e1 (same origin chain, same id).
+    // ALREADY_PRESENT (review x10): both sides deleted c3 (main by a pick of br1's e1) and
+    // both undid it; br1's undo restores c3, which main holds again. c3 is older than the
+    // common point on both paths: the same entity, not a collision.
     let mut log = log();
     log.fork("br1", "main", 0);
-    log.fork("br2", "main", 0);
-    log.commit("br1", "e1", "bob", vec![ins(30, 1)]);
+    log.commit("br1", "e1", "alice", vec![delete("c3")]);
     let e1 = log.find("e1").unwrap().unwrap();
-    let pick = |from: &str| Link::CherryPick {
+    let pick = Link::CherryPick {
         origin: "e1".into(),
-        from: from.into(),
+        from: "br1".into(),
         origin_hash: None,
     };
-    log.copy("br2", "cp2", "bob", pick("br1"), &e1);
-    log.copy("main", "cpm", "bob", pick("br1"), &e1);
-    let err = log.merge("br2", "main", "bob", "m", false).unwrap_err();
+    log.copy("main", "cp", "alice", pick, &e1);
+    log.undo("br1", "alice", "u1").unwrap();
+    log.undo("main", "alice", "um").unwrap();
+    let err = log.merge("br1", "main", "alice", "m", false).unwrap_err();
+    let c = &err.details["conflicts"][0];
     assert_eq!(
-        err.details["conflicts"][0]["reason"],
-        reasons::ALREADY_PRESENT
+        (c["txId"].as_str(), c["reason"].as_str()),
+        (Some("u1"), Some(reasons::ALREADY_PRESENT))
     );
 
     // ID_COLLISION: another server handed out the same id on main (Decision 33).
@@ -421,4 +433,147 @@ fn merge_both_directions_converges() {
             .is_empty()
     );
     assert_well_formed(&log.state("main"));
+}
+
+// Regression tests from the review of Task 13 (x1, x2, x3, x5, x8, x9): merges are
+// transitive (Decision 34) and "already present" is judged by origin root.
+
+fn trim(clip: &str, d: i64) -> Op {
+    Op::ClipTrim {
+        clip: clip.into(),
+        edge: Edge::End,
+        delta: secs(d),
+    }
+}
+
+#[test]
+fn transitive_merge_brings_the_sources_merged_records() {
+    // x1: br2 → br1 → main brings br2's clip, and br1's trim of it.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.fork("br2", "main", 0);
+    log.commit("br2", "e1", "bob", vec![ins(30, 5)]); // c4
+    log.merge("br2", "br1", "alice", "ma", false).unwrap();
+    log.commit("br1", "e2", "alice", vec![trim("c4", -1)]);
+    log.commit("br1", "e3", "alice", vec![ins(0, 1)]);
+    let plan = log.merge("br1", "main", "alice", "mb", false).unwrap();
+    assert_eq!(plan.merged, ["ma-1", "e2", "e3"]);
+    assert_eq!(log.state("main"), log.state("br1"));
+    let copy = log.find("mb-1").unwrap().unwrap();
+    assert_eq!(copy.record.origin.as_deref(), Some("ma-1"));
+    assert_eq!(fin_core::history::root_of(&log, &copy).unwrap(), "e1");
+    // br2 → main now: e1 is there (by root), nothing to merge.
+    assert!(
+        log.merge("br2", "main", "bob", "mc", false)
+            .unwrap()
+            .planned
+            .is_empty()
+    );
+}
+
+#[test]
+fn transitive_merge_carries_an_undo_of_a_merge() {
+    // x2: br2 → br1, br1 undoes that merge, br1 → main: net zero for br2's clip on main.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.fork("br2", "main", 0);
+    log.commit("br2", "e1", "bob", vec![ins(30, 5)]);
+    log.merge("br2", "br1", "alice", "ma", false).unwrap();
+    log.undo("br1", "alice", "u1").unwrap();
+    log.commit("br1", "e3", "alice", vec![ins(0, 1)]);
+    let plan = log.merge("br1", "main", "alice", "mb", false).unwrap();
+    assert_eq!(plan.merged, ["ma-1", "u1", "e3"]);
+    assert!(plan.excluded.is_empty());
+    assert_eq!(log.state("main"), log.state("br1"));
+    assert_eq!(ids_of(&log.state("main")).len(), 4, "c4 came and went");
+}
+
+#[test]
+fn same_root_picks_on_both_sides_merge_cleanly() {
+    // x3: br2 and main both picked br1's e1; br2 then trims the picked clip.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.fork("br2", "main", 0);
+    log.commit("br1", "e1", "bob", vec![ins(30, 5)]); // c4
+    let e1 = log.find("e1").unwrap().unwrap();
+    let pick = |f: &str| Link::CherryPick {
+        origin: "e1".into(),
+        from: f.into(),
+        origin_hash: None,
+    };
+    log.copy("br2", "cp2", "bob", pick("br1"), &e1);
+    log.copy("main", "cpm", "bob", pick("br1"), &e1);
+    log.commit("br2", "e2", "bob", vec![trim("c4", -1)]);
+    let plan = log.merge("br2", "main", "bob", "m", false).unwrap();
+    assert_eq!(
+        plan.merged,
+        ["e2"],
+        "cp2 is present by root; e2's trim maps through it"
+    );
+    assert_eq!(log.state("main"), log.state("br2"));
+}
+
+#[test]
+fn try_keep_after_updating_from_main() {
+    // x5: t (child of br1) is updated from main, edits main's clip, then merges into br1.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.commit("br1", "b1", "alice", vec![ins(30, 1)]); // c4
+    log.fork("t", "br1", 1);
+    log.commit("main", "m1", "bob", vec![ins(0, 2)]); // c5
+    log.merge("main", "t", "alice", "up", false).unwrap();
+    log.commit("t", "t1", "alice", vec![trim("c5", -1)]);
+    let plan = log.merge("t", "br1", "alice", "keep", false).unwrap();
+    assert_eq!(plan.merged, ["up-1", "t1"]);
+    assert_eq!(log.state("br1"), log.state("t"));
+    // br1 → main later: main's m1 is there by root; only b1 goes.
+    let plan = log.merge("br1", "main", "alice", "done", false).unwrap();
+    assert_eq!(plan.merged, ["b1", "keep-2"]);
+    assert_eq!(log.state("main"), log.state("br1"));
+}
+
+#[test]
+fn dependent_of_an_excluded_undo_depends_on_skipped() {
+    // x8: br1 undoes its merge of main's delete (excluded) and trims the clip it brought back.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.commit("main", "t1", "bob", vec![delete("c3")]);
+    log.merge("main", "br1", "alice", "mt", false).unwrap();
+    log.undo("br1", "alice", "u1").unwrap();
+    log.commit("br1", "e2", "alice", vec![trim("c3", -1)]);
+    log.commit("br1", "e3", "alice", vec![ins(0, 1)]);
+    let err = log.merge("br1", "main", "alice", "mb", false).unwrap_err();
+    let c = &err.details["conflicts"][0];
+    assert_eq!(
+        (
+            c["txId"].as_str(),
+            c["reason"].as_str(),
+            c["againstTx"].as_str()
+        ),
+        (Some("e2"), Some(reasons::DEPENDS_ON_SKIPPED), Some("u1"))
+    );
+    let plan = log.merge("br1", "main", "alice", "mb", true).unwrap();
+    assert_eq!(plan.merged, ["e3"]);
+    assert_eq!(plan.excluded[0].tx_id, "u1");
+}
+
+#[test]
+fn pick_of_a_copy_of_a_target_record_is_present() {
+    // x9: br2 picked br1's merge copy of main's t1: its root is on main.
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.fork("br2", "main", 0);
+    log.commit("main", "t1", "bob", vec![ins(30, 5)]);
+    log.merge("main", "br1", "alice", "mt", false).unwrap();
+    let c = log.find("mt-1").unwrap().unwrap();
+    let pick = Link::CherryPick {
+        origin: "mt-1".into(),
+        from: "br1".into(),
+        origin_hash: None,
+    };
+    log.copy("br2", "cp", "bob", pick, &c);
+    log.commit("br2", "e2", "bob", vec![trim("c4", -2)]);
+    let plan = log.merge("br2", "main", "bob", "m", false).unwrap();
+    assert_eq!(plan.merged, ["e2"]);
+    assert_eq!(log.state("main"), log.state("br2"));
 }

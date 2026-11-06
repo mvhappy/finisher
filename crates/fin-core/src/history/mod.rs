@@ -10,7 +10,8 @@
 //!   it copies.
 //! - [`pick`]: the cherry-pick and revert planners ([`plan_cherry_pick`], [`plan_revert`]).
 //! - [`merged`]: the derived `merged` state ([`left_to_merge`]).
-//! - [`origin`]: origin chains and their roots ([`root_of`]).
+//! - [`origin`]: origin chains and their roots ([`root_of`]), and what they say about a
+//!   merge's records ([`Roots`]).
 
 pub mod candidates;
 pub mod merge;
@@ -29,7 +30,7 @@ use crate::tx::{Applied, CommittedTx, Diff, Tx};
 pub use candidates::{Candidates, candidates};
 pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
 pub use merged::{left_to_merge, lineage_in};
-pub use origin::{root, root_of, target_roots};
+pub use origin::{Roots, root, root_of, target_roots};
 pub use pick::{plan_cherry_pick, plan_revert};
 pub use undo::{Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
 

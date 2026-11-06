@@ -14,18 +14,17 @@
 //!   group whose effect is already gone (reverted, or undone, and not brought back by an undo
 //!   of that or a redo) plans nothing.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 
-use super::merge::{Paths, TO_HEAD, common_point, on_skipped, path_after};
-use super::origin::{root, root_of, target_roots};
+use super::merge::{Binders, Paths, common_point, on_skipped, path_after, rerun_mode};
+use super::origin::{Roots, holds, root};
 use super::undo::{intent, rebase_over};
-use super::{Lineage, LogRec, LogView, Planned};
-use crate::apply::ApplyMode;
+use super::{LogRec, LogView, Planned};
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
-use crate::rebase::{Conflict, Conflicts, Rebase, rebase_apply};
+use crate::rebase::{Conflict, Conflicts, Rebase, reasons, rebase_apply};
 use crate::record::{Link, RecordKind};
 use crate::replay::BoundIds;
 use crate::tx::Tx;
@@ -82,34 +81,23 @@ pub fn plan_cherry_pick(
         // At or below the common point: the target's lineage holds it.
         return Ok(None);
     };
-    for t in &target {
-        if root_of(log, t)? == root_id {
-            return Ok(None);
-        }
+    let roots = Roots::new(log, &target_l, &source, &target)?;
+    if roots.present[i] {
+        return Ok(None);
     }
-    if let Some(&(_, reason)) = super::candidates(&source, &target)
-        .excluded
-        .iter()
-        .find(|(j, _)| *j == i)
-    {
-        let c = Conflict::new(origin, 0, reason, None);
+    if roots.undoes_target[i] {
+        let c = Conflict::new(origin, 0, reasons::UNDOES_TARGET_RECORDS, None);
         return Err(Conflicts::one(c).into());
     }
-    let steps = Paths::new(&source, &target)?.steps(i, &[]);
-    let same_origin: BTreeSet<String> = target_roots(log, &target)?
-        .into_iter()
-        .filter(|(t, _)| *t == root_id)
-        .flat_map(|(_, ids)| ids)
-        .collect();
+    let steps = Paths::new(&source, &target, &roots)?.steps(i, &[]);
+    let same_origin = Binders::new(&source, &roots.source, &target, &roots.target)
+        .same_origin(&rec.committed()?)?;
     let r = &rec.record;
     let tx = Tx {
         tx_id: tx_id.to_string(),
         ..r.intent.clone()
     };
-    let mode = match r.kind {
-        RecordKind::Edit | RecordKind::CherryPick => ApplyMode::Client,
-        _ => ApplyMode::Internal,
-    };
+    let mode = rerun_mode(r);
     let rebase = Rebase {
         tx: &tx,
         own: &rec.diff,
@@ -186,13 +174,6 @@ pub fn plan_revert(
     let tx = intent(tx_id, author, branch, last.seq, ops);
     let (head_seq, head) = log.head(branch)?;
     rebase_over(log, (head_seq, &head), &since, tx, link, ids).map(Some)
-}
-
-/// Whether lineage `l` holds the row `seq` of `branch`.
-fn holds(l: &Lineage, branch: &str, seq: u64) -> bool {
-    l.segs
-        .iter()
-        .any(|(b, after, through)| b == branch && seq > *after && seq <= through.unwrap_or(TO_HEAD))
 }
 
 /// Whether unit `id` (a txId or mergeId applied before `since`) still has its effect after

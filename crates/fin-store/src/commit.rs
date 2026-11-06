@@ -23,6 +23,7 @@ impl Store {
     ///   retries); the head does not move. When both carry an `argsHash` and they differ, the
     ///   key was reused for another command: `IDEM_KEY_REUSED` (`details {txId, rev,
     ///   committedOps}`). A malformed `argsHash` (not `blake3:<64 hex>`) is `INVALID_OP`.
+    ///   A new txId that is the id of a merge group is `IDEM_KEY_REUSED` too.
     /// - `baseRev` behind the head: the tx is rebased over the txs committed since, in the
     ///   frame of the state at `baseRev` (`fin_core::rebase_tx`); a conflict is `CONFLICT` with
     ///   `details.txId` (incoming), `details.againstTx` (the committed tx to blame, or null when
@@ -100,6 +101,8 @@ fn plan(
     generation: Option<&Generation>,
 ) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
+    // A txId that names a merge group would make the group's undo unit ambiguous.
+    crate::history_ops::merge_id_taken(txn, &tx.tx_id)?;
     // The branch by id (the stored intent holds it); an archived one takes no commits.
     let tx = &Tx {
         branch: crate::write::writable(txn, &tx.branch)?.id,

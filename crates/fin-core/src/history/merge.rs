@@ -1,6 +1,7 @@
-//! Merge (spec §4.4; plan 4B Decisions 18–20, 24): the source's candidates
+//! Merge (spec §4.4; plan 4B Decisions 18–20, 24, 34): the source's candidates
 //! ([`candidates`](super::candidates)) re-run, in order, at the target's head, each through the
-//! rebase engine with full policy.
+//! rebase engine with full policy. Merges are transitive: `merge` copies the source brought in
+//! from other branches are candidates too, unless the target already holds their origin root.
 //!
 //! - **Common point.** The two lineages share a branch, nearest first; the common point C is
 //!   the lower of the two seqs up to which each lineage reads it ([`common_point`]). A path is
@@ -10,33 +11,37 @@
 //!   state right before it). Its steps lead from that frame to the target head
 //!   ([`candidate_steps`]): the source path before it inverted, newest first; the target path
 //!   (with its undo/redo mirrors, [`steps_from`]); the copies this merge planned so far. Each
-//!   copy mirrors its inverted original, and so does a target `merge` or `cherryPick` record
-//!   of a source record (or the target record a source copy came from), so positions inside
-//!   an original come back through its copy (Decision 24). An original with no copy (skipped,
-//!   excluded) stays an unmirrored inverse: what depends on it conflicts.
+//!   copy mirrors its inverted original, and a target record mirrors the inverted source record
+//!   of the same origin root (one a copy of the other, or both copies of a third), so
+//!   positions inside an original come back through its copy (Decision 24). An original with
+//!   no copy (skipped, excluded) stays an unmirrored inverse: what depends on it conflicts.
 //! - **Copies** keep the source's entity ids: the re-run binds the source record's bindings
-//!   ([`BoundIds`]), in `Client` mode for `edit`/`cherryPick`, `Internal` for
-//!   `undo`/`redo`/`revert` (inverses may remove and restore). A `DUPLICATE_ID` there is
-//!   `ALREADY_PRESENT` when a target record of the same origin chain bound the id, else
-//!   `ID_COLLISION` (Decisions 18, 33). The copy is a `merge` record `<mergeId>-<n>` with
-//!   `origin` = the source txId; its intent and record author are the merging author
-//!   (Decision 20), its bindings the source's.
+//!   ([`BoundIds`]), in `Client` mode for client ops, `Internal` for inverses
+//!   ([`rerun_mode`]). A `DUPLICATE_ID` there is `ALREADY_PRESENT` when both paths have the
+//!   id from the same origin root, or neither binds it (a literal id older than C: a restore
+//!   of the same entity), else `ID_COLLISION` ([`Binders`]; Decisions 18, 33). The copy is a
+//!   `merge` record `<mergeId>-<n>` with `origin` = the source txId; its intent and record
+//!   author are the merging author (Decision 20), its bindings the source's.
 //! - **Conflicts.** A failing candidate is recorded and treated as skipped; planning goes on,
-//!   so the full list comes back. A conflict blamed on a skipped candidate's inverse (its
-//!   insert gone, say) is `DEPENDS_ON_SKIPPED`. Without `skip_conflicting`, any conflict makes
-//!   the plan `CONFLICT` with every conflict in `details.conflicts`.
+//!   so the full list comes back. A conflict blamed on a skipped or excluded candidate's
+//!   inverse (its insert gone, say) is `DEPENDS_ON_SKIPPED`. Without `skip_conflicting`, any
+//!   conflict makes the plan `CONFLICT` with every conflict in `details.conflicts`.
+//!
+//! Planning costs O(candidates × (source + target path)) step clones and mappings (Task 20).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde_json::json;
 
 use super::candidates::candidates;
-use super::origin::{root_of, target_roots};
+use super::origin::Roots;
 use super::{Lineage, LogRec, LogView, Planned};
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
-use crate::rebase::{Conflict, Conflicts, Rebase, Step, reasons, rebase_apply, steps_from};
-use crate::record::{Link, RecordKind};
+use crate::rebase::{
+    Conflict, Conflicts, Rebase, Step, committed_footprints, reasons, rebase_apply, steps_from,
+};
+use crate::record::{Link, Record, RecordKind};
 use crate::replay::BoundIds;
 use crate::tx::{CommittedTx, Tx};
 
@@ -91,13 +96,18 @@ pub(super) struct Paths {
     inv: Vec<Step>,
     /// The target path's steps, mirrors relative to this list.
     target: Vec<Step>,
-    /// `(target step, source index)`: a target record and a source record that copy one
-    /// another (either way).
+    /// `(target step, source index)`: a target record and a source record of the same origin
+    /// root.
     cross: Vec<(usize, usize)>,
 }
 
 impl Paths {
-    pub(super) fn new(source: &[LogRec], target: &[LogRec]) -> Result<Paths, CoreError> {
+    /// `roots`: [`Roots::new`] over `source` and `target`.
+    pub(super) fn new(
+        source: &[LogRec],
+        target: &[LogRec],
+        roots: &Roots,
+    ) -> Result<Paths, CoreError> {
         let inv = source
             .iter()
             .map(|r| {
@@ -115,31 +125,17 @@ impl Paths {
         for (q, s) in target_steps.iter().enumerate() {
             by_tx.entry(s.tx_id.as_str()).or_default().push(q);
         }
-        let src: HashMap<&str, usize> = source
-            .iter()
-            .enumerate()
-            .map(|(j, r)| (r.record.tx_id.as_str(), j))
-            .collect();
-        let copy_of = |r: &LogRec| match r.record.kind {
-            RecordKind::Merge | RecordKind::CherryPick => r.record.origin.clone(),
-            _ => None,
-        };
+        // A target record and a source record of the same origin root are the same edit,
+        // however each got there (a copy of the other, or both copies of a third).
         let mut cross = Vec::new();
         let mut used = HashSet::new();
-        for t in target {
+        for (t, root) in target.iter().zip(&roots.target) {
             let Some(&[q]) = by_tx.get(t.record.tx_id.as_str()).map(Vec::as_slice) else {
                 continue;
             };
-            let j = copy_of(t)
-                .and_then(|o| src.get(o.as_str()).copied())
-                .or_else(|| {
-                    source
-                        .iter()
-                        .position(|s| copy_of(s).as_deref() == Some(t.record.tx_id.as_str()))
-                });
-            if let Some(j) = j
-                && used.insert(j)
-            {
+            let j = (0..source.len()).find(|&j| roots.source[j] == *root && !used.contains(&j));
+            if let Some(j) = j {
+                used.insert(j);
                 cross.push((q, j));
             }
         }
@@ -187,14 +183,18 @@ impl Paths {
 
 /// The steps that lead from source candidate `i`'s frame to the target head (module docs):
 /// the source path before `i` inverted, newest first; the target path; the copies `planned`
-/// so far (source index, the copy as committed). Fails only as [`Step::from_committed`].
+/// so far (source index, the copy as committed). `target_l` is the target's lineage (origin
+/// roots pair same-root records). Fails as [`Step::from_committed`] or the log's reads.
 pub fn candidate_steps(
+    log: &dyn LogView,
+    target_l: &Lineage,
     source_path: &[LogRec],
     i: usize,
     target_path: &[LogRec],
     planned: &[(usize, CommittedTx)],
 ) -> Result<Vec<Step>, CoreError> {
-    let paths = Paths::new(source_path, target_path)?;
+    let roots = Roots::new(log, target_l, source_path, target_path)?;
+    let paths = Paths::new(source_path, target_path, &roots)?;
     let planned = planned
         .iter()
         .map(|(j, c)| Ok((*j, Step::from_committed(c)?)))
@@ -247,9 +247,10 @@ pub fn plan_merge(
     }
     let source = path_after(log, &source_l, &c)?;
     let target = path_after(log, &target_l, &c)?;
-    let cands = candidates(&source, &target);
-    let paths = Paths::new(&source, &target)?;
-    let roots = target_roots(log, &target)?;
+    let roots = Roots::new(log, &target_l, &source, &target)?;
+    let cands = candidates(&source, &roots);
+    let paths = Paths::new(&source, &target, &roots)?;
+    let binders = Binders::new(&source, &roots.source, &target, &roots.target);
     let (mut seq, mut head) = log.head(into)?;
 
     let mut plan = MergePlan {
@@ -264,25 +265,22 @@ pub fn plan_merge(
             .collect(),
     };
     let mut copies: Vec<(usize, Step)> = Vec::new();
-    let mut skipped: HashSet<&str> = HashSet::new();
+    // Candidates not copied: excluded, or failed. What depends on them is DEPENDS_ON_SKIPPED.
+    let mut skipped: HashSet<&str> = cands
+        .excluded
+        .iter()
+        .map(|&(i, _)| source[i].record.tx_id.as_str())
+        .collect();
     for &i in &cands.picks {
         let src = &source[i];
         let r = &src.record;
         let steps = paths.steps(i, &copies);
-        let root = root_of(log, src)?;
-        let same_origin: BTreeSet<String> = roots
-            .iter()
-            .filter(|(t, _)| *t == root)
-            .flat_map(|(_, ids)| ids.iter().cloned())
-            .collect();
+        let same_origin = binders.same_origin(&src.committed()?)?;
         let tx = Tx {
             tx_id: r.tx_id.clone(),
             ..r.intent.clone()
         };
-        let mode = match r.kind {
-            RecordKind::Edit | RecordKind::CherryPick => ApplyMode::Client,
-            _ => ApplyMode::Internal,
-        };
+        let mode = rerun_mode(r);
         let rebase = Rebase {
             tx: &tx,
             own: &src.diff,
@@ -347,5 +345,61 @@ pub(super) fn on_skipped(c: Conflict, skipped: &HashSet<&str>) -> Conflict {
             c.against_tx,
         ),
         _ => c,
+    }
+}
+
+/// The mode a copy of `r` re-runs in: `Client` for an edit, and for a pick or merge copy of
+/// client ops (full client policy); `Internal` for an undo, redo or revert, or a copy of one
+/// (inverses may remove and restore, and name the ids they bring back).
+pub(super) fn rerun_mode(r: &Record) -> ApplyMode {
+    match r.kind {
+        RecordKind::Edit => ApplyMode::Client,
+        RecordKind::CherryPick | RecordKind::Merge
+            if !r.intent.ops.iter().any(|o| o.is_internal()) =>
+        {
+            ApplyMode::Client
+        }
+        _ => ApplyMode::Internal,
+    }
+}
+
+/// Which record first bound each entity id on each path, by origin root (Decisions 18, 33):
+/// an id that a copy creates again, and the target holds, is `ALREADY_PRESENT` when both
+/// paths have it from the same root (or neither path binds it: it is older than the common
+/// point, and a restore brings back that same entity), else `ID_COLLISION`.
+pub(super) struct Binders {
+    source: HashMap<String, String>,
+    target: HashMap<String, String>,
+}
+
+impl Binders {
+    pub(super) fn new(
+        source: &[LogRec],
+        source_roots: &[String],
+        target: &[LogRec],
+        target_roots: &[String],
+    ) -> Binders {
+        let first = |path: &[LogRec], roots: &[String]| {
+            let mut out: HashMap<String, String> = HashMap::new();
+            for (r, root) in path.iter().zip(roots) {
+                for id in r.record.bindings.values() {
+                    out.entry(id.clone()).or_insert_with(|| root.clone());
+                }
+            }
+            out
+        };
+        Binders {
+            source: first(source, source_roots),
+            target: first(target, target_roots),
+        }
+    }
+
+    /// The ids `c` creates (bound or literal) that a duplicate makes `ALREADY_PRESENT`.
+    pub(super) fn same_origin(&self, c: &CommittedTx) -> Result<BTreeSet<String>, CoreError> {
+        Ok(committed_footprints(c)?
+            .into_iter()
+            .flat_map(|f| f.creates)
+            .filter(|id| self.source.get(id) == self.target.get(id))
+            .collect())
     }
 }

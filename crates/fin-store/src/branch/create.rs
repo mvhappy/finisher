@@ -238,6 +238,7 @@ fn metadata_draft(
 
 fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated, StoreError> {
     let txn = ctx.txn;
+    crate::history_ops::merge_id_taken(txn, &r.tx_id)?;
     let parent = writable(txn, &r.from)?.id;
     let head = ctx.head(&parent)?;
     let head_rev = head.rev;
@@ -318,6 +319,7 @@ fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated
 
 fn plan_set(ctx: &mut WriteCtx<'_>, r: &BranchSet) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
+    crate::history_ops::merge_id_taken(txn, &r.tx_id)?;
     let info = index::resolve(txn, &r.branch)?;
     let Some(parent) = info.parent.clone() else {
         return Err(CoreError::new(

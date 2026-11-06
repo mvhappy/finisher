@@ -106,6 +106,7 @@ fn result(c: CommittedTx, dry_run: bool) -> HistoryResult {
 
 fn plan(ctx: &mut WriteCtx<'_>, r: &HistoryReq, which: Which) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
+    super::merge_id_taken(txn, &r.tx_id)?;
     let branch = writable(txn, &r.branch)?.id;
     let mut ids = Counters::load(txn)?;
     let head = ctx.head(&branch)?;

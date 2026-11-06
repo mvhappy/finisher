@@ -40,10 +40,12 @@ pub struct MergeReq {
 }
 
 impl Store {
-    /// Merges branch `from` into `into` (spec §4.4): each candidate source record (its content
-    /// records after the two lineages' common point not yet merged or picked into the target)
-    /// re-run in order at the target's head, keeping its entity ids, as one `merge` record
-    /// `<mergeId>-<n>`.
+    /// Merges branch `from` into `into` (spec §4.4): each candidate source record (its records
+    /// with edits after the two lineages' common point, `merge` copies from other branches
+    /// included, whose origin root the target does not hold yet; Decision 34) re-run in order
+    /// at the target's head, keeping its entity ids, as one `merge` record `<mergeId>-<n>`.
+    /// Nothing to merge writes nothing, so a later request with the same mergeId merges what
+    /// arrived since.
     ///
     /// Errors, in order: `INVALID_OP` (empty txId, bad `argsHash`); a retried mergeId answers
     /// from the log (`IDEM_KEY_REUSED` when `<mergeId>-1` holds another kind of record or

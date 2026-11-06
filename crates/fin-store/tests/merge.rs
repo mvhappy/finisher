@@ -590,3 +590,132 @@ fn merges_replay_identically_on_follower() {
     let v = b.verify();
     assert!(v.ok, "{v:?}");
 }
+
+fn new_branch(s: &mut Store, key: &str, name: &str) -> String {
+    s.create_branch(BranchCreate {
+        tx_id: key.into(),
+        author: "alice".into(),
+        name: Some(name.into()),
+        from: MAIN.into(),
+        at: None,
+        dry_run: false,
+    })
+    .unwrap()
+    .branch
+    .id
+}
+
+fn branch_state(s: &Store, id: &str) -> BranchState {
+    s.branches(true)
+        .unwrap()
+        .into_iter()
+        .find(|b| b.id == id)
+        .unwrap()
+        .state
+}
+
+#[test]
+fn transitive_merge_and_merged_state() {
+    // br2 → br1 → main brings br2's clip and br1's trim of it (Decision 34); both branches
+    // are merged then, br2 through br1.
+    let e = env();
+    let mut s = project(&e);
+    let br2 = new_branch(&mut s, "b2", "other");
+    edit(&mut s, &br2, "e1", "bob", vec![insert("$p", 30, 5)]);
+    merge(&mut s, "ma", &br2, "br1");
+    assert_eq!(branch_state(&s, &br2), BranchState::Merged);
+    edit(&mut s, "br1", "e2", "alice", vec![trim("c4", -1)]);
+    let r = merge(&mut s, "mb", "br1", MAIN);
+    assert_eq!(r.merged, ["ma-1", "e2"]);
+    assert_eq!(r.source_state, BranchState::Merged);
+    assert_eq!(state(&s, MAIN), state(&s, "br1"));
+    assert_eq!(branch_state(&s, &br2), BranchState::Merged);
+    // A merge into br1 gives it something to merge on: active again, merged once it does.
+    let br3 = new_branch(&mut s, "b3", "third");
+    edit(&mut s, &br3, "e3", "bob", vec![insert("$q", 0, 1)]);
+    merge(&mut s, "mc", &br3, "br1");
+    assert_eq!(branch_state(&s, "br1"), BranchState::Active);
+    merge(&mut s, "md", "br1", MAIN);
+    assert_eq!(branch_state(&s, "br1"), BranchState::Merged);
+    assert_eq!(state(&s, MAIN), state(&s, "br1"));
+    // An update from main into a merged branch copies nothing that is left to merge back.
+    edit(&mut s, MAIN, "t1", "carol", vec![delete("c1")]);
+    merge(&mut s, "me", MAIN, "br1");
+    assert_eq!(branch_state(&s, "br1"), BranchState::Merged);
+    let v = s.verify();
+    assert!(v.ok, "{v:?}");
+}
+
+#[test]
+fn txid_equal_to_a_merge_id_is_refused() {
+    let e = env();
+    let mut s = project(&e);
+    edit(&mut s, "br1", "e1", "alice", vec![insert("$p", 30, 1)]);
+    merge(&mut s, "m", "br1", MAIN);
+    let before = rows(&s);
+    let base = s.head(MAIN);
+    let err = code(
+        s.commit(Tx {
+            tx_id: "m".into(),
+            author: "carol".into(),
+            branch: MAIN.into(),
+            base_rev: base,
+            schema_version: SCHEMA_VERSION,
+            args_hash: None,
+            ops: vec![insert("$q", 0, 1)],
+        })
+        .unwrap_err(),
+    );
+    assert_eq!(
+        (err.code.as_str(), err.details["mergeId"].as_str()),
+        ("IDEM_KEY_REUSED", Some("m"))
+    );
+    let hist = HistoryReq {
+        tx_id: "m".into(),
+        author: "carol".into(),
+        branch: MAIN.into(),
+        dry_run: false,
+        args_hash: None,
+    };
+    assert_eq!(
+        code(s.undo(hist.clone()).unwrap_err()).code,
+        "IDEM_KEY_REUSED"
+    );
+    assert_eq!(code(s.redo(hist).unwrap_err()).code, "IDEM_KEY_REUSED");
+    let err = code(
+        s.create_branch(BranchCreate {
+            tx_id: "m".into(),
+            author: "alice".into(),
+            name: Some("x".into()),
+            from: MAIN.into(),
+            at: None,
+            dry_run: false,
+        })
+        .unwrap_err(),
+    );
+    assert_eq!(err.code, "IDEM_KEY_REUSED");
+    assert_eq!(rows(&s), before);
+    // The merge unit stays one unit: undo takes the group.
+    let u = s
+        .undo(HistoryReq {
+            tx_id: "u1".into(),
+            author: "carol".into(),
+            branch: MAIN.into(),
+            dry_run: false,
+            args_hash: None,
+        })
+        .unwrap();
+    assert_eq!(u.undone, ["m"]);
+}
+
+#[test]
+fn empty_merge_leaves_no_trace() {
+    // Nothing to merge writes nothing, so the same key merges what arrives later.
+    let e = env();
+    let mut s = project(&e);
+    let before = rows(&s);
+    assert!(merge(&mut s, "k", "br1", MAIN).committed.is_empty());
+    assert_eq!(rows(&s), before);
+    edit(&mut s, "br1", "e1", "alice", vec![insert("$p", 30, 1)]);
+    assert_eq!(merge(&mut s, "k", "br1", MAIN).merged, ["e1"]);
+}
