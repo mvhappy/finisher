@@ -8,9 +8,15 @@
 //!   ([`derive_stacks`]), and the `undo` / `redo` planners.
 //! - [`merge`] and [`candidates`]: the merge planner ([`plan_merge`]) and which source records
 //!   it copies.
+//! - [`pick`]: the cherry-pick and revert planners ([`plan_cherry_pick`], [`plan_revert`]).
+//! - [`merged`]: the derived `merged` state ([`left_to_merge`]).
+//! - [`origin`]: origin chains and their roots ([`root_of`]).
 
 pub mod candidates;
 pub mod merge;
+pub mod merged;
+pub mod origin;
+pub mod pick;
 pub mod undo;
 
 use std::collections::HashSet;
@@ -22,6 +28,9 @@ use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 pub use candidates::{Candidates, candidates};
 pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
+pub use merged::{left_to_merge, lineage_in};
+pub use origin::{root, root_of, target_roots};
+pub use pick::{plan_cherry_pick, plan_revert};
 pub use undo::{Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
 
 /// One stored record with its place in the log and its diff (the store's `txs` row).

@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use fin_core::history::{
-    Lineage, LogRec, LogView, MergePlan, Planned, Stacks, derive_stacks, plan_merge, plan_redo,
-    plan_undo,
+    Lineage, LogRec, LogView, MergePlan, Planned, Stacks, derive_stacks, plan_cherry_pick,
+    plan_merge, plan_redo, plan_revert, plan_undo,
 };
 use fin_core::{
     Applied, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
@@ -159,6 +159,32 @@ impl MemLog {
             self.append(into, p);
         }
         Ok(plan)
+    }
+
+    /// Cherry-picks `origin` into `into` and appends the copy (`None`: nothing to do).
+    pub fn pick(
+        &mut self,
+        origin: &str,
+        into: &str,
+        author: &str,
+        tx_id: &str,
+    ) -> Result<Option<LogRec>, CoreError> {
+        let p = plan_cherry_pick(self, origin, into, author, tx_id)?;
+        Ok(p.map(|p| self.append(into, p)))
+    }
+
+    /// Reverts merge group `merge_id` on `b` and appends the record (`None`: nothing to do).
+    pub fn revert(
+        &mut self,
+        merge_id: &str,
+        b: &str,
+        author: &str,
+        tx_id: &str,
+    ) -> Result<Option<LogRec>, CoreError> {
+        let mut ids = self.ids.clone();
+        let p = plan_revert(self, merge_id, b, author, tx_id, &mut ids)?;
+        self.ids = ids;
+        Ok(p.map(|p| self.append(b, p)))
     }
 
     /// A copy of `origin` at the head of `b` with kind `link`: its intent re-run as a client

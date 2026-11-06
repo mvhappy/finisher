@@ -31,6 +31,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use serde_json::json;
 
 use super::candidates::candidates;
+use super::origin::{root_of, target_roots};
 use super::{Lineage, LogRec, LogView, Planned};
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
@@ -40,10 +41,7 @@ use crate::replay::BoundIds;
 use crate::tx::{CommittedTx, Tx};
 
 /// A `through` past any head (`records` reads to the head): seqs are SQLite integers.
-const TO_HEAD: u64 = i64::MAX as u64;
-
-/// How deep an origin chain is followed (a loop in stored links ends there).
-const MAX_CHAIN: usize = 1_000;
+pub(super) const TO_HEAD: u64 = i64::MAX as u64;
 
 /// The common point of two lineages: the first branch of `a` (own first) that `b` also reads,
 /// and the lower of the seqs up to which each reads it. `("", 0)` when they share no branch
@@ -63,7 +61,11 @@ pub fn common_point(a: &Lineage, b: &Lineage) -> (String, u64) {
 }
 
 /// `l`'s records after the common point `c` (on `l`'s lineage), oldest first.
-fn path_after(log: &dyn LogView, l: &Lineage, c: &(String, u64)) -> Result<Vec<LogRec>, CoreError> {
+pub(super) fn path_after(
+    log: &dyn LogView,
+    l: &Lineage,
+    c: &(String, u64),
+) -> Result<Vec<LogRec>, CoreError> {
     let Some(at) = l.segs.iter().position(|s| s.0 == c.0) else {
         return Ok(Vec::new());
     };
@@ -84,7 +86,7 @@ fn path_after(log: &dyn LogView, l: &Lineage, c: &(String, u64)) -> Result<Vec<L
 
 /// The source path inverted and the target path as steps, computed once per merge; each
 /// candidate takes its slice ([`Paths::steps`]).
-struct Paths {
+pub(super) struct Paths {
     /// `inv[j]`: source record `j` inverted.
     inv: Vec<Step>,
     /// The target path's steps, mirrors relative to this list.
@@ -95,7 +97,7 @@ struct Paths {
 }
 
 impl Paths {
-    fn new(source: &[LogRec], target: &[LogRec]) -> Result<Paths, CoreError> {
+    pub(super) fn new(source: &[LogRec], target: &[LogRec]) -> Result<Paths, CoreError> {
         let inv = source
             .iter()
             .map(|r| {
@@ -149,7 +151,7 @@ impl Paths {
     }
 
     /// The steps of source candidate `i`, with `planned` (source index, copy step) so far.
-    fn steps(&self, i: usize, planned: &[(usize, Step)]) -> Vec<Step> {
+    pub(super) fn steps(&self, i: usize, planned: &[(usize, Step)]) -> Vec<Step> {
         let at = |j: usize| i - 1 - j;
         let mut steps: Vec<Step> = (0..i).rev().map(|j| self.inv[j].clone()).collect();
         let mut paired = vec![false; i + self.target.len() + planned.len()];
@@ -336,7 +338,7 @@ pub fn plan_merge(
 
 /// `c`, as `DEPENDS_ON_SKIPPED` when the record it blames is a skipped candidate (its inverse
 /// is in the steps unmirrored).
-fn on_skipped(c: Conflict, skipped: &HashSet<&str>) -> Conflict {
+pub(super) fn on_skipped(c: Conflict, skipped: &HashSet<&str>) -> Conflict {
     match c.against_tx.as_deref() {
         Some(t) if skipped.contains(t) => Conflict::new(
             c.tx_id,
@@ -346,33 +348,4 @@ fn on_skipped(c: Conflict, skipped: &HashSet<&str>) -> Conflict {
         ),
         _ => c,
     }
-}
-
-/// The first record of `rec`'s origin chain: followed through `origin` while the log holds it.
-fn root_of(log: &dyn LogView, rec: &LogRec) -> Result<String, CoreError> {
-    let mut id = rec.record.tx_id.clone();
-    let mut origin = rec.record.origin.clone();
-    for _ in 0..MAX_CHAIN {
-        let Some(o) = origin else { break };
-        origin = log.find(&o)?.and_then(|r| r.record.origin);
-        id = o;
-    }
-    Ok(id)
-}
-
-/// Each target record's origin root and the ids it bound.
-fn target_roots(
-    log: &dyn LogView,
-    target: &[LogRec],
-) -> Result<Vec<(String, Vec<String>)>, CoreError> {
-    target
-        .iter()
-        .filter(|t| !t.record.bindings.is_empty())
-        .map(|t| {
-            Ok((
-                root_of(log, t)?,
-                t.record.bindings.values().cloned().collect(),
-            ))
-        })
-        .collect()
 }

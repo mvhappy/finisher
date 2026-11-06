@@ -189,7 +189,11 @@ fn merge_child_without_target_edits_applies_all() {
     let r = merge(&mut s, "m", "feature", MAIN);
     assert_eq!(r.merged, ["e1", "e2", "e3"]);
     assert!(r.skipped.is_empty() && r.excluded.is_empty() && !r.dry_run);
-    assert_eq!(r.source_state, BranchState::Active);
+    assert_eq!(
+        r.source_state,
+        BranchState::Merged,
+        "nothing of br1 is left"
+    );
     assert_eq!(state(&s, MAIN), state(&s, "br1"));
     assert_eq!(s.head(MAIN), 3 + 3, "after the branch record");
     let v = s.verify();

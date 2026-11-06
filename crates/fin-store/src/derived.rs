@@ -1,16 +1,21 @@
 //! The derived history tables, recomputed from the log (plan 4B Decision 6): after any row
 //! deletion (a rewind, a diverged tail, a cascade) the incremental updates no longer
 //! hold, so [`recompute`] runs in the same transaction.
+//!
+//! The index's `merged` flags (Decision 21, `fin_core::history::merged`) are part of
+//! [`compute`], and kept incrementally by [`Touched`]: every write and every import pass
+//! settles the branches its records can change.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
-use fin_core::RecordKind;
 use fin_core::branch::{Absorbed, BranchIndex, MAIN};
-use rusqlite::{Connection, params};
+use fin_core::history::{Lineage, LogRec, LogView, left_to_merge, lineage_in};
+use fin_core::{CoreError, Diff, Link, Project, RecordKind};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::StoreError;
 use crate::branch::index;
-use crate::db::{self, to_u64};
+use crate::db::{self, to_i64, to_u64};
 
 /// What the log alone says the derived tables hold ([`compute`]).
 #[derive(Debug, Clone)]
@@ -45,8 +50,8 @@ enum Outcome {
 ///   it; named the same way).
 ///
 /// A branch that holds an id after another is folded again, as its rows are the holder's.
-/// (`merged` is recomputed from `merge` records from Task 14 on; until then nothing sets
-/// it.) Reads only, and a function of the log alone, so every follower and a rebuild derive
+/// Each branch's `merged` flag follows from the `merge` records ([`merged_branches`]). Reads
+/// only, and a function of the log alone, so every follower and a rebuild derive
 /// the same: [`recompute`] writes the result (import after every pass that folded a `branch`
 /// or `branchSet` record, and after every cascade), verify compares it.
 pub(crate) fn compute(conn: &Connection) -> Result<Derived, StoreError> {
@@ -133,7 +138,18 @@ pub(crate) fn compute(conn: &Connection) -> Result<Derived, StoreError> {
             ignored.insert(hash, why);
         }
     }
-    Ok(Derived { index: ix, ignored })
+    let merged = merged_branches(conn, &ix, None)?;
+    let index = with_merged(&ix, &merged);
+    Ok(Derived { index, ignored })
+}
+
+/// `ix` with exactly the branches `merged` flagged `merged`.
+fn with_merged(ix: &BranchIndex, merged: &BTreeSet<String>) -> BranchIndex {
+    BranchIndex::from_infos(ix.list().into_iter().map(|(_, i)| {
+        let mut i = i.clone();
+        i.merged = merged.contains(&i.id);
+        i
+    }))
 }
 
 /// Drops the `record_links` rows whose record is gone, and writes what [`compute`] derives
@@ -175,6 +191,221 @@ fn write_marks(txn: &Connection, d: &Derived) -> Result<(), StoreError> {
         index::set_ignored(txn, hash, Some(why))?;
     }
     Ok(())
+}
+
+/// The branches of `ix` that are `merged` (Decision 21), among `only` (all when `None`): a
+/// branch B is when a branch T, not B's descendant, holds a `merge` record from B and
+/// nothing of B's own is left to merge into T (`fin_core::history::left_to_merge`).
+pub(crate) fn merged_branches(
+    conn: &Connection,
+    ix: &BranchIndex,
+    only: Option<&BTreeSet<String>>,
+) -> Result<BTreeSet<String>, StoreError> {
+    let pairs: Vec<(String, String)> = conn
+        .prepare_cached(
+            "SELECT DISTINCT from_branch, branch FROM record_links
+             WHERE kind = 'merge' AND from_branch IS NOT NULL ORDER BY from_branch, branch",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let log = IndexLog { conn, ix };
+    let mut out = BTreeSet::new();
+    for (b, t) in pairs {
+        if out.contains(&b)
+            || only.is_some_and(|o| !o.contains(&b))
+            || b == t
+            || ix.get(&b).is_none()
+            || ix.get(&t).is_none()
+            || ix.is_descendant(&t, &b)
+        {
+            continue;
+        }
+        if left_to_merge(&log, &b, &t)?.is_empty() {
+            out.insert(b);
+        }
+    }
+    Ok(out)
+}
+
+/// The branches whose `merged` flag the records of one write or import pass can change
+/// ([`Touched::record`]), settled by [`Touched::settle`] in the same transaction.
+#[derive(Debug, Default)]
+pub(crate) struct Touched {
+    /// Branches a write gave an `edit`: always left to merge, so never `merged`.
+    fresh: BTreeSet<String>,
+    /// Branches to recompute: the source of a `merge` or `cherryPick` copy, a branch that got
+    /// another content record (an undo tied to a merge's target is not a candidate), and a
+    /// branch an import gave any content record.
+    recheck: BTreeSet<String>,
+}
+
+impl Touched {
+    /// A record a write appended to `branch` with `link` (`None`: an edit). A new edit is
+    /// nobody's origin yet, so its branch is left to merge without a look.
+    pub(crate) fn record(&mut self, branch: &str, link: Option<&Link>) {
+        self.add(branch, link, true);
+    }
+
+    /// A record an import pass applied on `branch`: an edit that arrives late may be copied
+    /// already (its copy came first), so its branch is recomputed too.
+    pub(crate) fn imported(&mut self, branch: &str, link: Option<&Link>) {
+        self.add(branch, link, false);
+    }
+
+    fn add(&mut self, branch: &str, link: Option<&Link>, new: bool) {
+        match link {
+            None | Some(Link::Edit) if new => {
+                self.fresh.insert(branch.to_string());
+            }
+            None | Some(Link::Edit) => {
+                self.recheck.insert(branch.to_string());
+            }
+            Some(Link::Merge { from, .. }) => {
+                self.recheck.insert(from.clone());
+            }
+            Some(Link::CherryPick { from, .. }) => {
+                self.recheck.insert(from.clone());
+                self.recheck.insert(branch.to_string());
+            }
+            Some(Link::Undo { .. } | Link::Redo { .. } | Link::Revert { .. }) => {
+                self.recheck.insert(branch.to_string());
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Writes the `merged` flag of every touched branch the index holds, as
+    /// [`merged_branches`] gives it, and forgets them.
+    pub(crate) fn settle(&mut self, conn: &Connection) -> Result<(), StoreError> {
+        if self.recheck.is_empty() {
+            // Edits only (a commit): clear the flag where it is set, row by row.
+            for id in std::mem::take(&mut self.fresh) {
+                if let Some(info) = index::get(conn, &id)?.filter(|i| i.merged) {
+                    index::save(
+                        conn,
+                        &fin_core::branch::BranchInfo {
+                            merged: false,
+                            ..info
+                        },
+                    )?;
+                }
+            }
+            return Ok(());
+        }
+        let ix = index::load(conn)?;
+        let now = merged_branches(conn, &ix, Some(&self.recheck))?;
+        for id in self.fresh.iter().chain(&self.recheck) {
+            let Some(info) = ix.get(id) else { continue };
+            let want = now.contains(id);
+            if info.merged != want {
+                index::save(
+                    conn,
+                    &fin_core::branch::BranchInfo {
+                        merged: want,
+                        ..info.clone()
+                    },
+                )?;
+            }
+        }
+        *self = Touched::default();
+        Ok(())
+    }
+}
+
+/// The log as [`left_to_merge`] reads it: lineages from an index (the one [`compute`] derives,
+/// which may differ from the table), records without their diffs (never filled: verify reads
+/// through it and writes nothing). States are never read.
+struct IndexLog<'a> {
+    conn: &'a Connection,
+    ix: &'a BranchIndex,
+}
+
+impl IndexLog<'_> {
+    fn rec(&self, branch: String, seq: i64, bytes: &[u8]) -> Result<LogRec, StoreError> {
+        let seq = to_u64(seq)?;
+        Ok(LogRec {
+            record: db::parse_record(Some(seq), bytes)?,
+            branch,
+            seq,
+            diff: Diff::default(),
+        })
+    }
+}
+
+fn no_states() -> CoreError {
+    CoreError::new("DB_ERROR", "the merged state reads no project states")
+}
+
+impl LogView for IndexLog<'_> {
+    fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {
+        Ok(lineage_in(self.ix, branch))
+    }
+
+    fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError> {
+        let read = || -> Result<Vec<LogRec>, StoreError> {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT seq, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 AND seq <= ?3
+                 ORDER BY seq",
+            )?;
+            let rows: Vec<(i64, Vec<u8>)> = stmt
+                .query_map(params![branch, to_i64(after)?, to_i64(through)?], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            rows.into_iter()
+                .map(|(seq, bytes)| self.rec(branch.to_string(), seq, &bytes))
+                .collect()
+        };
+        Ok(read()?)
+    }
+
+    fn head(&self, _: &str) -> Result<(u64, Project), CoreError> {
+        Err(no_states())
+    }
+
+    fn state_at(&self, _: &str, _: u64) -> Result<Project, CoreError> {
+        Err(no_states())
+    }
+
+    fn find(&self, tx_id: &str) -> Result<Option<LogRec>, CoreError> {
+        let read = || -> Result<Option<LogRec>, StoreError> {
+            let row: Option<(String, i64, Vec<u8>)> = self
+                .conn
+                .prepare_cached("SELECT branch, seq, record_bytes FROM txs WHERE tx_id = ?1")?
+                .query_row(params![tx_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .optional()?;
+            row.map(|(b, seq, bytes)| self.rec(b, seq, &bytes))
+                .transpose()
+        };
+        Ok(read()?)
+    }
+
+    fn merge_group(&self, merge_id: &str) -> Result<Vec<LogRec>, CoreError> {
+        let ids: Vec<String> = self
+            .conn
+            .prepare_cached(
+                "SELECT tx_id FROM record_links WHERE kind = 'merge' AND merge_id = ?1
+                 ORDER BY branch, seq",
+            )
+            .map_err(StoreError::from)?
+            .query_map(params![merge_id], |r| r.get(0))
+            .map_err(StoreError::from)?
+            .collect::<Result<_, _>>()
+            .map_err(StoreError::from)?;
+        let mut out = vec![];
+        for id in ids {
+            out.extend(self.find(&id)?);
+        }
+        Ok(out)
+    }
+
+    fn is_descendant(&self, a: &str, of: &str) -> Result<bool, CoreError> {
+        Ok(self.ix.is_descendant(a, of))
+    }
+
+    fn merged_away(&self, _: &str) -> Result<HashSet<String>, CoreError> {
+        Err(no_states())
+    }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]

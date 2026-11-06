@@ -4,8 +4,10 @@
 //!
 //! - [`undo`]: `Store::undo`, `Store::redo`, `Store::undo_stacks`.
 //! - [`merge`] holds `Store::merge`.
+//! - [`pick`]: `Store::cherry_pick`, `Store::revert`.
 
 pub(crate) mod merge;
+pub(crate) mod pick;
 pub(crate) mod undo;
 
 use std::collections::{HashMap, HashSet};
@@ -208,4 +210,22 @@ pub(crate) fn targets(link: Option<&Link>) -> Vec<String> {
         Some(Link::Redo { redoes }) => vec![redoes.clone()],
         _ => vec![],
     }
+}
+
+/// `IDEM_KEY_REUSED` when `tx_id`, the txId a write would use, already names a merge group:
+/// a group's id and a record's txId never share a value (the merge checks the other way).
+pub(crate) fn merge_id_taken(conn: &Connection, tx_id: &str) -> Result<(), StoreError> {
+    let taken = conn
+        .prepare_cached("SELECT 1 FROM record_links WHERE merge_id = ?1 LIMIT 1")?
+        .exists(params![tx_id])?;
+    if !taken {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        "IDEM_KEY_REUSED",
+        format!("txId {tx_id} is the id of a merge"),
+    )
+    .with_details(serde_json::json!({ "txId": tx_id, "mergeId": tx_id }))
+    .with_fix("use a new idempotency key (txId)")
+    .into())
 }

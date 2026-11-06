@@ -62,6 +62,8 @@ pub(crate) struct WriteCtx<'a> {
     /// changed rows (records, ids, filled diffs, index rows), what it reads is no longer
     /// committed state, so heads are not refreshed into the shared cache any more.
     changes_at_start: u64,
+    /// Branches whose `merged` flag this write's records can change ([`WriteCtx::settle`]).
+    touched: crate::derived::Touched,
 }
 
 impl WriteCtx<'_> {
@@ -94,6 +96,13 @@ impl WriteCtx<'_> {
             self.staged.insert(branch.to_string(), head);
         }
         Ok(&self.staged[branch])
+    }
+
+    /// Writes the `merged` flags this write's appends changed so far (Decision 21), so what
+    /// the write reads next sees them. [`Store::write`] settles once more after the
+    /// operation.
+    pub(crate) fn settle(&mut self) -> Result<(), StoreError> {
+        self.touched.settle(self.txn)
     }
 
     /// Appends `d` at the head of its branch: the record (seq = head + 1, `parentHash` = the
@@ -137,6 +146,7 @@ impl WriteCtx<'_> {
             self.epoch.unwrap_or(0),
         )?;
         crate::branch::index::absorb(self.txn, &d.branch, seq, &record, &tip)?;
+        self.touched.record(&d.branch, link.as_deref());
         if seq.is_multiple_of(SNAPSHOT_EVERY) {
             db::insert_snapshot(self.txn, &d.branch, seq, &d.project)?;
         }
@@ -234,8 +244,10 @@ impl Store {
             cache: self.heads.get_mut(),
             staged: HashMap::new(),
             changes_at_start: txn.total_changes(),
+            touched: crate::derived::Touched::default(),
         };
         let out = f(&mut ctx)?;
+        ctx.settle()?;
         let WriteCtx { staged, .. } = ctx;
         let Some(epoch) = epoch else {
             txn.rollback()?;

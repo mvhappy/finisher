@@ -96,10 +96,13 @@ impl Step {
 ///   a unit that is a merge group (its `mergeId`) is its `merge` records here, each one step
 ///   not yet mirrored, newest first (an undo takes a group's inverses newest record first);
 /// - a `redo` of an `undo` that is one earlier step, not yet mirrored, mirrors it (the undo's
-///   unit was before `since`; with it inside, the undo is paired with the unit already).
+///   unit was before `since`; with it inside, the undo is paired with the unit already);
+/// - a `revert` of a merge group whose `merge` records are all here, not yet mirrored, is cut
+///   like an undo of that group: one part per record, newest first, each mirroring its record.
 ///
-/// Anything else stands alone: an undo whose units are not all here (or whose op counts do not
-/// add up: a merge group only partly here, say), a `revert` (Task 14), and every other kind.
+/// Anything else stands alone: an undo or revert whose units are not all here (or whose op
+/// counts do not add up: a merge group only partly here, say), a redo or undo of a step that
+/// was cut into parts (a revert, an undo of a merge group), and every other kind.
 /// Fails only as [`Step::from_committed`] does.
 pub fn steps_from(since: &[&CommittedTx]) -> Result<Vec<Step>, CoreError> {
     let mut steps: Vec<Step> = Vec::new();
@@ -113,14 +116,13 @@ pub fn steps_from(since: &[&CommittedTx]) -> Result<Vec<Step>, CoreError> {
             Some(&[j]) if !paired[j] => Some(j),
             _ => None,
         };
-        // A unit's steps, in the order its inverses stand in an undo.
-        let unit = |id: &str| match (one(id), groups.get(id)) {
-            (Some(j), _) => Some(vec![j]),
-            (None, Some(g)) if g.iter().all(|&j| !paired[j]) => {
-                Some(g.iter().rev().copied().collect())
-            }
+        // A merge group's steps, newest first (as its inverses stand in an undo or a revert).
+        let group = |id: &str| match groups.get(id) {
+            Some(g) if g.iter().all(|&j| !paired[j]) => Some(g.iter().rev().copied().collect()),
             _ => None,
         };
+        // A unit's steps, in the order its inverses stand in an undo.
+        let unit = |id: &str| one(id).map(|j| vec![j]).or_else(|| group(id));
         let targets: Option<Vec<usize>> = match c.link.as_deref() {
             Some(Link::Undo { undoes }) => undoes
                 .iter()
@@ -128,6 +130,7 @@ pub fn steps_from(since: &[&CommittedTx]) -> Result<Vec<Step>, CoreError> {
                 .collect::<Option<Vec<_>>>()
                 .map(|t| t.concat()),
             Some(Link::Redo { redoes }) => one(redoes).map(|j| vec![j]),
+            Some(Link::Revert { reverts }) => group(reverts),
             _ => None,
         };
         let targets = targets.filter(|t| {

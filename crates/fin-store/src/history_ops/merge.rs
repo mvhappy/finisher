@@ -159,6 +159,8 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
             project: p.applied.project,
         })?);
     }
+    // The source's state after the copies (Decision 21).
+    ctx.settle()?;
     Ok(MergeReport {
         merge_id: plan.merge_id,
         committed,

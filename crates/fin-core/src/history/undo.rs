@@ -224,7 +224,7 @@ pub fn plan_redo(
     rebase_inverse(log, &r, undo.last_seq, tx, link, ids)
 }
 
-fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<Op>) -> Tx {
+pub(super) fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<Op>) -> Tx {
     Tx {
         tx_id: tx_id.to_string(),
         author: author.to_string(),
@@ -246,18 +246,32 @@ fn rebase_inverse(
     link: Link,
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
-    let frame = log.state_at(&tx.branch, at)?;
+    let k = r.own.partition_point(|c| c.seq <= at);
+    rebase_over(log, (r.head_seq, &r.head), &r.own[k..], tx, link, ids)
+}
+
+/// `tx` (inverses written for the state after `tx.base_rev` on `tx.branch`) rebased over
+/// `since` (the branch's records after that seq, oldest first, with their mirrors) and applied
+/// at `head`, in `Internal` mode. `CONFLICT` with the one conflict when an op cannot be
+/// carried there.
+pub(super) fn rebase_over(
+    log: &dyn LogView,
+    (head_seq, head): (u64, &crate::model::Project),
+    since: &[LogRec],
+    tx: Tx,
+    link: Link,
+    ids: &mut dyn IdAlloc,
+) -> Result<Planned, CoreError> {
+    let frame = log.state_at(&tx.branch, tx.base_rev)?;
     // The inverses' own maps, in their frame (they name literal ids: nothing is allocated).
     let own = apply_tx_mode(&frame, &tx, &mut MemIds::after(&frame), ApplyMode::Internal)?;
-    let since: Vec<CommittedTx> = r
-        .own
+    let since: Vec<CommittedTx> = since
         .iter()
-        .filter(|c| c.seq > at)
         .map(LogRec::committed)
         .collect::<Result<_, _>>()?;
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
     let rebased = rebase_apply(
-        &r.head,
+        head,
         &Rebase::new(&tx, &own.diff, &steps),
         ids,
         ApplyMode::Internal,
@@ -266,7 +280,7 @@ fn rebase_inverse(
     Ok(Planned {
         link,
         intent: Tx {
-            base_rev: r.head_seq,
+            base_rev: head_seq,
             ..rebased.tx
         },
         applied: rebased.applied,

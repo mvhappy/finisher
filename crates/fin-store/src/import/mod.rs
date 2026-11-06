@@ -355,6 +355,13 @@ impl Store {
             kind,
         )?;
         report.rewound.extend(rewound);
+        // `merged` flags the applied records change (Decision 21), before the marks below
+        // compare the index with the log's.
+        let mut touched = crate::derived::Touched::default();
+        for c in &applied {
+            touched.imported(&c.tx.branch, c.link.as_deref());
+        }
+        touched.settle(&txn)?;
         report.applied.extend(applied);
         if ctx.folded {
             // Inert marks from the log alone, before the leftovers read them.

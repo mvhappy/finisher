@@ -72,6 +72,7 @@ pub use export::ExportReport;
 pub use export::FailPoint;
 pub use history::Generation;
 pub use history_ops::merge::MergeReq;
+pub use history_ops::pick::{CherryPickReq, RevertReq};
 pub use history_ops::undo::HistoryReq;
 pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
 #[cfg(any(test, feature = "test-hooks"))]
