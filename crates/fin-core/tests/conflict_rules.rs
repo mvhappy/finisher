@@ -302,7 +302,27 @@ fn every_op_has_a_footprint() {
             deleted.inverse[0].clone(),
             vec!["t2"],
         ),
-        // Shift-less ops that name no track bind none (their diff names items only).
+        // Ops that record no shift are on their item's track through their changes' `track`.
+        (
+            p.clone(),
+            fin_core::ItemDelete {
+                item: "c3".into(),
+                mode: fin_core::DeleteMode::Lift,
+            }
+            .into(),
+            vec!["t2"],
+        ),
+        (
+            p.clone(),
+            fin_core::ItemTrim {
+                item: "c1".into(),
+                edge: Edge::End,
+                delta: secs(-1),
+                mode: fin_core::TrimMode::Overwrite,
+            }
+            .into(),
+            vec!["t1"],
+        ),
         (
             p.clone(),
             fin_core::ItemSlip {
@@ -310,7 +330,7 @@ fn every_op_has_a_footprint() {
                 delta: secs(1),
             }
             .into(),
-            vec![],
+            vec!["t2"],
         ),
         (
             p.clone(),
@@ -320,7 +340,7 @@ fn every_op_has_a_footprint() {
                 id: "$r".into(),
             }
             .into(),
-            vec![],
+            vec!["t2"],
         ),
     ];
     let mut seen = BTreeSet::new();

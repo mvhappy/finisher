@@ -15,7 +15,7 @@ use crate::ops::util::{
 use crate::ops::{Bindings, ItemSlip, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
-use crate::tx::{Diff, EntityKind};
+use crate::tx::Diff;
 
 /// The parameter a slip sets (plan 4C Decision 20).
 const SOURCE_IN: &str = "sourceIn";
@@ -86,14 +86,16 @@ pub(crate) fn apply(
     let id = bindings.resolve(&s.item)?;
     validate(project, &id, s.delta, bindings)?;
     let (ti, ci) = item_index(project, &id)?;
-    let it = &mut ti.get_mut(project).items[ci];
+    let track = ti.get_mut(project);
+    let track_id = track.id.clone();
+    let it = &mut track.items[ci];
     match &mut it.body {
         ItemBody::Clip { source_in, .. } | ItemBody::Nested { source_in, .. } => {
             *source_in = source_in.checked_add(s.delta)?;
         }
         _ => return Err(wrong_op(op)),
     }
-    diff.record_path(EntityKind::Item, &id, SOURCE_IN);
+    diff.record_path(&track_id, &id, SOURCE_IN);
     Ok(vec![
         ItemSlip {
             item: id,

@@ -57,9 +57,12 @@ pub struct Footprint {
 }
 
 impl Footprint {
-    /// An empty footprint on `track` (if any) and every track `diff` shifts.
+    /// An empty footprint on `track` (if any), every track `diff` shifts and every track its
+    /// changes name (an item's, plan 4C Decision 4), so ops that record no shift (a lift, a
+    /// strict or overwrite trim, a roll, a slip, a split) are on their tracks too.
     pub(crate) fn on(track: Option<&str>, diff: &Diff) -> Footprint {
         let mut tracks: BTreeSet<String> = diff.shifts.iter().map(|s| s.track.clone()).collect();
+        tracks.extend(diff.changes.iter().filter_map(|c| c.track.clone()));
         tracks.extend(track.map(str::to_string));
         Footprint {
             tracks,
@@ -362,6 +365,7 @@ mod tests {
             id: id.into(),
             change: ChangeKind::Added,
             op: 0,
+            track: None,
             edge: None,
             path: None,
             by: None,

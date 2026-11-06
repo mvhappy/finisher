@@ -7,7 +7,7 @@ use crate::model::Track;
 use crate::ops::util::{OpDiff, end, move_start_edge};
 use crate::ops::{DeleteMode, Edge, ItemRestore, ItemTrim, Op, TrimMode};
 use crate::time::Rational;
-use crate::tx::{ChangeKind, EntityKind};
+use crate::tx::ChangeKind;
 
 /// Clears `[s, e)` on `track`, moving nothing else. Items fully inside it are removed (inverse:
 /// `item.restore` in `lift` mode); one overlapping `s` is trimmed at its end, one overlapping
@@ -44,7 +44,7 @@ pub(crate) fn carve(
         }
         if start >= s && stop <= e {
             let item = track.items.remove(i);
-            d.record(EntityKind::Item, &item.id, ChangeKind::Removed);
+            d.record_item(&track.id, &item.id, ChangeKind::Removed);
             restores.push(
                 ItemRestore {
                     item,
@@ -58,13 +58,13 @@ pub(crate) fn carve(
         let (edge, delta) = if start < s {
             let delta = s.checked_sub(stop)?;
             it.duration = it.duration.checked_add(delta)?;
-            d.record_edge(EntityKind::Item, &it.id, Edge::End, None);
+            d.record_edge(&track.id, &it.id, Edge::End, None);
             (Edge::End, delta)
         } else {
             let delta = e.checked_sub(start)?;
             let by = move_start_edge(it, delta)?;
             it.start = e;
-            d.record_edge(EntityKind::Item, &it.id, Edge::Start, Some(by));
+            d.record_edge(&track.id, &it.id, Edge::Start, Some(by));
             (Edge::Start, delta)
         };
         trims.push(

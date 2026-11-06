@@ -7,7 +7,6 @@ use crate::error::CoreError;
 use crate::model::Track;
 use crate::ops::util::{OpDiff, end, move_start_edge};
 use crate::ops::{Edge, ItemTrim, Op, TrimMode};
-use crate::tx::EntityKind;
 
 /// The item touching `edge` of item `index` (`NOT_ADJACENT` when none does).
 pub(crate) fn neighbour(track: &Track, index: usize, edge: Edge) -> Result<usize, CoreError> {
@@ -53,6 +52,7 @@ pub(crate) fn roll(
         Edge::End => (index, n),
         Edge::Start => (n, index),
     };
+    let track_id = track.id.clone();
     let l = &mut track.items[left];
     l.duration = l.duration.checked_add(t.delta)?;
     let l_id = l.id.clone();
@@ -60,9 +60,8 @@ pub(crate) fn roll(
     let by = move_start_edge(r, t.delta)?;
     r.start = r.start.checked_add(t.delta)?;
     let r_id = r.id.clone();
-    let left_change = |d: &mut OpDiff<'_>| d.record_edge(EntityKind::Item, &l_id, Edge::End, None);
-    let right_change =
-        |d: &mut OpDiff<'_>| d.record_edge(EntityKind::Item, &r_id, Edge::Start, Some(by));
+    let left_change = |d: &mut OpDiff<'_>| d.record_edge(&track_id, &l_id, Edge::End, None);
+    let right_change = |d: &mut OpDiff<'_>| d.record_edge(&track_id, &r_id, Edge::Start, Some(by));
     let named = if t.edge == Edge::End {
         left_change(diff);
         right_change(diff);

@@ -56,21 +56,22 @@ fn v1_diff() -> Value {
     })
 }
 
-/// The v2 shape: kind `item`, each entry's op, a start trim's `edge` and `by`, and no shift
-/// for the `clip.remove` without ripple (its `item.remove` lifts and records none).
+/// The v2 shape: kind `item` with its op's track, each entry's op, a start trim's `edge` and
+/// `by`, and no shift for the `clip.remove` without ripple (its `item.remove` lifts and
+/// records none; its change keeps that shift's track).
 fn v2_diff() -> Value {
     json!({
         "changes": [
             { "kind": "asset", "id": "a1", "change": "added", "op": 0 },
-            { "kind": "item", "id": "c1", "change": "added", "op": 1 },
-            { "kind": "item", "id": "c1", "change": "updated", "op": 2, "edge": "start",
+            { "kind": "item", "id": "c1", "change": "added", "op": 1, "track": "t1" },
+            { "kind": "item", "id": "c1", "change": "updated", "op": 2, "track": "t1", "edge": "start",
               "by": "-1/2" },
-            { "kind": "item", "id": "c1", "change": "updated", "op": 3, "edge": "end" },
-            { "kind": "item", "id": "c1", "change": "updated", "op": 4, "edge": "start",
+            { "kind": "item", "id": "c1", "change": "updated", "op": 3, "track": "t1", "edge": "end" },
+            { "kind": "item", "id": "c1", "change": "updated", "op": 4, "track": "t1", "edge": "start",
               "by": "3" },
-            { "kind": "item", "id": "c1", "change": "removed", "op": 5 },
-            { "kind": "item", "id": "c1", "change": "added", "op": 6 },
-            { "kind": "item", "id": "c1", "change": "removed", "op": 7 },
+            { "kind": "item", "id": "c1", "change": "removed", "op": 5, "track": "t1" },
+            { "kind": "item", "id": "c1", "change": "added", "op": 6, "track": "t1" },
+            { "kind": "item", "id": "c1", "change": "removed", "op": 7, "track": "t1" },
             { "kind": "asset", "id": "a1", "change": "removed", "op": 8 }
         ],
         "shifts": [
@@ -94,6 +95,36 @@ fn upcast_v1_diff_golden() {
                        "shifts": [{ "track": "t1", "from": "5", "by": "0" }] });
     let got = serde_json::to_value(upcast_diff(diff, &ops).unwrap()).unwrap();
     assert_eq!(got["changes"][0]["by"], "0");
+}
+
+/// A change takes its track from its own op's shift, a lift's dropped zero shift included;
+/// a shift without a track is damage.
+#[test]
+fn v1_change_track_comes_from_its_shift() {
+    let ops = [
+        json!({ "op": "clip.delete", "clip": "c1" }),
+        json!({ "op": "clip.remove", "id": "c2", "ripple": false }),
+    ];
+    let diff = json!({
+        "changes": [{ "kind": "clip", "id": "c1", "change": "removed" },
+                    { "kind": "clip", "id": "c2", "change": "removed" }],
+        "shifts": [{ "track": "t2", "from": "5", "by": "-5" },
+                   { "track": "t3", "from": "4", "by": "0" }] });
+    let got = serde_json::to_value(upcast_diff(diff.clone(), &ops).unwrap()).unwrap();
+    assert_eq!(
+        (&got["changes"][0]["track"], &got["changes"][1]["track"]),
+        (&json!("t2"), &json!("t3"))
+    );
+    assert_eq!(got["shifts"].as_array().unwrap().len(), 1);
+    let mut no_track = diff;
+    no_track["shifts"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("track");
+    assert_eq!(
+        upcast_diff(no_track, &ops).unwrap_err().code,
+        "INVALID_FORMAT"
+    );
 }
 
 /// The content offset `−delta` is written in canonical form whatever form the delta has; a

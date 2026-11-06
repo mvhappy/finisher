@@ -53,6 +53,9 @@ pub enum ChangeKind {
 /// One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction
 /// that made the change. The optional fields are omitted on the wire when absent (never
 /// `null`):
+/// - `track`: for an item, the track it is on (after the op; for a removed item, the track it
+///   was taken off), so a footprint and replay's track check see the tracks of ops that record
+///   no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;
 /// - `edge`: the edge an `updated` change moved, if that is all it did to the entity;
 /// - `path`: the parameter an `updated` change set (a registry path), if that is all it did;
 /// - `by`: the content offset of a start-edge move: every item-relative time of the entity
@@ -66,6 +69,9 @@ pub struct Change {
     pub op: u32,
     // The optional fields have no doc comment of their own: a schema `$ref` with a sibling
     // `description` would be inlined in the generated TypeScript instead of naming its type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub track: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Edge")]
     pub edge: Option<Edge>,

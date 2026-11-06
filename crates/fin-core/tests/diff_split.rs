@@ -7,12 +7,14 @@ use common::*;
 use fin_core::rebase::{Touch, footprint, split_diff};
 use fin_core::{Change, ChangeKind, Diff, Edge, EntityKind, Shift};
 
+/// A change; an item's is on `t1`.
 fn change(kind: EntityKind, id: &str, change: ChangeKind, op: u32) -> Change {
     Change {
         kind,
         id: id.into(),
         change,
         op,
+        track: (kind == EntityKind::Item).then(|| "t1".to_string()),
         edge: None,
         path: None,
         by: None,
@@ -63,12 +65,12 @@ fn ops_record_their_own_index() {
             shift("t1", 5, -2, 3)
         ]
     );
-    // The wire shape: `edge` and `by` only where set.
+    // The wire shape: `track` on item changes, `edge` and `by` only where set.
     let wire = serde_json::to_value(&a.diff).unwrap();
     assert_eq!(
         wire["changes"][3],
         serde_json::json!({ "kind": "item", "id": "c1", "change": "updated", "op": 3,
-                            "edge": "start", "by": "-2" })
+                            "track": "t1", "edge": "start", "by": "-2" })
     );
     assert_eq!(
         wire["changes"][0],
@@ -180,6 +182,10 @@ fn with_changes_maps_removed_added_edge_path() {
                 ..change(EntityKind::Item, "c10", ChangeKind::Updated, 0)
             },
             change(EntityKind::Item, "c11", ChangeKind::Updated, 0),
+            Change {
+                track: Some("t4".into()),
+                ..change(EntityKind::Item, "c11", ChangeKind::Updated, 0)
+            },
         ],
         shifts: vec![shift("t1", 5, 1, 0)],
     };
@@ -195,7 +201,11 @@ fn with_changes_maps_removed_added_edge_path() {
     );
     assert_eq!(f.removes, ["c7"]);
     assert_eq!(f.creates, ["c8"]);
-    assert!(f.tracks.contains("t1"));
+    // Tracks come from the shifts and from the changes' tracks.
+    assert_eq!(
+        f.tracks.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["t1", "t4"]
+    );
     // A committed insert's own Added change names the id it already creates: once.
     let a = apply(
         &with_clips(&[5]),

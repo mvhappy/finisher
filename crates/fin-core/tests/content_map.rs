@@ -17,6 +17,7 @@ fn by_change(id: &str, by: Option<Rational>) -> Change {
         id: id.into(),
         change: ChangeKind::Updated,
         op: 0,
+        track: Some("t1".into()),
         edge: Some(Edge::Start),
         path: None,
         by,

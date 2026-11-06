@@ -7,9 +7,11 @@
 //! shift; `asset.add` and `asset.remove` recorded none (`ops/*` at `36fe7e0`). So the step gives
 //! the changes the indexes of their ops in order, and the shifts the indexes of the clip ops in
 //! order. A `clip.trim` change also gains the op's `edge`, and on the start edge the content
-//! offset `by = −delta` (Decision 13). A change of kind `clip` becomes kind `item` (Decision 4).
-//! The zero shift a `clip.remove` or `clip.restore` without ripple recorded is dropped: its
-//! v2 op (`item.remove`/`item.restore` in `lift` mode) records no shift. The output equals
+//! offset `by = −delta` (Decision 13). A change of kind `clip` becomes kind `item` (Decision 4),
+//! and gains the `track` of its op's shift (every v1 clip op recorded its one shift on the
+//! clip's track; asset changes get none). The zero shift a `clip.remove` or `clip.restore`
+//! without ripple recorded is dropped after its track is read: its v2 op
+//! (`item.remove`/`item.restore` in `lift` mode) records no shift. The output equals
 //! what 4C's replay of the upcast record ([`super::record_v1`]) records.
 
 use serde_json::{Value, json};
@@ -45,6 +47,34 @@ pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
             other => return Err(bad(format!("op {i} ({other:?}) is not a v1 op"))),
         }
     }
+    let shifts = list(&mut diff, "shifts")?;
+    if shifts.len() != shifting.len() {
+        return Err(bad(format!(
+            "a v1 diff has one shift per clip op: {} shifts, {} clip ops",
+            shifts.len(),
+            shifting.len()
+        )));
+    }
+    // Each clip op's track, read off its shift (a dropped lift shift included).
+    let mut tracks = vec![None; ops.len()];
+    let mut kept = Vec::new();
+    for (i, (mut shift, (op, keep))) in std::mem::take(shifts).into_iter().zip(shifting).enumerate()
+    {
+        let obj = shift
+            .as_object_mut()
+            .ok_or_else(|| bad(format!("shift {i} is not an object")))?;
+        obj.insert("op".into(), json!(op));
+        tracks[op] = Some(
+            obj.get("track")
+                .filter(|t| t.is_string())
+                .cloned()
+                .ok_or_else(|| bad(format!("shift {i} has no track")))?,
+        );
+        if keep {
+            kept.push(shift);
+        }
+    }
+    *shifts = kept;
     let changes = list(&mut diff, "changes")?;
     if changes.len() != ops.len() {
         return Err(bad(format!(
@@ -60,6 +90,9 @@ pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
         change.insert("op".into(), json!(i));
         if change.get("kind") == Some(&json!("clip")) {
             change.insert("kind".into(), json!("item"));
+            if let Some(track) = &tracks[i] {
+                change.insert("track".into(), track.clone());
+            }
         }
         if op["op"] == "clip.trim" {
             change.insert("edge".into(), op["edge"].clone());
@@ -73,26 +106,6 @@ pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
             }
         }
     }
-    let shifts = list(&mut diff, "shifts")?;
-    if shifts.len() != shifting.len() {
-        return Err(bad(format!(
-            "a v1 diff has one shift per clip op: {} shifts, {} clip ops",
-            shifts.len(),
-            shifting.len()
-        )));
-    }
-    let mut kept = Vec::new();
-    for (i, (mut shift, (op, keep))) in std::mem::take(shifts).into_iter().zip(shifting).enumerate()
-    {
-        shift
-            .as_object_mut()
-            .ok_or_else(|| bad(format!("shift {i} is not an object")))?
-            .insert("op".into(), json!(op));
-        if keep {
-            kept.push(shift);
-        }
-    }
-    *shifts = kept;
     Ok(diff)
 }
 

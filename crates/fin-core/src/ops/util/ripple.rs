@@ -68,12 +68,19 @@ impl<'a> OpDiff<'a> {
         OpDiff { diff, op }
     }
 
-    fn push(&mut self, kind: EntityKind, id: &str, change: ChangeKind) -> &mut Change {
+    fn push(
+        &mut self,
+        track: Option<&str>,
+        kind: EntityKind,
+        id: &str,
+        change: ChangeKind,
+    ) -> &mut Change {
         self.diff.changes.push(Change {
             kind,
             id: id.to_string(),
             change,
             op: self.op,
+            track: track.map(str::to_string),
             edge: None,
             path: None,
             by: None,
@@ -82,27 +89,29 @@ impl<'a> OpDiff<'a> {
         &mut self.diff.changes[last]
     }
 
-    /// The entity `id` was added, removed or changed as a whole.
+    /// The entity `id`, on no track (an asset), was added, removed or changed as a whole.
     pub(crate) fn record(&mut self, kind: EntityKind, id: &str, change: ChangeKind) {
-        self.push(kind, id, change);
+        self.push(None, kind, id, change);
     }
 
-    /// One edge of `id` moved; `by` is the content offset of a start-edge move (Decision 13).
-    pub(crate) fn record_edge(
-        &mut self,
-        kind: EntityKind,
-        id: &str,
-        edge: Edge,
-        by: Option<Rational>,
-    ) {
-        let c = self.push(kind, id, ChangeKind::Updated);
+    /// Item `id` on `track` was added, removed or changed as a whole.
+    pub(crate) fn record_item(&mut self, track: &str, id: &str, change: ChangeKind) {
+        self.push(Some(track), EntityKind::Item, id, change);
+    }
+
+    /// One edge of item `id` on `track` moved; `by` is the content offset of a start-edge move
+    /// (Decision 13).
+    pub(crate) fn record_edge(&mut self, track: &str, id: &str, edge: Edge, by: Option<Rational>) {
+        let c = self.push(Some(track), EntityKind::Item, id, ChangeKind::Updated);
         c.edge = Some(edge);
         c.by = by;
     }
 
-    /// One parameter of `id` (its registry path, or `sourceIn` for a slip) was set.
-    pub(crate) fn record_path(&mut self, kind: EntityKind, id: &str, path: &str) {
-        self.push(kind, id, ChangeKind::Updated).path = Some(path.to_string());
+    /// One parameter of item `id` on `track` (its registry path, or `sourceIn` for a slip) was
+    /// set.
+    pub(crate) fn record_path(&mut self, track: &str, id: &str, path: &str) {
+        self.push(Some(track), EntityKind::Item, id, ChangeKind::Updated)
+            .path = Some(path.to_string());
     }
 
     /// Items on `track` at or after `from` moved by `by`.

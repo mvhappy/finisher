@@ -224,7 +224,7 @@ fn insert_echoes_resolved_rationals() {
     assert_eq!(r["bindings"], json!({ "$clip": "c3" }));
     assert_eq!(
         r["diff"]["changes"],
-        json!([{ "kind": "item", "id": "c3", "change": "added", "op": 0 }])
+        json!([{ "kind": "item", "id": "c3", "change": "added", "op": 0, "track": "t1" }])
     );
     assert_eq!(r["txId"].as_str().unwrap().len(), 26, "ULID txId");
 }

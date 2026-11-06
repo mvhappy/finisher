@@ -28,7 +28,7 @@ use crate::ops::util::{
 use crate::ops::{Bindings, DeleteMode, InsertMode, ItemInsert, ItemRemove, Op};
 use crate::rebase::Footprint;
 use crate::time::Rational;
-use crate::tx::{ChangeKind, Diff, EntityKind};
+use crate::tx::{ChangeKind, Diff};
 
 fn payload(op: &Op) -> Result<&ItemInsert, CoreError> {
     match op {
@@ -187,7 +187,7 @@ pub(crate) fn apply(
         InsertMode::Overwrite => carve(track, i.at, i.at.checked_add(i.duration)?, diff)?,
     };
     place(track, Item::new(id.clone(), i.at, i.duration, body));
-    diff.record(EntityKind::Item, &id, ChangeKind::Added);
+    diff.record_item(&track.id, &id, ChangeKind::Added);
     let mode = match i.mode {
         InsertMode::Ripple => {
             diff.shift(&track.id, i.at, i.duration);

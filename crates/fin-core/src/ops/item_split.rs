@@ -23,7 +23,7 @@ use crate::ops::util::{
 use crate::ops::{Bindings, DeleteMode, Edge, ItemRemove, ItemSplit, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
-use crate::tx::{ChangeKind, Diff, EntityKind};
+use crate::tx::{ChangeKind, Diff};
 
 fn payload(op: &Op) -> Result<&ItemSplit, CoreError> {
     match op {
@@ -111,8 +111,8 @@ pub(crate) fn apply(
     left.duration = s.offset;
     let length = right.duration;
     place(track, right);
-    diff.record(EntityKind::Item, &id, ChangeKind::Updated);
-    diff.record(EntityKind::Item, &right_id, ChangeKind::Added);
+    diff.record_item(&track.id, &id, ChangeKind::Updated);
+    diff.record_item(&track.id, &right_id, ChangeKind::Added);
     Ok(vec![
         ItemRemove {
             id: right_id,

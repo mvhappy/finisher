@@ -63,12 +63,14 @@ fn split(item: &str, offset: Rational, id: &str) -> Op {
     .into()
 }
 
+/// A change of an item on `t1`.
 fn change(id: &str, change: ChangeKind, edge: Option<Edge>, by: Option<Rational>) -> Change {
     Change {
         kind: EntityKind::Item,
         id: id.into(),
         change,
         op: 0,
+        track: Some("t1".into()),
         edge,
         path: None,
         by,

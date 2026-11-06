@@ -7,7 +7,7 @@ use crate::ops::util::{OpDiff, check_unlocked, end, item_index, ripple, wrong_op
 use crate::ops::{Bindings, DeleteMode, ItemRestore, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
-use crate::tx::{ChangeKind, Diff, EntityKind};
+use crate::tx::{ChangeKind, Diff};
 
 /// Takes item `id` off its track; `ripple` closes the gap (recording the shift), `lift` leaves
 /// it (and records none). Returns the `item.restore` inverse.
@@ -22,7 +22,7 @@ pub(crate) fn remove(
     check_unlocked(ti.get(project), Some(id), bindings)?;
     let track = ti.get_mut(project);
     let item = track.items.remove(ci);
-    diff.record(EntityKind::Item, &item.id, ChangeKind::Removed);
+    diff.record_item(&track.id, &item.id, ChangeKind::Removed);
     if mode == DeleteMode::Ripple {
         let from = end(&item)?;
         let by = item.duration.checked_neg()?;

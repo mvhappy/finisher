@@ -460,6 +460,9 @@ export interface Diff {
  * One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction
  * that made the change. The optional fields are omitted on the wire when absent (never
  * `null`):
+ * - `track`: for an item, the track it is on (after the op; for a removed item, the track it
+ *   was taken off), so a footprint and replay's track check see the tracks of ops that record
+ *   no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;
  * - `edge`: the edge an `updated` change moved, if that is all it did to the entity;
  * - `path`: the parameter an `updated` change set (a registry path), if that is all it did;
  * - `by`: the content offset of a start-edge move: every item-relative time of the entity
@@ -476,6 +479,7 @@ export interface Change {
   kind: EntityKind;
   op: number;
   path?: string;
+  track?: string;
 }
 /**
  * Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the

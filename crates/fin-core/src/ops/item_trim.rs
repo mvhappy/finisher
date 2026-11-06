@@ -28,7 +28,7 @@ use crate::ops::util::{
 use crate::ops::{Bindings, Edge, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
-use crate::tx::{Diff, EntityKind};
+use crate::tx::Diff;
 
 fn payload(op: &Op) -> Result<&ItemTrim, CoreError> {
     match op {
@@ -158,7 +158,7 @@ fn move_edge(
             (t.delta, None)
         }
     };
-    diff.record_edge(EntityKind::Item, &it.id, t.edge, content);
+    diff.record_edge(&track.id, &it.id, t.edge, content);
     Ok((it.id.clone(), from, by))
 }
 

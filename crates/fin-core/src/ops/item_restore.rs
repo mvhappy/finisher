@@ -18,7 +18,7 @@ use crate::ops::util::{
 use crate::ops::{Bindings, DeleteMode, ItemRemove, ItemRestore, Op};
 use crate::rebase::Footprint;
 use crate::time::Rational;
-use crate::tx::{ChangeKind, Diff, EntityKind};
+use crate::tx::{ChangeKind, Diff};
 
 fn payload(op: &Op) -> Result<&ItemRestore, CoreError> {
     match op {
@@ -80,7 +80,7 @@ pub(crate) fn apply(
     resolve_body(&mut item.body, bindings)?;
     let id = item.id.clone();
     let track = ti.get_mut(project);
-    diff.record(EntityKind::Item, &id, ChangeKind::Added);
+    diff.record_item(&track.id, &id, ChangeKind::Added);
     if r.mode == DeleteMode::Ripple {
         ripple(track, item.start, item.duration)?;
         diff.shift(&track.id, item.start, item.duration);

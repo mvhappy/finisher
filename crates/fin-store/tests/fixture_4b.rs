@@ -226,7 +226,7 @@ fn diff_upcast_equals_replay_on_fixtures() {
     }
 }
 
-/// A 4B start trim (main seq 7, `c3` by 1) reads with its edge and content offset.
+/// A 4B start trim (main seq 7, `c3` by 1) reads with its track, edge and content offset.
 #[test]
 fn fixture_4b_trim_reads_edge_and_content_offset() {
     let tmp = tempfile::tempdir().unwrap();
@@ -242,7 +242,7 @@ fn fixture_4b_trim_reads_edge_and_content_offset() {
         serde_json::to_value(&trim.diff).unwrap(),
         serde_json::json!({
             "changes": [{ "kind": "item", "id": "c3", "change": "updated", "op": 0,
-                          "edge": "start", "by": "-1" }],
+                          "track": "t2", "edge": "start", "by": "-1" }],
             "shifts": [{ "track": "t2", "from": "12", "by": "-1", "op": 0 }]
         })
     );

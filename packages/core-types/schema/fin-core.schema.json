@@ -314,7 +314,7 @@
       "type": "object"
     },
     "Change": {
-      "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
+      "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `track`: for an item, the track it is on (after the op; for a removed item, the track it\n  was taken off), so a footprint and replay's track check see the tracks of ops that record\n  no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
       "properties": {
         "by": {
           "$ref": "#/$defs/Rational"
@@ -337,6 +337,9 @@
           "type": "integer"
         },
         "path": {
+          "type": "string"
+        },
+        "track": {
           "type": "string"
         }
       },
