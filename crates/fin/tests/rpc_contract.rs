@@ -343,6 +343,11 @@ fn replay_history(server: &Server, subst: &[(String, String)], project_id: &str)
     );
     let set = Conn::open(server, subst).replay("branch-set");
     assert_eq!(set["exit"]["value"]["tx"]["txId"], "fx-s1", "{set}");
+    let dismissed = Conn::open(server, subst).replay("project-recover-dismiss-unknown");
+    assert_eq!(
+        dismissed["exit"]["cause"][0]["error"]["code"], "NOT_FOUND",
+        "{dismissed}"
+    );
     let recover = Conn::open(server, subst).replay("project-recover-groups");
     assert_eq!(recover["exit"]["value"]["dryRun"], true, "{recover}");
 }

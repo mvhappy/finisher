@@ -181,6 +181,7 @@ try {
   await unary("history-cherry-pick", "history.cherryPick", { txId: "fx-pk1", ...who, origin: "fx-p1", into: "main" }); // main rev 13
   await unary("history-revert", "history.revert", { txId: "fx-rv1", ...who, mergeId: "fx-mg1", branch: "main" }); // main rev 14
   await unary("branch-set", "branch.set", { txId: "fx-s1", ...who, branch: "feature", name: "polish" }); // main rev 15
+  await unary("project-recover-dismiss-unknown", "project.recover", { txId: "fx-rc2", ...who, dismiss: "000000000000" }, "NOT_FOUND");
   await unary("project-recover-groups", "project.recover", { txId: "fx-rc1", ...who, create: "all", dryRun: true });
 
   // Last: it changes the database's incarnation.

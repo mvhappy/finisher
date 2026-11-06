@@ -479,8 +479,10 @@ export function makeProjectRegistry(
       rebuild: (projectId) => on(projectId, (e) => e.rebuild()),
       compact: (projectId) => on(projectId, (e) => e.compact()),
       txGet: (projectId, txId) => on<TxGetResult>(projectId, async (e) => (await e.txGet(txId)) ?? "null"),
-      acknowledgeRewind: (projectId, branch, generation) =>
-        on<boolean>(projectId, async (e) => String(await e.acknowledgeRewind(branch, generation))),
+      acknowledgeRewind: (projectId, requested, generation) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
+          on<boolean>(projectId, async (e) => String(await e.acknowledgeRewind(branch, generation))),
+        ),
       acknowledgeSalvage: (projectId, copy) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy))),
       ensure: (projectId) => Effect.asVoid(get(projectId)),
 

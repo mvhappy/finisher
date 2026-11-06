@@ -1,0 +1,1 @@
+{"_tag":"Exit","requestId":"1","exit":{"_tag":"Failure","cause":[{"_tag":"Fail","error":{"_tag":"FinError","code":"NOT_FOUND","message":"no recover group 000000000000","details":{"group":"000000000000","kind":"group"},"fix":"list the groups with fin project recover"}}]}}

@@ -80,6 +80,19 @@ impl T<'_> {
             .map(|b| b["display"].as_str().unwrap().to_string())
             .collect()
     }
+    /// The try records of every project in the file, as one `{branchId: parentId}` map
+    /// (single-project tests).
+    fn tries(&self) -> Value {
+        let mut all = serde_json::Map::new();
+        for project in self.config()["tries"]
+            .as_object()
+            .into_iter()
+            .flat_map(|t| t.values())
+        {
+            all.extend(project.as_object().unwrap().clone());
+        }
+        Value::Object(all)
+    }
     fn config(&self) -> Value {
         match std::fs::read_to_string(self.0.sd.join("fin-config.json")) {
             Ok(t) => serde_json::from_str(&t).unwrap(),
@@ -351,7 +364,7 @@ fn try_without_name_then_keep() {
     let started = t.run(&["try"]);
     assert_eq!(started["branch"]["name"], "try-1", "{started}");
     let cfg = t.config();
-    assert_eq!(cfg["tries"], json!({ "br1": "main" }), "{cfg}");
+    assert_eq!(t.tries(), json!({ "br1": "main" }), "{cfg}");
     assert!(
         cfg["defaultBranch"]
             .as_object()
@@ -373,11 +386,11 @@ fn try_without_name_then_keep() {
     assert_eq!(t.clips(&["--branch", "main"]), ["c1"]);
     assert_eq!(t.run(&["status"])["tracks"][0]["clips"], 1);
     let cfg = t.config();
-    assert_eq!(cfg["tries"], json!({}), "{cfg}");
+    assert_eq!(t.tries(), json!({}), "{cfg}");
     assert_eq!(cfg["defaultBranch"], json!({}), "{cfg}");
     // Named, and from another branch than main.
     t.run(&["try", "scratch"]);
-    assert_eq!(t.config()["tries"], json!({ "br2": "main" }));
+    assert_eq!(t.tries(), json!({ "br2": "main" }));
 }
 
 #[test]
@@ -389,7 +402,7 @@ fn try_drop_archives() {
     let dropped = t.run(&["try", "drop"]);
     assert_eq!(dropped["branch"]["state"], "archived", "{dropped}");
     assert_eq!(t.names(false), ["main"]);
-    assert_eq!(t.config()["tries"], json!({}));
+    assert_eq!(t.tries(), json!({}));
     assert_eq!(t.clips(&[]), Vec::<String>::new());
     // Back on main: another drop is not on a try branch.
     assert_error(&t.raw(&["try", "drop"]), 2, "USAGE");
@@ -555,4 +568,186 @@ fn dry_run_each_history_command_writes_nothing() {
             "try {sub} --dry-run changed something"
         );
     }
+}
+
+/// Two projects in one server-data both make `br1`: each keeps its own try and default.
+#[test]
+fn tries_are_per_project() {
+    let (server, dir) = setup!("tries_are_per_project");
+    let other = server.root.join("film2");
+    ok(fin(
+        &server.sd,
+        &server.root,
+        &["project", "create", "film2", "--name", "Two"],
+    ));
+    media(&other.join("clip.mp4"), 10);
+    ok(fin(&server.sd, &other, &["asset", "add", "clip.mp4"]));
+    let (a, b) = (T(&server, &dir), T(&server, &other));
+    a.run(&["try", "a-try"]);
+    b.run(&["try", "b-try"]);
+    let cfg = a.config();
+    assert_eq!(cfg["defaultBranch"].as_object().unwrap().len(), 2, "{cfg}");
+    assert_eq!(cfg["tries"].as_object().unwrap().len(), 2, "{cfg}");
+    a.insert(&[], "t1");
+    b.insert(&[], "t1");
+    b.insert(&[], "t1");
+    let kept = b.run(&["try", "keep"]);
+    assert_eq!(
+        kept["merge"]["merged"].as_array().unwrap().len(),
+        2,
+        "{kept}"
+    );
+    // A's try record and default survived B's keep, and A keeps its own branch.
+    let cfg = a.config();
+    assert_eq!(cfg["tries"].as_object().unwrap().len(), 1, "{cfg}");
+    assert_eq!(a.clips(&[]), ["c1"]);
+    assert_eq!(a.clips(&["--branch", "main"]), Vec::<String>::new());
+    let kept = a.run(&["try", "keep"]);
+    assert_eq!(
+        kept["merge"]["merged"].as_array().unwrap().len(),
+        1,
+        "{kept}"
+    );
+    assert_eq!(a.clips(&[]), ["c1"]);
+    assert_eq!(b.clips(&[]), ["c1", "c2"]);
+    let cfg = a.config();
+    assert!(
+        cfg["tries"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|t| t == &json!({})),
+        "{cfg}"
+    );
+}
+
+#[test]
+fn a_stale_default_names_its_source_and_can_be_cleared() {
+    let (server, dir) = setup!("a_stale_default_names_its_source");
+    let t = T(&server, &dir);
+    t.run(&["try", "scratch"]);
+    // The branch goes away behind the file's back: the default now names br99.
+    let mut cfg = t.config();
+    let pid = cfg["defaultBranch"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    cfg["defaultBranch"][&pid] = json!("br99");
+    cfg["tries"][&pid] = json!({ "br99": "main" });
+    std::fs::write(server.sd.join("fin-config.json"), cfg.to_string()).unwrap();
+    for args in [
+        &["view"][..],
+        &["clip", "delete", "c1"],
+        &["undo"],
+        &["try", "keep"],
+    ] {
+        let run = t.raw(args);
+        assert_error(&run, 3, "BRANCH_NOT_FOUND");
+        let text = run.stdout.clone();
+        assert!(
+            text.contains("fin-config.json") && text.contains("branch default --clear"),
+            "{args:?}: {text}"
+        );
+    }
+    assert_eq!(t.clips(&["--branch", "main"]), Vec::<String>::new());
+    // `try drop` is the way out and leaves the file clean.
+    let dropped = t.run(&["try", "drop"]);
+    assert_eq!(dropped["cleared"], "br99", "{dropped}");
+    assert_eq!(t.clips(&[]), Vec::<String>::new());
+    // The same through `branch default`.
+    t.run(&["branch", "new", "x"]);
+    assert_eq!(t.run(&["branch", "default", "x"])["default"], "br2");
+    assert_eq!(t.run(&["branch", "default"])["default"], "br2");
+    assert_eq!(
+        t.run(&["--dry-run", "branch", "default", "--clear"])["dryRun"],
+        true
+    );
+    assert_eq!(t.run(&["branch", "default"])["default"], "br2");
+    assert_eq!(
+        t.run(&["branch", "default", "--clear"])["default"],
+        Value::Null
+    );
+    assert_eq!(t.run(&["branch", "default"])["default"], Value::Null);
+    assert_error(
+        &t.raw(&["branch", "default", "nope"]),
+        3,
+        "BRANCH_NOT_FOUND",
+    );
+}
+
+#[test]
+fn acknowledge_rewind_resolves_branch_names() {
+    let (server, dir) = setup!("acknowledge_rewind_resolves_branch_names");
+    let t = T(&server, &dir);
+    t.run(&["branch", "new", "side"]);
+    let ack = t.run(&[
+        "project",
+        "acknowledge",
+        "--rewind",
+        "1",
+        "--branch",
+        "side",
+    ]);
+    assert_eq!(ack["acknowledged"], false, "{ack}");
+    assert_error(
+        &t.raw(&[
+            "project",
+            "acknowledge",
+            "--rewind",
+            "1",
+            "--branch",
+            "nope",
+        ]),
+        3,
+        "BRANCH_NOT_FOUND",
+    );
+}
+
+#[test]
+fn undo_refusals_name_the_author_and_seqs_are_refused() {
+    let (server, dir) = setup!("undo_refusals_name_the_author");
+    let t = T(&server, &dir);
+    let nothing = t.raw(&["undo"]);
+    assert_error(&nothing, 3, "NOTHING_TO_UNDO");
+    assert_eq!(nothing.json["error"]["details"]["author"], "fin");
+    assert!(
+        nothing.json["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("FIN_AUTHOR")
+    );
+    let digits = t.raw(&["undo", "--to", "12"]);
+    assert_error(&digits, 2, "USAGE");
+    assert!(
+        digits.json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("checkpoint name")
+    );
+}
+
+#[test]
+fn dry_run_with_a_committed_key_is_not_reported_as_dry() {
+    let (server, dir) = setup!("dry_run_with_a_committed_key");
+    let t = T(&server, &dir);
+    let first = t.run(&["--idem-key", "ck", "checkpoint", "one"]);
+    let again = t.run(&["--idem-key", "ck", "--dry-run", "checkpoint", "one"]);
+    assert_eq!(again["rev"], first["rev"], "{again}");
+    assert!(again.get("dryRun").is_none(), "{again}");
+    let fresh = t.run(&["--idem-key", "ck2", "--dry-run", "checkpoint", "two"]);
+    assert_eq!(fresh["dryRun"], true, "{fresh}");
+}
+
+#[test]
+fn recover_dismiss_of_an_unknown_group_is_not_found() {
+    let (server, dir) = setup!("recover_dismiss_unknown");
+    let t = T(&server, &dir);
+    assert_error(
+        &t.raw(&["project", "recover", "--dismiss", "000000000000"]),
+        3,
+        "NOT_FOUND",
+    );
 }

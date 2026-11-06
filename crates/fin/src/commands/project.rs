@@ -47,6 +47,11 @@ pub struct RecoverArgs {
     #[arg(long, value_name = "dir")]
     #[serde(default)]
     pub import: Option<String>,
+    /// Stop listing and counting one group that cannot be recovered (its `problems` say so)
+    /// on this server; its records stay in the quarantine.
+    #[arg(long, value_name = "group")]
+    #[serde(default)]
+    pub dismiss: Option<String>,
 }
 
 /// Take the project's lease over from a server that stopped.
@@ -194,7 +199,10 @@ fn recover(backend: &dyn Backend, g: &Globals, a: &RecoverArgs) -> Result<Value,
     if let Some(dir) = &a.import {
         fields["importDir"] = json!(paths::resolve_str(dir).display().to_string());
     }
-    let args = json!({ "create": a.create, "import": a.import });
+    if let Some(group) = &a.dismiss {
+        fields["dismiss"] = json!(group);
+    }
+    let args = json!({ "create": a.create, "import": a.import, "dismiss": a.dismiss });
     let req = super::history::Req {
         tag: "project.recover",
         cmd: "project.recover",

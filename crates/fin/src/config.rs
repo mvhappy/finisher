@@ -4,6 +4,7 @@
 //! `main`: writes would otherwise land on the wrong branch.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use fin_core::CoreError;
 use serde_json::{Map, Value, json};
@@ -62,6 +63,52 @@ fn section<'a>(doc: &'a mut Value, key: &str) -> &'a mut Map<String, Value> {
     entry.as_object_mut().expect("just made an object")
 }
 
+/// Runs a read-modify-write of the file under `fin-config.json.lock` (created exclusively; a
+/// lock older than [`STALE`] belongs to a fin that died and is taken over).
+fn locked<T>(sd: &Path, f: impl FnOnce() -> Result<T, CoreError>) -> Result<T, CoreError> {
+    const STALE: Duration = Duration::from_secs(30);
+    let path = sd.join(format!("{FILE}.lock"));
+    std::fs::create_dir_all(sd).map_err(|e| unreadable(&path, e))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let old = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > STALE);
+                if old {
+                    let _ = std::fs::remove_file(&path);
+                } else if Instant::now() > deadline {
+                    return Err(unreadable(&path, "another fin holds the lock"));
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            Err(e) => return Err(unreadable(&path, e)),
+        }
+    }
+    let result = f();
+    let _ = std::fs::remove_file(&path);
+    result
+}
+
+fn update(sd: &Path, f: impl FnOnce(&mut Value)) -> Result<(), CoreError> {
+    locked(sd, || {
+        let mut doc = load(sd)?;
+        section(&mut doc, "tries");
+        section(&mut doc, "defaultBranch");
+        f(&mut doc);
+        save(sd, &doc)
+    })
+}
+
 /// The default branch reference stored for `project_id`.
 pub fn default_branch(sd: &Path, project_id: &str) -> Result<Option<String>, CoreError> {
     Ok(load(sd)?["defaultBranch"][project_id]
@@ -75,35 +122,58 @@ pub fn set_default_branch(
     project_id: &str,
     branch: Option<&str>,
 ) -> Result<(), CoreError> {
-    let mut doc = load(sd)?;
-    let map = section(&mut doc, "defaultBranch");
-    match branch {
-        Some(b) => map.insert(project_id.to_string(), json!(b)),
-        None => map.remove(project_id),
-    };
-    section(&mut doc, "tries");
-    save(sd, &doc)
+    update(sd, |doc| {
+        let map = section(doc, "defaultBranch");
+        match branch {
+            Some(b) => map.insert(project_id.to_string(), json!(b)),
+            None => map.remove(project_id),
+        };
+    })
 }
 
-/// Records `branch_id` as a try branch made from `parent_id`.
-pub fn record_try(sd: &Path, branch_id: &str, parent_id: &str) -> Result<(), CoreError> {
-    let mut doc = load(sd)?;
-    section(&mut doc, "tries").insert(branch_id.to_string(), json!(parent_id));
-    section(&mut doc, "defaultBranch");
-    save(sd, &doc)
+/// The try branches of `project_id`: `tries: {<projectId>: {<branchId>: <parentId>}}`.
+fn project_tries<'a>(doc: &'a mut Value, project_id: &str) -> &'a mut Map<String, Value> {
+    let tries = section(doc, "tries");
+    let entry = tries.entry(project_id).or_insert_with(|| json!({}));
+    if !entry.is_object() {
+        *entry = json!({});
+    }
+    entry.as_object_mut().expect("just made an object")
 }
 
-/// The parent a try branch was made from, `None` for a branch `fin try` did not make.
-pub fn try_parent(sd: &Path, branch_id: &str) -> Result<Option<String>, CoreError> {
-    Ok(load(sd)?["tries"][branch_id].as_str().map(str::to_string))
+/// Records `branch_id` as a try branch of `project_id` made from `parent_id`.
+pub fn record_try(
+    sd: &Path,
+    project_id: &str,
+    branch_id: &str,
+    parent_id: &str,
+) -> Result<(), CoreError> {
+    update(sd, |doc| {
+        project_tries(doc, project_id).insert(branch_id.to_string(), json!(parent_id));
+    })
+}
+
+/// The parent a try branch of `project_id` was made from, `None` for a branch `fin try` did
+/// not make.
+pub fn try_parent(
+    sd: &Path,
+    project_id: &str,
+    branch_id: &str,
+) -> Result<Option<String>, CoreError> {
+    Ok(load(sd)?["tries"][project_id][branch_id]
+        .as_str()
+        .map(str::to_string))
 }
 
 /// Forgets a try branch once it was kept or dropped.
-pub fn forget_try(sd: &Path, branch_id: &str) -> Result<(), CoreError> {
-    let mut doc = load(sd)?;
-    section(&mut doc, "tries").remove(branch_id);
-    section(&mut doc, "defaultBranch");
-    save(sd, &doc)
+pub fn forget_try(sd: &Path, project_id: &str, branch_id: &str) -> Result<(), CoreError> {
+    update(sd, |doc| {
+        if project_tries(doc, project_id).remove(branch_id).is_some()
+            && project_tries(doc, project_id).is_empty()
+        {
+            section(doc, "tries").remove(project_id);
+        }
+    })
 }
 
 #[cfg(test)]
@@ -121,11 +191,18 @@ mod tests {
         set_default_branch(sd, "p1", None).unwrap();
         assert_eq!(default_branch(sd, "p1").unwrap(), None);
         assert_eq!(default_branch(sd, "p2").unwrap().as_deref(), Some("x"));
-        record_try(sd, "br2", "main").unwrap();
-        assert_eq!(try_parent(sd, "br2").unwrap().as_deref(), Some("main"));
-        assert_eq!(try_parent(sd, "br3").unwrap(), None);
-        forget_try(sd, "br2").unwrap();
-        assert_eq!(try_parent(sd, "br2").unwrap(), None);
+        record_try(sd, "p1", "br2", "main").unwrap();
+        record_try(sd, "p2", "br2", "br1").unwrap();
+        assert_eq!(
+            try_parent(sd, "p1", "br2").unwrap().as_deref(),
+            Some("main")
+        );
+        assert_eq!(try_parent(sd, "p2", "br2").unwrap().as_deref(), Some("br1"));
+        assert_eq!(try_parent(sd, "p1", "br3").unwrap(), None);
+        forget_try(sd, "p1", "br2").unwrap();
+        assert_eq!(try_parent(sd, "p1", "br2").unwrap(), None);
+        assert_eq!(try_parent(sd, "p2", "br2").unwrap().as_deref(), Some("br1"));
+        assert!(!sd.join("fin-config.json.lock").exists());
         let doc: Value =
             serde_json::from_str(&std::fs::read_to_string(sd.join(FILE)).unwrap()).unwrap();
         assert!(doc["defaultBranch"].is_object() && doc["tries"].is_object());
@@ -142,6 +219,24 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn concurrent_updates_all_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let sd = dir.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let sd = sd.clone();
+                std::thread::spawn(move || record_try(&sd, "p", &format!("br{i}"), "main").unwrap())
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        for i in 0..8 {
+            assert!(try_parent(&sd, "p", &format!("br{i}")).unwrap().is_some());
+        }
     }
 
     #[test]

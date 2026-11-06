@@ -42,18 +42,42 @@ pub struct Globals {
     pub branch: Option<String>,
 }
 
-/// The branch a command acts on: `--branch`, else the project's default in `fin-config.json`,
-/// else `main`.
-pub fn target_branch(backend: &dyn Backend, globals: &Globals) -> Result<String, CoreError> {
+/// The branch reference a command names: `--branch`, else the project's default in
+/// `fin-config.json`, else `main`; and whether it came from the file.
+pub fn configured_branch(
+    backend: &dyn Backend,
+    globals: &Globals,
+) -> Result<(String, bool), CoreError> {
     if let Some(b) = &globals.branch {
-        return Ok(b.clone());
+        return Ok((b.clone(), false));
     }
-    if let Some((sd, project_id)) = backend.config_scope()
+    if let Some((sd, project_id)) = backend.config_scope()?
         && let Some(b) = crate::config::default_branch(&sd, &project_id)?
     {
-        return Ok(b);
+        return Ok((b, true));
     }
-    Ok("main".to_string())
+    Ok(("main".to_string(), false))
+}
+
+/// The branch a command acts on ([`configured_branch`]). A default from the file that names
+/// no branch any more is `BRANCH_NOT_FOUND` saying where it comes from and how to clear it.
+pub fn target_branch(backend: &dyn Backend, globals: &Globals) -> Result<String, CoreError> {
+    let (branch, from_config) = configured_branch(backend, globals)?;
+    if from_config && !backend.dry_run_only() {
+        let views = branch::list(backend, true)?;
+        if branch::find(&views, &branch).is_err() {
+            return Err(stale_default(&branch, &views));
+        }
+    }
+    Ok(branch)
+}
+
+pub(crate) fn stale_default(branch: &str, views: &[Value]) -> CoreError {
+    let mut e = branch::not_found(branch, views);
+    e.message =
+        format!("no branch {branch:?}: it is this project's default branch from fin-config.json");
+    e.details["source"] = json!("fin-config.json");
+    e.with_fix("fin branch default --clear (or fin try drop) resets the default to main; --branch <b> overrides it for one command")
 }
 
 /// The author of this command's records: `$FIN_AUTHOR` when set and not empty, else `fin`

@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::history::{Req, record_doc, send};
+use super::history::{Req, record_doc, send, send_flagged};
 use super::{Globals, target_branch};
 use crate::backend::Backend;
 use crate::output::usage;
@@ -17,6 +17,7 @@ pub enum BranchCmd {
     Ls(LsArgs),
     Rename(RenameArgs),
     Archive(ArchiveArgs),
+    Default(DefaultArgs),
 }
 
 /// Fork a new branch (a copy of the project at a point of another branch).
@@ -70,6 +71,21 @@ pub struct ArchiveArgs {
     #[arg(long = "as", value_name = "new", requires = "restore")]
     #[serde(default, rename = "as")]
     pub as_name: Option<String>,
+}
+
+/// Show, set or clear the branch commands use when `--branch` is not given (kept in
+/// `<server-data>/fin-config.json`, per project). Not a project write.
+#[derive(Debug, Clone, Default, Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DefaultArgs {
+    /// The branch to make the default; without it and without --clear: show the default.
+    #[arg(value_name = "b", conflicts_with = "clear")]
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Go back to `main`.
+    #[arg(long)]
+    #[serde(default)]
+    pub clear: bool,
 }
 
 /// `<branch>[@<seq|checkpoint>]` → the branch and `at` (`{seq}` or `{checkpoint}`).
@@ -129,7 +145,7 @@ pub fn create(
     )
 }
 
-/// `branch.set`: the committed record.
+/// `branch.set`: the committed record, and whether it is a plan only.
 pub fn set(
     backend: &dyn Backend,
     g: &Globals,
@@ -137,7 +153,7 @@ pub fn set(
     branch: &str,
     name: Option<&str>,
     archived: Option<bool>,
-) -> Result<Value, CoreError> {
+) -> Result<(Value, bool), CoreError> {
     let args = json!({ "branch": branch, "name": name, "archived": archived });
     let mut fields = json!({ "branch": branch });
     if let Some(n) = name {
@@ -146,7 +162,7 @@ pub fn set(
     if let Some(a) = archived {
         fields["archived"] = json!(a);
     }
-    send(
+    send_flagged(
         backend,
         g,
         Req {
@@ -184,6 +200,34 @@ pub fn find(views: &[Value], reference: &str) -> Result<Value, CoreError> {
         .ok_or_else(|| not_found(reference, views))
 }
 
+fn default_cmd(backend: &dyn Backend, g: &Globals, a: &DefaultArgs) -> Result<Value, CoreError> {
+    let (sd, project_id) = backend
+        .config_scope()?
+        .ok_or_else(|| crate::output::unavailable(json!({ "operation": "branch.default" })))?;
+    if a.clear {
+        if !g.dry_run {
+            crate::config::set_default_branch(&sd, &project_id, None)?;
+        }
+        return Ok(dry(json!({ "default": null }), g));
+    }
+    let Some(name) = &a.name else {
+        return Ok(json!({ "default": crate::config::default_branch(&sd, &project_id)? }));
+    };
+    let view = find(&list(backend, true)?, name)?;
+    let id = view["id"].as_str().unwrap_or_default();
+    if !g.dry_run {
+        crate::config::set_default_branch(&sd, &project_id, (id != "main").then_some(id))?;
+    }
+    Ok(dry(json!({ "default": id, "branch": view }), g))
+}
+
+fn dry(mut doc: Value, g: &Globals) -> Value {
+    if g.dry_run {
+        doc["dryRun"] = json!(true);
+    }
+    doc
+}
+
 pub fn run(backend: &dyn Backend, g: &Globals, cmd: &BranchCmd) -> Result<Value, CoreError> {
     match cmd {
         BranchCmd::New(a) => {
@@ -198,11 +242,12 @@ pub fn run(backend: &dyn Backend, g: &Globals, cmd: &BranchCmd) -> Result<Value,
         }
         BranchCmd::Ls(a) => Ok(json!({ "branches": list(backend, a.all)? })),
         BranchCmd::Rename(a) => {
-            let r = set(backend, g, "branch.rename", &a.old, Some(&a.new), None)?;
-            Ok(record_doc(&r, g.dry_run))
+            let (r, dry) = set(backend, g, "branch.rename", &a.old, Some(&a.new), None)?;
+            Ok(record_doc(&r, dry))
         }
+        BranchCmd::Default(a) => default_cmd(backend, g, a),
         BranchCmd::Archive(a) => {
-            let r = set(
+            let (r, dry) = set(
                 backend,
                 g,
                 "branch.archive",
@@ -210,7 +255,7 @@ pub fn run(backend: &dyn Backend, g: &Globals, cmd: &BranchCmd) -> Result<Value,
                 a.as_name.as_deref(),
                 Some(!a.restore),
             )?;
-            Ok(record_doc(&r, g.dry_run))
+            Ok(record_doc(&r, dry))
         }
     }
 }

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::branch::{self, find};
 use super::history::{merge_doc, merge_refs, record_doc};
-use super::{Globals, target_branch};
+use super::{Globals, configured_branch, target_branch};
 use crate::backend::Backend;
 use crate::config;
 use crate::output::usage;
@@ -49,7 +49,7 @@ pub struct NoArgs {}
 
 fn scope(backend: &dyn Backend) -> Result<(std::path::PathBuf, String), CoreError> {
     backend
-        .config_scope()
+        .config_scope()?
         .ok_or_else(|| crate::output::unavailable(json!({ "operation": "fin try" })))
 }
 
@@ -70,7 +70,7 @@ fn start(backend: &dyn Backend, g: &Globals, name: Option<&str>) -> Result<Value
     if !dry {
         let id = view["id"].as_str().unwrap_or_default();
         let parent = view["parent"].as_str().unwrap_or("main");
-        config::record_try(&sd, id, parent)?;
+        config::record_try(&sd, &project_id, id, parent)?;
         config::set_default_branch(&sd, &project_id, Some(id))?;
     }
     let mut doc = record_doc(&r["record"], dry);
@@ -79,9 +79,10 @@ fn start(backend: &dyn Backend, g: &Globals, name: Option<&str>) -> Result<Value
 }
 
 /// `keep` (merge into the parent) or `drop` (archive), then back to the parent as default.
+/// Works without validating the default: a try whose branch is gone is dropped from the file.
 fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreError> {
     let (sd, project_id) = scope(backend)?;
-    let current = target_branch(backend, g)?;
+    let (current, from_config) = configured_branch(backend, g)?;
     let views = branch::list(backend, true)?;
     let not_try = || {
         usage(
@@ -90,14 +91,26 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
             "fin try",
         )
     };
-    let view = find(&views, &current).map_err(|e| if current == "main" { not_try() } else { e })?;
+    let Ok(view) = find(&views, &current) else {
+        // A stale default (the branch is gone): `drop` is the way out of it.
+        if from_config && !keep && !g.dry_run {
+            config::set_default_branch(&sd, &project_id, None)?;
+            config::forget_try(&sd, &project_id, &current)?;
+            return Ok(json!({ "cleared": current, "switchedTo": "main" }));
+        }
+        return Err(if from_config {
+            super::stale_default(&current, &views)
+        } else {
+            branch::not_found(&current, &views)
+        });
+    };
     let id = view["id"].as_str().unwrap_or_default().to_string();
-    let parent = config::try_parent(&sd, &id)?.ok_or_else(not_try)?;
+    let parent = config::try_parent(&sd, &project_id, &id)?.ok_or_else(not_try)?;
     let mut doc = if keep {
         merge_doc(&merge_refs(backend, g, &id, &parent, false)?)
     } else {
-        let r = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
-        let mut doc = record_doc(&r, g.dry_run);
+        let (r, dry) = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
+        let mut doc = record_doc(&r, dry);
         let mut archived = view.clone();
         archived["state"] = json!("archived");
         doc["branch"] = archived;
@@ -109,7 +122,7 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
             let back = (parent != "main").then_some(parent.as_str());
             config::set_default_branch(&sd, &project_id, back)?;
         }
-        config::forget_try(&sd, &id)?;
+        config::forget_try(&sd, &project_id, &id)?;
     }
     doc["switchedTo"] = json!(parent);
     Ok(doc)

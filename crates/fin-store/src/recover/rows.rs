@@ -219,6 +219,7 @@ impl Runner<'_, '_, '_> {
                 from,
                 at: Some(At::Seq(seq)),
                 dry_run: ctx.dry_run,
+                args_hash: None,
             },
             Some(self.forest.rows[i].hash.clone()),
         )?;

@@ -112,6 +112,8 @@ export const ProjectRecoverPayload = Schema.Struct({
   author: Schema.optional(Schema.String),
   create: Schema.optional(Schema.String),
   importDir: Schema.optional(Schema.String),
+  /** A group id that cannot be recovered: stop listing and counting it on this server. */
+  dismiss: Schema.optional(Schema.String),
   dryRun: Schema.optional(Schema.Boolean),
 });
 export const RecoverReportSuccess = Schema.Unknown;

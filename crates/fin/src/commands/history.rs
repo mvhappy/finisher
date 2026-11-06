@@ -104,6 +104,16 @@ pub fn key(globals: &Globals) -> Result<String, CoreError> {
 
 /// Sends `req` and returns the server's answer.
 pub fn send(backend: &dyn Backend, globals: &Globals, req: Req<'_>) -> Result<Value, CoreError> {
+    send_flagged(backend, globals, req).map(|(answer, _)| answer)
+}
+
+/// [`send`], plus whether the answer is a plan only: `--dry-run` with a key that already
+/// committed gets that commit back, which is not a dry run.
+pub fn send_flagged(
+    backend: &dyn Backend,
+    globals: &Globals,
+    req: Req<'_>,
+) -> Result<(Value, bool), CoreError> {
     let tx_id = key(globals)?;
     let mut payload = req.fields;
     payload["txId"] = json!(tx_id);
@@ -115,22 +125,60 @@ pub fn send(backend: &dyn Backend, globals: &Globals, req: Req<'_>) -> Result<Va
         payload["argsHash"] = json!(args_hash(&[json!({ "cmd": req.cmd, "args": req.args })]));
     }
     let retry_safe = globals.idem_key.is_some() && !globals.dry_run;
-    if retry_safe && !backend.dry_run_only() {
+    let mut committed = false;
+    if globals.idem_key.is_some() && !backend.dry_run_only() {
         // A retry whose record was set aside is reported, never sent again blindly.
         let first = if req.group {
             format!("{tx_id}-1")
         } else {
             tx_id.clone()
         };
-        lookup(backend, &first)?;
+        committed = lookup(backend, &first)?.is_some();
     }
-    match backend.project_call(req.tag, payload.clone()) {
+    let answer = match backend.project_call(req.tag, payload.clone()) {
         // The answer was lost: the server answers the same txId from the log.
         Err(e) if retry_safe && IN_FLIGHT_CODES.contains(&e.code.as_str()) => {
             backend.project_call(req.tag, payload)
         }
         other => other,
+    }?;
+    Ok((answer, globals.dry_run && !committed))
+}
+
+/// Lists longer than this are cut to their first [`CAP`] entries; `<key>Total` has the count.
+const CAP: usize = 20;
+
+pub fn cap(doc: &mut Value, key: &str) {
+    let Some(list) = doc.get_mut(key).and_then(Value::as_array_mut) else {
+        return;
+    };
+    let total = list.len();
+    if total > CAP {
+        list.truncate(CAP);
+        doc[format!("{key}Total")] = json!(total);
     }
+}
+
+/// An undo/redo refusal says whose stack it looked at, and how to look at another's.
+fn with_author(mut e: CoreError, branch: &str) -> CoreError {
+    if matches!(
+        e.code.as_str(),
+        "CONFLICT" | "NOTHING_TO_UNDO" | "NOTHING_TO_REDO"
+    ) {
+        let who = author();
+        if let Some(map) = e.details.as_object_mut() {
+            map.entry("author").or_insert(json!(who));
+            map.entry("branch").or_insert(json!(branch));
+        }
+        let note = format!(
+            "undo and redo act on edits by author {who:?} on {branch}; set FIN_AUTHOR to act as another author"
+        );
+        e.fix = Some(match e.fix.take() {
+            Some(f) => format!("{f}; {note}"),
+            None => note,
+        });
+    }
+    e
 }
 
 fn last_of(committed: &Value) -> (Value, Value) {
@@ -167,6 +215,16 @@ fn result_doc(r: &Value, named: Option<(&str, &str)>) -> Value {
 }
 
 pub fn undo(backend: &dyn Backend, g: &Globals, a: &UndoArgs) -> Result<Value, CoreError> {
+    if let Some(to) = &a.to
+        && !to.is_empty()
+        && to.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(usage(
+            "--to takes a checkpoint name; seqs are not accepted",
+            json!({ "to": to }),
+            "name a point with `fin checkpoint <name>` first, then `fin undo --to <name>`",
+        ));
+    }
     let branch = target_branch(backend, g)?;
     let mut fields = json!({ "branch": branch });
     if let Some(to) = &a.to {
@@ -184,8 +242,11 @@ pub fn undo(backend: &dyn Backend, g: &Globals, a: &UndoArgs) -> Result<Value, C
             hashed: true,
             group: false,
         },
-    )?;
-    Ok(result_doc(&r, Some(("undone", "undone"))))
+    )
+    .map_err(|e| with_author(e, &branch))?;
+    let mut doc = result_doc(&r, Some(("undone", "undone")));
+    cap(&mut doc, "undone");
+    Ok(doc)
 }
 
 pub fn redo(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
@@ -202,7 +263,8 @@ pub fn redo(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
             hashed: true,
             group: false,
         },
-    )?;
+    )
+    .map_err(|e| with_author(e, &branch))?;
     // The result's `undone` names the undo a redo reverses.
     Ok(result_doc(&r, Some(("redone", "undone"))))
 }
@@ -215,7 +277,7 @@ pub fn checkpoint(
     let branch = target_branch(backend, g)?;
     let args = json!({ "branch": branch, "name": a.name });
     let fields = json!({ "branch": branch, "name": a.name });
-    let r = send(
+    let (r, dry) = send_flagged(
         backend,
         g,
         Req {
@@ -227,7 +289,7 @@ pub fn checkpoint(
             group: false,
         },
     )?;
-    Ok(record_doc(&r, g.dry_run))
+    Ok(record_doc(&r, dry))
 }
 
 /// `{merge: {...report, rev, records}}`: every report field but the committed records, which
@@ -243,7 +305,11 @@ pub fn merge_doc(report: &Value) -> Value {
             json!(committed.as_array().map_or(0, Vec::len)),
         );
     }
-    json!({ "merge": merge })
+    let mut doc = json!({ "merge": merge });
+    for key in ["merged", "skipped", "excluded"] {
+        cap(&mut doc["merge"], key);
+    }
+    doc
 }
 
 /// Merges `from` into `into`.
@@ -325,4 +391,19 @@ pub fn revert(backend: &dyn Backend, g: &Globals, a: &RevertArgs) -> Result<Valu
         },
     )?;
     Ok(result_doc(&r, Some(("reverted", "undone"))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_lists_are_cut_with_a_total() {
+        let mut doc = json!({ "a": (0..25).collect::<Vec<_>>(), "b": [1, 2] });
+        cap(&mut doc, "a");
+        cap(&mut doc, "b");
+        assert_eq!(doc["a"].as_array().unwrap().len(), CAP);
+        assert_eq!(doc["aTotal"], 25);
+        assert!(doc.get("bTotal").is_none());
+    }
 }

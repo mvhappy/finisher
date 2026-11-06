@@ -1021,6 +1021,7 @@ fn rename(s: &mut Store, tx: &str, b: &str, name: &str) {
         name: Some(name.into()),
         archived: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
 }

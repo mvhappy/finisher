@@ -55,9 +55,10 @@ pub trait Backend {
     /// branch and ignores it).
     fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError>;
     /// `(server-data, project id)`: where `fin-config.json` lives and which project's entry
-    /// is ours. `None` when there is no server to ask (offline) or it cannot be reached.
-    fn config_scope(&self) -> Option<(PathBuf, String)> {
-        None
+    /// is ours. `Ok(None)` offline; a project the server cannot be asked about is an error,
+    /// never a silent `main`.
+    fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
+        Ok(None)
     }
     /// Commits `tx`; the server rebases it over anything newer than `tx.base_rev`.
     /// `generation`: the snapshot's (see [`Snapshot`]).
@@ -284,8 +285,9 @@ impl Backend for Online {
         )
     }
 
-    fn config_scope(&self) -> Option<(PathBuf, String)> {
-        Some((endpoint::server_data()?, self.project_id().ok()?))
+    fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
+        let project_id = self.project_id()?;
+        Ok(endpoint::server_data().map(|sd| (sd, project_id)))
     }
 
     fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {

@@ -67,6 +67,9 @@ describe("storage RPCs", () => {
     expect(ok<{ skipped: unknown }>(await c.call("project.compact", { projectId }))).toHaveProperty("skipped");
     expect(ok(await c.call("project.recover", { projectId }))).toMatchObject({ groups: [], created: [], committed: [], manual: null });
     expect(ok(await c.call("project.acknowledgeRewind", { projectId, branch: "main", generation: 1 }))).toEqual({ acknowledged: false });
+    // A branch name is resolved like snapshot and subscribe do: unknown is an error, not `false`.
+    const unknown = await c.call("project.acknowledgeRewind", { projectId, branch: "no-such", generation: 1 });
+    expect(unknown.ok ? undefined : unknown.error.code).toBe("BRANCH_NOT_FOUND");
     expect(ok(await c.call("project.acknowledgeSalvage", { projectId, copy: "nope" }))).toEqual({ acknowledged: false });
 
     const got = ok<{ rev: number; tx: { txId: string } }>(await c.call("tx.get", { projectId, txId: "tx-1" }));
