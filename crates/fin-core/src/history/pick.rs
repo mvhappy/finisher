@@ -139,6 +139,7 @@ pub fn plan_cherry_pick(
             origin: root_id,
             from,
             origin_hash: None,
+            recovers: None,
         },
         intent: Tx {
             tx_id: tx_id.to_string(),

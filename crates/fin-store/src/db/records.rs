@@ -54,15 +54,16 @@ pub(crate) fn committed_link(record: &Record) -> Result<Option<Box<Link>>, CoreE
 ///   `cherryPick`);
 /// - `targets`: a JSON array of what the record acts on: the units of an `undo`, the `undo` of a
 ///   `redo`, the merge group of a `revert`, the branch of a `branch` or `branchSet`;
-/// - `name`: of a `checkpoint`, `branch` or `branchSet`.
+/// - `name`: of a `checkpoint`, `branch` or `branchSet`;
+/// - `recovers`: the quarantined record a recovery's record stands for (plan 4B Decision 27).
 fn insert_link(conn: &Connection, branch: &str, record: &Record) -> Result<(), StoreError> {
     let Some(l) = link_row(branch, record)? else {
         return Ok(());
     };
     conn.execute(
         "INSERT INTO record_links (tx_id, branch, seq, kind, author, origin, origin_hash,
-                                   from_branch, merge_id, targets, name)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                   from_branch, merge_id, targets, name, recovers)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             l.tx_id,
             l.branch,
@@ -75,6 +76,7 @@ fn insert_link(conn: &Connection, branch: &str, record: &Record) -> Result<(), S
             l.merge_id,
             l.targets,
             l.name,
+            l.recovers,
         ],
     )?;
     Ok(())
@@ -95,6 +97,7 @@ pub(crate) struct LinkRow {
     pub(crate) merge_id: Option<String>,
     pub(crate) targets: Option<String>,
     pub(crate) name: Option<String>,
+    pub(crate) recovers: Option<String>,
 }
 
 /// The `record_links` row `record` on `branch` gets (none for an edit), as [`insert_link`]
@@ -122,34 +125,26 @@ pub(crate) fn link_row(branch: &str, record: &Record) -> Result<Option<LinkRow>,
             origin: o,
             from: f,
             origin_hash: h,
+            ..
         } => {
             (origin, from, origin_hash) = (Some(o), Some(f), h);
             None
         }
         Link::Revert { reverts } => Some(vec![reverts]),
-        Link::Checkpoint {
-            name: n,
-            origin_hash: h,
-        } => {
-            (name, origin_hash) = (Some(n), h);
+        Link::Checkpoint { name: n, .. } => {
+            name = Some(n);
             None
         }
         Link::Branch {
-            branch_id,
-            name: n,
-            origin_hash: h,
-            ..
+            branch_id, name: n, ..
         } => {
-            (name, origin_hash) = (Some(n), h);
+            name = Some(n);
             Some(vec![branch_id])
         }
         Link::BranchSet {
-            branch_id,
-            name: n,
-            origin_hash: h,
-            ..
+            branch_id, name: n, ..
         } => {
-            (name, origin_hash) = (n, h);
+            name = n;
             Some(vec![branch_id])
         }
     };
@@ -165,6 +160,7 @@ pub(crate) fn link_row(branch: &str, record: &Record) -> Result<Option<LinkRow>,
         merge_id,
         targets: targets.map(|t| serde_json::to_string(&t)).transpose()?,
         name,
+        recovers: record.recovers.clone(),
     }))
 }
 

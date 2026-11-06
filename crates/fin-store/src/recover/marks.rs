@@ -10,7 +10,7 @@
 //! ([`check`]).
 //!
 //! [`uncounted`] is the set [`super::groups::Forest::recovered`] gives plus the dismissed
-//! rows, from indexes: the rows a record in `txs` names as `originHash` (read from the side of
+//! rows, from indexes: the rows a record in `txs` names as `recovers` (read from the side of
 //! `record_links`, so its cost follows the copies, not the quarantine), the `branchSet` rows
 //! of branches whose `branch` row is among them, and `meta` `recoverDismissed`. Rows not
 //! filled yet (written by a path that does not fill) are read from their bytes.
@@ -86,8 +86,8 @@ pub(crate) fn uncounted(conn: &Connection) -> Result<HashSet<String>, StoreError
     let stood: HashSet<String> = {
         // `record_links` first: the rows named by a copy, looked up by their unique hash.
         let mut stmt = conn.prepare_cached(
-            "SELECT DISTINCT l.origin_hash FROM record_links l CROSS JOIN quarantine q
-             WHERE l.origin_hash IS NOT NULL AND q.tx_hash = l.origin_hash AND q.current = 1",
+            "SELECT DISTINCT l.recovers FROM record_links l CROSS JOIN quarantine q
+             WHERE l.recovers IS NOT NULL AND q.tx_hash = l.recovers AND q.current = 1",
         )?;
         let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect::<Result<_, _>>()?

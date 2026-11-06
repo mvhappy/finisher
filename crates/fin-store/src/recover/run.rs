@@ -6,7 +6,7 @@
 //! A group is re-run from its fork state record by record ([`super::rows`]): a record with
 //! ops as a `cherryPick` copy, a `checkpoint` as a fresh `checkpoint`, a `branch` record whose
 //! branch has no records (no group of its own) as that branch made again, a `branchSet` of a
-//! live branch as a fresh `branchSet`; each names the row it stands for (`originHash`). The
+//! live branch as a fresh `branchSet`; each names the row it stands for (`recovers`). The
 //! groups forking at its rows follow, from the state and the remap at that row, on the
 //! recovered branch at its copy. A group with neither records with ops nor checkpoints makes
 //! no branch: its children fork where it does (its records change no state).

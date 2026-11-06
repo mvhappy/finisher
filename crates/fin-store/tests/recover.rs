@@ -233,10 +233,8 @@ fn origins(c: &[CommittedTx]) -> Vec<(String, Option<String>)> {
     c.iter()
         .filter_map(|c| match c.link.as_deref() {
             Some(Link::CherryPick {
-                origin,
-                origin_hash,
-                ..
-            }) => Some((origin.clone(), origin_hash.clone())),
+                origin, recovers, ..
+            }) => Some((origin.clone(), recovers.clone())),
             _ => None,
         })
         .collect()
@@ -1077,14 +1075,14 @@ fn name_of(s: &Store, id: &str) -> String {
         .name
 }
 
-/// The `originHash` of a record without ops (`checkpoint`, `branch`, `branchSet`).
+/// The `recovers` of a record without ops (`checkpoint`, `branch`, `branchSet`).
 fn stands_for(c: &CommittedTx) -> Option<&str> {
     match c.link.as_deref() {
         Some(
-            Link::Checkpoint { origin_hash, .. }
-            | Link::Branch { origin_hash, .. }
-            | Link::BranchSet { origin_hash, .. },
-        ) => origin_hash.as_deref(),
+            Link::Checkpoint { recovers, .. }
+            | Link::Branch { recovers, .. }
+            | Link::BranchSet { recovers, .. },
+        ) => recovers.as_deref(),
         _ => None,
     }
 }
@@ -1271,10 +1269,16 @@ fn merge_in_tail_keeps_its_source_root_and_ids() {
             origin,
             from,
             origin_hash,
+            recovers,
         }) => {
             assert_eq!((origin.as_str(), from.as_str()), ("s1", "br1"));
             assert_eq!(
                 origin_hash.as_deref(),
+                Some(tx_hash(&a, "s1").as_str()),
+                "its root"
+            );
+            assert_eq!(
+                recovers.as_deref(),
                 Some(hash_of_quarantined(&a, "xm-1").as_str())
             );
         }

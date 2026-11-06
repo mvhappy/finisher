@@ -2,11 +2,12 @@
 //! the current quarantine rows and the log alone, so a follower and a rebuild derive the same.
 //!
 //! - **Marks.** A row is recovered while a record in `txs` stands for it: a record that names
-//!   its `txHash` as `originHash` (`record_links.origin_hash`). A row with ops is stood for by
+//!   its `txHash` as `recovers` (`record_links.recovers`; only a recovery writes it, never an
+//!   ordinary cherry-pick, whose `originHash` names its root). A row with ops is stood for by
 //!   its `cherryPick` copy; a `checkpoint` row by a fresh `checkpoint`, a `branch` row by the
 //!   `branch` record of its recovered branch (its child group's, or the empty branch made
 //!   again), a `branchSet` row of a live branch by a fresh `branchSet`, each carrying
-//!   `originHash`. A `branchSet` row of a branch that is set aside with it (a `branch` row here
+//!   `recovers`. A `branchSet` row of a branch that is set aside with it (a `branch` row here
 //!   makes it) is recovered with that `branch` row. Rows dismissed on this server (`meta`
 //!   `recoverDismissed`, [`super::dismiss`]) are neither listed nor counted.
 //! - **Groups** are made of the rows not recovered. Each is a run of `parentHash` links on one
@@ -63,15 +64,15 @@ pub(crate) struct Forest {
     by_hash: HashMap<String, usize>,
     by_tx: HashMap<String, usize>,
     kids: HashMap<String, Vec<usize>>,
-    /// `txHash`es a record in `txs` stands for (`originHash`).
+    /// `txHash`es a record in `txs` stands for (`recovers`).
     stood: HashSet<String>,
 }
 
-/// The `txHash`es of current quarantine rows a record in `txs` names as `originHash`.
+/// The `txHash`es of current quarantine rows a record in `txs` names as `recovers`.
 fn stood(conn: &Connection) -> Result<HashSet<String>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT DISTINCT q.tx_hash FROM quarantine q
-         JOIN record_links l ON l.origin_hash = q.tx_hash
+         JOIN record_links l ON l.recovers = q.tx_hash
          WHERE q.current = 1",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
@@ -311,7 +312,7 @@ pub(super) fn copy_of(conn: &Connection, hash: &str) -> Result<Option<Copy>, Sto
         .prepare_cached(
             "SELECT t.branch, t.seq, t.record_bytes FROM record_links l
              JOIN txs t ON t.tx_id = l.tx_id
-             WHERE l.origin_hash = ?1 ORDER BY t.branch, t.seq LIMIT 1",
+             WHERE l.recovers = ?1 ORDER BY t.branch, t.seq LIMIT 1",
         )?
         .query_row(params![hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;

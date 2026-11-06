@@ -99,6 +99,7 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
         origin: "t1".into(),
         from: "main".into(),
         origin_hash: None,
+        recovers: None,
     };
     log.copy("br1", "cp1", "alice", pick, &t1);
     let op = append_clip(&log, "br1");
@@ -122,6 +123,7 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
         origin: "e2".into(),
         from: "br1".into(),
         origin_hash: None,
+        recovers: None,
     };
     log.copy("main", "cp2", "alice", pick, &e2);
 
@@ -357,6 +359,7 @@ fn duplicate_id_is_already_present_or_id_collision() {
         origin: "e1".into(),
         from: "br1".into(),
         origin_hash: None,
+        recovers: None,
     };
     log.copy("main", "cp", "alice", pick, &e1);
     log.undo("br1", "alice", "u1").unwrap();
@@ -500,6 +503,7 @@ fn same_root_picks_on_both_sides_merge_cleanly() {
         origin: "e1".into(),
         from: f.into(),
         origin_hash: None,
+        recovers: None,
     };
     log.copy("br2", "cp2", "bob", pick("br1"), &e1);
     log.copy("main", "cpm", "bob", pick("br1"), &e1);
@@ -570,6 +574,7 @@ fn pick_of_a_copy_of_a_target_record_is_present() {
         origin: "mt-1".into(),
         from: "br1".into(),
         origin_hash: None,
+        recovers: None,
     };
     log.copy("br2", "cp", "bob", pick, &c);
     log.commit("br2", "e2", "bob", vec![trim("c4", -2)]);

@@ -256,11 +256,11 @@ fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated
 }
 
 /// [`plan_create`], with the `branch` record standing for the quarantined record
-/// `origin_hash` (a recovered branch, plan 4B Decision 27).
+/// `recovers` (a recovered branch, plan 4B Decision 27).
 pub(crate) fn plan_create_with(
     ctx: &mut WriteCtx<'_>,
     r: &BranchCreate,
-    origin_hash: Option<String>,
+    recovers: Option<String>,
 ) -> Result<BranchCreated, StoreError> {
     let txn = ctx.txn;
     crate::history_ops::merge_id_taken(txn, &r.tx_id)?;
@@ -321,7 +321,7 @@ pub(crate) fn plan_create_with(
         // The fence epoch (0 in a dry run, which keeps nothing): it orders an id collision
         // with another server's record (Decision 33).
         epoch: ctx.epoch.unwrap_or(0),
-        origin_hash,
+        recovers,
     };
     let mut draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
     draft.intent.args_hash = r.args_hash.clone();
@@ -380,7 +380,7 @@ fn plan_set(ctx: &mut WriteCtx<'_>, r: &BranchSet) -> Result<CommittedTx, StoreE
         branch_id: info.id.clone(),
         name: r.name.clone(),
         archived: r.archived,
-        origin_hash: None,
+        recovers: None,
     };
     let mut draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
     draft.intent.args_hash = r.args_hash.clone();

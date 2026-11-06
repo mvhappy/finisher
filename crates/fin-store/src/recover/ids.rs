@@ -4,7 +4,8 @@
 //! - **Origin root.** A recovered record is a `cherryPick` whose `origin` is the record's
 //!   origin root: for a `merge` or `cherryPick` record, its `origin` followed through `txs`
 //!   and the quarantine rows to a record without one; for any other record, itself. `from` is
-//!   that root's branch, and `originHash` stays the quarantined record's hash (its mark).
+//!   that root's branch, `originHash` the root's hash (as for any pick), and `recovers` the
+//!   quarantined record's hash (its mark).
 //!   So a later merge judges the copy by the same root as its source (Decision 34) and never
 //!   brings the source again.
 //! - **Ids.** When the root is in `txs`, the copy keeps the ids the record bound (they are the
@@ -109,9 +110,9 @@ impl RootIds {
             return Ok(());
         }
         let mut stmt = conn.prepare_cached(
-            "SELECT l.origin_hash, t.seq, t.record_bytes FROM record_links l
+            "SELECT l.recovers, t.seq, t.record_bytes FROM record_links l
              JOIN txs t ON t.tx_id = l.tx_id
-             WHERE l.kind = 'cherryPick' AND l.origin = ?1 AND l.origin_hash IS NOT NULL",
+             WHERE l.kind = 'cherryPick' AND l.origin = ?1 AND l.recovers IS NOT NULL",
         )?;
         let rows: Vec<(String, i64, Vec<u8>)> = stmt
             .query_map(params![root], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?

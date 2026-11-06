@@ -41,7 +41,7 @@ fn crowded(e: &Env, q: usize) -> Store {
         .unwrap();
     }
     c.execute(
-        "INSERT INTO record_links (tx_id, branch, seq, kind, author, origin, origin_hash)
+        "INSERT INTO record_links (tx_id, branch, seq, kind, author, origin, recovers)
          VALUES ('pk', 'main', 999, 'cherryPick', 'x', 'q0', 'h0')",
         [],
     )

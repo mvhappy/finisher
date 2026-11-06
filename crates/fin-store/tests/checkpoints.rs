@@ -201,7 +201,7 @@ fn checkpoint_record_has_no_ops_and_is_skipped_by_stacks() {
         c.link.as_deref(),
         Some(&Link::Checkpoint {
             name: "v1".into(),
-            origin_hash: None
+            recovers: None
         })
     );
     assert_eq!(s.head(MAIN), 4);

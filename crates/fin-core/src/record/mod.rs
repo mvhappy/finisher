@@ -97,9 +97,7 @@ pub struct Record {
     /// `merge`, `cherryPick`: the txId of the copied record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// `cherryPick`: the copied record's txHash, when known; for a recovered record, the
-    /// quarantined record it stands for. `checkpoint`, `branch`, `branchSet`: the quarantined
-    /// record a recovered one stands for (plan 4B Decision 27).
+    /// `cherryPick`: the txHash of the copied record (its origin root), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_hash: Option<String>,
     /// `revert`: the merge group it reverts.
@@ -125,6 +123,11 @@ pub struct Record {
     /// `branchSet`: archive (`true`) or restore (`false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// `cherryPick`, `checkpoint`, `branch`, `branchSet` written by a recovery: the txHash of
+    /// the quarantined record this one stands for (plan 4B Decisions 5, 27). Only recovery
+    /// writes it, so only it marks a quarantine row recovered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovers: Option<String>,
     pub schema_version: u32,
     pub parent_hash: Option<String>,
     pub author: String,
@@ -167,6 +170,7 @@ impl Record {
             fork_hash: None,
             epoch: None,
             archived: None,
+            recovers: None,
             schema_version,
             parent_hash,
             author,

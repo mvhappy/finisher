@@ -1,6 +1,16 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Everything but the cross-host harness, which enables `fin-store/test-hooks`: a build or test
+# of the default members never unifies that feature into `fin` or `fin-node`
+# (`scripts/check-test-hooks.mjs`). Build the harness alone: `cargo build -p fin-store-xhost`.
+default-members = [
+    "crates/fin",
+    "crates/fin-core",
+    "crates/fin-node",
+    "crates/fin-probe",
+    "crates/fin-store",
+]
 
 [workspace.package]
 edition = "2024"

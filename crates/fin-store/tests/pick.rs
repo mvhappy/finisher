@@ -261,6 +261,7 @@ fn cherry_pick_single_record() {
             origin: "e1".into(),
             from: "br1".into(),
             origin_hash: Some(tx_hash(&s, "e1")),
+            recovers: None,
         })
     );
     assert_eq!((c.tx.author.as_str(), c.tx.branch.as_str()), ("dave", MAIN));
@@ -284,6 +285,7 @@ fn cherry_pick_single_record() {
             origin: "e1".into(),
             from: "br1".into(),
             origin_hash: Some(tx_hash(&s, "e1")),
+            recovers: None,
         })
     );
     assert_eq!(again.committed[0].bindings, p.bindings);
