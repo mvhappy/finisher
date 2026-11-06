@@ -494,20 +494,13 @@ impl Store {
     }
 
     /// What the project file says now: a newer `minReaderVersion` or `schemaVersion` (another
-    /// machine upgraded) makes the project `NEWER_FORMAT`; a file that cannot be read for any
-    /// other reason changes nothing.
+    /// machine upgraded) makes the project `NEWER_FORMAT` ([`ProjectFile::is_newer`]); a file
+    /// that cannot be read changes nothing.
+    ///
+    /// [`ProjectFile::is_newer`]: crate::ProjectFile::is_newer
     fn reread_project_file(&mut self) {
-        match crate::project_file::read_project_file_once(&self.project_dir) {
-            Ok(f) => self.file_newer = f.is_newer(),
-            Err(crate::StoreError::Core(e))
-                if e.code == "SCHEMA_VERSION"
-                    && e.details["actual"]
-                        .as_u64()
-                        .is_some_and(|v| v > u64::from(fin_core::SCHEMA_VERSION)) =>
-            {
-                self.file_newer = true;
-            }
-            Err(_) => {}
+        if let Ok(f) = crate::project_file::read_project_file_once(&self.project_dir) {
+            self.file_newer = f.is_newer();
         }
     }
 

@@ -221,6 +221,38 @@ fn open_rejects_an_id_that_is_not_a_ulid() {
     );
 }
 
+/// A project file written by a newer Finisher (a higher `schemaVersion`) opens read-only
+/// (`NEWER_FORMAT`) instead of failing: reads work, commits are refused, and the file is
+/// never rewritten.
+#[test]
+fn newer_project_file_opens_read_only() {
+    let e = env();
+    let mut s = create(&e);
+    s.commit(tx("tx-1", 0, vec![asset("$a"), insert("$c", 0, "$a", 5)]))
+        .unwrap();
+    let before = s.snapshot(MAIN).unwrap();
+    drop(s);
+    let path = e.dir.join("finisher.project.json");
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file["schemaVersion"] = (SCHEMA_VERSION + 1).into();
+    std::fs::write(&path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+    let written = std::fs::read(&path).unwrap();
+
+    let mut s = Store::open(&e.data, &e.dir).unwrap();
+    assert_eq!(s.read_only(), Some(fin_store::ReadOnlyReason::NewerFormat));
+    let status = serde_json::to_value(s.status()).unwrap();
+    assert_eq!(status["readOnly"]["reason"], "NEWER_FORMAT", "{status}");
+    assert_eq!(s.snapshot(MAIN).unwrap(), before);
+    assert_eq!(s.ops_since(MAIN, 0).unwrap().len(), 1);
+    let err = code(s.commit(tx("tx-2", 1, vec![asset("$a")])).unwrap_err());
+    assert_eq!(err.code, "PROJECT_READ_ONLY", "{err:?}");
+    assert_eq!(err.details["reason"], "NEWER_FORMAT");
+    assert_eq!(s.head(MAIN), 1);
+    drop(s);
+    assert_eq!(std::fs::read(&path).unwrap(), written, "the file is kept");
+}
+
 #[test]
 fn commit_returns_rev_1_and_bindings() {
     let e = env();
