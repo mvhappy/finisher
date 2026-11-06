@@ -4,6 +4,7 @@
   "formats": ["ttf", "otf", "ttc"],
   "archiveFormats": ["zip"],
   "maxSize": 67108864,
+  "sourceHosts": ["github.com", "raw.githubusercontent.com", "cdn.jsdelivr.net"],
   "rules": {
     "schema": "the catalog's shape: fields, types, no unknown fields",
     "version": "catalogVersion is YYYY.MM.N",
@@ -11,6 +12,7 @@
     "licence": "licence.spdx is in `licences` (no NC, ND, share-alike or GPL font exceptions)",
     "https": "every URL (sources, licence, homepage) is https",
     "immutableUrl": "every source URL names a 40-hex commit (a path segment, or after @) or a /releases/download/<tag>/ path",
+    "sourceHost": "every source URL's host is in `sourceHosts` (GitHub release downloads, raw files at a commit, jsDelivr at a commit), with no user info",
     "sha256": "every sha256 is 64 lowercase hex",
     "size": "every size is between 1 byte and maxSize",
     "format": "file formats are in `formats`, archive formats in `archiveFormats`",

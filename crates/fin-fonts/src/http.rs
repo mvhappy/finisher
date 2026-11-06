@@ -1,8 +1,17 @@
 //! The HTTP client (4C Decision 33): `ureq` over `rustls` with the `ring` provider and the
-//! platform verifier (the OS trust store, so corporate CAs work); proxies from
-//! `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` with `NO_PROXY`, and the Windows system proxy;
-//! connect timeout 10 s, idle read timeout 30 s. `https` only, except plain `http` to
-//! loopback in `test-hooks` builds when asked.
+//! platform verifier (the OS trust store, so corporate CAs work); connect timeout 10 s, idle
+//! read timeout 30 s. `https` only, except plain `http` to loopback in `test-hooks` builds
+//! when asked.
+//!
+//! **Proxies** are `ureq::Proxy::try_from_env`'s:
+//! - the first of `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` (and their lowercase forms) that
+//!   parses is used for every request, so `ALL_PROXY` wins over `HTTPS_PROXY`; `NO_PROXY`
+//!   (exact hosts, `*.x`, `.x`, `*`) bypasses it. An HTTP proxy is used with `CONNECT`;
+//!   SOCKS proxies are not supported (they are skipped);
+//! - with none set, on Windows, the user's system proxy (`ProxyEnable` and a single
+//!   `host:port` `ProxyServer` in the registry). A per-protocol `ProxyServer`
+//!   (`http=…;https=…`) does not parse and the fetch goes direct; PAC files and WPAD are not
+//!   read. Behind such a proxy, set `HTTPS_PROXY`.
 
 use std::io::Read;
 use std::sync::Arc;
@@ -110,8 +119,8 @@ impl Http {
             req = req.header("Range", format!("bytes={from}-"));
         }
         let resp = req.call().map_err(|e| {
-            let retry = !matches!(e, ureq::Error::RequireHttpsOnly(_) | ureq::Error::BadUri(_));
-            Failure::new("network", e.to_string(), retry)
+            let (reason, retry) = classify(&e);
+            Failure::new(reason, e.to_string(), retry)
         })?;
         let status = resp.status().as_u16();
         let header = |name: &str| {
@@ -155,6 +164,21 @@ impl Http {
     }
 }
 
+/// A failed call's reason and whether the same URL is worth another attempt: TLS and
+/// certificate errors, redirect loops, refused redirects and bad URLs fail over to the next
+/// source at once; network trouble is retried.
+fn classify(e: &ureq::Error) -> (&'static str, bool) {
+    use ureq::Error as E;
+    match e {
+        E::Rustls(_) | E::Tls(_) | E::Pem(_) | E::TlsRequired => ("tls", false),
+        E::Io(io) if io.get_ref().is_some_and(|i| i.is::<rustls::Error>()) => ("tls", false),
+        E::TooManyRedirects | E::RedirectFailed => ("redirect", false),
+        E::RequireHttpsOnly(_) => ("insecureUrl", false),
+        E::BadUri(_) | E::Http(_) | E::InvalidProxyUrl => ("badUrl", false),
+        _ => ("network", true),
+    }
+}
+
 /// The first byte and the total of `bytes <first>-<last>/<total>`.
 fn content_range(v: &str) -> (Option<u64>, Option<u64>) {
     let Some(rest) = v.trim().strip_prefix("bytes ") else {
@@ -177,6 +201,25 @@ mod tests {
         assert!(!is_loopback_http("http://127.0.0.1.example.com/x"));
         assert!(!is_loopback_http("https://127.0.0.1/x"));
         assert!(!is_loopback_http("http://example.com/x"));
+    }
+
+    #[test]
+    fn tls_and_redirect_errors_are_not_retried() {
+        let cert = ureq::Error::Rustls(rustls::Error::InvalidCertificate(
+            rustls::CertificateError::UnknownIssuer,
+        ));
+        assert_eq!(classify(&cert), ("tls", false));
+        let wrapped = ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
+        ));
+        assert_eq!(classify(&wrapped), ("tls", false));
+        assert_eq!(
+            classify(&ureq::Error::TooManyRedirects),
+            ("redirect", false)
+        );
+        assert_eq!(classify(&ureq::Error::ConnectionFailed), ("network", true));
+        assert_eq!(classify(&ureq::Error::HostNotFound), ("network", true));
     }
 
     #[test]

@@ -159,6 +159,8 @@ fn stray_temp_swept_after_24h() {
         names(d),
         [
             a.clone(),
+            // Taken (and so created) to delete a's part under it; lock files stay.
+            format!("{a}.lock"),
             format!("{b}.lock"),
             format!("{b}.part"),
             format!("{b}.part.json"),
@@ -179,4 +181,46 @@ fn only_sha256_names_are_looked_up() {
     assert!(!cache.has("../secret"));
     assert!(cache.get(&"A".repeat(64)).is_none());
     assert!(cache.list().is_empty());
+}
+
+#[test]
+fn oversize_file_is_never_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FontCache::open(dir.path()).unwrap();
+    let sha = "e".repeat(64);
+    let f = File::create(dir.path().join(&sha)).unwrap();
+    f.set_len(fin_fonts::MAX_FILE_SIZE + 1).unwrap(); // sparse
+    drop(f);
+    assert!(cache.get(&sha).is_none());
+    assert!(!cache.has(&sha));
+    assert!(cache.mismatch(&sha).is_some());
+}
+
+#[test]
+fn replaced_file_with_same_length_and_mtime_is_hashed_again() {
+    let srv = Server::start();
+    let bytes = font(4, 4096);
+    let path = format!("/{COMMIT}/d.ttf");
+    srv.route(&path, Route::new(bytes.clone()));
+    let file = CatFile::plain("d", "regular", bytes.clone(), vec![srv.url(&path)]);
+    let sha = file.sha();
+    let dir = tempfile::tempdir().unwrap();
+    let cache = Arc::new(FontCache::open(dir.path()).unwrap());
+    Fetcher::new(cache.clone(), catalog(&[file]), opts())
+        .fetch_now(&sha)
+        .unwrap();
+    let target = dir.path().join(&sha);
+    let mtime = fs::metadata(&target).unwrap().modified().unwrap();
+    assert!(cache.has(&sha));
+
+    // Another file renamed into place, with the same length and mtime: a new identity.
+    let mut other = bytes.clone();
+    other[200] ^= 0xff;
+    let tmp = dir.path().join("replacement");
+    fs::write(&tmp, &other).unwrap();
+    set_mtime(&tmp, mtime);
+    fs::rename(&tmp, &target).unwrap();
+    assert_eq!(fs::metadata(&target).unwrap().modified().unwrap(), mtime);
+    assert!(!cache.has(&sha));
+    assert!(cache.get(&sha).is_none());
 }

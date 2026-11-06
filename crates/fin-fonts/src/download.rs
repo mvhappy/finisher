@@ -132,7 +132,10 @@ fn fetch_rest(
     file.set_len(received).map_err(|e| io_failure(&e))?;
     file.seek(SeekFrom::Start(received))
         .map_err(|e| io_failure(&e))?;
-    if body.length.is_some_and(|n| received + n > t.size) {
+    if body
+        .length
+        .is_some_and(|n| received.saturating_add(n) > t.size)
+    {
         drop(file);
         discard(part, json);
         return Err(Failure::new(

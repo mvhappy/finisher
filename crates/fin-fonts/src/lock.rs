@@ -39,10 +39,15 @@ pub(crate) fn acquire(path: &Path, wait: Duration) -> io::Result<Option<Held>> {
     }
 }
 
-/// Whether nobody holds the lock at `path` now (a missing lock file is free).
-pub(crate) fn is_free(path: &Path) -> bool {
-    match OpenOptions::new().read(true).write(true).open(path) {
-        Ok(f) => f.try_lock().is_ok(),
-        Err(e) => e.kind() == io::ErrorKind::NotFound,
-    }
+/// Takes the lock at `path` if nobody holds it now (creating the lock file), so the caller
+/// can act on what it guards while holding it; `None` when it is held or cannot be taken.
+pub(crate) fn try_take(path: &Path) -> Option<Held> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .ok()?;
+    file.try_lock().ok().map(|()| Held(file))
 }

@@ -6,6 +6,7 @@ const steps = [
   ["node", ["scripts/check-action-pins.mjs"]],
   ["node", ["scripts/check-js-licenses.mjs"]],
   ["node", ["scripts/check-font-catalog.mjs"]],
+  ["node", ["scripts/check-wasm-deps.mjs"]],
   ["node", ["scripts/check-generated-types.mjs"]],
   ["node", ["scripts/check-typecheck.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],

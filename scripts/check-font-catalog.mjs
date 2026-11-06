@@ -6,7 +6,7 @@ import { rootArg } from "./walk.mjs";
 // The font catalog gate (4C Decision 31), the JS half of `FontCatalog::validate`: both read
 // the rule list `crates/fin-fonts/catalog/rules.json` and run the cases in
 // `crates/fin-fonts/tests/catalog_gate_cases.json`. Only permissive licences, immutable https
-// sources, sane hashes and sizes, unique ids and keys. Output: `FONT_CATALOG_INVALID: <rule>:
+// sources on the listed hosts, sane hashes and sizes, unique ids and keys. Output: `FONT_CATALOG_INVALID: <rule>:
 // <path>: <message>` per violation.
 
 const RULES = JSON.parse(readFileSync(fileURLToPath(new URL("../crates/fin-fonts/catalog/rules.json", import.meta.url)), "utf8"));
@@ -34,6 +34,15 @@ export function isImmutableUrl(url) {
   });
   const release = segs.some((s, k) => s === "releases" && segs[k + 1] === "download" && segs[k + 2] && segs[k + 3]);
   return pinned || release;
+}
+
+/** The host of `url`, or null when it has user info. */
+function hostOf(url) {
+  const i = url.indexOf("://");
+  if (i < 0) return null;
+  const authority = url.slice(i + 3).split(/[/?#]/)[0];
+  if (authority.includes("@")) return null;
+  return authority.startsWith("[") ? authority.slice(1).split("]")[0] : authority.split(":")[0];
 }
 
 /** Every violation of `catalog`, as `{ rule, path, message }`. */
@@ -129,6 +138,10 @@ export function checkCatalog(catalog, rules = RULES) {
     if (!keys(src, p, ["url", "sha256", "size", "archive"], ["url"])) return;
     https(`${p}/url`, src.url);
     if (isStr(src.url) && !isImmutableUrl(src.url)) bad("immutableUrl", `${p}/url`, `${src.url} names no commit or release tag`);
+    const host = isStr(src.url) ? hostOf(src.url) : null;
+    if (!host || !rules.sourceHosts.some((h) => h.toLowerCase() === host.toLowerCase())) {
+      bad("sourceHost", `${p}/url`, `${src.url} is not on a catalog source host`);
+    }
     if (present(src.archive)) {
       if (!keys(src.archive, `${p}/archive`, ["format", "member"], ["format", "member"])) return;
       if (!rules.archiveFormats.includes(src.archive.format)) bad("format", `${p}/archive/format`, `${src.archive.format} is not an archive format`);

@@ -270,7 +270,8 @@ fn fetch_failed_state_and_retry_at() {
     assert_eq!(err.details["key"], "Test b|400|normal");
     assert_eq!(err.details["sha256"], sha.as_str());
     assert!(err.details["retryAt"].as_i64().unwrap() > fin_now_ms());
-    assert_eq!(err.fix.as_deref(), Some("fin fonts fetch b"));
+    assert!(err.fix.as_deref().unwrap().ends_with("fin fonts fetch b"));
+    assert!(err.fix.as_deref().unwrap().contains("HTTPS_PROXY"));
 }
 
 fn fin_now_ms() -> i64 {
@@ -467,6 +468,122 @@ fn archive_member_extracted_and_verified() {
         .fetch_now(&sha)
         .unwrap_err();
     assert_eq!(failure(&err), "hashMismatch");
+}
+
+#[test]
+fn concurrent_siblings_download_the_archive_once() {
+    let srv = Server::start();
+    let (regular, bold) = (font(20, 6000), font(21, 7000));
+    let zip = zip_of(&[("A-Regular.ttf", &regular), ("A-Bold.ttf", &bold)]);
+    let path = "/releases/download/v2.0/siblings.zip".to_string();
+    srv.route(
+        &path,
+        Route {
+            chunk_delay: Duration::from_millis(40),
+            ..Route::new(zip.clone())
+        },
+    );
+    let member = |style, bytes: &[u8], name: &str| CatFile {
+        archive: Some((srv.url(&path), zip.clone(), name.to_string())),
+        ..CatFile::plain("a", style, bytes.to_vec(), vec![])
+    };
+    let files = [
+        member("regular", &regular, "A-Regular.ttf"),
+        member("bold", &bold, "A-Bold.ttf"),
+    ];
+    let (rs, bs) = (files[0].sha(), files[1].sha());
+    let dir = tempfile::tempdir().unwrap();
+    let spec = json!({ "dir": dir.path(), "catalog": catalog_json(&files), "sha": bs });
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["concurrent_child", "--exact", "--test-threads", "1"])
+        .env("FIN_FONTS_CHILD", spec.to_string())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let threads: Vec<_> = [rs.clone(), bs.clone()]
+        .into_iter()
+        .map(|sha| {
+            let (dir, cat) = (dir.path().to_path_buf(), catalog(&files));
+            std::thread::spawn(move || {
+                let cache = Arc::new(FontCache::open(&dir).unwrap());
+                Fetcher::new(cache, cat, opts()).fetch_now(&sha).unwrap();
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        srv.hits(&path).len(),
+        1,
+        "one archive download for both members"
+    );
+    let cache = FontCache::open(dir.path()).unwrap();
+    assert_eq!(&*cache.get(&rs).unwrap(), &regular[..]);
+    assert_eq!(&*cache.get(&bs).unwrap(), &bold[..]);
+}
+
+#[test]
+fn waiting_for_a_lock_holds_no_download_slot() {
+    let srv = Server::start();
+    let (a, b) = (font(22, 4096), font(23, 4096));
+    let (pa, pb) = (format!("/{COMMIT}/held.ttf"), format!("/{COMMIT}/free.ttf"));
+    srv.route(&pa, Route::new(a.clone()));
+    srv.route(&pb, Route::new(b.clone()));
+    let files = [
+        CatFile::plain("a", "regular", a.clone(), vec![srv.url(&pa)]),
+        CatFile::plain("b", "regular", b.clone(), vec![srv.url(&pb)]),
+    ];
+    let (sa, sb) = (files[0].sha(), files[1].sha());
+    let (dir, cache, cat) = setup(&files);
+    // Another process is fetching `a` and keeps its lock.
+    let held = fs::File::create(dir.path().join(format!("{sa}.lock"))).unwrap();
+    held.lock().unwrap();
+    // More waiters on `a` than the process has download slots.
+    let waiters: Vec<_> = (0..fin_fonts::MAX_DOWNLOADS + 1)
+        .map(|_| {
+            let (cache, cat, sa) = (cache.clone(), cat.clone(), sa.clone());
+            std::thread::spawn(move || Fetcher::new(cache, cat, opts()).fetch_now(&sa))
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let t0 = Instant::now();
+    let f = Fetcher::new(cache.clone(), cat.clone(), opts());
+    f.fetch_now(&sb).unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+    assert!(matches!(
+        f.state(&sa),
+        FileState::Missing | FileState::Queued
+    ));
+    drop(held);
+    for w in waiters {
+        w.join().unwrap().unwrap();
+    }
+    assert_eq!(srv.hits(&pa).len(), 1);
+    assert!(cache.has(&sa) && cache.has(&sb));
+}
+
+#[test]
+fn offline_can_change_at_run_time() {
+    let srv = Server::start();
+    let bytes = font(24, 4096);
+    let path = format!("/{COMMIT}/toggle.ttf");
+    srv.route(&path, Route::new(bytes.clone()));
+    let file = CatFile::plain("a", "regular", bytes.clone(), vec![srv.url(&path)]);
+    let sha = file.sha();
+    let (_dir, cache, cat) = setup(&[file]);
+    let f = Fetcher::new(cache, cat, opts());
+    assert!(!f.offline());
+    f.set_offline(true);
+    f.request(&sha);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(srv.connections(), 0);
+    f.set_offline(false);
+    let rx = f.subscribe();
+    f.request(&sha);
+    wait_for(&rx, &sha, LONG, |s| *s == FileState::Cached);
+    assert_eq!(srv.hits(&path).len(), 1);
 }
 
 #[test]

@@ -24,6 +24,7 @@ struct Rules {
     formats: Vec<String>,
     archive_formats: Vec<String>,
     max_size: u64,
+    source_hosts: Vec<String>,
 }
 
 fn rules() -> &'static Rules {
@@ -138,6 +139,33 @@ pub fn is_immutable_url(url: &str) -> bool {
     pinned_segment || release
 }
 
+/// The host of `url` when its authority has no user info (`user@host` is refused).
+fn host_of(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next(),
+        None => authority.split(':').next(),
+    }
+}
+
+/// Whether a source URL's host is on the `sourceHosts` list (in `test-hooks` builds also a
+/// loopback `http` URL, the tests' local server).
+pub fn is_allowed_source_host(url: &str) -> bool {
+    if cfg!(feature = "test-hooks") && crate::http::is_loopback_http(url) {
+        return true;
+    }
+    host_of(url).is_some_and(|h| {
+        rules()
+            .source_hosts
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(h))
+    })
+}
+
 /// `https`; in `test-hooks` builds also plain `http` to loopback (the tests' local server).
 fn is_https(url: &str) -> bool {
     if url.starts_with("https://") && url.len() > "https://".len() {
@@ -200,6 +228,13 @@ fn check_source(path: &str, src: &CatalogSource) -> Result<(), CoreError> {
             "immutableUrl",
             &format!("{path}/url"),
             format!("{} names no commit or release tag", src.url),
+        ));
+    }
+    if !is_allowed_source_host(&src.url) {
+        return Err(invalid(
+            "sourceHost",
+            &format!("{path}/url"),
+            format!("{} is not on a catalog source host", src.url),
         ));
     }
     match (&src.archive, &src.sha256, src.size) {
@@ -350,40 +385,5 @@ impl FontCatalog {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn immutable_urls() {
-        let c = "0123456789abcdef0123456789abcdef01234567";
-        assert!(is_immutable_url(&format!(
-            "https://raw.githubusercontent.com/o/r/{c}/a.ttf"
-        )));
-        assert!(is_immutable_url(&format!(
-            "https://cdn.jsdelivr.net/gh/o/r@{c}/a.ttf"
-        )));
-        assert!(is_immutable_url(
-            "https://github.com/o/r/releases/download/v4.1/x.zip"
-        ));
-        assert!(!is_immutable_url(
-            "https://raw.githubusercontent.com/o/r/main/a.ttf"
-        ));
-        assert!(!is_immutable_url(
-            "https://github.com/o/r/releases/latest/download/x.zip"
-        ));
-        assert!(!is_immutable_url(&format!(
-            "https://example.com/a.ttf?v={c}"
-        )));
-        assert!(!is_immutable_url(&format!("https://{c}.example.com/a.ttf")));
-    }
-
-    #[test]
-    fn rules_json_matches_the_constants() {
-        assert_eq!(rules().max_size, MAX_FILE_SIZE);
-        assert!(rules().licences.iter().any(|l| l == "OFL-1.1"));
     }
 }

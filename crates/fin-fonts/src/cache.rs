@@ -21,18 +21,20 @@ use fin_core::CoreError;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::{hex, is_sha256, lock, now_ms};
+use crate::{MAX_FILE_SIZE, hex, is_sha256, lock, now_ms};
 
 /// Temps older than this are swept: 24 h.
 pub const STRAY_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 const TEMP_PREFIX: &str = ".~fin-";
 
-type Stamp = (u64, SystemTime);
+/// What a verified file looked like: length, mtime and file identity (so a file replaced by
+/// another with the same length and mtime is hashed again).
+type Stamp = (u64, SystemTime, FileId);
 
 pub struct FontCache {
     dir: PathBuf,
-    /// The (length, mtime) at which each file last verified.
+    /// The stamp at which each file last verified.
     verified: Mutex<HashMap<String, Stamp>>,
     /// Files that failed verification, with when (ms since the epoch).
     mismatched: Mutex<HashMap<String, i64>>,
@@ -42,8 +44,26 @@ fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The device and inode on Unix; on Windows the creation time (std has no stable file
+/// index there), which a replacing write changes.
+#[cfg(unix)]
+type FileId = (u64, u64);
+#[cfg(not(unix))]
+type FileId = Option<SystemTime>;
+
+#[cfg(unix)]
+fn file_id(meta: &fs::Metadata) -> FileId {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(not(unix))]
+fn file_id(meta: &fs::Metadata) -> FileId {
+    meta.created().ok()
+}
+
 fn stamp(meta: &fs::Metadata) -> Option<Stamp> {
-    Some((meta.len(), meta.modified().ok()?))
+    Some((meta.len(), meta.modified().ok()?, file_id(meta)))
 }
 
 /// SHA-256 of the file at `path`.
@@ -83,16 +103,21 @@ impl FontCache {
         &self.dir
     }
 
-    /// The file's bytes when they hash to `sha256`; `None` when absent or mismatched (then
-    /// [`FontCache::mismatch`] says when).
+    /// The file's bytes when they hash to `sha256`; `None` when absent, larger than
+    /// [`MAX_FILE_SIZE`] (never read) or mismatched (then [`FontCache::mismatch`] says when).
     pub fn get(&self, sha256: &str) -> Option<Arc<[u8]>> {
         if !is_sha256(sha256) {
             return None;
         }
-        let mut file = File::open(self.path(sha256)).ok()?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).ok()?;
-        let st = file.metadata().ok().and_then(|m| stamp(&m));
+        let file = File::open(self.path(sha256)).ok()?;
+        let meta = file.metadata().ok()?;
+        if meta.len() > MAX_FILE_SIZE {
+            self.note_mismatch(sha256);
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+        file.take(MAX_FILE_SIZE + 1).read_to_end(&mut bytes).ok()?;
+        let st = stamp(&meta);
         let known = st.is_some()
             && st.map(|s| s.0) == Some(bytes.len() as u64)
             && guard(&self.verified).get(sha256) == st.as_ref();
@@ -100,10 +125,14 @@ impl FontCache {
             self.mark_verified(sha256, st);
             Some(bytes.into())
         } else {
-            guard(&self.verified).remove(sha256);
-            guard(&self.mismatched).insert(sha256.to_string(), now_ms());
+            self.note_mismatch(sha256);
             None
         }
+    }
+
+    fn note_mismatch(&self, sha256: &str) {
+        guard(&self.verified).remove(sha256);
+        guard(&self.mismatched).insert(sha256.to_string(), now_ms());
     }
 
     /// Whether a verified file is cached.
@@ -139,8 +168,8 @@ impl FontCache {
     }
 
     /// Removes temps older than [`STRAY_AFTER`] at `now`: `.~fin-*.part` files, and
-    /// resumable `<sha256>.part`/`.part.json` pairs whose lock nobody holds. Returns how
-    /// many files went.
+    /// resumable `<sha256>.part`/`.part.json` pairs, each deleted while holding its file's
+    /// fetch lock (one another fetcher holds is left alone). Returns how many files went.
     pub fn sweep(&self, now: SystemTime) -> usize {
         let old = |p: &Path| {
             fs::metadata(p)
@@ -157,14 +186,18 @@ impl FontCache {
                 .strip_suffix(".part.json")
                 .or_else(|| name.strip_suffix(".part"))
                 .filter(|s| is_sha256(s));
-            let stray = if name.starts_with(TEMP_PREFIX) && name.ends_with(".part") {
-                old(&path)
+            let gone = if name.starts_with(TEMP_PREFIX) && name.ends_with(".part") {
+                old(&path) && fs::remove_file(&path).is_ok()
             } else if let Some(sha) = resumable {
-                old(&path) && lock::is_free(&self.lock_path(sha))
+                old(&path)
+                    && lock::try_take(&self.lock_path(sha)).is_some_and(|_held| {
+                        // Re-checked under the lock: a fetcher may have resumed it meanwhile.
+                        old(&path) && fs::remove_file(&path).is_ok()
+                    })
             } else {
                 false
             };
-            if stray && fs::remove_file(&path).is_ok() {
+            if gone {
                 removed += 1;
             }
         }
@@ -232,8 +265,11 @@ impl FontCache {
             let linked = match fs::hard_link(temp, &target) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
-                // No hard links on this filesystem: the fetch lock makes check-then-rename safe
-                // among fetchers.
+                // No hard links on this filesystem: check-then-rename. Fetchers hold the file's
+                // lock, except for archive siblings (`fetch.rs`), which are placed under the
+                // archive's lock only. Racing there can at worst rename one verified copy over
+                // another (same bytes; the memo re-hashes once); Windows refuses to rename over
+                // an existing file, which then verifies and is kept.
                 Err(_) if !target.exists() => fs::rename(temp, &target),
                 Err(e) => Err(e),
             };

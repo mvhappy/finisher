@@ -1,7 +1,9 @@
 //! The font catalog (4C Decisions 30 and 31): the built-in catalog, the licence gate's
 //! shared cases, and face and fallback lookup.
 
-use fin_fonts::{FontCatalog, FontFormat, MAX_FILE_SIZE, RULES_JSON};
+use fin_fonts::{
+    FontCatalog, FontFormat, MAX_FILE_SIZE, RULES_JSON, is_allowed_source_host, is_immutable_url,
+};
 use serde_json::Value;
 
 const CASES: &str = include_str!("catalog_gate_cases.json");
@@ -155,5 +157,61 @@ fn catalog_round_trips_and_has_a_schema() {
             .as_value()
             .pointer("/properties/catalogVersion")
             .is_some()
+    );
+}
+
+#[test]
+fn immutable_urls_and_source_hosts() {
+    let c = "0123456789abcdef0123456789abcdef01234567";
+    assert!(is_immutable_url(&format!(
+        "https://raw.githubusercontent.com/o/r/{c}/a.ttf"
+    )));
+    assert!(is_immutable_url(&format!(
+        "https://cdn.jsdelivr.net/gh/o/r@{c}/a.ttf"
+    )));
+    assert!(is_immutable_url(
+        "https://github.com/o/r/releases/download/v4.1/x.zip"
+    ));
+    assert!(!is_immutable_url(
+        "https://raw.githubusercontent.com/o/r/main/a.ttf"
+    ));
+    assert!(!is_immutable_url(
+        "https://github.com/o/r/releases/latest/download/x.zip"
+    ));
+    assert!(!is_immutable_url(&format!(
+        "https://example.com/a.ttf?v={c}"
+    )));
+    assert!(!is_immutable_url(&format!("https://{c}.example.com/a.ttf")));
+
+    assert!(is_allowed_source_host(&format!(
+        "https://raw.githubusercontent.com/o/r/{c}/a"
+    )));
+    assert!(is_allowed_source_host(
+        "https://GitHub.com:443/o/r/releases/download/v1/x.zip"
+    ));
+    assert!(is_allowed_source_host(&format!(
+        "https://cdn.jsdelivr.net/gh/o/r@{c}/a"
+    )));
+    assert!(!is_allowed_source_host(&format!(
+        "https://example.com/{c}/a"
+    )));
+    assert!(!is_allowed_source_host(&format!(
+        "https://github.com.evil.example/{c}/a"
+    )));
+    assert!(!is_allowed_source_host(&format!(
+        "https://x@github.com/{c}/a"
+    )));
+}
+
+#[test]
+fn rules_json_matches_the_constants() {
+    let rules: Value = serde_json::from_str(RULES_JSON).unwrap();
+    assert_eq!(rules["maxSize"], MAX_FILE_SIZE);
+    assert!(
+        rules["licences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l == "OFL-1.1")
     );
 }

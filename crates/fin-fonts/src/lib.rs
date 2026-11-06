@@ -9,6 +9,9 @@
 //!   safe across processes. It is the server's [`fin_text::FontBytes`].
 //! - [`Fetcher`]: downloads catalog files into the cache over `ureq` + `rustls` (`ring`, the
 //!   OS trust store), with proxies, resumable `Range` requests, backoff and mirrors.
+//!   Proxies come from `ALL_PROXY`, then `HTTPS_PROXY`, then `HTTP_PROXY` (`NO_PROXY`
+//!   bypasses them), else the Windows system proxy when it is one `host:port`; per-protocol
+//!   Windows settings, PAC files and WPAD are not read (set `HTTPS_PROXY` instead).
 //!
 //! Nothing here is ever written to a record, a diff or a snapshot.
 
@@ -19,6 +22,7 @@ mod download;
 mod fetch;
 mod http;
 mod lock;
+mod slot;
 mod validate;
 
 use fin_core::CoreError;
@@ -31,7 +35,10 @@ pub use catalog::{
     CatalogStyle, FontCatalog, FontFormat, Licence,
 };
 pub use fetch::{FetchOptions, Fetcher, FileState};
-pub use validate::{MAX_FILE_SIZE, RULES_JSON, is_immutable_url, is_sha256};
+pub use slot::MAX_DOWNLOADS;
+pub use validate::{
+    MAX_FILE_SIZE, RULES_JSON, is_allowed_source_host, is_immutable_url, is_sha256,
+};
 
 /// Lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {

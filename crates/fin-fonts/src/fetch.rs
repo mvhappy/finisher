@@ -8,12 +8,13 @@
 //! - Per source, [`FetchOptions::backoff`] attempts (waiting 1 s, 4 s, 16 s after each), then
 //!   the next source. A total failure is `FONT_FETCH_FAILED`, retried automatically after
 //!   [`FetchOptions::retry_after`] (a background request) or at once by `fetch_now`.
-//! - At most [`MAX_DOWNLOADS`] downloads at a time per process; across processes one
+//! - At most [`crate::MAX_DOWNLOADS`] downloads at a time per process; across processes one
 //!   `<sha256>.lock` per file, so a file is downloaded once.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use fin_core::CoreError;
@@ -25,10 +26,8 @@ use crate::cache::FontCache;
 use crate::catalog::{CatalogSource, CatalogStyle, FontCatalog};
 use crate::download::{Target, download};
 use crate::http::{Failure, Http};
+use crate::slot::Slot;
 use crate::{archive, lock, not_in_catalog, now_ms};
-
-/// Downloads at a time per process.
-pub const MAX_DOWNLOADS: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct FetchOptions {
@@ -79,31 +78,6 @@ pub enum FileState {
     },
 }
 
-static SLOTS: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
-
-/// One of the process's [`MAX_DOWNLOADS`] download slots.
-struct Slot;
-
-impl Slot {
-    fn take() -> Slot {
-        let (m, cv) = &SLOTS;
-        let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
-        while *n >= MAX_DOWNLOADS {
-            n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
-        }
-        *n += 1;
-        Slot
-    }
-}
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        let (m, cv) = &SLOTS;
-        *m.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
-        cv.notify_one();
-    }
-}
-
 pub struct Fetcher {
     inner: Arc<Inner>,
 }
@@ -112,6 +86,8 @@ struct Inner {
     cache: Arc<FontCache>,
     catalog: Arc<FontCatalog>,
     opts: FetchOptions,
+    /// [`FetchOptions::offline`], changeable at run time ([`Fetcher::set_offline`]).
+    offline: AtomicBool,
     http: Http,
     /// Queued, fetching and failed files (cached ones are the cache's).
     states: Mutex<HashMap<String, FileState>>,
@@ -129,12 +105,23 @@ impl Fetcher {
             inner: Arc::new(Inner {
                 cache,
                 catalog,
+                offline: AtomicBool::new(opts.offline),
                 opts,
                 http,
                 states: Mutex::new(HashMap::new()),
                 subs: Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// Turns background fetching off or on (`fonts.autoFetch`). Queued and running fetches
+    /// finish; background retries stop while it is off.
+    pub fn set_offline(&self, offline: bool) {
+        self.inner.offline.store(offline, Ordering::SeqCst);
+    }
+
+    pub fn offline(&self) -> bool {
+        self.inner.offline.load(Ordering::SeqCst)
     }
 
     pub fn cache(&self) -> &Arc<FontCache> {
@@ -149,7 +136,10 @@ impl Fetcher {
     /// off, is not in the catalog, or background fetching is off.
     pub fn request(&self, sha256: &str) {
         let inner = &self.inner;
-        if inner.opts.offline || inner.catalog.by_sha(sha256).is_none() || inner.cache.has(sha256) {
+        if inner.offline.load(Ordering::SeqCst)
+            || inner.catalog.by_sha(sha256).is_none()
+            || inner.cache.has(sha256)
+        {
             return;
         }
         {
@@ -232,7 +222,10 @@ fn background(weak: &Weak<Inner>, sha: &str) {
         };
         {
             let mut states = guard(&inner.states);
-            if states.get(sha) != failed.as_ref() || inner.cache.has(sha) {
+            if states.get(sha) != failed.as_ref()
+                || inner.cache.has(sha)
+                || inner.offline.load(Ordering::SeqCst)
+            {
                 return;
             }
             states.insert(sha.to_string(), FileState::Queued);
@@ -255,14 +248,6 @@ impl Inner {
         let Some((entry, style)) = self.catalog.by_sha(sha) else {
             return Err(not_in_catalog(sha));
         };
-        let _slot = Slot::take();
-        self.set(
-            sha,
-            FileState::Fetching {
-                bytes: 0,
-                total: style.file.size,
-            },
-        );
         match self.fetch_file(style) {
             Ok(()) => {
                 guard(&self.states).remove(sha);
@@ -294,13 +279,17 @@ impl Inner {
                     "key": key, "entry": entry.id, "style": style.id, "sha256": sha,
                     "reason": f.reason, "retryAt": retry_at_ms,
                 }))
-                .with_fix(format!("fin fonts fetch {}", entry.id)))
+                .with_fix(format!(
+                    "check the network (behind a proxy, set HTTPS_PROXY), then: fin fonts fetch {}",
+                    entry.id
+                )))
             }
         }
     }
 
     /// Under the file's lock: done if another fetcher placed it meanwhile; else each source
-    /// in turn, each with its attempts and backoff.
+    /// in turn, each with its attempts and backoff. A download slot is taken per attempt,
+    /// after every lock it needs, so a fetch waiting on another's lock never holds one.
     fn fetch_file(&self, style: &CatalogStyle) -> Result<(), Failure> {
         let sha = style.file.sha256.as_str();
         let _lock = self.lock(sha)?;
@@ -327,6 +316,13 @@ impl Inner {
             }
         }
         Err(last)
+    }
+
+    /// Waits for one of the process's download slots, then reports `Fetching`.
+    fn slot(&self, sha: &str, total: u64) -> Slot {
+        let slot = Slot::take();
+        self.set(sha, FileState::Fetching { bytes: 0, total });
+        slot
     }
 
     fn lock(&self, sha: &str) -> Result<lock::Held, Failure> {
@@ -356,12 +352,18 @@ impl Inner {
                 sha256: &file.sha256,
                 size: file.size,
             };
+            let _slot = self.slot(&file.sha256, file.size);
             let part = download(&self.http, &self.cache, &target, &mut progress)?;
             let placed = self.cache.place(&file.sha256, &part);
             let _ = std::fs::remove_file(self.cache.part_json_path(&file.sha256));
             return placed.map_err(|e| Failure::new("io", e.to_string(), false));
         };
         let _archive_lock = self.lock(asha)?;
+        // A sibling's fetch may have extracted this file while we waited for the archive.
+        if self.cache.has(&file.sha256) {
+            return Ok(());
+        }
+        let _slot = self.slot(&file.sha256, asize);
         let target = Target {
             url: &src.url,
             sha256: asha,
@@ -369,7 +371,10 @@ impl Inner {
         };
         let zip = download(&self.http, &self.cache, &target, &mut progress)?;
         let result = archive::extract(&self.cache, &zip, &m.member, &file.sha256, file.size);
-        // The archive's other catalog members, so their own fetch needs no download.
+        // The archive's other catalog members, so their own fetch needs no download. They are
+        // placed under the archive's lock, not their own: a sibling fetch holding its lock is
+        // waiting for this archive, and finds its file cached once it gets the archive's lock.
+        // `FontCache::place` never replaces (see its rename fallback).
         for (other, member) in self.catalog.archive_members(asha) {
             let sha = &other.file.sha256;
             if result.is_ok() && sha != &file.sha256 && !self.cache.has(sha) {
