@@ -409,6 +409,32 @@ fn without_a_server_online_commands_are_unavailable() {
     );
 }
 
+/// Branches and history are planned by the server: with the snapshot hook (no server) every
+/// one of them, `--dry-run` included, is unavailable; reads honour `--branch` by ignoring it.
+#[test]
+fn history_commands_need_a_server() {
+    let offline = Env::offline();
+    for args in [
+        &["branch", "new", "b"][..],
+        &["branch", "ls"],
+        &["branch", "rename", "a", "b", "--dry-run"],
+        &["branch", "archive", "a", "--dry-run"],
+        &["checkpoint", "cp"],
+        &["undo", "--dry-run"],
+        &["redo"],
+        &["merge", "b", "--dry-run"],
+        &["cherry-pick", "t1"],
+        &["revert", "m1"],
+        &["project", "recover"],
+    ] {
+        assert_error(&offline.run(args), 5, "SERVER_UNAVAILABLE");
+    }
+    assert_eq!(offline.run(&["--branch", "b", "status"]).code, 0);
+    assert_error(&offline.run(&["try", "keep"]), 5, "SERVER_UNAVAILABLE");
+    assert_error(&offline.run(&["branch", "new"]), 2, "USAGE");
+    assert_error(&offline.run(&["undo", "--bogus"]), 2, "USAGE");
+}
+
 #[test]
 fn project_create_dry_run_validates_locally() {
     let env = Env::no_server();

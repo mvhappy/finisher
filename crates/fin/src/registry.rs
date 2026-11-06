@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use crate::commands::{asset, clip, project, view};
+use crate::commands::{asset, branch, clip, history, project, try_cmd, view};
 
 pub struct Command {
     /// Dotted name, e.g. "clip.insert" (also the `batch` cmd and op-style name).
@@ -130,15 +130,15 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "project.recover",
         group: "project",
-        args: "",
-        summary: "the manual steps out of CHAIN_FORK / CONFLICT_COPY",
-        write: false,
-        schema: || schema_of::<project::NoArgs>("project.recover"),
+        args: "[--create <group|all>] [--import <dir>]",
+        summary: "list set-aside record groups; --create makes recovered-* branches; --import reads moved-out .fseg files",
+        write: true,
+        schema: || schema_of::<project::RecoverArgs>("project.recover"),
     },
     Command {
         name: "project.acknowledge",
         group: "project",
-        args: "(--rewind <n> [--branch <b>]|--salvage <copy>)",
+        args: "(--rewind <n>|--salvage <copy>)",
         summary: "clear a REWOUND or SALVAGE_INCOMPLETE warning",
         write: false,
         schema: || {
@@ -164,6 +164,110 @@ pub const COMMANDS: &[Command] = &[
         summary: "clips per track: id, start, end, asset, sourceIn",
         write: false,
         schema: || schema_of::<view::ViewArgs>("view"),
+    },
+    Command {
+        name: "branch.new",
+        group: "branch",
+        args: "<name> [--from <b>[@<seq|checkpoint>]]",
+        summary: "fork a branch (default: current branch at its head)",
+        write: true,
+        schema: || schema_of::<branch::NewArgs>("branch.new"),
+    },
+    Command {
+        name: "branch.ls",
+        group: "branch",
+        args: "[--all]",
+        summary: "list branches (--all: archived too)",
+        write: false,
+        schema: || schema_of::<branch::LsArgs>("branch.ls"),
+    },
+    Command {
+        name: "branch.rename",
+        group: "branch",
+        args: "<old> <new>",
+        summary: "rename a branch",
+        write: true,
+        schema: || schema_of::<branch::RenameArgs>("branch.rename"),
+    },
+    Command {
+        name: "branch.archive",
+        group: "branch",
+        args: "<b> [--restore [--as <new>]]",
+        summary: "archive a branch, or restore it",
+        write: true,
+        schema: || schema_of::<branch::ArchiveArgs>("branch.archive"),
+    },
+    Command {
+        name: "checkpoint",
+        group: "history",
+        args: "<name>",
+        summary: "name the branch head",
+        write: true,
+        schema: || schema_of::<history::CheckpointArgs>("checkpoint"),
+    },
+    Command {
+        name: "undo",
+        group: "history",
+        args: "[--to <checkpoint>]",
+        summary: "undo your last edit (or all since a checkpoint)",
+        write: true,
+        schema: || schema_of::<history::UndoArgs>("undo"),
+    },
+    Command {
+        name: "redo",
+        group: "history",
+        args: "",
+        summary: "redo your last undo",
+        write: true,
+        schema: || schema_of::<project::NoArgs>("redo"),
+    },
+    Command {
+        name: "merge",
+        group: "history",
+        args: "<branch> [--into <b>] [--skip-conflicting]",
+        summary: "merge a branch (CONFLICT lists conflicts)",
+        write: true,
+        schema: || schema_of::<history::MergeArgs>("merge"),
+    },
+    Command {
+        name: "cherry-pick",
+        group: "history",
+        args: "<txId> [--into <b>]",
+        summary: "copy one record onto a branch",
+        write: true,
+        schema: || schema_of::<history::CherryPickArgs>("cherry-pick"),
+    },
+    Command {
+        name: "revert",
+        group: "history",
+        args: "<mergeId>",
+        summary: "undo a merge on the branch",
+        write: true,
+        schema: || schema_of::<history::RevertArgs>("revert"),
+    },
+    Command {
+        name: "try",
+        group: "try",
+        args: "[name]",
+        summary: "fork a try branch and switch to it",
+        write: true,
+        schema: || schema_of::<try_cmd::NameArgs>("try"),
+    },
+    Command {
+        name: "try.keep",
+        group: "try",
+        args: "",
+        summary: "merge the try branch back and switch back",
+        write: true,
+        schema: || schema_of::<try_cmd::NoArgs>("try.keep"),
+    },
+    Command {
+        name: "try.drop",
+        group: "try",
+        args: "",
+        summary: "archive the try branch and switch back",
+        write: true,
+        schema: || schema_of::<try_cmd::NoArgs>("try.drop"),
     },
     Command {
         name: "asset.add",

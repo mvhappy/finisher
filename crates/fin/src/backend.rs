@@ -51,8 +51,14 @@ pub struct Probed {
 }
 
 pub trait Backend {
-    /// The current project state on `main`.
-    fn snapshot(&self) -> Result<Snapshot, CoreError>;
+    /// The current project state on `branch` (a branch reference; the offline hook has one
+    /// branch and ignores it).
+    fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError>;
+    /// `(server-data, project id)`: where `fin-config.json` lives and which project's entry
+    /// is ours. `None` when there is no server to ask (offline) or it cannot be reached.
+    fn config_scope(&self) -> Option<(PathBuf, String)> {
+        None
+    }
     /// Commits `tx`; the server rebases it over anything newer than `tx.base_rev`.
     /// `generation`: the snapshot's (see [`Snapshot`]).
     fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError>;
@@ -109,7 +115,7 @@ fn offline_only(what: &str) -> CoreError {
 }
 
 impl Backend for Offline {
-    fn snapshot(&self) -> Result<Snapshot, CoreError> {
+    fn snapshot(&self, _branch: &str) -> Result<Snapshot, CoreError> {
         Ok(self.snapshot.clone())
     }
 
@@ -270,12 +276,16 @@ struct ProbeResult {
 }
 
 impl Backend for Online {
-    fn snapshot(&self) -> Result<Snapshot, CoreError> {
+    fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError> {
         let project_id = self.project_id()?;
         self.call_as(
             "snapshot.get",
-            json!({ "projectId": project_id, "branch": "main" }),
+            json!({ "projectId": project_id, "branch": branch }),
         )
+    }
+
+    fn config_scope(&self) -> Option<(PathBuf, String)> {
+        Some((endpoint::server_data()?, self.project_id().ok()?))
     }
 
     fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {

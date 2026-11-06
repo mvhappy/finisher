@@ -3,9 +3,12 @@
 //! transaction — or, for `--dry-run` and the offline hook, applied locally with `MemIds`.
 
 pub mod asset;
+pub mod branch;
 pub mod clip;
+pub mod history;
 pub mod project;
 pub mod schema;
+pub mod try_cmd;
 pub mod view;
 
 use std::collections::BTreeMap;
@@ -33,6 +36,33 @@ pub struct Globals {
     /// Validate and compute the result without committing.
     #[arg(long = "dry-run", global = true)]
     pub dry_run: bool,
+    /// Branch to read and write: an id, a name or `<name>#<id>`. Default: the one `fin try`
+    /// switched to (fin-config.json), else `main`.
+    #[arg(long, global = true, value_name = "b")]
+    pub branch: Option<String>,
+}
+
+/// The branch a command acts on: `--branch`, else the project's default in `fin-config.json`,
+/// else `main`.
+pub fn target_branch(backend: &dyn Backend, globals: &Globals) -> Result<String, CoreError> {
+    if let Some(b) = &globals.branch {
+        return Ok(b.clone());
+    }
+    if let Some((sd, project_id)) = backend.config_scope()
+        && let Some(b) = crate::config::default_branch(&sd, &project_id)?
+    {
+        return Ok(b);
+    }
+    Ok("main".to_string())
+}
+
+/// The author of this command's records: `$FIN_AUTHOR` when set and not empty, else `fin`
+/// (undo stacks are per author).
+pub fn author() -> String {
+    std::env::var("FIN_AUTHOR")
+        .ok()
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| "fin".to_string())
 }
 
 /// One write command's input, as typed flags or as a `batch` line.
@@ -48,6 +78,9 @@ pub enum Write {
 pub struct Builder<'a> {
     pub backend: &'a dyn Backend,
     base: Snapshot,
+    /// The branch reference the tx is committed to.
+    branch: String,
+    author: String,
     /// The base project with every planned op applied.
     pub work: Project,
     ids: MemIds,
@@ -71,13 +104,16 @@ fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
 
 impl<'a> Builder<'a> {
     pub fn new(backend: &'a dyn Backend, globals: &Globals) -> Result<Builder<'a>, CoreError> {
-        let base = backend.snapshot()?;
+        let branch = target_branch(backend, globals)?;
+        let base = backend.snapshot(&branch)?;
         let ids = MemIds::after(&base.project);
         let lenient = globals.idem_key.is_some() && !globals.dry_run && !backend.dry_run_only();
         Ok(Builder {
             backend,
             work: base.project.clone(),
             base,
+            branch,
+            author: author(),
             ids,
             bound: BTreeMap::new(),
             ops: Vec::new(),
@@ -129,8 +165,8 @@ impl<'a> Builder<'a> {
     fn tx(&self, ops: Vec<Op>) -> Tx {
         Tx {
             tx_id: String::new(),
-            author: "fin".to_string(),
-            branch: "main".to_string(),
+            author: self.author.clone(),
+            branch: self.branch.clone(),
             base_rev: self.base.rev,
             schema_version: SCHEMA_VERSION,
             args_hash: None,

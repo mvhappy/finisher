@@ -25,7 +25,7 @@ fn rejecting(answer: CoreError) -> Rejecting {
 }
 
 impl Backend for Rejecting {
-    fn snapshot(&self) -> Result<Snapshot, CoreError> {
+    fn snapshot(&self, _branch: &str) -> Result<Snapshot, CoreError> {
         let rate: Rational = "30".parse()?;
         Ok(Snapshot {
             rev: 1,
@@ -79,8 +79,8 @@ fn landed(tx_id: &str) -> CommittedTx {
 struct LostAnswer(Rejecting);
 
 impl Backend for LostAnswer {
-    fn snapshot(&self) -> Result<Snapshot, CoreError> {
-        self.0.snapshot()
+    fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError> {
+        self.0.snapshot(branch)
     }
     fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
         self.0.commit(tx, generation)

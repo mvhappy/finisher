@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::{Globals, target_branch};
 use crate::addr;
 use crate::backend::Backend;
 
@@ -35,8 +36,8 @@ fn kind(track: &Track) -> &'static str {
     }
 }
 
-pub fn status(backend: &dyn Backend) -> Result<Value, CoreError> {
-    let snap = backend.snapshot()?;
+pub fn status(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
+    let snap = backend.snapshot(&target_branch(backend, g)?)?;
     let p = &snap.project;
     let tracks = p
         .timeline
@@ -52,8 +53,8 @@ pub fn status(backend: &dyn Backend) -> Result<Value, CoreError> {
     }))
 }
 
-pub fn view(backend: &dyn Backend, a: &ViewArgs) -> Result<Value, CoreError> {
-    let snap = backend.snapshot()?;
+pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, CoreError> {
+    let snap = backend.snapshot(&target_branch(backend, g)?)?;
     let p = &snap.project;
     if let Some(t) = &a.track {
         addr::track_end(p, t)?; // NOT_FOUND with alternatives for an unknown track

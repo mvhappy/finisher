@@ -5,6 +5,7 @@ mod addr;
 mod backend;
 mod client;
 mod commands;
+mod config;
 mod conn;
 mod endpoint;
 mod map;
@@ -21,8 +22,11 @@ use fin_core::CoreError;
 use serde_json::{Map, Value, json};
 
 use commands::asset::AssetCmd;
+use commands::branch::BranchCmd;
 use commands::clip::ClipCmd;
+use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, UndoArgs};
 use commands::project::ProjectCmd;
+use commands::try_cmd::TryArgs;
 use commands::view::ViewArgs;
 use commands::{Globals, Write};
 
@@ -45,6 +49,15 @@ enum Cmd {
     Asset(AssetCmd),
     #[command(subcommand)]
     Clip(ClipCmd),
+    #[command(subcommand)]
+    Branch(BranchCmd),
+    Undo(UndoArgs),
+    Redo,
+    Checkpoint(CheckpointArgs),
+    Merge(MergeArgs),
+    CherryPick(CherryPickArgs),
+    Revert(RevertArgs),
+    Try(TryArgs),
     Batch,
     Help {
         topic: Option<String>,
@@ -137,13 +150,13 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         None | Some(Cmd::Help { topic: None }) => Ok(map::map()),
         Some(Cmd::Help { topic: Some(t) }) => commands::schema::help(&t),
         Some(Cmd::Schema { command }) => commands::schema::schema(&command),
-        Some(Cmd::Status) => commands::view::status(backend()?.as_ref()),
-        Some(Cmd::View(a)) => commands::view::view(backend()?.as_ref(), &a),
+        Some(Cmd::Status) => commands::view::status(backend()?.as_ref(), g),
+        Some(Cmd::View(a)) => commands::view::view(backend()?.as_ref(), g, &a),
         Some(Cmd::Project(ProjectCmd::Create(a))) => {
             commands::project::create(backend()?.as_ref(), g, &a)
         }
         Some(Cmd::Project(ProjectCmd::Open(a))) => commands::project::open(backend()?.as_ref(), &a),
-        Some(Cmd::Project(cmd)) => commands::project::storage(backend()?.as_ref(), &cmd),
+        Some(Cmd::Project(cmd)) => commands::project::storage(backend()?.as_ref(), g, &cmd),
         Some(Cmd::Asset(AssetCmd::Add(a))) => {
             commands::write(backend()?.as_ref(), g, Write::AssetAdd(a))
         }
@@ -156,6 +169,14 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Clip(ClipCmd::Delete(a))) => {
             commands::write(backend()?.as_ref(), g, Write::ClipDelete(a))
         }
+        Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
+        Some(Cmd::Undo(a)) => commands::history::undo(backend()?.as_ref(), g, &a),
+        Some(Cmd::Redo) => commands::history::redo(backend()?.as_ref(), g),
+        Some(Cmd::Checkpoint(a)) => commands::history::checkpoint(backend()?.as_ref(), g, &a),
+        Some(Cmd::Merge(a)) => commands::history::merge(backend()?.as_ref(), g, &a),
+        Some(Cmd::CherryPick(a)) => commands::history::cherry_pick(backend()?.as_ref(), g, &a),
+        Some(Cmd::Revert(a)) => commands::history::revert(backend()?.as_ref(), g, &a),
+        Some(Cmd::Try(a)) => commands::try_cmd::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Batch) => {
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input).map_err(|e| {
@@ -200,10 +221,23 @@ mod tests {
             "project verify",
             "project rebuild",
             "project compact",
-            "project recover",
+            "project recover --create all --import d",
             "project acknowledge --rewind 2 --branch main",
             "status",
             "view",
+            "branch new b --from main@3",
+            "branch ls --all",
+            "branch rename a b",
+            "branch archive b --restore --as c",
+            "checkpoint cp",
+            "undo --to cp",
+            "redo",
+            "merge b --into main --skip-conflicting",
+            "cherry-pick tx1 --into b",
+            "revert m1",
+            "try t",
+            "try keep",
+            "try drop",
             "asset add f.mp4",
             "clip insert --track t1 --at end --asset a1 --dur 1s",
             "clip trim c1 --end -1s",
@@ -221,6 +255,37 @@ mod tests {
             );
             assert!(parse(args(sample)).is_ok(), "{sample}");
         }
+    }
+
+    #[test]
+    fn positional_branch_names_are_not_the_global_flag() {
+        for (s, branch) in [
+            ("merge side", None),
+            ("branch archive side", None),
+            ("--branch x merge side", Some("x")),
+            ("merge side --branch x", Some("x")),
+        ] {
+            let cli = parse(args(s)).unwrap();
+            assert_eq!(cli.globals.branch.as_deref(), branch, "{s}");
+        }
+    }
+
+    #[test]
+    fn try_takes_a_name_or_keep_or_drop() {
+        for (s, name, sub) in [
+            ("try", None, false),
+            ("try scratch", Some("scratch"), false),
+            ("try keep", None, true),
+            ("try drop", None, true),
+        ] {
+            match parse(args(s)).unwrap().command {
+                Some(Cmd::Try(a)) => {
+                    assert_eq!((a.name.as_deref(), a.sub.is_some()), (name, sub), "{s}")
+                }
+                other => panic!("{s}: {other:?}"),
+            }
+        }
+        assert_eq!(parse(args("try a keep")).unwrap_err().code, "USAGE");
     }
 
     #[test]

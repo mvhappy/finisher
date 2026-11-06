@@ -1206,7 +1206,7 @@ impl Store {
   - `fin project recover [--create <group|all>] [--import <dir>]` → `{groups, created, imported, manual}`
 - **`@` parsing:** all digits means a seq; anything else names a checkpoint.
 
-- [ ] **Step 1: Write failing tests** (`cli_history.rs`, live server):
+- [x] **Step 1: Write failing tests** (`cli_history.rs`, live server):
   - `branch_new_ls_rename_archive`;
   - `branch_new_from_seq_and_checkpoint`;
   - `branch_ls_all_shows_archived`;
@@ -1225,8 +1225,15 @@ impl Store {
   - `idem_key_retry_merge_returns_first`;
   - `dry_run_each_history_command_writes_nothing` (a table over every write command).
   - `main.rs`: parse samples. `cli_offline.rs`: the map under 1,500 tokens.
-- [ ] **Step 2–4:** Run (`rtk cargo test -p fin`) → FAIL; implement (each command file ≤ 400 lines); the three gates and `rtk pnpm e2e` → PASS.
-- [ ] **Step 5: Commit** `feat(fin): branch, merge, cherry-pick, revert, undo, redo, checkpoint, try`.
+- [x] **Step 2–4:** Run (`rtk cargo test -p fin`) → FAIL; implement (each command file ≤ 400 lines); the three gates and `rtk pnpm e2e` → PASS.
+- [x] **Step 5: Commit** `feat(fin): branch, merge, cherry-pick, revert, undo, redo, checkpoint, try`.
+- As built (commit `feat(fin): branch and history commands`):
+  - **Backend:** `snapshot(branch)` and `config_scope() -> Option<(server-data, projectId)>` (default `None`, offline). `commands::target_branch` = `--branch`, else the `fin-config.json` default, else `main`; `Builder` uses it for the snapshot and `Tx.branch`, `commands::author()` (`$FIN_AUTHOR`, empty = `fin`) for `Tx.author`; `status` and `view` read the target branch. Branch and history writes go through `project_call` with one shared `history::send` (txId = key or ULID, `author`, `dryRun`, `argsHash` with a key; `tx.get(K)` / `tx.get(K-1)` for a merge first so a set-aside key is `TX_SET_ASIDE`; one resend on a lost answer, the store answers the txId from the log).
+  - **Clap id clash:** a positional named `branch` takes the global `--branch`'s value, so `merge` and `branch archive` name theirs `source`/`target` (serde and schema keep `branch`); `main.rs` pins it in a test. `project acknowledge --branch` is the global flag now (`AcknowledgeArgs.branch` is gone from its schema).
+  - **Output:** `branch new` `{branch, rev, txId}`; `branch ls` `{branches}`; rename/archive/checkpoint `{rev, txId}`; `undo` `{undone, rev, txId}`; `redo` `{redone, rev, txId}`; `cherry-pick` `{rev, txId, noOp?}`; `revert` `{reverted, rev, txId, noOp?}`; `merge` `{merge: report less `committed`, plus `rev` and `records`}`; `rev`/`txId` are null when nothing was written (`noOp`); `dryRun: true` on every planned-only answer. `project recover` prints the whole `RecoverReport` generically, except `committed` becomes `written` (a count).
+  - **`try`:** `fin try [name]` forks from the target branch, records the try and makes it the default; `keep` merges into the recorded parent, `drop` archives it; both then switch back (default cleared when the parent is `main`) and forget the try; not on a recorded try is `USAGE` (`fix: fin try`). `config.rs` reads fail loudly on a broken file (`Result`, not `Option`) so a damaged file never turns into writes on `main`; adds `forget_try`.
+  - **Deviations:** with the offline snapshot hook the history commands (and `--dry-run`) are `SERVER_UNAVAILABLE` (nothing to plan against); `undo --to` passes the string to the server, which only knows checkpoint names (digits are `NOT_FOUND`); `project.recover` is registered as a write (`--dry-run`) and sends no `argsHash` (its request does not take one).
+  - **Tests:** `cli_history.rs` (17, the listed ones), `cli_offline.rs` `history_commands_need_a_server`, parse samples for every registry command, `positional_branch_names_are_not_the_global_flag`, `try_takes_a_name_or_keep_or_drop`, `parse_from`, `config.rs` unit tests. The map is ~860 tokens.
 
 ### Task 20: Property suite and time budget — tier: opus
 

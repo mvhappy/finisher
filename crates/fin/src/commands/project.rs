@@ -23,7 +23,7 @@ pub enum ProjectCmd {
     Verify(NoArgs),
     Rebuild(NoArgs),
     Compact(NoArgs),
-    Recover(NoArgs),
+    Recover(RecoverArgs),
     Acknowledge(AcknowledgeArgs),
 }
 
@@ -31,6 +31,23 @@ pub enum ProjectCmd {
 #[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NoArgs {}
+
+/// List the groups of set-aside records; make recovered branches of them (`--create`) and read
+/// segment files moved out of the folder into the quarantine first (`--import`).
+#[derive(Debug, Clone, Default, Args, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecoverArgs {
+    /// Make a `recovered-*` branch of one group (its 12-hex id) or of every recoverable one
+    /// (`all`). Without it the groups are only listed.
+    #[arg(long, value_name = "group|all")]
+    #[serde(default)]
+    pub create: Option<String>,
+    /// A folder of `.fseg` files moved out of the project folder (a forked or conflicted
+    /// chain), read into the quarantine before listing.
+    #[arg(long, value_name = "dir")]
+    #[serde(default)]
+    pub import: Option<String>,
+}
 
 /// Take the project's lease over from a server that stopped.
 #[derive(Debug, Clone, Args, Deserialize, JsonSchema)]
@@ -58,10 +75,6 @@ pub struct AcknowledgeArgs {
     )]
     #[serde(default)]
     pub rewind: Option<u64>,
-    /// The branch of that rewind.
-    #[arg(long, value_name = "b", default_value = "main", requires = "rewind")]
-    #[serde(default)]
-    pub branch: Option<String>,
     /// The kept database copy of a SALVAGE_INCOMPLETE warning (`details.copy`).
     #[arg(long, value_name = "copy")]
     #[serde(default)]
@@ -171,8 +184,43 @@ fn verify_failed(report: Value) -> CoreError {
     .with_fix("fin project rebuild rebuilds the database from the folder; if segment files are damaged, restore them from a backup first (the report names them)")
 }
 
+/// `fin project recover`: the report, less the written records (`written` counts them) so a
+/// recovery of many records stays one screen; every other field is passed through as is.
+fn recover(backend: &dyn Backend, g: &Globals, a: &RecoverArgs) -> Result<Value, CoreError> {
+    let mut fields = json!({});
+    if let Some(create) = &a.create {
+        fields["create"] = json!(create);
+    }
+    if let Some(dir) = &a.import {
+        fields["importDir"] = json!(paths::resolve_str(dir).display().to_string());
+    }
+    let args = json!({ "create": a.create, "import": a.import });
+    let req = super::history::Req {
+        tag: "project.recover",
+        cmd: "project.recover",
+        args,
+        fields,
+        hashed: false,
+        group: true,
+    };
+    let mut report = super::history::send(backend, g, req)?;
+    if let Some(map) = report.as_object_mut() {
+        let written = map.remove("committed");
+        map.insert(
+            "written".into(),
+            json!(
+                written
+                    .as_ref()
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            ),
+        );
+    }
+    Ok(report)
+}
+
 /// The storage commands (`status` … `acknowledge`). `create` and `open` are handled above.
-pub fn storage(backend: &dyn Backend, cmd: &ProjectCmd) -> Result<Value, CoreError> {
+pub fn storage(backend: &dyn Backend, g: &Globals, cmd: &ProjectCmd) -> Result<Value, CoreError> {
     let call = |tag: &str, payload: Value| backend.project_call(tag, payload);
     Ok(match cmd {
         ProjectCmd::Status(_) => json!({ "status": call("project.status", json!({}))? }),
@@ -191,10 +239,10 @@ pub fn storage(backend: &dyn Backend, cmd: &ProjectCmd) -> Result<Value, CoreErr
             json!({ "report": report, "offline": offline })
         }
         ProjectCmd::Compact(_) => json!({ "report": call("project.compact", json!({}))? }),
-        ProjectCmd::Recover(_) => call("project.recover", json!({}))?,
+        ProjectCmd::Recover(a) => recover(backend, g, a)?,
         ProjectCmd::Acknowledge(a) => match (&a.rewind, &a.salvage) {
             (Some(n), None) => {
-                let branch = a.branch.clone().unwrap_or_else(|| "main".to_string());
+                let branch = super::target_branch(backend, g)?;
                 call(
                     "project.acknowledgeRewind",
                     json!({ "branch": branch, "generation": n }),

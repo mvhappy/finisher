@@ -579,7 +579,7 @@ fn project_status_prints_json() {
     let verify = ok(run(&["project", "verify"]));
     assert_eq!(verify["report"]["ok"], true, "{verify}");
     assert!(ok(run(&["project", "compact"]))["report"].is_object());
-    // 4B: the report of `project.recover` (Task 19 gives the command its flags).
+    // 4B: the report of `project.recover`.
     let recovered = ok(run(&["project", "recover"]));
     assert_eq!(recovered["groups"], json!([]), "{recovered}");
     assert_eq!(recovered["manual"], Value::Null);
