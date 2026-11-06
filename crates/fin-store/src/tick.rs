@@ -290,8 +290,13 @@ impl Store {
     /// Takes the lease over (`fin project takeover [--confirm]`, spec §3.5): see
     /// [`Contender::takeover`] for what `confirm` allows and the `LEASE_TAKEOVER_REFUSED`
     /// reasons. On success an import pass runs before this returns, and the ordering rule
-    /// applies as after any acquisition. Holding already: the status, unchanged.
+    /// applies as after any acquisition. Holding already: the status, unchanged. A project
+    /// that needs a newer Finisher is refused (`NEWER_FORMAT`, `crate::newer`).
     pub fn takeover(&mut self, confirm: bool) -> Result<crate::ProjectStatus, StoreError> {
+        self.reread_project_file();
+        if self.follow_if_newer() {
+            return Err(self.newer_takeover_refused());
+        }
         if !self.holding() {
             if !self.project_dir.join(".finisher").is_dir() {
                 return Err(CoreError::new(
@@ -384,6 +389,9 @@ impl Store {
     /// One acquisition attempt. Never creates `.finisher/`: a project folder that vanished
     /// must not come back empty.
     pub(crate) fn try_acquire(&mut self) -> bool {
+        if self.follow_if_newer() {
+            return false;
+        }
         if !self.project_dir.join(".finisher").is_dir() {
             self.ctl.seen = LeaseState::Lost {
                 reason: format!("{} cannot be reached", self.project_dir.display()),
@@ -467,6 +475,8 @@ impl Store {
         let started = self.ctl.now();
         self.reread_project_file();
         let r = self.import()?;
+        // A newer project file or segment lets go of the lease (`crate::newer`).
+        self.follow_if_newer();
         self.follow
             .queued
             .extend(r.rewound.iter().map(|w| StoreEvent::Rewound {
