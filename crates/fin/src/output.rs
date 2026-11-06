@@ -76,8 +76,12 @@ const VALIDATION_CODES: &[&str] = &[
     // History (sub-project 4B): the author has nothing to undo or redo on the branch.
     "NOTHING_TO_UNDO",
     "NOTHING_TO_REDO",
-    // Fonts (sub-project 4C): a file `fin_text::font_info` cannot read as a font.
+    // Fonts (sub-project 4C): a file `fin_text::font_info` cannot read as a font; a SHA-256,
+    // family or entry the font catalog does not list; a catalog breaking a gate rule
+    // (`details.rule`, `details.path`).
     "FONT_INVALID",
+    "FONT_NOT_IN_CATALOG",
+    "FONT_CATALOG_INVALID",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -127,6 +131,9 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "SERVER_SHUTTING_DOWN",
     "CANCELLED",
     "DB_IN_USE",
+    // `fin fonts fetch` could not download a font (`details.reason`, `details.retryAt`); in
+    // other replies it is a warning, not an error.
+    "FONT_FETCH_FAILED",
 ];
 
 /// The one place error codes become exit codes.
@@ -218,6 +225,7 @@ mod tests {
         assert_eq!(exit_code("UNSUPPORTED_HASH"), 3);
         assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
+        assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
         for code in [
             "SERVER_UNAVAILABLE",
             "SERVER_RUNNING",
@@ -268,6 +276,8 @@ mod tests {
             "NOTHING_TO_UNDO",
             "NOTHING_TO_REDO",
             "FONT_INVALID",
+            "FONT_NOT_IN_CATALOG",
+            "FONT_CATALOG_INVALID",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

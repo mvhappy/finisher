@@ -63,3 +63,29 @@ status: used (sub-project 4C), as Cargo dependencies; no code is copied.
 
 Fonts are never bundled; test fonts are generated at test time by the dev-only
 `fin-testfonts` crate (`write-fonts`, MIT OR Apache-2.0).
+
+## ureq, rustls and ring — `fin-fonts` (HTTP and TLS for font fetching)
+status: used (sub-project 4C), as Cargo dependencies; no code is copied.
+- `ureq` 3.5 (MIT OR Apache-2.0), `ureq-proto`, `http`, `httparse` (MIT OR Apache-2.0);
+- `rustls` 0.23 (Apache-2.0 OR ISC OR MIT) with the **`ring`** 0.17 provider (Apache-2.0 AND
+  ISC; both terms apply), `rustls-webpki` (ISC), `untrusted` (ISC), `rustls-pki-types`
+  (MIT OR Apache-2.0), `subtle` (BSD-3-Clause);
+- `rustls-platform-verifier` 0.7 (MIT OR Apache-2.0) over the OS trust store:
+  `rustls-native-certs` (Apache-2.0 OR ISC OR MIT) on Linux, `security-framework`
+  (MIT OR Apache-2.0) on macOS; `winreg` (MIT) for the Windows system proxy;
+- `sha2` (MIT OR Apache-2.0), `zip` 9 (MIT) with `flate2` (MIT OR Apache-2.0) and `zlib-rs`
+  (Zlib).
+
+Not used: `webpki-roots`/`webpki-root-certs` (CDLA-Permissive-2.0; only wasm32 and Android
+would pull them, which `deny.toml` `[graph] targets` leaves out) and `aws-lc-rs`.
+
+## Catalog fonts (OFL-1.1) — fetched at run time, never distributed
+status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
+upstream files by SHA-256 at pinned commits and release tags, and each machine downloads
+them from there. Licence texts (checked by hand, 2026-11-06):
+- Inter 4.1 (rsms/inter, `LICENSE.txt` at tag v4.1), SIL Open Font License 1.1;
+- Noto Sans, Noto Sans Arabic, Noto Sans Hebrew (notofonts `latin-greek-cyrillic`, `arabic`,
+  `hebrew`, `OFL.txt`), SIL Open Font License 1.1;
+- Noto Sans CJK (notofonts/noto-cjk `Sans/LICENSE`), SIL Open Font License 1.1;
+- Noto Color Emoji (googlefonts/noto-emoji `2D/fonts/LICENSE`), SIL Open Font License 1.1 (the
+  repository's tools and images are Apache-2.0 and are not used).

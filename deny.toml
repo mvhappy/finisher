@@ -1,5 +1,17 @@
 [graph]
 all-features = true
+# The shipped OS triples only (4C Task 5): crates that only wasm32 or Android pull in
+# (rustls-platform-verifier's webpki-root-certs, CDLA-Permissive-2.0) stay out of the graph.
+# fin-core and fin-text also build for wasm32-unknown-unknown; their dependencies are the
+# same on every target.
+targets = [
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
 
 [licenses]
 allow = [

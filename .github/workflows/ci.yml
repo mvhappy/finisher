@@ -28,6 +28,16 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Build fin-node (finisherd needs it for the fin online tests)
         run: pnpm --filter @finisher/fin-node build
+      - name: Restore the warmed font cache (keyed by the font catalog)
+        id: font-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fin-font-cache
+          key: fin-fonts-${{ runner.os }}-${{ hashFiles('crates/fin-fonts/catalog/catalog.json') }}
+      - name: Warm the font cache (the catalog changed)
+        if: steps.font-cache.outputs.cache-hit != 'true'
+        # Fetches every catalog file and checks its faces and scripts against the catalog.
+        run: cargo run --release -p fin-fonts --example warm_cache -- "${{ runner.temp }}/fin-font-cache"
       - name: Rust tests
         # The default members: everything but the cross-host harness, whose `test-hooks`
         # must not unify into fin or fin-node (scripts/check-test-hooks.mjs).
@@ -35,6 +45,9 @@ jobs:
         env:
           # fin's online and contract tests must run against a live finisherd, never skip.
           FIN_REQUIRE_SERVER: "1"
+          # The real-font tests read the warmed cache and fail rather than skip without it.
+          FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
+          FIN_REQUIRE_FONTS: "1"
       - name: Cross-host harness builds (alone)
         run: cargo build --release -p fin-store-xhost
       - name: TypeScript tests

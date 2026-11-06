@@ -1,0 +1,311 @@
+{
+  "catalogVersion": "2026.11.1",
+  "fallback": ["noto-sans", "noto-sans-arabic", "noto-sans-hebrew", "noto-sans-cjk", "noto-color-emoji"],
+  "entries": [
+    {
+      "id": "inter",
+      "family": "Inter",
+      "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/rsms/inter/e3a3d4c57d5ecc01453a575621882a384c1995a3/LICENSE.txt" },
+      "homepage": "https://rsms.me/inter/",
+      "scripts": ["Latn", "Cyrl", "Grek"],
+      "styles": [
+        {
+          "id": "regular",
+          "weight": 400,
+          "italic": false,
+          "file": {
+            "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+            "size": 411640,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Inter", "weight": 400, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip",
+              "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
+              "size": 33707794,
+              "archive": { "format": "zip", "member": "extras/ttf/Inter-Regular.ttf" }
+            }
+          ]
+        },
+        {
+          "id": "bold",
+          "weight": 700,
+          "italic": false,
+          "file": {
+            "sha256": "288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f",
+            "size": 420428,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Inter", "weight": 700, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip",
+              "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
+              "size": 33707794,
+              "archive": { "format": "zip", "member": "extras/ttf/Inter-Bold.ttf" }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "noto-sans",
+      "family": "Noto Sans",
+      "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/notofonts/latin-greek-cyrillic/0ef94805d19e98ed658543a7c48c0a4f19cc0ac0/OFL.txt" },
+      "homepage": "https://notofonts.github.io/",
+      "scripts": ["Latn", "Cyrl", "Grek"],
+      "styles": [
+        {
+          "id": "regular",
+          "weight": 400,
+          "italic": false,
+          "file": {
+            "sha256": "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8",
+            "size": 431364,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Sans", "weight": 400, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSans/unhinted/ttf/NotoSans-Regular.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSans/unhinted/ttf/NotoSans-Regular.ttf"
+            }
+          ]
+        },
+        {
+          "id": "bold",
+          "weight": 700,
+          "italic": false,
+          "file": {
+            "sha256": "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9",
+            "size": 432376,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Sans", "weight": 700, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSans/unhinted/ttf/NotoSans-Bold.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSans/unhinted/ttf/NotoSans-Bold.ttf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "noto-sans-arabic",
+      "family": "Noto Sans Arabic",
+      "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/notofonts/arabic/f1ba474be91d6a5d2cfcc4374bb03cc5f1011088/OFL.txt" },
+      "homepage": "https://notofonts.github.io/",
+      "scripts": ["Arab"],
+      "styles": [
+        {
+          "id": "regular",
+          "weight": 400,
+          "italic": false,
+          "file": {
+            "sha256": "bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0",
+            "size": 142140,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Sans Arabic", "weight": 400, "italic": false, "scripts": ["Arab"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Regular.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Regular.ttf"
+            }
+          ]
+        },
+        {
+          "id": "bold",
+          "weight": 700,
+          "italic": false,
+          "file": {
+            "sha256": "f4cb79f842a07d1bcf597879574358fb7010f73761396d1d0f2445dfedb4d2ca",
+            "size": 141852,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Sans Arabic", "weight": 700, "italic": false, "scripts": ["Arab"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Bold.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Bold.ttf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "noto-sans-hebrew",
+      "family": "Noto Sans Hebrew",
+      "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/notofonts/hebrew/3d639736161377dd9acf51441dd17e44daea0da4/OFL.txt" },
+      "homepage": "https://notofonts.github.io/",
+      "scripts": ["Hebr"],
+      "styles": [
+        {
+          "id": "regular",
+          "weight": 400,
+          "italic": false,
+          "file": {
+            "sha256": "04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853",
+            "size": 16836,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Sans Hebrew", "weight": 400, "italic": false, "scripts": ["Hebr"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Regular.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Regular.ttf"
+            }
+          ]
+        },
+        {
+          "id": "bold",
+          "weight": 700,
+          "italic": false,
+          "file": {
+            "sha256": "dfdb3056de1f4542b888c77a1a8a750548a802e271479f56e52152423b64dde8",
+            "size": 16900,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Sans Hebrew", "weight": 700, "italic": false, "scripts": ["Hebr"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Bold.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@86ce02c0fe7890f5936c5dffb26fca0797d1be64/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Bold.ttf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "noto-sans-cjk",
+      "family": "Noto Sans CJK",
+      "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE" },
+      "homepage": "https://github.com/notofonts/noto-cjk",
+      "scripts": ["Bopo", "Hang", "Hani", "Hira", "Kana"],
+      "styles": [
+        {
+          "id": "regular",
+          "weight": 400,
+          "italic": false,
+          "defaultFace": 2,
+          "file": {
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784,
+            "format": "ttc",
+            "faces": [
+              { "index": 0, "family": "Noto Sans CJK JP", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 1, "family": "Noto Sans CJK KR", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 2, "family": "Noto Sans CJK SC", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 3, "family": "Noto Sans CJK TC", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 4, "family": "Noto Sans CJK HK", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 5, "family": "Noto Sans Mono CJK JP", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 6, "family": "Noto Sans Mono CJK KR", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 7, "family": "Noto Sans Mono CJK SC", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 8, "family": "Noto Sans Mono CJK TC", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 9, "family": "Noto Sans Mono CJK HK", "weight": 400, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTC/NotoSansCJK-Regular.ttc"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTC/NotoSansCJK-Regular.ttc"
+            }
+          ]
+        },
+        {
+          "id": "bold",
+          "weight": 700,
+          "italic": false,
+          "defaultFace": 2,
+          "file": {
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760,
+            "format": "ttc",
+            "faces": [
+              { "index": 0, "family": "Noto Sans CJK JP", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 1, "family": "Noto Sans CJK KR", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 2, "family": "Noto Sans CJK SC", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 3, "family": "Noto Sans CJK TC", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 4, "family": "Noto Sans CJK HK", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 5, "family": "Noto Sans Mono CJK JP", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 6, "family": "Noto Sans Mono CJK KR", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 7, "family": "Noto Sans Mono CJK SC", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 8, "family": "Noto Sans Mono CJK TC", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] },
+              { "index": 9, "family": "Noto Sans Mono CJK HK", "weight": 700, "italic": false, "scripts": ["Bopo", "Cyrl", "Grek", "Hang", "Hani", "Hira", "Kana", "Latn"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTC/NotoSansCJK-Bold.ttc"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTC/NotoSansCJK-Bold.ttc"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "noto-color-emoji",
+      "family": "Noto Color Emoji",
+      "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e07d3d1fe1bdbcdb14964547f0fd592966f/2D/fonts/LICENSE" },
+      "homepage": "https://github.com/googlefonts/noto-emoji",
+      "scripts": ["Zsye"],
+      "styles": [
+        {
+          "id": "regular",
+          "weight": 400,
+          "italic": false,
+          "file": {
+            "sha256": "15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44",
+            "size": 10730124,
+            "format": "ttf",
+            "faces": [
+              { "index": 0, "family": "Noto Color Emoji", "weight": 400, "italic": false, "scripts": ["Zsye"] }
+            ]
+          },
+          "sources": [
+            {
+              "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e07d3d1fe1bdbcdb14964547f0fd592966f/2D/fonts/NotoColorEmoji.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@99701e07d3d1fe1bdbcdb14964547f0fd592966f/2D/fonts/NotoColorEmoji.ttf"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,50 +1,50 @@
 {
-  "note": "sha256 and face are filled from the font catalog (Task 5); null means not pinned yet.",
+  "note": "sha256 and face are the font catalog's (crates/fin-fonts/catalog/catalog.json, 2026.11.1).",
   "fonts": {
     "inter:regular": {
-      "sha256": null,
+      "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
       "face": 0,
       "family": "Inter",
       "weight": 400,
       "italic": false
     },
     "noto-sans:regular": {
-      "sha256": null,
+      "sha256": "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8",
       "face": 0,
       "family": "Noto Sans",
       "weight": 400,
       "italic": false
     },
     "noto-sans:bold": {
-      "sha256": null,
+      "sha256": "87cb2d84472a7d66da659ee47b6cdb9552326e8c128245231f191b6ac72529d9",
       "face": 0,
       "family": "Noto Sans",
       "weight": 700,
       "italic": false
     },
     "noto-sans-arabic:regular": {
-      "sha256": null,
+      "sha256": "bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0",
       "face": 0,
       "family": "Noto Sans Arabic",
       "weight": 400,
       "italic": false
     },
     "noto-sans-hebrew:regular": {
-      "sha256": null,
+      "sha256": "04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853",
       "face": 0,
       "family": "Noto Sans Hebrew",
       "weight": 400,
       "italic": false
     },
     "noto-sans-cjk:regular": {
-      "sha256": null,
-      "face": null,
+      "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+      "face": 2,
       "family": "Noto Sans CJK SC",
       "weight": 400,
       "italic": false
     },
     "noto-color-emoji:regular": {
-      "sha256": null,
+      "sha256": "15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44",
       "face": 0,
       "family": "Noto Color Emoji",
       "weight": 400,

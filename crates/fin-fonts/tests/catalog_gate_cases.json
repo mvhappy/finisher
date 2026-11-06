@@ -1,0 +1,89 @@
+{
+  "note": "The font catalog gate's cases, run by tests/catalog.rs (FontCatalog::from_json) and scripts/check-font-catalog.test.mjs (the JS gate). Each case sets JSON pointers in `base` (null removes a field) and names the one rule the result breaks; `base` itself passes.",
+  "base": {
+    "catalogVersion": "2026.11.1",
+    "fallback": ["a", "b"],
+    "entries": [
+      {
+        "id": "a",
+        "family": "Alpha",
+        "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/o/a/0123456789abcdef0123456789abcdef01234567/OFL.txt" },
+        "homepage": "https://example.com/a",
+        "scripts": ["Latn"],
+        "styles": [
+          {
+            "id": "regular", "weight": 400, "italic": false,
+            "file": { "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 1000, "format": "ttf",
+              "faces": [{ "index": 0, "family": "Alpha", "weight": 400, "italic": false, "scripts": ["Latn"] }] },
+            "sources": [
+              { "url": "https://raw.githubusercontent.com/o/a/0123456789abcdef0123456789abcdef01234567/Alpha-Regular.ttf" },
+              { "url": "https://cdn.jsdelivr.net/gh/o/a@0123456789abcdef0123456789abcdef01234567/Alpha-Regular.ttf" }
+            ]
+          },
+          {
+            "id": "bold", "weight": 700, "italic": false,
+            "file": { "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 1000, "format": "ttf",
+              "faces": [{ "index": 0, "family": "Alpha", "weight": 700, "italic": false, "scripts": ["Latn"] }] },
+            "sources": [
+              { "url": "https://github.com/o/a/releases/download/v1.0/alpha.zip", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "size": 5000,
+                "archive": { "format": "zip", "member": "ttf/Alpha-Bold.ttf" } }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "b",
+        "family": "Beta",
+        "licence": { "spdx": "Apache-2.0", "url": "https://raw.githubusercontent.com/o/b/0123456789abcdef0123456789abcdef01234567/LICENSE" },
+        "homepage": "https://example.com/b",
+        "scripts": ["Hani"],
+        "styles": [
+          {
+            "id": "regular", "weight": 400, "italic": false, "defaultFace": 1,
+            "file": { "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "size": 2000, "format": "ttc",
+              "faces": [
+                { "index": 0, "family": "Beta JP", "weight": 400, "italic": false, "scripts": ["Hani"] },
+                { "index": 1, "family": "Beta SC", "weight": 400, "italic": false, "scripts": ["Hani"] }
+              ] },
+            "sources": [{ "url": "https://raw.githubusercontent.com/o/b/0123456789abcdef0123456789abcdef01234567/Beta.ttc" }]
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    { "name": "non-commercial licence", "set": { "/entries/0/licence/spdx": "CC-BY-NC-4.0" }, "rule": "licence" },
+    { "name": "share-alike licence", "set": { "/entries/0/licence/spdx": "CC-BY-SA-4.0" }, "rule": "licence" },
+    { "name": "GPL font exception", "set": { "/entries/1/licence/spdx": "GPL-2.0-or-later WITH Font-exception-2.0" }, "rule": "licence" },
+    { "name": "mutable URL (a branch)", "set": { "/entries/0/styles/0/sources/0/url": "https://raw.githubusercontent.com/o/a/main/Alpha-Regular.ttf" }, "rule": "immutableUrl" },
+    { "name": "mutable URL (latest release)", "set": { "/entries/0/styles/1/sources/0/url": "https://github.com/o/a/releases/latest/download/alpha.zip" }, "rule": "immutableUrl" },
+    { "name": "plain http source", "set": { "/entries/0/styles/0/sources/1/url": "http://cdn.jsdelivr.net/gh/o/a@0123456789abcdef0123456789abcdef01234567/Alpha-Regular.ttf" }, "rule": "https" },
+    { "name": "plain http licence", "set": { "/entries/1/licence/url": "http://example.com/LICENSE" }, "rule": "https" },
+    { "name": "duplicate entry id", "set": { "/entries/1/id": "a" }, "rule": "unique" },
+    { "name": "duplicate style id", "set": { "/entries/0/styles/1/id": "regular" }, "rule": "unique" },
+    { "name": "duplicate face key", "set": { "/entries/1/styles/0/file/faces/0/family": "Alpha" }, "rule": "unique" },
+    { "name": "duplicate file", "set": { "/entries/1/styles/0/file/sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "rule": "unique" },
+    { "name": "duplicate face index", "set": { "/entries/1/styles/0/file/faces/1/index": 0 }, "rule": "unique" },
+    { "name": "oversize file", "set": { "/entries/1/styles/0/file/size": 67108865 }, "rule": "size" },
+    { "name": "empty file", "set": { "/entries/0/styles/0/file/size": 0 }, "rule": "size" },
+    { "name": "oversize archive", "set": { "/entries/0/styles/1/sources/0/size": 67108865 }, "rule": "size" },
+    { "name": "short sha256", "set": { "/entries/0/styles/0/file/sha256": "abc" }, "rule": "sha256" },
+    { "name": "uppercase sha256", "set": { "/entries/0/styles/0/file/sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }, "rule": "sha256" },
+    { "name": "unknown font format", "set": { "/entries/0/styles/0/file/format": "woff2" }, "rule": "format" },
+    { "name": "unknown archive format", "set": { "/entries/0/styles/1/sources/0/archive/format": "tar" }, "rule": "format" },
+    { "name": "archive without its sha256", "set": { "/entries/0/styles/1/sources/0/sha256": null }, "rule": "archive" },
+    { "name": "archive member escapes", "set": { "/entries/0/styles/1/sources/0/archive/member": "../Alpha-Bold.ttf" }, "rule": "archive" },
+    { "name": "plain source with a size", "set": { "/entries/0/styles/0/sources/0/size": 1000 }, "rule": "archive" },
+    { "name": "unknown fallback id", "set": { "/fallback/1": "c" }, "rule": "fallback" },
+    { "name": "fallback listed twice", "set": { "/fallback/1": "a" }, "rule": "fallback" },
+    { "name": "bad catalog version", "set": { "/catalogVersion": "2026-11" }, "rule": "version" },
+    { "name": "bad entry id", "set": { "/entries/0/id": "Alpha" }, "rule": "id" },
+    { "name": "bad script code", "set": { "/entries/0/scripts/0": "latn" }, "rule": "scripts" },
+    { "name": "no scripts", "set": { "/entries/0/scripts": [] }, "rule": "scripts" },
+    { "name": "weight out of range", "set": { "/entries/0/styles/0/weight": 0 }, "rule": "weight" },
+    { "name": "default face missing", "set": { "/entries/1/styles/0/defaultFace": 5 }, "rule": "faces" },
+    { "name": "default face of another weight", "set": { "/entries/0/styles/1/weight": 400 }, "rule": "faces" },
+    { "name": "no sources", "set": { "/entries/1/styles/0/sources": [] }, "rule": "sources" },
+    { "name": "unknown field", "set": { "/entries/0/styles/0/mirror": true }, "rule": "schema" }
+  ]
+}

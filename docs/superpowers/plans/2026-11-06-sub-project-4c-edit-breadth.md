@@ -572,7 +572,7 @@ pub fn test_sans() -> Vec<u8>; pub fn test_rtl() -> Vec<u8>; pub fn test_han() -
   - `FontSystem::new_with_locale_and_db_and_fallback("en-US", db, FaceListFallback)`, with the faces loaded in request order into an empty `fontdb::Database`;
   - `Buffer` with `Shaping::Advanced` and `Wrap::Word`; `libm::roundf` to 1/64 px;
   - files < 400 lines.
-- [ ] **Step 5: Goldens.** *(Generated goldens done. The real corpus waits for Task 5: `real.json` pins are `null` until the catalog fills them.)* Once Task 5's `warm_cache` exists (or by a one-off download into `archive/fonts/` checked against the catalog hashes), fill `expected.json` for the real corpus and review `layouts/` by eye.
+- [x] **Step 5: Goldens.** *(Generated goldens done in Task 4; the real corpus with Task 5: `real.json` pins the catalog files (`noto-sans-cjk:regular` is face 2, SC, of `NotoSansCJK-Regular.ttc`), the 14 real hashes are blessed from a `warm_cache` dir on Linux and the layouts reviewed by eye: RTL word order for Arabic and Hebrew, `123` before the Arabic word in the LTR mixed line (UBA W2), CJK at exactly 1 em per ideograph and kana, emoji at the CBDT advance (1.245 em), U+0378 missing, wrap lines ≤ 600 px.)* Once Task 5's `warm_cache` exists (or by a one-off download into `archive/fonts/` checked against the catalog hashes), fill `expected.json` for the real corpus and review `layouts/` by eye.
 - [x] **Step 6: Early cross-OS signal** (controller; generated corpus byte-identical on Linux, Windows 11, macOS arm64 and wasm32-wasip1; real fonts with Task 5): run both test files on the macOS and Windows hosts with a warmed cache, and on wasm32-wasip1 locally (`wasmtime --dir`). Record the results in `archive/sp4c-text/`. Task 29 repeats it.
 - [x] **Step 7: Run** the three gates → PASS. **Commit** `feat(text): fin-text measurement over fonts by hash; TextMeasurer contract; generated test fonts`.
 
@@ -612,12 +612,12 @@ impl Fetcher {
 }
 ```
 
-- [ ] **Step 1: Licences.** Add `ureq`, `rustls` (`ring`), `rustls-platform-verifier`, `sha2` and `zip` as the Tech Stack says. Set `deny.toml` `[graph] targets`, then run `rtk cargo deny check licenses sources bans`; record the tree's licences in the commit body.
-- [ ] **Step 2: Write the catalog.**
+- [x] **Step 1: Licences.** Add `ureq`, `rustls` (`ring`), `rustls-platform-verifier`, `sha2` and `zip` as the Tech Stack says. Set `deny.toml` `[graph] targets`, then run `rtk cargo deny check licenses sources bans`; record the tree's licences in the commit body.
+- [x] **Step 2: Write the catalog.**
   - Pin every initial file (Decision 30) at a commit or release tag, and fill `sha256`, `size`, `format`, faces and scripts from a one-off `warm_cache` run.
   - For Inter, the source is the release zip, and the archive member's own `sha256` and `size` are recorded.
   - Confirm each licence text by hand (OFL-1.1) and record the URL.
-- [ ] **Step 3: Write failing tests** (all against `support/http_server.rs`: an in-process HTTP/1.1 server on loopback that serves generated fonts and zips, with injectable faults: wrong bytes, a truncated body then a dropped connection, `Range` support on or off, HTTP 500, slow bodies):
+- [x] **Step 3: Write failing tests** (all against `support/http_server.rs`: an in-process HTTP/1.1 server on loopback that serves generated fonts and zips, with injectable faults: wrong bytes, a truncated body then a dropped connection, `Range` support on or off, HTTP 500, slow bodies):
   - catalog:
     - `builtin_catalog_validates`;
     - `catalog_gate_refuses_nc_licence` (and GPL font exception, mutable URL, non-https, duplicate keys, oversize, unknown fallback id). The same fixtures run through the JS gate test;
@@ -636,9 +636,16 @@ impl Fetcher {
     - `archive_member_extracted_and_verified`;
     - `proxy_env_is_used` (the test server acting as an HTTP `CONNECT` proxy records the request);
     - `https_required_outside_test_hooks`.
-- [ ] **Step 4: Run** `rtk cargo test -p fin-fonts` → FAIL. **Implement** (files < 400 lines; the HTTP code stays in `http.rs`).
-- [ ] **Step 5: CI.** Run `warm_cache` once locally into `archive/fonts/`, and check that it reports every face and script equal to the catalog.
-- [ ] **Step 6: Run** the three gates → PASS. **Commit** `feat(fonts): pinned font catalog, content-addressed cache and fetcher`.
+- [x] **Step 4: Run** `rtk cargo test -p fin-fonts` → FAIL. **Implement** (files < 400 lines; the HTTP code stays in `http.rs`).
+- [x] **Step 5: CI.** Run `warm_cache` once locally into `archive/fonts/`, and check that it reports every face and script equal to the catalog.
+- [x] **Step 6: Run** the three gates → PASS. **Commit** `feat(fonts): pinned font catalog, content-addressed cache and fetcher`.
+
+**As built** (for Tasks 6, 18, 20 and 22):
+- Catalog `2026.11.1`, 11 files, all OFL-1.1: Inter 4.1 Regular/Bold (members of the `v4.1` release zip, 33,707,794 bytes, extracted together: one download fills both); Noto Sans, Arabic and Hebrew Regular/Bold (unhinted TTFs, `notofonts/notofonts.github.io` at `86ce02c`); Noto Sans CJK Regular/Bold OTCs (`notofonts/noto-cjk` at `f8d1575`; 10 faces each, JP KR SC TC HK and the Mono five; `defaultFace` 2 = SC); Noto Color Emoji (`googlefonts/noto-emoji` at `99701e0`). Each GitHub-repository file has a jsDelivr mirror at the same commit (same bytes), tried only after the upstream fails. jsDelivr answers `Range` over another representation, so a `206` whose `Content-Range` total is not the catalog size restarts the download.
+- Faces carry `scripts` (exactly `font_info`'s, which `warm_cache` checks); the entry's `scripts` are what `fallback_for` matches; `CatalogStyle.default_face` names the face a fallback or an entry-level pin uses. `FontFormat` is defined in `fin-fonts` for now: Task 6 moves it to `fin_core::model` and `fin-fonts` re-uses it.
+- `FileState` gains `Missing` (not cached, not queued). `FetchOptions` also holds `proxy_from_env`, `backoff` (its length is the attempts per source), `retry_after` and `lock_wait`; `FontCatalog::active()` reads `FIN_FONT_CATALOG` in `test-hooks` builds. **`offline` stops background fetching only; `fetch_now` (`fin fonts fetch`) still downloads** (owner answer 1); Task 22 maps both `FIN_FONTS_OFFLINE=1` and `fonts.autoFetch: false` to it.
+- `FONT_FETCH_FAILED.details`: `{key (the default face's FontKey), entry, style, sha256, reason, retryAt}`, fix `fin fonts fetch <entry>`; reasons `hashMismatch | sizeMismatch | tooLarge | truncated | badRange | http<status> | network | insecureUrl | archive | lockTimeout | io`. New codes in `output.rs`: `FONT_NOT_IN_CATALOG`, `FONT_CATALOG_INVALID` (exit 3), `FONT_FETCH_FAILED` (exit 5).
+- `FontCatalog` and `FileState` derive `JsonSchema` but are not yet exported to TypeScript: Task 22 adds them to `export_schema.rs` with the `fonts.*` RPCs.
 
 ### Task 6: Model v2 (with the `fonts` registry), the snapshot upcaster, new id kinds — tier: opus
 
