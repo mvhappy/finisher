@@ -241,3 +241,20 @@ pub fn fixture_4a(tmp: &Path) -> (PathBuf, PathBuf) {
     fs::copy(src.join("project.fdb"), &db).unwrap();
     (server_data, folder)
 }
+
+/// The scrubbed 4B fixture (`tests/fixtures/4b`), laid out in `tmp`: returns
+/// `(server_data, folder)` with the folder copied and `project.fdb` placed at
+/// `<server_data>/projects/<id>/project.fdb`. The fixture's recorded folder is gone, so open it
+/// with `OpenOptions { relocate: true, .. }`.
+pub fn fixture_4b(tmp: &Path) -> (PathBuf, PathBuf) {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/4b");
+    let folder = tmp.join("folder");
+    copy_dir(&src.join("folder"), &folder);
+    let v: serde_json::Value =
+        serde_json::from_slice(&fs::read(folder.join("finisher.project.json")).unwrap()).unwrap();
+    let server_data = tmp.join("server-data");
+    let db = fin_store::db_path(&server_data, v["id"].as_str().unwrap());
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::copy(src.join("project.fdb"), &db).unwrap();
+    (server_data, folder)
+}

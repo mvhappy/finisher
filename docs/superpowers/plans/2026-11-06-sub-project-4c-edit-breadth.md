@@ -397,7 +397,7 @@ None open. All five were answered and are recorded as Decisions 9, 30, 10, 21 an
 - Create: `crates/fin-store/tests/fixture_4b.rs`.
 - The generator is **not** committed. It lives in a 4B worktree under `archive/`.
 
-- [ ] **Step 1: Generate from 4B code.**
+- [x] **Step 1: Generate from 4B code.**
   - `rtk git worktree add archive/wt-4b 36fe7e0` (4B as merged with the latest 4A).
   - In it, write `crates/fin-store/examples/make_4b_fixture.rs`:
     1. create a project; `asset.add`;
@@ -406,14 +406,14 @@ None open. All five were answered and are recorded as Decisions 9, 30, 10, 21 an
     4. one more edit on `main`; `merge feature`; `undo`, `redo`; a cherry-pick of a `feature` record back onto `main`;
     5. `tick` until exported; `close`; `PRAGMA wal_checkpoint(TRUNCATE)`.
   - Also record in `expected.json` the `argsHash` that 4B's `fin` computes for three fixed `clip insert|trim|delete` inputs (Decision 7). Compute them with 4B's `fin` `args_hash` in the worktree.
-- [ ] **Step 2: Scrub** as 4B Task 2 did:
+- [x] **Step 2: Scrub** as 4B Task 2 did:
   - copy only `finisher.project.json`, the `.fseg` files and `project.fdb`;
   - `DELETE FROM meta WHERE key IN ('projectDir','serverIds','createKey'); DELETE FROM lease_state; VACUUM;`;
   - write the states and the author's stacks.
-- [ ] **Step 3: Check for leaks:** `rtk proxy bash -c 'grep -rIl -e "$(hostname)" -e "$USER" crates/fin-store/tests/fixtures/4b || echo clean'`, plus `strings project.fdb` with the same patterns. Expected: clean.
-- [ ] **Step 4: Add the helper** `fixture_4b(tmp) -> (server_data, folder)` (copy, place the DB, open with `relocate: true`) and the smoke test `fixture_4b_opens_with_relocate`: both branch states equal `expected.json` with today's code.
-- [ ] **Step 5: Run** `rtk cargo test -p fin-store`, `rtk pnpm gates`. Remove the worktree with `rtk git worktree remove archive/wt-4b`.
-- [ ] **Step 6: Commit** `test(fin-store): scrubbed 4B fixture for 4C upgrade tests`.
+- [x] **Step 3: Check for leaks:** `rtk proxy bash -c 'grep -rIl -e "$(hostname)" -e "$USER" crates/fin-store/tests/fixtures/4b || echo clean'`, plus `strings project.fdb` with the same patterns. Expected: clean.
+- [x] **Step 4: Add the helper** `fixture_4b(tmp) -> (server_data, folder)` (copy, place the DB, open with `relocate: true`) and the smoke test `fixture_4b_opens_with_relocate`: both branch states equal `expected.json` with today's code.
+- [x] **Step 5: Run** `rtk cargo test -p fin-store`, `rtk pnpm gates`. Remove the worktree with `rtk git worktree remove archive/wt-4b`.
+- [x] **Step 6: Commit** `test(fin-store): scrubbed 4B fixture for 4C upgrade tests`.
 
 ### Task 3: Per-op diffs, the v1 diff upcaster, migration 0003, newer project files read-only — tier: opus
 

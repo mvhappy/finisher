@@ -1,0 +1,12 @@
+{
+  "id": "01m6r3sq1s34zp9esh9dtgwwjd",
+  "name": "4B fixture",
+  "schemaVersion": 1,
+  "formatVersion": 1,
+  "minReaderVersion": 1,
+  "storage": "local",
+  "genesis": {
+    "name": "4B fixture",
+    "rate": "30"
+  }
+}
