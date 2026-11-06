@@ -1,14 +1,16 @@
 //! Cherry-pick, revert and the merged state, planned in memory (plan 4B Task 14): picks name
 //! the origin root and are no-ops when the target holds it, reverts invert a merge group
-//! newest first and are mirrored in later stale rebases, and `left_to_merge` lists what a
-//! merge would still copy.
+//! newest first and are mirrored in later stale rebases (and pair part by part through undos
+//! and redos of them), and `left_to_merge` lists what a merge would still copy.
 
 mod common;
 
 use common::memlog::MemLog;
 use common::*;
 use fin_core::branch::{BranchIndex, BranchInfo};
-use fin_core::history::{Lineage, left_to_merge, lineage_in};
+use fin_core::history::{
+    Lineage, Outcome, left_to_merge, lineage_in, plan_cherry_pick, plan_revert,
+};
 use fin_core::rebase::reasons;
 use fin_core::{Link, Op, Project, Rational};
 
@@ -174,4 +176,122 @@ fn lineage_in_index_matches_the_log() {
             segs: vec![("loose".into(), 0, None)]
         }
     );
+}
+
+/// br1's `e1` inserts `c4` at 30, merged into main as `m` by carol; with `chain`, then
+/// reverted and the revert undone (c4 back), or undone and redone.
+fn merged_then(chain: &str) -> MemLog {
+    let mut log = MemLog::new(genesis());
+    log.fork("br1", "main", 0);
+    log.commit("br1", "e1", "alice", vec![ins(30, 2)]);
+    log.merge("br1", "main", "carol", "m", false).unwrap();
+    match chain {
+        "revert, undo" => {
+            log.revert("m", "main", "carol", "v1").unwrap().unwrap();
+            log.undo("main", "carol", "u1").unwrap();
+        }
+        "undo, redo" => {
+            log.undo("main", "carol", "u1").unwrap();
+            log.redo("main", "carol", "r1").unwrap();
+        }
+        _ => {}
+    }
+    assert_eq!(log.state("main"), log.state("br1"));
+    log
+}
+
+#[test]
+fn merge_and_pick_after_a_cancelled_inverse_keep_the_order() {
+    // Review B1: e3 inserts c5 right before c4 on br1. The copy of e1 that is in effect on
+    // main is the last re-application (the undo of the revert, the redo), so e3's position
+    // comes back through it and c5 lands before c4 there too.
+    for chain in ["", "revert, undo", "undo, redo"] {
+        for pick in [false, true] {
+            let mut log = merged_then(chain);
+            log.commit("br1", "e3", "alice", vec![ins(30, 1)]);
+            if pick {
+                log.pick("e3", "main", "dave", "k1").unwrap().unwrap();
+            } else {
+                log.merge("br1", "main", "carol", "m2", false).unwrap();
+            }
+            assert_eq!(
+                ids_of(&log.state("main")),
+                at(&[("c1", 0), ("c2", 10), ("c3", 20), ("c5", 30), ("c4", 31)]),
+                "{chain:?}, pick {pick}"
+            );
+        }
+    }
+}
+
+#[test]
+fn trim_of_the_merged_clip_after_a_cancelled_inverse_merges() {
+    for chain in ["", "revert, undo", "undo, redo"] {
+        let mut log = merged_then(chain);
+        let trim = Op::ClipTrim {
+            clip: "c4".into(),
+            edge: fin_core::Edge::End,
+            delta: secs(-1),
+        };
+        log.commit("br1", "e3", "alice", vec![trim]);
+        log.merge("br1", "main", "carol", "m2", false).unwrap();
+        assert_eq!(log.state("main"), log.state("br1"), "{chain:?}");
+    }
+}
+
+#[test]
+fn no_op_picks_and_reverts_say_why() {
+    let mut log = merged_then("");
+    let p = plan_cherry_pick(&log, "e1", "main", "dave", "k1").unwrap();
+    assert_eq!(p, Outcome::Nothing(reasons::ALREADY_PRESENT));
+    log.revert("m", "main", "carol", "v1").unwrap().unwrap();
+    let mut ids = log.ids.clone();
+    let r = plan_revert(&log, "m", "main", "carol", "v2", &mut ids).unwrap();
+    assert_eq!(r, Outcome::Nothing(reasons::ALREADY_REVERTED));
+}
+
+#[test]
+fn a_copy_of_a_revert_counts_as_the_revert() {
+    // br2 reverts m and main picks that revert: main's own revert of m is a no-op, not a
+    // conflict.
+    let mut log = merged_then("");
+    let h = log.head_seq("main");
+    log.fork("br2", "main", h);
+    log.revert("m", "br2", "carol", "v1").unwrap().unwrap();
+    log.pick("v1", "main", "dave", "k1").unwrap().unwrap();
+    assert_eq!(log.state("main"), genesis());
+    let mut ids = log.ids.clone();
+    let r = plan_revert(&log, "m", "main", "carol", "v2", &mut ids).unwrap();
+    assert_eq!(r, Outcome::Nothing(reasons::ALREADY_REVERTED));
+    // An undo of the picked revert brings the group back: it can be reverted again.
+    log.undo("main", "dave", "u1").unwrap();
+    assert!(log.revert("m", "main", "carol", "v3").unwrap().is_some());
+}
+
+#[test]
+fn revert_lists_every_conflicting_record() {
+    let mut log = MemLog::new(genesis());
+    log.fork("br1", "main", 0);
+    log.commit("br1", "e1", "alice", vec![ins(30, 2)]);
+    log.commit("br1", "e2", "alice", vec![delete("c1")]);
+    log.commit("br1", "e3", "alice", vec![ins(0, 3)]);
+    log.merge("br1", "main", "carol", "m", false).unwrap();
+    // c4 (e1's) and c5 (e3's) are deleted on main; c1's restore still applies.
+    log.commit("main", "t1", "bob", vec![delete("c4")]);
+    log.commit("main", "t2", "bob", vec![delete("c5")]);
+    let err = log.revert("m", "main", "carol", "v1").unwrap_err();
+    assert_eq!(err.code, "CONFLICT");
+    let all: Vec<(u64, &str, &str)> = err.details["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["opIndex"].as_u64().unwrap(),
+                c["reason"].as_str().unwrap(),
+                c["againstTx"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    // Ops newest record first: m-3's remove (0), m-2's restore (1), m-1's remove (2).
+    assert_eq!(all, [(0, "REMOVED", "t2"), (2, "REMOVED", "t1")]);
 }

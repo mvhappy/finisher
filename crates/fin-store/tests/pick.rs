@@ -325,6 +325,7 @@ fn cherry_pick_twice_is_idempotent() {
     for (key, origin, into) in [("k2", "e1", MAIN), ("k3", "s2", MAIN), ("k4", "s2", "br1")] {
         let r = pick(&mut s, key, origin, into);
         assert!(r.committed.is_empty(), "{key}: {r:?}");
+        assert_eq!(r.no_op.as_deref(), Some("ALREADY_PRESENT"), "{key}");
     }
     assert_eq!(rows(&s), before);
     // A txId holding another kind, or naming a merge group, is refused.
@@ -455,6 +456,8 @@ fn revert_is_idempotent() {
     );
     let again = revert(&mut s, "v2", "m", MAIN);
     assert!(again.committed.is_empty() && again.undone.is_empty());
+    assert_eq!(again.no_op.as_deref(), Some("ALREADY_REVERTED"));
+    assert_eq!(first.no_op, None);
     assert_eq!(rows(&s), rows_after);
     // Undo the revert: the group is back, and reverting it again works.
     undo(&mut s, "u1", "carol", MAIN);
@@ -784,5 +787,57 @@ fn follower_recomputes_merged_state() {
     // A rebuild from the folder alone derives the same.
     f.rebuild().unwrap();
     assert_eq!(states(&f), target);
+    assert_verifies(&f);
+}
+
+/// Review B2: a merge copies records whose origin is on another branch than the source (an
+/// ancestor's records on the source's lineage). Each branch on a copy's origin chain is
+/// recomputed, so br1 becomes merged again when br2 brings its new edit along.
+#[test]
+fn merge_from_a_child_settles_the_parent() {
+    let Env { _tmp, mut s } = project();
+    edit(&mut s, "br1", "e1", "alice", vec![insert("$p", 30, 2)]);
+    merge(&mut s, "m1", "br1", MAIN);
+    assert_eq!(branch_state(&s, "br1"), BranchState::Merged);
+    edit(&mut s, "br1", "e2", "alice", vec![trim("c1", -1)]);
+    assert_eq!(branch_state(&s, "br1"), BranchState::Active);
+    let br2 = branch(&mut s, "b2", "child", "br1");
+    edit(&mut s, &br2, "x1", "alice", vec![trim("c2", -1)]);
+    let r = merge(&mut s, "m2", &br2, MAIN);
+    assert_eq!(r.merged, ["e2", "x1"]);
+    assert_eq!(branch_state(&s, "br1"), BranchState::Merged);
+    assert_eq!(branch_state(&s, &br2), BranchState::Merged);
+    assert_verifies(&s);
+    // A merge that brings only the parent's records still makes the empty child merged.
+    let br3 = branch(&mut s, "b3", "grandchild", "br1");
+    edit(&mut s, "br1", "e3", "alice", vec![trim("c3", -1)]);
+    let br4 = branch(&mut s, "b4", "late", "br1");
+    let r = merge(&mut s, "m3", &br4, MAIN);
+    assert_eq!(r.merged, ["e3"]);
+    assert_eq!(branch_state(&s, &br4), BranchState::Merged);
+    assert_eq!(branch_state(&s, "br1"), BranchState::Merged);
+    assert_eq!(branch_state(&s, &br3), BranchState::Active, "never merged");
+    assert_verifies(&s);
+}
+
+#[test]
+fn follower_settles_the_parent_of_a_merged_child() {
+    let e = is::env();
+    let mut a = e.create("a");
+    setup(&mut a);
+    branch(&mut a, "b1", "feature", MAIN);
+    edit(&mut a, "br1", "e1", "alice", vec![insert("$p", 30, 2)]);
+    merge(&mut a, "m1", "br1", MAIN);
+    e.flush(&mut a);
+    let mut f = e.open("f");
+    e.poll(&mut f);
+    edit(&mut a, "br1", "e2", "alice", vec![trim("c1", -1)]);
+    let br2 = branch(&mut a, "b2", "child", "br1");
+    edit(&mut a, &br2, "x1", "alice", vec![trim("c2", -1)]);
+    merge(&mut a, "m2", &br2, MAIN);
+    e.flush(&mut a);
+    e.poll(&mut f);
+    assert_eq!(branch_state(&a, "br1"), BranchState::Merged);
+    assert_eq!(states(&f), states(&a));
     assert_verifies(&f);
 }

@@ -435,8 +435,10 @@ export interface Generation {
  * The answer of a history operation ([`Store::undo`](crate::Store::undo),
  * [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
  * rolled back, `dry_run`; a retry of a committed operation answers with its records,
- * `dry_run` false), and what they act on: the units an undo undoes, or the undo a redo
- * reverses.
+ * `dry_run` false), and what they act on: the units an undo undoes, the undo a redo
+ * reverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert
+ * committed nothing (`ALREADY_PRESENT`: the target holds the record's origin root;
+ * `ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "HistoryResult".
@@ -444,6 +446,7 @@ export interface Generation {
 export interface HistoryResult {
   committed: CommittedTx[];
   dryRun: boolean;
+  noOp?: string | null;
   undone: string[];
 }
 /**

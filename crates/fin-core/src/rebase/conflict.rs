@@ -24,6 +24,8 @@ pub mod reasons {
     pub const ID_COLLISION: &str = "ID_COLLISION";
     /// Undoing this unit would undo the target branch's own records (merge).
     pub const UNDOES_TARGET_RECORDS: &str = "UNDOES_TARGET_RECORDS";
+    /// Not a conflict: why a revert plans nothing (the merge group's effect is gone already).
+    pub const ALREADY_REVERTED: &str = "ALREADY_REVERTED";
 }
 
 /// One op that cannot be carried to the head: which op of which tx, why (a reason code), the

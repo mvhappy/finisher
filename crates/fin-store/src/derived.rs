@@ -208,7 +208,11 @@ pub(crate) fn merged_branches(
         )?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    let log = IndexLog { conn, ix };
+    let log = IndexLog {
+        conn,
+        ix,
+        found: Default::default(),
+    };
     let mut out = BTreeSet::new();
     for (b, t) in pairs {
         if out.contains(&b)
@@ -228,26 +232,32 @@ pub(crate) fn merged_branches(
 }
 
 /// The branches whose `merged` flag the records of one write or import pass can change
-/// ([`Touched::record`]), settled by [`Touched::settle`] in the same transaction.
+/// ([`Touched::record`], [`Touched::imported`]), settled by [`Touched::settle`] in the same
+/// transaction. A branch's own new records never make it merged (a record added to a branch
+/// never takes one of its records off the list left to merge); only copies of its records
+/// elsewhere do. So a merged branch that got records of its own is recomputed (an edit a write
+/// made just clears the flag: it is left to merge), and every branch on a new copy's origin
+/// chain is recomputed, with the copy's source branch.
 #[derive(Debug, Default)]
 pub(crate) struct Touched {
-    /// Branches a write gave an `edit`: always left to merge, so never `merged`.
-    fresh: BTreeSet<String>,
-    /// Branches to recompute: the source and target of a `merge` copy, the source of a
-    /// `cherryPick` copy, a branch that got another content record (an undo tied to a merge's
-    /// target is not a candidate), and a branch an import gave any content record.
-    recheck: BTreeSet<String>,
+    /// Branches a write gave an `edit`.
+    cleared: BTreeSet<String>,
+    /// Branches that got another record of their own (an imported edit may be copied already;
+    /// an undo tied to a merge's target is no candidate).
+    own: BTreeSet<String>,
+    /// The `from` branches of new copies.
+    sources: BTreeSet<String>,
+    /// The `origin`s of new copies.
+    origins: BTreeSet<String>,
 }
 
 impl Touched {
-    /// A record a write appended to `branch` with `link` (`None`: an edit). A new edit is
-    /// nobody's origin yet, so its branch is left to merge without a look.
+    /// A record a write appended to `branch` with `link` (`None`: an edit).
     pub(crate) fn record(&mut self, branch: &str, link: Option<&Link>) {
         self.add(branch, link, true);
     }
 
-    /// A record an import pass applied on `branch`: an edit that arrives late may be copied
-    /// already (its copy came first), so its branch is recomputed too.
+    /// A record an import pass applied on `branch`.
     pub(crate) fn imported(&mut self, branch: &str, link: Option<&Link>) {
         self.add(branch, link, false);
     }
@@ -255,64 +265,88 @@ impl Touched {
     fn add(&mut self, branch: &str, link: Option<&Link>, new: bool) {
         match link {
             None | Some(Link::Edit) if new => {
-                self.fresh.insert(branch.to_string());
+                self.cleared.insert(branch.to_string());
             }
-            None | Some(Link::Edit) => {
-                self.recheck.insert(branch.to_string());
+            Some(Link::Merge { from, origin, .. } | Link::CherryPick { from, origin, .. }) => {
+                self.own.insert(branch.to_string());
+                self.sources.insert(from.clone());
+                self.origins.insert(origin.clone());
             }
-            Some(Link::Merge { from, .. }) => {
-                // Merges are transitive: the copies are the target's own records, which it
-                // may still have to merge on.
-                self.recheck.insert(from.clone());
-                self.recheck.insert(branch.to_string());
-            }
-            Some(Link::CherryPick { from, .. }) => {
-                self.recheck.insert(from.clone());
-                self.recheck.insert(branch.to_string());
-            }
-            Some(Link::Undo { .. } | Link::Redo { .. } | Link::Revert { .. }) => {
-                self.recheck.insert(branch.to_string());
+            None
+            | Some(Link::Edit | Link::Undo { .. } | Link::Redo { .. } | Link::Revert { .. }) => {
+                self.own.insert(branch.to_string());
             }
             Some(_) => {}
         }
     }
 
-    /// Writes the `merged` flag of every touched branch the index holds, as
-    /// [`merged_branches`] gives it, and forgets them.
+    /// Writes the `merged` flag of every branch the touched records can change (type docs),
+    /// as [`merged_branches`] gives it, and forgets them.
     pub(crate) fn settle(&mut self, conn: &Connection) -> Result<(), StoreError> {
-        if self.recheck.is_empty() {
-            // Edits only (a commit): clear the flag where it is set, row by row.
-            for id in std::mem::take(&mut self.fresh) {
-                if let Some(info) = index::get(conn, &id)?.filter(|i| i.merged) {
-                    index::save(
-                        conn,
-                        &fin_core::branch::BranchInfo {
-                            merged: false,
-                            ..info
-                        },
-                    )?;
-                }
+        let t = std::mem::take(self);
+        let merged_now = |id: &str| -> Result<bool, StoreError> {
+            Ok(index::get(conn, id)?.is_some_and(|i| i.merged))
+        };
+        let mut recheck: BTreeSet<String> = t.sources;
+        for id in &t.own {
+            if merged_now(id)? {
+                recheck.insert(id.clone());
             }
+        }
+        for origin in &t.origins {
+            recheck.extend(chain_branches(conn, origin)?);
+        }
+        let mut clear = BTreeSet::new();
+        for id in &t.cleared {
+            if !recheck.contains(id) && merged_now(id)? {
+                clear.insert(id.clone());
+            }
+        }
+        for id in &clear {
+            set_merged(conn, id, false)?;
+        }
+        if recheck.is_empty() {
             return Ok(());
         }
         let ix = index::load(conn)?;
-        let now = merged_branches(conn, &ix, Some(&self.recheck))?;
-        for id in self.fresh.iter().chain(&self.recheck) {
-            let Some(info) = ix.get(id) else { continue };
-            let want = now.contains(id);
-            if info.merged != want {
-                index::save(
-                    conn,
-                    &fin_core::branch::BranchInfo {
-                        merged: want,
-                        ..info.clone()
-                    },
-                )?;
+        let now = merged_branches(conn, &ix, Some(&recheck))?;
+        for id in &recheck {
+            if let Some(info) = ix.get(id)
+                && info.merged != now.contains(id)
+            {
+                set_merged(conn, id, now.contains(id))?;
             }
         }
-        *self = Touched::default();
         Ok(())
     }
+}
+
+fn set_merged(conn: &Connection, id: &str, merged: bool) -> Result<(), StoreError> {
+    if let Some(info) = index::get(conn, id)? {
+        index::save(conn, &fin_core::branch::BranchInfo { merged, ..info })?;
+    }
+    Ok(())
+}
+
+/// The branches holding the records of `origin`'s chain (it, its origin, and so on, while
+/// this database holds them): a copy of one is a copy of each.
+fn chain_branches(conn: &Connection, origin: &str) -> Result<BTreeSet<String>, StoreError> {
+    let mut out = BTreeSet::new();
+    let mut next = Some(origin.to_string());
+    let mut stmt = conn.prepare_cached(
+        "SELECT t.branch, l.origin FROM txs t LEFT JOIN record_links l ON l.tx_id = t.tx_id
+         WHERE t.tx_id = ?1",
+    )?;
+    for _ in 0..1_000 {
+        let Some(id) = next.take() else { break };
+        let row: Option<(String, Option<String>)> = stmt
+            .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let Some((branch, origin)) = row else { break };
+        out.insert(branch);
+        next = origin;
+    }
+    Ok(out)
 }
 
 /// The log as [`left_to_merge`] reads it: lineages from an index (the one [`compute`] derives,
@@ -321,6 +355,9 @@ impl Touched {
 struct IndexLog<'a> {
     conn: &'a Connection,
     ix: &'a BranchIndex,
+    /// [`LogView::find`] answers, by txId: origin roots are followed for every record of
+    /// every pair, and mostly reach the same few records.
+    found: std::cell::RefCell<BTreeMap<String, Option<LogRec>>>,
 }
 
 impl IndexLog<'_> {
@@ -380,7 +417,14 @@ impl LogView for IndexLog<'_> {
             row.map(|(b, seq, bytes)| self.rec(b, seq, &bytes))
                 .transpose()
         };
-        Ok(read()?)
+        if let Some(hit) = self.found.borrow().get(tx_id) {
+            return Ok(hit.clone());
+        }
+        let rec = read()?;
+        self.found
+            .borrow_mut()
+            .insert(tx_id.to_string(), rec.clone());
+        Ok(rec)
     }
 
     fn merge_group(&self, merge_id: &str) -> Result<Vec<LogRec>, CoreError> {

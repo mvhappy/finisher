@@ -119,6 +119,7 @@ fn result(c: CommittedTx, dry_run: bool) -> HistoryResult {
         undone: targets(c.link.as_deref()),
         committed: vec![c],
         dry_run,
+        no_op: None,
     }
 }
 

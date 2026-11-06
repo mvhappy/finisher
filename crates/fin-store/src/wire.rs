@@ -131,14 +131,18 @@ pub struct BranchCreated {
 /// The answer of a history operation ([`Store::undo`](crate::Store::undo),
 /// [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
 /// rolled back, `dry_run`; a retry of a committed operation answers with its records,
-/// `dry_run` false), and what they act on: the units an undo undoes, or the undo a redo
-/// reverses.
+/// `dry_run` false), and what they act on: the units an undo undoes, the undo a redo
+/// reverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert
+/// committed nothing (`ALREADY_PRESENT`: the target holds the record's origin root;
+/// `ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryResult {
     pub committed: Vec<CommittedTx>,
     pub undone: Vec<String>,
     pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_op: Option<String>,
 }
 
 /// The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on

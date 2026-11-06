@@ -2,10 +2,11 @@
 //! planned by `fin_core::history::{plan_cherry_pick, plan_revert}` over the write's own
 //! transaction and appended through the one write path. A request with nothing to do (the
 //! target already holds the record; the merge group's effect is already gone) writes nothing
-//! and answers with no records, so repeating one is harmless. A follower replays the record's
+//! and answers with no records and `noOp` (`ALREADY_PRESENT`, `ALREADY_REVERTED`), so
+//! repeating one is harmless. A follower replays the record's
 //! intent like any other: nothing is re-planned there.
 
-use fin_core::history::{plan_cherry_pick, plan_revert};
+use fin_core::history::{Outcome, Planned, plan_cherry_pick, plan_revert};
 use fin_core::{CommittedTx, Link, RecordKind, Tx};
 use rusqlite::{OptionalExtension, params};
 
@@ -91,8 +92,9 @@ impl Store {
             let into = writable(txn, &r.into)?.id;
             let head = ctx.head(&into)?;
             let log = SqlLog::with_head(txn, &into, head.rev, &head.project);
-            let Some(mut p) = plan_cherry_pick(&log, &r.origin, &into, &r.author, &r.tx_id)? else {
-                return Ok(None);
+            let mut p = match plan_cherry_pick(&log, &r.origin, &into, &r.author, &r.tx_id)? {
+                Outcome::Append(p) => p,
+                Outcome::Nothing(why) => return Ok(Err(why)),
             };
             if let Link::CherryPick {
                 origin,
@@ -102,7 +104,7 @@ impl Store {
             {
                 *origin_hash = tx_hash(txn, origin)?;
             }
-            Ok(Some((into, p)))
+            Ok(Ok((into, p)))
         })
     }
 
@@ -127,7 +129,10 @@ impl Store {
             let log = SqlLog::with_head(txn, &branch, head.rev, &head.project);
             let planned = plan_revert(&log, &r.merge_id, &branch, &r.author, &r.tx_id, &mut ids)?;
             ids.save(txn)?;
-            Ok(planned.map(|p| (branch, p)))
+            Ok(match planned {
+                Outcome::Append(p) => Ok((branch, p)),
+                Outcome::Nothing(why) => Err(why),
+            })
         })
     }
 
@@ -135,17 +140,16 @@ impl Store {
         &mut self,
         c: &Common<'_>,
         which: Which,
-        plan: impl Fn(
-            &mut WriteCtx<'_>,
-        ) -> Result<Option<(String, fin_core::history::Planned)>, StoreError>,
+        plan: impl Fn(&mut WriteCtx<'_>) -> Result<Result<(String, Planned), &'static str>, StoreError>,
     ) -> Result<HistoryResult, StoreError> {
         check_key(c.tx_id)?;
         check_args_hash(c.args_hash, c.tx_id)?;
         loop {
             let wrote = self.write(c.tx_id, c.dry_run, |ctx| {
                 super::merge_id_taken(ctx.txn, c.tx_id)?;
-                let Some((branch, p)) = plan(ctx)? else {
-                    return Ok(None);
+                let (branch, p) = match plan(ctx)? {
+                    Ok(planned) => planned,
+                    Err(why) => return Ok(Err(why)),
                 };
                 ctx.append(Draft {
                     branch,
@@ -159,7 +163,7 @@ impl Store {
                     diff: p.applied.diff,
                     project: p.applied.project,
                 })
-                .map(Some)
+                .map(Ok)
             })?;
             if let Some(out) = wrote {
                 return Ok(result(out, c.dry_run));
@@ -169,21 +173,24 @@ impl Store {
                 if existing.link.as_deref().map(Link::kind) != Some(which.kind()) {
                     return Err(key_reused(&existing));
                 }
-                return Ok(result(Some(same_args_hash(c.args_hash, existing)?), false));
+                return Ok(result(Ok(same_args_hash(c.args_hash, existing)?), false));
             }
         }
     }
 }
 
-fn result(c: Option<CommittedTx>, dry_run: bool) -> HistoryResult {
-    let undone = match c.as_ref().and_then(|c| c.link.as_deref()) {
+/// The answer: the record, or nothing and why (`noOp`).
+fn result(c: Result<CommittedTx, &'static str>, dry_run: bool) -> HistoryResult {
+    let undone = match c.as_ref().ok().and_then(|c| c.link.as_deref()) {
         Some(Link::Revert { reverts }) => vec![reverts.clone()],
         _ => vec![],
     };
+    let no_op = c.as_ref().err().map(|why| why.to_string());
     HistoryResult {
         committed: c.into_iter().collect(),
         undone,
         dry_run,
+        no_op,
     }
 }
 

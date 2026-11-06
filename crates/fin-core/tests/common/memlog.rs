@@ -189,7 +189,7 @@ impl MemLog {
         author: &str,
         tx_id: &str,
     ) -> Result<Option<LogRec>, CoreError> {
-        let p = plan_cherry_pick(self, origin, into, author, tx_id)?;
+        let p = plan_cherry_pick(self, origin, into, author, tx_id)?.planned();
         Ok(p.map(|p| self.append(into, p)))
     }
 
@@ -202,7 +202,7 @@ impl MemLog {
         tx_id: &str,
     ) -> Result<Option<LogRec>, CoreError> {
         let mut ids = self.ids.clone();
-        let p = plan_revert(self, merge_id, b, author, tx_id, &mut ids)?;
+        let p = plan_revert(self, merge_id, b, author, tx_id, &mut ids)?.planned();
         self.ids = ids;
         Ok(p.map(|p| self.append(b, p)))
     }

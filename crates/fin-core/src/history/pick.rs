@@ -12,7 +12,9 @@
 //!   group's records, newest first, in the frame right after the group's last record, rebased
 //!   over the branch's records since (mirrors included: an undo of a unit inside, say). A
 //!   group whose effect is already gone (reverted, or undone, and not brought back by an undo
-//!   of that or a redo) plans nothing.
+//!   of that or a redo; a copy of a revert counts as the revert, by origin root) plans
+//!   nothing. A revert that conflicts lists every group record whose inverse cannot be carried
+//!   to the head, as a merge lists its candidates.
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,8 +22,8 @@ use serde_json::json;
 
 use super::merge::{Binders, Paths, common_point, on_skipped, path_after, rerun_mode};
 use super::origin::{Roots, holds, root};
-use super::undo::{intent, rebase_over};
-use super::{LogRec, LogView, Planned};
+use super::undo::{intent, try_rebase_over};
+use super::{LogRec, LogView, Outcome, Planned};
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::rebase::{Conflict, Conflicts, Rebase, reasons, rebase_apply};
@@ -30,7 +32,8 @@ use crate::replay::BoundIds;
 use crate::tx::Tx;
 
 /// The `cherryPick` record that copies record `origin` into branch `into` (an id), by
-/// `author`, as `tx_id` (module docs); `None` when `into` already holds it. The link's
+/// `author`, as `tx_id` (module docs); `Nothing(ALREADY_PRESENT)` when `into` already holds
+/// it. The link's
 /// `origin_hash` is left `None`: the store fills in the root record's txHash.
 ///
 /// Errors: `NOT_FOUND` (`details.kind` `tx`) for an unknown record; `INVALID_OP` for a record
@@ -44,7 +47,8 @@ pub fn plan_cherry_pick(
     into: &str,
     author: &str,
     tx_id: &str,
-) -> Result<Option<Planned>, CoreError> {
+) -> Result<Outcome, CoreError> {
+    let present = Ok(Outcome::Nothing(reasons::ALREADY_PRESENT));
     let Some(rec) = log.find(origin)? else {
         return Err(
             CoreError::new("NOT_FOUND", format!("record {origin} does not exist"))
@@ -73,17 +77,17 @@ pub fn plan_cherry_pick(
         .as_ref()
         .is_some_and(|r| holds(&target_l, &r.branch, r.seq))
     {
-        return Ok(None);
+        return present;
     }
     let source = path_after(log, &source_l, &c)?;
     let target = path_after(log, &target_l, &c)?;
     let Some(i) = source.iter().position(|r| r.record.tx_id == origin) else {
         // At or below the common point: the target's lineage holds it.
-        return Ok(None);
+        return present;
     };
     let roots = Roots::new(log, &target_l, &source, &target)?;
     if roots.present[i] {
-        return Ok(None);
+        return present;
     }
     if roots.undoes_target[i] {
         let c = Conflict::new(origin, 0, reasons::UNDOES_TARGET_RECORDS, None);
@@ -116,7 +120,7 @@ pub fn plan_cherry_pick(
         .and_then(|mut ids| rebase_apply(&head, &rebase, &mut ids, mode))
         .map_err(|c| CoreError::from(Conflicts::one(on_skipped(c, &before))))?;
     let from = root_rec.map_or_else(|| rec.branch.clone(), |r| r.branch);
-    Ok(Some(Planned {
+    Ok(Outcome::Append(Planned {
         link: Link::CherryPick {
             origin: root_id,
             from,
@@ -134,10 +138,12 @@ pub fn plan_cherry_pick(
 }
 
 /// The `revert` record of merge group `merge_id` on `branch` (an id), by `author`, as `tx_id`
-/// (module docs); `None` when the group's effect is already gone there.
+/// (module docs); `Nothing(ALREADY_REVERTED)` when the group's effect is already gone there.
 ///
 /// Errors: `NOT_FOUND` (`details.kind` `merge`) for an unknown group or one not on `branch`'s
-/// lineage; `CONFLICT` (one conflict) when an inverse cannot be carried to the head.
+/// lineage; `CONFLICT` when an inverse cannot be carried to the head: `details.conflicts`
+/// lists each group record whose inverse fails, newest first, as far as the others can be
+/// planned without it (op indexes into the whole revert).
 pub fn plan_revert(
     log: &dyn LogView,
     merge_id: &str,
@@ -145,7 +151,7 @@ pub fn plan_revert(
     author: &str,
     tx_id: &str,
     ids: &mut dyn IdAlloc,
-) -> Result<Option<Planned>, CoreError> {
+) -> Result<Outcome, CoreError> {
     let group = log.merge_group(merge_id)?;
     let l = log.lineage(branch)?;
     let last = match group.last() {
@@ -160,48 +166,114 @@ pub fn plan_revert(
         }
     };
     let since = path_after(log, &l, &(last.branch.clone(), last.seq))?;
-    if !in_effect(merge_id, &since) {
-        return Ok(None);
+    if !in_effect(log, merge_id, &since)? {
+        return Ok(Outcome::Nothing(reasons::ALREADY_REVERTED));
     }
-    let ops = group
-        .iter()
-        .rev()
-        .flat_map(|r| r.record.inverse.iter().cloned())
-        .collect();
+    // The group's inverses, newest record first: (first op index, record's inverse).
+    let mut parts = Vec::new();
+    let mut at = 0;
+    for r in group.iter().rev() {
+        parts.push((at, r.record.inverse.clone()));
+        at += r.record.inverse.len();
+    }
     let link = Link::Revert {
         reverts: merge_id.to_string(),
     };
-    let tx = intent(tx_id, author, branch, last.seq, ops);
-    let (head_seq, head) = log.head(branch)?;
-    rebase_over(log, (head_seq, &head), &since, tx, link, ids).map(Some)
+    let head = log.head(branch)?;
+    let plan = |keep: &[bool], ids: &mut dyn IdAlloc| {
+        let ops = parts
+            .iter()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .flat_map(|((_, ops), _)| ops.iter().cloned())
+            .collect();
+        let tx = intent(tx_id, author, branch, last.seq, ops);
+        try_rebase_over(log, (head.0, &head.1), &since, tx, link.clone(), ids)
+    };
+    let mut keep = vec![true; parts.len()];
+    let first = match plan(&keep, ids)? {
+        Ok(p) => return Ok(Outcome::Append(p)),
+        Err(c) => c,
+    };
+    // List every record that fails: leave each failing one out and plan the rest again (on a
+    // scratch counter: nothing of it is kept).
+    let mut conflicts = Vec::new();
+    let mut c = first;
+    loop {
+        // `c.op_index` counts the kept ops only: find its record.
+        let mut seen = 0;
+        let Some(k) = (0..parts.len()).filter(|&k| keep[k]).find(|&k| {
+            seen += parts[k].1.len();
+            c.op_index < seen
+        }) else {
+            break;
+        };
+        let before: usize = (0..k).filter(|&j| keep[j]).map(|j| parts[j].1.len()).sum();
+        conflicts.push(Conflict {
+            op_index: parts[k].0 + (c.op_index - before),
+            ..c
+        });
+        keep[k] = false;
+        if !keep.contains(&true) {
+            break;
+        }
+        match plan(&keep, &mut crate::ids::MemIds::after(&head.1)) {
+            Ok(Err(next)) => c = next,
+            // The rest plans (or no longer applies in its frame without the failing record).
+            Ok(Ok(_)) | Err(_) => break,
+        }
+    }
+    Err(Conflicts::new(conflicts)
+        .expect("at least the first conflict")
+        .into())
 }
 
 /// Whether unit `id` (a txId or mergeId applied before `since`) still has its effect after
 /// `since` (oldest first): no later record that inverts it (an undo naming it, a revert of the
-/// group, a redo of an undo) is itself in effect.
-fn in_effect(id: &str, since: &[LogRec]) -> bool {
-    fn inverts(r: &LogRec, id: &str) -> bool {
-        let r = &r.record;
-        match r.kind {
-            RecordKind::Undo => r.undoes.iter().flatten().any(|u| u == id),
-            RecordKind::Redo => r.redoes.as_deref() == Some(id),
-            RecordKind::Revert => r.reverts.as_deref() == Some(id),
-            _ => false,
-        }
+/// group, a redo of an undo) is itself in effect. A copy (merge, cherry-pick) inverts what its
+/// origin root inverts, and a merge copy is also undone through its group's id.
+fn in_effect(log: &dyn LogView, id: &str, since: &[LogRec]) -> Result<bool, CoreError> {
+    // Each record of `since`: the unit ids it inverts, and the ids it is undone by.
+    let mut inverts: Vec<Vec<String>> = Vec::with_capacity(since.len());
+    for r in since {
+        let (_, held) = root(log, r)?;
+        let base = held.as_ref().unwrap_or(r);
+        let b = &base.record;
+        inverts.push(match b.kind {
+            RecordKind::Undo => b.undoes.clone().unwrap_or_default(),
+            RecordKind::Redo => b.redoes.iter().cloned().collect(),
+            RecordKind::Revert => b.reverts.iter().cloned().collect(),
+            _ => Vec::new(),
+        });
     }
-    fn on(id: &str, since: &[LogRec], memo: &mut HashMap<String, bool>) -> bool {
-        if let Some(&v) = memo.get(id) {
-            return v;
-        }
-        let mut v = true;
-        for (k, r) in since.iter().enumerate() {
-            if inverts(r, id) && on(&r.record.tx_id, &since[k + 1..], memo) {
-                v = false;
-                break;
+    fn names(r: &LogRec) -> Vec<&str> {
+        let mut out = vec![r.record.tx_id.as_str()];
+        out.extend(r.record.merge_id.as_deref());
+        out
+    }
+    fn on(
+        ids: &[&str],
+        from: usize,
+        since: &[LogRec],
+        inverts: &[Vec<String>],
+        memo: &mut HashMap<usize, bool>,
+    ) -> bool {
+        for k in from..since.len() {
+            if inverts[k].iter().any(|u| ids.contains(&u.as_str())) {
+                let live = match memo.get(&k) {
+                    Some(&v) => v,
+                    None => {
+                        let v = on(&names(&since[k]), k + 1, since, inverts, memo);
+                        memo.insert(k, v);
+                        v
+                    }
+                };
+                if live {
+                    return false;
+                }
             }
         }
-        memo.insert(id.to_string(), v);
-        v
+        true
     }
-    on(id, since, &mut HashMap::new())
+    Ok(on(&[id], 0, since, &inverts, &mut HashMap::new()))
 }

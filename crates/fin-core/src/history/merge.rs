@@ -39,7 +39,8 @@ use super::{Lineage, LogRec, LogView, Planned};
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::rebase::{
-    Conflict, Conflicts, Rebase, Step, committed_footprints, reasons, rebase_apply, steps_from,
+    Conflict, Conflicts, Rebase, Step, committed_footprints, reasons, rebase_apply,
+    steps_with_units,
 };
 use crate::record::{Link, Record, RecordKind};
 use crate::replay::BoundIds;
@@ -120,22 +121,39 @@ impl Paths {
             .iter()
             .map(LogRec::committed)
             .collect::<Result<_, _>>()?;
-        let target_steps = steps_from(&committed.iter().collect::<Vec<_>>())?;
-        let mut by_tx: HashMap<&str, Vec<usize>> = HashMap::new();
+        let (target_steps, units) = steps_with_units(&committed.iter().collect::<Vec<_>>())?;
+        let root_of_tx: HashMap<&str, &str> = target
+            .iter()
+            .zip(&roots.target)
+            .map(|(t, r)| (t.record.tx_id.as_str(), r.as_str()))
+            .collect();
+        let mut paired = vec![false; target_steps.len()];
         for (q, s) in target_steps.iter().enumerate() {
-            by_tx.entry(s.tx_id.as_str()).or_default().push(q);
+            if let Some(m) = s.mirror_of {
+                paired[m] = true;
+                paired[q] = true;
+            }
         }
-        // A target record and a source record of the same origin root are the same edit,
-        // however each got there (a copy of the other, or both copies of a third).
+        // A target step and a source record of the same origin root are the same edit, however
+        // each got there (a copy of the other, or both copies of a third). On the target it is
+        // the step that applies that root's record and is in effect: unmirrored and not an
+        // inverse, so the last of a chain (merge, revert, undo of the revert: the undo's part).
+        let mut live: HashMap<&str, usize> = HashMap::new();
+        for (q, unit) in units.iter().enumerate() {
+            if let Some(u) = unit
+                && !u.inverted
+                && !paired[q]
+                && let Some(root) = root_of_tx.get(u.base.as_str())
+            {
+                live.insert(root, q);
+            }
+        }
         let mut cross = Vec::new();
         let mut used = HashSet::new();
-        for (t, root) in target.iter().zip(&roots.target) {
-            let Some(&[q]) = by_tx.get(t.record.tx_id.as_str()).map(Vec::as_slice) else {
-                continue;
-            };
-            let j = (0..source.len()).find(|&j| roots.source[j] == *root && !used.contains(&j));
-            if let Some(j) = j {
-                used.insert(j);
+        for (j, root) in roots.source.iter().enumerate() {
+            if let Some(&q) = live.get(root.as_str())
+                && used.insert(q)
+            {
                 cross.push((q, j));
             }
         }

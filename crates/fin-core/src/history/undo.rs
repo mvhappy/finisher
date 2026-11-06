@@ -34,7 +34,7 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, MemIds};
 use crate::model::SCHEMA_VERSION;
 use crate::ops::Op;
-use crate::rebase::{Conflicts, Rebase, rebase_apply, steps_from};
+use crate::rebase::{Conflict, Conflicts, Rebase, rebase_apply, steps_from};
 use crate::record::{Link, RecordKind};
 use crate::tx::{CommittedTx, Tx};
 
@@ -256,12 +256,26 @@ fn rebase_inverse(
 /// carried there.
 pub(super) fn rebase_over(
     log: &dyn LogView,
-    (head_seq, head): (u64, &crate::model::Project),
+    head: (u64, &crate::model::Project),
     since: &[LogRec],
     tx: Tx,
     link: Link,
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
+    try_rebase_over(log, head, since, tx, link, ids)?
+        .map_err(|c| CoreError::from(Conflicts::one(c)))
+}
+
+/// [`rebase_over`], with the conflict as a value (`Ok(Err(c))`); `Err` when the log's reads
+/// fail or `tx` does not apply in its own frame.
+pub(super) fn try_rebase_over(
+    log: &dyn LogView,
+    (head_seq, head): (u64, &crate::model::Project),
+    since: &[LogRec],
+    tx: Tx,
+    link: Link,
+    ids: &mut dyn IdAlloc,
+) -> Result<Result<Planned, Conflict>, CoreError> {
     let frame = log.state_at(&tx.branch, tx.base_rev)?;
     // The inverses' own maps, in their frame (they name literal ids: nothing is allocated).
     let own = apply_tx_mode(&frame, &tx, &mut MemIds::after(&frame), ApplyMode::Internal)?;
@@ -270,21 +284,20 @@ pub(super) fn rebase_over(
         .map(LogRec::committed)
         .collect::<Result<_, _>>()?;
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
-    let rebased = rebase_apply(
+    Ok(rebase_apply(
         head,
         &Rebase::new(&tx, &own.diff, &steps),
         ids,
         ApplyMode::Internal,
     )
-    .map_err(|c| CoreError::from(Conflicts::one(c)))?;
-    Ok(Planned {
+    .map(|rebased| Planned {
         link,
         intent: Tx {
             base_rev: head_seq,
             ..rebased.tx
         },
         applied: rebased.applied,
-    })
+    }))
 }
 
 /// The own record `tx_id` (a unit's record): one the stacks were derived from.

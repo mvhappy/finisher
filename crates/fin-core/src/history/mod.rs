@@ -104,6 +104,26 @@ pub trait LogView {
     fn merged_away(&self, branch: &str) -> Result<HashSet<String>, CoreError>;
 }
 
+/// What the cherry-pick and revert planners decide: a record to append, or nothing to do and
+/// why (`ALREADY_PRESENT`: the target holds the record's origin root; `ALREADY_REVERTED`: the
+/// merge group's effect is gone there, [`crate::rebase::reasons`]).
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // one per request, moved out at once (as `Planned` is)
+pub enum Outcome {
+    Append(Planned),
+    Nothing(&'static str),
+}
+
+impl Outcome {
+    /// The record to append, if any.
+    pub fn planned(self) -> Option<Planned> {
+        match self {
+            Outcome::Append(p) => Some(p),
+            Outcome::Nothing(_) => None,
+        }
+    }
+}
+
 /// A planned record: its kind and links, its intent (at the head: `baseRev` = the head seq,
 /// positions rebased) and the result of applying that intent at the head.
 #[derive(Debug, Clone, PartialEq)]

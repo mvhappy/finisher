@@ -21,4 +21,4 @@ pub use footprint::{
     Footprint, Touch, committed_footprints, committed_ops, entity_conflict, footprint, split_diff,
 };
 pub use map::{Assoc, MapResult, Mapping, Recover, StepMap, Unmapped};
-pub use steps::{Step, steps_from};
+pub use steps::{Step, StepUnit, steps_from, steps_with_units};
