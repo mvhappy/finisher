@@ -16,7 +16,7 @@
 //!   sets a group that cannot be recovered aside from listing and counting on this server
 //!   ([`dismiss`]); both also while the project is read-only.
 //!
-//! A quarantine row is recovered while a record in the log stands for it (`originHash`):
+//! A quarantine row is recovered while a record in the log stands for it (`recovers`):
 //! derived on import and rebuild alike, and compared by verify through `record_links`.
 
 mod dismiss;
@@ -346,9 +346,9 @@ impl Store {
         // A recovery writes a `branch` record first, or a record standing for a row.
         let stands = |l: &Link| match l {
             Link::Branch { .. } => true,
-            Link::CherryPick { origin_hash, .. }
-            | Link::Checkpoint { origin_hash, .. }
-            | Link::BranchSet { origin_hash, .. } => origin_hash.is_some(),
+            Link::CherryPick { recovers, .. }
+            | Link::Checkpoint { recovers, .. }
+            | Link::BranchSet { recovers, .. } => recovers.is_some(),
             _ => false,
         };
         if !committed[0].link.as_deref().is_some_and(stands) {

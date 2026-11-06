@@ -203,18 +203,20 @@ fn every_link() -> Vec<Link> {
             origin: "o2".into(),
             from: "br2".into(),
             origin_hash: Some(H.into()),
+            recovers: None,
         },
         Link::CherryPick {
             origin: "o2".into(),
             from: "br2".into(),
             origin_hash: None,
+            recovers: None,
         },
         Link::Revert {
             reverts: "m1".into(),
         },
         Link::Checkpoint {
             name: "before-cut".into(),
-            origin_hash: None,
+            recovers: None,
         },
         Link::Branch {
             branch_id: "br3".into(),
@@ -222,7 +224,7 @@ fn every_link() -> Vec<Link> {
             fork_seq: 4,
             fork_hash: Some(H.into()),
             epoch: 1,
-            origin_hash: None,
+            recovers: None,
         },
         Link::Branch {
             branch_id: "br4".into(),
@@ -230,24 +232,30 @@ fn every_link() -> Vec<Link> {
             fork_seq: 0,
             fork_hash: None,
             epoch: 1,
-            origin_hash: None,
+            recovers: None,
         },
         Link::BranchSet {
             branch_id: "br3".into(),
             name: Some("alt2".into()),
             archived: None,
-            origin_hash: None,
+            recovers: None,
         },
         Link::BranchSet {
             branch_id: "br3".into(),
             name: None,
             archived: Some(true),
-            origin_hash: None,
+            recovers: None,
         },
         // Recovered stand-ins name the quarantined record they stand for (Decision 27).
+        Link::CherryPick {
+            origin: "o3".into(),
+            from: "br2".into(),
+            origin_hash: Some(H.into()),
+            recovers: Some(H.into()),
+        },
         Link::Checkpoint {
             name: "kept".into(),
-            origin_hash: Some(H.into()),
+            recovers: Some(H.into()),
         },
         Link::Branch {
             branch_id: "br5".into(),
@@ -255,13 +263,13 @@ fn every_link() -> Vec<Link> {
             fork_seq: 0,
             fork_hash: None,
             epoch: 3,
-            origin_hash: Some(H.into()),
+            recovers: Some(H.into()),
         },
         Link::BranchSet {
             branch_id: "br3".into(),
             name: Some("alt3".into()),
             archived: None,
-            origin_hash: Some(H.into()),
+            recovers: Some(H.into()),
         },
     ]
 }
@@ -308,6 +316,7 @@ fn every_kind_roundtrips_byte_stable() {
             "forkSeq",
             "forkHash",
             "archived",
+            "recovers",
             "schemaVersion",
         ];
         let positions: Vec<usize> = order
@@ -379,7 +388,8 @@ fn kind_names_are_camel_case() {
         serde_json::to_value(Link::CherryPick {
             origin: "o".into(),
             from: "br1".into(),
-            origin_hash: None
+            origin_hash: None,
+            recovers: None,
         })
         .unwrap(),
         json!({"kind": "cherryPick", "origin": "o", "from": "br1"})
@@ -451,6 +461,12 @@ fn link_fields_must_match_kind() {
             "merge with originHash",
             with(&merge, &|m| {
                 m.insert("originHash".into(), json!(H));
+            }),
+        ),
+        (
+            "merge with recovers",
+            with(&merge, &|m| {
+                m.insert("recovers".into(), json!(H));
             }),
         ),
         (

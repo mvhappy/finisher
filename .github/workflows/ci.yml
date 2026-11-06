@@ -29,10 +29,14 @@ jobs:
       - name: Build fin-node (finisherd needs it for the fin online tests)
         run: pnpm --filter @finisher/fin-node build
       - name: Rust tests
-        run: cargo test --workspace --release
+        # The default members: everything but the cross-host harness, whose `test-hooks`
+        # must not unify into fin or fin-node (scripts/check-test-hooks.mjs).
+        run: cargo test --release
         env:
           # fin's online and contract tests must run against a live finisherd, never skip.
           FIN_REQUIRE_SERVER: "1"
+      - name: Cross-host harness builds (alone)
+        run: cargo build --release -p fin-store-xhost
       - name: TypeScript tests
         run: pnpm test
       - name: Gate tests

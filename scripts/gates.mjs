@@ -8,6 +8,7 @@ const steps = [
   ["node", ["scripts/check-generated-types.mjs"]],
   ["node", ["scripts/check-typecheck.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],
+  ["node", ["scripts/check-test-hooks.mjs"]],
   ["cargo", ["build", "-q", "-p", "fin-core", "--target", "wasm32-unknown-unknown"]],
 ];
 const hasCargoDeny = spawnSync("cargo", ["deny", "--version"], { stdio: "ignore" }).status === 0;

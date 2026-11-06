@@ -409,7 +409,20 @@ fn shuffle<T>(v: &mut [T], mut seed: u64) {
     }
 }
 
+/// `PROPTEST_CASES` overrides the per-block default (spec §4.6).
+fn config(default: u32) -> ProptestConfig {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    ProptestConfig {
+        cases,
+        ..ProptestConfig::default()
+    }
+}
+
 proptest! {
+    #![proptest_config(config(256))]
     /// The resolution matches the reference: in particular no record of a line whose epoch
     /// is lower than a competing line's is ever applied, and with the lease a stale write
     /// never beats the unexported tail.

@@ -118,6 +118,7 @@ export type Link =
       kind: "cherryPick";
       origin: string;
       originHash?: string | null;
+      recovers?: string | null;
     }
   | {
       kind: "revert";
@@ -126,10 +127,7 @@ export type Link =
   | {
       kind: "checkpoint";
       name: string;
-      /**
-       * A recovered record's quarantined original (plan 4B Decision 27).
-       */
-      originHash?: string | null;
+      recovers?: string | null;
     }
   | {
       branchId: string;
@@ -138,20 +136,14 @@ export type Link =
       forkSeq: number;
       kind: "branch";
       name: string;
-      /**
-       * A recovered record's quarantined original (plan 4B Decision 27).
-       */
-      originHash?: string | null;
+      recovers?: string | null;
     }
   | {
       archived?: boolean | null;
       branchId: string;
       kind: "branchSet";
       name?: string | null;
-      /**
-       * A recovered record's quarantined original (plan 4B Decision 27).
-       */
-      originHash?: string | null;
+      recovers?: string | null;
     };
 /**
  * One engine event (`Engine.onEvent`), tagged by `type`.

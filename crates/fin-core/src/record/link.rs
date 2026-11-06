@@ -34,27 +34,30 @@ pub enum Link {
         from: String,
         origin: String,
     },
-    /// A copy of `origin` from branch `from`; `origin_hash` names the exact record when known.
+    /// A copy of `origin` (its origin root) from branch `from`; `origin_hash` names the
+    /// exact record when known; `recovers`: the quarantined record a recovered copy stands for
+    /// (plan 4B Decision 27).
     CherryPick {
         origin: String,
         from: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         origin_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovers: Option<String>,
     },
     /// Reverts the merge group `reverts`.
     Revert {
         reverts: String,
     },
-    /// `origin_hash`: the quarantined record a recovered checkpoint stands for.
+    /// `recovers`: the quarantined record a recovered checkpoint stands for.
     Checkpoint {
         name: String,
-        /// A recovered record's quarantined original (plan 4B Decision 27).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        origin_hash: Option<String>,
+        recovers: Option<String>,
     },
     /// Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose
-    /// txHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`. `origin_hash`:
-    /// the quarantined `branch` record a recovered branch stands for.
+    /// txHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`. `recovers`: the
+    /// quarantined `branch` record a recovered branch stands for.
     Branch {
         branch_id: String,
         name: String,
@@ -62,11 +65,10 @@ pub enum Link {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fork_hash: Option<String>,
         epoch: u64,
-        /// A recovered record's quarantined original (plan 4B Decision 27).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        origin_hash: Option<String>,
+        recovers: Option<String>,
     },
-    /// Renames, archives or restores branch `branch_id`. `origin_hash`: the quarantined
+    /// Renames, archives or restores branch `branch_id`. `recovers`: the quarantined
     /// `branchSet` record a recovered one stands for.
     BranchSet {
         branch_id: String,
@@ -74,9 +76,8 @@ pub enum Link {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         archived: Option<bool>,
-        /// A recovered record's quarantined original (plan 4B Decision 27).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        origin_hash: Option<String>,
+        recovers: Option<String>,
     },
 }
 
@@ -112,6 +113,7 @@ struct Fields {
     fork_hash: Option<String>,
     epoch: Option<u64>,
     archived: Option<bool>,
+    recovers: Option<String>,
 }
 
 impl Fields {
@@ -134,15 +136,17 @@ impl Fields {
                 origin,
                 from,
                 origin_hash,
+                recovers,
             } => {
                 f.origin = Some(origin);
                 f.from = Some(from);
                 f.origin_hash = origin_hash;
+                f.recovers = recovers;
             }
             Link::Revert { reverts } => f.reverts = Some(reverts),
-            Link::Checkpoint { name, origin_hash } => {
+            Link::Checkpoint { name, recovers } => {
                 f.name = Some(name);
-                f.origin_hash = origin_hash;
+                f.recovers = recovers;
             }
             Link::Branch {
                 branch_id,
@@ -150,25 +154,25 @@ impl Fields {
                 fork_seq,
                 fork_hash,
                 epoch,
-                origin_hash,
+                recovers,
             } => {
                 f.branch_id = Some(branch_id);
                 f.name = Some(name);
                 f.fork_seq = Some(fork_seq);
                 f.fork_hash = fork_hash;
                 f.epoch = Some(epoch);
-                f.origin_hash = origin_hash;
+                f.recovers = recovers;
             }
             Link::BranchSet {
                 branch_id,
                 name,
                 archived,
-                origin_hash,
+                recovers,
             } => {
                 f.branch_id = Some(branch_id);
                 f.name = name;
                 f.archived = archived;
-                f.origin_hash = origin_hash;
+                f.recovers = recovers;
             }
         }
         f
@@ -190,6 +194,7 @@ impl Fields {
             ("forkHash", self.fork_hash.is_some()),
             ("epoch", self.epoch.is_some()),
             ("archived", self.archived.is_some()),
+            ("recovers", self.recovers.is_some()),
         ]
         .into_iter()
         .filter_map(|(name, set)| set.then_some(name))
@@ -213,6 +218,7 @@ impl Record {
             fork_hash: self.fork_hash.clone(),
             epoch: self.epoch,
             archived: self.archived,
+            recovers: self.recovers.clone(),
         }
     }
 
@@ -245,13 +251,14 @@ impl Record {
                 origin: f.origin.clone().ok_or_else(|| need("origin"))?,
                 from: f.from.clone().ok_or_else(|| need("from"))?,
                 origin_hash: f.origin_hash.clone(),
+                recovers: f.recovers.clone(),
             },
             RecordKind::Revert => Link::Revert {
                 reverts: f.reverts.clone().ok_or_else(|| need("reverts"))?,
             },
             RecordKind::Checkpoint => Link::Checkpoint {
                 name: f.name.clone().ok_or_else(|| need("name"))?,
-                origin_hash: f.origin_hash.clone(),
+                recovers: f.recovers.clone(),
             },
             RecordKind::Branch => Link::Branch {
                 branch_id: f.branch_id.clone().ok_or_else(|| need("branchId"))?,
@@ -259,13 +266,13 @@ impl Record {
                 fork_seq: f.fork_seq.ok_or_else(|| need("forkSeq"))?,
                 fork_hash: f.fork_hash.clone(),
                 epoch: f.epoch.ok_or_else(|| need("epoch"))?,
-                origin_hash: f.origin_hash.clone(),
+                recovers: f.recovers.clone(),
             },
             RecordKind::BranchSet => Link::BranchSet {
                 branch_id: f.branch_id.clone().ok_or_else(|| need("branchId"))?,
                 name: f.name.clone(),
                 archived: f.archived,
-                origin_hash: f.origin_hash.clone(),
+                recovers: f.recovers.clone(),
             },
         };
         let expected = Fields::of(link.clone());
@@ -329,6 +336,7 @@ impl Record {
         self.fork_hash = f.fork_hash;
         self.epoch = f.epoch;
         self.archived = f.archived;
+        self.recovers = f.recovers;
     }
 }
 

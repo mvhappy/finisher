@@ -52,7 +52,7 @@ impl Runner<'_, '_, '_> {
                 if let Some(b) = branch {
                     let link = Link::Checkpoint {
                         name: rec.name.clone().unwrap_or_default(),
-                        origin_hash: Some(self.forest.rows[i].hash.clone()),
+                        recovers: Some(self.forest.rows[i].hash.clone()),
                     };
                     self.no_op_record(b, link)?;
                 }
@@ -134,13 +134,29 @@ impl Runner<'_, '_, '_> {
                 Root::Live { branch, .. } | Root::Aside { branch, .. } => branch.clone(),
                 Root::Unknown { .. } => rec.from.clone().unwrap_or(rec.intent.branch.clone()),
             };
+            // `originHash` names the root, as for any pick; `recovers` the row it stands for.
+            let root_hash = match &root {
+                Root::Live { tx_id, .. } => self
+                    .conn
+                    .prepare_cached("SELECT tx_hash FROM txs WHERE tx_id = ?1")?
+                    .query_map([tx_id], |r| r.get::<_, String>(0))?
+                    .next()
+                    .transpose()?,
+                Root::Aside { tx_id, .. } if *tx_id == rec.tx_id => Some(hash.clone()),
+                Root::Aside { tx_id, .. } => self
+                    .forest
+                    .by_tx(tx_id)
+                    .map(|j| self.forest.rows[j].hash.clone()),
+                Root::Unknown { .. } => None,
+            };
             let ctx = self.ctx.as_deref_mut().expect("writing");
             let c = ctx.append(Draft {
                 branch: b.to_string(),
                 link: Link::CherryPick {
                     origin: root.tx_id().to_string(),
                     from,
-                    origin_hash: Some(hash),
+                    origin_hash: root_hash,
+                    recovers: Some(hash),
                 },
                 intent: tx,
                 inverse: applied.inverse,
@@ -273,7 +289,7 @@ impl Runner<'_, '_, '_> {
                 branch_id: target,
                 name: rec.name.clone(),
                 archived: rec.archived,
-                origin_hash: Some(self.forest.rows[i].hash.clone()),
+                recovers: Some(self.forest.rows[i].hash.clone()),
             };
             self.no_op_record(&parent, link)?;
         }

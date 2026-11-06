@@ -211,7 +211,7 @@ fn branch_link() -> Link {
         fork_seq: 0,
         fork_hash: None,
         epoch: 1,
-        origin_hash: None,
+        recovers: None,
     }
 }
 
@@ -293,7 +293,7 @@ fn reads_v1_and_v2_segments() {
         "k1",
         Link::Checkpoint {
             name: "cut".into(),
-            origin_hash: None,
+            recovers: None,
         },
     );
     assert_eq!(e.flush(&mut a), 1);
@@ -330,7 +330,7 @@ fn reads_v1_and_v2_segments() {
         txs[1].link.as_deref(),
         Some(&Link::Checkpoint {
             name: "cut".into(),
-            origin_hash: None
+            recovers: None
         })
     );
 }
@@ -354,7 +354,7 @@ fn pack_version_is_highest_of_contents() {
                 "k1",
                 Link::Checkpoint {
                     name: "cut".into(),
-                    origin_hash: None,
+                    recovers: None,
                 },
             );
             assert_eq!(e.flush(&mut a), 1);

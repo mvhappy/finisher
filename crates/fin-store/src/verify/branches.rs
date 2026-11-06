@@ -121,7 +121,7 @@ fn links(s: &Subject, d: &Derived, count: &mut u64) -> Result<Vec<Value>, StoreE
     let mut have: BTreeMap<String, (LinkRow, Option<String>)> = BTreeMap::new();
     let mut stmt = s.conn.prepare(
         "SELECT tx_id, branch, seq, kind, author, origin, origin_hash, from_branch, merge_id,
-                targets, name, ignored FROM record_links",
+                targets, name, ignored, recovers FROM record_links",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -137,6 +137,7 @@ fn links(s: &Subject, d: &Derived, count: &mut u64) -> Result<Vec<Value>, StoreE
                 merge_id: r.get(8)?,
                 targets: r.get(9)?,
                 name: r.get(10)?,
+                recovers: r.get(12)?,
             },
             r.get::<_, Option<String>>(11)?,
         ))

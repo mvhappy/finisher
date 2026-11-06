@@ -83,7 +83,7 @@ fn stack_simulation_table() {
                 a,
                 Link::Checkpoint {
                     name: "k".into(),
-                    origin_hash: None,
+                    recovers: None,
                 },
                 vec![],
             )),
@@ -195,6 +195,7 @@ fn merged_away_drops_stack_only_for_merge_into_non_descendant() {
         origin: "e3".into(),
         from: "br1".into(),
         origin_hash: None,
+        recovers: None,
     };
     copy(&mut log, "main", "cp1", pick);
     assert_eq!(ids(&log.stacks("br1", "alice").undo), ["e1", "e2", "e3"]);

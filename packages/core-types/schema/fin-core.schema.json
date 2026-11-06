@@ -671,7 +671,7 @@
           "type": "object"
         },
         {
-          "description": "A copy of `origin` from branch `from`; `origin_hash` names the exact record when known.",
+          "description": "A copy of `origin` (its origin root) from branch `from`; `origin_hash` names the\nexact record when known; `recovers`: the quarantined record a recovered copy stands for\n(plan 4B Decision 27).",
           "properties": {
             "from": {
               "type": "string"
@@ -684,6 +684,12 @@
               "type": "string"
             },
             "originHash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "recovers": {
               "type": [
                 "string",
                 "null"
@@ -715,7 +721,7 @@
           "type": "object"
         },
         {
-          "description": "`origin_hash`: the quarantined record a recovered checkpoint stands for.",
+          "description": "`recovers`: the quarantined record a recovered checkpoint stands for.",
           "properties": {
             "kind": {
               "const": "checkpoint",
@@ -724,8 +730,7 @@
             "name": {
               "type": "string"
             },
-            "originHash": {
-              "description": "A recovered record's quarantined original (plan 4B Decision 27).",
+            "recovers": {
               "type": [
                 "string",
                 "null"
@@ -739,7 +744,7 @@
           "type": "object"
         },
         {
-          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`. `origin_hash`:\nthe quarantined `branch` record a recovered branch stands for.",
+          "description": "Creates branch `branch_id` forking from this record's branch at `fork_seq` (whose\ntxHash is `fork_hash`, absent at 0), committed at lease epoch `epoch`. `recovers`: the\nquarantined `branch` record a recovered branch stands for.",
           "properties": {
             "branchId": {
               "type": "string"
@@ -767,8 +772,7 @@
             "name": {
               "type": "string"
             },
-            "originHash": {
-              "description": "A recovered record's quarantined original (plan 4B Decision 27).",
+            "recovers": {
               "type": [
                 "string",
                 "null"
@@ -785,7 +789,7 @@
           "type": "object"
         },
         {
-          "description": "Renames, archives or restores branch `branch_id`. `origin_hash`: the quarantined\n`branchSet` record a recovered one stands for.",
+          "description": "Renames, archives or restores branch `branch_id`. `recovers`: the quarantined\n`branchSet` record a recovered one stands for.",
           "properties": {
             "archived": {
               "type": [
@@ -806,8 +810,7 @@
                 "null"
               ]
             },
-            "originHash": {
-              "description": "A recovered record's quarantined original (plan 4B Decision 27).",
+            "recovers": {
               "type": [
                 "string",
                 "null"

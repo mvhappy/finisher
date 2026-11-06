@@ -38,7 +38,7 @@ pub enum TrySub {
 pub struct NameArgs {
     /// Branch name; default `try-<n>`. (Schema only: clap reads it as `TryArgs.name`.)
     #[serde(default)]
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "read through the schema only")]
     pub name: Option<String>,
 }
 

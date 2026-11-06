@@ -39,7 +39,8 @@ const VALIDATION_CODES: &[&str] = &[
     "SERVER_DATA_UNSAFE",
     "IDEM_KEY_REUSED",
     "PROJECT_DIR_UNWRITABLE",
-    // An empty or whitespace-only project name.
+    // A name the rules refuse: an empty or whitespace-only project name, or a branch or
+    // checkpoint name outside `[A-Za-z0-9._-]{1,64}` (4B Decision 11).
     "INVALID_NAME",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",

@@ -167,7 +167,7 @@ fn create_branch_appends_branch_record_on_parent() {
             fork_seq: 2,
             fork_hash: Some(fork_hash.clone()),
             epoch: 1,
-            origin_hash: None,
+            recovers: None,
         })
     );
     assert_eq!(s.head(MAIN), 3);
@@ -306,7 +306,7 @@ fn from_older_seq_forks_there() {
             fork_seq: 1,
             fork_hash: Some(hash_at(&s, MAIN, 1)),
             epoch: 1,
-            origin_hash: None,
+            recovers: None,
         })
     );
     assert_eq!(c.branch.head, 1);
@@ -352,7 +352,7 @@ fn fork_at_zero_has_null_fork_hash() {
             fork_seq: 0,
             fork_hash: None,
             epoch: 1,
-            origin_hash: None,
+            recovers: None,
         })
     );
     let (rev, p) = s.snapshot("br1").unwrap();
@@ -469,7 +469,7 @@ fn restore_onto_taken_name_needs_as() {
             branch_id: "br1".into(),
             name: Some("feature-old".into()),
             archived: Some(false),
-            origin_hash: None,
+            recovers: None,
         })
     );
     assert_eq!(s.resolve_branch("feature-old").unwrap(), "br1");
@@ -494,7 +494,7 @@ fn rename_and_archive_are_branch_set_on_parent() {
             branch_id: "br2".into(),
             name: Some("deeper".into()),
             archived: None,
-            origin_hash: None,
+            recovers: None,
         })
     );
     let a = s

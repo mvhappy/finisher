@@ -51,6 +51,7 @@ fn pick_names_the_origin_root_and_repeats_as_no_op() {
             origin: "e1".into(),
             from: "br1".into(),
             origin_hash: None,
+            recovers: None,
         }
     );
     assert_eq!(k1.record.bindings, e1.record.bindings);

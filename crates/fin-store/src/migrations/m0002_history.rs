@@ -29,11 +29,12 @@ CREATE TABLE IF NOT EXISTS branches (
 CREATE TABLE IF NOT EXISTS record_links (
     tx_id TEXT PRIMARY KEY, branch TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
     author TEXT NOT NULL, origin TEXT, origin_hash TEXT, from_branch TEXT, merge_id TEXT,
-    targets TEXT, name TEXT, ignored TEXT, UNIQUE (branch, seq)
+    targets TEXT, name TEXT, ignored TEXT, recovers TEXT, UNIQUE (branch, seq)
 );
 CREATE INDEX IF NOT EXISTS record_links_origin ON record_links (origin) WHERE origin IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_origin_hash ON record_links (origin_hash) WHERE origin_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_merge ON record_links (merge_id) WHERE merge_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS record_links_recovers ON record_links (recovers) WHERE recovers IS NOT NULL;
 CREATE TABLE IF NOT EXISTS quarantine_marks (
     tx_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT
 );

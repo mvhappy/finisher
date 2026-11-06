@@ -178,7 +178,20 @@ fn orders_by_value() {
     assert!(r("-1/2") < r("-1/3"));
 }
 
+/// `PROPTEST_CASES` overrides the per-block default (spec §4.6).
+fn config(default: u32) -> ProptestConfig {
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    ProptestConfig {
+        cases,
+        ..ProptestConfig::default()
+    }
+}
+
 proptest! {
+    #![proptest_config(config(256))]
     #[test]
     fn add_then_sub_is_identity(an in -1_000_000i64..1_000_000, ad in 1i64..10_000, bn in -1_000_000i64..1_000_000, bd in 1i64..10_000) {
         let a = Rational::new(an, ad).unwrap();

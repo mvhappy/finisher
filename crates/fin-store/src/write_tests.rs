@@ -78,7 +78,7 @@ fn checkpoint(ctx: &mut WriteCtx<'_>, id: &str, name: &str) -> Result<Draft, Sto
         branch: MAIN.into(),
         link: Link::Checkpoint {
             name: name.into(),
-            origin_hash: None,
+            recovers: None,
         },
         intent: tx(id, head.rev, vec![]),
         inverse: vec![],
@@ -160,7 +160,7 @@ fn write_dry_run_on_follower_plans_and_rolls_back() {
         out.1.link.as_deref(),
         Some(&Link::Checkpoint {
             name: "before".into(),
-            origin_hash: None,
+            recovers: None,
         })
     );
     assert_eq!(rows(&b), before);

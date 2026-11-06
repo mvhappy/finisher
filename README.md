@@ -13,7 +13,7 @@ the current plan is in [docs/plans/](docs/plans/).
 ```bash
 rtk npm install -g pnpm@12.15.0   # Node 26 ships no corepack; CI does the same
 rtk pnpm install
-rtk cargo test --workspace
+rtk cargo test                    # default members; the cross-host harness: cargo build -p fin-store-xhost
 rtk pnpm test
 rtk pnpm gates
 rtk pnpm e2e    # slow: builds fin and fin-node, then runs the end-to-end check
