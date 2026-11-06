@@ -13,10 +13,14 @@ pub(crate) mod merge;
 pub(crate) mod pick;
 pub(crate) mod undo;
 
+#[cfg(test)]
+#[path = "stack_rows_tests.rs"]
+mod stack_rows_tests;
+
 use std::collections::{HashMap, HashSet};
 
-use fin_core::history::{Lineage, LogRec, LogView};
-use fin_core::{CoreError, Diff, Link, Project};
+use fin_core::history::{Lineage, LogRec, LogView, StackRec};
+use fin_core::{CoreError, Diff, Link, Project, RecordKind};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::branch::{index, lineage};
@@ -69,6 +73,84 @@ impl<'a> SqlLog<'a> {
             log_rec(branch, to_u64(seq)?, &bytes, &diff)
         })
         .collect()
+    }
+
+    /// `branch`'s own rows with `after < seq <= through` as the stacks read them: kind and
+    /// links from `txs` and `record_links`, the intent's author out of the record's JSON (no
+    /// record is parsed, plan 4B Task 20). A link-bearing row without its link row (never on a
+    /// consistent DB) is parsed whole.
+    fn stack_rows(
+        &self,
+        branch: &str,
+        after: u64,
+        through: u64,
+    ) -> Result<Vec<StackRec>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT t.seq, t.tx_id, t.kind,
+                    json_extract(CAST(t.record_bytes AS TEXT), '$.intent.author'),
+                    l.tx_id IS NOT NULL, l.merge_id, l.targets
+             FROM txs t LEFT JOIN record_links l ON l.tx_id = t.tx_id
+             WHERE t.branch = ?1 AND t.seq > ?2 AND t.seq <= ?3 ORDER BY t.seq",
+        )?;
+        type Row = (
+            i64,
+            String,
+            String,
+            Option<String>,
+            bool,
+            Option<String>,
+            Option<String>,
+        );
+        let rows: Vec<Row> = stmt
+            .query_map(params![branch, to_i64(after)?, to_i64(through)?], |r| {
+                // Not a string (or absent): parsed whole below, as the record's own error.
+                let author = match r.get_ref(3)? {
+                    rusqlite::types::ValueRef::Text(t) => std::str::from_utf8(t).ok(),
+                    _ => None,
+                };
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    author.map(str::to_string),
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (seq, tx_id, kind, author, linked, merge_id, targets) in rows {
+            let seq = to_u64(seq)?;
+            let kind: RecordKind = serde_json::from_value(serde_json::Value::String(kind))?;
+            let needs_link = matches!(
+                kind,
+                RecordKind::Undo | RecordKind::Redo | RecordKind::Merge
+            );
+            let (Some(author), false) = (author, needs_link && !linked) else {
+                out.extend(self.rows(branch, seq - 1, seq)?.iter().map(StackRec::of));
+                continue;
+            };
+            let targets: Vec<String> = match targets {
+                Some(t) => serde_json::from_str(&t)?,
+                None => Vec::new(),
+            };
+            let (undoes, redoes) = match kind {
+                RecordKind::Undo => (targets, None),
+                RecordKind::Redo => (Vec::new(), targets.into_iter().next()),
+                _ => (Vec::new(), None),
+            };
+            out.push(StackRec {
+                seq,
+                tx_id,
+                kind,
+                author,
+                merge_id,
+                undoes,
+                redoes,
+            });
+        }
+        Ok(out)
     }
 
     fn find_row(&self, tx_id: &str) -> Result<Option<LogRec>, StoreError> {
@@ -147,6 +229,15 @@ impl LogView for SqlLog<'_> {
 
     fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError> {
         Ok(self.rows(branch, after, through)?)
+    }
+
+    fn stack_records(
+        &self,
+        branch: &str,
+        after: u64,
+        through: u64,
+    ) -> Result<Vec<StackRec>, CoreError> {
+        Ok(self.stack_rows(branch, after, through)?)
     }
 
     fn head(&self, branch: &str) -> Result<(u64, Project), CoreError> {

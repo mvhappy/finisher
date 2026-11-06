@@ -16,9 +16,10 @@ pub mod map;
 mod steps;
 
 pub use conflict::{Conflict, Conflicts, reasons};
-pub use engine::{Rebase, Rebased, rebase_apply, rebase_tx};
+pub use engine::{PreparedRebase, Rebase, Rebased, rebase_apply, rebase_prepared, rebase_tx};
 pub use footprint::{
     Footprint, Touch, committed_footprints, committed_ops, entity_conflict, footprint, split_diff,
 };
 pub use map::{Assoc, MapResult, Mapping, Recover, StepMap, Unmapped};
-pub use steps::{Step, StepUnit, steps_from, steps_with_units};
+pub(crate) use steps::Mirrored;
+pub use steps::{Prepared, Step, StepUnit, steps_from, steps_with_units};

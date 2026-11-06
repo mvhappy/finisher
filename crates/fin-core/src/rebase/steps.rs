@@ -2,6 +2,7 @@
 //! (Decision 24).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::error::CoreError;
 use crate::ops::Op;
@@ -85,6 +86,53 @@ impl Step {
                 }
             })
             .collect())
+    }
+}
+
+/// A step as the engine reads it ([`super::rebase_prepared`]): its map and its ops' footprints,
+/// worked out once. A clone shares them, so a merge hands the same steps to every candidate
+/// without copying records (plan 4B Task 20). Errors are kept and raised where the engine
+/// would meet them: a footprint only for a step in no mirrored pair.
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    pub tx_id: Arc<str>,
+    pub mirror_of: Option<usize>,
+    pub(super) map: Result<StepMap, CoreError>,
+    pub(super) footprints: Result<Arc<[Footprint]>, CoreError>,
+}
+
+impl Prepared {
+    pub fn new(step: &Step) -> Prepared {
+        Prepared {
+            tx_id: step.tx_id.as_str().into(),
+            mirror_of: step.mirror_of,
+            map: step.map(),
+            footprints: step.footprints().map(Into::into),
+        }
+    }
+}
+
+/// A step that may name an earlier one it mirrors ([`Step`], [`Prepared`]).
+pub(crate) trait Mirrored: Clone {
+    fn mirror_of(&self) -> Option<usize>;
+    fn set_mirror_of(&mut self, m: Option<usize>);
+}
+
+impl Mirrored for Step {
+    fn mirror_of(&self) -> Option<usize> {
+        self.mirror_of
+    }
+    fn set_mirror_of(&mut self, m: Option<usize>) {
+        self.mirror_of = m;
+    }
+}
+
+impl Mirrored for Prepared {
+    fn mirror_of(&self) -> Option<usize> {
+        self.mirror_of
+    }
+    fn set_mirror_of(&mut self, m: Option<usize>) {
+        self.mirror_of = m;
     }
 }
 

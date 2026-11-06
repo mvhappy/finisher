@@ -27,7 +27,9 @@
 //!   inverse (its insert gone, say) is `DEPENDS_ON_SKIPPED`. Without `skip_conflicting`, any
 //!   conflict makes the plan `CONFLICT` with every conflict in `details.conflicts`.
 //!
-//! Planning costs O(candidates × (source + target path)) step clones and mappings (Task 20).
+//! Planning maps each candidate through O(source + target path) steps. The steps are prepared
+//! once ([`Prepared`]: maps and footprints shared between candidates), so a candidate costs a
+//! walk over them, not a copy of the records (plan 4B Task 20).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -39,8 +41,8 @@ use super::{Lineage, LogRec, LogView, Planned};
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::rebase::{
-    Conflict, Conflicts, Rebase, Step, committed_footprints, reasons, rebase_apply,
-    steps_with_units,
+    Conflict, Conflicts, Mirrored, Prepared, PreparedRebase, Step, committed_footprints, reasons,
+    rebase_prepared, steps_with_units,
 };
 use crate::record::{Link, Record, RecordKind};
 use crate::replay::BoundIds;
@@ -90,19 +92,28 @@ pub(super) fn path_after(
     Ok(out)
 }
 
-/// The source path inverted and the target path as steps, computed once per merge; each
-/// candidate takes its slice ([`Paths::steps`]).
-pub(super) struct Paths {
+/// The source path inverted and the target path as steps (`T`: [`Step`] or [`Prepared`]),
+/// computed once per merge; each candidate takes its slice ([`Paths::steps`]).
+pub(super) struct Paths<T = Step> {
     /// `inv[j]`: source record `j` inverted.
-    inv: Vec<Step>,
+    inv: Vec<T>,
     /// The target path's steps, mirrors relative to this list.
-    target: Vec<Step>,
+    target: Vec<T>,
     /// `(target step, source index)`: a target record and a source record of the same origin
     /// root.
     cross: Vec<(usize, usize)>,
 }
 
-impl Paths {
+impl Paths<Step> {
+    /// The same paths with their steps prepared once ([`Prepared`]).
+    pub(super) fn prepared(&self) -> Paths<Prepared> {
+        Paths {
+            inv: self.inv.iter().map(Prepared::new).collect(),
+            target: self.target.iter().map(Prepared::new).collect(),
+            cross: self.cross.clone(),
+        }
+    }
+
     /// `roots`: [`Roots::new`] over `source` and `target`.
     pub(super) fn new(
         source: &[LogRec],
@@ -163,16 +174,20 @@ impl Paths {
             cross,
         })
     }
+}
 
+impl<T: Mirrored> Paths<T> {
     /// The steps of source candidate `i`, with `planned` (source index, copy step) so far.
-    pub(super) fn steps(&self, i: usize, planned: &[(usize, Step)]) -> Vec<Step> {
+    pub(super) fn steps(&self, i: usize, planned: &[(usize, T)]) -> Vec<T> {
         let at = |j: usize| i - 1 - j;
-        let mut steps: Vec<Step> = (0..i).rev().map(|j| self.inv[j].clone()).collect();
+        let mut steps: Vec<T> = Vec::with_capacity(i + self.target.len() + planned.len());
+        steps.extend((0..i).rev().map(|j| self.inv[j].clone()));
         let mut paired = vec![false; i + self.target.len() + planned.len()];
         for t in &self.target {
             let mut t = t.clone();
-            t.mirror_of = t.mirror_of.map(|m| m + i);
-            if let Some(m) = t.mirror_of {
+            let m = t.mirror_of().map(|m| m + i);
+            t.set_mirror_of(m);
+            if let Some(m) = m {
                 paired[m] = true;
                 paired[steps.len()] = true;
             }
@@ -181,7 +196,7 @@ impl Paths {
         for &(q, j) in &self.cross {
             let (a, b) = (j, i + q);
             if j < i && !paired[at(a)] && !paired[b] {
-                steps[b].mirror_of = Some(at(a));
+                steps[b].set_mirror_of(Some(at(a)));
                 paired[at(a)] = true;
                 paired[b] = true;
             }
@@ -189,7 +204,7 @@ impl Paths {
         for (j, step) in planned {
             let mut s = step.clone();
             if *j < i && !paired[at(*j)] {
-                s.mirror_of = Some(at(*j));
+                s.set_mirror_of(Some(at(*j)));
                 paired[at(*j)] = true;
                 paired[steps.len()] = true;
             }
@@ -267,7 +282,7 @@ pub fn plan_merge(
     let target = path_after(log, &target_l, &c)?;
     let roots = Roots::new(log, &target_l, &source, &target)?;
     let cands = candidates(&source, &roots);
-    let paths = Paths::new(&source, &target, &roots)?;
+    let paths = Paths::new(&source, &target, &roots)?.prepared();
     let binders = Binders::new(&source, &roots.source, &target, &roots.target);
     let (mut seq, mut head) = log.head(into)?;
 
@@ -282,7 +297,7 @@ pub fn plan_merge(
             .map(|&(i, reason)| Conflict::new(&source[i].record.tx_id, 0, reason, None))
             .collect(),
     };
-    let mut copies: Vec<(usize, Step)> = Vec::new();
+    let mut copies: Vec<(usize, Prepared)> = Vec::new();
     // Candidates not copied: excluded, or failed. What depends on them is DEPENDS_ON_SKIPPED.
     let mut skipped: HashSet<&str> = cands
         .excluded
@@ -299,7 +314,7 @@ pub fn plan_merge(
             ..r.intent.clone()
         };
         let mode = rerun_mode(r);
-        let rebase = Rebase {
+        let rebase = PreparedRebase {
             tx: &tx,
             own: &src.diff,
             steps: &steps,
@@ -307,7 +322,7 @@ pub fn plan_merge(
         };
         let rerun = BoundIds::new(&r.intent.ops, &r.bindings)
             .map_err(|e| Conflict::from_rerun(&e, &r.tx_id, 0, None))
-            .and_then(|mut ids| rebase_apply(&head, &rebase, &mut ids, mode));
+            .and_then(|mut ids| rebase_prepared(&head, &rebase, &mut ids, mode));
         let rebased = match rerun {
             Ok(rebased) => rebased,
             Err(c) => {
@@ -337,7 +352,7 @@ pub fn plan_merge(
             bindings: rebased.applied.bindings.clone(),
             link: Some(Box::new(link.clone())),
         };
-        copies.push((i, Step::from_committed(&copy)?));
+        copies.push((i, Prepared::new(&Step::from_committed(&copy)?)));
         head = rebased.applied.project.clone();
         plan.merged.push(r.tx_id.clone());
         plan.planned.push(Planned {

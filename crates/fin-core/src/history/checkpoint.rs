@@ -58,7 +58,8 @@ pub fn plan_undo_to(
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
     let r = read(log, branch, author)?;
-    let units = after_checkpoint(&r.own, &r.stacks.undo, checkpoint_seq, tx_id)?;
+    let own = log.records(branch, r.fork, r.head_seq)?;
+    let units = after_checkpoint(&own, &r.stacks.undo, checkpoint_seq, tx_id)?;
     if units.is_empty() {
         let mut e = nothing("NOTHING_TO_UNDO", "undo", branch, author);
         e.message =
@@ -75,11 +76,11 @@ pub fn plan_undo_to(
     let mut skipped: HashSet<String> = HashSet::new();
     let mut offset = 0;
     for unit in units {
-        let inverse = unit_inverse(&r.own, unit)?;
+        let inverse = unit_inverse(&own, unit)?;
         let n = inverse.len();
         let tx = intent(tx_id, author, branch, unit.last_seq, inverse);
-        let k = r.own.partition_point(|c| c.seq <= unit.last_seq);
-        let mut since: Vec<CommittedTx> = r.own[k..]
+        let k = own.partition_point(|c| c.seq <= unit.last_seq);
+        let mut since: Vec<CommittedTx> = own[k..]
             .iter()
             .map(LogRec::committed)
             .collect::<Result<_, _>>()?;

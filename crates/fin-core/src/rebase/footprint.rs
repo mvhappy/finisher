@@ -116,6 +116,16 @@ pub fn entity_conflict(
     own: &BTreeSet<String>,
     theirs: &[(&str, Footprint)],
 ) -> Option<(&'static str, String)> {
+    let theirs: Vec<(&str, &Footprint)> = theirs.iter().map(|(t, f)| (*t, f)).collect();
+    entity_conflict_in(ours, own, &theirs)
+}
+
+/// [`entity_conflict`] over borrowed footprints (the engine's, shared between rebases).
+pub(crate) fn entity_conflict_in(
+    ours: &Footprint,
+    own: &BTreeSet<String>,
+    theirs: &[(&str, &Footprint)],
+) -> Option<(&'static str, String)> {
     // Entities ours needs, each with the record that removed it last (None once re-created).
     let mut needed: Vec<(&str, Option<usize>)> = ours
         .touches

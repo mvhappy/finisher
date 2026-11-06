@@ -11,9 +11,9 @@ use crate::model::Project;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
-use super::footprint::{Footprint, entity_conflict, footprint, split_diff};
+use super::footprint::{Footprint, entity_conflict_in, footprint, split_diff};
 use super::map::{Assoc, Mapping, StepMap, Unmapped};
-use super::steps::{Step, steps_from};
+use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
 
@@ -44,6 +44,16 @@ impl<'a> Rebase<'a> {
     }
 }
 
+/// [`Rebase`] over [`Prepared`] steps: what a merge passes, sharing its steps between
+/// candidates (plan 4B Task 20).
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedRebase<'a> {
+    pub tx: &'a Tx,
+    pub own: &'a Diff,
+    pub steps: &'a [Prepared],
+    pub same_origin: &'a BTreeSet<String>,
+}
+
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
 /// applying it at the head.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +79,23 @@ pub fn rebase_apply(
     ids: &mut dyn IdAlloc,
     mode: ApplyMode,
 ) -> Result<Rebased, Conflict> {
+    let steps: Vec<Prepared> = r.steps.iter().map(Prepared::new).collect();
+    let p = PreparedRebase {
+        tx: r.tx,
+        own: r.own,
+        steps: &steps,
+        same_origin: r.same_origin,
+    };
+    rebase_prepared(head, &p, ids, mode)
+}
+
+/// [`rebase_apply`] over steps prepared once ([`Prepared`]).
+pub fn rebase_prepared(
+    head: &Project,
+    r: &PreparedRebase<'_>,
+    ids: &mut dyn IdAlloc,
+    mode: ApplyMode,
+) -> Result<Rebased, Conflict> {
     let tx_id = r.tx.tx_id.as_str();
     let bad = |e: CoreError| Conflict::from_rerun(&e, tx_id, 0, None);
     let own = split_diff(&r.tx.ops, r.own).map_err(bad)?;
@@ -79,7 +106,7 @@ pub fn rebase_apply(
     }
     let theirs = unmirrored_footprints(r.steps).map_err(bad)?;
     for step in r.steps {
-        let at = mapping.push(step.map().map_err(bad)?);
+        let at = mapping.push(step.map.clone().map_err(bad)?);
         if let Some(j) = step.mirror_of {
             mapping.set_mirror(n + j, at);
         }
@@ -87,7 +114,7 @@ pub fn rebase_apply(
     let blame = |i: usize| {
         (n..n + r.steps.len())
             .contains(&i)
-            .then(|| r.steps[i - n].tx_id.clone())
+            .then(|| r.steps[i - n].tx_id.to_string())
     };
     let mut run = Applier::new(head, r.tx.schema_version, mode).map_err(bad)?;
     let mut ops = Vec::with_capacity(n);
@@ -105,7 +132,7 @@ pub fn rebase_apply(
                 })?;
         }
         let fp = footprint(&op, &own[k]);
-        if let Some((reason, against)) = entity_conflict(&fp, &created, &theirs) {
+        if let Some((reason, against)) = entity_conflict_in(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
         created.extend(fp.creates.iter().cloned());
@@ -206,10 +233,11 @@ fn failed_at_base(
         .zip(&own)
         .flat_map(|(op, d)| footprint(op, d).creates)
         .collect();
-    let Ok(theirs) = unmirrored_footprints(steps) else {
+    let prepared: Vec<Prepared> = steps.iter().map(Prepared::new).collect();
+    let Ok(theirs) = unmirrored_footprints(&prepared) else {
         return e;
     };
-    match entity_conflict(&footprint(failed, &Diff::default()), &created, &theirs) {
+    match entity_conflict_in(&footprint(failed, &Diff::default()), &created, &theirs) {
         Some((reason, against)) => {
             Conflicts::one(Conflict::new(&tx.tx_id, i, reason, Some(against))).into()
         }
@@ -231,13 +259,13 @@ fn at_base(mut e: CoreError, base_rev: u64) -> CoreError {
 }
 
 /// The footprints of every op of the steps that are in no mirrored pair, with their txIds
-/// (what [`entity_conflict`] judges against). `INVALID_OP` for a bad `mirror_of`.
-fn unmirrored_footprints(steps: &[Step]) -> Result<Vec<(&str, Footprint)>, CoreError> {
+/// (what [`entity_conflict_in`] judges against). `INVALID_OP` for a bad `mirror_of`.
+fn unmirrored_footprints(steps: &[Prepared]) -> Result<Vec<(&str, &Footprint)>, CoreError> {
     let mut out = Vec::new();
     for (step, paired) in steps.iter().zip(mirrored(steps)?) {
         if !paired {
-            let fps = step.footprints()?;
-            out.extend(fps.into_iter().map(|f| (step.tx_id.as_str(), f)));
+            let fps = step.footprints.as_ref().map_err(Clone::clone)?;
+            out.extend(fps.iter().map(|f| (&*step.tx_id, f)));
         }
     }
     Ok(out)
@@ -245,7 +273,7 @@ fn unmirrored_footprints(steps: &[Step]) -> Result<Vec<(&str, Footprint)>, CoreE
 
 /// Which steps are in a mirrored pair. A `mirror_of` must name an earlier step that is in no
 /// other pair (`INVALID_OP`).
-fn mirrored(steps: &[Step]) -> Result<Vec<bool>, CoreError> {
+fn mirrored(steps: &[Prepared]) -> Result<Vec<bool>, CoreError> {
     let mut out = vec![false; steps.len()];
     for (s, step) in steps.iter().enumerate() {
         let Some(j) = step.mirror_of else { continue };
@@ -268,10 +296,10 @@ fn mirrored(steps: &[Step]) -> Result<Vec<bool>, CoreError> {
 /// and the assets ours only uses are left out, since nearly every step shares them.
 fn rerun_conflict(
     e: &CoreError,
-    r: &Rebase<'_>,
+    r: &PreparedRebase<'_>,
     k: usize,
     ours: &Footprint,
-    theirs: &[(&str, Footprint)],
+    theirs: &[(&str, &Footprint)],
     head: &Project,
 ) -> Conflict {
     let mut named: BTreeSet<&str> = ours.touches.iter().map(|(x, _)| x.as_str()).collect();

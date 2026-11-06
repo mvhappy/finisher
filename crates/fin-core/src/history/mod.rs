@@ -36,7 +36,7 @@ pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
 pub use merged::{left_to_merge, lineage_in};
 pub use origin::{Roots, root, root_of, target_roots};
 pub use pick::{plan_cherry_pick, plan_revert};
-pub use undo::{Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
+pub use undo::{StackRec, Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
 
 /// One stored record with its place in the log and its diff (the store's `txs` row).
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +88,20 @@ pub trait LogView {
     /// `branch`'s own records (not its ancestors') with `after < seq <= through`, oldest
     /// first.
     fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError>;
+    /// [`LogView::records`] as the undo stacks read them ([`StackRec`]: kinds, authors and
+    /// links only). A store answers from its link table without parsing records.
+    fn stack_records(
+        &self,
+        branch: &str,
+        after: u64,
+        through: u64,
+    ) -> Result<Vec<StackRec>, CoreError> {
+        Ok(self
+            .records(branch, after, through)?
+            .iter()
+            .map(StackRec::of)
+            .collect())
+    }
     /// The head seq of `branch` and the project there.
     fn head(&self, branch: &str) -> Result<(u64, Project), CoreError>;
     /// The project on `branch` after `seq` (below its fork: its ancestors' state).

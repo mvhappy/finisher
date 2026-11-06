@@ -15,6 +15,8 @@
 //! `deletedAfter` / `deletedBefore` do. The assoc-side edge (the end with `After`, the start
 //! with `Before`) is never deleted at all.
 
+use std::sync::Arc;
+
 use crate::error::CoreError;
 use crate::time::Rational;
 use crate::tx::{Diff, Shift};
@@ -27,10 +29,11 @@ pub enum Assoc {
     After,
 }
 
-/// One step's shifts, in op order; each is in the frame after the previous one.
+/// One step's shifts, in op order; each is in the frame after the previous one. Cloning is
+/// cheap (the shifts are shared), so one map serves every rebase that passes through it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StepMap {
-    shifts: Vec<Shift>,
+    shifts: Arc<[Shift]>,
 }
 
 /// Where a deleted position was: `offset` into the range removed by shift `shift`.
@@ -52,7 +55,9 @@ pub struct MapResult {
 
 impl StepMap {
     pub fn from_shifts(shifts: Vec<Shift>) -> StepMap {
-        StepMap { shifts }
+        StepMap {
+            shifts: shifts.into(),
+        }
     }
 
     pub fn from_diff(diff: &Diff) -> StepMap {
@@ -76,8 +81,8 @@ impl StepMap {
                     by: s.by.checked_neg()?,
                 })
             })
-            .collect::<Result<_, CoreError>>()?;
-        Ok(StepMap { shifts })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        Ok(StepMap::from_shifts(shifts))
     }
 
     /// `by >= 0` inserts `[from, from+by)`: positions at or after `from` (After), or after

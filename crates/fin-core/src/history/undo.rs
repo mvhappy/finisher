@@ -14,6 +14,10 @@
 //!   stack from that unit down, and an undo record merged away drops the redo stack from it
 //!   down (Decision 22; arch §6.4 drops both stacks when the branch is merged).
 //!
+//! The stacks need only each record's kind, author and links ([`StackRec`]), which a store
+//! reads without parsing records ([`LogView::stack_records`]); a plan then reads the unit's
+//! records and the records since (plan 4B Task 20).
+//!
 //! **Planning** an undo takes the top unit's stored inverses (its records newest first, or the
 //! redo record's), in the frame right after the unit (the state at its last seq), and rebases
 //! them over the branch's records since, mirrors included (an undo inside the interval
@@ -78,30 +82,59 @@ pub struct Stacks {
     pub redo: Vec<UnitEntry>,
 }
 
+/// A record as the stacks read it: no intent ops, inverses or diff ([`derive_stacks`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRec {
+    pub seq: u64,
+    pub tx_id: String,
+    pub kind: RecordKind,
+    /// The intent's author (Decision 25).
+    pub author: String,
+    pub merge_id: Option<String>,
+    /// The units an `undo` names (`undoes`), newest first.
+    pub undoes: Vec<String>,
+    /// The undo a `redo` reverses.
+    pub redoes: Option<String>,
+}
+
+impl StackRec {
+    pub fn of(rec: &LogRec) -> StackRec {
+        let r = &rec.record;
+        StackRec {
+            seq: rec.seq,
+            tx_id: r.tx_id.clone(),
+            kind: r.kind,
+            author: r.intent.author.clone(),
+            merge_id: r.merge_id.clone(),
+            undoes: r.undoes.clone().unwrap_or_default(),
+            redoes: r.redoes.clone(),
+        }
+    }
+}
+
 /// The stacks of `author` from a branch's own records `own` (oldest first), dropping from the
 /// top-most unit with a record in `merged_away` down (module docs).
-pub fn derive_stacks(own: &[LogRec], author: &str, merged_away: &HashSet<String>) -> Stacks {
+pub fn derive_stacks(own: &[StackRec], author: &str, merged_away: &HashSet<String>) -> Stacks {
     let mut s = Stacks::default();
     // The merge group the top unit is, while its records follow one another.
     let mut group: Option<&str> = None;
-    for rec in own {
-        let r = &rec.record;
+    for r in own {
         if r.kind == RecordKind::Merge
             && let (Some(g), Some(m), Some(top)) = (group, r.merge_id.as_deref(), s.undo.last_mut())
             && g == m
         {
             top.records.push(r.tx_id.clone());
-            top.last_seq = rec.seq;
+            top.last_seq = r.seq;
             continue;
         }
         group = None;
-        if r.intent.author != author {
+        if r.author != author {
             continue;
         }
         let unit = |id: &str, source: UnitSource| UnitEntry {
             id: id.to_string(),
             records: vec![r.tx_id.clone()],
-            last_seq: rec.seq,
+            last_seq: r.seq,
             source,
         };
         match r.kind {
@@ -116,7 +149,7 @@ pub fn derive_stacks(own: &[LogRec], author: &str, merged_away: &HashSet<String>
                 group = r.merge_id.as_deref();
             }
             RecordKind::Undo => {
-                for u in r.undoes.iter().flatten() {
+                for u in &r.undoes {
                     if let Some(i) = s.undo.iter().rposition(|e| e.id == *u) {
                         s.undo.remove(i);
                     }
@@ -152,23 +185,23 @@ pub fn derive_stacks(own: &[LogRec], author: &str, merged_away: &HashSet<String>
     s
 }
 
-/// What a planner reads first: the branch's head and own records, and the author's stacks.
+/// What a planner reads first: the branch's fork and head, and the author's stacks.
 pub(super) struct Read {
+    pub(super) fork: u64,
     pub(super) head_seq: u64,
     pub(super) head: crate::model::Project,
-    pub(super) own: Vec<LogRec>,
     pub(super) stacks: Stacks,
 }
 
 pub(super) fn read(log: &dyn LogView, branch: &str, author: &str) -> Result<Read, CoreError> {
     let fork = log.lineage(branch)?.fork_seq();
     let (head_seq, head) = log.head(branch)?;
-    let own = log.records(branch, fork, head_seq)?;
+    let own = log.stack_records(branch, fork, head_seq)?;
     let stacks = derive_stacks(&own, author, &log.merged_away(branch)?);
     Ok(Read {
+        fork,
         head_seq,
         head,
-        own,
         stacks,
     })
 }
@@ -191,15 +224,19 @@ pub fn plan_undo(
         UnitSource::Records => unit.records.clone(),
         UnitSource::Redo { tx_id } => vec![tx_id.clone()],
     };
+    // The unit's records end at its last seq, one after another (a merge group's included),
+    // and the records since follow them.
+    let first = unit.last_seq.saturating_sub(sources.len() as u64);
+    let read = log.records(branch, first.max(r.fork), r.head_seq)?;
     let mut ops = Vec::new();
     for id in sources.iter().rev() {
-        ops.extend(own_record(&r.own, id)?.record.inverse.iter().cloned());
+        ops.extend(own_record(&read, id)?.record.inverse.iter().cloned());
     }
     let link = Link::Undo {
         undoes: vec![unit.id.clone()],
     };
     let tx = intent(tx_id, author, branch, unit.last_seq, ops);
-    rebase_inverse(log, &r, unit.last_seq, tx, link, ids)
+    rebase_inverse(log, &r, &read, unit.last_seq, tx, link, ids)
 }
 
 /// The `redo` record of `author`'s top undo on `branch`: `Redo { redoes: <undo txId> }` with
@@ -216,12 +253,13 @@ pub fn plan_redo(
     let Some(undo) = r.stacks.redo.last() else {
         return Err(nothing("NOTHING_TO_REDO", "redo", branch, author));
     };
-    let ops = own_record(&r.own, &undo.id)?.record.inverse.clone();
+    let read = log.records(branch, undo.last_seq.saturating_sub(1), r.head_seq)?;
+    let ops = own_record(&read, &undo.id)?.record.inverse.clone();
     let link = Link::Redo {
         redoes: undo.id.clone(),
     };
     let tx = intent(tx_id, author, branch, undo.last_seq, ops);
-    rebase_inverse(log, &r, undo.last_seq, tx, link, ids)
+    rebase_inverse(log, &r, &read, undo.last_seq, tx, link, ids)
 }
 
 pub(super) fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<Op>) -> Tx {
@@ -237,17 +275,18 @@ pub(super) fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<
 }
 
 /// `tx` (inverses written for the state after seq `at`) rebased over the branch's own records
-/// after `at` and applied at the head.
+/// after `at` (`read` holds them, oldest first) and applied at the head.
 fn rebase_inverse(
     log: &dyn LogView,
     r: &Read,
+    read: &[LogRec],
     at: u64,
     tx: Tx,
     link: Link,
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
-    let k = r.own.partition_point(|c| c.seq <= at);
-    rebase_over(log, (r.head_seq, &r.head), &r.own[k..], tx, link, ids)
+    let k = read.partition_point(|c| c.seq <= at);
+    rebase_over(log, (r.head_seq, &r.head), &read[k..], tx, link, ids)
 }
 
 /// `tx` (inverses written for the state after `tx.base_rev` on `tx.branch`) rebased over

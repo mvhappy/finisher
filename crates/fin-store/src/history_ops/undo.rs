@@ -76,13 +76,13 @@ impl Store {
     }
 
     /// `author`'s undo and redo stacks on `branch` (a reference), as `undo` and `redo` see
-    /// them now. Reading may fill diffs a seeded rebuild left pending.
+    /// them now.
     pub fn undo_stacks(&self, branch: &str, author: &str) -> Result<Stacks, StoreError> {
         let id = index::resolve(&self.conn, branch)?.id;
         let log = SqlLog::new(&self.conn);
         let fork = log.lineage(&id)?.fork_seq();
         let head = db::latest_rev(&self.conn, &id)?.unwrap_or(fork);
-        let own = log.records(&id, fork, head)?;
+        let own = log.stack_records(&id, fork, head)?;
         Ok(derive_stacks(&own, author, &log.merged_away(&id)?))
     }
 

@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use fin_core::history::{
-    Lineage, LogRec, LogView, MergePlan, Planned, Stacks, derive_stacks, plan_cherry_pick,
-    plan_merge, plan_redo, plan_revert, plan_undo, plan_undo_to,
+    Lineage, LogRec, LogView, MergePlan, Planned, StackRec, Stacks, derive_stacks,
+    plan_cherry_pick, plan_merge, plan_redo, plan_revert, plan_undo, plan_undo_to,
 };
 use fin_core::{
     Applied, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
@@ -232,7 +232,8 @@ impl MemLog {
 
     pub fn stacks(&self, b: &str, author: &str) -> Stacks {
         let br = &self.branches[b];
-        derive_stacks(&br.recs, author, &self.merged_away(b).unwrap())
+        let own: Vec<StackRec> = br.recs.iter().map(StackRec::of).collect();
+        derive_stacks(&own, author, &self.merged_away(b).unwrap())
     }
 
     fn tx(&self, b: &str, tx_id: &str, author: &str, base: u64, ops: Vec<Op>) -> Tx {

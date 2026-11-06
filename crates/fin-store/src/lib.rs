@@ -28,6 +28,7 @@ mod history_ops;
 pub mod identity;
 mod import;
 pub mod lease;
+mod link_records;
 mod localdate;
 mod migrations;
 pub mod names;

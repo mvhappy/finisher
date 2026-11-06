@@ -5,8 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{Lineage, LogRec, LogView};
+use super::{Lineage, LogRec, LogView, StackRec};
 use crate::error::CoreError;
+use crate::model::Project;
 use crate::record::RecordKind;
 
 /// How deep an origin chain is followed (a loop in stored links ends there).
@@ -85,6 +86,8 @@ impl Roots {
         source: &[LogRec],
         target: &[LogRec],
     ) -> Result<Roots, CoreError> {
+        let known = Known::new(log, [source, target]);
+        let log: &dyn LogView = &known;
         let target_roots: Vec<String> = target
             .iter()
             .map(|t| root_of(log, t))
@@ -165,5 +168,70 @@ impl Ties<'_> {
         }
         self.memo.insert(id.to_string(), v);
         Ok(v)
+    }
+}
+
+/// `log`, answering [`LogView::find`] from records already read (a merge's two paths) before
+/// asking it: the origins of most copies on one path are records on the other (plan 4B
+/// Task 20). The paths are `log`'s own records, so the answers are the same.
+struct Known<'a> {
+    log: &'a dyn LogView,
+    by_tx: HashMap<&'a str, &'a LogRec>,
+}
+
+impl<'a> Known<'a> {
+    fn new<const N: usize>(log: &'a dyn LogView, paths: [&'a [LogRec]; N]) -> Known<'a> {
+        let by_tx = paths
+            .into_iter()
+            .flatten()
+            .map(|r| (r.record.tx_id.as_str(), r))
+            .collect();
+        Known { log, by_tx }
+    }
+}
+
+impl LogView for Known<'_> {
+    fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {
+        self.log.lineage(branch)
+    }
+
+    fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError> {
+        self.log.records(branch, after, through)
+    }
+
+    fn stack_records(
+        &self,
+        branch: &str,
+        after: u64,
+        through: u64,
+    ) -> Result<Vec<StackRec>, CoreError> {
+        self.log.stack_records(branch, after, through)
+    }
+
+    fn head(&self, branch: &str) -> Result<(u64, Project), CoreError> {
+        self.log.head(branch)
+    }
+
+    fn state_at(&self, branch: &str, seq: u64) -> Result<Project, CoreError> {
+        self.log.state_at(branch, seq)
+    }
+
+    fn find(&self, tx_id: &str) -> Result<Option<LogRec>, CoreError> {
+        match self.by_tx.get(tx_id) {
+            Some(r) => Ok(Some((*r).clone())),
+            None => self.log.find(tx_id),
+        }
+    }
+
+    fn merge_group(&self, merge_id: &str) -> Result<Vec<LogRec>, CoreError> {
+        self.log.merge_group(merge_id)
+    }
+
+    fn is_descendant(&self, a: &str, of: &str) -> Result<bool, CoreError> {
+        self.log.is_descendant(a, of)
+    }
+
+    fn merged_away(&self, branch: &str) -> Result<HashSet<String>, CoreError> {
+        self.log.merged_away(branch)
     }
 }

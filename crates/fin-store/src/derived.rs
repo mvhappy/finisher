@@ -138,7 +138,7 @@ pub(crate) fn compute(conn: &Connection) -> Result<Derived, StoreError> {
             ignored.insert(hash, why);
         }
     }
-    let merged = merged_branches(conn, &ix, None)?;
+    let merged = merged_branches(conn, &ix, None, false)?;
     let index = with_merged(&ix, &merged);
     Ok(Derived { index, ignored })
 }
@@ -196,10 +196,12 @@ fn write_marks(txn: &Connection, d: &Derived) -> Result<(), StoreError> {
 /// The branches of `ix` that are `merged` (Decision 21), among `only` (all when `None`): a
 /// branch B is when a branch T, not B's descendant, holds a `merge` record from B and
 /// nothing of B's own is left to merge into T (`fin_core::history::left_to_merge`).
+/// `links`: read records from their link rows ([`crate::link_records`]), not whole.
 pub(crate) fn merged_branches(
     conn: &Connection,
     ix: &BranchIndex,
     only: Option<&BTreeSet<String>>,
+    links: bool,
 ) -> Result<BTreeSet<String>, StoreError> {
     let pairs: Vec<(String, String)> = conn
         .prepare_cached(
@@ -211,6 +213,7 @@ pub(crate) fn merged_branches(
     let log = IndexLog {
         conn,
         ix,
+        links,
         found: Default::default(),
     };
     let mut out = BTreeSet::new();
@@ -326,7 +329,7 @@ impl Touched {
             return Ok(());
         }
         let ix = index::load(conn)?;
-        let now = merged_branches(conn, &ix, Some(&recheck))?;
+        let now = merged_branches(conn, &ix, Some(&recheck), true)?;
         for id in &recheck {
             if let Some(info) = ix.get(id)
                 && info.merged != now.contains(id)
@@ -372,6 +375,9 @@ fn chain_branches(conn: &Connection, origin: &str) -> Result<BTreeSet<String>, S
 struct IndexLog<'a> {
     conn: &'a Connection,
     ix: &'a BranchIndex,
+    /// Records from their link rows ([`crate::link_records`]): writes and import passes,
+    /// whose link rows are current. [`compute`] parses them.
+    links: bool,
     /// [`LogView::find`] answers, by txId: origin roots are followed for every record of
     /// every pair, and mostly reach the same few records.
     found: std::cell::RefCell<BTreeMap<String, Option<LogRec>>>,
@@ -399,6 +405,11 @@ impl LogView for IndexLog<'_> {
     }
 
     fn records(&self, branch: &str, after: u64, through: u64) -> Result<Vec<LogRec>, CoreError> {
+        if self.links {
+            return Ok(crate::link_records::records(
+                self.conn, branch, after, through,
+            )?);
+        }
         let read = || -> Result<Vec<LogRec>, StoreError> {
             let mut stmt = self.conn.prepare_cached(
                 "SELECT seq, record_bytes FROM txs WHERE branch = ?1 AND seq > ?2 AND seq <= ?3
@@ -426,6 +437,9 @@ impl LogView for IndexLog<'_> {
 
     fn find(&self, tx_id: &str) -> Result<Option<LogRec>, CoreError> {
         let read = || -> Result<Option<LogRec>, StoreError> {
+            if self.links {
+                return crate::link_records::find(self.conn, tx_id);
+            }
             let row: Option<(String, i64, Vec<u8>)> = self
                 .conn
                 .prepare_cached("SELECT branch, seq, record_bytes FROM txs WHERE tx_id = ?1")?
