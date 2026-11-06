@@ -18,8 +18,9 @@
     "format": "file formats are in `formats`, archive formats in `archiveFormats`",
     "weight": "weights are 1 to 1000",
     "scripts": "scripts are ISO 15924 codes (Xxxx); an entry has at least one",
-    "unique": "entry ids, style ids within an entry, file sha256s, face indexes within a file and face keys (family|weight|italic) are unique",
-    "faces": "a file has faces; defaultFace is one of them and matches its style's weight and italic",
+    "unique": "entry ids, style ids within an entry, file sha256s (except a variable file, see `variable`), face indexes within a file and face keys (family|weight|italic) are unique",
+    "variable": "a file's variable.wght is [min, max] with min <= max and covers its style's weight; a file listed under several styles is variable and declared identically each time",
+    "faces": "a file has faces; defaultFace is one of them and matches its style's italic, and its weight unless the file is variable",
     "sources": "a style has at least one source",
     "archive": "an archive source states the archive's sha256 and size and a relative member path; a plain source states neither",
     "fallback": "fallback ids are unique and name entries"

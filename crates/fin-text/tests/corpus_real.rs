@@ -26,6 +26,9 @@ struct RealFont {
     family: String,
     weight: u16,
     italic: bool,
+    /// A variable file: `weight` is the instance asked for, not `font_info`'s default.
+    #[serde(default)]
+    variable: bool,
 }
 
 #[derive(Deserialize)]
@@ -75,8 +78,13 @@ fn load(real: &Real) -> Option<(MapBytes, BTreeMap<String, FaceRef>)> {
             "{key}: the cache file's SHA-256 differs"
         );
         let info = fin_text::font_info(&data).unwrap().remove(face as usize);
+        let weight = if font.variable {
+            font.weight
+        } else {
+            info.weight
+        };
         assert_eq!(
-            (info.family.as_str(), info.weight, info.italic),
+            (info.family.as_str(), weight, info.italic),
             (font.family.as_str(), font.weight, font.italic),
             "{key}: font_info differs from real.json"
         );
@@ -86,7 +94,7 @@ fn load(real: &Real) -> Option<(MapBytes, BTreeMap<String, FaceRef>)> {
                 sha256: sha.clone(),
                 face,
                 family: info.family,
-                weight: info.weight,
+                weight: font.weight,
                 italic: info.italic,
             },
         );
@@ -129,6 +137,12 @@ fn real_corpus_matches_expected() {
         check_case(&case.id, &l, &refs);
         layouts.push((case.id.clone(), l));
     }
+    // The variable Inter at wght 700 is wider than at 400 (the axis is applied).
+    let width = |id: &str| layouts.iter().find(|(c, _)| c == id).map(|(_, l)| l.width);
+    assert!(
+        width("inter-bold") > width("latin-kerning"),
+        "bold is wider"
+    );
     let hashes: BTreeMap<String, String> = layouts
         .iter()
         .map(|(id, l)| (id.clone(), layout_hash(l)))

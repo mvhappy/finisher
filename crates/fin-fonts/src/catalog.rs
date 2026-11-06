@@ -73,6 +73,17 @@ pub struct CatalogFile {
     pub format: FontFormat,
     /// Every face, as `fin_text::font_info` reads it (`warm_cache` checks).
     pub faces: Vec<CatalogFace>,
+    /// A variable font's `wght` axis. Only a variable file may serve several styles (one per
+    /// weight in the range; the request's weight drives the axis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable: Option<Variable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Variable {
+    /// The `fvar` `wght` axis' `[min, max]` (`warm_cache` checks).
+    pub wght: [u16; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -157,19 +168,32 @@ impl FontCatalog {
         Ok(catalog)
     }
 
-    /// The face named exactly by family, weight and italic.
+    /// The face for a family, weight and italic: a face of that family name with that
+    /// weight (a variable face whose style has that weight counts), else the default face of
+    /// the style with that weight and italic in the entry of that family (`"Inter"` finds
+    /// the `Inter Variable` face; `"Noto Sans CJK"` its SC face).
     pub fn find_face(
         &self,
         family: &str,
         weight: u16,
         italic: bool,
     ) -> Option<(&CatalogEntry, &CatalogStyle, &CatalogFace)> {
-        self.styles().find_map(|(e, s)| {
+        let by_face = self.styles().find_map(|(e, s)| {
+            // A variable file serves one style per weight: the style's weight decides.
+            let at = |f: &CatalogFace| match s.file.variable {
+                Some(_) => s.weight == weight,
+                None => f.weight == weight,
+            };
             s.file
                 .faces
                 .iter()
-                .find(|f| f.family == family && f.weight == weight && f.italic == italic)
+                .find(|f| f.family == family && f.italic == italic && at(f))
                 .map(|f| (e, s, f))
+        });
+        by_face.or_else(|| {
+            self.styles()
+                .find(|(e, s)| e.family == family && s.weight == weight && s.italic == italic)
+                .map(|(e, s)| (e, s, s.face()))
         })
     }
 

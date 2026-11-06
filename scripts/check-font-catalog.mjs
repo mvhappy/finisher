@@ -36,6 +36,13 @@ export function isImmutableUrl(url) {
   return pinned || release;
 }
 
+/** JSON with sorted keys, to compare two declarations of one file. */
+function canonical(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (isObj(v)) return `{${Object.keys(v).filter((k) => present(v[k])).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+  return JSON.stringify(v);
+}
+
 /** The host of `url`, or null when it has user info. */
 function hostOf(url) {
   const i = url.indexOf("://");
@@ -70,7 +77,7 @@ export function checkCatalog(catalog, rules = RULES) {
   if (!keys(catalog, "", ["catalogVersion", "fallback", "entries"], ["catalogVersion", "fallback", "entries"])) return out;
   if (!VERSION.test(catalog.catalogVersion ?? "")) bad("version", "/catalogVersion", "not YYYY.MM.N");
   const ids = new Set();
-  const shas = new Set();
+  const shas = new Map();
   const faceKeys = new Set();
   (Array.isArray(catalog.entries) ? catalog.entries : []).forEach((e, i) => {
     const p = `/entries/${i}`;
@@ -103,12 +110,27 @@ export function checkCatalog(catalog, rules = RULES) {
     styleIds.add(s.id);
     weight(`${p}/weight`, s.weight);
     const f = s.file;
-    if (keys(f, `${p}/file`, ["sha256", "size", "format", "faces"], ["sha256", "size", "format", "faces"])) {
+    if (keys(f, `${p}/file`, ["sha256", "size", "format", "faces", "variable"], ["sha256", "size", "format", "faces"])) {
       sha(`${p}/file/sha256`, f.sha256);
       size(`${p}/file/size`, f.size);
       if (!rules.formats.includes(f.format)) bad("format", `${p}/file/format`, `${f.format} is not a font format`);
-      if (shas.has(f.sha256)) bad("unique", `${p}/file/sha256`, "listed twice");
-      shas.add(f.sha256);
+      const variable = present(f.variable);
+      if (variable && keys(f.variable, `${p}/file/variable`, ["wght"], ["wght"])) {
+        const w = f.variable.wght;
+        const wp = `${p}/file/variable/wght`;
+        if (!Array.isArray(w) || w.length !== 2) bad("schema", wp, "not [min, max]");
+        else {
+          weight(`${wp}/0`, w[0]);
+          weight(`${wp}/1`, w[1]);
+          if (!(w[0] <= w[1] && w[0] <= s.weight && s.weight <= w[1])) bad("variable", wp, `${JSON.stringify(w)} does not cover the style's weight ${s.weight}`);
+        }
+      }
+      // One file may serve several styles only as a variable font, declared identically.
+      const seen = shas.get(f.sha256);
+      const repeat = seen !== undefined;
+      if (repeat && !variable) bad("unique", `${p}/file/sha256`, "listed twice");
+      else if (repeat && canonical(seen) !== canonical(f)) bad("variable", `${p}/file`, "a variable file listed again must be declared identically");
+      if (!repeat) shas.set(f.sha256, f);
       const faces = Array.isArray(f.faces) ? f.faces : [];
       if (faces.length === 0) bad("faces", `${p}/file/faces`, "no faces");
       const indexes = new Set();
@@ -120,13 +142,13 @@ export function checkCatalog(catalog, rules = RULES) {
         if (indexes.has(face.index)) bad("unique", `${fp}/index`, "listed twice");
         indexes.add(face.index);
         const key = `${face.family}|${face.weight}|${face.italic}`;
-        if (!face.family || faceKeys.has(key)) bad("unique", fp, `face key ${key} is listed twice`);
+        if (!face.family || (!repeat && faceKeys.has(key))) bad("unique", fp, `face key ${key} is listed twice`);
         faceKeys.add(key);
       });
       const df = present(s.defaultFace) ? s.defaultFace : 0;
       const d = faces.find((x) => x.index === df);
-      if (faces.length && !(d && d.weight === s.weight && d.italic === s.italic)) {
-        bad("faces", `${p}/defaultFace`, "not a face of the file with the style's weight and italic");
+      if (faces.length && !(d && (d.weight === s.weight || variable) && d.italic === s.italic)) {
+        bad("faces", `${p}/defaultFace`, "not a face of the file with the style's weight (or a variable one) and italic");
       }
     }
     const sources = Array.isArray(s.sources) ? s.sources : [];

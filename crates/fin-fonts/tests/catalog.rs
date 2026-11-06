@@ -57,13 +57,21 @@ fn builtin_catalog_validates() {
         assert!(s.file.size <= MAX_FILE_SIZE);
         assert!(!s.sources.is_empty());
     }
-    // Inter comes from the release zip, as archive members with the zip's own hash and size.
+    // Inter is one variable file serving Regular and Bold (its wght axis covers both); no
+    // built-in entry uses an archive source now.
     let inter = c.entry("inter").unwrap();
-    for s in &inter.styles {
-        let src = &s.sources[0];
-        assert!(src.url.contains("/releases/download/v4.1/"));
-        assert!(src.archive.is_some() && src.sha256.is_some() && src.size.is_some());
-    }
+    let (r, b) = (
+        inter.style("regular").unwrap(),
+        inter.style("bold").unwrap(),
+    );
+    assert_eq!(r.file, b.file);
+    assert_eq!(r.file.variable.as_ref().unwrap().wght, [100, 900]);
+    assert_eq!((r.weight, b.weight), (400, 700));
+    assert!(r.sources[0].url.contains("/rsms/inter/"));
+    assert!(
+        c.styles()
+            .all(|(_, s)| s.sources.iter().all(|src| src.archive.is_none()))
+    );
     let cjk = c.entry("noto-sans-cjk").unwrap();
     for s in &cjk.styles {
         assert_eq!(s.file.format, FontFormat::Ttc);
@@ -103,12 +111,23 @@ fn find_face_and_fallback_for_script() {
         (e.id.as_str(), s.id.as_str(), f.index),
         ("noto-sans-cjk", "regular", 2)
     );
-    let (e, s, f) = c.find_face("Inter", 700, false).unwrap();
-    assert_eq!(
-        (e.id.as_str(), s.id.as_str(), f.index),
-        ("inter", "bold", 0)
-    );
+    // "Inter" is the entry's family; "Inter Variable" the face's: both find the style.
+    for family in ["Inter", "Inter Variable"] {
+        let (e, s, f) = c.find_face(family, 700, false).unwrap();
+        assert_eq!(
+            (e.id.as_str(), s.id.as_str(), f.index),
+            ("inter", "bold", 0)
+        );
+        let (_, s, _) = c.find_face(family, 400, false).unwrap();
+        assert_eq!(s.id, "regular");
+        assert!(c.find_face(family, 300, false).is_none(), "no style at 300");
+    }
     assert!(c.find_face("Inter", 700, true).is_none());
+    let (_, s, f) = c.find_face("Noto Sans CJK", 700, false).unwrap();
+    assert_eq!(
+        (s.id.as_str(), f.family.as_str()),
+        ("bold", "Noto Sans CJK SC")
+    );
     assert!(c.find_face("Comic Sans", 400, false).is_none());
 
     let fallback = |script: &str| {

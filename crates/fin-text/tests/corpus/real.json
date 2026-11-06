@@ -1,12 +1,21 @@
 {
-  "note": "sha256 and face are the font catalog's (crates/fin-fonts/catalog/catalog.json, 2026.11.1).",
+  "note": "sha256 and face are the font catalog's (crates/fin-fonts/catalog/catalog.json, 2026.11.1). A variable file (`variable: true`) serves several weights: the request's weight drives its wght axis, and font_info reports its default instance.",
   "fonts": {
     "inter:regular": {
-      "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
+      "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
       "face": 0,
-      "family": "Inter",
+      "family": "Inter Variable",
       "weight": 400,
-      "italic": false
+      "italic": false,
+      "variable": true
+    },
+    "inter:bold": {
+      "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+      "face": 0,
+      "family": "Inter Variable",
+      "weight": 700,
+      "italic": false,
+      "variable": true
     },
     "noto-sans:regular": {
       "sha256": "f3961a9cde016d41a4879aecda1474d3a36d6bf54fa0e4643de029cc2248b0e8",
@@ -67,6 +76,28 @@
       "style": {
         "family": "Inter",
         "weight": 400,
+        "italic": false,
+        "size": 64,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      }
+    },
+    {
+      "id": "inter-bold",
+      "what": "Inter Bold: the variable file at wght 700",
+      "fonts": [
+        "inter:bold"
+      ],
+      "words": [
+        "AVATAR",
+        "Wave",
+        "To",
+        "Ty."
+      ],
+      "style": {
+        "family": "Inter",
+        "weight": 700,
         "italic": false,
         "size": 64,
         "lineHeight": 1.25,

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use fin_fonts::{CatalogFace, FetchOptions, Fetcher, FontCache, FontCatalog, sha256_hex};
+use fin_fonts::{CatalogFace, FetchOptions, Fetcher, FontCache, FontCatalog, Variable, sha256_hex};
 use serde_json::json;
 
 fn faces(bytes: &[u8]) -> Result<Vec<CatalogFace>, String> {
@@ -31,6 +31,43 @@ fn faces(bytes: &[u8]) -> Result<Vec<CatalogFace>, String> {
         .collect())
 }
 
+fn be16(b: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(b.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn be32(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// The `wght` axis `[min, max]` of face `index`'s `fvar` table, rounded to integers; `None`
+/// for a static face.
+fn wght_axis(bytes: &[u8], index: u32) -> Option<Variable> {
+    let font = if bytes.get(0..4)? == b"ttcf" {
+        be32(bytes, 12 + 4 * index as usize)? as usize
+    } else {
+        0
+    };
+    let tables = be16(bytes, font + 4)? as usize;
+    let fvar = (0..tables).find_map(|i| {
+        let rec = font + 12 + 16 * i;
+        (bytes.get(rec..rec + 4)? == b"fvar").then(|| be32(bytes, rec + 8))?
+    })? as usize;
+    let (axes, count, size) = (
+        be16(bytes, fvar + 4)? as usize,
+        be16(bytes, fvar + 8)? as usize,
+        be16(bytes, fvar + 10)? as usize,
+    );
+    let fixed = |at: usize| be32(bytes, at).map(|v| (f64::from(v as i32) / 65536.0).round() as u16);
+    (0..count).find_map(|i| {
+        let a = fvar + axes + i * size;
+        (bytes.get(a..a + 4)? == b"wght").then(|| {
+            Some(Variable {
+                wght: [fixed(a + 4)?, fixed(a + 12)?],
+            })
+        })?
+    })
+}
+
 fn inspect(paths: &[String]) -> ExitCode {
     for p in paths {
         let bytes = match std::fs::read(p) {
@@ -41,8 +78,8 @@ fn inspect(paths: &[String]) -> ExitCode {
             }
         };
         let faces = faces(&bytes).unwrap_or_default();
-        let out =
-            json!({ "path": p, "sha256": sha256_hex(&bytes), "size": bytes.len(), "faces": faces });
+        let variable = wght_axis(&bytes, 0);
+        let out = json!({ "path": p, "sha256": sha256_hex(&bytes), "size": bytes.len(), "faces": faces, "variable": variable });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     }
     ExitCode::SUCCESS
@@ -71,6 +108,13 @@ fn check(catalog: &FontCatalog, cache: &FontCache) -> Vec<String> {
                 serde_json::to_string(&read).unwrap()
             )),
             Err(e) => problems.push(format!("{name}: {e}")),
+        }
+        let axis = wght_axis(&bytes, style.default_face);
+        if axis != style.file.variable {
+            problems.push(format!(
+                "{name}: the fvar wght axis is {axis:?}, the catalog says {:?}",
+                style.file.variable
+            ));
         }
         let face = style.face();
         for s in &entry.scripts {
@@ -126,9 +170,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     println!(
-        "warm_cache: catalog {} — {} files cached in {} and match the catalog",
+        "warm_cache: catalog {} — {} styles in {} files, cached in {} and matching the catalog",
         catalog.catalog_version,
         catalog.styles().count(),
+        catalog
+            .styles()
+            .map(|(_, s)| &s.file.sha256)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
         dir.display()
     );
     ExitCode::SUCCESS

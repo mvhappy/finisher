@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 pub use cache::{FontCache, STRAY_AFTER};
 pub use catalog::{
     ArchiveFormat, ArchiveMember, CatalogEntry, CatalogFace, CatalogFile, CatalogSource,
-    CatalogStyle, FontCatalog, FontFormat, Licence,
+    CatalogStyle, FontCatalog, FontFormat, Licence, Variable,
 };
 pub use fetch::{FetchOptions, Fetcher, FileState};
 pub use slot::MAX_DOWNLOADS;

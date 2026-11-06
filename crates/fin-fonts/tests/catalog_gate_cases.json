@@ -48,6 +48,27 @@
             "sources": [{ "url": "https://raw.githubusercontent.com/o/b/0123456789abcdef0123456789abcdef01234567/Beta.ttc" }]
           }
         ]
+      },
+      {
+        "id": "c",
+        "family": "Gamma",
+        "licence": { "spdx": "OFL-1.1", "url": "https://raw.githubusercontent.com/o/c/0123456789abcdef0123456789abcdef01234567/OFL.txt" },
+        "homepage": "https://example.com/c",
+        "scripts": ["Latn"],
+        "styles": [
+          {
+            "id": "regular", "weight": 400, "italic": false,
+            "file": { "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "size": 3000, "format": "ttf", "variable": { "wght": [100, 900] },
+              "faces": [{ "index": 0, "family": "Gamma Variable", "weight": 400, "italic": false, "scripts": ["Latn"] }] },
+            "sources": [{ "url": "https://raw.githubusercontent.com/o/c/0123456789abcdef0123456789abcdef01234567/GammaVariable.ttf" }]
+          },
+          {
+            "id": "bold", "weight": 700, "italic": false,
+            "file": { "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "size": 3000, "format": "ttf", "variable": { "wght": [100, 900] },
+              "faces": [{ "index": 0, "family": "Gamma Variable", "weight": 400, "italic": false, "scripts": ["Latn"] }] },
+            "sources": [{ "url": "https://cdn.jsdelivr.net/gh/o/c@0123456789abcdef0123456789abcdef01234567/GammaVariable.ttf" }]
+          }
+        ]
       }
     ]
   },
@@ -77,7 +98,7 @@
     { "name": "archive without its sha256", "set": { "/entries/0/styles/1/sources/0/sha256": null }, "rule": "archive" },
     { "name": "archive member escapes", "set": { "/entries/0/styles/1/sources/0/archive/member": "../Alpha-Bold.ttf" }, "rule": "archive" },
     { "name": "plain source with a size", "set": { "/entries/0/styles/0/sources/0/size": 1000 }, "rule": "archive" },
-    { "name": "unknown fallback id", "set": { "/fallback/1": "c" }, "rule": "fallback" },
+    { "name": "unknown fallback id", "set": { "/fallback/1": "z" }, "rule": "fallback" },
     { "name": "fallback listed twice", "set": { "/fallback/1": "a" }, "rule": "fallback" },
     { "name": "bad catalog version", "set": { "/catalogVersion": "2026-11" }, "rule": "version" },
     { "name": "bad entry id", "set": { "/entries/0/id": "Alpha" }, "rule": "id" },
@@ -87,6 +108,10 @@
     { "name": "default face missing", "set": { "/entries/1/styles/0/defaultFace": 5 }, "rule": "faces" },
     { "name": "default face of another weight", "set": { "/entries/0/styles/1/weight": 400 }, "rule": "faces" },
     { "name": "no sources", "set": { "/entries/1/styles/0/sources": [] }, "rule": "sources" },
+    { "name": "variable range misses a style's weight", "set": { "/entries/2/styles/1/weight": 950 }, "rule": "variable" },
+    { "name": "inverted variable range", "set": { "/entries/2/styles/0/file/variable/wght": [900, 100] }, "rule": "variable" },
+    { "name": "shared file that is not variable", "set": { "/entries/2/styles/0/file/variable": null, "/entries/2/styles/1/file/variable": null }, "rule": "unique" },
+    { "name": "shared variable file declared differently", "set": { "/entries/2/styles/1/file/size": 2999 }, "rule": "variable" },
     { "name": "unknown field", "set": { "/entries/0/styles/0/mirror": true }, "rule": "schema" }
   ]
 }

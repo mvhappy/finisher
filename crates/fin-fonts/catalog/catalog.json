@@ -14,19 +14,20 @@
           "weight": 400,
           "italic": false,
           "file": {
-            "sha256": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
-            "size": 411640,
+            "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+            "size": 879708,
             "format": "ttf",
             "faces": [
-              { "index": 0, "family": "Inter", "weight": 400, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
-            ]
+              { "index": 0, "family": "Inter Variable", "weight": 400, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
+            ],
+            "variable": { "wght": [100, 900] }
           },
           "sources": [
             {
-              "url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip",
-              "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
-              "size": 33707794,
-              "archive": { "format": "zip", "member": "extras/ttf/Inter-Regular.ttf" }
+              "url": "https://raw.githubusercontent.com/rsms/inter/e3a3d4c57d5ecc01453a575621882a384c1995a3/docs/font-files/InterVariable.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/rsms/inter@e3a3d4c57d5ecc01453a575621882a384c1995a3/docs/font-files/InterVariable.ttf"
             }
           ]
         },
@@ -35,19 +36,20 @@
           "weight": 700,
           "italic": false,
           "file": {
-            "sha256": "288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f",
-            "size": 420428,
+            "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+            "size": 879708,
             "format": "ttf",
             "faces": [
-              { "index": 0, "family": "Inter", "weight": 700, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
-            ]
+              { "index": 0, "family": "Inter Variable", "weight": 400, "italic": false, "scripts": ["Cyrl", "Grek", "Latn"] }
+            ],
+            "variable": { "wght": [100, 900] }
           },
           "sources": [
             {
-              "url": "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip",
-              "sha256": "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e",
-              "size": 33707794,
-              "archive": { "format": "zip", "member": "extras/ttf/Inter-Bold.ttf" }
+              "url": "https://raw.githubusercontent.com/rsms/inter/e3a3d4c57d5ecc01453a575621882a384c1995a3/docs/font-files/InterVariable.ttf"
+            },
+            {
+              "url": "https://cdn.jsdelivr.net/gh/rsms/inter@e3a3d4c57d5ecc01453a575621882a384c1995a3/docs/font-files/InterVariable.ttf"
             }
           ]
         }

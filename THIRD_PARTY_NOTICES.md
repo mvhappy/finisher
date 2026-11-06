@@ -83,7 +83,8 @@ would pull them, which `deny.toml` `[graph] targets` leaves out) and `aws-lc-rs`
 status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
 upstream files by SHA-256 at pinned commits and release tags, and each machine downloads
 them from there. Licence texts (checked by hand, 2026-11-06):
-- Inter 4.1 (rsms/inter, `LICENSE.txt` at tag v4.1), SIL Open Font License 1.1;
+- Inter 4.1 (rsms/inter `docs/font-files/InterVariable.ttf`, `LICENSE.txt` at tag v4.1), SIL Open Font
+  License 1.1;
 - Noto Sans, Noto Sans Arabic, Noto Sans Hebrew (notofonts `latin-greek-cyrillic`, `arabic`,
   `hebrew`, `OFL.txt`), SIL Open Font License 1.1;
 - Noto Sans CJK (notofonts/noto-cjk `Sans/LICENSE`), SIL Open Font License 1.1;

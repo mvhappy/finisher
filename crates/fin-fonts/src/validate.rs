@@ -2,14 +2,14 @@
 //! names, the licence allow list, the formats and the size limit come from
 //! `catalog/rules.json`, which `scripts/check-font-catalog.mjs` reads too.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use fin_core::CoreError;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::catalog::{CatalogSource, CatalogStyle, FontCatalog};
+use crate::catalog::{CatalogFile, CatalogSource, CatalogStyle, FontCatalog};
 
 /// The shared rule list.
 pub const RULES_JSON: &str = include_str!("../catalog/rules.json");
@@ -272,7 +272,7 @@ fn check_source(path: &str, src: &CatalogSource) -> Result<(), CoreError> {
 fn check_style(
     path: &str,
     style: &CatalogStyle,
-    shas: &mut BTreeSet<String>,
+    shas: &mut BTreeMap<String, CatalogFile>,
     keys: &mut BTreeSet<String>,
 ) -> Result<(), CoreError> {
     if !is_id(&style.id) {
@@ -286,13 +286,41 @@ fn check_style(
     let file = &style.file;
     check_sha(&format!("{path}/file/sha256"), &file.sha256)?;
     check_size(&format!("{path}/file/size"), file.size)?;
-    if !shas.insert(file.sha256.clone()) {
-        return Err(invalid(
-            "unique",
-            &format!("{path}/file/sha256"),
-            "listed twice",
-        ));
+    if let Some(v) = &file.variable {
+        let wp = format!("{path}/file/variable/wght");
+        check_weight(&format!("{wp}/0"), v.wght[0])?;
+        check_weight(&format!("{wp}/1"), v.wght[1])?;
+        if v.wght[0] > v.wght[1] || !(v.wght[0]..=v.wght[1]).contains(&style.weight) {
+            return Err(invalid(
+                "variable",
+                &wp,
+                format!(
+                    "{:?} does not cover the style's weight {}",
+                    v.wght, style.weight
+                ),
+            ));
+        }
     }
+    // One file may serve several styles only as a variable font, declared identically.
+    let repeat = match shas.get(&file.sha256) {
+        None => false,
+        Some(_) if file.variable.is_none() => {
+            return Err(invalid(
+                "unique",
+                &format!("{path}/file/sha256"),
+                "listed twice",
+            ));
+        }
+        Some(seen) if seen != file => {
+            return Err(invalid(
+                "variable",
+                &format!("{path}/file"),
+                "a variable file listed again must be declared identically",
+            ));
+        }
+        Some(_) => true,
+    };
+    shas.insert(file.sha256.clone(), file.clone());
     if file.faces.is_empty() {
         return Err(invalid("faces", &format!("{path}/file/faces"), "no faces"));
     }
@@ -305,7 +333,7 @@ fn check_style(
             return Err(invalid("unique", &format!("{fp}/index"), "listed twice"));
         }
         let key = format!("{}|{}|{}", face.family, face.weight, face.italic);
-        if face.family.is_empty() || !keys.insert(key.clone()) {
+        if face.family.is_empty() || (!repeat && !keys.insert(key.clone())) {
             return Err(invalid(
                 "unique",
                 &fp,
@@ -314,11 +342,14 @@ fn check_style(
         }
     }
     let default = file.faces.iter().find(|f| f.index == style.default_face);
-    if !default.is_some_and(|f| f.weight == style.weight && f.italic == style.italic) {
+    let fits = |f: &&crate::catalog::CatalogFace| {
+        f.italic == style.italic && (f.weight == style.weight || file.variable.is_some())
+    };
+    if !default.is_some_and(|f| fits(&f)) {
         return Err(invalid(
             "faces",
             &format!("{path}/defaultFace"),
-            "not a face of the file with the style's weight and italic",
+            "not a face of the file with the style's weight (or a variable one) and italic",
         ));
     }
     if style.sources.is_empty() {
@@ -336,7 +367,7 @@ impl FontCatalog {
         if !is_version(&self.catalog_version) {
             return Err(invalid("version", "/catalogVersion", "not YYYY.MM.N"));
         }
-        let (mut ids, mut shas, mut keys) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let (mut ids, mut shas, mut keys) = (BTreeSet::new(), BTreeMap::new(), BTreeSet::new());
         for (i, entry) in self.entries.iter().enumerate() {
             let path = format!("/entries/{i}");
             if !is_id(&entry.id) {
