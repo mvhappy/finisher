@@ -88,6 +88,7 @@ fn req(id: &str, author: &str, branch: &str) -> HistoryReq {
         branch: branch.into(),
         dry_run: false,
         args_hash: None,
+        to: None,
     }
 }
 

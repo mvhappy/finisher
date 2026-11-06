@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use fin_core::history::{
     Lineage, LogRec, LogView, MergePlan, Planned, Stacks, derive_stacks, plan_cherry_pick,
-    plan_merge, plan_redo, plan_revert, plan_undo,
+    plan_merge, plan_redo, plan_revert, plan_undo, plan_undo_to,
 };
 use fin_core::{
     Applied, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
@@ -141,6 +141,26 @@ impl MemLog {
     pub fn redo(&mut self, b: &str, author: &str, tx_id: &str) -> Result<LogRec, CoreError> {
         let mut ids = self.ids.clone();
         let p = plan_redo(self, b, author, tx_id, &mut ids)?;
+        self.ids = ids;
+        Ok(self.append(b, p))
+    }
+
+    /// A `checkpoint` record named `name` at the head of `b`; returns its seq.
+    pub fn checkpoint(&mut self, b: &str, tx_id: &str, author: &str, name: &str) -> u64 {
+        let link = Link::Checkpoint { name: name.into() };
+        self.append_link(b, tx_id, author, link, vec![]).seq
+    }
+
+    /// `undo --to` the checkpoint at `checkpoint_seq` on `b`, appended.
+    pub fn undo_to(
+        &mut self,
+        b: &str,
+        author: &str,
+        checkpoint_seq: u64,
+        tx_id: &str,
+    ) -> Result<LogRec, CoreError> {
+        let mut ids = self.ids.clone();
+        let p = plan_undo_to(self, b, author, checkpoint_seq, tx_id, &mut ids)?;
         self.ids = ids;
         Ok(self.append(b, p))
     }

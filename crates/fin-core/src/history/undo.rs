@@ -153,14 +153,14 @@ pub fn derive_stacks(own: &[LogRec], author: &str, merged_away: &HashSet<String>
 }
 
 /// What a planner reads first: the branch's head and own records, and the author's stacks.
-struct Read {
-    head_seq: u64,
-    head: crate::model::Project,
-    own: Vec<LogRec>,
-    stacks: Stacks,
+pub(super) struct Read {
+    pub(super) head_seq: u64,
+    pub(super) head: crate::model::Project,
+    pub(super) own: Vec<LogRec>,
+    pub(super) stacks: Stacks,
 }
 
-fn read(log: &dyn LogView, branch: &str, author: &str) -> Result<Read, CoreError> {
+pub(super) fn read(log: &dyn LogView, branch: &str, author: &str) -> Result<Read, CoreError> {
     let fork = log.lineage(branch)?.fork_seq();
     let (head_seq, head) = log.head(branch)?;
     let own = log.records(branch, fork, head_seq)?;
@@ -288,7 +288,7 @@ pub(super) fn rebase_over(
 }
 
 /// The own record `tx_id` (a unit's record): one the stacks were derived from.
-fn own_record<'a>(own: &'a [LogRec], tx_id: &str) -> Result<&'a LogRec, CoreError> {
+pub(super) fn own_record<'a>(own: &'a [LogRec], tx_id: &str) -> Result<&'a LogRec, CoreError> {
     own.iter().find(|c| c.record.tx_id == tx_id).ok_or_else(|| {
         CoreError::new(
             "DB_ERROR",
@@ -298,7 +298,7 @@ fn own_record<'a>(own: &'a [LogRec], tx_id: &str) -> Result<&'a LogRec, CoreErro
     })
 }
 
-fn nothing(code: &'static str, what: &str, branch: &str, author: &str) -> CoreError {
+pub(super) fn nothing(code: &'static str, what: &str, branch: &str, author: &str) -> CoreError {
     CoreError::new(
         code,
         format!("{author} has nothing to {what} on branch {branch}"),

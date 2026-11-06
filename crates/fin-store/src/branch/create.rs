@@ -23,8 +23,8 @@ use crate::{BranchCreated, BranchView, Store, StoreError};
 pub enum At {
     /// The parent's seq (at most its head).
     Seq(u64),
-    /// A checkpoint on the parent (Task 15; until then `NOT_FOUND`, `details.kind`
-    /// `checkpoint`).
+    /// A checkpoint on the parent's lineage, by name (`NOT_FOUND`, `details.kind`
+    /// `checkpoint`, when there is none): the fork is at the checkpoint record's seq.
     Checkpoint(String),
 }
 
@@ -208,8 +208,8 @@ fn name_taken(name: &str, ix: &BranchIndex, holder: &BranchInfo, fix: String) ->
     .into()
 }
 
-/// A no-op record (`branch`, `branchSet`) on `branch` at its head.
-fn metadata_draft(
+/// A no-op record (`branch`, `branchSet`, `checkpoint`) on `branch` at its head.
+pub(crate) fn metadata_draft(
     ctx: &mut WriteCtx<'_>,
     branch: &str,
     tx_id: &str,
@@ -245,15 +245,7 @@ fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated
     let fork_seq = match &r.at {
         None => head_rev,
         Some(At::Seq(seq)) => *seq,
-        Some(At::Checkpoint(name)) => {
-            return Err(CoreError::new(
-                "NOT_FOUND",
-                format!("no checkpoint {name:?} on branch {parent}"),
-            )
-            .with_details(json!({ "kind": "checkpoint", "name": name, "branch": parent }))
-            .with_fix("fork at a seq (--from <branch>@<seq>)")
-            .into());
-        }
+        Some(At::Checkpoint(name)) => crate::history_ops::checkpoint::find(txn, &parent, name)?.1,
     };
     if fork_seq > head_rev {
         return Err(CoreError::new(

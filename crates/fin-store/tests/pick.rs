@@ -126,6 +126,7 @@ fn undo(s: &mut Store, id: &str, author: &str, branch: &str) -> HistoryResult {
         branch: branch.into(),
         dry_run: false,
         args_hash: None,
+        to: None,
     })
     .unwrap()
 }

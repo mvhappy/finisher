@@ -71,6 +71,7 @@ pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
 pub use history::Generation;
+pub use history_ops::checkpoint::CheckpointReq;
 pub use history_ops::merge::MergeReq;
 pub use history_ops::pick::{CherryPickReq, RevertReq};
 pub use history_ops::undo::HistoryReq;

@@ -6,6 +6,8 @@
 //!
 //! - [`undo`]: the per-author undo and redo stacks derived from a branch's own records
 //!   ([`derive_stacks`]), and the `undo` / `redo` planners.
+//! - [`checkpoint`]: `undo --to <checkpoint>` ([`plan_undo_to`]), one undo record for every
+//!   unit after a checkpoint.
 //! - [`merge`] and [`candidates`]: the merge planner ([`plan_merge`]) and which source records
 //!   it copies.
 //! - [`pick`]: the cherry-pick and revert planners ([`plan_cherry_pick`], [`plan_revert`]).
@@ -14,6 +16,7 @@
 //!   merge's records ([`Roots`]).
 
 pub mod candidates;
+pub mod checkpoint;
 pub mod merge;
 pub mod merged;
 pub mod origin;
@@ -28,6 +31,7 @@ use crate::record::{Link, Record, RecordKind};
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 pub use candidates::{Candidates, candidates};
+pub use checkpoint::plan_undo_to;
 pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
 pub use merged::{left_to_merge, lineage_in};
 pub use origin::{Roots, root, root_of, target_roots};
