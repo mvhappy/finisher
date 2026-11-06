@@ -486,9 +486,62 @@ export interface Probe {
   video?: VideoInfo | null;
 }
 /**
+ * One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).
+ *
+ * - `id`: the first record's `txHash`, 12 hex digits (stable on every server);
+ * - `branch`: the branch the records were on; `fork_seq`, `fork_hash`: the seq and `txHash`
+ *   the first record continues;
+ * - `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;
+ * - `server`: the writer's server id (`unknown` when it cannot be told);
+ * - `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group
+ *   that makes none: it has only records without ops, and its child groups fork where it
+ *   does);
+ * - `children`: the groups forking from it, or made by its `branch` records;
+ * - `recoverable`, `problems`: why `create` leaves it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RecoverGroup".
+ */
+export interface RecoverGroup {
+  branch: string;
+  children: string[];
+  firstCommittedAt: number;
+  forkHash?: string | null;
+  forkSeq: number;
+  id: string;
+  name: string;
+  origin: string;
+  problems: Conflict[];
+  reasons: {
+    [k: string]: number;
+  };
+  records: number;
+  recoverable: boolean;
+  server: string;
+}
+/**
+ * [`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`), the branches made and
+ * every record written (`branch` records on the parents, the copies, checkpoints), in order,
+ * for publishing; `imported`: records read from `import_dir` into quarantine; `manual`: the
+ * procedure for a read-only state recovery cannot lift by itself (`CHAIN_FORK`,
+ * `CONFLICT_COPY`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RecoverReport".
+ */
+export interface RecoverReport {
+  committed: CommittedTx[];
+  created: BranchView[];
+  dryRun: boolean;
+  groups: RecoverGroup[];
+  imported: number;
+  manual?: string | null;
+}
+/**
  * A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:
  * `SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,
- * `MALFORMED`, `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.
+ * `MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,
+ * `foreign`, `salvage`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SetAside".

@@ -151,7 +151,7 @@ impl Store {
     }
 }
 
-fn view(info: &BranchInfo, display: String, head: u64) -> BranchView {
+pub(crate) fn view(info: &BranchInfo, display: String, head: u64) -> BranchView {
     BranchView {
         id: info.id.clone(),
         name: info.name.clone(),
@@ -236,7 +236,10 @@ pub(crate) fn metadata_draft(
     })
 }
 
-fn plan_create(ctx: &mut WriteCtx<'_>, r: &BranchCreate) -> Result<BranchCreated, StoreError> {
+pub(crate) fn plan_create(
+    ctx: &mut WriteCtx<'_>,
+    r: &BranchCreate,
+) -> Result<BranchCreated, StoreError> {
     let txn = ctx.txn;
     crate::history_ops::merge_id_taken(txn, &r.tx_id)?;
     let parent = writable(txn, &r.from)?.id;

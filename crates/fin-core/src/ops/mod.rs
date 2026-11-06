@@ -128,8 +128,9 @@ impl Op {
     }
 
     /// Every id reference in the op (new-entity ids, tracks, assets, clips), mutably, so
-    /// placeholders can be substituted in one place.
-    pub(crate) fn refs_mut(&mut self) -> Vec<&mut String> {
+    /// placeholders can be substituted in one place, and ids renamed (a recovered record
+    /// re-run under fresh ids, plan 4B Decision 27).
+    pub fn refs_mut(&mut self) -> Vec<&mut String> {
         match self {
             Op::AssetAdd { id, .. } | Op::AssetRemove { id } | Op::ClipRemove { id, .. } => {
                 vec![id]

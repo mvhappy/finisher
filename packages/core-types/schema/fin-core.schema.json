@@ -1090,9 +1090,134 @@
       "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
       "type": "string"
     },
+    "RecoverGroup": {
+      "additionalProperties": false,
+      "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `branch`: the branch the records were on; `fork_seq`, `fork_hash`: the seq and `txHash`\n  the first record continues;\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has only records without ops, and its child groups fork where it\n  does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it.",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "children": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "firstCommittedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "forkHash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forkSeq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "problems": {
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          },
+          "type": "array"
+        },
+        "reasons": {
+          "additionalProperties": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "records": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recoverable": {
+          "type": "boolean"
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "branch",
+        "forkSeq",
+        "records",
+        "reasons",
+        "origin",
+        "server",
+        "firstCommittedAt",
+        "name",
+        "children",
+        "recoverable",
+        "problems"
+      ],
+      "type": "object"
+    },
+    "RecoverReport": {
+      "additionalProperties": false,
+      "description": "[`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`), the branches made and\nevery record written (`branch` records on the parents, the copies, checkpoints), in order,\nfor publishing; `imported`: records read from `import_dir` into quarantine; `manual`: the\nprocedure for a read-only state recovery cannot lift by itself (`CHAIN_FORK`,\n`CONFLICT_COPY`).",
+      "properties": {
+        "committed": {
+          "items": {
+            "$ref": "#/$defs/CommittedTx"
+          },
+          "type": "array"
+        },
+        "created": {
+          "items": {
+            "$ref": "#/$defs/BranchView"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "groups": {
+          "items": {
+            "$ref": "#/$defs/RecoverGroup"
+          },
+          "type": "array"
+        },
+        "imported": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "manual": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "groups",
+        "created",
+        "committed",
+        "imported",
+        "dryRun"
+      ],
+      "type": "object"
+    },
     "SetAside": {
       "additionalProperties": false,
-      "description": "A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:\n`SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,\n`MALFORMED`, `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.",
+      "description": "A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:\n`SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,\n`MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,\n`foreign`, `salvage`.",
       "properties": {
         "branch": {
           "type": "string"

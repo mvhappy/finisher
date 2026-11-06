@@ -9,7 +9,8 @@
 //!   and claims still fence it);
 //! - `QUARANTINE`: records set aside, by reason. `DIVERGED_TAIL` rows are this server's own
 //!   edits that lost to the folder; their bytes exist nowhere else, so they stay counted
-//!   until recovered (4B: a `recovered-*` branch);
+//!   until recovered. Rows recovered (a `recovered-*` branch holds their copies, plan 4B
+//!   Decision 5; `crate::recover`) are not counted;
 //! - `REWOUND`: an applied line lost to a newer lease epoch and was rewound (`import::rewind`):
 //!   the records, their writers and epochs; one per rewind, for 24 h or until
 //!   [`Store::acknowledge_rewind`]. `SPLIT_BRAIN_SUSPECTED` instead when the lost records
@@ -118,7 +119,7 @@ pub struct QuarantineSummary {
     /// `folder`, `local`, `foreign`.
     pub origins: Vec<String>,
     /// Count per reason (`STALE_EPOCH`, `MALFORMED`, `DIVERGED_TAIL`, `SUPERSEDED`,
-    /// `CONFLICT_COPY`).
+    /// `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`, `SALVAGED`, `MISSING_FROM_FOLDER`).
     pub reasons: BTreeMap<String, u32>,
 }
 

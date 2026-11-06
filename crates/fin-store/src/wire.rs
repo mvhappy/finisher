@@ -3,6 +3,8 @@
 //! schema export (`examples/export_schema.rs`) puts them in `@finisher/core-types`, so
 //! `finisherd` and `@finisher/contracts` read generated types, never hand-written mirrors.
 
+use std::collections::BTreeMap;
+
 use fin_core::branch::BranchState;
 use fin_core::{CommittedTx, Conflict, CoreError};
 use schemars::JsonSchema;
@@ -90,7 +92,8 @@ pub struct TxSetAside {
 
 /// A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:
 /// `SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,
-/// `MALFORMED`, `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.
+/// `MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,
+/// `foreign`, `salvage`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetAside {
@@ -162,5 +165,51 @@ pub struct MergeReport {
     pub skipped: Vec<Conflict>,
     pub excluded: Vec<Conflict>,
     pub source_state: BranchState,
+    pub dry_run: bool,
+}
+
+/// One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).
+///
+/// - `id`: the first record's `txHash`, 12 hex digits (stable on every server);
+/// - `branch`: the branch the records were on; `fork_seq`, `fork_hash`: the seq and `txHash`
+///   the first record continues;
+/// - `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;
+/// - `server`: the writer's server id (`unknown` when it cannot be told);
+/// - `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group
+///   that makes none: it has only records without ops, and its child groups fork where it
+///   does);
+/// - `children`: the groups forking from it, or made by its `branch` records;
+/// - `recoverable`, `problems`: why `create` leaves it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoverGroup {
+    pub id: String,
+    pub branch: String,
+    pub fork_seq: u64,
+    pub fork_hash: Option<String>,
+    pub records: usize,
+    pub reasons: BTreeMap<String, usize>,
+    pub origin: String,
+    pub server: String,
+    pub first_committed_at: i64,
+    pub name: String,
+    pub children: Vec<String>,
+    pub recoverable: bool,
+    pub problems: Vec<Conflict>,
+}
+
+/// [`Store::recover`](crate::Store::recover)'s answer: the groups as found (before `create`), the branches made and
+/// every record written (`branch` records on the parents, the copies, checkpoints), in order,
+/// for publishing; `imported`: records read from `import_dir` into quarantine; `manual`: the
+/// procedure for a read-only state recovery cannot lift by itself (`CHAIN_FORK`,
+/// `CONFLICT_COPY`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoverReport {
+    pub groups: Vec<RecoverGroup>,
+    pub created: Vec<BranchView>,
+    pub committed: Vec<CommittedTx>,
+    pub imported: usize,
+    pub manual: Option<String>,
     pub dry_run: bool,
 }

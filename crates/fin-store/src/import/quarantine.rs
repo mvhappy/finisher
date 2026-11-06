@@ -11,7 +11,10 @@
 //!   server's, `super::branches` and `super::aside`; kept as reason once set, and current
 //!   while the folder's verdicts set the record aside, like `SUPERSEDED`: the record that
 //!   holds the id can itself be set aside later, and the loser's branch comes back; an
-//!   unexported row of such a branch, which exists nowhere else, is a `DIVERGED_TAIL`). Rebuild
+//!   unexported row of such a branch, which exists nowhere else, is a `DIVERGED_TAIL`),
+//!   [`IMPORTED`] (origin `foreign`: records of segment files moved out of the folder and read
+//!   back by `fin project recover --import`, `crate::recover`; they exist nowhere else, so
+//!   they stay current like `DIVERGED_TAIL`, and keep their reason). Rebuild
 //!   adds `SALVAGED` (origin `salvage`): the unexported records of the database it
 //!   replaced, which exist nowhere else; the old database's own quarantine rows come along
 //!   with their reason, origin `salvage`. `DIVERGED_TAIL` and `SUPERSEDED` are kept as reason, origin and
@@ -53,6 +56,9 @@ pub(super) const CONFLICT_COPY: &str = "CONFLICT_COPY";
 /// Decision 33). Like `SUPERSEDED`: kept once set, current while this pass's verdicts set
 /// the record aside.
 pub(super) const ID_COLLISION: &str = "ID_COLLISION";
+/// Records of segment files moved out of the folder and read back (`fin project recover
+/// --import`, plan 4B Decision 29): kept once set and always current, like `DIVERGED_TAIL`.
+pub(crate) const IMPORTED: &str = "IMPORTED";
 
 pub(super) struct Quarantined<'a> {
     pub(super) tx_hash: &'a str,
@@ -64,8 +70,8 @@ pub(super) struct Quarantined<'a> {
     pub(super) now: i64,
 }
 
-/// Inserts `q`, or marks its row current again. A `DIVERGED_TAIL` or `SUPERSEDED` row keeps
-/// its reason, origin and detail (module docs); otherwise the latest reason wins. Writes nothing when the row
+/// Inserts `q`, or marks its row current again. A `DIVERGED_TAIL`, `SUPERSEDED`, `SALVAGED`,
+/// `ID_COLLISION` or `IMPORTED` row keeps its reason, origin and detail (module docs); otherwise the latest reason wins. Writes nothing when the row
 /// is already current with the same reason and origin.
 pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreError> {
     conn.execute(
@@ -75,14 +81,14 @@ pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreErro
          ON CONFLICT(tx_hash) DO UPDATE SET
              current = 1,
              seen_at = excluded.seen_at,
-             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
+             origin = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION', 'IMPORTED')
                            THEN quarantine.origin ELSE excluded.origin END,
-             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
+             detail = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION', 'IMPORTED')
                            THEN quarantine.detail ELSE excluded.detail END,
-             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
+             reason = CASE WHEN quarantine.reason IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION', 'IMPORTED')
                            THEN quarantine.reason ELSE excluded.reason END
          WHERE quarantine.current = 0
-            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION')
+            OR (quarantine.reason NOT IN ('DIVERGED_TAIL', 'SUPERSEDED', 'SALVAGED', 'ID_COLLISION', 'IMPORTED')
                 AND (quarantine.reason != excluded.reason OR quarantine.origin != excluded.origin))",
         params![q.tx_hash, q.branch, q.origin, q.reason, q.detail, q.bytes, q.now],
     )?;
@@ -90,15 +96,15 @@ pub(super) fn upsert(conn: &Connection, q: &Quarantined) -> Result<(), StoreErro
 }
 
 /// Sets `current` from this pass's verdicts: the rows in `current` (folder and foreign
-/// records reported now) and every diverged tail and salvaged record, minus records `txs`
-/// holds.
+/// records reported now) and every diverged tail, salvaged and imported record, minus records
+/// `txs` holds.
 pub(super) fn flag_current(
     conn: &Connection,
     current: &BTreeSet<String>,
 ) -> Result<(), StoreError> {
     conn.execute(
-        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED'))
-         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED'))",
+        "UPDATE quarantine SET current = (reason IN ('DIVERGED_TAIL', 'SALVAGED', 'IMPORTED'))
+         WHERE current != (reason IN ('DIVERGED_TAIL', 'SALVAGED', 'IMPORTED'))",
         [],
     )?;
     let mut stmt =

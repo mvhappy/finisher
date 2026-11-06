@@ -35,6 +35,7 @@ mod open;
 mod paths;
 pub mod project_file;
 mod rebuild;
+mod recover;
 pub mod scan;
 pub mod segment;
 pub mod server_id;
@@ -86,6 +87,7 @@ pub use project_file::{Genesis, ProjectFile, read_project_file};
 #[doc(hidden)]
 pub use rebuild::fail_next_rebuild_swap_for_test;
 pub use rebuild::{RebuildReport, rebuild_project};
+pub use recover::{RecoverReq, RecoverSel};
 pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
@@ -93,7 +95,8 @@ pub use status::{
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
-    BranchCreated, BranchView, EngineEvent, HistoryResult, MergeReport, SetAside, TxSetAside,
+    BranchCreated, BranchView, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
+    RecoverReport, SetAside, TxSetAside,
 };
 
 /// The root branch, which every project has.

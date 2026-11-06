@@ -38,8 +38,11 @@ impl Store {
                     .join(", ")
             );
             if quarantine.reasons.contains_key("DIVERGED_TAIL") {
-                m.push_str("; DIVERGED_TAIL records are this server's own edits that lost to the project folder: they are kept and stay listed until recovered");
+                m.push_str("; DIVERGED_TAIL records are this server's own edits that lost to the project folder: they are kept and stay listed until recovered (fin project recover)");
             }
+            m.push_str(
+                "; fin project recover lists them and brings them back as recovered-* branches",
+            );
             warn("QUARANTINE", m);
         }
         for (code, m) in rewind_warnings(&self.conn, &self.server_id).unwrap_or_default() {
@@ -165,26 +168,31 @@ impl Store {
 pub(super) fn quarantine_summary(
     conn: &rusqlite::Connection,
 ) -> Result<QuarantineSummary, StoreError> {
+    // Recovered rows (a `recovered-*` branch holds their copies, plan 4B Decision 5) are
+    // not counted.
+    let recovered = crate::recover::recovered_hashes(conn)?;
     let mut stmt = conn.prepare(
-        "SELECT origin, reason, COUNT(*) FROM quarantine WHERE current = 1
-         GROUP BY origin, reason ORDER BY origin, reason",
+        "SELECT origin, reason, tx_hash FROM quarantine WHERE current = 1
+         ORDER BY origin, reason",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?,
+            r.get::<_, String>(2)?,
         ))
     })?;
     let mut s = QuarantineSummary::default();
     for row in rows {
-        let (origin, reason, n) = row?;
-        let n = u32::try_from(n).unwrap_or(u32::MAX);
-        s.count = s.count.saturating_add(n);
+        let (origin, reason, hash) = row?;
+        if recovered.contains(&hash) {
+            continue;
+        }
+        s.count = s.count.saturating_add(1);
         if !s.origins.contains(&origin) {
             s.origins.push(origin);
         }
-        *s.reasons.entry(reason).or_default() += n;
+        *s.reasons.entry(reason).or_default() += 1;
     }
     Ok(s)
 }

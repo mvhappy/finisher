@@ -76,7 +76,7 @@ mod ctx;
 mod hydrate;
 mod known;
 mod pass;
-mod quarantine;
+pub(crate) mod quarantine;
 mod records;
 mod report;
 mod rewind;
