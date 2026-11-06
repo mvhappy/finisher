@@ -6,12 +6,17 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history ...]  (default: every scenario)
 //
 // The "storage" scenario (scripts/e2e/storage.mjs) edits, exports, deletes the database,
 // rebuilds from the folder and checks a second finisherd follows the folder read-only.
 //
-// After the builds, the run has a deadline (E2E_DEADLINE_MS, default 120 s): when it passes,
+// The "history" scenario (scripts/e2e/history*.mjs) drives branches, merges (conflicting, skipped,
+// both directions), undo/redo, checkpoints, try, cherry-pick, revert, dry runs and a real
+// `project recover --create` (a second server on a lease-less folder copy diverges, ~12 s of
+// lease catch-up), with WebSocket subscribers checking each record lands on its own branch.
+//
+// After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
 // and E2E_START_TIMEOUT_MS bounds the wait for its `finisherd.json` (default 30 s).
@@ -19,12 +24,13 @@ import { pathToFileURL } from "node:url";
 import { build, live, removeTmp } from "./e2e/lib.mjs";
 import { checkRevs, run as runBasic } from "./e2e/basic.mjs";
 import { run as runStorage } from "./e2e/storage.mjs";
+import { run as runHistory } from "./e2e/history.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
-const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 120_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage };
+const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory };
 
 async function main(argv) {
   if (!argv.includes("--skip-build")) {

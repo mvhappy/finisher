@@ -37,8 +37,8 @@ export function build(cmd, args) {
 }
 
 /** Runs `fin` and returns `{ status, json }`, whatever the exit code. */
-export function finRaw(serverData, cwd, args) {
-  const env = { ...process.env, FIN_SERVER_DATA: serverData };
+export function finRaw(serverData, cwd, args, extraEnv = {}) {
+  const env = { ...process.env, FIN_SERVER_DATA: serverData, ...extraEnv };
   delete env.FIN_SERVER; // find the server through <server-data>/finisherd.json
   // fin has its own 30 s server timeouts; this bounds a hang the watchdog cannot interrupt
   // (spawnSync blocks the event loop).
@@ -56,8 +56,8 @@ export function finRaw(serverData, cwd, args) {
 }
 
 /** Runs `fin` and returns its single JSON document; throws on a non-zero exit. */
-export function fin(serverData, cwd, args) {
-  const r = finRaw(serverData, cwd, args);
+export function fin(serverData, cwd, args, extraEnv = {}) {
+  const r = finRaw(serverData, cwd, args, extraEnv);
   if (r.status !== 0) throw new Error(`fin ${args.join(" ")} exited ${r.status}: ${r.text} ${r.stderr}`);
   return r.json;
 }

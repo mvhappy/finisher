@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkRevs, parseFrames } from "./e2e.mjs";
+import { clipsOf, failure } from "./e2e/history-lib.mjs";
 
 test("parseFrames splits one message carrying several NDJSON frames", () => {
   const text = `${JSON.stringify({ _tag: "Chunk", requestId: "1", values: [] })}\n${JSON.stringify({ _tag: "Exit", requestId: "1" })}\n`;
@@ -69,4 +70,16 @@ test("the watchdog kills the server and fails the run at the deadline", () => {
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /e2e: FAIL: watchdog: the run did not finish within 1\.5s; killed finisherd/);
   assert.equal(alive(r.pid), false, `server pid ${r.pid} still running`);
+});
+
+test("clipsOf lists every track's clips as id:start+duration", () => {
+  const snapshot = { project: { timeline: { tracks: [{ id: "t1", items: [{ id: "c1", start: "0", duration: "4" }] }, { id: "t2", items: [] }] } } };
+  assert.deepEqual(clipsOf(snapshot), { t1: ["c1:0+4"], t2: [] });
+});
+
+test("failure checks the exit status and the error code of a refused fin call", () => {
+  const refused = { status: 4, json: { error: { code: "CONFLICT" } }, text: "{}" };
+  assert.equal(failure(refused, "CONFLICT", 4, "merge").code, "CONFLICT");
+  assert.throws(() => failure(refused, "NOT_FOUND", 4, "merge"), /expected exit 4 NOT_FOUND/);
+  assert.throws(() => failure({ ...refused, status: 3 }, "CONFLICT", 4, "merge"), /expected exit 4 CONFLICT/);
 });
