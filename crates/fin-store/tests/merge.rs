@@ -164,6 +164,7 @@ fn branch(s: &mut Store) {
         from: MAIN.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
 }
@@ -600,6 +601,7 @@ fn new_branch(s: &mut Store, key: &str, name: &str) -> String {
         from: MAIN.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap()
     .branch
@@ -692,6 +694,7 @@ fn txid_equal_to_a_merge_id_is_refused() {
             from: MAIN.into(),
             at: None,
             dry_run: false,
+            args_hash: None,
         })
         .unwrap_err(),
     );

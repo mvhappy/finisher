@@ -127,6 +127,7 @@ fn create(id: &str, from: &str, name: Option<&str>) -> BranchCreate {
         from: from.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     }
 }
 
@@ -138,6 +139,7 @@ fn set(id: &str, branch: &str, name: Option<&str>, archived: Option<bool>) -> Br
         name: name.map(String::from),
         archived,
         dry_run: false,
+        args_hash: None,
     }
 }
 
@@ -737,6 +739,35 @@ fn create_branch_dry_run_writes_nothing() {
 
     // The real create gets the id the dry runs planned.
     assert_eq!(new_branch(&mut s, "b1", MAIN, "feature").branch.id, "br1");
+}
+
+#[test]
+fn branch_args_hash_is_stored_and_checked_on_retry() {
+    let e = env();
+    let mut s = project(&e);
+    let h1 = format!("blake3:{}", "a".repeat(64));
+    let h2 = format!("blake3:{}", "b".repeat(64));
+    let mut c = create("b1", MAIN, Some("feature"));
+    c.args_hash = Some(h1.clone());
+    let first = s.create_branch(c.clone()).unwrap();
+    assert_eq!(first.record.tx.args_hash.as_deref(), Some(h1.as_str()));
+    assert_eq!(s.create_branch(c.clone()).unwrap().record, first.record);
+    c.args_hash = Some(h2.clone());
+    assert_eq!(
+        code(s.create_branch(c).unwrap_err()).code,
+        "IDEM_KEY_REUSED"
+    );
+    let mut bad = create("b2", MAIN, None);
+    bad.args_hash = Some("nope".into());
+    assert_eq!(code(s.create_branch(bad).unwrap_err()).code, "INVALID_OP");
+
+    let mut r = set("r1", "feature", Some("renamed"), None);
+    r.args_hash = Some(h1.clone());
+    let rec = s.set_branch(r.clone()).unwrap();
+    assert_eq!(rec.tx.args_hash.as_deref(), Some(h1.as_str()));
+    assert_eq!(s.set_branch(r.clone()).unwrap(), rec);
+    r.args_hash = Some(h2);
+    assert_eq!(code(s.set_branch(r).unwrap_err()).code, "IDEM_KEY_REUSED");
 }
 
 #[test]

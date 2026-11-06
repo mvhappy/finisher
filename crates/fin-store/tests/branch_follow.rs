@@ -78,6 +78,7 @@ fn create_req(tx_id: &str, name: &str, from: &str, at: Option<At>) -> BranchCrea
         from: from.into(),
         at,
         dry_run: false,
+        args_hash: None,
     }
 }
 
@@ -100,6 +101,7 @@ fn set(
         name: name.map(String::from),
         archived,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap()
 }

@@ -119,6 +119,50 @@ export class Engine {
     return call(this.#native.acknowledgeSalvage(copy));
   }
 
+  branchCreate(reqJson) {
+    return call(this.#native.branchCreate(reqJson));
+  }
+
+  branches(all) {
+    return call(this.#native.branches(all === true));
+  }
+
+  branchSet(reqJson) {
+    return call(this.#native.branchSet(reqJson));
+  }
+
+  resolveBranch(name) {
+    return call(this.#native.resolveBranch(name));
+  }
+
+  undo(reqJson) {
+    return call(this.#native.undo(reqJson));
+  }
+
+  redo(reqJson) {
+    return call(this.#native.redo(reqJson));
+  }
+
+  checkpoint(reqJson) {
+    return call(this.#native.checkpoint(reqJson));
+  }
+
+  merge(reqJson) {
+    return call(this.#native.merge(reqJson));
+  }
+
+  cherryPick(reqJson) {
+    return call(this.#native.cherryPick(reqJson));
+  }
+
+  revert(reqJson) {
+    return call(this.#native.revert(reqJson));
+  }
+
+  recover(reqJson) {
+    return call(this.#native.recover(reqJson));
+  }
+
   takeover(confirm) {
     return call(this.#native.takeover(confirm));
   }

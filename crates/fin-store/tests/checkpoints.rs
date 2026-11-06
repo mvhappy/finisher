@@ -94,6 +94,7 @@ fn create(from: &str, at: Option<At>, name: &str, id: &str) -> BranchCreate {
         from: from.into(),
         at,
         dry_run: false,
+        args_hash: None,
     }
 }
 
@@ -293,6 +294,7 @@ fn checkpoint_names_unique_per_branch() {
         name: None,
         archived: Some(true),
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
     let err = code(s.checkpoint(cp_req("k6", &br, "v9")).unwrap_err());

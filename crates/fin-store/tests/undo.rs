@@ -373,6 +373,7 @@ fn nothing_to_undo_on_fresh_branch() {
         from: MAIN.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
     // Main's edits (and the branch record) are not the branch's own.
@@ -399,6 +400,7 @@ fn nothing_to_undo_on_fresh_branch() {
         name: None,
         archived: Some(true),
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
     assert_eq!(

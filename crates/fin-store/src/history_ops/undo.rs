@@ -28,11 +28,13 @@ use crate::{HistoryResult, Store, StoreError};
 /// - `to`: `undo --to <checkpoint>`, a checkpoint name on the branch's lineage: one undo
 ///   record for every unit of the author's made after it (Task 15). `None` for a plain undo;
 ///   a redo takes none (`INVALID_OP`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryReq {
     pub tx_id: String,
     pub author: String,
     pub branch: String,
+    #[serde(default)]
     pub dry_run: bool,
     pub args_hash: Option<String>,
     pub to: Option<String>,

@@ -65,6 +65,7 @@ fn branch(s: &mut Store, tx_id: &str, name: &str, from: &str) -> String {
         from: from.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap()
     .branch

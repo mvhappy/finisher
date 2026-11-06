@@ -31,12 +31,14 @@ use crate::{Store, StoreError};
 /// - `dry_run`: plan against the local database and keep nothing, on a follower too;
 /// - `args_hash`: the command input's hash, stored on the record's intent; a retry of the
 ///   txId with another hash is `IDEM_KEY_REUSED`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CheckpointReq {
     pub tx_id: String,
     pub author: String,
     pub branch: String,
     pub name: String,
+    #[serde(default)]
     pub dry_run: bool,
     pub args_hash: Option<String>,
 }

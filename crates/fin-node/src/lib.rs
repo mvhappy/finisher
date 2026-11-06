@@ -4,9 +4,9 @@
 //!
 //! No call runs on the JS thread. Values cross the boundary as JSON strings.
 //! - **Short calls** (`head`, `commit`, `snapshot`, `opsSince`, `status`, `txGet`, the
-//!   acknowledgements) are napi `AsyncTask`s on the libuv pool ([`tasks`]).
+//!   acknowledgements, the branch and history calls of [`history`]) are napi `AsyncTask`s on the libuv pool ([`tasks`]).
 //! - **Long calls** (`create`/`open`, which may import or rebuild everything; `takeover`,
-//!   `verify`, `rebuild`, `compact`; `close`, which flushes the export) run one at a time on a
+//!   `verify`, `rebuild`, `compact`, `recover`; `close`, which flushes the export) run one at a time on a
 //!   dedicated per-engine worker thread and settle a napi deferred promise ([`worker`], plan
 //!   Decision 7), so they never hold a libuv thread for seconds.
 //! - **Maintenance**: one thread per engine calls `Store::tick` every 500 ms and forwards
@@ -41,6 +41,7 @@ use napi_derive::napi;
 use serde_json::json;
 
 mod engine;
+mod history;
 mod maintenance;
 mod server_lock;
 mod tasks;

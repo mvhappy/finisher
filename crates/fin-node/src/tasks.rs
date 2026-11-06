@@ -38,6 +38,38 @@ pub(crate) enum Call {
     AcknowledgeSalvage {
         copy: String,
     },
+    // The branch and history calls (`crate::history`); each `req_json` is the camelCase JSON
+    // of the fin-store request.
+    BranchCreate {
+        req_json: String,
+    },
+    Branches {
+        all: bool,
+    },
+    BranchSet {
+        req_json: String,
+    },
+    ResolveBranch {
+        name: String,
+    },
+    Undo {
+        req_json: String,
+    },
+    Redo {
+        req_json: String,
+    },
+    Checkpoint {
+        req_json: String,
+    },
+    Merge {
+        req_json: String,
+    },
+    CherryPick {
+        req_json: String,
+    },
+    Revert {
+        req_json: String,
+    },
     /// Test hook: panics while holding the store.
     #[cfg(feature = "test-hooks")]
     Panic,
@@ -220,6 +252,16 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         Call::AcknowledgeSalvage { copy } => with_store(store, |s| {
             Ok(Reply::Bool(s.acknowledge_salvage(&copy).map_err(reject)?))
         }),
+        call @ (Call::BranchCreate { .. }
+        | Call::Branches { .. }
+        | Call::BranchSet { .. }
+        | Call::ResolveBranch { .. }
+        | Call::Undo { .. }
+        | Call::Redo { .. }
+        | Call::Checkpoint { .. }
+        | Call::Merge { .. }
+        | Call::CherryPick { .. }
+        | Call::Revert { .. }) => crate::history::run(store, call),
         #[cfg(feature = "test-hooks")]
         Call::Panic => with_store(store, |_| panic!("fin-node test panic")),
     }

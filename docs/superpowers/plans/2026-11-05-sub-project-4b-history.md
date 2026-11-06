@@ -1134,9 +1134,10 @@ impl Store {
 - **Long call** (worker): `recover`.
 - **napi:** `branchCreate(reqJson)`, `branches(all)`, `branchSet(reqJson)`, `resolveBranch(name)`, `undo(reqJson)`, `redo(reqJson)`, `checkpoint(reqJson)`, `merge(reqJson)`, `cherryPick(reqJson)`, `revert(reqJson)`, `recover(reqJson)`. Each returns `Promise<string>` (JSON). The request JSON is the camelCase form of the Rust request structs (they derive `Deserialize`).
 
-- [ ] **Step 1:** Write `history.test.ts`: branch create/list/set; commit on a branch; merge; undo; redo; checkpoint; cherry-pick; revert; recover list; a dry run on a follower engine (a second server-data).
-- [ ] **Step 2–4:** Run (`rtk pnpm --filter @finisher/fin-node build && rtk pnpm --filter @finisher/fin-node build:test && rtk pnpm test`) → FAIL; implement; the three gates → PASS.
-- [ ] **Step 5: Commit** `feat(fin-node): branch and history bindings`.
+- [x] **Step 1:** Write `history.test.ts`: branch create/list/set; commit on a branch; merge; undo; redo; checkpoint; cherry-pick; revert; recover list; a dry run on a follower engine (a second server-data).
+- [x] **Step 2–4:** Run (`rtk pnpm --filter @finisher/fin-node build && rtk pnpm --filter @finisher/fin-node build:test && rtk pnpm test`) → FAIL; implement; the three gates → PASS.
+- [x] **Step 5: Commit** `feat(fin-node): branch and history bindings`.
+- As built: `crates/fin-node/src/history.rs` as planned (`Call` variants in `tasks.rs` delegate to `history::run`; `Engine::long` is `pub(crate)`); `recover` is the long call `recover`, also for the listing (no `create`). Request structs derive `Deserialize` (camelCase, `deny_unknown_fields`; `dryRun`/`skipConflicting` default false; `RecoverReq.txId`/`author` default empty; `At` is `{seq}` or `{checkpoint}`; `RecoverSel` is `"all"` or a group id). A request that does not decode is `INVALID_OP` naming the field. **`BranchCreate`/`BranchSet` gain `args_hash`** (Decision 26): checked (`INVALID_OP`), stored on the record's intent, a retry with another hash `IDEM_KEY_REUSED` (fin-store `branch_args_hash_is_stored_and_checked_on_retry`). `resolveBranch` resolves to the JSON string of the id, `branches` to `BranchView[]`. Tests: `packages/fin-node/test/history.test.ts` (branches, `argsHash`, bad requests, `at` seq and checkpoint, merge/undo/redo/revert, checkpoint and `undo --to`, cherry-pick no-op, merge `CONFLICT` with `details.conflicts` and `skipConflicting`, recover listing, dry runs on a follower and `PROJECT_READ_ONLY` for a real write there).
 
 ### Task 18: Contracts, finisherd routing, RPC fixtures — tier: sonnet
 

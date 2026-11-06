@@ -24,6 +24,8 @@ mod run;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
+use serde::Deserialize;
+
 use fin_core::{CommittedTx, Conflict, CoreError, Link};
 use rusqlite::Connection;
 use serde_json::json;
@@ -45,16 +47,32 @@ pub enum RecoverSel {
     Group(String),
 }
 
+/// On the wire: `"all"`, or a group id.
+impl<'de> serde::Deserialize<'de> for RecoverSel {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(if s == "all" {
+            RecoverSel::All
+        } else {
+            RecoverSel::Group(s)
+        })
+    }
+}
+
 /// [`Store::recover`]'s request: `tx_id` (the idempotency key: the records are
 /// `<txId>-<n>`), `author` (the records' author), `create`, `import_dir` (a folder of `.fseg`
 /// files moved out of the project folder), `dry_run` (plan against the local database and
 /// keep nothing, on a follower too).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecoverReq {
+    #[serde(default)]
     pub tx_id: String,
+    #[serde(default)]
     pub author: String,
     pub create: Option<RecoverSel>,
     pub import_dir: Option<PathBuf>,
+    #[serde(default)]
     pub dry_run: bool,
 }
 

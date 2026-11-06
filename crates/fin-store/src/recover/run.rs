@@ -317,6 +317,7 @@ impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
                     from,
                     at: Some(At::Seq(seq)),
                     dry_run: ctx.dry_run,
+                    args_hash: None,
                 },
             )?;
             self.ids = Counters::load(ctx.txn)?;

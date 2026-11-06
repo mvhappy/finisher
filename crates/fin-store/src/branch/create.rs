@@ -14,12 +14,14 @@ use fin_core::{
 use serde_json::json;
 
 use super::{index, lineage};
+use crate::commit::{check_args_hash, same_args_hash};
 use crate::db::{self, Counters};
 use crate::write::{Draft, WriteCtx, writable};
 use crate::{BranchCreated, BranchView, Store, StoreError};
 
 /// Where a new branch forks from its parent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum At {
     /// The parent's seq (at most its head).
     Seq(u64),
@@ -29,7 +31,8 @@ pub enum At {
 }
 
 /// [`Store::create_branch`]'s request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchCreate {
     /// The idempotency key: the `branch` record's txId.
     pub tx_id: String,
@@ -41,12 +44,17 @@ pub struct BranchCreate {
     pub from: String,
     /// The fork point; `None`: the parent's head.
     pub at: Option<At>,
+    #[serde(default)]
     pub dry_run: bool,
+    /// The command input's hash, stored on the record's intent (Decision 26); a retry of the
+    /// txId with another hash is `IDEM_KEY_REUSED`.
+    pub args_hash: Option<String>,
 }
 
 /// [`Store::set_branch`]'s request: a new name, archive (`true`) or restore (`false`), or
 /// both (`fin branch archive <b> --restore --as <new>`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchSet {
     /// The idempotency key: the `branchSet` record's txId.
     pub tx_id: String,
@@ -55,7 +63,10 @@ pub struct BranchSet {
     pub branch: String,
     pub name: Option<String>,
     pub archived: Option<bool>,
+    #[serde(default)]
     pub dry_run: bool,
+    /// As [`BranchCreate::args_hash`].
+    pub args_hash: Option<String>,
 }
 
 impl Store {
@@ -89,6 +100,7 @@ impl Store {
     /// the local database and keeps nothing, on a follower too (Decision 26).
     pub fn create_branch(&mut self, r: BranchCreate) -> Result<BranchCreated, StoreError> {
         check_key(&r.tx_id)?;
+        check_args_hash(r.args_hash.as_deref(), &r.tx_id)?;
         if let Some(name) = &r.name {
             validate_branch_name(name)?;
         }
@@ -98,7 +110,7 @@ impl Store {
             }
             // Deduped; gone again (an import rewound it since): the create runs again.
             if let Some(existing) = db::find_tx(&self.conn, &r.tx_id)? {
-                return self.created(existing);
+                return self.created(same_args_hash(r.args_hash.as_deref(), existing)?);
             }
         }
     }
@@ -114,6 +126,7 @@ impl Store {
     /// `--restore --as <new>`).
     pub fn set_branch(&mut self, r: BranchSet) -> Result<CommittedTx, StoreError> {
         check_key(&r.tx_id)?;
+        check_args_hash(r.args_hash.as_deref(), &r.tx_id)?;
         if r.name.is_none() && r.archived.is_none() {
             return Err(CoreError::new("INVALID_OP", "nothing to set on the branch")
                 .with_details(json!({ "branch": r.branch, "txId": r.tx_id }))
@@ -129,7 +142,9 @@ impl Store {
             }
             if let Some(existing) = db::find_tx(&self.conn, &r.tx_id)? {
                 return match existing.link.as_deref() {
-                    Some(Link::BranchSet { .. }) => Ok(existing),
+                    Some(Link::BranchSet { .. }) => {
+                        same_args_hash(r.args_hash.as_deref(), existing)
+                    }
                     _ => Err(key_reused(&existing)),
                 };
             }
@@ -300,7 +315,8 @@ pub(crate) fn plan_create(
         // with another server's record (Decision 33).
         epoch: ctx.epoch.unwrap_or(0),
     };
-    let draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
+    let mut draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
+    draft.intent.args_hash = r.args_hash.clone();
     let record = ctx.append(draft)?;
     db::insert_snapshot(txn, &id, fork_seq, &fork_state)?;
     let ix = index::load(txn)?;
@@ -357,6 +373,7 @@ fn plan_set(ctx: &mut WriteCtx<'_>, r: &BranchSet) -> Result<CommittedTx, StoreE
         name: r.name.clone(),
         archived: r.archived,
     };
-    let draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
+    let mut draft = metadata_draft(ctx, &parent, &r.tx_id, &r.author, link)?;
+    draft.intent.args_hash = r.args_hash.clone();
     ctx.append(draft)
 }

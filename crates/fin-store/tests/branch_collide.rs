@@ -44,6 +44,7 @@ fn branch(s: &mut Store, tx_id: &str, name: &str, from: &str) -> String {
         from: from.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap()
     .branch
@@ -1097,6 +1098,7 @@ fn branch_set_after_a_lost_collision_is_inert() {
         name: Some("ex-renamed".into()),
         archived: Some(true),
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
     export(&mut x);

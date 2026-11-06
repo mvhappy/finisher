@@ -25,24 +25,28 @@ use crate::{HistoryResult, Store, StoreError};
 /// - `into`: the branch reference to copy it onto;
 /// - `dry_run`: plan against the local database and keep nothing, on a follower too;
 /// - `args_hash`: the command input's hash, stored on the record's intent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CherryPickReq {
     pub tx_id: String,
     pub author: String,
     pub origin: String,
     pub into: String,
+    #[serde(default)]
     pub dry_run: bool,
     pub args_hash: Option<String>,
 }
 
 /// [`Store::revert`]'s request: as [`CherryPickReq`], with `merge_id` (the group to revert)
 /// and `branch` (the reference of the branch whose history holds it).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RevertReq {
     pub tx_id: String,
     pub author: String,
     pub merge_id: String,
     pub branch: String,
+    #[serde(default)]
     pub dry_run: bool,
     pub args_hash: Option<String>,
 }

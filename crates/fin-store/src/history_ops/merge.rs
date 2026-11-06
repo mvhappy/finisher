@@ -28,13 +28,16 @@ use crate::{MergeReport, Store, StoreError};
 /// - `skip_conflicting`: merge what applies and leave the conflicting candidates;
 /// - `dry_run`: plan against the local database and keep nothing, on a follower too;
 /// - `args_hash`: the command input's hash, stored on the first record's intent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MergeReq {
     pub tx_id: String,
     pub author: String,
     pub from: String,
     pub into: String,
+    #[serde(default)]
     pub skip_conflicting: bool,
+    #[serde(default)]
     pub dry_run: bool,
     pub args_hash: Option<String>,
 }

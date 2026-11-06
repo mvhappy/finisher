@@ -69,6 +69,28 @@ export declare class Engine {
   acknowledgeRewind(branch: string, generation: number): Promise<boolean>;
   /** Acknowledges the incomplete salvage of kept copy `copy`; `false` if none is listed. */
   acknowledgeSalvage(copy: string): Promise<boolean>;
+  /** Makes a branch: `BranchCreate` JSON (camelCase); resolves to the `BranchCreated` JSON. */
+  branchCreate(reqJson: string): Promise<string>;
+  /** Resolves to the `BranchView[]` JSON (`main` first; with `all`, archived ones too). */
+  branches(all: boolean): Promise<string>;
+  /** Renames, archives or restores a branch: `BranchSet` JSON; resolves to the `CommittedTx` JSON. */
+  branchSet(reqJson: string): Promise<string>;
+  /** Resolves to the JSON string of the id a branch reference (id, name, `<name>#<id>`) names. */
+  resolveBranch(name: string): Promise<string>;
+  /** `HistoryReq` JSON (`to`: undo back to a checkpoint); resolves to the `HistoryResult` JSON. */
+  undo(reqJson: string): Promise<string>;
+  /** `HistoryReq` JSON; resolves to the `HistoryResult` JSON. */
+  redo(reqJson: string): Promise<string>;
+  /** `CheckpointReq` JSON; resolves to the `CommittedTx` JSON. */
+  checkpoint(reqJson: string): Promise<string>;
+  /** `MergeReq` JSON; resolves to the `MergeReport` JSON. */
+  merge(reqJson: string): Promise<string>;
+  /** `CherryPickReq` JSON; resolves to the `HistoryResult` JSON. */
+  cherryPick(reqJson: string): Promise<string>;
+  /** `RevertReq` JSON; resolves to the `HistoryResult` JSON. */
+  revert(reqJson: string): Promise<string>;
+  /** Long call: lists recoverable groups and, with `create`, makes their branches (`RecoverReq` JSON); resolves to the `RecoverReport` JSON. */
+  recover(reqJson: string): Promise<string>;
   /** Long call: takes the lease over; resolves to the `ProjectStatus` JSON. */
   takeover(confirm: boolean): Promise<string>;
   /** Long call: resolves to the `VerifyReport` JSON (`{ ok, checks: [{ name, ok, details }] }`). */

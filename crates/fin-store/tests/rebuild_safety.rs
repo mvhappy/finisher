@@ -140,6 +140,7 @@ fn salvage_marks_missing_branch_rows() {
             from: MAIN.into(),
             at: None,
             dry_run: false,
+            args_hash: None,
         })
         .unwrap()
         .branch

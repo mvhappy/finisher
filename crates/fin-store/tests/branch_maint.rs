@@ -40,6 +40,7 @@ fn branch(s: &mut Store, tx_id: &str, name: &str, from: &str, at: Option<u64>) -
         from: from.into(),
         at: at.map(At::Seq),
         dry_run: false,
+        args_hash: None,
     })
     .unwrap()
     .branch
@@ -54,6 +55,7 @@ fn set(s: &mut Store, tx_id: &str, b: &str, name: Option<&str>, archived: Option
         name: name.map(String::from),
         archived,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
 }

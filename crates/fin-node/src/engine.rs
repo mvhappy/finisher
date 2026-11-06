@@ -158,7 +158,7 @@ impl Engine {
         AsyncTask::new(StoreTask::new(self.inner.clone(), call))
     }
 
-    fn long<'e>(
+    pub(crate) fn long<'e>(
         &self,
         env: &'e Env,
         operation: &'static str,

@@ -200,6 +200,7 @@ fn branch(s: &mut Store, tx_id: &str, name: &str, from: &str) -> String {
         from: from.into(),
         at: None,
         dry_run: false,
+        args_hash: None,
     })
     .unwrap()
     .branch
@@ -641,6 +642,7 @@ fn new_edit_reactivates_merged_branch() {
         name: None,
         archived: Some(true),
         dry_run: false,
+        args_hash: None,
     })
     .unwrap();
     assert_eq!(branch_state(&s, "br1"), BranchState::Archived);
