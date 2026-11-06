@@ -641,8 +641,6 @@ fn redo_inside(log: &mut MemLog) -> (u64, u64) {
 }
 
 #[test]
-#[ignore = "needs steps_with_units (commit 80f7693, cherry-picked after Task 15): today an undo \
-            naming a redo that is paired with its undo stands alone whole"]
 fn stale_edit_over_an_undo_to_with_a_redo_unit_pairs_each_unit() {
     // The `undo --to` record names [e2, r1]. Seen from a stale base after e1, u1 stands
     // alone and r1 mirrors it, so r1 is paired already: cut per unit, the e2 part still
