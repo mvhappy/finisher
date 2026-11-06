@@ -4,7 +4,8 @@
 //! [`Genesis`] into a sub-project 2 project file ([`Store::open`](crate::Store::open)).
 //!
 //! Fields:
-//! - `id`, `name`, `schemaVersion` (sub-project 2);
+//! - `id`, `name`, `schemaVersion` (sub-project 2): a file at a newer schema version opens
+//!   read-only (`NEWER_FORMAT`), like a newer `minReaderVersion`;
 //! - `formatVersion`, `minReaderVersion` ([`FORMAT_VERSION`], [`MIN_READER_VERSION`]): a file
 //!   whose `minReaderVersion` is above ours opens read-only (`NEWER_FORMAT`);
 //! - `storage`: the storage kind detected when the file was written (informational only;
@@ -149,9 +150,12 @@ impl ProjectFile {
         }
     }
 
-    /// Written by a newer Finisher that this one cannot fully read.
+    /// Written by a newer Finisher that this one cannot fully read: a `minReaderVersion`
+    /// above our format version, or a `schemaVersion` above ours. Either opens read-only
+    /// (`NEWER_FORMAT`).
     pub fn is_newer(&self) -> bool {
-        self.min_reader_version.is_some_and(|v| v > FORMAT_VERSION)
+        self.schema_version > SCHEMA_VERSION
+            || self.min_reader_version.is_some_and(|v| v > FORMAT_VERSION)
     }
 }
 
@@ -330,7 +334,8 @@ fn read(project_dir: &Path, retry: Duration) -> Result<ProjectFile, StoreError> 
     {
         return Err(invalid(format!("id {:?} is not a lowercase ULID", file.id)).into());
     }
-    if file.schema_version != SCHEMA_VERSION {
+    // A newer schema version opens read-only ([`ProjectFile::is_newer`]); 0 never existed.
+    if file.schema_version == 0 {
         return Err(CoreError::new("SCHEMA_VERSION", format!("project schema version {} is not supported", file.schema_version))
             .with_details(json!({ "expected": SCHEMA_VERSION, "actual": file.schema_version, "path": path.to_string_lossy() }))
             .into());
@@ -458,6 +463,44 @@ mod tests {
             Err(StoreError::Io { .. })
         ));
         assert!(read_project_file(tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn newer_schema_version_is_newer() {
+        let json = format!(
+            r#"{{"id":"x","name":"n","schemaVersion":{}}}"#,
+            SCHEMA_VERSION + 1
+        );
+        let f: ProjectFile = serde_json::from_str(&json).unwrap();
+        assert!(f.is_newer());
+        let json = format!(r#"{{"id":"x","name":"n","schemaVersion":{SCHEMA_VERSION}}}"#);
+        let f: ProjectFile = serde_json::from_str(&json).unwrap();
+        assert!(!f.is_newer());
+    }
+
+    /// Every schema version up to ours reads as current; a newer one reads (and is flagged
+    /// newer) instead of failing; 0 never existed.
+    #[test]
+    fn older_schema_version_still_opens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let genesis = Genesis {
+            name: "Demo".into(),
+            rate: Rational::from_int(30),
+        };
+        let mut file = ProjectFile::new("01jbcdefghjkmnpqrstvwxyz00", genesis, "local".into());
+        for v in 1..=SCHEMA_VERSION + 1 {
+            file.schema_version = v;
+            write(tmp.path(), &file).unwrap();
+            let read = read_project_file_once(tmp.path()).unwrap();
+            assert_eq!(read.schema_version, v);
+            assert_eq!(read.is_newer(), v > SCHEMA_VERSION, "{v}");
+        }
+        file.schema_version = 0;
+        write(tmp.path(), &file).unwrap();
+        match read_project_file_once(tmp.path()) {
+            Err(StoreError::Core(e)) => assert_eq!(e.code, "SCHEMA_VERSION"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
