@@ -1088,15 +1088,30 @@ Also: `shift_map`, `pick_props` (merge or pick after any revert/undo/redo chain 
 - `pnpm e2e` gains the `history` scenario: branch, edits on both sides, a `SAME_EDGE` merge conflict (exit 4), `--skip-conflicting`, undo of the merge, state checked, and a subscriber on `main` receiving the merge then the undo; beyond that redo, `undo --to`, rename/archive/restore, `try keep|drop`, cherry-pick, revert, dry runs, keyed merge retries, per-branch subscribers, and a real `recover --import` + `--create` from a second server's diverged copy. *(Done.)*
 - Cross-host: a branch made on host A merges on host B after takeover. *(Pending: §4.8.)*
 
-### 4.8 Validation results (Task 23) — pending
+### 4.8 Validation results (Task 23)
 
-Task 23 has not run. 4B is not mergeable until it has (and 4A's §3.13 gates 4A first). Results go here as durable conclusions; raw runs stay in `archive/`.
+Run 2026-11-06 on `sp4b-history` (c4ef8db plus the harness rows) and the 4A setup of §3.13: one SMB 3.1.1 share on a NAS, Linux cifs, Windows 11, macOS smbfs. The harness is `tests/storage-xhost/` (rows `history` and `mixed`; `xhost brancher`, `xhost merger`; `verify` and followers report every branch's head, `stateHash` and `indexHash`). Raw runs stay in `archive/`.
 
-1. **Full suites** on macOS, Windows 11 and the Linux VM: `cargo test --workspace` (`FIN_REQUIRE_SERVER=1`), `pnpm test`, `pnpm gates`, `pnpm e2e`, with counts.
-2. **`history` row** per NAS pair (Mac↔Windows, Mac↔Linux, Windows↔Linux), 5 runs each (`xhost brancher` / `xhost merger`): 0 lost records, the skipped record reported, and the same `stateHash` and `indexHash` on both hosts after one follow cycle.
-3. **Mixed-version row:** a 4A follower and a 4B holder on one folder. Edit-only use keeps the 4A follower following; the first branch record makes it read-only `NEWER_FORMAT` (Decision 4).
-4. **4A rows again with 4B on top:** the race row (20 per pair) and the stall row: 0 double holders, 0 applied stale writes.
-5. Any defect fixed with a regression test in the owning crate, and the affected rows re-run.
+1. **Full suites**, `FIN_REQUIRE_SERVER=1`, all pass:
+   - *Linux VM* (debug): `cargo test --workspace` 939, `pnpm test` 107, `pnpm gates`, `pnpm e2e` (smoke, storage, history 19 s).
+   - *macOS* (`--release`): 934, 107, `pnpm gates` (cargo-deny included), `pnpm e2e` (history 20 s).
+   - *Windows 11* (`--release`, MSVC): 925, 107, `pnpm gates` (it skips cargo-deny on Windows), `pnpm e2e` (history 20 s).
+   - The counts differ only by platform-gated tests (Unix symlink, FIFO, permission and non-UTF-8 name tests; the Linux storage probes).
+2. **`history` row**, 5 runs per pair. Each run: the brancher makes `x`, commits 6 edits on each line (one same-edge trim on each side) and stops without closing; the merger on the other host takes over, merges `x` into `main` with `--skip-conflicting` and exports.
+   - *Windows↔Linux* (Linux branches, Windows merges) and *Mac↔Linux* (the Mac branches, Linux merges): 10/10 runs clean. 0 lost records (100 accepted per pair: edits on both lines, branch and merge records). Every run merged 5 records and reported the branch's trim skipped as `SAME_EDGE`. The follower on the brancher's host, after one follow cycle, and fresh verifiers on both hosts had the merger's `stateHash` and `indexHash` (15/15 views per pair, the derived `branches` and `record_links` tables included). The merge reached the other host's follower 2.2–3.7 s after it was committed. The merger took over 48–49 s after the brancher stopped and wrote from 56–60 s (the 10 s ordering-rule wait, §3.6).
+   - *Mac↔Windows* (Windows branches, the Mac merges): on `sp4b-history` alone, 1 of 5 runs merged. In the other 4 the Mac merger's open failed with `PROJECT_NOT_FOUND`: a project made by Windows 15 s earlier was hidden behind the Mac's cached listing. 4B lacks the network open retry that 4A has since added (`7716b8a`, `145d137`; §3.13 item 14). With binaries built from `sp4b-history` with the current 4A merged in (the code merges cleanly; only this spec conflicts), 5/5 runs are clean, with the same counts as the other pairs and 0 harness-level open retries. A Mac merger writes about 114 s after the holder stopped: it takes over at 48 s, then waits 65 s (the macOS ordering-rule wait, §3.6). A Windows follower sees the merge 7.8–9.5 s after its commit (the Windows directory cache).
+   - **Merging 4B therefore needs the current 4A merged into it first.**
+3. **Mixed-version row** (Decision 4): a 4B brancher edits `main` only for 20 s, then makes a branch and edits both lines; a 4A follower (current 4A) follows on another host. Runs: Mac holder with a Linux follower, Windows holder with a Linux follower, Linux holder with a Mac follower; 2 runs each. Results:
+   - The 4A follower applied every edit-only record in a v1 segment (117/117).
+   - It turned read-only `NEWER_FORMAT` in every run, and applied nothing at or past the branch record.
+   - The 4B side lost nothing.
+   - **Edits exported in the same segment as the first 4B record are invisible to 4A** (0–1 per run, 5 in all): that segment is v2 because its version follows its content. So a 4A follower stops at the last export before the first 4B record, not at the record itself. This is by design. The records are on the share, and a 4B reader applies them. A follow-up could cut the segment before the first non-edit record.
+4. **4A rows with 4B on top**, all 0 critical: 0 double holders, 0 unsafe or early takeovers, 0 stale writes applied or left applied, 0 id reuse, 0 acknowledged writes vanished.
+   - *Races*, 20 per pair (Windows↔Linux 762 accepted, Mac↔Linux 684, Mac↔Windows 796): follow latency p50 2.1–2.2 s, p95 3.4–3.7 s.
+   - *Stalls*, a 90 s holder freeze with writes in flight: the only set-aside records were the 2–8 the stalled holder had acknowledged but not exported (`DIVERGED_TAIL`, §3.4).
+   - The Mac↔Windows rows were run on both builds. In 2 of each build's 20 races, the Mac racer failed to open (`PROJECT_NOT_FOUND`), so those rounds had a single racer. The project's parent, the run's new directory, had been made by Windows 1.5 s earlier and was hidden behind the Mac's cached listing of its own parent.
+   - **4A gap:** even with 4A's retry this fails at once, because 4A skips the retry when the parent looks missing (to fail fast on typos, §3.13 item 14). A Mac opening a project in a directory another host has just made needs up to ~60 s, or an explicit refresh of the grandparent. Recorded for 4A.
+5. **Defects:** none in 4B. The two findings are a stacking gap (4B needs the current 4A: item 2) and a 4A follow-up (item 4). The 4A-to-4B segment boundary is by design (item 3). No 4B code changed. The harness gained the history rows, an `--open-retry-ms` option, and analyser self-tests (`node --test tests/storage-xhost/`).
 
 ---
 

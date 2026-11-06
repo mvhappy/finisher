@@ -1,7 +1,8 @@
 //! `verify`: the folder as a fresh reader resolves it, and the raw folder evidence.
 //!
 //! Events: `opened`, `verify` (`Store::verify`), `status`, `chain` (the resolved `main`
-//! rows and the quarantine), `folder` (every segment with its records' seq, txId and txHash,
+//! rows, every branch's rows in `all`, and the quarantine), `hashes` (every branch's head,
+//! the state and index hashes), `folder` (every segment with its records' seq, txId and txHash,
 //! the lease record, claims and probes, and anything else found).
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -148,8 +149,9 @@ pub fn run(a: &Args, em: &mut Emitter) -> Result<(), String> {
     em.emit(
         "chain",
         None,
-        json!({ "rows": db.chain()?, "quarantine": db.quarantine()? }),
+        json!({ "rows": db.chain()?, "all": db.all_rows()?, "quarantine": db.quarantine()? }),
     );
+    em.emit("hashes", None, crate::hashes::of(&store, &db));
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

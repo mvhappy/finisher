@@ -1,12 +1,14 @@
 # Cross-host storage harness
 
-Plan 4A Task 19 (spec `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §3.12, §3.13).
+Plan 4A Task 19 (spec `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §3.12, §3.13),
+with the history rows of plan 4B Task 23 (§4.8).
 It runs lease and follow scenarios between several Finisher "servers" on one project folder, then
 analyses what each server logged and what the folder ended up holding. A server is a server-data
 directory. Its nodes can be on one machine or on several.
 
 Nothing about hosts, shares or users is in this repository. Access comes from `XHOST_*` variables
-only. Raw results go to `archive/spike/sp4a-xhost/` (git-ignored). Only durable conclusions go
+only. Raw results go to `archive/spike/sp4a-xhost/` (git-ignored; `XHOST_RESULTS` names another
+directory under the repository, e.g. `archive/spike/sp4b-xhost`). Only durable conclusions go
 into the spec.
 
 ## Parts
@@ -18,14 +20,20 @@ into the spec.
   - Holders log every commit: accepted with its seq, txHash and row epoch, or refused with its
     code and reason. They also log lease gains and losses with the reason and what the gain
     replaced, heartbeats, exports, and an `alive` sample every 500 ms.
-  - Followers log every applied record (seq, txHash, epoch, origin) and every rewind.
-  - At the end, each node logs the fate of every commit it got accepted (`final`) and its
-    database's chain.
+  - Followers log every applied record (seq, branch, kind, txHash, epoch, origin) and every
+    rewind, and after each import that applied something the heads and hashes (`hashes`).
+  - At the end, each node logs the fate of every commit it got accepted (`final`, with every
+    branch's head and the hashes) and its database's chain (`main`'s rows, and every branch's
+    in `all`).
+  - `hashes`: every branch's head (seq and txHash), `stateHash` (every branch's state) and
+    `indexHash` (the derived `branches` and `record_links` tables). Two servers that have
+    followed the same folder must have the same ones.
   - Every 5 s, each node samples its wall clock against the share's: it writes
     `xhost-clock-<label>` in the project folder and reads the file's mtime back (`clock`).
 - `run.mjs` is the controller. It runs a scenario round by round on N nodes, then collects and
   analyses the events.
-- `analyse.mjs` is the analyser. `analyse.test.mjs` is its self-test on synthetic rounds:
+- `analyse.mjs` is the analyser, `analyse-history.mjs` its history checks. `analyse.test.mjs` and
+  `analyse-history.test.mjs` are their self-tests on synthetic rounds:
   `node --test tests/storage-xhost/`.
 
 ## Building
@@ -75,6 +83,8 @@ node tests/storage-xhost/run.mjs stall-check                  # stall inside a f
 node tests/storage-xhost/run.mjs stall-sigstop                # whole process stopped (SIGSTOP/SIGCONT)
 node tests/storage-xhost/run.mjs skew --skew-ms -60000        # emulated server-time skew on the holder
 node tests/storage-xhost/run.mjs follow                       # (c) follow latency
+node tests/storage-xhost/run.mjs history                      # a branch made on one host merges on another (5 rounds)
+node tests/storage-xhost/run.mjs mixed --nodes a,o            # a 4B holder with a 4A follower (XHOST_O_BIN: a 4A xhost)
 node tests/storage-xhost/run.mjs <scenario> --storage local   # the same on a local disk (control)
 node tests/storage-xhost/run.mjs analyse <results dir>        # re-analyse saved results
 ```
@@ -92,6 +102,16 @@ node tests/storage-xhost/run.mjs analyse <results dir>        # re-analyse saved
   - `check`: the next fence check hangs after reading the record.
 - `follow`: holder `a` commits every `--commit-every-ms` (default 1000) for 70 s, and follower `f`
   on node `b` logs every apply.
+- `history`: `xhost brancher` on node a holds the lease, commits a clip on `main`, makes branch
+  `x`, commits `--edits` (12) edits alternating between `x` and `main` (edits 3 and 4 trim the
+  same edge of the clip on each side), waits for the export, and stops without closing. When
+  it has ended, `xhost merger` on node b starts with the heads it reached (`--expect`), waits
+  for the takeover and those heads, merges `x` into `main` with `--skip-conflicting`, exports,
+  and reports `merged` (`{merged, skipped, stateHash, indexHash, heads}`). Follower `f` on node
+  c (else a, the host the merger is not on) stops one follow cycle after applying the merge
+  (`followed`). Fresh verifiers run on nodes a and b.
+- `mixed`: a 4B `brancher` on node a edits `main` only for `--plain-ms` (20 s), then makes a
+  branch and edits both; node b runs the `follower` of a 4A build (plan 4B Decision 4).
 
 ## What the analyser reports
 
@@ -118,7 +138,24 @@ share time (`wall` plus the node's median `clock` offset against the share's mti
 | `idReuse` | a txId accepted by two servers, an entity id bound by two commits on the resolved chain, or a seq twice on the chain |
 | `seqCollisions` | a seq accepted by two servers (information: expected only when a stale write was accepted) |
 | `lostAcked` | accepted commits missing from the resolved chain (**critical**), split into `lostAckedSetAside` (in the writer's quarantine, e.g. `DIVERGED_TAIL`) and `lostAckedVanished` |
+| `openRetries` | opens refused with `PROJECT_NOT_FOUND` and retried (`--open-retry-ms`; the `history` merger retries for 90 s): a folder another host has just made, not yet in this host's directory cache (information) |
 | `latencyMs` | follow latency: a commit on one server until it is applied on another, for commits made after the follower opened |
+
+History counts (`history` and `mixed`, `analyse-history.mjs`):
+
+| Count | Meaning |
+|---|---|
+| `historyMerged`, `historySkipped` | records the merge copied, and those it skipped |
+| `historySkippedMissing` | the branch's conflicting trim was not reported skipped with `SAME_EDGE` (**critical**) |
+| `historyMergedWrong` | the merge did not copy every other branch edit (**critical**) |
+| `historyHashMismatches` / `historyViews` | views (the follower after its follow cycle, each fresh verifier) whose `stateHash` or `indexHash` differs from the merger's (**critical**) |
+| `mixedFollowed` / `mixedEditOnly` | edit-only records in v1 segments the 4A follower applied (`mixedMissed`: **critical**) |
+| `mixedEditsInBranchSegment` | edit-only records exported in the same segment as the branch record: that segment is v2, so a 4A reader never sees them (information) |
+| `mixedAppliedPastBranch` | records at or after the branch record the 4A follower applied (**critical**) |
+| `mixedNewerFormat` | the 4A follower turned read-only `NEWER_FORMAT` (0 is **critical**) |
+
+Lost records are the common `lostAcked` count: with `all`, every branch's accepted records
+(branch and merge records included) must be on the verifier's resolved rows.
 
 A round is critical when it has a double holder, an unsafe takeover, a lost acknowledged write that is not in
 quarantine, or a stale record left applied. `summary.json` holds the counts per scenario and round,

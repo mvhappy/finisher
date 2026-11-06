@@ -1,38 +1,24 @@
 //! `holder`, `contender` and `follower`: one store driven like `fin-node`'s maintenance
-//! thread (`tick_with` without the heavy steps), with commits and stalls.
+//! thread (`tick_with` without the heavy steps), with commits and stalls. [`Node`] is also
+//! the base of `brancher` and `merger` (`history`).
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fin_core::{CoreError, Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
-use fin_store::lease::{HangPoint, LeaseState, MonoClock, SystemClock};
-use fin_store::{MAIN, OpenOptions, ReadOnlyReason, Store, StoreEvent, TickOptions, TxStatus};
+use fin_core::{CommittedTx, CoreError, Op, SCHEMA_VERSION, Tx};
+use fin_store::lease::{HangPoint, LeaseState};
+use fin_store::{MAIN, ReadOnlyReason, Store, StoreEvent, TickOptions, TxStatus};
 use serde_json::{Value, json};
 
 use crate::db::Db;
 use crate::emit::{Emitter, lease_parts};
+use crate::hashes;
+use crate::ops::{asset_op, kind_of, open_store};
 use crate::{Args, StallMode};
 
 const LIGHT: TickOptions = TickOptions {
     backup: false,
     compaction: false,
 };
-
-/// The system clock, with the share's time seen `shift_ms` off (`--skew-ms`): every probe
-/// mtime this store reads is shifted, as a client-set mtime on a skewed client would be.
-#[derive(Debug)]
-struct SkewClock {
-    shift_ms: i64,
-}
-
-impl MonoClock for SkewClock {
-    fn now(&self) -> Instant {
-        SystemClock.now()
-    }
-    fn server_shift_ms(&self) -> i64 {
-        self.shift_ms
-    }
-}
 
 /// What was last reported, to emit changes only.
 #[derive(Default)]
@@ -57,16 +43,21 @@ fn same_lease(a: &LeaseState, b: &LeaseState) -> bool {
     }
 }
 
-struct Node<'a> {
-    a: &'a Args,
-    em: &'a mut Emitter,
-    store: Store,
-    db: Db,
+pub struct Node<'a> {
+    pub a: &'a Args,
+    pub em: &'a mut Emitter,
+    pub store: Store,
+    pub db: Db,
     seen: Seen,
-    role: &'static str,
+    pub role: &'static str,
     commits: u64,
     ever_held: bool,
-    accepted: Vec<String>,
+    /// Accepted records' txIds (commits, branch records, merge records).
+    pub accepted: Vec<String>,
+    /// Records applied by imports so far.
+    pub applied: u64,
+    /// The txId of the first applied record of kind `--until-kind`, when seen.
+    pub until_seen: Option<String>,
 }
 
 pub fn run(a: &Args, em: &mut Emitter) -> Result<(), String> {
@@ -75,17 +66,15 @@ pub fn run(a: &Args, em: &mut Emitter) -> Result<(), String> {
         "contender" => "contender",
         _ => "holder",
     };
-    let mut opts = OpenOptions::default();
-    if a.skew_ms != 0 {
-        opts.clock = Some(Arc::new(SkewClock {
-            shift_ms: a.skew_ms,
-        }) as Arc<dyn MonoClock>);
-    }
+    let mut n = open(a, em, role)?;
+    n.lp()?;
+    n.finish(true)
+}
+
+/// Opens the store of `a` as `role`, reports it, and drains the events of the open.
+pub fn open<'a>(a: &'a Args, em: &'a mut Emitter, role: &'static str) -> Result<Node<'a>, String> {
     let t0 = Instant::now();
-    let store = Store::open_with(&a.data, &a.dir, opts).map_err(|e| {
-        let e: CoreError = e.into();
-        format!("open: {}: {}", e.code, e.message)
-    })?;
+    let store = open_store(a, em)?;
     em.server = Some(store.server_id().to_string());
     let db = Db::open(store.db_path())?;
     let mut n = Node {
@@ -98,6 +87,8 @@ pub fn run(a: &Args, em: &mut Emitter) -> Result<(), String> {
         commits: 0,
         ever_held: false,
         accepted: Vec::new(),
+        applied: 0,
+        until_seen: None,
     };
     let lease = n.store.lease_state();
     n.em.emit(
@@ -122,17 +113,16 @@ pub fn run(a: &Args, em: &mut Emitter) -> Result<(), String> {
     }
     n.observe("open");
     n.drain_open_events()?;
-    n.lp()?;
-    n.finish()
+    Ok(n)
 }
 
 impl Node<'_> {
-    fn lease(&self) -> LeaseState {
+    pub fn lease(&self) -> LeaseState {
         self.store.lease_state()
     }
 
     /// Emits what changed in memory: the lease, the read-only reason, heartbeats. No I/O.
-    fn observe(&mut self, why: &str) {
+    pub fn observe(&mut self, why: &str) {
         let l = self.lease();
         if self.seen.lease.as_ref().is_none_or(|p| !same_lease(p, &l)) {
             let from = self.seen.lease.as_ref().map(|p| lease_parts(p).0);
@@ -197,11 +187,17 @@ impl Node<'_> {
                 StoreEvent::Applied(c) => {
                     let row = self.db.row(&c.tx.tx_id);
                     let l = self.lease();
+                    let kind = kind_of(&c);
+                    self.applied += 1;
+                    if self.until_seen.is_none() && self.a.until_kind.as_deref() == Some(&kind) {
+                        self.until_seen = Some(c.tx.tx_id.clone());
+                    }
                     self.em.emit(
                         "applied",
                         Some(&l),
                         json!({
                             "txId": c.tx.tx_id, "seq": c.rev, "origin": c.tx.author,
+                            "branch": c.tx.branch, "kind": kind,
                             "txHash": row.as_ref().map(|r| r.tx_hash.clone()),
                             "recEpoch": row.as_ref().map(|r| r.epoch),
                         }),
@@ -230,7 +226,8 @@ impl Node<'_> {
         }
     }
 
-    fn tick(&mut self) -> Result<(), String> {
+    pub fn tick(&mut self) -> Result<(), String> {
+        let before = self.applied;
         let t = Instant::now();
         let r = self.store.tick_with(t, LIGHT).map_err(|e| e.to_string())?;
         let ms = t.elapsed().as_millis() as u64;
@@ -271,65 +268,105 @@ impl Node<'_> {
         }
         self.events(r.events);
         self.observe("tick");
+        // A follower's view after each import that changed it (the `history` row compares
+        // the last one with the merger's).
+        if self.role == "follower" && self.applied > before {
+            let h = hashes::of(&self.store, &self.db);
+            let l = self.lease();
+            self.em.emit("hashes", Some(&l), h);
+        }
         Ok(())
     }
 
-    fn commit(&mut self) {
+    /// A fresh txId for this node's next write.
+    pub fn next_tx_id(&mut self) -> String {
         self.commits += 1;
-        let tx_id = format!("{}.{}.{}", self.a.label, std::process::id(), self.commits);
-        let author = format!("xhost:{}:{}", self.a.label, self.store.server_id());
+        format!("{}.{}.{}", self.a.label, std::process::id(), self.commits)
+    }
+
+    /// This node's author string.
+    pub fn author(&self) -> String {
+        format!("xhost:{}:{}", self.a.label, self.store.server_id())
+    }
+
+    fn commit(&mut self) {
+        let tx_id = self.next_tx_id();
+        let op = asset_op(&tx_id);
+        self.commit_on(tx_id, MAIN, vec![op], json!({}));
+    }
+
+    /// Commits `ops` on `branch` as `tx_id` and logs it (`extra`: more fields of the event).
+    pub fn commit_on(
+        &mut self,
+        tx_id: String,
+        branch: &str,
+        ops: Vec<Op>,
+        extra: Value,
+    ) -> Option<CommittedTx> {
         let tx = Tx {
             tx_id: tx_id.clone(),
-            author,
-            branch: MAIN.into(),
-            base_rev: self.store.head(MAIN),
+            author: self.author(),
+            branch: branch.into(),
+            base_rev: self.store.head(branch),
             schema_version: SCHEMA_VERSION,
             args_hash: None,
-            ops: vec![Op::AssetAdd {
-                id: "$a".into(),
-                path: format!("/xhost/{tx_id}.mov"),
-                duration: Rational::from_int(10),
-                video: Some(VideoInfo {
-                    width: 1920,
-                    height: 1080,
-                    rate: Rational::from_int(30),
-                }),
-                audio: None,
-                fingerprint: format!("fp-{tx_id}"),
-            }],
+            ops,
         };
         let before = self.lease();
         let t = Instant::now();
         let r = self.store.commit(tx);
         let ms = t.elapsed().as_millis() as u64;
-        let l = self.lease();
-        match r {
+        let out = match r {
             Ok(c) => {
-                let row = self.db.row(&tx_id);
-                self.accepted.push(tx_id.clone());
-                self.em.emit(
-                    "commit",
-                    Some(&l),
-                    json!({
-                        "ok": true, "txId": tx_id, "seq": c.rev,
-                        "txHash": row.as_ref().map(|r| r.tx_hash.clone()),
-                        "rowEpoch": row.as_ref().map(|r| r.epoch),
-                        "leaseBefore": lease_parts(&before).1, "ms": ms,
-                        "ids": c.bindings.values().collect::<Vec<_>>(),
-                    }),
-                );
+                let ids: Vec<String> = c.bindings.values().cloned().collect();
+                self.accepted_event(&c, &before, ms, ids, extra);
+                Some(c)
             }
             Err(e) => {
-                let e: CoreError = e.into();
-                let reason = e.details.get("reason").cloned();
-                self.em.emit(
-                    "commit",
-                    Some(&l),
-                    json!({ "ok": false, "txId": tx_id, "code": e.code, "reason": reason, "message": e.message, "ms": ms }),
-                );
+                self.refused_event(&tx_id, branch, e, ms);
+                None
             }
-        }
+        };
         self.observe("commit");
+        out
+    }
+
+    /// Logs an accepted record (`ids`: the entity ids it bound, for the analyser's id-reuse
+    /// check; none for copies, which keep their origin's ids).
+    pub fn accepted_event(
+        &mut self,
+        c: &CommittedTx,
+        before: &LeaseState,
+        ms: u64,
+        ids: Vec<String>,
+        extra: Value,
+    ) {
+        let row = self.db.row(&c.tx.tx_id);
+        self.accepted.push(c.tx.tx_id.clone());
+        let l = self.lease();
+        let mut ev = json!({
+            "ok": true, "txId": c.tx.tx_id, "seq": c.rev, "branch": c.tx.branch,
+            "kind": kind_of(c),
+            "txHash": row.as_ref().map(|r| r.tx_hash.clone()),
+            "rowEpoch": row.as_ref().map(|r| r.epoch),
+            "leaseBefore": lease_parts(before).1, "ms": ms, "ids": ids,
+        });
+        if let (Some(o), Value::Object(x)) = (ev.as_object_mut(), extra) {
+            o.extend(x);
+        }
+        self.em.emit("commit", Some(&l), ev);
+    }
+
+    /// Logs a refused write.
+    pub fn refused_event(&mut self, tx_id: &str, branch: &str, e: fin_store::StoreError, ms: u64) {
+        let l = self.lease();
+        let e: CoreError = e.into();
+        let reason = e.details.get("reason").cloned();
+        self.em.emit(
+            "commit",
+            Some(&l),
+            json!({ "ok": false, "txId": tx_id, "branch": branch, "code": e.code, "reason": reason, "message": e.message, "ms": ms }),
+        );
     }
 
     /// The main loop: ticks, commits (holder, contender), stalls, clock samples.
@@ -350,8 +387,26 @@ impl Node<'_> {
         let mut stalled = false;
         let mut beats_failing_until: Option<Instant> = None;
         let (mut next_tick, mut next_commit, mut next_clock) = (start, start, start);
+        let mut until_at: Option<Instant> = None;
         while Instant::now() < end {
             let now = Instant::now();
+            // `--until-kind K`: once a record of kind K applied, `--settle-ms` more, then one
+            // full follow cycle (a fresh poll and a tick), and stop.
+            if self.until_seen.is_some() {
+                let at = *until_at.get_or_insert(now + Duration::from_millis(a.settle_ms));
+                if now >= at {
+                    self.store.poll_now_for_test();
+                    self.tick()?;
+                    let l = self.lease();
+                    let h = hashes::of(&self.store, &self.db);
+                    self.em.emit(
+                        "followed",
+                        Some(&l),
+                        json!({ "until": self.until_seen, "hashes": h }),
+                    );
+                    break;
+                }
+            }
             if let Some((s_at, s_end)) = stall
                 && !stalled
                 && now >= s_at
@@ -452,8 +507,9 @@ impl Node<'_> {
         Ok(None)
     }
 
-    /// Final report: what became of every accepted commit, then close, then the chain.
-    fn finish(self) -> Result<(), String> {
+    /// Final report: what became of every accepted commit, then close (or, without `close`,
+    /// stop as a crash would: no export, the lease left to go stale), then the chain.
+    pub fn finish(self, close: bool) -> Result<(), String> {
         let mut statuses = serde_json::Map::new();
         for id in &self.accepted {
             let s = match self.store.tx_status(id) {
@@ -476,21 +532,28 @@ impl Node<'_> {
                 "txStatus": statuses, "head": self.store.head(MAIN),
                 "generation": self.store.generation(MAIN), "readOnly": self.store.read_only(),
                 "quarantine": status.quarantine, "warnings": status.warnings,
+                "branches": status.branches, "hashes": hashes::of(&self.store, &self.db),
             }),
         );
         let Node { em, store, db, .. } = self;
-        match store.close() {
-            Ok(r) => em.emit(
-                "closed",
-                Some(&l),
-                json!({ "segments": r.segments_written, "records": r.records, "error": r.error }),
-            ),
-            Err(e) => em.emit("closed", Some(&l), json!({ "error": e.to_string() })),
+        if close {
+            match store.close() {
+                Ok(r) => em.emit(
+                    "closed",
+                    Some(&l),
+                    json!({ "segments": r.segments_written, "records": r.records, "error": r.error }),
+                ),
+                Err(e) => em.emit("closed", Some(&l), json!({ "error": e.to_string() })),
+            }
+        } else {
+            // Nothing is released: the process ends with the lease and its files as they are.
+            std::mem::forget(store);
+            em.emit("stopped", Some(&l), json!({}));
         }
         em.emit(
             "chain",
             None,
-            json!({ "rows": db.chain()?, "quarantine": db.quarantine()? }),
+            json!({ "rows": db.chain()?, "all": db.all_rows()?, "quarantine": db.quarantine()? }),
         );
         Ok(())
     }

@@ -5,7 +5,8 @@
 //        [--skew-ms K] [--b-delay-ms D]
 //   node tests/storage-xhost/run.mjs analyse <results dir>
 //
-// Scenarios: race, race-stale, stall, stall-short, stall-check, stall-sigstop, follow, skew.
+// Scenarios: race, race-stale, stall, stall-short, stall-check, stall-sigstop, follow, skew,
+// history, mixed.
 // Host and share access come only from XHOST_* variables (README.md); nothing about hosts is
 // written into this repository.
 import { randomBytes } from "node:crypto";
@@ -165,6 +166,36 @@ function plan(scenario, nodes, o, dir, round) {
       p.procs[0].args.push("--skew-ms", skew);
       return p;
     }
+    case "history": {
+      // Brancher `a` (node a) makes branch x and edits both lines, then stops without closing;
+      // merger `b` (node b) starts when it has ended, waits for the takeover and the heads `a`
+      // reached, merges x into main skipping the conflict, and exports; follower `f` (node c,
+      // else a: the host the merger is not on) stops one follow cycle after applying the merge.
+      const f = nodes[2] ?? a;
+      const heads = (evs) => Object.entries(evs.find((e) => e.ev === "final")?.hashes?.heads ?? {}).map(([br, [seq]]) => `${br}=${seq}`).join(",");
+      return {
+        create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", "--free"] },
+        procs: [
+          { node: a, role: "brancher", args: ["brancher", ...base(a, "a", "a", Number(o.secs ?? 60)), "--commit-every-ms", o["commit-every-ms"] ?? 500, "--edits", o.edits ?? 12], delayMs: 0 },
+          { node: f, role: "follower", args: ["follower", ...base(f, "f", "f", 300), "--until-kind", "merge", "--settle-ms", 3000], delayMs: 2000 },
+          { node: b, role: "merger", args: ["merger", ...base(b, "b", "b", 180), "--open-retry-ms", o["open-retry-ms"] ?? 90_000], delayMs: 0, after: "a", extra: (evs) => ["--expect", heads(evs) || "main=0"] },
+        ],
+        verifyOn: [a, b],
+      };
+    }
+    case "mixed": {
+      // Mixed versions (plan 4B Decision 4): a 4B brancher on node a edits main only for
+      // `--plain-ms` (default 20 s), then makes a branch and edits both; node b runs a 4A
+      // follower (`XHOST_B_BIN`: a 4A `xhost`), which must follow the edit-only part and then
+      // turn read-only NEWER_FORMAT, applying nothing past the branch record.
+      return {
+        create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", "--free"] },
+        procs: [
+          { node: a, role: "brancher", args: ["brancher", ...base(a, "a", "a", Number(o.secs ?? 60)), "--commit-every-ms", o["commit-every-ms"] ?? 1000, "--plain-ms", o["plain-ms"] ?? 20_000, "--edits", o.edits ?? 8], delayMs: 0 },
+          { node: b, role: "follower-4a", args: ["follower", ...base(b, "o", "o", Number(o.secs ?? 60) + 10)], delayMs: 2000 },
+        ],
+      };
+    }
     default:
       throw new Error(`unknown scenario ${scenario}`);
   }
@@ -181,9 +212,19 @@ async function round(scenario, nodes, o, outDir, runId, k) {
   procs.push(tag(p.create.node, "create", "create", cr));
   if (cr.exit !== 0) throw new Error(`create failed on ${p.create.node.name}: see ${rdir}/create.jsonl.err`);
   const t0 = Date.now() + 1500;
+  const labelOf = (x) => x.args[x.args.indexOf("--label") + 1];
+  // Each process's result, for `after` (it starts when that process has ended, with
+  // `extra(its events)` appended).
+  const ended = {};
+  for (const x of p.procs) {
+    let ok;
+    ended[labelOf(x)] = { promise: new Promise((r) => (ok = r)), ok: (v) => ok(v) };
+  }
   const running = p.procs.map(async (x) => {
-    const label = x.args[x.args.indexOf("--label") + 1];
-    const args = [...x.args, "--start-at-ms", t0 + x.delayMs];
+    const label = labelOf(x);
+    let args;
+    if (x.after) args = [...x.args, ...x.extra((await ended[x.after].promise).events)];
+    else args = [...x.args, "--start-at-ms", t0 + x.delayMs];
     let pid = null;
     const r = run(x.node, args, join(rdir, `${label}.jsonl`), { onEvent: (e) => (e.ev === "start" ? (pid = e.pid) : null) });
     if (x.sigstop) {
@@ -194,12 +235,17 @@ async function round(scenario, nodes, o, outDir, runId, k) {
         await signal(x.node, pid, "SIGCONT");
       }
     }
-    return tag(x.node, x.role, label, await r);
+    const res = await r;
+    ended[label].ok(res);
+    return tag(x.node, x.role, label, res);
   });
   procs.push(...(await Promise.all(running)));
-  const v = nodes[0];
-  const vr = await run(v, ["verify", "--data", pjoin(v, v.data, `verify-${runId}-${scenario}-r${k}`), "--dir", pjoin(v, v.base, rel), "--label", "verify"], join(rdir, "verify.jsonl"));
-  procs.push(tag(v, "verify", "verify", vr));
+  // A fresh reader on each `verifyOn` node (default: the first): `verify`, `verify-<node>`.
+  for (const [i, v] of (p.verifyOn ?? [nodes[0]]).entries()) {
+    const label = i === 0 ? "verify" : `verify-${v.name}`;
+    const vr = await run(v, ["verify", "--data", pjoin(v, v.data, `${label}-${runId}-${scenario}-r${k}`), "--dir", pjoin(v, v.base, rel), "--label", label], join(rdir, `${label}.jsonl`));
+    procs.push(tag(v, i === 0 ? "verify" : "verify-other", label, vr));
+  }
   writeFileSync(join(rdir, "meta.json"), JSON.stringify({ scenario, round: k, rel, nodes: procs.map(({ events, ...m }) => m) }, null, 1));
   return procs;
 }
@@ -229,7 +275,9 @@ function report(outDir, scenario, rounds, tolMs) {
   console.log(`  double holders ${c.doubleHolders} (suspects ${c.doubleHolderSuspects}), early takeovers ${c.earlyTakeovers}/${c.takeovers} (unsafe, < 25 s: ${c.unsafeTakeovers})`);
   console.log(`  stale: accepted-after-newer-epoch ${c.staleAcceptedAfterNewerEpoch}, exported ${c.staleExported}, applied ${c.staleApplied}, left applied ${c.staleLeftApplied}; rewinds ${c.rewinds} (${c.rewoundRecords} records)`);
   console.log(`  id reuse ${c.idReuse} (seq collisions among accepted ${c.seqCollisions}); lost acknowledged ${c.lostAcked} (set aside ${c.lostAckedSetAside}, vanished ${c.lostAckedVanished}) of ${c.accepted} accepted`);
-  console.log(`  verify failures ${c.verifyFailed}; refusals ${JSON.stringify(s.refused)}`);
+  console.log(`  verify failures ${c.verifyFailed}; refusals ${JSON.stringify(s.refused)}; opens retried ${c.openRetries} (PROJECT_NOT_FOUND)`);
+  if (c.historyViews !== undefined) console.log(`  history: merged ${c.historyMerged}, skipped ${c.historySkipped} (missing ${c.historySkippedMissing}), wrong merge count ${c.historyMergedWrong}, hash mismatches ${c.historyHashMismatches} over ${c.historyViews} views`);
+  if (c.mixedEditOnly !== undefined) console.log(`  mixed: 4A follower followed ${c.mixedFollowed}/${c.mixedEditOnly} edit-only records (${c.mixedEditsInBranchSegment} more exported in the branch record's v2 segment), applied past the branch record ${c.mixedAppliedPastBranch}, NEWER_FORMAT in ${c.mixedNewerFormat} rounds`);
   console.log(`  follow latency ms: n=${s.latencyMs.n} p50=${s.latencyMs.p50} p95=${s.latencyMs.p95} max=${s.latencyMs.max}`);
   for (const p of s.problems.slice(0, 20)) console.log(`  problem: ${p}`);
   return out;
@@ -252,15 +300,15 @@ async function main() {
   const nodes = names.map((n) => node(n, storage));
   // Time-sortable, plus a random suffix so controllers started in the same millisecond differ.
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
-  const outDir = o.out ?? join(REPO, "archive/spike/sp4a-xhost", `${runId}-${storage}`);
-  const rounds = Number(o.rounds ?? (scenario === "race" ? 20 : 1));
+  const outDir = o.out ?? join(REPO, env.XHOST_RESULTS ?? "archive/spike/sp4a-xhost", `${runId}-${storage}`);
+  const rounds = Number(o.rounds ?? (scenario === "race" ? 20 : scenario === "history" ? 5 : 1));
   const results = [];
   for (let k = 1; k <= rounds; k++) {
     const procs = await round(scenario, nodes, o, outDir, runId, k);
     const r = analyseRound(procs, { tolMs });
     results.push(r);
     const c = r.counts;
-    console.log(`${scenario} r${k}: dbl=${c.doubleHolders} early=${c.earlyTakeovers} staleApplied=${c.staleApplied} left=${c.staleLeftApplied} idReuse=${c.idReuse} lostAck=${c.lostAcked}(vanished ${c.lostAckedVanished}) rewinds=${c.rewinds} verifyFail=${c.verifyFailed} chain=${c.chain}${r.problems.length ? ` problems=${r.problems.length}` : ""}`);
+    console.log(`${scenario} r${k}: dbl=${c.doubleHolders} early=${c.earlyTakeovers} staleApplied=${c.staleApplied} left=${c.staleLeftApplied} idReuse=${c.idReuse} lostAck=${c.lostAcked}(vanished ${c.lostAckedVanished}) rewinds=${c.rewinds} verifyFail=${c.verifyFailed} chain=${c.chain}${c.historyViews !== undefined ? ` merged=${c.historyMerged} skipped=${c.historySkipped} hashMismatch=${c.historyHashMismatches}` : ""}${c.mixedEditOnly !== undefined ? ` 4aFollowed=${c.mixedFollowed}/${c.mixedEditOnly} pastBranch=${c.mixedAppliedPastBranch} newer=${c.mixedNewerFormat}` : ""}${r.problems.length ? ` problems=${r.problems.length}` : ""}`);
   }
   report(outDir, scenario, results, tolMs);
   console.log(`results: ${outDir}`);

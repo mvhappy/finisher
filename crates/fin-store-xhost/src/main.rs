@@ -8,12 +8,20 @@
 //! - `holder --data S --dir D --secs N --commit-every-ms M`: opens, ticks until it holds, then
 //!   commits a small op every M ms and ticks. `contender` is the same loop (it is told apart
 //!   only by its role in the events);
-//! - `follower --data S --dir D --secs N`: read-only; logs every applied record;
+//! - `follower --data S --dir D --secs N [--until-kind K]`: read-only; logs every applied
+//!   record, and the heads and hashes (`hashes`) after each import that applied some. With
+//!   `--until-kind K` it stops `--settle-ms` after applying a record of kind K, after one
+//!   more follow cycle (`followed`);
+//! - `brancher`, `merger` (the `history` row, see `history`): `brancher --data S --dir D
+//!   --secs N [--edits E] [--plain-ms T] [--branch x]`; `merger --data S --dir D --secs N
+//!   [--branch x] [--expect id=seq,…]`;
 //! - `verify --data S --dir D`: opens (normally with fresh server data, so the database is
 //!   rebuilt from the folder), then reports `Store::verify`, the resolved chain, the
-//!   quarantine and the folder's segments and lease files.
+//!   quarantine and the folder's segments and lease files, and the heads and hashes of every
+//!   branch (`hashes`, see `hashes`).
 //!
-//! Common options: `--label L` (default: the subcommand), `--start-at-ms T` (Unix ms: wait
+//! Common options: `--open-retry-ms R` (retry an open refused with `PROJECT_NOT_FOUND` for R
+//! ms, logging each refusal as `openRetry`), `--label L` (default: the subcommand), `--start-at-ms T` (Unix ms: wait
 //! for it, to start nodes together), `--tick-ms` (default 250), `--clock-every-ms` (default
 //! 5000), `--wall-skew-ms K` (emulated wall-clock skew of the event stamps only), `--skew-ms K`
 //! (emulated server-time skew: this store's lease sees the share's clock K ms off, as with a
@@ -30,7 +38,10 @@
 
 mod db;
 mod emit;
+mod hashes;
+mod history;
 mod node;
+mod ops;
 mod verify;
 
 use std::path::PathBuf;
@@ -71,6 +82,17 @@ pub struct Args {
     /// Follower: may acquire the lease (default: passive, never acquires).
     pub active: bool,
     pub settle_ms: u64,
+    /// Follower: stop after applying a record of this kind (`--until-kind`).
+    pub until_kind: Option<String>,
+    /// Brancher: edits after the branch (`--edits`); edit-only phase before it (`--plain-ms`).
+    pub edits: u64,
+    pub plain_ms: u64,
+    /// Brancher, merger: the branch's display name (`--branch`).
+    pub branch: String,
+    /// Merger: heads to wait for before merging (`--expect id=seq,…`).
+    pub expect: Vec<(String, u64)>,
+    /// Retry an open refused with `PROJECT_NOT_FOUND` for this long (`--open-retry-ms`).
+    pub open_retry_ms: u64,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
@@ -93,6 +115,12 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         free: false,
         active: false,
         settle_ms: 3000,
+        until_kind: None,
+        edits: 12,
+        plain_ms: 0,
+        branch: "x".into(),
+        expect: Vec::new(),
+        open_retry_ms: 0,
     };
     let mut it = argv[1..].iter();
     while let Some(flag) = it.next() {
@@ -125,6 +153,18 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--wall-skew-ms" => a.wall_skew_ms = num(val()?)?,
             "--start-at-ms" => a.start_at_ms = Some(num(val()?)?),
             "--settle-ms" => a.settle_ms = num(val()?)?.max(0) as u64,
+            "--until-kind" => a.until_kind = Some(val()?),
+            "--edits" => a.edits = num(val()?)?.max(4) as u64,
+            "--plain-ms" => a.plain_ms = num(val()?)?.max(0) as u64,
+            "--branch" => a.branch = val()?,
+            "--expect" => {
+                for kv in val()?.split(',').filter(|x| !x.is_empty()) {
+                    let (k, v) = kv.split_once('=').ok_or("--expect: id=seq,…")?;
+                    a.expect
+                        .push((k.to_string(), num(v.to_string())?.max(0) as u64));
+                }
+            }
+            "--open-retry-ms" => a.open_retry_ms = num(val()?)?.max(0) as u64,
             "--free" => a.free = true,
             "--active" => a.active = true,
             f => return Err(format!("unknown option {f}")),
@@ -183,7 +223,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("xhost: {e}");
             eprintln!(
-                "usage: xhost create|holder|contender|follower|verify --data S --dir D [options]"
+                "usage: xhost create|holder|contender|follower|brancher|merger|verify --data S --dir D [options]"
             );
             return ExitCode::from(2);
         }
@@ -205,6 +245,8 @@ fn main() -> ExitCode {
     let r = match a.cmd.as_str() {
         "create" => create(&a, &mut em),
         "holder" | "contender" | "follower" => node::run(&a, &mut em),
+        "brancher" => history::brancher(&a, &mut em),
+        "merger" => history::merger(&a, &mut em),
         "verify" => verify::run(&a, &mut em),
         c => Err(format!("unknown subcommand {c}")),
     };

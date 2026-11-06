@@ -7,6 +7,11 @@
 // share time (wall + the offset each node measured against the share's mtimes) with a stated
 // tolerance.
 
+import { historyChecks } from "./analyse-history.mjs";
+
+/** Roles of the processes that hold or follow a store. */
+export const NODE_ROLES = ["holder", "contender", "follower", "brancher", "merger", "follower-4a"];
+
 /** Lease timings of spec §3.5, ms. */
 export const SPEC = { staleAfterMs: 45_000, minUnchangedMs: 25_000, selfFenceMs: 20_000 };
 
@@ -95,11 +100,12 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
   const chainHashes = new Set();
   const seqSeen = new Map();
   let chainDupSeq = 0;
-  for (const [seq, txId, txHash, epoch, , author] of vChain?.rows ?? []) {
-    chain.set(txId, { seq, txHash, epoch, author });
+  // Every branch's rows when the verifier lists them (`all`, 4B), else `main`'s.
+  for (const [seq, txId, txHash, epoch, , author, branch = "main"] of vChain?.all ?? vChain?.rows ?? []) {
+    chain.set(txId, { seq, txHash, epoch, author, branch });
     chainHashes.add(txHash);
-    if (seqSeen.has(seq)) chainDupSeq++;
-    seqSeen.set(seq, txId);
+    if (seqSeen.has(`${branch}:${seq}`)) chainDupSeq++;
+    seqSeen.set(`${branch}:${seq}`, txId);
   }
   const folderRec = new Map(); // txHash -> {epochs, writers}
   const segs = vFolder?.scan?.segments ?? [];
@@ -115,7 +121,7 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
   }
 
   // Servers, accepted commits, epochs.
-  const nodes = procs.filter((p) => ["holder", "contender", "follower"].includes(p.role));
+  const nodes = procs.filter((p) => NODE_ROLES.includes(p.role));
   const accepted = [];
   const refused = {};
   const epochServers = new Map();
@@ -225,7 +231,7 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
     }
     const fc = p.events.find((x) => x.ev === "chain");
     if (vChain && fc) {
-      for (const [seq, txId, txHash, epoch, exported] of fc.rows) {
+      for (const [seq, txId, txHash, epoch, exported] of fc.all ?? fc.rows) {
         if (!chainHashes.has(txHash)) leftApplied.push({ node: p.label, seq, txId, epoch, exported });
       }
     }
@@ -242,7 +248,10 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
   }
   const entityReuse = [...ids].filter(([, t]) => t.length > 1).map(([id, t]) => ({ id, txIds: t }));
   const seqAcc = new Map();
-  for (const { e } of accepted) (seqAcc.get(e.seq) ?? seqAcc.set(e.seq, new Set()).get(e.seq)).add(e.server);
+  for (const { e } of accepted) {
+    const k = `${e.branch ?? "main"}:${e.seq}`;
+    (seqAcc.get(k) ?? seqAcc.set(k, new Set()).get(k)).add(e.server);
+  }
   const seqCollisions = [...seqAcc].filter(([, s]) => s.size > 1).length;
 
   // Follow latency: commit on one server -> applied on another (commits after it opened).
@@ -268,6 +277,7 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
       return [p.label, { role: p.role, accepted: f?.accepted ?? 0, attempts: f?.attempts ?? 0, readOnly: f?.readOnly ?? null, lease: f?.lease ?? null, epoch: f?.epoch ?? null, quarantine: f?.quarantine ?? null, ok: end?.ok ?? false, error: end?.error }];
     }),
   );
+  let openRetries = 0;
   for (const p of procs) {
     // A node that cannot write to the share: first error text per node and kind.
     const cant = p.events.find((e) => (e.ev === "opened" || e.ev === "lease") && JSON.stringify([e.reason, e.leaseDetail]).includes("cannot write the probe file"));
@@ -277,14 +287,20 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
     const end = p.events.find((e) => e.ev === "end");
     if (!end?.ok) r.problems.push(`${p.label} (${p.role}) did not end ok: ${end?.error ?? `exit ${p.exit}`}`);
     for (const w of p.events.filter((e) => e.ev === "warning")) r.notes.push(`${p.label}: ${w.what}`);
+    const retries = p.events.filter((e) => e.ev === "openRetry");
+    openRetries += retries.length;
+    if (retries.length) r.notes.push(`${p.label} (${p.role}): open refused ${retries.length}× (${retries[0].code}), for ${retries.at(-1).waitedMs} ms`);
   }
   const vFailed = (vReport?.checks ?? []).filter((c) => !c.ok).map((c) => c.name);
 
   const lostSetAside = lost.filter((l) => l.status?.state === "setAside");
   const lostVanished = lost.filter((l) => l.status?.state !== "setAside");
+  const h = historyChecks(procs);
+  r.problems.push(...h.problems);
   return {
     ...r,
     counts: {
+      ...h.counts,
       doubleHolders: doubles.length + epochReuse.length,
       doubleHolderSuspects: suspects.length,
       earlyTakeovers: takeovers.filter((t) => t.early).length,
@@ -303,12 +319,14 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
       lostAckedSetAside: lostSetAside.length,
       lostAckedVanished: lostVanished.length,
       verifyFailed: vFailed.length,
+      openRetries,
       chain: chain.size,
       holders: new Set(wins.map((w) => w.proc.server)).size,
     },
-    critical: lostVanished.length + doubles.length + epochReuse.length + leftApplied.length + takeovers.filter((t) => t.unsafe).length > 0,
+    critical: h.critical || lostVanished.length + doubles.length + epochReuse.length + leftApplied.length + takeovers.filter((t) => t.unsafe).length > 0,
     latencyMs: lat,
-    detail: { doubles, suspects, epochReuse, takeovers, staleAccepts, lost, staleFolder, applied, leftApplied, txIdReuse, entityReuse, refused, finals, verifyFailed: vFailed, verifyOk: vReport?.ok ?? null, clocks: clk },
+    detail: {
+      history: h.detail, doubles, suspects, epochReuse, takeovers, staleAccepts, lost, staleFolder, applied, leftApplied, txIdReuse, entityReuse, refused, finals, verifyFailed: vFailed, verifyOk: vReport?.ok ?? null, clocks: clk },
   };
 }
 
