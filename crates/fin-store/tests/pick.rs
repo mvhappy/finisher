@@ -841,3 +841,97 @@ fn follower_settles_the_parent_of_a_merged_child() {
     assert_eq!(states(&f), states(&a));
     assert_verifies(&f);
 }
+
+/// Review of the B2 fix: on a follower, copies arrive before the records they copy, and
+/// before the `branch` record of a child that has none of its own. Every follower ends with
+/// br1, br2 and br3 merged, in every order the five segments can arrive in.
+#[test]
+fn merged_state_converges_when_copies_arrive_first() {
+    let e = is::env();
+    let mut a = e.create("a");
+    setup(&mut a);
+    branch(&mut a, "b1", "feature", MAIN);
+    edit(&mut a, "br1", "e1", "alice", vec![insert("$p", 30, 2)]);
+    merge(&mut a, "m1", "br1", MAIN);
+    e.flush(&mut a);
+    edit(&mut a, "br1", "e2", "alice", vec![trim("c1", -1)]);
+    let br2 = branch(&mut a, "b2", "child", "br1");
+    edit(&mut a, &br2, "x1", "alice", vec![trim("c2", -1)]);
+    edit(&mut a, "br1", "e6", "alice", vec![trim("c3", -1)]);
+    let br4 = branch(&mut a, "b4", "late", "br1");
+    e.flush(&mut a);
+    merge(&mut a, "m2", &br2, MAIN);
+    e.flush(&mut a);
+    assert_eq!(branch_state(&a, "br1"), BranchState::Active);
+    merge(&mut a, "m3", &br4, MAIN);
+    e.flush(&mut a);
+    assert_eq!(branch_state(&a, "br1"), BranchState::Merged);
+    assert_eq!(branch_state(&a, &br2), BranchState::Merged);
+    assert_eq!(branch_state(&a, &br4), BranchState::Merged);
+    let root = e.dir.join(".finisher").join("segments");
+    let files: Vec<PathBuf> = all_segments(&e.dir)
+        .into_iter()
+        .map(|p| p.strip_prefix(&root).unwrap().to_path_buf())
+        .collect();
+    assert_eq!(files.len(), 6, "{files:?}");
+    let first = is::segments(&e.dir)[0]
+        .0
+        .strip_prefix(&root)
+        .unwrap()
+        .to_path_buf();
+    let rest: Vec<&PathBuf> = files.iter().filter(|p| **p != first).collect();
+    let target = states(&a);
+    let mut orders: Vec<Vec<usize>> = vec![vec![]];
+    for _ in 0..rest.len() {
+        orders = orders
+            .into_iter()
+            .flat_map(|o| {
+                (0..rest.len())
+                    .filter(|i| !o.contains(i))
+                    .map(|i| {
+                        let mut n = o.clone();
+                        n.push(i);
+                        n
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    }
+    let mut bad = vec![];
+    for (k, order) in orders.iter().enumerate() {
+        let dir = e.root.join(format!("order-{k}"));
+        is::copy_dir(&e.dir, &dir);
+        for p in all_segments(&dir) {
+            fs::remove_file(p).unwrap();
+        }
+        let put = |rel: &Path| {
+            let to = dir.join(".finisher").join("segments").join(rel);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(root.join(rel), to).unwrap();
+        };
+        put(&first);
+        let seen: Vec<&PathBuf> = order.iter().map(|&i| rest[i]).collect();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut x = e.try_open_at(&format!("x{k}"), &dir).unwrap();
+            for &i in order {
+                put(rest[i]);
+                e.poll(&mut x);
+            }
+            let v = x.verify();
+            (states(&x) == target && v.ok, format!("{:?}", states(&x)))
+        }));
+        match r {
+            Ok((true, _)) => {}
+            Ok((false, st)) => bad.push(format!("{seen:?}: {st}")),
+            Err(_) => bad.push(format!("{seen:?}: PANIC")),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert!(
+        bad.is_empty(),
+        "{} of {} orders differ from {target:?}:\n{}",
+        bad.len(),
+        orders.len(),
+        bad.join("\n")
+    );
+}

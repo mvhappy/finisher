@@ -235,16 +235,22 @@ pub(crate) fn merged_branches(
 /// ([`Touched::record`], [`Touched::imported`]), settled by [`Touched::settle`] in the same
 /// transaction. A branch's own new records never make it merged (a record added to a branch
 /// never takes one of its records off the list left to merge); only copies of its records
-/// elsewhere do. So a merged branch that got records of its own is recomputed (an edit a write
-/// made just clears the flag: it is left to merge), and every branch on a new copy's origin
-/// chain is recomputed, with the copy's source branch.
+/// elsewhere do. So, for a write, a merged branch that got records of its own is recomputed
+/// (an edit a write made just clears the flag: it is left to merge), and every branch on a new
+/// copy's origin chain is recomputed, with the copy's source branch. An import pass applies
+/// records in folder order, not in the order they were written: a copy may arrive before the
+/// records it copies, or before the `branch` record of their branch. So every branch an import
+/// gave records, and every branch an imported `branch` record makes, is recomputed whatever
+/// its flag.
 #[derive(Debug, Default)]
 pub(crate) struct Touched {
     /// Branches a write gave an `edit`.
     cleared: BTreeSet<String>,
-    /// Branches that got another record of their own (an imported edit may be copied already;
-    /// an undo tied to a merge's target is no candidate).
+    /// Branches a write gave another record of their own (an undo tied to a merge's target is
+    /// no candidate): recomputed when merged now.
     own: BTreeSet<String>,
+    /// Branches an import gave records, or made: always recomputed.
+    imported: BTreeSet<String>,
     /// The `from` branches of new copies.
     sources: BTreeSet<String>,
     /// The `origin`s of new copies.
@@ -263,18 +269,28 @@ impl Touched {
     }
 
     fn add(&mut self, branch: &str, link: Option<&Link>, new: bool) {
+        let own = if new {
+            &mut self.own
+        } else {
+            &mut self.imported
+        };
         match link {
             None | Some(Link::Edit) if new => {
                 self.cleared.insert(branch.to_string());
             }
             Some(Link::Merge { from, origin, .. } | Link::CherryPick { from, origin, .. }) => {
-                self.own.insert(branch.to_string());
+                own.insert(branch.to_string());
                 self.sources.insert(from.clone());
                 self.origins.insert(origin.clone());
             }
             None
             | Some(Link::Edit | Link::Undo { .. } | Link::Redo { .. } | Link::Revert { .. }) => {
-                self.own.insert(branch.to_string());
+                own.insert(branch.to_string());
+            }
+            // A branch made after the copies of its records arrived (import only: a write's
+            // new branch has no records yet, and no copies).
+            Some(Link::Branch { branch_id, .. }) if !new => {
+                self.imported.insert(branch_id.clone());
             }
             Some(_) => {}
         }
@@ -288,6 +304,7 @@ impl Touched {
             Ok(index::get(conn, id)?.is_some_and(|i| i.merged))
         };
         let mut recheck: BTreeSet<String> = t.sources;
+        recheck.extend(t.imported);
         for id in &t.own {
             if merged_now(id)? {
                 recheck.insert(id.clone());
