@@ -1,8 +1,9 @@
 //! Records as their links say (plan 4B Task 20): the `merged` state's reads
 //! (`fin_core::history::left_to_merge`) need only each record's kind and links (origins, merge
 //! groups, the units an undo names), which `txs` and `record_links` hold, so a write or an
-//! import pass settles it without parsing records. A record here has no ops, inverses,
-//! bindings or intent author.
+//! import pass settles it without parsing records. What these reads give is a [`LinkRec`]:
+//! a record with its kind, links, branch and seq only. Its author, intent, ops, inverses,
+//! bindings and diff are empty, so it is only for readers of links.
 //!
 //! `derived::compute` (verify's reference) still parses records: it must follow from the log
 //! alone, `record_links` included in what verify checks.
@@ -48,13 +49,28 @@ fn cols(r: &Row<'_>) -> rusqlite::Result<Cols> {
     ))
 }
 
+/// A record as its link row says: kind, links (`origin`, `originHash`, `from`, `mergeId`,
+/// `undoes`, `redoes`, `reverts`), branch and seq. Everything else is empty (no author, intent,
+/// ops, inverses, bindings or diff), so it is unwrapped only where links are all that is read
+/// ([`LinkRec::links_only`]).
+#[derive(Debug, Clone)]
+pub(crate) struct LinkRec(LogRec);
+
+impl LinkRec {
+    /// The record, for a reader of kinds and links only (the merged state's
+    /// `left_to_merge`); never for one that reads its author, ops or diff.
+    pub(crate) fn links_only(self) -> LogRec {
+        self.0
+    }
+}
+
 /// `branch`'s rows with `after < seq <= through`, oldest first.
 pub(crate) fn records(
     conn: &Connection,
     branch: &str,
     after: u64,
     through: u64,
-) -> Result<Vec<LogRec>, StoreError> {
+) -> Result<Vec<LinkRec>, StoreError> {
     let rows: Vec<Cols> = conn
         .prepare_cached(&format!(
             "{SELECT} WHERE t.branch = ?1 AND t.seq > ?2 AND t.seq <= ?3 ORDER BY t.seq"
@@ -65,7 +81,7 @@ pub(crate) fn records(
 }
 
 /// The row with `tx_id`, if any.
-pub(crate) fn find(conn: &Connection, tx_id: &str) -> Result<Option<LogRec>, StoreError> {
+pub(crate) fn find(conn: &Connection, tx_id: &str) -> Result<Option<LinkRec>, StoreError> {
     let rows: Vec<Cols> = conn
         .prepare_cached(&format!("{SELECT} WHERE t.tx_id = ?1"))?
         .query_map(params![tx_id], cols)?
@@ -75,7 +91,7 @@ pub(crate) fn find(conn: &Connection, tx_id: &str) -> Result<Option<LogRec>, Sto
 
 /// One row as a record of its kind and links. A non-edit row without its link row (never on a
 /// consistent DB) is parsed whole.
-fn record(conn: &Connection, c: Cols) -> Result<LogRec, StoreError> {
+fn record(conn: &Connection, c: Cols) -> Result<LinkRec, StoreError> {
     let (branch, seq, tx_id, kind, linked, origin, origin_hash, from, merge_id, targets) = c;
     let seq = to_u64(seq)?;
     let kind: RecordKind = serde_json::from_value(serde_json::Value::String(kind))?;
@@ -83,12 +99,12 @@ fn record(conn: &Connection, c: Cols) -> Result<LogRec, StoreError> {
         let bytes: Vec<u8> = conn
             .prepare_cached("SELECT record_bytes FROM txs WHERE tx_id = ?1")?
             .query_row(params![tx_id], |r| r.get(0))?;
-        return Ok(LogRec {
+        return Ok(LinkRec(LogRec {
             record: db::parse_record(Some(seq), &bytes)?,
             branch,
             seq,
             diff: Diff::default(),
-        });
+        }));
     }
     let targets: Vec<String> = match targets {
         Some(t) => serde_json::from_str(&t)?,
@@ -125,10 +141,10 @@ fn record(conn: &Connection, c: Cols) -> Result<LogRec, StoreError> {
         RecordKind::Revert => r.reverts = first,
         _ => {}
     }
-    Ok(LogRec {
+    Ok(LinkRec(LogRec {
         record: r,
         branch,
         seq,
         diff: Diff::default(),
-    })
+    }))
 }

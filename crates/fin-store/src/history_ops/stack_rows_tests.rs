@@ -141,7 +141,8 @@ fn stack_records_equal_the_parsed_records() {
         };
         let light: Vec<_> = crate::link_records::records(&s.conn, b, fork, head)
             .unwrap()
-            .iter()
+            .into_iter()
+            .map(|r| r.links_only())
             .map(|r| (r.branch.clone(), links(&r.record)))
             .collect();
         let parsed: Vec<_> = log
@@ -152,7 +153,10 @@ fn stack_records_equal_the_parsed_records() {
             .collect();
         assert_eq!(light, parsed, "{b}");
         for (_, l) in &parsed {
-            let one = crate::link_records::find(&s.conn, &l.0).unwrap().unwrap();
+            let one = crate::link_records::find(&s.conn, &l.0)
+                .unwrap()
+                .unwrap()
+                .links_only();
             assert_eq!(&links(&one.record), l);
         }
     }
