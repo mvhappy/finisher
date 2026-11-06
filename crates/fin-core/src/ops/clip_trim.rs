@@ -7,11 +7,11 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::Project;
-use crate::ops::util::{asset, clip_index, end, invalid_range, record, ripple, shift, wrong_op};
+use crate::ops::util::{OpDiff, asset, clip_index, end, invalid_range, ripple, wrong_op};
 use crate::ops::{Bindings, Edge, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::{Rational, frame_duration};
-use crate::tx::{ChangeKind, Diff, EntityKind};
+use crate::tx::{Diff, EntityKind};
 
 /// Resolved, checked trim: where the clip is.
 pub(crate) struct Plan {
@@ -62,7 +62,7 @@ pub(crate) fn apply(
     op: &Op,
     bindings: &mut Bindings,
     _ids: &mut dyn IdAlloc,
-    diff: &mut Diff,
+    diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let plan = validate(project, op, bindings)?;
     let Op::ClipTrim { edge, delta, .. } = op else {
@@ -71,21 +71,22 @@ pub(crate) fn apply(
     let track = &mut project.timeline.tracks[plan.track];
     let c = &mut track.items[plan.item];
     let from = end(c)?;
-    let by = match edge {
+    // `content`: the clip's source moved under its fixed start (Decision 13).
+    let (by, content) = match edge {
         Edge::Start => {
             c.source_in = c.source_in.checked_add(*delta)?;
             c.duration = c.duration.checked_sub(*delta)?;
-            delta.checked_neg()?
+            (delta.checked_neg()?, Some(delta.checked_neg()?))
         }
         Edge::End => {
             c.duration = c.duration.checked_add(*delta)?;
-            *delta
+            (*delta, None)
         }
     };
     let id = c.id.clone();
     ripple(track, from, by)?;
-    record(diff, EntityKind::Clip, &id, ChangeKind::Updated);
-    shift(diff, &track.id, from, by);
+    diff.record_edge(EntityKind::Clip, &id, *edge, content);
+    diff.shift(&track.id, from, by);
     Ok(vec![Op::ClipTrim {
         clip: id,
         edge: *edge,
@@ -111,8 +112,6 @@ pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
 pub(crate) const NAME: &str = "clip.trim";
 /// Whether the op is produced only as an inverse and never accepted from clients.
 pub(crate) const INTERNAL: bool = false;
-/// Whether applying the op records exactly one `Shift`.
-pub(crate) const RECORDS_SHIFT: bool = true;
 
 /// Every id reference the op carries, mutably.
 pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {

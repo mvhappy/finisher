@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::model::{Clip, Track};
+use crate::ops::Edge;
 use crate::ops::util::end;
 use crate::time::Rational;
 use crate::tx::{Change, ChangeKind, Diff, EntityKind, Shift};
@@ -54,18 +55,64 @@ pub(crate) fn place(track: &mut Track, clip: Clip) {
     track.items.insert(i, clip);
 }
 
-pub(crate) fn record(diff: &mut Diff, kind: EntityKind, id: &str, change: ChangeKind) {
-    diff.changes.push(Change {
-        kind,
-        id: id.to_string(),
-        change,
-    });
+/// The diff sink of one op: everything it records carries the op's index (plan 4C
+/// Decision 4).
+pub(crate) struct OpDiff<'a> {
+    diff: &'a mut Diff,
+    op: u32,
 }
 
-pub(crate) fn shift(diff: &mut Diff, track: &str, from: Rational, by: Rational) {
-    diff.shifts.push(Shift {
-        track: track.to_string(),
-        from,
-        by,
-    });
+impl<'a> OpDiff<'a> {
+    /// Records into `diff` as op `op` of the transaction.
+    pub(crate) fn new(diff: &'a mut Diff, op: u32) -> OpDiff<'a> {
+        OpDiff { diff, op }
+    }
+
+    fn push(&mut self, kind: EntityKind, id: &str, change: ChangeKind) -> &mut Change {
+        self.diff.changes.push(Change {
+            kind,
+            id: id.to_string(),
+            change,
+            op: self.op,
+            edge: None,
+            path: None,
+            by: None,
+        });
+        let last = self.diff.changes.len() - 1;
+        &mut self.diff.changes[last]
+    }
+
+    /// The entity `id` was added, removed or changed as a whole.
+    pub(crate) fn record(&mut self, kind: EntityKind, id: &str, change: ChangeKind) {
+        self.push(kind, id, change);
+    }
+
+    /// One edge of `id` moved; `by` is the content offset of a start-edge move (Decision 13).
+    pub(crate) fn record_edge(
+        &mut self,
+        kind: EntityKind,
+        id: &str,
+        edge: Edge,
+        by: Option<Rational>,
+    ) {
+        let c = self.push(kind, id, ChangeKind::Updated);
+        c.edge = Some(edge);
+        c.by = by;
+    }
+
+    /// One parameter of `id` (its registry path) was set.
+    #[allow(dead_code, reason = "param.set (plan 4C Task 10) records paths")]
+    pub(crate) fn record_path(&mut self, kind: EntityKind, id: &str, path: &str) {
+        self.push(kind, id, ChangeKind::Updated).path = Some(path.to_string());
+    }
+
+    /// Items on `track` at or after `from` moved by `by`.
+    pub(crate) fn shift(&mut self, track: &str, from: Rational, by: Rational) {
+        self.diff.shifts.push(Shift {
+            track: track.to_string(),
+            from,
+            by,
+            op: self.op,
+        });
+    }
 }

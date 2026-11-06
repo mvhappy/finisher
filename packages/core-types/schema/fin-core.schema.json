@@ -171,21 +171,58 @@
       "type": "object"
     },
     "Change": {
+      "description": "One entity an op changed (plan 4C Decision 4).",
       "properties": {
+        "by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Content offset of a start-edge move: every item-relative time of the entity moved by\nit (plan 4C Decision 13)."
+        },
         "change": {
           "$ref": "#/$defs/ChangeKind"
+        },
+        "edge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Edge"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The edge an `updated` change moved, if that is all it did to the entity."
         },
         "id": {
           "type": "string"
         },
         "kind": {
           "$ref": "#/$defs/EntityKind"
+        },
+        "op": {
+          "description": "The index of the op in its transaction that made the change.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "The parameter an `updated` change set (a registry path), if that is all it did.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "kind",
         "id",
-        "change"
+        "change",
+        "op"
       ],
       "type": "object"
     },
@@ -324,6 +361,7 @@
       "type": "object"
     },
     "Diff": {
+      "description": "What a transaction changed, op by op: each entry names the op that recorded it (`op`),\nand both lists are in op order. An op may record any number of changes and shifts.",
       "properties": {
         "changes": {
           "items": {
@@ -1293,13 +1331,18 @@
       "type": "object"
     },
     "Shift": {
-      "description": "Items on `track` at or after `from` moved by `by` (ripple).",
+      "description": "Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the\ntransaction.",
       "properties": {
         "by": {
           "$ref": "#/$defs/Rational"
         },
         "from": {
           "$ref": "#/$defs/Rational"
+        },
+        "op": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "track": {
           "type": "string"
@@ -1308,7 +1351,8 @@
       "required": [
         "track",
         "from",
-        "by"
+        "by",
+        "op"
       ],
       "type": "object"
     },

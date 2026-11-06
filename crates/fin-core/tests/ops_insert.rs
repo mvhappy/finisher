@@ -75,7 +75,8 @@ fn insert_at_track_end_appends() {
         [Shift {
             track: "t1".into(),
             from: secs(5),
-            by: secs(2)
+            by: secs(2),
+            op: 0
         }]
     );
 }
@@ -100,7 +101,8 @@ fn insert_at_boundary_ripples_later_clip_by_duration() {
         [Shift {
             track: "t1".into(),
             from: secs(5),
-            by: r("5/2")
+            by: r("5/2"),
+            op: 0
         }]
     );
     assert_well_formed(&a.project);

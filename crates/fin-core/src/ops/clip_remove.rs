@@ -3,7 +3,7 @@
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::Project;
-use crate::ops::util::{clip_index, end, record, ripple, shift, wrong_op};
+use crate::ops::util::{OpDiff, clip_index, end, ripple, wrong_op};
 use crate::ops::{Bindings, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
@@ -14,7 +14,7 @@ pub(crate) fn remove(
     project: &mut Project,
     id: &str,
     rippling: bool,
-    diff: &mut Diff,
+    diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let (ti, ci) = clip_index(project, id)?;
     let track = &mut project.timeline.tracks[ti];
@@ -26,8 +26,8 @@ pub(crate) fn remove(
         Rational::zero()
     };
     ripple(track, from, by)?;
-    record(diff, EntityKind::Clip, &clip.id, ChangeKind::Removed);
-    shift(diff, &track.id, from, by);
+    diff.record(EntityKind::Clip, &clip.id, ChangeKind::Removed);
+    diff.shift(&track.id, from, by);
     Ok(vec![Op::ClipRestore {
         clip,
         track: track.id.clone(),
@@ -53,7 +53,7 @@ pub(crate) fn apply(
     op: &Op,
     bindings: &mut Bindings,
     _ids: &mut dyn IdAlloc,
-    diff: &mut Diff,
+    diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let id = validate(project, op, bindings)?;
     let Op::ClipRemove { ripple, .. } = op else {
@@ -81,8 +81,6 @@ pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
 pub(crate) const NAME: &str = "clip.remove";
 /// Whether the op is produced only as an inverse and never accepted from clients.
 pub(crate) const INTERNAL: bool = true;
-/// Whether applying the op records exactly one `Shift`.
-pub(crate) const RECORDS_SHIFT: bool = true;
 
 /// Every id reference the op carries, mutably.
 pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {

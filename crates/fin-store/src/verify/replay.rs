@@ -116,7 +116,8 @@ fn one(
         let bytes: Vec<u8> = row.get(2)?;
         let stored: String = row.get(3)?;
         b.rows += 1;
-        let applied = match db::replay_row(&project, branch, &(seq, tx_id.clone(), bytes)) {
+        let record_row = (seq, tx_id.clone(), bytes);
+        let applied = match db::replay_row(&project, branch, &record_row) {
             Ok(a) => a,
             Err(e) => {
                 b.stopped = Some(json!({ "seq": seq, "error": fin_core::CoreError::from(e) }));
@@ -125,7 +126,7 @@ fn one(
         };
         if stored == crate::diffs::NOT_STORED {
             b.not_stored += 1;
-        } else if serde_json::from_str::<Diff>(&stored).ok().as_ref() != Some(&applied.diff) {
+        } else if stored_diff(&record_row.2, &stored).as_ref() != Some(&applied.diff) {
             b.diff_mismatch_count += 1;
             if b.diff_mismatches.len() < LIST {
                 b.diff_mismatches
@@ -142,4 +143,11 @@ fn one(
     }
     b.head_matches = live.is_some_and(|(r, p)| *r == rev && *p == project);
     Ok(b)
+}
+
+/// A row's stored diff as every reader sees it ([`db::stored_diff`]); `None` when it does not
+/// decode, which counts as a mismatch.
+fn stored_diff(record_bytes: &[u8], stored: &str) -> Option<Diff> {
+    let record: serde_json::Value = serde_json::from_slice(record_bytes).ok()?;
+    db::stored_diff(&record, stored).ok()
 }

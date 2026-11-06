@@ -218,6 +218,7 @@ Plan: `docs/superpowers/plans/2026-11-06-sub-project-4c-edit-breadth.md`. Spec: 
 
 - [x] Task 1: make room (pure refactor): `ops_table!` dispatch with per-module `NAME`/`INTERNAL`/`RECORDS_SHIFT`/`refs_mut`/`ids`/`allocates`, `Op` in `ops/defs.rs`, `model/mod.rs`, `ops/util/{lookup,ripple,check}.rs`, `Builder` in `commands/builder.rs` (placeholder substitution through `Op::refs_mut`), test helper `ids_cover_every_id_in_json`. Rust tests 948 → 950 (`ops_table_lists_every_variant`, `ids_json_helper_flags_an_unlisted_id`), JS 107 unchanged
 - [x] Task 2: scrubbed 4B fixture generated from 4B code at `36fe7e0` (`tests/fixtures/4b`: main + br1, checkpoint, merge, undo/redo, cherry-pick; stacks; pinned 4B `argsHash` values), `fixture_4b` helper, `fixture_4b_opens_with_relocate`
+- [x] Task 3: a project file at a newer `schemaVersion` opens read-only `NEWER_FORMAT` (commit A `d60edb5`, cherry-picks cleanly onto `sp4b-history` `36fe7e0`, its `fin-store` tests pass there); per-op diffs (`Change {op, edge?, path?, by?}`, `Shift.op`, `OpDiff` sink, `split_diff` by `op`, `Footprint::with_changes`; `RECORDS_SHIFT` gone); frozen v1 diff step `upcast_diff` behind one store helper `db::stored_diff` (record decode, history log, `verify` `diffs_match`); m0003 = DB v3 version bump only. `EntityKind` keeps `clip` until the model rename. Rust tests 951 → 967, JS 107 unchanged
 
 ## Blocked on hardware or accounts
 

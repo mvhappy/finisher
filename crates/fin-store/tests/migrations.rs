@@ -1,11 +1,13 @@
 //! DB versioning: `application_id`/`user_version`, refusals that leave the file untouched,
 //! pre-migration backups and migration 0001 (the sub-project 2 layout → hashed records).
 
+mod integration_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use fin_core::{Op, Rational, Record, RecordKind, SCHEMA_VERSION, Tx, resolve_ops};
-use fin_store::{APPLICATION_ID, DB_VERSION, MAIN, Store, StoreError, db_path};
+use fin_store::{APPLICATION_ID, DB_VERSION, MAIN, OpenOptions, Store, StoreError, db_path};
 use rusqlite::{Connection, OpenFlags, params};
 use tempfile::TempDir;
 
@@ -149,9 +151,9 @@ fn sp2_fixture_migrates_to_identical_state() {
     assert_eq!(pragma(&conn, "user_version"), i64::from(DB_VERSION));
     assert_eq!(pragma(&conn, "application_id"), i64::from(APPLICATION_ID));
     assert!(!columns(&conn, "txs").contains(&"json".to_string()));
-    // Migration 0002 runs after 0001.
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("2"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("2"));
+    // Migrations 0002 and 0003 run after 0001.
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("3"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("3"));
     assert!(
         meta(&conn, "lastOpenedBy")
             .unwrap()
@@ -292,8 +294,8 @@ fn fresh_and_migrated_schemas_match() {
     for table in ["segments", "lease_state", "quarantine"] {
         assert!(!columns(&a, table).is_empty(), "{table}");
     }
-    assert_eq!(meta(&a, "formatVersion").as_deref(), Some("2"));
-    assert_eq!(meta(&a, "minReaderVersion").as_deref(), Some("2"));
+    assert_eq!(meta(&a, "formatVersion").as_deref(), Some("3"));
+    assert_eq!(meta(&a, "minReaderVersion").as_deref(), Some("3"));
     let created_by = meta(&a, "createdBy").unwrap();
     assert_eq!(
         created_by,
@@ -309,7 +311,7 @@ fn migration_backs_up_first() {
     drop(sp2.open().unwrap());
     let names = backup_names(&sp2.backups());
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-2-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-3-"), "{names:?}");
     assert!(names[0].ends_with(".fdb"), "{names:?}");
     // The backup is the database as it was before the first step.
     let conn = read_only(&sp2.backups().join(&names[0]));
@@ -686,4 +688,99 @@ fn check_handles_awkward_paths() {
     assert_eq!(sidecars(&db), Vec::<String>::new());
     assert_eq!(code(Store::open(&data, &dir)), "DB_TOO_NEW");
     assert_eq!(sidecars(&db), Vec::<String>::new());
+}
+
+/// Every row of `table`, each column as text, in rowid order.
+fn rows(conn: &Connection, table: &str) -> Vec<Vec<Option<String>>> {
+    let n = columns(conn, table).len();
+    let mut stmt = conn
+        .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+        .unwrap();
+    stmt.query_map([], |r| {
+        (0..n)
+            .map(|i| {
+                Ok(match r.get_ref(i)? {
+                    rusqlite::types::ValueRef::Null => None,
+                    rusqlite::types::ValueRef::Integer(v) => Some(v.to_string()),
+                    rusqlite::types::ValueRef::Real(v) => Some(v.to_string()),
+                    rusqlite::types::ValueRef::Text(t) | rusqlite::types::ValueRef::Blob(t) => {
+                        Some(hash(t))
+                    }
+                })
+            })
+            .collect()
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+/// Migration 0003 is frozen at schema v3 (plan 4C Decision 3): on the 4B fixture (a v2
+/// database) it sets `user_version` 3 and the version `meta` keys to `"3"`, and changes nothing
+/// else: no table, no stored record, diff or snapshot.
+#[test]
+fn migration_0003_is_frozen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (data, folder) = integration_support::fixture_4b(tmp.path());
+    let id = fin_store::read_project_file(&folder).unwrap().id;
+    let db = db_path(&data, &id);
+    let before = read_only(&db);
+    assert_eq!(
+        pragma(&before, "user_version"),
+        2,
+        "the fixture is a 4B database"
+    );
+    let (schema_before, txs, snapshots, branches) = (
+        schema(&before),
+        rows(&before, "txs"),
+        rows(&before, "snapshots"),
+        rows(&before, "branches"),
+    );
+    drop(before);
+    let opts = OpenOptions {
+        relocate: true,
+        ..OpenOptions::default()
+    };
+    drop(Store::open_with(&data, &folder, opts).unwrap());
+    let conn = read_only(&db);
+    assert_eq!(pragma(&conn, "user_version"), 3);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("3"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("3"));
+    assert_eq!(schema(&conn), schema_before, "no table changes");
+    assert_eq!(rows(&conn, "txs"), txs, "records and diffs as stored");
+    assert_eq!(rows(&conn, "snapshots"), snapshots, "snapshots as stored");
+    assert_eq!(rows(&conn, "branches"), branches);
+    let names = backup_names(&db.parent().unwrap().join("backups"));
+    assert!(
+        names.len() == 1 && names[0].starts_with("pre-migrate-2-3-"),
+        "{names:?}"
+    );
+}
+
+/// A 4C database says `user_version` 3 and `minReaderVersion` "3"; a reader at version N
+/// refuses a database above N on either (`DB_TOO_NEW`, untouched), so a 4B reader (N = 2)
+/// refuses a 4C database. Shown here one version up, through the refusal helper: this
+/// reader (N = 3) refuses version 4 on either key.
+#[test]
+fn db_v3_is_refused_by_a_v2_reader() {
+    let (_tmp, _data, _dir, db) = fresh();
+    let conn = read_only(&db);
+    assert_eq!(pragma(&conn, "user_version"), 3);
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("3"));
+    drop(conn);
+    assert_eq!(DB_VERSION, 3);
+    for e in refused("PRAGMA user_version = 4") {
+        assert_eq!(e.code, "DB_TOO_NEW");
+        assert_eq!(
+            (
+                e.details["dbVersion"].clone(),
+                e.details["supported"].clone()
+            ),
+            (4.into(), 3.into())
+        );
+    }
+    for e in refused("UPDATE meta SET value = '4' WHERE key = 'minReaderVersion'") {
+        assert_eq!(e.code, "DB_TOO_NEW");
+        assert_eq!(e.details["minReaderVersion"], 4);
+    }
 }

@@ -1,9 +1,11 @@
 //! Conflict footprints: what one op touches, per track and per entity (spec §4.3).
 //!
 //! A footprint comes from an op plus its own diff, never from a project, so a committed record
-//! is judged by what it stored. Each op module builds its own (`ops::<op>::footprint`);
-//! [`footprint`] dispatches, and [`split_diff`] / [`committed_footprints`] cut a record's diff
-//! into its ops' own diffs.
+//! is judged by what it stored. Each op module builds its own from what the op names
+//! (`ops::<op>::footprint`); [`footprint`] dispatches and adds what the op's diff records
+//! ([`Footprint::with_changes`], plan 4C Decision 20), so an op that changed entities it does
+//! not name (an overwrite's neighbours, a link group) is judged on them too. [`split_diff`] /
+//! [`committed_footprints`] cut a record's diff into its ops' own diffs by each entry's `op`.
 //!
 //! Rules ([`entity_conflict`]), judged against the intervening records the caller passes (the
 //! unmirrored ones, Decision 24):
@@ -26,7 +28,7 @@ use std::collections::BTreeSet;
 use crate::error::CoreError;
 use crate::ops::{self, Edge, Op};
 use crate::record::{invalid_format, resolve_ops};
-use crate::tx::{CommittedTx, Diff};
+use crate::tx::{Change, ChangeKind, CommittedTx, Diff, Shift};
 
 use super::conflict::reasons;
 
@@ -64,32 +66,92 @@ impl Footprint {
             ..Footprint::default()
         }
     }
-}
 
-/// The footprint of `op` from its own diff (`op_diff`: its single shift, if any). A committed
-/// op is passed with its placeholders resolved; one of ours may keep its `$name`s.
-pub fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
-    ops::footprint(op, op_diff)
-}
-
-/// Each op's own diff out of the diff of the transaction `ops` made: clip ops record exactly
-/// one shift each, asset ops none. Only `shifts` are split; `changes` stay empty.
-/// `INVALID_FORMAT` when the shifts do not match the ops.
-pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError> {
-    let mismatch = || invalid_format("diff", "its shifts do not match its ops");
-    let mut shifts = diff.shifts.iter();
-    let mut out = Vec::with_capacity(ops.len());
-    for op in ops {
-        let mut own = Diff::default();
-        if op.records_shift() {
-            own.shifts.push(shifts.next().ok_or_else(mismatch)?.clone());
+    /// Adds what `own` (the op's own diff) records (Decision 20): `removed` → `removes`,
+    /// `added` → `creates`, `updated` with an `edge` → [`Touch::Edge`], with a `path` →
+    /// [`Touch::Param`], any other `updated` → [`Touch::Exists`]. What the op's own rules
+    /// already list is not repeated.
+    pub(crate) fn with_changes(mut self, own: &Diff) -> Footprint {
+        fn add<T: PartialEq>(v: &mut Vec<T>, x: T) {
+            if !v.contains(&x) {
+                v.push(x);
+            }
         }
-        out.push(own);
+        for c in &own.changes {
+            match c.change {
+                ChangeKind::Removed => add(&mut self.removes, c.id.clone()),
+                ChangeKind::Added => add(&mut self.creates, c.id.clone()),
+                ChangeKind::Updated => {
+                    let touch = match (c.edge, &c.path) {
+                        (Some(edge), _) => Touch::Edge(edge),
+                        (None, Some(path)) => Touch::Param(path.clone()),
+                        (None, None) => Touch::Exists,
+                    };
+                    add(&mut self.touches, (c.id.clone(), touch));
+                }
+            }
+        }
+        self
     }
-    if shifts.next().is_some() {
-        return Err(mismatch());
+}
+
+/// The footprint of `op` from its own diff (`op_diff`: what it recorded): the op's own rules
+/// plus [`Footprint::with_changes`]. A committed op is passed with its placeholders resolved;
+/// one of ours may keep its `$name`s.
+pub fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
+    ops::footprint(op, op_diff).with_changes(op_diff)
+}
+
+/// Each op's own diff out of the diff of the transaction `ops` made, by each change's and
+/// shift's `op` (entries keep their index). `INVALID_FORMAT` when an entry names an op past
+/// the end, or a list is not in op order.
+pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError> {
+    let mut out = vec![Diff::default(); ops.len()];
+    let slot = |op: u32, last: &mut u32, what: &str| -> Result<usize, CoreError> {
+        let i = usize::try_from(op).unwrap_or(usize::MAX);
+        if i >= ops.len() {
+            return Err(invalid_format(
+                "diff",
+                format!(
+                    "a {what} names op {op}; the transaction has {} ops",
+                    ops.len()
+                ),
+            ));
+        }
+        if op < *last {
+            return Err(invalid_format(
+                "diff",
+                format!("its {what}s are not in op order"),
+            ));
+        }
+        *last = op;
+        Ok(i)
+    };
+    let mut last = 0;
+    for c in &diff.changes {
+        out[slot(c.op, &mut last, "change")?]
+            .changes
+            .push(c.clone());
+    }
+    let mut last = 0;
+    for s in &diff.shifts {
+        out[slot(s.op, &mut last, "shift")?].shifts.push(s.clone());
     }
     Ok(out)
+}
+
+/// The diff of consecutive ops from their own diffs ([`split_diff`]'s), each entry's `op`
+/// renumbered to its op's position in `diffs`.
+pub(crate) fn join_diffs(diffs: &[Diff]) -> Diff {
+    let mut out = Diff::default();
+    for (i, d) in diffs.iter().enumerate() {
+        let op = u32::try_from(i).unwrap_or(u32::MAX);
+        out.changes
+            .extend(d.changes.iter().cloned().map(|c| Change { op, ..c }));
+        out.shifts
+            .extend(d.shifts.iter().cloned().map(|s| Shift { op, ..s }));
+    }
+    out
 }
 
 /// A committed record's ops, placeholders resolved, each with its own diff.

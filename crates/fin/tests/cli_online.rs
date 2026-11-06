@@ -69,14 +69,14 @@ fn full_editing_flow() {
     assert_eq!(trimmed["rev"], 4);
     assert_eq!(
         trimmed["diff"]["shifts"],
-        json!([{ "track": "t1", "from": "4", "by": "-1" }])
+        json!([{ "track": "t1", "from": "4", "by": "-1", "op": 0 }])
     );
 
     let deleted = run(&["clip", "delete", "c1"]);
     assert_eq!(deleted["rev"], 5);
     assert_eq!(
         deleted["diff"]["changes"],
-        json!([{ "kind": "clip", "id": "c1", "change": "removed" }])
+        json!([{ "kind": "clip", "id": "c1", "change": "removed", "op": 0 }])
     );
 
     let view = run(&["view"]);

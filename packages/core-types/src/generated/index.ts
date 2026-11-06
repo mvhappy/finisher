@@ -5,22 +5,29 @@
  */
 
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ChangeKind".
- */
-export type ChangeKind = "added" | "removed" | "updated";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "EntityKind".
- */
-export type EntityKind = "asset" | "track" | "clip" | "timeline";
-/**
  * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Rational".
  */
 export type Rational = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ChangeKind".
+ */
+export type ChangeKind = "added" | "removed" | "updated";
+/**
+ * Which edge of a clip a trim moves.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Edge".
+ */
+export type Edge = "start" | "end";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntityKind".
+ */
+export type EntityKind = "asset" | "track" | "clip" | "timeline";
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -71,13 +78,6 @@ export type Op =
       ripple?: boolean;
       track: string;
     };
-/**
- * Which edge of a clip a trim moves.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Edge".
- */
-export type Edge = "start" | "end";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TrackKind".
@@ -226,6 +226,9 @@ export interface Applied {
   project: Project;
 }
 /**
+ * What a transaction changed, op by op: each entry names the op that recorded it (`op`),
+ * and both lists are in op order. An op may record any number of changes and shifts.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Diff".
  */
@@ -234,16 +237,36 @@ export interface Diff {
   shifts: Shift[];
 }
 /**
+ * One entity an op changed (plan 4C Decision 4).
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Change".
  */
 export interface Change {
+  /**
+   * Content offset of a start-edge move: every item-relative time of the entity moved by
+   * it (plan 4C Decision 13).
+   */
+  by?: Rational | null;
   change: ChangeKind;
+  /**
+   * The edge an `updated` change moved, if that is all it did to the entity.
+   */
+  edge?: Edge | null;
   id: string;
   kind: EntityKind;
+  /**
+   * The index of the op in its transaction that made the change.
+   */
+  op: number;
+  /**
+   * The parameter an `updated` change set (a registry path), if that is all it did.
+   */
+  path?: string | null;
 }
 /**
- * Items on `track` at or after `from` moved by `by` (ripple).
+ * Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the
+ * transaction.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Shift".
@@ -251,6 +274,7 @@ export interface Change {
 export interface Shift {
   by: Rational;
   from: Rational;
+  op: number;
   track: string;
 }
 /**

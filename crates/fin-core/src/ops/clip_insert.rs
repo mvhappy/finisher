@@ -7,8 +7,8 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Clip, Project};
 use crate::ops::util::{
-    asset, check_kind, check_source, clip_containing, insert_inside, invalid_range, place, record,
-    ripple, shift, track_index, wrong_op,
+    OpDiff, asset, check_kind, check_source, clip_containing, insert_inside, invalid_range, place,
+    ripple, track_index, wrong_op,
 };
 use crate::ops::{Bindings, Op};
 use crate::rebase::Footprint;
@@ -65,7 +65,7 @@ pub(crate) fn apply(
     op: &Op,
     bindings: &mut Bindings,
     ids: &mut dyn IdAlloc,
-    diff: &mut Diff,
+    diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let plan = validate(project, op, bindings)?;
     let Op::ClipInsert {
@@ -89,8 +89,8 @@ pub(crate) fn apply(
         duration: *duration,
     };
     place(track, clip);
-    record(diff, EntityKind::Clip, &id, ChangeKind::Added);
-    shift(diff, &track.id, *at, *duration);
+    diff.record(EntityKind::Clip, &id, ChangeKind::Added);
+    diff.shift(&track.id, *at, *duration);
     Ok(vec![Op::ClipRemove { id, ripple: true }])
 }
 
@@ -120,8 +120,6 @@ pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
 pub(crate) const NAME: &str = "clip.insert";
 /// Whether the op is produced only as an inverse and never accepted from clients.
 pub(crate) const INTERNAL: bool = false;
-/// Whether applying the op records exactly one `Shift`.
-pub(crate) const RECORDS_SHIFT: bool = true;
 
 /// Every id reference the op carries, mutably.
 pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {

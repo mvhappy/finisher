@@ -28,7 +28,7 @@ pub use replay::{BoundIds, apply_committed};
 pub use schema::{json_schema, json_schema_with};
 pub use time::{Rational, check_canonical_times, frame_duration, parse_time};
 pub use tx::*;
-pub use upgrade::{upcast_record, upcast_snapshot};
+pub use upgrade::{upcast_diff, upcast_record, upcast_snapshot};
 
 /// The crate version, as declared in its manifest.
 pub fn version() -> &'static str {

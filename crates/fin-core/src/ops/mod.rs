@@ -5,8 +5,9 @@
 //! as inverses (`asset.remove`, `clip.remove`, `clip.restore`); clients sending them get
 //! `INVALID_OP`.
 //!
-//! Every clip op records exactly one `Shift` in the diff (possibly `by: 0`) and asset ops record
-//! none. The rebase engine relies on that to pair a transaction's shifts with its ops.
+//! Every change and shift an op records carries the op's index in its transaction
+//! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
+//! ([`crate::rebase::split_diff`]) whatever each op records.
 
 use std::collections::BTreeMap;
 
@@ -157,7 +158,7 @@ pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
 }
 
 /// Lists every op variant with its module once, and generates the dispatch from it. Each
-/// module provides `NAME`, `INTERNAL`, `RECORDS_SHIFT`, `refs_mut`, `ids`, `allocates`,
+/// module provides `NAME`, `INTERNAL`, `refs_mut`, `ids`, `allocates`,
 /// `positions_mut`, `apply` and `footprint`.
 macro_rules! ops_table {
     ($($variant:ident => $module:ident),* $(,)?) => {
@@ -170,11 +171,6 @@ macro_rules! ops_table {
             /// Internal ops are produced as inverses and never accepted from clients.
             pub fn is_internal(&self) -> bool {
                 match self { $(Op::$variant { .. } => $module::INTERNAL,)* }
-            }
-
-            /// Clip ops record exactly one `Shift` when applied; asset ops record none.
-            pub(crate) fn records_shift(&self) -> bool {
-                match self { $(Op::$variant { .. } => $module::RECORDS_SHIFT,)* }
             }
 
             /// Every id reference in the op (new-entity ids, tracks, assets, clips), mutably,
@@ -206,20 +202,21 @@ macro_rules! ops_table {
             }
         }
 
-        /// Applies one op to `project`, appending to `diff`; returns the op's inverse ops (in
-        /// order).
+        /// Applies one op to `project`, recording into `diff` under the op's index; returns
+        /// the op's inverse ops (in order).
         pub(crate) fn apply(
             project: &mut Project,
             op: &Op,
             bindings: &mut Bindings,
             ids: &mut dyn IdAlloc,
-            diff: &mut Diff,
+            diff: &mut util::OpDiff<'_>,
         ) -> Result<Vec<Op>, CoreError> {
             match op { $(Op::$variant { .. } => $module::apply(project, op, bindings, ids, diff),)* }
         }
 
-        /// The conflict footprint of `op` from its own diff (`op_diff`: its single shift, if
-        /// any). A committed op comes with its placeholders resolved; one of ours may keep its
+        /// The conflict footprint of `op` by its own rules, from its own diff (`op_diff`:
+        /// what it recorded; [`crate::rebase::footprint`] adds the diff's changes). A
+        /// committed op comes with its placeholders resolved; one of ours may keep its
         /// `$name`s.
         pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
             match op { $(Op::$variant { .. } => $module::footprint(op, op_diff),)* }

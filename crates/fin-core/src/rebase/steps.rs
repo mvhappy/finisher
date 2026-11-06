@@ -9,7 +9,7 @@ use crate::ops::Op;
 use crate::record::{Link, resolve_ops};
 use crate::tx::{CommittedTx, Diff};
 
-use super::footprint::{Footprint, footprint, split_diff};
+use super::footprint::{Footprint, footprint, join_diffs, split_diff};
 use super::map::StepMap;
 
 /// One intervening record (or one unit's part of an `undo` record), as the engine sees it: its
@@ -64,8 +64,8 @@ impl Step {
         Ok(out)
     }
 
-    /// The step cut into consecutive parts of `sizes` ops each (each op records at most one
-    /// shift, so each part takes its ops' shifts). `sizes` must add up to the op count.
+    /// The step cut into consecutive parts of `sizes` ops each; each part takes its ops' own
+    /// diffs, renumbered from 0. `sizes` must add up to the op count.
     fn split(&self, sizes: &[usize]) -> Result<Vec<Step>, CoreError> {
         let diffs = split_diff(&self.ops, &self.diff)?;
         let mut at = 0;
@@ -77,10 +77,7 @@ impl Step {
                 Step {
                     tx_id: self.tx_id.clone(),
                     ops: self.ops[range.clone()].to_vec(),
-                    diff: Diff {
-                        changes: Vec::new(),
-                        shifts: diffs[range].iter().flat_map(|d| d.shifts.clone()).collect(),
-                    },
+                    diff: join_diffs(&diffs[range]),
                     mirror_of: None,
                     invert: false,
                 }

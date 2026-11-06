@@ -31,7 +31,8 @@ fn trim_start_moves_source_in_and_ripples_later_clips() {
         [Shift {
             track: "t1".into(),
             from: secs(5),
-            by: secs(-1)
+            by: secs(-1),
+            op: 0
         }]
     );
     assert_eq!(a.diff.changes[0].change, ChangeKind::Updated);
@@ -106,7 +107,8 @@ fn delete_middle_clip_closes_the_gap() {
         [Shift {
             track: "t1".into(),
             from: secs(8),
-            by: secs(-3)
+            by: secs(-3),
+            op: 0
         }]
     );
     assert_eq!(a.diff.changes[0].change, ChangeKind::Removed);

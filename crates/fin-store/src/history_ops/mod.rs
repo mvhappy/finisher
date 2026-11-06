@@ -20,7 +20,7 @@ mod stack_rows_tests;
 use std::collections::{HashMap, HashSet};
 
 use fin_core::history::{Lineage, LogRec, LogView, StackRec};
-use fin_core::{CoreError, Diff, Link, Project, RecordKind};
+use fin_core::{CoreError, Link, Project, RecordKind};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::branch::{index, lineage};
@@ -206,13 +206,12 @@ fn log_rec(branch: &str, seq: u64, bytes: &[u8], diff: &str) -> Result<LogRec, S
         .with_fix("rebuild the project database (fin project rebuild)")
         .into());
     }
-    let record = db::parse_record(Some(seq), bytes)?;
-    let diff: Diff = serde_json::from_str(diff)?;
+    let (record, diff) = db::parse_record_with_diff(Some(seq), bytes, Some(diff))?;
     Ok(LogRec {
         branch: branch.to_string(),
         seq,
         record,
-        diff,
+        diff: diff.unwrap_or_default(),
     })
 }
 

@@ -461,25 +461,25 @@ pub fn upcast_diff(diff: Value, v1_ops: &[Value]) -> Result<Diff, CoreError>;
 ```
 In this task `SCHEMA_VERSION` is still 1, so `kind` stays `clip` until Task 6 renames it in the model, and in the diff step together with its golden.
 
-- [ ] **Step 1: Commit A.**
+- [x] **Step 1: Commit A.**
   - Tests: `newer_schema_version_is_newer`, `newer_project_file_opens_read_only` (open answers read-only `NEWER_FORMAT`, reads work, commits refuse), `older_schema_version_still_opens`.
   - Implement, run `rtk cargo test -p fin-store`, commit `fix(store): a project file at a newer schemaVersion opens read-only`.
   - Check that it applies cleanly with `rtk git cherry-pick --no-commit` onto a scratch checkout of `sp4b-history`, run `rtk cargo test -p fin-store` there, then discard the checkout. Report the commit hash to the coordinator.
-- [ ] **Step 2: Write failing tests for commit B:**
+- [x] **Step 2: Write failing tests for commit B:**
   - `split_diff_by_op_index`, `split_diff_rejects_out_of_range_or_unordered_op`, `ops_record_their_own_index` (a tx of `asset.add`, two inserts, a start trim: the trim's change carries `edge` and `by`);
   - `with_changes_maps_removed_added_edge_path`;
   - `upcast_v1_diff_golden` (frozen v1 diffs of each v1 op kind in, v2 out), `mixed_diff_is_invalid_format`, `empty_diff_reads_the_same`;
   - `diff_upcast_equals_replay_on_fixtures` (SP2, 4A and 4B: every row's upcast stored diff equals its replay; `verify` ok, `diffs_match` included);
   - `migration_0003_is_frozen` (pins `user_version` and the meta values); `fresh_and_migrated_schemas_match` (unchanged test); `db_v3_is_refused_by_a_v2_reader` (through the existing refusal helper);
   - every 4B rebase and history test still passes unchanged.
-- [ ] **Step 3: Run** `rtk cargo test -p fin-core --test diff_split --test upgrade_golden` and `rtk cargo test -p fin-store --test migrations --test fixture_4b`. Expected: FAIL.
-- [ ] **Step 4: Implement.** m0003 runs
+- [x] **Step 3: Run** `rtk cargo test -p fin-core --test diff_split --test upgrade_golden` and `rtk cargo test -p fin-store --test migrations --test fixture_4b`. Expected: FAIL.
+- [x] **Step 4: Implement.** m0003 runs
   ```sql
   UPDATE meta SET value = '3' WHERE key IN ('formatVersion', 'minReaderVersion');
   ```
   and the runner sets `user_version` 3. It leaves `txs.diff` and `snapshots` alone. `stored_diff` parses the record's raw JSON once, takes the raw `intent.ops` when `schemaVersion` is 1, and calls `upcast_diff`.
-- [ ] **Step 5: Regenerate types** (`rtk pnpm --filter @finisher/core-types generate`); update the RPC fixtures and TS tests that hold diffs.
-- [ ] **Step 6: Run** the three gates → PASS. **Commit** `feat(core,store): per-op diffs; v1 diffs upcast on read; DB v3`.
+- [x] **Step 5: Regenerate types** (`rtk pnpm --filter @finisher/core-types generate`); update the RPC fixtures and TS tests that hold diffs.
+- [x] **Step 6: Run** the three gates → PASS. **Commit** `feat(core,store): per-op diffs; v1 diffs upcast on read; DB v3`.
 
 ### Task 4: The `TextMeasurer` contract, `fin-text`, bundled fonts — tier: opus
 

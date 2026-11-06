@@ -221,7 +221,7 @@ fn insert_echoes_resolved_rationals() {
     assert_eq!(r["bindings"], json!({ "$clip": "c3" }));
     assert_eq!(
         r["diff"]["changes"],
-        json!([{ "kind": "clip", "id": "c3", "change": "added" }])
+        json!([{ "kind": "clip", "id": "c3", "change": "added", "op": 0 }])
     );
     assert_eq!(r["txId"].as_str().unwrap().len(), 26, "ULID txId");
 }
@@ -239,7 +239,7 @@ fn insert_resolves_end_and_after() {
     assert_eq!(after.json["resolved"]["at"], "5", "{}", after.stdout);
     assert_eq!(
         after.json["diff"]["shifts"],
-        json!([{ "track": "t1", "from": "5", "by": "1/2" }])
+        json!([{ "track": "t1", "from": "5", "by": "1/2", "op": 0 }])
     );
     assert_error(
         &env.run(&[
@@ -278,7 +278,7 @@ fn idem_key_becomes_tx_id() {
     assert_eq!(run.json["resolved"], json!({ "clip": "c1" }));
     assert_eq!(
         run.json["diff"]["shifts"],
-        json!([{ "track": "t1", "from": "5", "by": "-5" }])
+        json!([{ "track": "t1", "from": "5", "by": "-5", "op": 0 }])
     );
 }
 

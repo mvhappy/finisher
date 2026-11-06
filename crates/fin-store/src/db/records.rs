@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 
 use fin_core::{
     Applied, CommittedTx, CoreError, Diff, Link, Op, Project, Record, RecordKind, Tx,
-    apply_committed, encode_record, resolve_ops, upcast_record,
+    apply_committed, encode_record, resolve_ops, upcast_diff, upcast_record,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use serde_json::Value;
 
 use super::{hash_bytes, to_i64, to_u64};
 use crate::StoreError;
@@ -316,13 +317,25 @@ fn committed_from_row(row: &Row<'_>) -> rusqlite::Result<(i64, Vec<u8>, String)>
 /// Bytes to a [`Record`]: not JSON, or not a record, is `INVALID_FORMAT` with
 /// `details {kind: "record", reason}`, plus `seq` when the row is known.
 pub(crate) fn parse_record(seq: Option<u64>, bytes: &[u8]) -> Result<Record, CoreError> {
+    parse_record_with_diff(seq, bytes, None)
+        .map(|(r, _)| r)
+        .map_err(CoreError::from)
+}
+
+/// [`parse_record`], and the row's stored diff through [`stored_diff`] when `diff` is given:
+/// the record's bytes are parsed once for both.
+pub(crate) fn parse_record_with_diff(
+    seq: Option<u64>,
+    bytes: &[u8],
+    diff: Option<&str>,
+) -> Result<(Record, Option<Diff>), StoreError> {
     let with_seq = |mut e: CoreError| {
-        if let (Some(seq), serde_json::Value::Object(map)) = (seq, &mut e.details) {
+        if let (Some(seq), Value::Object(map)) = (seq, &mut e.details) {
             map.insert("seq".into(), serde_json::json!(seq));
         }
         e
     };
-    let value = serde_json::from_slice(bytes).map_err(|e| {
+    let value: Value = serde_json::from_slice(bytes).map_err(|e| {
         with_seq(
             CoreError::new(
                 "INVALID_FORMAT",
@@ -331,17 +344,40 @@ pub(crate) fn parse_record(seq: Option<u64>, bytes: &[u8]) -> Result<Record, Cor
             .with_details(serde_json::json!({ "kind": "record", "reason": e.to_string() })),
         )
     })?;
-    upcast_record(value).map_err(with_seq)
+    let diff = diff
+        .map(|d| {
+            stored_diff(&value, d).map_err(|e| match e {
+                StoreError::Core(e) => with_seq(e).into(),
+                e => e,
+            })
+        })
+        .transpose()?;
+    Ok((upcast_record(value).map_err(with_seq)?, diff))
+}
+
+/// A row's `txs.diff` in the current shape, for its record's raw JSON `record` (plan 4C
+/// Decision 5). Every reader of `txs.diff` goes through here: a diff stored by 4B or earlier
+/// (v1-shaped, never rewritten) is upcast against the record's raw v1 `intent.ops`.
+pub(crate) fn stored_diff(record: &Value, diff: &str) -> Result<Diff, StoreError> {
+    let diff: Value = serde_json::from_str(diff)?;
+    let v1_ops: &[Value] = if record["schemaVersion"] == 1 {
+        record["intent"]["ops"]
+            .as_array()
+            .map_or(&[], Vec::as_slice)
+    } else {
+        &[]
+    };
+    Ok(upcast_diff(diff, v1_ops)?)
 }
 
 fn decode((seq, bytes, diff): (i64, Vec<u8>, String)) -> Result<CommittedTx, StoreError> {
     let seq = to_u64(seq)?;
-    let record = parse_record(Some(seq), &bytes)?;
+    let (record, diff) = parse_record_with_diff(Some(seq), &bytes, Some(&diff))?;
     Ok(CommittedTx {
         rev: seq,
         link: committed_link(&record)?,
         tx: record.intent,
-        diff: serde_json::from_str(&diff)?,
+        diff: diff.unwrap_or_default(),
         bindings: record.bindings,
     })
 }

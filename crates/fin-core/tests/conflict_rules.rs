@@ -8,10 +8,9 @@ use std::collections::BTreeSet;
 use common::*;
 use fin_core::rebase::{
     Conflict, Conflicts, Footprint, Touch, committed_footprints, entity_conflict, reasons,
-    split_diff,
 };
 use fin_core::{
-    CommittedTx, CoreError, Diff, Edge, MemIds, Op, Project, Rational, apply_internal, apply_tx,
+    CommittedTx, CoreError, Edge, MemIds, Op, Project, Rational, apply_internal, apply_tx,
     resolve_ops,
 };
 use serde_json::json;
@@ -345,31 +344,6 @@ fn every_op_has_a_footprint() {
         );
     }
     assert_eq!(seen.len(), 7);
-}
-
-#[test]
-fn split_diff_pairs_each_op_with_its_shift() {
-    let p = base();
-    let ops = vec![
-        av_asset("$b", secs(10)),
-        trim("c1", Edge::End, secs(-1)),
-        delete("c3"),
-    ];
-    let a = apply(&p, ops.clone());
-    let diffs = split_diff(&ops, &a.diff).unwrap();
-    assert_eq!(diffs.len(), 3);
-    assert!(diffs[0].shifts.is_empty());
-    assert_eq!(diffs[1].shifts, a.diff.shifts[..1]);
-    assert_eq!(diffs[2].shifts, a.diff.shifts[1..]);
-    let short = Diff {
-        shifts: a.diff.shifts[..1].to_vec(),
-        ..Diff::default()
-    };
-    assert_eq!(split_diff(&ops, &short).unwrap_err().code, "INVALID_FORMAT");
-    assert_eq!(
-        split_diff(&ops[..1], &a.diff).unwrap_err().code,
-        "INVALID_FORMAT"
-    );
 }
 
 #[test]

@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Project;
+use crate::ops::Edge;
 pub use crate::ops::Op;
 use crate::record::Link;
 use crate::time::Rational;
@@ -46,23 +47,40 @@ pub enum ChangeKind {
     Updated,
 }
 
+/// One entity an op changed (plan 4C Decision 4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     pub kind: EntityKind,
     pub id: String,
     pub change: ChangeKind,
+    /// The index of the op in its transaction that made the change.
+    pub op: u32,
+    /// The edge an `updated` change moved, if that is all it did to the entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge: Option<Edge>,
+    /// The parameter an `updated` change set (a registry path), if that is all it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Content offset of a start-edge move: every item-relative time of the entity moved by
+    /// it (plan 4C Decision 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Rational>,
 }
 
-/// Items on `track` at or after `from` moved by `by` (ripple).
+/// Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the
+/// transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Shift {
     pub track: String,
     pub from: Rational,
     pub by: Rational,
+    pub op: u32,
 }
 
+/// What a transaction changed, op by op: each entry names the op that recorded it (`op`),
+/// and both lists are in op order. An op may record any number of changes and shifts.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Diff {

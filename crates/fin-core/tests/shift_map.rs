@@ -13,6 +13,7 @@ fn sh(track: &str, from: i64, by: i64) -> Shift {
         track: track.into(),
         from: q(from),
         by: q(by),
+        op: 0,
     }
 }
 
@@ -75,6 +76,7 @@ fn shift_on(tracks: &'static [&'static str]) -> impl Strategy<Value = Shift> {
             track: track.to_string(),
             from,
             by,
+            op: 0,
         })
 }
 
@@ -401,13 +403,14 @@ proptest! {
         // (not including) its end, resumes `offset` into the rebased A'.
         let offset = Rational::new(i64::from(frac) * size.num(), 8 * size.den()).unwrap();
         prop_assume!(a == Assoc::After || !offset.is_zero());
-        let own = StepMap::from_shifts(vec![Shift { track: "t1".into(), from: at, by: size }]);
+        let own = StepMap::from_shifts(vec![Shift { track: "t1".into(), from: at, by: size, op: 0 }]);
         let moved = between.map("t1", at, Assoc::After).unwrap();
         prop_assume!(moved.deleted.is_none());
         let rebased = StepMap::from_shifts(vec![Shift {
             track: "t1".into(),
             from: moved.pos,
             by: size,
+            op: 0,
         }]);
         let m = mapping(vec![own.invert().unwrap(), between, rebased], &[(0, 2)]);
         let pos = at.checked_add(offset).unwrap();

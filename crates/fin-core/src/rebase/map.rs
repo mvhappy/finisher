@@ -79,6 +79,7 @@ impl StepMap {
                     track: s.track.clone(),
                     from: s.from.checked_add(s.by)?,
                     by: s.by.checked_neg()?,
+                    op: s.op,
                 })
             })
             .collect::<Result<Vec<_>, CoreError>>()?;

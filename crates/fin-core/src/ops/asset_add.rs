@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, Project};
-use crate::ops::util::{invalid_range, record, wrong_op};
+use crate::ops::util::{OpDiff, invalid_range, wrong_op};
 use crate::ops::{Bindings, Op};
 use crate::rebase::Footprint;
 use crate::time::Rational;
@@ -32,7 +32,7 @@ pub(crate) fn apply(
     op: &Op,
     bindings: &mut Bindings,
     ids: &mut dyn IdAlloc,
-    diff: &mut Diff,
+    diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     validate(project, op, bindings)?;
     let Op::AssetAdd {
@@ -56,7 +56,7 @@ pub(crate) fn apply(
         fingerprint: fingerprint.clone(),
     };
     project.assets.insert(id.clone(), asset);
-    record(diff, EntityKind::Asset, &id, ChangeKind::Added);
+    diff.record(EntityKind::Asset, &id, ChangeKind::Added);
     Ok(vec![Op::AssetRemove { id }])
 }
 
@@ -78,8 +78,6 @@ pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
 pub(crate) const NAME: &str = "asset.add";
 /// Whether the op is produced only as an inverse and never accepted from clients.
 pub(crate) const INTERNAL: bool = false;
-/// Whether applying the op records exactly one `Shift`.
-pub(crate) const RECORDS_SHIFT: bool = false;
 
 /// Every id reference the op carries, mutably.
 pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {

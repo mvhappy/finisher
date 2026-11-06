@@ -2,15 +2,21 @@
 //! read, by pure one-step converters on `serde_json::Value`, so old Rust types need not be
 //! kept. A step must not change ids, timestamps or bindings.
 //!
-//! Schema version 1 is the first, so there are no steps yet. Adding version `n + 1` means
-//! bumping `SCHEMA_VERSION` and appending a `Step { from: n, .. }` to each table, with a golden
-//! test (frozen old shape in, expected new shape out).
+//! Schema version 1 is the first, so there are no record or snapshot steps yet. Adding version
+//! `n + 1` means bumping `SCHEMA_VERSION` and appending a `Step { from: n, .. }` to each table,
+//! with a golden test (frozen old shape in, expected new shape out).
+//!
+//! Stored diffs (`txs.diff`) are not versioned themselves: [`upcast_diff`] reads their shape
+//! (plan 4C Decision 5, [`diff_v1`]).
+
+mod diff_v1;
 
 use serde_json::{Value, json};
 
 use crate::error::CoreError;
 use crate::model::{Project, SCHEMA_VERSION};
 use crate::record::{Record, RecordKind, decode_record, invalid_format};
+use crate::tx::Diff;
 
 /// Converts a value at schema version `from` to `from + 1`. The runner stamps the new version.
 pub(crate) struct Step {
@@ -50,6 +56,36 @@ pub fn upcast_record(v: Value) -> Result<Record, CoreError> {
 pub fn upcast_snapshot(v: Value) -> Result<Project, CoreError> {
     let v = upcast(v, SNAPSHOT_STEPS, SCHEMA_VERSION, "snapshot")?;
     serde_json::from_value(v).map_err(|e| invalid_format("snapshot", e))
+}
+
+/// A stored diff in the current shape. A v1-shaped diff (no entry has `op`) of a record whose
+/// raw v1 ops are `v1_ops` (its `intent.ops` as stored) is upgraded ([`diff_v1`]); a v2 diff
+/// is returned unchanged, and an empty one reads the same in both shapes. A diff where some
+/// entries have `op` and some do not, or that does not match `v1_ops`, is `INVALID_FORMAT`.
+pub fn upcast_diff(diff: Value, v1_ops: &[Value]) -> Result<Diff, CoreError> {
+    let entries = ["changes", "shifts"]
+        .iter()
+        .filter_map(|k| diff.get(k).and_then(Value::as_array))
+        .flatten();
+    let (mut with, mut without) = (0, 0);
+    for e in entries {
+        if e.get("op").is_some() {
+            with += 1;
+        } else {
+            without += 1;
+        }
+    }
+    let diff = match (with, without) {
+        (_, 0) => diff,
+        (0, _) => diff_v1::run(diff, v1_ops)?,
+        _ => {
+            return Err(invalid_format(
+                "diff",
+                "some entries name their op and some do not",
+            ));
+        }
+    };
+    serde_json::from_value(diff).map_err(|e| invalid_format("diff", e))
 }
 
 /// Runs `steps` in order from `v`'s `schemaVersion` up to `target`.

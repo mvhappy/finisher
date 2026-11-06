@@ -90,8 +90,8 @@ impl Applier {
         })
     }
 
-    /// Applies op `index` of the transaction; returns the shifts it recorded. An error carries
-    /// `details.opIndex`.
+    /// Applies op `index` of the transaction, recording its changes and shifts under that
+    /// index; returns the shifts it recorded. An error carries `details.opIndex`.
     pub(crate) fn op(
         &mut self,
         index: usize,
@@ -112,7 +112,7 @@ impl Applier {
                 op,
                 &mut self.bindings,
                 ids,
-                &mut self.diff,
+                &mut ops::util::OpDiff::new(&mut self.diff, op_index(index)),
             )
             .and_then(|inverse| {
                 if self.mode == ApplyMode::Replay {
@@ -134,6 +134,11 @@ impl Applier {
             bindings: self.bindings.map,
         }
     }
+}
+
+/// An op index as a diff records it (a transaction never holds `u32::MAX` ops).
+fn op_index(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 fn at_op(mut e: CoreError, index: usize) -> CoreError {
