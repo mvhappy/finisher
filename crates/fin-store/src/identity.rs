@@ -148,3 +148,54 @@ fn os_machine_id() -> Option<String> {
 fn os_machine_id() -> Option<String> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The OS's own id, in the shape each source gives (spec §3.13 item 9).
+    #[test]
+    fn the_machine_id_is_the_oss_own() {
+        let id = os_machine_id().expect("readable on the test machines");
+        #[cfg(target_os = "linux")]
+        {
+            let file = std::fs::read_to_string("/etc/machine-id")
+                .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
+                .unwrap();
+            assert_eq!(id, file.trim());
+        }
+        // systemd's 32 hex digits; macOS: the 16-byte host UUID in hex.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(
+            id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{id}"
+        );
+        // `MachineGuid`: a GUID without braces.
+        #[cfg(windows)]
+        assert!(
+            id.len() == 36
+                && id.split('-').map(str::len).eq([8, 4, 4, 4, 12])
+                && id.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit()),
+            "{id}"
+        );
+    }
+
+    /// One directory whatever the spelling, kept across a rename, another for a sibling.
+    #[test]
+    fn a_directory_keeps_its_identity_and_a_sibling_has_another() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let id = dir_identity(&a).expect("known on the test machines' disks");
+        assert_eq!(dir_identity(&a.join(".")), Some(id.clone()));
+        assert_eq!(
+            dir_identity(&std::fs::canonicalize(&a).unwrap()),
+            Some(id.clone())
+        );
+        assert_ne!(dir_identity(&b), Some(id.clone()));
+        let moved = tmp.path().join("moved");
+        std::fs::rename(&a, &moved).unwrap();
+        assert_eq!(dir_identity(&moved), Some(id));
+    }
+}

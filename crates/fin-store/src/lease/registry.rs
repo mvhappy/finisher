@@ -90,6 +90,18 @@ pub(super) fn last_epoch(key: &Key) -> Option<u64> {
     lock(table()).get(key).map(|e| e.epoch)
 }
 
+/// Whether one of our leases in this process is heartbeating `key`.
+pub(super) fn live(key: &Key) -> bool {
+    lock(table()).get(key).is_some_and(|e| e.live)
+}
+
+/// Whether this process held `key` at `epoch` and that lease no longer writes.
+pub(super) fn stopped_at(key: &Key, epoch: u64) -> bool {
+    lock(table())
+        .get(key)
+        .is_some_and(|e| !e.live && e.epoch == epoch)
+}
+
 pub(super) fn lookup(key: &Key, record: &LeaseRecord) -> Mine {
     match lock(table()).get(key) {
         Some(e) if e.live => Mine::Live,

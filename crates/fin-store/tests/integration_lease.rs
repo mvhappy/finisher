@@ -398,3 +398,60 @@ fn a_cloned_server_data_is_another_server_and_follows() {
     assert_eq!(a.server_id(), id);
     assert_eq!(held_epoch(&a), Some(2));
 }
+
+/// `lease.json` deleted under a holder (spec §3.5, §3.13 item 18): the holder can no longer
+/// prove its lease and reports `LEASE_LOST`; another server sees the missing record beside
+/// the holder's claim as held (`LEASE_HELD`). Both wait for the claim to go stale.
+#[test]
+fn a_deleted_lease_json_is_lost_to_its_holder_and_held_to_others() {
+    let e = env();
+    let mut a = e.create("a");
+    let mut b = e.open("b");
+    fs::remove_file(e.dir.join(".finisher").join("lease.json")).unwrap();
+    e.advance(6); // the next heartbeat finds it gone
+    e.poll(&mut a);
+    e.poll(&mut b);
+    assert_eq!(held_epoch(&a), None);
+    assert_eq!(
+        a.read_only(),
+        Some(ReadOnlyReason::LeaseLost),
+        "{:?}",
+        a.lease_state()
+    );
+    assert!(matches!(a.lease_state(), LeaseState::Lost { .. }));
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::LeaseHeld));
+    match b.lease_state() {
+        LeaseState::HeldElsewhere { holder, epoch, .. } => {
+            assert_eq!((holder.as_str(), epoch), (a.server_id(), 1));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The same after a restart: our own claim is all that is left and the server-data lock is
+/// free, so no process of ours holds a lease: lost, not held by ourselves. While another
+/// process of this server data still holds the lock, it stays held.
+#[test]
+fn a_deleted_lease_json_is_lost_to_a_restarted_holder_and_held_while_another_process_runs() {
+    let e = env();
+    let a = e.create("a");
+    fs::remove_file(e.dir.join(".finisher").join("lease.json")).unwrap();
+    restart(&e); // "another process" from here on; the first still holds the lock
+    let mut a2 = e.open("a");
+    assert_eq!(a2.read_only(), Some(ReadOnlyReason::LeaseHeld));
+    drop(a);
+    e.poll(&mut a2);
+    assert_eq!(
+        a2.read_only(),
+        Some(ReadOnlyReason::LeaseLost),
+        "{:?}",
+        a2.lease_state()
+    );
+    match a2.lease_state() {
+        LeaseState::Lost { reason } => assert!(reason.contains("earlier run"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+    let mut b = e.open("b");
+    e.poll(&mut b);
+    assert_eq!(b.read_only(), Some(ReadOnlyReason::LeaseHeld));
+}

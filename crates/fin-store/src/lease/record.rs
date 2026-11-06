@@ -112,7 +112,7 @@ pub(crate) enum Seen {
     Valid(LeaseRecord),
 }
 
-/// Reads `path` uncached ([`fsio::read_uncached`], with delete sharing on Windows), retrying
+/// Reads `path` uncached ([`fsio::read_uncached_once`], with delete sharing on Windows), retrying
 /// transient errors ([`fsio::is_transient`]) for up to [`fsio::RETRIES`] × [`fsio::RETRY_DELAY`].
 /// `Err` is "unreadable": held when acquiring; when fencing, that look cannot tell (`fence`).
 pub(crate) fn read(path: &Path) -> io::Result<Seen> {
@@ -122,7 +122,7 @@ pub(crate) fn read(path: &Path) -> io::Result<Seen> {
         if let Some(seen) = injected(path) {
             return seen;
         }
-        match fsio::read_uncached(path) {
+        match fsio::read_uncached_once(path) {
             Ok(bytes) => {
                 return Ok(match decode(&bytes) {
                     Some(r) => Seen::Valid(r),
@@ -170,12 +170,12 @@ fn injected(path: &Path) -> Option<io::Result<Seen>> {
         ReadFault::Real => None,
         ReadFault::Error(kind) => Some(Err(io::Error::new(kind, "injected read failure"))),
         ReadFault::Torn => {
-            let mut bytes = fsio::read_uncached(path).unwrap_or_default();
+            let mut bytes = fsio::read_uncached_once(path).unwrap_or_default();
             bytes.truncate(bytes.len() / 2);
             Some(Ok(Seen::Corrupt(bytes)))
         }
         ReadFault::Stale => {
-            let mut r = decode(&fsio::read_uncached(path).ok()?)?;
+            let mut r = decode(&fsio::read_uncached_once(path).ok()?)?;
             r.heartbeat = r.heartbeat.checked_sub(1)?;
             Some(Ok(Seen::Valid(r)))
         }

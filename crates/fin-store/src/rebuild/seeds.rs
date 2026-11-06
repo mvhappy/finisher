@@ -35,7 +35,9 @@ pub(super) fn read(project_dir: &Path, project_id: &str, genesis_hash: &str) -> 
             if !meta.is_file() || meta.len() > SNAPSHOT_CAP {
                 continue;
             }
-            let Ok(bytes) = fs::read(f.path()) else {
+            // Reading a placeholder downloads it; a first read that times out is retried.
+            let path = f.path();
+            let Ok(bytes) = crate::fsio::hydrating(&path, || fs::read(&path)) else {
                 continue;
             };
             let Ok(snap) = snapfile::decode(&bytes) else {

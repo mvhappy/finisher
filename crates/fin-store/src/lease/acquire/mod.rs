@@ -9,7 +9,11 @@
 //!    - **missing**, no claims → free;
 //!    - **missing** beside claims → held (spec §3.5). Its age is the newest claim's mtime in
 //!      server time: an acquirer that crashed between claim and record would otherwise hold
-//!      the folder forever (inferred; see [`Contender`]);
+//!      the folder forever (inferred; see [`Contender`]). When the newest claim is our own
+//!      and no lease of ours holds it (this process held that epoch and lost it, or the
+//!      server-data lock is free, so no process of this server data runs a lease), it is
+//!      judged the same way but reported as [`LeaseState::Lost`]: we hold nothing, and no
+//!      one else is shown as the holder;
 //!    - **unreadable or bad checksum** → held (spec §3.5). Never taken over automatically,
 //!      only by a confirmed takeover;
 //!    - **ours**: if one of our leases in this process still heartbeats it → held; if it is
@@ -30,7 +34,8 @@
 //!
 //! 1. List claims. A claim above the expected record's epoch that is younger than 45 s
 //!    (server time from the last counting probe, extrapolated so it never overestimates), or
-//!    whose age is unknown, is another acquisition in progress → back off.
+//!    whose age is unknown, is another acquisition in progress → back off. A takeover does
+//!    not back off for our own lost claim (above): it is no acquisition in progress.
 //! 2. Claim `base + 1` only (base = the highest of the record's epoch, every claim, every
 //!    segment name's epoch and the last epoch this process held here, so epochs never
 //!    repeat even with every lease file gone). If it is taken, someone else is acquiring
@@ -92,6 +97,12 @@ pub struct Contender {
     locked: Option<server_lock::Held>,
     /// The record to re-take is one this process wrote (registry).
     leftover: bool,
+    /// This observation found `lease.json` missing beside our own newest claim, whose lease
+    /// nothing of this server holds any more ([`OwnLost`]).
+    own_lost: Option<OwnLost>,
+    /// For the next [`Contender::take`]: our own lost claim at this epoch is no acquisition
+    /// in progress (step 1 does not back off for it).
+    own_claim: Option<u64>,
     #[cfg(any(test, feature = "test-hooks"))]
     after_write: Option<AfterWrite>,
 }
@@ -114,6 +125,49 @@ struct Evidence {
 enum Fingerprint {
     Record(LeaseRecord),
     Claims(Vec<u64>),
+}
+
+/// `lease.json` is missing beside our own newest claim at `epoch`, and no lease of this
+/// server holds it: this process held that epoch and lost it (`here`), or the server-data lock
+/// is free, so no process of this server data holds a lease (an earlier run's claim). Others
+/// see the folder as held; this server reports its lease as lost.
+#[derive(Debug, Clone, Copy)]
+struct OwnLost {
+    epoch: u64,
+    here: bool,
+}
+
+impl OwnLost {
+    /// What happened, for status and refusals.
+    fn what(self) -> String {
+        if self.here {
+            format!(
+                "this server's lease at epoch {} was lost (lease.json was deleted)",
+                self.epoch
+            )
+        } else {
+            format!(
+                "lease.json is missing beside this server's claim at epoch {} from an earlier run (no process of this server data holds a lease)",
+                self.epoch
+            )
+        }
+    }
+
+    /// [`OwnLost::what`] and what comes next.
+    fn reason(self, p: &Params) -> String {
+        if p.auto_takeover {
+            format!(
+                "{}; it is re-acquired once that claim is stale (~{} s)",
+                self.what(),
+                p.stale_after.as_secs()
+            )
+        } else {
+            format!(
+                "{}; on a sync folder `fin project takeover --confirm` re-takes it",
+                self.what()
+            )
+        }
+    }
 }
 
 /// What [`Contender::take`] expects to replace.
@@ -166,6 +220,8 @@ impl Contender {
             server_lock: None,
             locked: None,
             leftover: false,
+            own_lost: None,
+            own_claim: None,
             #[cfg(any(test, feature = "test-hooks"))]
             after_write: None,
         }
@@ -194,6 +250,9 @@ impl Contender {
             }
             Verdict::Stale { expected, .. } if self.params.auto_takeover => self.take(expected),
             Verdict::Stale { holder, epoch, .. } => Err(LeaseState::Stale { holder, epoch }),
+            Verdict::Held { .. } if let Some(own) = self.own_lost.take() => Err(LeaseState::Lost {
+                reason: own.reason(&self.params),
+            }),
             Verdict::Held {
                 holder, epoch, age, ..
             } => Err(LeaseState::HeldElsewhere {
@@ -218,6 +277,10 @@ impl Contender {
         let verdict = self
             .observe()
             .map_err(|r| refused("UNAVAILABLE", &r, None))?;
+        // Our own lost claim: the same refusal codes, but no "other server" to speak of.
+        let own = self.own_lost.take();
+        self.own_claim = own.map(|o| o.epoch);
+        let own_text = |sync_text: &str| own.map(|o| format!("{}; {sync_text}", o.what()));
         let taken = match verdict {
             Verdict::Free => self.take(Expected::Missing),
             Verdict::Leftover(r) => self.take(Expected::Record(r)),
@@ -225,7 +288,9 @@ impl Contender {
             Verdict::Stale { holder, epoch, .. } => {
                 return Err(refused(
                     "CONFIRM_REQUIRED",
-                    "the holder looks stopped, but on a sync folder only a confirmed takeover replaces it",
+                    &own_text("on a sync folder only a confirmed takeover re-takes it").unwrap_or_else(|| {
+                        "the holder looks stopped, but on a sync folder only a confirmed takeover replaces it".into()
+                    }),
                     Some((&holder, epoch, None)),
                 ));
             }
@@ -240,14 +305,17 @@ impl Contender {
                 Some(_) if !auto => {
                     return Err(refused(
                         "CONFIRM_REQUIRED",
-                        "another server holds the lease; on a sync folder taking it over needs confirmation",
+                        &own_text("on a sync folder re-taking it needs confirmation").unwrap_or_else(|| {
+                            "another server holds the lease; on a sync folder taking it over needs confirmation".into()
+                        }),
                         Some((&holder, epoch, age)),
                     ));
                 }
                 _ => {
                     return Err(refused(
                         why,
-                        "another server holds the lease",
+                        &own.map(|o| o.reason(&self.params))
+                            .unwrap_or_else(|| "another server holds the lease".into()),
                         Some((&holder, epoch, age)),
                     ));
                 }
@@ -282,6 +350,8 @@ impl Contender {
 
     /// One observation (module docs). `Err`: the folder cannot be reached.
     fn observe(&mut self) -> Result<Verdict, String> {
+        self.own_lost = None;
+        self.own_claim = None;
         if !valid_server_id(&self.server_id) {
             return Err(format!("{:?} is not a valid server id", self.server_id));
         }
@@ -323,6 +393,9 @@ impl Contender {
                 let holder =
                     claim::owner(&self.dir, newest.epoch).unwrap_or_else(|| "unknown".to_string());
                 let age = server_now.zip(newest.server_ms).map(|(n, m)| n - m);
+                if holder == self.server_id {
+                    self.own_lost = self.own_claim_lost(newest.epoch);
+                }
                 let seen = Fingerprint::Claims(claims.iter().map(|c| c.epoch).collect());
                 Ok(self.judge(
                     seen,
@@ -377,6 +450,31 @@ impl Contender {
                     Expected::Record(r),
                 ))
             }
+        }
+    }
+
+    /// Our own newest claim at `epoch` beside a missing `lease.json`: whether no lease of this
+    /// server holds it ([`OwnLost`]). To others the folder is held (by us); this server knows
+    /// better when this process held that epoch and lost it, or when the server-data lock is
+    /// free (taken only to ask, and released at once). A lease of ours still running here, or
+    /// a lock another process holds, keeps it held.
+    fn own_claim_lost(&self, epoch: u64) -> Option<OwnLost> {
+        let key = registry::key(&self.dir, &self.server_id);
+        if registry::stopped_at(&key, epoch) {
+            return Some(OwnLost { epoch, here: true });
+        }
+        if registry::live(&key) {
+            return None;
+        }
+        // As for the restart shortcut: a free OS lock proves nothing when the server data is
+        // on network or sync storage.
+        let cfg = self.server_lock.as_ref().filter(|c| c.shortcut)?;
+        match server_lock::try_lock(&cfg.path) {
+            server_lock::Attempt::Locked(held) => {
+                drop(held);
+                Some(OwnLost { epoch, here: false })
+            }
+            _ => None,
         }
     }
 

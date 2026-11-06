@@ -201,7 +201,7 @@ fn create(dir: &Path, path: &Path, server_id: &str) -> io::Result<()> {
 
 /// Who wrote claim `epoch`, if readable.
 pub fn owner(dir: &Path, epoch: u64) -> Option<String> {
-    let bytes = fsio::read_uncached(&dir.join(claim_name(epoch))).ok()?;
+    let bytes = fsio::read_uncached_once(&dir.join(claim_name(epoch))).ok()?;
     let s = String::from_utf8(bytes).ok()?;
     let s = s.trim();
     (!s.is_empty()).then(|| s.to_string())
