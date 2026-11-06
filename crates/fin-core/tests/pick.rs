@@ -323,3 +323,58 @@ fn pick_of_an_undo_needs_its_unit_on_the_target() {
     log.pick("s2", "br2", "dave", "k3").unwrap().unwrap();
     assert_eq!(log.state("br2"), genesis());
 }
+
+/// The same rule for a redo (plan 4B Task 20 review): a pick of a redo whose undo the target
+/// does not hold is refused, naming the undo; with the undo there, it picks.
+#[test]
+fn pick_of_a_redo_needs_its_undo_on_the_target() {
+    let mut log = MemLog::new(genesis());
+    log.fork("br1", "main", 0);
+    log.commit("br1", "s1", "carol", vec![delete("c2")]);
+    log.undo("br1", "carol", "s2").unwrap();
+    log.redo("br1", "carol", "s3").unwrap();
+    let e = log.pick("s3", "main", "dave", "k1").unwrap_err();
+    let c = &e.details["conflicts"][0];
+    assert_eq!(
+        (
+            c["txId"].as_str(),
+            c["reason"].as_str(),
+            c["againstTx"].as_str()
+        ),
+        (Some("s3"), Some(reasons::DEPENDS_ON_SKIPPED), Some("s2"))
+    );
+    assert_eq!(log.state("main"), genesis());
+    log.fork("br2", "main", 0);
+    for (origin, id) in [("s1", "k2"), ("s2", "k3"), ("s3", "k4")] {
+        log.pick(origin, "br2", "dave", id).unwrap().unwrap();
+    }
+    assert_eq!(ids_of(&log.state("br2")), at(&[("c1", 0), ("c3", 10)]));
+}
+
+/// And for a revert: a pick of a revert of a merge group whose records the target does not
+/// hold is refused, naming the group's record; once the target merged the same source, the
+/// revert picks and takes the merged clip out there too.
+#[test]
+fn pick_of_a_revert_needs_its_group_on_the_target() {
+    let mut log = MemLog::new(genesis());
+    log.fork("br1", "main", 0);
+    log.fork("br2", "main", 0);
+    log.commit("br2", "e1", "bob", vec![ins(30, 5)]); // c4
+    log.merge("br2", "br1", "alice", "m", false).unwrap();
+    log.revert("m", "br1", "alice", "rv").unwrap().unwrap();
+    let e = log.pick("rv", "main", "dave", "k1").unwrap_err();
+    let c = &e.details["conflicts"][0];
+    assert_eq!(
+        (
+            c["txId"].as_str(),
+            c["reason"].as_str(),
+            c["againstTx"].as_str()
+        ),
+        (Some("rv"), Some(reasons::DEPENDS_ON_SKIPPED), Some("m-1"))
+    );
+    assert_eq!(log.state("main"), genesis());
+    log.merge("br2", "main", "alice", "m2", false).unwrap();
+    assert_eq!(ids_of(&log.state("main")).len(), 4);
+    log.pick("rv", "main", "dave", "k2").unwrap().unwrap();
+    assert_eq!(log.state("main"), genesis());
+}

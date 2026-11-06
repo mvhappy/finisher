@@ -1,7 +1,8 @@
 //! Undo/redo property (spec §4.6 prop 4; plan 4B Task 20): 2–4 authors interleave edits,
-//! undos, redos, cherry-picks and merges on `main` and a side branch `br1`, through the real
-//! planners over a [`MemLog`]; after every step the heads, the stacks and every conflict
-//! reason match a reference model.
+//! undos, redos, cherry-picks (side branch → main) and merges (side branch → main, and main →
+//! side branch, so a merge can carry copies back and exclude undos of them) on `main` and a
+//! side branch `br1`, through the real planners over a [`MemLog`]. After every step the
+//! heads, the stacks and every conflict reason match a reference model.
 //!
 //! **Edits** are gapless ripple edits: inserts at a clip boundary or at the track end, deletes
 //! and end trims, one op each. A track is then exactly its ordered list of `(clipId,
@@ -10,6 +11,8 @@
 //! **The model** knows nothing of positions. It keeps:
 //! - per branch, the ordered clip lists, changed by list operations: insert an id before its
 //!   recorded successor id (or at the end), remove an id, add to a duration;
+//! - per branch and clip, the end trims in effect (each by the edit whose effect it is: a copy
+//!   keeps it, an undo takes it back);
 //! - per author and branch, undo and redo stacks of unit ids (Decisions 22–23);
 //! - per record, the list operations it made, so a unit's inverse is a list of list
 //!   operations (a removal records the successor it had, and its inverse reinserts before it).
@@ -20,21 +23,30 @@
 //! deletes c2, Bob undoes, Alice undoes gives `c1, c3, c2`, which the recorded successors
 //! predict exactly).
 //!
-//! **Conflicts** are predicted from abstract footprints (an insert or restore creates its clip,
-//! a removal needs and removes it, a trim needs its end edge) over the records between a
-//! unit and the head, or over a copy's merge steps (the source records before it inverted,
-//! the target's records, the copies so far), paired as Decision 24 says: an undo with its
-//! units, a redo with its undo, a copy with its inverted original, a target record with the
-//! inverted source record of the same origin root. Then:
-//! - undo of an insert is `REMOVED` when another author deleted the clip;
-//! - undo of a trim is `SAME_EDGE` when someone later trimmed the same end and that still
-//!   stands, `REMOVED` when the clip is gone;
-//! - a copy (merge or cherry-pick) is the same list operation on the target; it fails when
-//!   that is impossible (`REMOVED`, `SAME_EDGE`, `ALREADY_PRESENT`), as `DEPENDS_ON_SKIPPED`
-//!   when what makes it impossible is a source record the target does not hold;
-//! - a copy of an undo or redo whose unit the merge skipped (a pick: the target does not hold)
-//!   is `DEPENDS_ON_SKIPPED`: its inverse would bring back what the target never lost (found
-//!   by this property: a skipped delete's undo re-created a clip the target had deleted).
+//! **Two oracles for conflicts.**
+//! - *Independent* ([`MBranch::verdict`]): from the clip lists and edge histories alone, an
+//!   op cannot be carried when its clip is gone (remove, trim), is there already (a restore),
+//!   or its end edge was changed by someone else since (an undo or redo: since the edit it
+//!   inverts; a copy: since what the source had before it); and a copied undo or redo cannot be
+//!   carried when the target does not hold its unit. Wherever it says so, the real planner
+//!   must refuse, with a reason of that kind. It allows the planner to refuse more (it is
+//!   conservative: two unmirrored records may cancel in effect), so it cannot predict every
+//!   conflict.
+//! - *Transcribed* (shared with the implementation's rules, so a bug in those rules could be
+//!   shared too): the exact reason and blamed record come from abstract footprints (a restore
+//!   creates its clip, a removal needs and removes it, a trim needs its end edge) over the
+//!   records between a unit and the head, or over a copy's merge steps (the source records
+//!   before it inverted, the target's records, the copies so far), paired as Decision 24 says
+//!   (an undo with its units, a redo with its undo, a copy with its inverted original, a target
+//!   record with the inverted source record of the same origin root), plus the candidate rules
+//!   (present by root; `UNDOES_TARGET_RECORDS`; an undo or redo of a skipped unit is
+//!   `DEPENDS_ON_SKIPPED`, found by this property: a skipped delete's undo re-created a clip
+//!   the target had deleted). The heads, which the transcribed part never computes, are
+//!   checked by the list model alone.
+//!
+//! Not driven here: `revert` (its chains have their own oracle, `pick_props`), `undo --to`
+//! (`undo_to_props`: equal to the undos in a row), and lineages deeper than one fork
+//! (`merge.rs` cases; the store's prop 5, `props_replay`, drives all of them end to end).
 
 mod common;
 
@@ -118,9 +130,10 @@ enum Act {
     Pick {
         k: usize,
     },
-    /// A merge of the side branch into main.
+    /// A merge of the side branch into main, or of main into the side branch (`down`).
     Merge {
         skip: bool,
+        down: bool,
     },
 }
 
@@ -135,7 +148,7 @@ fn act() -> impl Strategy<Value = Act> {
         3 => any::<bool>().prop_map(|side| Act::Undo { side }),
         2 => any::<bool>().prop_map(|side| Act::Redo { side }),
         1 => (0usize..16).prop_map(|k| Act::Pick { k }),
-        1 => any::<bool>().prop_map(|skip| Act::Merge { skip }),
+        2 => (any::<bool>(), any::<bool>()).prop_map(|(skip, down)| Act::Merge { skip, down }),
     ]
 }
 
@@ -187,13 +200,43 @@ enum LOp {
         succ: Option<String>,
         stamp: u32,
     },
+    /// An end trim. `eff`: the edit whose effect it is (a copy keeps it, an undo takes it
+    /// back: `push` false); `expect`: the edge history it needs (an undo or redo: as the edit
+    /// it inverts left it); `pre`/`post`: the history around it as made (the independent
+    /// oracle, module docs).
     Trim {
         id: String,
         delta: i64,
+        eff: String,
+        push: bool,
+        expect: Option<Vec<String>>,
+        pre: Vec<String>,
+        post: Vec<String>,
     },
 }
 
 const UNSURE: u32 = u32::MAX;
+
+/// What the engine may answer when the independent oracle says an op is impossible. A clip
+/// gone may also be the re-run's own `NOT_FOUND` (Decision 17): a copy's entity judgement
+/// leaves out mirrored pairs, and when one pair's two steps lie around another removal of the
+/// clip (an inverted source undo that `UNDOES_TARGET_RECORDS` excluded), the judgement misses
+/// that the clip is gone (Task 22 follow-up: name the excluded record instead).
+const GONE: &[&str] = &[reasons::REMOVED, reasons::DEPENDS_ON_SKIPPED, "NOT_FOUND"];
+const THERE: &[&str] = &[
+    reasons::ALREADY_PRESENT,
+    reasons::ID_COLLISION,
+    reasons::DEPENDS_ON_SKIPPED,
+];
+const EDGE: &[&str] = &[
+    reasons::SAME_EDGE,
+    reasons::REMOVED,
+    reasons::DEPENDS_ON_SKIPPED,
+];
+const UNHELD: &[&str] = &[reasons::DEPENDS_ON_SKIPPED];
+
+/// An independent verdict: op `k` cannot be carried, and the reasons the engine may give.
+type Verdict = Option<(usize, &'static [&'static str])>;
 
 impl LOp {
     /// The inverse, as planned (a removal's successor is found when it is made).
@@ -219,7 +262,22 @@ impl LOp {
                 before: succ,
                 stamp,
             },
-            LOp::Trim { id, delta } => LOp::Trim { id, delta: -delta },
+            LOp::Trim {
+                id,
+                delta,
+                eff,
+                push,
+                post,
+                ..
+            } => LOp::Trim {
+                id,
+                delta: -delta,
+                eff,
+                push: !push,
+                expect: Some(post),
+                pre: Vec::new(),
+                post: Vec::new(),
+            },
         }
     }
 
@@ -284,6 +342,8 @@ struct MBranch {
     /// and durations, then the real order is taken).
     unsure: [bool; 2],
     removals: HashMap<String, u32>,
+    /// Per clip, the trims of its end in effect, oldest first (by `eff`).
+    edges: HashMap<String, Vec<String>>,
     recs: Vec<ARec>,
 }
 
@@ -303,6 +363,27 @@ impl MBranch {
 
     fn rec(&self, tx: &str) -> &ARec {
         self.recs.iter().find(|r| r.tx == tx).unwrap()
+    }
+
+    /// The independent oracle for `op` here: the reasons the engine may give when the op
+    /// cannot be carried, from what the clip lists and edge histories say alone (no steps, no
+    /// mirrors). A clip to remove or trim is gone; a clip to put back is there; an end edge
+    /// someone else changed since (an undo or redo: since the edit it inverts; a copy: since
+    /// what the source had before it).
+    fn verdict(&self, op: &LOp, copy: bool) -> Option<&'static [&'static str]> {
+        let present = self.find(op.clip()).is_some();
+        match op {
+            LOp::Insert { .. } => present.then_some(THERE),
+            LOp::Remove { .. } => (!present).then_some(GONE),
+            LOp::Trim { .. } if !present => Some(GONE),
+            LOp::Trim {
+                id, expect, pre, ..
+            } => {
+                let want = if copy { Some(pre) } else { expect.as_ref() };
+                let here = self.edges.get(id).cloned().unwrap_or_default();
+                want.is_some_and(|w| *w != here).then_some(EDGE)
+            }
+        }
     }
 
     /// Applies `op` (the re-run: `Err(code)` when it is impossible here); returns it as made.
@@ -365,14 +446,36 @@ impl MBranch {
                     stamp,
                 })
             }
-            LOp::Trim { id, delta } => {
+            LOp::Trim {
+                id,
+                delta,
+                eff,
+                push,
+                expect,
+                ..
+            } => {
                 let (t, i) = self.find(&id).ok_or("NOT_FOUND")?;
                 let d = self.tracks[t][i].1 + delta;
                 if !(1..=MAX_FRAMES).contains(&d) {
                     return Err("INVALID_RANGE");
                 }
                 self.tracks[t][i].1 = d;
-                Ok(op.clone())
+                let hist = self.edges.entry(id.clone()).or_default();
+                let pre = hist.clone();
+                if push {
+                    hist.push(eff.clone());
+                } else if let Some(k) = hist.iter().rposition(|e| *e == eff) {
+                    hist.remove(k);
+                }
+                Ok(LOp::Trim {
+                    id,
+                    delta,
+                    eff,
+                    push,
+                    expect,
+                    pre,
+                    post: hist.clone(),
+                })
             }
         }
     }
@@ -550,7 +653,8 @@ fn entity_conflict(
 /// A predicted conflict: `(txId, opIndex, reason, againstTx)`.
 type Pred = (String, usize, String, Option<String>);
 
-/// `ops` re-run one by one on `b` over `steps` (module docs); the ops as made, or the conflict.
+/// `ops` re-run one by one on `b` over `steps` (module docs): the ops as made, or the conflict
+/// the transcribed rules predict; and the independent oracle's verdict on the ops it reached.
 /// `dup`: the reason a re-created clip that is there already gets (a copy's same origin:
 /// `ALREADY_PRESENT`; an undo's: `ID_COLLISION`).
 fn rerun(
@@ -560,11 +664,28 @@ fn rerun(
     steps: &[AStep],
     copy: bool,
     dup: &'static str,
+) -> (Result<Vec<LOp>, Pred>, Verdict) {
+    let mut verdict = None;
+    let out = rerun_ops(b, tx, ops, steps, copy, dup, &mut verdict);
+    (out, verdict)
+}
+
+fn rerun_ops(
+    b: &mut MBranch,
+    tx: &str,
+    ops: &[LOp],
+    steps: &[AStep],
+    copy: bool,
+    dup: &'static str,
+    verdict: &mut Verdict,
 ) -> Result<Vec<LOp>, Pred> {
     let theirs = unmirrored(steps);
     let mut created = HashSet::new();
     let mut made = Vec::new();
     for (k, op) in ops.iter().enumerate() {
+        if verdict.is_none() {
+            *verdict = b.verdict(op, copy).map(|class| (k, class));
+        }
         let f = op.fp();
         if let Some((reason, against)) = entity_conflict(&f, &created, &theirs) {
             return Err((tx.to_string(), k, reason.to_string(), Some(against)));
@@ -756,20 +877,95 @@ impl Model {
         self.br[b].recs.iter().filter(|r| r.seq > seq).collect()
     }
 
-    /// Plans `ops` on `b` over its records after `at` (an undo or a redo).
-    fn plan_inverse(&self, b: usize, tx: &str, at: u64, ops: &[LOp]) -> Result<MBranch, Pred> {
+    /// Plans `ops` on `b` over its records after `at` (an undo or a redo), with the
+    /// independent verdict.
+    fn plan_inverse(
+        &self,
+        b: usize,
+        tx: &str,
+        at: u64,
+        ops: &[LOp],
+    ) -> (Result<MBranch, Pred>, Verdict) {
         let steps = steps_from(&self.after(b, at));
         let mut next = self.br[b].clone();
-        let made = rerun(&mut next, tx, ops, &steps, false, reasons::ID_COLLISION)?;
-        next.recs.push(ARec {
-            tx: tx.to_string(),
-            seq: 0,
-            kind: Kind::Edit,
-            root: tx.to_string(),
-            ops: made,
+        let (made, verdict) = rerun(&mut next, tx, ops, &steps, false, reasons::ID_COLLISION);
+        let out = made.map(|made| {
+            next.recs.push(ARec {
+                tx: tx.to_string(),
+                seq: 0,
+                kind: Kind::Edit,
+                root: tx.to_string(),
+                ops: made,
+            });
+            next
         });
-        Ok(next)
+        (out, verdict)
     }
+
+    /// The record `tx`, on whichever branch holds it.
+    fn find(&self, tx: &str) -> Option<&ARec> {
+        self.br.iter().flat_map(|b| &b.recs).find(|r| r.tx == tx)
+    }
+
+    /// The records of unit `u` on `b`: the record `u`, or the merge group `u`.
+    fn unit_recs(&self, b: usize, u: &str) -> Vec<&ARec> {
+        self.br[b]
+            .recs
+            .iter()
+            .filter(|r| r.tx == u || r.kind == Kind::Merge(u.to_string()))
+            .collect()
+    }
+
+    /// Whether branch `b` holds a record of `root` (its own records: every lineage here
+    /// starts at main's seq 0, which holds no record).
+    fn holds(&self, b: usize, root: &str) -> bool {
+        self.br[b].recs.iter().any(|r| r.root == root)
+    }
+
+    /// Whether `r` (by its root record) is an undo or redo whose units hold a record that
+    /// originates on `into`, directly or through another such record
+    /// (`UNDOES_TARGET_RECORDS`).
+    fn undoes_target(&self, into: usize, r: &ARec, depth: usize) -> bool {
+        let base = self.find(&r.root).unwrap_or(r);
+        let (Kind::Undo(u) | Kind::Redo(u)) = &base.kind else {
+            return false;
+        };
+        let Some(b) = (0..2).find(|&b| self.br[b].recs.iter().any(|x| x.tx == base.tx)) else {
+            return false;
+        };
+        depth < 8
+            && self.unit_recs(b, u).iter().any(|x| {
+                let root = self.find(&x.root).unwrap_or(x);
+                self.br[into].recs.iter().any(|y| y.tx == root.tx)
+                    || self.undoes_target(into, root, depth + 1)
+            })
+    }
+}
+
+/// The independent oracle against a real answer of one record: where it says op `k` cannot
+/// be carried, the real answer is a conflict, with a reason it allows when it names op `k`.
+fn agree<T: std::fmt::Debug>(
+    verdict: Verdict,
+    real: &Result<T, CoreError>,
+    what: &str,
+) -> Result<(), TestCaseError> {
+    let Some((k, class)) = verdict else {
+        return Ok(());
+    };
+    let Err(e) = real else {
+        prop_assert!(
+            false,
+            "{what}: op {k} cannot be carried ({class:?}), real {real:?}"
+        );
+        return Ok(());
+    };
+    for c in preds(e).iter().filter(|c| c.1 == k) {
+        prop_assert!(
+            class.contains(&c.2.as_str()),
+            "{what}: {c:?} not in {class:?}"
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -811,7 +1007,8 @@ impl Run {
             Act::Undo { side } => self.undo(a, usize::from(side)),
             Act::Redo { side } => self.redo(a, usize::from(side)),
             Act::Pick { k } => self.pick(a, k),
-            Act::Merge { skip } => self.merge(a, skip),
+            Act::Merge { skip, down: false } => self.merge(a, SIDE, MAIN, skip),
+            Act::Merge { skip, down: true } => self.merge(a, MAIN, SIDE, skip),
         }
     }
 
@@ -876,6 +1073,11 @@ impl Run {
                     LOp::Trim {
                         id: c.id.clone(),
                         delta: d,
+                        eff: String::new(),
+                        push: true,
+                        expect: None,
+                        pre: Vec::new(),
+                        post: Vec::new(),
                     },
                 )
             }
@@ -886,6 +1088,9 @@ impl Run {
         }
         let id = self.tx();
         let rec = self.log.commit(BR[b], &id, AUTHORS[a], vec![op]);
+        if let LOp::Trim { eff, .. } = &mut lop {
+            *eff = id.clone();
+        }
         if let LOp::Insert { id: clip, .. } = &mut lop {
             *clip = rec.record.bindings["$x"].clone();
         }
@@ -914,7 +1119,9 @@ impl Run {
             return Ok(());
         };
         let ops = self.m.inverse_of(b, &unit);
-        match (self.m.plan_inverse(b, &id, unit.last_seq, &ops), real) {
+        let (planned, verdict) = self.m.plan_inverse(b, &id, unit.last_seq, &ops);
+        agree(verdict, &real, &format!("undo of {}", unit.id))?;
+        match (planned, real) {
             (Ok(next), Ok(rec)) => {
                 self.m.br[b] = next;
                 let last = self.m.br[b].recs.last_mut().unwrap();
@@ -953,7 +1160,9 @@ impl Run {
             .rev()
             .map(LOp::inverse)
             .collect();
-        match (self.m.plan_inverse(b, &id, undo.last_seq, &ops), real) {
+        let (planned, verdict) = self.m.plan_inverse(b, &id, undo.last_seq, &ops);
+        agree(verdict, &real, &format!("redo of {}", undo.id))?;
+        match (planned, real) {
             (Ok(next), Ok(rec)) => {
                 self.m.br[b] = next;
                 let last = self.m.br[b].recs.last_mut().unwrap();
@@ -977,9 +1186,14 @@ impl Run {
         Ok(())
     }
 
-    /// Whether main holds a record of `root`.
-    fn present(&self, root: &str) -> bool {
-        self.m.br[MAIN].recs.iter().any(|r| r.root == root)
+    /// The first record of the unit an undo or redo `r` on `b` addresses (oldest first) for
+    /// which `missing` holds.
+    fn unit_dep(&self, b: usize, r: &ARec, missing: impl Fn(&ARec) -> bool) -> Option<String> {
+        let (Kind::Undo(u) | Kind::Redo(u)) = &r.kind else {
+            return None;
+        };
+        let recs = self.m.unit_recs(b, u);
+        recs.into_iter().find(|x| missing(x)).map(|x| x.tx.clone())
     }
 
     fn pick(&mut self, a: usize, k: usize) -> Result<(), TestCaseError> {
@@ -991,7 +1205,7 @@ impl Run {
         let origin = side[i].clone();
         let id = self.tx();
         let real = self.log.pick(&origin.tx, BR[MAIN], AUTHORS[a], &id);
-        if self.present(&origin.root) {
+        if self.m.holds(MAIN, &origin.root) {
             prop_assert!(
                 matches!(real, Ok(None)),
                 "{} is on main: {:?}",
@@ -1000,13 +1214,17 @@ impl Run {
             );
             return Ok(());
         }
-        if let Kind::Undo(u) | Kind::Redo(u) = &origin.kind
-            && !self.present(&self.m.br[SIDE].rec(u).root)
-        {
-            // Named by the picked record, as `UNDOES_TARGET_RECORDS` is.
-            let dep = reasons::DEPENDS_ON_SKIPPED.to_string();
-            let want = (origin.tx.clone(), 0, dep, Some(u.clone()));
-            let e = real.expect_err("a pick of an undo whose unit main does not hold");
+        // Both named by the picked record. The second is also the independent oracle's: the
+        // undo's unit is not on main, so its inverse would take back what main never got.
+        let refused = if self.m.undoes_target(MAIN, &origin, 0) {
+            Some((reasons::UNDOES_TARGET_RECORDS, None))
+        } else {
+            self.unit_dep(SIDE, &origin, |x| !self.m.holds(MAIN, &x.root))
+                .map(|u| (reasons::DEPENDS_ON_SKIPPED, Some(u)))
+        };
+        if let Some((reason, against)) = refused {
+            let want = (origin.tx.clone(), 0, reason.to_string(), against);
+            let e = real.expect_err("a pick of an undo tied to main or to what main lacks");
             prop_assert_eq!(preds(&e), vec![want]);
             return Ok(());
         }
@@ -1014,15 +1232,16 @@ impl Run {
         let steps = paths.steps(i, &[]);
         let before: HashSet<String> = side[..i].iter().map(|r| r.tx.clone()).collect();
         let mut next = self.m.br[MAIN].clone();
-        let planned = rerun(
+        let (planned, verdict) = rerun(
             &mut next,
             &id,
             &origin.ops,
             &steps,
             true,
             reasons::ALREADY_PRESENT,
-        )
-        .map_err(|c| on_skipped(c, &before));
+        );
+        let planned = planned.map_err(|c| on_skipped(c, &before));
+        agree(verdict, &real, &format!("pick of {}", origin.tx))?;
         match (planned, real) {
             (Ok(made), Ok(Some(rec))) => {
                 self.m.br[MAIN] = next;
@@ -1050,38 +1269,58 @@ impl Run {
         Ok(())
     }
 
-    fn merge(&mut self, a: usize, skip: bool) -> Result<(), TestCaseError> {
+    /// A merge of `from` into `into` (the side branch into main, or main into the side
+    /// branch: both lineages start at main's seq 0, so both paths are whole).
+    fn merge(
+        &mut self,
+        a: usize,
+        from: usize,
+        into: usize,
+        skip: bool,
+    ) -> Result<(), TestCaseError> {
         let mid = self.tx();
-        let real = self.log.merge(BR[SIDE], BR[MAIN], AUTHORS[a], &mid, skip);
-        let side = self.m.br[SIDE].recs.clone();
-        let paths = Paths::new(&side, &self.m.br[MAIN].recs);
-        let mut next = self.m.br[MAIN].clone();
+        let real = self.log.merge(BR[from], BR[into], AUTHORS[a], &mid, skip);
+        let source = self.m.br[from].recs.clone();
+        let paths = Paths::new(&source, &self.m.br[into].recs);
+        let mut next = self.m.br[into].clone();
         let mut copies: Vec<(usize, AStep)> = Vec::new();
         let mut made: Vec<(String, ARec)> = Vec::new();
-        let mut conflicts: Vec<Pred> = Vec::new();
+        let (mut conflicts, mut excluded): (Vec<Pred>, Vec<Pred>) = (Vec::new(), Vec::new());
+        // Candidates the independent oracle says cannot be copied: (txId, op, reasons).
+        let mut must_fail: Vec<(String, usize, &[&str])> = Vec::new();
         let mut skipped: HashSet<String> = HashSet::new();
-        for (i, r) in side.iter().enumerate() {
-            if self.present(&r.root) {
+        for (i, r) in source.iter().enumerate() {
+            if self.m.holds(into, &r.root) {
                 continue;
             }
-            if let Kind::Undo(u) | Kind::Redo(u) = &r.kind
-                && skipped.contains(u)
-            {
-                let dep = reasons::DEPENDS_ON_SKIPPED.to_string();
-                conflicts.push((r.tx.clone(), 0, dep, Some(u.clone())));
+            if self.m.undoes_target(into, r, 0) {
+                let why = reasons::UNDOES_TARGET_RECORDS.to_string();
+                excluded.push((r.tx.clone(), 0, why, None));
+                skipped.insert(r.tx.clone());
+                continue;
+            }
+            // An undo or redo of a unit this merge does not copy (also the oracle's rule).
+            if let Some(dep) = self.unit_dep(from, r, |x| skipped.contains(&x.tx)) {
+                must_fail.push((r.tx.clone(), 0, UNHELD));
+                let why = reasons::DEPENDS_ON_SKIPPED.to_string();
+                conflicts.push((r.tx.clone(), 0, why, Some(dep)));
                 skipped.insert(r.tx.clone());
                 continue;
             }
             let steps = paths.steps(i, &copies);
             let mut scratch = next.clone();
-            match rerun(
+            let (out, verdict) = rerun(
                 &mut scratch,
                 &r.tx,
                 &r.ops,
                 &steps,
                 true,
                 reasons::ALREADY_PRESENT,
-            ) {
+            );
+            if let Some((k, class)) = verdict {
+                must_fail.push((r.tx.clone(), k, class));
+            }
+            match out {
                 Ok(ops) => {
                     next = scratch;
                     let copy = ARec {
@@ -1100,35 +1339,54 @@ impl Run {
                 }
             }
         }
+        let got: Vec<Pred> = match &real {
+            Ok(plan) => plan.conflicts.iter().cloned().map(pred).collect(),
+            Err(e) => preds(e),
+        };
+        for (tx, k, class) in &must_fail {
+            let c = got.iter().find(|c| c.0 == *tx);
+            prop_assert!(
+                c.is_some(),
+                "merge {mid}: {tx} op {k} cannot be copied ({class:?})"
+            );
+            let c = c.unwrap();
+            prop_assert!(
+                c.1 != *k || class.contains(&c.2.as_str()),
+                "merge {mid}: {c:?}"
+            );
+        }
+        prop_assert_eq!(&got, &conflicts, "merge {} conflicts", mid);
         let real = match real {
             Ok(plan) => {
                 prop_assert!(
                     skip || conflicts.is_empty(),
                     "merge {mid} should fail {conflicts:?}"
                 );
-                let got: Vec<Pred> = plan.conflicts.into_iter().map(pred).collect();
-                prop_assert_eq!(&got, &conflicts, "merge {} conflicts", mid);
+                let ex: Vec<Pred> = plan.excluded.into_iter().map(pred).collect();
+                prop_assert_eq!(ex, excluded, "merge {} excluded", mid);
                 plan.planned
             }
             Err(e) => {
                 prop_assert!(!skip, "merge {mid} refused with --skip-conflicting: {e:?}");
-                prop_assert_eq!(preds(&e), conflicts, "merge {} conflicts", mid);
                 return Ok(());
             }
         };
         prop_assert_eq!(real.len(), made.len(), "merge {} copies", mid);
-        let head = self.log.head_seq(BR[MAIN]);
+        let head = self.log.head_seq(BR[into]);
         let first = head + 1 - made.len() as u64;
         let mut group = Vec::new();
         for (n, (origin, mut c)) in made.into_iter().enumerate() {
             c.seq = first + n as u64;
-            self.m.merged_away.insert(origin);
+            // Decision 22: a merge into a non-descendant drops the source's stacks there.
+            if into == MAIN {
+                self.m.merged_away.insert(origin);
+            }
             group.push(c.tx.clone());
             next.recs.push(c);
         }
-        self.m.br[MAIN] = next;
+        self.m.br[into] = next;
         if !group.is_empty() {
-            self.m.push_unit(MAIN, a, &mid, group, head);
+            self.m.push_unit(into, a, &mid, group, head);
         }
         Ok(())
     }

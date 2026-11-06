@@ -1,8 +1,13 @@
-//! Replay property (spec §4.6 prop 5; plan 4B Task 20): a generated log with branches, edits
-//! by several authors, undos, redos, merges, cherry-picks and a checkpoint, written through the
-//! store. Replaying each branch from its first snapshot (`apply_committed`) gives its live
-//! head, and a fresh server-data that imports the folder has the same heads, branch index,
-//! `merged` states and undo stacks, and verifies.
+//! Replay property (spec §4.6 prop 5; plan 4B Task 20, widened by its review): a generated log
+//! written through the store, with edits by several authors, branches forked at the head, at a
+//! checkpoint or at an earlier seq, archiving and restoring, undos, redos, `undo --to`,
+//! checkpoints, merges and cherry-picks in any direction (into the parent, a child or a
+//! sibling), reverts, and partial imports by a follower along the way. Replaying each branch
+//! from its first snapshot (`apply_committed`) gives its live head; the writer verifies; and the
+//! follower, after a last import, has the same heads, branch index, `merged` states and undo
+//! stacks, and verifies.
+//!
+//! 16 cases by default (about 2 s in a debug build); `PROPTEST_CASES=300` for a stress run.
 
 mod integration_support;
 
@@ -44,24 +49,44 @@ enum Act {
         k: usize,
         n: i64,
     },
-    /// A branch forked from branch `from` at its head.
+    /// A branch forked from branch `from`: at its head (`at` 0–1), at checkpoint `k1` (2), or
+    /// at `at / 5` of its head seq.
     Branch {
         from: usize,
+        at: u8,
     },
+    /// Branch `b` archived (`on`) or restored.
+    Archive {
+        b: usize,
+        on: bool,
+    },
+    /// `undo --to k1` on branch `b`.
+    UndoTo {
+        b: usize,
+    },
+    /// A revert of the `k`th merge made so far, on branch `b`.
+    Revert {
+        b: usize,
+        k: usize,
+    },
+    /// The writer exports and the follower imports what is there.
+    Sync,
     Undo {
         b: usize,
     },
     Redo {
         b: usize,
     },
-    /// Branch `from` merged into its parent.
+    /// Branch `from` merged into branch `into` (5: its parent).
     Merge {
         from: usize,
+        into: usize,
         skip: bool,
     },
-    /// The `k`th record of branch `from` cherry-picked into its parent.
+    /// The `k`th own record of branch `from` cherry-picked into branch `into` (5: its parent).
     Pick {
         from: usize,
+        into: usize,
         k: usize,
     },
     Checkpoint {
@@ -73,30 +98,28 @@ fn act() -> impl Strategy<Value = Act> {
     prop_oneof![
         6 => (0usize..4, 0u8..3, 0usize..6, -3i64..4)
             .prop_map(|(b, what, k, n)| Act::Edit { b, what, k, n }),
-        2 => (0usize..4).prop_map(|from| Act::Branch { from }),
+        2 => (0usize..5, 0u8..6).prop_map(|(from, at)| Act::Branch { from, at }),
+        1 => (1usize..5, any::<bool>()).prop_map(|(b, on)| Act::Archive { b, on }),
+        1 => (0usize..5).prop_map(|b| Act::UndoTo { b }),
+        1 => (0usize..5, 0usize..4).prop_map(|(b, k)| Act::Revert { b, k }),
+        1 => Just(Act::Sync),
         3 => (0usize..4).prop_map(|b| Act::Undo { b }),
         2 => (0usize..4).prop_map(|b| Act::Redo { b }),
-        3 => (1usize..4, any::<bool>()).prop_map(|(from, skip)| Act::Merge { from, skip }),
-        2 => (1usize..4, 0usize..8).prop_map(|(from, k)| Act::Pick { from, k }),
+        3 => (0usize..5, 0usize..6, any::<bool>()).prop_map(|(from, into, skip)| Act::Merge { from, into, skip }),
+        2 => (0usize..5, 0usize..6, 0usize..8).prop_map(|(from, into, k)| Act::Pick { from, into, k }),
         1 => (0usize..4).prop_map(|b| Act::Checkpoint { b }),
     ]
 }
 
-/// Refusals the script may meet (and goes on): nothing to undo or redo, a conflict, a pick of
-/// something already there, a trim past its limits, a merge with nothing in common.
-const EXPECTED: [&str; 6] = [
-    "NOTHING_TO_UNDO",
-    "NOTHING_TO_REDO",
-    "CONFLICT",
-    "INVALID_RANGE",
-    "INVALID_OP",
-    "NAME_TAKEN",
-];
+/// A step may be refused (nothing to undo, a conflict, an archived branch, a name taken, a
+/// merge of a branch into itself, …) and the script goes on; only codes that say the store
+/// itself is broken fail the case.
+const BROKEN: [&str; 4] = ["DB_ERROR", "INTERNAL", "INVALID_FORMAT", "CORRUPT"];
 
 fn allowed<T>(r: Result<T, StoreError>) -> Result<(), TestCaseError> {
     if let Err(e) = r {
         let e = CoreError::from(e);
-        prop_assert!(EXPECTED.contains(&e.code.as_str()), "{e:?}");
+        prop_assert!(!BROKEN.contains(&e.code.as_str()), "{e:?}");
     }
     Ok(())
 }
@@ -105,6 +128,8 @@ struct Script {
     s: Store,
     branches: Vec<String>,
     n: usize,
+    /// The merges asked for so far (revert targets), with their target branch.
+    merges: Vec<(String, String)>,
 }
 
 impl Script {
@@ -128,6 +153,15 @@ impl Script {
             .into_iter()
             .find(|v| v.id == b)
             .and_then(|v| v.parent)
+    }
+
+    /// Branch `into` (an index), or `from`'s parent for 5 and up.
+    fn target(&self, from: &str, into: usize) -> Option<String> {
+        if into >= 5 {
+            self.parent(from)
+        } else {
+            Some(self.branch(into))
+        }
     }
 
     fn history(&mut self, b: &str) -> HistoryReq {
@@ -190,21 +224,65 @@ impl Script {
                 let b = self.branch(b);
                 self.edit(&b, what, k, n)
             }
-            Act::Branch { from } => {
+            Act::Branch { from, at } => {
                 let from = self.branch(from);
+                let head = self.s.head(&from);
+                let at = match at {
+                    0 | 1 => None,
+                    2 => Some(fin_store::At::Checkpoint("k1".into())),
+                    n => Some(fin_store::At::Seq(head * u64::from(n) / 5)),
+                };
                 let tx_id = self.id();
                 let made = self.s.create_branch(BranchCreate {
                     tx_id,
                     author: self.author().into(),
                     name: None,
                     from,
-                    at: None,
+                    at,
                     dry_run: false,
                     args_hash: None,
                 });
-                self.branches.push(made.unwrap().branch.id);
+                match made {
+                    Ok(m) => self.branches.push(m.branch.id),
+                    Err(e) => allowed::<()>(Err(e))?,
+                }
                 Ok(())
             }
+            Act::Archive { b, on } => {
+                let branch = self.branch(b);
+                let tx_id = self.id();
+                allowed(self.s.set_branch(fin_store::BranchSet {
+                    tx_id,
+                    author: self.author().into(),
+                    branch,
+                    name: None,
+                    archived: Some(on),
+                    dry_run: false,
+                    args_hash: None,
+                }))
+            }
+            Act::UndoTo { b } => {
+                let mut r = self.history(&self.branch(b));
+                r.to = Some("k1".into());
+                allowed(self.s.undo(r))
+            }
+            Act::Revert { b, k } => {
+                if self.merges.is_empty() {
+                    return Ok(());
+                }
+                let (m, _) = self.merges[k % self.merges.len()].clone();
+                let branch = self.branch(b);
+                let tx_id = self.id();
+                allowed(self.s.revert(fin_store::RevertReq {
+                    tx_id,
+                    author: self.author().into(),
+                    merge_id: m,
+                    branch,
+                    dry_run: false,
+                    args_hash: None,
+                }))
+            }
+            Act::Sync => Ok(()),
             Act::Undo { b } => {
                 let r = self.history(&self.branch(b));
                 allowed(self.s.undo(r))
@@ -213,12 +291,13 @@ impl Script {
                 let r = self.history(&self.branch(b));
                 allowed(self.s.redo(r))
             }
-            Act::Merge { from, skip } => {
+            Act::Merge { from, into, skip } => {
                 let from = self.branch(from);
-                let Some(into) = self.parent(&from) else {
+                let Some(into) = self.target(&from, into) else {
                     return Ok(());
                 };
                 let tx_id = self.id();
+                self.merges.push((tx_id.clone(), into.clone()));
                 let r = self.s.merge(MergeReq {
                     tx_id,
                     author: self.author().into(),
@@ -230,9 +309,9 @@ impl Script {
                 });
                 allowed(r)
             }
-            Act::Pick { from, k } => {
+            Act::Pick { from, into, k } => {
                 let from = self.branch(from);
-                let Some(into) = self.parent(&from) else {
+                let Some(into) = self.target(&from, into) else {
                     return Ok(());
                 };
                 let fork = self
@@ -313,14 +392,15 @@ proptest! {
     #![proptest_config(config(16))]
     #[test]
     fn replay_and_export_import_roundtrip(
-        mut acts in prop::collection::vec(act(), 4..24),
+        mut acts in prop::collection::vec(act(), 4..36),
         at in any::<prop::sample::Index>(),
         cp in 0usize..4,
     ) {
-        // Every log has a branch, a checkpoint somewhere and a merge of the branch at the end.
-        acts.insert(0, Act::Branch { from: 0 });
+        // Every log has a branch, a checkpoint somewhere and a merge of the first branch into
+        // its parent at the end.
+        acts.insert(0, Act::Branch { from: 0, at: 0 });
         acts.insert(1 + at.index(acts.len()), Act::Checkpoint { b: cp });
-        acts.push(Act::Merge { from: 1, skip: true });
+        acts.push(Act::Merge { from: 1, into: 5, skip: true });
         let e = is::env();
         let mut s = e.create("a");
         is::commit(&mut s, "s1", vec![is::asset("/media/a.mov")]);
@@ -335,9 +415,21 @@ proptest! {
             })
             .collect();
         is::commit(&mut s, "s2", clips);
-        let mut run = Script { s, branches: vec![MAIN.to_string()], n: 0 };
+        let mut run = Script {
+            s,
+            branches: vec![MAIN.to_string()],
+            n: 0,
+            merges: vec![],
+        };
+        // The follower, opened at the first partial import.
+        let mut f0: Option<Store> = None;
         for act in &acts {
             run.step(act)?;
+            if matches!(act, Act::Sync) {
+                e.flush(&mut run.s);
+                let f = f0.get_or_insert_with(|| e.open("f"));
+                e.poll(f);
+            }
         }
         let mut s = run.s;
         assert_replays(&s)?;
@@ -345,7 +437,7 @@ proptest! {
         prop_assert!(v.ok, "{v:?}");
 
         e.flush(&mut s);
-        let mut f = e.open("f");
+        let mut f = f0.unwrap_or_else(|| e.open("f"));
         e.poll(&mut f);
         prop_assert_eq!(heads(&f), heads(&s));
         assert_replays(&f)?;
