@@ -295,3 +295,31 @@ fn revert_lists_every_conflicting_record() {
     // Ops newest record first: m-3's remove (0), m-2's restore (1), m-1's remove (2).
     assert_eq!(all, [(0, "REMOVED", "t2"), (2, "REMOVED", "t1")]);
 }
+
+/// Plan 4B Task 20: a pick of an undo whose unit the target does not hold depends on that
+/// unit (it would re-create a clip the target deleted); once the unit is there, the undo
+/// picks.
+#[test]
+fn pick_of_an_undo_needs_its_unit_on_the_target() {
+    let mut log = MemLog::new(genesis());
+    log.fork("br1", "main", 0);
+    log.commit("br1", "s1", "carol", vec![delete("c2")]);
+    log.undo("br1", "carol", "s2").unwrap();
+    log.commit("main", "a1", "alice", vec![delete("c2")]);
+    let e = log.pick("s2", "main", "dave", "k1").unwrap_err();
+    let c = &e.details["conflicts"][0];
+    assert_eq!(
+        (
+            c["txId"].as_str(),
+            c["reason"].as_str(),
+            c["againstTx"].as_str()
+        ),
+        (Some("s2"), Some(reasons::DEPENDS_ON_SKIPPED), Some("s1"))
+    );
+    assert_eq!(ids_of(&log.state("main")), at(&[("c1", 0), ("c3", 10)]));
+    // On a target that holds the unit, the undo picks.
+    log.fork("br2", "main", 0);
+    log.pick("s1", "br2", "dave", "k2").unwrap().unwrap();
+    log.pick("s2", "br2", "dave", "k3").unwrap().unwrap();
+    assert_eq!(log.state("br2"), genesis());
+}

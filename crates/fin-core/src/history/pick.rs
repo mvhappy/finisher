@@ -20,7 +20,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 
-use super::merge::{Binders, Paths, common_point, on_skipped, path_after, rerun_mode};
+use super::merge::{
+    Binders, Paths, common_point, on_skipped, path_after, rerun_mode, unit_record_in,
+};
 use super::origin::{Roots, holds, root};
 use super::undo::{intent, try_rebase_over};
 use super::{LogRec, LogView, Outcome, Planned};
@@ -40,7 +42,8 @@ use crate::tx::Tx;
 /// with no ops to copy (`checkpoint`, `branch`, `branchSet`) or branches that share no
 /// history; `CONFLICT` (one conflict) when it cannot be re-run at the head: an undo, redo or
 /// revert tied to the target's own records is `UNDOES_TARGET_RECORDS`, a conflict blamed on an
-/// earlier source record the target does not hold is `DEPENDS_ON_SKIPPED`.
+/// earlier source record the target does not hold is `DEPENDS_ON_SKIPPED`, and so is an undo,
+/// redo or revert whose unit holds such a record.
 pub fn plan_cherry_pick(
     log: &dyn LogView,
     origin: &str,
@@ -91,6 +94,17 @@ pub fn plan_cherry_pick(
     }
     if roots.undoes_target[i] {
         let c = Conflict::new(origin, 0, reasons::UNDOES_TARGET_RECORDS, None);
+        return Err(Conflicts::one(c).into());
+    }
+    // An undo, redo or revert whose unit the target does not hold would apply an inverse of
+    // what the target never had (plan 4B Task 20).
+    if let Some(dep) = unit_record_in(&source[..i], &rec.record, |t| {
+        source[..i]
+            .iter()
+            .position(|s| s.record.tx_id == t)
+            .is_some_and(|j| !roots.present[j])
+    }) {
+        let c = Conflict::new(origin, 0, reasons::DEPENDS_ON_SKIPPED, Some(dep));
         return Err(Conflicts::one(c).into());
     }
     let steps = Paths::new(&source, &target, &roots)?.steps(i, &[]);

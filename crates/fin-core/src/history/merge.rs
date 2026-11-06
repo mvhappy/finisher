@@ -24,7 +24,9 @@
 //!   author are the merging author (Decision 20), its bindings the source's.
 //! - **Conflicts.** A failing candidate is recorded and treated as skipped; planning goes on,
 //!   so the full list comes back. A conflict blamed on a skipped or excluded candidate's
-//!   inverse (its insert gone, say) is `DEPENDS_ON_SKIPPED`. Without `skip_conflicting`, any
+//!   inverse (its insert gone, say) is `DEPENDS_ON_SKIPPED`, and so is an `undo`, `redo` or
+//!   `revert` whose unit holds a skipped or excluded candidate ([`unit_record_in`]): its
+//!   inverse would undo what the target never got (plan 4B Task 20). Without `skip_conflicting`, any
 //!   conflict makes the plan `CONFLICT` with every conflict in `details.conflicts`.
 //!
 //! Planning maps each candidate through O(source + target path) steps. The steps are prepared
@@ -307,6 +309,18 @@ pub fn plan_merge(
     for &i in &cands.picks {
         let src = &source[i];
         let r = &src.record;
+        // An undo, redo or revert of a unit this merge does not copy would apply an inverse
+        // the target never had the original of (a clip the target deleted comes back).
+        if let Some(dep) = unit_record_in(&source[..i], r, |t| skipped.contains(t)) {
+            plan.conflicts.push(Conflict::new(
+                &r.tx_id,
+                0,
+                reasons::DEPENDS_ON_SKIPPED,
+                Some(dep),
+            ));
+            skipped.insert(&r.tx_id);
+            continue;
+        }
         let steps = paths.steps(i, &copies);
         let same_origin = binders.same_origin(&src.committed()?)?;
         let tx = Tx {
@@ -365,6 +379,32 @@ pub fn plan_merge(
         return Err(all.into());
     }
     Ok(plan)
+}
+
+/// The first record of the units `r` addresses (an `undo`'s units, a `redo`'s undo, a
+/// `revert`'s merge group) among `before` (the source path before `r`) for which `pick`
+/// holds: units named in order, each unit's records oldest first. `None` for other kinds (a
+/// copy of an undo from another branch addresses nothing here).
+pub(super) fn unit_record_in(
+    before: &[LogRec],
+    r: &Record,
+    pick: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let units: Vec<&str> = match r.kind {
+        RecordKind::Undo => r.undoes.iter().flatten().map(String::as_str).collect(),
+        RecordKind::Redo => r.redoes.iter().map(String::as_str).collect(),
+        RecordKind::Revert => r.reverts.iter().map(String::as_str).collect(),
+        _ => return None,
+    };
+    units.into_iter().find_map(|u| {
+        before
+            .iter()
+            .map(|b| &b.record)
+            .filter(|b| b.tx_id == u || b.merge_id.as_deref() == Some(u))
+            .map(|b| b.tx_id.as_str())
+            .find(|t| pick(t))
+            .map(str::to_string)
+    })
 }
 
 /// `c`, as `DEPENDS_ON_SKIPPED` when the record it blames is a skipped candidate (its inverse

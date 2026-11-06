@@ -577,3 +577,39 @@ fn pick_of_a_copy_of_a_target_record_is_present() {
     assert_eq!(plan.merged, ["e2"]);
     assert_eq!(log.state("main"), log.state("br2"));
 }
+
+/// Found by the undo/redo property (plan 4B Task 20): br1 deletes c2 and undoes it; main
+/// deletes c2 too. The merge skips br1's delete (`REMOVED`), so the undo of it depends on
+/// the skipped record: copied, it would bring c2 back on main, where br1's net effect on c2 is
+/// nothing. Alice's own undo on main then restores c2 as before.
+#[test]
+fn undo_of_a_skipped_record_depends_on_skipped() {
+    let mut log = log();
+    log.fork("br1", "main", 0);
+    log.commit("br1", "s1", "carol", vec![delete("c2")]);
+    log.undo("br1", "carol", "s2").unwrap();
+    log.commit("main", "a1", "alice", vec![delete("c2")]);
+    let reasons_of = |cs: &[fin_core::Conflict]| -> Vec<(String, String, Option<String>)> {
+        cs.iter()
+            .map(|c| (c.tx_id.clone(), c.reason.clone(), c.against_tx.clone()))
+            .collect()
+    };
+    let want = vec![
+        ("s1".into(), reasons::REMOVED.into(), Some("a1".into())),
+        (
+            "s2".into(),
+            reasons::DEPENDS_ON_SKIPPED.into(),
+            Some("s1".into()),
+        ),
+    ];
+    let err = log.merge("br1", "main", "bob", "m", false).unwrap_err();
+    let all: Vec<fin_core::Conflict> =
+        serde_json::from_value(err.details["conflicts"].clone()).unwrap();
+    assert_eq!(reasons_of(&all), want);
+    let plan = log.merge("br1", "main", "bob", "m", true).unwrap();
+    assert!(plan.merged.is_empty());
+    assert_eq!(reasons_of(&plan.conflicts), want);
+    assert_eq!(ids_of(&log.state("main")), at(&[("c1", 0), ("c3", 10)]));
+    log.undo("main", "alice", "a2").unwrap();
+    assert_eq!(log.state("main"), genesis());
+}
