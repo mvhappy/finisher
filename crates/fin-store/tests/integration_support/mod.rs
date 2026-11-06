@@ -278,11 +278,6 @@ pub fn fixture_4a(tmp: &Path) -> (PathBuf, PathBuf) {
 /// `(server_data, folder)` with the folder copied and `project.fdb` placed at
 /// `<server_data>/projects/<id>/project.fdb`. The fixture's recorded folder is gone, so open it
 /// with `OpenOptions { relocate: true, .. }`.
-///
-/// The fixture was generated at `36fe7e0`, before 4B's `f95f678` added `record_links.recovers`
-/// to (then unshipped) migration 0002, so its database lacks that column and every history
-/// write or `branch_index` check on it fails. Until the fixture is regenerated from final 4B
-/// code (or a migration adds the column), the copy gets the column 4B's final schema has.
 pub fn fixture_4b(tmp: &Path) -> (PathBuf, PathBuf) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/4b");
     let folder = tmp.join("folder");
@@ -293,12 +288,5 @@ pub fn fixture_4b(tmp: &Path) -> (PathBuf, PathBuf) {
     let db = fin_store::db_path(&server_data, v["id"].as_str().unwrap());
     fs::create_dir_all(db.parent().unwrap()).unwrap();
     fs::copy(src.join("project.fdb"), &db).unwrap();
-    let c = rusqlite::Connection::open(&db).unwrap();
-    c.execute_batch(
-        "ALTER TABLE record_links ADD COLUMN recovers TEXT;
-         CREATE INDEX IF NOT EXISTS record_links_recovers ON record_links (recovers)
-         WHERE recovers IS NOT NULL;",
-    )
-    .unwrap();
     (server_data, folder)
 }

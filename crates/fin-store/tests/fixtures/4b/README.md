@@ -1,6 +1,6 @@
 # 4B fixture
 
-A project written by the sub-project 4B store (commit `36fe7e0`, 4B merged with the latest 4A),
+A project written by the sub-project 4B store (commit `be29438`, the final 4B code, `sp4b-history`),
 kept so 4C upgrade tests can prove that a 4B project opens, migrates and rebuilds to identical
 state, including its branches, checkpoint, merge, undo/redo and cherry-pick.
 
@@ -14,7 +14,7 @@ three fixed inputs: `clip.insert`, `clip.trim` and `clip.delete` (plan 4C Decisi
 ## How it was made
 
 1. A throwaway generator, `crates/fin-store/examples/make_4b_fixture.rs`, lived in a 4B worktree
-   (`archive/wt-4b` at `36fe7e0`, git-ignored; it is not part of 4C). It created a project in a
+   (`archive/wt-4b` at `be29438`, git-ignored; it is not part of 4C). It created a project in a
    temp dir with `asset.add` (video + audio, so `t2` takes clips), then on `main` 4 inserts on
    `t1`/`t2`, 2 trims (one per edge) and 1 delete; `branch new feature` (`br1`) with 2 inserts;
    checkpoint `v1` on `main`; one more insert on `main`; `merge` of `br1` into `main`; `undo`,
