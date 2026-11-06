@@ -5,7 +5,6 @@ import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { attemptJson, toFinError } from "./errors.ts";
 import { ProjectRegistry } from "./projects.ts";
-import { RECOVER_MANUAL } from "./recover.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -41,7 +40,16 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.verify": ({ projectId }) => guard(registry.verify(projectId)),
       "project.rebuild": ({ projectId }) => guard(registry.rebuild(projectId)),
       "project.compact": ({ projectId }) => guard(registry.compact(projectId)),
-      "project.recover": ({ projectId }) => guard(Effect.as(registry.ensure(projectId), { manual: RECOVER_MANUAL })),
+      "project.recover": (payload) => guard(registry.history(payload.projectId, "recover", payload)),
+      "branch.create": (payload) => guard(registry.history(payload.projectId, "branchCreate", payload)),
+      "branch.list": ({ projectId, all }) => guard(registry.branches(projectId, all === true)),
+      "branch.set": (payload) => guard(registry.history(payload.projectId, "branchSet", payload)),
+      "history.undo": (payload) => guard(registry.history(payload.projectId, "undo", payload)),
+      "history.redo": (payload) => guard(registry.history(payload.projectId, "redo", payload)),
+      "history.checkpoint": (payload) => guard(registry.history(payload.projectId, "checkpoint", payload)),
+      "history.merge": (payload) => guard(registry.history(payload.projectId, "merge", payload)),
+      "history.cherryPick": (payload) => guard(registry.history(payload.projectId, "cherryPick", payload)),
+      "history.revert": (payload) => guard(registry.history(payload.projectId, "revert", payload)),
       "project.acknowledgeRewind": ({ projectId, branch, generation }) =>
         guard(Effect.map(registry.acknowledgeRewind(projectId, branch, generation), (acknowledged) => ({ acknowledged }))),
       "project.acknowledgeSalvage": ({ projectId, copy }) =>

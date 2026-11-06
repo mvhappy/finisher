@@ -2,6 +2,24 @@ import type { CommittedTx, EngineEvent, Probe, Project, Tx, TxSetAside } from "@
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { FinError } from "./errors.ts";
+import {
+  BranchCreatePayload,
+  BranchCreateSuccess,
+  BranchListPayload,
+  BranchListSuccess,
+  BranchSetPayload,
+  HistoryCheckpointPayload,
+  HistoryCherryPickPayload,
+  HistoryMergePayload,
+  HistoryRedoPayload,
+  HistoryResultSuccess,
+  HistoryRevertPayload,
+  HistoryUndoPayload,
+  MergeReportSuccess,
+  ProjectRecoverPayload,
+  RecordSuccess,
+  RecoverReportSuccess,
+} from "./history.ts";
 
 /**
  * Envelope types generated from the Rust types they carry (`@finisher/core-types`). The Effect
@@ -106,8 +124,6 @@ export const ProjectTakeoverPayload = Schema.Struct({
   /** Needed on sync folders, which never take over without a person's say-so. */
   confirm: Schema.Boolean,
 });
-/** `{ manual }`: the documented manual procedure (spec §3.7); a real recovery comes in 4B. */
-export const ProjectRecoverSuccess = Schema.Struct({ manual: Schema.String });
 export const ProjectAcknowledgeRewindPayload = Schema.Struct({
   projectId: Schema.String,
   branch: Schema.String,
@@ -219,7 +235,18 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("project.rebuild", { payload: ProjectIdPayload, success: Schema.Unknown, error: FinError }),
   /** fin-store's `CompactReport` (a forced run). */
   Rpc.make("project.compact", { payload: ProjectIdPayload, success: Schema.Unknown, error: FinError }),
-  Rpc.make("project.recover", { payload: ProjectIdPayload, success: ProjectRecoverSuccess, error: FinError }),
+  /** fin-store's `RecoverReport`: the groups found, the branches made, every record written. A long call. */
+  Rpc.make("project.recover", { payload: ProjectRecoverPayload, success: RecoverReportSuccess, error: FinError }),
+  /** Plan 4B Task 18: branches and history. Every committed record reaches its branch's subscribers. */
+  Rpc.make("branch.create", { payload: BranchCreatePayload, success: BranchCreateSuccess, error: FinError }),
+  Rpc.make("branch.list", { payload: BranchListPayload, success: BranchListSuccess, error: FinError }),
+  Rpc.make("branch.set", { payload: BranchSetPayload, success: RecordSuccess, error: FinError }),
+  Rpc.make("history.undo", { payload: HistoryUndoPayload, success: HistoryResultSuccess, error: FinError }),
+  Rpc.make("history.redo", { payload: HistoryRedoPayload, success: HistoryResultSuccess, error: FinError }),
+  Rpc.make("history.checkpoint", { payload: HistoryCheckpointPayload, success: RecordSuccess, error: FinError }),
+  Rpc.make("history.merge", { payload: HistoryMergePayload, success: MergeReportSuccess, error: FinError }),
+  Rpc.make("history.cherryPick", { payload: HistoryCherryPickPayload, success: HistoryResultSuccess, error: FinError }),
+  Rpc.make("history.revert", { payload: HistoryRevertPayload, success: HistoryResultSuccess, error: FinError }),
   Rpc.make("project.acknowledgeRewind", {
     payload: ProjectAcknowledgeRewindPayload,
     success: AcknowledgeSuccess,

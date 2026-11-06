@@ -139,6 +139,15 @@ fn commit(c: &mut Conn, id: &str, project_id: &str, tx: Value) {
     assert_eq!(got["exit"]["_tag"], "Success", "{got}");
 }
 
+/// One request that must succeed (setup between captured scenarios).
+fn rpc(c: &mut Conn, project_id: &str, tag: &str, payload: Value) {
+    let mut payload = payload;
+    payload["projectId"] = json!(project_id);
+    c.send(&json!({ "_tag": "Request", "id": "1", "tag": tag, "payload": payload, "headers": [] }));
+    let got = c.frame();
+    assert_eq!(got["exit"]["_tag"], "Success", "{tag}: {got}");
+}
+
 fn tx(id: &str, base: u64, ops: Value) -> Value {
     json!({ "txId": id, "author": "test", "branch": "main", "baseRev": base, "schemaVersion": 1, "ops": ops })
 }
@@ -191,14 +200,14 @@ fn captured_frames_replay_against_a_live_server() {
 
     replay_subscribe(&server, &subst, &project_id);
     Conn::open(&server, &subst).replay("subscribe-error");
-    replay_storage(&server, &subst);
+    replay_storage(&server, &subst, &project_id);
 }
 
 /// Frame → exit → value → the value's keys: what a storage report's shape is checked to.
 const REPORT_KEYS: usize = 4;
 
 /// The storage RPCs (plan 4A Task 15), in the capture script's order.
-fn replay_storage(server: &Server, subst: &[(String, String)]) {
+fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str) {
     let snap = Conn::open(server, subst).replay("snapshot-get");
     assert_eq!(snap["exit"]["value"]["generation"]["n"], 0, "{snap}");
     let status = Conn::open(server, subst).replay_to("project-status", REPORT_KEYS);
@@ -237,8 +246,105 @@ fn replay_storage(server: &Server, subst: &[(String, String)]) {
     let relocated = Conn::open(server, subst).replay("project-open-relocate");
     assert_eq!(relocated["exit"]["value"]["rev"], 4, "{relocated}");
     replay_events(server, subst);
+    replay_history(server, subst, project_id);
     let rebuilt = Conn::open(server, subst).replay_to("project-rebuild", REPORT_KEYS);
     assert_eq!(rebuilt["exit"]["value"]["reason"], "manual", "{rebuilt}");
+}
+
+/// The branch and history RPCs (plan 4B Task 18), in the capture script's order, with its
+/// setup between scenarios (main is at rev 4 here).
+fn replay_history(server: &Server, subst: &[(String, String)], project_id: &str) {
+    let mut setup = Conn::open(server, subst);
+    let on_branch = |id: &str, branch: &str, base: u64, ops: Value| {
+        let mut t = tx(id, base, ops);
+        t["branch"] = json!(branch);
+        t
+    };
+    let clip = |at: u64| json!({ "op": "clip.insert", "id": "$c", "track": "t1", "at": at.to_string(), "asset": "a1", "sourceIn": "0", "duration": "5" });
+    let delete = json!({ "op": "clip.delete", "clip": "c2" });
+    let who = "fixture";
+    commit(
+        &mut setup,
+        "1",
+        project_id,
+        tx("fx-m0", 4, json!([clip(0)])),
+    );
+    let created = Conn::open(server, subst).replay("branch-create");
+    assert_eq!(created["exit"]["value"]["branch"]["id"], "br1", "{created}");
+    let listed = Conn::open(server, subst).replay("branch-list");
+    assert_eq!(
+        listed["exit"]["value"]["branches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    commit(
+        &mut setup,
+        "2",
+        project_id,
+        on_branch("fx-e1", "br1", 5, json!([delete])),
+    );
+    commit(
+        &mut setup,
+        "3",
+        project_id,
+        on_branch("fx-e2", "br1", 6, json!([clip(20)])),
+    );
+    commit(&mut setup, "4", project_id, tx("fx-m1", 6, json!([delete])));
+    let conflict = Conn::open(server, subst).replay("history-merge-conflict");
+    assert_eq!(conflict["exit"]["cause"][0]["error"]["code"], "CONFLICT");
+    let merged = Conn::open(server, subst).replay("history-merge");
+    assert_eq!(
+        merged["exit"]["value"]["committed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1,
+        "{merged}"
+    );
+    assert_eq!(
+        merged["exit"]["value"]["skipped"][0]["reason"], "REMOVED",
+        "{merged}"
+    );
+    let undo = Conn::open(server, subst).replay("history-undo");
+    assert_eq!(undo["exit"]["value"]["undone"], json!(["fx-mg1"]), "{undo}");
+    let redo = Conn::open(server, subst).replay("history-redo");
+    assert_eq!(
+        redo["exit"]["value"]["committed"].as_array().unwrap().len(),
+        1,
+        "{redo}"
+    );
+    let cp = Conn::open(server, subst).replay("history-checkpoint");
+    assert_eq!(cp["exit"]["value"]["tx"]["txId"], "fx-c1", "{cp}");
+    rpc(
+        &mut setup,
+        project_id,
+        "branch.create",
+        json!({ "txId": "fx-b2", "author": who, "name": "other", "from": "main" }),
+    );
+    commit(
+        &mut setup,
+        "5",
+        project_id,
+        on_branch("fx-p1", "br2", 11, json!([clip(40)])),
+    );
+    let pick = Conn::open(server, subst).replay("history-cherry-pick");
+    assert_eq!(
+        pick["exit"]["value"]["committed"].as_array().unwrap().len(),
+        1,
+        "{pick}"
+    );
+    let revert = Conn::open(server, subst).replay("history-revert");
+    assert_eq!(
+        revert["exit"]["value"]["undone"],
+        json!(["fx-mg1"]),
+        "{revert}"
+    );
+    let set = Conn::open(server, subst).replay("branch-set");
+    assert_eq!(set["exit"]["value"]["tx"]["txId"], "fx-s1", "{set}");
+    let recover = Conn::open(server, subst).replay("project-recover-groups");
+    assert_eq!(recover["exit"]["value"]["dryRun"], true, "{recover}");
 }
 
 /// `project-events`: the first chunk (the status now), its ack, then the interrupt. Status

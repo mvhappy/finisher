@@ -11,6 +11,15 @@ test("the group exposes exactly the v1 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
       "asset.probe",
+      "branch.create",
+      "branch.list",
+      "branch.set",
+      "history.cherryPick",
+      "history.checkpoint",
+      "history.merge",
+      "history.redo",
+      "history.revert",
+      "history.undo",
       "ops.subscribe",
       "project.acknowledgeRewind",
       "project.acknowledgeSalvage",
@@ -61,6 +70,25 @@ test("project.events items keep every field of each event kind", async () => {
     status: { lease: { state: "held" } },
   });
   expect(await encode({ type: "rebuilt", incarnation: "i2" })).toEqual({ type: "rebuilt", incarnation: "i2" });
+});
+
+test("history payloads decode what finisherd needs and the results are not streams", async () => {
+  const decode = (tag: string, v: unknown) =>
+    Effect.runPromise(Schema.decodeUnknownEffect(FinRpcs.requests.get(tag)!.payloadSchema as PlainSchema)(v));
+  expect(await decode("branch.create", { projectId: "p", txId: "t", author: "a", from: "main", at: { checkpoint: "v1" } })).toEqual({
+    projectId: "p",
+    txId: "t",
+    author: "a",
+    from: "main",
+    at: { checkpoint: "v1" },
+  });
+  expect(await decode("history.undo", { projectId: "p", txId: "t", author: "a", branch: "main", to: "v1", dryRun: true })).toMatchObject({
+    to: "v1",
+    dryRun: true,
+  });
+  await expect(decode("history.merge", { projectId: "p", txId: "t", author: "a", from: "x" })).rejects.toThrow();
+  // `project.recover` lists with just the project.
+  expect(await decode("project.recover", { projectId: "p" })).toEqual({ projectId: "p" });
 });
 
 test("FinError round-trips through encode/decode", async () => {

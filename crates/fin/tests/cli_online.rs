@@ -579,8 +579,10 @@ fn project_status_prints_json() {
     let verify = ok(run(&["project", "verify"]));
     assert_eq!(verify["report"]["ok"], true, "{verify}");
     assert!(ok(run(&["project", "compact"]))["report"].is_object());
-    let manual = ok(run(&["project", "recover"]));
-    assert!(manual["manual"].as_str().unwrap().contains("CHAIN_FORK"));
+    // 4B: the report of `project.recover` (Task 19 gives the command its flags).
+    let recovered = ok(run(&["project", "recover"]));
+    assert_eq!(recovered["groups"], json!([]), "{recovered}");
+    assert_eq!(recovered["manual"], Value::Null);
     let ack = ok(run(&["project", "acknowledge", "--rewind", "1"]));
     assert_eq!(ack, json!({ "acknowledged": false }));
     let ack = ok(run(&["project", "acknowledge", "--salvage", "nope"]));

@@ -65,7 +65,7 @@ describe("storage RPCs", () => {
     expect(report.ok).toBe(true);
     expect(report.checks.length).toBeGreaterThan(0);
     expect(ok<{ skipped: unknown }>(await c.call("project.compact", { projectId }))).toHaveProperty("skipped");
-    expect(ok<{ manual: string }>(await c.call("project.recover", { projectId })).manual).toContain("CHAIN_FORK");
+    expect(ok(await c.call("project.recover", { projectId }))).toMatchObject({ groups: [], created: [], committed: [], manual: null });
     expect(ok(await c.call("project.acknowledgeRewind", { projectId, branch: "main", generation: 1 }))).toEqual({ acknowledged: false });
     expect(ok(await c.call("project.acknowledgeSalvage", { projectId, copy: "nope" }))).toEqual({ acknowledged: false });
 

@@ -3,11 +3,12 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { CommittedTx } from "@finisher/core-types";
+import type { BranchView, CommittedTx } from "@finisher/core-types";
 import type { EngineEvent, FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
+import { callEngine, type HistoryOp, type HistoryPayload, publishResult } from "./history.ts";
 import { follower, Hubs, type Stamped } from "./hubs.ts";
 
 export interface ProjectRef {
@@ -29,12 +30,21 @@ export interface ProjectRegistryShape {
   readonly open: (dir: string, relocate?: boolean) => Effect.Effect<ProjectRef, FinError>;
   /** With `generation`, refused with `HISTORY_REWOUND` when the branch moved under the caller. */
   readonly commit: (projectId: string, tx: unknown, generation?: Generation) => Effect.Effect<CommittedTx, FinError>;
+  /** `branch`: an id, a name or `<name>#<id>`; resolved to the id first. */
   readonly snapshot: (
     projectId: string,
     branch: string,
   ) => Effect.Effect<{ rev: number; project: unknown; generation?: Generation }, FinError>;
+  /** Every branch (`all`: archived ones too). */
+  readonly branches: (projectId: string, all: boolean) => Effect.Effect<{ branches: BranchView[] }, FinError>;
   /**
-   * Replays `rev > fromRev`, then follows live commits and imports: every rev exactly once, in
+   * A branch or history write (`payload`: the RPC payload; the engine's request is the same
+   * less `projectId`). Runs under the commit lock; afterwards every record of the result is
+   * published to its own branch's hub, in rev order (nothing for a dry run).
+   */
+  readonly history: (projectId: string, op: HistoryOp, payload: HistoryPayload) => Effect.Effect<unknown, FinError>;
+  /**
+   * `branch` is resolved to its id first (hubs are keyed by id). Replays `rev > fromRev`, then follows live commits and imports: every rev exactly once, in
    * order. Ends with `HISTORY_REWOUND` once history it reported (or started from) is rewound,
    * at once when `generation` (what the caller read `fromRev` at) is not the branch's now,
    * and with `ENGINE_CLOSED` when the engine is evicted (subscribe again to reopen it).
@@ -302,6 +312,10 @@ export function makeProjectRegistry(
     const on = <A>(projectId: string, f: (engine: Engine) => Promise<string>): Effect.Effect<A, FinError> =>
       Effect.flatMap(get(projectId), (p) => call<A>(p, f));
 
+    /** The id a branch reference names (`BRANCH_NOT_FOUND` when none does); `main` needs no call. */
+    const resolveBranch = (projectId: string, branch: string): Effect.Effect<string, FinError> =>
+      branch === MAIN ? Effect.succeed(MAIN) : on<string>(projectId, (e) => e.resolveBranch(branch));
+
     const opsSince = (projectId: string, branch: string, rev: number) =>
       on<CommittedTx[]>(projectId, (e) => e.opsSince(branch, rev));
 
@@ -353,11 +367,29 @@ export function makeProjectRegistry(
           ),
         ),
 
-      snapshot: (projectId, branch) => on(projectId, (e) => e.snapshot(branch)),
+      snapshot: (projectId, requested) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) => on(projectId, (e) => e.snapshot(branch))),
 
-      subscribe: (projectId, branch, fromRev, generation) =>
+      branches: (projectId, all) =>
+        Effect.map(on<BranchView[]>(projectId, (e) => e.branches(all)), (branches) => ({ branches })),
+
+      history: (projectId, op, payload) =>
+        Effect.flatMap(get(projectId), (p) =>
+          p.commitLock.withPermits(1)(
+            Effect.uninterruptible(
+              Effect.tap(
+                call<unknown>(p, (e) => callEngine(e, op, payload)),
+                (result) => Effect.sync(() => publishResult(hubs, projectId, result, payload.dryRun === true)),
+              ),
+            ),
+          ),
+        ),
+
+      subscribe: (projectId, requested, fromRev, generation) =>
         Stream.unwrap(
           Effect.gen(function* () {
+            // Hubs are keyed by id: a name, or `<name>#<id>`, resolves before anything else.
+            const branch = yield* resolveBranch(projectId, requested);
             const channel = yield* Effect.acquireRelease(
               Effect.sync(() => hubs.acquireOps(projectId, branch)),
               () => Effect.sync(() => hubs.releaseOps(projectId, branch)),

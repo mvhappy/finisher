@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { Schema } from "effect";
 import { expect, test } from "vitest";
+import { BranchViewSchema, ConflictSchema } from "./history.ts";
 import { GenerationSchema, ProbeSchema, ProjectEventSchema, TxSetAsideSchema } from "./rpc.ts";
 
 type Json = { [k: string]: unknown };
@@ -82,4 +83,22 @@ test("ProjectEventSchema is fin-store's EngineEvent less what finisherd keeps to
   // `applied` feeds ops.subscribe; `lagged` ends subscribers. Neither reaches project.events.
   expect(Object.keys(ours).sort()).toEqual(Object.keys(engine).filter((t) => t !== "applied" && t !== "lagged").sort());
   for (const [type, member] of Object.entries(ours)) expect(member, type).toEqual(engine[type]);
+});
+
+test("BranchViewSchema is fin-store's BranchView, with its states", () => {
+  const ours = Schema.toJsonSchemaDocument(BranchViewSchema).schema as { properties: Json; required?: string[] };
+  const theirs = defs.BranchView as { properties: Json; required: string[] };
+  expect(Object.keys(ours.properties).sort()).toEqual(Object.keys(theirs.properties).sort());
+  expect([...(ours.required ?? [])].sort()).toEqual([...theirs.required].sort());
+  // Effect writes a union of literals as one `enum`, or as `anyOf` of `const`s.
+  const state = ours.properties.state as { enum?: string[]; anyOf?: { const?: string; enum?: string[] }[] };
+  const states = state.enum ?? state.anyOf!.flatMap((a) => a.enum ?? [a.const]);
+  expect(states.sort()).toEqual([...(defs.BranchState as { enum: string[] }).enum].sort());
+});
+
+test("ConflictSchema is fin-core's Conflict", () => {
+  const ours = Schema.toJsonSchemaDocument(ConflictSchema).schema as { properties: Json; required?: string[] };
+  const theirs = defs.Conflict as { properties: Json; required: string[] };
+  expect(Object.keys(ours.properties).sort()).toEqual(Object.keys(theirs.properties).sort());
+  expect([...(ours.required ?? [])].sort()).toEqual([...theirs.required].sort());
 });

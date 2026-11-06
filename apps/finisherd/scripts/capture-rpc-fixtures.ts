@@ -154,6 +154,35 @@ try {
     await sub.done;
   });
 
+  // Branches and history (plan 4B Task 18), on their own branches so the scenarios above
+  // keep their revs. `fixture` is the author. Main is at rev 4 here. The setup between
+  // scenarios (a clip, edits on `br1`, a second branch) is mirrored in `rpc_contract.rs`.
+  const rpc = async (tag: string, payload: Record<string, unknown>) => {
+    const c = await NdjsonClient.connect(server!.info.socket);
+    ok(await c.call(tag, { projectId, ...payload }));
+    await c.close();
+  };
+  const who = { author: "fixture" };
+  const onBranch = (id: string, branch: string, baseRev: number, ops: unknown[]) => ({ tx: { ...tx(id, baseRev, ops), branch } });
+  const clip = (at: number) => insert(at, 5);
+  await rpc("tx.commit", { tx: tx("fx-m0", 4, [clip(0)]) }); // c2, main rev 5
+  await unary("branch-create", "branch.create", { txId: "fx-b1", ...who, name: "feature", from: "main" }); // br1 forks at 5; main rev 6
+  await unary("branch-list", "branch.list", { all: true });
+  await rpc("tx.commit", onBranch("fx-e1", "br1", 5, [{ op: "clip.delete", clip: "c2" }])); // br1 rev 6
+  await rpc("tx.commit", onBranch("fx-e2", "br1", 6, [clip(20)])); // br1 rev 7
+  await rpc("tx.commit", { tx: tx("fx-m1", 6, [{ op: "clip.delete", clip: "c2" }]) }); // main rev 7
+  await unary("history-merge-conflict", "history.merge", { txId: "fx-mg0", ...who, from: "feature", into: "main" }, "CONFLICT");
+  await unary("history-merge", "history.merge", { txId: "fx-mg1", ...who, from: "feature", into: "main", skipConflicting: true }); // main rev 8
+  await unary("history-undo", "history.undo", { txId: "fx-u1", ...who, branch: "main" }); // rev 9
+  await unary("history-redo", "history.redo", { txId: "fx-r1", ...who, branch: "main" }); // rev 10
+  await unary("history-checkpoint", "history.checkpoint", { txId: "fx-c1", ...who, branch: "main", name: "v1" }); // rev 11
+  await rpc("branch.create", { txId: "fx-b2", ...who, name: "other", from: "main" }); // br2 forks at 11; main rev 12
+  await rpc("tx.commit", onBranch("fx-p1", "br2", 11, [clip(40)])); // br2 rev 12
+  await unary("history-cherry-pick", "history.cherryPick", { txId: "fx-pk1", ...who, origin: "fx-p1", into: "main" }); // main rev 13
+  await unary("history-revert", "history.revert", { txId: "fx-rv1", ...who, mergeId: "fx-mg1", branch: "main" }); // main rev 14
+  await unary("branch-set", "branch.set", { txId: "fx-s1", ...who, branch: "feature", name: "polish" }); // main rev 15
+  await unary("project-recover-groups", "project.recover", { txId: "fx-rc1", ...who, create: "all", dryRun: true });
+
   // Last: it changes the database's incarnation.
   await unary("project-rebuild", "project.rebuild", {});
 } finally {
