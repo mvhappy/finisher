@@ -61,8 +61,11 @@ const VALIDATION_CODES: &[&str] = &[
     "CLIP_OVERLAP",
     "CLIP_EMPTY",
     "CLIP_NEGATIVE",
-    // Edits (sub-project 4C): an item op on a locked track (Decision 26).
+    // Edits (sub-project 4C): an item op on a locked track (Decision 26); an overwrite
+    // strictly inside one item (split it first); a roll with no touching neighbour.
     "TRACK_LOCKED",
+    "OVERWRITE_SPLITS_ITEM",
+    "NOT_ADJACENT",
     "INVALID_ID",
     "BINDINGS_MISMATCH",
     // A stored (migrated) record too large for a segment: export stops at it.
@@ -229,6 +232,8 @@ mod tests {
         assert_eq!(exit_code("DB_IN_USE"), 5);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
+        assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
+        assert_eq!(exit_code("NOT_ADJACENT"), 3);
         for code in [
             "SERVER_UNAVAILABLE",
             "SERVER_RUNNING",

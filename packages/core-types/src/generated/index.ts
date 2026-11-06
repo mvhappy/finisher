@@ -51,6 +51,12 @@ export type Op =
   | (ItemDelete & {
       op: "item.delete";
     })
+  | (ItemSlip & {
+      op: "item.slip";
+    })
+  | (ItemSplit & {
+      op: "item.split";
+    })
   | {
       id: string;
       op: "asset.remove";
@@ -104,12 +110,14 @@ export type ItemInsert = {
 } & ItemInsert1;
 /**
  * How an insert makes room (plan 4C Decision 18): `ripple` moves every later item on the
- * track by the item's duration.
+ * track by the item's duration; `overwrite` takes the range over, removing the items inside it
+ * and trimming the ones overlapping its ends (an item strictly containing it is
+ * `OVERWRITE_SPLITS_ITEM`: split it first, `compose::overwrite`), and moves nothing else.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "InsertMode".
  */
-export type InsertMode = "ripple";
+export type InsertMode = "ripple" | "overwrite";
 export type ItemInsert1 =
   | {
       asset: string;
@@ -155,13 +163,16 @@ export type ItemInsert1 =
 export type ParamValue = boolean | number | [number, number] | string;
 /**
  * How a trim treats the rest of the track: `ripple` moves every later item by the change;
- * `strict` (internal: the inverse of carving edits) moves nothing, and an overlap it would
- * make is `CLIP_OVERLAP` in every apply mode.
+ * `roll` moves the cut between the item and the neighbour touching that edge (both change,
+ * nothing else moves; `NOT_ADJACENT` without one); `overwrite` moves the edge itself, carving
+ * whatever it extends over and leaving a gap when it shrinks; `strict` (internal: the inverse
+ * of carving edits) moves the edge only, and an overlap it would make is `CLIP_OVERLAP` in
+ * every apply mode.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TrimMode".
  */
-export type TrimMode = "ripple" | "strict";
+export type TrimMode = "ripple" | "roll" | "overwrite" | "strict";
 /**
  * How a delete leaves its range: `ripple` closes the gap, `lift` leaves it.
  *
@@ -637,6 +648,31 @@ export interface ItemTrim {
 export interface ItemDelete {
   item: string;
   mode: DeleteMode;
+}
+/**
+ * `item.slip`: moves the source of `item` (a clip or nested item) under it by `delta`
+ * source seconds (`sourceIn += delta`); its place on the timeline and its item-relative times
+ * stay. The source range is policy.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemSlip".
+ */
+export interface ItemSlip {
+  delta: Rational;
+  item: string;
+}
+/**
+ * `item.split`: cuts `item` at `offset` (item-relative seconds, strictly inside it). The left
+ * part keeps the id and ends at `offset`; the right part is a copy (effects keep their ids,
+ * item-relative times move by `−offset`, no link group) named by `id`, a `$name` placeholder.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemSplit".
+ */
+export interface ItemSplit {
+  id: string;
+  item: string;
+  offset: Rational;
 }
 /**
  * `item.remove` (internal): takes item `id` off its track.

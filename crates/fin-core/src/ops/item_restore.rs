@@ -117,6 +117,11 @@ pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
     }
 }
 
+/// No item-relative values.
+pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
+}
+
 /// The wire name.
 pub(crate) const NAME: &str = "item.restore";
 /// Whether the op is produced only as an inverse and never accepted from clients.

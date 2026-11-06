@@ -28,6 +28,12 @@ pub enum Op {
     /// Takes an item off its track.
     #[serde(rename = "item.delete")]
     ItemDelete(ItemDelete),
+    /// Moves an item's source under it (`sourceIn`), keeping its timeline place.
+    #[serde(rename = "item.slip")]
+    ItemSlip(ItemSlip),
+    /// Cuts an item in two at `offset`; the right part gets a new id.
+    #[serde(rename = "item.split")]
+    ItemSplit(ItemSplit),
     /// Internal (inverse of `asset.add`): removes an unused asset.
     #[serde(rename = "asset.remove")]
     AssetRemove { id: String },
@@ -72,11 +78,14 @@ pub enum Edge {
 }
 
 /// How an insert makes room (plan 4C Decision 18): `ripple` moves every later item on the
-/// track by the item's duration.
+/// track by the item's duration; `overwrite` takes the range over, removing the items inside it
+/// and trimming the ones overlapping its ends (an item strictly containing it is
+/// `OVERWRITE_SPLITS_ITEM`: split it first, `compose::overwrite`), and moves nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum InsertMode {
     Ripple,
+    Overwrite,
 }
 
 /// How a delete leaves its range: `ripple` closes the gap, `lift` leaves it.
@@ -88,12 +97,17 @@ pub enum DeleteMode {
 }
 
 /// How a trim treats the rest of the track: `ripple` moves every later item by the change;
-/// `strict` (internal: the inverse of carving edits) moves nothing, and an overlap it would
-/// make is `CLIP_OVERLAP` in every apply mode.
+/// `roll` moves the cut between the item and the neighbour touching that edge (both change,
+/// nothing else moves; `NOT_ADJACENT` without one); `overwrite` moves the edge itself, carving
+/// whatever it extends over and leaving a gap when it shrinks; `strict` (internal: the inverse
+/// of carving edits) moves the edge only, and an overlap it would make is `CLIP_OVERLAP` in
+/// every apply mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TrimMode {
     Ripple,
+    Roll,
+    Overwrite,
     Strict,
 }
 
@@ -203,6 +217,27 @@ pub struct ItemTrim {
     pub mode: TrimMode,
 }
 
+/// `item.slip`: moves the source of `item` (a clip or nested item) under it by `delta`
+/// source seconds (`sourceIn += delta`); its place on the timeline and its item-relative times
+/// stay. The source range is policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemSlip {
+    pub item: String,
+    pub delta: Rational,
+}
+
+/// `item.split`: cuts `item` at `offset` (item-relative seconds, strictly inside it). The left
+/// part keeps the id and ends at `offset`; the right part is a copy (effects keep their ids,
+/// item-relative times move by `−offset`, no link group) named by `id`, a `$name` placeholder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemSplit {
+    pub item: String,
+    pub offset: Rational,
+    pub id: String,
+}
+
 /// `item.remove` (internal): takes item `id` off its track.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -242,6 +277,18 @@ impl From<ItemTrim> for Op {
 impl From<ItemDelete> for Op {
     fn from(op: ItemDelete) -> Op {
         Op::ItemDelete(op)
+    }
+}
+
+impl From<ItemSlip> for Op {
+    fn from(op: ItemSlip) -> Op {
+        Op::ItemSlip(op)
+    }
+}
+
+impl From<ItemSplit> for Op {
+    fn from(op: ItemSplit) -> Op {
+        Op::ItemSplit(op)
     }
 }
 

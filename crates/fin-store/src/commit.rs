@@ -17,8 +17,9 @@ impl Store {
     ///
     /// - An empty `txId` or empty `ops` is `INVALID_OP`, checked before anything else.
     /// - The tx is normalised first ([`fin_core::normalize`]): `clip.*` aliases become their
-    ///   `item.*` ops, and a schema-1 client tx is upgraded (or refused `SCHEMA_VERSION`). The
-    ///   stored intent is the normalised tx.
+    ///   `item.*` ops, a schema-1 client tx is upgraded (or refused `SCHEMA_VERSION`), and
+    ///   op values are made canonical. The stored intent is the normalised tx. A tx that
+    ///   normalising refuses is still answered from the log when its `txId` is committed.
     /// - `tx.branch` is a branch reference (an id, an active name or `<name>#<id>`); the
     ///   stored intent holds the id. An unknown one is `BRANCH_NOT_FOUND`, an archived one
     ///   `BRANCH_ARCHIVED` (both checked after the dedupe, the read-only state and the fence).
@@ -83,7 +84,15 @@ impl Store {
         check_shape(&tx)?;
         // The stored intent never holds a `clip.*` alias, nor a schema-1 shape (plan 4C
         // Decision 6).
-        let tx = fin_core::normalize(tx)?;
+        let tx = match fin_core::normalize(tx.clone()) {
+            Ok(normal) => normal,
+            // A retry of a committed txId is answered from the log whatever shape it is sent
+            // in (a schema-1 retry of a schema-2 command included): the dedupe comes first.
+            Err(e) => match db::find_tx(&self.conn, &tx.tx_id)? {
+                Some(existing) => return same_args(&tx, existing),
+                None => return Err(e.into()),
+            },
+        };
         // Everything in `plan` runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.
         loop {

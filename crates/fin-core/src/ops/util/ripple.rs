@@ -100,8 +100,7 @@ impl<'a> OpDiff<'a> {
         c.by = by;
     }
 
-    /// One parameter of `id` (its registry path) was set.
-    #[allow(dead_code, reason = "param.set (plan 4C Task 10) records paths")]
+    /// One parameter of `id` (its registry path, or `sourceIn` for a slip) was set.
     pub(crate) fn record_path(&mut self, kind: EntityKind, id: &str, path: &str) {
         self.push(kind, id, ChangeKind::Updated).path = Some(path.to_string());
     }

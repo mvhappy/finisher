@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::model::{AssetKind, ItemBody, SCHEMA_VERSION};
+use crate::ops::util::normalize_body;
 use crate::ops::{DeleteMode, InsertMode, ItemDelete, ItemInsert, ItemTrim, Op, TrimMode};
 use crate::time::Rational;
 use crate::tx::Tx;
@@ -67,6 +68,10 @@ pub(crate) fn to_item(op: &Op) -> Op {
 /// `kind: "media"`. A schema-1 tx with another op is `SCHEMA_VERSION` (with `opIndex`); any
 /// other schema version is left for the apply to refuse. Ids, bindings and `argsHash` are
 /// untouched.
+///
+/// The values an op carries are made canonical too, so the stored intent's bytes match the
+/// state it made: every `-0.0` in an `item.insert` body (graphic slots, caption overrides)
+/// becomes `0.0`, and a non-finite number is `INVALID_RANGE` (`details.path`, `opIndex`).
 pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
     if tx.schema_version == 1 {
         for (i, op) in tx.ops.iter_mut().enumerate() {
@@ -91,9 +96,17 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
         tx.schema_version = SCHEMA_VERSION;
     }
     if tx.schema_version == SCHEMA_VERSION {
-        for op in &mut tx.ops {
+        for (i, op) in tx.ops.iter_mut().enumerate() {
             if op.is_alias() {
                 *op = to_item(op);
+            }
+            if let Op::ItemInsert(insert) = op {
+                normalize_body(&mut insert.body).map_err(|mut e| {
+                    if let serde_json::Value::Object(d) = &mut e.details {
+                        d.insert("opIndex".into(), json!(i));
+                    }
+                    e
+                })?;
             }
         }
     }
@@ -142,6 +155,11 @@ macro_rules! alias_module {
                     Op::$variant { $($field,)* .. } => $positions,
                     _ => Vec::new(),
                 }
+            }
+
+            /// Aliases carry no item-relative values.
+            pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+                Vec::new()
             }
 
             #[allow(unused_variables)]

@@ -127,3 +127,46 @@ fn alias_outside_client_mode_is_invalid_op() {
         }
     }
 }
+
+/// Review of Task 7 (S1): the stored intent's values are canonical, so its bytes agree with
+/// the state the insert makes: `-0.0` becomes `0.0`; a non-finite number is refused with its
+/// op's index.
+#[test]
+fn normalize_makes_insert_values_canonical() {
+    let graphic = |x: f64| -> Op {
+        fin_core::ItemInsert {
+            id: "$g".into(),
+            track: "t1".into(),
+            at: secs(0),
+            duration: secs(1),
+            mode: fin_core::InsertMode::Overwrite,
+            body: fin_core::ItemBody::Graphic {
+                asset: "a1".into(),
+                slots: [("x".to_string(), fin_core::ParamValue::Vec2([x, 1.0]))].into(),
+            },
+        }
+        .into()
+    };
+    let got = normalize(tx(vec![delete("c1"), graphic(-0.0)])).unwrap();
+    let Op::ItemInsert(i) = &got.ops[1] else {
+        panic!("{:?}", got.ops)
+    };
+    let fin_core::ItemBody::Graphic { slots, .. } = &i.body else {
+        panic!("{i:?}")
+    };
+    let fin_core::ParamValue::Vec2([x, _]) = slots["x"] else {
+        panic!("{slots:?}")
+    };
+    assert_eq!(x.to_bits(), 0.0f64.to_bits());
+    assert!(
+        serde_json::to_string(&got.ops[1])
+            .unwrap()
+            .contains("[0.0,1.0]")
+    );
+    let e = normalize(tx(vec![delete("c1"), graphic(f64::NAN)])).unwrap_err();
+    assert_eq!(e.code, "INVALID_RANGE");
+    assert_eq!(
+        (&e.details["path"], &e.details["opIndex"]),
+        (&json!("slots.x"), &json!(1))
+    );
+}

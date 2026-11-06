@@ -3,20 +3,27 @@
 //! - `ripple`, start edge: `start` stays; `duration −= delta`; the source moves under it
 //!   (`sourceIn += delta × speed`, plan 4C Decision 14); later items move by `−delta`.
 //! - `ripple`, end edge: `duration += delta`; later items move by `+delta`.
-//! - `strict` (internal): the edge itself moves (a start edge moves `start` by `delta`
-//!   too), nothing else does, and an overlap it makes is `CLIP_OVERLAP` in every apply mode.
+//! - `roll`: the cut between the item and the neighbour touching that edge moves by `delta`
+//!   (`NOT_ADJACENT` without one, in every apply mode): the left item's end and the right
+//!   item's start (with its source) move, nothing else does. Its inverse is a roll back.
+//! - `overwrite`: the edge itself moves (a start edge moves `start` by `delta` too); extending
+//!   carves the range it covers ([`carve`]), shrinking leaves a gap. No shifts. Its inverse is a
+//!   `strict` trim back, then the carve's inverses.
+//! - `strict` (internal): the edge itself moves, nothing else does, and an overlap it makes is
+//!   `CLIP_OVERLAP` in every apply mode.
 //!
-//! A start-edge move shifts the item's relative times (keyframes, caption words) by `−delta`
+//! A start-edge move shifts that item's relative times (keyframes, caption words) by `−delta`
 //! and records that content offset as the change's `by` (Decision 13).
 
 use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
-use crate::model::{ItemBody, Project};
+use crate::model::{Project, Track};
+use crate::ops::util::roll::{back, neighbour, roll};
 use crate::ops::util::{
-    OpDiff, TrackAt, asset, check_track, check_unlocked, end, frame_of, invalid_range, item_index,
-    media_duration, ripple, shift_content, wrong_op,
+    Limits, OpDiff, TrackAt, carve, check_delta, check_track, check_unlocked, edge_limits, end,
+    intersect, item_index, move_start_edge, ripple, wrong_op,
 };
 use crate::ops::{Bindings, Edge, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
@@ -30,10 +37,11 @@ fn payload(op: &Op) -> Result<&ItemTrim, CoreError> {
     }
 }
 
-/// Resolved, checked trim: where the item is.
+/// Resolved, checked trim: where the item is, and for a roll, its neighbour across the edge.
 pub(crate) struct Plan {
     track: TrackAt,
     item: usize,
+    neighbour: Option<usize>,
 }
 
 pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Result<Plan, CoreError> {
@@ -41,70 +49,41 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     if t.mode == TrimMode::Strict && !bindings.internal() {
         return Err(CoreError::new("INVALID_OP", "strict trims are internal")
             .with_details(json!({ "op": "item.trim", "mode": "strict" }))
-            .with_fix("trim with mode ripple"));
+            .with_fix("trim with mode ripple, roll or overwrite"));
     }
     let id = bindings.resolve(&t.item)?;
     let (ti, ci) = item_index(project, &id)?;
+    let track = ti.get(project);
     let plan = Plan {
         track: ti,
         item: ci,
+        neighbour: match t.mode {
+            TrimMode::Roll => Some(neighbour(track, ci, t.edge)?),
+            _ => None,
+        },
     };
     // Policy (skipped on replay): the lock, the source range and the one-frame minimum.
     if !bindings.policy() {
         return Ok(plan);
     }
-    let track = ti.get(project);
     check_unlocked(track, Some(&id), bindings)?;
-    let it = &track.items[ci];
-    let frame = frame_of(project, ti)?;
-    // The source a trim may reveal: clips are bounded by their asset, nested items by 0.
-    let (source_in, speed, length) = match &it.body {
-        ItemBody::Clip {
-            asset: a,
-            source_in,
-            speed,
-        } => (
-            Some(*source_in),
-            *speed,
-            Some(media_duration(asset(project, a)?)?),
-        ),
-        ItemBody::Nested { source_in, .. } => (Some(*source_in), Rational::from_int(1), None),
-        _ => (None, Rational::from_int(1), None),
-    };
-    let (mut min, max) = match t.edge {
-        Edge::Start => (
-            source_in
-                .map(|s| s.checked_neg()?.checked_div(speed))
-                .transpose()?,
-            Some(it.duration.checked_sub(frame)?),
-        ),
-        Edge::End => (
-            Some(frame.checked_sub(it.duration)?),
-            match (source_in, length) {
-                (Some(s), Some(l)) => Some(
-                    l.checked_sub(s)?
-                        .checked_div(speed)?
-                        .checked_sub(it.duration)?,
-                ),
-                _ => None,
-            },
-        ),
-    };
-    if t.edge == Edge::Start && t.mode == TrimMode::Strict {
-        let floor = it.start.checked_neg()?;
-        min = Some(min.map_or(floor, |m| m.max(floor)));
+    let mut limits: Limits = edge_limits(project, ti, ci, t.edge)?;
+    match (t.mode, plan.neighbour) {
+        // The start edge moves `start` itself, which stays at 0 or later.
+        (TrimMode::Strict | TrimMode::Overwrite, _) if t.edge == Edge::Start => {
+            limits = intersect(limits, (Some(track.items[ci].start.checked_neg()?), None));
+        }
+        // The neighbour's opposite edge moves by the same delta.
+        (TrimMode::Roll, Some(n)) => {
+            let other = match t.edge {
+                Edge::Start => Edge::End,
+                Edge::End => Edge::Start,
+            };
+            limits = intersect(limits, edge_limits(project, ti, n, other)?);
+        }
+        _ => {}
     }
-    if min.is_some_and(|m| t.delta < m) || max.is_some_and(|m| t.delta > m) {
-        let range = |v: Option<Rational>| v.map_or("unbounded".to_string(), |v| v.to_string());
-        return Err(invalid_range(
-            format!(
-                "trimming item {id} by {} would leave its source range or go below one frame",
-                t.delta
-            ),
-            json!({ "clip": id, "item": id, "edge": t.edge, "delta": t.delta, "min": min, "max": max }),
-            format!("use a delta between {} and {}", range(min), range(max)),
-        ));
-    }
+    check_delta(&id, t.edge, t.delta, limits)?;
     Ok(plan)
 }
 
@@ -117,50 +96,70 @@ pub(crate) fn apply(
 ) -> Result<Vec<Op>, CoreError> {
     let plan = validate(project, op, bindings)?;
     let t = payload(op)?;
-    let delta = t.delta;
     let track = plan.track.get_mut(project);
-    let it = &mut track.items[plan.item];
+    match (t.mode, plan.neighbour) {
+        (TrimMode::Roll, Some(n)) => roll(track, plan.item, n, t, diff),
+        (TrimMode::Ripple, _) => {
+            let (id, from, by) = move_edge(track, plan.item, t, false, diff)?;
+            ripple(track, from, by)?;
+            diff.shift(&track.id, from, by);
+            Ok(vec![back(&id, t, TrimMode::Ripple)?])
+        }
+        (TrimMode::Overwrite, _) => {
+            let it = &track.items[plan.item];
+            let (start, stop) = (it.start, end(it)?);
+            let range = match t.edge {
+                Edge::End => (stop, stop.checked_add(t.delta)?),
+                Edge::Start => (start.checked_add(t.delta)?, start),
+            };
+            let id = it.id.clone();
+            let carved = carve(track, range.0, range.1, diff)?;
+            // Carving may have removed items before it.
+            let index = track
+                .items
+                .iter()
+                .position(|c| c.id == id)
+                .unwrap_or(plan.item);
+            move_edge(track, index, t, true, diff)?;
+            let mut inverse = vec![back(&id, t, TrimMode::Strict)?];
+            inverse.extend(carved);
+            Ok(inverse)
+        }
+        _ => {
+            let (id, _, _) = move_edge(track, plan.item, t, true, diff)?;
+            check_track(track)?;
+            Ok(vec![back(&id, t, TrimMode::Strict)?])
+        }
+    }
+}
+
+/// Moves `t.edge` of item `index` by `t.delta` and records it; `moves_start`: a start edge
+/// moves `start` too (every mode but ripple). Returns the item's id, its old end and the
+/// length change.
+fn move_edge(
+    track: &mut Track,
+    index: usize,
+    t: &ItemTrim,
+    moves_start: bool,
+    diff: &mut OpDiff<'_>,
+) -> Result<(String, Rational, Rational), CoreError> {
+    let it = &mut track.items[index];
     let from = end(it)?;
     let (by, content) = match t.edge {
         Edge::Start => {
-            match &mut it.body {
-                ItemBody::Clip {
-                    source_in, speed, ..
-                } => *source_in = source_in.checked_add(delta.checked_mul(*speed)?)?,
-                ItemBody::Nested { source_in, .. } => *source_in = source_in.checked_add(delta)?,
-                _ => {}
+            let content = move_start_edge(it, t.delta)?;
+            if moves_start {
+                it.start = it.start.checked_add(t.delta)?;
             }
-            it.duration = it.duration.checked_sub(delta)?;
-            if t.mode == TrimMode::Strict {
-                it.start = it.start.checked_add(delta)?;
-            }
-            let content = delta.checked_neg()?;
-            shift_content(it, content)?;
             (content, Some(content))
         }
         Edge::End => {
-            it.duration = it.duration.checked_add(delta)?;
-            (delta, None)
+            it.duration = it.duration.checked_add(t.delta)?;
+            (t.delta, None)
         }
     };
-    let id = it.id.clone();
-    diff.record_edge(EntityKind::Item, &id, t.edge, content);
-    match t.mode {
-        TrimMode::Ripple => {
-            ripple(track, from, by)?;
-            diff.shift(&track.id, from, by);
-        }
-        TrimMode::Strict => check_track(track)?,
-    }
-    Ok(vec![
-        ItemTrim {
-            item: id,
-            edge: t.edge,
-            delta: delta.checked_neg()?,
-            mode: t.mode,
-        }
-        .into(),
-    ])
+    diff.record_edge(EntityKind::Item, &it.id, t.edge, content);
+    Ok((it.id.clone(), from, by))
 }
 
 /// Moves one edge of the item (on the track its shift names, when it ripples).
@@ -174,6 +173,11 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
 
 /// No timeline positions: `delta` is a length.
 pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
+}
+
+/// No item-relative values.
+pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 

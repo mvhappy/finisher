@@ -6,7 +6,7 @@ use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::{Project, SCHEMA_VERSION};
 use crate::ops::{self, Bindings, Op};
-use crate::tx::{Applied, Diff, Shift, Tx};
+use crate::tx::{Applied, Diff, Tx};
 
 /// Who is applying: clients may only send client ops (the `clip.*` aliases included, each
 /// rewritten to its `item.*` op first, [`crate::normalize`]); internal callers (undo, replaying
@@ -94,13 +94,13 @@ impl Applier {
     }
 
     /// Applies op `index` of the transaction, recording its changes and shifts under that
-    /// index; returns the shifts it recorded. An error carries `details.opIndex`.
+    /// index; returns what it recorded (its own diff). An error carries `details.opIndex`.
     pub(crate) fn op(
         &mut self,
         index: usize,
         op: &Op,
         ids: &mut dyn IdAlloc,
-    ) -> Result<&[Shift], CoreError> {
+    ) -> Result<Diff, CoreError> {
         let before = self.diff.shifts.len();
         let changes_before = self.diff.changes.len();
         let applied = if self.mode == ApplyMode::Client && op.is_internal() {
@@ -109,7 +109,10 @@ impl Applier {
                 format!("{} is internal and cannot be sent by clients", op.name()),
             )
             .with_details(json!({ "op": op.name() }))
-            .with_fix("use asset.add, item.insert, item.trim or item.delete"))
+            .with_fix(
+                "use asset.add, item.insert, item.trim (ripple, roll or overwrite), item.delete, \
+                 item.slip or item.split",
+            ))
         } else if self.mode != ApplyMode::Client && op.is_alias() {
             Err(CoreError::new(
                 "INVALID_OP",
@@ -127,10 +130,7 @@ impl Applier {
             )
             .and_then(|inverse| {
                 if self.mode == ApplyMode::Replay {
-                    let own = Diff {
-                        changes: self.diff.changes[changes_before..].to_vec(),
-                        shifts: self.diff.shifts[before..].to_vec(),
-                    };
+                    let own = self.own_diff(changes_before, before);
                     let touched = ops::util::touched_tracks(&self.project, &own);
                     ops::util::check_tracks(&self.project, &touched)?;
                 }
@@ -138,7 +138,20 @@ impl Applier {
             })
         };
         self.inverses.push(applied.map_err(|e| at_op(e, index))?);
-        Ok(&self.diff.shifts[before..])
+        Ok(self.own_diff(changes_before, before))
+    }
+
+    /// The entries recorded since `changes` changes and `shifts` shifts.
+    fn own_diff(&self, changes: usize, shifts: usize) -> Diff {
+        Diff {
+            changes: self.diff.changes[changes..].to_vec(),
+            shifts: self.diff.shifts[shifts..].to_vec(),
+        }
+    }
+
+    /// The placeholders bound so far, to the ids they name.
+    pub(crate) fn bound(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.bindings.map
     }
 
     /// The result: the inverse lists each op's inverse in reverse op order.

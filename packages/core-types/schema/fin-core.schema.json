@@ -966,9 +966,10 @@
       "type": "object"
     },
     "InsertMode": {
-      "description": "How an insert makes room (plan 4C Decision 18): `ripple` moves every later item on the\ntrack by the item's duration.",
+      "description": "How an insert makes room (plan 4C Decision 18): `ripple` moves every later item on the\ntrack by the item's duration; `overwrite` takes the range over, removing the items inside it\nand trimming the ones overlapping its ends (an item strictly containing it is\n`OVERWRITE_SPLITS_ITEM`: split it first, `compose::overwrite`), and moves nothing else.",
       "enum": [
-        "ripple"
+        "ripple",
+        "overwrite"
       ],
       "type": "string"
     },
@@ -1436,6 +1437,42 @@
         "item",
         "track",
         "mode"
+      ],
+      "type": "object"
+    },
+    "ItemSlip": {
+      "description": "`item.slip`: moves the source of `item` (a clip or nested item) under it by `delta`\nsource seconds (`sourceIn += delta`); its place on the timeline and its item-relative times\nstay. The source range is policy.",
+      "properties": {
+        "delta": {
+          "$ref": "#/$defs/Rational"
+        },
+        "item": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "delta"
+      ],
+      "type": "object"
+    },
+    "ItemSplit": {
+      "description": "`item.split`: cuts `item` at `offset` (item-relative seconds, strictly inside it). The left\npart keeps the id and ends at `offset`; the right part is a copy (effects keep their ids,\nitem-relative times move by `−offset`, no link group) named by `id`, a `$name` placeholder.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        },
+        "offset": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "item",
+        "offset",
+        "id"
       ],
       "type": "object"
     },
@@ -1948,6 +1985,46 @@
             }
           ],
           "description": "Takes an item off its track."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemSlip"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.slip",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Moves an item's source under it (`sourceIn`), keeping its timeline place."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemSplit"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.split",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Cuts an item in two at `offset`; the right part gets a new id."
         },
         {
           "description": "Internal (inverse of `asset.add`): removes an unused asset.",
@@ -2667,9 +2744,11 @@
       "type": "string"
     },
     "TrimMode": {
-      "description": "How a trim treats the rest of the track: `ripple` moves every later item by the change;\n`strict` (internal: the inverse of carving edits) moves nothing, and an overlap it would\nmake is `CLIP_OVERLAP` in every apply mode.",
+      "description": "How a trim treats the rest of the track: `ripple` moves every later item by the change;\n`roll` moves the cut between the item and the neighbour touching that edge (both change,\nnothing else moves; `NOT_ADJACENT` without one); `overwrite` moves the edge itself, carving\nwhatever it extends over and leaving a gap when it shrinks; `strict` (internal: the inverse\nof carving edits) moves the edge only, and an overlap it would make is `CLIP_OVERLAP` in\nevery apply mode.",
       "enum": [
         "ripple",
+        "roll",
+        "overwrite",
         "strict"
       ],
       "type": "string"

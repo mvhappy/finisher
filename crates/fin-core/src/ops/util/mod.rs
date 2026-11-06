@@ -5,19 +5,24 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ops::Op;
 
+mod carve;
 mod check;
 mod content;
+mod limits;
 mod lock;
 mod lookup;
 mod ripple;
+pub(crate) mod roll;
 mod touched;
 mod values;
 
+pub(crate) use carve::carve;
 pub(crate) use check::{
     check_frame, check_kind, check_source, check_speed, check_track, check_tracks, invalid_range,
     kind_name, media_duration,
 };
-pub(crate) use content::shift_content;
+pub(crate) use content::{move_start_edge, shift_content};
+pub(crate) use limits::{Limits, check_delta, edge_limits, intersect};
 pub(crate) use lock::check_unlocked;
 pub(crate) use lookup::{
     TrackAt, asset, end, exists, find_item, find_transition, item_index, items, track_index, tracks,

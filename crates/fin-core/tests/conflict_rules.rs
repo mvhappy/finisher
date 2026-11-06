@@ -302,6 +302,26 @@ fn every_op_has_a_footprint() {
             deleted.inverse[0].clone(),
             vec!["t2"],
         ),
+        // Shift-less ops that name no track bind none (their diff names items only).
+        (
+            p.clone(),
+            fin_core::ItemSlip {
+                item: "c3".into(),
+                delta: secs(1),
+            }
+            .into(),
+            vec![],
+        ),
+        (
+            p.clone(),
+            fin_core::ItemSplit {
+                item: "c3".into(),
+                offset: secs(2),
+                id: "$r".into(),
+            }
+            .into(),
+            vec![],
+        ),
     ];
     let mut seen = BTreeSet::new();
     for (at, op, tracks) in cases {
@@ -336,6 +356,10 @@ fn every_op_has_a_footprint() {
                 f.creates == [r.item.id.clone()]
                     && f.uses == [r.item.asset().unwrap().to_string(), r.track.clone()]
             }
+            Op::ItemSlip(s) => f.touches == [(s.item.clone(), Touch::Param("sourceIn".into()))],
+            Op::ItemSplit(s) => {
+                f.touches == [(s.item.clone(), Touch::Exists)] && f.creates == [s.id.clone()]
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -343,7 +367,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 7);
+    assert_eq!(seen.len(), 9);
 }
 
 #[test]

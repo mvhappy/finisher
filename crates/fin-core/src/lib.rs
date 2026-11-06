@@ -2,6 +2,7 @@
 
 pub mod apply;
 pub mod branch;
+pub mod compose;
 pub mod error;
 pub mod history;
 pub mod ids;
@@ -23,7 +24,7 @@ pub use layout::{FaceRef, Measured, TextLayout, TextMeasurer, TextRequest, TextS
 pub use model::*;
 pub use ops::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
-    ItemTrim, Op, TrimMode, normalize,
+    ItemSlip, ItemSplit, ItemTrim, Op, TrimMode, normalize,
 };
 pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{

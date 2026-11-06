@@ -224,3 +224,47 @@ pub fn starts(p: &Project, track: usize) -> Vec<(String, Rational)> {
         .map(|c| (c.id.clone(), c.start))
         .collect()
 }
+
+/// Decision 23: the inverse records the op's shifts inverted, in exact reverse order.
+pub fn inverse_shifts_mirror(applied: &Applied) {
+    let p = &applied.project;
+    let back = apply_internal(p, &tx(applied.inverse.clone()), &mut MemIds::after(p)).unwrap();
+    let want = fin_core::rebase::StepMap::from_diff(&applied.diff)
+        .invert()
+        .unwrap();
+    let strip = |s: &[fin_core::Shift]| -> Vec<(String, Rational, Rational)> {
+        s.iter().map(|s| (s.track.clone(), s.from, s.by)).collect()
+    };
+    assert_eq!(
+        strip(&back.diff.shifts),
+        strip(want.shifts()),
+        "{applied:?}"
+    );
+}
+
+/// Applies `ops`, checks the inverse restores `p` exactly and mirrors the shifts.
+pub fn golden_apply(p: &Project, ops: Vec<Op>) -> Applied {
+    let a = apply(p, ops);
+    assert_eq!(undo(&a), *p, "inverse restores the project");
+    inverse_shifts_mirror(&a);
+    a
+}
+
+/// A project with asset `a1` (100 s, video+audio) and back-to-back clips on `t1`, each
+/// `(duration, sourceIn)`.
+pub fn with_sourced(clips: &[(i64, i64)]) -> Project {
+    let mut ops = vec![av_asset("$a", secs(100))];
+    let mut at = 0;
+    for (i, (d, s)) in clips.iter().enumerate() {
+        ops.push(insert(
+            &format!("$c{i}"),
+            "t1",
+            secs(at),
+            "$a",
+            secs(*s),
+            secs(*d),
+        ));
+        at += d;
+    }
+    apply(&project(), ops).project
+}

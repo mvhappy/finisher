@@ -12,7 +12,7 @@ use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
 use super::footprint::{Footprint, entity_conflict_in, footprint, split_diff, unbind_own};
-use super::map::{Assoc, Mapping, StepMap, Unmapped};
+use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
@@ -132,16 +132,20 @@ pub fn rebase_prepared(
                     Unmapped::Overflow => Conflict::from_rerun(&overflow(), tx_id, k, None),
                 })?;
         }
+        for (item, v) in op.offsets_mut() {
+            *v = mapping
+                .map_content(n - k, &item, *v)
+                .map_err(|_| Conflict::from_rerun(&overflow(), tx_id, k, None))?;
+        }
         let fp = footprint(&op, &own[k]);
         if let Some((reason, against)) = entity_conflict_in(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
         created.extend(fp.creates.iter().cloned());
-        let shifts = run
+        let rerun = run
             .op(k, &op, ids)
-            .map_err(|e| rerun_conflict(&e, r, k, &fp, &theirs, head))?
-            .to_vec();
-        let at = mapping.push(StepMap::from_shifts(shifts));
+            .map_err(|e| rerun_conflict(&e, r, k, &fp, &theirs, head))?;
+        let at = mapping.push(rebased_map(rerun, run.bound()));
         mapping.set_mirror(n - 1 - k, at);
         ops.push(op);
     }
@@ -153,6 +157,24 @@ pub fn rebase_prepared(
         tx,
         applied: run.finish(),
     })
+}
+
+/// The map of one of our ops as re-run at the head (`rerun`: what it recorded there). Its
+/// content offsets name the items our tx created by their placeholders, as our ops (and
+/// [`unbind_own`]'s diffs of them) do, so a later op of ours naming `$x` meets the offsets of
+/// both its own inverse and its rebased copy, and they cancel.
+fn rebased_map(rerun: Diff, bound: &std::collections::BTreeMap<String, String>) -> StepMap {
+    let content = content_of(&rerun)
+        .into_iter()
+        .map(|(id, by)| {
+            let name = bound
+                .iter()
+                .find(|(_, v)| **v == id)
+                .map(|(p, _)| p.clone());
+            (name.unwrap_or(id), by)
+        })
+        .collect();
+    StepMap::from_parts(rerun.shifts, content)
 }
 
 /// Stale commit: `own` = `tx` applied at `base` with `MemIds::after(base)`; steps = `since`

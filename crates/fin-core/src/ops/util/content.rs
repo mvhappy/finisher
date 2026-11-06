@@ -25,3 +25,22 @@ pub(crate) fn shift_content(item: &mut Item, by: Rational) -> Result<(), CoreErr
     }
     Ok(())
 }
+
+/// Moves the start edge of `item` by `delta` under its content: the source moves with the edge
+/// (`sourceIn += delta × speed` for a clip, `+ delta` for a nested item, plan 4C Decision 14),
+/// `duration −= delta`, and every item-relative time moves by `−delta`. `start` is the
+/// caller's: a ripple trim keeps it, every other start-edge move adds `delta`. Returns the
+/// content offset `by = −delta` the change records.
+pub(crate) fn move_start_edge(item: &mut Item, delta: Rational) -> Result<Rational, CoreError> {
+    match &mut item.body {
+        ItemBody::Clip {
+            source_in, speed, ..
+        } => *source_in = source_in.checked_add(delta.checked_mul(*speed)?)?,
+        ItemBody::Nested { source_in, .. } => *source_in = source_in.checked_add(delta)?,
+        _ => {}
+    }
+    item.duration = item.duration.checked_sub(delta)?;
+    let by = delta.checked_neg()?;
+    shift_content(item, by)?;
+    Ok(by)
+}

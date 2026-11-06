@@ -882,7 +882,7 @@ Rules:
   - a caption is `INVALID_OP` with `fix: "use caption.split"`;
   - the inverse is internal: `item.remove` of the right part (lift), then `item.trim` of the left part (`strict`, +right length).
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - goldens for every mode (with `inverse_shifts_mirror`);
   - `overwrite_removes_covered_and_trims_partial`, `overwrite_inside_one_item_is_refused`, `compose_overwrite_splits_first`;
   - `roll_requires_adjacent_neighbour`, `roll_moves_both_edges_and_source`;
@@ -890,9 +890,21 @@ Rules:
   - B4: `undo_of_overwrite_conflicts_with_later_insert` (an insert into the vacated range, then undo: `CLIP_OVERLAP` conflict, nothing carved), `undo_of_split_after_neighbour_extend_conflicts`;
   - B3: `stale_split_after_start_trim_maps_offset`, `content_map_inverse_negates`, `mirrored_trim_and_undo_cancel`;
   - rebase: `overwrite_vs_trim_of_overwritten_item_conflicts` (`SAME_EDGE` from the diff's edge change), `overwrite_vs_delete_of_covered_item` (not a conflict), `roll_vs_neighbour_start_trim_same_edge`, `stale_overwrite_maps_over_ripple_insert`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test ops_modes --test rebase_modes --test content_map`. Expected: FAIL.
-- [ ] **Step 3: Implement** (each module < 250 lines).
-- [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): overwrite, roll, slip and split; content offsets in rebase`.
+- [x] **Step 2: Run** `rtk cargo test -p fin-core --test ops_modes --test rebase_modes --test content_map`. Expected: FAIL.
+- [x] **Step 3: Implement** (each module < 250 lines).
+- [x] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): overwrite, roll, slip and split; content offsets in rebase`.
+
+**As built** (for Tasks 9–14, 19, 23 and 26):
+- **Wire:** `InsertMode {ripple, overwrite}`, `TrimMode {ripple, roll, overwrite, strict}`; `Op::ItemSlip(ItemSlip {item, delta})` (`delta` in **source** seconds: `sourceIn += delta`, no speed factor) and `Op::ItemSplit(ItemSplit {item, offset, id})`, unboxed. `OVERWRITE_SPLITS_ITEM` and `NOT_ADJACENT` are structural (every apply mode) and exit 3 in `fin`.
+- **`ops/util/carve.rs`** (`carve(track, s, e, diff)`) records changes in track order (end-trimmed, removed, start-trimmed with `by`); the insert's `added` change comes after them. The overwrite insert's inverse is `[item.remove (lift), strict trims back…, lift restores…]`; the overwrite trim's is `[strict trim back of the item, carve inverses…]`. Carving does not enforce a one-frame minimum on what it leaves (a sliver under a frame is structurally valid). Overwrite and strict start trims may not move `start` below 0 (policy).
+- **Roll** (`ops/util/roll.rs`): the named item's change is recorded first; the start-edge item (the neighbour when rolling an end edge) records `by`; limits are the intersection of both items' edge limits (`ops/util/limits.rs` `edge_limits`, shared with every trim mode). Inverse: roll back.
+- **Split:** `0 < offset < duration` is structural (`INVALID_RANGE`), one frame from each end policy. Diff: the left part `updated` (no edge → `Exists`), the right part `added`. A split of nested or non-source items works (nested `sourceIn += offset`).
+- **Content offsets (B3):** `StepMap {shifts, content}` (`from_parts`, `from_diff` takes every change's `by`, `invert` negates in reverse), `Mapping::map_content(start, item, v)` sums them (mirrors cancel by construction; only `Overflow` fails). The engine maps `offsets_mut()` after positions; the map of each of our re-run ops names items our tx created by their placeholders (`rebased_map` through the applier's bindings), so own inverses and rebased copies cancel, `$x` included. `Applier::op` now returns the op's own diff. Every op module (and the alias macro) has `offsets_mut`; only `item.split` returns one (Task 14 adds keyframe `at`; `stale_keyframe_after_start_trim_keeps_identity` lands there).
+- **Mirrors of 1:N inverses:** `steps_from` cut an undo/redo/revert only when op counts add up, so an undo of an overwrite or a split stood alone (judged for entity conflicts, e.g. SAME_EDGE against a stale trim). Now a record addressing **one whole** step mirrors it whatever its op count. Multi-step units (undo of a merge group, `undo --to` parts) holding a 1:N op still stand alone (safe: more conflicts, never a wrong state). Counting assumes no op inverts to zero ops.
+- **Footprints:** slip `Param("sourceIn")` (recorded as a `path` change), split `Exists` + creates, roll/overwrite from their diffs' edge and removed changes.
+- **`compose::overwrite`** returns `Composed {ops, echo}`, echo `{mode: "overwrite", split: {item, offset, id} | null}`; the right part is `$split` (`$split_` when the insert's own id is `$split`).
+- **Review of Task 7 folded in:** S1 `normalize` runs the value check over every `item.insert` body (`-0.0` → `0.0`; non-finite `INVALID_RANGE` with `opIndex`), so stored intents are canonical; S2 `Store::commit_in` answers a retry of a committed txId from the log when `normalize` refuses it (schema-1 retry of a schema-2 op). **S3 (footprint `tracks` for shift-less ops) is open:** a footprint is built from `(op, own diff)` only, and `item.trim`/`delete`/`remove`/`slip`/`split` name no track and their diffs record items only, so there is nothing to read the track from without a format change (an optional `track` on `Change`, or zero shifts). Needs a decision before Task 9's link-group/move rules.
+- Tests: `ops_modes.rs` (16), `rebase_modes.rs` (10), `content_map.rs` (4), `normalize_makes_insert_values_canonical`, fin-store `retry_refused_by_normalize_is_answered_from_the_log`; `every_op_has_a_footprint` and `ops_table_lists_every_variant` cover the two new ops. Shared `golden_apply`, `inverse_shifts_mirror`, `with_sourced` in `tests/common`.
 
 ### Task 9: Moves, slides, link groups; `compose::clip_with_audio`, `compose::split_linked` — tier: opus
 

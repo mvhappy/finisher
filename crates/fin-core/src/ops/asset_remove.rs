@@ -81,6 +81,11 @@ pub(crate) fn positions_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 
+/// No item-relative values.
+pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
+}
+
 /// The wire name.
 pub(crate) const NAME: &str = "asset.remove";
 /// Whether the op is produced only as an inverse and never accepted from clients.

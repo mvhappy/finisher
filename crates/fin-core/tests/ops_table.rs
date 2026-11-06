@@ -3,8 +3,8 @@ mod common;
 use common::ids_json::{ids_cover_every_id_in_json, ids_cover_json};
 use fin_core::{
     AssetAdd, BlendMode, CaptionBlock, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
-    ItemBody, ItemDelete, ItemInsert, ItemRemove, ItemRestore, ItemTrim, Keyframe, Op, ParamValue,
-    Rational, TrimMode, Word,
+    ItemBody, ItemDelete, ItemInsert, ItemRemove, ItemRestore, ItemSlip, ItemSplit, ItemTrim,
+    Keyframe, Op, ParamValue, Rational, TrimMode, Word,
 };
 use serde_json::json;
 
@@ -91,6 +91,17 @@ fn every_variant() -> Vec<Op> {
             mode: DeleteMode::Lift,
         }
         .into(),
+        ItemSlip {
+            item: "c1".into(),
+            delta: r(1),
+        }
+        .into(),
+        ItemSplit {
+            item: "c1".into(),
+            offset: r(1),
+            id: "$r".into(),
+        }
+        .into(),
         Op::AssetRemove { id: "a1".into() },
         ItemRemove {
             id: "c1".into(),
@@ -125,6 +136,8 @@ fn every_variant() -> Vec<Op> {
             | Op::ItemInsert(_)
             | Op::ItemTrim(_)
             | Op::ItemDelete(_)
+            | Op::ItemSlip(_)
+            | Op::ItemSplit(_)
             | Op::AssetRemove { .. }
             | Op::ItemRemove(_)
             | Op::ItemRestore(_)

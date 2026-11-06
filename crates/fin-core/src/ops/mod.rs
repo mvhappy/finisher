@@ -1,10 +1,10 @@
 //! Primitive edit operations, one module per op (schema, validate, apply, invert, conflict
 //! footprint, positions).
 //!
-//! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete` (and the `clip.*`
-//! aliases of the last three, [`alias`]). Internal ops exist only as inverses
-//! (`asset.remove`, `item.remove`, `item.restore`, and `item.trim` in `strict` mode); clients
-//! sending them get `INVALID_OP`.
+//! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete`, `item.slip`,
+//! `item.split` (and the `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`,
+//! [`alias`]). Internal ops exist only as inverses (`asset.remove`, `item.remove`,
+//! `item.restore`, and `item.trim` in `strict` mode); clients sending them get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
 //! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
@@ -30,6 +30,8 @@ mod item_delete;
 mod item_insert;
 mod item_remove;
 mod item_restore;
+mod item_slip;
+mod item_split;
 mod item_trim;
 pub(crate) mod util;
 
@@ -37,7 +39,7 @@ pub use alias::normalize;
 use alias::{clip_delete, clip_insert, clip_trim};
 pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
-    ItemTrim, Op, TrimMode,
+    ItemSlip, ItemSplit, ItemTrim, Op, TrimMode,
 };
 
 /// `$name` placeholders bound during one transaction, in op order.
@@ -172,7 +174,7 @@ pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
 
 /// Lists every op variant with its module once, and generates the dispatch from it. Each
 /// module provides `NAME`, `INTERNAL`, `refs_mut`, `ids`, `allocates`,
-/// `positions_mut`, `apply` and `footprint`.
+/// `positions_mut`, `offsets_mut`, `apply` and `footprint`.
 macro_rules! ops_table {
     ($($variant:ident => $module:ident),* $(,)?) => {
         impl Op {
@@ -214,6 +216,14 @@ macro_rules! ops_table {
             pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)> {
                 match self { $(Op::$variant { .. } => $module::positions_mut(self),)* }
             }
+
+            /// Every item-relative value the op carries (content-anchored, plan 4C Decisions
+            /// 13 and 16), with the item it counts from (as the op names it), mutably, so a
+            /// rebase can map them through the content offsets of the steps between
+            /// (`item.split` `offset`; Task 14 adds keyframe `at`s).
+            pub(crate) fn offsets_mut(&mut self) -> Vec<(String, &mut Rational)> {
+                match self { $(Op::$variant { .. } => $module::offsets_mut(self),)* }
+            }
         }
 
         /// Applies one op to `project`, recording into `diff` under the op's index; returns
@@ -243,6 +253,8 @@ ops_table! {
     ItemInsert => item_insert,
     ItemTrim => item_trim,
     ItemDelete => item_delete,
+    ItemSlip => item_slip,
+    ItemSplit => item_split,
     AssetRemove => asset_remove,
     ItemRemove => item_remove,
     ItemRestore => item_restore,

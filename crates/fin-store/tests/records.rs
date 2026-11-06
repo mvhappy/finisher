@@ -229,3 +229,19 @@ fn reopen_rejects_a_record_copied_into_another_row() {
     assert_eq!(err.details["txId"], "tx-3");
     assert_eq!(err.details["recordTxId"], "tx-2");
 }
+
+/// A retry of a committed txId is answered from the log even when it is sent in a shape the
+/// commit entry refuses (a schema-1 tx holding a schema-2 op).
+#[test]
+fn retry_refused_by_normalize_is_answered_from_the_log() {
+    let e = env();
+    let mut s = store_with_three(&e);
+    let mut retry = tx("tx-2", 0, vec![insert("$c", 0)]);
+    retry.schema_version = 1;
+    let again = s.commit(retry.clone()).unwrap();
+    assert_eq!((again.rev, s.head(MAIN)), (2, 3));
+    // A new txId in that shape is still refused.
+    retry.tx_id = "tx-9".into();
+    let err = CoreError::from(s.commit(retry).unwrap_err());
+    assert_eq!(err.code, "SCHEMA_VERSION");
+}

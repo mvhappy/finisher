@@ -29,11 +29,13 @@ pub enum Assoc {
     After,
 }
 
-/// One step's shifts, in op order; each is in the frame after the previous one. Cloning is
-/// cheap (the shifts are shared), so one map serves every rebase that passes through it.
+/// One step's shifts, in op order; each is in the frame after the previous one; and its
+/// content offsets, in change order. Cloning is cheap (both are shared), so one map serves
+/// every rebase that passes through it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StepMap {
     shifts: Arc<[Shift]>,
+    content: Arc<[(String, Rational)]>,
 }
 
 /// Where a deleted position was: `offset` into the range removed by shift `shift`.
@@ -54,21 +56,43 @@ pub struct MapResult {
 }
 
 impl StepMap {
+    /// A map of `shifts` with no content offsets.
     pub fn from_shifts(shifts: Vec<Shift>) -> StepMap {
+        StepMap::from_parts(shifts, Vec::new())
+    }
+
+    /// A map of `shifts` and content offsets `(item, by)`.
+    pub fn from_parts(shifts: Vec<Shift>, content: Vec<(String, Rational)>) -> StepMap {
         StepMap {
             shifts: shifts.into(),
+            content: content.into(),
         }
     }
 
+    /// The diff's shifts, and the `by` of each of its changes that has one.
     pub fn from_diff(diff: &Diff) -> StepMap {
-        StepMap::from_shifts(diff.shifts.clone())
+        StepMap::from_parts(diff.shifts.clone(), content_of(diff))
     }
 
     pub fn shifts(&self) -> &[Shift] {
         &self.shifts
     }
 
-    /// The inverse map: shifts in reverse order, each `{from, by}` → `{from + by, -by}`.
+    /// The content offsets `(item, by)`, in change order.
+    pub fn content(&self) -> &[(String, Rational)] {
+        &self.content
+    }
+
+    /// The sum of the content offsets of `item`.
+    fn content_of(&self, item: &str) -> Result<Rational, CoreError> {
+        self.content
+            .iter()
+            .filter(|(id, _)| id == item)
+            .try_fold(Rational::zero(), |sum, (_, by)| sum.checked_add(*by))
+    }
+
+    /// The inverse map: shifts in reverse order, each `{from, by}` → `{from + by, -by}`;
+    /// content offsets in reverse order, each negated.
     pub fn invert(&self) -> Result<StepMap, CoreError> {
         let shifts = self
             .shifts
@@ -83,7 +107,13 @@ impl StepMap {
                 })
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
-        Ok(StepMap::from_shifts(shifts))
+        let content = self
+            .content
+            .iter()
+            .rev()
+            .map(|(id, by)| Ok((id.clone(), by.checked_neg()?)))
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        Ok(StepMap::from_parts(shifts, content))
     }
 
     /// `by >= 0` inserts `[from, from+by)`: positions at or after `from` (After), or after
@@ -136,6 +166,14 @@ impl StepMap {
             _ => Ok(None),
         }
     }
+}
+
+/// The content offsets `diff`'s changes record (`(id, by)` for each change with a `by`).
+pub(crate) fn content_of(diff: &Diff) -> Vec<(String, Rational)> {
+    diff.changes
+        .iter()
+        .filter_map(|c| c.by.map(|by| (c.id.clone(), by)))
+        .collect()
 }
 
 /// One shift applied to a position on its track: the new position, and the offset into the
@@ -258,6 +296,17 @@ impl Mapping {
             i += 1;
         }
         Ok(pos)
+    }
+
+    /// An item-relative value `v` of `item` mapped through `maps[start..]`: plus every content
+    /// offset of `item` they record (Decision 16). Mirrors need no special case: a map's
+    /// inverse negates its offsets, so the pair cancels. Only overflow fails.
+    pub fn map_content(&self, start: usize, item: &str, v: Rational) -> Result<Rational, Unmapped> {
+        self.maps
+            .iter()
+            .skip(start)
+            .try_fold(v, |v, m| v.checked_add(m.content_of(item)?))
+            .map_err(overflow)
     }
 
     /// A position deleted by shift `rec.shift` of map `i`, recovered through its mirror `j` and

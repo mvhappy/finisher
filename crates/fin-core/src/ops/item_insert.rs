@@ -1,5 +1,12 @@
-//! `item.insert`: places an item of any kind at a boundary (or in a gap / past the end) and, in
-//! `ripple` mode, moves later items on the track by its duration.
+//! `item.insert`: places an item of any kind on a track.
+//!
+//! - `ripple`: at a boundary (or in a gap / past the end); later items on the track move by
+//!   its duration.
+//! - `overwrite` (plan 4C Decision 18): anywhere; the range it covers is carved
+//!   ([`crate::ops::util::carve`]: covered items removed, overlapping ones trimmed, an item
+//!   strictly containing it `OVERWRITE_SPLITS_ITEM`). Nothing moves and no shift is recorded.
+//!   Its inverse is `item.remove` (lift), then the carve's inverses (`strict` trims back, lift
+//!   restores), so an undo never carves.
 //!
 //! Per kind (plan 4C Task 7; policy unless noted):
 //! - `clip` on a video or audio track needs a `media` asset with that stream
@@ -14,11 +21,11 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, AssetKind, Item, ItemBody, Project, Track, TrackKind};
 use crate::ops::util::{
-    OpDiff, TrackAt, asset, check_frame, check_kind, check_source, check_speed, check_unlocked,
-    clip_containing, frame_of, insert_inside, invalid_range, kind_name, normalize_body, place,
-    ripple, track_index, wrong_op,
+    OpDiff, TrackAt, asset, carve, check_frame, check_kind, check_source, check_speed,
+    check_unlocked, clip_containing, frame_of, insert_inside, invalid_range, kind_name,
+    normalize_body, place, ripple, track_index, wrong_op,
 };
-use crate::ops::{Bindings, DeleteMode, ItemInsert, ItemRemove, Op};
+use crate::ops::{Bindings, DeleteMode, InsertMode, ItemInsert, ItemRemove, Op};
 use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
@@ -148,7 +155,9 @@ pub(crate) fn validate(
                 "insert at 0 or later",
             ));
         }
-        if let Some(other) = clip_containing(track, i.at)? {
+        if i.mode == InsertMode::Ripple
+            && let Some(other) = clip_containing(track, i.at)?
+        {
             return Err(insert_inside(other, i.at)?);
         }
     }
@@ -170,20 +179,29 @@ pub(crate) fn apply(
     resolve_body(&mut body, bindings)?;
     let id = bindings.create(project, &i.id, IdKind::of_item(&body), ids)?;
     let track = ti.get_mut(project);
-    ripple(track, i.at, i.duration)?;
+    let carved = match i.mode {
+        InsertMode::Ripple => {
+            ripple(track, i.at, i.duration)?;
+            Vec::new()
+        }
+        InsertMode::Overwrite => carve(track, i.at, i.at.checked_add(i.duration)?, diff)?,
+    };
     place(track, Item::new(id.clone(), i.at, i.duration, body));
     diff.record(EntityKind::Item, &id, ChangeKind::Added);
-    diff.shift(&track.id, i.at, i.duration);
-    Ok(vec![
-        ItemRemove {
-            id,
-            mode: DeleteMode::Ripple,
+    let mode = match i.mode {
+        InsertMode::Ripple => {
+            diff.shift(&track.id, i.at, i.duration);
+            DeleteMode::Ripple
         }
-        .into(),
-    ])
+        InsertMode::Overwrite => DeleteMode::Lift,
+    };
+    let mut inverse = vec![ItemRemove { id, mode }.into()];
+    inverse.extend(carved);
+    Ok(inverse)
 }
 
-/// Creates the item on its track, using the track and the asset it shows.
+/// Creates the item on its track, using the track and the asset it shows (an overwrite's diff
+/// adds the items it removed and the edges it trimmed).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let Op::ItemInsert(i) = op else {
         return Footprint::on(None, op_diff);
@@ -201,6 +219,11 @@ pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
         Op::ItemInsert(i) => vec![(i.track.clone(), &mut i.at)],
         _ => Vec::new(),
     }
+}
+
+/// No item-relative values.
+pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
+    Vec::new()
 }
 
 /// The wire name.

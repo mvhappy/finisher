@@ -148,7 +148,9 @@ pub struct StepUnit {
 ///   record's steps, or a merge group's records' steps, by `mergeId`), a redo its undo, a
 ///   revert its group. When they are all here and the op counts add up (each op inverts to
 ///   one op), it is cut into one part per addressed step, in the order its ops invert them
-///   (newest first), and each part mirrors its step when that step is not mirrored yet.
+///   (newest first), and each part mirrors its step when that step is not mirrored yet. One
+///   addressed step needs no cut: the whole record mirrors it, whatever its op count (an
+///   overwrite or a split inverts to several ops).
 ///   A step already mirrored (an undo of a revert: the revert is paired with the group) leaves
 ///   the part unmirrored: it applies the step's record again, and a later inverse of it pairs
 ///   with that part ([`StepUnit`] says which).
@@ -206,6 +208,9 @@ pub fn steps_with_units(
                 .map(|g| (g.iter().rev().copied().collect(), false)),
             _ => None,
         };
+        // One whole addressed step needs no cut: the record inverts it whatever each op
+        // inverts to (an overwrite or a split inverts to several ops, plan 4C Task 8).
+        let whole = |t: &[usize], partial: bool| t.len() == 1 && !partial && !step.ops.is_empty();
         let addressed = addressed.filter(|(t, partial)| {
             let distinct = t.iter().collect::<BTreeSet<_>>().len() == t.len();
             let ops: usize = t.iter().map(|&j| steps[j].ops.len()).sum();
@@ -214,12 +219,16 @@ pub fn steps_with_units(
             } else {
                 ops == step.ops.len()
             };
-            distinct && !t.is_empty() && fits
+            distinct && !t.is_empty() && (fits || whole(t, *partial))
         });
         let start = steps.len();
         match addressed {
             Some((t, partial)) => {
-                let mut sizes: Vec<usize> = t.iter().map(|&j| steps[j].ops.len()).collect();
+                let mut sizes: Vec<usize> = if whole(&t, partial) {
+                    vec![step.ops.len()]
+                } else {
+                    t.iter().map(|&j| steps[j].ops.len()).collect()
+                };
                 let tail = step.ops.len() - sizes.iter().sum::<usize>();
                 if partial {
                     sizes.push(tail);
