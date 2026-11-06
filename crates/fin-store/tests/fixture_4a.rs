@@ -17,7 +17,7 @@ fn fixture_4a_opens_with_relocate() {
     let expected: serde_json::Value = serde_json::from_slice(
         &std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/4a/expected.json"),
+                .join("tests/fixtures/4a/expected_v2.json"),
         )
         .unwrap(),
     )

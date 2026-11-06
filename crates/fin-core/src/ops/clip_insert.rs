@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Clip, Project};
+use crate::ops::util::TrackAt;
 use crate::ops::util::{
     OpDiff, asset, check_kind, check_source, clip_containing, insert_inside, invalid_range, place,
     ripple, track_index, wrong_op,
@@ -17,7 +18,7 @@ use crate::tx::{ChangeKind, Diff, EntityKind};
 
 /// Resolved, checked insert.
 pub(crate) struct Plan {
-    track: usize,
+    track: TrackAt,
     asset: String,
 }
 
@@ -36,7 +37,7 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     let ti = track_index(project, &bindings.resolve(track)?)?;
     let asset_id = bindings.resolve(asset_ref)?;
     let a = asset(project, &asset_id)?;
-    let track = &project.timeline.tracks[ti];
+    let track = ti.get(project);
     check_kind(track, a)?;
     // Policy (skipped on replay). An insert inside a clip also overlaps it, which replay still
     // rejects through the structural track check.
@@ -79,16 +80,10 @@ pub(crate) fn apply(
         return Err(wrong_op(op));
     };
     let id = bindings.create(project, id, IdKind::Clip, ids)?;
-    let track = &mut project.timeline.tracks[plan.track];
+    let track = plan.track.get_mut(project);
     ripple(track, *at, *duration)?;
-    let clip = Clip {
-        id: id.clone(),
-        asset: plan.asset,
-        start: *at,
-        source_in: *source_in,
-        duration: *duration,
-    };
-    place(track, clip);
+    let clip = Clip::new(id.clone(), plan.asset, *at, *source_in, *duration);
+    place(track, clip.into());
     diff.record(EntityKind::Clip, &id, ChangeKind::Added);
     diff.shift(&track.id, *at, *duration);
     Ok(vec![Op::ClipRemove { id, ripple: true }])

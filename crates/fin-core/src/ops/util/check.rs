@@ -23,6 +23,7 @@ pub(crate) fn check_kind(track: &Track, asset: &Asset) -> Result<(), CoreError> 
     let ok = match track.kind {
         TrackKind::Video => asset.video.is_some(),
         TrackKind::Audio => asset.audio.is_some(),
+        TrackKind::Caption => false,
     };
     if ok {
         return Ok(());
@@ -30,6 +31,7 @@ pub(crate) fn check_kind(track: &Track, asset: &Asset) -> Result<(), CoreError> 
     let want = match track.kind {
         TrackKind::Video => "video",
         TrackKind::Audio => "audio",
+        TrackKind::Caption => "caption",
     };
     Err(CoreError::new(
         "TRACK_KIND_MISMATCH",
@@ -42,6 +44,21 @@ pub(crate) fn check_kind(track: &Track, asset: &Asset) -> Result<(), CoreError> 
     .with_fix(format!(
         "put the asset on a track whose kind it has a stream for, not {want}"
     )))
+}
+
+/// The length of a media asset (`INVALID_OP` for an asset without one).
+pub(crate) fn media_duration(asset: &Asset) -> Result<Rational, CoreError> {
+    asset.duration.ok_or_else(|| {
+        CoreError::new(
+            "INVALID_OP",
+            format!(
+                "asset {} has no duration: it is not a media asset",
+                asset.id
+            ),
+        )
+        .with_details(json!({ "asset": asset.id }))
+        .with_fix("use a media asset")
+    })
 }
 
 /// `source_in >= 0`, `duration >= one frame`, `source_in + duration <= asset.duration`.
@@ -66,14 +83,15 @@ pub(crate) fn check_source(
             format!("use a duration of at least {frame}s"),
         ));
     }
-    if source_in.checked_add(duration)? > asset.duration {
-        let max = asset.duration.checked_sub(source_in)?;
+    let length = media_duration(asset)?;
+    if source_in.checked_add(duration)? > length {
+        let max = length.checked_sub(source_in)?;
         return Err(invalid_range(
             format!(
                 "sourceIn + duration runs past the end of asset {}",
                 asset.id
             ),
-            json!({ "sourceIn": source_in, "duration": duration, "assetDuration": asset.duration, "max": max }),
+            json!({ "sourceIn": source_in, "duration": duration, "assetDuration": length, "max": max }),
             format!("use a duration of at most {max}s from this sourceIn"),
         ));
     }
@@ -86,7 +104,7 @@ pub(crate) fn check_source(
 /// after every op on each track the op shifted.
 pub(crate) fn check_tracks(project: &Project, shifts: &[Shift]) -> Result<(), CoreError> {
     for s in shifts {
-        check_track(&project.timeline.tracks[track_index(project, &s.track)?])?;
+        check_track(track_index(project, &s.track)?.get(project))?;
     }
     Ok(())
 }
@@ -100,7 +118,8 @@ fn check_track(track: &Track) -> Result<(), CoreError> {
             )
             .with_details(json!({ "track": track.id, "clip": c.id, "duration": c.duration })));
         }
-        if c.start < Rational::zero() || c.source_in < Rational::zero() {
+        let source_in = c.source_in().unwrap_or_default();
+        if c.start < Rational::zero() || source_in < Rational::zero() {
             return Err(CoreError::new(
                 "CLIP_NEGATIVE",
                 format!("clip {} has a negative start or sourceIn", c.id),
@@ -109,7 +128,7 @@ fn check_track(track: &Track) -> Result<(), CoreError> {
                 "track": track.id,
                 "clip": c.id,
                 "start": c.start,
-                "sourceIn": c.source_in,
+                "sourceIn": source_in,
             })));
         }
     }

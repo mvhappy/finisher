@@ -145,15 +145,11 @@ fn refresh_tip_falls_back_to_fork_hash() {
     assert_eq!(head.project, state_at(&s.conn, MAIN, 2).unwrap());
     assert_eq!(tip_hash(&s.conn, "br1").unwrap(), fork_hash);
     // The cached head is still valid: refresh keeps it (same tip, no reload).
-    heads
-        .get_mut("br1")
-        .unwrap()
-        .project
-        .timeline
+    heads.get_mut("br1").unwrap().project.timelines[0]
         .tracks
         .clear();
     crate::refresh(&s.conn, &mut heads, "br1").unwrap();
-    assert!(heads["br1"].project.timeline.tracks.is_empty());
+    assert!(heads["br1"].project.timelines[0].tracks.is_empty());
     // Main itself is unchanged by the fallback.
     assert_eq!(
         tip_hash(&s.conn, MAIN).unwrap(),

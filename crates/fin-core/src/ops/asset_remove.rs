@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::Project;
-use crate::ops::util::{OpDiff, asset, wrong_op};
+use crate::ops::util::{OpDiff, asset, items, media_duration, wrong_op};
 use crate::ops::{Bindings, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
@@ -21,12 +21,8 @@ pub(crate) fn validate(
     };
     let id = bindings.resolve(id)?;
     asset(project, &id)?;
-    let users: Vec<&str> = project
-        .timeline
-        .tracks
-        .iter()
-        .flat_map(|t| t.items.iter())
-        .filter(|c| c.asset == id)
+    let users: Vec<&str> = items(project)
+        .filter(|c| c.asset() == Some(id.as_str()))
         .map(|c| c.id.as_str())
         .collect();
     if !users.is_empty() {
@@ -47,6 +43,7 @@ pub(crate) fn apply(
     diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let id = validate(project, op, bindings)?;
+    let duration = media_duration(asset(project, &id)?)?;
     let Some(a) = project.assets.remove(&id) else {
         return Err(crate::ops::util::not_found("asset", &id));
     };
@@ -54,7 +51,7 @@ pub(crate) fn apply(
     Ok(vec![Op::AssetAdd {
         id: a.id,
         path: a.path,
-        duration: a.duration,
+        duration,
         video: a.video,
         audio: a.audio,
         fingerprint: a.fingerprint,

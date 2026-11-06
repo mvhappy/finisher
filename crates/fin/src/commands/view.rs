@@ -33,6 +33,7 @@ fn kind(track: &Track) -> &'static str {
     match track.kind {
         TrackKind::Video => "video",
         TrackKind::Audio => "audio",
+        TrackKind::Caption => "caption",
     }
 }
 
@@ -40,7 +41,7 @@ pub fn status(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
     let snap = backend.snapshot(&target_branch(backend, g)?)?;
     let p = &snap.project;
     let tracks = p
-        .timeline
+        .timelines[0]
         .tracks
         .iter()
         .map(|t| Ok(json!({ "id": t.id, "kind": kind(t), "clips": t.items.len(), "end": addr::track_end(p, &t.id)? })))
@@ -64,8 +65,7 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
         None => (None, None),
     };
     let mut tracks = Vec::new();
-    for t in p
-        .timeline
+    for t in p.timelines[0]
         .tracks
         .iter()
         .filter(|t| a.track.as_ref().is_none_or(|id| &t.id == id))
@@ -76,7 +76,7 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
             if from.is_some_and(|f| end <= f) || to.is_some_and(|t| c.start >= t) {
                 continue;
             }
-            clips.push(json!({ "id": c.id, "start": c.start, "end": end, "asset": c.asset, "sourceIn": c.source_in }));
+            clips.push(json!({ "id": c.id, "start": c.start, "end": end, "asset": c.asset(), "sourceIn": c.source_in() }));
         }
         tracks.push(json!({ "id": t.id, "kind": kind(t), "clips": clips }));
     }

@@ -3,14 +3,14 @@
 use serde_json::json;
 
 use crate::error::CoreError;
-use crate::model::{Clip, Track};
+use crate::model::{Item, Track};
 use crate::ops::Edge;
 use crate::ops::util::end;
 use crate::time::Rational;
 use crate::tx::{Change, ChangeKind, Diff, EntityKind, Shift};
 
-/// The clip on `track` strictly containing `at` (`start < at < end`), if any.
-pub(crate) fn clip_containing(track: &Track, at: Rational) -> Result<Option<&Clip>, CoreError> {
+/// The item on `track` strictly containing `at` (`start < at < end`), if any.
+pub(crate) fn clip_containing(track: &Track, at: Rational) -> Result<Option<&Item>, CoreError> {
     for clip in &track.items {
         if clip.start < at && at < end(clip)? {
             return Ok(Some(clip));
@@ -19,7 +19,7 @@ pub(crate) fn clip_containing(track: &Track, at: Rational) -> Result<Option<&Cli
     Ok(None)
 }
 
-pub(crate) fn insert_inside(clip: &Clip, at: Rational) -> Result<CoreError, CoreError> {
+pub(crate) fn insert_inside(clip: &Item, at: Rational) -> Result<CoreError, CoreError> {
     let (start, end) = (clip.start, end(clip)?);
     let nearest = if at.checked_sub(start)? <= end.checked_sub(at)? {
         start
@@ -50,7 +50,7 @@ pub(crate) fn ripple(track: &mut Track, from: Rational, by: Rational) -> Result<
 }
 
 /// Inserts `clip` keeping `track.items` sorted by `start` (after any item with the same start).
-pub(crate) fn place(track: &mut Track, clip: Clip) {
+pub(crate) fn place(track: &mut Track, clip: Item) {
     let i = track.items.partition_point(|c| c.start <= clip.start);
     track.items.insert(i, clip);
 }

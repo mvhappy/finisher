@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 function tx(txId: string, baseRev: number, ops: unknown[]): string {
-  return JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 1, ops });
+  return JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops });
 }
 
 const addAsset = {
@@ -63,7 +63,7 @@ describe("Engine", () => {
     const snap = JSON.parse(await engine.snapshot("main"));
     expect(snap.rev).toBe(2);
     expect(snap.project.rate).toBe("30000/1001");
-    expect(snap.project.timeline.tracks[0].items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
+    expect(snap.project.timelines[0].tracks[0].items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
 
     const since = JSON.parse(await engine.opsSince("main", 1));
     expect(since.map((c: { rev: number }) => c.rev)).toEqual([2]);

@@ -83,11 +83,11 @@ describe("finisherd", () => {
     expect(c1).toMatchObject({ rev: 1, bindings: { $a: "a1" } });
     ok(await c.call("tx.commit", { projectId, tx: tx("tx-2", 1, [insert(0, 5)]) }));
 
-    const snap = ok<{ rev: number; project: { timeline: { tracks: Array<{ items: unknown[] }> } } }>(
+    const snap = ok<{ rev: number; project: { timelines: Array<{ tracks: Array<{ items: unknown[] }> }> } }>(
       await c.call("snapshot.get", { projectId, branch: "main" }),
     );
     expect(snap.rev).toBe(2);
-    expect(snap.project.timeline.tracks[0]!.items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
+    expect(snap.project.timelines[0]!.tracks[0]!.items).toMatchObject([{ id: "c1", start: "0", duration: "5" }]);
 
     const again = ok<{ projectId: string; rev: number }>(await c.call("project.open", { dir: join(tmp, "My Проєкт") }));
     expect(again).toEqual({ projectId, rev: 2 });

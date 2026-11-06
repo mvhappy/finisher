@@ -9,10 +9,10 @@ export function failure(r, code, status, what) {
   return r.json.error;
 }
 
-/** The clips of every track of a `snapshot.get` answer: `{t1: ["c1:0+5", ...]}`. */
+/** The clips of every track (of every timeline) of a `snapshot.get` answer: `{t1: ["c1:0+5", ...]}`. */
 export function clipsOf(snapshot) {
   return Object.fromEntries(
-    snapshot.project.timeline.tracks.map((t) => [t.id, t.items.map((i) => `${i.id}:${i.start}+${i.duration}`)]),
+    snapshot.project.timelines.flatMap((tl) => tl.tracks).map((t) => [t.id, t.items.map((i) => `${i.id}:${i.start}+${i.duration}`)]),
   );
 }
 

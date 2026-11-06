@@ -114,7 +114,7 @@ fn state(s: &Store, branch: &str) -> Project {
 }
 
 fn starts(p: &Project) -> Vec<(String, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start))
@@ -440,7 +440,7 @@ fn merge_both_directions() {
     assert_eq!(r.merged, ["e1", "e2"], "the copy of t1 is not merged back");
     assert_eq!(state(&s, MAIN), state(&s, "br1"));
     // Each record is applied once on each branch: one clip each.
-    let count = |p: &Project| p.timeline.tracks[0].items.len();
+    let count = |p: &Project| p.timelines[0].tracks[0].items.len();
     assert_eq!(count(&state(&s, MAIN)), 5);
     // Nothing is left either way.
     assert!(merge(&mut s, "m3", "br1", MAIN).committed.is_empty());

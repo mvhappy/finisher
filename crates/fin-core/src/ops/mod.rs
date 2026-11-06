@@ -257,13 +257,7 @@ mod tests {
         }
         assert!(matches!(insert, Op::ClipInsert { at, .. } if at == r(7)));
         let mut restore = Op::ClipRestore {
-            clip: Clip {
-                id: "c1".into(),
-                asset: "a1".into(),
-                start: r(4),
-                source_in: r(0),
-                duration: r(1),
-            },
+            clip: Box::new(Clip::new("c1", "a1", r(4), r(0), r(1))),
             track: "t1".into(),
             ripple: true,
         };
@@ -289,13 +283,7 @@ mod tests {
     #[test]
     fn ids_lists_the_fields_refs_mut_does() {
         let r = Rational::from_int;
-        let clip = Clip {
-            id: "c1".into(),
-            asset: "a1".into(),
-            start: r(0),
-            source_in: r(0),
-            duration: r(1),
-        };
+        let clip = Clip::new("c1", "a1", r(0), r(0), r(1));
         let ops = [
             Op::AssetAdd {
                 id: "a1".into(),
@@ -325,7 +313,7 @@ mod tests {
                 ripple: true,
             },
             Op::ClipRestore {
-                clip,
+                clip: Box::new(clip),
                 track: "t2".into(),
                 ripple: true,
             },

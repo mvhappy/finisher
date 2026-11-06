@@ -17,7 +17,7 @@ pub(crate) fn remove(
     diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let (ti, ci) = clip_index(project, id)?;
-    let track = &mut project.timeline.tracks[ti];
+    let track = ti.get_mut(project);
     let clip = track.items.remove(ci);
     let from = end(&clip)?;
     let by = if rippling {
@@ -28,8 +28,11 @@ pub(crate) fn remove(
     ripple(track, from, by)?;
     diff.record(EntityKind::Clip, &clip.id, ChangeKind::Removed);
     diff.shift(&track.id, from, by);
+    let Some(clip) = clip.to_clip() else {
+        return Err(crate::ops::util::not_found("clip", id));
+    };
     Ok(vec![Op::ClipRestore {
-        clip,
+        clip: Box::new(clip),
         track: track.id.clone(),
         ripple: rippling,
     }])

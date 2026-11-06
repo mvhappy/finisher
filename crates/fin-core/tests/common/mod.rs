@@ -128,14 +128,15 @@ pub fn with_clips(durations: &[i64]) -> Project {
 
 /// Sorted by start, non-overlapping, non-negative, positive durations, on every track.
 pub fn assert_well_formed(p: &Project) {
-    for track in &p.timeline.tracks {
+    for track in &p.timelines[0].tracks {
         for c in &track.items {
             assert!(c.start >= Rational::zero(), "negative start {c:?}");
-            assert!(c.source_in >= Rational::zero(), "negative sourceIn {c:?}");
+            let source_in = c.source_in().unwrap();
+            assert!(source_in >= Rational::zero(), "negative sourceIn {c:?}");
             assert!(c.duration.is_positive(), "non-positive duration {c:?}");
-            let asset = &p.assets[&c.asset];
+            let asset = &p.assets[c.asset().unwrap()];
             assert!(
-                (c.source_in + c.duration).unwrap() <= asset.duration,
+                (source_in + c.duration).unwrap() <= asset.duration.unwrap(),
                 "past asset end {c:?}"
             );
         }
@@ -152,17 +153,19 @@ pub fn assert_well_formed(p: &Project) {
     }
 }
 
-pub fn clip<'a>(p: &'a Project, id: &str) -> &'a fin_core::Clip {
-    p.timeline
+/// Clip item `id`, in the shape the `clip.*` ops carry.
+pub fn clip(p: &Project, id: &str) -> fin_core::Clip {
+    p.timelines[0]
         .tracks
         .iter()
         .flat_map(|t| &t.items)
         .find(|c| c.id == id)
+        .and_then(fin_core::Item::to_clip)
         .unwrap_or_else(|| panic!("no clip {id}"))
 }
 
 pub fn starts(p: &Project, track: usize) -> Vec<(String, Rational)> {
-    p.timeline.tracks[track]
+    p.timelines[0].tracks[track]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start))

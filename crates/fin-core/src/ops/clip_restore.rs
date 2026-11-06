@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::Project;
+use crate::ops::util::TrackAt;
 use crate::ops::util::{
     OpDiff, asset, check_kind, check_source, clip_containing, end, insert_inside, invalid_range,
     place, ripple, track_index, wrong_op,
@@ -21,7 +22,7 @@ pub(crate) fn validate(
     project: &Project,
     op: &Op,
     bindings: &Bindings,
-) -> Result<usize, CoreError> {
+) -> Result<TrackAt, CoreError> {
     let Op::ClipRestore {
         clip,
         track,
@@ -33,7 +34,7 @@ pub(crate) fn validate(
     bindings.check_new(project, &clip.id, IdKind::Clip)?;
     let ti = track_index(project, &bindings.resolve(track)?)?;
     let a = asset(project, &bindings.resolve(&clip.asset)?)?;
-    let track = &project.timeline.tracks[ti];
+    let track = ti.get(project);
     check_kind(track, a)?;
     // Policy (skipped on replay); overlaps are caught there by the structural track check.
     if !bindings.policy() {
@@ -51,7 +52,7 @@ pub(crate) fn validate(
         return Err(insert_inside(other, clip.start)?);
     }
     if !*ripple {
-        let stop = end(clip)?;
+        let stop = clip.start.checked_add(clip.duration)?;
         for other in &track.items {
             if other.start < stop && clip.start < end(other)? {
                 return Err(invalid_range(
@@ -87,7 +88,7 @@ pub(crate) fn apply(
     let mut clip = clip.clone();
     clip.id = bindings.create(project, &clip.id, IdKind::Clip, ids)?;
     clip.asset = bindings.resolve(&clip.asset)?;
-    let track = &mut project.timeline.tracks[ti];
+    let track = ti.get_mut(project);
     let by = if *rippling {
         clip.duration
     } else {
@@ -97,7 +98,7 @@ pub(crate) fn apply(
     diff.record(EntityKind::Clip, &clip.id, ChangeKind::Added);
     diff.shift(&track.id, clip.start, by);
     let id = clip.id.clone();
-    place(track, clip);
+    place(track, (*clip).into());
     Ok(vec![Op::ClipRemove {
         id,
         ripple: *rippling,

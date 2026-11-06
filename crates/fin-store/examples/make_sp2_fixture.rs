@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     store.commit(tx(next(), 3, vec![trim]))?; // rev 4
     let (_, p) = store.snapshot(MAIN)?;
-    let first = p.timeline.tracks[0].items[0].id.clone();
+    let first = p.timelines[0].tracks[0].items[0].id.clone();
     store.commit(tx(next(), 4, vec![Op::ClipDelete { clip: first }]))?; // rev 5
 
     for _ in 0..100 {

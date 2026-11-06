@@ -18,7 +18,7 @@ fn fixture_root() -> PathBuf {
 }
 
 fn expected_4a() -> serde_json::Value {
-    serde_json::from_slice(&fs::read(fixture_root().join("4a/expected.json")).unwrap()).unwrap()
+    serde_json::from_slice(&fs::read(fixture_root().join("4a/expected_v2.json")).unwrap()).unwrap()
 }
 
 fn read_only(path: &Path) -> Connection {
@@ -225,8 +225,13 @@ fn edit_record_bytes_unchanged_from_4a() {
         for line in &seg.records {
             let record: Record = serde_json::from_slice(line).unwrap();
             assert_eq!(encode_record(&record), *line);
+            // Read as v2: only the schema versions are stamped (plan 4C Task 6).
             let up = upcast_record(serde_json::from_slice(line).unwrap()).unwrap();
-            assert_eq!(up, record);
+            let mut want = record.clone();
+            assert_eq!((want.schema_version, want.intent.schema_version), (1, 1));
+            want.schema_version = SCHEMA_VERSION;
+            want.intent.schema_version = SCHEMA_VERSION;
+            assert_eq!(up, want);
             assert_eq!(up.link().unwrap(), Link::Edit);
             n += 1;
         }
@@ -487,7 +492,7 @@ fn sp2_fixture_migrates_through_0002() {
     let data = tmp.path().join("server-data");
     let store = Store::open(&data, &tmp.path().join("folder")).unwrap();
     let expected: serde_json::Value =
-        serde_json::from_slice(&fs::read(tmp.path().join("expected.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(tmp.path().join("expected_v2.json")).unwrap()).unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
     assert_eq!(serde_json::to_value(&head).unwrap(), expected["project"]);

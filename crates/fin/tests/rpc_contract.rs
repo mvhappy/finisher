@@ -149,7 +149,7 @@ fn rpc(c: &mut Conn, project_id: &str, tag: &str, payload: Value) {
 }
 
 fn tx(id: &str, base: u64, ops: Value) -> Value {
-    json!({ "txId": id, "author": "test", "branch": "main", "baseRev": base, "schemaVersion": 1, "ops": ops })
+    json!({ "txId": id, "author": "test", "branch": "main", "baseRev": base, "schemaVersion": 2, "ops": ops })
 }
 
 #[test]

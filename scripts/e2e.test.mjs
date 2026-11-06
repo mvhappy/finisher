@@ -73,7 +73,7 @@ test("the watchdog kills the server and fails the run at the deadline", () => {
 });
 
 test("clipsOf lists every track's clips as id:start+duration", () => {
-  const snapshot = { project: { timeline: { tracks: [{ id: "t1", items: [{ id: "c1", start: "0", duration: "4" }] }, { id: "t2", items: [] }] } } };
+  const snapshot = { project: { timelines: [{ tracks: [{ id: "t1", items: [{ id: "c1", start: "0", duration: "4" }] }, { id: "t2", items: [] }] }] } };
   assert.deepEqual(clipsOf(snapshot), { t1: ["c1:0+4"], t2: [] });
 });
 

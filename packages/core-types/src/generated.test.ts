@@ -8,6 +8,21 @@ test("Rational-typed fields keep the Rational type", () => {
   expect(block("Clip")).toMatch(/start: Rational;/);
   expect(block("Clip")).toMatch(/sourceIn: Rational;/);
   expect(block("Project")).toMatch(/rate: Rational;/);
+  expect(block("Timeline")).toMatch(/rate: Rational;/);
+});
+
+test("model v2: timelines, items tagged by kind, font pins", () => {
+  expect(block("Project")).toMatch(/timelines: Timeline\[\];/);
+  expect(block("Project")).toMatch(/fonts\?: Fonts;/);
+  expect(block("Timeline")).toMatch(/resolution: Resolution;/);
+  expect(block("Track")).toMatch(/items: Item\[\];/);
+  // An item is its common fields and one kind-tagged body.
+  expect(ts).toMatch(/export type Item = \{[\s\S]*?start: Rational;[\s\S]*?\} & Item1;/);
+  for (const kind of ["clip", "caption", "graphic", "image", "adjustment", "nested"]) {
+    expect(ts).toContain(`kind: "${kind}";`);
+  }
+  expect(block("FontPin")).toMatch(/sha256: string;/);
+  expect(ts).toMatch(/export type FontFormat = "ttf" \| "otf" \| "ttc";/);
 });
 
 test("CoreError.details is required", () => {

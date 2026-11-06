@@ -80,9 +80,150 @@ export type Op =
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BlendMode".
+ */
+export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "add" | "darken" | "lighten";
+/**
+ * A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's
+ * `float_roundtrip`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamValue".
+ */
+export type ParamValue = boolean | number | [number, number] | string;
+/**
+ * How a keyframe's value moves to the next one.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Interp".
+ */
+export type Interp =
+  | {
+      type: "hold";
+    }
+  | {
+      type: "linear";
+    }
+  | {
+      type: "bezier";
+      x1: number;
+      x2: number;
+      y1: number;
+      y2: number;
+    };
+/**
+ * A font file's container format.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFormat".
+ */
+export type FontFormat = "ttf" | "otf" | "ttc";
+/**
+ * What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,
+ * `lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`
+ * colour lookup table).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetKind".
+ */
+export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | "lut";
+/**
+ * Where a pinned file comes from: a catalog entry's style (at the catalog version that
+ * pinned it), or an imported font asset.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontSource".
+ */
+export type FontSource =
+  | {
+      catalog: string;
+      entry: string;
+      style: string;
+      type: "catalog";
+    }
+  | {
+      asset: string;
+      type: "asset";
+    };
+/**
+ * One item on a track. On the wire the body's `kind` and fields and the common fields sit
+ * next to `id`, `start` and `duration` (both are flattened).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Item".
+ */
+export type Item = {
+  audio?: AudioParams;
+  blend?: BlendMode;
+  crop?: Crop;
+  duration: Rational;
+  effects?: Effect[];
+  id: string;
+  /**
+   * Keyframes by registry path, each list sorted by `at`.
+   */
+  keyframes?: {
+    [k: string]: Keyframe[];
+  };
+  /**
+   * The link group (`lk<n>`) the item belongs to.
+   */
+  link?: string;
+  mask?: Mask;
+  opacity?: number;
+  start: Rational;
+  transform?: Transform;
+} & Item1;
+export type Item1 =
+  | {
+      asset: string;
+      kind: "clip";
+      sourceIn: Rational;
+      speed?: Rational;
+    }
+  | {
+      kind: "caption";
+      overrides?: {
+        [k: string]: ParamValue;
+      };
+      source?: CaptionSource;
+      style: string;
+      words: Word[];
+    }
+  | {
+      asset: string;
+      kind: "graphic";
+      slots?: {
+        [k: string]: ParamValue;
+      };
+    }
+  | {
+      asset: string;
+      kind: "image";
+    }
+  | {
+      kind: "adjustment";
+    }
+  | {
+      kind: "nested";
+      sourceIn: Rational;
+      timeline: string;
+    };
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TrackKind".
  */
-export type TrackKind = "video" | "audio";
+export type TrackKind = "video" | "audio" | "caption";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Curve".
+ */
+export type Curve = "linear" | "equalPower";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TransitionKind".
+ */
+export type TransitionKind = "crossfade" | "dissolve";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "BranchState".
@@ -280,15 +421,127 @@ export interface VideoInfo {
   width: number;
 }
 /**
+ * The clip shape the `clip.*` ops carry (a clip item without its `kind`; 4B's shape plus the
+ * optional `speed` and common fields), so an inverse restores a clip item exactly. Item ops
+ * replace it (plan 4C Task 7).
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Clip".
  */
 export interface Clip {
   asset: string;
+  audio?: AudioParams;
+  blend?: BlendMode;
+  crop?: Crop;
   duration: Rational;
+  effects?: Effect[];
   id: string;
+  /**
+   * Keyframes by registry path, each list sorted by `at`.
+   */
+  keyframes?: {
+    [k: string]: Keyframe[];
+  };
+  /**
+   * The link group (`lk<n>`) the item belongs to.
+   */
+  link?: string;
+  mask?: Mask;
+  opacity?: number;
   sourceIn: Rational;
+  speed?: Rational;
   start: Rational;
+  transform?: Transform;
+}
+/**
+ * The item's own audio: gain in dB, pan in −1…1, fades in seconds.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioParams".
+ */
+export interface AudioParams {
+  fadeIn?: Rational;
+  fadeOut?: Rational;
+  gain?: number;
+  pan?: number;
+}
+/**
+ * Fractions of the item's size cut from each side.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Crop".
+ */
+export interface Crop {
+  bottom?: number;
+  left?: number;
+  right?: number;
+  top?: number;
+}
+/**
+ * One effect of an item (`fx<n>`, addressed as `(item, effect)`); `params` is sparse.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Effect".
+ */
+export interface Effect {
+  enabled?: boolean;
+  id: string;
+  kind: string;
+  params?: {
+    [k: string]: ParamValue;
+  };
+}
+/**
+ * A keyframe; `at` is relative to the item's start (plan 4C Decision 13).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Keyframe".
+ */
+export interface Keyframe {
+  at: Rational;
+  interp: Interp;
+  value: ParamValue;
+}
+/**
+ * A matte (an artifact reference) that masks the item.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Mask".
+ */
+export interface Mask {
+  choke?: number;
+  feather?: number;
+  invert?: boolean;
+  matte: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Transform".
+ */
+export interface Transform {
+  /**
+   * Item-normalised.
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  anchor?: [number, number];
+  /**
+   * Pixels from the frame centre.
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  position?: [number, number];
+  /**
+   * Degrees.
+   */
+  rotation?: number;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  scale?: [number, number];
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -298,43 +551,270 @@ export interface Project {
   assets: {
     [k: string]: Asset;
   };
+  bins?: {
+    [k: string]: Bin;
+  };
+  fonts?: Fonts;
   id: string;
   name: string;
   rate: Rational;
   schemaVersion: number;
-  timeline: Timeline;
+  styles?: {
+    [k: string]: CaptionStyle;
+  };
+  /**
+   * The first is the main timeline.
+   */
+  timelines: Timeline[];
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Asset".
  */
 export interface Asset {
-  audio?: AudioInfo | null;
-  duration: Rational;
+  audio?: AudioInfo;
+  bin?: string;
+  duration?: Rational;
   fingerprint: string;
+  font?: FontFile;
   id: string;
+  image?: ImageInfo;
+  kind: AssetKind;
+  lottie?: LottieInfo;
+  lut?: LutInfo;
   path: string;
-  video?: VideoInfo | null;
+  video?: VideoInfo;
 }
+/**
+ * An imported font file (plan 4C Decision 37): its whole-file SHA-256, size, format and faces.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFile".
+ */
+export interface FontFile {
+  faces: FontFace[];
+  format: FontFormat;
+  sha256: string;
+  size: number;
+}
+/**
+ * One face of a font file, as `fin_text::font_info` reads it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFace".
+ */
+export interface FontFace {
+  family: string;
+  index: number;
+  italic: boolean;
+  /**
+   * ISO 15924 script codes the face covers.
+   */
+  scripts: string[];
+  weight: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ImageInfo".
+ */
+export interface ImageInfo {
+  height: number;
+  width: number;
+}
+/**
+ * A dotLottie template: its canvas, timing, replaceable slots and the font families it names.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LottieInfo".
+ */
+export interface LottieInfo {
+  duration: Rational;
+  fonts?: string[];
+  height: number;
+  rate: Rational;
+  slots?: SlotSpec[];
+  width: number;
+}
+/**
+ * One replaceable slot of a template: its id and value kind (as the template declares it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SlotSpec".
+ */
+export interface SlotSpec {
+  id: string;
+  kind: string;
+}
+/**
+ * A `.cube` LUT: its edge size.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LutInfo".
+ */
+export interface LutInfo {
+  size: number;
+}
+/**
+ * A folder of assets; `parent` nests it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Bin".
+ */
+export interface Bin {
+  id: string;
+  name: string;
+  parent?: string;
+}
+/**
+ * The pins, keyed by [`font_key`], and the fallback order (pin keys, first tried first).
+ * Empty until a caption edit pins a face; omitted from the project JSON while empty.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Fonts".
+ */
+export interface Fonts {
+  fallback?: string[];
+  pins?: {
+    [k: string]: FontPin;
+  };
+}
+/**
+ * One face of one exact file: `face` is the index inside a collection (0 for a single font).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontPin".
+ */
+export interface FontPin {
+  face: number;
+  family: string;
+  format: FontFormat;
+  italic: boolean;
+  /**
+   * ISO 15924 script codes the face covers (as `fin_text::font_info` reports them).
+   */
+  scripts: string[];
+  /**
+   * The whole file's SHA-256, 64 lowercase hex digits.
+   */
+  sha256: string;
+  /**
+   * The file's size in bytes.
+   */
+  size: number;
+  source: FontSource;
+  weight: number;
+}
+/**
+ * A project caption style (`st<n>`). Its fields arrive with captions (plan 4C Task 18); until
+ * then the project holds none.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionStyle".
+ */
+export interface CaptionStyle {}
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Timeline".
  */
 export interface Timeline {
   id: string;
+  /**
+   * Sorted by `at`. Markers never ripple.
+   */
+  markers?: Marker[];
+  name: string;
+  rate: Rational;
+  resolution: Resolution;
+  /**
+   * Compositing order, bottom first.
+   */
   tracks: Track[];
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Marker".
+ */
+export interface Marker {
+  at: Rational;
+  color?: string;
+  duration?: Rational;
+  id: string;
+  label: string;
+}
+/**
+ * Frame size in pixels.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Resolution".
+ */
+export interface Resolution {
+  height: number;
+  width: number;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Track".
  */
 export interface Track {
+  /**
+   * Decibels.
+   */
+  gain?: number;
   id: string;
   /**
    * Sorted by `start`, non-overlapping.
    */
-  items: Clip[];
+  items: Item[];
   kind: TrackKind;
+  lock?: boolean;
+  mute?: boolean;
+  name: string;
+  solo?: boolean;
+  transitions?: Transition[];
+}
+/**
+ * The transcript artifact a caption came from, and its word range (`[first, end)`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionSource".
+ */
+export interface CaptionSource {
+  artifact: string;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  wordRange: [number, number];
+}
+/**
+ * One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Word".
+ */
+export interface Word {
+  end: Rational;
+  start: Rational;
+  text: string;
+}
+/**
+ * A transition at the cut between two touching items of one track, centred on the cut.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Transition".
+ */
+export interface Transition {
+  /**
+   * The outgoing item, then the incoming one.
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  between: [string, string];
+  curve?: Curve;
+  duration: Rational;
+  id: string;
+  kind: TransitionKind;
 }
 /**
  * The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and

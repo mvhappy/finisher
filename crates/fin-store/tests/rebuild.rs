@@ -543,7 +543,7 @@ fn sp2_fixture_rebuilds_and_verifies() {
     copy_dir(&fixture().join("folder"), &e.dir);
     copy_dir(&fixture().join("server-data"), &e.data("a"));
     let expected: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture().join("expected.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(fixture().join("expected_v2.json")).unwrap()).unwrap();
     let mut a = e.open("a");
     let v = a.verify();
     assert!(v.ok, "{v:?}");

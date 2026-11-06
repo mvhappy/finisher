@@ -175,7 +175,7 @@ struct Realiser {
 
 impl Realiser {
     fn position(p: &Project, track: usize, at: &At) -> Rational {
-        let items = &p.timeline.tracks[track].items;
+        let items = &p.timelines[0].tracks[track].items;
         match *at {
             At::Boundary(k) => items.get(k).map_or_else(
                 || {
@@ -190,7 +190,7 @@ impl Realiser {
     }
 
     fn clip(p: &Project, track: usize, k: usize) -> Option<String> {
-        let items = &p.timeline.tracks[track].items;
+        let items = &p.timelines[0].tracks[track].items;
         Some(items.get(k % items.len().max(1))?.id.clone())
     }
 
@@ -216,7 +216,7 @@ impl Realiser {
                 let ids: Vec<&String> = p.assets.keys().collect();
                 insert(
                     &name,
-                    &p.timeline.tracks[*track].id,
+                    &p.timelines[0].tracks[*track].id,
                     Self::position(p, *track, at),
                     ids.get(asset % ids.len().max(1))?,
                     frames(*src),
@@ -252,11 +252,11 @@ impl Realiser {
                     clip.id = name;
                 }
                 if let Some(at) = at {
-                    let t = p.timeline.tracks.iter().position(|t| t.id == *track)?;
+                    let t = p.timelines[0].tracks.iter().position(|t| t.id == *track)?;
                     clip.start = Self::position(p, t, at);
                 }
                 Op::ClipRestore {
-                    clip,
+                    clip: Box::new(clip),
                     track: track.clone(),
                     ripple: *ripple,
                 }
@@ -277,7 +277,7 @@ impl Realiser {
         let Ok(a) = apply_tx_mode(&self.state, &tx(vec![op.clone()]), &mut ids, mode) else {
             return;
         };
-        let after: BTreeSet<&str> = clips(&a.project).map(|(_, c)| c.id.as_str()).collect();
+        let after: BTreeSet<String> = clips(&a.project).map(|(_, c)| c.id).collect();
         for (t, c) in clips(&self.state) {
             if !after.contains(c.id.as_str()) {
                 self.graveyard.push((t.to_string(), c.clone()));
@@ -289,11 +289,12 @@ impl Realiser {
     }
 }
 
-fn clips(p: &Project) -> impl Iterator<Item = (&str, &Clip)> {
-    p.timeline
-        .tracks
-        .iter()
-        .flat_map(|t| t.items.iter().map(move |c| (t.id.as_str(), c)))
+fn clips(p: &Project) -> impl Iterator<Item = (&str, Clip)> {
+    p.timelines[0].tracks.iter().flat_map(|t| {
+        t.items
+            .iter()
+            .map(move |c| (t.id.as_str(), c.to_clip().unwrap()))
+    })
 }
 
 fn internal(ops: Vec<Op>) -> Tx {
@@ -371,13 +372,7 @@ fn any_time() -> impl Strategy<Value = Rational> {
 
 fn any_clip() -> impl Strategy<Value = Clip> {
     (any_id(), any_id(), any_time(), any_time(), any_time()).prop_map(
-        |(id, asset, start, source_in, duration)| Clip {
-            id,
-            asset,
-            start,
-            source_in,
-            duration,
-        },
+        |(id, asset, start, source_in, duration)| Clip::new(id, asset, start, source_in, duration),
     )
 }
 
@@ -428,7 +423,7 @@ fn any_op() -> impl Strategy<Value = Op> {
         (any_id(), any::<bool>()).prop_map(|(id, ripple)| Op::ClipRemove { id, ripple }),
         (any_clip(), any_id(), any::<bool>()).prop_map(|(clip, track, ripple)| {
             Op::ClipRestore {
-                clip,
+                clip: Box::new(clip),
                 track,
                 ripple,
             }
@@ -450,10 +445,10 @@ fn assert_invariants(p: &Project, mode: ApplyMode) -> Result<(), TestCaseError> 
     let frame = frame_duration(p.rate).unwrap();
     let mut seen = BTreeSet::new();
     for a in p.assets.values() {
-        prop_assert!(a.duration.is_positive(), "asset {:?}", a);
+        prop_assert!(a.duration.unwrap().is_positive(), "asset {:?}", a);
     }
-    for t in &p.timeline.tracks {
-        for c in &t.items {
+    for t in &p.timelines[0].tracks {
+        for c in t.items.iter().map(|c| c.to_clip().unwrap()) {
             prop_assert!(seen.insert(c.id.clone()), "clip id {} twice", c.id);
             prop_assert!(c.start >= Rational::zero(), "negative start {:?}", c);
             prop_assert!(c.source_in >= Rational::zero(), "negative sourceIn {:?}", c);
@@ -469,12 +464,13 @@ fn assert_invariants(p: &Project, mode: ApplyMode) -> Result<(), TestCaseError> 
             let fits = match t.kind {
                 TrackKind::Video => asset.video.is_some(),
                 TrackKind::Audio => asset.audio.is_some(),
+                TrackKind::Caption => false,
             };
             prop_assert!(fits, "clip {} of {} on {:?} track", c.id, c.asset, t.kind);
             if mode != ApplyMode::Replay {
                 prop_assert!(c.duration >= frame, "shorter than a frame {:?}", c);
                 prop_assert!(
-                    (c.source_in + c.duration).unwrap() <= asset.duration,
+                    (c.source_in + c.duration).unwrap() <= asset.duration.unwrap(),
                     "past its asset's end {:?}",
                     c
                 );

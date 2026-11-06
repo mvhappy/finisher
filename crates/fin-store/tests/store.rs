@@ -70,7 +70,7 @@ fn insert(id: &str, at: i64, asset: &str, duration: i64) -> Op {
 }
 
 fn clips(p: &Project) -> Vec<(String, Rational, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start, c.duration))
@@ -751,7 +751,8 @@ fn sp2_fixture_opens_and_replays_to_expected_state() {
     let tmp = tempfile::tempdir().unwrap();
     copy_dir(&fixture, tmp.path());
     let expected: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(tmp.path().join("expected.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(tmp.path().join("expected_v2.json")).unwrap())
+            .unwrap();
     let store = Store::open(&tmp.path().join("server-data"), &tmp.path().join("folder")).unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());

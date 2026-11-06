@@ -732,7 +732,7 @@ pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, 
 // Effect, Link, Style; ID_KINDS lists all; fin-store `counters::kind_name` names them.
 ```
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - `upcast_v1_snapshot_golden` (frozen `snapshot_v1.json` → `snapshot_v2.json`, compared as decoded `Project` and as re-encoded JSON);
   - `new_project_equals_upcast_genesis` (rates 30, 30000/1001, 25, 60; resolution 1080×1920);
   - `item_json_round_trips_every_kind`, `fonts_registry_round_trips`, `defaults_are_omitted` (a rev-0 project, with an empty `fonts`, encodes to the golden bytes);
@@ -741,16 +741,27 @@ pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, 
   - `ids_after_counts_every_kind`, `new_id_prefixes_are_unambiguous`;
   - every existing `ops_*`, `rebase*`, `undo`, `merge`, `pick` and props test passes on the v2 model;
   - `sp2_4a_4b_fixtures_open_equal_v2_goldens` (fin-store: the states equal `expected_v2.json`, and `upcast_snapshot(expected.project)` equals it too).
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test upgrade_golden --test model --test record`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The snapshot step is written on `Value` with literal names:
+- [x] **Step 2: Run** `rtk cargo test -p fin-core --test upgrade_golden --test model --test record`. Expected: FAIL.
+- [x] **Step 3: Implement.** The snapshot step is written on `Value` with literal names:
   - it reproduces `new_project`'s defaults (track names by kind order, `"Timeline 1"`, 1080×1920);
   - sets `kind: "media"` on assets;
   - moves `timeline` into `timelines[0]` with the project rate;
   - adds nothing for `fonts` (empty is the omitted default).
 
   Tests and `fin` send version 2; client v1 txs come in Task 7 through `normalize`.
-- [ ] **Step 4: Golden review.** Generate `expected_v2.json` for the three fixtures, read each against `expected.json` by hand (ids, times, assets equal; only shape and defaults differ), and commit them.
-- [ ] **Step 5: Run** the three gates and `rtk pnpm e2e` (scripts read `timelines[0]`) → PASS. **Commit** `feat(core): v2 model with timelines, item kinds, common fields and font pins; snapshot upcaster`.
+- [x] **Step 4: Golden review.** Generate `expected_v2.json` for the three fixtures, read each against `expected.json` by hand (ids, times, assets equal; only shape and defaults differ), and commit them.
+- [x] **Step 5: Run** the three gates and `rtk pnpm e2e` (scripts read `timelines[0]`) → PASS. **Commit** `feat(core): v2 model with timelines, item kinds, common fields and font pins; snapshot upcaster`.
+
+**As built** (for Tasks 7, 11, 14, 18, 19 and 25):
+- **Op payloads stay v1-shaped** (the record step is an identity until Task 7): `clip.*` still carry `Clip`, now 4B's shape plus an optional `speed` (default 1) and the flattened `Common` (all omitted at their defaults), so a v1 record decodes unchanged and an inverse restores a clip item exactly. `Op::ClipRestore.clip` is `Box<Clip>` (clippy `large_enum_variant`). `Item::to_clip()`/`From<Clip> for Item` convert; `clip.*` find only clip items (`NOT_FOUND` "clip" otherwise). `asset.add` builds `kind: media` with `duration: Some(..)`; `asset.remove`'s inverse needs a duration (`INVALID_OP` for a durationless asset until Task 7 gives `asset.add` its kinds). `EntityKind` keeps `clip` (Task 7 renames it together with `diff_v1` and its golden). `clip.trim` still assumes speed 1 (only a hand-made `clip.restore` can carry another speed; `item.trim` handles it).
+- **Wire shapes the interface left open:** `ItemBody::Caption { #[serde(flatten)] block: CaptionBlock }` (a newtype variant made json-schema-to-typescript drop the `kind` tag); `FontSource` is tagged `type` (`{"type":"catalog",entry,style,catalog}` / `{"type":"asset",asset}`); `Interp` is tagged `type`; `SlotSpec.kind` is a `String` (Task 11 may narrow it); `CaptionStyle {}` is empty until Task 18. The generated TS is `Item = {id, start, duration, …common} & Item1` (the flattened body union gets the generator's name `Item1`).
+- **Defaults omitted** (Decision 11): every new field at its default, floats compared bit for bit (`-0.0` is written and reads back as itself); the collections 4B already had (`assets`, `tracks`, `items`) are always written. Golden in `tests/model.rs` `defaults_are_omitted`.
+- **Lookups span every timeline:** `ops::util::TrackAt {timeline, track}` (`get`/`get_mut`), `tracks()`, `items()`; `exists` covers every `IdKind` (item kinds: any item with the id). `Project::entity_ids()` lists every id (timelines, markers, tracks, transitions, items, effects, links, bins, assets, styles); `MemIds::after` raises, for each, the one kind whose prefix it carries, and `fin-store` `recover::remap::entity_ids` uses it. `counters::kind_name` names the 11 new kinds (`caption` … `style`; rows keyed by name, no migration).
+- **Also added:** `DEFAULT_RESOLUTION` (1080×1920), `DEFAULT_TIMELINE_NAME`, `Track::new`, `TrackKind::letter`, `IdKind::of_item`/`is_item`, `Item::{end, asset, source_in, kind_name}`, `Rational::to_f64` and `Default` (zero). `check_kind` refuses media on caption tracks. `FontFormat` lives in `fin_core::model`; `fin-fonts` re-exports it.
+- **Fixtures:** `tests/fixtures/{sp2,4a,4b}/expected_v2.json` (`{rev, project}`, per branch for 4B), generated once by `upcast_snapshot` of `expected.json`, reviewed (ids, times, assets equal; `kind`s, names, `timelines[0]` and the dropped `null` streams differ), frozen; every state test reads them. `crates/fin/tests/fixtures/rpc/*` recaptured (`schemaVersion: 2`). `float_roundtrip` is checked to matter: `param_values_round_trip_through_record_bytes` fails without it.
+- `fin`: `addr` resolves tracks and clips across all timelines; `fin view`/`status` still show `timelines[0]` (Task 25).
+- **For Task 7:** fill `record_v1.rs` (and freeze it), rename `EntityKind::Clip` → `Item` in `diff_v1` + golden, replace `Clip` and `Box<Clip>` with `Item` in `item.restore`, and move the float-roundtrip property onto `item.restore`/`item.insert` (it now rides in `clip.restore`'s common fields).
+
 
 ### Task 7: `item.*` ops replace `clip.*`; aliases; record upcaster; asset kinds; replay track check — tier: opus
 

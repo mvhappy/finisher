@@ -1,17 +1,40 @@
 //! Entity id allocation. The store allocates durable ids at commit time; `MemIds` is the
 //! in-memory allocator for tests, WASM and dry runs.
 
-use crate::model::Project;
+use crate::model::{ItemBody, Project};
 
+/// The kinds of allocated ids, one prefix each (plan 4C Decision 10, owner): items have one
+/// kind per item kind. No prefix is another one followed by digits, so an id names at most one
+/// kind ([`suffix`]). Font pins are keyed by face, not by id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdKind {
     Asset,
     Track,
+    /// Clip items.
     Clip,
     Timeline,
     /// Branch ids (`br<n>`, sub-project 4B). The store keeps the counter from 4A on so that
     /// importing another machine's branches raises it too (spec §3.3).
     Branch,
+    /// Caption items.
+    Caption,
+    /// Graphic (Lottie template) items.
+    Graphic,
+    /// Image items.
+    Image,
+    /// Adjustment items.
+    Adjustment,
+    /// Nested-timeline items.
+    Nested,
+    Marker,
+    Transition,
+    Bin,
+    /// Effects, from one project-wide counter, addressed as `(item, effect)`.
+    Effect,
+    /// Link groups.
+    Link,
+    /// Project caption styles.
+    Style,
 }
 
 impl IdKind {
@@ -22,7 +45,43 @@ impl IdKind {
             IdKind::Clip => "c",
             IdKind::Timeline => "tl",
             IdKind::Branch => "br",
+            IdKind::Caption => "cap",
+            IdKind::Graphic => "g",
+            IdKind::Image => "img",
+            IdKind::Adjustment => "adj",
+            IdKind::Nested => "nst",
+            IdKind::Marker => "m",
+            IdKind::Transition => "tr",
+            IdKind::Bin => "b",
+            IdKind::Effect => "fx",
+            IdKind::Link => "lk",
+            IdKind::Style => "st",
         }
+    }
+
+    /// The id kind of an item body.
+    pub const fn of_item(body: &ItemBody) -> IdKind {
+        match body {
+            ItemBody::Clip { .. } => IdKind::Clip,
+            ItemBody::Caption { .. } => IdKind::Caption,
+            ItemBody::Graphic { .. } => IdKind::Graphic,
+            ItemBody::Image { .. } => IdKind::Image,
+            ItemBody::Adjustment {} => IdKind::Adjustment,
+            ItemBody::Nested { .. } => IdKind::Nested,
+        }
+    }
+
+    /// Whether ids of this kind name items.
+    pub const fn is_item(self) -> bool {
+        matches!(
+            self,
+            IdKind::Clip
+                | IdKind::Caption
+                | IdKind::Graphic
+                | IdKind::Image
+                | IdKind::Adjustment
+                | IdKind::Nested
+        )
     }
 
     const fn slot(self) -> usize {
@@ -35,12 +94,23 @@ pub trait IdAlloc {
 }
 
 /// Every kind, in declaration order.
-pub const ID_KINDS: [IdKind; 5] = [
+pub const ID_KINDS: [IdKind; 16] = [
     IdKind::Asset,
     IdKind::Track,
     IdKind::Clip,
     IdKind::Timeline,
     IdKind::Branch,
+    IdKind::Caption,
+    IdKind::Graphic,
+    IdKind::Image,
+    IdKind::Adjustment,
+    IdKind::Nested,
+    IdKind::Marker,
+    IdKind::Transition,
+    IdKind::Bin,
+    IdKind::Effect,
+    IdKind::Link,
+    IdKind::Style,
 ];
 
 /// In-memory counters, one per kind; the next id is one past the last allocated.
@@ -71,25 +141,22 @@ impl MemIds {
         Self::default()
     }
 
-    /// Seeds each counter past the highest numeric suffix present in `project`. A `Project`
+    /// Seeds each counter past the highest numeric suffix present in `project`, over every
+    /// id it holds ([`Project::entity_ids`]). Each id raises the one kind whose prefix it
+    /// carries, whichever entity holds it, so an id is never handed out twice. A `Project`
     /// holds no branch ids, so the branch counter starts at 1.
     pub fn after(project: &Project) -> Self {
         let mut ids = MemIds::new();
-        let mut seen = |kind: IdKind, id: &str| {
-            if let Some(n) = suffix(id, kind.prefix()) {
-                let slot = &mut ids.next[kind.slot()];
-                *slot = (*slot).max(n.saturating_add(1));
+        let mut seen = |id: &str| {
+            for kind in ID_KINDS {
+                if let Some(n) = suffix(id, kind.prefix()) {
+                    let slot = &mut ids.next[kind.slot()];
+                    *slot = (*slot).max(n.saturating_add(1));
+                }
             }
         };
-        seen(IdKind::Timeline, &project.timeline.id);
-        for id in project.assets.keys() {
-            seen(IdKind::Asset, id);
-        }
-        for track in &project.timeline.tracks {
-            seen(IdKind::Track, &track.id);
-            for clip in &track.items {
-                seen(IdKind::Clip, &clip.id);
-            }
+        for id in project.entity_ids() {
+            seen(id);
         }
         ids
     }

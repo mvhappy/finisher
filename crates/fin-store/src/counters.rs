@@ -1,5 +1,7 @@
-//! The `ids` table: the project-global id counters (`asset`, `track`, `clip`, `timeline`,
-//! `branch`), loaded for one SQLite transaction and saved back in it.
+//! The `ids` table: the project-global id counters, one per `fin_core::IdKind` (`asset`,
+//! `track`, `clip`, `timeline`, `branch`; from 4C also `caption`, `graphic`, `image`,
+//! `adjustment`, `nested`, `marker`, `transition`, `bin`, `effect`, `link`, `style`), loaded
+//! for one SQLite transaction and saved back in it.
 //!
 //! Commit allocates from them. Replay never allocates, so after an import the counters are
 //! raised past every id in the log ([`Counters::raise_to_log`], spec §3.3); otherwise the first
@@ -7,8 +9,8 @@
 //! allocated by records that were later set aside (a diverged tail) are never handed out
 //! again either.
 //!
-//! The `ids` table is keyed by kind name, so a kind added later (`branch`) needs no
-//! migration: a missing row starts at 1.
+//! The `ids` table is keyed by kind name, so a kind added later (`branch`, the 4C kinds) needs
+//! no migration: a missing row starts at 1.
 
 use fin_core::{ID_KINDS, IdAlloc, IdKind, MemIds, Project};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -25,6 +27,17 @@ fn kind_name(kind: IdKind) -> &'static str {
         IdKind::Clip => "clip",
         IdKind::Timeline => "timeline",
         IdKind::Branch => "branch",
+        IdKind::Caption => "caption",
+        IdKind::Graphic => "graphic",
+        IdKind::Image => "image",
+        IdKind::Adjustment => "adjustment",
+        IdKind::Nested => "nested",
+        IdKind::Marker => "marker",
+        IdKind::Transition => "transition",
+        IdKind::Bin => "bin",
+        IdKind::Effect => "effect",
+        IdKind::Link => "link",
+        IdKind::Style => "style",
     }
 }
 
@@ -258,7 +271,11 @@ mod tests {
         let mut c = Counters::seed(&p);
         assert_eq!(
             ID_KINDS.map(|k| c.next(k)),
-            ["a1", "t3", "c1", "tl2", "br1"].map(String::from)
+            [
+                "a1", "t3", "c1", "tl2", "br1", "cap1", "g1", "img1", "adj1", "nst1", "m1", "tr1",
+                "b1", "fx1", "lk1", "st1"
+            ]
+            .map(String::from)
         );
     }
 
@@ -271,6 +288,34 @@ mod tests {
         c.saw("tl1");
         c.saw("br3");
         c.saw("$x");
-        assert_eq!(c.next, [1, 3, 10, 2, 4]);
+        c.saw("cap7");
+        c.saw("fx2");
+        assert_eq!(c.next, [1, 3, 10, 2, 4, 8, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1]);
+    }
+
+    /// The `ids` rows are keyed by these names: one per kind, never renamed.
+    #[test]
+    fn kind_names_are_unique_and_frozen() {
+        assert_eq!(
+            ID_KINDS.map(kind_name),
+            [
+                "asset",
+                "track",
+                "clip",
+                "timeline",
+                "branch",
+                "caption",
+                "graphic",
+                "image",
+                "adjustment",
+                "nested",
+                "marker",
+                "transition",
+                "bin",
+                "effect",
+                "link",
+                "style"
+            ]
+        );
     }
 }

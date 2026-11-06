@@ -1,1 +1,1 @@
-{"_tag":"Request","id":"1","tag":"tx.commit","payload":{"projectId":"01fixtureproject0000000000","tx":{"txId":"tx-late","author":"test","branch":"main","baseRev":2,"schemaVersion":1,"ops":[{"op":"clip.delete","clip":"c1"}]}},"headers":[]}
+{"_tag":"Request","id":"1","tag":"tx.commit","payload":{"projectId":"01fixtureproject0000000000","tx":{"txId":"tx-late","author":"test","branch":"main","baseRev":2,"schemaVersion":2,"ops":[{"op":"clip.delete","clip":"c1"}]}},"headers":[]}

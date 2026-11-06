@@ -311,7 +311,7 @@ fn rerun_conflict(
     if let Some(clips) = e.details["clips"].as_array() {
         named.extend(clips.iter().filter_map(Value::as_str));
     }
-    for t in &head.timeline.tracks {
+    for t in crate::ops::util::tracks(head) {
         named.remove(t.id.as_str());
     }
     let blamed: BTreeSet<&str> = theirs

@@ -177,7 +177,7 @@ impl Script {
     }
 
     fn edit(&mut self, b: &str, what: u8, k: usize, n: i64) -> Result<(), TestCaseError> {
-        let items = self.s.snapshot(b).unwrap().1.timeline.tracks[0]
+        let items = self.s.snapshot(b).unwrap().1.timelines[0].tracks[0]
             .items
             .clone();
         let clip = items.get(k % items.len().max(1));

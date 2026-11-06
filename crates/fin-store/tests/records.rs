@@ -168,7 +168,7 @@ fn reopen_survives_policy_tightening() {
     let s = Store::open(&e.data, &e.dir).unwrap();
     let (rev, project) = s.snapshot(MAIN).unwrap();
     assert_eq!(rev, 3);
-    let items = &project.timeline.tracks[0].items;
+    let items = &project.timelines[0].tracks[0].items;
     assert_eq!(items.len(), 2);
     assert_eq!(items[1].duration, Rational::new(1, 60).unwrap());
 }

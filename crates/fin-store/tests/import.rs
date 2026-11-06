@@ -354,7 +354,7 @@ fn import_upcasts_and_applies_without_policy() {
     assert_eq!(r.applied.len(), 3, "{r:?}");
     assert_eq!(r.applied[2].bindings["$x"], "c2");
     let (_, project) = b.snapshot(MAIN).unwrap();
-    let clip = project.timeline.tracks[0]
+    let clip = project.timelines[0].tracks[0]
         .items
         .iter()
         .find(|c| c.id == "c2")

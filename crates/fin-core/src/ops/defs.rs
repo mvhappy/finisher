@@ -56,7 +56,8 @@ pub enum Op {
     /// rippling later clips by its duration when `ripple`.
     #[serde(rename = "clip.restore")]
     ClipRestore {
-        clip: Clip,
+        // Boxed: a clip with its common fields is several times the size of the other ops.
+        clip: Box<Clip>,
         track: String,
         #[serde(default = "yes")]
         ripple: bool,

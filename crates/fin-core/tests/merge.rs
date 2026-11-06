@@ -26,7 +26,7 @@ fn ins(at: i64, dur: i64) -> Op {
 /// A 1 s clip at the end of `t1` on `b`.
 fn append_clip(log: &MemLog, b: &str) -> Op {
     let p = log.state(b);
-    let end = p.timeline.tracks[0]
+    let end = p.timelines[0].tracks[0]
         .items
         .last()
         .map_or(Rational::zero(), |c| (c.start + c.duration).unwrap());

@@ -100,6 +100,13 @@ impl Rational {
         self.num > 0
     }
 
+    /// The nearest `f64` to `num / den` after converting each part (both conversions and the
+    /// division are IEEE-754 round-to-nearest, so the result is the same on every platform).
+    /// For evaluation only: positions stay rational.
+    pub fn to_f64(self) -> f64 {
+        self.num as f64 / self.den as f64
+    }
+
     pub fn is_zero(&self) -> bool {
         self.num == 0
     }
@@ -120,6 +127,13 @@ impl Rational {
 
     pub fn checked_neg(self) -> Result<Rational, CoreError> {
         Self::from_i128(-(self.num as i128), self.den as i128)
+    }
+}
+
+/// Zero.
+impl Default for Rational {
+    fn default() -> Self {
+        Rational::zero()
     }
 }
 

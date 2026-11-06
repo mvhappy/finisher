@@ -68,7 +68,7 @@ impl Backend for Rejecting {
 fn landed(tx_id: &str) -> CommittedTx {
     serde_json::from_value(json!({
         "rev": 2,
-        "tx": { "txId": tx_id, "author": "fin", "branch": "main", "baseRev": 1, "schemaVersion": 1,
+        "tx": { "txId": tx_id, "author": "fin", "branch": "main", "baseRev": 1, "schemaVersion": 2,
                 "ops": [{ "op": "clip.delete", "clip": "c9" }] },
         "bindings": {},
         "diff": { "changes": [], "shifts": [] },

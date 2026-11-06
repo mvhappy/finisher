@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{Asset, Project};
+use crate::model::{Asset, AssetKind, Project};
 use crate::ops::util::{OpDiff, invalid_range, wrong_op};
 use crate::ops::{Bindings, Op};
 use crate::rebase::Footprint;
@@ -49,11 +49,17 @@ pub(crate) fn apply(
     let id = bindings.create(project, id, IdKind::Asset, ids)?;
     let asset = Asset {
         id: id.clone(),
+        kind: AssetKind::Media,
         path: path.clone(),
-        duration: *duration,
+        fingerprint: fingerprint.clone(),
+        bin: None,
+        duration: Some(*duration),
         video: video.clone(),
         audio: audio.clone(),
-        fingerprint: fingerprint.clone(),
+        image: None,
+        lottie: None,
+        font: None,
+        lut: None,
     };
     project.assets.insert(id.clone(), asset);
     diff.record(EntityKind::Asset, &id, ChangeKind::Added);

@@ -45,11 +45,9 @@ fn config(default: u32) -> ProptestConfig {
 /// (video), `t2` and `t3` (audio), each starting 10 s into the asset.
 fn base(lens: &[Vec<i64>]) -> Project {
     let mut p = project();
-    p.timeline.tracks.push(Track {
-        id: "t3".into(),
-        kind: TrackKind::Audio,
-        items: Vec::new(),
-    });
+    p.timelines[0]
+        .tracks
+        .push(Track::new("t3", TrackKind::Audio, "A2"));
     let mut ops = vec![av_asset("$a", secs(100))];
     for (t, track) in lens.iter().enumerate() {
         let mut at = 0;
@@ -184,7 +182,7 @@ impl Realiser {
             Key::Id(id) => id.clone(),
             Key::Own(p) => self.bound.get(p)?.clone(),
         };
-        let tracks = &self.state.timeline.tracks;
+        let tracks = &self.state.timelines[0].tracks;
         let present = tracks.iter().flat_map(|t| &t.items).any(|c| c.id == id);
         present.then_some(id)
     }
@@ -207,7 +205,10 @@ impl Realiser {
                 len,
                 asset,
             } => {
-                let t = self.state.timeline.tracks.iter().find(|t| t.id == *track)?;
+                let t = self.state.timelines[0]
+                    .tracks
+                    .iter()
+                    .find(|t| t.id == *track)?;
                 let at = match before {
                     Some(key) => {
                         let id = self.id(key)?;
@@ -265,7 +266,7 @@ impl Realiser {
         let mut out = Vec::new();
         for (i, intent) in intents.iter().enumerate() {
             let pick = |r: &Realiser, track: usize, k: usize| {
-                let items = &r.state.timeline.tracks[track].items;
+                let items = &r.state.timelines[0].tracks[track].items;
                 let id = &items.get(k % items.len().max(1))?.id;
                 let own = r.bound.iter().find(|(_, v)| *v == id).map(|(p, _)| p);
                 Some(own.map_or_else(|| Key::Id(id.clone()), |p| Key::Own(p.clone())))

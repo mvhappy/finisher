@@ -583,3 +583,85 @@ fn committed_tx_link_omitted_for_edits() {
     assert_eq!(v["link"], json!({"kind": "undo", "undoes": ["u1"]}));
     assert_eq!(serde_json::from_value::<CommittedTx>(v).unwrap(), c);
 }
+
+/// Finite `f64`s from every corner: random bit patterns (subnormals included), `±0.0`, the
+/// extremes and values with long decimal expansions.
+fn any_finite() -> impl proptest::strategy::Strategy<Value = f64> {
+    use proptest::prelude::*;
+    prop_oneof![
+        3 => any::<u64>().prop_map(f64::from_bits).prop_filter("finite", |x| x.is_finite()),
+        1 => (0u64..1 << 52).prop_map(f64::from_bits),
+        1 => (0u64..1 << 52).prop_map(|m| -f64::from_bits(m)),
+        1 => prop::sample::select(vec![
+            0.0, -0.0, f64::MIN_POSITIVE, -f64::MIN_POSITIVE, f64::MAX, f64::MIN, f64::EPSILON,
+            5e-324, -5e-324, 0.1, 1.0 / 3.0, 2.0f64.sqrt(), 1e300, 123_456_789.012_345_68,
+        ]),
+        1 => any::<f64>().prop_filter("finite", |x| x.is_finite()),
+    ]
+}
+
+/// The floats a clip's common fields carry, in a fixed order.
+fn floats_of(c: &fin_core::Common) -> Vec<u64> {
+    use fin_core::ParamValue;
+    let mut out = vec![c.opacity, c.transform.rotation, c.transform.position[0]];
+    for kfs in c.keyframes.values() {
+        for k in kfs {
+            match &k.value {
+                ParamValue::Number(x) => out.push(*x),
+                ParamValue::Vec2([x, y]) => out.extend([*x, *y]),
+                _ => {}
+            }
+        }
+    }
+    for e in &c.effects {
+        for v in e.params.values() {
+            if let ParamValue::Number(x) = v {
+                out.push(*x);
+            }
+        }
+    }
+    out.into_iter().map(f64::to_bits).collect()
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(256),
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// B2: parameter values inside ops come back bit for bit from record bytes (serde_json's
+    /// `float_roundtrip`), through the reader's path (bytes → `Value` → `upcast_record`), and
+    /// the record re-encodes to the same bytes.
+    #[test]
+    fn param_values_round_trip_through_record_bytes(
+        xs in proptest::collection::vec(any_finite(), 7)
+    ) {
+        use fin_core::{Clip, Effect, Interp, Keyframe, ParamValue};
+        let mut clip = Clip::new("c1", "a1", secs(0), secs(0), secs(1));
+        clip.common.opacity = xs[0];
+        clip.common.transform.rotation = xs[1];
+        clip.common.transform.position[0] = xs[2];
+        clip.common.keyframes.insert("opacity".into(), vec![
+            Keyframe { at: secs(0), value: ParamValue::Number(xs[3]), interp: Interp::Linear },
+            Keyframe { at: secs(1), value: ParamValue::Vec2([xs[4], xs[5]]), interp: Interp::Hold },
+        ]);
+        clip.common.effects.push(Effect {
+            id: "fx1".into(),
+            kind: "blur".into(),
+            enabled: true,
+            params: BTreeMap::from([("radius".to_string(), ParamValue::Number(xs[6]))]),
+        });
+        let want = floats_of(&clip.common);
+        let restore = Op::ClipRestore { clip: Box::new(clip), track: "t1".into(), ripple: true };
+        let mut record = sample();
+        record.inverse = vec![restore.clone()];
+        record.resolved = vec![restore];
+        let bytes = encode_record(&record);
+        let read = upcast_record(serde_json::from_slice(&bytes).unwrap()).unwrap();
+        for op in read.inverse.iter().chain(&read.resolved) {
+            let Op::ClipRestore { clip, .. } = op else { panic!("{op:?}") };
+            proptest::prop_assert_eq!(floats_of(&clip.common), want.clone());
+        }
+        proptest::prop_assert_eq!(encode_record(&read), bytes);
+    }
+}

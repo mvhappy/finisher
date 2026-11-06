@@ -30,7 +30,7 @@ function keep(e: Engine): Engine {
 }
 
 function tx(txId: string, baseRev: number, ops: unknown[]): string {
-  return JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 1, ops });
+  return JSON.stringify({ txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops });
 }
 
 const addAsset = {

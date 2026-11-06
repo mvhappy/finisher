@@ -48,7 +48,7 @@ fn act() -> impl Strategy<Value = Act> {
 }
 
 fn op_for(p: &Project, kind: u8, k: usize) -> Option<Op> {
-    let items = &p.timeline.tracks[0].items;
+    let items = &p.timelines[0].tracks[0].items;
     match kind {
         0 => items
             .get(k % items.len().max(1))

@@ -21,7 +21,7 @@ fn sp2_project_gets_its_genesis_and_a_fresh_server_rebuilds_it_exactly() {
     copy_dir(&fixture().join("folder"), &e.dir);
     copy_dir(&fixture().join("server-data"), &e.data("a"));
     let expected: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture().join("expected.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(fixture().join("expected_v2.json")).unwrap()).unwrap();
     assert!(read_project_file(&e.dir).unwrap().genesis.is_none());
 
     let a = e.open("a");

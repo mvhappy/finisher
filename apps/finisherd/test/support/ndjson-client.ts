@@ -176,7 +176,7 @@ export async function startServer(serverData: string, timeoutMs = 15_000): Promi
 }
 
 export function tx(txId: string, baseRev: number, ops: unknown[]): Record<string, unknown> {
-  return { txId, author: "test", branch: "main", baseRev, schemaVersion: 1, ops };
+  return { txId, author: "test", branch: "main", baseRev, schemaVersion: 2, ops };
 }
 
 export function addAsset(placeholder = "$a"): Record<string, unknown> {

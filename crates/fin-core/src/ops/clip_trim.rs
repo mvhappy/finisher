@@ -6,8 +6,11 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
+use crate::model::ItemBody;
 use crate::model::Project;
-use crate::ops::util::{OpDiff, asset, clip_index, end, invalid_range, ripple, wrong_op};
+use crate::ops::util::{
+    OpDiff, TrackAt, asset, clip_index, end, invalid_range, media_duration, ripple, wrong_op,
+};
 use crate::ops::{Bindings, Edge, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::{Rational, frame_duration};
@@ -15,7 +18,7 @@ use crate::tx::{Diff, EntityKind};
 
 /// Resolved, checked trim: where the clip is.
 pub(crate) struct Plan {
-    track: usize,
+    track: TrackAt,
     item: usize,
 }
 
@@ -25,8 +28,16 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     };
     let id = bindings.resolve(clip)?;
     let (ti, ci) = clip_index(project, &id)?;
-    let c = &project.timeline.tracks[ti].items[ci];
-    let a = asset(project, &c.asset)?;
+    let c = &ti.get(project).items[ci];
+    let ItemBody::Clip {
+        asset: a,
+        source_in,
+        ..
+    } = &c.body
+    else {
+        return Err(crate::ops::util::not_found("clip", &id));
+    };
+    let (a, source_in) = (asset(project, a)?, *source_in);
     let plan = Plan {
         track: ti,
         item: ci,
@@ -37,11 +48,11 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     }
     let frame = frame_duration(project.rate)?;
     let (min, max) = match edge {
-        Edge::Start => (c.source_in.checked_neg()?, c.duration.checked_sub(frame)?),
+        Edge::Start => (source_in.checked_neg()?, c.duration.checked_sub(frame)?),
         Edge::End => (
             frame.checked_sub(c.duration)?,
-            a.duration
-                .checked_sub(c.source_in)?
+            media_duration(a)?
+                .checked_sub(source_in)?
                 .checked_sub(c.duration)?,
         ),
     };
@@ -68,13 +79,15 @@ pub(crate) fn apply(
     let Op::ClipTrim { edge, delta, .. } = op else {
         return Err(wrong_op(op));
     };
-    let track = &mut project.timeline.tracks[plan.track];
+    let track = plan.track.get_mut(project);
     let c = &mut track.items[plan.item];
     let from = end(c)?;
     // `content`: the clip's source moved under its fixed start (Decision 13).
     let (by, content) = match edge {
         Edge::Start => {
-            c.source_in = c.source_in.checked_add(*delta)?;
+            if let ItemBody::Clip { source_in, .. } = &mut c.body {
+                *source_in = source_in.checked_add(*delta)?;
+            }
             c.duration = c.duration.checked_sub(*delta)?;
             (delta.checked_neg()?, Some(delta.checked_neg()?))
         }

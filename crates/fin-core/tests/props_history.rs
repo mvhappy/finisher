@@ -811,7 +811,7 @@ impl Model {
     fn new(p: &Project) -> Model {
         let mut b = MBranch::default();
         for t in 0..2 {
-            b.tracks[t] = p.timeline.tracks[t]
+            b.tracks[t] = p.timelines[0].tracks[t]
                 .items
                 .iter()
                 .map(|c| (c.id.clone(), to_frames(c.duration)))
@@ -1018,7 +1018,7 @@ impl Run {
         let p = self.log.state(BR[b]);
         let (op, mut lop) = match *act {
             Act::Insert { track, at, len, .. } => {
-                let items = &p.timeline.tracks[track].items;
+                let items = &p.timelines[0].tracks[track].items;
                 let (pos, before) = match items.get(at) {
                     Some(c) => (c.start, Some(c.id.clone())),
                     None => (
@@ -1040,7 +1040,7 @@ impl Run {
                 (op, lop)
             }
             Act::Delete { track, k, .. } => {
-                let items = &p.timeline.tracks[track].items;
+                let items = &p.timelines[0].tracks[track].items;
                 let Some(c) = items.get(k % items.len().max(1)) else {
                     return;
                 };
@@ -1059,7 +1059,7 @@ impl Run {
                 frames: d,
                 ..
             } => {
-                let items = &p.timeline.tracks[track].items;
+                let items = &p.timelines[0].tracks[track].items;
                 let Some(c) = items.get(k % items.len().max(1)) else {
                     return;
                 };
@@ -1398,7 +1398,7 @@ impl Run {
             let p = self.log.state(br);
             assert_well_formed(&p);
             for (t, track) in TRACKS.iter().enumerate() {
-                let real: Vec<(String, i64)> = p.timeline.tracks[t]
+                let real: Vec<(String, i64)> = p.timelines[0].tracks[t]
                     .items
                     .iter()
                     .map(|c| (c.id.clone(), to_frames(c.duration)))

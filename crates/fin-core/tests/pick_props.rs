@@ -37,7 +37,7 @@ fn order(p: &Project) -> Vec<String> {
 
 /// `(start, duration)` of every clip on `t1`: the layout, ids aside.
 fn layout(p: &Project) -> Vec<(Rational, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.start, c.duration))
@@ -47,7 +47,7 @@ fn layout(p: &Project) -> Vec<(Rational, Rational)> {
 /// A clip edge on `b`: the start of clip `k`, or the track's end.
 fn edge(log: &MemLog, b: &str, k: usize) -> Rational {
     let p = log.state(b);
-    let items = &p.timeline.tracks[0].items;
+    let items = &p.timelines[0].tracks[0].items;
     items.get(k % (items.len() + 1)).map_or_else(
         || {
             items
@@ -89,7 +89,9 @@ fn build(first: usize, chain: &[Act]) -> (MemLog, bool) {
     let on = log.state("main") == log.state("br1");
     if !on {
         let mut without = log.state("br1");
-        without.timeline.tracks[0].items.retain(|c| c.id != "c4");
+        without.timelines[0].tracks[0]
+            .items
+            .retain(|c| c.id != "c4");
         assert_eq!(order(&log.state("main")), order(&without));
     }
     (log, on)

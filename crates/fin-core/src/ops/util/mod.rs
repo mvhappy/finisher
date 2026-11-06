@@ -9,8 +9,8 @@ mod check;
 mod lookup;
 mod ripple;
 
-pub(crate) use check::{check_kind, check_source, check_tracks, invalid_range};
-pub(crate) use lookup::{asset, clip_index, end, exists, track_index};
+pub(crate) use check::{check_kind, check_source, check_tracks, invalid_range, media_duration};
+pub(crate) use lookup::{TrackAt, asset, clip_index, end, exists, items, track_index, tracks};
 pub(crate) use ripple::{OpDiff, clip_containing, insert_inside, place, ripple};
 
 pub(crate) fn not_found(kind: &str, id: &str) -> CoreError {

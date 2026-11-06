@@ -28,7 +28,7 @@ function keep(e: Engine): Engine {
 }
 
 function tx(txId: string, branch: string, baseRev: number, ops: unknown[]): string {
-  return JSON.stringify({ txId, author: "test", branch, baseRev, schemaVersion: 1, ops });
+  return JSON.stringify({ txId, author: "test", branch, baseRev, schemaVersion: 2, ops });
 }
 
 const addAsset = {
@@ -68,7 +68,7 @@ async function project(serverData = join(tmp, "server-data")): Promise<Engine> {
 
 const clips = async (e: Engine, branch = "main"): Promise<number> => {
   const snap = await json(e.snapshot(branch));
-  return snap.project.timeline.tracks.flatMap((t: { items: unknown[] }) => t.items).length;
+  return snap.project.timelines.flatMap((tl: { tracks: { items: unknown[] }[] }) => tl.tracks.flatMap((t) => t.items)).length;
 };
 
 describe("branches", () => {

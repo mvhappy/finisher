@@ -67,7 +67,7 @@ fn insert(id: &str, at: i64, duration: i64) -> Op {
 }
 
 fn clips(p: &Project) -> Vec<(String, Rational, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start, c.duration))

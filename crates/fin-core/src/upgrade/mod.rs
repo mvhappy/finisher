@@ -2,14 +2,18 @@
 //! read, by pure one-step converters on `serde_json::Value`, so old Rust types need not be
 //! kept. A step must not change ids, timestamps or bindings.
 //!
-//! Schema version 1 is the first, so there are no record or snapshot steps yet. Adding version
-//! `n + 1` means bumping `SCHEMA_VERSION` and appending a `Step { from: n, .. }` to each table,
-//! with a golden test (frozen old shape in, expected new shape out).
+//! Schema version 1 is the first. Version 2 (plan 4C) has a snapshot step
+//! ([`snapshot_v1`], frozen) and a record step ([`record_v1`], an identity until plan 4C
+//! Task 7 fills it). Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
+//! `Step { from: n, .. }` to each table, with a golden test (frozen old shape in, expected new
+//! shape out).
 //!
 //! Stored diffs (`txs.diff`) are not versioned themselves: [`upcast_diff`] reads their shape
 //! (plan 4C Decision 5, [`diff_v1`]).
 
 mod diff_v1;
+mod record_v1;
+mod snapshot_v1;
 
 use serde_json::{Value, json};
 
@@ -24,8 +28,14 @@ pub(crate) struct Step {
     pub(crate) run: fn(Value) -> Result<Value, CoreError>,
 }
 
-const RECORD_STEPS: &[Step] = &[];
-const SNAPSHOT_STEPS: &[Step] = &[];
+const RECORD_STEPS: &[Step] = &[Step {
+    from: 1,
+    run: record_v1::run,
+}];
+const SNAPSHOT_STEPS: &[Step] = &[Step {
+    from: 1,
+    run: snapshot_v1::run,
+}];
 
 /// A record value of any known schema version, upgraded to `SCHEMA_VERSION`. Upgrading also
 /// stamps `intent.schemaVersion`, which follows the record's. Above `SCHEMA_VERSION`, or an

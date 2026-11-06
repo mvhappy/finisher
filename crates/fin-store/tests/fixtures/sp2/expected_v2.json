@@ -1,0 +1,57 @@
+{
+  "project": {
+    "assets": {
+      "a1": {
+        "duration": "600",
+        "fingerprint": "fixture-fingerprint",
+        "id": "a1",
+        "kind": "media",
+        "path": "media/clip.mov",
+        "video": {
+          "height": 1080,
+          "rate": "30",
+          "width": 1920
+        }
+      }
+    },
+    "id": "01m6kvqb80p491nh8nfcg5bx1s",
+    "name": "SP2 fixture",
+    "rate": "30",
+    "schemaVersion": 2,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "Timeline 1",
+        "rate": "30",
+        "resolution": {
+          "height": 1920,
+          "width": 1080
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "7",
+                "id": "c2",
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              }
+            ],
+            "kind": "video",
+            "name": "V1"
+          },
+          {
+            "id": "t2",
+            "items": [],
+            "kind": "audio",
+            "name": "A1"
+          }
+        ]
+      }
+    ]
+  },
+  "rev": 205
+}

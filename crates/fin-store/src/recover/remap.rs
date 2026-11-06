@@ -22,16 +22,9 @@ pub(crate) struct Remap {
     map: BTreeMap<String, String>,
 }
 
-/// Every entity id in `project`: the timeline, its tracks and clips, the assets.
+/// Every entity id in `project` ([`Project::entity_ids`]).
 pub(crate) fn entity_ids(project: &Project) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    out.insert(project.timeline.id.clone());
-    for t in &project.timeline.tracks {
-        out.insert(t.id.clone());
-        out.extend(t.items.iter().map(|c| c.id.clone()));
-    }
-    out.extend(project.assets.keys().cloned());
-    out
+    project.entity_ids().into_iter().map(String::from).collect()
 }
 
 impl Remap {

@@ -213,7 +213,7 @@ fn assert_verifies(s: &Store) {
 
 /// Every clip id on `t1` of `p`, in order.
 fn clips(p: &Project) -> Vec<String> {
-    let t = p.timeline.tracks.iter().find(|t| t.id == "t1").unwrap();
+    let t = p.timelines[0].tracks.iter().find(|t| t.id == "t1").unwrap();
     t.items.iter().map(|c| c.id.clone()).collect()
 }
 
@@ -379,7 +379,7 @@ fn recovered_tail_gets_fresh_ids_after_takeover() {
     assert_eq!(r.committed[2].tx.ops, [trim(&fresh)]);
     let (_, p) = a.snapshot(&made.id).unwrap();
     assert_eq!(clips(&p), std::slice::from_ref(&fresh));
-    let clip = &p.timeline.tracks[0].items[0];
+    let clip = &p.timelines[0].tracks[0].items[0];
     assert_eq!(
         clip.duration,
         Rational::from_int(2),

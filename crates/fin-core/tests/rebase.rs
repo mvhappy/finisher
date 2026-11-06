@@ -121,7 +121,7 @@ fn rebase_insert_over_insert_same_track() {
     );
     let done = rb.applied.project;
     assert_well_formed(&done);
-    assert_eq!(done.timeline.tracks[0].items.len(), 4);
+    assert_eq!(done.timelines[0].tracks[0].items.len(), 4);
     assert_eq!(try_apply(&pa, rb.tx.ops).unwrap().project, done);
 }
 
@@ -356,17 +356,11 @@ fn invalid_at_base_but_removed_since_is_conflict() {
 #[test]
 fn insert_inside_committed_clip_is_policy_conflict() {
     let p = with_clips(&[5]);
-    let placed = Clip {
-        id: "c9".into(),
-        asset: "a1".into(),
-        start: secs(6),
-        source_in: secs(0),
-        duration: secs(3),
-    };
+    let placed = Clip::new("c9", "a1", secs(6), secs(0), secs(3));
     let (pa, a) = commit(
         &p,
         vec![Op::ClipRestore {
-            clip: placed,
+            clip: Box::new(placed),
             track: "t1".into(),
             ripple: false,
         }],
@@ -463,13 +457,7 @@ fn other_track_edits_never_conflict() {
 fn restore_with_placeholder_id_binds() {
     let p = with_clips(&[5]);
     let restore = Op::ClipRestore {
-        clip: Clip {
-            id: "$r".into(),
-            asset: "a1".into(),
-            start: secs(5),
-            source_in: secs(0),
-            duration: secs(2),
-        },
+        clip: Box::new(Clip::new("$r", "a1", secs(5), secs(0), secs(2))),
         track: "t1".into(),
         ripple: true,
     };
@@ -735,7 +723,7 @@ fn edit() -> impl Strategy<Value = Edit> {
 }
 
 fn to_op(p: &Project, e: &Edit, name: &str) -> Op {
-    let items = &p.timeline.tracks[0].items;
+    let items = &p.timelines[0].tracks[0].items;
     let f = |n: i64| Rational::new(n, 30).unwrap();
     match *e {
         Edit::Insert { boundary, len } => {
@@ -803,7 +791,7 @@ proptest! {
                     prop_assert_eq!(clip(&done.project, &done.bindings["$b"]).duration, duration);
                 }
                 if let Op::ClipDelete { clip: id } = &oa {
-                    prop_assert!(done.project.timeline.tracks[0].items.iter().all(|c| &c.id != id));
+                    prop_assert!(done.project.timelines[0].tracks[0].items.iter().all(|c| &c.id != id));
                 }
             }
             // Entity conflicts, or two trims of one clip that jointly exceed its bounds (the
@@ -829,7 +817,7 @@ fn stale_sequence(p: &Project, edits: &[Edit]) -> Option<Vec<Op>> {
     let mut names = BTreeMap::<String, String>::new();
     let mut ops = Vec::new();
     for (i, e) in edits.iter().enumerate() {
-        if local.timeline.tracks[0].items.is_empty() && !matches!(e, Edit::Insert { .. }) {
+        if local.timelines[0].tracks[0].items.is_empty() && !matches!(e, Edit::Insert { .. }) {
             continue;
         }
         let mut op = to_op(&local, e, &format!("$b{i}"));
@@ -913,7 +901,7 @@ fn intervening_record_allocating_our_base_id_is_not_ours() {
     let mine = clip(&r.applied.project, id);
     assert_eq!((mine.start, mine.duration), (secs(10), secs(2)));
     assert!(
-        r.applied.project.timeline.tracks[1].items.is_empty(),
+        r.applied.project.timelines[0].tracks[1].items.is_empty(),
         "the other c3 stays deleted"
     );
 }

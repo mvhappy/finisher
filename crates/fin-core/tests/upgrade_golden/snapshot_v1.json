@@ -1,0 +1,64 @@
+{
+  "assets": {
+    "a1": {
+      "audio": { "channels": 2, "sampleRate": 48000 },
+      "duration": "600",
+      "fingerprint": "fixture-fingerprint",
+      "id": "a1",
+      "path": "media/clip.mov",
+      "video": { "height": 1080, "rate": "30", "width": 1920 }
+    },
+    "a2": {
+      "audio": { "channels": 1, "sampleRate": 44100 },
+      "duration": "1201/10",
+      "fingerprint": "fp-voice",
+      "id": "a2",
+      "path": "media/voice.wav",
+      "video": null
+    },
+    "a3": {
+      "audio": null,
+      "duration": "30000/1001",
+      "fingerprint": "fp-broll",
+      "id": "a3",
+      "path": "media/broll.mp4",
+      "video": { "height": 1920, "rate": "30000/1001", "width": 1080 }
+    }
+  },
+  "id": "01m6r3sq1s34zp9esh9dtgwwjd",
+  "name": "Frozen v1 snapshot",
+  "rate": "30000/1001",
+  "schemaVersion": 1,
+  "timeline": {
+    "id": "tl1",
+    "tracks": [
+      {
+        "id": "t1",
+        "items": [
+          { "asset": "a1", "duration": "8", "id": "c1", "sourceIn": "0", "start": "0" },
+          { "asset": "a3", "duration": "1001/250", "id": "c4", "sourceIn": "1/2", "start": "8" }
+        ],
+        "kind": "video"
+      },
+      {
+        "id": "t2",
+        "items": [
+          { "asset": "a2", "duration": "5/2", "id": "c2", "sourceIn": "3", "start": "1/3" }
+        ],
+        "kind": "audio"
+      },
+      {
+        "id": "t3",
+        "items": [],
+        "kind": "video"
+      },
+      {
+        "id": "t4",
+        "items": [
+          { "asset": "a1", "duration": "8", "id": "c3", "sourceIn": "0", "start": "0" }
+        ],
+        "kind": "audio"
+      }
+    ]
+  }
+}

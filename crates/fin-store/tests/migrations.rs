@@ -140,7 +140,8 @@ fn code(r: Result<Store, StoreError>) -> String {
 fn sp2_fixture_migrates_to_identical_state() {
     let sp2 = Sp2::new();
     let expected: serde_json::Value =
-        serde_json::from_slice(&fs::read(sp2.tmp.path().join("expected.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(sp2.tmp.path().join("expected_v2.json")).unwrap())
+            .unwrap();
     let store = sp2.open().unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
@@ -214,7 +215,8 @@ fn sp2_fixture_migrates_to_identical_state() {
         assert_eq!(record.tx_id, *tx_id);
         assert_eq!(record.seq, *seq as u64);
         assert_eq!(record.kind, RecordKind::Edit);
-        assert_eq!(record.schema_version, SCHEMA_VERSION);
+        // Sub-project 2 wrote schema 1; the bytes stay as written (read as v2 by upcasting).
+        assert_eq!(record.schema_version, 1);
         assert_eq!(i64::from(record.schema_version), *sv);
         assert_eq!(record.parent_hash, parent);
         assert_eq!(record.author, "fixture");

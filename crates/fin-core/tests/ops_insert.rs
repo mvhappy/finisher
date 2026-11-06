@@ -188,7 +188,7 @@ fn audio_only_asset_on_video_track_mismatches() {
             insert("$c", "t2", secs(0), "$a", secs(0), secs(1)),
         ],
     );
-    assert_eq!(ok.project.timeline.tracks[1].items.len(), 1);
+    assert_eq!(ok.project.timelines[0].tracks[1].items.len(), 1);
 }
 
 #[test]
@@ -275,7 +275,7 @@ fn wrong_schema_version_is_rejected() {
     let e = apply_tx(&p, &t, &mut MemIds::after(&p)).unwrap_err();
     assert_eq!(
         (e.code.as_str(), &e.details["expected"]),
-        ("SCHEMA_VERSION", &json!(1))
+        ("SCHEMA_VERSION", &json!(2))
     );
 }
 

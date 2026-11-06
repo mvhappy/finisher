@@ -34,14 +34,10 @@
     "Asset": {
       "properties": {
         "audio": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AudioInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/AudioInfo"
+        },
+        "bin": {
+          "type": "string"
         },
         "duration": {
           "$ref": "#/$defs/Rational"
@@ -49,30 +45,50 @@
         "fingerprint": {
           "type": "string"
         },
+        "font": {
+          "$ref": "#/$defs/FontFile"
+        },
         "id": {
           "type": "string"
+        },
+        "image": {
+          "$ref": "#/$defs/ImageInfo"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "lottie": {
+          "$ref": "#/$defs/LottieInfo"
+        },
+        "lut": {
+          "$ref": "#/$defs/LutInfo"
         },
         "path": {
           "type": "string"
         },
         "video": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VideoInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VideoInfo"
         }
       },
       "required": [
         "id",
+        "kind",
         "path",
-        "duration",
         "fingerprint"
       ],
       "type": "object"
+    },
+    "AssetKind": {
+      "description": "What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,\n`lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`\ncolour lookup table).",
+      "enum": [
+        "media",
+        "image",
+        "svg",
+        "lottieTemplate",
+        "font",
+        "lut"
+      ],
+      "type": "string"
     },
     "AudioInfo": {
       "properties": {
@@ -93,6 +109,57 @@
         "channels"
       ],
       "type": "object"
+    },
+    "AudioParams": {
+      "description": "The item's own audio: gain in dB, pan in −1…1, fades in seconds.",
+      "properties": {
+        "fadeIn": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fadeOut": {
+          "$ref": "#/$defs/Rational"
+        },
+        "gain": {
+          "format": "double",
+          "type": "number"
+        },
+        "pan": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "Bin": {
+      "description": "A folder of assets; `parent` nests it.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "BlendMode": {
+      "enum": [
+        "normal",
+        "multiply",
+        "screen",
+        "overlay",
+        "add",
+        "darken",
+        "lighten"
+      ],
+      "type": "string"
     },
     "BranchCreated": {
       "additionalProperties": false,
@@ -170,6 +237,33 @@
       ],
       "type": "object"
     },
+    "CaptionSource": {
+      "description": "The transcript artifact a caption came from, and its word range (`[first, end)`).",
+      "properties": {
+        "artifact": {
+          "type": "string"
+        },
+        "wordRange": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "artifact",
+        "wordRange"
+      ],
+      "type": "object"
+    },
+    "CaptionStyle": {
+      "description": "A project caption style (`st<n>`). Its fields arrive with captions (plan 4C Task 18); until\nthen the project holds none.",
+      "type": "object"
+    },
     "Change": {
       "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
       "properties": {
@@ -214,21 +308,64 @@
       "type": "string"
     },
     "Clip": {
+      "description": "The clip shape the `clip.*` ops carry (a clip item without its `kind`; 4B's shape plus the\noptional `speed` and common fields), so an inverse restores a clip item exactly. Item ops\nreplace it (plan 4C Task 7).",
       "properties": {
         "asset": {
           "type": "string"
         },
+        "audio": {
+          "$ref": "#/$defs/AudioParams"
+        },
+        "blend": {
+          "$ref": "#/$defs/BlendMode"
+        },
+        "crop": {
+          "$ref": "#/$defs/Crop"
+        },
         "duration": {
           "$ref": "#/$defs/Rational"
+        },
+        "effects": {
+          "items": {
+            "$ref": "#/$defs/Effect"
+          },
+          "type": "array"
         },
         "id": {
           "type": "string"
         },
+        "keyframes": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/Keyframe"
+            },
+            "type": "array"
+          },
+          "description": "Keyframes by registry path, each list sorted by `at`.",
+          "type": "object"
+        },
+        "link": {
+          "description": "The link group (`lk<n>`) the item belongs to.",
+          "type": "string"
+        },
+        "mask": {
+          "$ref": "#/$defs/Mask"
+        },
+        "opacity": {
+          "format": "double",
+          "type": "number"
+        },
         "sourceIn": {
+          "$ref": "#/$defs/Rational"
+        },
+        "speed": {
           "$ref": "#/$defs/Rational"
         },
         "start": {
           "$ref": "#/$defs/Rational"
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform"
         }
       },
       "required": [
@@ -339,6 +476,35 @@
       ],
       "type": "object"
     },
+    "Crop": {
+      "description": "Fractions of the item's size cut from each side.",
+      "properties": {
+        "bottom": {
+          "format": "double",
+          "type": "number"
+        },
+        "left": {
+          "format": "double",
+          "type": "number"
+        },
+        "right": {
+          "format": "double",
+          "type": "number"
+        },
+        "top": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "Curve": {
+      "enum": [
+        "linear",
+        "equalPower"
+      ],
+      "type": "string"
+    },
     "Diff": {
       "description": "What a transaction changed, op by op: each entry names the op that recorded it (`op`),\nand both lists are in op order. An op may record any number of changes and shifts.",
       "properties": {
@@ -368,6 +534,31 @@
         "end"
       ],
       "type": "string"
+    },
+    "Effect": {
+      "description": "One effect of an item (`fx<n>`, addressed as `(item, effect)`); `params` is sparse.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamValue"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
     },
     "EngineEvent": {
       "description": "One engine event (`Engine.onEvent`), tagged by `type`.",
@@ -521,6 +712,201 @@
       ],
       "type": "string"
     },
+    "FontFace": {
+      "description": "One face of a font file, as `fin_text::font_info` reads it.",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "scripts": {
+          "description": "ISO 15924 script codes the face covers.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "weight": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index",
+        "family",
+        "weight",
+        "italic",
+        "scripts"
+      ],
+      "type": "object"
+    },
+    "FontFile": {
+      "description": "An imported font file (plan 4C Decision 37): its whole-file SHA-256, size, format and faces.",
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/FontFace"
+          },
+          "type": "array"
+        },
+        "format": {
+          "$ref": "#/$defs/FontFormat"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size",
+        "format",
+        "faces"
+      ],
+      "type": "object"
+    },
+    "FontFormat": {
+      "description": "A font file's container format.",
+      "enum": [
+        "ttf",
+        "otf",
+        "ttc"
+      ],
+      "type": "string"
+    },
+    "FontPin": {
+      "description": "One face of one exact file: `face` is the index inside a collection (0 for a single font).",
+      "properties": {
+        "face": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "family": {
+          "type": "string"
+        },
+        "format": {
+          "$ref": "#/$defs/FontFormat"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "scripts": {
+          "description": "ISO 15924 script codes the face covers (as `fin_text::font_info` reports them).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sha256": {
+          "description": "The whole file's SHA-256, 64 lowercase hex digits.",
+          "type": "string"
+        },
+        "size": {
+          "description": "The file's size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/FontSource"
+        },
+        "weight": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "family",
+        "weight",
+        "italic",
+        "face",
+        "sha256",
+        "size",
+        "format",
+        "scripts",
+        "source"
+      ],
+      "type": "object"
+    },
+    "FontSource": {
+      "description": "Where a pinned file comes from: a catalog entry's style (at the catalog version that\npinned it), or an imported font asset.",
+      "oneOf": [
+        {
+          "properties": {
+            "catalog": {
+              "type": "string"
+            },
+            "entry": {
+              "type": "string"
+            },
+            "style": {
+              "type": "string"
+            },
+            "type": {
+              "const": "catalog",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entry",
+            "style",
+            "catalog"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "type": {
+              "const": "asset",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "asset"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Fonts": {
+      "description": "The pins, keyed by [`font_key`], and the fallback order (pin keys, first tried first).\nEmpty until a caption edit pins a face; omitted from the project JSON while empty.",
+      "properties": {
+        "fallback": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "pins": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FontPin"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "Generation": {
       "description": "A branch generation as a caller holds it: the database's incarnation and the branch's\nrewind count in it (module docs).",
       "properties": {
@@ -569,6 +955,299 @@
         "committed",
         "undone",
         "dryRun"
+      ],
+      "type": "object"
+    },
+    "ImageInfo": {
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "Interp": {
+      "description": "How a keyframe's value moves to the next one.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "hold",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "linear",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "CSS `cubic-bezier(x1, y1, x2, y2)`.",
+          "properties": {
+            "type": {
+              "const": "bezier",
+              "type": "string"
+            },
+            "x1": {
+              "format": "double",
+              "type": "number"
+            },
+            "x2": {
+              "format": "double",
+              "type": "number"
+            },
+            "y1": {
+              "format": "double",
+              "type": "number"
+            },
+            "y2": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x1",
+            "y1",
+            "x2",
+            "y2"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Item": {
+      "description": "One item on a track. On the wire the body's `kind` and fields and the common fields sit\nnext to `id`, `start` and `duration` (both are flattened).",
+      "oneOf": [
+        {
+          "description": "A span of a media asset. Source time = `sourceIn + (t − start) × speed`.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "clip",
+              "type": "string"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
+            },
+            "speed": {
+              "$ref": "#/$defs/Rational"
+            }
+          },
+          "required": [
+            "kind",
+            "asset",
+            "sourceIn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Timed words in a caption style. (A struct variant with the block flattened, so the\ngenerated TypeScript keeps the `kind` tag next to the block's fields.)",
+          "properties": {
+            "kind": {
+              "const": "caption",
+              "type": "string"
+            },
+            "overrides": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ParamValue"
+              },
+              "type": "object"
+            },
+            "source": {
+              "$ref": "#/$defs/CaptionSource"
+            },
+            "style": {
+              "type": "string"
+            },
+            "words": {
+              "items": {
+                "$ref": "#/$defs/Word"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "words",
+            "style"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A Lottie template with its slot values.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "graphic",
+              "type": "string"
+            },
+            "slots": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ParamValue"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A still image or SVG.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "image",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Applies its effects to everything below it.",
+          "properties": {
+            "kind": {
+              "const": "adjustment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another timeline of the project.",
+          "properties": {
+            "kind": {
+              "const": "nested",
+              "type": "string"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
+            },
+            "timeline": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "timeline",
+            "sourceIn"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioParams"
+        },
+        "blend": {
+          "$ref": "#/$defs/BlendMode"
+        },
+        "crop": {
+          "$ref": "#/$defs/Crop"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "effects": {
+          "items": {
+            "$ref": "#/$defs/Effect"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "keyframes": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/Keyframe"
+            },
+            "type": "array"
+          },
+          "description": "Keyframes by registry path, each list sorted by `at`.",
+          "type": "object"
+        },
+        "link": {
+          "description": "The link group (`lk<n>`) the item belongs to.",
+          "type": "string"
+        },
+        "mask": {
+          "$ref": "#/$defs/Mask"
+        },
+        "opacity": {
+          "format": "double",
+          "type": "number"
+        },
+        "start": {
+          "$ref": "#/$defs/Rational"
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform"
+        }
+      },
+      "required": [
+        "id",
+        "start",
+        "duration"
+      ],
+      "type": "object"
+    },
+    "Keyframe": {
+      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13).",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "at",
+        "value",
+        "interp"
       ],
       "type": "object"
     },
@@ -803,6 +1482,108 @@
           "type": "object"
         }
       ]
+    },
+    "LottieInfo": {
+      "description": "A dotLottie template: its canvas, timing, replaceable slots and the font families it names.",
+      "properties": {
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fonts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rate": {
+          "$ref": "#/$defs/Rational"
+        },
+        "slots": {
+          "items": {
+            "$ref": "#/$defs/SlotSpec"
+          },
+          "type": "array"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "rate",
+        "duration"
+      ],
+      "type": "object"
+    },
+    "LutInfo": {
+      "description": "A `.cube` LUT: its edge size.",
+      "properties": {
+        "size": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size"
+      ],
+      "type": "object"
+    },
+    "Marker": {
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "color": {
+          "type": "string"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "label"
+      ],
+      "type": "object"
+    },
+    "Mask": {
+      "description": "A matte (an artifact reference) that masks the item.",
+      "properties": {
+        "choke": {
+          "format": "double",
+          "type": "number"
+        },
+        "feather": {
+          "format": "double",
+          "type": "number"
+        },
+        "invert": {
+          "type": "boolean"
+        },
+        "matte": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "matte"
+      ],
+      "type": "object"
     },
     "MergeReport": {
       "additionalProperties": false,
@@ -1049,6 +1830,30 @@
         }
       ]
     },
+    "ParamValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`)."
+    },
     "Probe": {
       "description": "What the server needs to register a media asset. Its serde form is what `asset.probe`\nanswers (`@finisher/core-types` exports it as `Probe`).",
       "properties": {
@@ -1099,6 +1904,15 @@
           },
           "type": "object"
         },
+        "bins": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Bin"
+          },
+          "type": "object"
+        },
+        "fonts": {
+          "$ref": "#/$defs/Fonts"
+        },
         "id": {
           "type": "string"
         },
@@ -1113,8 +1927,18 @@
           "minimum": 0,
           "type": "integer"
         },
-        "timeline": {
-          "$ref": "#/$defs/Timeline"
+        "styles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CaptionStyle"
+          },
+          "type": "object"
+        },
+        "timelines": {
+          "description": "The first is the main timeline.",
+          "items": {
+            "$ref": "#/$defs/Timeline"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -1122,7 +1946,7 @@
         "name",
         "schemaVersion",
         "rate",
-        "timeline",
+        "timelines",
         "assets"
       ],
       "type": "object"
@@ -1287,6 +2111,26 @@
       ],
       "type": "object"
     },
+    "Resolution": {
+      "description": "Frame size in pixels.",
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
     "SetAside": {
       "additionalProperties": false,
       "description": "A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:\n`SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,\n`MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,\n`foreign`, `salvage`.",
@@ -1355,6 +2199,22 @@
       ],
       "type": "object"
     },
+    "SlotSpec": {
+      "description": "One replaceable slot of a template: its id and value kind (as the template declares it).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
     "Stacks": {
       "description": "An author's undo and redo stacks on a branch, bottom first (the top is the last entry).",
       "properties": {
@@ -1382,7 +2242,24 @@
         "id": {
           "type": "string"
         },
+        "markers": {
+          "description": "Sorted by `at`. Markers never ripple.",
+          "items": {
+            "$ref": "#/$defs/Marker"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rate": {
+          "$ref": "#/$defs/Rational"
+        },
+        "resolution": {
+          "$ref": "#/$defs/Resolution"
+        },
         "tracks": {
+          "description": "Compositing order, bottom first.",
           "items": {
             "$ref": "#/$defs/Track"
           },
@@ -1391,29 +2268,56 @@
       },
       "required": [
         "id",
+        "name",
+        "rate",
+        "resolution",
         "tracks"
       ],
       "type": "object"
     },
     "Track": {
       "properties": {
+        "gain": {
+          "description": "Decibels.",
+          "format": "double",
+          "type": "number"
+        },
         "id": {
           "type": "string"
         },
         "items": {
           "description": "Sorted by `start`, non-overlapping.",
           "items": {
-            "$ref": "#/$defs/Clip"
+            "$ref": "#/$defs/Item"
           },
           "type": "array"
         },
         "kind": {
           "$ref": "#/$defs/TrackKind"
+        },
+        "lock": {
+          "type": "boolean"
+        },
+        "mute": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "solo": {
+          "type": "boolean"
+        },
+        "transitions": {
+          "items": {
+            "$ref": "#/$defs/Transition"
+          },
+          "type": "array"
         }
       },
       "required": [
         "id",
         "kind",
+        "name",
         "items"
       ],
       "type": "object"
@@ -1421,7 +2325,87 @@
     "TrackKind": {
       "enum": [
         "video",
-        "audio"
+        "audio",
+        "caption"
+      ],
+      "type": "string"
+    },
+    "Transform": {
+      "properties": {
+        "anchor": {
+          "description": "Item-normalised.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "position": {
+          "description": "Pixels from the frame centre.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "rotation": {
+          "description": "Degrees.",
+          "format": "double",
+          "type": "number"
+        },
+        "scale": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Transition": {
+      "description": "A transition at the cut between two touching items of one track, centred on the cut.",
+      "properties": {
+        "between": {
+          "description": "The outgoing item, then the incoming one.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "curve": {
+          "$ref": "#/$defs/Curve"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TransitionKind"
+        }
+      },
+      "required": [
+        "id",
+        "between",
+        "kind",
+        "duration"
+      ],
+      "type": "object"
+    },
+    "TransitionKind": {
+      "enum": [
+        "crossfade",
+        "dissolve"
       ],
       "type": "string"
     },
@@ -1568,6 +2552,26 @@
         "width",
         "height",
         "rate"
+      ],
+      "type": "object"
+    },
+    "Word": {
+      "description": "One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Rational"
+        },
+        "start": {
+          "$ref": "#/$defs/Rational"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "start",
+        "end"
       ],
       "type": "object"
     }

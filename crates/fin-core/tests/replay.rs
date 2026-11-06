@@ -207,7 +207,7 @@ fn replay_rejects_a_restore_without_ripple_that_overlaps() {
     c.id = "c5".into();
     c.start = secs(2);
     let ops = vec![Op::ClipRestore {
-        clip: c,
+        clip: Box::new(c),
         track: "t1".into(),
         ripple: false,
     }];
@@ -239,7 +239,7 @@ fn replay_rejects_literal_ids_that_do_not_fit_their_kind() {
     c.id = "$r".into();
     c.start = secs(3);
     let restore = |clip| Op::ClipRestore {
-        clip,
+        clip: Box::new(clip),
         track: "t1".into(),
         ripple: true,
     };

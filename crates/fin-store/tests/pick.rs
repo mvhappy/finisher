@@ -140,7 +140,7 @@ fn state(s: &Store, branch: &str) -> Project {
 }
 
 fn starts(p: &Project) -> Vec<(String, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start))
@@ -272,7 +272,7 @@ fn cherry_pick_single_record() {
         at(&[("c5", 0), ("c1", 5), ("c2", 15), ("c3", 25), ("c4", 35)])
     );
     assert_eq!(
-        state(&s, MAIN).timeline.tracks[0].items[1].duration,
+        state(&s, MAIN).timelines[0].tracks[0].items[1].duration,
         secs(10)
     );
     assert_eq!(s.ops_since(MAIN, s.head(MAIN) - 1).unwrap(), r.committed);

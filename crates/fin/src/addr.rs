@@ -1,7 +1,7 @@
 //! Addressing: turns the strings agents type (`12.4s`, `f300`, `+0.5s`, `after:c12`, `end`,
 //! `2s..5s`) into exact `Rational` seconds against a project. Callers echo what they resolved.
 
-use fin_core::{Clip, CoreError, Project, Rational, parse_time};
+use fin_core::{CoreError, Project, Rational, Track, parse_time};
 use serde_json::json;
 
 fn not_found(kind: &str, id: &str, alternatives: Vec<String>) -> CoreError {
@@ -58,39 +58,29 @@ pub fn delta(project: &Project, field: &str, input: &str) -> Result<Rational, Co
     }
 }
 
-fn clip_end(clip: &Clip) -> Result<Rational, CoreError> {
-    clip.start.checked_add(clip.duration)
+/// Every track of every timeline.
+fn tracks(project: &Project) -> impl Iterator<Item = &Track> {
+    project.timelines.iter().flat_map(|tl| tl.tracks.iter())
 }
 
 fn clip_ids(project: &Project) -> Vec<String> {
-    project
-        .timeline
-        .tracks
-        .iter()
+    tracks(project)
         .flat_map(|t| t.items.iter().map(|c| c.id.clone()))
         .collect()
 }
 
 pub fn track_ids(project: &Project) -> Vec<String> {
-    project
-        .timeline
-        .tracks
-        .iter()
-        .map(|t| t.id.clone())
-        .collect()
+    tracks(project).map(|t| t.id.clone()).collect()
 }
 
 /// The end of the last clip on `track` (0 when empty).
 pub fn track_end(project: &Project, track: &str) -> Result<Rational, CoreError> {
-    let t = project
-        .timeline
-        .tracks
-        .iter()
+    let t = tracks(project)
         .find(|t| t.id == track)
         .ok_or_else(|| not_found("track", track, track_ids(project)))?;
     t.items
         .iter()
-        .try_fold(Rational::zero(), |acc, c| Ok(acc.max(clip_end(c)?)))
+        .try_fold(Rational::zero(), |acc, c| Ok(acc.max(c.end()?)))
 }
 
 /// An insert position on `track`: `end`, `after:<clip>`, or an absolute time.
@@ -104,14 +94,11 @@ pub fn position(
         return track_end(project, track);
     }
     if let Some(id) = input.strip_prefix("after:") {
-        let clip = project
-            .timeline
-            .tracks
-            .iter()
+        let clip = tracks(project)
             .flat_map(|t| t.items.iter())
             .find(|c| c.id == id);
         return match clip {
-            Some(c) => clip_end(c),
+            Some(c) => c.end(),
             None => Err(for_field(not_found("clip", id, clip_ids(project)), field)),
         };
     }
@@ -153,7 +140,7 @@ pub fn range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fin_core::{Asset, Clip, new_project};
+    use fin_core::{Asset, AssetKind, Clip, new_project};
 
     fn r(s: &str) -> Rational {
         s.parse().unwrap()
@@ -165,21 +152,22 @@ mod tests {
             "a1".into(),
             Asset {
                 id: "a1".into(),
+                kind: AssetKind::Media,
                 path: "/m.mp4".into(),
-                duration: r("60"),
+                fingerprint: "x".into(),
+                bin: None,
+                duration: Some(r("60")),
                 video: None,
                 audio: None,
-                fingerprint: "x".into(),
+                image: None,
+                lottie: None,
+                font: None,
+                lut: None,
             },
         );
-        let clip = |id: &str, start: &str, dur: &str| Clip {
-            id: id.into(),
-            asset: "a1".into(),
-            start: r(start),
-            source_in: r("0"),
-            duration: r(dur),
-        };
-        p.timeline.tracks[0].items = vec![clip("c1", "0", "10"), clip("c2", "10", "5/2")];
+        let clip =
+            |id: &str, start: &str, dur: &str| Clip::new(id, "a1", r(start), r("0"), r(dur)).into();
+        p.timelines[0].tracks[0].items = vec![clip("c1", "0", "10"), clip("c2", "10", "5/2")];
         p
     }
 

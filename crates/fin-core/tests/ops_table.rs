@@ -35,13 +35,7 @@ fn every_variant() -> Vec<Op> {
             ripple: true,
         },
         Op::ClipRestore {
-            clip: Clip {
-                id: "c1".into(),
-                asset: "a1".into(),
-                start: r(0),
-                source_in: r(0),
-                duration: r(1),
-            },
+            clip: Box::new(Clip::new("c1", "a1", r(0), r(0), r(1))),
             track: "t1".into(),
             ripple: true,
         },

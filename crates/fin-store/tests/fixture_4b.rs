@@ -1,4 +1,5 @@
-//! The scrubbed 4B fixture opens and holds the states and stacks it was generated with.
+//! The scrubbed 4B fixture opens and holds the states and stacks it was generated with (the
+//! states in model v2: `expected_v2.json`).
 
 mod integration_support;
 
@@ -25,7 +26,8 @@ fn fixture_4b_opens_with_relocate() {
         .unwrap(),
     )
     .unwrap();
-    let branches = expected["branches"].as_object().unwrap();
+    let states = expected_v2("4b");
+    let branches = states["branches"].as_object().unwrap();
     assert_eq!(
         branches.keys().collect::<Vec<_>>(),
         ["br1", "main"],
@@ -52,6 +54,76 @@ fn fixture_4b_opens_with_relocate() {
     for h in hashes {
         let h = h["hash"].as_str().unwrap();
         assert!(h.len() == 71 && h.starts_with("blake3:"), "{h}");
+    }
+}
+
+/// A fixture's `expected_v2.json`: its states (`{rev, project}`, per branch for 4B) in model
+/// v2, generated once with `upcast_snapshot` from `expected.json`, reviewed by hand and frozen.
+fn expected_v2(name: &str) -> serde_json::Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+        .join("expected_v2.json");
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+/// `(branch, {rev, project})` of a fixture's expected file, `main` alone for SP2 and 4A.
+fn states(name: &str, v: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    match v.get("branches") {
+        Some(b) => b
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, s)| (k.clone(), s.clone()))
+            .collect(),
+        None => {
+            assert!(name != "4b");
+            vec![("main".to_string(), v.clone())]
+        }
+    }
+}
+
+/// Plan 4C Task 6: every pre-4C fixture opens in model v2 with the states of its frozen
+/// `expected_v2.json`, and those are the upcasts of the v1 states 4B (or earlier) recorded in
+/// `expected.json`: same ids, times and assets, only shape and defaults differ.
+#[test]
+fn sp2_4a_4b_fixtures_open_equal_v2_goldens() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, data, folder) in fixtures(tmp.path()) {
+        let v1: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(name)
+                    .join("expected.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let v2 = expected_v2(name);
+        let (v1, v2) = (states(name, &v1), states(name, &v2));
+        assert_eq!(v1.len(), v2.len(), "{name}");
+        let opts = OpenOptions {
+            relocate: true,
+            ..OpenOptions::default()
+        };
+        let store = Store::open_with(&data, &folder, opts).unwrap();
+        for ((b1, old), (b2, new)) in v1.iter().zip(&v2) {
+            assert_eq!(b1, b2, "{name}");
+            assert_eq!(old["project"]["schemaVersion"], 1, "{name} {b1}");
+            assert_eq!(new["project"]["schemaVersion"], 2, "{name} {b1}");
+            assert_eq!(old["rev"], new["rev"], "{name} {b1}");
+            let up = upcast_snapshot(old["project"].clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&up).unwrap(),
+                new["project"],
+                "{name} {b1}"
+            );
+            let (rev, project) = store.snapshot(b1).unwrap();
+            assert_eq!(rev, new["rev"].as_u64().unwrap(), "{name} {b1}");
+            assert_eq!(project, up, "{name} {b1}");
+            assert_eq!(serde_json::to_value(&project).unwrap(), new["project"]);
+        }
     }
 }
 

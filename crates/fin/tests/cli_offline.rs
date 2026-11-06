@@ -9,28 +9,31 @@ use tempfile::TempDir;
 
 /// Rate 30; asset a1 (60 s, video); t1 holds c1 [0, 5) and c2 [5, 10); t2 (audio) is empty.
 fn snapshot() -> Value {
-    let clip = |id: &str, start: &str| json!({ "id": id, "asset": "a1", "start": start, "sourceIn": "0", "duration": "5" });
+    let clip = |id: &str, start: &str| json!({ "id": id, "kind": "clip", "asset": "a1", "start": start, "sourceIn": "0", "duration": "5" });
     json!({
         "rev": 7,
         "project": {
             "id": "p1",
             "name": "Demo",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "rate": "30",
-            "timeline": {
+            "timelines": [{
                 "id": "tl1",
+                "name": "Timeline 1",
+                "rate": "30",
+                "resolution": { "width": 1080, "height": 1920 },
                 "tracks": [
-                    { "id": "t1", "kind": "video", "items": [clip("c1", "0"), clip("c2", "5")] },
-                    { "id": "t2", "kind": "audio", "items": [] },
+                    { "id": "t1", "kind": "video", "name": "V1", "items": [clip("c1", "0"), clip("c2", "5")] },
+                    { "id": "t2", "kind": "audio", "name": "A1", "items": [] },
                 ],
-            },
+            }],
             "assets": {
                 "a1": {
                     "id": "a1",
+                    "kind": "media",
                     "path": "/media/a.mp4",
                     "duration": "60",
                     "video": { "width": 1920, "height": 1080, "rate": "30" },
-                    "audio": null,
                     "fingerprint": "f",
                 },
             },
@@ -457,7 +460,7 @@ fn project_create_dry_run_validates_locally() {
             .unwrap()
             .ends_with("film")
     );
-    assert_eq!(run.json["project"]["timeline"]["tracks"][1]["id"], "t2");
+    assert_eq!(run.json["project"]["timelines"][0]["tracks"][1]["id"], "t2");
     assert_error(
         &env.run(&[
             "project",

@@ -1,10 +1,13 @@
 //! Golden tests of the frozen upcaster steps (plan 4C Decision 5): frozen old shapes in, the
-//! expected new shapes out.
+//! expected new shapes out. The snapshot goldens are `upgrade_golden/snapshot_v{1,2}.json`.
 
 mod common;
 
 use common::*;
-use fin_core::{Diff, Edge, MemIds, Op, apply_internal, upcast_diff};
+use fin_core::{
+    Diff, Edge, MemIds, Op, Project, Rational, apply_internal, new_project, upcast_diff,
+    upcast_snapshot,
+};
 use serde_json::{Value, json};
 
 /// One v1 op of each kind, as 4B stored them (`intent.ops`), and the v1 diff their tx stored:
@@ -53,7 +56,7 @@ fn v1_diff() -> Value {
     })
 }
 
-/// The v2 shape (kind stays `clip` until model v2 renames it, plan 4C Task 6).
+/// The v2 shape (kind stays `clip` until the item ops rename it, plan 4C Task 7).
 fn v2_diff() -> Value {
     json!({
         "changes": [
@@ -270,5 +273,75 @@ fn v1_shape_of_a_fresh_diff_upcasts_back() {
             }
         }
         assert_eq!(upcast_diff(v1, &ops).unwrap(), fresh);
+    }
+}
+
+fn golden(name: &str) -> Value {
+    let path = format!("{}/tests/upgrade_golden/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+}
+
+/// The frozen snapshot step: `snapshot_v1.json` upcasts to `snapshot_v2.json`, compared as a
+/// decoded `Project` and as re-encoded JSON (the step's output is canonical v2 JSON).
+#[test]
+fn upcast_v1_snapshot_golden() {
+    let got = upcast_snapshot(golden("snapshot_v1.json")).unwrap();
+    let want: Project = serde_json::from_value(golden("snapshot_v2.json")).unwrap();
+    assert_eq!(got, want);
+    assert_eq!(
+        serde_json::to_value(&got).unwrap(),
+        golden("snapshot_v2.json")
+    );
+    // The v2 golden is current: it reads as itself.
+    assert_eq!(upcast_snapshot(golden("snapshot_v2.json")).unwrap(), want);
+}
+
+/// A v1 snapshot the step cannot read is `INVALID_FORMAT`.
+#[test]
+fn malformed_v1_snapshot_is_invalid_format() {
+    let base = golden("snapshot_v1.json");
+    let breaks: [fn(&mut Value); 5] = [
+        |v| {
+            v.as_object_mut().unwrap().remove("timeline");
+        },
+        |v| v["timeline"]["tracks"] = json!({}),
+        |v| v["timeline"]["tracks"][0]["kind"] = json!("caption"),
+        |v| v["timeline"]["tracks"][0]["items"][0] = json!("c1"),
+        |v| v["assets"] = json!([]),
+    ];
+    for (i, f) in breaks.iter().enumerate() {
+        let mut v = base.clone();
+        f(&mut v);
+        let e = upcast_snapshot(v).unwrap_err();
+        assert_eq!(e.code, "INVALID_FORMAT", "case {i}");
+    }
+}
+
+/// `new_project` is the upcast of 4B's rev-0 project (plan 4C Decision 5): same timeline,
+/// names, rate and 1080×1920, for any rate.
+#[test]
+fn new_project_equals_upcast_genesis() {
+    for rate in ["30", "30000/1001", "25", "60"] {
+        let v1 = json!({
+            "id": "01m6r3sq1s34zp9esh9dtgwwjd", "name": "Genesis", "schemaVersion": 1,
+            "rate": rate,
+            "timeline": { "id": "tl1", "tracks": [
+                { "id": "t1", "kind": "video", "items": [] },
+                { "id": "t2", "kind": "audio", "items": [] }
+            ] },
+            "assets": {}
+        });
+        let rate: Rational = rate.parse().unwrap();
+        let fresh =
+            new_project("01m6r3sq1s34zp9esh9dtgwwjd".into(), "Genesis".into(), rate).unwrap();
+        let up = upcast_snapshot(v1).unwrap();
+        assert_eq!(up, fresh, "{rate}");
+        assert_eq!(
+            serde_json::to_string(&up).unwrap(),
+            serde_json::to_string(&fresh).unwrap()
+        );
+        let tl = &up.timelines[0];
+        assert_eq!((tl.resolution.width, tl.resolution.height), (1080, 1920));
+        assert_eq!(tl.rate, rate);
     }
 }

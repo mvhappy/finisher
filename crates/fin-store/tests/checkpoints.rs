@@ -107,7 +107,7 @@ fn state(s: &Store, branch: &str) -> Project {
 }
 
 fn starts(p: &Project) -> Vec<(String, Rational)> {
-    p.timeline.tracks[0]
+    p.timelines[0].tracks[0]
         .items
         .iter()
         .map(|c| (c.id.clone(), c.start))
