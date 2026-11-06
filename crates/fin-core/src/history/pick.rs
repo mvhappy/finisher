@@ -56,7 +56,7 @@ pub fn plan_cherry_pick(
         return Err(
             CoreError::new("NOT_FOUND", format!("record {origin} does not exist"))
                 .with_details(json!({ "kind": "tx", "id": origin }))
-                .with_fix("name a record's txId (fin log, fin branch ls)"),
+                .with_fix("name a record's txId, as a commit or merge printed it"),
         );
     };
     if !(rec.record.kind.is_content() || rec.record.kind == RecordKind::Merge) {

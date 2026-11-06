@@ -1,6 +1,6 @@
 //! `<server-data>/fin-config.json`: the per-project default branch (`--branch` falls back to
-//! it) and the try branches `fin try` made (`tries: {<branchId>: <parentId>}`). Written
-//! temp-then-rename, 0600 on unix. A file this fin cannot read is an error, never a silent
+//! it) and the try branches `fin try` made, per project
+//! (`tries: {<projectId>: {<branchId>: <parentId>}}`). Written temp-then-rename, 0600 on unix. A file this fin cannot read is an error, never a silent
 //! `main`: writes would otherwise land on the wrong branch.
 
 use std::path::Path;
