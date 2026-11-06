@@ -47,24 +47,30 @@ pub enum ChangeKind {
     Updated,
 }
 
-/// One entity an op changed (plan 4C Decision 4).
+/// One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction
+/// that made the change. The optional fields are omitted on the wire when absent (never
+/// `null`):
+/// - `edge`: the edge an `updated` change moved, if that is all it did to the entity;
+/// - `path`: the parameter an `updated` change set (a registry path), if that is all it did;
+/// - `by`: the content offset of a start-edge move: every item-relative time of the entity
+///   moved by it (plan 4C Decision 13).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     pub kind: EntityKind,
     pub id: String,
     pub change: ChangeKind,
-    /// The index of the op in its transaction that made the change.
     pub op: u32,
-    /// The edge an `updated` change moved, if that is all it did to the entity.
+    // The optional fields have no doc comment of their own: a schema `$ref` with a sibling
+    // `description` would be inlined in the generated TypeScript instead of naming its type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Edge")]
     pub edge: Option<Edge>,
-    /// The parameter an `updated` change set (a registry path), if that is all it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub path: Option<String>,
-    /// Content offset of a start-edge move: every item-relative time of the entity moved by
-    /// it (plan 4C Decision 13).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Rational")]
     pub by: Option<Rational>,
 }
 

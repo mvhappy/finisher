@@ -11,7 +11,7 @@ use crate::model::Project;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
-use super::footprint::{Footprint, entity_conflict_in, footprint, split_diff};
+use super::footprint::{Footprint, entity_conflict_in, footprint, split_diff, unbind_own};
 use super::map::{Assoc, Mapping, StepMap, Unmapped};
 use super::steps::{Prepared, Step, steps_from};
 
@@ -98,7 +98,8 @@ pub fn rebase_prepared(
 ) -> Result<Rebased, Conflict> {
     let tx_id = r.tx.tx_id.as_str();
     let bad = |e: CoreError| Conflict::from_rerun(&e, tx_id, 0, None);
-    let own = split_diff(&r.tx.ops, r.own).map_err(bad)?;
+    // Ids our tx allocated where `own` was recorded go back to placeholders (`unbind_own`).
+    let own = unbind_own(&r.tx.ops, split_diff(&r.tx.ops, r.own).map_err(bad)?);
     let n = own.len();
     let mut mapping = Mapping::new();
     for d in own.iter().rev() {
@@ -227,6 +228,7 @@ fn failed_at_base(
     let Ok(own) = split_diff(&prefix.ops, &own.diff) else {
         return e;
     };
+    let own = unbind_own(&prefix.ops, own);
     let created: BTreeSet<String> = prefix
         .ops
         .iter()

@@ -56,7 +56,9 @@ pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
                 let delta = op["delta"]
                     .as_str()
                     .ok_or_else(|| bad(format!("op {i} has no delta")))?;
-                change.insert("by".into(), json!(negate(delta)));
+                let by = negate(delta)
+                    .ok_or_else(|| bad(format!("op {i} delta {delta:?} is not a time")))?;
+                change.insert("by".into(), json!(by));
             }
         }
     }
@@ -83,12 +85,39 @@ fn list<'a>(diff: &'a mut Value, key: &str) -> Result<&'a mut Vec<Value>, CoreEr
         .ok_or_else(|| invalid_format("diff", format!("{key} is missing or not a list")))
 }
 
-/// `−t` for a time in canonical form (`n` or `n/d`, a leading `-` only): the sign flips, and
-/// `0` stays `0`.
-fn negate(t: &str) -> String {
-    match t.strip_prefix('-') {
-        Some(abs) => abs.to_string(),
-        None if t == "0" => t.to_string(),
-        None => format!("-{t}"),
+/// `−t`, in canonical form (`n`, or `n/d` in lowest terms with `d > 1`; a leading `-` only;
+/// `0` never signed), for a time `t` written as `[+-]n[/d]` in decimal digits. Parsed
+/// leniently (a `+`, leading zeros, a fraction not in lowest terms), so the output is canonical
+/// whatever the input; a canonical `t` only has its sign flipped. `None` when `t` is not of
+/// that form, has a zero denominator, or does not fit 64 bits.
+fn negate(t: &str) -> Option<String> {
+    let (negative, body) = match t.as_bytes().first()? {
+        b'-' => (true, &t[1..]),
+        b'+' => (false, &t[1..]),
+        _ => (false, t),
+    };
+    let (num, den) = body.split_once('/').unwrap_or((body, "1"));
+    let digits = |s: &str| -> Option<u64> {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    let (num, den) = (digits(num)?, digits(den)?);
+    if den == 0 {
+        return None;
     }
+    let (mut a, mut b) = (num, den);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let (num, den) = (num / a, den / a);
+    if num == 0 {
+        return Some("0".into());
+    }
+    let sign = if negative { "" } else { "-" };
+    Some(if den == 1 {
+        format!("{sign}{num}")
+    } else {
+        format!("{sign}{num}/{den}")
+    })
 }

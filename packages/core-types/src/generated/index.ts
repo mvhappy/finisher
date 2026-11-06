@@ -229,32 +229,25 @@ export interface Diff {
   shifts: Shift[];
 }
 /**
- * One entity an op changed (plan 4C Decision 4).
+ * One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction
+ * that made the change. The optional fields are omitted on the wire when absent (never
+ * `null`):
+ * - `edge`: the edge an `updated` change moved, if that is all it did to the entity;
+ * - `path`: the parameter an `updated` change set (a registry path), if that is all it did;
+ * - `by`: the content offset of a start-edge move: every item-relative time of the entity
+ *   moved by it (plan 4C Decision 13).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Change".
  */
 export interface Change {
-  /**
-   * Content offset of a start-edge move: every item-relative time of the entity moved by
-   * it (plan 4C Decision 13).
-   */
-  by?: Rational | null;
+  by?: Rational;
   change: ChangeKind;
-  /**
-   * The edge an `updated` change moved, if that is all it did to the entity.
-   */
-  edge?: Edge | null;
+  edge?: Edge;
   id: string;
   kind: EntityKind;
-  /**
-   * The index of the op in its transaction that made the change.
-   */
   op: number;
-  /**
-   * The parameter an `updated` change set (a registry path), if that is all it did.
-   */
-  path?: string | null;
+  path?: string;
 }
 /**
  * Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the

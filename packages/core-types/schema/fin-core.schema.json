@@ -171,32 +171,16 @@
       "type": "object"
     },
     "Change": {
-      "description": "One entity an op changed (plan 4C Decision 4).",
+      "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
       "properties": {
         "by": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Content offset of a start-edge move: every item-relative time of the entity moved by\nit (plan 4C Decision 13)."
+          "$ref": "#/$defs/Rational"
         },
         "change": {
           "$ref": "#/$defs/ChangeKind"
         },
         "edge": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Edge"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The edge an `updated` change moved, if that is all it did to the entity."
+          "$ref": "#/$defs/Edge"
         },
         "id": {
           "type": "string"
@@ -205,17 +189,12 @@
           "$ref": "#/$defs/EntityKind"
         },
         "op": {
-          "description": "The index of the op in its transaction that made the change.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
         "path": {
-          "description": "The parameter an `updated` change set (a registry path), if that is all it did.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [

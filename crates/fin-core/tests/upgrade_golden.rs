@@ -93,6 +93,51 @@ fn upcast_v1_diff_golden() {
     assert_eq!(got["changes"][0]["by"], "0");
 }
 
+/// The content offset `−delta` is written in canonical form whatever form the delta has; a
+/// delta that is not a time is `INVALID_FORMAT`.
+#[test]
+fn start_trim_offset_is_canonical() {
+    let by = |delta: &str| {
+        let ops = [json!({ "op": "clip.trim", "clip": "c1", "edge": "start", "delta": delta })];
+        let diff = json!({ "changes": [{ "kind": "clip", "id": "c1", "change": "updated" }],
+                           "shifts": [{ "track": "t1", "from": "5", "by": "0" }] });
+        upcast_diff(diff, &ops)
+            .map(|d| serde_json::to_value(d).unwrap()["changes"][0]["by"].clone())
+    };
+    for (delta, want) in [
+        ("1", "-1"),
+        ("-1", "1"),
+        ("1/2", "-1/2"),
+        ("-7/3", "7/3"),
+        ("+1", "-1"),
+        ("+3/2", "-3/2"),
+        ("01", "-1"),
+        ("2/4", "-1/2"),
+        ("-6/3", "2"),
+        ("-0", "0"),
+        ("0/5", "0"),
+        ("9223372036854775807", "-9223372036854775807"),
+    ] {
+        assert_eq!(by(delta).unwrap(), json!(want), "{delta}");
+    }
+    for bad in [
+        "",
+        "-",
+        "+",
+        "x",
+        "1/0",
+        "1/",
+        "/2",
+        "1.5",
+        "--1",
+        "-+1",
+        "1/-2",
+        "18446744073709551616",
+    ] {
+        assert_eq!(by(bad).unwrap_err().code, "INVALID_FORMAT", "{bad:?}");
+    }
+}
+
 /// A v2 diff comes back as it is, whatever ops are passed.
 #[test]
 fn v2_diff_is_returned_unchanged() {

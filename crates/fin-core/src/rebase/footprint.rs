@@ -23,7 +23,7 @@
 //!
 //! `REMOVED` wins over `SAME_EDGE`/`SAME_PARAM`; within one reason the earliest record is named.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::CoreError;
 use crate::ops::{self, Edge, Op};
@@ -140,6 +140,45 @@ pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError> {
     Ok(out)
 }
 
+/// Our own ops' diffs (`own`, from [`split_diff`]) with the ids our transaction allocated
+/// given back as the placeholders that allocated them. `own` was recorded where the tx was
+/// first applied (at its base, or on the source branch for a copy), so those ids are the ones
+/// bound *there*: on the head the same ids may name other entities (an intervening record
+/// allocated them), and a footprint must not claim them. An op that allocates `$p` and records
+/// one `added` change maps that change's id to `$p`; when it records several, which one is
+/// `$p`'s is unknown, so they are dropped (the op's own rules still name `$p`). Every change of
+/// every op naming such an id follows. Shifts carry no ids and stay.
+pub(crate) fn unbind_own(ops: &[Op], mut own: Vec<Diff>) -> Vec<Diff> {
+    let mut bound: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for (op, d) in ops.iter().zip(&own) {
+        let Some(p) = op.allocates() else { continue };
+        let added: Vec<&str> = d
+            .changes
+            .iter()
+            .filter(|c| c.change == ChangeKind::Added && c.id != p)
+            .map(|c| c.id.as_str())
+            .collect();
+        let to = (added.len() == 1).then(|| p.to_string());
+        for id in added {
+            bound.insert(id.to_string(), to.clone());
+        }
+    }
+    if bound.is_empty() {
+        return own;
+    }
+    for d in &mut own {
+        d.changes.retain_mut(|c| match bound.get(&c.id) {
+            Some(Some(p)) => {
+                c.id.clone_from(p);
+                true
+            }
+            Some(None) => false,
+            None => true,
+        });
+    }
+    own
+}
+
 /// The diff of consecutive ops from their own diffs ([`split_diff`]'s), each entry's `op`
 /// renumbered to its op's position in `diffs`.
 pub(crate) fn join_diffs(diffs: &[Diff]) -> Diff {
@@ -235,4 +274,123 @@ fn same_touch(
         };
         (!own.contains(x) && theirs.touches.iter().any(|(y, u)| y == x && u == t)).then_some(reason)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::MemIds;
+    use crate::model::{VideoInfo, new_project};
+    use crate::time::Rational;
+    use crate::tx::Tx;
+
+    fn tx(ops: Vec<Op>) -> Tx {
+        Tx {
+            tx_id: "t".into(),
+            author: "a".into(),
+            branch: "main".into(),
+            base_rev: 0,
+            schema_version: crate::model::SCHEMA_VERSION,
+            args_hash: None,
+            ops,
+        }
+    }
+
+    /// The ids a tx allocated at its base are given back as its placeholders before its
+    /// diff joins a footprint: `c1` below is `$c`'s at the base only.
+    #[test]
+    fn own_footprints_name_placeholders_not_base_ids() {
+        let s = Rational::from_int;
+        let p = new_project("p".into(), "P".into(), s(30)).unwrap();
+        let ops = vec![
+            Op::AssetAdd {
+                id: "$a".into(),
+                path: "/m.mov".into(),
+                duration: s(60),
+                video: Some(VideoInfo {
+                    width: 2,
+                    height: 2,
+                    rate: s(30),
+                }),
+                audio: None,
+                fingerprint: "f".into(),
+            },
+            Op::ClipInsert {
+                id: "$c".into(),
+                track: "t1".into(),
+                asset: "$a".into(),
+                at: s(0),
+                source_in: s(0),
+                duration: s(5),
+            },
+            Op::ClipTrim {
+                clip: "$c".into(),
+                edge: Edge::End,
+                delta: s(-1),
+            },
+        ];
+        let applied = crate::apply_tx(&p, &tx(ops.clone()), &mut MemIds::after(&p)).unwrap();
+        let split = split_diff(&ops, &applied.diff).unwrap();
+        // As recorded: the base's ids.
+        assert_eq!(footprint(&ops[2], &split[2]).touches.len(), 2);
+        let own = unbind_own(&ops, split);
+        let fps: Vec<Footprint> = ops.iter().zip(&own).map(|(o, d)| footprint(o, d)).collect();
+        assert_eq!(fps[0].creates, ["$a"]);
+        assert_eq!(fps[1].creates, ["$c"]);
+        assert_eq!(fps[2].touches, [("$c".to_string(), Touch::Edge(Edge::End))]);
+        let named = fps.iter().flat_map(|f| {
+            f.touches
+                .iter()
+                .map(|(x, _)| x)
+                .chain(&f.creates)
+                .chain(&f.removes)
+        });
+        assert!(named.into_iter().all(|x| x.starts_with('$')), "{fps:?}");
+        // Shifts are kept.
+        assert_eq!(own[1].shifts.len(), 1);
+        assert_eq!(own[2].shifts.len(), 1);
+    }
+
+    /// An allocating op that records several `added` changes: which is its placeholder's is
+    /// unknown, so they are dropped.
+    #[test]
+    fn several_added_changes_of_an_allocating_op_are_dropped() {
+        use crate::tx::{Change, EntityKind};
+        let add = |id: &str| Change {
+            kind: EntityKind::Clip,
+            id: id.into(),
+            change: ChangeKind::Added,
+            op: 0,
+            edge: None,
+            path: None,
+            by: None,
+        };
+        let ops = vec![Op::ClipInsert {
+            id: "$c".into(),
+            track: "t1".into(),
+            asset: "a1".into(),
+            at: Rational::zero(),
+            source_in: Rational::zero(),
+            duration: Rational::from_int(1),
+        }];
+        let own = vec![Diff {
+            changes: vec![add("c7"), add("c8")],
+            shifts: vec![],
+        }];
+        assert!(unbind_own(&ops, own)[0].changes.is_empty());
+        // Literal ids (an internal restore, no placeholder) are real and kept.
+        let literal = vec![Op::ClipInsert {
+            id: "c9".into(),
+            track: "t1".into(),
+            asset: "a1".into(),
+            at: Rational::zero(),
+            source_in: Rational::zero(),
+            duration: Rational::from_int(1),
+        }];
+        let own = vec![Diff {
+            changes: vec![add("c9")],
+            shifts: vec![],
+        }];
+        assert_eq!(unbind_own(&literal, own.clone()), own);
+    }
 }

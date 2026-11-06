@@ -872,3 +872,48 @@ proptest! {
         }
     }
 }
+
+/// Our stale tx inserts `$c` (bound to `c3` at the base) and trims it; meanwhile intervening
+/// records allocated `c3` for another clip, trimmed its end and deleted it. Our footprints
+/// name `$c`, never the base's `c3`, so the other clip is not ours and nothing conflicts:
+/// ours lands under a fresh id, trimmed, and the other clip stays deleted.
+#[test]
+fn intervening_record_allocating_our_base_id_is_not_ours() {
+    let p = with_clips(&[5, 5]);
+    let mut ids = MemIds::after(&p);
+    let (p1, a) = commit_with(
+        &p,
+        vec![insert("$x", "t2", secs(0), "a1", secs(0), secs(4))],
+        1,
+        "tx-a",
+        &mut ids,
+    );
+    assert_eq!(a.bindings["$x"], "c3", "the id our base binds too");
+    let (p2, b) = commit_with(
+        &p1,
+        vec![trim("c3", Edge::End, secs(-1))],
+        2,
+        "tx-trim",
+        &mut ids,
+    );
+    let (p3, c) = commit_with(
+        &p2,
+        vec![Op::ClipDelete { clip: "c3".into() }],
+        3,
+        "tx-del",
+        &mut ids,
+    );
+    let ours = stale(vec![
+        insert("$c", "t1", secs(10), "a1", secs(0), secs(3)),
+        trim("$c", Edge::End, secs(-1)),
+    ]);
+    let r = rebase_tx(&p, &p3, &ours, &[a, b, c], &mut ids).unwrap();
+    let id = &r.applied.bindings["$c"];
+    assert_ne!(id, "c3");
+    let mine = clip(&r.applied.project, id);
+    assert_eq!((mine.start, mine.duration), (secs(10), secs(2)));
+    assert!(
+        r.applied.project.timeline.tracks[1].items.is_empty(),
+        "the other c3 stays deleted"
+    );
+}
