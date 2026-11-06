@@ -32,9 +32,11 @@ use sha2::{Digest, Sha256};
 pub use cache::{FontCache, STRAY_AFTER};
 pub use catalog::{
     ArchiveFormat, ArchiveMember, CatalogEntry, CatalogFace, CatalogFile, CatalogSource,
-    CatalogStyle, FontCatalog, FontFormat, Licence, Variable,
+    CatalogStyle, FontCatalog, Licence, Variable,
 };
 pub use fetch::{FetchOptions, Fetcher, FileState};
+/// The model's font file format (`fin_core::FontFormat`), which the catalog's files use too.
+pub use fin_core::FontFormat;
 pub use slot::MAX_DOWNLOADS;
 pub use validate::{
     MAX_FILE_SIZE, RULES_JSON, is_allowed_source_host, is_immutable_url, is_sha256,

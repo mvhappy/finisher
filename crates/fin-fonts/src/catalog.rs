@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use fin_core::CoreError;
+use fin_core::{CoreError, FontFormat};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -95,14 +95,6 @@ pub struct CatalogFace {
     pub italic: bool,
     /// ISO 15924 coverage by `fin_text::font_info`'s rule, sorted.
     pub scripts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum FontFormat {
-    Ttf,
-    Otf,
-    Ttc,
 }
 
 /// Where a file can be fetched. A plain source serves the file itself; an archive source
