@@ -3,10 +3,15 @@
 //!
 //! **Which units:** from the top of the author's undo stack ([`derive_stacks`]) down, while
 //! the unit was made after the checkpoint's seq. A unit of records was made at its last seq.
-//! A redo unit stands for the units it recreated (Decision 23), so it was made when they were
-//! (the newest of them): a redo of a unit made before the checkpoint stops the walk, as that
-//! unit is part of the checkpoint's state. A checkpoint at or before the branch's fork takes
-//! every unit of the author's on the branch (Decision 22).
+//! A redo unit stands for the units its undo took back (Decision 23), so it was made when
+//! they were, recursively through earlier redos: a redo of a unit made before the checkpoint
+//! stops the walk, as that unit is part of the checkpoint's state. But when that undo is at
+//! or before the checkpoint, the checkpoint's state lacks those units, and the redo was made
+//! at its own seq (it is taken). A redo that stands for units on both sides of the checkpoint
+//! (a redo of an earlier `undo --to`) can be neither taken nor kept without changing the
+//! checkpoint's state: `CONFLICT` with reason `STRADDLES_CHECKPOINT`, all or nothing. A
+//! checkpoint at or before the branch's fork takes every unit of the author's on the branch
+//! (Decision 22).
 //!
 //! **Planning** is that many undos in a row, written as one record: newest unit first, each
 //! unit's stored inverse is rebased over the branch's records after it and over the inverses
@@ -34,7 +39,7 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, MemIds};
 use crate::model::Project;
 use crate::ops::Op;
-use crate::rebase::{Conflict, Conflicts, Rebase, Rebased, rebase_apply, steps_from};
+use crate::rebase::{Conflict, Conflicts, Rebase, Rebased, reasons, rebase_apply, steps_from};
 use crate::record::{Link, RecordKind};
 use crate::tx::{CommittedTx, Tx};
 
@@ -53,7 +58,7 @@ pub fn plan_undo_to(
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
     let r = read(log, branch, author)?;
-    let units = after_checkpoint(&r.own, &r.stacks.undo, checkpoint_seq);
+    let units = after_checkpoint(&r.own, &r.stacks.undo, checkpoint_seq, tx_id)?;
     if units.is_empty() {
         let mut e = nothing("NOTHING_TO_UNDO", "undo", branch, author);
         e.message =
@@ -167,49 +172,94 @@ fn rebase_steps(
     ))
 }
 
-/// The units `undo --to` takes, newest first (module docs).
+/// The units `undo --to` takes, newest first (module docs); `CONFLICT`
+/// (`STRADDLES_CHECKPOINT`) at a redo unit that stands for units on both sides of it.
 fn after_checkpoint<'a>(
     own: &[LogRec],
     undo: &'a [UnitEntry],
     checkpoint_seq: u64,
-) -> Vec<&'a UnitEntry> {
+    tx_id: &str,
+) -> Result<Vec<&'a UnitEntry>, CoreError> {
     let by_id: HashMap<&str, &LogRec> = own.iter().map(|c| (c.record.tx_id.as_str(), c)).collect();
-    undo.iter()
-        .rev()
-        .take_while(|u| made_at(own, &by_id, u) > checkpoint_seq)
-        .collect()
-}
-
-/// When `unit`'s content was made: its last seq, or for a redo unit the newest of the units
-/// its undo had taken back (recursively, through earlier redos).
-fn made_at(own: &[LogRec], by_id: &HashMap<&str, &LogRec>, unit: &UnitEntry) -> u64 {
-    match &unit.source {
-        UnitSource::Records => unit.last_seq,
-        UnitSource::Redo { tx_id } => redo_made_at(own, by_id, tx_id).unwrap_or(unit.last_seq),
-    }
-}
-
-fn redo_made_at(own: &[LogRec], by_id: &HashMap<&str, &LogRec>, redo: &str) -> Option<u64> {
-    let r = by_id.get(redo)?;
-    let undo = by_id.get(r.record.redoes.as_deref()?)?;
-    let mut newest = None;
-    for id in undo.record.undoes.iter().flatten() {
-        let at = match by_id.get(id.as_str()) {
-            // A redo unit again: it names a record older than this one (seqs only go down).
-            Some(c) if c.record.kind == RecordKind::Redo && c.seq < r.seq => {
-                redo_made_at(own, by_id, id).unwrap_or(c.seq)
+    let made = Made {
+        own,
+        by_id,
+        checkpoint_seq,
+    };
+    let (mut taken, mut offset) = (Vec::new(), 0);
+    for u in undo.iter().rev() {
+        let (oldest, newest) = made.unit(u);
+        if oldest > checkpoint_seq {
+            offset += unit_inverse(own, u)?.len();
+            taken.push(u);
+        } else if newest <= checkpoint_seq {
+            break;
+        } else {
+            let against = match &u.source {
+                UnitSource::Redo { tx_id } => tx_id.clone(),
+                UnitSource::Records => u.id.clone(),
+            };
+            let c = Conflict::new(tx_id, offset, reasons::STRADDLES_CHECKPOINT, Some(against));
+            let mut c = in_record(c, 0, &u.id);
+            if let Some(Value::Object(d)) = c.details.as_deref_mut() {
+                d.insert("checkpointSeq".into(), json!(checkpoint_seq));
             }
-            Some(c) => c.seq,
-            // A merge group's id: the group's last record.
-            None => own
-                .iter()
-                .filter(|c| c.record.merge_id.as_deref() == Some(id.as_str()))
-                .map(|c| c.seq)
-                .max()?,
-        };
-        newest = newest.max(Some(at));
+            return Err(Conflicts::one(c).into());
+        }
     }
-    newest
+    Ok(taken)
+}
+
+/// When units were made, judged against one checkpoint (module docs).
+struct Made<'a> {
+    own: &'a [LogRec],
+    by_id: HashMap<&'a str, &'a LogRec>,
+    checkpoint_seq: u64,
+}
+
+impl Made<'_> {
+    /// The oldest and newest seq at which `unit`'s content was made.
+    fn unit(&self, unit: &UnitEntry) -> (u64, u64) {
+        let own = (unit.last_seq, unit.last_seq);
+        match &unit.source {
+            UnitSource::Records => own,
+            UnitSource::Redo { tx_id } => self.redo(tx_id).unwrap_or(own),
+        }
+    }
+
+    /// The oldest and newest seq at which the units redo record `redo` recreated were made:
+    /// the redo's own seq when its undo is at or before the checkpoint (the checkpoint's
+    /// state lacks them), else theirs, recursively through earlier redos.
+    fn redo(&self, redo: &str) -> Option<(u64, u64)> {
+        let r = self.by_id.get(redo)?;
+        let undo = self.by_id.get(r.record.redoes.as_deref()?)?;
+        if undo.seq <= self.checkpoint_seq {
+            return Some((r.seq, r.seq));
+        }
+        let mut range: Option<(u64, u64)> = None;
+        for id in undo.record.undoes.iter().flatten() {
+            let (lo, hi) = match self.by_id.get(id.as_str()) {
+                // A redo unit again: it names a record older than this one (seqs only go
+                // down).
+                Some(c) if c.record.kind == RecordKind::Redo && c.seq < r.seq => {
+                    self.redo(id).unwrap_or((c.seq, c.seq))
+                }
+                Some(c) => (c.seq, c.seq),
+                // A merge group's id: the group's last record.
+                None => {
+                    let last = self
+                        .own
+                        .iter()
+                        .filter(|c| c.record.merge_id.as_deref() == Some(id.as_str()))
+                        .map(|c| c.seq)
+                        .max()?;
+                    (last, last)
+                }
+            };
+            range = Some(range.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+        }
+        range
+    }
 }
 
 /// `c` (a conflict of one unit's inverse) as a conflict of the whole record: its op index

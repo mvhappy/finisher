@@ -24,6 +24,9 @@ pub mod reasons {
     pub const ID_COLLISION: &str = "ID_COLLISION";
     /// Undoing this unit would undo the target branch's own records (merge).
     pub const UNDOES_TARGET_RECORDS: &str = "UNDOES_TARGET_RECORDS";
+    /// `undo --to`: a redo unit stands for units made on both sides of the checkpoint, so
+    /// neither undoing it nor keeping it gives the checkpoint's state.
+    pub const STRADDLES_CHECKPOINT: &str = "STRADDLES_CHECKPOINT";
     /// Not a conflict: why a revert plans nothing (the merge group's effect is gone already).
     pub const ALREADY_REVERTED: &str = "ALREADY_REVERTED";
 }
@@ -100,6 +103,9 @@ fn fix_for(reason: &str) -> &'static str {
         reasons::ALREADY_PRESENT => "the change is already present; skip it",
         reasons::ID_COLLISION => "the entity id is taken; recreate the entity under a new id",
         reasons::UNDOES_TARGET_RECORDS => "undo the change on the target branch itself",
+        reasons::STRADDLES_CHECKPOINT => {
+            "undo it with plain undos (fin undo), or undo --to an earlier checkpoint"
+        }
         _ => "read the project at the current head and send the edit again",
     }
 }

@@ -108,8 +108,14 @@ pub struct StepUnit {
 ///   the part unmirrored: it applies the step's record again, and a later inverse of it pairs
 ///   with that part ([`StepUnit`] says which).
 ///
-/// Anything else stands alone: an undo or revert whose units are not all here (a merge group
-/// only partly here, say), or whose op counts do not add up, and every other kind.
+/// An undo whose units are only partly here (a stale base between two units of an
+/// `undo --to`) names them newest first, so the units here come first, and their inverses
+/// lead its ops: it is cut into one part per step of theirs, as above, and one unpaired tail
+/// part for the rest (the inverses of units older than the interval, which stand alone).
+///
+/// Anything else stands alone: an undo whose units here are not a prefix of the ones it
+/// names, a revert whose group is not all here, a step whose op counts do not add up, and
+/// every other kind.
 /// Fails only as [`Step::from_committed`] does.
 pub fn steps_from(since: &[&CommittedTx]) -> Result<Vec<Step>, CoreError> {
     Ok(steps_with_units(since)?.0)
@@ -136,28 +142,47 @@ pub fn steps_with_units(
                 .or_else(|| groups.get(id))
                 .map(|g| g.iter().rev().copied().collect())
         };
-        let addressed: Option<Vec<usize>> = match c.link.as_deref() {
-            Some(Link::Undo { undoes }) => undoes
-                .iter()
-                .map(|u| unit(u))
-                .collect::<Option<Vec<_>>>()
-                .map(|t| t.concat()),
-            Some(Link::Redo { redoes }) => unit(redoes),
+        // The addressed steps, and whether some named units are not here (`partial`).
+        let addressed: Option<(Vec<usize>, bool)> = match c.link.as_deref() {
+            Some(Link::Undo { undoes }) => {
+                let here: Vec<Option<Vec<usize>>> = undoes.iter().map(|u| unit(u)).collect();
+                let n = here.iter().take_while(|u| u.is_some()).count();
+                // The units here must be a prefix of the named ones (newest first).
+                (here[n..].iter().all(Option::is_none)).then(|| {
+                    (
+                        here[..n].iter().flatten().flatten().copied().collect(),
+                        n < here.len(),
+                    )
+                })
+            }
+            Some(Link::Redo { redoes }) => unit(redoes).map(|t| (t, false)),
             Some(Link::Revert { reverts }) => groups
                 .get(reverts)
-                .map(|g| g.iter().rev().copied().collect()),
+                .map(|g| (g.iter().rev().copied().collect(), false)),
             _ => None,
         };
-        let addressed = addressed.filter(|t| {
+        let addressed = addressed.filter(|(t, partial)| {
             let distinct = t.iter().collect::<BTreeSet<_>>().len() == t.len();
             let ops: usize = t.iter().map(|&j| steps[j].ops.len()).sum();
-            distinct && !t.is_empty() && ops == step.ops.len()
+            let fits = if *partial {
+                ops < step.ops.len()
+            } else {
+                ops == step.ops.len()
+            };
+            distinct && !t.is_empty() && fits
         });
         let start = steps.len();
         match addressed {
-            Some(t) => {
-                let sizes: Vec<usize> = t.iter().map(|&j| steps[j].ops.len()).collect();
-                for (mut part, j) in step.split(&sizes)?.into_iter().zip(t) {
+            Some((t, partial)) => {
+                let mut sizes: Vec<usize> = t.iter().map(|&j| steps[j].ops.len()).collect();
+                let tail = step.ops.len() - sizes.iter().sum::<usize>();
+                if partial {
+                    sizes.push(tail);
+                }
+                let mut parts = step.split(&sizes)?;
+                // The inverses of units older than the interval: one unpaired part.
+                let rest = partial.then(|| parts.pop()).flatten();
+                for (mut part, j) in parts.into_iter().zip(t) {
                     if !paired[j] {
                         part.mirror_of = Some(j);
                         paired[j] = true;
@@ -169,6 +194,11 @@ pub fn steps_with_units(
                     paired.push(part.mirror_of.is_some());
                     steps.push(part);
                     units.push(unit);
+                }
+                if let Some(part) = rest {
+                    paired.push(false);
+                    steps.push(part);
+                    units.push(None);
                 }
             }
             None => {

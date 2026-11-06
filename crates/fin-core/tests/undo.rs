@@ -673,3 +673,100 @@ fn stale_edit_over_an_undo_to_with_a_redo_unit_pairs_each_unit() {
     }
     assert_eq!(one.state("main"), many.state("main"));
 }
+
+#[test]
+fn redo_after_the_checkpoint_of_an_undo_before_it_is_taken() {
+    // e1, its undo, the checkpoint, then the redo: the checkpoint's state lacks e1, so the
+    // redo was made after it and `undo --to` takes it back.
+    let mut log = log();
+    log.commit("main", "e1", "alice", vec![delete("c1")]);
+    log.undo("main", "alice", "u1").unwrap();
+    let cp = log.checkpoint("main", "k1", "alice", "v1");
+    let at_cp = log.state("main");
+    log.redo("main", "alice", "r1").unwrap();
+    let u = log.undo_to("main", "alice", cp, "ut").unwrap();
+    assert_eq!(undoes(&u), ["r1"]);
+    assert_eq!(log.state("main"), at_cp);
+}
+
+#[test]
+fn redo_straddling_the_checkpoint_is_refused() {
+    // cp0; e1; cpB; e2; undo --to cp0 (both); redo: the redo stands for e1 (before cpB) and
+    // e2 (after it). Neither undoing it nor keeping it gives cpB's state: refused whole.
+    let mut log = log();
+    let cp0 = log.checkpoint("main", "k0", "alice", "v0");
+    log.commit("main", "e1", "alice", vec![delete("c1")]);
+    let cpb = log.checkpoint("main", "kb", "alice", "vb");
+    log.commit("main", "e2", "alice", vec![delete("c2")]);
+    log.undo_to("main", "alice", cp0, "ut0").unwrap();
+    log.redo("main", "alice", "r1").unwrap();
+    edit(&mut log, "main", "e3", "alice");
+    let head = log.head_seq("main");
+    let err = code(log.undo_to("main", "alice", cpb, "utb"));
+    assert_eq!(err.code, "CONFLICT");
+    let c = &err.details["conflicts"][0];
+    assert_eq!(
+        (
+            c["reason"].as_str(),
+            c["againstTx"].as_str(),
+            c["opIndex"].as_u64(),
+            c["details"]["unit"].as_str(),
+            c["details"]["checkpointSeq"].as_u64(),
+        ),
+        (
+            Some("STRADDLES_CHECKPOINT"),
+            Some("r1"),
+            Some(1),
+            Some("r1"),
+            Some(cpb)
+        ),
+        "{err:?}"
+    );
+    assert_eq!(err.details["conflicts"].as_array().unwrap().len(), 1);
+    assert!(c["fix"].as_str().unwrap().contains("plain undos"));
+    assert_eq!(log.head_seq("main"), head, "nothing appended");
+    // An earlier checkpoint takes the redo whole; plain undos work too.
+    let u = log.undo_to("main", "alice", cp0, "ut1").unwrap();
+    assert_eq!(undoes(&u), ["e3", "r1"]);
+    assert_eq!(log.state("main"), genesis());
+}
+
+/// cp; e1 deletes Z; e2 deletes X; then `undo --to` cp, or two undos. Returns e1's seq.
+fn two_units(log: &mut MemLog, to: bool) -> u64 {
+    let cp = log.checkpoint("main", "k1", "alice", "v1");
+    let e1 = log.commit("main", "e1", "alice", vec![delete("c3")]).seq;
+    log.commit("main", "e2", "alice", vec![delete("c1")]);
+    if to {
+        log.undo_to("main", "alice", cp, "ut").unwrap();
+    } else {
+        log.undo("main", "alice", "ua").unwrap();
+        log.undo("main", "alice", "ub").unwrap();
+    }
+    e1
+}
+
+#[test]
+fn stale_edit_between_undo_to_units_is_the_undos_in_a_row() {
+    // A stale base between e1 and e2: only e2 is in the interval. The record is cut into e2's
+    // part (paired) and an unpaired tail, as the two undos would be.
+    let trim = Op::ClipTrim {
+        clip: "c1".into(),
+        edge: Edge::End,
+        delta: secs(-2),
+    };
+    let w = |at: i64| insert("$w", "t1", secs(at), "a1", secs(0), secs(5));
+    for (n, ops) in [vec![trim], vec![w(0)], vec![w(5)], vec![w(10)], vec![w(20)]]
+        .into_iter()
+        .enumerate()
+    {
+        let (mut one, mut many) = (log(), log());
+        let e1 = two_units(&mut one, true);
+        two_units(&mut many, false);
+        let a = one
+            .commit_at("main", "b1", "bob", e1, ops.clone())
+            .map(|_| ());
+        let b = many.commit_at("main", "b1", "bob", e1, ops).map(|_| ());
+        assert_eq!(a.map_err(|e| e.code), b.map_err(|e| e.code), "case {n}");
+        assert_eq!(one.state("main"), many.state("main"), "case {n}");
+    }
+}
