@@ -56,7 +56,7 @@ use common::memlog::MemLog;
 use common::*;
 use fin_core::history::UnitEntry;
 use fin_core::rebase::{Conflict, reasons};
-use fin_core::{CoreError, Edge, Op, Project, Rational, apply_tx};
+use fin_core::{CoreError, Edge, Project, Rational, apply_tx};
 use proptest::prelude::*;
 use proptest::sample::Index;
 
@@ -1051,7 +1051,7 @@ impl Run {
                     succ: None,
                     stamp: 0,
                 };
-                (Op::ClipDelete { clip: c.id.clone() }, lop)
+                (delete(&c.id), lop)
             }
             Act::Trim {
                 track,
@@ -1063,11 +1063,7 @@ impl Run {
                 let Some(c) = items.get(k % items.len().max(1)) else {
                     return;
                 };
-                let op = Op::ClipTrim {
-                    clip: c.id.clone(),
-                    edge: Edge::End,
-                    delta: frames(d),
-                };
+                let op = trim(&c.id, Edge::End, frames(d));
                 (
                     op,
                     LOp::Trim {
@@ -1461,18 +1457,8 @@ proptest! {
 #[test]
 fn prosemirror_tie_break_is_the_models_order() {
     let mut log = MemLog::new(with_clips(&[10, 10, 10]));
-    log.commit(
-        "main",
-        "b1",
-        "bob",
-        vec![Op::ClipDelete { clip: "c3".into() }],
-    );
-    log.commit(
-        "main",
-        "a1",
-        "alice",
-        vec![Op::ClipDelete { clip: "c2".into() }],
-    );
+    log.commit("main", "b1", "bob", vec![delete("c3")]);
+    log.commit("main", "a1", "alice", vec![delete("c2")]);
     log.undo("main", "bob", "b2").unwrap();
     log.undo("main", "alice", "a2").unwrap();
     let order: Vec<String> = starts(&log.state("main"), 0)

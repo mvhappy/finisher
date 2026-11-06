@@ -74,16 +74,17 @@ pub fn kind_of(c: &CommittedTx) -> String {
 
 /// A small, unique asset: the op every holder commit carries.
 pub fn asset_op(tx_id: &str) -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: format!("/xhost/{tx_id}.mov"),
-        duration: Rational::from_int(10),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        format!("/xhost/{tx_id}.mov"),
+        Rational::from_int(10),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: Rational::from_int(30),
         }),
-        audio: None,
-        fingerprint: format!("fp-{tx_id}"),
-    }
+        None,
+        format!("fp-{tx_id}"),
+    )
+    .into()
 }

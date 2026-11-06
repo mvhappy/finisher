@@ -305,7 +305,7 @@ fn rerun_conflict(
     head: &Project,
 ) -> Conflict {
     let mut named: BTreeSet<&str> = ours.touches.iter().map(|(x, _)| x.as_str()).collect();
-    for key in ["clip", "id", "asset"] {
+    for key in ["clip", "item", "id", "asset"] {
         named.extend(e.details[key].as_str());
     }
     if let Some(clips) = e.details["clips"].as_array() {

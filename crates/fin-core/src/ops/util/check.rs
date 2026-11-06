@@ -3,10 +3,9 @@
 use serde_json::json;
 
 use crate::error::CoreError;
-use crate::model::{Asset, Project, Track, TrackKind};
-use crate::ops::util::{end, track_index};
-use crate::time::{Rational, frame_duration};
-use crate::tx::Shift;
+use crate::model::{Asset, AssetKind, Project, Track, TrackKind};
+use crate::ops::util::{TrackAt, end};
+use crate::time::Rational;
 
 pub(crate) fn invalid_range(
     message: impl Into<String>,
@@ -18,21 +17,18 @@ pub(crate) fn invalid_range(
         .with_fix(fix)
 }
 
-/// The asset must carry the stream the track plays.
+/// A clip's asset must be a `media` asset carrying the stream the track plays (structural).
 pub(crate) fn check_kind(track: &Track, asset: &Asset) -> Result<(), CoreError> {
-    let ok = match track.kind {
-        TrackKind::Video => asset.video.is_some(),
-        TrackKind::Audio => asset.audio.is_some(),
-        TrackKind::Caption => false,
-    };
+    let ok = asset.kind == AssetKind::Media
+        && match track.kind {
+            TrackKind::Video => asset.video.is_some(),
+            TrackKind::Audio => asset.audio.is_some(),
+            TrackKind::Caption => false,
+        };
     if ok {
         return Ok(());
     }
-    let want = match track.kind {
-        TrackKind::Video => "video",
-        TrackKind::Audio => "audio",
-        TrackKind::Caption => "caption",
-    };
+    let want = kind_name(track.kind);
     Err(CoreError::new(
         "TRACK_KIND_MISMATCH",
         format!(
@@ -44,6 +40,15 @@ pub(crate) fn check_kind(track: &Track, asset: &Asset) -> Result<(), CoreError> 
     .with_fix(format!(
         "put the asset on a track whose kind it has a stream for, not {want}"
     )))
+}
+
+/// The wire name of a track kind.
+pub(crate) fn kind_name(kind: TrackKind) -> &'static str {
+    match kind {
+        TrackKind::Video => "video",
+        TrackKind::Audio => "audio",
+        TrackKind::Caption => "caption",
+    }
 }
 
 /// The length of a media asset (`INVALID_OP` for an asset without one).
@@ -61,21 +66,8 @@ pub(crate) fn media_duration(asset: &Asset) -> Result<Rational, CoreError> {
     })
 }
 
-/// `source_in >= 0`, `duration >= one frame`, `source_in + duration <= asset.duration`.
-pub(crate) fn check_source(
-    project: &Project,
-    asset: &Asset,
-    source_in: Rational,
-    duration: Rational,
-) -> Result<(), CoreError> {
-    let frame = frame_duration(project.rate)?;
-    if source_in < Rational::zero() {
-        return Err(invalid_range(
-            "sourceIn must not be negative",
-            json!({ "sourceIn": source_in, "min": Rational::zero() }),
-            "use a sourceIn of 0 or more",
-        ));
-    }
+/// At least one `frame` (of the item's timeline) long (policy).
+pub(crate) fn check_frame(frame: Rational, duration: Rational) -> Result<(), CoreError> {
     if duration < frame {
         return Err(invalid_range(
             "duration must be at least one frame",
@@ -83,15 +75,49 @@ pub(crate) fn check_source(
             format!("use a duration of at least {frame}s"),
         ));
     }
+    Ok(())
+}
+
+/// A clip's speed is positive (structural: source times would run backwards or stand still).
+pub(crate) fn check_speed(speed: Rational) -> Result<(), CoreError> {
+    if speed.is_positive() {
+        return Ok(());
+    }
+    Err(invalid_range(
+        "speed must be positive",
+        json!({ "speed": speed, "min": "0", "exclusive": true }),
+        "use a speed greater than 0, e.g. 1 or 1/2",
+    ))
+}
+
+/// `source_in >= 0`, `duration >= frame`, and the source extent `duration × speed`
+/// (plan 4C Decision 14) ends within the asset: `source_in + duration × speed <=
+/// asset.duration`.
+pub(crate) fn check_source(
+    frame: Rational,
+    asset: &Asset,
+    source_in: Rational,
+    duration: Rational,
+    speed: Rational,
+) -> Result<(), CoreError> {
+    if source_in < Rational::zero() {
+        return Err(invalid_range(
+            "sourceIn must not be negative",
+            json!({ "sourceIn": source_in, "min": Rational::zero() }),
+            "use a sourceIn of 0 or more",
+        ));
+    }
+    check_frame(frame, duration)?;
     let length = media_duration(asset)?;
-    if source_in.checked_add(duration)? > length {
-        let max = length.checked_sub(source_in)?;
+    if source_in.checked_add(duration.checked_mul(speed)?)? > length {
+        let max = length.checked_sub(source_in)?.checked_div(speed)?;
         return Err(invalid_range(
             format!(
                 "sourceIn + duration runs past the end of asset {}",
                 asset.id
             ),
-            json!({ "sourceIn": source_in, "duration": duration, "assetDuration": length, "max": max }),
+            json!({ "sourceIn": source_in, "duration": duration, "speed": speed,
+                    "assetDuration": length, "max": max }),
             format!("use a duration of at most {max}s from this sourceIn"),
         ));
     }
@@ -101,32 +127,36 @@ pub(crate) fn check_source(
 /// The structural invariant of a track: positive durations (`CLIP_EMPTY`), non-negative
 /// `start` and `sourceIn` (`CLIP_NEGATIVE`), sorted by `start` with no overlaps
 /// (`CLIP_OVERLAP`). Policy checks keep it on the edit path; replay, which skips them, checks it
-/// after every op on each track the op shifted.
-pub(crate) fn check_tracks(project: &Project, shifts: &[Shift]) -> Result<(), CoreError> {
-    for s in shifts {
-        check_track(track_index(project, &s.track)?.get(project))?;
+/// after every op on each track the op touched ([`crate::ops::util::touched_tracks`]).
+pub(crate) fn check_tracks(project: &Project, tracks: &[TrackAt]) -> Result<(), CoreError> {
+    for t in tracks {
+        check_track(t.get(project))?;
     }
     Ok(())
 }
 
-fn check_track(track: &Track) -> Result<(), CoreError> {
+/// [`check_tracks`] for one track.
+pub(crate) fn check_track(track: &Track) -> Result<(), CoreError> {
     for c in &track.items {
         if !c.duration.is_positive() {
             return Err(CoreError::new(
                 "CLIP_EMPTY",
-                format!("clip {} has no positive duration", c.id),
+                format!("item {} has no positive duration", c.id),
             )
-            .with_details(json!({ "track": track.id, "clip": c.id, "duration": c.duration })));
+            .with_details(
+                json!({ "track": track.id, "clip": c.id, "item": c.id, "duration": c.duration }),
+            ));
         }
         let source_in = c.source_in().unwrap_or_default();
         if c.start < Rational::zero() || source_in < Rational::zero() {
             return Err(CoreError::new(
                 "CLIP_NEGATIVE",
-                format!("clip {} has a negative start or sourceIn", c.id),
+                format!("item {} has a negative start or sourceIn", c.id),
             )
             .with_details(json!({
                 "track": track.id,
                 "clip": c.id,
+                "item": c.id,
                 "start": c.start,
                 "sourceIn": source_in,
             })));
@@ -138,7 +168,7 @@ fn check_track(track: &Track) -> Result<(), CoreError> {
             return Err(CoreError::new(
                 "CLIP_OVERLAP",
                 format!(
-                    "clips {} and {} overlap on track {}",
+                    "items {} and {} overlap on track {}",
                     w[0].id, w[1].id, track.id
                 ),
             )

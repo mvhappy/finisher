@@ -2,7 +2,7 @@
 
 use crate::error::CoreError;
 use crate::ids::IdKind;
-use crate::model::{Asset, Item, ItemBody, Project, Track};
+use crate::model::{Asset, Item, Project, Track};
 use crate::ops::util::not_found;
 use crate::time::Rational;
 
@@ -69,20 +69,33 @@ pub(crate) fn track_index(project: &Project, id: &str) -> Result<TrackAt, CoreEr
     Err(not_found("track", id))
 }
 
-/// The track and item index of clip item `id` (`NOT_FOUND` when no clip item has it).
-pub(crate) fn clip_index(project: &Project, id: &str) -> Result<(TrackAt, usize), CoreError> {
+/// The track and index of item `id`, of any kind (`NOT_FOUND` "item" when no item has it).
+pub(crate) fn item_index(project: &Project, id: &str) -> Result<(TrackAt, usize), CoreError> {
+    find_item(project, id).ok_or_else(|| not_found("item", id))
+}
+
+/// Where item `id` is, if any item has it.
+pub(crate) fn find_item(project: &Project, id: &str) -> Option<(TrackAt, usize)> {
     for (timeline, tl) in project.timelines.iter().enumerate() {
         for (track, t) in tl.tracks.iter().enumerate() {
-            let found = t
-                .items
-                .iter()
-                .position(|c| c.id == id && matches!(c.body, ItemBody::Clip { .. }));
-            if let Some(ci) = found {
-                return Ok((TrackAt { timeline, track }, ci));
+            if let Some(i) = t.items.iter().position(|c| c.id == id) {
+                return Some((TrackAt { timeline, track }, i));
             }
         }
     }
-    Err(not_found("clip", id))
+    None
+}
+
+/// Where the track holding transition `id` is, if any.
+pub(crate) fn find_transition(project: &Project, id: &str) -> Option<TrackAt> {
+    for (timeline, tl) in project.timelines.iter().enumerate() {
+        for (track, t) in tl.tracks.iter().enumerate() {
+            if t.transitions.iter().any(|x| x.id == id) {
+                return Some(TrackAt { timeline, track });
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn asset<'a>(project: &'a Project, id: &str) -> Result<&'a Asset, CoreError> {

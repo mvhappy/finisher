@@ -6,7 +6,7 @@ mod integration_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fin_core::{Op, Rational, Record, RecordKind, SCHEMA_VERSION, Tx, resolve_ops};
+use fin_core::{Rational, Record, RecordKind, SCHEMA_VERSION, Tx, resolve_ops, upcast_record};
 use fin_store::{APPLICATION_ID, DB_VERSION, MAIN, OpenOptions, Store, StoreError, db_path};
 use rusqlite::{Connection, OpenFlags, params};
 use tempfile::TempDir;
@@ -209,15 +209,20 @@ fn sp2_fixture_migrates_to_identical_state() {
         assert_eq!(*tx_hash, hash(bytes), "seq {seq}");
         assert_eq!(*parent_hash, parent, "seq {seq}");
         assert_eq!((*epoch, *exported), (0, 0));
-        let record: Record = serde_json::from_slice(bytes).unwrap();
-        // Exactly the bytes a fresh commit would write: re-encoding is the identity.
-        assert_eq!(fin_core::encode_record(&record), *bytes);
+        // The bytes stay as 0001 wrote them (schema 1, `clip.*` ops); readers upcast them.
+        let raw: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(raw["schemaVersion"], 1);
+        let record = upcast_record(raw.clone()).unwrap();
+        assert_eq!(
+            raw["intent"]["ops"].as_array().unwrap().len(),
+            record.intent.ops.len()
+        );
         assert_eq!(record.tx_id, *tx_id);
         assert_eq!(record.seq, *seq as u64);
         assert_eq!(record.kind, RecordKind::Edit);
         // Sub-project 2 wrote schema 1; the bytes stay as written (read as v2 by upcasting).
-        assert_eq!(record.schema_version, 1);
-        assert_eq!(i64::from(record.schema_version), *sv);
+        assert_eq!(record.schema_version, SCHEMA_VERSION);
+        assert_eq!(*sv, 1);
         assert_eq!(record.parent_hash, parent);
         assert_eq!(record.author, "fixture");
         assert_eq!(record.author, *author);
@@ -247,14 +252,20 @@ fn commit_after_migration_continues_the_chain() {
             base_rev: rev,
             schema_version: SCHEMA_VERSION,
             args_hash: None,
-            ops: vec![Op::AssetAdd {
-                id: "$a".into(),
-                path: "media/b.mov".into(),
-                duration: Rational::from_int(5),
-                video: None,
-                audio: None,
-                fingerprint: "fp".into(),
-            }],
+            ops: vec![
+                fin_core::AssetAdd::media(
+                    "$a",
+                    "media/b.mov",
+                    Rational::from_int(5),
+                    None,
+                    Some(fin_core::AudioInfo {
+                        sample_rate: 48_000,
+                        channels: 2,
+                    }),
+                    "fp",
+                )
+                .into(),
+            ],
         })
         .unwrap();
     assert_eq!(c.rev, rev + 1);
@@ -604,8 +615,10 @@ fn migration_0001_output_is_pinned() {
 const GOLDEN_LAST_TX_HASH: &str =
     "blake3:4e6755bc3ae846cec660a6bef924520123073bca9042aa95d3f35f39409c2139";
 
-/// Today the frozen migration and a 4A commit agree byte for byte: each SP2 row, rebuilt
-/// through the current `fin-core` types and `encode_record`, gives the migrated bytes.
+/// The frozen migration's records are the SP2 rows: up to 4B a 4A commit wrote them byte
+/// for byte (`encode_record`); from 4C, which writes schema 2, each migrated record read as
+/// every reader reads it (`upcast_record`) equals the SP2 row upcast the same way (its tx,
+/// inverse, bindings and time in a v1 record), and its `resolved` is its intent resolved.
 #[test]
 fn migration_0001_matches_encode_record() {
     let sp2 = Sp2::new();
@@ -613,42 +626,13 @@ fn migration_0001_matches_encode_record() {
     let mut stmt = old
         .prepare("SELECT rev, json, inverse, bindings, committed_at FROM txs ORDER BY rev")
         .unwrap();
-    let expected: Vec<Vec<u8>> = {
-        let mut parent = None;
-        stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
+    let rows: Vec<(i64, String, String, String, i64)> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })
         .unwrap()
-        .map(|row| {
-            let (rev, json, inverse, bindings, committed_at) = row.unwrap();
-            let intent: Tx = serde_json::from_str(&json).unwrap();
-            let bindings: std::collections::BTreeMap<String, String> =
-                serde_json::from_str(&bindings).unwrap();
-            let resolved = resolve_ops(&intent.ops, &bindings).unwrap();
-            let record = Record::new_edit(
-                intent.tx_id.clone(),
-                rev as u64,
-                intent.schema_version,
-                parent.clone(),
-                intent.author.clone(),
-                committed_at,
-                intent,
-                resolved,
-                serde_json::from_str(&inverse).unwrap(),
-                bindings,
-            );
-            let bytes = fin_core::encode_record(&record);
-            parent = Some(hash(&bytes));
-            bytes
-        })
-        .collect()
-    };
+        .map(Result::unwrap)
+        .collect();
     drop(stmt);
     drop(old);
     drop(sp2.open().unwrap());
@@ -661,13 +645,23 @@ fn migration_0001_matches_encode_record() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    assert_eq!(got.len(), expected.len());
-    for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
+    assert_eq!(got.len(), rows.len());
+    for (bytes, (rev, json, inverse, bindings, committed_at)) in got.iter().zip(rows) {
+        let raw: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let intent: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let v1 = serde_json::json!({
+            "txId": intent["txId"], "seq": rev, "kind": "edit", "schemaVersion": 1,
+            "parentHash": raw["parentHash"], "author": intent["author"],
+            "committedAt": committed_at, "intent": intent, "resolved": raw["resolved"],
+            "inverse": serde_json::from_str::<serde_json::Value>(&inverse).unwrap(),
+            "bindings": serde_json::from_str::<serde_json::Value>(&bindings).unwrap(),
+        });
+        let want = upcast_record(v1).unwrap();
+        let up = upcast_record(raw).unwrap();
+        assert_eq!(up, want, "seq {rev}");
         assert_eq!(
-            String::from_utf8_lossy(g),
-            String::from_utf8_lossy(e),
-            "seq {}",
-            i + 1
+            up.resolved,
+            resolve_ops(&up.intent.ops, &up.bindings).unwrap()
         );
     }
 }

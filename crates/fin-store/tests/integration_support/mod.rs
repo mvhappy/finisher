@@ -95,29 +95,61 @@ impl Env {
 }
 
 pub fn asset(path: &str) -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: path.into(),
-        duration: Rational::from_int(600),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        path,
+        Rational::from_int(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: Rational::from_int(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 pub fn insert(at: i64, asset: &str) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: "$c".into(),
         track: "t1".into(),
         at: Rational::from_int(at),
-        asset: asset.into(),
-        source_in: Rational::from_int(0),
         duration: Rational::from_int(1),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: asset.into(),
+            source_in: Rational::from_int(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
+}
+
+/// `item.delete` of `item`, ripple.
+pub fn delete_item(item: &str) -> Op {
+    Op::from(fin_core::ItemDelete {
+        item: item.into(),
+        mode: fin_core::DeleteMode::Ripple,
+    })
+}
+
+/// `item.remove` of `id`, ripple (the inverse of an insert).
+pub fn remove_item(id: &str) -> Op {
+    Op::from(fin_core::ItemRemove {
+        id: id.into(),
+        mode: fin_core::DeleteMode::Ripple,
+    })
+}
+
+/// `item.trim` of `item`'s `edge` by `delta`, ripple.
+pub fn trim_item(item: &str, edge: fin_core::Edge, delta: Rational) -> Op {
+    Op::from(fin_core::ItemTrim {
+        item: item.into(),
+        edge,
+        delta,
+        mode: fin_core::TrimMode::Ripple,
+    })
 }
 
 pub fn try_commit(s: &mut Store, id: &str, ops: Vec<Op>) -> Result<CommittedTx, CoreError> {
@@ -246,6 +278,11 @@ pub fn fixture_4a(tmp: &Path) -> (PathBuf, PathBuf) {
 /// `(server_data, folder)` with the folder copied and `project.fdb` placed at
 /// `<server_data>/projects/<id>/project.fdb`. The fixture's recorded folder is gone, so open it
 /// with `OpenOptions { relocate: true, .. }`.
+///
+/// The fixture was generated at `36fe7e0`, before 4B's `f95f678` added `record_links.recovers`
+/// to (then unshipped) migration 0002, so its database lacks that column and every history
+/// write or `branch_index` check on it fails. Until the fixture is regenerated from final 4B
+/// code (or a migration adds the column), the copy gets the column 4B's final schema has.
 pub fn fixture_4b(tmp: &Path) -> (PathBuf, PathBuf) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/4b");
     let folder = tmp.join("folder");
@@ -256,5 +293,12 @@ pub fn fixture_4b(tmp: &Path) -> (PathBuf, PathBuf) {
     let db = fin_store::db_path(&server_data, v["id"].as_str().unwrap());
     fs::create_dir_all(db.parent().unwrap()).unwrap();
     fs::copy(src.join("project.fdb"), &db).unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "ALTER TABLE record_links ADD COLUMN recovers TEXT;
+         CREATE INDEX IF NOT EXISTS record_links_recovers ON record_links (recovers)
+         WHERE recovers IS NOT NULL;",
+    )
+    .unwrap();
     (server_data, folder)
 }

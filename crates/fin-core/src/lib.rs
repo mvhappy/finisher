@@ -21,7 +21,10 @@ pub use error::CoreError;
 pub use ids::{ID_KINDS, IdAlloc, IdKind, MemIds};
 pub use layout::{FaceRef, Measured, TextLayout, TextMeasurer, TextRequest, TextStyle};
 pub use model::*;
-pub use ops::{Edge, Op};
+pub use ops::{
+    AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
+    ItemTrim, Op, TrimMode, normalize,
+};
 pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{
     Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,

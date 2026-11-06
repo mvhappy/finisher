@@ -56,20 +56,21 @@ fn v1_diff() -> Value {
     })
 }
 
-/// The v2 shape (kind stays `clip` until the item ops rename it, plan 4C Task 7).
+/// The v2 shape: kind `item`, each entry's op, a start trim's `edge` and `by`, and no shift
+/// for the `clip.remove` without ripple (its `item.remove` lifts and records none).
 fn v2_diff() -> Value {
     json!({
         "changes": [
             { "kind": "asset", "id": "a1", "change": "added", "op": 0 },
-            { "kind": "clip", "id": "c1", "change": "added", "op": 1 },
-            { "kind": "clip", "id": "c1", "change": "updated", "op": 2, "edge": "start",
+            { "kind": "item", "id": "c1", "change": "added", "op": 1 },
+            { "kind": "item", "id": "c1", "change": "updated", "op": 2, "edge": "start",
               "by": "-1/2" },
-            { "kind": "clip", "id": "c1", "change": "updated", "op": 3, "edge": "end" },
-            { "kind": "clip", "id": "c1", "change": "updated", "op": 4, "edge": "start",
+            { "kind": "item", "id": "c1", "change": "updated", "op": 3, "edge": "end" },
+            { "kind": "item", "id": "c1", "change": "updated", "op": 4, "edge": "start",
               "by": "3" },
-            { "kind": "clip", "id": "c1", "change": "removed", "op": 5 },
-            { "kind": "clip", "id": "c1", "change": "added", "op": 6 },
-            { "kind": "clip", "id": "c1", "change": "removed", "op": 7 },
+            { "kind": "item", "id": "c1", "change": "removed", "op": 5 },
+            { "kind": "item", "id": "c1", "change": "added", "op": 6 },
+            { "kind": "item", "id": "c1", "change": "removed", "op": 7 },
             { "kind": "asset", "id": "a1", "change": "removed", "op": 8 }
         ],
         "shifts": [
@@ -78,8 +79,7 @@ fn v2_diff() -> Value {
             { "track": "t1", "from": "15/2", "by": "-1", "op": 3 },
             { "track": "t1", "from": "13/2", "by": "3", "op": 4 },
             { "track": "t1", "from": "19/2", "by": "-19/2", "op": 5 },
-            { "track": "t1", "from": "0", "by": "8", "op": 6 },
-            { "track": "t1", "from": "8", "by": "0", "op": 7 }
+            { "track": "t1", "from": "0", "by": "8", "op": 6 }
         ]
     })
 }
@@ -199,81 +199,273 @@ fn empty_diff_reads_the_same() {
     assert_eq!(upcast_diff(empty, &empty_v1).unwrap(), Diff::default());
 }
 
-/// Today's ops record what the step gives a v1 diff: the v1 shape of a fresh diff (no `op`,
-/// `edge` or `by`) upcasts back to it, for every op kind.
+/// The v1 shape of a v2 op as 4B wrote it (the record step run backwards; test only).
+fn downcast(op: &Op) -> Value {
+    let mut v = serde_json::to_value(op).unwrap();
+    let m = v.as_object_mut().unwrap();
+    let mode = m.remove("mode");
+    let ripple = mode.as_ref().map(|m| m == "ripple");
+    match m["op"].as_str().unwrap() {
+        "asset.add" => {
+            m.remove("kind");
+        }
+        "item.insert" => {
+            m.insert("op".into(), json!("clip.insert"));
+            m.remove("kind");
+        }
+        "item.trim" | "item.delete" => {
+            let name = m["op"].as_str().unwrap().replace("item.", "clip.");
+            m.insert("op".into(), json!(name));
+            let item = m.remove("item").unwrap();
+            m.insert("clip".into(), item);
+        }
+        "item.remove" => {
+            m.insert("op".into(), json!("clip.remove"));
+            m.insert("ripple".into(), json!(ripple));
+        }
+        "item.restore" => {
+            m.insert("op".into(), json!("clip.restore"));
+            let mut item = m.remove("item").unwrap();
+            item.as_object_mut().unwrap().remove("kind");
+            m.insert("clip".into(), item);
+            m.insert("ripple".into(), json!(ripple));
+        }
+        _ => {}
+    }
+    v
+}
+
+/// The v1 shape of a fresh v2 diff of ripple ops: no `op`, `edge` or `by`; kind `clip`.
+fn v1_shape(fresh: &Diff) -> Value {
+    let mut v1 = serde_json::to_value(fresh).unwrap();
+    for (list, keys) in [("changes", &["op", "edge", "by"][..]), ("shifts", &["op"])] {
+        for e in v1[list].as_array_mut().unwrap() {
+            let e = e.as_object_mut().unwrap();
+            for k in keys {
+                e.remove(*k);
+            }
+            if e.get("kind") == Some(&json!("item")) {
+                e.insert("kind".into(), json!("clip"));
+            }
+        }
+    }
+    v1
+}
+
+/// A v1 record (as 4B stored it) of `intent_ops` with the given resolved and inverse ops.
+fn v1_record(
+    intent_ops: Vec<Value>,
+    resolved: Vec<Value>,
+    inverse: Vec<Value>,
+    bindings: Value,
+) -> Value {
+    json!({
+        "txId": "01JC0000000000000000000001", "seq": 3, "kind": "edit", "schemaVersion": 1,
+        "parentHash": null, "author": "fixture", "committedAt": 1_700_000_000_000_i64,
+        "intent": { "txId": "01JC0000000000000000000001", "author": "fixture",
+                    "branch": "main", "baseRev": 2, "schemaVersion": 1, "ops": intent_ops },
+        "resolved": resolved, "inverse": inverse, "bindings": bindings
+    })
+}
+
+/// The stored-diff step equals 4C's replay of the upcast record: a ripple tx and its inverse,
+/// written in the v1 shapes, upcast, replayed, and their v1-shaped fresh diffs upcast back.
 #[test]
 fn v1_shape_of_a_fresh_diff_upcasts_back() {
     let p = project();
-    let client = apply(
-        &p,
-        vec![
-            av_asset("$a", secs(100)),
-            insert("$c1", "t1", secs(0), "$a", secs(0), secs(5)),
-            insert("$c2", "t1", secs(5), "$a", secs(0), secs(4)),
-            Op::ClipTrim {
-                clip: "$c1".into(),
-                edge: Edge::Start,
-                delta: r("1/3"),
-            },
-            Op::ClipTrim {
-                clip: "$c2".into(),
-                edge: Edge::End,
-                delta: secs(-1),
-            },
-            Op::ClipDelete { clip: "$c2".into() },
-        ],
-    );
+    let ops = vec![
+        av_asset("$a", secs(100)),
+        insert("$c1", "t1", secs(0), "$a", secs(0), secs(5)),
+        insert("$c2", "t1", secs(5), "$a", secs(0), secs(4)),
+        trim("$c1", Edge::Start, r("1/3")),
+        trim("$c2", Edge::End, secs(-1)),
+        delete("$c2"),
+    ];
+    let client = apply(&p, ops.clone());
     let undo = apply_internal(
         &client.project,
         &tx(client.inverse.clone()),
         &mut MemIds::after(&client.project),
     )
     .unwrap();
-    let ops_of = |ops: Vec<Op>| -> Vec<Value> {
-        ops.iter()
-            .map(|o| serde_json::to_value(o).unwrap())
-            .collect()
-    };
-    let cases = [
-        (Vec::new(), Diff::default()),
-        (
-            ops_of(vec![
-                av_asset("$a", secs(100)),
-                insert("$c1", "t1", secs(0), "$a", secs(0), secs(5)),
-                insert("$c2", "t1", secs(5), "$a", secs(0), secs(4)),
-                Op::ClipTrim {
-                    clip: "$c1".into(),
-                    edge: Edge::Start,
-                    delta: r("1/3"),
-                },
-                Op::ClipTrim {
-                    clip: "$c2".into(),
-                    edge: Edge::End,
-                    delta: secs(-1),
-                },
-                Op::ClipDelete { clip: "$c2".into() },
-            ]),
-            client.diff.clone(),
-        ),
-        (ops_of(client.inverse.clone()), undo.diff.clone()),
-    ];
     assert!(
         undo.diff.changes.len() == 6 && client.diff.shifts.len() == 5,
         "every kind is covered: {:?}",
         undo.diff
     );
+    let v1 = |ops: &[Op]| -> Vec<Value> { ops.iter().map(downcast).collect() };
+    let bindings = serde_json::to_value(&client.bindings).unwrap();
+    let resolved = fin_core::resolve_ops(&ops, &client.bindings).unwrap();
+    let record = v1_record(v1(&ops), v1(&resolved), v1(&client.inverse), bindings);
+    // The record step gives back the v2 ops exactly.
+    let up = fin_core::upcast_record(record).unwrap();
+    assert_eq!(
+        (
+            up.intent.ops.clone(),
+            up.resolved.clone(),
+            up.inverse.clone()
+        ),
+        (ops.clone(), resolved, client.inverse.clone())
+    );
+    // Replaying it records what the diff step gives its v1 diff.
+    let replay = fin_core::apply_committed(&p, &up.intent, &up.bindings).unwrap();
+    assert_eq!(replay.diff, client.diff);
+    let cases = [
+        (Vec::new(), Diff::default()),
+        (v1(&ops), client.diff.clone()),
+        (v1(&client.inverse), undo.diff.clone()),
+    ];
     for (ops, fresh) in cases {
-        let mut v1 = serde_json::to_value(&fresh).unwrap();
-        for (list, keys) in [("changes", &["op", "edge", "by"][..]), ("shifts", &["op"])] {
-            for e in v1[list].as_array_mut().unwrap() {
-                let e = e.as_object_mut().unwrap();
-                for k in keys {
-                    e.remove(*k);
-                }
-            }
-        }
-        assert_eq!(upcast_diff(v1, &ops).unwrap(), fresh);
+        assert_eq!(upcast_diff(v1_shape(&fresh), &ops).unwrap(), fresh);
     }
+}
+
+/// A lift remove and restore: the v1 zero shifts are dropped, as the v2 ops record none.
+#[test]
+fn lift_ops_lose_their_zero_shift() {
+    let ops = [
+        json!({ "op": "clip.restore", "clip": { "id": "c1", "asset": "a1", "start": "2",
+                "sourceIn": "0", "duration": "1" }, "track": "t1", "ripple": false }),
+        json!({ "op": "clip.remove", "id": "c1", "ripple": false }),
+        json!({ "op": "clip.remove", "id": "c2", "ripple": true }),
+    ];
+    let diff = json!({
+        "changes": [{ "kind": "clip", "id": "c1", "change": "added" },
+                    { "kind": "clip", "id": "c1", "change": "removed" },
+                    { "kind": "clip", "id": "c2", "change": "removed" }],
+        "shifts": [{ "track": "t1", "from": "2", "by": "0" },
+                   { "track": "t1", "from": "3", "by": "0" },
+                   { "track": "t1", "from": "9", "by": "-4" }]
+    });
+    let got = serde_json::to_value(upcast_diff(diff, &ops).unwrap()).unwrap();
+    assert_eq!(
+        got["shifts"],
+        json!([{ "track": "t1", "from": "9", "by": "-4", "op": 2 }])
+    );
+}
+
+/// The frozen record step, op by op (plan 4C Task 7): each v1 op shape in `intent`, `resolved`
+/// and `inverse`, to its v2 shape.
+#[test]
+fn upcast_v1_record_golden_per_op() {
+    let cases = [
+        (
+            json!({ "op": "asset.add", "id": "$a", "path": "m.mov", "duration": "600",
+                    "video": { "width": 1920, "height": 1080, "rate": "30" }, "fingerprint": "fp" }),
+            json!({ "op": "asset.add", "id": "$a", "kind": "media", "path": "m.mov",
+                    "fingerprint": "fp", "duration": "600",
+                    "video": { "width": 1920, "height": 1080, "rate": "30" } }),
+        ),
+        (
+            json!({ "op": "clip.insert", "id": "$c", "track": "t1", "at": "1/2", "asset": "a1",
+                    "sourceIn": "2", "duration": "8" }),
+            json!({ "op": "item.insert", "id": "$c", "track": "t1", "at": "1/2", "duration": "8",
+                    "mode": "ripple", "kind": "clip", "asset": "a1", "sourceIn": "2" }),
+        ),
+        (
+            json!({ "op": "clip.trim", "clip": "c1", "edge": "start", "delta": "-1" }),
+            json!({ "op": "item.trim", "item": "c1", "edge": "start", "delta": "-1", "mode": "ripple" }),
+        ),
+        (
+            json!({ "op": "clip.delete", "clip": "c1" }),
+            json!({ "op": "item.delete", "item": "c1", "mode": "ripple" }),
+        ),
+        (
+            json!({ "op": "clip.remove", "id": "c1", "ripple": true }),
+            json!({ "op": "item.remove", "id": "c1", "mode": "ripple" }),
+        ),
+        (
+            json!({ "op": "clip.remove", "id": "c1", "ripple": false }),
+            json!({ "op": "item.remove", "id": "c1", "mode": "lift" }),
+        ),
+        (
+            json!({ "op": "clip.restore", "clip": { "id": "c1", "asset": "a1", "start": "3",
+                    "sourceIn": "1", "duration": "2" }, "track": "t1", "ripple": false }),
+            json!({ "op": "item.restore", "item": { "id": "c1", "start": "3", "duration": "2",
+                    "kind": "clip", "asset": "a1", "sourceIn": "1" }, "track": "t1", "mode": "lift" }),
+        ),
+        // A missing `ripple` on a restore is 4B's default: true.
+        (
+            json!({ "op": "clip.restore", "clip": { "id": "c1", "asset": "a1", "start": "3",
+                    "sourceIn": "1", "duration": "2" }, "track": "t1" }),
+            json!({ "op": "item.restore", "item": { "id": "c1", "start": "3", "duration": "2",
+                    "kind": "clip", "asset": "a1", "sourceIn": "1" }, "track": "t1", "mode": "ripple" }),
+        ),
+        (
+            json!({ "op": "asset.remove", "id": "a1" }),
+            json!({ "op": "asset.remove", "id": "a1" }),
+        ),
+    ];
+    for (v1, v2) in cases {
+        let record = v1_record(
+            vec![v1.clone()],
+            vec![v1.clone()],
+            vec![v1.clone()],
+            json!({}),
+        );
+        let up = fin_core::upcast_record(record).unwrap();
+        for ops in [&up.intent.ops, &up.resolved, &up.inverse] {
+            assert_eq!(
+                serde_json::to_value(ops).unwrap(),
+                json!([v2.clone()]),
+                "{v1}"
+            );
+        }
+        assert_eq!((up.schema_version, up.intent.schema_version), (2, 2));
+    }
+}
+
+/// The whole record: ids, timestamps and bindings untouched; every list upgraded.
+#[test]
+fn upcast_v1_record_golden_whole() {
+    let record = v1_record(
+        vec![v1_ops()[0].clone(), v1_ops()[1].clone()],
+        vec![
+            json!({ "op": "asset.add", "id": "a1", "path": "media/clip.mov", "duration": "600",
+                    "fingerprint": "fp" }),
+            json!({ "op": "clip.insert", "id": "c1", "track": "t1", "at": "0", "asset": "a1",
+                    "sourceIn": "0", "duration": "8" }),
+        ],
+        vec![
+            json!({ "op": "clip.remove", "id": "c1", "ripple": true }),
+            json!({ "op": "asset.remove", "id": "a1" }),
+        ],
+        json!({ "$a": "a1", "$c": "c1" }),
+    );
+    let up = fin_core::upcast_record(record.clone()).unwrap();
+    assert_eq!(up.tx_id, record["txId"]);
+    assert_eq!(
+        (up.seq, up.committed_at, up.author.as_str()),
+        (3, 1_700_000_000_000, "fixture")
+    );
+    assert_eq!(
+        serde_json::to_value(&up.bindings).unwrap(),
+        record["bindings"]
+    );
+    let names = |ops: &[Op]| ops.iter().map(Op::name).collect::<Vec<_>>();
+    assert_eq!(names(&up.intent.ops), ["asset.add", "item.insert"]);
+    assert_eq!(names(&up.resolved), ["asset.add", "item.insert"]);
+    assert_eq!(names(&up.inverse), ["item.remove", "asset.remove"]);
+    // Every op the v1 lists held is a v2 op now: none is an alias.
+    assert!(
+        up.intent
+            .ops
+            .iter()
+            .chain(&up.resolved)
+            .chain(&up.inverse)
+            .all(|o| !o.is_alias())
+    );
+    // A malformed v1 op is `INVALID_FORMAT`.
+    let bad = v1_record(
+        vec![json!({ "op": "clip.restore", "clip": "c1", "track": "t1" })],
+        vec![],
+        vec![],
+        json!({}),
+    );
+    assert_eq!(
+        fin_core::upcast_record(bad).unwrap_err().code,
+        "INVALID_FORMAT"
+    );
 }
 
 fn golden(name: &str) -> Value {

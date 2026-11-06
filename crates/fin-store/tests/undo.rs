@@ -35,33 +35,43 @@ fn env() -> Env {
 }
 
 fn asset() -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: "/media/a.mov".into(),
-        duration: secs(600),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        "/media/a.mov",
+        secs(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
+    fin_core::ItemDelete {
+        item: clip.into(),
+        mode: fin_core::DeleteMode::Ripple,
+    }
+    .into()
 }
 
 fn tx(id: &str, author: &str, branch: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
@@ -174,10 +184,13 @@ fn undo_appends_inverse_and_restores_state() {
             undoes: vec!["e1".into()]
         })
     );
-    let Op::ClipRestore { clip, .. } = &c.tx.ops[0] else {
+    let Op::ItemRestore(restore) = &c.tx.ops[0] else {
         panic!("{:?}", c.tx.ops)
     };
-    assert_eq!((clip.id.as_str(), clip.start), ("c2", secs(10)));
+    assert_eq!(
+        (restore.item.id.as_str(), restore.item.start),
+        ("c2", secs(10))
+    );
     assert_eq!(state(&s, MAIN), before);
     // Reads carry the link too (the stale-commit mirrors rely on it).
     let since = s.ops_since(MAIN, 3).unwrap();
@@ -242,10 +255,10 @@ fn undo_rebases_over_other_authors_edit() {
     // Bob inserts 5 s at 0; everything moves by 5, and the restore with it.
     edit(&mut s, "b1", "bob", vec![insert("$w", 0, 5)]);
     let r = undo(&mut s, "u1", "alice");
-    let Op::ClipRestore { clip, .. } = &r.committed[0].tx.ops[0] else {
+    let Op::ItemRestore(restore) = &r.committed[0].tx.ops[0] else {
         panic!()
     };
-    assert_eq!(clip.start, secs(15));
+    assert_eq!(restore.item.start, secs(15));
     assert_eq!(
         starts(&state(&s, MAIN)),
         at(&[("c4", 0), ("c1", 5), ("c2", 15), ("c3", 25)])
@@ -324,11 +337,13 @@ fn stale_commit_over_undo_pair_is_mirrored() {
 fn undo_conflicts_when_other_author_removed_target() {
     let e = env();
     let mut s = project(&e);
-    let trim = Op::ClipTrim {
-        clip: "c2".into(),
+    let trim = fin_core::ItemTrim {
+        item: "c2".into(),
         edge: Edge::End,
         delta: secs(-2),
-    };
+        mode: fin_core::TrimMode::Ripple,
+    }
+    .into();
     edit(&mut s, "e1", "alice", vec![trim]);
     edit(&mut s, "b1", "bob", vec![delete("c2")]);
     let before = rows(&s);

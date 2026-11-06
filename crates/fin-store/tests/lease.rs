@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
-use fin_core::{Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
+use fin_core::{Rational, SCHEMA_VERSION, Tx, VideoInfo};
 use fin_store::lease::claim::{self, claim_name};
 use fin_store::lease::record::{self, LeaseRecord, RECORD_SIZE};
 use fin_store::lease::{
@@ -927,18 +927,21 @@ fn tx(id: &str, base_rev: u64) -> Tx {
         base_rev,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        ops: vec![Op::AssetAdd {
-            id: "$a".into(),
-            path: format!("/media/{id}.mov"),
-            duration: Rational::from_int(60),
-            video: Some(VideoInfo {
-                width: 1920,
-                height: 1080,
-                rate: Rational::from_int(30),
-            }),
-            audio: None,
-            fingerprint: "fp".into(),
-        }],
+        ops: vec![
+            fin_core::AssetAdd::media(
+                "$a",
+                format!("/media/{id}.mov"),
+                Rational::from_int(60),
+                Some(VideoInfo {
+                    width: 1920,
+                    height: 1080,
+                    rate: Rational::from_int(30),
+                }),
+                None,
+                "fp",
+            )
+            .into(),
+        ],
     }
 }
 

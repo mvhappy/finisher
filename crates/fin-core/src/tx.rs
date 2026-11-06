@@ -35,8 +35,11 @@ pub struct Tx {
 pub enum EntityKind {
     Asset,
     Track,
-    Clip,
     Timeline,
+    // An item of any kind (4B's `clip`, plan 4C Decision 4). Not a doc comment: a described
+    // variant splits the generated TypeScript union.
+    Item,
+    Transition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

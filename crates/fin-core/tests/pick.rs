@@ -23,10 +23,6 @@ fn ins(at: i64, dur: i64) -> Op {
     insert("$x", "t1", secs(at), "a1", Rational::zero(), secs(dur))
 }
 
-fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
-}
-
 fn ids_of(p: &Project) -> Vec<(String, Rational)> {
     starts(p, 0)
 }
@@ -103,7 +99,7 @@ fn revert_inverts_the_group_newest_first() {
     log.merge("br1", "main", "carol", "m", false).unwrap();
     let v = log.revert("m", "main", "carol", "v1").unwrap().unwrap();
     assert_eq!(v.record.reverts.as_deref(), Some("m"));
-    assert!(matches!(v.record.intent.ops[0], Op::ClipRestore { .. }));
+    assert!(matches!(v.record.intent.ops[0], Op::ItemRestore(_)));
     assert_eq!(log.state("main"), genesis());
     assert!(log.revert("m", "main", "carol", "v2").unwrap().is_none());
     // An undo of the revert brings the group back; it may be reverted again.
@@ -228,11 +224,7 @@ fn merge_and_pick_after_a_cancelled_inverse_keep_the_order() {
 fn trim_of_the_merged_clip_after_a_cancelled_inverse_merges() {
     for chain in ["", "revert, undo", "undo, redo"] {
         let mut log = merged_then(chain);
-        let trim = Op::ClipTrim {
-            clip: "c4".into(),
-            edge: fin_core::Edge::End,
-            delta: secs(-1),
-        };
+        let trim = trim("c4", fin_core::Edge::End, secs(-1));
         log.commit("br1", "e3", "alice", vec![trim]);
         log.merge("br1", "main", "carol", "m2", false).unwrap();
         assert_eq!(log.state("main"), log.state("br1"), "{chain:?}");

@@ -5,15 +5,7 @@ mod common;
 
 use common::*;
 use fin_core::rebase::{Touch, footprint, split_diff};
-use fin_core::{Change, ChangeKind, Diff, Edge, EntityKind, Op, Shift};
-
-fn trim(clip: &str, edge: Edge, delta: fin_core::Rational) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
-        edge,
-        delta,
-    }
-}
+use fin_core::{Change, ChangeKind, Diff, Edge, EntityKind, Shift};
 
 fn change(kind: EntityKind, id: &str, change: ChangeKind, op: u32) -> Change {
     Change {
@@ -52,14 +44,14 @@ fn ops_record_their_own_index() {
     let trimmed = Change {
         edge: Some(Edge::Start),
         by: Some(secs(-2)),
-        ..change(EntityKind::Clip, "c1", ChangeKind::Updated, 3)
+        ..change(EntityKind::Item, "c1", ChangeKind::Updated, 3)
     };
     assert_eq!(
         a.diff.changes,
         [
             change(EntityKind::Asset, "a1", ChangeKind::Added, 0),
-            change(EntityKind::Clip, "c1", ChangeKind::Added, 1),
-            change(EntityKind::Clip, "c2", ChangeKind::Added, 2),
+            change(EntityKind::Item, "c1", ChangeKind::Added, 1),
+            change(EntityKind::Item, "c2", ChangeKind::Added, 2),
             trimmed,
         ]
     );
@@ -75,7 +67,7 @@ fn ops_record_their_own_index() {
     let wire = serde_json::to_value(&a.diff).unwrap();
     assert_eq!(
         wire["changes"][3],
-        serde_json::json!({ "kind": "clip", "id": "c1", "change": "updated", "op": 3,
+        serde_json::json!({ "kind": "item", "id": "c1", "change": "updated", "op": 3,
                             "edge": "start", "by": "-2" })
     );
     assert_eq!(
@@ -94,7 +86,7 @@ fn split_diff_by_op_index() {
     let ops = vec![
         av_asset("$b", secs(10)),
         trim("c1", Edge::End, secs(-1)),
-        Op::ClipDelete { clip: "c2".into() },
+        delete("c2"),
     ];
     let a = apply(&p, ops.clone());
     let diffs = split_diff(&ops, &a.diff).unwrap();
@@ -108,8 +100,8 @@ fn split_diff_by_op_index() {
     // Any number of entries per op, and ops with none.
     let many = Diff {
         changes: vec![
-            change(EntityKind::Clip, "c1", ChangeKind::Updated, 1),
-            change(EntityKind::Clip, "c2", ChangeKind::Removed, 1),
+            change(EntityKind::Item, "c1", ChangeKind::Updated, 1),
+            change(EntityKind::Item, "c2", ChangeKind::Removed, 1),
         ],
         shifts: vec![shift("t1", 0, 1, 1), shift("t2", 0, 1, 1)],
     };
@@ -123,7 +115,7 @@ fn split_diff_by_op_index() {
 fn split_diff_rejects_out_of_range_or_unordered_op() {
     let ops = vec![av_asset("$a", secs(10)), trim("c1", Edge::End, secs(1))];
     let past = Diff {
-        changes: vec![change(EntityKind::Clip, "c1", ChangeKind::Updated, 2)],
+        changes: vec![change(EntityKind::Item, "c1", ChangeKind::Updated, 2)],
         shifts: vec![],
     };
     let e = split_diff(&ops, &past).unwrap_err();
@@ -139,7 +131,7 @@ fn split_diff_rejects_out_of_range_or_unordered_op() {
     );
     let unordered = Diff {
         changes: vec![
-            change(EntityKind::Clip, "c1", ChangeKind::Updated, 1),
+            change(EntityKind::Item, "c1", ChangeKind::Updated, 1),
             change(EntityKind::Asset, "a1", ChangeKind::Added, 0),
         ],
         shifts: vec![],
@@ -174,20 +166,20 @@ fn with_changes_maps_removed_added_edge_path() {
         changes: vec![
             Change {
                 edge: Some(Edge::End),
-                ..change(EntityKind::Clip, "c1", ChangeKind::Updated, 0)
+                ..change(EntityKind::Item, "c1", ChangeKind::Updated, 0)
             },
-            change(EntityKind::Clip, "c7", ChangeKind::Removed, 0),
-            change(EntityKind::Clip, "c8", ChangeKind::Added, 0),
+            change(EntityKind::Item, "c7", ChangeKind::Removed, 0),
+            change(EntityKind::Item, "c8", ChangeKind::Added, 0),
             Change {
                 edge: Some(Edge::Start),
                 by: Some(secs(-1)),
-                ..change(EntityKind::Clip, "c9", ChangeKind::Updated, 0)
+                ..change(EntityKind::Item, "c9", ChangeKind::Updated, 0)
             },
             Change {
                 path: Some("transform.scale".into()),
-                ..change(EntityKind::Clip, "c10", ChangeKind::Updated, 0)
+                ..change(EntityKind::Item, "c10", ChangeKind::Updated, 0)
             },
-            change(EntityKind::Clip, "c11", ChangeKind::Updated, 0),
+            change(EntityKind::Item, "c11", ChangeKind::Updated, 0),
         ],
         shifts: vec![shift("t1", 5, 1, 0)],
     };

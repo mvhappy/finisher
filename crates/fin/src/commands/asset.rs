@@ -2,7 +2,7 @@
 //! `asset.add`.
 
 use clap::{Args, Subcommand};
-use fin_core::{CoreError, Op};
+use fin_core::CoreError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -28,13 +28,16 @@ pub struct AddArgs {
 pub fn plan_add(b: &mut Builder<'_>, a: &AddArgs, placeholder: &str) -> Result<Value, CoreError> {
     let probed = b.backend.probe(&paths::resolve_str(&a.path))?;
     let resolved = json!({ "path": probed.path, "duration": probed.duration });
-    b.push(Op::AssetAdd {
-        id: placeholder.to_string(),
-        path: probed.path,
-        duration: probed.duration,
-        video: probed.video,
-        audio: probed.audio,
-        fingerprint: probed.fingerprint,
-    })?;
+    b.push(
+        fin_core::AssetAdd::media(
+            placeholder.to_string(),
+            probed.path,
+            probed.duration,
+            probed.video,
+            probed.audio,
+            probed.fingerprint,
+        )
+        .into(),
+    )?;
     Ok(resolved)
 }

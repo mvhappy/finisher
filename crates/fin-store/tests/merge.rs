@@ -38,41 +38,53 @@ fn env() -> Env {
 }
 
 fn asset() -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: "/media/a.mov".into(),
-        duration: secs(600),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        "/media/a.mov",
+        secs(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
+    fin_core::ItemDelete {
+        item: clip.into(),
+        mode: fin_core::DeleteMode::Ripple,
+    }
+    .into()
 }
 
 fn trim(clip: &str, delta: i64) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
+    fin_core::ItemTrim {
+        item: clip.into(),
         edge: Edge::End,
         delta: secs(delta),
+        mode: fin_core::TrimMode::Ripple,
     }
+    .into()
 }
 
 fn edit(s: &mut Store, branch: &str, id: &str, author: &str, ops: Vec<Op>) -> CommittedTx {
@@ -211,10 +223,10 @@ fn merge_rebases_over_target_edits_on_same_track() {
     let r = merge(&mut s, "m", "br1", MAIN);
     let c = &r.committed[0];
     assert_eq!(c.bindings, p.bindings);
-    let Op::ClipInsert { at: pos, .. } = &c.tx.ops[0] else {
+    let Op::ItemInsert(i) = &c.tx.ops[0] else {
         panic!("{:?}", c.tx.ops)
     };
-    assert_eq!(*pos, secs(35));
+    assert_eq!(i.at, secs(35));
     assert_eq!(
         starts(&state(&s, MAIN)),
         at(&[("c5", 0), ("c1", 5), ("c2", 15), ("c3", 25), ("c4", 35)])

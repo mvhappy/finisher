@@ -50,9 +50,7 @@ fn act() -> impl Strategy<Value = Act> {
 fn op_for(p: &Project, kind: u8, k: usize) -> Option<Op> {
     let items = &p.timelines[0].tracks[0].items;
     match kind {
-        0 => items
-            .get(k % items.len().max(1))
-            .map(|c| Op::ClipDelete { clip: c.id.clone() }),
+        0 => items.get(k % items.len().max(1)).map(|c| delete(&c.id)),
         1 => {
             let at = items.get(k % (items.len() + 1)).map_or_else(
                 || {
@@ -67,10 +65,12 @@ fn op_for(p: &Project, kind: u8, k: usize) -> Option<Op> {
         _ => items
             .get(k % items.len().max(1))
             .filter(|c| c.duration > secs(2))
-            .map(|c| Op::ClipTrim {
-                clip: c.id.clone(),
-                edge: [Edge::End, Edge::Start][k % 2],
-                delta: [secs(-1), secs(1)][k % 2],
+            .map(|c| {
+                trim(
+                    &c.id,
+                    [Edge::End, Edge::Start][k % 2],
+                    [secs(-1), secs(1)][k % 2],
+                )
             }),
     }
 }

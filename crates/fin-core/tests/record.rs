@@ -35,10 +35,11 @@ fn sample() -> Record {
         intent,
         resolved,
         vec![
-            Op::ClipRemove {
+            fin_core::ItemRemove {
                 id: "c1".into(),
-                ripple: true,
-            },
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
             Op::AssetRemove { id: "a1".into() },
         ],
         b,
@@ -636,8 +637,8 @@ proptest::proptest! {
     fn param_values_round_trip_through_record_bytes(
         xs in proptest::collection::vec(any_finite(), 7)
     ) {
-        use fin_core::{Clip, Effect, Interp, Keyframe, ParamValue};
-        let mut clip = Clip::new("c1", "a1", secs(0), secs(0), secs(1));
+        use fin_core::{DeleteMode, Effect, InsertMode, Interp, Item, ItemBody, ItemInsert, ItemRestore, Keyframe, ParamValue};
+        let mut clip = Item::clip("c1", "a1", secs(0), secs(0), secs(1));
         clip.common.opacity = xs[0];
         clip.common.transform.rotation = xs[1];
         clip.common.transform.position[0] = xs[2];
@@ -652,15 +653,42 @@ proptest::proptest! {
             params: BTreeMap::from([("radius".to_string(), ParamValue::Number(xs[6]))]),
         });
         let want = floats_of(&clip.common);
-        let restore = Op::ClipRestore { clip: Box::new(clip), track: "t1".into(), ripple: true };
+        let restore: Op = ItemRestore { item: clip, track: "t1".into(), mode: DeleteMode::Ripple }.into();
+        // An insert carries values in its body: a graphic's slots.
+        let slots = BTreeMap::from([
+            ("a".to_string(), ParamValue::Number(xs[0])),
+            ("b".to_string(), ParamValue::Vec2([xs[1], xs[2]])),
+        ]);
+        let graphic: Op = ItemInsert {
+            id: "$g".into(),
+            track: "t1".into(),
+            at: secs(0),
+            duration: secs(1),
+            mode: InsertMode::Ripple,
+            body: ItemBody::Graphic { asset: "a1".into(), slots: slots.clone() },
+        }
+        .into();
         let mut record = sample();
         record.inverse = vec![restore.clone()];
-        record.resolved = vec![restore];
+        record.resolved = vec![restore, graphic];
         let bytes = encode_record(&record);
         let read = upcast_record(serde_json::from_slice(&bytes).unwrap()).unwrap();
         for op in read.inverse.iter().chain(&read.resolved) {
-            let Op::ClipRestore { clip, .. } = op else { panic!("{op:?}") };
-            proptest::prop_assert_eq!(floats_of(&clip.common), want.clone());
+            match op {
+                Op::ItemRestore(r) => proptest::prop_assert_eq!(floats_of(&r.item.common), want.clone()),
+                Op::ItemInsert(i) => {
+                    let ItemBody::Graphic { slots: got, .. } = &i.body else { panic!("{op:?}") };
+                    let bits = |m: &BTreeMap<String, ParamValue>| -> Vec<u64> {
+                        m.values().flat_map(|v| match v {
+                            ParamValue::Number(x) => vec![x.to_bits()],
+                            ParamValue::Vec2([x, y]) => vec![x.to_bits(), y.to_bits()],
+                            _ => vec![],
+                        }).collect()
+                    };
+                    proptest::prop_assert_eq!(bits(got), bits(&slots));
+                }
+                other => panic!("{other:?}"),
+            }
         }
         proptest::prop_assert_eq!(encode_record(&read), bytes);
     }

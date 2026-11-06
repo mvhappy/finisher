@@ -1,7 +1,11 @@
-//! `fin clip insert|trim|delete`.
+//! `fin clip insert|trim|delete`: clip edits in ripple mode, sent as `item.*` ops (plan 4C
+//! Task 7; the `clip.*` op aliases are for older clients).
 
 use clap::{Args, Subcommand};
-use fin_core::{CoreError, Edge, Op, Rational};
+use fin_core::{
+    CoreError, DeleteMode, Edge, InsertMode, ItemBody, ItemDelete, ItemInsert, ItemTrim, Rational,
+    TrimMode,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -131,14 +135,21 @@ pub fn plan_insert(
         "duration": duration,
         "out": out,
     });
-    b.push(Op::ClipInsert {
-        id: placeholder.to_string(),
-        track: a.track.clone(),
-        at,
-        asset: a.asset.clone(),
-        source_in,
-        duration,
-    })?;
+    b.push(
+        ItemInsert {
+            id: placeholder.to_string(),
+            track: a.track.clone(),
+            at,
+            duration,
+            mode: InsertMode::Ripple,
+            body: ItemBody::Clip {
+                asset: a.asset.clone(),
+                source_in,
+                speed: Rational::from_int(1),
+            },
+        }
+        .into(),
+    )?;
     Ok(resolved)
 }
 
@@ -150,17 +161,25 @@ pub fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> 
         (Edge::End, "end")
     };
     let delta = addr::delta(&b.work, field, input)?;
-    b.push(Op::ClipTrim {
-        clip: a.clip.clone(),
-        edge,
-        delta,
-    })?;
+    b.push(
+        ItemTrim {
+            item: a.clip.clone(),
+            edge,
+            delta,
+            mode: TrimMode::Ripple,
+        }
+        .into(),
+    )?;
     Ok(json!({ "clip": a.clip, "edge": edge, "delta": delta }))
 }
 
 pub fn plan_delete(b: &mut Builder<'_>, a: &DeleteArgs) -> Result<Value, CoreError> {
-    b.push(Op::ClipDelete {
-        clip: a.clip.clone(),
-    })?;
+    b.push(
+        ItemDelete {
+            item: a.clip.clone(),
+            mode: DeleteMode::Ripple,
+        }
+        .into(),
+    )?;
     Ok(json!({ "clip": a.clip }))
 }

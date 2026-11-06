@@ -20,26 +20,37 @@ fn secs(n: i64) -> Rational {
 }
 
 fn insert(id: &str, at: i64, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
+    fin_core::ItemDelete {
+        item: clip.into(),
+        mode: fin_core::DeleteMode::Ripple,
+    }
+    .into()
 }
 
 fn trim(clip: &str, delta: i64) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
+    fin_core::ItemTrim {
+        item: clip.into(),
         edge: Edge::End,
         delta: secs(delta),
+        mode: fin_core::TrimMode::Ripple,
     }
+    .into()
 }
 
 fn edit(s: &mut Store, branch: &str, id: &str, author: &str, ops: Vec<Op>) -> CommittedTx {
@@ -437,12 +448,8 @@ fn undo_to_checkpoint_one_record_newest_first() {
     );
     // One op per op: e2's inverse, then e1's (rebased over bob's insert).
     assert_eq!(c.tx.ops.len(), e2.tx.ops.len() + e1.tx.ops.len());
-    assert!(matches!(c.tx.ops[0], Op::ClipTrim { .. }), "{:?}", c.tx.ops);
-    assert!(
-        matches!(c.tx.ops[1], Op::ClipRestore { .. }),
-        "{:?}",
-        c.tx.ops
-    );
+    assert!(matches!(c.tx.ops[0], Op::ItemTrim(_)), "{:?}", c.tx.ops);
+    assert!(matches!(c.tx.ops[1], Op::ItemRestore(_)), "{:?}", c.tx.ops);
     // Bob's clip stays; alice's are as at the checkpoint, after it.
     assert_eq!(
         starts(&state(&s, MAIN)),

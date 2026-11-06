@@ -5,8 +5,8 @@ const ts = readFileSync(new URL("./generated/index.ts", import.meta.url), "utf8"
 const block = (name: string) => ts.match(new RegExp(`export interface ${name} \\{[\\s\\S]*?\n\\}`))?.[0] ?? "";
 
 test("Rational-typed fields keep the Rational type", () => {
-  expect(block("Clip")).toMatch(/start: Rational;/);
-  expect(block("Clip")).toMatch(/sourceIn: Rational;/);
+  expect(ts).toMatch(/export type ItemInsert = \{[\s\S]*?at: Rational;[\s\S]*?duration: Rational;[\s\S]*?\} & ItemInsert1;/);
+  expect(block("ItemTrim")).toMatch(/delta: Rational;/);
   expect(block("Project")).toMatch(/rate: Rational;/);
   expect(block("Timeline")).toMatch(/rate: Rational;/);
 });
@@ -23,6 +23,20 @@ test("model v2: timelines, items tagged by kind, font pins", () => {
   }
   expect(block("FontPin")).toMatch(/sha256: string;/);
   expect(ts).toMatch(/export type FontFormat = "ttf" \| "otf" \| "ttc";/);
+});
+
+test("item ops carry their payload and tag (plan 4C Task 7)", () => {
+  for (const op of ["asset.add", "item.insert", "item.trim", "item.delete", "item.remove", "item.restore"]) {
+    expect(ts).toMatch(new RegExp(`\\(\\w+ & \\{\\s*op: "${op.replace(".", "\\.")}";\\s*\\}\\)`));
+  }
+  expect(block("ItemRestore")).toMatch(/item: Item;/);
+  expect(block("ItemRestore")).toMatch(/mode: DeleteMode;/);
+  expect(block("AssetAdd")).toMatch(/kind\?: (AssetKind|"media" \| "image" \| "svg" \| "lottieTemplate" \| "font" \| "lut");/);
+  expect(ts).toMatch(/export type EntityKind = "asset" \| "track" \| "timeline" \| "item" \| "transition";/);
+  // The clip.* aliases stay accepted from clients.
+  for (const op of ["clip.insert", "clip.trim", "clip.delete"]) {
+    expect(ts).toContain(`op: "${op}";`);
+  }
 });
 
 test("CoreError.details is required", () => {

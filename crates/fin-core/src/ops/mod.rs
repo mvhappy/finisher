@@ -1,9 +1,10 @@
 //! Primitive edit operations, one module per op (schema, validate, apply, invert, conflict
 //! footprint, positions).
 //!
-//! Client ops: `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`. Internal ops exist only
-//! as inverses (`asset.remove`, `clip.remove`, `clip.restore`); clients sending them get
-//! `INVALID_OP`.
+//! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete` (and the `clip.*`
+//! aliases of the last three, [`alias`]). Internal ops exist only as inverses
+//! (`asset.remove`, `item.remove`, `item.restore`, and `item.trim` in `strict` mode); clients
+//! sending them get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
 //! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
@@ -21,17 +22,23 @@ use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::Diff;
 
+mod alias;
 mod asset_add;
 mod asset_remove;
-mod clip_delete;
-mod clip_insert;
-mod clip_remove;
-mod clip_restore;
-mod clip_trim;
 mod defs;
+mod item_delete;
+mod item_insert;
+mod item_remove;
+mod item_restore;
+mod item_trim;
 pub(crate) mod util;
 
-pub use defs::{Edge, Op};
+pub use alias::normalize;
+use alias::{clip_delete, clip_insert, clip_trim};
+pub use defs::{
+    AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
+    ItemTrim, Op, TrimMode,
+};
 
 /// `$name` placeholders bound during one transaction, in op order.
 pub(crate) struct Bindings {
@@ -49,6 +56,12 @@ impl Bindings {
             internal: mode != ApplyMode::Client,
             policy: mode != ApplyMode::Replay,
         }
+    }
+
+    /// Whether literal ids may name new entities and internal ops and modes are allowed
+    /// (internal and replay applies).
+    pub(crate) fn internal(&self) -> bool {
+        self.internal
     }
 
     /// Whether policy checks run. Replay ([`ApplyMode::Replay`]) checks structure only: what
@@ -163,7 +176,7 @@ pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
 macro_rules! ops_table {
     ($($variant:ident => $module:ident),* $(,)?) => {
         impl Op {
-            /// The wire name (`"clip.insert"`, ...).
+            /// The wire name (`"item.insert"`, ...).
             pub fn name(&self) -> &'static str {
                 match self { $(Op::$variant { .. } => $module::NAME,)* }
             }
@@ -173,7 +186,8 @@ macro_rules! ops_table {
                 match self { $(Op::$variant { .. } => $module::INTERNAL,)* }
             }
 
-            /// Every id reference in the op (new-entity ids, tracks, assets, clips), mutably,
+            /// Every id reference in the op (new-entity ids, tracks, assets, items, and the ids
+            /// nested in a restored item, plan 4C Decision 24), mutably,
             /// so placeholders can be substituted in one place, and ids renamed (a recovered
             /// record re-run under fresh ids, plan 4B Decision 27).
             pub fn refs_mut(&mut self) -> Vec<&mut String> {
@@ -189,14 +203,14 @@ macro_rules! ops_table {
             }
 
             /// The placeholder this op binds to a newly allocated id, if any (in op order
-            /// these are the order ids are allocated in). `clip.restore` binds one when its
-            /// clip id is a placeholder (spec §4.3).
+            /// these are the order ids are allocated in). `item.restore` binds one when its
+            /// item id is a placeholder (spec §4.3).
             pub fn allocates(&self) -> Option<&str> {
                 match self { $(Op::$variant { .. } => $module::allocates(self),)* }
             }
 
             /// Every timeline position the op carries, with its track, mutably, so a rebase
-            /// can map them (`clip.insert` `at`, `clip.restore` `clip.start`).
+            /// can map them (`item.insert` `at`, `item.restore` `item.start`).
             pub(crate) fn positions_mut(&mut self) -> Vec<(String, &mut Rational)> {
                 match self { $(Op::$variant { .. } => $module::positions_mut(self),)* }
             }
@@ -226,102 +240,68 @@ macro_rules! ops_table {
 
 ops_table! {
     AssetAdd => asset_add,
+    ItemInsert => item_insert,
+    ItemTrim => item_trim,
+    ItemDelete => item_delete,
+    AssetRemove => asset_remove,
+    ItemRemove => item_remove,
+    ItemRestore => item_restore,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,
-    AssetRemove => asset_remove,
-    ClipRemove => clip_remove,
-    ClipRestore => clip_restore,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Clip;
+    use crate::model::{Item, ItemBody};
     use crate::time::Rational;
 
     #[test]
     fn positions_mut_lists_placements() {
         let r = Rational::from_int;
-        let mut insert = Op::ClipInsert {
+        let mut insert: Op = ItemInsert {
             id: "$c".into(),
             track: "t2".into(),
-            asset: "a1".into(),
             at: r(3),
-            source_in: r(0),
             duration: r(1),
-        };
+            mode: InsertMode::Ripple,
+            body: ItemBody::Adjustment {},
+        }
+        .into();
         for (track, pos) in insert.positions_mut() {
             assert_eq!(track, "t2");
             *pos = r(7);
         }
-        assert!(matches!(insert, Op::ClipInsert { at, .. } if at == r(7)));
-        let mut restore = Op::ClipRestore {
-            clip: Box::new(Clip::new("c1", "a1", r(4), r(0), r(1))),
+        assert!(matches!(&insert, Op::ItemInsert(i) if i.at == r(7)));
+        let mut restore: Op = ItemRestore {
+            item: Item::clip("c1", "a1", r(4), r(0), r(1)),
             track: "t1".into(),
-            ripple: true,
-        };
+            mode: DeleteMode::Ripple,
+        }
+        .into();
         let got: Vec<(String, Rational)> = restore
             .positions_mut()
             .into_iter()
             .map(|(t, p)| (t, *p))
             .collect();
         assert_eq!(got, vec![("t1".to_string(), r(4))]);
-        let mut trim = Op::ClipTrim {
-            clip: "c1".into(),
+        let mut alias = Op::ClipInsert {
+            id: "$c".into(),
+            track: "t1".into(),
+            at: r(2),
+            asset: "a1".into(),
+            source_in: r(0),
+            duration: r(1),
+        };
+        assert_eq!(alias.positions_mut().len(), 1);
+        let mut trim: Op = ItemTrim {
+            item: "c1".into(),
             edge: Edge::End,
             delta: r(1),
-        };
-        assert!(trim.positions_mut().is_empty());
-        assert!(
-            Op::ClipDelete { clip: "c1".into() }
-                .positions_mut()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn ids_lists_the_fields_refs_mut_does() {
-        let r = Rational::from_int;
-        let clip = Clip::new("c1", "a1", r(0), r(0), r(1));
-        let ops = [
-            Op::AssetAdd {
-                id: "a1".into(),
-                path: "p".into(),
-                duration: r(1),
-                video: None,
-                audio: None,
-                fingerprint: "f".into(),
-            },
-            Op::AssetRemove { id: "a2".into() },
-            Op::ClipInsert {
-                id: "c3".into(),
-                track: "t1".into(),
-                asset: "a1".into(),
-                at: r(0),
-                source_in: r(0),
-                duration: r(1),
-            },
-            Op::ClipTrim {
-                clip: "c4".into(),
-                edge: crate::Edge::End,
-                delta: r(1),
-            },
-            Op::ClipDelete { clip: "c5".into() },
-            Op::ClipRemove {
-                id: "c6".into(),
-                ripple: true,
-            },
-            Op::ClipRestore {
-                clip: Box::new(clip),
-                track: "t2".into(),
-                ripple: true,
-            },
-        ];
-        for op in ops {
-            let mut m = op.clone();
-            let want: Vec<String> = m.refs_mut().into_iter().map(|s| s.clone()).collect();
-            assert_eq!(op.ids(), want, "{}", op.name());
+            mode: TrimMode::Ripple,
         }
+        .into();
+        assert!(trim.positions_mut().is_empty());
     }
 }

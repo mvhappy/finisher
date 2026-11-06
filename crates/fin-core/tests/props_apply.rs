@@ -1,8 +1,8 @@
 //! Apply properties (spec §4.6, props 1 and 6; plan 4B Task 20).
 //!
 //! - Prop 1: a transaction's stored inverse takes the project back exactly, for every op kind:
-//!   the client ops, the internal ones (`asset.remove`, `clip.remove`, `clip.restore`), and a
-//!   `clip.restore` naming its clip with a `$` placeholder (a fresh id). The inverse of the
+//!   the client ops, the internal ones (`asset.remove`, `item.remove`, `item.restore`, in
+//!   both modes), and an `item.restore` naming its item with a `$` placeholder (a fresh id). The inverse of the
 //!   inverse (a redo) gives the transaction's result again.
 //! - Prop 6: whatever op a transaction holds (any ids, any times, any mode), `apply_tx_mode`
 //!   never panics, and a success keeps the model's invariants: clips sorted with no overlap,
@@ -15,8 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::*;
 use fin_core::{
-    ApplyMode, AudioInfo, Clip, Edge, MemIds, Op, Project, Rational, TrackKind, Tx, VideoInfo,
-    apply_internal, apply_tx_mode, frame_duration,
+    ApplyMode, AssetAdd, AudioInfo, DeleteMode, Edge, Item, ItemRemove, ItemRestore, ItemTrim,
+    MemIds, Op, Project, Rational, TrackKind, TrimMode, Tx, VideoInfo, apply_internal,
+    apply_tx_mode, frame_duration,
 };
 use proptest::prelude::*;
 
@@ -25,21 +26,22 @@ fn frames(n: i64) -> Rational {
 }
 
 fn asset_op(id: &str, secs_long: i64, video: bool) -> Op {
-    Op::AssetAdd {
-        id: id.into(),
-        path: format!("/media/{}.mov", id.trim_start_matches('$')),
-        duration: secs(secs_long),
-        video: video.then(|| VideoInfo {
+    AssetAdd::media(
+        id,
+        format!("/media/{}.mov", id.trim_start_matches('$')),
+        secs(secs_long),
+        video.then(|| VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: Some(AudioInfo {
+        Some(AudioInfo {
             sample_rate: 48_000,
             channels: 2,
         }),
-        fingerprint: "fp".into(),
-    }
+        "fp",
+    )
+    .into()
 }
 
 /// `a1` (100 s, video and audio), `a2` (40 s, audio only), back-to-back clips (lengths in
@@ -169,7 +171,7 @@ struct Realiser {
     ids: MemIds,
     ops: Vec<Op>,
     /// Clips taken out so far (by this or earlier transactions), with their track.
-    graveyard: Vec<(String, Clip)>,
+    graveyard: Vec<(String, Item)>,
     n: usize,
 }
 
@@ -228,18 +230,17 @@ impl Realiser {
                 k,
                 start,
                 frames: n,
-            } => Op::ClipTrim {
-                clip: Self::clip(p, *track, *k)?,
-                edge: if *start { Edge::Start } else { Edge::End },
-                delta: frames(*n),
-            },
-            Gen::Delete { track, k } => Op::ClipDelete {
-                clip: Self::clip(p, *track, *k)?,
-            },
-            Gen::Remove { track, k, ripple } => Op::ClipRemove {
+            } => trim(
+                &Self::clip(p, *track, *k)?,
+                if *start { Edge::Start } else { Edge::End },
+                frames(*n),
+            ),
+            Gen::Delete { track, k } => delete(&Self::clip(p, *track, *k)?),
+            Gen::Remove { track, k, ripple } => ItemRemove {
                 id: Self::clip(p, *track, *k)?,
-                ripple: *ripple,
-            },
+                mode: mode_of(*ripple),
+            }
+            .into(),
             Gen::Restore {
                 k,
                 fresh,
@@ -255,11 +256,12 @@ impl Realiser {
                     let t = p.timelines[0].tracks.iter().position(|t| t.id == *track)?;
                     clip.start = Self::position(p, t, at);
                 }
-                Op::ClipRestore {
-                    clip: Box::new(clip),
+                ItemRestore {
+                    item: clip,
                     track: track.clone(),
-                    ripple: *ripple,
+                    mode: mode_of(*ripple),
                 }
+                .into()
             }
         })
     }
@@ -289,12 +291,19 @@ impl Realiser {
     }
 }
 
-fn clips(p: &Project) -> impl Iterator<Item = (&str, Clip)> {
-    p.timelines[0].tracks.iter().flat_map(|t| {
-        t.items
-            .iter()
-            .map(move |c| (t.id.as_str(), c.to_clip().unwrap()))
-    })
+fn clips(p: &Project) -> impl Iterator<Item = (&str, Item)> {
+    p.timelines[0]
+        .tracks
+        .iter()
+        .flat_map(|t| t.items.iter().map(move |c| (t.id.as_str(), c.clone())))
+}
+
+fn mode_of(ripple: bool) -> DeleteMode {
+    if ripple {
+        DeleteMode::Ripple
+    } else {
+        DeleteMode::Lift
+    }
 }
 
 fn internal(ops: Vec<Op>) -> Tx {
@@ -370,30 +379,31 @@ fn any_time() -> impl Strategy<Value = Rational> {
     ]
 }
 
-fn any_clip() -> impl Strategy<Value = Clip> {
+fn any_clip() -> impl Strategy<Value = Item> {
     (any_id(), any_id(), any_time(), any_time(), any_time()).prop_map(
-        |(id, asset, start, source_in, duration)| Clip::new(id, asset, start, source_in, duration),
+        |(id, asset, start, source_in, duration)| Item::clip(id, asset, start, source_in, duration),
     )
 }
 
 fn any_op() -> impl Strategy<Value = Op> {
     prop_oneof![
         (any_id(), any_time(), any::<bool>(), any::<bool>()).prop_map(|(id, duration, v, a)| {
-            Op::AssetAdd {
+            AssetAdd::media(
                 id,
-                path: "/media/x.mov".into(),
+                "/media/x.mov",
                 duration,
-                video: v.then(|| VideoInfo {
+                v.then(|| VideoInfo {
                     width: 1280,
                     height: 720,
                     rate: secs(25),
                 }),
-                audio: a.then_some(AudioInfo {
+                a.then_some(AudioInfo {
                     sample_rate: 44_100,
                     channels: 1,
                 }),
-                fingerprint: "fp".into(),
-            }
+                "fp",
+            )
+            .into()
         }),
         (
             any_id(),
@@ -420,13 +430,43 @@ fn any_op() -> impl Strategy<Value = Op> {
         }),
         any_id().prop_map(|clip| Op::ClipDelete { clip }),
         any_id().prop_map(|id| Op::AssetRemove { id }),
-        (any_id(), any::<bool>()).prop_map(|(id, ripple)| Op::ClipRemove { id, ripple }),
-        (any_clip(), any_id(), any::<bool>()).prop_map(|(clip, track, ripple)| {
-            Op::ClipRestore {
-                clip: Box::new(clip),
-                track,
-                ripple,
+        (any_id(), any_id(), any_time(), any_id(), any_time()).prop_map(
+            |(id, track, at, asset, duration)| insert(
+                &id,
+                &track,
+                at,
+                &asset,
+                Rational::zero(),
+                duration
+            )
+        ),
+        (any_id(), any::<bool>(), any_time(), any::<bool>()).prop_map(
+            |(item, start, delta, strict)| {
+                ItemTrim {
+                    item,
+                    edge: if start { Edge::Start } else { Edge::End },
+                    delta,
+                    mode: if strict {
+                        TrimMode::Strict
+                    } else {
+                        TrimMode::Ripple
+                    },
+                }
+                .into()
             }
+        ),
+        (any_id(), any::<bool>()).prop_map(|(id, ripple)| ItemRemove {
+            id,
+            mode: mode_of(ripple)
+        }
+        .into()),
+        (any_clip(), any_id(), any::<bool>()).prop_map(|(item, track, ripple)| {
+            ItemRestore {
+                item,
+                track,
+                mode: mode_of(ripple),
+            }
+            .into()
         }),
     ]
 }
@@ -448,7 +488,7 @@ fn assert_invariants(p: &Project, mode: ApplyMode) -> Result<(), TestCaseError> 
         prop_assert!(a.duration.unwrap().is_positive(), "asset {:?}", a);
     }
     for t in &p.timelines[0].tracks {
-        for c in t.items.iter().map(|c| c.to_clip().unwrap()) {
+        for c in t.items.iter().map(|c| clip(p, &c.id)) {
             prop_assert!(seen.insert(c.id.clone()), "clip id {} twice", c.id);
             prop_assert!(c.start >= Rational::zero(), "negative start {:?}", c);
             prop_assert!(c.source_in >= Rational::zero(), "negative sourceIn {:?}", c);
@@ -548,8 +588,8 @@ fn prop_1_generator_reaches_every_op_kind() {
         }
         for op in &r.ops {
             *kinds.entry(op.name()).or_default() += 1;
-            if let Op::ClipRestore { clip, .. } = op
-                && clip.id.starts_with('$')
+            if let Op::ItemRestore(r) = op
+                && r.item.id.starts_with('$')
             {
                 fresh_restores += 1;
             }

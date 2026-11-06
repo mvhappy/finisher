@@ -42,29 +42,35 @@ fn tx(id: &str, branch: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
 }
 
 fn asset() -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: "/media/a.mov".into(),
-        duration: secs(60),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        "/media/a.mov",
+        secs(60),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn clips(p: &Project) -> Vec<(String, Rational, Rational)> {

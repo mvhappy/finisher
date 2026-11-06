@@ -78,6 +78,55 @@
       ],
       "type": "object"
     },
+    "AssetAdd": {
+      "description": "`asset.add`: what probing found, by kind (plan 4C Task 7). Each kind carries its own\nfields and none of the others': `media` a positive `duration` and its `video`/`audio`\nstreams; `image` and `svg` an `image`; `lottieTemplate` a positive `duration` and `lottie`;\n`font` a `font` (with its whole-file SHA-256); `lut` a `lut`.",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioInfo"
+        },
+        "bin": {
+          "type": "string"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "font": {
+          "$ref": "#/$defs/FontFile"
+        },
+        "id": {
+          "type": "string"
+        },
+        "image": {
+          "$ref": "#/$defs/ImageInfo"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind",
+          "default": "media",
+          "description": "`media` when absent: a sub-project 4B (schema 1) `asset.add` names no kind."
+        },
+        "lottie": {
+          "$ref": "#/$defs/LottieInfo"
+        },
+        "lut": {
+          "$ref": "#/$defs/LutInfo"
+        },
+        "path": {
+          "type": "string"
+        },
+        "video": {
+          "$ref": "#/$defs/VideoInfo"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
     "AssetKind": {
       "description": "What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,\n`lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`\ncolour lookup table).",
       "enum": [
@@ -307,76 +356,6 @@
       ],
       "type": "string"
     },
-    "Clip": {
-      "description": "The clip shape the `clip.*` ops carry (a clip item without its `kind`; 4B's shape plus the\noptional `speed` and common fields), so an inverse restores a clip item exactly. Item ops\nreplace it (plan 4C Task 7).",
-      "properties": {
-        "asset": {
-          "type": "string"
-        },
-        "audio": {
-          "$ref": "#/$defs/AudioParams"
-        },
-        "blend": {
-          "$ref": "#/$defs/BlendMode"
-        },
-        "crop": {
-          "$ref": "#/$defs/Crop"
-        },
-        "duration": {
-          "$ref": "#/$defs/Rational"
-        },
-        "effects": {
-          "items": {
-            "$ref": "#/$defs/Effect"
-          },
-          "type": "array"
-        },
-        "id": {
-          "type": "string"
-        },
-        "keyframes": {
-          "additionalProperties": {
-            "items": {
-              "$ref": "#/$defs/Keyframe"
-            },
-            "type": "array"
-          },
-          "description": "Keyframes by registry path, each list sorted by `at`.",
-          "type": "object"
-        },
-        "link": {
-          "description": "The link group (`lk<n>`) the item belongs to.",
-          "type": "string"
-        },
-        "mask": {
-          "$ref": "#/$defs/Mask"
-        },
-        "opacity": {
-          "format": "double",
-          "type": "number"
-        },
-        "sourceIn": {
-          "$ref": "#/$defs/Rational"
-        },
-        "speed": {
-          "$ref": "#/$defs/Rational"
-        },
-        "start": {
-          "$ref": "#/$defs/Rational"
-        },
-        "transform": {
-          "$ref": "#/$defs/Transform"
-        }
-      },
-      "required": [
-        "id",
-        "asset",
-        "start",
-        "sourceIn",
-        "duration"
-      ],
-      "type": "object"
-    },
     "CommittedTx": {
       "description": "A transaction as persisted: with its revision, resolved bindings and diff.",
       "properties": {
@@ -505,6 +484,14 @@
       ],
       "type": "string"
     },
+    "DeleteMode": {
+      "description": "How a delete leaves its range: `ripple` closes the gap, `lift` leaves it.",
+      "enum": [
+        "ripple",
+        "lift"
+      ],
+      "type": "string"
+    },
     "Diff": {
       "description": "What a transaction changed, op by op: each entry names the op that recorded it (`op`),\nand both lists are in op order. An op may record any number of changes and shifts.",
       "properties": {
@@ -528,7 +515,7 @@
       "type": "object"
     },
     "Edge": {
-      "description": "Which edge of a clip a trim moves.",
+      "description": "Which edge of an item a trim moves.",
       "enum": [
         "start",
         "end"
@@ -707,8 +694,9 @@
       "enum": [
         "asset",
         "track",
-        "clip",
-        "timeline"
+        "timeline",
+        "item",
+        "transition"
       ],
       "type": "string"
     },
@@ -977,6 +965,13 @@
       ],
       "type": "object"
     },
+    "InsertMode": {
+      "description": "How an insert makes room (plan 4C Decision 18): `ripple` moves every later item on the\ntrack by the item's duration.",
+      "enum": [
+        "ripple"
+      ],
+      "type": "string"
+    },
     "Interp": {
       "description": "How a keyframe's value moves to the next one.",
       "oneOf": [
@@ -1228,6 +1223,243 @@
         "id",
         "start",
         "duration"
+      ],
+      "type": "object"
+    },
+    "ItemDelete": {
+      "description": "`item.delete`: takes `item` off its track.",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/DeleteMode"
+        }
+      },
+      "required": [
+        "item",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ItemInsert": {
+      "description": "`item.insert`: an item of any kind (the flattened `body`, tagged by `kind`) at `at` on\n`track`, `duration` long, with default common fields. `id` is a `$name` placeholder bound\nto a new id of the item's kind.",
+      "oneOf": [
+        {
+          "description": "A span of a media asset. Source time = `sourceIn + (t − start) × speed`.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "clip",
+              "type": "string"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
+            },
+            "speed": {
+              "$ref": "#/$defs/Rational"
+            }
+          },
+          "required": [
+            "kind",
+            "asset",
+            "sourceIn"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Timed words in a caption style. (A struct variant with the block flattened, so the\ngenerated TypeScript keeps the `kind` tag next to the block's fields.)",
+          "properties": {
+            "kind": {
+              "const": "caption",
+              "type": "string"
+            },
+            "overrides": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ParamValue"
+              },
+              "type": "object"
+            },
+            "source": {
+              "$ref": "#/$defs/CaptionSource"
+            },
+            "style": {
+              "type": "string"
+            },
+            "words": {
+              "items": {
+                "$ref": "#/$defs/Word"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "words",
+            "style"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A Lottie template with its slot values.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "graphic",
+              "type": "string"
+            },
+            "slots": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ParamValue"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A still image or SVG.",
+          "properties": {
+            "asset": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "image",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Applies its effects to everything below it.",
+          "properties": {
+            "kind": {
+              "const": "adjustment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another timeline of the project.",
+          "properties": {
+            "kind": {
+              "const": "nested",
+              "type": "string"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
+            },
+            "timeline": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "timeline",
+            "sourceIn"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/InsertMode"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "track",
+        "at",
+        "duration",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ItemRemove": {
+      "description": "`item.remove` (internal): takes item `id` off its track.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/DeleteMode"
+        }
+      },
+      "required": [
+        "id",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ItemRestore": {
+      "description": "`item.restore` (internal): puts `item` back on `track` at its `start`. Its id may be a\n`$placeholder` (spec §4.3): the item then gets a newly allocated id.",
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/Item"
+        },
+        "mode": {
+          "$ref": "#/$defs/DeleteMode"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "track",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ItemTrim": {
+      "description": "`item.trim`: moves one edge of `item` by `delta` seconds (positive moves it later).",
+      "properties": {
+        "delta": {
+          "$ref": "#/$defs/Rational"
+        },
+        "edge": {
+          "$ref": "#/$defs/Edge"
+        },
+        "item": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/TrimMode"
+        }
+      },
+      "required": [
+        "item",
+        "edge",
+        "delta",
+        "mode"
       ],
       "type": "object"
     },
@@ -1635,59 +1867,147 @@
       "type": "object"
     },
     "Op": {
-      "description": "A primitive edit operation, tagged by `op`.",
+      "description": "A primitive edit operation, tagged by `op`.\n\n`clip.insert`, `clip.trim` and `clip.delete` are client aliases of the `item.*` ops (plan 4C\nDecision 6): [`crate::normalize`] rewrites them before a commit, so a stored transaction\nnever holds one, and internal and replay applies refuse them (`INVALID_OP`).",
       "oneOf": [
         {
-          "description": "Adds a media asset. `id` is a `$name` placeholder bound to a new `a<n>` id.",
-          "properties": {
-            "audio": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/AudioInfo"
-                },
-                {
-                  "type": "null"
+          "allOf": [
+            {
+              "$ref": "#/$defs/AssetAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "asset.add",
+                  "type": "string"
                 }
-              ]
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds an asset. `id` is a `$name` placeholder bound to a new `a<n>` id."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemInsert"
             },
-            "duration": {
-              "$ref": "#/$defs/Rational"
+            {
+              "properties": {
+                "op": {
+                  "const": "item.insert",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Places an item on a track at `at`."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemTrim"
             },
-            "fingerprint": {
-              "type": "string"
+            {
+              "properties": {
+                "op": {
+                  "const": "item.trim",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Moves one edge of an item by `delta` seconds."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemDelete"
             },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.delete",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes an item off its track."
+        },
+        {
+          "description": "Internal (inverse of `asset.add`): removes an unused asset.",
+          "properties": {
             "id": {
               "type": "string"
             },
             "op": {
-              "const": "asset.add",
+              "const": "asset.remove",
               "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "video": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/VideoInfo"
-                },
-                {
-                  "type": "null"
-                }
-              ]
             }
           },
           "required": [
             "op",
-            "id",
-            "path",
-            "duration",
-            "fingerprint"
+            "id"
           ],
           "type": "object"
         },
         {
-          "description": "Inserts a clip at `at` on `track`, rippling later clips by `duration`. `id` is a `$name`\nplaceholder; `asset` is an asset id or a placeholder bound earlier in the transaction.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `item.insert`): removes an item."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `item.delete`/`item.remove`): puts an item back at its `start`."
+        },
+        {
+          "description": "Client alias of `item.insert` of a clip in ripple mode.",
           "properties": {
             "asset": {
               "type": "string"
@@ -1724,7 +2044,7 @@
           "type": "object"
         },
         {
-          "description": "Moves one edge of a clip by `delta` seconds, rippling later clips on the track.",
+          "description": "Client alias of `item.trim` in ripple mode.",
           "properties": {
             "clip": {
               "type": "string"
@@ -1749,7 +2069,7 @@
           "type": "object"
         },
         {
-          "description": "Removes a clip and closes the gap (ripple).",
+          "description": "Client alias of `item.delete` in ripple mode.",
           "properties": {
             "clip": {
               "type": "string"
@@ -1762,69 +2082,6 @@
           "required": [
             "op",
             "clip"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Internal (inverse of `asset.add`): removes an unused asset.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "op": {
-              "const": "asset.remove",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Internal (inverse of `clip.insert`): removes a clip, rippling when `ripple`.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "op": {
-              "const": "clip.remove",
-              "type": "string"
-            },
-            "ripple": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "op",
-            "id",
-            "ripple"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Internal (inverse of `clip.delete`/`clip.remove`): puts `clip` back at its `start`,\nrippling later clips by its duration when `ripple`.",
-          "properties": {
-            "clip": {
-              "$ref": "#/$defs/Clip"
-            },
-            "op": {
-              "const": "clip.restore",
-              "type": "string"
-            },
-            "ripple": {
-              "default": true,
-              "type": "boolean"
-            },
-            "track": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "clip",
-            "track"
           ],
           "type": "object"
         }
@@ -2406,6 +2663,14 @@
       "enum": [
         "crossfade",
         "dissolve"
+      ],
+      "type": "string"
+    },
+    "TrimMode": {
+      "description": "How a trim treats the rest of the track: `ripple` moves every later item by the change;\n`strict` (internal: the inverse of carving edits) moves nothing, and an overlap it would\nmake is `CLIP_OVERLAP` in every apply mode.",
+      "enum": [
+        "ripple",
+        "strict"
       ],
       "type": "string"
     },

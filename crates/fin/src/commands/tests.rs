@@ -69,7 +69,7 @@ fn landed(tx_id: &str) -> CommittedTx {
     serde_json::from_value(json!({
         "rev": 2,
         "tx": { "txId": tx_id, "author": "fin", "branch": "main", "baseRev": 1, "schemaVersion": 2,
-                "ops": [{ "op": "clip.delete", "clip": "c9" }] },
+                "ops": [{ "op": "item.delete", "item": "c9", "mode": "ripple" }] },
         "bindings": {},
         "diff": { "changes": [], "shifts": [] },
     }))
@@ -215,15 +215,28 @@ fn a_deferred_local_error_only_replaces_server_validation_errors() {
 #[test]
 fn a_rebased_commit_is_the_same_command_but_another_kind_or_clip_is_not() {
     let r = |s: &str| s.parse::<Rational>().unwrap();
-    let insert = |at: &str| Op::ClipInsert {
-        id: "$clip".into(),
-        track: "t1".into(),
-        at: r(at),
-        asset: "a1".into(),
-        source_in: r("0"),
-        duration: r("2"),
+    let insert = |at: &str| -> Op {
+        fin_core::ItemInsert {
+            id: "$clip".into(),
+            track: "t1".into(),
+            at: r(at),
+            duration: r("2"),
+            mode: fin_core::InsertMode::Ripple,
+            body: fin_core::ItemBody::Clip {
+                asset: "a1".into(),
+                source_in: r("0"),
+                speed: r("1"),
+            },
+        }
+        .into()
     };
-    let delete = |clip: &str| Op::ClipDelete { clip: clip.into() };
+    let delete = |clip: &str| -> Op {
+        fin_core::ItemDelete {
+            item: clip.into(),
+            mode: fin_core::DeleteMode::Ripple,
+        }
+        .into()
+    };
     assert!(same_command(&[insert("0")], &[insert("4")]));
     assert!(same_command(&[delete("c1")], &[delete("c1")]));
     assert!(!same_command(&[insert("0")], &[delete("c1")]));
@@ -322,4 +335,25 @@ fn args_hash_uses_the_canonical_media_path() {
     // A missing file still hashes (by its absolute path).
     let missing = add(&media.join("gone.mov"));
     assert_ne!(args_hash(&[direct]), args_hash(&[missing]));
+}
+
+/// Decision 7: the `argsHash` of a 4B `fin clip insert|trim|delete` is unchanged, so a retry
+/// across the upgrade is answered from the log. The hashes are the ones 4B's `fin` computed,
+/// pinned in the 4B fixture (plan 4C Task 2).
+#[test]
+fn args_hash_of_4b_inputs_is_unchanged() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../fin-store/tests/fixtures/4b/expected.json");
+    let expected: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let pinned = expected["argsHashes"].as_array().unwrap();
+    assert_eq!(pinned.len(), 3);
+    for case in pinned {
+        let args = case["args"].clone();
+        let step = batch_step(case["cmd"].as_str().unwrap(), args).unwrap();
+        assert_eq!(
+            input(&step),
+            json!({ "cmd": case["cmd"], "args": case["args"] })
+        );
+        assert_eq!(json!(args_hash(&[input(&step)])), case["hash"], "{case}");
+    }
 }

@@ -5,8 +5,11 @@ mod integration_support;
 
 use std::path::{Path, PathBuf};
 
-use fin_core::{apply_committed, upcast_snapshot};
-use fin_store::{OpenOptions, Store, read_project_file};
+use fin_core::{
+    InsertMode, ItemBody, ItemInsert, Op, Project, Rational, SCHEMA_VERSION, Tx, apply_committed,
+    upcast_snapshot,
+};
+use fin_store::{CherryPickReq, HistoryReq, MAIN, MergeReq, OpenOptions, Store, read_project_file};
 use integration_support::{copy_dir, fixture_4a, fixture_4b};
 
 #[test]
@@ -192,24 +195,12 @@ fn diff_upcast_equals_replay_on_fixtures() {
         assert_eq!(diffs.details["notStored"], 0, "{name}");
         assert_eq!(diffs.details["checked"], before.len(), "{name}");
         assert!(check("replay_matches_live").ok, "{name}: {:?}", report);
+        // The genesis check and every other check pass too (review of Task 6).
+        assert!(report.ok, "{name}: {report:?}");
 
         // Through the read path too: each record of each branch's lineage, replayed in order
         // from rev 0, records the diff its row reads as.
-        let rev0 = {
-            let conn = rusqlite::Connection::open_with_flags(
-                &db,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .unwrap();
-            let json: String = conn
-                .query_row(
-                    "SELECT json FROM snapshots WHERE branch = 'main' AND seq = 0",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            upcast_snapshot(serde_json::from_str(&json).unwrap()).unwrap()
-        };
+        let rev0 = rev0(&db);
         let branches: Vec<String> = before.iter().map(|(b, _, _)| b.clone()).collect();
         let mut branches = branches;
         branches.dedup();
@@ -250,7 +241,7 @@ fn fixture_4b_trim_reads_edge_and_content_offset() {
     assert_eq!(
         serde_json::to_value(&trim.diff).unwrap(),
         serde_json::json!({
-            "changes": [{ "kind": "clip", "id": "c3", "change": "updated", "op": 0,
+            "changes": [{ "kind": "item", "id": "c3", "change": "updated", "op": 0,
                           "edge": "start", "by": "-1" }],
             "shifts": [{ "track": "t2", "from": "12", "by": "-1", "op": 0 }]
         })
@@ -258,4 +249,221 @@ fn fixture_4b_trim_reads_edge_and_content_offset() {
     let undo = rows.iter().find(|c| c.rev == 14).unwrap();
     let ops: Vec<u32> = undo.diff.shifts.iter().map(|s| s.op).collect();
     assert_eq!(ops, [0, 1], "the undo's two removes, in op order");
+}
+
+/// The rev-0 project a database holds (upcast).
+fn rev0(db: &Path) -> Project {
+    let conn =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let json: String = conn
+        .query_row(
+            "SELECT json FROM snapshots WHERE branch = 'main' AND seq = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    upcast_snapshot(serde_json::from_str(&json).unwrap()).unwrap()
+}
+
+/// `branch` replayed from rev 0 through its records up to `rev`, each upcast as read.
+fn replay_to(store: &Store, db: &Path, branch: &str, rev: u64) -> Project {
+    let mut project = rev0(db);
+    for c in store.ops_since(branch, 0).unwrap() {
+        if c.rev > rev {
+            break;
+        }
+        project = apply_committed(&project, &c.tx, &c.bindings)
+            .unwrap()
+            .project;
+    }
+    project
+}
+
+/// The 4B fixture, open for writing (a fixed lease past its records' epoch 1), and its DB.
+fn writable_4b(tmp: &Path) -> (Store, PathBuf) {
+    let (data, folder) = fixture_4b(tmp);
+    let opts = OpenOptions {
+        relocate: true,
+        ..OpenOptions::default()
+    };
+    let mut store = Store::open_with(&data, &folder, opts).unwrap();
+    store.set_test_lease(2, true);
+    let db = fin_store::db_path(&data, &read_project_file(&folder).unwrap().id);
+    (store, db)
+}
+
+fn assert_verifies(store: &Store) {
+    let report = store.verify();
+    assert!(report.ok, "{report:?}");
+}
+
+fn no_alias(ops: &[Op]) {
+    assert!(ops.iter().all(|o| !o.is_alias()), "{ops:?}");
+}
+
+/// Plan 4C Task 7: 4B's records undo after the upgrade. The fixture's last two `main` units
+/// (its cherry-pick, then the redo of its undone merge) undo as `item.*` inverses, to the
+/// state of `main` before them; a redo brings the pick back.
+#[test]
+fn undo_of_4b_record_after_upgrade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, db) = writable_4b(tmp.path());
+    let head = s.snapshot(MAIN).unwrap().1;
+    let req = |id: &str| HistoryReq {
+        tx_id: id.into(),
+        author: "fixture".into(),
+        branch: MAIN.into(),
+        dry_run: false,
+        args_hash: None,
+        to: None,
+    };
+    let u1 = s.undo(req("u-4c-1")).unwrap();
+    assert_eq!(u1.undone, ["01JC0000000000000000000018"], "the cherry-pick");
+    no_alias(&u1.committed[0].tx.ops);
+    assert_eq!(s.snapshot(MAIN).unwrap().1, replay_to(&s, &db, MAIN, 15));
+    let u2 = s.undo(req("u-4c-2")).unwrap();
+    assert_eq!(u2.undone, ["01JC0000000000000000000016"], "4B's redo");
+    let names: Vec<&str> = u2.committed[0].tx.ops.iter().map(Op::name).collect();
+    assert_eq!(names, ["item.remove", "item.remove"]);
+    assert_eq!(s.snapshot(MAIN).unwrap().1, replay_to(&s, &db, MAIN, 11));
+    s.redo(req("r-4c-1")).unwrap();
+    s.redo(req("r-4c-2")).unwrap();
+    assert_eq!(s.snapshot(MAIN).unwrap().1, head);
+    assert_verifies(&s);
+}
+
+/// Plan 4C Task 7: a 4B branch merges after the upgrade, with a 4C edit on top of its 4B
+/// records.
+#[test]
+fn merge_of_4b_branch_after_upgrade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, _) = writable_4b(tmp.path());
+    let br1 = s.snapshot("br1").unwrap().1;
+    let end = br1.timelines[0].tracks[0]
+        .items
+        .iter()
+        .map(|i| i.end().unwrap())
+        .max()
+        .unwrap();
+    let insert = Op::from(ItemInsert {
+        id: "$c".into(),
+        track: "t1".into(),
+        at: end,
+        duration: Rational::from_int(1),
+        mode: InsertMode::Ripple,
+        body: ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: Rational::zero(),
+            speed: Rational::from_int(1),
+        },
+    });
+    let c = s
+        .commit(Tx {
+            tx_id: "e-4c".into(),
+            author: "fixture".into(),
+            branch: "br1".into(),
+            base_rev: s.head("br1"),
+            schema_version: SCHEMA_VERSION,
+            args_hash: None,
+            ops: vec![insert],
+        })
+        .unwrap();
+    let new_id = c.bindings["$c"].clone();
+    let m = s
+        .merge(MergeReq {
+            tx_id: "m-4c".into(),
+            author: "fixture".into(),
+            from: "br1".into(),
+            into: MAIN.into(),
+            skip_conflicting: false,
+            dry_run: false,
+            args_hash: None,
+        })
+        .unwrap();
+    assert!(m.skipped.is_empty(), "{m:?}");
+    assert!(m.merged.contains(&"e-4c".to_string()), "{m:?}");
+    for c in &m.committed {
+        no_alias(&c.tx.ops);
+    }
+    let main = s.snapshot(MAIN).unwrap().1;
+    assert!(
+        main.timelines[0].tracks[0]
+            .items
+            .iter()
+            .any(|i| i.id == new_id)
+    );
+    assert_verifies(&s);
+}
+
+/// Plan 4C Task 7: a 4B record cherry-picks after the upgrade: `main`'s insert after the
+/// fork, onto `br1`.
+#[test]
+fn cherry_pick_of_4b_record_after_upgrade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut s, _) = writable_4b(tmp.path());
+    let count = |s: &Store| -> usize {
+        let p = s.snapshot("br1").unwrap().1;
+        p.timelines[0].tracks.iter().map(|t| t.items.len()).sum()
+    };
+    let before = count(&s);
+    let r = s
+        .cherry_pick(CherryPickReq {
+            tx_id: "p-4c".into(),
+            author: "fixture".into(),
+            origin: "01JC0000000000000000000013".into(),
+            into: "br1".into(),
+            dry_run: false,
+            args_hash: None,
+        })
+        .unwrap();
+    assert_eq!(r.committed.len(), 1);
+    let names: Vec<&str> = r.committed[0].tx.ops.iter().map(Op::name).collect();
+    assert_eq!(names, ["item.insert"]);
+    assert_eq!(count(&s), before + 1);
+    assert_verifies(&s);
+}
+
+/// Plan 4C Task 7: every pre-4C fixture's records, upcast and replayed from rev 0, give the
+/// frozen v2 goldens; the 4A and 4B folders (which hold segments) rebuild from the folder
+/// alone to the same states. (The SP2 fixture has no folder segments: its database is the
+/// only copy of its history.)
+#[test]
+fn replay_of_upcast_records_equals_v2_golden() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (name, data, folder) in fixtures(tmp.path()) {
+        let golden = expected_v2(name);
+        let opts = || OpenOptions {
+            relocate: true,
+            ..OpenOptions::default()
+        };
+        let store = Store::open_with(&data, &folder, opts()).unwrap();
+        let db = fin_store::db_path(&data, &read_project_file(&folder).unwrap().id);
+        for (branch, want) in states(name, &golden) {
+            let rev = want["rev"].as_u64().unwrap();
+            let replayed = replay_to(&store, &db, &branch, rev);
+            assert_eq!(
+                serde_json::to_value(&replayed).unwrap(),
+                want["project"],
+                "{name} {branch}"
+            );
+        }
+        drop(store);
+        if name == "sp2" {
+            continue;
+        }
+        std::fs::remove_dir_all(db.parent().unwrap()).unwrap();
+        let store = Store::open_with(&data, &folder, opts()).unwrap();
+        let report = store.last_rebuild().expect("rebuilt at open").clone();
+        assert!(report.verify.ok, "{name}: {:?}", report.verify);
+        for (branch, want) in states(name, &golden) {
+            let (rev, project) = store.snapshot(&branch).unwrap();
+            assert_eq!(rev, want["rev"].as_u64().unwrap(), "{name} {branch}");
+            assert_eq!(
+                serde_json::to_value(&project).unwrap(),
+                want["project"],
+                "{name} {branch}"
+            );
+        }
+    }
 }

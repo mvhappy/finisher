@@ -16,6 +16,9 @@ impl Store {
     /// Commits `tx` to its branch and returns it as committed.
     ///
     /// - An empty `txId` or empty `ops` is `INVALID_OP`, checked before anything else.
+    /// - The tx is normalised first ([`fin_core::normalize`]): `clip.*` aliases become their
+    ///   `item.*` ops, and a schema-1 client tx is upgraded (or refused `SCHEMA_VERSION`). The
+    ///   stored intent is the normalised tx.
     /// - `tx.branch` is a branch reference (an id, an active name or `<name>#<id>`); the
     ///   stored intent holds the id. An unknown one is `BRANCH_NOT_FOUND`, an archived one
     ///   `BRANCH_ARCHIVED` (both checked after the dedupe, the read-only state and the fence).
@@ -78,6 +81,9 @@ impl Store {
         dry_run: bool,
     ) -> Result<CommittedTx, StoreError> {
         check_shape(&tx)?;
+        // The stored intent never holds a `clip.*` alias, nor a schema-1 shape (plan 4C
+        // Decision 6).
+        let tx = fin_core::normalize(tx)?;
         // Everything in `plan` runs under the write lock, against the head as stored: another
         // `Store` on this database may have committed since our cache was filled.
         loop {

@@ -25,41 +25,53 @@ fn secs(n: i64) -> Rational {
 }
 
 fn asset() -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: "/media/a.mov".into(),
-        duration: secs(600),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        "/media/a.mov",
+        secs(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
+    fin_core::ItemDelete {
+        item: clip.into(),
+        mode: fin_core::DeleteMode::Ripple,
+    }
+    .into()
 }
 
 fn trim(clip: &str, delta: i64) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
+    fin_core::ItemTrim {
+        item: clip.into(),
         edge: Edge::End,
         delta: secs(delta),
+        mode: fin_core::TrimMode::Ripple,
     }
+    .into()
 }
 
 fn edit(s: &mut Store, branch: &str, id: &str, author: &str, ops: Vec<Op>) -> CommittedTx {
@@ -435,8 +447,8 @@ fn revert_merge_group_newest_first() {
         v["inverse"].as_array().unwrap().len()
     };
     assert_eq!(ops.len(), inverse("m-2") + inverse("m-1"));
-    assert!(matches!(ops[0], Op::ClipRestore { .. }), "{ops:?}");
-    assert!(matches!(ops.last(), Some(Op::ClipRemove { .. })), "{ops:?}");
+    assert!(matches!(ops[0], Op::ItemRestore(_)), "{ops:?}");
+    assert!(matches!(ops.last(), Some(Op::ItemRemove(_))), "{ops:?}");
     assert_eq!(state(&s, MAIN), before);
     assert_eq!(m.committed.len(), 2);
     // The revert is carol's unit; undoing it brings the merge back.

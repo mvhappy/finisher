@@ -28,13 +28,13 @@ pub(crate) fn insert_inside(clip: &Item, at: Rational) -> Result<CoreError, Core
     };
     Ok(CoreError::new(
         "INSERT_INSIDE_CLIP",
-        format!("{at} is inside clip {}", clip.id),
+        format!("{at} is inside item {}", clip.id),
     )
     .with_details(
-        json!({ "clip": clip.id, "at": at, "start": start, "end": end, "nearest": nearest }),
+        json!({ "clip": clip.id, "item": clip.id, "at": at, "start": start, "end": end, "nearest": nearest }),
     )
     .with_fix(format!(
-        "insert at the clip's start ({start}) or end ({end}); nearest is {nearest}"
+        "insert at the item's start ({start}) or end ({end}); nearest is {nearest}"
     )))
 }
 

@@ -303,18 +303,19 @@ mod tests {
         let s = Rational::from_int;
         let p = new_project("p".into(), "P".into(), s(30)).unwrap();
         let ops = vec![
-            Op::AssetAdd {
-                id: "$a".into(),
-                path: "/m.mov".into(),
-                duration: s(60),
-                video: Some(VideoInfo {
+            crate::ops::AssetAdd::media(
+                "$a",
+                "/m.mov",
+                s(60),
+                Some(VideoInfo {
                     width: 2,
                     height: 2,
                     rate: s(30),
                 }),
-                audio: None,
-                fingerprint: "f".into(),
-            },
+                None,
+                "f",
+            )
+            .into(),
             Op::ClipInsert {
                 id: "$c".into(),
                 track: "t1".into(),
@@ -357,7 +358,7 @@ mod tests {
     fn several_added_changes_of_an_allocating_op_are_dropped() {
         use crate::tx::{Change, EntityKind};
         let add = |id: &str| Change {
-            kind: EntityKind::Clip,
+            kind: EntityKind::Item,
             id: id.into(),
             change: ChangeKind::Added,
             op: 0,

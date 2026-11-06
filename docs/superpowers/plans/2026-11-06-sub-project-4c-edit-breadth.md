@@ -803,7 +803,7 @@ Insert validation per kind (policy unless noted):
 
 `item.trim` on the start edge records `by` and rebases keyframes and words (Decision 13). `strict` is `INVALID_OP` from clients. Every op on a locked track's items is `TRACK_LOCKED`.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - goldens for `item.insert` (each allowed kind), `item.delete` (`ripple`, `lift`), `item.trim` (`ripple` on both edges, `strict`, speed ≠ 1), and the internal remove and restore. Each checks apply, inverse, shifts and `inverse_shifts_mirror`, and `ids_cover_every_id_in_json` for `item.restore` of an item with effects, a link, keyframes and a style;
   - `start_trim_rebases_keyframes_and_words` (exact inverse, `by` recorded); `strict_trim_refuses_overlap_in_every_mode`;
   - `replay_checks_tracks_touched_by_changes` (B1: a hand-made `lift` record whose restore overlaps is `REPLAY_FAILED` `CLIP_OVERLAP` though it records no shift);
@@ -817,8 +817,8 @@ Insert validation per kind (policy unless noted):
     - `diff_upcast_equals_replay_on_fixtures` again with `item`;
     - `counters_see_ids_inside_restores`, `recovery_remaps_nested_ids` (B6);
   - `fin`: `args_hash_of_4b_inputs_is_unchanged` (the pinned hashes from Task 2, Decision 7).
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test ops_item --test upgrade_golden --test normalize`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The record step maps:
+- [x] **Step 2: Run** `rtk cargo test -p fin-core --test ops_item --test upgrade_golden --test normalize`. Expected: FAIL.
+- [x] **Step 3: Implement.** The record step maps:
   - `clip.insert {id, track, at, asset, sourceIn, duration}` → `item.insert {id, track, at, duration, mode: "ripple", kind: "clip", asset, sourceIn}`;
   - `clip.trim {clip, edge, delta}` → `item.trim {item, edge, delta, mode: "ripple"}`;
   - `clip.delete {clip}` → `item.delete {item, mode: "ripple"}`;
@@ -827,7 +827,21 @@ Insert validation per kind (policy unless noted):
   - `asset.add` + `kind: "media"`.
 
   It never touches ids, timestamps or bindings.
-- [ ] **Step 4: Run** the three gates and `rtk pnpm e2e` → PASS. **Commit** `feat(core): item.* ops with modes; clip.* as client aliases; record upcaster v1→v2`.
+- [x] **Step 4: Run** the three gates and `rtk pnpm e2e` → PASS. **Commit** `feat(core): item.* ops with modes; clip.* as client aliases; record upcaster v1→v2`.
+
+**As built** (for Tasks 8–14, 18, 19, 23 and 26):
+- **Payloads are boxed newtype variants:** `Op::AssetAdd(Box<AssetAdd>)`, `ItemInsert(Box<..>)`, `ItemRestore(Box<..>)` (clippy `large_enum_variant`), `ItemTrim`, `ItemDelete`, `ItemRemove` unboxed; `From<payload> for Op` for each, and `AssetAdd::media(..)`. `Clip`, `Item::to_clip` and `From<Clip>` are gone; `Item::{new, clip}` and `Item`/`ItemBody::{refs_mut, ids, asset, kind_name}` replace them (Decision 24: an item lists its id, what its body names, its effects' ids and its link; a caption lists its `style`, a `preset:` included).
+- **Modes hold only what is implemented:** `InsertMode {Ripple}`, `DeleteMode {Ripple, Lift}`, `TrimMode {Ripple, Strict}`; Task 8 adds `overwrite` and `roll`. `strict` from a client is `INVALID_OP`. Strict and lift restores check their track themselves (`CLIP_OVERLAP`: strict in every mode, lift restore under policy; replay's touched-track check finds a lift overlap too).
+- **Lift records no shift** (`item.remove`/`item.restore` in `lift` mode, strict trims, and so B1 needed `touched_tracks`). The diff step therefore drops the zero shift a v1 `clip.remove`/`clip.restore` without ripple recorded (`diff_v1`, golden updated), so `diff_upcast_equals_replay` holds for them.
+- **Aliases** apply in `Client` mode by rewriting each to its `item.*` op (`ops::alias`), are `INVALID_OP` in `Internal`/`Replay`, and `fin_core::normalize` runs first in `Store::commit_in` (after the `txId`/empty-ops shape check), so stored intents never hold one. A schema-1 tx with another op kind is `SCHEMA_VERSION` (`details {op, opIndex}`); other versions are left to the apply. `AssetAdd.kind` defaults to `media` when absent (serde), so a 4B client's `asset.add` parses; `normalize` also sets it for schema-1 txs. `fin` sends `item.*` (argsHash unchanged: it hashes the command input).
+- **Record step** (`upgrade/record_v1.rs`, frozen) on `intent.ops`, `resolved`, `inverse`; a non-boolean `ripple` or a restore without a clip object is `INVALID_FORMAT`. Goldens `upcast_v1_record_golden_per_op`/`_whole`, and `v1_shape_of_a_fresh_diff_upcasts_back` now goes through a v1 record (ops written back in the v1 shapes) upcast and replayed.
+- **Insert rules:** `check_body` (shared with `item.restore`) as the interface says; a non-`media` asset under a clip is `TRACK_KIND_MISMATCH` (structural), a wrong asset kind for an image/graphic `INVALID_OP` (policy), nested inserts `INVALID_OP` in every mode (restores of nested items are not refused). Speed is structural (`> 0`); the source extent `duration × speed` and the one-frame minimum (of the item's **timeline** rate) are policy. Trims of items without a source have no lower start limit in ripple mode (`min` null).
+- **`asset.add` kinds** (structural): each kind's own fields only, `media`/`lottieTemplate` need a positive `duration`, a font a 64-lowercase-hex `sha256`, a size and a face, a LUT `size ≥ 2`, a `bin` must exist (and is in `ids`/footprint `uses`); policy: a media asset has a stream. `asset.remove`'s inverse carries every field, so durationless assets undo. `ASSET_IN_USE` details gain `items`; `INSERT_INSIDE_CLIP`, `CLIP_*` and trim `INVALID_RANGE` gain `item` (`clip` kept); the rebase blame reads `item` too.
+- **Review of Task 6 folded in:** nested ids (above, with a busy item in `ops_table`); `-0.0` stored as `0.0` and non-finite floats refused (`INVALID_RANGE` `{path}`) in insert bodies and restored items (`ops/util/values.rs`), `encode_record` debug-asserts its bytes decode; trims use the timeline's rate; `diff_upcast_equals_replay_on_fixtures` asserts `report.ok`.
+- **`EntityKind`** is `asset, track, timeline, item, transition` (Tasks 10–18 add theirs). `json_schema` wraps a `$ref` with sibling keywords in `allOf` (json-schema-to-typescript merged them shallowly and dropped the payload's fields): TS `Op` is `(ItemInsert & {op: "item.insert"}) | …`.
+- **4B fixture schema:** its DB predates 4B's `f95f678` (`record_links.recovers`, added to unshipped m0002), so `branch_index` and every history write failed on it; `integration_support::fixture_4b` adds the column to the copy until the fixture is regenerated from final 4B (or a migration adds it). Coordinator decision pending.
+- SP2 has no folder segments, so `replay_of_upcast_records_equals_v2_golden` rebuilds only 4A and 4B from the folder. `counters_see_ids_inside_restores` is in `tests/import.rs` and `recovery_remaps_nested_ids` in `recover/remap.rs` (`tests/recover.rs` is near its limit). `migration_0001_matches_encode_record` now compares the migrated records with the SP2 rows through `upcast_record` (4C cannot decode v1 bytes into its types); `edit_record_bytes_unchanged_from_4a` checks the raw bytes and their upcast.
+- **For Task 8:** add the modes to the enums; `ops/util/content.rs` `shift_content` is the content offset to reuse; `item_insert::check_body`/`resolve_body` are shared; overwrite and strict inverses get `touched_tracks` for free in replay.
 
 ### Task 8: Overwrite, roll, slip, split; content offsets in the rebase engine; `compose::overwrite` — tier: opus
 

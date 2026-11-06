@@ -6,12 +6,25 @@ use crate::error::CoreError;
 use crate::ops::Op;
 
 mod check;
+mod content;
+mod lock;
 mod lookup;
 mod ripple;
+mod touched;
+mod values;
 
-pub(crate) use check::{check_kind, check_source, check_tracks, invalid_range, media_duration};
-pub(crate) use lookup::{TrackAt, asset, clip_index, end, exists, items, track_index, tracks};
+pub(crate) use check::{
+    check_frame, check_kind, check_source, check_speed, check_track, check_tracks, invalid_range,
+    kind_name, media_duration,
+};
+pub(crate) use content::shift_content;
+pub(crate) use lock::check_unlocked;
+pub(crate) use lookup::{
+    TrackAt, asset, end, exists, find_item, find_transition, item_index, items, track_index, tracks,
+};
 pub(crate) use ripple::{OpDiff, clip_containing, insert_inside, place, ripple};
+pub(crate) use touched::touched_tracks;
+pub(crate) use values::{body as normalize_body, normalize_item};
 
 pub(crate) fn not_found(kind: &str, id: &str) -> CoreError {
     CoreError::new("NOT_FOUND", format!("{kind} {id} does not exist"))
@@ -26,4 +39,12 @@ pub(crate) fn wrong_op(op: &Op) -> CoreError {
         format!("{} dispatched to the wrong module", op.name()),
     )
     .with_details(json!({ "op": op.name() }))
+}
+
+/// The frame length of the timeline `at` is on.
+pub(crate) fn frame_of(
+    project: &crate::model::Project,
+    at: TrackAt,
+) -> Result<crate::time::Rational, CoreError> {
+    crate::time::frame_duration(project.timelines[at.timeline].rate)
 }

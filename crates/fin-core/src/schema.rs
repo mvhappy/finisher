@@ -26,10 +26,47 @@ pub fn json_schema_with(extra: impl FnOnce(&mut SchemaGenerator)) -> Value {
     generator.subschema_for::<CommittedTx>();
     generator.subschema_for::<Applied>();
     extra(&mut generator);
-    let defs: Map<String, Value> = generator.take_definitions(true);
+    let mut defs: Map<String, Value> = generator.take_definitions(true);
+    for v in defs.values_mut() {
+        ref_siblings_to_all_of(v);
+    }
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "FinCore",
         "$defs": defs,
     })
+}
+
+/// Rewrites every `{"$ref": r, <keywords>}` with sibling keywords other than `description`
+/// and `default` into `{"allOf": [{"$ref": r}, {<keywords>}]}` (keeping those two). schemars writes an
+/// internally tagged newtype variant (`Op::ItemInsert(..)`) as its payload's `$ref` beside the
+/// tag's `properties`; json-schema-to-typescript merges such siblings into the referenced
+/// schema shallowly, so the tag's `properties` would replace the payload's.
+fn ref_siblings_to_all_of(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for x in map.values_mut() {
+                ref_siblings_to_all_of(x);
+            }
+            let has_ref = map.contains_key("$ref");
+            let siblings = map
+                .keys()
+                .any(|k| !matches!(k.as_str(), "$ref" | "description" | "default"));
+            if has_ref && siblings {
+                let reference = map.remove("$ref").unwrap_or_default();
+                let kept: Vec<(String, Value)> = ["description", "default"]
+                    .into_iter()
+                    .filter_map(|k| map.remove(k).map(|v| (k.to_string(), v)))
+                    .collect();
+                let rest = std::mem::take(map);
+                map.insert(
+                    "allOf".into(),
+                    json!([{ "$ref": reference }, Value::Object(rest)]),
+                );
+                map.extend(kept);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(ref_siblings_to_all_of),
+        _ => {}
+    }
 }

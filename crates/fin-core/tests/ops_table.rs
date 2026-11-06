@@ -1,20 +1,108 @@
 mod common;
 
 use common::ids_json::{ids_cover_every_id_in_json, ids_cover_json};
-use fin_core::{Clip, Edge, Op, Rational};
+use fin_core::{
+    AssetAdd, BlendMode, CaptionBlock, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
+    ItemBody, ItemDelete, ItemInsert, ItemRemove, ItemRestore, ItemTrim, Keyframe, Op, ParamValue,
+    Rational, TrimMode, Word,
+};
 use serde_json::json;
+
+/// A clip item with everything that carries an id: effects, a link group, keyframes.
+pub fn busy_clip() -> Item {
+    let r = Rational::from_int;
+    let mut item = Item::clip("c1", "a1", r(0), r(0), r(1));
+    item.common.effects = vec![
+        Effect {
+            id: "fx1".into(),
+            kind: "blur".into(),
+            enabled: true,
+            params: [("radius".to_string(), ParamValue::Number(2.5))].into(),
+        },
+        Effect {
+            id: "fx2".into(),
+            kind: "colorAdjust".into(),
+            enabled: false,
+            params: Default::default(),
+        },
+    ];
+    item.common.link = Some("lk1".into());
+    item.common.blend = BlendMode::Screen;
+    item.common.keyframes.insert(
+        "opacity".into(),
+        vec![Keyframe {
+            at: r(0),
+            value: ParamValue::Number(0.5),
+            interp: Interp::Linear,
+        }],
+    );
+    item
+}
+
+/// A caption item in project style `st2`.
+pub fn caption() -> Item {
+    let r = Rational::from_int;
+    let body = ItemBody::Caption {
+        block: CaptionBlock {
+            words: vec![Word {
+                text: "hi".into(),
+                start: r(0),
+                end: r(1),
+            }],
+            style: "st2".into(),
+            overrides: Default::default(),
+            source: None,
+        },
+    };
+    let mut item = Item::new("cap1", r(0), r(1), body);
+    item.common.effects.push(Effect {
+        id: "fx3".into(),
+        kind: "blur".into(),
+        enabled: true,
+        params: Default::default(),
+    });
+    item
+}
 
 fn every_variant() -> Vec<Op> {
     let r = Rational::from_int;
-    let ops = vec![
-        Op::AssetAdd {
-            id: "$a".into(),
-            path: "a1.mov".into(),
-            duration: r(2),
-            video: None,
-            audio: None,
-            fingerprint: "c9".into(),
-        },
+    let mut add = AssetAdd::media("$a", "a1.mov", r(2), None, None, "c9");
+    add.bin = Some("b1".into());
+    let ops: Vec<Op> = vec![
+        add.into(),
+        ItemInsert {
+            id: "$c".into(),
+            track: "t1".into(),
+            at: r(0),
+            duration: r(1),
+            mode: InsertMode::Ripple,
+            body: ItemBody::Image { asset: "a1".into() },
+        }
+        .into(),
+        ItemTrim {
+            item: "c1".into(),
+            edge: Edge::Start,
+            delta: r(1),
+            mode: TrimMode::Ripple,
+        }
+        .into(),
+        ItemDelete {
+            item: "c1".into(),
+            mode: DeleteMode::Lift,
+        }
+        .into(),
+        Op::AssetRemove { id: "a1".into() },
+        ItemRemove {
+            id: "c1".into(),
+            mode: DeleteMode::Ripple,
+        }
+        .into(),
+        ItemRestore {
+            item: busy_clip(),
+            track: "t1".into(),
+            mode: DeleteMode::Ripple,
+        }
+        .into(),
         Op::ClipInsert {
             id: "$c".into(),
             track: "t1".into(),
@@ -29,27 +117,20 @@ fn every_variant() -> Vec<Op> {
             delta: r(1),
         },
         Op::ClipDelete { clip: "c1".into() },
-        Op::AssetRemove { id: "a1".into() },
-        Op::ClipRemove {
-            id: "c1".into(),
-            ripple: true,
-        },
-        Op::ClipRestore {
-            clip: Box::new(Clip::new("c1", "a1", r(0), r(0), r(1))),
-            track: "t1".into(),
-            ripple: true,
-        },
     ];
     // Adding a variant breaks this match, so the list above cannot silently fall behind.
     for op in &ops {
         match op {
-            Op::AssetAdd { .. }
+            Op::AssetAdd(_)
+            | Op::ItemInsert(_)
+            | Op::ItemTrim(_)
+            | Op::ItemDelete(_)
+            | Op::AssetRemove { .. }
+            | Op::ItemRemove(_)
+            | Op::ItemRestore(_)
             | Op::ClipInsert { .. }
             | Op::ClipTrim { .. }
-            | Op::ClipDelete { .. }
-            | Op::AssetRemove { .. }
-            | Op::ClipRemove { .. }
-            | Op::ClipRestore { .. } => {}
+            | Op::ClipDelete { .. } => {}
         }
     }
     ops
@@ -68,6 +149,41 @@ fn ops_table_lists_every_variant() {
         let back: Op = serde_json::from_value(json).unwrap();
         assert_eq!(&back, op);
         ids_cover_every_id_in_json(op);
+        let mut m = op.clone();
+        let refs: Vec<String> = m.refs_mut().into_iter().map(|s| s.clone()).collect();
+        assert_eq!(
+            op.ids(),
+            refs,
+            "{}: ids lists what refs_mut does",
+            op.name()
+        );
+        assert_eq!(op.is_alias(), op.name().starts_with("clip."));
+    }
+}
+
+/// Decision 24: a restore lists every id nested in its item (B6).
+#[test]
+fn restore_lists_nested_ids() {
+    let ops: Vec<Op> = [busy_clip(), caption()]
+        .into_iter()
+        .map(|item| {
+            ItemRestore {
+                item,
+                track: "t3".into(),
+                mode: DeleteMode::Lift,
+            }
+            .into()
+        })
+        .collect();
+    assert_eq!(
+        ops[0].ids(),
+        ["c1", "a1", "fx1", "fx2", "lk1", "t3"],
+        "{:?}",
+        ops[0]
+    );
+    assert_eq!(ops[1].ids(), ["cap1", "st2", "fx3", "t3"]);
+    for op in &ops {
+        ids_cover_every_id_in_json(op);
     }
 }
 
@@ -82,4 +198,16 @@ fn ids_json_helper_flags_an_unlisted_id() {
     let mut json = serde_json::to_value(&op).unwrap();
     json["label"] = json!("c9");
     assert_eq!(ids_cover_json(&op, &json), Ok(()));
+    // An id nested in a restored item is found.
+    let mut item = busy_clip();
+    item.common.link = None;
+    let op: Op = ItemRestore {
+        item,
+        track: "t1".into(),
+        mode: DeleteMode::Ripple,
+    }
+    .into();
+    let mut json = serde_json::to_value(&op).unwrap();
+    json["item"]["link"] = json!("lk7");
+    assert_eq!(ids_cover_json(&op, &json), Err(vec!["lk7".to_string()]));
 }

@@ -182,40 +182,84 @@ mod tests {
     }
 
     fn trim(clip: &str) -> Op {
-        Op::ClipTrim {
-            clip: clip.into(),
+        fin_core::ItemTrim {
+            item: clip.into(),
             edge: Edge::End,
             delta: Rational::from_int(-1),
+            mode: fin_core::TrimMode::Ripple,
         }
+        .into()
+    }
+
+    fn remove(id: &str) -> Op {
+        fin_core::ItemRemove {
+            id: id.into(),
+            mode: fin_core::DeleteMode::Ripple,
+        }
+        .into()
     }
 
     #[test]
     fn bound_ids_become_placeholders_and_later_literals_follow_the_remap() {
         let mut m = Remap::default();
-        let first = record(
-            vec![Op::ClipRemove {
-                id: "c10".into(),
-                ripple: true,
-            }],
-            &[("$c", "c10")],
-        );
+        let first = record(vec![remove("c10")], &[("$c", "c10")]);
         let mut never = |_: &str| -> Result<bool, StoreError> { panic!("not asked") };
         let tx = m
             .prepare(&first, &BTreeSet::new(), &mut never)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            tx.ops,
-            [Op::ClipRemove {
-                id: "$c".into(),
-                ripple: true
-            }]
-        );
+        assert_eq!(tx.ops, [remove("$c")]);
         m.learn(&first, &BTreeMap::from([("$c".into(), "c42".into())]));
         let later = record(vec![trim("c10"), trim("c3")], &[]);
         let fork = BTreeSet::from(["c3".to_string()]);
         let tx = m.prepare(&later, &fork, &mut never).unwrap().unwrap();
         assert_eq!(tx.ops, [trim("c42"), trim("c3")]);
+    }
+
+    /// B6 (plan 4C Decision 24): the ids nested in a restored item are remapped and checked
+    /// like any other: its own id follows the remap, its effect and link ids are judged.
+    #[test]
+    fn recovery_remaps_nested_ids() {
+        let r = Rational::from_int;
+        let mut m = Remap::default();
+        m.learn(
+            &record(vec![], &[("$c", "c10")]),
+            &BTreeMap::from([("$c".into(), "c42".into())]),
+        );
+        let mut item = fin_core::Item::clip("c10", "a1", r(0), r(0), r(1));
+        item.common.effects.push(fin_core::Effect {
+            id: "fx5".into(),
+            kind: "blur".into(),
+            enabled: true,
+            params: Default::default(),
+        });
+        item.common.link = Some("lk2".into());
+        let restore: Op = fin_core::ItemRestore {
+            item,
+            track: "t1".into(),
+            mode: fin_core::DeleteMode::Lift,
+        }
+        .into();
+        let mut asked = vec![];
+        let mut elsewhere = |id: &str| -> Result<bool, StoreError> {
+            asked.push(id.to_string());
+            Ok(id == "lk2")
+        };
+        let fork = BTreeSet::from(["a1".to_string(), "t1".to_string()]);
+        let rec = record(vec![restore.clone()], &[]);
+        let c = m.prepare(&rec, &fork, &mut elsewhere).unwrap().unwrap_err();
+        assert_eq!(c.reason, "ID_COLLISION");
+        assert_eq!(asked, ["fx5", "lk2"]);
+        let fork = BTreeSet::from(["a1".into(), "t1".into(), "fx5".into(), "lk2".into()]);
+        let tx = m.prepare(&rec, &fork, &mut never_asked).unwrap().unwrap();
+        let Op::ItemRestore(got) = &tx.ops[0] else {
+            panic!("{:?}", tx.ops)
+        };
+        assert_eq!(got.item.ids(), ["c42", "a1", "fx5", "lk2"]);
+    }
+
+    fn never_asked(_: &str) -> Result<bool, StoreError> {
+        panic!("not asked")
     }
 
     #[test]

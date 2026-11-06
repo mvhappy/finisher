@@ -27,11 +27,13 @@ fn edit(s: &mut Store, b: &str, id: &str, author: &str, ops: Vec<Op>) {
 }
 
 fn trim(clip: &str, d: i64) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
+    fin_core::ItemTrim {
+        item: clip.into(),
         edge: Edge::End,
         delta: secs(d),
+        mode: fin_core::TrimMode::Ripple,
     }
+    .into()
 }
 
 fn history(id: &str, author: &str, b: &str) -> HistoryReq {
@@ -56,27 +58,35 @@ fn stack_records_equal_the_parsed_records() {
         None,
     )
     .unwrap();
-    let asset = Op::AssetAdd {
-        id: "$a".into(),
-        path: "/m/a.mov".into(),
-        duration: secs(600),
-        video: Some(VideoInfo {
+    let asset = fin_core::AssetAdd::media(
+        "$a",
+        "/m/a.mov",
+        secs(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    };
+        None,
+        "fp",
+    )
+    .into();
     edit(&mut s, MAIN, "s1", "setup", vec![asset]);
     let clips = (0..3)
-        .map(|i| Op::ClipInsert {
-            id: format!("$c{i}"),
-            track: "t1".into(),
-            at: secs(10 * i),
-            asset: "a1".into(),
-            source_in: secs(0),
-            duration: secs(10),
+        .map(|i| {
+            fin_core::ItemInsert {
+                id: format!("$c{i}"),
+                track: "t1".into(),
+                at: secs(10 * i),
+                duration: secs(10),
+                mode: fin_core::InsertMode::Ripple,
+                body: fin_core::ItemBody::Clip {
+                    asset: "a1".into(),
+                    source_in: secs(0),
+                    speed: fin_core::Rational::from_int(1),
+                },
+            }
+            .into()
         })
         .collect();
     edit(&mut s, MAIN, "s2", "setup", clips);

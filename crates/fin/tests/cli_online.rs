@@ -76,7 +76,7 @@ fn full_editing_flow() {
     assert_eq!(deleted["rev"], 5);
     assert_eq!(
         deleted["diff"]["changes"],
-        json!([{ "kind": "clip", "id": "c1", "change": "removed", "op": 0 }])
+        json!([{ "kind": "item", "id": "c1", "change": "removed", "op": 0 }])
     );
 
     let view = run(&["view"]);
@@ -375,8 +375,8 @@ fn idem_key_reused_for_a_different_command_is_rejected() {
     let error = &reused.json["error"];
     assert_eq!(error["details"]["txId"], "k1");
     assert_eq!(error["details"]["rev"], 4);
-    assert_eq!(error["details"]["committedOps"][0]["op"], "clip.delete");
-    assert_eq!(error["details"]["committedOps"][0]["clip"], "c2");
+    assert_eq!(error["details"]["committedOps"][0]["op"], "item.delete");
+    assert_eq!(error["details"]["committedOps"][0]["item"], "c2");
     assert_eq!(error["fix"], "use a new --idem-key for a different command");
     // The same kind of op on another clip is a different command too.
     ok(run(&[

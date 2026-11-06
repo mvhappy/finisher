@@ -140,7 +140,7 @@ pub fn range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fin_core::{Asset, AssetKind, Clip, new_project};
+    use fin_core::{Asset, AssetKind, Item, new_project};
 
     fn r(s: &str) -> Rational {
         s.parse().unwrap()
@@ -166,7 +166,7 @@ mod tests {
             },
         );
         let clip =
-            |id: &str, start: &str, dur: &str| Clip::new(id, "a1", r(start), r("0"), r(dur)).into();
+            |id: &str, start: &str, dur: &str| Item::clip(id, "a1", r(start), r("0"), r(dur));
         p.timelines[0].tracks[0].items = vec![clip("c1", "0", "10"), clip("c2", "10", "5/2")];
         p
     }

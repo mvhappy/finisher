@@ -50,11 +50,7 @@ fn on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx {
 }
 
 fn trim(clip: &str) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
-        edge: Edge::End,
-        delta: Rational::from_int(1),
-    }
+    trim_item(clip, Edge::End, Rational::from_int(1))
 }
 
 fn branch(s: &mut Store, tx_id: &str, name: &str, from: &str) -> String {
@@ -403,7 +399,7 @@ fn restore_of_a_clip_deleted_before_the_fork_is_no_collision() {
         &e,
         |a| {
             commit(a, "e1", vec![insert(0, "a1")]);
-            commit(a, "e2", vec![Op::ClipDelete { clip: "c1".into() }]);
+            commit(a, "e2", vec![delete_item("c1")]);
         },
         |_| {},
         winner,
@@ -1016,13 +1012,7 @@ fn undo_in_the_tail_names_the_fresh_id() {
     let r = create_all(&mut a, "rec");
     let fresh = r.committed[2].bindings["$c"].clone();
     assert_ne!(fresh, "c2");
-    assert_eq!(
-        r.committed[3].tx.ops,
-        [Op::ClipRemove {
-            id: fresh,
-            ripple: true
-        }]
-    );
+    assert_eq!(r.committed[3].tx.ops, [remove_item(&fresh)]);
     let (_, p) = a.snapshot(&r.created[0].id).unwrap();
     assert_eq!(clips(&p), [r.committed[1].bindings["$c"].clone()]);
     assert_verifies(&a);

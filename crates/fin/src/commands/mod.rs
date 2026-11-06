@@ -129,8 +129,8 @@ fn same_command(planned: &[Op], committed: &[Op]) -> bool {
         && planned.iter().zip(committed).all(|(p, c)| {
             p.name() == c.name()
                 && match (p, c) {
-                    (Op::ClipTrim { clip: a, .. }, Op::ClipTrim { clip: b, .. })
-                    | (Op::ClipDelete { clip: a }, Op::ClipDelete { clip: b }) => a == b,
+                    (Op::ItemTrim(a), Op::ItemTrim(b)) => a.item == b.item,
+                    (Op::ItemDelete(a), Op::ItemDelete(b)) => a.item == b.item,
                     _ => true,
                 }
         })
@@ -157,20 +157,13 @@ fn idem_key_reused(committed: &CommittedTx) -> CoreError {
 /// `--idem-key`. Each planned step pushed exactly one op, so steps and ops pair up in order.
 fn echo_committed(resolved: &mut Value, ops: &[Op]) {
     let patch = |r: &mut Value, op: &Op| {
-        if let (
-            Op::ClipInsert {
-                at,
-                source_in,
-                duration,
-                ..
-            },
-            Some(map),
-        ) = (op, r.as_object_mut())
+        if let (Op::ItemInsert(i), Some(map)) = (op, r.as_object_mut())
+            && let fin_core::ItemBody::Clip { source_in, .. } = &i.body
         {
-            map.insert("at".to_string(), json!(at));
+            map.insert("at".to_string(), json!(i.at));
             map.insert("in".to_string(), json!(source_in));
-            map.insert("duration".to_string(), json!(duration));
-            if let Ok(out) = source_in.checked_add(*duration) {
+            map.insert("duration".to_string(), json!(i.duration));
+            if let Ok(out) = source_in.checked_add(i.duration) {
                 map.insert("out".to_string(), json!(out));
             }
         }

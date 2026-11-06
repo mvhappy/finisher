@@ -41,29 +41,35 @@ fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
 }
 
 fn asset() -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: "/media/a.mov".into(),
-        duration: secs(60),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        "/media/a.mov",
+        secs(60),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(2),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn hash_of(bytes: &[u8]) -> String {
@@ -154,13 +160,13 @@ fn reopen_survives_policy_tightening() {
     rewrite(&conn, 3, |rec| {
         let tiny = Rational::new(1, 60).unwrap();
         for op in &mut rec.intent.ops {
-            if let Op::ClipInsert { duration, .. } = op {
-                *duration = tiny;
+            if let Op::ItemInsert(i) = op {
+                i.duration = tiny;
             }
         }
         for op in &mut rec.resolved {
-            if let Op::ClipInsert { duration, .. } = op {
-                *duration = tiny;
+            if let Op::ItemInsert(i) = op {
+                i.duration = tiny;
             }
         }
     });
@@ -182,7 +188,13 @@ fn reopen_reports_structural_damage() {
     let conn = Connection::open(&db).unwrap();
     // Tx 3 now deletes a clip that does not exist (hash kept consistent with the new bytes).
     rewrite(&conn, 3, |rec| {
-        rec.intent.ops = vec![Op::ClipDelete { clip: "c99".into() }];
+        rec.intent.ops = vec![
+            fin_core::ItemDelete {
+                item: "c99".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ];
         rec.resolved = rec.intent.ops.clone();
         rec.bindings.clear();
     });

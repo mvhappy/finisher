@@ -8,15 +8,18 @@ use crate::model::{Project, SCHEMA_VERSION};
 use crate::ops::{self, Bindings, Op};
 use crate::tx::{Applied, Diff, Shift, Tx};
 
-/// Who is applying: clients may only send client ops; internal callers (undo, replaying
-/// inverses) may also send `asset.remove`, `clip.remove` and `clip.restore`, and may name new
-/// entities with literal ids.
+/// Who is applying: clients may only send client ops (the `clip.*` aliases included, each
+/// rewritten to its `item.*` op first, [`crate::normalize`]); internal callers (undo, replaying
+/// inverses) may also send `asset.remove`, `item.remove`, `item.restore` and strict
+/// `item.trim`s, and may name new entities with literal ids, but never an alias.
 ///
 /// `Replay` re-applies committed history (see [`crate::apply_committed`]): like `Internal`, but
-/// policy checks (the one-frame minimum, `sourceIn + duration` within the asset, trim limits,
-/// `INSERT_INSIDE_CLIP`) are skipped and only structural ones run: referenced entities exist,
-/// new ids are new and fit their kind, track kinds match, assets have a positive duration, and
-/// after every op no track holds overlapping, empty or negative-start/`sourceIn` clips.
+/// policy checks (the one-frame minimum, the source range, trim limits, `INSERT_INSIDE_CLIP`,
+/// item kinds on track kinds other than a clip's, `TRACK_LOCKED`) are skipped and only
+/// structural ones run: referenced entities exist, new ids are new and fit their kind, a clip's
+/// asset has the track's stream, value shapes, and after every op no track the op's diff
+/// touched ([`ops::util::touched_tracks`]) holds overlapping, empty or negative-start/`sourceIn`
+/// items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyMode {
     Client,
@@ -99,13 +102,21 @@ impl Applier {
         ids: &mut dyn IdAlloc,
     ) -> Result<&[Shift], CoreError> {
         let before = self.diff.shifts.len();
+        let changes_before = self.diff.changes.len();
         let applied = if self.mode == ApplyMode::Client && op.is_internal() {
             Err(CoreError::new(
                 "INVALID_OP",
                 format!("{} is internal and cannot be sent by clients", op.name()),
             )
             .with_details(json!({ "op": op.name() }))
-            .with_fix("use asset.add, clip.insert, clip.trim or clip.delete"))
+            .with_fix("use asset.add, item.insert, item.trim or item.delete"))
+        } else if self.mode != ApplyMode::Client && op.is_alias() {
+            Err(CoreError::new(
+                "INVALID_OP",
+                format!("{} is a client alias; history holds item ops", op.name()),
+            )
+            .with_details(json!({ "op": op.name() }))
+            .with_fix("normalize the transaction (fin_core::normalize) before committing it"))
         } else {
             ops::apply(
                 &mut self.project,
@@ -116,7 +127,12 @@ impl Applier {
             )
             .and_then(|inverse| {
                 if self.mode == ApplyMode::Replay {
-                    ops::util::check_tracks(&self.project, &self.diff.shifts[before..])?;
+                    let own = Diff {
+                        changes: self.diff.changes[changes_before..].to_vec(),
+                        shifts: self.diff.shifts[before..].to_vec(),
+                    };
+                    let touched = ops::util::touched_tracks(&self.project, &own);
+                    ops::util::check_tracks(&self.project, &touched)?;
                 }
                 Ok(inverse)
             })

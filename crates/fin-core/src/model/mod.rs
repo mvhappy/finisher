@@ -24,7 +24,7 @@ pub use asset::{
 pub use caption::{CaptionBlock, CaptionSource, CaptionStyle, Word};
 pub use fonts::{FontFormat, FontPin, FontSource, Fonts, font_key};
 pub use item::{
-    AudioParams, BlendMode, Clip, Common, Crop, Effect, Interp, Item, ItemBody, Keyframe, Mask,
+    AudioParams, BlendMode, Common, Crop, Effect, Interp, Item, ItemBody, Keyframe, Mask,
     ParamValue, Transform,
 };
 pub use timeline::{

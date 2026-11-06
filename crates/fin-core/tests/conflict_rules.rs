@@ -10,24 +10,11 @@ use fin_core::rebase::{
     Conflict, Conflicts, Footprint, Touch, committed_footprints, entity_conflict, reasons,
 };
 use fin_core::{
-    CommittedTx, CoreError, Edge, MemIds, Op, Project, Rational, apply_internal, apply_tx,
-    resolve_ops,
+    CommittedTx, CoreError, Edge, MemIds, Op, Project, apply_internal, apply_tx, resolve_ops,
 };
 use serde_json::json;
 
 type Verdict = Option<(&'static str, String)>;
-
-fn trim(clip: &str, edge: Edge, delta: Rational) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
-        edge,
-        delta,
-    }
-}
-
-fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
-}
 
 /// Commits `ops` at `p` (internally when any op is internal) as `tx_id`.
 fn commit(p: &Project, ops: Vec<Op>, tx_id: &str) -> (CommittedTx, Project) {
@@ -126,10 +113,11 @@ fn insert_on_another_track_never_conflicts() {
         (p.clone(), delete("c1")),
         (
             p.clone(),
-            Op::ClipRemove {
+            fin_core::ItemRemove {
                 id: "c2".into(),
-                ripple: false,
-            },
+                mode: fin_core::DeleteMode::Lift,
+            }
+            .into(),
         ),
         (deleted.project.clone(), restore),
     ];
@@ -184,10 +172,13 @@ fn edits_of_a_removed_clip_conflict() {
     assert_eq!(
         judge(
             &p,
-            vec![Op::ClipRemove {
-                id: "c1".into(),
-                ripple: true
-            }],
+            vec![
+                fin_core::ItemRemove {
+                    id: "c1".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into()
+            ],
             trim("c1", Edge::Start, secs(1))
         ),
         removed("tx-1")
@@ -299,10 +290,11 @@ fn every_op_has_a_footprint() {
         (p.clone(), delete("c3"), vec!["t2"]),
         (
             p.clone(),
-            Op::ClipRemove {
+            fin_core::ItemRemove {
                 id: "c2".into(),
-                ripple: true,
-            },
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
             vec!["t1"],
         ),
         (
@@ -322,19 +314,27 @@ fn every_op_has_a_footprint() {
             op.name()
         );
         let want = match &op {
-            Op::AssetAdd { id, .. } => f.creates == [id.clone()] && f.touches.is_empty(),
+            Op::AssetAdd(a) => f.creates == [a.id.clone()] && f.touches.is_empty(),
             Op::AssetRemove { id } => {
                 f.removes == [id.clone()] && f.touches == [(id.clone(), Touch::Exists)]
             }
             Op::ClipInsert {
                 id, track, asset, ..
             } => f.creates == [id.clone()] && f.uses == [asset.clone(), track.clone()],
-            Op::ClipTrim { clip, edge, .. } => f.touches == [(clip.clone(), Touch::Edge(*edge))],
-            Op::ClipDelete { clip } | Op::ClipRemove { id: clip, .. } => {
-                f.removes == [clip.clone()] && f.touches == [(clip.clone(), Touch::Exists)]
+            Op::ItemInsert(i) => {
+                f.creates == [i.id.clone()]
+                    && f.uses == [i.body.asset().unwrap().to_string(), i.track.clone()]
             }
-            Op::ClipRestore { clip, track, .. } => {
-                f.creates == [clip.id.clone()] && f.uses == [clip.asset.clone(), track.clone()]
+            Op::ClipTrim { clip, edge, .. } => f.touches == [(clip.clone(), Touch::Edge(*edge))],
+            Op::ItemTrim(t) => f.touches == [(t.item.clone(), Touch::Edge(t.edge))],
+            Op::ClipDelete { clip: id }
+            | Op::ItemDelete(fin_core::ItemDelete { item: id, .. })
+            | Op::ItemRemove(fin_core::ItemRemove { id, .. }) => {
+                f.removes == [id.clone()] && f.touches == [(id.clone(), Touch::Exists)]
+            }
+            Op::ItemRestore(r) => {
+                f.creates == [r.item.id.clone()]
+                    && f.uses == [r.item.asset().unwrap().to_string(), r.track.clone()]
             }
         };
         assert!(want, "{}: {f:?}", op.name());

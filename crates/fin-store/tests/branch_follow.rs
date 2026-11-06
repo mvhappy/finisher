@@ -28,18 +28,19 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 
 fn asset(path: &str) -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: path.into(),
-        duration: Rational::from_int(600),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        path,
+        Rational::from_int(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: Rational::from_int(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(at: i64) -> Op {
@@ -47,14 +48,19 @@ fn insert(at: i64) -> Op {
 }
 
 fn insert_as(id: &str, at: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: Rational::from_int(at),
-        asset: "a1".into(),
-        source_in: Rational::from_int(0),
         duration: Rational::from_int(1),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: Rational::from_int(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn commit_on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx {

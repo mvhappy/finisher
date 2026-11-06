@@ -128,6 +128,22 @@ impl Rational {
     pub fn checked_neg(self) -> Result<Rational, CoreError> {
         Self::from_i128(-(self.num as i128), self.den as i128)
     }
+
+    /// `self × rhs` (a time scaled by a speed, plan 4C Decision 14).
+    pub fn checked_mul(self, rhs: Rational) -> Result<Rational, CoreError> {
+        Self::from_i128(
+            self.num as i128 * rhs.num as i128,
+            self.den as i128 * rhs.den as i128,
+        )
+    }
+
+    /// `self ÷ rhs`; `INVALID_TIME` when `rhs` is zero.
+    pub fn checked_div(self, rhs: Rational) -> Result<Rational, CoreError> {
+        Self::from_i128(
+            self.num as i128 * rhs.den as i128,
+            self.den as i128 * rhs.num as i128,
+        )
+    }
 }
 
 /// Zero.

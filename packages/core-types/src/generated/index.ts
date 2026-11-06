@@ -17,7 +17,7 @@ export type Rational = string;
  */
 export type ChangeKind = "added" | "removed" | "updated";
 /**
- * Which edge of a clip a trim moves.
+ * Which edge of an item a trim moves.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Edge".
@@ -27,23 +27,40 @@ export type Edge = "start" | "end";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EntityKind".
  */
-export type EntityKind = "asset" | "track" | "clip" | "timeline";
+export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition";
 /**
  * A primitive edit operation, tagged by `op`.
+ *
+ * `clip.insert`, `clip.trim` and `clip.delete` are client aliases of the `item.*` ops (plan 4C
+ * Decision 6): [`crate::normalize`] rewrites them before a commit, so a stored transaction
+ * never holds one, and internal and replay applies refuse them (`INVALID_OP`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Op".
  */
 export type Op =
-  | {
-      audio?: AudioInfo | null;
-      duration: Rational;
-      fingerprint: string;
-      id: string;
+  | (AssetAdd & {
       op: "asset.add";
-      path: string;
-      video?: VideoInfo | null;
+    })
+  | (ItemInsert & {
+      op: "item.insert";
+    })
+  | (ItemTrim & {
+      op: "item.trim";
+    })
+  | (ItemDelete & {
+      op: "item.delete";
+    })
+  | {
+      id: string;
+      op: "asset.remove";
     }
+  | (ItemRemove & {
+      op: "item.remove";
+    })
+  | (ItemRestore & {
+      op: "item.restore";
+    })
   | {
       asset: string;
       at: Rational;
@@ -62,54 +79,6 @@ export type Op =
   | {
       clip: string;
       op: "clip.delete";
-    }
-  | {
-      id: string;
-      op: "asset.remove";
-    }
-  | {
-      id: string;
-      op: "clip.remove";
-      ripple: boolean;
-    }
-  | {
-      clip: Clip;
-      op: "clip.restore";
-      ripple?: boolean;
-      track: string;
-    };
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "BlendMode".
- */
-export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "add" | "darken" | "lighten";
-/**
- * A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's
- * `float_roundtrip`).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ParamValue".
- */
-export type ParamValue = boolean | number | [number, number] | string;
-/**
- * How a keyframe's value moves to the next one.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Interp".
- */
-export type Interp =
-  | {
-      type: "hold";
-    }
-  | {
-      type: "linear";
-    }
-  | {
-      type: "bezier";
-      x1: number;
-      x2: number;
-      y1: number;
-      y2: number;
     };
 /**
  * A font file's container format.
@@ -119,32 +88,87 @@ export type Interp =
  */
 export type FontFormat = "ttf" | "otf" | "ttc";
 /**
- * What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,
- * `lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`
- * colour lookup table).
+ * `item.insert`: an item of any kind (the flattened `body`, tagged by `kind`) at `at` on
+ * `track`, `duration` long, with default common fields. `id` is a `$name` placeholder bound
+ * to a new id of the item's kind.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AssetKind".
+ * via the `definition` "ItemInsert".
  */
-export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | "lut";
+export type ItemInsert = {
+  at: Rational;
+  duration: Rational;
+  id: string;
+  mode: InsertMode;
+  track: string;
+} & ItemInsert1;
 /**
- * Where a pinned file comes from: a catalog entry's style (at the catalog version that
- * pinned it), or an imported font asset.
+ * How an insert makes room (plan 4C Decision 18): `ripple` moves every later item on the
+ * track by the item's duration.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "FontSource".
+ * via the `definition` "InsertMode".
  */
-export type FontSource =
+export type InsertMode = "ripple";
+export type ItemInsert1 =
   | {
-      catalog: string;
-      entry: string;
+      asset: string;
+      kind: "clip";
+      sourceIn: Rational;
+      speed?: Rational;
+    }
+  | {
+      kind: "caption";
+      overrides?: {
+        [k: string]: ParamValue;
+      };
+      source?: CaptionSource;
       style: string;
-      type: "catalog";
+      words: Word[];
     }
   | {
       asset: string;
-      type: "asset";
+      kind: "graphic";
+      slots?: {
+        [k: string]: ParamValue;
+      };
+    }
+  | {
+      asset: string;
+      kind: "image";
+    }
+  | {
+      kind: "adjustment";
+    }
+  | {
+      kind: "nested";
+      sourceIn: Rational;
+      timeline: string;
     };
+/**
+ * A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's
+ * `float_roundtrip`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamValue".
+ */
+export type ParamValue = boolean | number | [number, number] | string;
+/**
+ * How a trim treats the rest of the track: `ripple` moves every later item by the change;
+ * `strict` (internal: the inverse of carving edits) moves nothing, and an overlap it would
+ * make is `CLIP_OVERLAP` in every apply mode.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrimMode".
+ */
+export type TrimMode = "ripple" | "strict";
+/**
+ * How a delete leaves its range: `ripple` closes the gap, `lift` leaves it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DeleteMode".
+ */
+export type DeleteMode = "ripple" | "lift";
 /**
  * One item on a track. On the wire the body's `kind` and fields and the common fields sit
  * next to `id`, `start` and `duration` (both are flattened).
@@ -174,6 +198,31 @@ export type Item = {
   start: Rational;
   transform?: Transform;
 } & Item1;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BlendMode".
+ */
+export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "add" | "darken" | "lighten";
+/**
+ * How a keyframe's value moves to the next one.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Interp".
+ */
+export type Interp =
+  | {
+      type: "hold";
+    }
+  | {
+      type: "linear";
+    }
+  | {
+      type: "bezier";
+      x1: number;
+      x2: number;
+      y1: number;
+      y2: number;
+    };
 export type Item1 =
   | {
       asset: string;
@@ -208,6 +257,33 @@ export type Item1 =
       kind: "nested";
       sourceIn: Rational;
       timeline: string;
+    };
+/**
+ * What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,
+ * `lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`
+ * colour lookup table).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetKind".
+ */
+export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | "lut";
+/**
+ * Where a pinned file comes from: a catalog entry's style (at the catalog version that
+ * pinned it), or an imported font asset.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontSource".
+ */
+export type FontSource =
+  | {
+      catalog: string;
+      entry: string;
+      style: string;
+      type: "catalog";
+    }
+  | {
+      asset: string;
+      type: "asset";
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -404,12 +480,107 @@ export interface Shift {
   track: string;
 }
 /**
+ * `asset.add`: what probing found, by kind (plan 4C Task 7). Each kind carries its own
+ * fields and none of the others': `media` a positive `duration` and its `video`/`audio`
+ * streams; `image` and `svg` an `image`; `lottieTemplate` a positive `duration` and `lottie`;
+ * `font` a `font` (with its whole-file SHA-256); `lut` a `lut`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetAdd".
+ */
+export interface AssetAdd {
+  audio?: AudioInfo;
+  bin?: string;
+  duration?: Rational;
+  fingerprint: string;
+  font?: FontFile;
+  id: string;
+  image?: ImageInfo;
+  /**
+   * `media` when absent: a sub-project 4B (schema 1) `asset.add` names no kind.
+   */
+  kind?: "media" | "image" | "svg" | "lottieTemplate" | "font" | "lut";
+  lottie?: LottieInfo;
+  lut?: LutInfo;
+  path: string;
+  video?: VideoInfo;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AudioInfo".
  */
 export interface AudioInfo {
   channels: number;
   sampleRate: number;
+}
+/**
+ * An imported font file (plan 4C Decision 37): its whole-file SHA-256, size, format and faces.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFile".
+ */
+export interface FontFile {
+  faces: FontFace[];
+  format: FontFormat;
+  sha256: string;
+  size: number;
+}
+/**
+ * One face of a font file, as `fin_text::font_info` reads it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFace".
+ */
+export interface FontFace {
+  family: string;
+  index: number;
+  italic: boolean;
+  /**
+   * ISO 15924 script codes the face covers.
+   */
+  scripts: string[];
+  weight: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ImageInfo".
+ */
+export interface ImageInfo {
+  height: number;
+  width: number;
+}
+/**
+ * A dotLottie template: its canvas, timing, replaceable slots and the font families it names.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LottieInfo".
+ */
+export interface LottieInfo {
+  duration: Rational;
+  fonts?: string[];
+  height: number;
+  rate: Rational;
+  slots?: SlotSpec[];
+  width: number;
+}
+/**
+ * One replaceable slot of a template: its id and value kind (as the template declares it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SlotSpec".
+ */
+export interface SlotSpec {
+  id: string;
+  kind: string;
+}
+/**
+ * A `.cube` LUT: its edge size.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LutInfo".
+ */
+export interface LutInfo {
+  size: number;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -421,37 +592,73 @@ export interface VideoInfo {
   width: number;
 }
 /**
- * The clip shape the `clip.*` ops carry (a clip item without its `kind`; 4B's shape plus the
- * optional `speed` and common fields), so an inverse restores a clip item exactly. Item ops
- * replace it (plan 4C Task 7).
+ * The transcript artifact a caption came from, and its word range (`[first, end)`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Clip".
+ * via the `definition` "CaptionSource".
  */
-export interface Clip {
-  asset: string;
-  audio?: AudioParams;
-  blend?: BlendMode;
-  crop?: Crop;
-  duration: Rational;
-  effects?: Effect[];
-  id: string;
+export interface CaptionSource {
+  artifact: string;
   /**
-   * Keyframes by registry path, each list sorted by `at`.
+   * @minItems 2
+   * @maxItems 2
    */
-  keyframes?: {
-    [k: string]: Keyframe[];
-  };
-  /**
-   * The link group (`lk<n>`) the item belongs to.
-   */
-  link?: string;
-  mask?: Mask;
-  opacity?: number;
-  sourceIn: Rational;
-  speed?: Rational;
+  wordRange: [number, number];
+}
+/**
+ * One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Word".
+ */
+export interface Word {
+  end: Rational;
   start: Rational;
-  transform?: Transform;
+  text: string;
+}
+/**
+ * `item.trim`: moves one edge of `item` by `delta` seconds (positive moves it later).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemTrim".
+ */
+export interface ItemTrim {
+  delta: Rational;
+  edge: Edge;
+  item: string;
+  mode: TrimMode;
+}
+/**
+ * `item.delete`: takes `item` off its track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemDelete".
+ */
+export interface ItemDelete {
+  item: string;
+  mode: DeleteMode;
+}
+/**
+ * `item.remove` (internal): takes item `id` off its track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemRemove".
+ */
+export interface ItemRemove {
+  id: string;
+  mode: DeleteMode;
+}
+/**
+ * `item.restore` (internal): puts `item` back on `track` at its `start`. Its id may be a
+ * `$placeholder` (spec §4.3): the item then gets a newly allocated id.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemRestore".
+ */
+export interface ItemRestore {
+  item: Item;
+  mode: DeleteMode;
+  track: string;
 }
 /**
  * The item's own audio: gain in dB, pan in −1…1, fades in seconds.
@@ -586,75 +793,6 @@ export interface Asset {
   video?: VideoInfo;
 }
 /**
- * An imported font file (plan 4C Decision 37): its whole-file SHA-256, size, format and faces.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "FontFile".
- */
-export interface FontFile {
-  faces: FontFace[];
-  format: FontFormat;
-  sha256: string;
-  size: number;
-}
-/**
- * One face of a font file, as `fin_text::font_info` reads it.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "FontFace".
- */
-export interface FontFace {
-  family: string;
-  index: number;
-  italic: boolean;
-  /**
-   * ISO 15924 script codes the face covers.
-   */
-  scripts: string[];
-  weight: number;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ImageInfo".
- */
-export interface ImageInfo {
-  height: number;
-  width: number;
-}
-/**
- * A dotLottie template: its canvas, timing, replaceable slots and the font families it names.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "LottieInfo".
- */
-export interface LottieInfo {
-  duration: Rational;
-  fonts?: string[];
-  height: number;
-  rate: Rational;
-  slots?: SlotSpec[];
-  width: number;
-}
-/**
- * One replaceable slot of a template: its id and value kind (as the template declares it).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "SlotSpec".
- */
-export interface SlotSpec {
-  id: string;
-  kind: string;
-}
-/**
- * A `.cube` LUT: its edge size.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "LutInfo".
- */
-export interface LutInfo {
-  size: number;
-}
-/**
  * A folder of assets; `parent` nests it.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -771,31 +909,6 @@ export interface Track {
   name: string;
   solo?: boolean;
   transitions?: Transition[];
-}
-/**
- * The transcript artifact a caption came from, and its word range (`[first, end)`).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "CaptionSource".
- */
-export interface CaptionSource {
-  artifact: string;
-  /**
-   * @minItems 2
-   * @maxItems 2
-   */
-  wordRange: [number, number];
-}
-/**
- * One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Word".
- */
-export interface Word {
-  end: Rational;
-  start: Rational;
-  text: string;
 }
 /**
  * A transition at the cut between two touching items of one track, centred on the cut.

@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use common::*;
 use fin_core::rebase::{Rebase, Rebased, Step, reasons, rebase_apply, steps_from};
 use fin_core::{
-    ApplyMode, BoundIds, Clip, CommittedTx, CoreError, Edge, Link, MemIds, Op, Project, Rational,
-    Tx, apply_committed, apply_internal, apply_tx, rebase_tx,
+    ApplyMode, BoundIds, CommittedTx, CoreError, DeleteMode, Edge, Item, ItemRemove, ItemRestore,
+    Link, MemIds, Op, Project, Rational, Tx, apply_committed, apply_internal, apply_tx, rebase_tx,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -66,16 +66,8 @@ fn rebase(
 
 fn at_of(op: &Op) -> Rational {
     match op {
-        Op::ClipInsert { at, .. } => *at,
+        Op::ItemInsert(i) => i.at,
         other => panic!("not an insert: {other:?}"),
-    }
-}
-
-fn trim(clip: &str, edge: Edge, delta: Rational) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
-        edge,
-        delta,
     }
 }
 
@@ -141,7 +133,7 @@ fn insert_on_another_track_is_unchanged() {
 #[test]
 fn insert_after_a_deleted_clip_moves_left() {
     let p = with_clips(&[5, 3]);
-    let (pa, a) = commit(&p, vec![Op::ClipDelete { clip: "c1".into() }], 1, "tx-a");
+    let (pa, a) = commit(&p, vec![delete("c1")], 1, "tx-a");
     let b = stale(vec![insert("$y", "t1", secs(8), "a1", secs(0), secs(2))]);
     let rb = rebase(&p, &pa, &b, &[a]).unwrap();
     assert_eq!(at_of(&rb.tx.ops[0]), secs(3));
@@ -151,7 +143,7 @@ fn insert_after_a_deleted_clip_moves_left() {
 #[test]
 fn edit_of_deleted_clip_conflicts() {
     let p = with_clips(&[5, 3]);
-    let (pa, a) = commit(&p, vec![Op::ClipDelete { clip: "c2".into() }], 1, "tx-a");
+    let (pa, a) = commit(&p, vec![delete("c2")], 1, "tx-a");
     let b = stale(vec![
         insert("$y", "t1", secs(0), "a1", secs(0), secs(1)),
         trim("c2", Edge::End, secs(1)),
@@ -163,7 +155,7 @@ fn edit_of_deleted_clip_conflicts() {
     );
     assert_eq!(e.details["txId"], "tx-b");
     assert_eq!(e.details["conflicts"][0]["txId"], "tx-b");
-    let del = stale(vec![Op::ClipDelete { clip: "c2".into() }]);
+    let del = stale(vec![delete("c2")]);
     let e = rebase(&p, &pa, &del, &[a]).unwrap_err();
     assert_eq!(conflict(&e).0, reasons::REMOVED);
 }
@@ -229,7 +221,7 @@ fn positions_after_our_own_trim_or_delete_follow_the_track() {
     );
     // At the base, after deleting c1, c2 is [0, 3): insert at its end.
     let b = stale(vec![
-        Op::ClipDelete { clip: "c1".into() },
+        delete("c1"),
         insert("$y", "t1", secs(3), "a1", secs(0), secs(1)),
     ]);
     let rb = rebase(&p, &pa, &b, std::slice::from_ref(&a)).unwrap();
@@ -326,7 +318,7 @@ fn stale_insert_of_removed_asset_conflicts_removed() {
 #[test]
 fn invalid_at_base_but_removed_since_is_conflict() {
     let p = with_clips(&[2, 3]);
-    let (pa, a) = commit(&p, vec![Op::ClipDelete { clip: "c1".into() }], 1, "tx-a");
+    let (pa, a) = commit(&p, vec![delete("c1")], 1, "tx-a");
     let too_far = trim("c1", Edge::End, secs(-10));
     let b = stale(vec![
         insert("$y", "t1", secs(5), "a1", secs(0), secs(1)),
@@ -346,7 +338,7 @@ fn invalid_at_base_but_removed_since_is_conflict() {
     assert_eq!(e.details["baseRev"], 0);
     assert!(e.fix.as_deref().unwrap().contains("current head"), "{e:?}");
     // An earlier op of ours that conflicts is named first.
-    let b = stale(vec![Op::ClipDelete { clip: "c1".into() }, too_far]);
+    let b = stale(vec![delete("c1"), too_far]);
     let e = rebase(&p, &pa, &b, &[a]).unwrap_err();
     assert_eq!(conflict(&e).1, 0);
 }
@@ -356,14 +348,17 @@ fn invalid_at_base_but_removed_since_is_conflict() {
 #[test]
 fn insert_inside_committed_clip_is_policy_conflict() {
     let p = with_clips(&[5]);
-    let placed = Clip::new("c9", "a1", secs(6), secs(0), secs(3));
+    let placed = Item::clip("c9", "a1", secs(6), secs(0), secs(3));
     let (pa, a) = commit(
         &p,
-        vec![Op::ClipRestore {
-            clip: Box::new(placed),
-            track: "t1".into(),
-            ripple: false,
-        }],
+        vec![
+            ItemRestore {
+                item: placed,
+                track: "t1".into(),
+                mode: DeleteMode::Lift,
+            }
+            .into(),
+        ],
         1,
         "tx-a",
     );
@@ -426,13 +421,7 @@ fn other_track_edits_never_conflict() {
     )
     .project;
     let mut ids = MemIds::after(&p);
-    let (p1, c1) = commit_with(
-        &p,
-        vec![Op::ClipDelete { clip: "c1".into() }],
-        1,
-        "tx-1",
-        &mut ids,
-    );
+    let (p1, c1) = commit_with(&p, vec![delete("c1")], 1, "tx-1", &mut ids);
     let (p2, c2) = commit_with(
         &p1,
         vec![
@@ -456,11 +445,12 @@ fn other_track_edits_never_conflict() {
 #[test]
 fn restore_with_placeholder_id_binds() {
     let p = with_clips(&[5]);
-    let restore = Op::ClipRestore {
-        clip: Box::new(Clip::new("$r", "a1", secs(5), secs(0), secs(2))),
+    let restore: Op = ItemRestore {
+        item: Item::clip("$r", "a1", secs(5), secs(0), secs(2)),
         track: "t1".into(),
-        ripple: true,
-    };
+        mode: DeleteMode::Ripple,
+    }
+    .into();
     let t = tx(vec![restore.clone(), trim("$r", Edge::End, secs(1))]);
     assert_eq!(
         apply_tx(&p, &t, &mut MemIds::after(&p)).unwrap_err().code,
@@ -473,10 +463,11 @@ fn restore_with_placeholder_id_binds() {
         live.inverse,
         vec![
             trim("c2", Edge::End, secs(-1)),
-            Op::ClipRemove {
+            ItemRemove {
                 id: "c2".into(),
-                ripple: true
-            },
+                mode: DeleteMode::Ripple
+            }
+            .into(),
         ]
     );
     let replayed = apply_committed(&p, &t, &live.bindings).unwrap();
@@ -614,7 +605,7 @@ fn inverse(p: &Project, ops: &[Op]) -> Vec<Op> {
 #[test]
 fn undo_in_since_mirrors_its_unit() {
     let p = with_clips(&[5, 3]);
-    let del = vec![Op::ClipDelete { clip: "c2".into() }];
+    let del = vec![delete("c2")];
     let (p1, u) = commit(&p, del.clone(), 1, "tx-del");
     let (p2, undo) = commit(&p1, inverse(&p, &del), 2, "tx-undo");
     assert_eq!(p2, p);
@@ -630,7 +621,7 @@ fn undo_in_since_mirrors_its_unit() {
 #[test]
 fn undo_of_several_units_mirrors_each() {
     let p = with_clips(&[5, 3]);
-    let del = vec![Op::ClipDelete { clip: "c2".into() }];
+    let del = vec![delete("c2")];
     let (p1, u1) = commit(&p, del.clone(), 1, "tx-1");
     let ins = vec![insert("$z", "t1", secs(0), "a1", secs(0), secs(1))];
     let (p2, u2) = commit(&p1, ins, 2, "tx-2");
@@ -745,9 +736,7 @@ fn to_op(p: &Project, e: &Edit, name: &str) -> Op {
             if start { Edge::Start } else { Edge::End },
             f(frames),
         ),
-        Edit::Delete { clip } => Op::ClipDelete {
-            clip: items[clip % items.len()].id.clone(),
-        },
+        Edit::Delete { clip } => delete(&items[clip % items.len()].id),
     }
 }
 
@@ -784,13 +773,13 @@ proptest! {
             Ok(rb) => {
                 let done = rb.applied;
                 assert_well_formed(&done.project);
-                if let Op::ClipInsert { .. } = oa {
+                if let Op::ItemInsert(_) = oa {
                     clip(&done.project, &a.bindings["$a"]);
                 }
-                if let Op::ClipInsert { duration, .. } = ob {
-                    prop_assert_eq!(clip(&done.project, &done.bindings["$b"]).duration, duration);
+                if let Op::ItemInsert(i) = &ob {
+                    prop_assert_eq!(clip(&done.project, &done.bindings["$b"]).duration, i.duration);
                 }
-                if let Op::ClipDelete { clip: id } = &oa {
+                if let Op::ItemDelete(fin_core::ItemDelete { item: id, .. }) = &oa {
                     prop_assert!(done.project.timelines[0].tracks[0].items.iter().all(|c| &c.id != id));
                 }
             }
@@ -801,7 +790,7 @@ proptest! {
                 let reason = e.details["reason"].as_str().unwrap_or_default();
                 prop_assert!(
                     [reasons::REMOVED, reasons::SAME_EDGE].contains(&reason)
-                        || (reason == "INVALID_RANGE" && matches!(ob, Op::ClipTrim { .. })),
+                        || (reason == "INVALID_RANGE" && matches!(ob, Op::ItemTrim(_))),
                     "{:?} over {:?}: {:?}", ob, oa, e
                 );
             }
@@ -822,7 +811,8 @@ fn stale_sequence(p: &Project, edits: &[Edit]) -> Option<Vec<Op>> {
         }
         let mut op = to_op(&local, e, &format!("$b{i}"));
         let a = apply_tx(&local, &tx(vec![op.clone()]), &mut ids).ok()?;
-        if let Op::ClipTrim { clip, .. } | Op::ClipDelete { clip } = &mut op
+        if let Op::ItemTrim(fin_core::ItemTrim { item: clip, .. })
+        | Op::ItemDelete(fin_core::ItemDelete { item: clip, .. }) = &mut op
             && let Some(name) = names.get(clip.as_str())
         {
             *clip = name.clone();
@@ -884,13 +874,7 @@ fn intervening_record_allocating_our_base_id_is_not_ours() {
         "tx-trim",
         &mut ids,
     );
-    let (p3, c) = commit_with(
-        &p2,
-        vec![Op::ClipDelete { clip: "c3".into() }],
-        3,
-        "tx-del",
-        &mut ids,
-    );
+    let (p3, c) = commit_with(&p2, vec![delete("c3")], 3, "tx-del", &mut ids);
     let ours = stale(vec![
         insert("$c", "t1", secs(10), "a1", secs(0), secs(3)),
         trim("$c", Edge::End, secs(-1)),

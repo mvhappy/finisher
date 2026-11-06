@@ -305,82 +305,51 @@ pub enum ParamValue {
     Text(String),
 }
 
-/// The clip shape the `clip.*` ops carry (a clip item without its `kind`; 4B's shape plus the
-/// optional `speed` and common fields), so an inverse restores a clip item exactly. Item ops
-/// replace it (plan 4C Task 7).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct Clip {
-    pub id: String,
-    pub asset: String,
-    // Position on the timeline, in seconds.
-    pub start: Rational,
-    // Offset into the asset, in seconds.
-    pub source_in: Rational,
-    pub duration: Rational,
-    #[serde(default = "one_time", skip_serializing_if = "is_one_time")]
-    pub speed: Rational,
-    #[serde(flatten)]
-    pub common: Common,
-}
+impl Item {
+    /// An item of `body` with default common fields.
+    pub fn new(id: impl Into<String>, start: Rational, duration: Rational, body: ItemBody) -> Item {
+        Item {
+            id: id.into(),
+            start,
+            duration,
+            body,
+            common: Common::default(),
+        }
+    }
 
-impl Clip {
-    /// A clip at speed 1 with default common fields.
-    pub fn new(
+    /// A clip item at speed 1 with default common fields.
+    pub fn clip(
         id: impl Into<String>,
         asset: impl Into<String>,
         start: Rational,
         source_in: Rational,
         duration: Rational,
-    ) -> Clip {
-        Clip {
-            id: id.into(),
+    ) -> Item {
+        let body = ItemBody::Clip {
             asset: asset.into(),
-            start,
             source_in,
-            duration,
             speed: one_time(),
-            common: Common::default(),
-        }
-    }
-}
-
-impl From<Clip> for Item {
-    fn from(c: Clip) -> Item {
-        Item {
-            id: c.id,
-            start: c.start,
-            duration: c.duration,
-            body: ItemBody::Clip {
-                asset: c.asset,
-                source_in: c.source_in,
-                speed: c.speed,
-            },
-            common: c.common,
-        }
-    }
-}
-
-impl Item {
-    /// The item as the `clip.*` ops carry it, when it is a clip.
-    pub fn to_clip(&self) -> Option<Clip> {
-        let ItemBody::Clip {
-            asset,
-            source_in,
-            speed,
-        } = &self.body
-        else {
-            return None;
         };
-        Some(Clip {
-            id: self.id.clone(),
-            asset: asset.clone(),
-            start: self.start,
-            source_in: *source_in,
-            duration: self.duration,
-            speed: *speed,
-            common: self.common.clone(),
-        })
+        Item::new(id, start, duration, body)
+    }
+
+    /// Every id the item carries (plan 4C Decision 24), mutably: its own, what its body
+    /// names (an asset, a nested timeline, a caption style), its effects' and its link group.
+    pub fn refs_mut(&mut self) -> Vec<&mut String> {
+        let mut out = vec![&mut self.id];
+        out.extend(self.body.refs_mut());
+        out.extend(self.common.effects.iter_mut().map(|e| &mut e.id));
+        out.extend(self.common.link.as_mut());
+        out
+    }
+
+    /// The ids [`Item::refs_mut`] lists.
+    pub fn ids(&self) -> Vec<&str> {
+        let mut out = vec![self.id.as_str()];
+        out.extend(self.body.ids());
+        out.extend(self.common.effects.iter().map(|e| e.id.as_str()));
+        out.extend(self.common.link.as_deref());
+        out
     }
 
     /// The end on the timeline (`start + duration`).
@@ -390,12 +359,7 @@ impl Item {
 
     /// The asset the item shows, for clips, graphics and images.
     pub fn asset(&self) -> Option<&str> {
-        match &self.body {
-            ItemBody::Clip { asset, .. }
-            | ItemBody::Graphic { asset, .. }
-            | ItemBody::Image { asset } => Some(asset),
-            _ => None,
-        }
+        self.body.asset()
     }
 
     /// The source offset, for clips and nested items.
@@ -410,13 +374,54 @@ impl Item {
 
     /// The wire `kind` (`"clip"`, `"caption"`, ...).
     pub fn kind_name(&self) -> &'static str {
-        match self.body {
+        self.body.kind_name()
+    }
+}
+
+impl ItemBody {
+    /// The asset the body shows, for clips, graphics and images.
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            ItemBody::Clip { asset, .. }
+            | ItemBody::Graphic { asset, .. }
+            | ItemBody::Image { asset } => Some(asset),
+            _ => None,
+        }
+    }
+
+    /// The wire `kind` (`"clip"`, `"caption"`, ...).
+    pub fn kind_name(&self) -> &'static str {
+        match self {
             ItemBody::Clip { .. } => "clip",
             ItemBody::Caption { .. } => "caption",
             ItemBody::Graphic { .. } => "graphic",
             ItemBody::Image { .. } => "image",
             ItemBody::Adjustment {} => "adjustment",
             ItemBody::Nested { .. } => "nested",
+        }
+    }
+
+    /// Every id the body names (an asset, a nested timeline, a caption style), mutably.
+    pub fn refs_mut(&mut self) -> Vec<&mut String> {
+        match self {
+            ItemBody::Clip { asset, .. }
+            | ItemBody::Graphic { asset, .. }
+            | ItemBody::Image { asset } => vec![asset],
+            ItemBody::Nested { timeline, .. } => vec![timeline],
+            ItemBody::Caption { block } => vec![&mut block.style],
+            ItemBody::Adjustment {} => Vec::new(),
+        }
+    }
+
+    /// The ids [`ItemBody::refs_mut`] lists.
+    pub fn ids(&self) -> Vec<&str> {
+        match self {
+            ItemBody::Clip { asset, .. }
+            | ItemBody::Graphic { asset, .. }
+            | ItemBody::Image { asset } => vec![asset],
+            ItemBody::Nested { timeline, .. } => vec![timeline],
+            ItemBody::Caption { block } => vec![&block.style],
+            ItemBody::Adjustment {} => Vec::new(),
         }
     }
 }

@@ -44,29 +44,35 @@ fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
 }
 
 fn asset(id: &str) -> Op {
-    Op::AssetAdd {
-        id: id.into(),
-        path: "/media/a.mov".into(),
-        duration: secs(60),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        id,
+        "/media/a.mov",
+        secs(60),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(id: &str, at: i64, asset: &str, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: asset.into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: asset.into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn clips(p: &Project) -> Vec<(String, Rational, Rational)> {
@@ -288,7 +294,7 @@ fn commit_stale_base_rebases() {
     assert_eq!((a.rev, b.rev), (3, 4));
     assert_eq!(b.tx.base_rev, 3, "the stored tx is the rebased one");
     match &b.tx.ops[0] {
-        Op::ClipInsert { at, .. } => assert_eq!(*at, secs(8)),
+        Op::ItemInsert(i) => assert_eq!(i.at, secs(8)),
         op => panic!("unexpected {op:?}"),
     }
     let (rev, p) = s.snapshot(MAIN).unwrap();
@@ -309,12 +315,32 @@ fn conflicting_stale_tx_is_conflict_with_both_tx_ids() {
     let mut s = with_asset(&e);
     s.commit(tx("tx-base", 1, vec![insert("$c", 0, "a1", 5)]))
         .unwrap();
-    s.commit(tx("tx-del", 2, vec![Op::ClipDelete { clip: "c1".into() }]))
-        .unwrap();
+    s.commit(tx(
+        "tx-del",
+        2,
+        vec![
+            fin_core::ItemDelete {
+                item: "c1".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
     let before = s.snapshot(MAIN).unwrap();
     let err = code(
-        s.commit(tx("tx-late", 2, vec![Op::ClipDelete { clip: "c1".into() }]))
-            .unwrap_err(),
+        s.commit(tx(
+            "tx-late",
+            2,
+            vec![
+                fin_core::ItemDelete {
+                    item: "c1".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
+            ],
+        ))
+        .unwrap_err(),
     );
     assert_eq!(err.code, "CONFLICT");
     assert_eq!(err.details["againstTx"], "tx-del");
@@ -344,14 +370,18 @@ fn commit_rebases_after_own_delete_exactly() {
             "tx-b",
             2,
             vec![
-                Op::ClipDelete { clip: "c1".into() },
+                fin_core::ItemDelete {
+                    item: "c1".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
                 insert("$y", 3, "a1", 1),
             ],
         ))
         .unwrap();
     assert_eq!(b.tx.base_rev, 3);
     match &b.tx.ops[1] {
-        Op::ClipInsert { at, .. } => assert_eq!(*at, secs(6)),
+        Op::ItemInsert(i) => assert_eq!(i.at, secs(6)),
         op => panic!("unexpected {op:?}"),
     }
     let (rev, p) = s.snapshot(MAIN).unwrap();
@@ -378,22 +408,30 @@ fn conflict_details_list_conflicts() {
     s.commit(tx(
         "tx-trim",
         2,
-        vec![Op::ClipTrim {
-            clip: "c1".into(),
-            edge: fin_core::Edge::End,
-            delta: secs(1),
-        }],
+        vec![
+            fin_core::ItemTrim {
+                item: "c1".into(),
+                edge: fin_core::Edge::End,
+                delta: secs(1),
+                mode: fin_core::TrimMode::Ripple,
+            }
+            .into(),
+        ],
     ))
     .unwrap();
     let err = code(
         s.commit(tx(
             "tx-late",
             2,
-            vec![Op::ClipTrim {
-                clip: "c1".into(),
-                edge: fin_core::Edge::End,
-                delta: secs(2),
-            }],
+            vec![
+                fin_core::ItemTrim {
+                    item: "c1".into(),
+                    edge: fin_core::Edge::End,
+                    delta: secs(2),
+                    mode: fin_core::TrimMode::Ripple,
+                }
+                .into(),
+            ],
         ))
         .unwrap_err(),
     );
@@ -575,8 +613,18 @@ fn ids_are_never_reused_after_reopen() {
     let mut s = with_asset(&e);
     s.commit(tx("tx-1", 1, vec![insert("$c", 0, "a1", 5)]))
         .unwrap();
-    s.commit(tx("tx-2", 2, vec![Op::ClipDelete { clip: "c1".into() }]))
-        .unwrap();
+    s.commit(tx(
+        "tx-2",
+        2,
+        vec![
+            fin_core::ItemDelete {
+                item: "c1".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
     drop(s);
     let mut s = Store::open(&e.data, &e.dir).unwrap();
     let c = s
@@ -601,17 +649,31 @@ fn ops_since_zero_replays_to_the_snapshot() {
     s.commit(tx(
         "tx-2",
         2,
-        vec![Op::ClipTrim {
-            clip: "c1".into(),
-            edge: fin_core::Edge::End,
-            delta: secs(-1),
-        }],
+        vec![
+            fin_core::ItemTrim {
+                item: "c1".into(),
+                edge: fin_core::Edge::End,
+                delta: secs(-1),
+                mode: fin_core::TrimMode::Ripple,
+            }
+            .into(),
+        ],
     ))
     .unwrap();
     s.commit(tx("tx-3", 2, vec![insert("$e", 0, "a1", 2)]))
         .unwrap(); // stale: rebased
-    s.commit(tx("tx-4", 4, vec![Op::ClipDelete { clip: "c2".into() }]))
-        .unwrap();
+    s.commit(tx(
+        "tx-4",
+        4,
+        vec![
+            fin_core::ItemDelete {
+                item: "c2".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))
+    .unwrap();
     let history = s.ops_since(MAIN, 0).unwrap();
     assert_eq!(history.len() as u64, s.head(MAIN));
     let head = s.snapshot(MAIN).unwrap().1;
@@ -693,7 +755,17 @@ fn two_stores_on_one_project_interleave_commits() {
         .commit(tx("tx-a2", 3, vec![insert("$z", 7, "a1", 1)]))
         .unwrap();
     let b2 = b
-        .commit(tx("tx-b2", 4, vec![Op::ClipDelete { clip: "c3".into() }]))
+        .commit(tx(
+            "tx-b2",
+            4,
+            vec![
+                fin_core::ItemDelete {
+                    item: "c3".into(),
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
+            ],
+        ))
         .unwrap();
     assert_eq!([a1.rev, b1.rev, a2.rev, b2.rev], [2, 3, 4, 5]);
     assert_eq!(

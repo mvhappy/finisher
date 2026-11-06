@@ -38,10 +38,6 @@ fn edit(log: &mut MemLog, b: &str, tx: &str) {
     log.commit(b, tx, "alice", vec![op]);
 }
 
-fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
-}
-
 fn ids_of(p: &Project) -> Vec<(String, Rational)> {
     starts(p, 0)
 }
@@ -253,17 +249,9 @@ fn skipped_insert_makes_dependent_depends_on_skipped() {
     let mut log = log();
     log.fork("br1", "main", 0);
     // e1 trims c3 and inserts X after it; e2 trims X; e3 is independent.
-    let trim = Op::ClipTrim {
-        clip: "c3".into(),
-        edge: Edge::End,
-        delta: secs(-2),
-    };
-    log.commit("br1", "e1", "alice", vec![trim, ins(28, 2)]);
-    let trim_x = Op::ClipTrim {
-        clip: "c4".into(),
-        edge: Edge::End,
-        delta: secs(-1),
-    };
+    let trim_c3 = trim("c3", Edge::End, secs(-2));
+    log.commit("br1", "e1", "alice", vec![trim_c3, ins(28, 2)]);
+    let trim_x = trim("c4", Edge::End, secs(-1));
     log.commit("br1", "e2", "alice", vec![trim_x]);
     log.commit("br1", "e3", "alice", vec![delete("c1")]);
     // main deletes c3: e1 cannot apply.
@@ -441,12 +429,8 @@ fn merge_both_directions_converges() {
 // Regression tests from the review of Task 13 (x1, x2, x3, x5, x8, x9): merges are
 // transitive (Decision 34) and "already present" is judged by origin root.
 
-fn trim(clip: &str, d: i64) -> Op {
-    Op::ClipTrim {
-        clip: clip.into(),
-        edge: Edge::End,
-        delta: secs(d),
-    }
+fn trim_end(clip: &str, d: i64) -> Op {
+    trim(clip, Edge::End, secs(d))
 }
 
 #[test]
@@ -457,7 +441,7 @@ fn transitive_merge_brings_the_sources_merged_records() {
     log.fork("br2", "main", 0);
     log.commit("br2", "e1", "bob", vec![ins(30, 5)]); // c4
     log.merge("br2", "br1", "alice", "ma", false).unwrap();
-    log.commit("br1", "e2", "alice", vec![trim("c4", -1)]);
+    log.commit("br1", "e2", "alice", vec![trim_end("c4", -1)]);
     log.commit("br1", "e3", "alice", vec![ins(0, 1)]);
     let plan = log.merge("br1", "main", "alice", "mb", false).unwrap();
     assert_eq!(plan.merged, ["ma-1", "e2", "e3"]);
@@ -507,7 +491,7 @@ fn same_root_picks_on_both_sides_merge_cleanly() {
     };
     log.copy("br2", "cp2", "bob", pick("br1"), &e1);
     log.copy("main", "cpm", "bob", pick("br1"), &e1);
-    log.commit("br2", "e2", "bob", vec![trim("c4", -1)]);
+    log.commit("br2", "e2", "bob", vec![trim_end("c4", -1)]);
     let plan = log.merge("br2", "main", "bob", "m", false).unwrap();
     assert_eq!(
         plan.merged,
@@ -526,7 +510,7 @@ fn try_keep_after_updating_from_main() {
     log.fork("t", "br1", 1);
     log.commit("main", "m1", "bob", vec![ins(0, 2)]); // c5
     log.merge("main", "t", "alice", "up", false).unwrap();
-    log.commit("t", "t1", "alice", vec![trim("c5", -1)]);
+    log.commit("t", "t1", "alice", vec![trim_end("c5", -1)]);
     let plan = log.merge("t", "br1", "alice", "keep", false).unwrap();
     assert_eq!(plan.merged, ["up-1", "t1"]);
     assert_eq!(log.state("br1"), log.state("t"));
@@ -544,7 +528,7 @@ fn dependent_of_an_excluded_undo_depends_on_skipped() {
     log.commit("main", "t1", "bob", vec![delete("c3")]);
     log.merge("main", "br1", "alice", "mt", false).unwrap();
     log.undo("br1", "alice", "u1").unwrap();
-    log.commit("br1", "e2", "alice", vec![trim("c3", -1)]);
+    log.commit("br1", "e2", "alice", vec![trim_end("c3", -1)]);
     log.commit("br1", "e3", "alice", vec![ins(0, 1)]);
     let err = log.merge("br1", "main", "alice", "mb", false).unwrap_err();
     let c = &err.details["conflicts"][0];
@@ -577,7 +561,7 @@ fn pick_of_a_copy_of_a_target_record_is_present() {
         recovers: None,
     };
     log.copy("br2", "cp", "bob", pick, &c);
-    log.commit("br2", "e2", "bob", vec![trim("c4", -2)]);
+    log.commit("br2", "e2", "bob", vec![trim_end("c4", -2)]);
     let plan = log.merge("br2", "main", "bob", "m", false).unwrap();
     assert_eq!(plan.merged, ["e2"]);
     assert_eq!(log.state("main"), log.state("br2"));

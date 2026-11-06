@@ -68,11 +68,7 @@ fn replay_ignores_policy_rules() {
     apply_committed(&p, &past_end, &bindings(&[("$x", "c2")])).unwrap();
 
     let p = with_clips(&[3]);
-    let trim = tx(vec![Op::ClipTrim {
-        clip: "c1".into(),
-        edge: fin_core::Edge::End,
-        delta: secs(500),
-    }]);
+    let trim = tx(vec![trim("c1", fin_core::Edge::End, secs(500))]);
     assert_eq!(
         apply_tx(&p, &trim, &mut MemIds::after(&p))
             .unwrap_err()
@@ -97,7 +93,7 @@ fn replay_rejects_insert_inside_a_clip_as_overlap() {
 #[test]
 fn replay_rejects_structural() {
     let p = with_clips(&[3]);
-    let intent = tx(vec![Op::ClipDelete { clip: "c9".into() }]);
+    let intent = tx(vec![delete("c9")]);
     let e = apply_committed(&p, &intent, &BTreeMap::new()).unwrap_err();
     assert_eq!(e.code, "REPLAY_FAILED");
     assert_eq!(e.details["txId"], "tx-test");
@@ -185,11 +181,7 @@ fn replay_rejects_negative_start_and_source_in() {
 #[test]
 fn replay_rejects_a_trim_to_nothing() {
     let p = with_clips(&[3]);
-    let trim = vec![Op::ClipTrim {
-        clip: "c1".into(),
-        edge: fin_core::Edge::End,
-        delta: secs(-3),
-    }];
+    let trim = vec![trim("c1", fin_core::Edge::End, secs(-3))];
     assert_eq!(cause(&p, trim, &BTreeMap::new()), "CLIP_EMPTY");
 }
 
@@ -203,14 +195,15 @@ fn replay_rejects_removing_an_asset_in_use() {
 #[test]
 fn replay_rejects_a_restore_without_ripple_that_overlaps() {
     let p = with_clips(&[4]);
-    let mut c = clip(&p, "c1").clone();
-    c.id = "c5".into();
-    c.start = secs(2);
-    let ops = vec![Op::ClipRestore {
-        clip: Box::new(c),
-        track: "t1".into(),
-        ripple: false,
-    }];
+    let c = fin_core::Item::clip("c5", "a1", secs(2), secs(0), secs(4));
+    let ops = vec![
+        fin_core::ItemRestore {
+            item: c,
+            track: "t1".into(),
+            mode: fin_core::DeleteMode::Lift,
+        }
+        .into(),
+    ];
     assert_eq!(cause(&p, ops, &BTreeMap::new()), "CLIP_OVERLAP");
 }
 
@@ -235,13 +228,14 @@ fn replay_rejects_literal_ids_that_do_not_fit_their_kind() {
     let right = vec![av_asset("a9", secs(10))];
     apply_committed(&p, &tx(right), &BTreeMap::new()).unwrap();
 
-    let mut c = clip(&p, "c1").clone();
-    c.id = "$r".into();
-    c.start = secs(3);
-    let restore = |clip| Op::ClipRestore {
-        clip: Box::new(clip),
-        track: "t1".into(),
-        ripple: true,
+    let mut c = fin_core::Item::clip("$r", "a1", secs(3), secs(0), secs(3));
+    let restore = |item| -> Op {
+        fin_core::ItemRestore {
+            item,
+            track: "t1".into(),
+            mode: fin_core::DeleteMode::Ripple,
+        }
+        .into()
     };
     // A placeholder restore (spec §4.3) needs its recorded binding.
     assert_eq!(

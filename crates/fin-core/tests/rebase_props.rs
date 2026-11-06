@@ -229,26 +229,21 @@ impl Realiser {
                 frames: n,
             } => {
                 self.id(clip)?;
-                Op::ClipTrim {
-                    clip: Self::reference(clip),
-                    edge: *edge,
-                    delta: frames(*n),
-                }
+                trim(&Self::reference(clip), *edge, frames(*n))
             }
             Keyed::Delete { clip } => {
                 self.id(clip)?;
-                Op::ClipDelete {
-                    clip: Self::reference(clip),
-                }
+                delete(&Self::reference(clip))
             }
         };
         let mut resolved = op.clone();
-        if let Op::ClipTrim { clip: r, .. }
-        | Op::ClipDelete { clip: r }
-        | Op::ClipInsert { asset: r, .. } = &mut resolved
-            && let Some(id) = self.bound.get(r.as_str())
-        {
-            *r = id.clone();
+        let allocated = resolved.allocates().map(str::to_string);
+        for r in resolved.refs_mut() {
+            if allocated.as_deref() != Some(r.as_str())
+                && let Some(id) = self.bound.get(r.as_str())
+            {
+                *r = id.clone();
+            }
         }
         let a = apply_tx(&self.state, &tx(vec![resolved]), &mut self.ids).ok()?;
         self.bound.extend(a.bindings);

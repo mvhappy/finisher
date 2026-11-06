@@ -12,6 +12,7 @@ use fin_store::snapfile::{self, SnapHeader};
 use fin_store::{DB_VERSION, MAIN, OpenOptions, Store};
 use integration_support::*;
 use rusqlite::{Connection, OpenFlags, params};
+use serde_json::json;
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -223,15 +224,32 @@ fn edit_record_bytes_unchanged_from_4a() {
         let seg = segment::decode(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
         assert_eq!(versions(&seg), (1, 1), "4A wrote format 1");
         for line in &seg.records {
-            let record: Record = serde_json::from_slice(line).unwrap();
-            assert_eq!(encode_record(&record), *line);
-            // Read as v2: only the schema versions are stamped (plan 4C Task 6).
-            let up = upcast_record(serde_json::from_slice(line).unwrap()).unwrap();
-            let mut want = record.clone();
-            assert_eq!((want.schema_version, want.intent.schema_version), (1, 1));
-            want.schema_version = SCHEMA_VERSION;
-            want.intent.schema_version = SCHEMA_VERSION;
-            assert_eq!(up, want);
+            // 4A's bytes, as 4A wrote them: schema 1, `clip.*` ops, never re-encoded.
+            let raw: serde_json::Value = serde_json::from_slice(line).unwrap();
+            assert_eq!(
+                (&raw["schemaVersion"], &raw["intent"]["schemaVersion"]),
+                (&json!(1), &json!(1))
+            );
+            // Read as v2 (plan 4C Task 7): the versions are stamped and the ops upgraded;
+            // ids, times and bindings are as written.
+            let up = upcast_record(raw.clone()).unwrap();
+            assert_eq!(
+                (up.schema_version, up.intent.schema_version),
+                (SCHEMA_VERSION, SCHEMA_VERSION)
+            );
+            assert_eq!(
+                (json!(up.tx_id), json!(up.committed_at)),
+                (raw["txId"].clone(), raw["committedAt"].clone())
+            );
+            assert_eq!(serde_json::to_value(&up.bindings).unwrap(), raw["bindings"]);
+            assert!(
+                up.intent
+                    .ops
+                    .iter()
+                    .chain(&up.resolved)
+                    .chain(&up.inverse)
+                    .all(|o| !o.is_alias())
+            );
             assert_eq!(up.link().unwrap(), Link::Edit);
             n += 1;
         }

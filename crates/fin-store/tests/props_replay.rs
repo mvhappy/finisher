@@ -12,7 +12,7 @@
 mod integration_support;
 
 use fin_core::{
-    CommittedTx, CoreError, Edge, Op, Project, Rational, SCHEMA_VERSION, Tx, apply_committed,
+    CommittedTx, CoreError, Edge, Project, Rational, SCHEMA_VERSION, Tx, apply_committed,
 };
 use fin_store::{
     BranchCreate, CheckpointReq, CherryPickReq, HistoryReq, MAIN, MergeReq, Store, StoreError,
@@ -182,7 +182,7 @@ impl Script {
             .clone();
         let clip = items.get(k % items.len().max(1));
         let op = match (what, clip) {
-            (0, _) => Op::ClipInsert {
+            (0, _) => fin_core::ItemInsert {
                 id: "$c".into(),
                 track: "t1".into(),
                 at: clip.map_or_else(
@@ -193,16 +193,27 @@ impl Script {
                     },
                     |c| c.start,
                 ),
-                asset: "a1".into(),
-                source_in: secs(0),
                 duration: secs(n.abs() + 1),
-            },
-            (1, Some(c)) => Op::ClipDelete { clip: c.id.clone() },
-            (_, Some(c)) if n != 0 => Op::ClipTrim {
-                clip: c.id.clone(),
+                mode: fin_core::InsertMode::Ripple,
+                body: fin_core::ItemBody::Clip {
+                    asset: "a1".into(),
+                    source_in: secs(0),
+                    speed: fin_core::Rational::from_int(1),
+                },
+            }
+            .into(),
+            (1, Some(c)) => fin_core::ItemDelete {
+                item: c.id.clone(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+            (_, Some(c)) if n != 0 => fin_core::ItemTrim {
+                item: c.id.clone(),
                 edge: Edge::End,
                 delta: secs(n),
-            },
+                mode: fin_core::TrimMode::Ripple,
+            }
+            .into(),
             _ => return Ok(()),
         };
         let tx_id = self.id();
@@ -405,14 +416,7 @@ proptest! {
         let mut s = e.create("a");
         is::commit(&mut s, "s1", vec![is::asset("/media/a.mov")]);
         let clips = (0..3)
-            .map(|i| Op::ClipInsert {
-                id: format!("$c{i}"),
-                track: "t1".into(),
-                at: secs(10 * i),
-                asset: "a1".into(),
-                source_in: secs(0),
-                duration: secs(10),
-            })
+            .map(|i| fin_core::ItemInsert { id: format!("$c{i}"), track: "t1".into(), at: secs(10 * i), duration: secs(10), mode: fin_core::InsertMode::Ripple, body: fin_core::ItemBody::Clip { asset: "a1".into(), source_in: secs(0), speed: fin_core::Rational::from_int(1) } }.into())
             .collect();
         is::commit(&mut s, "s2", clips);
         let mut run = Script {

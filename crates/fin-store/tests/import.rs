@@ -70,29 +70,35 @@ fn server(e: &Env, a: &Store, name: &str) -> Store {
 }
 
 fn asset(path: &str) -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: path.into(),
-        duration: Rational::from_int(600),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        path,
+        Rational::from_int(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: Rational::from_int(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 fn insert(at: i64, asset: &str) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: "$c".into(),
         track: "t1".into(),
         at: Rational::from_int(at),
-        asset: asset.into(),
-        source_in: Rational::from_int(0),
         duration: Rational::from_int(1),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: asset.into(),
+            source_in: Rational::from_int(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn tx(s: &Store, id: &str, ops: Vec<Op>) -> Tx {
@@ -298,14 +304,21 @@ fn second_store_imports_first_stores_segments() {
 /// a re-encode would change the hash.
 fn half_frame_record(a: &Store, seq: u64, parent: &str) -> Vec<u8> {
     let half: Rational = "1/60".parse().unwrap();
-    let ops = vec![Op::ClipInsert {
-        id: "$x".into(),
-        track: "t1".into(),
-        at: Rational::from_int(5),
-        asset: "a1".into(),
-        source_in: Rational::from_int(0),
-        duration: half,
-    }];
+    let ops = vec![
+        fin_core::ItemInsert {
+            id: "$x".into(),
+            track: "t1".into(),
+            at: Rational::from_int(5),
+            duration: half,
+            mode: fin_core::InsertMode::Ripple,
+            body: fin_core::ItemBody::Clip {
+                asset: "a1".into(),
+                source_in: Rational::from_int(0),
+                speed: fin_core::Rational::from_int(1),
+            },
+        }
+        .into(),
+    ];
     let bindings = BTreeMap::from([("$x".to_string(), "c2".to_string())]);
     let mut intent = tx(a, "policy", ops.clone());
     intent.base_rev = seq - 1;
@@ -422,7 +435,17 @@ fn ids_never_reused_after_takeover() {
         commit(&mut a, &format!("c{i}"), vec![insert(i, "a1")]);
     }
     // c5 is deleted: the snapshot no longer holds it, the log still does.
-    commit(&mut a, "del", vec![Op::ClipDelete { clip: "c5".into() }]);
+    commit(
+        &mut a,
+        "del",
+        vec![
+            fin_core::ItemDelete {
+                item: "c5".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    );
     export(&mut a);
     assert_eq!(b.import().unwrap().applied.len(), 7);
     let c = commit(&mut b, "b1", vec![asset("/m/b.mov"), insert(10, "$a")]);
@@ -594,8 +617,8 @@ fn diverged_tail_moves_to_quarantine_and_ids_are_not_reused() {
         "b-clips",
         vec![insert(0, "a1"), {
             let mut op = insert(1, "a1");
-            if let Op::ClipInsert { id, .. } = &mut op {
-                *id = "$d".into();
+            if let Op::ItemInsert(i) = &mut op {
+                i.id = "$d".into();
             }
             op
         }],
@@ -934,7 +957,13 @@ fn a_record_that_cannot_be_replayed_blocks_writes_until_it_is_gone() {
         "bad",
         2,
         &rows(&a)[0].3,
-        vec![Op::ClipDelete { clip: "c9".into() }],
+        vec![
+            fin_core::ItemDelete {
+                item: "c9".into(),
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
     );
     let path = {
         plant(&e.dir, &header(&a, 0, 2, 2, Some(prev)), &[&bad]);
@@ -979,8 +1008,8 @@ fn literal_ids_in_imported_records_raise_the_counters() {
     let prev = segments(&e.dir)[0].1.hash.clone();
     // Replay accepts literal ids: a7 is added, then removed, all in one import.
     let mut add = asset("/m/x.mov");
-    if let Op::AssetAdd { id, .. } = &mut add {
-        *id = "a7".into();
+    if let Op::AssetAdd(a) = &mut add {
+        a.id = "a7".into();
     }
     let r2 = raw_record(&a, "lit-add", 2, &rows(&a)[0].3, vec![add]);
     let r3 = raw_record(
@@ -1022,4 +1051,46 @@ fn first_pass_after_open_raises_counters_past_the_snapshot() {
         (c.bindings["$a"].as_str(), c.bindings["$c"].as_str()),
         ("a2", "c4")
     );
+}
+
+/// B6 (plan 4C Decision 24): the ids nested in a restored item (its effects', its link
+/// group's) raise the counters like any literal id in the log.
+#[test]
+fn counters_see_ids_inside_restores() {
+    let e = env();
+    let mut a = create(&e);
+    let mut b = server(&e, &a, "b");
+    commit(&mut a, "t1", vec![asset("/m/a.mov")]);
+    export(&mut a);
+    let prev = segments(&e.dir)[0].1.hash.clone();
+    let r = Rational::from_int;
+    let mut item = fin_core::Item::clip("c9", "a1", r(0), r(0), r(1));
+    item.common.effects.push(fin_core::Effect {
+        id: "fx7".into(),
+        kind: "blur".into(),
+        enabled: true,
+        params: Default::default(),
+    });
+    item.common.link = Some("lk3".into());
+    let restore = Op::from(fin_core::ItemRestore {
+        item,
+        track: "t1".into(),
+        mode: fin_core::DeleteMode::Lift,
+    });
+    let r2 = raw_record(&a, "restore", 2, &rows(&a)[0].3, vec![restore]);
+    let remove = Op::from(fin_core::ItemRemove {
+        id: "c9".into(),
+        mode: fin_core::DeleteMode::Lift,
+    });
+    let r3 = raw_record(&a, "remove", 3, &hash(&r2), vec![remove]);
+    plant(&e.dir, &header(&a, 0, 2, 3, Some(prev)), &[&r2, &r3]);
+    let report = b.import().unwrap();
+    assert_eq!((report.applied.len(), report.error), (3, None));
+    drop(b);
+    let c = Connection::open(db_path(&e.data("b"), a.project_id())).unwrap();
+    let next = |kind: &str| -> i64 {
+        c.query_row("SELECT next FROM ids WHERE kind = ?1", [kind], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!((next("clip"), next("effect"), next("link")), (10, 8, 4));
 }

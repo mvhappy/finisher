@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use fin_core::{Edge, Op, Rational};
+use fin_core::{Edge, Rational};
 use fin_store::lease::LeaseState;
 use fin_store::{BranchCreate, MAIN, MergeReq};
 use serde_json::json;
@@ -112,14 +112,19 @@ pub fn brancher(a: &Args, em: &mut Emitter) -> Result<(), String> {
         .ok_or("setup asset refused")?;
     let asset = c.bindings.get("$a").cloned().ok_or("no asset binding")?;
     let id = n.next_tx_id();
-    let op = Op::ClipInsert {
+    let op = fin_core::ItemInsert {
         id: "$c".into(),
         track: "t1".into(),
         at: secs(0),
-        asset,
-        source_in: secs(0),
         duration: secs(5),
-    };
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset,
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
+    }
+    .into();
     let c = n
         .commit_on(id, MAIN, vec![op], json!({ "phase": "setup" }))
         .ok_or("setup clip refused")?;
@@ -169,11 +174,13 @@ pub fn brancher(a: &Args, em: &mut Emitter) -> Result<(), String> {
         let id = n.next_tx_id();
         let (op, conflict) = match i {
             2 | 3 => (
-                Op::ClipTrim {
-                    clip: clip.clone(),
+                fin_core::ItemTrim {
+                    item: clip.clone(),
                     edge: Edge::End,
                     delta: secs(if i == 2 { -1 } else { -2 }),
-                },
+                    mode: fin_core::TrimMode::Ripple,
+                }
+                .into(),
                 true,
             ),
             _ => (asset_op(&id), false),

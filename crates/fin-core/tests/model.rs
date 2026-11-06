@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use fin_core::{
-    AudioParams, BlendMode, CaptionBlock, CaptionSource, Clip, Common, Crop, DEFAULT_RESOLUTION,
-    Effect, FontFormat, FontPin, FontSource, Fonts, ID_KINDS, IdAlloc, IdKind, Interp, Item,
-    ItemBody, Keyframe, Mask, MemIds, ParamValue, Project, Rational, Resolution, SCHEMA_VERSION,
-    TrackKind, Transform, Word, font_key, json_schema, new_project,
+    AudioParams, BlendMode, CaptionBlock, CaptionSource, Common, Crop, DEFAULT_RESOLUTION, Effect,
+    FontFormat, FontPin, FontSource, Fonts, ID_KINDS, IdAlloc, IdKind, Interp, Item, ItemBody,
+    Keyframe, Mask, MemIds, ParamValue, Project, Rational, Resolution, SCHEMA_VERSION, TrackKind,
+    Transform, Word, font_key, json_schema, new_project,
 };
 use serde_json::json;
 
@@ -67,7 +67,7 @@ fn defaults_are_omitted() {
         r#"{"id":"t2","kind":"audio","name":"A1","items":[]}]}],"assets":{}}"#
     );
     assert_eq!(serde_json::to_string(&p).unwrap(), golden);
-    let item: Item = Clip::new("c1", "a1", r("0"), r("0"), r("1")).into();
+    let item = Item::clip("c1", "a1", r("0"), r("0"), r("1"));
     assert_eq!(
         serde_json::to_string(&item).unwrap(),
         r#"{"id":"c1","start":"0","duration":"1","kind":"clip","asset":"a1","sourceIn":"0"}"#
@@ -77,9 +77,13 @@ fn defaults_are_omitted() {
 #[test]
 fn project_json_round_trips_byte_identically() {
     let mut p = new_project("p1".into(), "Demo".into(), rate()).unwrap();
-    p.timelines[0].tracks[0]
-        .items
-        .push(Clip::new("c1", "a1", Rational::zero(), r("1/2"), r("62/5")).into());
+    p.timelines[0].tracks[0].items.push(Item::clip(
+        "c1",
+        "a1",
+        Rational::zero(),
+        r("1/2"),
+        r("62/5"),
+    ));
     let json = serde_json::to_string(&p).unwrap();
     let back: Project = serde_json::from_str(&json).unwrap();
     assert_eq!(back, p);
@@ -248,22 +252,22 @@ fn item_json_round_trips_every_kind() {
     assert!(Common::default().is_default() && !busy_common().is_default());
 }
 
+/// A clip item's constructor, and its ids (plan 4C Decision 24): its own, its asset, its
+/// effects' and its link group's.
 #[test]
-fn clip_and_item_convert_both_ways() {
+fn clip_constructor_and_item_ids() {
     let it = every_kind().remove(0);
-    let clip = it.to_clip().unwrap();
-    assert_eq!(clip.speed, r("2"));
-    assert_eq!(Item::from(clip.clone()), it);
-    // The op payload is the clip item without `kind`.
-    let mut v = serde_json::to_value(&it).unwrap();
-    v.as_object_mut().unwrap().remove("kind");
-    assert_eq!(serde_json::to_value(&clip).unwrap(), v);
-    // 4B's clip shape still reads.
-    let v1: Clip = serde_json::from_value(json!({ "id": "c1", "asset": "a1", "start": "0",
-        "sourceIn": "0", "duration": "8" }))
-    .unwrap();
-    assert_eq!(v1, Clip::new("c1", "a1", r("0"), r("0"), r("8")));
-    assert!(every_kind()[1].to_clip().is_none());
+    let mut plain = Item::clip("c1", "a1", r("0"), r("0"), r("8"));
+    assert_eq!(plain.kind_name(), "clip");
+    assert_eq!(plain.ids(), ["c1", "a1"]);
+    let mut busy = it.clone();
+    let listed: Vec<String> = busy.ids().iter().map(|s| s.to_string()).collect();
+    let refs: Vec<String> = busy.refs_mut().into_iter().map(|s| s.clone()).collect();
+    assert_eq!(listed, refs);
+    for r in plain.refs_mut() {
+        r.push('x');
+    }
+    assert_eq!(plain.ids(), ["c1x", "a1x"]);
 }
 
 #[test]
@@ -365,16 +369,13 @@ fn mem_ids_continue_after_a_project() {
 #[test]
 fn mem_ids_skip_past_highest_suffix() {
     let mut p = new_project("p1".into(), "Demo".into(), rate()).unwrap();
-    p.timelines[0].tracks[0].items.push(
-        Clip::new(
-            "c7",
-            "a9",
-            Rational::zero(),
-            Rational::zero(),
-            Rational::from_int(1),
-        )
-        .into(),
-    );
+    p.timelines[0].tracks[0].items.push(Item::clip(
+        "c7",
+        "a9",
+        Rational::zero(),
+        Rational::zero(),
+        Rational::from_int(1),
+    ));
     let mut ids = MemIds::after(&p);
     assert_eq!(ids.next(IdKind::Clip), "c8");
 }
@@ -515,9 +516,9 @@ fn schema_requires_details_and_keeps_rational_refs() {
         ("Timeline", "rate"),
         ("Item", "start"),
         ("Item", "duration"),
-        ("Clip", "start"),
-        ("Clip", "sourceIn"),
-        ("Clip", "duration"),
+        ("ItemInsert", "at"),
+        ("ItemInsert", "duration"),
+        ("ItemTrim", "delta"),
         ("Asset", "duration"),
         ("Marker", "duration"),
     ] {

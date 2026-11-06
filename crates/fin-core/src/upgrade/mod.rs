@@ -3,8 +3,7 @@
 //! kept. A step must not change ids, timestamps or bindings.
 //!
 //! Schema version 1 is the first. Version 2 (plan 4C) has a snapshot step
-//! ([`snapshot_v1`], frozen) and a record step ([`record_v1`], an identity until plan 4C
-//! Task 7 fills it). Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
+//! ([`snapshot_v1`]) and a record step ([`record_v1`]), both frozen. Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
 //! `Step { from: n, .. }` to each table, with a golden test (frozen old shape in, expected new
 //! shape out).
 //!

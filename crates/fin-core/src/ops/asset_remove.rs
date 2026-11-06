@@ -5,8 +5,8 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::Project;
-use crate::ops::util::{OpDiff, asset, items, media_duration, wrong_op};
-use crate::ops::{Bindings, Op};
+use crate::ops::util::{OpDiff, asset, items, wrong_op};
+use crate::ops::{AssetAdd, Bindings, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
@@ -27,9 +27,9 @@ pub(crate) fn validate(
         .collect();
     if !users.is_empty() {
         return Err(
-            CoreError::new("ASSET_IN_USE", format!("asset {id} is used by clips"))
-                .with_details(json!({ "id": id, "clips": users }))
-                .with_fix("delete the clips that use the asset first"),
+            CoreError::new("ASSET_IN_USE", format!("asset {id} is used by items"))
+                .with_details(json!({ "id": id, "clips": users, "items": users }))
+                .with_fix("delete the items that use the asset first"),
         );
     }
     Ok(id)
@@ -43,19 +43,27 @@ pub(crate) fn apply(
     diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let id = validate(project, op, bindings)?;
-    let duration = media_duration(asset(project, &id)?)?;
     let Some(a) = project.assets.remove(&id) else {
         return Err(crate::ops::util::not_found("asset", &id));
     };
     diff.record(EntityKind::Asset, &id, ChangeKind::Removed);
-    Ok(vec![Op::AssetAdd {
-        id: a.id,
-        path: a.path,
-        duration,
-        video: a.video,
-        audio: a.audio,
-        fingerprint: a.fingerprint,
-    }])
+    Ok(vec![
+        AssetAdd {
+            id: a.id,
+            kind: a.kind,
+            path: a.path,
+            fingerprint: a.fingerprint,
+            duration: a.duration,
+            video: a.video,
+            audio: a.audio,
+            image: a.image,
+            lottie: a.lottie,
+            font: a.font,
+            lut: a.lut,
+            bin: a.bin,
+        }
+        .into(),
+    ])
 }
 
 /// Removes the asset; binds no track.

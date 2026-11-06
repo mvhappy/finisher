@@ -41,14 +41,19 @@ fn tx(n: u64, base_rev: u64, ops: Vec<Op>) -> Tx {
 }
 
 fn insert(id: &str, at: i64, duration: i64) -> Op {
-    Op::ClipInsert {
+    fin_core::ItemInsert {
         id: id.into(),
         track: "t1".into(),
         at: secs(at),
-        asset: "a1".into(),
-        source_in: secs(0),
         duration: secs(duration),
+        mode: fin_core::InsertMode::Ripple,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: fin_core::Rational::from_int(1),
+        },
     }
+    .into()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,39 +70,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         n += 1;
         n
     };
-    let asset = Op::AssetAdd {
-        id: "$a".into(),
-        path: "media/clip.mov".into(),
-        duration: secs(600),
-        video: Some(VideoInfo {
+    let asset = fin_core::AssetAdd::media(
+        "$a",
+        "media/clip.mov",
+        secs(600),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: None,
-        fingerprint: "fixture-fingerprint".into(),
-    };
+        None,
+        "fixture-fingerprint",
+    )
+    .into();
     store.commit(tx(next(), 0, vec![asset]))?; // rev 1
     store.commit(tx(next(), 1, vec![insert("$c", 0, 10)]))?; // rev 2
     // Stale base: sent against rev 1, so the store rebases it over rev 2.
     let rebased = store.commit(tx(next(), 1, vec![insert("$c", 0, 5)]))?; // rev 3
     assert_eq!(rebased.tx.base_rev, 2, "the stale insert was rebased");
     let trimmed = rebased.bindings["$c"].clone();
-    let trim = Op::ClipTrim {
-        clip: trimmed,
+    let trim = fin_core::ItemTrim {
+        item: trimmed,
         edge: Edge::End,
         delta: secs(2),
-    };
+        mode: fin_core::TrimMode::Ripple,
+    }
+    .into();
     store.commit(tx(next(), 3, vec![trim]))?; // rev 4
     let (_, p) = store.snapshot(MAIN)?;
     let first = p.timelines[0].tracks[0].items[0].id.clone();
-    store.commit(tx(next(), 4, vec![Op::ClipDelete { clip: first }]))?; // rev 5
+    store.commit(tx(
+        next(),
+        4,
+        vec![
+            fin_core::ItemDelete {
+                item: first,
+                mode: fin_core::DeleteMode::Ripple,
+            }
+            .into(),
+        ],
+    ))?; // rev 5
 
     for _ in 0..100 {
         let head = store.head(MAIN);
         let c = store.commit(tx(next(), head, vec![insert("$c", 0, 3)]))?;
         let clip = c.bindings["$c"].clone();
-        store.commit(tx(next(), c.rev, vec![Op::ClipDelete { clip }]))?;
+        store.commit(tx(
+            next(),
+            c.rev,
+            vec![
+                fin_core::ItemDelete {
+                    item: clip,
+                    mode: fin_core::DeleteMode::Ripple,
+                }
+                .into(),
+            ],
+        ))?;
     }
     let (rev, project) = store.snapshot(MAIN)?;
     assert!(rev >= SNAPSHOT_EVERY, "a DB snapshot exists at rev 200");

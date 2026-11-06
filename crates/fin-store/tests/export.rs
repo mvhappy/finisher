@@ -45,18 +45,19 @@ fn create(e: &Env) -> Store {
 }
 
 fn asset_op(path: &str) -> Op {
-    Op::AssetAdd {
-        id: "$a".into(),
-        path: path.into(),
-        duration: Rational::from_int(60),
-        video: Some(VideoInfo {
+    fin_core::AssetAdd::media(
+        "$a",
+        path,
+        Rational::from_int(60),
+        Some(VideoInfo {
             width: 1920,
             height: 1080,
             rate: Rational::from_int(30),
         }),
-        audio: None,
-        fingerprint: "fp".into(),
-    }
+        None,
+        "fp",
+    )
+    .into()
 }
 
 /// Commits one tx adding one asset at the head.
@@ -292,21 +293,10 @@ fn export_never_splits_a_tx() {
         .into_iter()
         .enumerate()
         .map(|(i, op)| match op {
-            Op::AssetAdd {
-                path,
-                duration,
-                video,
-                audio,
-                fingerprint,
-                ..
-            } => Op::AssetAdd {
-                id: format!("$a{i}"),
-                path,
-                duration,
-                video,
-                audio,
-                fingerprint,
-            },
+            Op::AssetAdd(mut a) => {
+                a.id = format!("$a{i}");
+                Op::AssetAdd(a)
+            }
             other => other,
         })
         .collect();
@@ -324,8 +314,8 @@ fn export_never_splits_a_tx() {
 /// One asset op whose path makes the record about `kib` KiB.
 fn sized_op(i: usize, kib: usize) -> Op {
     let mut op = asset_op(&format!("/media/{i}/{}", "x".repeat(kib * 1024)));
-    if let Op::AssetAdd { id, .. } = &mut op {
-        *id = format!("$a{i}");
+    if let Op::AssetAdd(a) = &mut op {
+        a.id = format!("$a{i}");
     }
     op
 }

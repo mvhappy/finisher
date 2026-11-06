@@ -37,10 +37,6 @@ fn ids(stack: &[UnitEntry]) -> Vec<&str> {
     stack.iter().map(|u| u.id.as_str()).collect()
 }
 
-fn delete(clip: &str) -> Op {
-    Op::ClipDelete { clip: clip.into() }
-}
-
 fn code(r: Result<fin_core::history::LogRec, CoreError>) -> CoreError {
     r.expect_err("expected an error")
 }
@@ -249,10 +245,10 @@ fn undo_maps_over_later_insert_before_it() {
     let w = insert("$w", "t1", secs(0), "a1", secs(0), secs(5));
     log.commit("main", "b1", "bob", vec![w]);
     let u = log.undo("main", "alice", "u1").unwrap();
-    let Op::ClipRestore { clip, .. } = &u.record.intent.ops[0] else {
+    let Op::ItemRestore(r) = &u.record.intent.ops[0] else {
         panic!("{:?}", u.record.intent.ops)
     };
-    assert_eq!((clip.id.as_str(), clip.start), ("c2", secs(15)));
+    assert_eq!((r.item.id.as_str(), r.item.start), ("c2", secs(15)));
     assert_eq!(
         starts(&log.state("main"), 0),
         [
@@ -295,11 +291,7 @@ fn undo_redo_undo_again_is_exact() {
 #[test]
 fn undo_conflicts_when_another_author_removed_the_clip() {
     let mut log = log();
-    let trim = Op::ClipTrim {
-        clip: "c2".into(),
-        edge: Edge::End,
-        delta: secs(-2),
-    };
+    let trim = trim("c2", Edge::End, secs(-2));
     log.commit("main", "e1", "alice", vec![trim]);
     log.commit("main", "b1", "bob", vec![delete("c2")]);
     let before = log.head_seq("main");
@@ -539,11 +531,7 @@ fn redo_reverses_whole_undo_to() {
 fn undo_to_conflict_is_all_or_nothing() {
     let mut log = log();
     let cp = log.checkpoint("main", "k1", "alice", "v1");
-    let trim = |c: &str| Op::ClipTrim {
-        clip: c.into(),
-        edge: Edge::End,
-        delta: secs(-2),
-    };
+    let trim = |c: &str| trim(c, Edge::End, secs(-2));
     log.commit("main", "e1", "alice", vec![trim("c2")]);
     log.commit("main", "e2", "alice", vec![trim("c3")]);
     edit(&mut log, "main", "e3", "alice");
@@ -757,11 +745,7 @@ fn two_units(log: &mut MemLog, to: bool) -> u64 {
 fn stale_edit_between_undo_to_units_is_the_undos_in_a_row() {
     // A stale base between e1 and e2: only e2 is in the interval. The record is cut into e2's
     // part (paired) and an unpaired tail, as the two undos would be.
-    let trim = Op::ClipTrim {
-        clip: "c1".into(),
-        edge: Edge::End,
-        delta: secs(-2),
-    };
+    let trim = trim("c1", Edge::End, secs(-2));
     let w = |at: i64| insert("$w", "t1", secs(at), "a1", secs(0), secs(5));
     for (n, ops) in [vec![trim], vec![w(0)], vec![w(5)], vec![w(10)], vec![w(20)]]
         .into_iter()

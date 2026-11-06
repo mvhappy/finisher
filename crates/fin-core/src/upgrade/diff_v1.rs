@@ -7,7 +7,10 @@
 //! shift; `asset.add` and `asset.remove` recorded none (`ops/*` at `36fe7e0`). So the step gives
 //! the changes the indexes of their ops in order, and the shifts the indexes of the clip ops in
 //! order. A `clip.trim` change also gains the op's `edge`, and on the start edge the content
-//! offset `by = −delta` (Decision 13).
+//! offset `by = −delta` (Decision 13). A change of kind `clip` becomes kind `item` (Decision 4).
+//! The zero shift a `clip.remove` or `clip.restore` without ripple recorded is dropped: its
+//! v2 op (`item.remove`/`item.restore` in `lift` mode) records no shift. The output equals
+//! what 4C's replay of the upcast record ([`super::record_v1`]) records.
 
 use serde_json::{Value, json};
 
@@ -29,10 +32,15 @@ const STILL: &[&str] = &["asset.add", "asset.remove"];
 /// in the v2 shape. `INVALID_FORMAT` when the entries do not match the ops.
 pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
     let bad = |why: String| invalid_format("diff", why);
+    // Each v1 shift's op, and whether its v2 op still records it.
     let mut shifting = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         match op.get("op").and_then(Value::as_str) {
-            Some(name) if SHIFTING.contains(&name) => shifting.push(i),
+            Some(name) if SHIFTING.contains(&name) => {
+                let lift = matches!(name, "clip.remove" | "clip.restore")
+                    && op.get("ripple") == Some(&Value::Bool(false));
+                shifting.push((i, !lift));
+            }
             Some(name) if STILL.contains(&name) => {}
             other => return Err(bad(format!("op {i} ({other:?}) is not a v1 op"))),
         }
@@ -50,6 +58,9 @@ pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
             .as_object_mut()
             .ok_or_else(|| bad(format!("change {i} is not an object")))?;
         change.insert("op".into(), json!(i));
+        if change.get("kind") == Some(&json!("clip")) {
+            change.insert("kind".into(), json!("item"));
+        }
         if op["op"] == "clip.trim" {
             change.insert("edge".into(), op["edge"].clone());
             if op["edge"] == "start" {
@@ -70,12 +81,18 @@ pub(super) fn run(mut diff: Value, ops: &[Value]) -> Result<Value, CoreError> {
             shifting.len()
         )));
     }
-    for (i, (shift, op)) in shifts.iter_mut().zip(shifting).enumerate() {
+    let mut kept = Vec::new();
+    for (i, (mut shift, (op, keep))) in std::mem::take(shifts).into_iter().zip(shifting).enumerate()
+    {
         shift
             .as_object_mut()
             .ok_or_else(|| bad(format!("shift {i} is not an object")))?
             .insert("op".into(), json!(op));
+        if keep {
+            kept.push(shift);
+        }
     }
+    *shifts = kept;
     Ok(diff)
 }
 

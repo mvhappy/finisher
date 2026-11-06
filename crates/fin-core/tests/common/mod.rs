@@ -5,7 +5,8 @@ pub mod ids_json;
 pub mod memlog;
 
 use fin_core::{
-    Applied, AudioInfo, CoreError, MemIds, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo,
+    Applied, AssetAdd, AudioInfo, CoreError, DeleteMode, Edge, InsertMode, ItemBody, ItemDelete,
+    ItemInsert, ItemTrim, MemIds, Op, Project, Rational, SCHEMA_VERSION, TrimMode, Tx, VideoInfo,
     apply_internal, apply_tx, new_project,
 };
 
@@ -48,21 +49,22 @@ pub fn tx(ops: Vec<Op>) -> Tx {
 }
 
 fn asset(id: &str, duration: Rational, video: bool, audio: bool) -> Op {
-    Op::AssetAdd {
-        id: id.into(),
-        path: format!("/media/{}.mov", id.trim_start_matches('$')),
+    AssetAdd::media(
+        id,
+        format!("/media/{}.mov", id.trim_start_matches('$')),
         duration,
-        video: video.then(|| VideoInfo {
+        video.then(|| VideoInfo {
             width: 1920,
             height: 1080,
             rate: secs(30),
         }),
-        audio: audio.then_some(AudioInfo {
+        audio.then_some(AudioInfo {
             sample_rate: 48_000,
             channels: 2,
         }),
-        fingerprint: "fp".into(),
-    }
+        "fp",
+    )
+    .into()
 }
 
 /// An asset with video and audio streams.
@@ -82,14 +84,39 @@ pub fn insert(
     source_in: Rational,
     duration: Rational,
 ) -> Op {
-    Op::ClipInsert {
+    ItemInsert {
         id: id.into(),
         track: track.into(),
         at,
-        asset: asset.into(),
-        source_in,
         duration,
+        mode: InsertMode::Ripple,
+        body: ItemBody::Clip {
+            asset: asset.into(),
+            source_in,
+            speed: Rational::from_int(1),
+        },
     }
+    .into()
+}
+
+/// `item.trim` in ripple mode.
+pub fn trim(item: &str, edge: Edge, delta: Rational) -> Op {
+    ItemTrim {
+        item: item.into(),
+        edge,
+        delta,
+        mode: TrimMode::Ripple,
+    }
+    .into()
+}
+
+/// `item.delete` in ripple mode.
+pub fn delete(item: &str) -> Op {
+    ItemDelete {
+        item: item.into(),
+        mode: DeleteMode::Ripple,
+    }
+    .into()
 }
 
 pub fn try_apply(p: &Project, ops: Vec<Op>) -> Result<Applied, CoreError> {
@@ -153,15 +180,41 @@ pub fn assert_well_formed(p: &Project) {
     }
 }
 
-/// Clip item `id`, in the shape the `clip.*` ops carry.
-pub fn clip(p: &Project, id: &str) -> fin_core::Clip {
-    p.timelines[0]
+/// A clip item's fields, flat.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipView {
+    pub id: String,
+    pub asset: String,
+    pub start: Rational,
+    pub source_in: Rational,
+    pub duration: Rational,
+    pub speed: Rational,
+}
+
+/// Clip item `id`, flat.
+pub fn clip(p: &Project, id: &str) -> ClipView {
+    let item = p.timelines[0]
         .tracks
         .iter()
         .flat_map(|t| &t.items)
         .find(|c| c.id == id)
-        .and_then(fin_core::Item::to_clip)
-        .unwrap_or_else(|| panic!("no clip {id}"))
+        .unwrap_or_else(|| panic!("no item {id}"));
+    let ItemBody::Clip {
+        asset,
+        source_in,
+        speed,
+    } = &item.body
+    else {
+        panic!("{id} is not a clip");
+    };
+    ClipView {
+        id: item.id.clone(),
+        asset: asset.clone(),
+        start: item.start,
+        source_in: *source_in,
+        duration: item.duration,
+        speed: *speed,
+    }
 }
 
 pub fn starts(p: &Project, track: usize) -> Vec<(String, Rational)> {
