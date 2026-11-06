@@ -92,6 +92,11 @@ CREATE TABLE IF NOT EXISTS record_links (
 CREATE INDEX IF NOT EXISTS record_links_origin ON record_links (origin) WHERE origin IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_origin_hash ON record_links (origin_hash) WHERE origin_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_merge ON record_links (merge_id) WHERE merge_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS quarantine_marks (
+    tx_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT
+);
+CREATE INDEX IF NOT EXISTS quarantine_marks_target ON quarantine_marks (kind, target) WHERE target IS NOT NULL;
+CREATE INDEX IF NOT EXISTS quarantine_counted ON quarantine (current, origin, reason);
 ";
 
 /// The `main` row of `branches`, as migration 0002 writes it.

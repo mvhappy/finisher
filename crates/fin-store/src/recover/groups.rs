@@ -277,28 +277,6 @@ impl Forest {
     }
 }
 
-/// The rows status does not count, by `txHash`: recovered or dismissed. Status asks on every
-/// poll, so the rows are read only when some are stood for and a `branchSet` row (whose mark
-/// depends on another row) may be among them.
-pub(crate) fn uncounted(conn: &Connection) -> Result<HashSet<String>, StoreError> {
-    let mut out = stood(conn)?;
-    out.extend(super::dismiss::load(conn)?);
-    if out.is_empty() {
-        return Ok(out);
-    }
-    let sets: bool = conn
-        .prepare_cached(
-            "SELECT 1 FROM quarantine WHERE current = 1
-             AND CAST(record_bytes AS TEXT) LIKE '%\"kind\":\"branchSet\"%' LIMIT 1",
-        )?
-        .exists([])?;
-    if sets {
-        let f = Forest::load(conn)?;
-        out.extend(f.recovered().into_iter().map(|i| f.rows[i].hash.clone()));
-    }
-    Ok(out)
-}
-
 /// Where a root group forks, through rows already recovered (module docs).
 #[derive(Debug, Clone)]
 pub(crate) enum Fork {

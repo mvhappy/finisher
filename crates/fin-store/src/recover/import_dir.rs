@@ -111,5 +111,6 @@ pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<Imp
         }
     }
     crate::db::Counters::raise_to_quarantine(conn)?;
+    super::marks::fill(conn)?;
     Ok(out)
 }

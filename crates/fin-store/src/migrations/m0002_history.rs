@@ -6,10 +6,13 @@
 //!   that made each branch) and `record_links` (one row per non-`edit` record, with its kind,
 //!   origin, origin hash, source branch, merge group, targets, name, and why it took no
 //!   effect when it is inert: `ignored`), with their indexes. Both are derived: they can be rebuilt from `txs`;
+//! - creates `quarantine_marks` (per quarantine row, its record's kind and the branch a
+//!   `branch` or `branchSet` record names; derived from `quarantine`, `crate::recover`) and
+//!   the index `quarantine_counted` on `quarantine (current, origin, reason)` for status;
 //! - inserts the `main` row (a 4A database has no other branch);
 //! - sets `meta` `formatVersion` and `minReaderVersion` to `"2"`.
 //!
-//! It never runs `ALTER TABLE`: it only creates tables, so a fresh database (`db::SCHEMA`, which
+//! It never runs `ALTER TABLE`: it only creates tables and indexes, so a fresh database (`db::SCHEMA`, which
 //! holds the same text) and a migrated one have the same schema. A 4A database holds only `edit`
 //! records, so `record_links` starts empty.
 
@@ -31,6 +34,11 @@ CREATE TABLE IF NOT EXISTS record_links (
 CREATE INDEX IF NOT EXISTS record_links_origin ON record_links (origin) WHERE origin IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_origin_hash ON record_links (origin_hash) WHERE origin_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_links_merge ON record_links (merge_id) WHERE merge_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS quarantine_marks (
+    tx_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT
+);
+CREATE INDEX IF NOT EXISTS quarantine_marks_target ON quarantine_marks (kind, target) WHERE target IS NOT NULL;
+CREATE INDEX IF NOT EXISTS quarantine_counted ON quarantine (current, origin, reason);
 ";
 
 pub(super) fn run(txn: &Transaction<'_>) -> Result<(), StoreError> {

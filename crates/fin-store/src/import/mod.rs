@@ -46,7 +46,7 @@
 //!    whenever rows were added or removed, and on the store's first pass (which repairs a DB
 //!    whose counters fell behind for any reason); and on every pass past the ids of
 //!    quarantine rows added since the last ([`Counters::raise_to_quarantine`], plan 4B
-//!    Decision 28).
+//!    Decision 28), and the recovered marks read the kind of those rows once (`recover::marks`).
 //! 6. **Quarantine** ([`quarantine`]): rows are keyed by `txHash`, so a record reported on
 //!    every poll (a stale line) or by two sources (a stale line and a conflict copy of it) is
 //!    one row. `current` says whether this pass's verdicts still set it aside; status counts
@@ -395,6 +395,7 @@ impl Store {
             quarantine::flag_current(&txn, &current)?;
         }
         Counters::raise_to_quarantine(&txn)?;
+        crate::recover::fill_marks(&txn)?;
         report.quarantined = quarantine::count(&txn)?;
         let seeded = ctx.seeded;
         drop(ctx);

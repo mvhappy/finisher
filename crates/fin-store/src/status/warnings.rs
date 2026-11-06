@@ -165,34 +165,62 @@ impl Store {
     }
 }
 
+/// The quarantine summary, read again only when the database changed since the last one: by
+/// this connection (`total_changes`) or another (`PRAGMA data_version`).
 pub(super) fn quarantine_summary(
     conn: &rusqlite::Connection,
+    seen: &std::cell::RefCell<Option<((i64, u64), QuarantineSummary)>>,
 ) -> Result<QuarantineSummary, StoreError> {
-    // Recovered rows (a record in the log stands for them, plan 4B Decision 5) and rows
-    // dismissed here are not counted.
-    let recovered = crate::recover::uncounted(conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT origin, reason, tx_hash FROM quarantine WHERE current = 1
-         ORDER BY origin, reason",
+    let version: i64 = conn.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+    let key = (version, conn.total_changes());
+    if let Some((k, s)) = seen.borrow().as_ref()
+        && *k == key
+    {
+        return Ok(s.clone());
+    }
+    let s = summary(conn)?;
+    *seen.borrow_mut() = Some((key, s.clone()));
+    Ok(s)
+}
+
+/// Current rows by origin and reason (index `quarantine_counted`), less the rows recovered or
+/// dismissed (plan 4B Decision 5; `recover::marks`): its cost follows those, not the
+/// quarantine's size.
+fn summary(conn: &rusqlite::Connection) -> Result<QuarantineSummary, StoreError> {
+    let mut counts: std::collections::BTreeMap<(String, String), i64> = {
+        let mut stmt = conn.prepare_cached(
+            "SELECT origin, reason, COUNT(*) FROM quarantine WHERE current = 1
+             GROUP BY origin, reason",
+        )?;
+        let rows = stmt.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let uncounted = crate::recover::uncounted(conn)?;
+    let mut one = conn.prepare_cached(
+        "SELECT origin, reason FROM quarantine WHERE tx_hash = ?1 AND current = 1",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    })?;
+    for h in &uncounted {
+        let row: Option<(String, String)> = one
+            .query_map([h], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .next()
+            .transpose()?;
+        if let Some(k) = row
+            && let Some(n) = counts.get_mut(&k)
+        {
+            *n -= 1;
+        }
+    }
     let mut s = QuarantineSummary::default();
-    for row in rows {
-        let (origin, reason, hash) = row?;
-        if recovered.contains(&hash) {
+    for ((origin, reason), n) in counts {
+        let n = u32::try_from(n).unwrap_or(0);
+        if n == 0 {
             continue;
         }
-        s.count = s.count.saturating_add(1);
+        s.count = s.count.saturating_add(n);
         if !s.origins.contains(&origin) {
             s.origins.push(origin);
         }
-        *s.reasons.entry(reason).or_default() += 1;
+        *s.reasons.entry(reason).or_default() += n;
     }
     Ok(s)
 }

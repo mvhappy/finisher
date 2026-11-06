@@ -198,6 +198,7 @@ impl Store {
             due: tick::DueWork::default(),
             db_lock: None,
             damage: RefCell::new(crate::verify::DamageSeen::default()),
+            quarantine_seen: RefCell::new(None),
             compact: crate::compact::CompactState::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,

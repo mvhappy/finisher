@@ -234,6 +234,9 @@ pub struct Store {
     damage: RefCell<verify::DamageSeen>,
     /// Compaction manifests seen and their grace periods.
     compact: compact::CompactState,
+    /// The last quarantine summary and the database version it was read at
+    /// (`status::warnings::quarantine_summary`): status asks on every poll.
+    quarantine_seen: RefCell<Option<((i64, u64), QuarantineSummary)>>,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }

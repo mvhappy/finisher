@@ -194,8 +194,16 @@ fn quarantine(s: &Store) -> Vec<(String, String)> {
     out
 }
 
+/// The rows status counts; checks that they are the rows the listing groups (status reads
+/// the marks from `quarantine_marks`, the listing from the rows' bytes).
 fn counted(s: &Store) -> u32 {
-    s.status().quarantine.count
+    let n = s.status().quarantine.count;
+    let listed: usize = s.recover_groups().unwrap().iter().map(|g| g.records).sum();
+    assert_eq!(
+        n as usize, listed,
+        "status and the listing agree on the marks"
+    );
+    n
 }
 
 fn assert_verifies(s: &Store) {
@@ -820,9 +828,17 @@ fn recovered_marks_rebuild_from_log() {
     create_all(&mut a, "rec");
     e.flush(&mut a);
     assert_eq!(counted(&a), 0);
+    let before = marks(&a);
+    assert_eq!(before.len(), 1);
     let rep = a.rebuild().unwrap();
     assert!(rep.verify.ok, "{:#?}", rep.verify);
     assert_eq!(quarantine(&a).len(), 1, "the row came along");
+    e.poll(&mut a);
+    assert_eq!(
+        marks(&a),
+        before,
+        "the side table is read again from the rows"
+    );
     assert_eq!(counted(&a), 0, "still not counted");
     assert!(a.recover_groups().unwrap().is_empty());
     // A server with no database rebuilds the same marks from the folder.
@@ -855,8 +871,21 @@ fn recovered_marks_follow_to_followers() {
         assert_eq!(counted(s), 0);
         assert!(s.recover_groups().unwrap().is_empty());
         assert_eq!(quarantine(s).len(), 2, "kept");
+        assert_eq!(marks(s), marks(&b));
         assert_verifies(s);
     }
+}
+
+/// `quarantine_marks`, sorted.
+fn marks(s: &Store) -> Vec<(String, String, Option<String>)> {
+    let c = db(s);
+    let mut stmt = c
+        .prepare("SELECT tx_hash, kind, target FROM quarantine_marks ORDER BY tx_hash")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
 /// A `CHAIN_FORK` (two servers at one epoch), resolved by the manual procedure: one side's
@@ -1429,4 +1458,24 @@ fn unrecoverable_group_can_be_dismissed() {
     assert_eq!(r.groups.len(), 1);
     assert_eq!(counted(&b), 1);
     assert!(!b.status().warnings.iter().any(|w| w.message.contains("x9")));
+}
+
+/// Verify compares the marks' side table with the rows' bytes.
+#[test]
+fn verify_checks_quarantine_marks() {
+    let e = env();
+    let Split { a, .. } = diverged(&e, |a| {
+        on(a, "x1", MAIN, vec![insert(0, "a1")]);
+    });
+    assert_eq!(marks(&a).len(), 1);
+    assert_verifies(&a);
+    db(&a)
+        .execute("UPDATE quarantine_marks SET kind = 'branch'", [])
+        .unwrap();
+    let v = a.verify();
+    let c = v.checks.iter().find(|c| c.name == "branch_index").unwrap();
+    assert!(
+        !c.ok && c.details["marks"].as_array().unwrap().len() == 1,
+        "{c:#?}"
+    );
 }

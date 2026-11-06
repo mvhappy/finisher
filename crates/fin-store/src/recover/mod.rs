@@ -23,6 +23,7 @@ mod dismiss;
 mod groups;
 mod ids;
 mod import_dir;
+mod marks;
 mod naming;
 mod remap;
 mod rows;
@@ -37,8 +38,8 @@ use fin_core::{CommittedTx, Conflict, CoreError, Link, RecordKind};
 use rusqlite::Connection;
 use serde_json::json;
 
-pub(crate) use groups::uncounted;
 use groups::{Forest, Group};
+pub(crate) use marks::{check as check_marks, fill as fill_marks, uncounted};
 use naming::{Writers, server8, utc_stamp};
 use run::Runner;
 

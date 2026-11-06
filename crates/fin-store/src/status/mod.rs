@@ -293,7 +293,7 @@ impl Store {
             fix: reason.fix().to_string(),
         });
         let f = &self.follow;
-        let quarantine = quarantine_summary(&self.conn).unwrap_or_default();
+        let quarantine = quarantine_summary(&self.conn, &self.quarantine_seen).unwrap_or_default();
         let compaction = self.compaction_status();
         let warnings = self.status_warnings(&quarantine, &compaction);
         let rel = |p: &String| {

@@ -53,7 +53,9 @@
 //!   yet are `pending`, not a failure) or one unknown here: on a folder chain this verify
 //!   resolved, or made by such a record, it is the folder ahead of the database (`ahead`,
 //!   not a failure); otherwise `waiting` (not a failure while files arrive). Never a live
-//!   record the index does not hold or a record of another branch (`segments`).
+//!   record the index does not hold or a record of another branch (`segments`). The
+//!   recovered marks' side table (`quarantine_marks`) holds what each quarantine row's bytes
+//!   give, up to its watermark, and nothing for rows that are gone (`marks`).
 //!
 //! Per branch, the folder checks read the segments that make it: all of `main`'s, and a 4B
 //! branch's that name its index record, resolved from its fork point

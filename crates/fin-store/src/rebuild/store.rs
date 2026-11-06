@@ -108,6 +108,8 @@ impl Store {
         }
         self.db_lock = Some(dblock::shared(&dir)?);
         self.conn = db::connect(&db_path, false)?;
+        // Another connection: its change counters say nothing about the last summary.
+        *self.quarantine_seen.get_mut() = None;
         let report = match rebuilt {
             Ok(Some(r)) => r,
             Ok(None) => {

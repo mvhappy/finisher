@@ -42,11 +42,16 @@ pub(super) fn check(s: &Subject, f: &Folder) -> Result<(bool, Value), StoreError
     let (index, stateless, unindexed) = index(s, &d, &mut count)?;
     let links = links(s, &d, &mut count)?;
     let (segments, (waiting, pending, ahead)) = segments(s, f, &mut count)?;
+    // The recovered marks' side table against the quarantine rows' bytes.
+    let mut marks = vec![];
+    for v in crate::recover::check_marks(s.conn)? {
+        push(&mut marks, &mut count, v);
+    }
     Ok((
         count == 0,
         json!({ "index": index, "stateless": stateless, "unindexed": unindexed,
                 "links": links, "segments": segments, "waiting": waiting,
-                "pending": pending, "ahead": ahead, "problemCount": count }),
+                "pending": pending, "ahead": ahead, "marks": marks, "problemCount": count }),
     ))
 }
 
