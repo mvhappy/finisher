@@ -1,370 +1,426 @@
 # Sub-project 4C: Edit breadth — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task names a **model tier** for its implementer: `opus` for semantics (model and upcasters, ops with their inverses, footprints, shift and content maps, rebase, evaluation, captions, text measurement, `fin` composition), `sonnet` for plumbing (fixtures, probes, bindings, RPC, CLI, docs).
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task names a **model tier** for its implementer: `opus` for semantics (model and upcasters, ops with their inverses, footprints, shift and content maps, rebase, evaluation, captions, text measurement, font pinning, fetching and caching, `fin` composition), `sonnet` for plumbing (fixtures, probes, bindings, RPC, CLI, docs).
 
 **Goal:** The model covers everything v1 edits, and evaluation tells the media engine exactly what to draw and play:
 - Several timelines, bins and markers. Video, audio and caption tracks. Items of kind `clip`, `caption`, `graphic`, `image`, `adjustment` and `nested`, each with transform, crop, opacity, blend, effects, mask, audio params, keyframes and link groups. Transitions at cuts.
 - A settings registry drives generic `param.set`, `keyframe.*` and `effect.*` edits.
-- Structural edits with explicit modes (`ripple`, `overwrite`, `lift`, `roll`), each with:
-  - an exact inverse;
-  - a footprint;
-  - a shift map, plus a content map for item-relative times.
-
-  So 4B's rebase, merge and undo work on all of them.
-- `fin-core::eval` produces deterministic frame and audio plans. Caption layouts come from the new `fin-text` crate with bundled fonts (CJK and emoji included), identical on every OS.
-- New asset kinds are probed. `fin view`, `fin status`, and a `fin` command for every edit.
+- Structural edits with explicit modes (`ripple`, `overwrite`, `lift`, `roll`), each with an exact inverse, a footprint, a shift map and a content map for item-relative times, so 4B's rebase, merge and undo work on all of them.
+- `fin-core::eval` produces deterministic frame and audio plans.
+- Caption layouts come from the new `fin-text` crate:
+  - **projects pin fonts by SHA-256**, so every machine measures with identical bytes;
+  - fonts come from a pinned **font catalog** and are **fetched on demand** into a shared, content-addressed cache. No fonts are bundled;
+  - imported font assets pin by hash too.
+- New asset kinds are probed. `fin view`, `fin status`, `fin fonts`, and a `fin` command for every edit.
 - Every pre-4C project (sub-project 2, 4A, 4B) opens with the same state in the new model.
 
 Everything is driven and tested through `fin` → `finisherd`. There is no UI work.
 
 **Architecture:**
 - **`fin-core`** gains:
-  - the v2 model (`model/`), schema version 2, and frozen upcasters for snapshots, records and stored diffs (`upgrade/`);
-  - **per-op diffs:** every change and shift carries its op index, and start-edge changes carry their content offset. So a footprint is computed from the op's own diff even when the op touched items it does not name (overwrite, links, transition pruning). The rebase engine maps item-relative values through other edits' start-edge moves;
-  - about 40 primitive ops, one module each, with inverse, footprint, positions and item offsets. `clip.*` stay as client aliases;
-  - `params/` (the registry), `eval/` (frame and audio plans), `captions/` (blocks, SRT, text alignment, styles, safe zones), `layout` (the `TextMeasurer` contract), and `compose/` (pure multi-op builders that `fin` uses: linked audio, overwrite inside an item, split of a linked item, transitions on linked partners);
-  - a measurer threaded through the edit path (`ApplyEnv`), the rebase engine and the history planners. **Replay never takes one.**
-- **`fin-text`** (new): cosmic-text shaping and measurement over fonts injected as bytes, with a platform-independent fallback list. It is pure and builds for wasm32. It is also the one source of font family names, which `fin-probe` uses too.
+  - the v2 model (`model/`), including **a `fonts` registry of pins** (key → exact file by SHA-256) and the project's fallback order; schema version 2; and frozen upcasters for snapshots, records and stored diffs (`upgrade/`);
+  - **per-op diffs:** every change and shift carries its op index, and start-edge changes carry their content offset;
+  - about 45 primitive ops, one module each, `font.pin`, `font.unpin` and `font.repin` included. `clip.*` stay as client aliases;
+  - `params/`, `eval/`, `captions/`, and `layout` (the `TextMeasurer` contract, the face resolution from pins, script detection); `compose/` (pure multi-op builders that `fin` uses);
+  - a measurer threaded through the edit path (`ApplyEnv`), the rebase engine and the history planners. **Apply and replay never fetch, and never read font bytes.**
+- **`fin-text`** (new) is pure and builds for wasm32. It shapes and measures over font bytes looked up by SHA-256 through a `FontBytes` provider. It is the one source of font family and script-coverage information (`font_info`).
+- **`fin-fonts`** (new, server side) owns the font catalog (a versioned, pinned JSON manifest with a licence gate) and the shared cache `<server-data>/fonts/<sha256>`. That cache is content-addressed, written temp-then-rename, verified before use, safe across processes, resumable, works offline and respects proxies. A fetcher over `ureq` + `rustls` fills it, and the pin planner turns a tx's font needs into `font.pin` ops.
 - **`fin-store`** gains:
   - DB migration 0003 (a version bump only);
   - stored v1 diffs upcast on read;
   - alias normalisation at commit;
   - an injected measurer;
   - a project file at a newer schema opens read-only. This is a cherry-pickable fix that lets 4B degrade too.
-- **`fin-probe`** probes images, SVG, dotLottie, fonts, `.cube` LUTs and audio-only files.
-- **`fin-node`, `@finisher/contracts`, `finisherd`** get bundled-font loading, a per-project measurer (bundled fonts plus project font assets) and the `eval.frame` / `eval.audio` RPCs. Edits keep going through `tx.commit`.
+- **`fin-probe`** probes images, SVG, dotLottie, fonts (with a whole-file SHA-256), `.cube` LUTs and audio-only files.
+- **`fin-node`, `@finisher/contracts`, `finisherd`:**
+  - the font manager (fetch triggers, progress, status warnings), a `FontBytes` provider over the cache and font assets, one shared measurer;
+  - the `eval.frame`, `eval.audio` and `fonts.*` RPCs. Edits keep going through `tx.commit`.
 - **`fin`** gets:
-  - a command for every edit (`--dry-run`, the mode and resolved values echoed). `fin clip insert` of an A/V asset adds a linked audio item by default;
-  - `fin view` (screenplay text with a token budget), `fin status`, `fin schema param` and `fin eval`.
+  - a command for every edit (`--dry-run`, echoed mode and resolved values, font pins planned through the server). `fin clip insert` of an A/V asset adds a linked audio item by default;
+  - `fin view`, `fin status`, `fin fonts`, `fin schema param` and `fin eval`.
 
 **Tech Stack:**
-- Rust 2024, rusqlite 0.37 bundled, `blake3`, `proptest` (dev). `serde_json` gains the `float_roundtrip` feature in `fin-core`; feature unification makes it workspace-wide.
-- New crates, all permissive:
-  - **`fin-text`:** `cosmic-text` 0.19 (MIT OR Apache-2.0) with `default-features = false, features = ["no_std"]`. That brings:
+- Rust 2024, rusqlite 0.37 bundled, `blake3`, `proptest` (dev). `serde_json` gains `float_roundtrip` in `fin-core` (feature unification makes it workspace-wide).
+- New crates, all permissive (Task 4 and Task 5 check each one with `cargo deny`):
+  - **`fin-core`:** `unicode-script` (MIT OR Apache-2.0), pure, wasm-safe.
+  - **`fin-text`:** `cosmic-text` 0.19 (MIT OR Apache-2.0), `default-features = false, features = ["no_std"]`. It brings:
     - `fontdb` 0.23 (MIT), `harfrust` 0.5 (MIT), `skrifa` 0.40 / `read-fonts` (MIT OR Apache-2.0);
-    - `unicode-bidi`, `unicode-script`, `unicode-segmentation` (MIT OR Apache-2.0), `unicode-linebreak` (Apache-2.0), `libm` (MIT OR Apache-2.0);
-    - `self_cell` (Apache-2.0 OR GPL-2.0-only, **used under Apache-2.0**: `cargo deny` accepts the `OR`, and `THIRD_PARTY_NOTICES.md` records the choice).
+    - `unicode-bidi`, `unicode-segmentation` (MIT OR Apache-2.0), `unicode-linebreak` (Apache-2.0), `libm` (MIT OR Apache-2.0);
+    - `self_cell` (Apache-2.0 OR GPL-2.0-only, **used under Apache-2.0**; recorded in `THIRD_PARTY_NOTICES.md`).
 
-    No `swash` in 4C, because rasterising is sub-project 6.
-  - **`fin-probe`:** `imagesize` 0.15 (MIT), `zip` 9 (MIT; `default-features = false, features = ["deflate-flate2-zlib-rs"]`: inflate through pure-Rust `zlib-rs` (Zlib); no zopfli, bzip2, zstd, lzma or AES), `roxmltree` 0.21 (MIT OR Apache-2.0), `fin-text` (font names).
-  - **`fin-core` dev only:** `blake3` (plan hashes).
-  - **CI only, never shipped:** `wasmtime` (Apache-2.0 WITH LLVM-exception) for the wasm32 corpus runs.
-- **Fonts** (SIL OFL-1.1, upstream files, unmodified, no subsets, so no Reserved Font Name issue):
-  - **committed** (about 2.5 MB): Inter, Noto Sans, Noto Sans Arabic, Noto Sans Hebrew, Regular and Bold;
-  - **fetched, pinned and hash-checked** (Decision 30, about 50 MB): Noto Sans CJK Regular and Bold (`NotoSansCJK-{Regular,Bold}.ttc`, 19.5 and 20.1 MB) and Noto Color Emoji (`NotoColorEmoji.ttf`, CBDT, 10.7 MB). The emoji font file is OFL-1.1; the noto-emoji repository's tools and images are Apache-2.0 and are not used.
+    No `swash` in 4C.
+  - **`fin-fonts`:**
+    - `ureq` 3.5 (MIT OR Apache-2.0) with `default-features = false, features = ["rustls-no-provider", "platform-verifier"]`, plus `win-system-proxy` on Windows;
+    - `rustls` 0.23 (Apache-2.0 OR ISC OR MIT) with the **`ring`** provider (0.17, Apache-2.0 AND ISC; both allowed);
+    - `rustls-platform-verifier` 0.7 (MIT OR Apache-2.0; OS trust stores, so corporate CAs work; on Linux `rustls-native-certs` and `rustls-webpki` (ISC));
+    - `sha2` (MIT OR Apache-2.0), `zip` (archive members, as in `fin-probe`).
+    - Not used: `webpki-roots` (CDLA-Permissive-2.0, not in `deny.toml`) and `aws-lc-rs` (a C/cmake build). `rustls-platform-verifier` pulls `webpki-root-certs` only on wasm32/Android, so `deny.toml` `[graph]` gains `targets` = the shipped triples (x86_64/aarch64 for Apple, Linux and Windows), keeping those out of the licence graph.
+  - **`fin-probe`:** `imagesize` 0.15 (MIT), `zip` 9 (MIT; `default-features = false, features = ["deflate-flate2-zlib-rs"]`), `roxmltree` 0.21 (MIT OR Apache-2.0), `sha2`, `fin-text` (font names and coverage).
+  - **`fin-testfonts`** (new, dev only, `publish = false`): `write-fonts` 0.55 (MIT OR Apache-2.0) generates test fonts at test time.
+  - **`fin-core` dev:** `blake3`.
+  - **CI only:** `wasmtime` (Apache-2.0 WITH LLVM-exception).
+- **No font files are in the repository or in any package.** The initial catalog (Decision 30) lists upstream OFL-1.1 files at pinned commits or release tags.
 - Node 26, Effect 4, vitest.
 
 **Spec:** `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §5 (4C). The plan also depends on:
 - §1–2;
-- §3.1–3.2 (versioning, frozen migrations), §3.3, §3.4 (`finisher.project.json`);
+- §3.1–3.4 (versioning, frozen migrations, `finisher.project.json`);
 - §4.3 (rebase, footprints, shift maps), §4.4–4.6, §4.8;
 - §6 and §8.
 
 Parent: `docs/specs/2026-11-01-finisher-architecture-design.md` §6.2–6.4, §7, §9, §12.3–12.7 and §27.10 (S11b `fin-text`).
 
-**Branch:** `sp4c-edit-breadth` at `36fe7e0` (4B merged with the latest 4A, including 4B's Task 22/23 docs and the xhost harness). 4A Task 19 and 4B Task 23 still gate their merges. Task 28 here runs 4C's validation.
+**Branch:** `sp4c-edit-breadth` (the plan was committed as `6251bc7` on `36fe7e0`). 4A Task 19 and 4B Task 23 still gate their merges. Task 29 here runs 4C's validation.
 
-**Out of scope** (spec §1): pixels and sound (compositor, mixer, rasterising text, sanitising SVG), transcription, `.otio`, `fin apply` / `fin batch` changes / `fin tx`, review items, `fin-wasm` replay tests, and UI. **Also moved to sub-project 6** (Decision 41): the edits that make `nested` items and masks.
+**Out of scope** (spec §1): pixels and sound (compositor, mixer, rasterising text, sanitising SVG), transcription, `.otio`, `fin apply` / `fin batch` changes / `fin tx`, review items, `fin-wasm` replay tests, and UI.
+
+**Also moved:**
+- the edits that make `nested` items and masks go to sub-project 6 (Decision 48);
+- catalogs supplied by the registry, and signed catalogs, go to sub-project 8 (Decision 30).
 
 ## Global Constraints
 
 **Code**
-- MIT. No GPL/LGPL/AGPL/SSPL/EUPL in shipped code. `pnpm gates` runs cargo-deny and the JS licence gate. Task 4 adds a font licence gate.
+- MIT. No GPL/LGPL/AGPL/SSPL/EUPL in shipped code. `pnpm gates` runs cargo-deny and the JS licence gate. Task 5 adds the **font catalog licence gate**.
 - **`fin-core` is pure:** no I/O, clocks or randomness. It builds for `wasm32-unknown-unknown`, and so does `fin-text` (Task 4 adds it to `pnpm gates`).
-- **Dependency rules:** `fin-core` never depends on `fin-text`. `fin` links neither `fin-text` nor `fin-probe`.
-- **Primitive ops live only in `fin-core`, one module per op** under `crates/fin-core/src/ops/`. Each module holds that op's validate, apply, inverse, `footprint`, `positions_mut`, `offsets_mut` (item-relative values) and `refs_mut`. Shared helpers live in `ops/util/`. Multi-op builders live in `compose/` and are never ops.
+- **Dependency rules:**
+  - `fin-core` never depends on `fin-text` or `fin-fonts`;
+  - `fin-text` has no I/O;
+  - **`fin` links neither `fin-text`, `fin-fonts` nor `fin-probe`**, so it carries no HTTP or TLS stack and no shaper.
+- **Primitive ops live only in `fin-core`, one module per op** under `crates/fin-core/src/ops/`. Each module holds that op's validate, apply, inverse, `footprint`, `positions_mut`, `offsets_mut` and `refs_mut`. Shared helpers live in `ops/util/`. Multi-op builders live in `compose/` and are never ops.
 - **TypeScript model types are generated, never hand-written.**
   - Every new wire type derives `JsonSchema` and is reachable from `fin_core::json_schema` or added in `crates/fin-store/examples/export_schema.rs`, in the task that creates it.
   - Then run `pnpm --filter @finisher/core-types generate`. The drift gate is `scripts/check-generated-types.mjs`.
 - **File sizes:** non-test source files ≤ 600 lines, tests ≤ 1,500.
   - Near the limit at `36fe7e0`:
-    - `fin-store`: `lease/clock.rs` 600, `tick.rs` 587, `fsio.rs` 582, `derived.rs` 519, `project_file.rs` 469 (grew in the merge);
+    - `fin-store`: `lease/clock.rs` 600, `tick.rs` 587, `fsio.rs` 582, `derived.rs` 519, `project_file.rs` 469;
     - `fin-store-xhost`: `node.rs` 560;
-    - `fin`: `client.rs` 525, `commands/mod.rs` 487;
-    - `fin-core`: `history/merge.rs` 478, `ops/mod.rs` 448.
+    - `fin`: `client.rs` 525, `commands/mod.rs` 487 (Task 1 splits it);
+    - `fin-core`: `history/merge.rs` 478.
   - **`fin-core/tests/props_history.rs` is at 1,483 lines**, so 4C property code goes into new files.
-  - Task 1 makes room in `ops/` and `fin`. Later tasks add new modules rather than growing those files.
-- Errors are `{ code, message, details, fix? }`. Every new code goes into `crates/fin/src/output.rs` with the exit code Decision 38 gives.
-- No media files are committed. Test media is generated in code (`fin-probe` `fixtures`). **The one exception is the small bundled fonts** (`assets/fonts/`), which the spec requires, with their licences beside them.
+- Errors are `{ code, message, details, fix? }`. Every new code goes into `crates/fin/src/output.rs` with the exit code Decision 45 gives.
+- **No media and no font files are committed.** Test media is generated in code (`fin-probe` `fixtures`). Test fonts are generated at test time (`fin-testfonts`).
 
 **Formats and migrations**
-- **Migrations are frozen once shipped.** `m0001_records.rs` and `m0002_history.rs` and their pins (`migration_0001_output_is_pinned`, `fresh_and_migrated_schemas_match`) never change. m0003 writes literal values only and never runs `ALTER TABLE`.
-- **Upcasters are frozen the same way.** Each step works on `serde_json::Value` with literal field names, uses no current model types, and has a golden test (frozen old shape in, expected new shape out). Until 4C merges, a step may still be edited together with its golden.
-- **Stored bytes are never re-encoded.** Old records, stored diffs and snapshot rows stay as written and are upgraded in memory on read. The record format (`RECORD_FORMAT` 2) and segment framing do not change.
-- **Replay applies; it never re-judges** (spec §2). Every new rule is a policy check unless eval or the model's invariants need it (Decision 25 lists the structural ones). Replay never needs a measurer.
+- **Migrations are frozen once shipped.** `m0001_records.rs` and `m0002_history.rs` and their pins never change. m0003 writes literal values only.
+- **Upcasters are frozen the same way:** `serde_json::Value` steps with literal names and golden tests. Until 4C merges, a step may still be edited together with its golden.
+- **Stored bytes are never re-encoded.** Old records, stored diffs and snapshot rows are upgraded in memory on read. The record and segment formats do not change.
+- **Replay applies; it never re-judges** (spec §2). Replay never needs a measurer, a catalog or font bytes. **Nothing measured or fetched is ever written to a record, a diff or a snapshot.** Pins are plain data in ops.
 
 **Determinism** (spec §5.4, §5.6)
 - **Eval** (`fin-core/src/eval/`, `params/`, `captions/`, `layout.rs`) uses only:
-  - `f64` `+ − × ÷`, `sqrt`, comparisons, `abs`, `min`/`max`, `floor` (exact);
+  - `f64` `+ − × ÷`, `sqrt`, comparisons, `abs`, `min`/`max`, `floor`;
   - conversions from integers.
 
-  It never uses `sin`, `cos`, `tan`, `pow*`, `exp`, `ln`, `log*`, `hypot`, `atan*`, `mul_add` or any `libm::` function. Rotation is output as an angle. Task 16 adds a gate.
+  It never uses `sin`, `cos`, `tan`, `pow*`, `exp`, `ln`, `log*`, `hypot`, `atan*`, `mul_add` or any `libm::` function. Task 17 adds a gate.
 - **Text:**
-  - fonts come only from the bundle or from project assets, never from the system;
-  - the fallback list is our own, and the locale is fixed;
-  - all float functions go through `libm` (`no_std`);
+  - the bytes are exactly the project's pinned files (by SHA-256);
+  - the fallback order is the project's, never the platform's;
+  - the locale is fixed; float functions go through `libm` (`no_std`);
   - output is in 1/64 px integers.
-- Plan and layout hashes are BLAKE3 of compact JSON. They are compared across macOS, Windows 11, Linux and wasm32 (Tasks 4, 16, 28).
+- Plan and layout hashes are BLAKE3 of compact JSON, compared across macOS, Windows 11, Linux and wasm32 (Tasks 4, 17, 29).
+
+**Network and caches**
+- **Tests never use the internet.** The fetcher is tested against a local HTTP server started by the test, with fault injection.
+- Tests that need **real** catalog fonts read them from a cache warmed beforehand (`FIN_FONT_CACHE`, filled by `cargo run -p fin-fonts --example warm_cache`). CI warms and caches it and sets `FIN_REQUIRE_FONTS=1`, so those tests fail rather than skip there. Locally they skip with a printed notice when the cache is absent.
 
 **Testing and process**
-- **Property tests run inside `cargo test`.** All properties (4B's included) take under 30 s in a debug build on the Linux VM. Each `proptest!` block sets `ProptestConfig { cases, .. }` explicitly and honours `PROPTEST_CASES`.
-- **Every edit gets golden tests:** apply, inverse (state equals the state before), shift map (the recorded `shifts`), and `inverse_shifts_mirror` (Decision 23). The goldens live in `crates/fin-core/tests/ops_<group>.rs`. **Every op with nested ids gets `ids_cover_every_id_in_json`** (Decision 24).
-- **Before each commit, every task runs** `rtk cargo test --workspace`, `rtk pnpm test` and `rtk pnpm gates`. Tasks that touch the TS side or `fin` also run `rtk pnpm e2e` once at the end. Tests that need the fetched fonts run after `rtk pnpm fonts:fetch`; CI sets `FIN_REQUIRE_FONTS=1`, so they fail rather than skip.
+- **Property tests run inside `cargo test`.** All properties (4B's included) take under 30 s in a debug build on the Linux VM. Each `proptest!` sets `ProptestConfig { cases, .. }` explicitly and honours `PROPTEST_CASES`.
+- **Every edit gets golden tests:** apply, inverse, shift map and `inverse_shifts_mirror` (Decision 23). **Every op with nested ids gets `ids_cover_every_id_in_json`** (Decision 24).
+- **Before each commit, every task runs** `rtk cargo test --workspace`, `rtk pnpm test` and `rtk pnpm gates`. Tasks that touch the TS side or `fin` also run `rtk pnpm e2e` once at the end.
 - Commits use Conventional Commits, author `mvhappy <333925574+mvhappy@users.noreply.github.com>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Prefix shell commands with `rtk`, after `source .superpowers/env.sh` (Node 26).
-- **The repo is public:** no host names, IPs, user names or key names in tracked files, fixtures included. Cross-host details stay in `archive/hosts.md` (git-ignored). Spikes and scratch work go in `archive/`.
-- **Tracker:** each task ticks its line in `TASKS.md` under a new section "Sub-project 4C: edit breadth", in the same commit.
-- **Batches** (spec §8 "4C is large"). Each batch must be green before the next starts:
-  - A, foundations, model and structural edits: Tasks 1–9;
-  - B, params, structure ops and eval: Tasks 10–16;
-  - C, captions, measurement, assets and server: Tasks 17–21;
-  - D, `fin`: Tasks 22–24;
-  - E, properties, e2e, docs and validation: Tasks 25–28.
+- **The repo is public:** no host names, IPs, user names or key names in tracked files, fixtures included. Cross-host details stay in `archive/hosts.md`. Spikes and scratch work go in `archive/`.
+- **Tracker:** each task ticks its line in `TASKS.md` under "Sub-project 4C: edit breadth", in the same commit.
+- **Batches** (spec §8). Each batch must be green before the next starts:
+  - A, foundations, model and structural edits: Tasks 1–10;
+  - B, params, structure ops and eval: Tasks 11–17;
+  - C, captions, fonts in the edit path, assets and server: Tasks 18–22;
+  - D, `fin`: Tasks 23–25;
+  - E, properties, e2e, docs and validation: Tasks 26–29.
 
-  Task 4 may run beside Tasks 3 and 5 (in `fin-core` it touches only a new `layout.rs`). Task 20 may run beside Tasks 14–19.
+  Tasks 4 and 5 may run beside Tasks 3 and 6. Task 21 may run beside Tasks 15–20.
 
-## Decisions taken here (the spec leaves them open; Task 27 records them in the spec)
+## Decisions taken here (the spec leaves them open; Task 28 records them in the spec)
 
 ### Versions, migrations and upgrade
 
 1. **One schema version for ops and model: `SCHEMA_VERSION` 1 → 2.**
-   - Every record 4C writes is version 2, plain clip edits included. A 4B (or 4A) follower reads such a record as `NEWER_FORMAT` and goes read-only (the record-level rule, principle 6). **This is accepted (coordinator):** the spec and the README upgrade notes say that the first 4C edit on a folder turns its 4B machines read-only.
-   - The segment format, the record format and the `.fsnap` framing do not change; `.fsnap` headers say `modelSchemaVersion: 2`.
+   - Every record 4C writes is version 2. A 4B (or 4A) follower reads one as `NEWER_FORMAT` and goes read-only. **This is accepted:** the spec and the README upgrade notes say so.
+   - The segment, record and `.fsnap` framing do not change; `.fsnap` headers say `modelSchemaVersion: 2`.
 2. **`finisher.project.json` `schemaVersion`:**
    - new projects write 2;
-   - an existing file is never bumped (its other rewrites keep the value);
+   - an existing file is never bumped;
    - reads accept 1 and 2;
-   - **a higher value opens read-only `NEWER_FORMAT`**: `ProjectFile::is_newer()` counts it, and `read_project_file_once` no longer refuses it (today it fails `SCHEMA_VERSION` at open; only the poll path treats it as newer, `tick.rs` `reread_project_file`).
+   - **a higher value opens read-only `NEWER_FORMAT`**: `ProjectFile::is_newer()` counts it, and `read_project_file_once` no longer refuses it. Today `project_file.rs` fails `SCHEMA_VERSION` at open; only the poll in `tick.rs` `reread_project_file` treats it as newer.
 
-   Task 3 lands this as its own commit, which also applies to `sp4b-history` unchanged. The coordinator cherry-picks it there before 4B ships, so a 4B machine opening a 4C-created project goes read-only instead of failing. If it is not cherry-picked, Task 27 documents that 4B refuses 4C-created projects with `SCHEMA_VERSION`.
-3. **DB schema v3 (`m0003_version`, frozen) is a version bump only:**
-   - `user_version` 3, `formatVersion` and `minReaderVersion` `"3"`;
-   - no table changes, and no data rewritten.
-
-   *Why:* a 4C database holds v2 snapshots and records, and a 4B binary must refuse it (`DB_TOO_NEW`) rather than misread it. **Nothing is cleared or replayed** (coordinator):
-   - stored v1 diffs are upgraded on read (Decision 5);
-   - old `snapshots` rows are upcast on every read and never rewritten. `diffs::fill` only inserts the missing snapshots at multiples of 200 (`diffs.rs:70`), so it does not upgrade old ones.
+   Task 3 lands this as its own commit, which also applies to `sp4b-history` unchanged, for the coordinator to cherry-pick there. Otherwise Task 28 documents that 4B refuses 4C-created projects.
+3. **DB schema v3 (`m0003_version`, frozen) is a version bump only:** `user_version` 3, `formatVersion`/`minReaderVersion` `"3"`, no table or data changes. A 4B binary therefore refuses a 4C database (`DB_TOO_NEW`).
+   - Stored v1 diffs are upgraded on read (Decision 5).
+   - Old `snapshots` rows are upcast on every read and never rewritten. `diffs::fill` only inserts the missing snapshots at multiples of 200 (`diffs.rs:70`).
 4. **Per-op diffs:**
-   - `Change { kind, id, change, op, edge?, path?, by? }` and `Shift { track, from, by, op }`. `op` is the index of the op in its transaction;
-   - `by` on a change is the **content offset** of a start-edge move: every item-relative time of that item moved by it (Decision 13);
-   - an op may record any number of shifts and changes. The 4B rule "clip ops record exactly one shift" is gone, and `split_diff` splits by `op`;
-   - **ripple never records shifted items as changes** (the shift covers them);
-   - entity kinds: `asset, track, timeline, item, transition, marker, bin, effect, link, style`. `item` replaces 4B's `clip`; the item's kind is in its id.
-5. **Upcasters v1 → v2** (frozen, `upgrade/`):
+   - `Change { kind, id, change, op, edge?, path?, by? }` and `Shift { track, from, by, op }`. `op` is the op's index in its transaction;
+   - `by` on a change is the **content offset** of a start-edge move;
+   - an op may record any number of shifts and changes, and `split_diff` splits by `op`;
+   - **ripple never records shifted items as changes**;
+   - entity kinds: `asset, track, timeline, item, transition, marker, bin, effect, link, style, font`. `item` replaces 4B's `clip`.
+5. **Upcasters v1 → v2** (frozen):
    - **Record step.** In `intent.ops`, `resolved` and `inverse`:
-     - `clip.insert` → `item.insert` (`mode: "ripple"`, `kind: "clip"`);
-     - `clip.trim` → `item.trim` (`mode: "ripple"`);
-     - `clip.delete` → `item.delete` (`ripple`);
-     - `clip.remove` → `item.remove` (`ripple` → `"ripple"`/`"lift"`);
-     - `clip.restore` → `item.restore` (**a missing `ripple` means `true`**, the v1 serde default);
+     - `clip.insert|trim|delete|remove|restore` → `item.*` (ripple or lift; **a missing `ripple` on `clip.restore` means `true`**);
      - `asset.add` gains `kind: "media"`.
-   - **Snapshot step:** builds the v2 model with the defaults of Decision 9.
-   - **Diff step:** a stored diff is v1-shaped when **no** entry has `op` (an empty diff reads the same in both shapes; a mix is `INVALID_FORMAT`). 4B's v1 ops each recorded exactly one change, and each clip op exactly one shift (`ops/*` at `36fe7e0`; `clip.delete` goes through `clip.remove`). So the step gives entries their op indexes in order. A `clip.trim` change gains `edge` (from the op) and, on the start edge, `by = −delta`; `kind` `clip` becomes `item`. It takes the record's raw v1 ops, and its output must equal what 4C's replay of the upcast record records (`verify` `diffs_match` on all three fixtures).
-   - **`new_project(genesis)` must equal `upcast_snapshot(<v1 rev-0 JSON of the same genesis>)`.** A test pins it, because a rebuild of an old project starts from `genesis` in the new shape and must meet the migrated database (`replay_matches_live`).
-6. **Aliases** (spec §5.3).
-   - `clip.insert|trim|delete` are accepted from **clients** for schema version 2 only. A client tx at `schemaVersion: 1` holding only v1 op kinds is accepted too, and a v1 `asset.add` gains `kind: "media"`.
-   - `fin_core::normalize(tx)` rewrites them to `item.*` and stamps version 2. It runs at the commit entry (`fin-store` `commit.rs`, `fin`'s `Builder`), so a stored v2 intent never holds an alias.
-   - An alias in `Internal` or `Replay` mode is `INVALID_OP`.
-   - Removing the aliases at schema 3 is a TASKS follow-up.
-7. **`argsHash` is stable across the upgrade.** New `fin clip insert` arguments (`--mode`, `--no-audio`, `--audio-track`) are skipped from the hashed input when absent, so an equivalent call hashes as it did in 4B; a golden test pins the 4B hashes. A retry across the upgrade is answered from the log (`tx.get`), never re-sent, so the upgrade cannot cause `IDEM_KEY_REUSED`. The default linked audio (Decision 21) changes what a *new* call does, not the hash.
+   - **Snapshot step:** the v2 model with Decision 9's defaults and an empty `fonts` registry.
+   - **Diff step:** a stored diff is v1-shaped when no entry has `op` (an empty diff reads the same either way; a mix is `INVALID_FORMAT`).
+     - 4B's v1 ops each recorded exactly one change, and each clip op exactly one shift, so entries get op indexes in order.
+     - A `clip.trim` change gains `edge`, and on the start edge `by = −delta`; `clip` becomes `item`.
+     - Its output must equal 4C's replay of the upcast record (`verify` `diffs_match` on all fixtures).
+   - **`new_project(genesis)` equals `upcast_snapshot(<v1 rev-0 JSON>)`** (pinned by a test).
+6. **Aliases:**
+   - `clip.insert|trim|delete` are accepted from clients for schema version 2 only, and so is a v1 client tx holding only v1 op kinds;
+   - `fin_core::normalize` rewrites them at the commit entry (adding `kind: "media"` to a v1 `asset.add`);
+   - an alias in `Internal`/`Replay` mode is `INVALID_OP`;
+   - dropping the aliases at schema 3 is a follow-up.
+7. **`argsHash` is stable across the upgrade:** new `fin` arguments are left out of the hashed input when absent, and golden tests pin the 4B hashes. A retry across the upgrade is answered from the log. Pins planned by the server (Decision 35) are ops, not arguments, so they never change the hash.
 
 ### Model
 
-8. **Layout** (spec §5.1). `Project { id, name, schemaVersion, rate, timelines: Vec<Timeline>, bins, assets, styles }`.
-   - `rate` stays: it is the genesis rate and the default for new timelines.
-   - **`fonts` is derived, not stored:** `layout::fonts(project)` lists the bundled families plus the font assets. *Deviation from spec §5.1 "fonts (registry)". Why:* one source of truth, and `asset.add`/`asset.remove` need no second edit.
-9. **Rev-0 and upcast defaults** (owner answer 1):
-   - timeline `tl1` named `"Timeline 1"`, rate = the project rate, **resolution 1080×1920 (vertical)**, frozen in the snapshot upcaster;
-   - tracks named by kind in track order (`V1`, `V2`…, `A1`…, `C1`…); mute, solo and lock false; gain 0 dB;
-   - **track order is compositing order, bottom first.**
-10. **Ids: one prefix per kind** (owner answer 3), each with its own counter, all prefix + digits:
-    - items: `c` clip, `cap` caption, `g` graphic, `img` image, `adj` adjustment, `nst` nested;
-    - `m` marker, `tr` transition, `b` bin, `fx` effect, `lk` link group, `st` style;
+8. **Layout** (spec §5.1). `Project { id, name, schemaVersion, rate, timelines: Vec<Timeline>, bins, assets, styles, fonts: Fonts }`.
+   - **`fonts` is stored, as spec §5.1 originally said.** It reverses this plan's earlier "fonts derived" choice, because only stored pins make every machine measure with the same bytes (Decision 29).
+   - `rate` stays: the genesis rate and the default for new timelines.
+9. **Rev-0 and upcast defaults:**
+   - timeline `tl1` `"Timeline 1"`, the project rate, **1080×1920** (owner), frozen in the upcaster;
+   - tracks named by kind in track order (`V1`, `A1`, `C1`…), flags false, gain 0 dB;
+   - track order is compositing order, bottom first;
+   - `fonts` empty.
+10. **Ids: one prefix per item kind** (owner):
+    - `c` clip, `cap` caption, `g` graphic, `img` image, `adj` adjustment, `nst` nested;
+    - `m` marker, `tr` transition, `b` bin, `fx` effect, `lk` link, `st` style;
     - 4B's `a`, `t`, `tl`, `br` are unchanged.
 
-    Effect ids come from the global counter but are addressed as `(item, effect)`, and a split copies its effects with their ids. *Why:* agents read an entity's kind from its id (arch §9.2), and digits-only suffixes keep prefixes unambiguous (`cap1` is not a `c` id).
-11. **Defaults are omitted in JSON** (`skip_serializing_if`), so snapshots stay small and the upcast output is minimal.
+    Font pins are keyed by face, not by id (Decision 29). Effect ids come from the global counter and are addressed as `(item, effect)`.
+11. **Defaults are omitted in JSON.**
 12. **Value types:**
     - times are `Rational`;
-    - parameter values are finite `f64` (NaN and ±∞ are refused when parsed), `bool`, `[f64; 2]` or strings (enums, colours `#rrggbb[aa]`, asset refs);
-    - `serde_json` `float_roundtrip` makes record bytes parse back to the same bits;
-    - **gains are in dB.** `fin-core` never converts dB to amplitude: an `AudioPlan` carries dB ramps, and the mixer (sub-project 6) converts, because the conversion needs `pow`;
-    - plans carry colours as `[f64; 4]` (0–1, unrounded), interpolated linearly per sRGB component. `fin view` prints hex with `floor(c × 255 + 0.5)`.
+    - parameter values are finite `f64` (round-tripped exactly through record bytes by `float_roundtrip`), `bool`, `[f64; 2]` or strings;
+    - **gains are dB**, so `fin-core` needs no `pow`;
+    - plans carry colours as `[f64; 4]`, interpolated per sRGB component; `fin view` prints hex with `floor(c × 255 + 0.5)`.
 13. **Item-relative times are content-anchored.** Keyframe `at`, caption word times and a split's `offset` are relative to the item start.
-    - A start-edge move by `d` (start trim, roll on a start edge, a slide's neighbours) shifts all of that item's keyframes and words by `−d`, and records `by = −d` on its change.
-    - A split rebases the right part's times. A slip moves no item-relative time.
-    - Values that fall outside the item are kept, never dropped, so every inverse is exact; eval clamps.
-14. **Speed** (clips): source time = `sourceIn + (t − start) × speed`, exact `Rational`. `sourceIn + duration × speed ≤ asset.duration` is a policy check.
+    - A start-edge move by `d` (start trim, a start-edge roll, a slide's neighbour) shifts them by `−d` and records `by = −d`.
+    - A split rebases the right part. A slip moves none.
+    - Out-of-range values are kept, so inverses stay exact; eval clamps.
+14. **Speed:** source time = `sourceIn + (t − start) × speed`. The source extent is policy.
 
 ### Edits and rebase
 
-15. **Positions are in the frame before the op** (`Assoc::After`), `item.move`'s `at` included: it is the drop point on the timeline as the client saw it. Lengths are never mapped: slip, slide and trim deltas.
-16. **Item-relative values are mapped through content offsets** (blocker B3; option "map" chosen over "conflict").
-    - `StepMap` gains `content: Vec<(item, Rational)>`, from the steps' `by` changes, and `Mapping::map_content(item, v)` adds them up; an inverse map negates them.
-    - Ops expose `offsets_mut() -> Vec<(String, &mut Rational)>`: `item.split` `offset`, `keyframe.set`/`keyframe.remove` `at`, `caption.split` none (it takes a word index).
-    - The engine maps them like positions, through `[inverse(our earlier ops), steps, our rebased earlier ops]`.
-    - *Why map rather than conflict:* a start-edge move is a pure translation of that item's relative times, so translations compose by addition. Mirrored pairs (an undo with its unit) cancel exactly, and nothing is ever deleted or needs recovering. Making these ops touch the start edge would refuse common, unambiguous edits (a keyframe set while someone trims the head) and would also make two keyframe edits conflict with each other. **Keyframe identity survives:** the trim moved every keyframe of the item by the same `by`, so the mapped `at` names the same keyframe. A mapped `offset` that leaves the item fails the re-run's policy check, which is a conflict with that code.
+15. **Positions are in the frame before the op** (`Assoc::After`), `item.move`'s `at` included. Lengths are never mapped.
+16. **Item-relative values are mapped through content offsets** (chosen over "make them conflict").
+    - `StepMap.content` holds `(item, by)` from the steps' changes; `Mapping::map_content` adds them, and an inverse map negates them.
+    - Ops expose `offsets_mut()`: the `item.split` `offset` and the keyframe `at`.
+    - *Why:* a start-edge move is a pure translation of that item's relative times, so translations compose by addition and an undo cancels its unit exactly. Conflicting instead would refuse common edits and make two keyframe edits conflict with each other. Keyframe identity survives: the trim moved every keyframe of the item by the same `by`.
 17. **At most one id allocation per op:**
-    - `caption.import` expands in `fin` into one `item.insert` per block (`captions::blocks`);
-    - an overwrite never splits an item: one landing strictly inside a single item is `OVERWRITE_SPLITS_ITEM`, and `compose::overwrite` sends `item.split` first;
-    - `item.split` of a linked item splits that item only, and `compose::split_linked` splits each member and links the right parts;
-    - `transition.set` creates with a `$` id and updates with a literal one.
-
-    *Why:* `BoundIds` and recovery's remap assume at most one placeholder per op, known from the op alone.
-18. **Modes are required fields:**
-    - `item.insert` and `item.move`: `ripple | overwrite`;
+    - `caption.import` expands in `fin`;
+    - an overwrite never splits (`OVERWRITE_SPLITS_ITEM`; `compose::overwrite` splits first);
+    - a split of a linked item splits that item only (`compose::split_linked`);
+    - `transition.set` creates with `$` and updates with a literal id;
+    - font pins allocate no id.
+18. **Modes are required:**
+    - `item.insert`/`item.move`: `ripple | overwrite`;
     - `item.delete`: `ripple | lift`;
-    - `item.trim`: `ripple | roll | overwrite`, plus **internal `strict`** (blocker B4).
+    - `item.trim`: `ripple | roll | overwrite`, and **internal `strict`** (no ripple, no carving, an overlap is refused `CLIP_OVERLAP` in every mode).
 
-    **`strict`** moves the edge with no ripple and no carving, and an overlap is refused (`CLIP_OVERLAP`) in every mode. It is used by the inverses of an overwrite (trimmed neighbours go back), a split (the left part grows back) and a caption merge, so an undo meets a later edit as a conflict, not as silent carving. `fin` defaults to `ripple` for clips and to `overwrite` (`lift` for delete) for every other kind, and echoes `resolved.mode`.
-19. **Link groups** (`lk<n>`, spec §5.1 `link?`):
-    - `item.move` moves every member by the same time delta, and only the named item changes track;
-    - `item.trim` moves the same edge of every member by the same delta, all or nothing;
-    - `item.delete` deletes every member, rippling each track;
-    - `item.slip`, `item.slide` and `item.split` act on the named item only.
-
-    Members are found at apply time and recorded in the op's diff.
+    The inverses of overwrite, split and caption merge use `strict`, so an undo meets later edits as a conflict. `fin` defaults to ripple for clips, overwrite (lift for delete) otherwise, and echoes `resolved.mode`.
+19. **Link groups:** move, trim and delete act on every member (only the named item changes track); slip, slide and split act on the named item. Members are recorded in the diff.
 20. **Footprints:**
-    - Ops keep their 4B rules for what they name. `Footprint::with_changes(own_diff)` adds what the diff records: `Removed` → removes, `Added` → creates, `Updated` with `edge` → `Touch::Edge`, `Updated` with `path` → `Touch::Param`, other `Updated` → `Touch::Exists`.
-    - Sub-entity ids are `"<item>/<fx>"` and `"<track>/<transition>"`.
-    - Per op:
-      - `item.slip` touches `Param("sourceIn")`;
-      - `item.split` touches `Exists` on the item and creates the right part;
-      - `item.slide` touches `Param("start")` on the named item, and its neighbours' edges from the diff.
-    - `Touch::Param` keys:
-      - the registry path for `param.set`;
-      - `"<path>@<at>"` for keyframes;
-      - `"effects"` for effect order;
-      - `"caption.words"`, `"caption.style"`;
-      - `"transition.out"` on A and `"transition.in"` on B.
-
-      So two transitions set at one cut conflict `SAME_PARAM`.
-21. **Linked audio by default** (owner answer 4).
-    - `fin clip insert` of an asset with video and audio on a video track sends, in one tx: the video clip, an audio clip item (same asset, `sourceIn`, duration, speed and mode) on the audio track, and `item.link` of the two (`compose::clip_with_audio`).
-    - The audio track is `--audio-track <t>`, else the timeline's first audio track; with none, it is `USAGE` with `fix` "`--no-audio`, or `fin track add --kind audio`".
-    - `--no-audio` opts out.
-22. **Transitions** live on the track and are centred on the cut.
-    - Handles are a policy check for clip items (`TRANSITION_NO_HANDLES`): A needs `duration/2 × speed` of source after its out point, B needs as much before its `sourceIn`.
-    - **A generic post-op pass prunes** every transition whose two items no longer touch on its track: a `Removed` change, plus a restoring `transition.set` appended to that op's inverse. It runs in every mode, replay included.
-    - Adjacency is also checked structurally (`TRANSITION_INVALID`).
-    - **Linked partners:** `compose::transition_with_links` also sets a `crossfade` (same duration and curve) between the A and B items' link partners when those touch on another track. `--no-linked` opts out.
-23. **Inverse shift order** (blocker B5). An op's inverse ops, applied in order, record exactly the inverses of the op's shifts **in reverse order**, because `Mapping::set_mirror` pairs shifts in reverse (`rebase/map.rs` `set_mirror`: "b's shifts are a's in reverse order").
-    - Example: a ripple move records `[close src {end, −dur}, open dst {at', +dur}]`, and its inverse must record `[{at' + dur, −dur} on dst, {start, +dur} on src]`.
-    - Every golden checks it (`inverse_shifts_mirror` helper), property 1 checks it for every op, and Task 25 seeds the reordered bug.
-24. **Ids nested in ops** (blocker B6). `Op::ids()` and `refs_mut()` list **every** id an op carries, nested ones included, because the store's counters and recovery's remap rely on them:
-    - `item.restore`: the item's id, asset, style, link, slot asset refs, nested timeline and effect ids;
-    - `track.restore`: the track, its items (as above) and its transitions;
-    - `timeline.restore`: everything in it;
-    - `effect.restore`, `style.add`, the literal `*.add` inverses.
-
-    `ids_cover_every_id_in_json` walks an op's JSON and checks that every id-shaped string outside the free-text fields (`label`, `name`, `text`, `path`, `fingerprint`, `words[].text`, `color`) is listed. It runs per op in the goldens and over every generated op in property 1.
+    - 4B rules for what an op names, plus `Footprint::with_changes(own_diff)`: `Removed` → removes, `Added` → creates, `edge` → `Edge`, `path` → `Param`, else `Exists`;
+    - sub-entities are `"<item>/<fx>"`, `"<track>/<transition>"` and `"font/<key>"`;
+    - slip touches `Param("sourceIn")`; split touches `Exists` and creates the right part; slide touches `Param("start")` and its neighbours' edges;
+    - `Param` keys: the registry path, `"<path>@<at>"` for keyframes, `"effects"`, `"caption.words"`, `"caption.style"`, `"transition.out"`/`"transition.in"`, and `"sha256"` for `font.repin`.
+21. **Linked audio by default** (owner): `fin clip insert` of an A/V asset on a video track sends the video clip, an audio clip item on `--audio-track` (default: the first audio track) and `item.link` (`compose::clip_with_audio`). With no audio track it is `USAGE` with a fix. `--no-audio` opts out.
+22. **Transitions** are centred on the cut.
+    - Clip handles are policy (`TRANSITION_NO_HANDLES`).
+    - A generic post-op pass prunes transitions whose items no longer touch, appending the restore to the op's inverse; it runs in every mode.
+    - `TRANSITION_INVALID` is structural.
+    - `compose::transition_with_links` adds a `crossfade` between touching link partners (`--no-linked` opts out).
+23. **Inverse shift order** (blocker B5): an op's inverse records the op's shifts inverted **in exact reverse order** (`Mapping::set_mirror`, `rebase/map.rs`). It is checked in every golden and in property 1, with a seeded bug in Task 26.
+24. **Nested ids** (blocker B6): `Op::ids()`/`refs_mut()` list every id an op carries, nested ones included: restores, the literal adds, `effect.restore`, `style.add`, and a `font.pin` of an asset. `ids_cover_every_id_in_json` checks it per op and in property 1.
 25. **Structural checks for replay** (blocker B1):
-    - The track check (`CLIP_OVERLAP`/`CLIP_EMPTY`/`CLIP_NEGATIVE` for every item kind, codes unchanged, plus `TRANSITION_INVALID`) runs after each op on **every track its diff touched**:
-      - the tracks of its shifts;
-      - the tracks that hold, after the op, any item a change names;
-      - tracks named by track or transition changes.
+    - the track check runs after each op on **every track its diff touched**: shift tracks, tracks holding any item a change names, and tracks named by track or transition changes;
+    - `TRANSITION_INVALID`;
+    - value shapes.
 
-      4B checked shift tracks only, which would miss no-shift ops (overwrite, lift, roll, slip, slide, split, strict).
-    - Value shapes come from deserialisation.
-    - **Everything else is policy:** registry ranges and types, handles, lock, slot types, caption word order, caption overflow.
-26. **Markers never ripple** (owner answer 5): they are timeline-level, with no track positions to map. **Track lock** is a policy check (`TRACK_LOCKED`) on every item op touching a locked track's items.
-27. **Effects:**
-    - `effect.add` allocates `$fx` from the global counter; the effect list order is the render order;
-    - built-in kinds: `colorAdjust`, `lut`, `blur` (crop is part of the item);
-    - effect params are a sparse map validated by the effect's specs, so plugin-declared specs fit later;
-    - easing presets (`ease`, `easeIn`, `easeOut`, `easeInOut`, CSS values) are resolved by `fin` into stored `bezier` values.
+    Everything else is policy (font availability and overflow included).
+26. **Markers never ripple** (owner). **Track lock** is policy (`TRACK_LOCKED`).
+27. **Effects:** `effect.add` allocates `$fx`. The built-ins are `colorAdjust`, `lut` and `blur`. Params are a sparse map validated by specs (plugin-ready). `fin` resolves easing presets to `bezier`.
 28. **Styles:**
-    - caption styles are built-in presets (`fin-core` data, `preset:<name>`) plus project styles `st<n>`;
-    - `style.add`, `style.set` and `style.remove` are new ops, not in the spec §5.3 table;
-    - safe zones are named data (`tiktok`, `reels`, `shorts`, `generic916`, `generic169`) with their source noted;
-    - a font asset whose family a style names is in use (`ASSET_IN_USE`).
+    - built-in presets (`preset:<name>`) plus project styles `st<n>`, through `style.add|set|remove`;
+    - safe zones are named data with their sources;
+    - a style names a font **family, weight and italic**, which resolve to a pin (Decision 29);
+    - a font asset a pin uses, or a pin a style uses, is in use (`ASSET_IN_USE`, `FONT_IN_USE`).
 
-### Text and evaluation
+### Fonts
 
-29. **`fin-text`:**
-    - `cosmic-text` with `no_std`: all float functions go through `libm`, pure Rust, the same on every target;
-    - always our own `Fallback`. `cosmic-text`'s `PlatformFallback` differs per OS, so `FontSystem::new*` without ours is never called;
-    - fixed locale `"en-US"`;
-    - faces loaded in manifest order, then project fonts by asset id, into an empty `fontdb::Database`;
-    - **one process-wide name interner**: the `Fallback` trait needs `&'static str`, and each distinct family name is leaked once, never per measurer rebuild;
-    - output in 1/64 px `i32` at the timeline resolution.
-    - **Fallback order:**
-      - common: `Inter, Noto Sans, Noto Sans Arabic, Noto Sans Hebrew, Noto Sans CJK SC, Noto Color Emoji`, then project families;
-      - per script: Han → `Noto Sans CJK SC, JP, TC, KR, HK`; Hiragana/Katakana → `JP`; Hangul → `KR`.
-    - **`fingerprint()`** = `fin-text` version + the `cosmic-text`, `harfrust` and `skrifa` versions (from `Cargo.lock` via `build.rs`) + the BLAKE3 of the font set. It is carried in plans.
-    - **`fin_text::font_info(bytes)`** is the one source of family, weight and italic names: `fin-probe`'s font probe calls it, so a font asset's family is exactly the name the measurer matches.
-30. **Bundled fonts** (owner answer 2):
-    - all upstream files, unmodified, listed in `assets/fonts/fonts.json` (file, family, weight, italic, `sha256` for fetching, `blake3` for loading, licence, upstream URL at a pinned commit);
-    - the four small families are **committed**;
-    - **Noto Sans CJK and Noto Color Emoji (about 50 MB) are fetched** by `pnpm fonts:fetch` (`scripts/fetch-fonts.mjs`, pinned URLs, `sha256` checked) into the git-ignored `assets/fonts/fetched/`; CI caches them. *Why:* 50 MB of binaries in a public git history weighs on every clone forever, and each file stays under GitHub's limits either way. The owner may prefer committing them; only the fetch step changes;
-    - a gate checks hashes and licences, and checks fetched files only when present (or required, with `FIN_REQUIRE_FONTS=1`);
-    - loaded at run time by `fin-node` (`FIN_FONTS_DIR`, else `<binary dir>/fonts`, else the repo's `assets/fonts` in debug builds), never embedded. The `fin-node` package grows by about 52 MB; `fin` does not change.
-31. **Measurer injection:**
-    - `fin_core::layout::TextMeasurer: Send + Sync`;
-    - `ApplyEnv { measurer }` goes through `Applier`, the rebase engine (`Rebase.env`, `rebase_tx(.., env)`) and the history planners (`LogView::measurer()`, default `None`);
-    - the store takes it from `OpenOptions.measurer` / `Store::set_measurer`, and `fin-node` builds it.
-    - **Overflow is checked once per transaction, at its end** (`Applier::finish`, and after the last op of a rebase), over every caption the transaction changed. The error names the last op that changed the item.
-    - **Without a measurer it is not checked:** always in replay; in `fin`'s offline dry runs (`measured: false`); and when the fonts are damaged (Decision 32).
-32. **Damaged or missing fonts never block editing.** A bundle that fails verification gives status warning `FONTS_DAMAGED {files}` and **no measurer**: no overflow checks, and eval plans carry `layout: null` and `textEngine: null`. A project font asset whose file is missing is left out with warning `FONT_MISSING {asset, path}`.
-33. **Eval runs on the server.** `fin eval frame|audio` needs `finisherd` (fonts and project font assets live there), like the 4B history commands.
-34. **Plans:**
-    - layers come bottom-up in track order; a `nested` item is a group layer with `children`; an `adjustment` item is a layer with effects only; a transition yields A (`role: out`) then B (`role: in`) with `progress`;
-    - a video or caption track with `mute` set is hidden;
-    - only **audio tracks** produce audio items (Decision 21 links audio items to video clips);
-    - `solo` on any audio track silences the non-solo ones;
-    - `AudioPlan` gain segments break at every keyframe, fade and transition edge, each with `db: [d0, d1]`, its `interp`, and `shapes` (fade or crossfade, `linear` or `equalPower`, progress `[p0, p1]`).
-35. **Bézier:** CSS `cubic-bezier`. `x(t) = u` is solved by 8 Newton steps, accepted when `|x(t) − u| < 1e-7` and `|x'(t)| > 1e-6`, else by 32 bisection steps on `[0, 1]`.
+29. **Pins in the model.**
+    ```rust
+    pub struct Fonts { pub pins: BTreeMap<String /* FontKey "<family>|<weight>|<normal|italic>" */, FontPin>,
+                       pub fallback: Vec<String> /* keys, in fallback order */ }
+    pub struct FontPin { pub family: String, pub weight: u16, pub italic: bool, pub face: u32,
+        pub sha256: String, pub size: u64, pub format: FontFormat /* ttf|otf|ttc */,
+        pub scripts: Vec<String> /* ISO 15924 coverage */, pub source: FontSource }
+    pub enum FontSource { Catalog { entry: String, style: String, catalog: String /* catalog version */ },
+                          Asset { asset: String } }
+    ```
+    - **Ops:**
+      - `font.pin {key, pin, fallback: Option<u32>}` adds a pin (and optionally places it in the fallback order). A pin of a key already held **with the same `sha256`** is a no-op (empty diff, empty inverse), so two edits pinning the same face merge cleanly. With another hash it is `FONT_PINNED`: policy on edits, structural on replay, because valid history cannot produce it.
+      - `font.unpin {key}`: refused while a style or caption uses the key (`FONT_IN_USE`).
+      - `font.repin {key, pin}`: the user changes the file, for example to a newer catalog version.
+      - Inverses are exact (`font.unpin` ↔ `font.pin` with its fallback index; `font.repin` with the old pin).
+    - **A catalog update never changes an existing project's layout**: pins name exact bytes, and only `font.repin` moves them.
+    - Pins are data. Apply never fetches and never reads font bytes; replay needs neither.
+30. **The catalog** (`crates/fin-fonts/catalog/catalog.json`, `catalogVersion` such as `"2026.11.1"`), typed by `fin_fonts::FontCatalog` (`JsonSchema`):
+    ```json
+    { "catalogVersion": "2026.11.1",
+      "fallback": ["noto-sans", "noto-sans-arabic", "noto-sans-hebrew", "noto-sans-cjk", "noto-color-emoji"],
+      "entries": [{ "id": "noto-sans", "family": "Noto Sans", "licence": { "spdx": "OFL-1.1", "url": "…" },
+        "homepage": "…", "scripts": ["Latn", "Cyrl", "Grek"],
+        "styles": [{ "id": "regular", "weight": 400, "italic": false,
+          "file": { "sha256": "…", "size": 0, "format": "ttf", "faces": [{ "index": 0, "family": "Noto Sans", "weight": 400, "italic": false }] },
+          "sources": [{ "url": "https://…/<commit>/…/NotoSans-Regular.ttf" },
+                      { "url": "https://…/releases/download/<tag>/…zip", "sha256": "…", "size": 0,
+                        "archive": { "format": "zip", "member": "…/Inter-Regular.ttf" } }] }] }] }
+    ```
+    - **Initial entries:**
+      - Inter (static TTFs from the `rsms/inter` release zip, as archive members);
+      - Noto Sans, Noto Sans Arabic, Noto Sans Hebrew (static TTFs from `notofonts` at a pinned commit), Regular and Bold;
+      - Noto Sans CJK Regular and Bold (`notofonts/noto-cjk` `Sans/OTC/*.ttc`, 19.5 and 20.1 MB; faces SC, TC, JP, KR, HK);
+      - Noto Color Emoji (`googlefonts/noto-emoji` `2D/fonts/NotoColorEmoji.ttf`, CBDT, 10.7 MB; the font is OFL-1.1, while the repository's tools and images are Apache-2.0 and are not used).
+    - **Extensible:** more entries and styles can be added, catalogs merge by entry id, and a newer `catalogVersion` adds files without touching pins. **Sub-project 8's registry can supply further catalogs** (and signatures); 4C reads only the built-in one, plus `FIN_FONT_CATALOG` in `test-hooks` builds.
+31. **The catalog gate** (`scripts/check-font-catalog.mjs`, and the Rust validation in `FontCatalog::validate`, which share one rule list):
+    - `licence.spdx` is in the permissive allow list (`OFL-1.1`, `Apache-2.0`, `MIT`, `BSD-3-Clause`, `CC0-1.0`). No NC, ND, share-alike corpus licences, or GPL font exceptions;
+    - every URL is `https` and immutable: it contains a 40-hex commit or a `/releases/download/<tag>/` path;
+    - `sha256` is 64 hex; `size` is between 1 byte and 64 MiB; `format` is `ttf`, `otf` or `ttc`;
+    - ids, style ids and face keys are unique, and every `fallback` id exists;
+    - archive members say their archive's `sha256` and `size` too.
+32. **The cache** (`fin-fonts::cache`, `<server-data>/fonts/`):
+    - **content-addressed** `<sha256>` files;
+    - written as `.~fin-<ulid>.part` → SHA-256 verified → renamed **without replacing** (an existing file is verified, then kept);
+    - **verified before every use** (SHA-256, memoised by length and mtime);
+    - **resumable:** `<sha256>.part` plus `<sha256>.part.json` `{url, received}`, continued with an HTTP `Range` request when the server answers 206, else restarted;
+    - **concurrency-safe across processes:** one OS lock (`File::lock`, as `fin-store`'s `lease.lock` uses) on `<sha256>.lock` while fetching. Others wait (bounded), then re-check the final file;
+    - **size limits:** the download must match the catalog `size` and is aborted past it (archives: their own size, then the member's);
+    - a stray temp file is swept after 24 h. No total-size limit in 4C (`fin fonts gc` is a follow-up).
+33. **The fetcher** (`fin-fonts::fetch`):
+    - `ureq` with `rustls` + `ring` and the platform verifier;
+    - proxies from `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`, and the Windows system proxy;
+    - connect timeout 10 s, idle read timeout 30 s;
+    - per source, 3 attempts with backoff (1 s, 4 s, 16 s), then the next source. Total failure is `FONT_FETCH_FAILED {key, sha256, reason, retryAt}`, retried automatically after at most 10 min, or at once on `fin fonts fetch`;
+    - at most 2 downloads at a time per process;
+    - **offline-friendly:** `FIN_FONTS_OFFLINE=1` or the finisherd setting `fonts.autoFetch: false` never touches the network; cache hits work either way;
+    - plain `http` only for loopback in `test-hooks` builds.
+34. **When fetching happens** (owner question 1, default **automatic**):
+    - when a project opens or imports, and after a commit, for pins whose bytes are not cached;
+    - when a measurement reports missing bytes;
+    - on `fonts.plan` (for the files it pins);
+    - on `fin fonts fetch`.
 
-### Interfaces and CLI
+    Fonts are server-level, so `fin fonts status` and the `fonts.status` RPC show every file's state (`cached | queued | fetching {bytes, total} | failed {reason, retryAt}`). Project status lists what its pins lack (`fonts {missing, fetching, failed}`) and warns `FONT_MISSING` or `FONT_FETCH_FAILED` with fix text. A change is published as a `status` event on `project.events`; no new event type.
+35. **Pins are planned by the server, sent by the client.**
+    - `fin`'s `Builder`, when online, calls `fonts.plan {projectId, branch, ops}` before it commits. The server applies the ops to a copy of the head without a measurer and reads `layout::font_needs`:
+      - faces = the styles' `(family, weight, italic)`;
+      - scripts = `unicode-script` of the caption text.
+    - It returns `font.pin` ops for faces with no pin (from the catalog's matching entry style) and for scripts no fallback pin covers (from the catalog `fallback` order). `fin` prepends them to its own tx and echoes `resolved.fonts`.
+    - **The server never alters a client's tx** (spec §2.3: intent as submitted).
+    - A text whose faces or scripts have no pin (another client that did not plan) is unmeasured, with warning `FONT_UNPINNED` and `fix: fin fonts pin`.
+    - Offline `fin` plans no pins (`measured: false`).
+36. **Measurement uses pinned bytes; missing bytes mean "unmeasured", never "blocked".**
+    - `layout::faces_for(project, style, words)` resolves the request's faces: the style's pin first, then every `fonts.fallback` pin whose `scripts` meet the text's scripts, in fallback order.
+    - `TextRequest.faces` carries `FaceRef {sha256, face, family, weight, italic}`. `fin-text` looks the bytes up by SHA-256 through a `FontBytes` provider and answers `Measured::Layout` or `Measured::Unavailable {missing}`.
+    - **One shared measurer serves every project and branch.** Determinism comes from the request, which names exact bytes.
+    - Unavailable (not fetched, offline, failed, hash mismatch, no pin):
+      - overflow is not checked for that item;
+      - eval reports `CaptionPlan.layout: null` and `unmeasured: {reason, keys}`;
+      - status warns.
 
-36. **No per-edit RPCs.** Every edit is an op in `tx.commit`, and Rust validates it. The new RPCs are `eval.frame` and `eval.audio`.
-37. **`fin` commands:**
-    - `fin clip insert|trim|delete` stay (they build `item.*`);
-    - `fin item move|split|delete|trim|slip|slide|link|unlink` work on any kind;
-    - `fin image|graphic insert`, then the track, timeline, marker, bin, asset, transition, param, keyframe, effect, caption, style, schema and eval groups;
-    - **`fin` alone keeps its map under 1.5k tokens** by listing command names per group, with usage lines in `fin help <group>`;
-    - no `fin batch` changes (sub-project 7).
+      Once the bytes arrive, the next measurement is measured; nothing is re-written.
+    - **Nothing measured enters the log:** the overflow check only accepts or refuses an edit; layouts live only in eval plans, computed on demand. *Known consequence (spec §5.6, wider here):* an edit accepted while a font was missing can conflict `CAPTION_OVERFLOW` when a machine that has it later rebases or merges it.
+37. **Font assets** (imported files):
+    - `asset.add` of kind `font` records `font: FontFile {sha256, size, format, faces: [{index, family, weight, italic, scripts}]}`, from `fin_text::font_info` and a whole-file SHA-256;
+    - `fin fonts pin --asset <a>` pins a face with `source: Asset`;
+    - the provider reads the asset's file and verifies its SHA-256. A changed file is a hash mismatch: unmeasured, warning `FONT_MISSING` (reason `hashMismatch`).
+38. **`fin-text` engine rules:**
+    - `cosmic-text` `no_std` (`libm` everywhere); always our own `Fallback`, built from the request's face list (`PlatformFallback` is never constructed); locale `"en-US"`;
+    - **one process-wide name interner** (each distinct family name leaked once);
+    - `FontSystem`s cached by the request's face list (LRU, 8);
+    - output in 1/64 px at the timeline resolution;
+    - `fingerprint()` = the `fin-text`, `cosmic-text`, `harfrust` and `skrifa` versions (from `Cargo.lock` via `build.rs`). A plan's caption layout also lists its face hashes.
+    - `fin_text::font_info(bytes)` is the one source of family, weight, italic and script coverage, used by `fin-probe` and catalog verification.
+39. **Test fonts:**
+    - unit and integration tests use fonts **generated at test time** by `fin-testfonts` (`write-fonts`). They are deterministic (fixed timestamps), with chosen cmaps, advances and coverage (`TestSans` Latin+Cyrillic, `TestRtl` Hebrew letters, `TestHan` a few Han code points, `TestBig` for size limits), and need no licence or network;
+    - the test-only CJK subset font of the earlier plan is dropped;
+    - **real-font shaping** (Arabic joining, bidi, kerning, CJK, emoji) is pinned by a corpus over the warmed real catalog files (`FIN_FONT_CACHE`), required in CI and on the Task 29 hosts;
+    - the `pnpm fonts:fetch` script is gone; `warm_cache` is only a CI cache warmer.
 
-    `fin` itself has no editing semantics: every multi-op command calls a `fin_core::compose` builder.
-38. **New codes** (exit 3 unless noted):
+### Evaluation, interfaces and CLI
+
+40. **Eval runs on the server.** `fin eval frame|audio` needs `finisherd`.
+41. **Plans:**
+    - layers come bottom-up; a nested item is a group layer; an adjustment layer carries effects only; a transition yields A (`out`) then B (`in`) with `progress`;
+    - a muted video or caption track is hidden; only audio tracks produce audio; `solo` silences the rest;
+    - `AudioPlan` gain segments carry dB ramps with `interp` and fade or crossfade `shapes`.
+42. **Bézier:** CSS `cubic-bezier`, solved by 8 Newton steps (accepted at `|x − u| < 1e-7` with `|x'| > 1e-6`), else 32 bisection steps.
+43. **RPCs.** No per-edit RPCs: edits go through `tx.commit`. New: `eval.frame`, `eval.audio`, `fonts.catalog`, `fonts.status`, `fonts.fetch`, `fonts.plan`.
+44. **`fin` commands:**
+    - the clip, item, image, graphic, transition, track, timeline, marker, bin, asset, param, keyframe, effect, caption, style, schema and eval groups;
+    - **`fin fonts ls [--catalog | --cached | --project]`, `fonts fetch <key | entry | --pinned>`, `fonts status`, `fonts pin <family> [--weight] [--italic] [--asset <a>] [--fallback <n>]`, `fonts repin <key> [--catalog-version <v>]`, `fonts unpin <key>`**;
+    - the map lists command names per group and stays under 1.5k tokens;
+    - multi-op behaviour comes from `fin_core::compose`;
+    - no `fin batch` changes.
+45. **New codes** (exit 3 unless noted):
     - `OVERWRITE_SPLITS_ITEM`, `NOT_ADJACENT`, `TRANSITION_NO_HANDLES`, `TRANSITION_EXISTS`, `TRANSITION_INVALID`, `TRACK_LOCKED`;
     - `TRACK_NOT_EMPTY`, `TIMELINE_NOT_EMPTY`, `TIMELINE_NESTED`, `BIN_NOT_EMPTY`, `BIN_CYCLE`, `ALREADY_LINKED`, `SLIDE_BLOCKED`, `MOVE_INTO_ITSELF`;
     - `PARAM_UNKNOWN`, `PARAM_TYPE`, `PARAM_NOT_ANIMATABLE`, `PARAM_ANIMATED`, `SLOT_UNKNOWN`, `STYLE_IN_USE`, `CAPTION_OVERFLOW`, `SRT_INVALID`;
-    - `NESTED_CYCLE` (eval only, defensive).
+    - `FONT_PINNED`, `FONT_IN_USE`, `FONT_NOT_IN_CATALOG`; `FONT_FETCH_FAILED` (exit 5 as a `fin fonts fetch` error, otherwise a warning); `NESTED_CYCLE` (eval only).
 
-    `FONTS_DAMAGED` and `FONT_MISSING` are status warnings (Decision 32). `INVALID_RANGE` gains `details {path, min, max, unit}` for parameters, and `ASSET_IN_USE` gains `details.items`. `INSERT_INSIDE_CLIP` keeps its name for every item kind and gains `details.item`. *Why:* codes are stable API (arch §9.7).
-39. **`fin view`:**
-    - JSON `{rev, timeline, lines, elided, tokens}`, one screenplay line per item per track in time order, captions' text inline, markers on their own lines;
-    - tokens estimated as `ceil(chars / 4)`;
-    - degrades in fixed steps until it fits: drop parameter notes → merge runs of adjacent clips of one asset → shorten caption text to 6 words + `…` → elide middle time ranges. Each step is listed in `elided`.
-40. **Upgrade notes** (README and spec): a 4C machine turns 4B followers read-only at its first edit (Decision 1); a 4C-created project opens read-only on a patched 4B, or not at all on an unpatched one (Decision 2); a 4C database is refused by 4B (`DB_TOO_NEW`, Decision 3).
-41. **Last-batch kinds** (coordinator: keep only what is cheap):
-    - `adjustment` items are enabled by one `item.insert` rule (Task 6), and `blend` is a registry path (Task 10). Both stay in 4C.
-    - **The edits that make `nested` items and masks move to sub-project 6:** a nested insert with its cycle rule, and `mask.set`/`mask.remove`. They need ops, guards and tests of their own, and nothing consumes them before sub-project 6. *Why:* the plan is already 28 tasks.
-    - The model, the registry's `mask.*` paths, eval of `nested` and masks (tested on projects built literally), the `TIMELINE_NESTED` guard and the defensive `NESTED_CYCLE` stay, so sub-project 6 adds only ops.
-    - A TASKS follow-up records it.
+    Warnings: `FONT_MISSING`, `FONT_FETCH_FAILED`, `FONT_UNPINNED`. `INVALID_RANGE` gains `{path, min, max, unit}`, `ASSET_IN_USE` gains `items`, and `INSERT_INSIDE_CLIP` keeps its name and gains `details.item`.
+46. **`fin view`:** screenplay JSON `{rev, timeline, lines, elided, tokens}`, with the token estimate `ceil(chars / 4)` and fixed degradation steps.
+47. **Upgrade notes** (README and spec):
+    - 4C turns 4B followers read-only at its first edit;
+    - a 4C-created project opens read-only on a patched 4B, or not at all on an unpatched one;
+    - a 4C DB is refused by 4B;
+    - old projects pin no fonts until their first caption edit.
+48. **Last-batch kinds:** adjustment and blend stay in 4C. **The nested-insert and mask edits move to sub-project 6** (the model, registry paths, eval and guards stay). It is a TASKS follow-up.
 
-## Questions for the owner
+## Questions for the owner (answered 2026-11-06)
 
-None open. All five were answered and are recorded as Decisions 9, 30, 10, 21 and 26. Decision 30's fetch-instead-of-commit for the large fonts is a choice the owner may reverse without other changes.
+Both defaults accepted by the owner: automatic fetching with the off switch, and upstream sources at pinned commits/tags with optional mirrors.
+
+1. **May `finisherd` fetch fonts without being asked?** Default **yes** (Decision 34): it fetches a project's pinned or planned fonts as soon as they are needed, so captions measure without a manual step. Off switch: `fonts.autoFetch: false` or `FIN_FONTS_OFFLINE=1`, after which only `fin fonts fetch` downloads. The alternative is fetch-only-on-command, or a first-use prompt in the UI later.
+2. **Catalog sources.** Default: the upstream GitHub repositories at pinned commits and release tags (`notofonts`, `googlefonts/noto-emoji`, `rsms/inter` release zips), each entry allowing further mirror URLs. The alternative is a Finisher-hosted mirror from the start (it needs hosting; sub-project 8's registry is the natural home). This choice decides availability and who is contacted on first use.
+
+Earlier answers are recorded in Decisions 9, 10, 21 and 26. The bundling answer is superseded by Decisions 29–39.
 
 ## Review Focus
 
-1. **The upgrade path.**
-   - The SP2, 4A and 4B fixtures open in 4C with states equal to hand-checked v2 goldens, and their upcast v1 diffs equal a fresh replay.
-   - `new_project` equals the upcast v1 genesis.
-   - An undo, a merge and a cherry-pick of pre-4C records work after upgrade.
-   - A patched 4B opens a 4C project read-only.
-   - → Tasks 3, 5, 6: `diff_upcast_equals_replay_on_fixtures`, `newer_project_file_opens_read_only`, `sp2_4a_4b_fixtures_open_equal_v2_goldens`, `new_project_equals_upcast_genesis`, `undo_of_4b_record_after_upgrade`, `merge_of_4b_branch_after_upgrade`; Task 28 mixed-version row.
-2. **Footprints from the op's own diff** catch conflicts on items the op did not name. → Tasks 7–9: `overwrite_vs_trim_of_overwritten_item_conflicts`, `linked_delete_footprint_covers_members`, `pruned_transition_restored_by_undo`.
-3. **Content offsets** (B3). A stale split or keyframe edit after a concurrent start trim lands on the same content, and a stale keyframe edit names the same keyframe. → Tasks 7, 13: `stale_split_after_start_trim_maps_offset`, `stale_keyframe_after_start_trim_keeps_identity`; property 3.
-4. **Exact inverses**, with shifts in reverse order (B5), for every op, pruned transitions and link groups included; the strict trim (B4) refuses overlap. → Task 25 property 1 plus seeded bugs; Task 7 `undo_of_overwrite_conflicts_with_later_insert`.
-5. **Replay's track check** covers no-shift ops (B1). → Task 6 `replay_checks_tracks_touched_by_changes`; property 6.
-6. **Numbers round-trip** through record bytes (B2). → Task 5 `param_values_round_trip_through_record_bytes`.
-7. **Nested ids** are counted and remapped (B6). → Tasks 1, 6, 11, 13: `ids_cover_every_id_in_json`; fin-store `counters_see_ids_inside_restores`, `recovery_remaps_nested_ids`.
-8. **Determinism.** Plan hashes and text layouts are identical on macOS, Windows, Linux and wasm32, and the float gate holds. → Tasks 4, 16, 28.
-9. **Measurer threading.** Replay never calls it; commit, rebase, merge, undo and recovery re-check overflow once per tx; damaged fonts never block. → Tasks 19, 21.
-10. **Frozen code.** The m0001 and m0002 pins are unchanged, m0003 is pinned, and every upcaster step has its golden. → Tasks 3, 5, 6.
+1. **The upgrade path:**
+   - fixtures open with states equal to hand-checked v2 goldens, and their upcast v1 diffs equal a fresh replay;
+   - `new_project` equals the upcast genesis;
+   - undo, merge and pick of pre-4C records work;
+   - a patched 4B opens a 4C project read-only;
+   - → Tasks 3, 6, 7; Task 29 mixed-version row.
+2. **Footprints from the op's own diff.** → Tasks 8–10.
+3. **Content offsets** (B3). → Tasks 8, 14, property 3.
+4. **Exact inverses** in reverse shift order (B5); `strict` refuses overlap (B4). → Task 26, Task 8.
+5. **Replay's track check** covers no-shift ops (B1). → Task 7, property 6.
+6. **Numbers round-trip** (B2). → Task 6.
+7. **Nested ids** (B6). → Tasks 1, 7, 12, 14, 18.
+8. **Fonts:**
+   - pins make layouts identical on machines with the same bytes;
+   - a catalog update changes nothing pinned;
+   - a missing, failing or mismatched font never blocks an edit and never puts anything into the log;
+   - concurrent and resumed fetches are safe;
+   - the licence gate holds;
+   - → Tasks 5, 18, 20, 22: `same_pins_same_layout_across_providers`, `catalog_update_keeps_pinned_layout`, `missing_font_never_blocks_and_logs_nothing`, `concurrent_fetch_one_download`, `resume_after_partial`, `catalog_gate_refuses_nc_licence`.
+9. **Determinism** across OSes and wasm32, with generated and real fonts. → Tasks 4, 17, 29.
+10. **Measurer threading.** Replay never calls it; edits re-check overflow once per tx. → Task 20.
+11. **Frozen code.** → Tasks 3, 6, 7.
 
 ---
 
@@ -392,177 +448,205 @@ None open. All five were answered and are recorded as Decisions 9, 30, 10, 21 an
 ### Task 2: Scrubbed 4B fixture, generated from 4B code — tier: sonnet
 
 **Files:**
-- Create: `crates/fin-store/tests/fixtures/4b/folder/finisher.project.json`, `.../folder/.finisher/segments/{main,br1}/*.fseg`, `crates/fin-store/tests/fixtures/4b/project.fdb`, `.../4b/expected.json` (`{branches: {main: {rev, project}, br1: {rev, project}}, stacks, argsHashes}`), `.../4b/README.md` (the commit hash and the scrub steps).
-- Modify: `crates/fin-store/tests/integration_support/mod.rs` (`fixture_4b`).
-- Create: `crates/fin-store/tests/fixture_4b.rs`.
-- The generator is **not** committed. It lives in a 4B worktree under `archive/`.
+- Create: `crates/fin-store/tests/fixtures/4b/folder/finisher.project.json`, `.../folder/.finisher/segments/{main,br1}/*.fseg`, `crates/fin-store/tests/fixtures/4b/project.fdb`, `.../4b/expected.json` (`{branches: {main: {rev, project}, br1: {rev, project}}, stacks, argsHashes}`), `.../4b/README.md`.
+- Modify: `crates/fin-store/tests/integration_support/mod.rs` (`fixture_4b`). Create: `crates/fin-store/tests/fixture_4b.rs`.
+- The generator lives in a 4B worktree under `archive/`, never committed.
 
-- [x] **Step 1: Generate from 4B code.**
-  - `rtk git worktree add archive/wt-4b 36fe7e0` (4B as merged with the latest 4A).
-  - In it, write `crates/fin-store/examples/make_4b_fixture.rs`:
+- [ ] **Step 1: Generate from 4B code.**
+  - `rtk git worktree add archive/wt-4b 36fe7e0`.
+  - Write `crates/fin-store/examples/make_4b_fixture.rs`:
     1. create a project; `asset.add`;
-    2. on `main`, 4 inserts on `t1` and `t2`, 2 trims (one on each edge), 1 delete;
-    3. `branch new feature` and 2 edits there; checkpoint `v1` on `main`;
-    4. one more edit on `main`; `merge feature`; `undo`, `redo`; a cherry-pick of a `feature` record back onto `main`;
+    2. on `main`, 4 inserts on `t1`/`t2`, 2 trims (one per edge), 1 delete;
+    3. `branch new feature` with 2 edits; checkpoint `v1`;
+    4. one more `main` edit; `merge feature`; `undo`, `redo`; a cherry-pick from `feature`;
     5. `tick` until exported; `close`; `PRAGMA wal_checkpoint(TRUNCATE)`.
-  - Also record in `expected.json` the `argsHash` that 4B's `fin` computes for three fixed `clip insert|trim|delete` inputs (Decision 7). Compute them with 4B's `fin` `args_hash` in the worktree.
-- [x] **Step 2: Scrub** as 4B Task 2 did:
+  - Record the `argsHash` 4B's `fin` computes for three fixed `clip insert|trim|delete` inputs (Decision 7).
+- [ ] **Step 2: Scrub** as 4B Task 2 did:
   - copy only `finisher.project.json`, the `.fseg` files and `project.fdb`;
   - `DELETE FROM meta WHERE key IN ('projectDir','serverIds','createKey'); DELETE FROM lease_state; VACUUM;`;
-  - write the states and the author's stacks.
-- [x] **Step 3: Check for leaks:** `rtk proxy bash -c 'grep -rIl -e "$(hostname)" -e "$USER" crates/fin-store/tests/fixtures/4b || echo clean'`, plus `strings project.fdb` with the same patterns. Expected: clean.
-- [x] **Step 4: Add the helper** `fixture_4b(tmp) -> (server_data, folder)` (copy, place the DB, open with `relocate: true`) and the smoke test `fixture_4b_opens_with_relocate`: both branch states equal `expected.json` with today's code.
-- [x] **Step 5: Run** `rtk cargo test -p fin-store`, `rtk pnpm gates`. Remove the worktree with `rtk git worktree remove archive/wt-4b`.
-- [x] **Step 6: Commit** `test(fin-store): scrubbed 4B fixture for 4C upgrade tests`.
+  - write the states, stacks and hashes.
+- [ ] **Step 3: Leak check:** `rtk proxy bash -c 'grep -rIl -e "$(hostname)" -e "$USER" crates/fin-store/tests/fixtures/4b || echo clean'`, plus `strings project.fdb` with the same patterns.
+- [ ] **Step 4:** Add `fixture_4b(tmp)` and `fixture_4b_opens_with_relocate` (today's code: the states equal `expected.json`).
+- [ ] **Step 5: Run** `rtk cargo test -p fin-store`, `rtk pnpm gates`; `rtk git worktree remove archive/wt-4b`.
+- [ ] **Step 6: Commit** `test(fin-store): scrubbed 4B fixture for 4C upgrade tests`.
 
-### Task 3: Per-op diffs, the v1 diff upcaster, migration 0003, newer project files read-only — tier: opus
+### Task 3: Newer project files read-only; per-op diffs; the v1 diff upcaster; migration 0003 — tier: opus
 
 **Files:**
-- **Commit A** (cherry-pickable onto `sp4b-history`, Decision 2): `crates/fin-store/src/project_file.rs` (`is_newer()` counts `schemaVersion > SCHEMA_VERSION`; `read_project_file_once` stops refusing it), its tests, and `crates/fin-store/tests/store.rs` (`newer_project_file_opens_read_only`).
+- **Commit A** (cherry-pickable onto `sp4b-history`): `crates/fin-store/src/project_file.rs` (`is_newer()` counts `schemaVersion > SCHEMA_VERSION`; `read_project_file_once` stops refusing it), tests, `crates/fin-store/tests/store.rs`.
 - **Commit B:**
-  - `crates/fin-core/src/tx.rs` (`Change`, `Shift`, `EntityKind`), `crates/fin-core/src/apply.rs` (the `Applier` hands each op its index);
-  - `crates/fin-core/src/ops/util/ripple.rs` (`OpDiff`), every op module (pass the sink through);
-  - `crates/fin-core/src/rebase/footprint.rs` (`split_diff`, `Footprint::with_changes`), `crates/fin-core/src/rebase/steps.rs`;
-  - create `crates/fin-core/src/upgrade/diff_v1.rs` (frozen step; `upgrade.rs` → `upgrade/mod.rs`).
-- **Commit B, store side:**
-  - create `crates/fin-store/src/migrations/m0003_version.rs`; modify `crates/fin-store/src/migrations/mod.rs` (`DB_VERSION = 3`, `MIN_READER_VERSION = 3`, step), `crates/fin-store/src/db/mod.rs` (a fresh `meta` writes `"3"`);
-  - **every reader of `txs.diff` goes through one helper**, `db::records::stored_diff(record_value, diff_json)`, which upcasts. The readers are `db/records.rs` `decode`, `history_ops/mod.rs` (the `Diff` parse near line 210) and `verify/replay.rs` (the `diffs_match` compare).
-  - modify the RPC fixtures under `crates/fin/tests/` and the TS tests that carry diffs.
-- Test: `crates/fin-core/tests/diff_split.rs` (new), `crates/fin-core/tests/upgrade_golden.rs` (new, the diff step), `crates/fin-store/tests/{migrations.rs, fixture_4b.rs}`.
+  - `crates/fin-core/src/{tx.rs (Change, Shift, EntityKind), apply.rs}`, `ops/util/ripple.rs` (`OpDiff`), every op module;
+  - `rebase/{footprint.rs (split_diff, with_changes), steps.rs}`;
+  - create `crates/fin-core/src/upgrade/diff_v1.rs` (`upgrade.rs` → `upgrade/mod.rs`);
+  - create `crates/fin-store/src/migrations/m0003_version.rs`; modify `migrations/mod.rs` (`DB_VERSION = 3`, `MIN_READER_VERSION = 3`), `db/mod.rs`;
+  - one helper `db::records::stored_diff(record_value, diff_json)` used by every reader of `txs.diff`: `db/records.rs` `decode`, `history_ops/mod.rs` (the `Diff` parse near line 210) and `verify/replay.rs` (the `diffs_match` compare);
+  - the RPC fixtures under `crates/fin/tests/` and the TS tests that carry diffs.
+- Test: `crates/fin-core/tests/{diff_split.rs, upgrade_golden.rs}`, `crates/fin-store/tests/{migrations.rs, fixture_4b.rs}`.
 
 **Interfaces:**
 ```rust
-// fin_core::tx
-pub struct Change {
-    pub kind: EntityKind, pub id: String, pub change: ChangeKind,
-    pub op: u32, // index of the op in its transaction
+pub struct Change { pub kind: EntityKind, pub id: String, pub change: ChangeKind, pub op: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub edge: Option<Edge>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub path: Option<String>,
-    /// Content offset of a start-edge move (Decision 13).
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub by: Option<Rational>,
-}
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub by: Option<Rational> }
 pub struct Shift { pub track: String, pub from: Rational, pub by: Rational, pub op: u32 }
-pub enum EntityKind { Asset, Track, Timeline, Item, Transition, Marker, Bin, Effect, Link, Style }
-// ops::util
-pub(crate) struct OpDiff<'a> { diff: &'a mut Diff, op: u32 }
-impl OpDiff<'_> {
-    pub(crate) fn record(&mut self, kind: EntityKind, id: &str, change: ChangeKind);
-    pub(crate) fn record_edge(&mut self, kind: EntityKind, id: &str, edge: Edge, by: Option<Rational>);
-    pub(crate) fn record_path(&mut self, kind: EntityKind, id: &str, path: &str);
-    pub(crate) fn shift(&mut self, track: &str, from: Rational, by: Rational);
-}
-// fin_core::rebase::footprint
-pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError>; // by `op`; INVALID_FORMAT out of range/order
-impl Footprint { pub(crate) fn with_changes(self, own: &Diff) -> Footprint; } // Decision 20
-// fin_core::upgrade (frozen)
-/// A v1-shaped stored diff (no entry has `op`) of a record whose raw v1 ops are `v1_ops`, in the
-/// v2 shape (Decision 5). A v2 diff is returned unchanged; a mix is INVALID_FORMAT.
-pub fn upcast_diff(diff: Value, v1_ops: &[Value]) -> Result<Diff, CoreError>;
+pub enum EntityKind { Asset, Track, Timeline, Item, Transition, Marker, Bin, Effect, Link, Style, Font }
+pub(crate) struct OpDiff<'a> { diff: &'a mut Diff, op: u32 } // record, record_edge(.., by), record_path, shift
+pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError>;
+impl Footprint { pub(crate) fn with_changes(self, own: &Diff) -> Footprint; }
+pub fn upcast_diff(diff: Value, v1_ops: &[Value]) -> Result<Diff, CoreError>; // Decision 5, frozen
 ```
-In this task `SCHEMA_VERSION` is still 1, so `kind` stays `clip` until Task 6 renames it in the model, and in the diff step together with its golden.
 
 - [x] **Step 1: Commit A.**
-  - Tests: `newer_schema_version_is_newer`, `newer_project_file_opens_read_only` (open answers read-only `NEWER_FORMAT`, reads work, commits refuse), `older_schema_version_still_opens`.
-  - Implement, run `rtk cargo test -p fin-store`, commit `fix(store): a project file at a newer schemaVersion opens read-only`.
-  - Check that it applies cleanly with `rtk git cherry-pick --no-commit` onto a scratch checkout of `sp4b-history`, run `rtk cargo test -p fin-store` there, then discard the checkout. Report the commit hash to the coordinator.
-- [x] **Step 2: Write failing tests for commit B:**
-  - `split_diff_by_op_index`, `split_diff_rejects_out_of_range_or_unordered_op`, `ops_record_their_own_index` (a tx of `asset.add`, two inserts, a start trim: the trim's change carries `edge` and `by`);
-  - `with_changes_maps_removed_added_edge_path`;
-  - `upcast_v1_diff_golden` (frozen v1 diffs of each v1 op kind in, v2 out), `mixed_diff_is_invalid_format`, `empty_diff_reads_the_same`;
-  - `diff_upcast_equals_replay_on_fixtures` (SP2, 4A and 4B: every row's upcast stored diff equals its replay; `verify` ok, `diffs_match` included);
-  - `migration_0003_is_frozen` (pins `user_version` and the meta values); `fresh_and_migrated_schemas_match` (unchanged test); `db_v3_is_refused_by_a_v2_reader` (through the existing refusal helper);
-  - every 4B rebase and history test still passes unchanged.
-- [x] **Step 3: Run** `rtk cargo test -p fin-core --test diff_split --test upgrade_golden` and `rtk cargo test -p fin-store --test migrations --test fixture_4b`. Expected: FAIL.
-- [x] **Step 4: Implement.** m0003 runs
-  ```sql
-  UPDATE meta SET value = '3' WHERE key IN ('formatVersion', 'minReaderVersion');
-  ```
-  and the runner sets `user_version` 3. It leaves `txs.diff` and `snapshots` alone. `stored_diff` parses the record's raw JSON once, takes the raw `intent.ops` when `schemaVersion` is 1, and calls `upcast_diff`.
-- [x] **Step 5: Regenerate types** (`rtk pnpm --filter @finisher/core-types generate`); update the RPC fixtures and TS tests that hold diffs.
+  - Tests: `newer_schema_version_is_newer`, `newer_project_file_opens_read_only`, `older_schema_version_still_opens`.
+  - Commit `fix(store): a project file at a newer schemaVersion opens read-only`.
+  - Check that it cherry-picks cleanly onto a scratch checkout of `sp4b-history` with passing `rtk cargo test -p fin-store`, then discard the checkout. Report the hash to the coordinator.
+- [x] **Step 2: Failing tests for commit B:**
+  - `split_diff_by_op_index`, `split_diff_rejects_out_of_range_or_unordered_op`, `ops_record_their_own_index` (the start trim's change has `edge` and `by`), `with_changes_maps_removed_added_edge_path`;
+  - `upcast_v1_diff_golden`, `mixed_diff_is_invalid_format`, `empty_diff_reads_the_same`, `diff_upcast_equals_replay_on_fixtures` (SP2, 4A, 4B; `verify` ok);
+  - `migration_0003_is_frozen`, `fresh_and_migrated_schemas_match`, `db_v3_is_refused_by_a_v2_reader`;
+  - all 4B rebase and history tests unchanged.
+- [x] **Step 3: Run** `rtk cargo test -p fin-core --test diff_split --test upgrade_golden` and `rtk cargo test -p fin-store --test migrations --test fixture_4b` → FAIL.
+- [x] **Step 4: Implement.** m0003 runs `UPDATE meta SET value = '3' WHERE key IN ('formatVersion', 'minReaderVersion');` (the runner sets `user_version`). `stored_diff` passes the raw v1 `intent.ops` to `upcast_diff`.
+- [x] **Step 5:** Regenerate types; update the fixtures and TS tests.
 - [x] **Step 6: Run** the three gates → PASS. **Commit** `feat(core,store): per-op diffs; v1 diffs upcast on read; DB v3`.
 
-### Task 4: The `TextMeasurer` contract, `fin-text`, bundled fonts — tier: opus
+### Task 4: The `TextMeasurer` contract and `fin-text` (pure, bytes by hash); generated test fonts — tier: opus
 
-The riskiest unknown goes first: deterministic shaping across OSes. The S11b spike code is not available, so `fin-text` is written fresh from arch §27.10 item 10 and this plan (Task 27 records it).
+The riskiest unknown goes first: deterministic shaping across OSes. `fin-text` is written fresh (the S11b spike code is not available).
 
 **Files:**
-- Create: `crates/fin-core/src/layout.rs` (contract types; re-exported). Modify `crates/fin-core/src/lib.rs`.
-- Create: `crates/fin-text/Cargo.toml`, `crates/fin-text/build.rs` (dependency versions from `Cargo.lock`), `crates/fin-text/src/{lib.rs, fonts.rs, fallback.rs, intern.rs, info.rs, measure.rs}`.
-- Create: `crates/fin-text/tests/corpus.rs`, `crates/fin-text/tests/corpus/{cases.json, expected.json, layouts/*.json}`.
-- Create: `assets/fonts/{Inter-Regular.ttf, Inter-Bold.ttf, NotoSans-Regular.ttf, NotoSans-Bold.ttf, NotoSansArabic-Regular.ttf, NotoSansArabic-Bold.ttf, NotoSansHebrew-Regular.ttf, NotoSansHebrew-Bold.ttf, fonts.json, OFL-Inter.txt, OFL-Noto.txt, OFL-NotoCJK.txt, OFL-NotoEmoji.txt}`, with `assets/fonts/fetched/` in `.gitignore`.
-- Create: `scripts/fetch-fonts.mjs` (`pnpm fonts:fetch`), `scripts/check-fonts.mjs`, `scripts/check-fonts.test.mjs`.
-- Modify: `package.json`, `scripts/gates.mjs` (the font gate; `cargo build -p fin-text --target wasm32-unknown-unknown`), `.github/workflows/ci.yml` (cache plus `pnpm fonts:fetch` before the tests, `FIN_REQUIRE_FONTS=1`; actions pinned to SHAs), `THIRD_PARTY_NOTICES.md`.
+- Create: `crates/fin-core/src/layout.rs` (the contract). Modify `crates/fin-core/src/lib.rs`.
+- Create: `crates/fin-testfonts/{Cargo.toml, src/lib.rs}` (`publish = false`; dev-dependency of the crates below).
+- Create: `crates/fin-text/{Cargo.toml, build.rs}`, `crates/fin-text/src/{lib.rs, system.rs (FontSystem from a face list), fallback.rs, intern.rs, info.rs, measure.rs}`.
+- Create: `crates/fin-text/tests/{measure.rs (generated fonts), corpus_real.rs (warmed real fonts)}`, `crates/fin-text/tests/corpus/{generated.json, real.json, expected.json, layouts/*.json}`.
+- Modify: `scripts/gates.mjs` (`cargo build -p fin-text --target wasm32-unknown-unknown`), `THIRD_PARTY_NOTICES.md`.
 
 **Interfaces:**
 ```rust
 // fin_core::layout (re-exported)
-pub struct TextStyle { pub family: String, pub weight: u16, pub italic: bool, pub size: f64 /* px */,
-    pub line_height: f64 /* × size */, pub letter_spacing: f64 /* px */, pub align: Align }
-pub enum Align { Start, Center, End }
-pub struct TextRequest { pub words: Vec<String> /* joined by one space */, pub style: TextStyle,
-    pub max_width: Option<f64> /* px */, pub max_lines: Option<u32> }
-/// 1/64 px integers. `overflow`: more lines than `max_lines`, or a word wider than `max_width`.
+pub struct TextStyle { pub family: String, pub weight: u16, pub italic: bool, pub size: f64, pub line_height: f64,
+    pub letter_spacing: f64, pub align: Align }
+pub struct FaceRef { pub sha256: String, pub face: u32, pub family: String, pub weight: u16, pub italic: bool }
+pub struct TextRequest { pub words: Vec<String>, pub style: TextStyle,
+    pub faces: Vec<FaceRef> /* primary first, then fallbacks in order */, pub max_width: Option<f64>, pub max_lines: Option<u32> }
 pub struct TextLayout { pub lines: Vec<LineBox>, pub words: Vec<WordBox>, pub width: i32, pub height: i32,
-    pub overflow: bool, pub missing: Vec<u32> /* code points no font has */, pub engine: String }
-pub struct LineBox { pub x: i32, pub y: i32, pub width: i32, pub height: i32, pub baseline: i32, pub rtl: bool, pub words: [u32; 2] }
-pub struct WordBox { pub word: u32, pub line: u32, pub x: i32, pub y: i32, pub width: i32, pub height: i32 }
+    pub overflow: bool, pub missing: Vec<u32> /* code points no face has */, pub faces: Vec<String> /* sha256s used */ }
+pub enum Measured { Layout(TextLayout), Unavailable { missing: Vec<String> /* sha256s without bytes */ } }
 pub trait TextMeasurer: Send + Sync {
-    fn measure(&self, req: &TextRequest) -> Result<TextLayout, CoreError>;
-    fn fingerprint(&self) -> String; // Decision 29
-    fn families(&self) -> Vec<String>;
+    fn measure(&self, req: &TextRequest) -> Result<Measured, CoreError>;
+    fn fingerprint(&self) -> String; // Decision 38
 }
 // fin_text
-pub struct FontFile { pub name: String, pub bytes: std::sync::Arc<[u8]> }
-pub struct FontInfo { pub family: String, pub weight: u16, pub italic: bool, pub face: u32 }
-pub fn font_info(bytes: &[u8]) -> Result<Vec<FontInfo>, CoreError>; // one per face (TTC too)
-pub struct FontSet { /* faces in load order */ }
-impl FontSet {
-    /// `manifest` is `fonts.json`; every file's BLAKE3 must match, else Err(FONTS_DAMAGED {files}).
-    pub fn bundled(manifest: &str, files: Vec<FontFile>) -> Result<FontSet, CoreError>;
-    pub fn with_project_fonts(self, fonts: Vec<FontFile>) -> Result<FontSet, CoreError>;
-    pub fn fingerprint(&self) -> String;
-}
-pub struct Measurer { /* Mutex<cosmic_text::FontSystem> */ }
-impl Measurer { pub fn new(set: FontSet) -> Measurer; }
-impl fin_core::layout::TextMeasurer for Measurer { /* ... */ }
+pub trait FontBytes: Send + Sync { fn get(&self, sha256: &str) -> Option<std::sync::Arc<[u8]>>; }
+pub struct FaceInfo { pub index: u32, pub family: String, pub weight: u16, pub italic: bool, pub scripts: Vec<String> }
+pub fn font_info(bytes: &[u8]) -> Result<Vec<FaceInfo>, CoreError>;
+pub struct Measurer { /* provider + LRU of FontSystems keyed by face list */ }
+impl Measurer { pub fn new(bytes: std::sync::Arc<dyn FontBytes>) -> Measurer; }
+impl fin_core::layout::TextMeasurer for Measurer {}
+// fin_testfonts
+pub struct Spec { pub family: &'static str, pub weight: u16, pub italic: bool, pub chars: &'static str, pub advance: fn(char) -> u16 }
+pub fn build(spec: &Spec) -> Vec<u8>;            // deterministic TTF (glyf, cmap, hmtx, name, OS/2, …)
+pub fn test_sans() -> Vec<u8>; pub fn test_rtl() -> Vec<u8>; pub fn test_han() -> Vec<u8>; pub fn test_big(size: usize) -> Vec<u8>;
 ```
 
-- [ ] **Step 1: Licences and sources first.**
-  - Add `cosmic-text = { version = "0.19", default-features = false, features = ["no_std"] }` and `unicode-script` at the version `cosmic-text` uses. Run `rtk cargo deny check licenses` and record each transitive licence in the commit body.
-  - Pin the upstream fonts at release tags or commits: Inter 4.x; `notofonts` Sans, Arabic and Hebrew releases; `notofonts/noto-cjk` `Sans/OTC/NotoSansCJK-{Regular,Bold}.ttc`; `googlefonts/noto-emoji` `2D/fonts/NotoColorEmoji.ttf` (CBDT; colour bitmaps that `swash` can paint in sub-project 6). Record versions, URLs, `sha256` and `blake3` in `fonts.json`.
-  - Confirm every licence text is OFL-1.1 and that the files are unmodified.
-- [ ] **Step 2: Write failing tests** (`corpus.rs`). Each case is a `TextRequest` (and a font set) → its `TextLayout` JSON. The BLAKE3 hashes go in `expected.json`; the full layouts in `layouts/` are for review. Cases:
-  - Latin with kerning (`"AVATAR Wave"`); Cyrillic; Greek;
-  - Arabic shaping (RTL, joined forms); Hebrew RTL; mixed bidi (`"abc عربي 123"`);
-  - wrapping at `max_width`; `max_lines` overflow; one over-wide word;
-  - Bold weight; letter spacing; centre and end alignment;
-  - Simplified Chinese, Japanese kana, Korean Hangul (each through its per-script fallback); emoji; an unassigned private-use code point (`missing`).
+- [ ] **Step 1: Licences.** Add `cosmic-text = { version = "0.19", default-features = false, features = ["no_std"] }` and `write-fonts` (dev). Run `rtk cargo deny check licenses`, and record the transitive licences in the commit body.
+- [ ] **Step 2: Write failing tests:**
+  - `measure.rs` (generated fonts, always run):
+    - `same_bytes_same_layout` (two `Measurer`s, two providers);
+    - `fallback_follows_face_order` (`TestSans` then `TestHan`; swapping the order changes which face is used);
+    - `missing_bytes_are_unavailable` (lists the sha256);
+    - `rtl_run_is_rtl`, `wrap_and_overflow`, `letter_spacing_and_alignment`;
+    - `platform_fallback_never_used`, `interner_leaks_each_name_once`, `fingerprint_names_versions`;
+    - `font_info_reads_faces_and_scripts` (TTC too, built from two generated faces).
+  - `corpus_real.rs` (warmed real fonts, by sha256; skips with a notice unless `FIN_FONT_CACHE` is set; fails when `FIN_REQUIRE_FONTS=1` and a file is missing):
+    - Latin kerning, Cyrillic, Greek;
+    - Arabic joining, Hebrew, mixed bidi;
+    - Simplified Chinese, Japanese kana, Korean, emoji;
+    - an unassigned code point (`missing`);
+    - Bold; wrapping; `max_lines`.
 
-  Plus:
-  - `measure_is_repeatable` (two calls, and two `Measurer`s, are equal);
-  - `fallback_lists_are_ours` (`PlatformFallback` is never constructed; the lists are Decision 29's);
-  - `interner_leaks_each_name_once`;
-  - `damaged_font_is_refused` (`FONTS_DAMAGED`); `fingerprint_names_versions_and_fonts`;
-  - `font_info_reads_ttc_faces`.
-
-  `scripts/check-fonts.test.mjs`: a missing licence, a hash mismatch and an unlisted font each fail; a missing fetched font passes unless `FIN_REQUIRE_FONTS=1`.
-- [ ] **Step 3: Run** `rtk pnpm fonts:fetch`, then `rtk cargo test -p fin-text`. Expected: FAIL.
+  Hashes go in `expected.json`; the layouts in `layouts/` are for review.
+- [ ] **Step 3: Run** `rtk cargo test -p fin-text --test measure` → FAIL.
 - [ ] **Step 4: Implement.**
-  - Build the `FontSystem` with `new_with_locale_and_db_and_fallback("en-US", db, OurFallback)`.
-  - Lay out with `Buffer` (`Shaping::Advanced`, `Wrap::Word`), reading `layout_runs()` glyph clusters back to word boxes.
-  - Round `f32` to 1/64 px with `libm::roundf`.
-  - Each file stays < 400 lines.
-- [ ] **Step 5: Goldens.** Generate `expected.json` once, then review `layouts/` by eye: Arabic and Hebrew runs are `rtl`, wrapping is at word boundaries, CJK and emoji glyphs come from their fonts, and boxes don't overlap.
-- [ ] **Step 6: Early cross-OS signal** (controller). Run `rtk cargo test -p fin-text --test corpus` on the macOS and Windows hosts now, and on wasm32-wasip1 locally (wasmtime with `--dir assets/fonts`). Record the results in `archive/sp4c-text/`. A mismatch is fixed here, before anything depends on `fin-text`. Task 28 repeats it.
-- [ ] **Step 7: Run** the three gates (the wasm32 build of `fin-text` included) → PASS. **Commit** `feat(text): fin-text measurement over bundled fonts; TextMeasurer contract`.
+  - `FontSystem::new_with_locale_and_db_and_fallback("en-US", db, FaceListFallback)`, with the faces loaded in request order into an empty `fontdb::Database`;
+  - `Buffer` with `Shaping::Advanced` and `Wrap::Word`; `libm::roundf` to 1/64 px;
+  - files < 400 lines.
+- [ ] **Step 5: Goldens.** Once Task 5's `warm_cache` exists (or by a one-off download into `archive/fonts/` checked against the catalog hashes), fill `expected.json` for the real corpus and review `layouts/` by eye.
+- [ ] **Step 6: Early cross-OS signal** (controller): run both test files on the macOS and Windows hosts with a warmed cache, and on wasm32-wasip1 locally (`wasmtime --dir`). Record the results in `archive/sp4c-text/`. Task 29 repeats it.
+- [ ] **Step 7: Run** the three gates → PASS. **Commit** `feat(text): fin-text measurement over fonts by hash; TextMeasurer contract; generated test fonts`.
 
-### Task 5: Model v2, the snapshot upcaster, new id kinds — tier: opus
-
-The existing 7 ops are ported onto the v2 model unchanged in meaning (`clip.*` still apply, now to `Item` of kind `clip` on any timeline). Task 6 renames them.
+### Task 5: The font catalog, the cache and the fetcher (`fin-fonts`) — tier: opus
 
 **Files:**
-- Create: `crates/fin-core/src/model/{timeline.rs, item.rs, asset.rs, caption.rs}`. Modify: `model/mod.rs` (`Project`, `new_project`, `SCHEMA_VERSION = 2`).
-- Create: `crates/fin-core/src/upgrade/snapshot_v1.rs` (frozen step) and `upgrade/record_v1.rs` (an identity step for now; Task 6 fills it).
+- Create: `crates/fin-fonts/{Cargo.toml, catalog/catalog.json}`, `crates/fin-fonts/src/{lib.rs, catalog.rs (FontCatalog, validate), cache.rs, fetch.rs, http.rs (ureq agent: TLS, proxies, timeouts), archive.rs, lock.rs}`.
+- Create: `crates/fin-fonts/examples/warm_cache.rs` (fetch every catalog file into a dir: the CI cache warmer, and the catalog check that compares `font_info` faces and scripts with the catalog's), `crates/fin-fonts/tests/{catalog.rs, cache.rs, fetch.rs, support/http_server.rs}`.
+- Create: `scripts/check-font-catalog.mjs`, `scripts/check-font-catalog.test.mjs`. Modify: `scripts/gates.mjs`, `deny.toml` (`[graph] targets`), `.github/workflows/ci.yml` (cache the warmed dir keyed by the catalog's hash with a SHA-pinned `actions/cache`, run `warm_cache` on a miss, set `FIN_FONT_CACHE` and `FIN_REQUIRE_FONTS=1`).
+
+**Interfaces:**
+```rust
+pub struct FontCatalog { pub catalog_version: String, pub fallback: Vec<String>, pub entries: Vec<CatalogEntry> }
+impl FontCatalog {
+    pub fn builtin() -> &'static FontCatalog;              // include_str!("../catalog/catalog.json")
+    pub fn from_json(s: &str) -> Result<FontCatalog, CoreError>; // + validate (Decision 31)
+    pub fn find_face(&self, family: &str, weight: u16, italic: bool) -> Option<(&CatalogEntry, &CatalogStyle, &CatalogFace)>;
+    pub fn by_sha(&self, sha256: &str) -> Option<(&CatalogEntry, &CatalogStyle)>;
+    pub fn fallback_for(&self, script: &str) -> Option<(&CatalogEntry, &CatalogStyle)>;
+}
+pub struct FontCache { /* <server-data>/fonts */ }
+impl FontCache {
+    pub fn open(dir: &Path) -> Result<FontCache, CoreError>;
+    pub fn get(&self, sha256: &str) -> Option<Arc<[u8]>>;   // verified (Decision 32)
+    pub fn has(&self, sha256: &str) -> bool;
+}
+impl fin_text::FontBytes for FontCache {}
+pub struct Fetcher { /* agent, queue (2 workers), backoff state */ }
+pub struct FetchOptions { pub offline: bool, pub allow_loopback_http: bool /* test-hooks only */ }
+pub enum FileState { Cached, Queued, Fetching { bytes: u64, total: u64 }, Failed { reason: String, retry_at_ms: i64 } }
+impl Fetcher {
+    pub fn new(cache: Arc<FontCache>, catalog: Arc<FontCatalog>, opts: FetchOptions) -> Fetcher;
+    pub fn request(&self, sha256: &str);                    // enqueue unless cached, running or backing off
+    pub fn fetch_now(&self, sha256: &str) -> Result<(), CoreError>; // blocking (fin fonts fetch); FONT_FETCH_FAILED
+    pub fn state(&self, sha256: &str) -> FileState;
+    pub fn subscribe(&self) -> std::sync::mpsc::Receiver<(String, FileState)>;
+}
+```
+
+- [ ] **Step 1: Licences.** Add `ureq`, `rustls` (`ring`), `rustls-platform-verifier`, `sha2` and `zip` as the Tech Stack says. Set `deny.toml` `[graph] targets`, then run `rtk cargo deny check licenses sources bans`; record the tree's licences in the commit body.
+- [ ] **Step 2: Write the catalog.**
+  - Pin every initial file (Decision 30) at a commit or release tag, and fill `sha256`, `size`, `format`, faces and scripts from a one-off `warm_cache` run.
+  - For Inter, the source is the release zip, and the archive member's own `sha256` and `size` are recorded.
+  - Confirm each licence text by hand (OFL-1.1) and record the URL.
+- [ ] **Step 3: Write failing tests** (all against `support/http_server.rs`: an in-process HTTP/1.1 server on loopback that serves generated fonts and zips, with injectable faults: wrong bytes, a truncated body then a dropped connection, `Range` support on or off, HTTP 500, slow bodies):
+  - catalog:
+    - `builtin_catalog_validates`;
+    - `catalog_gate_refuses_nc_licence` (and GPL font exception, mutable URL, non-https, duplicate keys, oversize, unknown fallback id). The same fixtures run through the JS gate test;
+    - `find_face_and_fallback_for_script`;
+  - cache:
+    - `write_is_temp_then_rename`, `existing_file_is_verified_and_kept`, `tampered_cache_file_is_rejected` (`get` → `None`; the state is `Failed {hashMismatch}`);
+    - `stray_temp_swept_after_24h` (with a fake clock);
+  - fetch:
+    - `fetch_verifies_hash` (`hash_mismatch_never_lands`);
+    - `resume_after_partial` (a `206` continues from `received`; without `Range` it restarts);
+    - `size_limit_aborts`;
+    - `retries_with_backoff_then_next_source`, `fetch_failed_state_and_retry_at`;
+    - `concurrent_fetch_one_download` (two `Fetcher`s in two threads and a child process share the dir: one download, both see `Cached`);
+    - `cache_reuse_no_network`;
+    - `offline_never_connects`;
+    - `archive_member_extracted_and_verified`;
+    - `proxy_env_is_used` (the test server acting as an HTTP `CONNECT` proxy records the request);
+    - `https_required_outside_test_hooks`.
+- [ ] **Step 4: Run** `rtk cargo test -p fin-fonts` → FAIL. **Implement** (files < 400 lines; the HTTP code stays in `http.rs`).
+- [ ] **Step 5: CI.** Run `warm_cache` once locally into `archive/fonts/`, and check that it reports every face and script equal to the catalog.
+- [ ] **Step 6: Run** the three gates → PASS. **Commit** `feat(fonts): pinned font catalog, content-addressed cache and fetcher`.
+
+### Task 6: Model v2 (with the `fonts` registry), the snapshot upcaster, new id kinds — tier: opus
+
+The existing 7 ops are ported onto the v2 model unchanged in meaning (`clip.*` still apply, now to `Item` of kind `clip` on any timeline). Task 7 renames them.
+
+**Files:**
+- Create: `crates/fin-core/src/model/{timeline.rs, item.rs, asset.rs, caption.rs, fonts.rs}`. Modify: `model/mod.rs` (`Project`, `new_project`, `SCHEMA_VERSION = 2`).
+- Create: `crates/fin-core/src/upgrade/snapshot_v1.rs` (frozen step) and `upgrade/record_v1.rs` (an identity step for now; Task 7 fills it).
 - Modify:
   - `crates/fin-core/Cargo.toml` (`serde_json` `float_roundtrip`);
   - `crates/fin-core/src/ids.rs` (Decision 10 kinds; `MemIds::after` walks every entity);
@@ -581,7 +665,8 @@ The existing 7 ops are ported onto the v2 model unchanged in meaning (`clip.*` s
 pub const SCHEMA_VERSION: u32 = 2;
 pub struct Project { pub id: String, pub name: String, pub schema_version: u32, pub rate: Rational,
     pub timelines: Vec<Timeline>, pub bins: BTreeMap<String, Bin>, pub assets: BTreeMap<String, Asset>,
-    pub styles: BTreeMap<String, CaptionStyle> /* Task 17 fills the struct; empty until then */ }
+    pub styles: BTreeMap<String, CaptionStyle> /* Task 18 fills the struct; empty until then */,
+    pub fonts: Fonts /* Decision 29; empty until a caption edit pins */ }
 pub struct Timeline { pub id: String, pub name: String, pub rate: Rational, pub resolution: Resolution,
     pub markers: Vec<Marker>, pub tracks: Vec<Track> }
 pub struct Resolution { pub width: u32, pub height: u32 }
@@ -623,9 +708,16 @@ pub struct Bin { pub id: String, pub name: String, pub parent: Option<String> }
 pub enum AssetKind { Media, Image, Svg, LottieTemplate, Font, Lut }
 pub struct Asset { pub id: String, pub kind: AssetKind, pub path: String, pub fingerprint: String,
     pub bin: Option<String>, pub duration: Option<Rational>, pub video: Option<VideoInfo>, pub audio: Option<AudioInfo>,
-    pub image: Option<ImageInfo>, pub lottie: Option<LottieInfo>, pub font: Option<Vec<FontFace>>, pub lut: Option<LutInfo> }
+    pub image: Option<ImageInfo>, pub lottie: Option<LottieInfo>, pub font: Option<FontFile>, pub lut: Option<LutInfo> }
 // ImageInfo {width, height}; LottieInfo {width, height, rate, duration, slots: Vec<SlotSpec{id, kind}>, fonts: Vec<String>};
-// FontFace {family, weight, italic, face}; LutInfo {size}
+// LutInfo {size}
+pub struct FontFile { pub sha256: String, pub size: u64, pub format: FontFormat /* ttf|otf|ttc */, pub faces: Vec<FontFace> }
+pub struct FontFace { pub index: u32, pub family: String, pub weight: u16, pub italic: bool, pub scripts: Vec<String> }
+pub struct Fonts { pub pins: BTreeMap<String /* FontKey */, FontPin>, pub fallback: Vec<String> }
+pub struct FontPin { pub family: String, pub weight: u16, pub italic: bool, pub face: u32, pub sha256: String,
+    pub size: u64, pub format: FontFormat, pub scripts: Vec<String>, pub source: FontSource }
+pub enum FontSource { Catalog { entry: String, style: String, catalog: String }, Asset { asset: String } }
+pub fn font_key(family: &str, weight: u16, italic: bool) -> String; // "<family>|<weight>|<normal|italic>"
 pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, CoreError>; // Decision 9
 // fin_core::ids: IdKind gains Caption, Graphic, Image, Adjustment, Nested, Marker, Transition, Bin,
 // Effect, Link, Style; ID_KINDS lists all; fin-store `counters::kind_name` names them.
@@ -634,7 +726,8 @@ pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, 
 - [ ] **Step 1: Write failing tests:**
   - `upcast_v1_snapshot_golden` (frozen `snapshot_v1.json` → `snapshot_v2.json`, compared as decoded `Project` and as re-encoded JSON);
   - `new_project_equals_upcast_genesis` (rates 30, 30000/1001, 25, 60; resolution 1080×1920);
-  - `item_json_round_trips_every_kind`, `defaults_are_omitted` (a rev-0 project encodes to the golden bytes);
+  - `item_json_round_trips_every_kind`, `fonts_registry_round_trips`, `defaults_are_omitted` (a rev-0 project, with an empty `fonts`, encodes to the golden bytes);
+  - `font_key_is_canonical` (family as written, weight digits, `normal`/`italic`);
   - `param_values_round_trip_through_record_bytes` (B2; a prop, 256 cases: random finite `f64`s, subnormals and `±0.0` included, in `ParamValue`s inside ops → `encode_record` → `decode_record` → bit-identical);
   - `ids_after_counts_every_kind`, `new_id_prefixes_are_unambiguous`;
   - every existing `ops_*`, `rebase*`, `undo`, `merge`, `pick` and props test passes on the v2 model;
@@ -643,13 +736,14 @@ pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, 
 - [ ] **Step 3: Implement.** The snapshot step is written on `Value` with literal names:
   - it reproduces `new_project`'s defaults (track names by kind order, `"Timeline 1"`, 1080×1920);
   - sets `kind: "media"` on assets;
-  - moves `timeline` into `timelines[0]` with the project rate.
+  - moves `timeline` into `timelines[0]` with the project rate;
+  - adds nothing for `fonts` (empty is the omitted default).
 
-  Tests and `fin` send version 2; client v1 txs come in Task 6 through `normalize`.
+  Tests and `fin` send version 2; client v1 txs come in Task 7 through `normalize`.
 - [ ] **Step 4: Golden review.** Generate `expected_v2.json` for the three fixtures, read each against `expected.json` by hand (ids, times, assets equal; only shape and defaults differ), and commit them.
-- [ ] **Step 5: Run** the three gates and `rtk pnpm e2e` (scripts read `timelines[0]`) → PASS. **Commit** `feat(core): v2 model with timelines, item kinds and common fields; snapshot upcaster`.
+- [ ] **Step 5: Run** the three gates and `rtk pnpm e2e` (scripts read `timelines[0]`) → PASS. **Commit** `feat(core): v2 model with timelines, item kinds, common fields and font pins; snapshot upcaster`.
 
-### Task 6: `item.*` ops replace `clip.*`; aliases; record upcaster; asset kinds; replay track check — tier: opus
+### Task 7: `item.*` ops replace `clip.*`; aliases; record upcaster; asset kinds; replay track check — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{item_insert.rs, item_delete.rs, item_trim.rs, item_remove.rs, item_restore.rs, alias.rs}`, `crates/fin-core/src/ops/util/{content.rs (Decision 13), lock.rs (TRACK_LOCKED), touched.rs (Decision 25)}`.
@@ -660,7 +754,7 @@ pub fn new_project(id: String, name: String, rate: Rational) -> Result<Project, 
   - `history/*` and `rebase/*` where `Op::ClipRestore`/`ClipRemove` are named;
   - `crates/fin-store/src/{commit.rs (normalize), recover/remap.rs, history_ops/stack_rows_tests.rs, write_tests.rs, branch/lineage_tests.rs}`;
   - `crates/fin-store-xhost/src/{history.rs, ops.rs}`;
-  - `crates/fin/src/commands/clip.rs` (builds `item.*`; linked audio comes in Task 22), `crates/fin/src/output.rs`.
+  - `crates/fin/src/commands/clip.rs` (builds `item.*`; linked audio comes in Task 23), `crates/fin/src/output.rs`.
 - Test: `crates/fin-core/tests/{ops_item.rs (new; replaces ops_insert.rs and ops_trim_delete.rs), upgrade_golden.rs, normalize.rs (new)}`, `crates/fin-store/tests/{fixture_4b.rs, records.rs, recover.rs}`, `crates/fin/src/commands/tests.rs`.
 
 **Interfaces** (new ops are newtype variants, `Op::ItemInsert(ItemInsert)`, wire tag `"item.insert"`):
@@ -675,7 +769,7 @@ pub struct ItemRemove { pub id: String, pub mode: DeleteMode }                  
 pub struct ItemRestore { pub item: Item, pub track: String, pub mode: DeleteMode } // internal; $ id allocates
 pub struct AssetAdd { pub id: String, pub kind: AssetKind, pub path: String, pub fingerprint: String,
     pub duration: Option<Rational>, pub video: Option<VideoInfo>, pub audio: Option<AudioInfo>, pub image: Option<ImageInfo>,
-    pub lottie: Option<LottieInfo>, pub font: Option<Vec<FontFace>>, pub lut: Option<LutInfo>, pub bin: Option<String> }
+    pub lottie: Option<LottieInfo>, pub font: Option<FontFile>, pub lut: Option<LutInfo>, pub bin: Option<String> }
 // ops::alias: `Op::ClipInsert {..}`, `ClipTrim {..}`, `ClipDelete {..}` stay (struct variants, client only)
 pub fn normalize(tx: Tx) -> Result<Tx, CoreError>; // Decision 6; re-exported from fin_core
 // ops::util::touched
@@ -683,8 +777,8 @@ pub(crate) fn touched_tracks(project: &Project, own: &Diff) -> Vec<usize>; // De
 ```
 Insert validation per kind (policy unless noted):
 - `clip` on a video or audio track needs a `media` asset with that stream (`TRACK_KIND_MISMATCH`, structural as today);
-- `image` (`image`/`svg` assets), `graphic` (`lottieTemplate`; slots checked in Task 10) and `adjustment` go on video tracks (Decision 41);
-- `caption` goes on caption tracks (word rules in Task 18);
+- `image` (`image`/`svg` assets), `graphic` (`lottieTemplate`; slots checked in Task 11) and `adjustment` go on video tracks (Decision 48);
+- `caption` goes on caption tracks (word rules in Task 19);
 - `nested` is `INVALID_OP` with `fix` "nested items arrive in sub-project 6".
 
 `item.trim` on the start edge records `by` and rebases keyframes and words (Decision 13). `strict` is `INVALID_OP` from clients. Every op on a locked track's items is `TRACK_LOCKED`.
@@ -715,7 +809,7 @@ Insert validation per kind (policy unless noted):
   It never touches ids, timestamps or bindings.
 - [ ] **Step 4: Run** the three gates and `rtk pnpm e2e` → PASS. **Commit** `feat(core): item.* ops with modes; clip.* as client aliases; record upcaster v1→v2`.
 
-### Task 7: Overwrite, roll, slip, split; content offsets in the rebase engine; `compose::overwrite` — tier: opus
+### Task 8: Overwrite, roll, slip, split; content offsets in the rebase engine; `compose::overwrite` — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/util/carve.rs`, `crates/fin-core/src/ops/{item_slip.rs, item_split.rs}`, `crates/fin-core/src/compose/{mod.rs, overwrite.rs}`.
@@ -766,7 +860,7 @@ Rules:
 - [ ] **Step 3: Implement** (each module < 250 lines).
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): overwrite, roll, slip and split; content offsets in rebase`.
 
-### Task 8: Moves, slides, link groups; `compose::clip_with_audio`, `compose::split_linked` — tier: opus
+### Task 9: Moves, slides, link groups; `compose::clip_with_audio`, `compose::split_linked` — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{item_move.rs, item_slide.rs, item_link.rs, item_unlink.rs}`, `crates/fin-core/src/ops/util/group.rs`, `crates/fin-core/src/compose/{audio.rs, split.rs}`.
@@ -805,7 +899,7 @@ Rules:
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): item.move, item.slide, link groups; linked-audio and linked-split builders`.
 
-### Task 9: Transitions; `compose::transition_with_links` — tier: opus
+### Task 10: Transitions; `compose::transition_with_links` — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{transition_set.rs, transition_remove.rs}`, `crates/fin-core/src/ops/util/prune.rs`, `crates/fin-core/src/compose/transition.rs`.
@@ -843,7 +937,7 @@ Rules (policy unless noted):
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates and `rtk pnpm e2e` → PASS. **Commit** `feat(core): transitions at cuts, pruned by a post-op pass; linked-partner builder`. **Batch A is done.**
 
-### Task 10: The settings registry and `param.set` — tier: opus
+### Task 11: The settings registry and `param.set` — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/params/{mod.rs (ParamSpec, ParamType, find, validate), item.rs, effects.rs, scopes.rs (track, timeline, marker, style), access.rs (get/set on the typed model)}`, `crates/fin-core/src/ops/param_set.rs`.
@@ -892,7 +986,7 @@ Paths:
 - [ ] **Step 3: Implement.** `access.rs` is one `match` per path group; files < 400 lines.
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): settings registry and param.set`.
 
-### Task 11: Tracks and timelines — tier: opus
+### Task 12: Tracks and timelines — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{track_add, track_remove, track_restore, track_move, track_set, timeline_add, timeline_set, timeline_remove, timeline_restore}.rs`.
@@ -927,11 +1021,11 @@ Rules:
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): track and timeline ops`.
 
-### Task 12: Markers, bins and assets — tier: opus
+### Task 13: Markers, bins and assets — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{marker_add, marker_set, marker_remove, bin_add, bin_move, bin_remove, asset_move}.rs`.
-- Modify: `ops/asset_remove.rs` (now a client op: `ASSET_IN_USE` with `details.items` over clips, graphics, images, and `lut` effect params; styles naming a font family join in Task 17).
+- Modify: `ops/asset_remove.rs` (now a client op: `ASSET_IN_USE` with `details.items` over clips, graphics, images, `lut` effect params, and font pins with `source: Asset`; Task 18 adds those pins).
 - Test: `crates/fin-core/tests/ops_library.rs`.
 
 **Interfaces:**
@@ -956,7 +1050,7 @@ Rules:
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): marker, bin and asset ops`.
 
-### Task 13: Effects and keyframes — tier: opus
+### Task 14: Effects and keyframes — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{effect_add, effect_remove, effect_restore, effect_move, keyframe_set, keyframe_remove}.rs`.
@@ -990,9 +1084,9 @@ Rules (policy unless noted):
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): effects and keyframes`.
 
-### Task 14: `eval_frame` — tier: opus
+### Task 15: `eval_frame` — tier: opus
 
-Eval covers every item kind, `nested` and masks included (built literally in tests, Decision 41).
+Eval covers every item kind, `nested` and masks included (built literally in tests, Decision 48).
 
 **Files:**
 - Create: `crates/fin-core/src/eval/{mod.rs, plan.rs, interp.rs, source.rs, frame.rs, transition.rs}`.
@@ -1012,10 +1106,11 @@ pub struct SourceRef { pub asset: String, pub time: Rational }
 pub struct EffectPlan { pub id: String, pub kind: String, pub params: BTreeMap<String, PlanValue> }
 pub enum PlanValue { Bool(bool), Number(f64), Vec2([f64; 2]), Color([f64; 4]), Text(String) } // Decision 12
 pub struct TransitionState { pub id: String, pub kind: TransitionKind, pub curve: Curve, pub progress: f64, pub role: Role }
-pub struct CaptionPlan { pub words: Vec<WordPlan>, pub style: String, pub layout: Option<TextLayout> } // layout: Task 19
+pub struct CaptionPlan { pub words: Vec<WordPlan>, pub style: String, pub layout: Option<TextLayout>,
+    pub unmeasured: Option<Unmeasured> /* {reason: fontMissing|fontFetchFailed|fontUnpinned|noMeasurer, keys} */ } // filled in Task 20
 pub struct GraphicPlan { pub asset: String, pub time: Rational, pub slots: BTreeMap<String, PlanValue> }
 pub fn interpolate(kfs: &[Keyframe], at: Rational, base: &ParamValue, ty: &ParamType) -> PlanValue;
-pub fn bezier_y(c: [f64; 4], u: f64) -> f64; // Decision 35
+pub fn bezier_y(c: [f64; 4], u: f64) -> f64; // Decision 42
 pub const PRESETS: &[(&str, [f64; 4])];   // ease, easeIn, easeOut, easeInOut (CSS)
 ```
 Rules:
@@ -1033,7 +1128,7 @@ Rules:
 - [ ] **Step 3: Implement** within the float rules.
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): eval_frame with keyframes, transitions and nesting`.
 
-### Task 15: `eval_audio` — tier: opus
+### Task 16: `eval_audio` — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/eval/{audio.rs, segments.rs}`.
@@ -1049,7 +1144,7 @@ pub struct GainSegment { pub from: Rational, pub to: Rational, pub db: [f64; 2],
 pub struct Shape { pub kind: ShapeKind /* fadeIn|fadeOut|crossIn|crossOut */, pub curve: Curve, pub p: [f64; 2] }
 pub struct PanSegment { pub from: Rational, pub to: Rational, pub pan: [f64; 2], pub interp: Interp }
 ```
-Rules (Decision 34):
+Rules (Decision 41):
 - `db` = track gain + item `audio.gain` (keyframed in dB);
 - segments break at keyframes, fade ends and transition edges, clipped to `[from, to)`;
 - mute omits; any solo keeps only soloed tracks;
@@ -1060,7 +1155,7 @@ Rules (Decision 34):
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): eval_audio gain and pan plans`.
 
-### Task 16: The determinism corpus, the float gate and the wasm32 runner — tier: opus
+### Task 17: The determinism corpus, the float gate and the wasm32 runner — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/tests/eval_corpus.rs`, `crates/fin-core/tests/eval_corpus/{projects/*.json, expected.json}`.
@@ -1068,7 +1163,7 @@ Rules (Decision 34):
 - Modify: `.github/workflows/ci.yml`, on ubuntu only:
   - `rustup target add wasm32-wasip1`;
   - wasmtime through a SHA-pinned `bytecodealliance/actions/wasmtime/setup`;
-  - `CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir ."`, then `cargo test -p fin-core --target wasm32-wasip1 --test eval_corpus` and `cargo test -p fin-text --target wasm32-wasip1 --test corpus`. `--dir` gives the tests the corpus files and the fonts.
+  - `CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime --dir ."`, then `cargo test -p fin-core --target wasm32-wasip1 --test eval_corpus`, `cargo test -p fin-text --target wasm32-wasip1 --test measure` and, with the warmed cache under the mapped dir, `--test corpus_real`. `--dir` gives the tests the corpus files and the font cache.
 - Modify: `crates/fin-core/Cargo.toml` (`blake3` dev-dependency).
 
 **Corpus:** about 20 projects × 6–10 times each. They cover:
@@ -1095,43 +1190,53 @@ Its test feeds it `x.powf(2.0)`, `f64::sin(x)` and `libm::exp(x)` and expects th
   - if wasm cannot run in CI, keep the native run and say so in TASKS.md and spec §5.4 (the spec allows it).
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `test(core): plan-hash determinism corpus, float gate, wasm32 runner`. **Batch B is done.**
 
-### Task 17: Captions: blocks, SRT, alignment, styles and style ops — tier: opus
+### Task 18: Captions, styles and font pins in the model — tier: opus
 
 **Files:**
-- Create: `crates/fin-core/src/captions/{mod.rs, blocks.rs, srt.rs, align.rs, presets.rs}`, `crates/fin-core/src/model/caption.rs` (`CaptionStyle`), `crates/fin-core/src/ops/{style_add, style_set, style_remove}.rs`.
-- Modify: `params/scopes.rs` (style paths), `ops/asset_remove.rs` (a font family a style names is in use, Decision 28).
-- Test: `crates/fin-core/tests/{captions.rs, ops_styles.rs}`.
+- Create: `crates/fin-core/src/captions/{mod.rs, blocks.rs, srt.rs, align.rs, presets.rs}`, `crates/fin-core/src/model/caption.rs` (`CaptionStyle`), `crates/fin-core/src/ops/{style_add, style_set, style_remove, font_pin, font_unpin, font_repin}.rs`.
+- Modify: `crates/fin-core/src/layout.rs` (`font_needs`, `faces_for`, `scripts_of`), `params/scopes.rs` (style paths), `ops/asset_remove.rs`, `crates/fin-core/Cargo.toml` (`unicode-script`).
+- Test: `crates/fin-core/tests/{captions.rs, ops_styles.rs, ops_fonts.rs, layout_faces.rs}`.
 
 **Interfaces:**
 ```rust
-pub struct CaptionStyle { pub id: String, pub name: String, pub text: TextStyle, pub color: String,
-    pub stroke: Option<Stroke>, pub background: Option<CaptionBox>, pub highlight: Option<String>,
-    pub position: CaptionPosition /* {anchor: top|center|bottom, offset: f64} */, pub safe_zone: String,
-    pub max_chars: u32, pub max_lines: u32, pub gap: Rational, pub max_duration: Option<Rational> }
-pub struct SafeZone { pub name: &'static str, pub insets: [Rational; 4] /* left, top, right, bottom; fractions */ }
-pub fn presets() -> &'static [CaptionStyle];   // "preset:<name>"
-pub fn safe_zones() -> &'static [SafeZone];
-pub fn style<'a>(project: &'a Project, reference: &str) -> Result<Cow<'a, CaptionStyle>, CoreError>;
-pub fn blocks(words: &[Word], style: &CaptionStyle) -> Vec<BlockDraft /* {start, duration, words} */>;
-pub fn parse_srt(text: &str) -> Result<Vec<Word>, CoreError>; // SRT_INVALID {line}; a cue's words share its span by chars
-pub fn align_text(old: &[Word], text: &str) -> Vec<Word>;    // LCS keep; each new run takes the replaced span, by chars
-pub struct StyleAdd { pub id: String, pub name: String, pub from: Option<String>, #[serde(default)] pub set: BTreeMap<String, ParamValue> }
-pub struct StyleSet { pub style: String, pub path: String, pub value: ParamValue }
-pub struct StyleRemove { pub style: String } // STYLE_IN_USE {items}
+pub struct CaptionStyle { pub id: String, pub name: String, pub text: TextStyle /* family, weight, italic, size, … */,
+    pub color: String, pub stroke: Option<Stroke>, pub background: Option<CaptionBox>, pub highlight: Option<String>,
+    pub position: CaptionPosition, pub safe_zone: String, pub max_chars: u32, pub max_lines: u32, pub gap: Rational,
+    pub max_duration: Option<Rational> }
+pub fn presets() -> &'static [CaptionStyle]; pub fn safe_zones() -> &'static [SafeZone];
+pub fn blocks(words: &[Word], style: &CaptionStyle) -> Vec<BlockDraft>;
+pub fn parse_srt(text: &str) -> Result<Vec<Word>, CoreError>;
+pub fn align_text(old: &[Word], text: &str) -> Vec<Word>;
+pub struct StyleAdd { pub id: String, pub name: String, pub from: Option<String>, pub set: BTreeMap<String, ParamValue> }
+pub struct StyleSet { pub style: String, pub path: String, pub value: ParamValue }   pub struct StyleRemove { pub style: String }
+pub struct FontPinOp { pub key: String, pub pin: FontPin, pub fallback: Option<u32> }      // op "font.pin"
+pub struct FontUnpin { pub key: String }   pub struct FontRepin { pub key: String, pub pin: FontPin }
+// layout
+pub struct FontNeeds { pub faces: BTreeSet<(String, u16, bool)>, pub scripts: BTreeSet<String> }
+pub fn font_needs(project: &Project) -> FontNeeds;           // every style in use and every caption's text
+pub fn scripts_of(words: &[Word]) -> BTreeSet<String>;        // unicode-script; Common/Inherited ignored
+/// The request faces for `style` and `words` (Decision 36), or the keys that have no pin.
+pub fn faces_for(project: &Project, style: &CaptionStyle, words: &[Word]) -> Result<Vec<FaceRef>, Vec<String>>;
 ```
-Safe-zone values come from the platforms' public creator guidelines; the module doc names each source and date.
+Rules:
+- `font.pin` with the same `sha256` is a no-op; another hash is `FONT_PINNED` (policy; structural on replay);
+- `font.unpin` is `FONT_IN_USE` while a style resolves to the key;
+- a style whose face has no pin is valid (it is unmeasured: Decision 36);
+- the footprint is entity `"font/<key>"` (pin creates, unpin removes, repin touches `Param("sha256")`);
+- `style.remove` is `STYLE_IN_USE {items}` while a caption uses the style;
+- safe-zone values come from the platforms' public creator guidelines, with each source and date named in the module doc.
 
-- [ ] **Step 1: Write failing tests:**
-  - `blocks_split_on_gap_chars_lines_duration`;
-  - `srt_parses_and_distributes`, `srt_errors_name_the_line`;
-  - `align_keeps_matching_times`, `align_distributes_by_chars`, `align_is_exact_rational`;
-  - style op goldens (`ids_cover_every_id_in_json` for `style.add`); `style_remove_in_use_refused`; `font_named_by_a_style_is_in_use`;
-  - `presets_and_zones_are_valid`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --test captions --test ops_styles`. Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): caption blocks, SRT, text alignment, styles`.
+- [ ] **Step 1: Failing tests:**
+  - `blocks_split_on_gap_chars_lines_duration`, `srt_parses_and_distributes`, `srt_errors_name_the_line`, `align_keeps_matching_times`, `align_distributes_by_chars`, `align_is_exact_rational`;
+  - style goldens, `style_remove_in_use_refused`, `presets_and_zones_are_valid`;
+  - font goldens (`ids_cover_every_id_in_json` for an asset pin):
+    - `same_hash_pin_is_a_noop_and_merges`, `other_hash_pin_is_font_pinned`;
+    - `unpin_in_use_refused`, `repin_inverse_exact`, `font_pin_never_reads_bytes` (the op works with no provider anywhere);
+  - `font_needs_lists_styles_and_scripts`, `faces_for_orders_primary_then_matching_fallbacks`, `faces_for_reports_unpinned_keys`.
+- [ ] **Step 2–3:** Run → FAIL; implement.
+- [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): caption blocks, SRT, alignment, styles and font pins`.
 
-### Task 18: Caption item edits — tier: opus
+### Task 19: Caption item edits — tier: opus
 
 **Files:**
 - Create: `crates/fin-core/src/ops/{caption_set_text, caption_set_words, caption_split, caption_merge, caption_set_style}.rs`.
@@ -1158,50 +1263,49 @@ Rules (policy):
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core): caption set-text, split, merge and style edits`.
 
-### Task 19: Measurement in the edit path and in eval — tier: opus
+### Task 20: Measurement in the edit path and eval; pin planning — tier: opus
 
 **Files:**
-- Modify (fin-core):
-  - `apply.rs` (`ApplyEnv`, `apply_tx_env`; the overflow check in `finish`);
-  - `rebase/engine.rs` (`Rebase.env`, `PreparedRebase.env`, `rebase_tx(.., env)`; the check after the last op);
-  - `history/mod.rs` (`LogView::measurer`) and the planners (`undo`, `checkpoint`, `merge`, `pick`);
-  - `captions/overflow.rs` (new), `eval/frame.rs` (layouts, `text_engine`);
-  - `layout.rs` (`pub mod testing { FakeMeasurer, PanicMeasurer }` behind feature `test-measurer`).
-- Modify (fin-store): `open.rs` (`OpenOptions.measurer`), `lib.rs` (`Store::set_measurer`), `commit.rs`, `history_ops/mod.rs` (`SqlLog::measurer`), `recover/rows.rs`.
-- Modify: `crates/fin-core/tests/common/memlog.rs` (`MemLog::with_measurer`).
-- Test: `crates/fin-core/tests/overflow.rs`, `crates/fin-store/tests/measure.rs`.
+- fin-core:
+  - `apply.rs` (`ApplyEnv`, `apply_tx_env`; the overflow check in `finish`), `rebase/engine.rs` (`Rebase.env`, `rebase_tx(.., env)`);
+  - `history/mod.rs` (`LogView::measurer`) and the planners;
+  - `captions/overflow.rs`, `eval/frame.rs` (layouts, `unmeasured`);
+  - `layout.rs` `testing { FakeMeasurer, PanicMeasurer, MapBytes }` (feature `test-measurer`).
+- fin-store: `open.rs` (`OpenOptions.measurer`), `lib.rs` (`Store::set_measurer`), `commit.rs`, `history_ops/mod.rs`, `recover/rows.rs`.
+- fin-fonts: `src/plan.rs`.
+- `crates/fin-core/tests/common/memlog.rs`.
+- Test: `crates/fin-core/tests/overflow.rs`, `crates/fin-store/tests/measure.rs`, `crates/fin-fonts/tests/plan.rs`.
 
 **Interfaces:**
 ```rust
-#[derive(Clone, Copy, Default)]
-pub struct ApplyEnv<'a> { pub measurer: Option<&'a dyn TextMeasurer> }
-pub fn apply_tx_env(project: &Project, tx: &Tx, ids: &mut dyn IdAlloc, mode: ApplyMode, env: ApplyEnv<'_>)
-    -> Result<Applied, CoreError>; // apply_tx / apply_internal / apply_tx_mode keep their signatures (env none)
-pub fn rebase_tx(base: &Project, head: &Project, tx: &Tx, since: &[CommittedTx], ids: &mut dyn IdAlloc,
-    env: ApplyEnv<'_>) -> Result<Rebased, CoreError>;
-pub trait LogView { /* 4B methods */ fn measurer(&self) -> Option<&dyn TextMeasurer> { None } }
-/// Once per tx (Decision 31): every caption item the tx changed, every user of a changed style, and
-/// every caption of a timeline whose resolution changed, laid out in its safe zone. CAPTION_OVERFLOW
-/// {item, lines, maxLines, width, maxWidth, missing, opIndex} with `fix` "shorten the text, split the
-/// block (fin caption split), or reduce the style's size".
+#[derive(Clone, Copy, Default)] pub struct ApplyEnv<'a> { pub measurer: Option<&'a dyn TextMeasurer> }
+pub fn apply_tx_env(project: &Project, tx: &Tx, ids: &mut dyn IdAlloc, mode: ApplyMode, env: ApplyEnv<'_>) -> Result<Applied, CoreError>;
+pub fn rebase_tx(base: &Project, head: &Project, tx: &Tx, since: &[CommittedTx], ids: &mut dyn IdAlloc, env: ApplyEnv<'_>)
+    -> Result<Rebased, CoreError>;
+pub trait LogView { /* 4B */ fn measurer(&self) -> Option<&dyn TextMeasurer> { None } }
+/// Once per tx: each caption the tx changed (and each user of a changed style or resolution, and each
+/// caption whose pins changed), laid out through `faces_for` + the measurer. `Unavailable` or unpinned
+/// → skipped (Decision 36). CAPTION_OVERFLOW {item, lines, maxLines, width, maxWidth, missing, opIndex}.
 pub(crate) fn check_overflow(project: &Project, diff: &Diff, m: &dyn TextMeasurer) -> Result<(), CoreError>;
-pub struct OpenOptions { /* 4A/4B fields */ pub measurer: Option<Arc<dyn TextMeasurer>> }
-impl Store { pub fn set_measurer(&self, m: Option<Arc<dyn TextMeasurer>>); }
+// fin_fonts::plan (Decision 35)
+pub fn plan_pins(head: &Project, ops: &[Op], catalog: &FontCatalog) -> Result<Vec<Op> /* font.pin */, CoreError>;
 ```
 
-- [ ] **Step 1: Write failing tests:**
+- [ ] **Step 1: Failing tests:**
   - `replay_never_calls_the_measurer` (`PanicMeasurer` through `apply_committed`, import and rebuild);
-  - `client_insert_overflow_refused` (code, details, fix text);
-  - `overflow_checked_once_at_tx_end` (a tx that sets long text, then splits the block, passes);
-  - `style_set_rechecks_every_user`, `resolution_change_rechecks_timeline`;
-  - `stale_commit_rechecks_overflow`, `merge_rechecks_overflow` (a wider-glyph `FakeMeasurer` on the target: `CAPTION_OVERFLOW` conflict, spec §5.6), `undo_rechecks_overflow`, `recovery_rechecks_overflow`;
-  - `no_measurer_skips_the_check`;
-  - `eval_attaches_layouts_and_engine`.
-- [ ] **Step 2: Run** `rtk cargo test -p fin-core --features test-measurer --test overflow` and `rtk cargo test -p fin-store --test measure`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Thread `env` explicitly; there is no global state.
-- [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core,store): caption overflow once per tx through an injected measurer`.
+  - `client_insert_overflow_refused`, `overflow_checked_once_at_tx_end`, `style_set_rechecks_every_user`, `resolution_change_rechecks_timeline`, `repin_rechecks_users`;
+  - `stale_commit_rechecks_overflow`, `merge_rechecks_overflow`, `undo_rechecks_overflow`, `recovery_rechecks_overflow`;
+  - **`missing_font_never_blocks_and_logs_nothing`** (with a provider lacking the bytes, the edit commits and the record, diff and snapshot are byte-equal to the same edit made without a measurer);
+  - `unpinned_text_is_unmeasured`;
+  - **`same_pins_same_layout_across_providers`** (two `MapBytes` holding the same bytes: equal plans);
+  - **`catalog_update_keeps_pinned_layout`** (a newer catalog with another file for the same family: an existing project's plans are unchanged until `font.repin`);
+  - `eval_reports_unmeasured_with_reason`, `measurement_resumes_when_bytes_arrive`;
+  - plan: `plan_pins_for_new_style_face`, `plan_pins_fallback_for_new_script`, `plan_pins_nothing_when_pinned`, `plan_never_pins_unknown_face` (`FONT_NOT_IN_CATALOG` is returned as a note, not an error).
+- [ ] **Step 2: Run** `rtk cargo test -p fin-core --features test-measurer --test overflow`, `rtk cargo test -p fin-store --test measure` and `rtk cargo test -p fin-fonts --test plan` → FAIL.
+- [ ] **Step 3: Implement.** Thread `env` explicitly, with no global state.
+- [ ] **Step 4: Run** the three gates → PASS. **Commit** `feat(core,store,fonts): measurement from pinned bytes; unmeasured never blocks; pin planning`.
 
-### Task 20: Probes for the new asset kinds — tier: sonnet
+### Task 21: Probes for the new asset kinds — tier: sonnet
 
 **Files:**
 - Modify: `crates/fin-probe/src/lib.rs` (dispatch by magic bytes; `Probe` gains `kind` and the kind fields), `crates/fin-probe/Cargo.toml`.
@@ -1215,7 +1319,7 @@ impl Store { pub fn set_measurer(&self, m: Option<Arc<dyn TextMeasurer>>); }
 ```rust
 pub struct Probe { pub kind: AssetKind, pub duration: Option<Rational>, pub video: Option<VideoInfo>,
     pub audio: Option<AudioInfo>, pub image: Option<ImageInfo>, pub lottie: Option<LottieInfo>,
-    pub font: Option<Vec<FontFace>>, pub lut: Option<LutInfo>, pub fingerprint: String, pub size: u64 }
+    pub font: Option<FontFile>, pub lut: Option<LutInfo>, pub fingerprint: String, pub size: u64 }
 ```
 Kinds:
 - **PNG, JPEG, WebP:** `imagesize` reads the header only.
@@ -1225,49 +1329,64 @@ Kinds:
   - slots from `slots` (id plus kind: text, color, image, number);
   - font names from `fonts.list`;
   - malformed JSON or `chars` is `UNSUPPORTED_CONTAINER` with `details.reason` (arch §27.10).
-- **Font:** `fin_text::font_info` (Decision 29), TTF/OTF/TTC.
+- **Font:** `fin_text::font_info` (Decision 38) for faces and scripts, plus a whole-file SHA-256 (`sha2`) → `FontFile`; TTF/OTF/TTC. This is what `fin fonts pin --asset` pins (Decision 37).
 - **`.cube`:** `LUT_3D_SIZE` 2–64 with exactly size³ rows.
 - **WAV:** a RIFF/`WAVE` `fmt ` + `data` parser.
 - **M4A/AAC:** the existing MP4 path with no video track → `media` with audio only.
 
 - [ ] **Step 1:** Add the crates and run `rtk cargo deny check licenses` (expected: MIT, MIT OR Apache-2.0, Zlib).
-- [ ] **Step 2: Write failing tests:** one per kind from the fixture writers; `truncated_inputs_are_unsupported_container`; `unknown_magic_is_unsupported`; `lottie_slots_and_fonts_listed`; `font_family_matches_the_measurer` (the probed family resolves in a `FontSet` with that asset); `probe_is_deterministic`.
+- [ ] **Step 2: Write failing tests:** one per kind from the fixture writers; `truncated_inputs_are_unsupported_container`; `unknown_magic_is_unsupported`; `lottie_slots_and_fonts_listed`; `font_probe_sha256_is_whole_file`; `font_family_matches_the_measurer` (the probed face, pinned, resolves in `faces_for` and measures) (the probed family resolves in a `FontSet` with that asset); `probe_is_deterministic`.
 - [ ] **Step 3: Implement.** **Run** `rtk cargo test -p fin-probe`, then the three gates → PASS.
 - [ ] **Step 4: Commit** `feat(probe): image, SVG, dotLottie, font, LUT and audio-only probes`.
 
-### Task 21: Fonts, the measurer and eval in `fin-node`; the eval RPCs — tier: sonnet
+### Task 22: The font manager in `fin-node`; eval and `fonts.*` RPCs — tier: sonnet
+
+The semantics live in `fin-fonts` (Task 5) and `fin-core`/`fin-fonts::plan` (Task 20). This task wires them up.
 
 **Files:**
-- Create: `crates/fin-node/src/fonts.rs`, `crates/fin-node/src/eval.rs`.
+- Create: `crates/fin-node/src/{fonts.rs (manager: cache, fetcher, provider over cache + asset files, triggers, status), eval.rs}`.
 - Modify:
-  - `crates/fin-node/src/{engine.rs, lib.rs}`, `crates/fin-node/Cargo.toml` (`fin-text`);
-  - `packages/fin-node/` (ship `fonts/` beside the binary, the fetched files included; `index.js` exports);
-  - `packages/contracts/src/rpc.ts` (`eval.frame`, `eval.audio`), `apps/finisherd/src/handlers.ts`;
-  - `crates/fin-store/examples/export_schema.rs` (`FramePlan`, `AudioPlan`, `TextLayout`, `ParamSpec`), `crates/fin/tests/rpc_contract.rs` (fixtures), generated types.
-- Test: `packages/fin-node/test/eval.test.ts`, `apps/finisherd/test/eval.test.ts`, `crates/fin-node/src/fonts.rs` unit tests.
+  - `crates/fin-node/src/{engine.rs, lib.rs, maintenance.rs}`, `crates/fin-node/Cargo.toml` (`fin-text`, `fin-fonts`);
+  - `packages/contracts/src/rpc.ts`, `apps/finisherd/src/{handlers.ts, config.ts (fonts.autoFetch)}`;
+  - `crates/fin-store/examples/export_schema.rs` (`FramePlan`, `AudioPlan`, `TextLayout`, `ParamSpec`, `FontCatalog`, `FileState`), `crates/fin/tests/rpc_contract.rs`, generated types.
+- Test: `packages/fin-node/test/{eval,fonts}.test.ts`, `apps/finisherd/test/fonts.test.ts` (a loopback HTTP server and a test catalog through `FIN_FONT_CATALOG`, test-hooks build).
 
 **Interfaces:**
-- **Font discovery:** `FIN_FONTS_DIR`, else `<dir of the fin-node binary>/fonts`, else (debug builds) `<repo>/assets/fonts` (+ `fetched/`).
-- **Failure never blocks** (Decision 32). A bundle that does not verify → `Store::set_measurer(None)` and status warning `FONTS_DAMAGED {files}`; a missing font asset file → left out, warning `FONT_MISSING {asset, path}`.
-- **The measurer** is `FontSet::bundled(..).with_project_fonts(<font assets, by id>)`, cached per engine by fingerprint. It is rebuilt after a commit or import whose diff adds or removes a `font` asset.
-- **napi:** `evalFrame(projectId, branch, timeline?, at) -> FramePlan`, `evalAudio(projectId, branch, timeline?, from, to) -> AudioPlan` (AsyncTask).
+- **Manager:**
+  - one per server data (`<server-data>/fonts/`), shared by every engine;
+  - one `Measurer` over a provider that answers from the cache, or from an open project's font asset file when its SHA-256 matches;
+  - triggers per Decision 34;
+  - status merges into `project.status` (`fonts {missing, fetching, failed}`, warnings `FONT_MISSING`, `FONT_FETCH_FAILED`, `FONT_UNPINNED`) and publishes `status` events on change.
+- **napi:** `evalFrame`, `evalAudio`, `fontsCatalog()`, `fontsStatus()`, `fontsFetch({shas | pinned: projectId})`, `fontsPlan(projectId, branch, ops)`.
 - **RPC:**
   ```ts
-  Rpc.make("eval.frame", { payload: EvalFramePayload /* {projectId, branch?, timeline?, at} */, success: FramePlanSchema, error: FinError })
-  Rpc.make("eval.audio", { payload: EvalAudioPayload /* {projectId, branch?, timeline?, from, to} */, success: AudioPlanSchema, error: FinError })
+  Rpc.make("eval.frame",   { payload: EvalFramePayload,  success: FramePlanSchema,   error: FinError })
+  Rpc.make("eval.audio",   { payload: EvalAudioPayload,  success: AudioPlanSchema,   error: FinError })
+  Rpc.make("fonts.catalog",{ payload: Schema.Struct({}), success: FontCatalogSchema, error: FinError })
+  Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema,  error: FinError })
+  Rpc.make("fonts.fetch",  { payload: FontsFetchPayload, success: FontStatusSchema,  error: FinError })
+  Rpc.make("fonts.plan",   { payload: FontsPlanPayload /* {projectId, branch, ops} */, success: FontsPlanSchema /* {ops, notes} */, error: FinError })
   ```
 
-- [ ] **Step 1: Write failing tests:** `fonts_dir_discovery_order`, `damaged_bundle_degrades_to_no_measurer_with_warning` (edits still commit; eval layouts are `null`), `measurer_rebuilt_after_font_asset_add`, `font_missing_warns`, `eval_frame_rpc_returns_layouts`, `eval_audio_rpc`, RPC fixtures replayed by `rpc_contract.rs`.
-- [ ] **Step 2: Implement.** **Run** the three gates and `rtk pnpm e2e` → PASS. Record the `fin-node` package size before and after.
-- [ ] **Step 3: Commit** `feat(node,rpc): bundled fonts, per-project measurer, eval.frame and eval.audio`. **Batch C is done.**
+- [ ] **Step 1: Failing tests:**
+  - `open_triggers_fetch_of_missing_pins`, `commit_with_new_pin_triggers_fetch`;
+  - `fetch_progress_reaches_status_events`;
+  - `failed_fetch_warns_with_fix_and_retries`;
+  - `offline_setting_never_fetches`;
+  - `asset_font_pin_measures_from_asset_file`, `changed_asset_file_is_hash_mismatch`;
+  - `eval_frame_rpc_returns_layouts_and_unmeasured`, `eval_audio_rpc`;
+  - `fonts_plan_rpc_returns_pin_ops`;
+  - RPC fixtures.
+- [ ] **Step 2: Implement.** **Run** the three gates and `rtk pnpm e2e` → PASS.
+- [ ] **Step 3: Commit** `feat(node,rpc): font manager, eval and fonts RPCs`. **Batch C is done.**
 
-### Task 22: `fin` edit commands — structure — tier: sonnet
+### Task 23: `fin` edit commands — structure — tier: sonnet
 
-All multi-op behaviour comes from the `fin_core::compose` builders (Tasks 7–9). This task parses arguments, calls them, and echoes.
+All multi-op behaviour comes from the `fin_core::compose` builders (Tasks 8–10). This task parses arguments, calls them, and echoes.
 
 **Files:**
 - Create: `crates/fin/src/commands/{item.rs, track.rs, timeline.rs, marker.rs, bin.rs, transition.rs}`.
-- Modify: `crates/fin/src/commands/{clip.rs, asset.rs, builder.rs}`, `crates/fin/src/{registry.rs, map.rs, addr.rs, main.rs, output.rs}`.
+- Modify: `crates/fin/src/commands/{clip.rs, asset.rs, builder.rs}` (the `Builder` calls `fonts.plan` before an online commit and prepends the returned `font.pin` ops, Decision 35), `crates/fin/src/{registry.rs, map.rs, addr.rs, main.rs, output.rs}`.
 - Test: `crates/fin/tests/cli_edit.rs` (new; offline snapshot hook plus a live server), `crates/fin/tests/cli_offline.rs` (map size).
 
 **Commands** (every write takes `--dry-run`; global `--timeline <tl>`, default the first timeline):
@@ -1280,6 +1399,7 @@ All multi-op behaviour comes from the `fin_core::compose` builders (Tasks 7–9)
 Behaviour:
 - Mode defaults follow Decision 18, and every write echoes `resolved.mode` and what each builder sent.
 - New optional arguments are omitted from the hashed input when absent (Decision 7).
+- **Font pins:** every online write sends its ops to `fonts.plan` first and prepends the answer, echoed as `resolved.fonts` (keys and catalog entries). Offline writes plan nothing and say `measured: false`.
 - **SP2 follow-ups:**
   - trim echoes the resulting edge (`resolved.edgeAt`);
   - `--out < --in` says "`--out` must be after `--in`" with both values;
@@ -1289,18 +1409,19 @@ Behaviour:
 - [ ] **Step 1: Write failing tests:** per command: the dry-run JSON, a live commit, and its main refusal with exit code and `fix`. Plus:
   - `clip_insert_links_audio_by_default`, `clip_insert_no_audio`, `clip_insert_without_audio_track_is_usage`;
   - `mode_default_and_echo`, `overwrite_inside_item_composes_split`, `transition_set_crossfades_linked_audio`;
-  - `args_hash_of_4b_inputs_is_unchanged` (end to end);
+  - `args_hash_of_4b_inputs_is_unchanged` (end to end), `planned_pins_do_not_change_args_hash`;
+  - `builder_prepends_planned_pins`, `offline_write_plans_no_pins`;
   - `trim_echoes_resulting_edge`, `out_before_in_wording`, `negative_max_wording`, `project_open_dry_run_is_usage`;
   - `map_is_small_and_lists_every_group` (< 1.5k tokens).
 - [ ] **Step 2: Implement.** **Run** `rtk cargo test -p fin` (`FIN_REQUIRE_SERVER=1`), the three gates and `rtk pnpm e2e` → PASS.
 - [ ] **Step 3: Commit** `feat(fin): structural edit commands with modes, linked audio and echoed values`.
 
-### Task 23: `fin` edit commands — settings, captions, eval — tier: sonnet
+### Task 24: `fin` commands — settings, captions, fonts, eval — tier: sonnet
 
 **Files:**
-- Create: `crates/fin/src/commands/{param.rs, keyframe.rs, effect.rs, caption.rs, style.rs, eval.rs}`, `crates/fin/src/values.rs` (parse a value by `ParamType`).
-- Modify: `crates/fin/src/commands/schema.rs` (`fin schema param [--scope] [--path]`), `crates/fin/src/registry.rs`, `crates/fin/src/client.rs` (keep it ≤ 600 lines; eval calls go in `client_eval.rs`).
-- Test: `crates/fin/tests/{cli_settings.rs, cli_captions.rs}`.
+- Create: `crates/fin/src/commands/{param.rs, keyframe.rs, effect.rs, caption.rs, style.rs, fonts.rs, eval.rs}`, `crates/fin/src/values.rs` (parse a value by `ParamType`).
+- Modify: `crates/fin/src/commands/schema.rs` (`fin schema param [--scope] [--path]`), `crates/fin/src/registry.rs`, `crates/fin/src/client.rs` (keep it ≤ 600 lines; eval and fonts calls go in `client_eval.rs` and `client_fonts.rs`).
+- Test: `crates/fin/tests/{cli_settings.rs, cli_captions.rs, cli_fonts.rs}`.
 
 **Commands:**
 - `fin param set <item> <path> <value>`;
@@ -1308,7 +1429,14 @@ Behaviour:
 - `fin effect add <item> <kind> [--at <n>] [--set p=v]…`, `effect remove|move`;
 - `fin caption import --track <t> (--words <file.json>|--srt <file>) --style <s> [--at <time>]`, which expands through `captions::blocks` into one `item.insert` per block in one tx;
 - `fin caption set-text|split|merge|style`, `fin style add|set|remove|ls`, `fin schema param`;
-- `fin eval frame --at <time>`, `fin eval audio --range a..b` (server only).
+- `fin eval frame --at <time>`, `fin eval audio --range a..b` (server only);
+- **`fin fonts`** (Decision 44, server only):
+  - `ls [--catalog | --cached | --project]` answers compactly (per entry: family, styles, and cached/pinned flags; URLs only with `--detail`), within the map budget;
+  - `fetch <key | entry | --pinned>` blocks until done, with progress on stderr; `FONT_FETCH_FAILED` is exit 5 with a fix (check the network or proxy, or `FIN_FONTS_OFFLINE`);
+  - `status`;
+  - `pin <family> [--weight] [--italic] [--asset <a>] [--fallback <n>]`, `repin <key> [--catalog-version <v>]`, `unpin <key>` (`FONT_IN_USE`).
+
+`caption import`, `caption style` and `style add|set` plan their pins through `fonts.plan`, like every write (Task 23).
 
 Values:
 - numbers take an optional unit (`-6dB`, `45deg`, `120px`, `50%` for fractions);
@@ -1316,11 +1444,11 @@ Values:
 
 `--words` is `[{text, start, end}]` with times as rationals or decimals, converted exactly. Offline dry runs answer `measured: false`.
 
-- [ ] **Step 1: Write failing tests:** per command as in Task 22, plus `values_parse_by_type`, `bad_value_errors_name_the_spec_range`, `caption_import_words_and_srt_make_blocks`, `caption_import_overflow_refused_online`, `schema_param_lists_the_registry`, `eval_needs_a_server`.
+- [ ] **Step 1: Write failing tests:** per command as in Task 23, plus `values_parse_by_type`, `bad_value_errors_name_the_spec_range`, `caption_import_words_and_srt_make_blocks`, `caption_import_overflow_refused_online`, `caption_import_pins_fonts_once`, `fonts_ls_fits_budget`, `fonts_fetch_failed_exits_5_with_fix` (a loopback server that answers 500), `fonts_pin_asset`, `fonts_repin_to_catalog_version`, `fonts_unpin_in_use_refused`, `schema_param_lists_the_registry`, `eval_needs_a_server`.
 - [ ] **Step 2: Implement.** **Run** `rtk cargo test -p fin`, the three gates and `rtk pnpm e2e` → PASS.
-- [ ] **Step 3: Commit** `feat(fin): param, keyframe, effect, caption, style, schema param and eval commands`.
+- [ ] **Step 3: Commit** `feat(fin): param, keyframe, effect, caption, style, fonts, schema param and eval commands`.
 
-### Task 24: `fin view` and `fin status` — tier: sonnet
+### Task 25: `fin view` and `fin status` — tier: sonnet
 
 **Files:**
 - Modify: `crates/fin/src/commands/view.rs`. Create `crates/fin/src/view/{mod.rs, lines.rs, budget.rs}`.
@@ -1331,124 +1459,111 @@ Values:
   - `00:04.0–00:07.5  V1  c3 clip a1 [2.0s+3.5s] x1.5 opacity 0.8 fx: blur  ⟷ lk1`
   - `00:05.0–00:06.2  C1  cap2 "Let's go" (preset:bold)`
   - `00:06.0  ── marker m1 "drop"`
-- Degrades as Decision 39 says; deterministic for a given project and budget.
-- `fin status` returns `{project {id, name}, branch, head, lease, readOnly, lastExport, unmergedBranches: [{id, name}], warnings}`. It merges the snapshot, `project.status` and `branch.list`; warnings include `FONTS_DAMAGED` and `FONT_MISSING`. Offline, it returns `{project, branch, head, server: false}`.
+- Degrades as Decision 46 says; deterministic for a given project and budget.
+- `fin view` caption lines mark unmeasured text, e.g. `(unmeasured: font missing)`.
+- `fin status` returns `{project {id, name}, branch, head, lease, readOnly, lastExport, unmergedBranches: [{id, name}], fonts {missing, fetching, failed}, warnings}`. It merges the snapshot, `project.status` and `branch.list`; warnings include `FONT_MISSING`, `FONT_FETCH_FAILED` and `FONT_UNPINNED`, each with its fix. Offline, it returns `{project, branch, head, server: false}`.
 
-- [ ] **Step 1: Write failing tests:** `view_full_matches_golden`, `view_budget_degrades_in_order_and_says_so`, `view_range_and_timeline`, `view_is_deterministic`, `status_online_fields`, `status_offline`.
+- [ ] **Step 1: Write failing tests:** `view_full_matches_golden`, `view_budget_degrades_in_order_and_says_so`, `view_range_and_timeline`, `view_is_deterministic`, `view_marks_unmeasured_captions`, `status_online_fields` (with fonts), `status_offline`.
 - [ ] **Step 2: Implement.** **Run** `rtk cargo test -p fin`, the three gates and `rtk pnpm e2e` → PASS.
 - [ ] **Step 3: Commit** `feat(fin): screenplay view with a token budget; fuller status`. **Batch D is done.**
 
-### Task 25: Property suite and time budget — tier: opus
+### Task 26: Property suite and time budget — tier: opus
 
-**Files:**
-- Create:
-  - `crates/fin-core/tests/props_ops_4c.rs` (properties 1 and 6 over every op);
-  - `crates/fin-core/tests/props_rebase_4c.rs` (property 3);
-  - `crates/fin-core/tests/props_history_4c.rs` (property 4 over 4C ops);
-  - `crates/fin-core/tests/common/gen4c.rs` (generators).
-- Modify: `crates/fin-store/tests/props_replay.rs` (property 5 draws 4C ops), `crates/fin-core/tests/common/memlog.rs`, `TASKS.md`.
+**Files:** create `crates/fin-core/tests/{props_ops_4c.rs, props_rebase_4c.rs, props_history_4c.rs, common/gen4c.rs}`; modify `crates/fin-store/tests/props_replay.rs`, `crates/fin-core/tests/common/memlog.rs`, `TASKS.md`.
 
-**Properties** (spec §4.6 extended, §5.9):
-1. `apply_then_inverse_is_exact_for_every_4c_op` (256).
-   - Chains of 1–6 txs of 1–4 ops from every client and internal op (`strict` included), on projects with 2 timelines, linked groups, transitions, keyframes, effects and captions.
-   - The inverse is exact; the inverse of the inverse gives the result again; **the inverse's shifts are the op's inverted in reverse order** (B5); every op passes `ids_cover_every_id_in_json` (B6).
-   - A fixed-seed test checks that the generator reaches every op kind.
-2. 4B's `rebase_over_empty_interval_is_identity`, run over the 4C generators (256).
+**Properties:**
+1. `apply_then_inverse_is_exact_for_every_4c_op` (256). Every client and internal op, `strict` and the font ops included. The inverse is exact and involutive, its shifts are in reverse order (B5), and every op passes `ids_cover_every_id_in_json` (B6).
+2. `rebase_over_empty_interval_is_identity` over the 4C generators (256).
 3. `stale_and_fresh_agree_4c` (128).
-   - An anchor model over 3 tracks (2 video, 1 audio), with 0–6 committed edits, each sometimes followed by its undo, drawn from: insert (both modes), delete (both), trim (all three, **start trims included**), move across tracks, **slide**, split, slip, link, transitions, **keyframe set and remove**, **effect add and move**, **caption split and merge**.
-   - Our stale edit is drawn from the same set, so **a split or keyframe edit after a concurrent start trim** is common (B3).
-   - When both succeed, the states are equal. A stale refusal where the fresh edit applies must be `SAME_EDGE`, `SAME_PARAM`, `REMOVED` or a policy code the head state explains.
-4. `undo_redo_matches_reference_model_4c` (64). 4B's list-op model per track, extended with ripple moves between tracks and splits, on `main` and a side branch with merges and picks. The predicted reasons include `SAME_PARAM` for `param.set` on the same path.
-5. `replay_and_export_import_roundtrip` (16, fin-store), with 4C ops and a `font` asset in the log. The follower gets the same `stateHash`.
-6. `apply_tx_never_panics_and_success_keeps_invariants_4c` (512).
-   - Any ids, times and parameter values in every mode, with **no-shift ops (overwrite, lift, roll, slip, slide, split, strict) given values past their policy limits in `Replay` mode** (B1).
-   - Success keeps the structural invariants on every track (Decision 25) and, outside `Replay`, the policy ones.
+   - Committed edits and our stale edit come from: inserts, deletes and trims in every mode (**start trims included**), cross-track moves, **slide**, split, slip, link, transitions, **keyframe set/remove**, **effect add/move**, **caption split/merge**, and **font pins** (the same pin on both sides merges).
+   - When both succeed, the states are equal. A refusal is `SAME_EDGE`, `SAME_PARAM`, `REMOVED`, `FONT_PINNED` or a policy code the head explains.
+4. `undo_redo_matches_reference_model_4c` (64), with cross-track ripple moves and splits.
+5. `replay_and_export_import_roundtrip` (16, fin-store), with 4C ops, font pins and a font asset in the log; the follower's `stateHash` equals the writer's.
+6. `apply_tx_never_panics_and_success_keeps_invariants_4c` (512), with no-shift ops past their policy limits in `Replay` mode (B1).
 
-- [ ] **Step 1: Write the files.** Then seed each bug locally, confirm it is caught, and revert it:
-  - (a) `carve` leaves a 1-frame overlap → props 1 and 6;
-  - (b) the prune pass skips the inverse restore → prop 1;
-  - (c) `split_diff` swaps two op indexes → props 3 and 4;
-  - (d) **a move's inverse records its shifts in forward order** (B5) → props 1, 3 and 4;
-  - (e) content offsets not mapped (B3) → prop 3;
-  - (f) the replay track check looks at shift tracks only (B1) → prop 6.
+- [ ] **Step 1:** Write the files. Seed each bug, confirm it is caught, and revert it:
+  - (a) `carve` leaves a 1-frame overlap;
+  - (b) prune skips its restore;
+  - (c) `split_diff` swaps op indexes;
+  - (d) a move's inverse records its shifts in forward order (B5);
+  - (e) content offsets are not mapped (B3);
+  - (f) the replay check looks at shift tracks only (B1);
+  - (g) a same-hash `font.pin` is not a no-op.
 - [ ] **Step 2: Measure** every property binary:
   - `rtk proxy bash -c 'time cargo test -p fin-core --test props_ops_4c --test props_rebase_4c --test props_history_4c --test props_apply --test props_history --test rebase_props --test pick_props --test undo_to_props --test shift_map'`;
   - `rtk proxy bash -c 'time cargo test -p fin-store --test props_replay --test chain_props'`.
 
-  The total must stay < 30 s in debug; record the numbers in TASKS.md.
-- [ ] **Step 3:** Fix what the properties find, each fix with a unit regression test in the owning module's tests. Run the three gates → PASS. **Commit** `test(core): 4C property suite`.
+  The total must stay < 30 s; record it in TASKS.md.
+- [ ] **Step 3:** Fix what the properties find, each fix with a regression test. Run the gates → PASS. **Commit** `test(core): 4C property suite`.
 
-### Task 26: e2e reel scenario — tier: sonnet
+### Task 27: e2e reel scenario — tier: sonnet
 
-**Files:**
-- Create: `scripts/e2e/reel.mjs`, `scripts/e2e/reel-golden/{view.json, frames.json, audio.json}`.
-- Modify: `scripts/e2e.mjs` (`SCENARIOS.reel`), `scripts/e2e.test.mjs`, `scripts/e2e/fixture.mjs` (write the image, dotLottie and WAV fixtures through `testHooks`).
+**Files:** create `scripts/e2e/{reel.mjs, fontserver.mjs (a loopback server for generated fonts plus a test catalog)}`, `scripts/e2e/reel-golden/{view.json, frames.json, audio.json, frames-real.json}`; modify `scripts/e2e.mjs` (`SCENARIOS.reel`), `scripts/e2e.test.mjs`, `scripts/e2e/fixture.mjs`.
 
-- [ ] **Step 1: Write the scenario** (spec §5.9), by `fin` only:
-  1. Create a project (1080×1920 by default); `track add --kind audio` (A2, music) and `track add --kind caption`.
-  2. `asset add` an MP4 (A/V), a PNG, a dotLottie template with a text slot, and a WAV.
-  3. Clips:
-     - V1: three clips (one at speed 3/2), each with its **linked audio on A1 by default**;
-     - V2: an image overlay and a graphic with its slot set;
-     - **A2: the music** (WAV) with a fade-in, `track set A2 gain -6dB`. Music and linked audio never share a track.
-  4. `caption import --words words.json --style preset:bold` (about 40 words → several blocks; CJK words and one emoji included, so the fetched fonts are exercised).
-  5. `keyframe set` opacity on the overlay (`0s` 0 → `1s` 1, `--interp easeOut`).
-  6. `transition set` a dissolve between two V1 clips. The linked audio items get their crossfade (Decision 22), and the echo says so.
-  7. Total length 30 s.
-  8. `fin view` equals `view.json`.
-  9. `fin eval frame` at 0, 0.5, 4.9 (inside the crossfade), 12, 20 and 29.9 s, compared as BLAKE3 hashes with `frames.json` (the file also keeps the full plans for review).
-  10. `fin eval audio --range 0..30` equals `audio.json` (A1 crossfade shapes, A2 fade and dB).
-  11. An overflowing `caption set-text` is refused `CAPTION_OVERFLOW` (exit 3). `item delete` of the second V1 clip prunes both transitions, and `undo` restores them.
-- [ ] **Step 2: Run** `rtk pnpm fonts:fetch && rtk pnpm e2e`. Expected: every scenario passes (basic, storage, history, reel).
-- [ ] **Step 3: Commit** `test(e2e): 30-second reel built by fin, checked by view and eval goldens`.
+- [ ] **Step 1: Write the scenario** (spec §5.9), by `fin` only. finisherd runs with `FIN_FONT_CATALOG` pointing at a test catalog served by `fontserver.mjs` (the test-hooks build), and starts **offline**.
+  1. Create a project; `track add --kind audio` (A2, music) and `--kind caption`.
+  2. `asset add` an MP4 (A/V), a PNG, a dotLottie with a text slot, and a WAV.
+  3. V1: three clips (one at speed 3/2) with linked audio on A1 by default. V2: an image overlay and a graphic. A2: music with a fade-in at `-6dB`.
+  4. `caption import --words words.json --style preset:bold`. The write pins the style face and a fallback for the Hebrew words; `fin status` shows them `FONT_MISSING`, `fin view` shows `(unmeasured: font missing)`, and `fin eval frame` reports `unmeasured`.
+  5. Go online (restart finisherd without the offline flag): the fonts fetch automatically, `fin fonts status` shows them cached, and the same `fin eval frame` now carries layouts. **The project's records are byte-identical before and after.**
+  6. `keyframe set` opacity on the overlay with `--interp easeOut`; `transition set` a dissolve between two V1 clips (the linked audio gets its crossfade).
+  7. Total length 30 s. `fin view` equals `view.json`; `fin eval frame` at 0, 0.5, 4.9, 12, 20 and 29.9 s equals `frames.json` (hashes); `fin eval audio --range 0..30` equals `audio.json`.
+  8. An overflowing `caption set-text` is `CAPTION_OVERFLOW` (exit 3). Deleting the second V1 clip prunes both transitions, and `undo` restores them.
+  9. **Real fonts** (only when `FIN_FONT_CACHE` is set; required in CI): a second project with the built-in catalog, offline, its cache seeded from `FIN_FONT_CACHE`, captions in Latin, Arabic, CJK and emoji; `fin eval frame` samples equal `frames-real.json`.
+- [ ] **Step 2: Run** `rtk pnpm e2e` → every scenario passes.
+- [ ] **Step 3: Commit** `test(e2e): 30-second reel built by fin; on-demand fonts; view and eval goldens`.
 
-### Task 27: Spec and tracker — tier: sonnet
+### Task 28: Spec and tracker — tier: sonnet
 
 **Files:**
 - `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`:
-  - §5 as built: the decision table (1–41 plus any added during implementation), codes, RPCs, commands, the header state line, and "§5.10 Validation results (Task 28) — pending";
+  - §5 as built (Decisions 1–48 plus additions, codes, RPCs, commands, the header state line, §5.10 pending);
   - §3.1: DB v3 and m0003 (a version bump only); §3.2: schema version 2, the record, snapshot and diff upcasters, the aliases, per-op diffs, `float_roundtrip`; §3.4: the project-file `schemaVersion` rule (and whether 4B got the cherry-pick);
   - §4.3: per-op diff footprints, content offsets, the reverse shift order of inverses, the `SAME_PARAM` keys, replay's touched-track check;
-  - §5.1: `fonts` derived; §5.3: `style.*` ops, `strict` trims, `caption.import` as a command; §5.4: the wasm32 status; §5.6: the fonts (CJK and emoji bundled, the large ones fetched); §6: the crate map as built.
-  - **Deviations, said plainly:**
-    - no `swash` in 4C;
-    - `fin-text` was written fresh (the S11b spike code was unavailable);
-    - `fin` neither links `fin-text` nor injects a measurer (offline dry runs are unmeasured);
-    - no per-edit RPCs;
-    - gains are dB ramps, converted by the mixer;
-    - the binary and package sizes were measured by hand (Task 21, Task 28), not in CI;
-    - nested and mask edits moved to sub-project 6.
-- `docs/specs/2026-11-01-finisher-architecture-design.md`: a §27 item 15 pointer for 4C (model, registry, eval, `fin-text`, fonts, assets).
-- `README.md`:
-  - "Run it" gains a reel example (`fin clip insert`, `fin caption import`, `fin view`, `fin eval frame`) and `pnpm fonts:fetch`;
-  - **"Upgrading from 4B"** states Decision 40.
+  - §5.3: `style.*` and `font.*` ops, `strict` trims, `caption.import` as a command; §5.4: the wasm32 status;
+  - **§5.1:** `fonts` stored as pins;
+  - **§5.6 rewritten:**
+    - the catalog, the cache, fetching, pinning by hash, unmeasured-never-blocks;
+    - font assets;
+    - **"bundled fonts" replaced by fetched, pinned fonts**, with arch §27.10's condition ("fonts always bundled, never from the system") restated as "always pinned bytes, never from the system";
+  - §6: the crate map with `fin-fonts` and `fin-testfonts`.
+  - **Deviations:**
+    - no `swash`; `fin-text` written fresh;
+    - `fin` neither links `fin-text`/`fin-fonts` nor measures;
+    - no per-edit RPCs; dB ramps;
+    - sizes measured by hand;
+    - nested and mask edits moved to sub-project 6;
+    - catalogs from the registry are sub-project 8.
+- `docs/specs/2026-11-01-finisher-architecture-design.md`: a §27 item 15 pointer for 4C, noting that §27.10's bundled-fonts condition is now pinned fetched fonts.
+- `README.md`: "Run it" gains a reel example and `fin fonts`. **"Upgrading from 4B"** states Decision 47; a "Fonts" note covers the cache location, auto-fetch, the offline switch and proxies.
 - `TASKS.md`:
-  - tick the 4C section;
-  - tick the SP2 follow-up "fin output: trim echoes…";
-  - add the follow-ups: drop the `clip.*` aliases at schema 3; nested and mask edits (sub-project 6); cache caption layouts between transactions; colour emoji painting (`swash`, sub-project 6); fonts in CI caches versus the repo (owner's call, Decision 30).
+  - tick the 4C section and the SP2 "fin output" follow-up;
+  - add the follow-ups: drop the `clip.*` aliases; nested and mask edits (sub-project 6); `fin fonts gc` and a cache size cap; registry and signed catalogs (sub-project 8); caching caption layouts; colour-emoji painting (sub-project 6); variable fonts in the catalog.
 
-- [ ] **Step 1:** Write the edits. Check every decision against the code, as 4B Task 22 did, and note in the commit body any that changed.
+- [ ] **Step 1:** Write the edits; check each decision against the code and note in the commit body any that changed.
 - [ ] **Step 2: Run** `rtk pnpm gates` → ok. **Commit** `docs: record sub-project 4C as built`.
 
-### Task 28: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
+### Task 29: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
 
-**Files:**
-- Results go to `archive/sp4c-xhost/`; durable conclusions go into spec §5.10.
-- Create: `crates/fin-store-xhost/src/edit4c.rs` (an `editor` subcommand committing a fixed 4C edit script; `node.rs` is already at 560 lines), `tests/storage-xhost/analyse-edit4c.mjs` and its test (following `analyse-history.mjs`).
-- Modify: `crates/fin-store-xhost/src/main.rs`, `tests/storage-xhost/run.mjs` (row `edit4c`), `tests/storage-xhost/README.md` (no host details).
+**Files:** results in `archive/sp4c-xhost/`, conclusions in spec §5.10; create `crates/fin-store-xhost/src/edit4c.rs`, `tests/storage-xhost/analyse-edit4c.mjs` and its test; modify `crates/fin-store-xhost/src/main.rs`, `tests/storage-xhost/{run.mjs, README.md}`.
 
-- [ ] **Step 1: Full suites** on macOS (arm64), Windows 11 (x64) and the Linux VM (x64), after `pnpm fonts:fetch`: `cargo test --workspace` (`FIN_REQUIRE_SERVER=1`, `FIN_REQUIRE_FONTS=1`), `pnpm test`, `pnpm gates`, `pnpm e2e`. Record the counts.
-- [ ] **Step 2: Determinism.** On each OS:
-  - the `fin-text` corpus and the eval corpus match the committed hashes, and the e2e reel goldens match;
-  - on Linux, the wasm32-wasip1 runs match too.
-  - **Any mismatch blocks the merge.** Bisect it to the first differing layout or plan, fix the source (a float function, a fallback path, a hash-map order, a font file), add a regression case, and re-run all three OSes.
-- [ ] **Step 3: Upgrade rows.**
-  - Copy a real 4B project (made on each OS by the 4B build) and open it with 4C: the state equals the 4B state passed through `upcast_snapshot`; `verify` is ok (`diffs_match` through the diff upcaster); an undo of a 4B record works.
-  - Rebuild it from the folder alone: the same `stateHash`.
-- [ ] **Step 4: Mixed-version row**, per pair (Mac↔Windows, Mac↔Linux, Windows↔Linux), on one NAS folder:
-  - a 4B follower and a 4C holder: the first 4C record turns the 4B follower read-only `NEWER_FORMAT` (Decision 1), with no lost records and no crash;
-  - a 4C-created project opened by 4B goes read-only (with the Task 3 cherry-pick) or refuses `SCHEMA_VERSION` (without it); record which;
-  - a 4C follower follows to the same `stateHash` and `indexHash`.
-- [ ] **Step 5: `edit4c` row** per NAS pair, 5 runs each: host A holds and runs the edit script; host B follows; after one follow cycle both report the same `stateHash` and the same eval plan hashes for the script's sample times.
-- [ ] **Step 6: Packaging.** Each OS's `fin-node` package finds its `fonts/`, the fetched ones included. Record the sizes of `fin` (unchanged by `fin-text`) and of the `fin-node` package (about +52 MB of fonts; spec §8 risk).
-- [ ] **Step 7:** Fix any defect, each with a regression test in the owning crate, and re-run the affected rows. Record the conclusions in spec §5.10 and TASKS.md. **Commit** `test(storage): cross-host 4C rows; record 4C validation`.
+- [ ] **Step 1: Full suites** on macOS (arm64), Windows 11 (x64) and the Linux VM (x64), each with a font cache warmed by `warm_cache` on that host: `cargo test --workspace` (`FIN_REQUIRE_SERVER=1`, `FIN_REQUIRE_FONTS=1`), `pnpm test`, `pnpm gates`, `pnpm e2e`. Record the counts.
+- [ ] **Step 2: Determinism with fetched fonts.**
+  - On each OS: the cache files' SHA-256 equal the catalog's; the generated and real `fin-text` corpora, the eval corpus and the reel goldens (generated and real) match the committed hashes; on Linux, the wasm32-wasip1 runs match.
+  - **Any mismatch blocks the merge.** Bisect it to the first differing layout or plan, fix it, add a corpus case, and re-run all three OSes.
+- [ ] **Step 3: Fetch rows.** On each OS:
+  - behind the host's real network: a cold fetch of the catalog;
+  - with an HTTP proxy set (`HTTPS_PROXY`), and with the corporate-CA case simulated where the host allows it;
+  - a kill mid-download, then a resume;
+  - two `finisherd` processes on one server data fetching at once (one download).
+- [ ] **Step 4: Upgrade rows:** a real 4B project per OS opens in 4C (state as upcast, `verify` ok, undo of a 4B record works) and rebuilds from the folder alone to the same `stateHash`.
+- [ ] **Step 5: Mixed-version row** per NAS pair:
+  - a 4B follower goes read-only at the first 4C record, with no lost records;
+  - a 4C-created project on 4B is read-only (with the cherry-pick) or refused (without it); record which;
+  - a 4C follower follows to the same hashes.
+- [ ] **Step 6: `edit4c` row** per NAS pair, 5 runs each, the edit script pinning fonts and setting captions:
+  - after one follow cycle both hosts report the same `stateHash` and the same eval plan hashes;
+  - the follower fetches the pinned fonts on its own;
+  - a follower kept offline reports `unmeasured` and nothing else differs.
+- [ ] **Step 7: Sizes:** `fin` (no `fin-text`, `fin-fonts` or TLS) and the `fin-node` package (no fonts; the TLS stack added), recorded by hand.
+- [ ] **Step 8:** Fix defects, each with a regression test in the owning crate; re-run the affected rows; record the conclusions in spec §5.10 and TASKS.md. **Commit** `test(storage): cross-host 4C rows; record 4C validation`.
