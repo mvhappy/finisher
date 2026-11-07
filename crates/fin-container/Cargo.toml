@@ -1,0 +1,10 @@
+[package]
+name = "fin-container"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "MP4/MOV sample tables, edit lists, fragments, limits and codec configurations over mp4-atom; MP4 mux (pure; builds for wasm32)."
+
+[dependencies]

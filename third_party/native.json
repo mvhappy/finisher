@@ -1,0 +1,27 @@
+{
+  "libraries": [
+    {
+      "name": "SQLite",
+      "package": "libsqlite3-sys",
+      "version": "0.35",
+      "license": "blessing",
+      "note": "the SQLite amalgamation bundled by libsqlite3-sys (rusqlite's `bundled` feature); SQLite is in the public domain"
+    },
+    {
+      "name": "BLAKE3",
+      "package": "blake3",
+      "version": "1",
+      "license": "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+      "note": "the crate's own C and assembly implementations, compiled by its build script with cc"
+    },
+    {
+      "name": "ring",
+      "package": "ring",
+      "version": "0.17",
+      "license": "Apache-2.0 AND ISC",
+      "note": "the crate's bundled C and assembly (derived from BoringSSL), compiled by its build script"
+    }
+  ],
+  "allow": ["BSD-2-Clause", "BSD-3-Clause", "BSD-3-Clause-Clear", "MIT", "ISC", "Zlib", "Apache-2.0", "CC0-1.0", "blessing"],
+  "patentLicences": ["AOMedia-Patent-License-1.0", "WebM-Patent-Grant"]
+}

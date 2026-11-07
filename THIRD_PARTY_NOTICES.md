@@ -97,3 +97,30 @@ them from there. Licence texts (checked by hand, 2026-11-06):
 - Noto Sans CJK (notofonts/noto-cjk `Sans/LICENSE`), SIL Open Font License 1.1;
 - Noto Color Emoji (googlefonts/noto-emoji `2D/fonts/LICENSE`), SIL Open Font License 1.1 (the
   repository's tools and images are Apache-2.0 and are not used).
+
+## Native libraries
+Native code compiled into Finisher's binaries by a crate's build script, as
+`third_party/native.json` lists it (sub-project 6 spec §16.3; `scripts/check-native-deps.mjs`
+checks that every such package is listed, its licence allowed and named here).
+
+### SQLite (public domain) — `libsqlite3-sys` 0.35, bundled by `rusqlite`
+status: used (`fin-store`), the SQLite amalgamation compiled from the crate's sources. SQLite
+is dedicated to the public domain (`blessing`); `libsqlite3-sys` itself is MIT.
+
+### BLAKE3 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception) — `blake3` 1
+status: used, the crate's own C and assembly implementations compiled by its build script.
+Finisher uses them under Apache-2.0.
+
+### ring (Apache-2.0 AND ISC) — `ring` 0.17
+status: used (sub-project 4C), its bundled C and assembly compiled by its build script; see
+"ureq, rustls and ring" above.
+
+## MPL-2.0 §3.2 — source of MPL-licensed crates
+Finisher's executables include the MPL-2.0 crates listed here, unmodified. Under MPL-2.0 §3.2
+their source code is available from crates.io (`https://crates.io/crates/<name>/<version>`)
+and they are licensed under the Mozilla Public License 2.0
+(`https://mozilla.org/MPL/2.0/`). The native build gate checks that every MPL-2.0 package in
+the shipped graph is named here as `<name> <version>`.
+
+No MPL-2.0 crate is in the shipped graph yet (symphonia arrives in sub-project 6C).
+

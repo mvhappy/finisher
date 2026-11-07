@@ -271,8 +271,24 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
 - [ ] Asks of 5C (spec §3.2): an `onSucceeded` hook before the job directory is deleted (needed by 6A-2 Task 12), a `hwenc` pool, RAM-scaled memory limits (6B)
 - [ ] Requirements on sub-project 7 (spec §3.5): the `worker` sandbox profile (GPU, media engines, library reads, `out/` writes, no network, no exec)
 - [ ] Spec follow-ups (spec §22): reword core §5.6 and arch §27.10 "fonts always bundled"; arch §18 exception for Electron's ffmpeg if question 2 is (a); D31 and Windows 10 22H2 (question 9)
-- [ ] 6A-1: foundations
+- [ ] 6A-1: foundations (branch `sp6a1-media-foundations`)
+  - [x] Task 1: crates, licence gates (native build, run-time libraries, crate dependencies), `libm` pinned. As built: `scripts/check-native-deps.mjs` (per `deny.toml` target, `cargo metadata --all-features --filter-platform`; lists `libsqlite3-sys`, `blake3` and `ring`, which already compile bundled C; `blessing` and `CC0-1.0` added to native.json's allow list for SQLite and BLAKE3), `check-runtime-libs.mjs`, `check-crate-deps.mjs` (`fin-node` may link `fin-shm`: Tasks 10 and 12 move job outputs through it, spec §3.4/§18), BLAKE3 for licence files in `scripts/blake3.mjs` (Node has none; checked against the published vectors)
+  - [ ] Task 2: `fin-media` types and the nearest-frame rule
+  - [ ] Task 3: frame-id test patterns
+  - [ ] Task 4: MP4 muxer over `mp4-atom`
+  - [ ] Task 5: demuxer (sample tables, edit lists, fragments, limits)
+  - [ ] Task 6: software AV1 (`rav1d` decode, SVT-AV1 encode), lossy pattern check
+  - [ ] Task 7: geometry, coverage, mips, colour and the CPU reference compositor
+  - [ ] Task 8: probe through `fin-container`
 - [ ] 6A-2: first pixels (after 5C-1)
+  - [ ] Task 9: wgpu compositor core and the T1 comparator
+  - [ ] Task 10: `fin-shm`
+  - [ ] Task 11: the `media` worker family and `media.look`
+  - [ ] Task 12: media job inputs in `fin-node`, the `media.look` kind
+  - [ ] Task 13: `media.look`, `media.capabilities`, `fin look`
+  - [ ] Task 14: media diagnostics
+  - [ ] Task 15: e2e scenario and CI
+  - [ ] Task 16: spec, tracker and cross-platform validation
 - [ ] 6B-1: stateful platform codecs and proxies
 - [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)

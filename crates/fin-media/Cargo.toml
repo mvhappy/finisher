@@ -1,0 +1,10 @@
+[package]
+name = "fin-media"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Pure media types: pixel formats, colour tags, MediaInfo, the sample table and the nearest-frame rule (no I/O; builds for wasm32)."
+
+[dependencies]

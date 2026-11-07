@@ -429,6 +429,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-codecs"
+version = "0.0.0"
+
+[[package]]
+name = "fin-compositor"
+version = "0.0.0"
+
+[[package]]
+name = "fin-container"
+version = "0.0.0"
+
+[[package]]
 name = "fin-core"
 version = "0.0.0"
 dependencies = [
@@ -477,6 +489,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-media"
+version = "0.0.0"
+
+[[package]]
 name = "fin-node"
 version = "0.0.0"
 dependencies = [
@@ -514,6 +530,10 @@ dependencies = [
  "tempfile",
  "zip",
 ]
+
+[[package]]
+name = "fin-shm"
+version = "0.0.0"
 
 [[package]]
 name = "fin-store"
