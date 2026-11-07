@@ -28,7 +28,12 @@
 //!   op cannot be carried when its clip is gone (remove, trim), is there already (a restore),
 //!   or its end edge was changed by someone else since (an undo or redo: since the edit it
 //!   inverts; a copy: since what the source had before it); and a copied undo or redo cannot be
-//!   carried when the target does not hold its unit. Wherever it says so, the real planner
+//!   carried when the target does not hold its unit. An edge history is the trims in effect: a
+//!   restore re-creates a clip without touching its edge (spec §4.3: the last removal or
+//!   creation decides `REMOVED`, only trims make `SAME_EDGE`), and a clip the record itself
+//!   re-created at an earlier op is not judged (60k cases found both: an undo of a merge group
+//!   that removes, restores, then trims a clip another author trimmed since; and an undo of a
+//!   trim whose clip a merged delete and restore re-created). Wherever it says so, the real planner
 //!   must refuse, with a reason of that kind. It allows the planner to refuse more (it is
 //!   conservative: two unmirrored records may cancel in effect), so it cannot predict every
 //!   conflict.
@@ -683,7 +688,9 @@ fn rerun_ops(
     let mut created = HashSet::new();
     let mut made = Vec::new();
     for (k, op) in ops.iter().enumerate() {
-        if verdict.is_none() {
+        // Entities our own earlier ops created are never judged (spec §4.3): after this tx
+        // removed and restored a clip, its trims act on the restored item.
+        if verdict.is_none() && !created.contains(op.clip()) {
             *verdict = b.verdict(op, copy).map(|class| (k, class));
         }
         let f = op.fp();
