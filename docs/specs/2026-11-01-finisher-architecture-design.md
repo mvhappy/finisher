@@ -328,7 +328,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 - Provider permission rules (Claude Code allow/deny, Codex `workspace-write`) are a second layer, not the guarantee.
 - **Integrity regardless of sandbox:** assets are referenced by content hash, and the server verifies the hash whenever an asset is used. `.finisher/` and `assets/` are server-written only, so tampering is detected and rejected.
-- **Environment allow-list:** `PATH`, `HOME` (or a per-session home), `LANG`/`LC_*`, `TMPDIR`, the provider's own config/auth dir variables, `FIN_SERVER`, `FIN_SESSION`. Everything else is removed.
+- **Environment allow-list:** `PATH`, `HOME` (or a per-session home), `LANG`/`LC_*`, `TMPDIR`, the provider's own config/auth dir variables, `FIN_SERVER`, `FIN_SESSION`, `FIN_CREDENTIAL` (the path of the session's credential file, never the secret itself; sub-project 5 spec §4.1). Everything else is removed.
 - **Token delivery:** `FIN_TOKEN` is **not** in the environment. `fin` obtains a scoped credential from a per-session 0600 credential file inside the session sandbox, or from peer-credential checks on the local socket. Subprocesses cannot inherit it from the environment.
 
 ### 8.5 Workspace artifacts
