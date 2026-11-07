@@ -40,8 +40,30 @@ use crate::{encode, guarded, reject};
 /// Every open journal, by canonical server data.
 pub(super) static JOURNALS: Mutex<Vec<(PathBuf, fin_journal::Journal)>> = Mutex::new(Vec::new());
 
+/// The same key before and after `server_data` exists: its nearest existing ancestor made
+/// canonical, the rest appended. A journal is opened before an engine creates the directory,
+/// and canonicalising only an existing path keyed the two apart wherever the canonical form
+/// differs (a symlink; macOS temp dirs behind `/var` → `/private/var`; Windows `\\?\`
+/// paths), so the engines found no journal and recorded nothing.
 fn key_of(server_data: &Path) -> PathBuf {
-    std::fs::canonicalize(server_data).unwrap_or_else(|_| server_data.to_path_buf())
+    let mut rest = Vec::new();
+    let mut at = server_data;
+    loop {
+        if let Ok(found) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(found, |p, name| p.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+            }
+            _ => return server_data.to_path_buf(),
+        }
+    }
 }
 
 /// The journal open on `server_data`, or a disabled one (records nothing).
