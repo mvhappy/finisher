@@ -150,7 +150,11 @@ export declare class ServerLock {
  */
 export declare function lockExclusive(path: string): ServerLock;
 
-/** Probes an MP4/MOV file; resolves to `{ duration, video, audio, fingerprint, size }` JSON. */
+/**
+ * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
+ * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
+ * image?, lottie?, font?, lut?, fingerprint, size }`).
+ */
 export declare function probe(path: string): Promise<string>;
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
@@ -159,6 +163,12 @@ export declare const testHooks:
       writeFixtureMp4(
         path: string,
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
+      ): void;
+      /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
+       * (4³), `wav` (1 s, 48 kHz stereo) or `m4a` (2 s, 48 kHz stereo) fixture. */
+      writeFixture(
+        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | "m4a",
+        path: string,
       ): void;
     }
   | undefined;

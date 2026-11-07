@@ -257,5 +257,12 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
+      writeFixture(kind, path) {
+        try {
+          native.writeFixtureForTest(kind, path);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
     }
   : undefined;

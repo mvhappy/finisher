@@ -13,7 +13,7 @@ test = false
 doctest = false
 
 [features]
-# Test-only exports (`Engine.panicForTest`, `writeFixtureMp4ForTest`). The vitest build enables
+# Test-only exports (`Engine.panicForTest`, the `writeFixture*ForTest` writers). The vitest build enables
 # it; the plain `build` script does not.
 test-hooks = ["fin-probe/fixtures"]
 

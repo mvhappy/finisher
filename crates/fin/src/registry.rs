@@ -281,7 +281,7 @@ pub const COMMANDS: &[Command] = &[
         name: "asset.add",
         group: "asset",
         args: "<path>",
-        summary: "probe a media file and add it; binds $asset",
+        summary: "probe a file (media, image, SVG, dotLottie, font, LUT) and add it; binds $asset",
         write: true,
         schema: || schema_of::<asset::AddArgs>("asset.add"),
     },

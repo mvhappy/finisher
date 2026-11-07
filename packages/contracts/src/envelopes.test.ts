@@ -59,7 +59,7 @@ test("TxSetAsideSchema is fin-store's TxSetAside", () => {
   expect({ ...ours, props: { setAside: "unknown" } }).toEqual(rust("TxSetAside"));
 });
 
-test("ProbeSchema is fin-core's Probe, with its audio and video info", () => {
+test("ProbeSchema is fin-probe's Probe, with each kind's info", () => {
   const ours = Schema.toJsonSchemaDocument(ProbeSchema).schema as { properties: Json; required?: string[] };
   const theirs = defs.Probe as { properties: Json; required: string[] };
   expect(Object.keys(ours.properties).sort()).toEqual(Object.keys(theirs.properties).sort());
@@ -71,6 +71,10 @@ test("ProbeSchema is fin-core's Probe, with its audio and video info", () => {
   for (const [ours_, rust_] of [
     [ours.properties.audio, "AudioInfo"],
     [ours.properties.video, "VideoInfo"],
+    [ours.properties.image, "ImageInfo"],
+    [ours.properties.lottie, "LottieInfo"],
+    [ours.properties.font, "FontFile"],
+    [ours.properties.lut, "LutInfo"],
   ] as const) {
     const d = defs[rust_] as { properties: Json; required: string[] };
     expect(info(ours_)).toEqual({ keys: Object.keys(d.properties).sort(), required: [...d.required].sort() });

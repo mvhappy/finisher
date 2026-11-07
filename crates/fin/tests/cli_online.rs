@@ -47,7 +47,7 @@ fn full_editing_flow() {
     assert_eq!(added["bindings"], json!({ "$asset": "a1" }));
     assert_eq!(
         added["resolved"],
-        json!({ "path": s(&dir.join("clip.mp4")), "duration": "10" })
+        json!({ "path": s(&dir.join("clip.mp4")), "kind": "media", "duration": "10" })
     );
 
     let first = run(&[
@@ -153,6 +153,57 @@ fn asset_paths_resolve_to_absolute_and_are_echoed() {
         with_home(&["status", "--project", "~/другий проєкт"])["project"]["name"],
         "Second"
     );
+}
+
+#[test]
+fn every_asset_kind_is_probed_and_added() {
+    let Some((server, dir)) = project("every_asset_kind_is_probed_and_added") else {
+        return;
+    };
+    use fin_probe::fixtures as fx;
+    let opts = fx::FixtureOpts {
+        seconds: 2,
+        ..Default::default()
+    };
+    let font = |p: &Path| std::fs::write(p, fin_testfonts::test_sans()).unwrap();
+    type Writer<'a> = &'a dyn Fn(&Path);
+    let files: [(&str, Writer, &str, Option<&str>); 8] = [
+        ("still.png", &|p| fx::write_png(p, 64, 48), "image", None),
+        ("still.jpg", &|p| fx::write_jpeg(p, 64, 48), "image", None),
+        ("logo.svg", &|p| fx::write_svg(p, 640, 360), "svg", None),
+        (
+            "lower third.lottie",
+            &|p| fx::write_dotlottie(p, &fx::sample_lottie(), true),
+            "lottieTemplate",
+            Some("3"),
+        ),
+        ("Sans.ttf", &font, "font", None),
+        ("grade.cube", &|p| fx::write_cube(p, 4), "lut", None),
+        (
+            "vo.wav",
+            &|p| fx::write_wav(p, 48_000, 1, 24_000),
+            "media",
+            Some("1/2"),
+        ),
+        ("music.m4a", &|p| fx::write_m4a(p, opts), "media", Some("2")),
+    ];
+    for (n, (name, write, kind, duration)) in files.iter().enumerate() {
+        let path = dir.join(name);
+        write(&path);
+        let added = ok(fin(&server.sd, &dir, &["asset", "add", name]));
+        assert_eq!(added["rev"], n + 1, "{name}");
+        assert_eq!(added["bindings"]["$asset"], format!("a{}", n + 1), "{name}");
+        let mut resolved = json!({ "path": s(&path), "kind": kind });
+        if let Some(d) = duration {
+            resolved["duration"] = json!(d);
+        }
+        assert_eq!(added["resolved"], resolved, "{name}");
+    }
+    // A file of no supported kind is refused before anything commits.
+    std::fs::write(dir.join("notes.txt"), "not an asset").unwrap();
+    let run = fin(&server.sd, &dir, &["asset", "add", "notes.txt"]);
+    assert_error(&run, 3, "UNSUPPORTED_CONTAINER");
+    assert_eq!(ok(fin(&server.sd, &dir, &["status"]))["rev"], files.len());
 }
 
 #[test]

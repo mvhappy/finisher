@@ -65,15 +65,49 @@ export const ProjectRefSuccess = Schema.Struct({
 });
 
 export const AssetProbePayload = Schema.Struct({ path: Schema.String });
-/** What `asset.probe` answers: fin-core's `Probe` (the generated type; `envelopes.test.ts` checks the fields). */
-export const ProbeSchema = Schema.Struct({
-  audio: Schema.optionalKey(Schema.NullOr(Schema.Struct({ channels: Schema.Number, sampleRate: Schema.Number }))),
+const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
+const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });
+const LottieInfoSchema = Schema.Struct({
   duration: Schema.String,
-  fingerprint: Schema.String,
-  size: Schema.Number,
-  video: Schema.optionalKey(
-    Schema.NullOr(Schema.Struct({ height: Schema.Number, rate: Schema.String, width: Schema.Number })),
+  fonts: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+  height: Schema.Number,
+  rate: Schema.String,
+  slots: Schema.optionalKey(
+    Schema.mutable(Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.String }))),
   ),
+  width: Schema.Number,
+});
+const FontFileSchema = Schema.Struct({
+  faces: Schema.mutable(
+    Schema.Array(
+      Schema.Struct({
+        family: Schema.String,
+        index: Schema.Number,
+        italic: Schema.Boolean,
+        scripts: Schema.mutable(Schema.Array(Schema.String)),
+        weight: Schema.Number,
+      }),
+    ),
+  ),
+  format: Schema.Literals(["ttf", "otf", "ttc"]),
+  sha256: Schema.String,
+  size: Schema.Number,
+});
+/**
+ * What `asset.probe` answers: fin-probe's `Probe` (the generated type; `envelopes.test.ts`
+ * checks the fields): the asset kind its bytes show and that kind's fields, absent ones omitted.
+ */
+export const ProbeSchema = Schema.Struct({
+  audio: Optional(Schema.Struct({ channels: Schema.Number, sampleRate: Schema.Number })),
+  duration: Optional(Schema.String),
+  fingerprint: Schema.String,
+  font: Optional(FontFileSchema),
+  image: Optional(ImageInfoSchema),
+  kind: Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]),
+  lottie: Optional(LottieInfoSchema),
+  lut: Optional(Schema.Struct({ size: Schema.Number })),
+  size: Schema.Number,
+  video: Optional(Schema.Struct({ height: Schema.Number, rate: Schema.String, width: Schema.Number })),
 });
 export const AssetProbeSuccess = ProbeSchema;
 // The schema's type and the generated `Probe` must stay assignable to each other.

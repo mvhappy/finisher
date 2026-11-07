@@ -29,7 +29,8 @@ fn probes_generated_fixture() {
     let path = dir.path().join("clip.mp4");
     write_fixture(&path);
     let p = probe(&path).unwrap();
-    assert_eq!(p.duration, r(2, 1));
+    assert_eq!(p.kind, fin_core::AssetKind::Media);
+    assert_eq!(p.duration, Some(r(2, 1)));
     let v = p.video.unwrap();
     assert_eq!((v.width, v.height, v.rate), (320, 180, r(25, 1)));
     let a = p.audio.unwrap();
@@ -91,7 +92,7 @@ fn spaces_and_cyrillic_paths_work() {
     std::fs::create_dir(&sub).unwrap();
     let path = sub.join("кліп 1.mp4");
     write_fixture(&path);
-    assert_eq!(probe(&path).unwrap().duration, r(2, 1));
+    assert_eq!(probe(&path).unwrap().duration, Some(r(2, 1)));
 }
 
 #[test]
@@ -193,7 +194,7 @@ fn probe_mov_fixture() {
     // A QuickTime file: `ftyp` with major brand `qt  `.
     assert_eq!(&bytes[4..12], b"ftypqt  ");
     let p = probe(&path).unwrap();
-    assert_eq!(p.duration, r(2, 1));
+    assert_eq!(p.duration, Some(r(2, 1)));
     let v = p.video.unwrap();
     assert_eq!((v.width, v.height, v.rate), (320, 180, r(25, 1)));
     let a = p.audio.unwrap();
@@ -212,7 +213,11 @@ fn probe_json_is_the_serde_form() {
     let v = serde_json::to_value(&p).unwrap();
     let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["audio", "duration", "fingerprint", "size", "video"]);
+    assert_eq!(
+        keys,
+        ["audio", "duration", "fingerprint", "kind", "size", "video"]
+    );
+    assert_eq!(v["kind"], "media");
     assert_eq!(v["duration"], "2");
     assert_eq!(v["video"]["rate"], "25");
     assert_eq!(v["audio"]["sampleRate"], 48_000);

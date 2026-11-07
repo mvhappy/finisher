@@ -4,13 +4,14 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use fin_probe::fixtures::{FixtureOpts, write_fixture_mp4};
+use fin_core::CoreError;
+use fin_probe::fixtures::{self, FixtureOpts, write_fixture_mp4};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::engine::{Engine, lock};
-use crate::guarded;
 use crate::tasks::{Call, StoreTask};
+use crate::{guarded, reject};
 
 /// Faults an engine's threads pick up.
 #[derive(Default)]
@@ -104,6 +105,44 @@ pub fn write_fixture_mp4_for_test(
     guarded(
         || {
             write_fixture_mp4(Path::new(&path), opts);
+            Ok(())
+        },
+        || {},
+    )
+}
+
+/// Writes a small fixture of `kind` to `path`: `png`, `jpeg` and `webp` (64x48), `svg`
+/// (640x360), `dotlottie` (the fixtures' sample template), `cube` (an identity 4³ LUT), `wav`
+/// (1 s of 48 kHz stereo PCM) or `m4a` (2 s of 48 kHz stereo AAC, no video).
+#[napi(catch_unwind)]
+pub fn write_fixture_for_test(kind: String, path: String) -> Result<()> {
+    let path = Path::new(&path);
+    guarded(
+        || {
+            match kind.as_str() {
+                "png" => fixtures::write_png(path, 64, 48),
+                "jpeg" => fixtures::write_jpeg(path, 64, 48),
+                "webp" => fixtures::write_webp(path, 64, 48),
+                "svg" => fixtures::write_svg(path, 640, 360),
+                "dotlottie" => fixtures::write_dotlottie(path, &fixtures::sample_lottie(), true),
+                "cube" => fixtures::write_cube(path, 4),
+                "wav" => fixtures::write_wav(path, 48_000, 2, 48_000),
+                "m4a" => fixtures::write_m4a(
+                    path,
+                    FixtureOpts {
+                        seconds: 2,
+                        fps: 25,
+                        audio: true,
+                        sample_rate: 48_000,
+                    },
+                ),
+                other => {
+                    return Err(reject(CoreError::new(
+                        "INTERNAL",
+                        format!("no fixture kind {other:?}"),
+                    )));
+                }
+            }
             Ok(())
         },
         || {},

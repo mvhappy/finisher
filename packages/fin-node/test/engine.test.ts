@@ -175,11 +175,55 @@ describe("probe", () => {
     const file = join(tmp, "clip.mp4");
     testHooks!.writeFixtureMp4(file, { seconds: 2, fps: 25, audio: true, sampleRate: 44100 });
     const p = JSON.parse(await probe(file));
+    expect(p.kind).toBe("media");
     expect(p.duration).toBe("2");
     expect(p.video).toEqual({ width: 320, height: 180, rate: "25" });
     expect(p.audio).toEqual({ sampleRate: 44100, channels: 2 });
     expect(p.fingerprint).toMatch(/\S/);
     expect(p.size).toBeGreaterThan(0);
+  });
+
+  test("each asset kind resolves to its kind and info", async () => {
+    const probed = async (kind: Parameters<NonNullable<typeof testHooks>["writeFixture"]>[0]) => {
+      const file = join(tmp, `fixture.${kind}`);
+      testHooks!.writeFixture(kind, file);
+      const p = JSON.parse(await probe(file));
+      expect(p.fingerprint).toMatch(/^fp1:/);
+      expect(p.size).toBeGreaterThan(0);
+      return p;
+    };
+    for (const kind of ["png", "jpeg", "webp"] as const) {
+      const p = await probed(kind);
+      expect(p.kind).toBe("image");
+      expect(p.image).toEqual({ width: 64, height: 48 });
+      expect(p).not.toHaveProperty("duration");
+    }
+    const svg = await probed("svg");
+    expect([svg.kind, svg.image]).toEqual(["svg", { width: 640, height: 360 }]);
+
+    const lottie = await probed("dotlottie");
+    expect(lottie.kind).toBe("lottieTemplate");
+    expect(lottie.duration).toBe("3");
+    expect(lottie.lottie).toMatchObject({ width: 1920, height: 1080, rate: "30", duration: "3" });
+    expect(lottie.lottie.fonts).toEqual(["Inter", "Roboto Mono"]);
+    expect(lottie.lottie.slots.map((s: { kind: string }) => s.kind).sort()).toEqual([
+      "color",
+      "image",
+      "number",
+      "text",
+    ]);
+
+    const cube = await probed("cube");
+    expect([cube.kind, cube.lut]).toEqual(["lut", { size: 4 }]);
+
+    const wav = await probed("wav");
+    expect([wav.kind, wav.duration, wav.audio]).toEqual(["media", "1", { sampleRate: 48000, channels: 2 }]);
+    expect(wav).not.toHaveProperty("video");
+
+    const m4a = await probed("m4a");
+    expect([m4a.kind, m4a.duration]).toEqual(["media", "2"]);
+    expect(m4a.audio).toEqual({ sampleRate: 48000, channels: 2 });
+    expect(m4a).not.toHaveProperty("video");
   });
 
   test("a missing path rejects with ASSET_NOT_FOUND", async () => {

@@ -2841,7 +2841,7 @@
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`)."
     },
     "Probe": {
-      "description": "What the server needs to register a media asset. Its serde form is what `asset.probe`\nanswers (`@finisher/core-types` exports it as `Probe`).",
+      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted.",
       "properties": {
         "audio": {
           "anyOf": [
@@ -2854,10 +2854,63 @@
           ]
         },
         "duration": {
-          "$ref": "#/$defs/Rational"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds: `media` and `lottieTemplate` only."
         },
         "fingerprint": {
           "type": "string"
+        },
+        "font": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FontFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A font's whole-file SHA-256, format and faces (Decision 37)."
+        },
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`image` and `svg`: the pixel size."
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "lottie": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LottieInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lut": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LutInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "size": {
           "format": "uint64",
@@ -2876,7 +2929,7 @@
         }
       },
       "required": [
-        "duration",
+        "kind",
         "fingerprint",
         "size"
       ],
