@@ -44,8 +44,10 @@ export declare class Engine {
    * Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generationJson`
    * (`{"incarnation": string, "n": number}`, from `opsSinceAt` or `status`), rejects with
    * `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
+   * `metaJson` (`{actor: {kind, session?, call?}}`, finisherd's `callMeta`) is the actor of the
+   * `log.commit` diagnostics entry; every writing branch and history call takes it too.
    */
-  commit(txJson: string, generationJson?: string): Promise<string>;
+  commit(txJson: string, generationJson?: string, metaJson?: string): Promise<string>;
   /** Resolves to `{ rev, project, generation: { incarnation, n } }` JSON, read together. */
   snapshot(branch: string): Promise<string>;
   /** Resolves to the `CommittedTx[]` JSON with `rev > rev`. */
@@ -70,27 +72,27 @@ export declare class Engine {
   /** Acknowledges the incomplete salvage of kept copy `copy`; `false` if none is listed. */
   acknowledgeSalvage(copy: string): Promise<boolean>;
   /** Makes a branch: `BranchCreate` JSON (camelCase); resolves to the `BranchCreated` JSON. */
-  branchCreate(reqJson: string): Promise<string>;
+  branchCreate(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the `BranchView[]` JSON (`main` first; with `all`, archived ones too). */
   branches(all: boolean): Promise<string>;
   /** Renames, archives or restores a branch: `BranchSet` JSON; resolves to the `CommittedTx` JSON. */
-  branchSet(reqJson: string): Promise<string>;
+  branchSet(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the JSON string of the id a branch reference (id, name, `<name>#<id>`) names. */
   resolveBranch(name: string): Promise<string>;
   /** `HistoryReq` JSON (`to`: undo back to a checkpoint); resolves to the `HistoryResult` JSON. */
-  undo(reqJson: string): Promise<string>;
+  undo(reqJson: string, metaJson?: string): Promise<string>;
   /** `HistoryReq` JSON; resolves to the `HistoryResult` JSON. */
-  redo(reqJson: string): Promise<string>;
+  redo(reqJson: string, metaJson?: string): Promise<string>;
   /** `CheckpointReq` JSON; resolves to the `CommittedTx` JSON. */
-  checkpoint(reqJson: string): Promise<string>;
+  checkpoint(reqJson: string, metaJson?: string): Promise<string>;
   /** `MergeReq` JSON; resolves to the `MergeReport` JSON. */
-  merge(reqJson: string): Promise<string>;
+  merge(reqJson: string, metaJson?: string): Promise<string>;
   /** `CherryPickReq` JSON; resolves to the `HistoryResult` JSON. */
-  cherryPick(reqJson: string): Promise<string>;
+  cherryPick(reqJson: string, metaJson?: string): Promise<string>;
   /** `RevertReq` JSON; resolves to the `HistoryResult` JSON. */
-  revert(reqJson: string): Promise<string>;
+  revert(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: lists recoverable groups and, with `create`, makes their branches (`RecoverReq` JSON); resolves to the `RecoverReport` JSON. */
-  recover(reqJson: string): Promise<string>;
+  recover(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: takes the lease over; resolves to the `ProjectStatus` JSON. */
   takeover(confirm: boolean): Promise<string>;
   /** Long call: resolves to the `VerifyReport` JSON (`{ ok, checks: [{ name, ok, details }] }`). */
@@ -232,6 +234,12 @@ export declare class Journal {
   panicOnThreadForTest(thread: string): boolean;
   /** @internal Test builds only: the writer panics at its next message. */
   panicWriterForTest(): void;
+  /** @internal Test builds only: `raw` as entries store an id (a ULID kept, else keyed); undefined while off. */
+  idRefForTest(raw: string): string | undefined;
+  /** @internal Test builds only: stalls the writer until `resumeWriterForTest` (false when off). */
+  pauseWriterForTest(): boolean;
+  /** @internal Test builds only: lets a stalled writer go on. */
+  resumeWriterForTest(): void;
   /** @internal Test builds only: how often the previous panic hook ran. */
   previousHookCallsForTest(): number;
 }

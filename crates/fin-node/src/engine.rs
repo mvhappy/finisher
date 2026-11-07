@@ -63,6 +63,13 @@ pub(crate) struct Inner {
     pub(crate) fonts: crate::fonts::Handle,
     /// The project's flag in the server's journal, until `close` (unknown afterwards).
     pub(crate) journal: Mutex<Option<crate::journal::ProjectGuard>>,
+    /// The server's journal (found at open): `log.commit`, `storage.state`, `eval.stats`
+    /// and `error.internal` go there ([`crate::commit_log`]).
+    pub(crate) diag: fin_journal::Journal,
+    /// The project id (lower case), for the entries' `ctx.project`.
+    pub(crate) project: String,
+    /// The read-only reason last seen (its code), for `storage.state` on a change.
+    pub(crate) read_only: Mutex<Option<&'static str>>,
     #[cfg(feature = "test-hooks")]
     pub(crate) hooks: crate::test_hooks::Hooks,
 }
@@ -92,6 +99,16 @@ pub(crate) fn lock_state(shared: &Shared, wait: Duration) -> MutexGuard<'_, Stat
             .0;
     }
     guard
+}
+
+/// Records `storage.state` when the project's read-only reason (`now`, a `ReadOnlyReason`
+/// code) differs from the last one seen (status events, long calls).
+pub(crate) fn observe_read_only(shared: &Shared, now: Option<&'static str>) {
+    let mut seen = lock(&shared.read_only);
+    if *seen != now {
+        crate::commit_log::storage_state(&shared.diag, &shared.project, *seen, now);
+        *seen = now;
+    }
 }
 
 /// Runs `f` against the open store, or fails with `ENGINE_CLOSED` / `ENGINE_BUSY`.
@@ -138,9 +155,10 @@ impl Engine {
         status: Option<serde_json::Value>,
         worker: Worker,
         fonts: crate::fonts::Opened,
-        journal: crate::journal::ProjectGuard,
+        (diag, journal): (fin_journal::Journal, crate::journal::ProjectGuard),
     ) -> Result<Engine> {
         let project_id = store.project_id().to_string();
+        let read_only = store.read_only().map(fin_store::ReadOnlyReason::code);
         let inner = Arc::new_cyclic(|weak| Inner {
             fonts: fonts
                 .manager
@@ -152,6 +170,9 @@ impl Engine {
             events: EventSink::default(),
             maintenance: Mutex::new(None),
             journal: Mutex::new(Some(journal)),
+            diag,
+            project: project_id.clone(),
+            read_only: Mutex::new(read_only),
             #[cfg(feature = "test-hooks")]
             hooks: Default::default(),
         });
@@ -251,11 +272,19 @@ impl Engine {
     /// Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generation_json`
     /// (`{incarnation, n}`, as `opsSinceAt` or `status` gave it) the commit is refused with
     /// `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
+    /// `meta_json` (`{actor: {kind, session?, call?}}`, finisherd's `callMeta`) is the actor
+    /// of the `log.commit` entry (`unknown` without it).
     #[napi(catch_unwind)]
-    pub fn commit(&self, tx_json: String, generation_json: Option<String>) -> AsyncTask<StoreTask> {
+    pub fn commit(
+        &self,
+        tx_json: String,
+        generation_json: Option<String>,
+        meta_json: Option<String>,
+    ) -> AsyncTask<StoreTask> {
         self.task(Call::Commit {
             tx_json,
             generation_json,
+            meta_json,
         })
     }
 

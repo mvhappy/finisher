@@ -175,6 +175,7 @@ impl Journal {
                 dir: dir.to_path_buf(),
                 data: data_tx,
                 ctl: ctl_tx,
+                waker: thread.thread().clone(),
                 thread: Mutex::new(Some(thread)),
             })),
         }
@@ -441,6 +442,7 @@ impl Journal {
         let Some(h) = &self.h else { return false };
         h.sh.faults.request_pause();
         h.send_raw(Data::Wake);
+        h.wake();
         h.sh.faults.wait_parked(Duration::from_secs(5))
     }
 

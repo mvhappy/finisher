@@ -219,6 +219,7 @@ impl Store {
             quarantine_seen: RefCell::new(None),
             compact: crate::compact::CompactState::default(),
             measurer: opts.measurer.clone(),
+            write_outcome: None,
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }

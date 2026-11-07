@@ -91,7 +91,10 @@ impl Store {
             // A retry of a committed txId is answered from the log whatever shape it is sent
             // in (a schema-1 retry of a schema-2 command included): the dedupe comes first.
             Err(e) => match db::find_tx(&self.conn, &tx.tx_id)? {
-                Some(existing) => return same_args(&tx, existing),
+                Some(existing) => {
+                    self.write_outcome = Some(crate::WriteOutcome::Deduped);
+                    return same_args(&tx, existing);
+                }
                 None => return Err(e.into()),
             },
         };

@@ -250,6 +250,10 @@ fn tick(inner: &Shared) -> bool {
                 inner.fonts.rescan_all(store);
             }
             for e in &events {
+                if let StoreEvent::Status(st) = e {
+                    let now = st.read_only.as_ref().map(|r| r.reason.code());
+                    crate::engine::observe_read_only(inner, now);
+                }
                 if let StoreEvent::Status(st) = e
                     && let Ok(v) = serde_json::to_value(st)
                 {

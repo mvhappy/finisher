@@ -111,21 +111,40 @@ pub(crate) struct Handle {
     /// Each control message with the count of data messages queued before it.
     pub(crate) ctl: Sender<(u64, Control)>,
     pub(crate) thread: Mutex<Option<JoinHandle<()>>>,
+    /// The writer thread, to unpark ([`Handle::wake`]).
+    pub(crate) waker: std::thread::Thread,
 }
 
+/// Data in flight past which a sender wakes the writer (its flush size): below it, data waits
+/// for the writer's own timer.
+pub(crate) const WAKE_BYTES: usize = 64 * 1024;
+
 impl Handle {
-    /// Queues a data message unless either bound is reached.
+    /// Queues a data message unless either bound is reached. It does not wake the writer
+    /// (a wake costs the sender a futex call and, on a VM, a cross-CPU interrupt: 10–20 µs on
+    /// every commit), unless [`WAKE_BYTES`] are in flight or the channel is full: the writer
+    /// takes data on its flush timer.
     pub(crate) fn send(&self, d: Data, bytes: usize) {
         let limit = self.sh.opts.channel_bytes;
-        if self.sh.inflight.fetch_add(bytes, Relaxed) + bytes > limit {
+        let inflight = self.sh.inflight.fetch_add(bytes, Relaxed) + bytes;
+        if inflight > limit {
             self.sh.inflight.fetch_sub(bytes, Relaxed);
             self.sh.dropped(bytes);
+            self.wake();
             return;
         }
         if !self.send_raw(d) {
             self.sh.inflight.fetch_sub(bytes, Relaxed);
             self.sh.dropped(bytes);
+            self.wake();
+        } else if inflight >= WAKE_BYTES {
+            self.wake();
         }
+    }
+
+    /// Wakes the writer if it waits (cheap when it runs: one atomic swap).
+    pub(crate) fn wake(&self) {
+        self.waker.unpark();
     }
 
     /// `try_send`, counting what is queued so a control message knows what came before it.
@@ -137,9 +156,8 @@ impl Handle {
         ok
     }
 
-    /// Sends a control message and wakes the writer if it is waiting for data. A full data
-    /// channel means the writer is busy and drains control before its next batch. The
-    /// writer handles the data queued before it first, and only that.
+    /// Sends a control message and wakes the writer. The writer handles the data queued
+    /// before it first, and only that.
     pub(crate) fn control(&self, c: Control) -> bool {
         self.control_after(self.seen(), c)
     }
@@ -155,6 +173,7 @@ impl Handle {
     pub(crate) fn control_after(&self, seen: u64, c: Control) -> bool {
         let sent = self.ctl.send((seen, c)).is_ok();
         self.send_raw(Data::Wake);
+        self.wake();
         sent
     }
 
