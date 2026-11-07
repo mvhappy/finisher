@@ -14,10 +14,7 @@ use crate::msg_host::{Attach, HostMsg, Start};
 use crate::msg_worker::WorkerMsg;
 use crate::worker::calls::Calls;
 use crate::worker::ctx::CancelToken;
-use crate::{CancelReason, DEFAULT_ALIVE_MS, EXIT_HOST_GONE};
-
-/// A runtime's exit code when its host sends a line it cannot decode.
-pub(crate) const EXIT_HOST_PROTOCOL: i32 = 65;
+use crate::{CancelReason, DEFAULT_ALIVE_MS, EXIT_HOST_GONE, EXIT_HOST_PROTOCOL};
 
 /// Where a runtime talks to its host. [`Channel::stdio`] is the real one; tests drive a
 /// runtime over in-memory pipes with `hard_exit: false`.

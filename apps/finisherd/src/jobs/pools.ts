@@ -15,7 +15,9 @@ export interface Pools {
   define(name: string, size: number): void;
   /**
    * Takes one slot per listed name, or none. `overrun` lets a pool go over its size by that
-   * many slots (a warm job's `cpu`, Decision 35). A stuck or undefined pool refuses.
+   * many slots: a warm dispatch passes `warmOverrun(warm)` from `schedule.ts` (`cpu` = the sum
+   * of every warm family's slots, Decision 35), a cold one nothing. A stuck or undefined pool
+   * refuses.
    */
   take(names: ReadonlyArray<string>, overrun?: Readonly<Record<string, number>>): boolean;
   give(names: ReadonlyArray<string>): void;

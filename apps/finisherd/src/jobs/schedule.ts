@@ -159,23 +159,57 @@ function* dueStream(b: Bucket, now: number): Generator<QueuedJob> {
   }
 }
 
+/**
+ * The `cpu` slots a warm dispatch may take beyond the pool's size: the sum of `slots` over
+ * every warm family (Decision 35). The caller takes a warm dispatch's slots with
+ * `pools.take(resources, warmOverrun(state.warm))` and a cold one's with no overrun; `schedule`
+ * checks exactly the same bound, so a dispatch it returns is always takeable.
+ */
+export function warmOverrun(warm: SchedState["warm"]): { cpu: number } {
+  let cpu = 0;
+  for (const w of warm.values()) cpu += w.slots;
+  return { cpu };
+}
+
+type PlanWorker = WarmWorkerView & { retiring?: boolean };
+
 /** What one call decides, applied to copies of the state as it goes. */
 class Plan {
   readonly out: Dispatch[] = [];
+  readonly #state: SchedState;
+  readonly #overrun: number;
   readonly #used = new Map<string, number>();
-  readonly #warm = new Map<string, { slots: number; workers: Array<WarmWorkerView & { retiring?: boolean }>; spawning: Set<string> }>();
+  readonly #warm = new Map<string, { slots: number; workers: PlanWorker[]; spawning: Set<string> }>();
+  /** Per family, the keys with a due queued job (never retired, Decision 35). */
+  readonly #dueKeys = new Map<string, Set<string>>();
 
-  constructor(private readonly state: SchedState) {
-    for (const [family, w] of state.warm) this.#warm.set(family, { slots: w.slots, workers: w.workers.map((x) => ({ ...x })), spawning: new Set() });
+  constructor(state: SchedState) {
+    this.#state = state;
+    this.#overrun = warmOverrun(state.warm).cpu;
+    for (const [family, w] of state.warm) {
+      this.#warm.set(family, { slots: w.slots, workers: w.workers.map((x) => ({ ...x })), spawning: new Set() });
+    }
   }
 
-  #fits(names: ReadonlyArray<string>, skip?: string): boolean {
-    const pools = this.state.pools;
+  /** Notes that a due warm job of `key` is queued. */
+  due(j: QueuedJob): void {
+    if (j.warm === undefined) return;
+    let keys = this.#dueKeys.get(j.warm.family);
+    if (keys === undefined) {
+      keys = new Set();
+      this.#dueKeys.set(j.warm.family, keys);
+    }
+    keys.add(j.warm.key);
+  }
+
+  /** As `Pools.take` would answer, with `overrun` extra `cpu` slots. */
+  #fits(names: ReadonlyArray<string>, overrun: number): boolean {
+    const pools = this.#state.pools;
     for (const [name, n] of slotCounts(names)) {
       const cap = pools.size(name);
       if (cap === undefined || pools.stuck(name)) return false;
-      if (name === skip) continue;
-      if (pools.used(name) + (this.#used.get(name) ?? 0) + n > cap) return false;
+      const extra = name === "cpu" ? overrun : 0;
+      if (pools.used(name) + (this.#used.get(name) ?? 0) + n > cap + extra) return false;
     }
     return true;
   }
@@ -184,66 +218,87 @@ class Plan {
     for (const [name, n] of slotCounts(names)) this.#used.set(name, (this.#used.get(name) ?? 0) + n);
   }
 
-  /** Decides for one job; false when the job (and so its FIFO) cannot go on now. */
-  decide(j: QueuedJob): boolean {
+  /**
+   * First pass, in global order: a cold job runs if its slots are free; a warm job runs on a
+   * ready worker of its own key. `"wait"`: a warm job with no ready worker of its key, decided
+   * in the second pass. `false`: the job (and so its FIFO) cannot go on now.
+   */
+  decide(j: QueuedJob): boolean | "wait" {
     if (j.warm === undefined) {
-      if (!this.#fits(j.resources)) return false;
+      if (!this.#fits(j.resources, 0)) return false;
       this.#take(j.resources);
       this.out.push({ job: j.id, mode: "cold" });
       return true;
     }
     const { family, key } = j.warm;
     const pool = this.#warm.get(family);
-    // A warm job never waits for `cpu` (it may run over by the interactive slots).
-    if (pool === undefined || !this.#fits(j.resources, "cpu")) return false;
+    if (pool === undefined || !this.#fits(j.resources, this.#overrun)) return false;
     const ready = pool.workers.find((w) => w.key === key && w.state === "ready" && w.retiring !== true);
-    if (ready !== undefined) {
-      Object.assign(ready, { state: "busy" });
-      this.#take(j.resources);
-      this.out.push({ job: j.id, mode: "warm", family, key });
-      return true;
-    }
-    if (pool.spawning.has(key) || pool.workers.some((w) => w.key === key && w.state === "spawning")) return false;
+    if (ready === undefined) return "wait";
+    Object.assign(ready, { state: "busy" });
+    this.#take(j.resources);
+    this.out.push({ job: j.id, mode: "warm", family, key });
+    return true;
+  }
+
+  /**
+   * Second pass, for a warm job left waiting: spawn a worker of its key when the family has
+   * room (one spawn per key at a time); with the pool full of other keys, retire the
+   * longest-idle ready worker whose key has no due job; else it waits.
+   */
+  place(j: QueuedJob): void {
+    if (j.warm === undefined) return;
+    const { family, key } = j.warm;
+    const pool = this.#warm.get(family);
+    if (pool === undefined) return;
+    if (pool.spawning.has(key) || pool.workers.some((w) => w.key === key && w.state === "spawning")) return;
     const live = pool.workers.filter((w) => w.retiring !== true).length + pool.spawning.size;
     if (live < pool.slots) {
       pool.spawning.add(key);
       this.out.push({ mode: "spawnWarm", family, key });
-      return false;
+      return;
     }
-    if (pool.workers.some((w) => w.key === key && w.retiring !== true)) return false;
+    if (pool.workers.some((w) => w.key === key && w.retiring !== true)) return;
+    const busyKeys = this.#dueKeys.get(family) ?? new Set<string>();
     let retire: number | undefined;
     pool.workers.forEach((w, i) => {
-      if (w.state !== "ready" || w.retiring === true || w.key === key) return;
+      if (w.state !== "ready" || w.retiring === true || w.key === key || busyKeys.has(w.key)) return;
       const best = retire === undefined ? undefined : pool.workers[retire];
       if (best === undefined || (w.idleSince ?? Infinity) < (best.idleSince ?? Infinity)) retire = i;
     });
-    if (retire === undefined) return false;
-    (pool.workers[retire] as { retiring?: boolean }).retiring = true;
+    if (retire === undefined) return;
+    (pool.workers[retire] as PlanWorker).retiring = true;
     pool.spawning.add(key);
     this.out.push({ mode: "spawnWarm", family, key, retire });
-    return false;
   }
 }
 
 /**
  * The dispatches for `now`, in order. Pure: it reads the state and returns what to do; the
- * caller takes the slots (`Pools.take`, with `{cpu: slots}` overrun for warm jobs), starts
- * the jobs, spawns and retires warm workers, and removes dispatched jobs from the queue.
+ * caller takes the slots (`Pools.take`; a warm dispatch with `warmOverrun(state.warm)`),
+ * starts the jobs, spawns and retires warm workers, and removes dispatched jobs from the queue.
+ * Warm spawns and retirements come after every dispatch, so a retirement never takes a
+ * worker a due job of its own key could run on.
  */
 export function schedule(state: SchedState, now: number): Dispatch[] {
   const plan = new Plan(state);
   const heads: Array<{ it: Iterator<QueuedJob>; job: QueuedJob }> = [];
   for (const it of state.queue.streams(now)) {
     const first = it.next();
-    if (first.done !== true) heads.push({ it, job: first.value });
+    if (first.done === true) continue;
+    heads.push({ it, job: first.value });
+    plan.due(first.value);
   }
+  const waiting: QueuedJob[] = [];
   while (heads.length > 0) {
     let best = 0;
     for (let i = 1; i < heads.length; i++) {
       if (compareJobs((heads[i] as { job: QueuedJob }).job, (heads[best] as { job: QueuedJob }).job, now) < 0) best = i;
     }
     const head = heads[best] as { it: Iterator<QueuedJob>; job: QueuedJob };
-    if (!plan.decide(head.job)) {
+    const decided = plan.decide(head.job);
+    if (decided !== true) {
+      if (decided === "wait") waiting.push(head.job);
       heads.splice(best, 1);
       continue;
     }
@@ -251,5 +306,6 @@ export function schedule(state: SchedState, now: number): Dispatch[] {
     if (next.done === true) heads.splice(best, 1);
     else head.job = next.value;
   }
+  for (const j of waiting) plan.place(j);
   return plan.out;
 }

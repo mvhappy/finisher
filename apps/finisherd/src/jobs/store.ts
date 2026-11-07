@@ -61,7 +61,6 @@ export interface TransitionPatch {
   readonly extra?: unknown;
   readonly isolation?: unknown;
   readonly pausedFrom?: JobState | null;
-  readonly startedAt?: number;
 }
 
 /** A job's full row: the view plus the engine's own columns. */
@@ -306,7 +305,14 @@ export class JobStore {
     return this.#view(this.#s1("activeByDedupe").get(kind, key) as Row | undefined);
   }
 
-  /** A finished job of this dedupe key that failed `POISON_ITEM` (`rememberPoison`, Decision 27). */
+  /**
+   * A finished job of this dedupe key that failed `POISON_ITEM` (`rememberPoison`, Decision 27).
+   * Only a job whose own error is `POISON_ITEM`: sub-project 6 §3.3 remembers a poisoned media
+   * *input*, and a media kind is one input per job, so its poison fails the job. A batch that
+   * succeeds with a `POISON_ITEM` item error is not remembered: its dedupe key names the whole
+   * batch, so matching it would refuse the batch's healthy items too, and the batch's owner
+   * (5D's placeholders) records the poisoned item itself.
+   */
   poisonedByDedupe(kind: string, key: string): JobView | undefined {
     return this.#view(this.#s1("poisonedByDedupe").get(kind, key) as Row | undefined);
   }
@@ -318,8 +324,9 @@ export class JobStore {
 
   /**
    * Moves a job to `to` in one `UPDATE` (Decision 26). Terminal states set `finishedAt`; the
-   * others clear it; `running` sets `startedAt` once; `queued` resets the phase to `run`. An
-   * illegal transition, or a row changed under it, is a bug and throws.
+   * others clear it; the first move to `running` sets `startedAt` (the first start, kept across
+   * retries and restarts; no patch changes it); `queued` resets the phase to `run`. An illegal
+   * transition, or a row changed under it, is a bug and throws.
    */
   transition(id: string, to: JobState, patch: TransitionPatch = {}): JobView {
     const cur = this.row(id) ?? refuse(`transition of unknown job ${id}`);
@@ -328,7 +335,8 @@ export class JobStore {
     const pick = <K extends keyof TransitionPatch>(k: K, fallback: unknown): unknown => (k in patch ? patch[k] : fallback);
     const phase = to === "queued" ? "run" : cur.phase;
     const finishedAt = TERMINAL_JOB_STATES.includes(to) ? now : null;
-    const startedAt = to === "running" ? (cur.startedAt ?? patch.startedAt ?? now) : (cur.startedAt ?? null);
+    // `startedAt` is the first start: set by the first move to `running`, then never changed.
+    const startedAt = cur.startedAt ?? (to === "running" ? now : null);
     const error = pick("error", cur.error) as FinErrorData | null | undefined;
     const changed = this.#s1("update").run(
       to,
@@ -387,14 +395,21 @@ export class JobStore {
     });
   }
 
-  /** Newest first; `next` continues the listing (an unreadable cursor reads as the end). */
+  /** Newest first; `next` continues the listing. An unreadable cursor is `INVALID_REQUEST`. */
   list(q: JobQuery = {}): { jobs: JobView[]; next?: string } {
     const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(q.limit ?? 100)));
     const where: string[] = [];
     const params: Array<string | number> = [];
     if (q.cursor !== undefined) {
       const m = /^(\d{1,16})\.([0-9A-Za-z]{1,64})$/.exec(q.cursor);
-      if (m === null) return { jobs: [] };
+      if (m === null) {
+        throw new FinError({
+          code: "INVALID_REQUEST",
+          message: "the job list cursor is not one this server gave",
+          details: { field: "cursor" },
+          fix: "pass the `next` of the previous page, or no cursor",
+        });
+      }
       where.push("(createdAt < ? OR (createdAt = ? AND id < ?))");
       params.push(Number(m[1]), Number(m[1]), m[2] as string);
     }

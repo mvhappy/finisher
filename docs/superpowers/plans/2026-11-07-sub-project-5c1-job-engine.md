@@ -267,6 +267,9 @@
     - **Warm keys:** a family may declare `warmKey?(job) → string` (sub-project 8: `(plugin, project, invoker class)`). A warm worker is bound to the key of its first job and serves only jobs with that key. The family's slots are shared across keys; when a key has no worker and the pool is full, the longest-idle worker of another key is shut down to make room.
     - **A job whose key has a `ready` worker is handed to it directly in the submit's own turn, without `schedule()`:** one enqueue on that worker's stdin. Budget: ≤ 5 ms from submit to `start` written, p99, measured with 10k queued cold jobs and cold spawns in flight (Task 11).
     - With no ready worker and room in the pool, one is spawned and the job waits for its `hello`; otherwise the job waits in the pool's FIFO.
+    - **Warm argv** (batch A review, M3): the engine makes a process warm by appending `--warm` to its argv (`fin-workers <family> --warm`; a plugin's `<path> <args…> --warm`), through `KindRegistry.program(family, job, "warm")`. A family declares one cold argv; `Family::warm()` stays its declaration that it can serve warm jobs.
+    - **Order within one `schedule()`** (batch A review, M2): every dispatch first (a warm job only to a ready worker of its own key), then spawns and retirements for the warm jobs left waiting; a retirement takes only a ready worker whose key has no due queued job, so a worker is never retired from under a job it could run now, and alternating keys do not ping-pong.
+    - **The `cpu` overrun** of warm dispatches is bounded by the sum of `slots` over every warm family (`warmOverrun`), checked by `schedule` exactly as `Pools.take` applies it.
 36. **Warm lifecycle:**
     - **idle expiry:** a worker idle for **60 s** (the family's `warm.idleS`) gets `shutdown` (`idleExpired`);
     - **recycling:** it is retired after **500 jobs or 30 minutes**, or at a `ready` whose reported memory (Decision 20) passes **80 % of its limit**. **The replacement is spawned first**; the old worker keeps serving until the replacement's `hello`, then gets `shutdown` (`recycled`);
@@ -336,6 +339,9 @@ Once Tasks 1, 6, 7 and 9a–11 merge, these are frozen for 6A-2, 5D, 5C-2 and 8B
 // crates/fin-jobs (Task 1)
 pub const PROTOCOL: u32 = 1;  pub const MINOR: u32 = 0;
 pub const EXIT_HOST_GONE: i32 = 70;  pub const EXIT_SELF_SANDBOX: i32 = 78;
+pub const EXIT_HOST_PROTOCOL: i32 = 65;   // the host sent a line the runtime cannot decode (batch A review, m3)
+// Runtime exit codes: 0 done (cold) or shutdown; 65 bad host line; 70 host gone (stdin EOF); 78 self-sandbox failed;
+// 101 caught panic (worker::EXIT_PANIC); a helper whose `run` fails exits 1.
 pub fn envelope_id() -> &'static str;                               // Decision 3
 pub enum HostMsg { Start(Start), Cancel { job: String, reason: CancelReason }, Shutdown {}, Attach(Attach),
     Reply { id: u64, value: Option<Value>, error: Option<JobError> } }
@@ -464,7 +470,13 @@ export interface FamilySpec {
 export interface HelperProgram { readonly kind: "codec" | "plugin"; readonly id: string; readonly profile: "worker" | "plugin";
   resolve(job: JobView): ProgramSpec; readonly onCall?: OnCall; readonly pluginId?: string }
 export interface KindRegistry { registerFamily(f: FamilySpec): void; registerKind<P, R>(k: KindSpec<P, R>): void;
-  registerHelper(h: HelperProgram): void; kind(name: string): KindSpec | undefined; family(name: string): FamilySpec | undefined }
+  registerHelper(h: HelperProgram): void; kind(name: string): KindSpec | undefined; family(name: string): FamilySpec | undefined;
+  helper(kind: string, id: string): HelperProgram | undefined; kinds(): ReadonlyArray<KindSpec>;
+  program(family: string, job: JobView, mode: SpawnMode): ProgramSpec }   // the family's argv, `--warm` appended for a warm spawn
+export type SpawnMode = "cold" | "warm";  export const WARM_ARG = "--warm";
+// Warmness comes from the engine (batch A review, M3): `FamilySpec.program` is the cold argv and never holds `--warm`;
+// the engine spawns every process through `program(family, job, mode)`, which appends `--warm` for a warm spawn,
+// `Program::Path` plugin processes included. `Family::warm()` (Rust) stays the family's declaration that it can serve warm.
 
 // apps/finisherd/src/jobs/engine.ts (Tasks 9a–11)
 export interface SubmitSpec { readonly kind: string; readonly params: unknown; readonly priority?: Priority;

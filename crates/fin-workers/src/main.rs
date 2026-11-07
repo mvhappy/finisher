@@ -2,7 +2,8 @@
 //! are in `families.rs`.
 //!
 //! ```text
-//! fin-workers <family> [--warm]        run a family's worker (stdin/stdout envelope)
+//! fin-workers <family> [--warm]        run a family's worker (stdin/stdout envelope); the engine
+//!                                       appends `--warm` for a warm spawn
 //! fin-workers --helper <name>:<variant> run a helper (test builds: test:ok|exitEarly|hang|spawn|call)
 //! fin-workers watchdog                  the Unix host watchdog (Task 4)
 //! fin-workers --version                 prints the envelope id

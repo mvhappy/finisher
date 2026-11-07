@@ -27,15 +27,17 @@ impl CancelToken {
         CancelToken::default()
     }
 
-    /// Sets the token; the first reason stands.
+    /// Sets the token. `cancel` always wins: it upgrades a `pause` (a pause whose grace runs
+    /// out, then a cancel, ends as a cancel), and a later `pause` never downgrades it.
     pub fn cancel(&self, reason: CancelReason) {
-        let v = match reason {
-            CancelReason::Cancel => CANCEL,
-            CancelReason::Pause => PAUSE,
-        };
-        let _ = self
-            .0
-            .compare_exchange(NONE, v, Ordering::AcqRel, Ordering::Acquire);
+        match reason {
+            CancelReason::Cancel => self.0.store(CANCEL, Ordering::Release),
+            CancelReason::Pause => {
+                let _ = self
+                    .0
+                    .compare_exchange(NONE, PAUSE, Ordering::AcqRel, Ordering::Acquire);
+            }
+        }
     }
 
     pub fn reason(&self) -> Option<CancelReason> {

@@ -13,6 +13,7 @@ import {
   type SchedState,
   schedule,
   type WarmWorkerView,
+  warmOverrun,
 } from "../../src/jobs/schedule.ts";
 
 const RUNS = { numRuns: 1000 };
@@ -37,14 +38,22 @@ const POOL_NAMES = ["cpu", "gpu", "net", "io:a"] as const;
 const RESOURCE = fc.constantFrom("cpu", "cpu", "gpu", "net", "io:a", "io:missing");
 const PRIORITY = fc.constantFrom<Priority>("interactive", "normal", "background");
 
+const FAMILIES = ["f", "g"] as const;
+
 interface World {
   readonly sizes: Record<string, number>;
   readonly used: Record<string, number>;
   readonly stuck: string[];
   readonly jobs: QueuedJob[];
-  readonly slots: number;
-  readonly workers: WarmWorkerView[];
+  readonly warm: Record<string, { slots: number; workers: WarmWorkerView[] }>;
 }
+
+const workerArb = fc.record({
+  key: fc.constantFrom("A", "B", "C"),
+  state: fc.constantFrom<WarmWorkerView["state"]>("spawning", "ready", "busy"),
+  idle: fc.integer({ min: 0, max: 1000 }),
+});
+const familyArb = fc.record({ slots: fc.integer({ min: 1, max: 2 }), workers: fc.array(workerArb, { maxLength: 2 }) });
 
 const world: fc.Arbitrary<World> = fc
   .record({
@@ -57,87 +66,106 @@ const world: fc.Arbitrary<World> = fc
         age: fc.integer({ min: 0, max: 45 * MIN }),
         resources: fc.array(RESOURCE, { minLength: 0, maxLength: 3 }),
         delay: fc.option(fc.integer({ min: -5000, max: 5000 }), { nil: undefined }),
-        warmKey: fc.option(fc.constantFrom("A", "B", "C"), { nil: undefined, freq: 3 }),
+        warm: fc.option(fc.record({ family: fc.constantFrom(...FAMILIES), key: fc.constantFrom("A", "B", "C") }), { nil: undefined, freq: 3 }),
+        warmGpu: fc.boolean(),
       }),
       { maxLength: 60 },
     ),
-    slots: fc.integer({ min: 1, max: 2 }),
-    workers: fc.array(
-      fc.record({ key: fc.constantFrom("A", "B", "C"), state: fc.constantFrom<WarmWorkerView["state"]>("spawning", "ready", "busy"), idle: fc.integer({ min: 0, max: 1000 }) }),
-      { maxLength: 2 },
-    ),
+    f: familyArb,
+    g: fc.option(familyArb, { nil: undefined }),
   })
-  .map(({ sizes, usedFrac, stuck, raw, slots, workers }) => {
+  .map(({ sizes, usedFrac, stuck, raw, f, g }) => {
     const used: Record<string, number> = {};
     POOL_NAMES.forEach((n, i) => (used[n] = Math.floor((usedFrac[i] ?? 0) * ((sizes as Record<string, number>)[n] ?? 0))));
     const jobs = raw.map((r, i) => {
       const j: QueuedJob = {
         id: `j${String(i).padStart(3, "0")}`,
-        priority: r.warmKey !== undefined ? "interactive" : r.priority,
+        priority: r.warm !== undefined ? "interactive" : r.priority,
         createdAt: NOW - r.age,
-        resources: r.warmKey !== undefined ? ["cpu"] : r.resources,
+        resources: r.warm !== undefined ? (r.warmGpu ? ["cpu", "gpu"] : ["cpu"]) : r.resources,
         ...(r.delay !== undefined ? { nextRunAt: NOW + r.delay } : {}),
-        ...(r.warmKey !== undefined ? { warm: { family: "f", key: r.warmKey } } : {}),
+        ...(r.warm !== undefined ? { warm: r.warm } : {}),
       };
       return j;
     });
-    const ws = workers.slice(0, slots).map((w) => ({ key: w.key, state: w.state, ...(w.state === "ready" ? { idleSince: w.idle } : {}) }));
-    return { sizes, used, stuck, jobs, slots, workers: ws };
+    const fam = (x: { slots: number; workers: Array<{ key: string; state: WarmWorkerView["state"]; idle: number }> }) => ({
+      slots: x.slots,
+      workers: x.workers.slice(0, x.slots).map((w) => ({ key: w.key, state: w.state, ...(w.state === "ready" ? { idleSince: w.idle } : {}) })),
+    });
+    const warm: World["warm"] = { f: fam(f) };
+    if (g !== undefined) warm.g = fam(g);
+    return { sizes, used, stuck, jobs, warm };
   });
+
+function warmMap(w: World): SchedState["warm"] {
+  return new Map(Object.entries(w.warm));
+}
 
 function build(w: World): SchedState {
   const pools = makePools(w.sizes);
   for (const [name, n] of Object.entries(w.used)) pools.take(Array(n).fill(name), { [name]: n });
   for (const s of w.stuck) pools.markStuck(s, true);
-  return state(w.jobs, pools, new Map([["f", { slots: w.slots, workers: w.workers }]]));
+  return state(w.jobs, pools, warmMap(w));
 }
 
-/** An independent brute force: every due job in global order, the rules applied one by one. */
+/**
+ * An independent brute force: every due job in global order, the rules applied one by one;
+ * warm spawns and retirements in a second pass over the warm jobs left waiting.
+ */
 function reference(w: World, now: number): Dispatch[] {
   const used = new Map(Object.entries(w.used));
-  const workers = w.workers.map((x) => ({ ...x, retiring: false }));
-  const spawning = new Set<string>();
+  const overrun = Object.values(w.warm).reduce((n, f) => n + f.slots, 0);
+  const fams = new Map(Object.entries(w.warm).map(([k, f]) => [k, { slots: f.slots, workers: f.workers.map((x) => ({ ...x, retiring: false })), spawning: new Set<string>() }]));
   const out: Dispatch[] = [];
-  const fits = (names: ReadonlyArray<string>, skipCpu: boolean): boolean =>
+  const fits = (names: ReadonlyArray<string>, extraCpu: number): boolean =>
     [...slotCounts(names)].every(([name, n]) => {
       const cap = w.sizes[name];
       if (cap === undefined || w.stuck.includes(name)) return false;
-      return (skipCpu && name === "cpu") || (used.get(name) ?? 0) + n <= cap;
+      return (used.get(name) ?? 0) + n <= cap + (name === "cpu" ? extraCpu : 0);
     });
   const take = (names: ReadonlyArray<string>): void => {
     for (const n of names) used.set(n, (used.get(n) ?? 0) + 1);
   };
   const due = w.jobs.filter((j) => (j.nextRunAt ?? 0) <= now).sort((a, b) => compareJobs(a, b, now));
+  const dueKeys = new Set(due.flatMap((j) => (j.warm ? [`${j.warm.family}/${j.warm.key}`] : [])));
+  const waiting: QueuedJob[] = [];
   for (const j of due) {
     if (j.warm === undefined) {
-      if (fits(j.resources, false)) {
+      if (fits(j.resources, 0)) {
         take(j.resources);
         out.push({ job: j.id, mode: "cold" });
       }
       continue;
     }
-    const key = j.warm.key;
-    if (!fits(j.resources, true)) continue;
-    const ready = workers.find((x) => x.key === key && x.state === "ready" && !x.retiring);
-    if (ready) {
-      ready.state = "busy";
-      take(j.resources);
-      out.push({ job: j.id, mode: "warm", family: "f", key });
+    const fam = fams.get(j.warm.family);
+    if (fam === undefined || !fits(j.resources, overrun)) continue;
+    const ready = fam.workers.find((x) => x.key === j.warm?.key && x.state === "ready" && !x.retiring);
+    if (ready === undefined) {
+      waiting.push(j);
       continue;
     }
-    if (spawning.has(key) || workers.some((x) => x.key === key && x.state === "spawning")) continue;
-    if (workers.filter((x) => !x.retiring).length + spawning.size < w.slots) {
-      spawning.add(key);
-      out.push({ mode: "spawnWarm", family: "f", key });
+    ready.state = "busy";
+    take(j.resources);
+    out.push({ job: j.id, mode: "warm", family: j.warm.family, key: j.warm.key });
+  }
+  for (const j of waiting) {
+    const { family, key } = j.warm!;
+    const fam = fams.get(family)!;
+    if (fam.spawning.has(key) || fam.workers.some((x) => x.key === key && x.state === "spawning")) continue;
+    if (fam.workers.filter((x) => !x.retiring).length + fam.spawning.size < fam.slots) {
+      fam.spawning.add(key);
+      out.push({ mode: "spawnWarm", family, key });
       continue;
     }
-    if (workers.some((x) => x.key === key && !x.retiring)) continue;
-    const candidates = workers.map((x, i) => ({ x, i })).filter(({ x }) => x.state === "ready" && !x.retiring && x.key !== key);
+    if (fam.workers.some((x) => x.key === key && !x.retiring)) continue;
+    const candidates = fam.workers
+      .map((x, i) => ({ x, i }))
+      .filter(({ x }) => x.state === "ready" && !x.retiring && x.key !== key && !dueKeys.has(`${family}/${x.key}`));
     if (candidates.length === 0) continue;
     const oldest = candidates.reduce((a, b) => ((b.x.idleSince ?? Infinity) < (a.x.idleSince ?? Infinity) ? b : a));
     oldest.x.retiring = true;
-    spawning.add(key);
-    out.push({ mode: "spawnWarm", family: "f", key, retire: oldest.i });
+    fam.spawning.add(key);
+    out.push({ mode: "spawnWarm", family, key, retire: oldest.i });
   }
   return out;
 }
@@ -188,16 +216,18 @@ describe("schedule", () => {
           if (!("job" in d)) continue;
           const j = byId.get(d.job)!;
           for (const name of j.resources) expect(s.pools.stuck(name)).toBe(false);
-          const overrun = d.mode === "warm" ? { cpu: w.slots } : {};
+          const overrun = d.mode === "warm" ? warmOverrun(s.warm) : {};
           expect(s.pools.take(j.resources, overrun), `${d.mode} ${d.job}`).toBe(true);
         }
         for (const name of POOL_NAMES) {
           const cap = (w.sizes as Record<string, number>)[name] ?? 0;
-          const extra = name === "cpu" ? w.slots : 0;
+          const extra = name === "cpu" ? warmOverrun(s.warm).cpu : 0;
           expect(s.pools.used(name)).toBeLessThanOrEqual(Math.max(cap + extra, w.used[name] ?? 0));
         }
-        const warm = ds.filter((d) => d.mode === "warm").length;
-        expect(warm).toBeLessThanOrEqual(w.workers.filter((x) => x.state === "ready").length);
+        for (const [family, f] of Object.entries(w.warm)) {
+          const warm = ds.filter((d) => d.mode === "warm" && d.family === family).length;
+          expect(warm).toBeLessThanOrEqual(f.workers.filter((x) => x.state === "ready").length);
+        }
       }),
       RUNS,
     );
@@ -272,14 +302,27 @@ describe("schedule", () => {
         const served = new Map<string, number>();
         for (const d of ds) {
           if (d.mode === "warm") {
-            expect(byId.get(d.job)?.warm?.key).toBe(d.key);
-            served.set(d.key, (served.get(d.key) ?? 0) + 1);
+            expect(byId.get(d.job)?.warm).toEqual({ family: d.family, key: d.key });
+            served.set(`${d.family}/${d.key}`, (served.get(`${d.family}/${d.key}`) ?? 0) + 1);
           }
         }
-        for (const [key, n] of served) expect(n).toBeLessThanOrEqual(w.workers.filter((x) => x.key === key && x.state === "ready").length);
+        for (const [fk, n] of served) {
+          const [family, key] = fk.split("/") as [string, string];
+          expect(n).toBeLessThanOrEqual(w.warm[family]!.workers.filter((x) => x.key === key && x.state === "ready").length);
+        }
         const spawns = ds.filter((d) => d.mode === "spawnWarm");
-        expect(new Set(spawns.map((d) => d.key)).size).toBe(spawns.length);
-        for (const d of spawns) if (d.retire !== undefined) expect(w.workers[d.retire]?.key).not.toBe(d.key);
+        expect(new Set(spawns.map((d) => `${d.family}/${d.key}`)).size).toBe(spawns.length);
+        const dueKeys = new Set(w.jobs.filter((j) => j.warm && (j.nextRunAt ?? 0) <= NOW).map((j) => `${j.warm!.family}/${j.warm!.key}`));
+        for (const d of spawns) {
+          if (d.retire === undefined) continue;
+          const retired = w.warm[d.family]!.workers[d.retire]!;
+          expect(retired.key).not.toBe(d.key);
+          expect(retired.state).toBe("ready");
+          expect(dueKeys.has(`${d.family}/${retired.key}`), "a key with a due job is never retired").toBe(false);
+        }
+        // Spawns and retirements come after every dispatch.
+        const firstSpawn = ds.findIndex((d) => d.mode === "spawnWarm");
+        if (firstSpawn >= 0) expect(ds.slice(firstSpawn).every((d) => d.mode === "spawnWarm")).toBe(true);
       }),
       RUNS,
     );
@@ -296,6 +339,62 @@ describe("schedule", () => {
     expect(schedule(state([wj], pools, two), NOW)).toEqual([{ mode: "spawnWarm", family: "f", key: "B", retire: 1 }]);
     const busy = new Map([["f", { slots: 1, workers: [{ key: "A", state: "busy" as const }] }]]);
     expect(schedule(state([wj], pools, busy), NOW)).toEqual([]);
+  });
+
+  test("warm_overrun_covers_every_family", () => {
+    // cpu 1 held by a cold job and by f's busy warm job; g has a ready worker.
+    const pools = makePools({ cpu: 1 });
+    pools.take(["cpu"]);
+    const warm = new Map([
+      ["f", { slots: 1, workers: [{ key: "A", state: "busy" as const }] }],
+      ["g", { slots: 1, workers: [{ key: "A", state: "ready" as const, idleSince: 1 }] }],
+    ]);
+    expect(warmOverrun(warm)).toEqual({ cpu: 2 });
+    pools.take(["cpu"], warmOverrun(warm));
+    const g1 = job("g1", { priority: "interactive", warm: { family: "g", key: "A" } });
+    expect(schedule(state([g1], pools, warm), NOW)).toEqual([{ job: "g1", mode: "warm", family: "g", key: "A" }]);
+    expect(pools.take(["cpu"], warmOverrun(warm)), "what schedule returned is takeable").toBe(true);
+    expect(pools.used("cpu")).toBe(3);
+    // At size + every family's slots, nothing more runs, warm or cold.
+    expect(schedule(state([g1, job("c")], pools, warm), NOW)).toEqual([]);
+  });
+
+  test("retirement_never_takes_a_worker_a_due_job_could_use", () => {
+    const pools = makePools({ cpu: 4, gpu: 1 });
+    const warm = () => new Map([["f", { slots: 1, workers: [{ key: "A", state: "ready" as const, idleSince: 5 }] }]]);
+    const b = job("b", { priority: "interactive", createdAt: NOW - 5000, warm: { family: "f", key: "B" } });
+    const a = job("a", { priority: "interactive", createdAt: NOW - 10, warm: { family: "f", key: "A" } });
+    // The older B job does not retire A's worker while A has a due job: A runs on it.
+    expect(schedule(state([b, a], pools, warm()), NOW)).toEqual([{ job: "a", mode: "warm", family: "f", key: "A" }]);
+    // Also when A's job is blocked on another pool: its key keeps its worker.
+    pools.markStuck("gpu", true);
+    const aGpu = job("a", { ...a, resources: ["cpu", "gpu"] });
+    expect(schedule(state([b, aGpu], pools, warm()), NOW)).toEqual([]);
+    pools.markStuck("gpu", false);
+    // Without a due A job, B retires it.
+    expect(schedule(state([b], pools, warm()), NOW)).toEqual([{ mode: "spawnWarm", family: "f", key: "B", retire: 0 }]);
+  });
+
+  test("alternating_keys_do_not_ping_pong", () => {
+    // One slot, a ready A worker, and B, A, B, A queued: ticks until the queue is empty, each
+    // warm job finishing at once and each spawn becoming ready at the next tick.
+    const pools = makePools({ cpu: 4 });
+    const queue = new QueueIndex();
+    ["B", "A", "B", "A"].forEach((key, i) => queue.add(job(`${key}${i}`, { priority: "interactive", createdAt: NOW - 100 + i, warm: { family: "f", key } })));
+    let workers: WarmWorkerView[] = [{ key: "A", state: "ready", idleSince: 0 }];
+    let retirements = 0;
+    for (let tick = 0; tick < 10 && queue.size() > 0; tick++) {
+      const ds = schedule({ queue, pools, warm: new Map([["f", { slots: 1, workers }]]) }, NOW + tick);
+      for (const d of ds) {
+        if (d.mode === "warm") queue.remove(d.job);
+        else if (d.mode === "spawnWarm") {
+          if (d.retire !== undefined) retirements++;
+          workers = [...workers.filter((_, i) => i !== d.retire), { key: d.key, state: "ready", idleSince: tick }];
+        }
+      }
+    }
+    expect(queue.size()).toBe(0);
+    expect(retirements).toBe(1);
   });
 
   test("next_run_at_is_respected", () => {

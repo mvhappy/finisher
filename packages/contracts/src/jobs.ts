@@ -60,7 +60,17 @@ export const HelperSpecSchema = Schema.Struct({
 });
 export type HelperSpec = typeof HelperSpecSchema.Type;
 
-/** An error as stored and shown: `{code, message, details, fix?}` (a `FinError`'s data). */
+/**
+ * An error as stored and shown: `{code, message, details, fix?}`, a `FinError`'s data.
+ *
+ * Two forms on purpose. `FinError` (errors.ts) is the Effect error class: it is what code
+ * fails with and catches (`Effect.fail(new FinError(…))`, `onCall`, `prepare`, an item's
+ * `ItemOutcome.error` handed to a kind's hooks). `FinErrorData` is the plain JSON of one, which
+ * is what a job row stores and what `JobView.error` / `itemErrors` carry, so a view
+ * round-trips through `control.db` and over the wire unchanged. A `FinError` is assignable to
+ * `FinErrorData`; the store turns stored data back into `FinError`s only where an `Effect`
+ * consumer expects one (`JobStore.items`).
+ */
 export const FinErrorDataSchema = Schema.Struct({
   code: Schema.String,
   message: Schema.String,
