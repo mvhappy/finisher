@@ -47,6 +47,8 @@ const VALIDATION_CODES: &[&str] = &[
     // A name the rules refuse: an empty or whitespace-only project name, or a branch or
     // checkpoint name outside `[A-Za-z0-9._-]{1,64}` (4B Decision 11).
     "INVALID_NAME",
+    // A path the server got was relative or had `.`/`..` segments (`details.field`).
+    "INVALID_PATH",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -190,6 +192,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "SERVER_SHUTTING_DOWN",
     "CANCELLED",
     "DB_IN_USE",
+    // The server's control database (`control.db`) was locked past its busy timeout.
+    "CONTROL_DB_BUSY",
     // `fin fonts fetch` could not download a font (`details.reason`, `details.retryAt`); in
     // other replies it is a warning, not an error.
     "FONT_FETCH_FAILED",
@@ -312,6 +316,7 @@ mod tests {
         }
         assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
+        assert_eq!(exit_code("CONTROL_DB_BUSY"), 5);
         assert_eq!(exit_code("CONSENT_UI_ONLY"), 2);
         assert_eq!(exit_code("JOURNAL_UNAVAILABLE"), 5);
         assert_eq!(exit_code("SETTINGS_INVALID"), 5);
@@ -379,6 +384,7 @@ mod tests {
             "SERVER_DATA_UNSAFE",
             "PROJECT_DIR_UNWRITABLE",
             "INVALID_NAME",
+            "INVALID_PATH",
             "IDEM_KEY_REUSED",
             "DB_TOO_NEW",
             "NOT_A_PROJECT_DB",

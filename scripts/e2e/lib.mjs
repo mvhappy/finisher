@@ -36,6 +36,21 @@ export function build(cmd, args) {
   if (status !== 0) throw new Error(`${cmd} ${args.join(" ")} failed (exit ${status})`);
 }
 
+/**
+ * The release `fin` (built with `-p fin` alone, so no dev-dependency turns `test-hooks` on)
+ * ignores its test hooks: with `FIN_OFFLINE_SNAPSHOT` naming a missing file it still looks for
+ * a server instead of failing to read the snapshot (5A Decision 37).
+ */
+export function assertNoTestHooks() {
+  const r = spawnSync(FIN, ["view", "--project", ROOT], {
+    encoding: "utf8",
+    env: { ...process.env, FIN_SERVER: join(ROOT, "target", "no-such.sock"), FIN_OFFLINE_SNAPSHOT: join(ROOT, "target", "no-such-snapshot.json"), FIN_TEST_COMMIT_GATE: "x" },
+  });
+  const code = JSON.parse(r.stdout || "{}").error?.code;
+  if (code !== "SERVER_UNAVAILABLE") throw new Error(`the release fin reads a test hook: ${r.stdout}${r.stderr}`);
+  log("release fin ignores its test hooks");
+}
+
 /** Runs `fin` and returns `{ status, json }`, whatever the exit code. */
 export function finRaw(serverData, cwd, args, extraEnv = {}) {
   const env = { ...process.env, FIN_SERVER_DATA: serverData, ...extraEnv };

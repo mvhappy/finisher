@@ -486,6 +486,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "clap",
+ "fin",
  "fin-core",
  "fin-probe",
  "fin-store",
@@ -616,6 +617,7 @@ dependencies = [
  "napi-derive",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

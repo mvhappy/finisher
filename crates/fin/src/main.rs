@@ -8,6 +8,7 @@ mod client_fonts;
 mod commands;
 mod config;
 mod conn;
+mod deadline;
 mod diag;
 mod endpoint;
 mod map;
@@ -301,8 +302,10 @@ fn edit(g: &Globals, step: Edit) -> Result<Value, CoreError> {
 fn main() {
     diag::begin();
     output::install_panic_hook();
+    // `FIN_TEST_PANIC` (test builds only) before anything else; the overall deadline
+    // (5A Decision 36) bounds the command, not D6's recording, which has its own budget.
     diag::test_panic();
-    let result = run(std::env::args_os().collect());
+    let result = deadline::start().and_then(|()| run(std::env::args_os().collect()));
     let code = match &result {
         Ok(doc) => output::ok(doc),
         Err(e) => output::error(e),
