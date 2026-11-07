@@ -1,0 +1,365 @@
+//! The determinism corpus (plan 4C Task 17, spec §5.4): frame and audio plans of the projects
+//! in `eval_corpus/projects/`, hashed as BLAKE3 of their compact JSON and compared with
+//! `eval_corpus/expected.json` on every OS and on wasm32 (`wasm32-wasip1` under
+//! `wasmtime --dir .`).
+//!
+//! The files are read relative to the package directory (where `cargo test` runs), so the
+//! wasm runner needs only `--dir .`. `FIN_EVAL_CORPUS_BLESS=1` rewrites `expected.json`
+//! (natively) after review; a mismatch prints the first differing plan.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use fin_core::eval::{eval_audio, eval_frame};
+use fin_core::layout::{LineBox, Measured, TextLayout, TextMeasurer, TextRequest, WordBox};
+use fin_core::params::{ParamType, Scope, specs};
+use fin_core::{
+    CoreError, Curve, Interp, Item, ItemBody, Project, Rational, Timeline, upcast_snapshot,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+const DIR: &str = "tests/eval_corpus";
+
+/// One corpus file: a project and the times and ranges evaluated on `timeline`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Case {
+    #[allow(dead_code)]
+    what: String,
+    timeline: String,
+    /// Evaluate frames with [`FakeMeasurer`] instead of no measurer.
+    #[serde(default)]
+    measurer: bool,
+    frames: Vec<Rational>,
+    audio: Vec<[Rational; 2]>,
+    project: Value,
+}
+
+/// One line of `expected.json`: a frame (`t`) or an audio range (`range`) of a case.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Entry {
+    case: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    t: Option<Rational>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    range: Option<[Rational; 2]>,
+    blake3: String,
+}
+
+impl Entry {
+    fn key(&self) -> String {
+        match (&self.t, &self.range) {
+            (Some(t), _) => format!("{} t={t}", self.case),
+            (_, Some([a, b])) => format!("{} range={a}..{b}", self.case),
+            _ => format!("{} ?", self.case),
+        }
+    }
+}
+
+/// Every corpus file, by name (sorted), with its project read through the snapshot upcaster.
+fn cases() -> Vec<(String, Case, Project)> {
+    let dir = Path::new(DIR).join("projects");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e} (wasm runners need --dir .)", dir.display()))
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".json"))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let text = std::fs::read_to_string(dir.join(&name)).unwrap();
+            let case: Case = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let project =
+                upcast_snapshot(case.project.clone()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            let id = name.trim_end_matches(".json").to_string();
+            (id, case, project)
+        })
+        .collect()
+}
+
+/// A measurer with fixed advances (1/64 px integers only): each character 0.5 em wide, a
+/// space 0.25 em, one line unless `max_width` breaks it. Real-font layouts are pinned by
+/// `fin-text`'s corpora and e2e.
+struct FakeMeasurer;
+
+impl TextMeasurer for FakeMeasurer {
+    fn measure(&self, req: &TextRequest) -> Result<Measured, CoreError> {
+        let em = (req.style.size * 64.0).floor() as i32;
+        let line_h = (req.style.size * req.style.line_height * 64.0).floor() as i32;
+        let space = em / 4;
+        let max = req.max_width.map(|w| (w * 64.0).floor() as i32);
+        let mut lines: Vec<LineBox> = Vec::new();
+        let mut words = Vec::new();
+        let (mut x, mut first) = (0, 0u32);
+        for (i, w) in req.words.iter().enumerate() {
+            let width = w.chars().count() as i32 * em / 2;
+            if x > 0 && max.is_some_and(|m| x + space + width > m) {
+                lines.push(line(lines.len(), first, i as u32, x - space, line_h));
+                (x, first) = (0, i as u32);
+            }
+            words.push(WordBox {
+                line: lines.len() as u32,
+                x,
+                width,
+            });
+            x += width + space;
+        }
+        lines.push(line(
+            lines.len(),
+            first,
+            req.words.len() as u32,
+            (x - space).max(0),
+            line_h,
+        ));
+        let width = lines.iter().map(|l| l.width).max().unwrap_or(0);
+        let overflow =
+            max.is_some_and(|m| width > m) || req.max_lines.is_some_and(|n| lines.len() as u32 > n);
+        Ok(Measured::Layout(TextLayout {
+            height: line_h * lines.len() as i32,
+            lines,
+            words,
+            width,
+            overflow,
+            missing: Vec::new(),
+            faces: req.faces.iter().map(|f| f.sha256.clone()).collect(),
+        }))
+    }
+    fn fingerprint(&self) -> String {
+        "fake/1".into()
+    }
+}
+
+fn line(n: usize, first: u32, end: u32, width: i32, height: i32) -> LineBox {
+    LineBox {
+        x: 0,
+        top: n as i32 * height,
+        width,
+        height,
+        baseline: n as i32 * height + height * 4 / 5,
+        rtl: false,
+        first_word: first,
+        end_word: end,
+    }
+}
+
+fn hash(plan: &impl Serialize) -> (String, String) {
+    let json = serde_json::to_string(plan).unwrap();
+    (blake3::hash(json.as_bytes()).to_hex().to_string(), json)
+}
+
+/// Every plan of the corpus: its entry and its compact JSON, in file then list order (frames,
+/// then audio ranges).
+fn computed() -> Vec<(Entry, String)> {
+    let mut out = Vec::new();
+    for (id, case, project) in cases() {
+        let m: Option<&dyn TextMeasurer> = case.measurer.then_some(&FakeMeasurer);
+        for &t in &case.frames {
+            let plan = eval_frame(&project, &case.timeline, t, m)
+                .unwrap_or_else(|e| panic!("{id} t={t}: {e:?}"));
+            let (blake3, json) = hash(&plan);
+            let entry = Entry {
+                case: id.clone(),
+                t: Some(t),
+                range: None,
+                blake3,
+            };
+            out.push((entry, json));
+        }
+        for &[from, to] in &case.audio {
+            let plan = eval_audio(&project, &case.timeline, from, to)
+                .unwrap_or_else(|e| panic!("{id} {from}..{to}: {e:?}"));
+            let (blake3, json) = hash(&plan);
+            let entry = Entry {
+                case: id.clone(),
+                t: None,
+                range: Some([from, to]),
+                blake3,
+            };
+            out.push((entry, json));
+        }
+    }
+    out
+}
+
+fn bless() -> bool {
+    std::env::var("FIN_EVAL_CORPUS_BLESS").is_ok_and(|v| v == "1")
+}
+
+/// The cross-machine check: every plan hash equals the committed one.
+#[test]
+fn corpus_plans_match_expected() {
+    let plans = computed();
+    let entries: Vec<Entry> = plans.iter().map(|(e, _)| e.clone()).collect();
+    let path = Path::new(DIR).join("expected.json");
+    if bless() {
+        let text = serde_json::to_string_pretty(&entries).unwrap() + "\n";
+        std::fs::write(&path, text).unwrap();
+        return;
+    }
+    // One line per plan, for comparing runs across machines (`--nocapture`).
+    for (e, _) in &plans {
+        println!("{} {}", e.key(), e.blake3);
+    }
+    let expected: Vec<Entry> =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let want: BTreeMap<String, &str> = expected
+        .iter()
+        .map(|e| (e.key(), e.blake3.as_str()))
+        .collect();
+    assert_eq!(want.len(), expected.len(), "expected.json repeats a plan");
+    for (e, json) in &plans {
+        let key = e.key();
+        if want.get(&key) != Some(&e.blake3.as_str()) {
+            let pretty =
+                serde_json::to_string_pretty(&serde_json::from_str::<Value>(json).unwrap())
+                    .unwrap();
+            panic!(
+                "{key}: expected {:?}, computed {}; {} plans computed, {} expected.\n\
+                 The plan:\n{pretty}\n\
+                 Rerun with FIN_EVAL_CORPUS_BLESS=1 after review.",
+                want.get(&key),
+                e.blake3,
+                plans.len(),
+                expected.len()
+            );
+        }
+    }
+    let computed: BTreeSet<String> = plans.iter().map(|(e, _)| e.key()).collect();
+    let stale: Vec<&String> = want.keys().filter(|k| !computed.contains(*k)).collect();
+    assert!(
+        stale.is_empty(),
+        "expected.json lists plans the corpus no longer has: {stale:?}"
+    );
+}
+
+/// The corpus files are model JSON exactly: a field the model does not know (dropped on read)
+/// or one at its default (omitted on write) would make the file say something the plan does
+/// not.
+#[test]
+fn corpus_projects_round_trip() {
+    for (id, case, project) in cases() {
+        assert_eq!(
+            serde_json::to_value(&project).unwrap(),
+            case.project,
+            "{id}: the project does not round-trip"
+        );
+    }
+}
+
+/// Every item of a timeline, nested ones included (each timeline once).
+fn items(p: &Project) -> impl Iterator<Item = (&Timeline, &Item)> {
+    p.timelines.iter().flat_map(|tl| {
+        tl.tracks
+            .iter()
+            .flat_map(move |t| t.items.iter().map(move |i| (tl, i)))
+    })
+}
+
+fn is_bezier(kfs: &[fin_core::Keyframe]) -> bool {
+    kfs.iter()
+        .any(|k| matches!(k.interp, Interp::Bezier { .. }))
+}
+
+/// The corpus covers what plan 4C Task 17 lists: bézier keyframes on every animatable number,
+/// `vec2` and colour path (items, effects and graphic slots), transitions with both curves,
+/// the three speeds, nesting two deep, an adjustment layer, masks, captions with a measurer
+/// and audio ranges.
+#[test]
+fn corpus_covers_the_plan() {
+    let cases = cases();
+    let mut keyed: BTreeSet<String> = BTreeSet::new();
+    let mut curves = BTreeSet::new();
+    let mut speeds = BTreeSet::new();
+    let (mut depth2, mut adjustment, mut mask, mut captions, mut audio) =
+        (false, false, false, false, false);
+    for (_, case, p) in &cases {
+        audio |= !case.audio.is_empty();
+        for (tl, item) in items(p) {
+            for (path, kfs) in &item.common.keyframes {
+                if !is_bezier(kfs) {
+                    continue;
+                }
+                // Registry form: `effects.<fx>.<param>` is `<kind>.<param>`; a slot is keyed
+                // by its template's slot kind.
+                let name = match path.split_once('.') {
+                    Some(("effects", rest)) => {
+                        let (fx, param) = rest.split_once('.').unwrap();
+                        let e = item.common.effects.iter().find(|e| e.id == fx).unwrap();
+                        format!("{}.{param}", e.kind)
+                    }
+                    Some(("slots", slot)) => {
+                        let ItemBody::Graphic { asset, .. } = &item.body else {
+                            panic!("slot keyframes on a non-graphic")
+                        };
+                        let lottie = p.assets[asset].lottie.as_ref().unwrap();
+                        let s = lottie.slots.iter().find(|s| s.id == slot).unwrap();
+                        format!("slots.<{}>", s.kind)
+                    }
+                    _ => path.clone(),
+                };
+                keyed.insert(name);
+            }
+            match &item.body {
+                ItemBody::Clip { speed, .. } => {
+                    speeds.insert(speed.to_string());
+                }
+                ItemBody::Adjustment {} => adjustment = true,
+                ItemBody::Caption { .. } => captions |= case.measurer,
+                ItemBody::Nested { timeline, .. } => {
+                    let inner = p.timelines.iter().find(|t| &t.id == timeline).unwrap();
+                    depth2 |= tl.id != *timeline
+                        && inner
+                            .tracks
+                            .iter()
+                            .flat_map(|t| &t.items)
+                            .any(|i| matches!(i.body, ItemBody::Nested { .. }));
+                }
+                _ => {}
+            }
+            mask |= item.common.mask.is_some();
+        }
+        for t in p.timelines.iter().flat_map(|tl| &tl.tracks) {
+            curves.extend(t.transitions.iter().map(|tr| format!("{:?}", tr.curve)));
+        }
+    }
+    let mut want: BTreeSet<String> = BTreeSet::new();
+    for s in specs() {
+        let numeric = matches!(
+            s.ty,
+            ParamType::Number { .. } | ParamType::Vec2 { .. } | ParamType::Color
+        );
+        if !(s.animatable && numeric) {
+            continue;
+        }
+        match s.scope {
+            Scope::Item { .. } if s.path == "slots.<id>" => {
+                let kind = if s.ty == ParamType::Color {
+                    "color"
+                } else {
+                    "number"
+                };
+                want.insert(format!("slots.<{kind}>"));
+            }
+            Scope::Item { .. } | Scope::Effect { .. } => {
+                want.insert(s.path.to_string());
+            }
+            _ => panic!("{}: an animatable path outside items and effects", s.path),
+        }
+    }
+    let missing: Vec<&String> = want.difference(&keyed).collect();
+    assert!(missing.is_empty(), "no bézier keyframes on {missing:?}");
+    let both = [Curve::Linear, Curve::EqualPower].map(|c| format!("{c:?}"));
+    assert_eq!(curves, BTreeSet::from(both));
+    for s in ["1/2", "3/2", "30000/1001"] {
+        assert!(speeds.contains(s), "no clip at speed {s}");
+    }
+    assert!(depth2 && adjustment && mask && captions && audio);
+    assert!(
+        (15..=25).contains(&cases.len()),
+        "{} cases (the plan asks for about 20)",
+        cases.len()
+    );
+}

@@ -1,0 +1,516 @@
+{
+  "what": "a reel: linked A/V with transitions, a graphic, an image, captions, markers and a second timeline",
+  "timeline": "tl1",
+  "frames": [
+    "0",
+    "15/4",
+    "17/4",
+    "15/2",
+    "8",
+    "17/2",
+    "19/2",
+    "27/2"
+  ],
+  "audio": [
+    [
+      "0",
+      "14"
+    ],
+    [
+      "7/2",
+      "9/2"
+    ],
+    [
+      "15/2",
+      "17/2"
+    ],
+    [
+      "12",
+      "14"
+    ]
+  ],
+  "project": {
+    "id": "p1",
+    "name": "Corpus",
+    "schemaVersion": 2,
+    "rate": "30",
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "width": 1080,
+          "height": 1920
+        },
+        "markers": [
+          {
+            "id": "mk1",
+            "at": "4",
+            "label": "beat"
+          },
+          {
+            "id": "mk2",
+            "at": "8",
+            "duration": "1",
+            "label": "drop",
+            "color": "#ff0000"
+          }
+        ],
+        "tracks": [
+          {
+            "id": "t1",
+            "kind": "video",
+            "name": "T1",
+            "items": [
+              {
+                "id": "c1",
+                "start": "0",
+                "duration": "4",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "12",
+                "link": "lk1"
+              },
+              {
+                "id": "c2",
+                "start": "4",
+                "duration": "4",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "60",
+                "speed": "3/2",
+                "link": "lk2"
+              },
+              {
+                "id": "c3",
+                "start": "8",
+                "duration": "6",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "120",
+                "link": "lk3",
+                "keyframes": {
+                  "transform.scale": [
+                    {
+                      "at": "0",
+                      "value": [
+                        1.0,
+                        1.0
+                      ],
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.42,
+                        "y1": 0.0,
+                        "x2": 0.58,
+                        "y2": 1.0
+                      }
+                    },
+                    {
+                      "at": "6",
+                      "value": [
+                        1.2,
+                        1.2
+                      ],
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "transitions": [
+              {
+                "id": "tr1",
+                "between": [
+                  "c1",
+                  "c2"
+                ],
+                "kind": "crossfade",
+                "duration": "1/2"
+              },
+              {
+                "id": "tr2",
+                "between": [
+                  "c2",
+                  "c3"
+                ],
+                "kind": "dissolve",
+                "duration": "1",
+                "curve": "equalPower"
+              }
+            ]
+          },
+          {
+            "id": "t3",
+            "kind": "video",
+            "name": "T3",
+            "items": [
+              {
+                "id": "i1",
+                "start": "1",
+                "duration": "2",
+                "kind": "image",
+                "asset": "a2",
+                "transform": {
+                  "position": [
+                    0.0,
+                    600.0
+                  ],
+                  "scale": [
+                    0.4,
+                    0.4
+                  ]
+                }
+              },
+              {
+                "id": "g1",
+                "start": "9",
+                "duration": "3",
+                "kind": "graphic",
+                "asset": "a3",
+                "slots": {
+                  "title": "The end",
+                  "tint": "#ffffff"
+                },
+                "keyframes": {
+                  "slots.size": [
+                    {
+                      "at": "0",
+                      "value": 0.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.68,
+                        "y1": -0.55,
+                        "x2": 0.265,
+                        "y2": 1.55
+                      }
+                    },
+                    {
+                      "at": "1",
+                      "value": 64.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "id": "t4",
+            "kind": "caption",
+            "name": "T4",
+            "items": [
+              {
+                "id": "cap1",
+                "start": "0",
+                "duration": "4",
+                "kind": "caption",
+                "words": [
+                  {
+                    "text": "one",
+                    "start": "0",
+                    "end": "1"
+                  },
+                  {
+                    "text": "two",
+                    "start": "1",
+                    "end": "2"
+                  },
+                  {
+                    "text": "three",
+                    "start": "2",
+                    "end": "4"
+                  }
+                ],
+                "style": "preset:bold"
+              },
+              {
+                "id": "cap2",
+                "start": "4",
+                "duration": "6",
+                "kind": "caption",
+                "words": [
+                  {
+                    "text": "four",
+                    "start": "0",
+                    "end": "3"
+                  },
+                  {
+                    "text": "five",
+                    "start": "3",
+                    "end": "6"
+                  }
+                ],
+                "style": "preset:bold"
+              }
+            ]
+          },
+          {
+            "id": "t2",
+            "kind": "audio",
+            "name": "T2",
+            "items": [
+              {
+                "id": "c4",
+                "start": "0",
+                "duration": "4",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "12",
+                "link": "lk1"
+              },
+              {
+                "id": "c5",
+                "start": "4",
+                "duration": "4",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "60",
+                "speed": "3/2",
+                "link": "lk2"
+              },
+              {
+                "id": "c6",
+                "start": "8",
+                "duration": "6",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "120",
+                "link": "lk3",
+                "audio": {
+                  "fadeOut": "2"
+                }
+              }
+            ],
+            "transitions": [
+              {
+                "id": "tr3",
+                "between": [
+                  "c4",
+                  "c5"
+                ],
+                "kind": "crossfade",
+                "duration": "1/2"
+              },
+              {
+                "id": "tr4",
+                "between": [
+                  "c5",
+                  "c6"
+                ],
+                "kind": "crossfade",
+                "duration": "1",
+                "curve": "equalPower"
+              }
+            ]
+          },
+          {
+            "id": "t5",
+            "kind": "audio",
+            "name": "T5",
+            "items": [
+              {
+                "id": "c7",
+                "start": "0",
+                "duration": "14",
+                "kind": "clip",
+                "asset": "a4",
+                "sourceIn": "0",
+                "audio": {
+                  "gain": -18.0
+                },
+                "keyframes": {
+                  "audio.gain": [
+                    {
+                      "at": "3",
+                      "value": -18.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    },
+                    {
+                      "at": "4",
+                      "value": -30.0,
+                      "interp": {
+                        "type": "hold"
+                      }
+                    },
+                    {
+                      "at": "8",
+                      "value": -30.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.0,
+                        "y1": 0.0,
+                        "x2": 0.58,
+                        "y2": 1.0
+                      }
+                    },
+                    {
+                      "at": "9",
+                      "value": -12.0,
+                      "interp": {
+                        "type": "bezier",
+                        "x1": 0.25,
+                        "y1": 0.1,
+                        "x2": 0.25,
+                        "y2": 1.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "tl2",
+        "name": "tl2",
+        "rate": "30",
+        "resolution": {
+          "width": 1080,
+          "height": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "kind": "video",
+            "name": "T1",
+            "items": [
+              {
+                "id": "c8",
+                "start": "0",
+                "duration": "5",
+                "kind": "clip",
+                "asset": "a1",
+                "sourceIn": "0"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "assets": {
+      "a1": {
+        "id": "a1",
+        "kind": "media",
+        "path": "a1.bin",
+        "fingerprint": "fp-a1",
+        "duration": "600",
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": "30"
+        },
+        "audio": {
+          "sampleRate": 48000,
+          "channels": 2
+        }
+      },
+      "a2": {
+        "id": "a2",
+        "kind": "image",
+        "path": "a2.bin",
+        "fingerprint": "fp-a2",
+        "image": {
+          "width": 800,
+          "height": 600
+        }
+      },
+      "a3": {
+        "id": "a3",
+        "kind": "lottieTemplate",
+        "path": "a3.bin",
+        "fingerprint": "fp-a3",
+        "duration": "3",
+        "lottie": {
+          "width": 1080,
+          "height": 1920,
+          "rate": "30",
+          "duration": "3",
+          "slots": [
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "tint",
+              "kind": "color"
+            },
+            {
+              "id": "size",
+              "kind": "number"
+            },
+            {
+              "id": "logo",
+              "kind": "image"
+            }
+          ]
+        }
+      },
+      "a4": {
+        "id": "a4",
+        "kind": "media",
+        "path": "a4.bin",
+        "fingerprint": "fp-a4",
+        "duration": "300",
+        "audio": {
+          "sampleRate": 44100,
+          "channels": 1
+        }
+      },
+      "a5": {
+        "id": "a5",
+        "kind": "lut",
+        "path": "a5.bin",
+        "fingerprint": "fp-a5",
+        "lut": {
+          "size": 33
+        }
+      },
+      "a6": {
+        "id": "a6",
+        "kind": "svg",
+        "path": "a6.bin",
+        "fingerprint": "fp-a6",
+        "image": {
+          "width": 512,
+          "height": 512
+        }
+      },
+      "a7": {
+        "id": "a7",
+        "kind": "media",
+        "path": "a7.bin",
+        "fingerprint": "fp-a7",
+        "duration": "1200",
+        "video": {
+          "width": 1920,
+          "height": 1080,
+          "rate": "30000/1001"
+        },
+        "audio": {
+          "sampleRate": 48000,
+          "channels": 2
+        }
+      }
+    }
+  }
+}

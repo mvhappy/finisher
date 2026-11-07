@@ -13,4 +13,6 @@ thiserror = "2"
 unicode-script = "0.5"
 
 [dev-dependencies]
-proptest = "1"
+blake3 = "1"
+# No `fork`/`timeout` (wait-timeout does not build for wasm32-wasip1, where the eval corpus runs).
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
