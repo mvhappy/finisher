@@ -24,10 +24,11 @@
 //!   operations (a removal records the successor it had, and its inverse reinserts before it).
 //!   A move inverts to a removal and a reinsertion before the successor it had, with the
 //!   length it had then (`item_move`'s inverse: `item.remove`, then `item.restore` of the
-//!   item as it was). A split inverts to a *lift* removal of the right part (a gap unless it is
-//!   last) and a *strict* trim of the left part by the right part's length, which fills the
-//!   gap and overlaps (`CLIP_OVERLAP`) whatever else is there (`item_split`'s inverse, B4); a
-//!   redo of that shrinks the left part and lift-restores the right part into the gap.
+//!   item as it was, refused when the item's edge or `start` changed since). A split inverts
+//!   to a *lift* removal of the right part (a gap unless it is last) and a *strict* trim of the
+//!   left part by the right part's length, which fills the gap and overlaps (`CLIP_OVERLAP`)
+//!   whatever else is there (`item_split`'s inverse, B4); a redo of that shrinks the left part
+//!   and lift-restores the right part into the gap.
 //!
 //! **Placement.** A reinsertion is certain while its successor is present and was neither
 //! removed nor moved since (a copy: never on either side); an insertion at the end, while its
@@ -42,34 +43,36 @@
 //! **Two oracles for conflicts.**
 //! - *Independent* (`MBranch::verdict`): from the clip lists and edge histories alone, an op
 //!   cannot be carried when its clip is gone (remove, trim, move, split), is there already (a
-//!   restore, a split's right part), or its end edge was changed by someone else since (a trim
-//!   or a split; an undo or redo: since the edit it inverts; a copy: since what the source had
-//!   before it); and a copied undo or redo cannot be carried when the target does not hold its
-//!   unit. An edge history is the trims in effect: a restore re-creates a clip without touching
-//!   its edge (spec §4.3: the last removal or creation decides `REMOVED`, only trims make
-//!   `SAME_EDGE`), and a clip the record itself re-created at an earlier op is not judged (60k
-//!   cases found both: an undo of a merge group that removes, restores, then trims a clip
-//!   another author trimmed since; and an undo of a trim whose clip a merged delete and restore
-//!   re-created). Wherever it says so, the real planner must refuse, with a reason of that
-//!   kind. It allows the planner to refuse more (it is conservative: two unmirrored records may
-//!   cancel in effect), so it cannot predict every conflict. A move's `start` has no history
-//!   here: an undo of a move is a removal and a restore, which never conflict (spec §4.3), so
-//!   no history of moves in effect predicts `SAME_PARAM` soundly (main's move and its undo
-//!   cancel; a side undo of a merged move does not count).
+//!   restore, a split's right part), or its end edge was changed by someone else since (a
+//!   trim, a split, and a ripple restore, which puts its clip back whole; an undo or redo:
+//!   since the edit it inverts, for a restore the removal or move; a copy: since what the
+//!   source had before it); and a copied undo or redo cannot be carried when the target does
+//!   not hold its unit. An edge history is the trims in effect: a restore leaves it as it is
+//!   (spec §4.3: the last removal or creation decides `REMOVED`; a restore over a later edge
+//!   change is `SAME_EDGE`, or `SAME_PARAM` when a move of the clip came first), and a clip the
+//!   record itself re-created at an earlier op is not judged (60k cases found it: an undo of a
+//!   merge group that removes, restores, then trims a clip: the trim acts on the restored
+//!   item). Wherever it says so, the real planner must refuse, with a reason of that kind. It
+//!   allows the planner to refuse more (it is conservative: two unmirrored records may cancel
+//!   in effect), so it cannot predict every conflict. A move's `start` has no history here, so
+//!   it never predicts a restore's `SAME_PARAM` alone (main's move and its undo cancel; a side
+//!   undo of a merged move does not count).
 //! - *Transcribed* (shared with the implementation's rules, so a bug in those rules could be
 //!   shared too): the exact reason and blamed record come from abstract footprints (`LOp::fp`:
-//!   a restore creates its clip, a removal needs and removes it, a trim needs its end edge, a
-//!   move sets its `start`, a split needs its clip, moves its end edge and creates the right
-//!   part) over the records between a unit and the head, or over a copy's merge steps (the
-//!   source records before it inverted, the target's records, the copies so far), paired as
-//!   Decision 24 says (an undo with its units, cut by each unit's inverse length; a redo with
-//!   its undo; a copy with its inverted original; a target record with the inverted source
-//!   record of the same origin root), plus the candidate rules (present by root;
-//!   `UNDOES_TARGET_RECORDS`; an undo or redo of a skipped unit is `DEPENDS_ON_SKIPPED`, found
-//!   by this property: a skipped delete's undo re-created a clip the target had deleted). A
-//!   re-run failure blames the one unmirrored record that touched, created or removed a clip
-//!   the op touches or its error names (`rerun_conflict`). The heads, which the transcribed
-//!   part never computes, are checked by the list model alone.
+//!   a restore creates its clip and puts it back whole, a removal needs and removes it, a trim
+//!   needs its end edge, a move sets its `start`, a split needs its clip, moves its end edge
+//!   and creates the right part) over the records between a unit and the head, or over a
+//!   copy's merge steps (the source records before it inverted, the target's records, the
+//!   copies so far), paired as Decision 24 says (an undo with its units, cut by each unit's
+//!   inverse length; a redo with its undo; a copy with its inverted original; a target record
+//!   with the inverted source record of the same origin root), plus the candidate rules
+//!   (present by root; `UNDOES_TARGET_RECORDS`; an undo or redo of a skipped unit is
+//!   `DEPENDS_ON_SKIPPED`, found by this property: a skipped delete's undo re-created a clip
+//!   the target had deleted). A re-run failure blames the one unmirrored record that touched,
+//!   created or removed a clip the op touches or its error names (`rerun_conflict`); a
+//!   restore that re-ran is then refused by the first unmirrored record that touched its
+//!   clip's edge or `start` (`overwrite_conflict`). The heads, which the transcribed part
+//!   never computes, are checked by the list model alone.
 //!
 //! **Exclusions** (4C; none of them arises from 4B ops):
 //! - *Gaps.* The run stops at the first state with a gap: a lift removal the strict trim does
@@ -87,9 +90,6 @@
 //!   `MOVE_INTO_ITSELF` or `CLIP_OVERLAP` (or `DEPENDS_ON_SKIPPED` when blamed on a skipped
 //!   record); the model takes that refusal as it is (`Rerun::takes`). Its success is checked
 //!   as an uncertain placement.
-//! - *Undo of a move* drops what others did to the clip since (it restores the clip as it was:
-//!   another author's trim or move of it is lost, with no conflict). The model transcribes it;
-//!   `props_history_4c` keeps the repro (`undo_of_move_keeps_a_later_trim`, ignored).
 //!
 //! Not driven here: `revert` (its chains have their own oracle, `pick_props`), `undo --to`
 //! (`undo_to_props`: equal to the undos in a row), and lineages deeper than one fork

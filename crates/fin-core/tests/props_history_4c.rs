@@ -10,7 +10,7 @@ mod undo_model;
 use common::memlog::MemLog;
 use common::moves::{move_to, spans_on};
 use common::*;
-use fin_core::{Edge, InsertMode, ItemSplit};
+use fin_core::{Edge, InsertMode, ItemSplit, Op, ParamSet, ParamValue};
 use proptest::prelude::*;
 use undo_model::driver::{act_4c, run_script, script};
 use undo_model::{frames, genesis};
@@ -23,28 +23,26 @@ proptest! {
     }
 }
 
-/// Suspected engine defect (the model transcribes it; module docs, *Exclusions*): an undo of a
-/// move restores the item as it was before the move, so a later edit of it by another author
-/// is dropped without a conflict. An undo of a trim after another author's trim of the same end
-/// is `SAME_EDGE` (spec §4.3); the restore puts the end back too, so this should be one.
+/// An undo of a move is `item.remove`, then `item.restore` of the item as it was. The restore
+/// puts the whole item back, its end edge included, so after another author's trim of that end
+/// it is `SAME_EDGE` (spec §4.3, *as built*), not a silent loss of the trim. Found by this
+/// property (it used to pass, with c1 back on t1 untrimmed: bob's trim was gone).
 #[test]
-#[ignore = "suspected engine defect: an undo of a move drops a later trim of the item"]
 fn undo_of_move_keeps_a_later_trim() {
     let mut log = MemLog::new(with_clips(&[2, 2, 2]));
     let to_t2 = move_to("c1", "t2", secs(0), InsertMode::Ripple);
     log.commit("main", "m1", "alice", vec![to_t2]);
     log.commit("main", "t1", "bob", vec![trim("c1", Edge::End, frames(-9))]);
-    // Today: Ok, and c1 is back on t1 at 2 s: bob's trim is gone.
     let Err(e) = log.undo("main", "alice", "u1") else {
         panic!("no conflict: t1 {:?}", spans_on(&log.state("main"), 0));
     };
     assert_eq!(e.details["reason"], "SAME_EDGE", "{e:?}");
 }
 
-/// The same defect after a split of the moved item: the undo restores the left part at its
-/// length before the split while the right part stays, so the right part's media plays twice.
+/// The same after a split of the moved item: the split moved its end edge, so the restore is
+/// `SAME_EDGE`. It used to pass, restoring the left part at its length before the split while
+/// the right part stayed, so the right part's media played twice.
 #[test]
-#[ignore = "suspected engine defect: an undo of a move after a split duplicates media"]
 fn undo_of_move_after_a_split_keeps_the_split() {
     let mut log = MemLog::new(with_clips(&[2, 2, 2]));
     let to_t2 = move_to("c1", "t2", secs(0), InsertMode::Ripple);
@@ -55,8 +53,6 @@ fn undo_of_move_after_a_split_keeps_the_split() {
         id: "$x".into(),
     };
     log.commit("main", "s1", "bob", vec![split.into()]);
-    // Today: Ok, with c1 (2 s, on t1) and the right part c4 (1 s, on t2) both showing its
-    // second half.
     let Err(e) = log.undo("main", "alice", "u1") else {
         let p = log.state("main");
         panic!(
@@ -66,4 +62,74 @@ fn undo_of_move_after_a_split_keeps_the_split() {
         );
     };
     assert_eq!(e.details["reason"], "SAME_EDGE", "{e:?}");
+}
+
+/// The restore meets a later change of the item's `start` or of a parameter the same way:
+/// `SAME_PARAM`, and nothing is written.
+#[test]
+fn undo_of_move_after_a_later_move_or_param_is_same_param() {
+    let opacity: Op = ParamSet {
+        item: "c1".into(),
+        path: "opacity".into(),
+        value: Some(ParamValue::Number(0.5)),
+    }
+    .into();
+    for later in [move_to("c1", "t1", secs(0), InsertMode::Ripple), opacity] {
+        let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+        let to_t2 = move_to("c1", "t2", secs(0), InsertMode::Ripple);
+        log.commit("main", "m1", "alice", vec![to_t2]);
+        log.commit("main", "b1", "bob", vec![later.clone()]);
+        let before = log.state("main");
+        let e = log.undo("main", "alice", "u1").expect_err("a conflict");
+        assert_eq!(e.details["reason"], "SAME_PARAM", "{later:?}: {e:?}");
+        assert_eq!(e.details["againstTx"], "b1", "{later:?}: {e:?}");
+        assert_eq!(log.state("main"), before, "{later:?}");
+    }
+}
+
+/// A later edit that was undone again (a mirrored pair) is not in the way: the undo of the
+/// move applies and puts c1 back first on t1, at its length.
+#[test]
+fn undo_of_move_after_an_undone_trim_applies() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let to_t2 = move_to("c1", "t2", secs(0), InsertMode::Ripple);
+    log.commit("main", "m1", "alice", vec![to_t2]);
+    log.commit("main", "t1", "bob", vec![trim("c1", Edge::End, frames(-9))]);
+    log.undo("main", "bob", "u0").unwrap();
+    log.undo("main", "alice", "u1").unwrap();
+    let p = log.state("main");
+    assert_eq!(
+        spans_on(&p, 0),
+        [
+            ("c1".to_string(), secs(0), secs(2)),
+            ("c2".to_string(), secs(2), secs(2)),
+            ("c3".to_string(), secs(4), secs(2)),
+        ]
+    );
+    assert!(spans_on(&p, 1).is_empty());
+}
+
+/// The merge case of the same rule (spec §4.3, *as built*): bob deletes c1 on br1 and undoes
+/// that, while alice trims c1 on main. The copy of bob's undo would restore c1 as bob deleted
+/// it, without alice's trim; it is `SAME_EDGE`, blamed on her trim, and the merge writes
+/// nothing. It used to merge, dropping the trim.
+#[test]
+fn merged_delete_and_restore_keeps_a_target_trim() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    log.fork("br1", "main", 0);
+    log.commit(
+        "main",
+        "t1",
+        "alice",
+        vec![trim("c1", Edge::End, frames(-9))],
+    );
+    log.commit("br1", "d1", "bob", vec![delete("c1")]);
+    log.undo("br1", "bob", "u1").unwrap();
+    let before = log.state("main");
+    let e = log
+        .merge("br1", "main", "carol", "m1", false)
+        .expect_err("a conflict");
+    assert_eq!(e.details["reason"], "SAME_EDGE", "{e:?}");
+    assert_eq!(e.details["againstTx"], "t1", "{e:?}");
+    assert_eq!(log.state("main"), before);
 }

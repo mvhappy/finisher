@@ -286,6 +286,8 @@ impl Run {
                     before,
                     stamp,
                     ns: mb.ns[track],
+                    expect: None,
+                    pre: Vec::new(),
                 };
                 (op, lop)
             }
@@ -298,6 +300,7 @@ impl Run {
                     succ: None,
                     stamp: 0,
                     ns: 0,
+                    post: Vec::new(),
                 };
                 (delete(&c.id), lop)
             }
@@ -338,6 +341,7 @@ impl Run {
                     succ: None,
                     sstamp: 0,
                     sns: 0,
+                    post: Vec::new(),
                 };
                 (op, lop)
             }

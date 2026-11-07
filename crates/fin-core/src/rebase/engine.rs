@@ -11,7 +11,9 @@ use crate::model::Project;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
-use super::footprint::{Footprint, entity_conflict_in, footprint, split_diff, unbind_own};
+use super::footprint::{
+    Footprint, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
+};
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
 use super::steps::{Prepared, Step, steps_from};
 
@@ -156,7 +158,6 @@ pub fn rebase_prepared(
         if let Some((reason, against)) = entity_conflict_in(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
-        created.extend(fp.creates.iter().cloned());
         let rerun = match run.op(k, &op, ids) {
             Ok(d) => d,
             Err(e) => {
@@ -168,6 +169,11 @@ pub fn rebase_prepared(
                 return Err(rerun_conflict(&e, r, k, &ours, &theirs, head));
             }
         };
+        // A restore that re-ran would put its snapshot over a later edit of the item.
+        if let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
+            return Err(Conflict::new(tx_id, k, reason, Some(against)));
+        }
+        created.extend(fp.creates.iter().cloned());
         let at = mapping.push(rebased_map(rerun, run.bound()));
         mapping.set_own_mirror(n - 1 - k, at);
         earlier.push(fp);

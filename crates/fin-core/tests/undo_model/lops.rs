@@ -9,7 +9,9 @@ use fin_core::rebase::reasons;
 #[derive(Debug, Clone, PartialEq)]
 pub enum LOp {
     /// `item.insert` (ripple), or the ripple `item.restore` of an inverse: before `before`,
-    /// or at the track end.
+    /// or at the track end. A restore puts the clip back whole, its end edge included:
+    /// `expect`, the edge history it needs (as the removal or move it inverts left it);
+    /// `pre`, the history as made (what a copy needs).
     Insert {
         track: usize,
         id: String,
@@ -17,9 +19,11 @@ pub enum LOp {
         before: Option<String>,
         stamp: u32,
         ns: u32,
+        expect: Option<Vec<String>>,
+        pre: Vec<String>,
     },
     /// `item.delete` (ripple), or the ripple `item.remove` of an inverse; `succ`: the clip
-    /// after it when made.
+    /// after it when made; `post`: its edge history then.
     Remove {
         track: usize,
         id: String,
@@ -27,6 +31,7 @@ pub enum LOp {
         succ: Option<String>,
         stamp: u32,
         ns: u32,
+        post: Vec<String>,
     },
     /// An end trim (`strict`: the internal trim of a split's inverse, which moves nothing
     /// else). `eff`: the edit whose effect it is (a copy keeps it, an undo takes it back:
@@ -44,7 +49,8 @@ pub enum LOp {
     },
     /// `item.move` (ripple) to track `to`, before `before` (the clip itself: where it is) or
     /// at the end. As made: the track it left (`from`), its length (`dur`) and the clip
-    /// after it there (`succ`, with `sstamp`/`sns`), which its inverse restores it before.
+    /// after it there (`succ`, with `sstamp`/`sns`), which its inverse restores it before;
+    /// `post`: its edge history then (its inverse's restore needs it unchanged).
     Move {
         id: String,
         to: usize,
@@ -56,6 +62,7 @@ pub enum LOp {
         succ: Option<String>,
         sstamp: u32,
         sns: u32,
+        post: Vec<String>,
     },
     /// `item.split` of `id` at `off` frames; the right part `right` (`rlen` frames, as made)
     /// goes right after it. Its end edge moves: `eff`, `pre`, `post` as for a trim.
@@ -103,12 +110,14 @@ pub enum T {
     Param,
 }
 
-/// An op's abstract footprint: what it touches, creates and removes.
+/// An op's abstract footprint: what it touches, creates and removes, and what it puts back
+/// whole (`Footprint::overwrites`: a restore's clip).
 #[derive(Debug, Clone, Default)]
 pub struct Fp {
     pub touches: Vec<(String, T)>,
     pub creates: Vec<String>,
     pub removes: Vec<String>,
+    pub overwrites: Vec<String>,
 }
 
 /// What the engine may answer when the independent oracle says an op is impossible. A clip
@@ -125,6 +134,15 @@ pub const GONE_EDGE: &[&str] = &[
     reasons::DEPENDS_ON_SKIPPED,
     "NOT_FOUND",
     reasons::SAME_EDGE,
+];
+/// What a restore may meet when its clip's end edge changed since the edit it inverts: the
+/// change itself (`SAME_EDGE`), or a move of the clip met first (`SAME_PARAM`), as for
+/// [`EDGE`].
+pub const RESTORE: &[&str] = &[
+    reasons::SAME_EDGE,
+    reasons::SAME_PARAM,
+    reasons::REMOVED,
+    reasons::DEPENDS_ON_SKIPPED,
 ];
 /// [`GONE`] for a move: likewise, an unmirrored move of the clip still meets it.
 pub const GONE_PARAM: &[&str] = &[
@@ -171,6 +189,7 @@ impl LOp {
                 succ: None,
                 stamp: 0,
                 ns: 0,
+                post: Vec::new(),
             }],
             LOp::Remove {
                 track,
@@ -179,6 +198,7 @@ impl LOp {
                 succ,
                 stamp,
                 ns,
+                post,
             } => vec![LOp::Insert {
                 track,
                 id,
@@ -186,6 +206,8 @@ impl LOp {
                 before: succ,
                 stamp,
                 ns,
+                expect: Some(post),
+                pre: Vec::new(),
             }],
             LOp::Trim {
                 id,
@@ -213,6 +235,7 @@ impl LOp {
                 succ,
                 sstamp,
                 sns,
+                post,
                 ..
             } => vec![
                 LOp::Remove {
@@ -222,6 +245,7 @@ impl LOp {
                     succ: None,
                     stamp: 0,
                     ns: 0,
+                    post: Vec::new(),
                 },
                 LOp::Insert {
                     track: from,
@@ -230,6 +254,8 @@ impl LOp {
                     before: succ,
                     stamp: sstamp,
                     ns: sns,
+                    expect: Some(post),
+                    pre: Vec::new(),
                 },
             ],
             LOp::Split {
@@ -304,7 +330,9 @@ impl LOp {
     }
 
     /// The footprint, transcribed from the op modules' `footprint` plus what their diffs
-    /// record (`Footprint::with_changes`): an insert or restore creates its clip; a removal
+    /// record (`Footprint::with_changes`): an insert or restore creates its clip, and a
+    /// restore puts it back whole (`item_restore::footprint`; a client insert's clip is new,
+    /// so no record before it can have touched it, and the model need not tell them apart); a removal
     /// needs and removes it; a trim needs its end edge; a move sets the clip's `start`
     /// (`item_move::footprint`, and its diff's `path: "start"` changes); a split needs the
     /// clip, moves its end edge (its diff's edge change) and creates the right part
@@ -312,7 +340,10 @@ impl LOp {
     pub fn fp(&self) -> Fp {
         let mut f = Fp::default();
         match self {
-            LOp::Insert { id, .. } | LOp::RestoreLift { id, .. } => f.creates.push(id.clone()),
+            LOp::Insert { id, .. } | LOp::RestoreLift { id, .. } => {
+                f.creates.push(id.clone());
+                f.overwrites.push(id.clone());
+            }
             LOp::Remove { id, .. } | LOp::RemoveLift { id, .. } => {
                 f.touches.push((id.clone(), T::Exists));
                 f.removes.push(id.clone());
