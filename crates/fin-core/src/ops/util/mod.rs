@@ -12,6 +12,7 @@ mod group;
 mod limits;
 mod lock;
 mod lookup;
+mod prune;
 mod ripple;
 pub(crate) mod roll;
 mod touched;
@@ -29,6 +30,7 @@ pub(crate) use lock::check_unlocked;
 pub(crate) use lookup::{
     TrackAt, asset, end, exists, find_item, find_transition, item_index, items, track_index, tracks,
 };
+pub(crate) use prune::{check_transitions, prune, sort_transitions, touching};
 pub(crate) use ripple::{OpDiff, clip_containing, insert_inside, place, ripple};
 pub(crate) use touched::touched_tracks;
 pub(crate) use values::{body as normalize_body, normalize_item};

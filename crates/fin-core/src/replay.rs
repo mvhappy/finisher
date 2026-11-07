@@ -75,8 +75,9 @@ impl IdAlloc for BoundIds<'_> {
 /// Fails only on structural damage, as `REPLAY_FAILED` with `details {txId, cause}`; `cause`
 /// is the structural error (`NOT_FOUND`, `DUPLICATE_ID`, `INVALID_ID`, `TRACK_KIND_MISMATCH`,
 /// `ASSET_IN_USE`, `CLIP_OVERLAP`, `CLIP_EMPTY`, `CLIP_NEGATIVE`, `INVALID_RANGE` for a
-/// non-positive asset duration, `UNBOUND_PLACEHOLDER`, `DUPLICATE_PLACEHOLDER`,
-/// `TIME_OVERFLOW`), or
+/// non-positive asset or transition duration, `UNBOUND_PLACEHOLDER`, `DUPLICATE_PLACEHOLDER`,
+/// `TIME_OVERFLOW`, and 4C's `NOT_ADJACENT`, `OVERWRITE_SPLITS_ITEM`, `SLIDE_BLOCKED`,
+/// `MOVE_INTO_ITSELF`, `TRANSITION_INVALID`), or
 /// `BINDINGS_MISMATCH` when the recorded bindings are not the ones the intent allocates.
 pub fn apply_committed(
     project: &Project,

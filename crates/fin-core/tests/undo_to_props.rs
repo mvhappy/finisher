@@ -10,8 +10,9 @@ use common::memlog::MemLog;
 use common::*;
 use fin_core::history::LogView;
 use fin_core::{
-    Edge, InsertMode, ItemBody, ItemInsert, ItemSplit, ItemTrim, MemIds, Op, Project, Rational,
-    TrimMode, apply_tx, compose,
+    Curve, Edge, InsertMode, ItemBody, ItemInsert, ItemMove, ItemSplit, ItemTrim, MemIds, Op,
+    Project, Rational, TransitionKind, TransitionRemove, TransitionSet, TrimMode, apply_tx,
+    compose,
 };
 use proptest::prelude::*;
 
@@ -30,6 +31,27 @@ fn config(default: u32) -> ProptestConfig {
 /// `c1`..`c4`, 10 s each, on `t1`, asset `a1`.
 fn genesis() -> Project {
     with_clips(&[10, 10, 10, 10])
+}
+
+fn dissolve(id: &str, a: &str, b: &str) -> Op {
+    TransitionSet {
+        id: id.into(),
+        track: "t1".into(),
+        between: [a.into(), b.into()],
+        kind: TransitionKind::Dissolve,
+        duration: Rational::new(1, 2).unwrap(),
+        curve: Curve::Linear,
+    }
+    .into()
+}
+
+/// [`genesis`] with source before every clip and a dissolve at each cut (plan 4C Task 10).
+fn genesis_with_transitions() -> Project {
+    let p = with_sourced(&[(10, 5), (10, 15), (10, 25), (10, 35)]);
+    let cuts = (1..4)
+        .map(|i| dissolve(&format!("$t{i}"), &format!("c{i}"), &format!("c{}", i + 1)))
+        .collect();
+    apply(&p, cuts).project
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +151,35 @@ fn ops_for(p: &Project, kind: u8, k: usize) -> Option<Vec<Op>> {
             }
             .into(),
         ],
+        // Plan 4C Task 10: a transition at the cut after the item, the removal of one, and
+        // an overwrite move by a second (its inverse carries the transition at a cut it keeps).
+        8 => {
+            let it = it?;
+            let end = (it.start + it.duration).ok()?;
+            let next = items.iter().find(|c| c.start == end)?;
+            vec![dissolve("$tr", &it.id, &next.id)]
+        }
+        9 => {
+            let ts = &p.timelines[0].tracks[0].transitions;
+            vec![
+                TransitionRemove {
+                    transition: ts.get(k % ts.len().max(1))?.id.clone(),
+                }
+                .into(),
+            ]
+        }
+        10 => {
+            let it = it?;
+            vec![
+                ItemMove {
+                    item: it.id.clone(),
+                    track: "t1".into(),
+                    at: (it.start + secs([1, -1][k % 2])).ok()?,
+                    mode: InsertMode::Overwrite,
+                }
+                .into(),
+            ]
+        }
         _ => vec![
             ItemInsert {
                 id: "$o".into(),
@@ -175,10 +226,11 @@ fn outcome<T>(r: Result<T, fin_core::CoreError>) -> Result<(), String> {
     r.map(|_| ()).map_err(|e| e.code)
 }
 
-/// One `undo --to` against the undos in a row it stands for (see the module docs); stale
-/// edits of kinds `0..kinds`.
+/// One `undo --to` against the undos in a row it stands for (see the module docs), from
+/// `genesis`; stale edits of kinds `0..kinds`.
 #[allow(clippy::too_many_arguments)]
 fn undo_to_vs_undos(
+    genesis: fn() -> Project,
     acts: &[Act],
     cpi: usize,
     redo: bool,
@@ -243,7 +295,7 @@ proptest! {
         skind in 0u8..3,
         sk in 0usize..6,
     ) {
-        undo_to_vs_undos(&acts, cpi, redo, tail_bob, base_pick, skind, sk)?;
+        undo_to_vs_undos(genesis, &acts, cpi, redo, tail_bob, base_pick, skind, sk)?;
     }
 }
 
@@ -263,6 +315,28 @@ proptest! {
         skind in 0u8..8,
         sk in 0usize..6,
     ) {
-        undo_to_vs_undos(&acts, cpi, redo, tail_bob, base_pick, skind, sk)?;
+        undo_to_vs_undos(genesis, &acts, cpi, redo, tail_bob, base_pick, skind, sk)?;
+    }
+}
+
+proptest! {
+    #![proptest_config(config(1000))]
+
+    /// Plan 4C Task 10: the same with transitions at the cuts, which the other edits prune
+    /// (their restores follow each op's inverse) or carry (removed before an inverse of several
+    /// ops, restored after it), so inverse op counts include them.
+    #[test]
+    fn undo_to_matches_undos_in_a_row_with_transitions(
+        acts in prop::collection::vec(acts_of(11), 1..12),
+        cpi in 0usize..4,
+        redo in any::<bool>(),
+        tail_bob in any::<bool>(),
+        base_pick in 0u64..64,
+        skind in 0u8..11,
+        sk in 0usize..6,
+    ) {
+        undo_to_vs_undos(
+            genesis_with_transitions, &acts, cpi, redo, tail_bob, base_pick, skind, sk,
+        )?;
     }
 }

@@ -63,13 +63,18 @@ const VALIDATION_CODES: &[&str] = &[
     "CLIP_NEGATIVE",
     // Edits (sub-project 4C): an item op on a locked track (Decision 26); an overwrite
     // strictly inside one item (split it first); a roll with no touching neighbour; a link of
-    // an item in a group already; a slide with no room; a ripple move inside the item itself.
+    // an item in a group already; a slide with no room; a ripple move inside the item itself;
+    // a transition without the source it reads past the cut, at a cut that has one, or left
+    // invalid (replay).
     "TRACK_LOCKED",
     "OVERWRITE_SPLITS_ITEM",
     "NOT_ADJACENT",
     "ALREADY_LINKED",
     "SLIDE_BLOCKED",
     "MOVE_INTO_ITSELF",
+    "TRANSITION_NO_HANDLES",
+    "TRANSITION_EXISTS",
+    "TRANSITION_INVALID",
     "INVALID_ID",
     "BINDINGS_MISMATCH",
     // A stored (migrated) record too large for a segment: export stops at it.
@@ -238,7 +243,14 @@ mod tests {
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
         assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
         assert_eq!(exit_code("NOT_ADJACENT"), 3);
-        for code in ["ALREADY_LINKED", "SLIDE_BLOCKED", "MOVE_INTO_ITSELF"] {
+        for code in [
+            "ALREADY_LINKED",
+            "SLIDE_BLOCKED",
+            "MOVE_INTO_ITSELF",
+            "TRANSITION_NO_HANDLES",
+            "TRANSITION_EXISTS",
+            "TRANSITION_INVALID",
+        ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }
         for code in [

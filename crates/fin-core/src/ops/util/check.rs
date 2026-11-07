@@ -128,9 +128,14 @@ pub(crate) fn check_source(
 /// `start` and `sourceIn` (`CLIP_NEGATIVE`), sorted by `start` with no overlaps
 /// (`CLIP_OVERLAP`). Policy checks keep it on the edit path; replay, which skips them, checks it
 /// after every op on each track the op touched ([`crate::ops::util::touched_tracks`]).
+///
+/// It checks each track's transitions too ([`crate::ops::util::check_transitions`],
+/// `TRANSITION_INVALID`); [`check_track`], which ops run mid-edit, before the prune pass,
+/// does not.
 pub(crate) fn check_tracks(project: &Project, tracks: &[TrackAt]) -> Result<(), CoreError> {
     for t in tracks {
         check_track(t.get(project))?;
+        crate::ops::util::check_transitions(t.get(project))?;
     }
     Ok(())
 }

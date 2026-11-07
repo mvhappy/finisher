@@ -2189,6 +2189,46 @@
           "description": "Dissolves a link group."
         },
         {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TransitionSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "transition.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Creates or updates the transition at a cut."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TransitionRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "transition.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes a transition off its track."
+        },
+        {
           "description": "Internal (inverse of `asset.add`): removes an unused asset.",
           "properties": {
             "id": {
@@ -2916,6 +2956,54 @@
         "dissolve"
       ],
       "type": "string"
+    },
+    "TransitionRemove": {
+      "description": "`transition.remove`: takes transition `transition` off its track.",
+      "properties": {
+        "transition": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "transition"
+      ],
+      "type": "object"
+    },
+    "TransitionSet": {
+      "description": "`transition.set`: the transition at the cut between `between[0]` (outgoing) and\n`between[1]` (incoming), touching items of `track`, centred on the cut. `id` is a `$name`\nplaceholder to create one, or the literal id of the one to update (a literal id naming no\ntransition restores it: internal only).",
+      "properties": {
+        "between": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "curve": {
+          "$ref": "#/$defs/Curve"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TransitionKind"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "track",
+        "between",
+        "kind",
+        "duration"
+      ],
+      "type": "object"
     },
     "TrimMode": {
       "description": "How a trim treats the rest of the track: `ripple` moves every later item by the change;\n`roll` moves the cut between the item and the neighbour touching that edge (both change,\nnothing else moves; `NOT_ADJACENT` without one); `overwrite` moves the edge itself, carving\nwhatever it extends over and leaving a gap when it shrinks; `strict` (internal: the inverse\nof carving edits) moves the edge only, and an overlap it would make is `CLIP_OVERLAP` in\nevery apply mode.",

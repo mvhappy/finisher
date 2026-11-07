@@ -357,8 +357,34 @@ fn every_op_has_a_footprint() {
         (p.clone(), link(&["c1", "c3"], "$g"), vec!["t1", "t2"]),
         (linked, unlink("lk1"), vec!["t1", "t2"]),
     ];
+    // Transitions need a cut with handles: c2 reads from 5 s on.
+    let cut = with_sourced(&[(5, 0), (5, 5)]);
+    let set = |id: &str| -> Op {
+        fin_core::TransitionSet {
+            id: id.into(),
+            track: "t1".into(),
+            between: ["c1".into(), "c2".into()],
+            kind: fin_core::TransitionKind::Dissolve,
+            duration: secs(1),
+            curve: fin_core::Curve::Linear,
+        }
+        .into()
+    };
+    let dissolved = apply(&cut, vec![set("$t")]).project;
+    let transitions = [
+        (cut, set("$t"), vec!["t1"]),
+        (dissolved.clone(), set("tr1"), vec!["t1"]),
+        (
+            dissolved,
+            fin_core::TransitionRemove {
+                transition: "tr1".into(),
+            }
+            .into(),
+            vec!["t1"],
+        ),
+    ];
     let mut seen = BTreeSet::new();
-    for (at, op, tracks) in cases.into_iter().chain(more) {
+    for (at, op, tracks) in cases.into_iter().chain(more).chain(transitions) {
         let (op, f, _) = fp(&at, op);
         seen.insert(op.name());
         assert_eq!(
@@ -427,6 +453,22 @@ fn every_op_has_a_footprint() {
                     ]
                     && f.creates == [s.id.clone()]
             }
+            Op::TransitionSet(s) => {
+                let mut want = vec![
+                    ("c1".to_string(), Touch::Param("transition.out".into())),
+                    ("c2".to_string(), Touch::Param("transition.in".into())),
+                ];
+                // An update touches the transition; a create creates it.
+                let update = f.creates.is_empty();
+                if update {
+                    want.push((s.id.clone(), Touch::Exists));
+                }
+                f.touches == want && f.uses == [s.track.clone()] && (update || f.creates == ["tr1"])
+            }
+            Op::TransitionRemove(r) => {
+                f.removes == [r.transition.clone()]
+                    && f.touches == [(r.transition.clone(), Touch::Exists)]
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -434,7 +476,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 13);
+    assert_eq!(seen.len(), 15);
 }
 
 #[test]

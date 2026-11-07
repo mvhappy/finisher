@@ -69,6 +69,12 @@ export type Op =
   | (ItemUnlink & {
       op: "item.unlink";
     })
+  | (TransitionSet & {
+      op: "transition.set";
+    })
+  | (TransitionRemove & {
+      op: "transition.remove";
+    })
   | {
       id: string;
       op: "asset.remove";
@@ -193,6 +199,16 @@ export type TrimMode = "ripple" | "roll" | "overwrite" | "strict";
  */
 export type DeleteMode = "ripple" | "lift";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Curve".
+ */
+export type Curve = "linear" | "equalPower";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TransitionKind".
+ */
+export type TransitionKind = "crossfade" | "dissolve";
+/**
  * One item on a track. On the wire the body's `kind` and fields and the common fields sit
  * next to `id`, `start` and `duration` (both are flattened).
  *
@@ -313,16 +329,6 @@ export type FontSource =
  * via the `definition` "TrackKind".
  */
 export type TrackKind = "video" | "audio" | "caption";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Curve".
- */
-export type Curve = "linear" | "equalPower";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "TransitionKind".
- */
-export type TransitionKind = "crossfade" | "dissolve";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "BranchState".
@@ -754,6 +760,36 @@ export interface ItemLink {
  */
 export interface ItemUnlink {
   group: string;
+}
+/**
+ * `transition.set`: the transition at the cut between `between[0]` (outgoing) and
+ * `between[1]` (incoming), touching items of `track`, centred on the cut. `id` is a `$name`
+ * placeholder to create one, or the literal id of the one to update (a literal id naming no
+ * transition restores it: internal only).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TransitionSet".
+ */
+export interface TransitionSet {
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  between: [string, string];
+  curve?: Curve;
+  duration: Rational;
+  id: string;
+  kind: TransitionKind;
+  track: string;
+}
+/**
+ * `transition.remove`: takes transition `transition` off its track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TransitionRemove".
+ */
+export interface TransitionRemove {
+  transition: string;
 }
 /**
  * `item.remove` (internal): takes item `id` off its track.

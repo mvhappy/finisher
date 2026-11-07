@@ -39,13 +39,16 @@ mod item_slip;
 mod item_split;
 mod item_trim;
 mod item_unlink;
+mod transition_remove;
+mod transition_set;
 pub(crate) mod util;
 
 pub use alias::normalize;
 use alias::{clip_delete, clip_insert, clip_trim};
 pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
-    ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides, TrimMode,
+    ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
+    TransitionRemove, TransitionSet, TrimMode,
 };
 
 /// `$name` placeholders bound during one transaction, in op order.
@@ -232,9 +235,8 @@ macro_rules! ops_table {
             }
         }
 
-        /// Applies one op to `project`, recording into `diff` under the op's index; returns
-        /// the op's inverse ops (in order).
-        pub(crate) fn apply(
+        /// [`apply`] by the op's own module (without the prune pass).
+        fn module_apply(
             project: &mut Project,
             op: &Op,
             bindings: &mut Bindings,
@@ -244,11 +246,8 @@ macro_rules! ops_table {
             match op { $(Op::$variant { .. } => $module::apply(project, op, bindings, ids, diff),)* }
         }
 
-        /// How many ops the inverse of `op` holds, read off its own diff (`own`: what it
-        /// recorded). The rebase engine cuts an undo of several steps at these boundaries
-        /// ([`crate::rebase::steps_from`]); [`crate::apply::Applier`] checks it against every
-        /// inverse it builds in debug builds.
-        pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+        /// [`inverse_len`] by the op's own module (without the prune pass).
+        fn module_inverse_len(op: &Op, own: &Diff) -> usize {
             match op { $(Op::$variant { .. } => $module::inverse_len(op, own),)* }
         }
 
@@ -262,6 +261,57 @@ macro_rules! ops_table {
     };
 }
 
+/// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op
+/// but `transition.*`, and an alias's runs as the op it stands for.
+fn prunes(op: &Op) -> bool {
+    !op.is_alias() && !matches!(op, Op::TransitionSet(_) | Op::TransitionRemove(_))
+}
+
+/// Applies one op to `project`, recording into `diff` under the op's index; returns the op's
+/// inverse ops (in order). Then the post-op transition pass runs ([`util::prune`]): the
+/// transitions whose items no longer touch on the tracks it touched are removed and restored
+/// after the op's own inverse, and the ones that inverse would prune on its way are carried
+/// (removed before it, restored after it).
+pub(crate) fn apply(
+    project: &mut Project,
+    op: &Op,
+    bindings: &mut Bindings,
+    ids: &mut dyn IdAlloc,
+    diff: &mut util::OpDiff<'_>,
+) -> Result<Vec<Op>, CoreError> {
+    let inverse = module_apply(project, op, bindings, ids, diff)?;
+    if !prunes(op) {
+        return Ok(inverse);
+    }
+    util::prune(project, diff, inverse)
+}
+
+/// How many ops the inverse of `op` holds, read off its own diff (`own`: what it recorded):
+/// its module's count, plus what the prune pass added (an op that is not `transition.*`
+/// records only that pass's `transition` changes): one restore per `removed` transition, a
+/// remove and a restore per carried (`updated`) one. The rebase engine cuts an undo of
+/// several steps at these boundaries ([`crate::rebase::steps_from`]);
+/// [`crate::apply::Applier`] checks it against every inverse it builds in debug builds.
+pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+    if !prunes(op) {
+        return module_inverse_len(op, own);
+    }
+    let (transitions, changes): (Vec<_>, Vec<_>) = own
+        .changes
+        .iter()
+        .cloned()
+        .partition(|c| c.kind == crate::tx::EntityKind::Transition);
+    let carried = transitions
+        .iter()
+        .filter(|c| c.change == crate::tx::ChangeKind::Updated)
+        .count();
+    let rest = Diff {
+        changes,
+        shifts: own.shifts.clone(),
+    };
+    module_inverse_len(op, &rest) + transitions.len() + carried
+}
+
 ops_table! {
     AssetAdd => asset_add,
     ItemInsert => item_insert,
@@ -273,6 +323,8 @@ ops_table! {
     ItemSlide => item_slide,
     ItemLink => item_link,
     ItemUnlink => item_unlink,
+    TransitionSet => transition_set,
+    TransitionRemove => transition_remove,
     AssetRemove => asset_remove,
     ItemRemove => item_remove,
     ItemRestore => item_restore,

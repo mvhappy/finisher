@@ -4,7 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AssetKind, AudioInfo, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo, VideoInfo,
+    AssetKind, AudioInfo, Curve, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo,
+    TransitionKind, VideoInfo,
 };
 use crate::time::Rational;
 
@@ -46,6 +47,12 @@ pub enum Op {
     /// Dissolves a link group.
     #[serde(rename = "item.unlink")]
     ItemUnlink(ItemUnlink),
+    /// Creates or updates the transition at a cut.
+    #[serde(rename = "transition.set")]
+    TransitionSet(TransitionSet),
+    /// Takes a transition off its track.
+    #[serde(rename = "transition.remove")]
+    TransitionRemove(TransitionRemove),
     /// Internal (inverse of `asset.add`): removes an unused asset.
     #[serde(rename = "asset.remove")]
     AssetRemove { id: String },
@@ -289,6 +296,34 @@ pub struct ItemLink {
     pub id: String,
 }
 
+/// `transition.set`: the transition at the cut between `between[0]` (outgoing) and
+/// `between[1]` (incoming), touching items of `track`, centred on the cut. `id` is a `$name`
+/// placeholder to create one, or the literal id of the one to update (a literal id naming no
+/// transition restores it: internal only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionSet {
+    pub id: String,
+    pub track: String,
+    pub between: [String; 2],
+    pub kind: TransitionKind,
+    // Seconds, centred on the cut.
+    pub duration: Rational,
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub curve: Curve,
+}
+
+fn is_linear(c: &Curve) -> bool {
+    *c == Curve::Linear
+}
+
+/// `transition.remove`: takes transition `transition` off its track.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionRemove {
+    pub transition: String,
+}
+
 /// `item.unlink`: dissolves link group `group`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -404,5 +439,17 @@ impl From<ItemLink> for Op {
 impl From<ItemUnlink> for Op {
     fn from(op: ItemUnlink) -> Op {
         Op::ItemUnlink(op)
+    }
+}
+
+impl From<TransitionSet> for Op {
+    fn from(op: TransitionSet) -> Op {
+        Op::TransitionSet(op)
+    }
+}
+
+impl From<TransitionRemove> for Op {
+    fn from(op: TransitionRemove) -> Op {
+        Op::TransitionRemove(op)
     }
 }

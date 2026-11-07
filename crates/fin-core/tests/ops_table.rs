@@ -5,7 +5,7 @@ use fin_core::{
     AssetAdd, BlendMode, CaptionBlock, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
     ItemBody, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide,
     ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe, Op, ParamValue, Rational, SlideSides,
-    TrimMode, Word,
+    TransitionKind, TransitionRemove, TransitionSet, TrimMode, Word,
 };
 use serde_json::json;
 
@@ -129,6 +129,19 @@ fn every_variant() -> Vec<Op> {
             group: "lk1".into(),
         }
         .into(),
+        TransitionSet {
+            id: "$tr".into(),
+            track: "t1".into(),
+            between: ["c1".into(), "$c".into()],
+            kind: TransitionKind::Dissolve,
+            duration: r(1),
+            curve: fin_core::Curve::EqualPower,
+        }
+        .into(),
+        TransitionRemove {
+            transition: "tr1".into(),
+        }
+        .into(),
         Op::AssetRemove { id: "a1".into() },
         ItemRemove {
             id: "c1".into(),
@@ -169,6 +182,8 @@ fn every_variant() -> Vec<Op> {
             | Op::ItemSlide(_)
             | Op::ItemLink(_)
             | Op::ItemUnlink(_)
+            | Op::TransitionSet(_)
+            | Op::TransitionRemove(_)
             | Op::AssetRemove { .. }
             | Op::ItemRemove(_)
             | Op::ItemRestore(_)

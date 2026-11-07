@@ -24,8 +24,8 @@ pub use layout::{FaceRef, Measured, TextLayout, TextMeasurer, TextRequest, TextS
 pub use model::*;
 pub use ops::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
-    ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides, TrimMode,
-    normalize,
+    ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
+    TransitionRemove, TransitionSet, TrimMode, normalize,
 };
 pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{

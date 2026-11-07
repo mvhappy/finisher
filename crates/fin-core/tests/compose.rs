@@ -4,7 +4,9 @@ mod common;
 
 use common::moves::*;
 use common::*;
-use fin_core::{InsertMode, ItemBody, Op, TrackKind, compose};
+use fin_core::{
+    Curve, InsertMode, ItemBody, Op, Project, TrackKind, TransitionKind, TransitionSet, compose,
+};
 use serde_json::json;
 
 #[test]
@@ -177,4 +179,136 @@ fn split_linked_splits_members_and_links_rights() {
     assert_eq!(c.ops.len(), 1);
     assert_eq!(c.echo["link"], json!(null));
     let _ = ItemBody::Adjustment {};
+}
+
+/// Two A/V clips back to back, each with its linked audio: `c1`|`c3` on `t1` (video, from 0
+/// and 10), `c2`|`c4` on `t2` (audio), so every cut has handles.
+fn linked_pair() -> Project {
+    let mut p = apply(&project(), vec![av_asset("$a", secs(100))]).project;
+    for (at, from) in [(0, 0), (4, 10)] {
+        let c = compose::clip_with_audio(
+            &p,
+            "t1",
+            secs(at),
+            secs(4),
+            "a1",
+            secs(from),
+            secs(1),
+            InsertMode::Ripple,
+            None,
+        )
+        .unwrap();
+        p = apply(&p, c.ops).project;
+    }
+    p
+}
+
+fn transitions_on(p: &Project, track: usize) -> Vec<(String, [String; 2], TransitionKind)> {
+    p.timelines[0].tracks[track]
+        .transitions
+        .iter()
+        .map(|t| (t.id.clone(), t.between.clone(), t.kind))
+        .collect()
+}
+
+#[test]
+fn transition_with_links_crossfades_audio_partners() {
+    let p = linked_pair();
+    let c = compose::transition_with_links(
+        &p,
+        "c1",
+        "c3",
+        TransitionKind::Dissolve,
+        secs(1),
+        Curve::Linear,
+        true,
+    )
+    .unwrap();
+    let want: Vec<Op> = [
+        ("$transition", "t1", "c1", "c3", TransitionKind::Dissolve),
+        ("$transition2", "t2", "c2", "c4", TransitionKind::Crossfade),
+    ]
+    .into_iter()
+    .map(|(id, track, a, b, kind)| {
+        TransitionSet {
+            id: id.into(),
+            track: track.into(),
+            between: [a.into(), b.into()],
+            kind,
+            duration: secs(1),
+            curve: Curve::Linear,
+        }
+        .into()
+    })
+    .collect();
+    assert_eq!(c.ops, want);
+    assert_eq!(
+        c.echo,
+        json!({
+            "transitions": [
+                { "id": "$transition", "track": "t1", "between": ["c1", "c3"] },
+                { "id": "$transition2", "track": "t2", "between": ["c2", "c4"] },
+            ],
+            "skipped": [],
+        })
+    );
+    let a = apply(&p, c.ops);
+    let pair = |id: &str, x: &str, y: &str, kind| (id.to_string(), [x.into(), y.into()], kind);
+    assert_eq!(
+        transitions_on(&a.project, 0),
+        [pair("tr1", "c1", "c3", TransitionKind::Dissolve)]
+    );
+    assert_eq!(
+        transitions_on(&a.project, 1),
+        [pair("tr2", "c2", "c4", TransitionKind::Crossfade)]
+    );
+    // `--no-linked`: the one transition.
+    let c = compose::transition_with_links(
+        &p,
+        "c1",
+        "c3",
+        TransitionKind::Dissolve,
+        secs(1),
+        Curve::Linear,
+        false,
+    )
+    .unwrap();
+    assert_eq!(c.ops.len(), 1);
+    // Unknown items are NOT_FOUND; a cut that is not one is the op's own NOT_ADJACENT.
+    let e = compose::transition_with_links(
+        &p,
+        "c9",
+        "c3",
+        TransitionKind::Dissolve,
+        secs(1),
+        Curve::Linear,
+        true,
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "NOT_FOUND");
+}
+
+#[test]
+fn transition_with_links_skips_partners_that_do_not_touch() {
+    let mut p = linked_pair();
+    // The first audio partner ends a second early: no cut on t2.
+    p.timelines[0].tracks[1].items[0].duration = secs(3);
+    let c = compose::transition_with_links(
+        &p,
+        "c1",
+        "c3",
+        TransitionKind::Dissolve,
+        secs(1),
+        Curve::Linear,
+        true,
+    )
+    .unwrap();
+    assert_eq!(c.ops.len(), 1);
+    assert_eq!(
+        c.echo["skipped"],
+        json!([{ "track": "t2", "between": ["c2", "c4"] }])
+    );
+    let a = apply(&p, c.ops);
+    assert_eq!(transitions_on(&a.project, 0).len(), 1);
+    assert!(transitions_on(&a.project, 1).is_empty());
 }

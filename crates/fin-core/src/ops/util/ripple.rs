@@ -89,6 +89,38 @@ impl<'a> OpDiff<'a> {
         &mut self.diff.changes[last]
     }
 
+    /// What this op recorded so far (its entries of the transaction's diff).
+    pub(crate) fn own(&self) -> Diff {
+        Diff {
+            changes: self
+                .diff
+                .changes
+                .iter()
+                .filter(|c| c.op == self.op)
+                .cloned()
+                .collect(),
+            shifts: self
+                .diff
+                .shifts
+                .iter()
+                .filter(|s| s.op == self.op)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The entity `id` of `kind` on `track` (a transition) was added, removed or changed as a
+    /// whole.
+    pub(crate) fn record_on(
+        &mut self,
+        track: &str,
+        kind: EntityKind,
+        id: &str,
+        change: ChangeKind,
+    ) {
+        self.push(Some(track), kind, id, change);
+    }
+
     /// The entity `id`, on no track (an asset), was added, removed or changed as a whole.
     pub(crate) fn record(&mut self, kind: EntityKind, id: &str, change: ChangeKind) {
         self.push(None, kind, id, change);

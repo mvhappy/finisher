@@ -9,10 +9,12 @@ use crate::ops::Op;
 mod audio;
 mod overwrite;
 mod split;
+mod transition;
 
 pub use audio::clip_with_audio;
 pub use overwrite::overwrite;
 pub use split::split_linked;
+pub use transition::transition_with_links;
 
 /// What a builder sends: the ops, in order, and echo data saying what it decided (for `fin`'s
 /// output).
