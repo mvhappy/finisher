@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FinRpcs } from "@finisher/contracts";
 import type { ConsentState, DiagnosticsReport, Envelope, ExportPage } from "@finisher/core-types";
@@ -309,10 +309,14 @@ describe("sessions and errors", () => {
   });
 
   test("locationOf keeps only repo-relative frames", () => {
-    const root = "/repo/";
-    const e = { stack: "Error: x\n    at f (node:internal/x:1:1)\n    at g (/repo/node_modules/y/z.js:2:3)\n    at h (file:///repo/apps/finisherd/src/main.ts:12:5)" };
+    // Native paths: `/repo` on POSIX, `<drive>:\repo` on Windows (a drive-less file URL is
+    // not a Windows path).
+    const root = resolve("/repo") + sep;
+    const main = pathToFileURL(join(root, "apps", "finisherd", "src", "main.ts")).href;
+    const dep = join(root, "node_modules", "y", "z.js");
+    const e = { stack: `Error: x\n    at f (node:internal/x:1:1)\n    at g (${dep}:2:3)\n    at h (${main}:12:5)` };
     expect(locationOf(e, root)).toBe("apps/finisherd/src/main.ts:12");
-    expect(locationOf({ stack: "Error\n    at /elsewhere/a.js:1:1" }, root)).toBeUndefined();
+    expect(locationOf({ stack: `Error\n    at ${resolve("/elsewhere/a.js")}:1:1` }, root)).toBeUndefined();
   });
 });
 

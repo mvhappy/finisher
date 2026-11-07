@@ -25,18 +25,18 @@ use crate::node::{self, Node};
 use crate::ops::asset_op;
 
 /// Ticks (and samples the share's clock) until `until`.
-struct Pacer {
+pub(crate) struct Pacer {
     next_clock: Instant,
 }
 
 impl Pacer {
-    fn new() -> Pacer {
+    pub(crate) fn new() -> Pacer {
         Pacer {
             next_clock: Instant::now(),
         }
     }
 
-    fn step(&mut self, n: &mut Node) -> Result<(), String> {
+    pub(crate) fn step(&mut self, n: &mut Node) -> Result<(), String> {
         if Instant::now() >= self.next_clock {
             let l = n.lease();
             n.em.clock_sample(&n.a.dir, Some(&l));
@@ -45,7 +45,7 @@ impl Pacer {
         n.tick()
     }
 
-    fn until(&mut self, n: &mut Node, until: Instant) -> Result<(), String> {
+    pub(crate) fn until(&mut self, n: &mut Node, until: Instant) -> Result<(), String> {
         loop {
             self.step(n)?;
             let now = Instant::now();
@@ -57,7 +57,7 @@ impl Pacer {
     }
 
     /// Ticks until this store holds the lease and may write; `Err` at `end`.
-    fn held(&mut self, n: &mut Node, end: Instant) -> Result<u64, String> {
+    pub(crate) fn held(&mut self, n: &mut Node, end: Instant) -> Result<u64, String> {
         let t = Instant::now();
         loop {
             self.step(n)?;
@@ -75,7 +75,7 @@ impl Pacer {
     }
 
     /// Ticks until every branch is exported through its head; `false` at `end`.
-    fn exported(&mut self, n: &mut Node, end: Instant) -> Result<bool, String> {
+    pub(crate) fn exported(&mut self, n: &mut Node, end: Instant) -> Result<bool, String> {
         loop {
             self.step(n)?;
             let st = n.store.status();

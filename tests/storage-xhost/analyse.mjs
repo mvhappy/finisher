@@ -7,10 +7,11 @@
 // share time (wall + the offset each node measured against the share's mtimes) with a stated
 // tolerance.
 
+import { ROLES_4C, edit4cChecks, is4cRound } from "./analyse-edit4c.mjs";
 import { historyChecks } from "./analyse-history.mjs";
 
 /** Roles of the processes that hold or follow a store. */
-export const NODE_ROLES = ["holder", "contender", "follower", "brancher", "merger", "follower-4a"];
+export const NODE_ROLES = ["holder", "contender", "follower", "brancher", "merger", "follower-4a", ...ROLES_4C];
 
 /** Lease timings of spec §3.5, ms. */
 export const SPEC = { staleAfterMs: 45_000, minUnchangedMs: 25_000, selfFenceMs: 20_000 };
@@ -277,6 +278,9 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
       return [p.label, { role: p.role, accepted: f?.accepted ?? 0, attempts: f?.attempts ?? 0, readOnly: f?.readOnly ?? null, lease: f?.lease ?? null, epoch: f?.epoch ?? null, quarantine: f?.quarantine ?? null, ok: end?.ok ?? false, error: end?.error }];
     }),
   );
+  // Row checks: the 4C rows', else the history rows'.
+  const h = is4cRound(procs) ? edit4cChecks(procs) : historyChecks(procs);
+  const mayFail = new Set(h.mayFail ?? []);
   let openRetries = 0;
   for (const p of procs) {
     // A node that cannot write to the share: first error text per node and kind.
@@ -285,7 +289,8 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
     const clk = p.events.find((e) => e.ev === "clock" && e.error);
     if (clk) r.problems.push(`${p.label} (${p.role}) clock sample failed: ${clk.error}`);
     const end = p.events.find((e) => e.ev === "end");
-    if (!end?.ok) r.problems.push(`${p.label} (${p.role}) did not end ok: ${end?.error ?? `exit ${p.exit}`}`);
+    if (!end?.ok && mayFail.has(p.label)) r.notes.push(`${p.label} (${p.role}) refused: ${end?.error ?? `exit ${p.exit}`}`);
+    else if (!end?.ok) r.problems.push(`${p.label} (${p.role}) did not end ok: ${end?.error ?? `exit ${p.exit}`}`);
     for (const w of p.events.filter((e) => e.ev === "warning")) r.notes.push(`${p.label}: ${w.what}`);
     const retries = p.events.filter((e) => e.ev === "openRetry");
     openRetries += retries.length;
@@ -295,7 +300,6 @@ export function analyseRound(procs, { tolMs = 1000 } = {}) {
 
   const lostSetAside = lost.filter((l) => l.status?.state === "setAside");
   const lostVanished = lost.filter((l) => l.status?.state !== "setAside");
-  const h = historyChecks(procs);
   r.problems.push(...h.problems);
   return {
     ...r,

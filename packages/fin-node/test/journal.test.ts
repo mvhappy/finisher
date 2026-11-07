@@ -1,6 +1,6 @@
 // The napi `Journal` (plan D, Task D4): open under resolved settings, records, the report,
 // paged export, purge, the project flags the engines set, and the chained panic hook.
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConsentState, DiagnosticsReport, Envelope, ExportPage, JournalStatus } from "@finisher/core-types";
@@ -199,6 +199,19 @@ describe("Journal", () => {
     expect(JSON.parse(j.projectPolicies())[id]).toBe("unknown");
     j.record("cli.command", 1, JSON.stringify({ project: id }), JSON.stringify(cli()), "fin");
     expect(await all(j, { project: id })).toHaveLength(0);
+  });
+
+  test("engines find a journal opened before its server data exists, behind a symlink", async () => {
+    // The directory's canonical path differs from the one given (a link here; macOS temp dirs
+    // are behind `/var` → `/private/var`, Windows canonical paths are `\\?\` ones).
+    mkdirSync(join(tmp, "real"));
+    symlinkSync(join(tmp, "real"), join(tmp, "link"), "junction");
+    serverData = join(tmp, "link", "server-data");
+    expect(existsSync(serverData)).toBe(false);
+    const j = open();
+    engine = await Engine.create(serverData, join(tmp, "Project"), "Demo", "30");
+    await j.status();
+    expect(JSON.parse(j.projectPolicies())).toEqual({ [engine.projectId]: "default" });
   });
 
   test("sessions: start, end and unclean", async () => {

@@ -90,10 +90,12 @@ fn consent(purposes: Purposes) -> Consent {
     }
 }
 
+/// Stats each file by path: on Windows a directory entry's size lags for a file still open
+/// (the training row measures after `flush`, not `close`), which read 629 B for 792.
 fn dir_bytes(dir: &Path) -> u64 {
     std::fs::read_dir(dir)
         .map(|rd| {
-            rd.filter_map(|e| e.ok()?.metadata().ok())
+            rd.filter_map(|e| std::fs::metadata(e.ok()?.path()).ok())
                 .map(|m| m.len())
                 .sum()
         })

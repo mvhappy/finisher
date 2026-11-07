@@ -7,6 +7,7 @@ mod support;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,21 @@ use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 use serde_json::{Value, json};
 use support::{fin_cmd, finish};
+
+/// Where a fake listens: a socket file on Unix, a named pipe on Windows, whose local sockets
+/// are named pipes only (`fin` takes a `\\.\pipe\` path in `FIN_SERVER` or `finisherd.json`).
+fn endpoint(root: &Path) -> PathBuf {
+    if cfg!(windows) {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        PathBuf::from(format!(
+            r"\\.\pipe\fin-diag-test-{}-{n}",
+            std::process::id()
+        ))
+    } else {
+        root.join("fake.sock")
+    }
+}
 
 /// What a connection does after it answered its first request.
 #[derive(Clone, Copy)]
@@ -41,7 +57,7 @@ impl Fake {
     fn start(after: After) -> Fake {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let socket = root.join("fake.sock");
+        let socket = endpoint(&root);
         let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
         let requests: Arc<Mutex<Vec<Value>>> = Arc::default();
@@ -60,6 +76,16 @@ impl Fake {
             socket,
             requests,
             replies,
+        }
+    }
+
+    /// Makes the fake's address one that nothing listens on (a server that is gone).
+    fn vanish(&mut self) {
+        if cfg!(windows) {
+            // A pipe exists while its listener does; a fresh name was never created.
+            self.socket = endpoint(&self.root);
+        } else {
+            std::fs::remove_file(&self.socket).unwrap();
         }
     }
 
@@ -399,9 +425,9 @@ fn runs_that_never_called_the_server_are_recorded_too() {
     run_args(&off, &sd, &["help"]);
     none_after_a_moment(&off);
     // No server to be found, or one that is gone: nothing is recorded, and nothing is slower.
-    let gone = Fake::start(After::Serve);
+    let mut gone = Fake::start(After::Serve);
+    gone.vanish();
     let sd = gone.discovery(Some(true));
-    std::fs::remove_file(&gone.socket).unwrap();
     let started = Instant::now();
     assert_eq!(run_args(&gone, &sd, &["help"]).code, 0);
     assert!(started.elapsed() < Duration::from_secs(2));
