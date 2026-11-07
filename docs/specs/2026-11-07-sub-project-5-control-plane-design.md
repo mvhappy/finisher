@@ -620,6 +620,18 @@ HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
   - helpers start before the worker, die with the job, and only see their mapped files; mapped-file directories are gone after the job and after a crash;
   - restart resumes from the checkpoint; `fin wait` exit codes (5C-2); `job.done` and `worker.exit` entries.
 
+
+### 6.10 Interface additions from the 5C-1 plan (revision 2, for sub-projects 7 and 8)
+
+The 5C-1 plan (`docs/superpowers/plans/2026-11-07-sub-project-5c1-job-engine.md`, revision 2) adds these to §6.2–6.5; its Task 13 folds them into those sections as built:
+- **Host calls:** worker → host `call {id, method, params}`, host → worker `reply {id, value | error}`, routed to a family's (or helper's) `onCall` handler with the job's owner, `via` and rights. Sub-project 8 serves its host API (`project.snapshot`, `media.pcm`, `net.fetch`, `job.submit`, ring `slot`/`release`) this way; a plugin process speaks only the envelope.
+- **Versions:** bundled processes must match the envelope's schema hash exactly; plugin processes (`profile: plugin`) need only the major `v` and announce a `minor`; an unknown message type above the host's minor gets an error reply, not a kill.
+- **Warm keys:** `FamilySpec.warmKey(job)`; a warm worker serves only jobs of its key (sub-project 8: plugin, project, invoker class).
+- **Kill domains:** every process gets a leaf inside its job's group (Windows host → group → leaf Job; a leaf cgroup where delegated) carrying `PlatformCommand.job_limits` (active processes, UI limits) for sub-project 7's profiles. Memory limits apply per group on every OS.
+- **Self-sandbox entry:** `fin_jobs::worker::run` and `helper::run` call a function registered by `fin-sandbox` before `hello` (seccomp, Seatbelt applied by the process itself after exec); a requested self-sandbox that cannot be applied fails closed.
+- **`onSucceeded` is at least once:** the result and `phase: hooks` are persisted before the hook; after a crash the job directory is kept and the hook runs again, so hooks must be idempotent.
+- **Deviation from §6.9:** without a delegated cgroup (macOS; Linux in a terminal), a grandchild that calls `setsid` escapes the process-group kill after a cancel and after host death; Windows Job Objects and delegated cgroups have no such gap.
+
 ---
 
 ## 7. 5D — Library indexer
