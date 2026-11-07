@@ -4,7 +4,7 @@
 // Logs go to stderr only; stdout stays empty.
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Cause, Effect, Exit, Layer, Logger } from "effect";
+import { Cause, Context, Effect, Exit, Layer, Logger } from "effect";
 import {
   ensureServerData,
   newToken,
@@ -16,8 +16,9 @@ import {
   writeServerInfo,
 } from "./config.ts";
 import { serverId } from "@finisher/fin-node";
+import { KeysTag, rotateKeys } from "./auth/keys.ts";
 import { layerAudit } from "./control/audit.ts";
-import { layerControlStore } from "./control/db.ts";
+import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { HandlersLive } from "./handlers.ts";
 import { withServerLock } from "./lock.ts";
@@ -42,6 +43,10 @@ export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
       // The control store (5A Task 1) before any listener: the environment id, the audit log.
       const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
       const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
+      const envId = Context.get(control, ControlStoreTag).envId;
+      // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
+      // while this server listens is always this server's. `auth/` and `run/` are private.
+      const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const token = newToken();
@@ -53,12 +58,13 @@ export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
           Layer.provide(HandlersLive),
           Layer.provide(Layer.mergeAll(layerProjectRegistry(serverData, registry), layerFonts(serverData, fonts))),
           Layer.provide(Layer.succeedContext(control)),
+          Layer.provide(Layer.succeed(KeysTag, keys)),
         ),
       );
 
       const info = yield* Effect.acquireRelease(
         Effect.try({
-          try: () => writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token }),
+          try: () => writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, envId }),
           catch: startFailure,
         }),
         () => Effect.sync(() => removeServerInfo(serverData)),

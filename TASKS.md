@@ -255,7 +255,7 @@ Plan: `docs/superpowers/plans/2026-11-06-sub-project-4c-edit-breadth.md`. Spec: 
 Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3). Plan: `docs/superpowers/plans/2026-11-07-sub-project-5a-principals-and-scopes.md`. Branch `sp5a-principals`, stacked on `sp4c-edit-breadth`. Tasks 1, 2 and 10 need only D1, D2 and 4C; Tasks 3–9 and 11–14 wait for diagnostics D4 and D6. 5C-1 can start once Tasks 1 and 2 have merged.
 
 - [x] Task 1: control store (`control.db`, per-area migration chains), environment id, `server_ids`, audit log
-- [ ] Task 2: key files in `auth/`, the socket in `run/`, private server data on Windows, handshake crypto
+- [x] Task 2: key files in `auth/`, the socket in `run/`, private server data on Windows, handshake crypto
 - [ ] Task 3: connection-aware protocol, principals, the handshake RPCs (not yet enforced)
 - [ ] Task 4: `fin` proves; the server requires proofs; exit code 7
 - [ ] Task 5: middleware chain, scopes, reach, policy and the write guard

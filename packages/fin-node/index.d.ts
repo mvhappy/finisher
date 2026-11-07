@@ -205,6 +205,29 @@ export declare function lockExclusive(path: string): ServerLock;
  */
 export declare function serverId(serverData: string): string;
 
+/** What `checkPrivateDir` found. */
+export interface PrivateDirReport {
+  ok: boolean;
+  /** The owner's SID (Windows only). */
+  owner?: string | undefined;
+  /** Why it is not private: `owner <sid>`, `allows <sid>`, `null dacl`, `unsupported ace <type>`. */
+  problems: string[];
+}
+
+/**
+ * Windows: the directory's owner is this user (or Administrators) and its DACL allows nobody
+ * but this user, SYSTEM, Administrators and CREATOR OWNER. Elsewhere `{ ok: true }` (POSIX
+ * modes are checked by the caller). Throws `SERVER_DATA_UNSAFE` when the path cannot be read.
+ */
+export declare function checkPrivateDir(path: string): PrivateDirReport;
+
+/**
+ * Creates `path` (and parents) private to this user: on Windows a protected DACL
+ * `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` owned by the user; elsewhere
+ * mode 0700. Throws `SERVER_DATA_UNSAFE`.
+ */
+export declare function makePrivateDir(path: string): void;
+
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,

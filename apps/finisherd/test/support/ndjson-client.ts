@@ -123,6 +123,7 @@ export interface ServerInfo {
   socket: string;
   token: string;
   protocolVersion: number;
+  envId: string;
 }
 
 export interface RunningServer {

@@ -46,6 +46,7 @@ mod eval;
 mod fonts;
 mod history;
 mod maintenance;
+mod private_dir;
 mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]
@@ -54,6 +55,7 @@ mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
+pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;
 

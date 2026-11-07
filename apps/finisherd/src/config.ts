@@ -4,6 +4,7 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writ
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
+import { checkPrivateDir, makePrivateDir } from "@finisher/fin-node";
 
 export const SERVER_VERSION = "0.0.0";
 
@@ -20,7 +21,7 @@ export function defaultServerData(
 }
 
 /**
- * Plan decision 5: `<server-data>/fin.sock`, or on Windows the named pipe
+ * Plan decision 5 (5A Task 2: in `run/`): `<server-data>/run/fin.sock`, or on Windows the named pipe
  * `\\.\pipe\finisher-<username>` for the default server-data. Pipe names are global per
  * machine rather than per directory, so any other server-data gets its own pipe
  * `finisher-<username>-<hash>` (12 hex chars of SHA-256 of the lower-cased path): otherwise a
@@ -33,7 +34,7 @@ export function socketPath(
   defaultDir: string = defaultServerData({ ...process.env, FIN_SERVER_DATA: undefined }, platform),
   username: string = userInfo().username,
 ): string {
-  if (platform !== "win32") return join(serverData, "fin.sock");
+  if (platform !== "win32") return join(serverData, "run", "fin.sock");
   const pipe = `\\\\.\\pipe\\finisher-${username}`;
   const key = (dir: string) => dir.replace(/[\\/]+$/, "").toLowerCase();
   if (key(serverData) === key(defaultDir)) return pipe;
@@ -68,6 +69,8 @@ export interface ServerInfo {
   readonly socket: string;
   readonly token: string;
   readonly protocolVersion: number;
+  /** The environment id (`control.db` `meta`, 5A). */
+  readonly envId: string;
 }
 
 export function newToken(): string {
@@ -106,19 +109,40 @@ export function startFailure(e: unknown): ServerStartError {
 }
 
 /**
- * Creates the server-data directory (0700) or checks an existing one: it must be a real
- * directory (not a symlink) owned by this user; group/other permissions are stripped.
+ * Creates `dir` (0700; on Windows a protected owner-only DACL) or checks an existing one: it
+ * must be a real directory (not a symlink) owned by this user. On Unix group/other permissions
+ * are stripped; on Windows a DACL that lets anyone else in is `SERVER_DATA_UNSAFE` (fin-node
+ * `checkPrivateDir`: no `Everyone`, `Users`, `Authenticated Users` or other account).
  */
-export function ensureServerData(serverData: string, platform: NodeJS.Platform = process.platform): void {
-  mkdirSync(serverData, { recursive: true, mode: 0o700 });
-  const st = lstatSync(serverData);
-  if (st.isSymbolicLink()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is a symlink`);
-  if (!st.isDirectory()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is not a directory`);
-  if (platform === "win32") return;
-  if (process.getuid && st.uid !== process.getuid()) {
-    throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is owned by uid ${st.uid}, not this user`);
+export function ensurePrivateDir(dir: string, platform: NodeJS.Platform = process.platform): void {
+  let created = false;
+  try {
+    lstatSync(dir);
+  } catch (e) {
+    if ((e as { code?: unknown }).code !== "ENOENT") throw e;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    created = true;
   }
-  if (st.mode & 0o077) chmodSync(serverData, 0o700);
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is a symlink`);
+  if (!st.isDirectory()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is not a directory`);
+  if (platform === "win32") {
+    if (created) makePrivateDir(dir);
+    const report = checkPrivateDir(dir);
+    if (!report.ok) {
+      throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is readable by other accounts`, { path: dir, problems: report.problems });
+    }
+    return;
+  }
+  if (process.getuid && st.uid !== process.getuid()) {
+    throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is owned by uid ${st.uid}, not this user`);
+  }
+  if (st.mode & 0o077) chmodSync(dir, 0o700);
+}
+
+/** The server-data directory itself (see `ensurePrivateDir`). */
+export function ensureServerData(serverData: string, platform: NodeJS.Platform = process.platform): void {
+  ensurePrivateDir(serverData, platform);
 }
 
 /** Writes the discovery file atomically: a private `<file>.<pid>.tmp` (0600, `wx`) renamed into place. */
