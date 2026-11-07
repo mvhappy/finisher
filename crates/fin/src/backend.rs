@@ -139,6 +139,19 @@ pub trait Backend {
     fn fonts_plan(&self, _branch: &str, _ops: &[Op]) -> Result<FontPlan, CoreError> {
         Ok(FontPlan::default())
     }
+    /// A server-level RPC (`fonts.catalog`, `fonts.status`): no project needed. Offline it is
+    /// `SERVER_UNAVAILABLE` (plan 4C Decision 40: eval and fonts run on the server).
+    fn server_call(&self, tag: &str, _payload: Value) -> Result<Value, CoreError> {
+        Err(offline_only(tag))
+    }
+    /// The project's id on the server (`fonts.fetch {pinned}`).
+    fn project_id(&self) -> Result<String, CoreError> {
+        Err(offline_only("project.open"))
+    }
+    /// `fonts.fetch`: blocks until done, with progress on stderr (`client_fonts`).
+    fn fonts_fetch(&self, _payload: Value) -> Result<Value, CoreError> {
+        Err(offline_only("fonts.fetch"))
+    }
 }
 
 /// Reads a snapshot file; every write is a dry run, nothing reaches a server.
@@ -303,7 +316,7 @@ impl Online {
         serde_json::from_value(value.clone()).map_err(|e| unexpected(tag, e, &value))
     }
 
-    fn project_id(&self) -> Result<String, CoreError> {
+    fn project_ref(&self) -> Result<String, CoreError> {
         if let Some(id) = self.project_id.get() {
             return Ok(id.clone());
         }
@@ -321,7 +334,7 @@ struct ProjectRef {
 
 impl Backend for Online {
     fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError> {
-        let project_id = self.project_id()?;
+        let project_id = self.project_ref()?;
         self.call_as(
             "snapshot.get",
             json!({ "projectId": project_id, "branch": branch }),
@@ -329,12 +342,12 @@ impl Backend for Online {
     }
 
     fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
-        let project_id = self.project_id()?;
+        let project_id = self.project_ref()?;
         Ok(endpoint::server_data().map(|sd| (sd, project_id)))
     }
 
     fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
-        let project_id = self.project_id()?;
+        let project_id = self.project_ref()?;
         if let Some(gate) = std::env::var_os(COMMIT_GATE_ENV).filter(|g| !g.is_empty()) {
             commit_gate(Path::new(&gate))?;
         }
@@ -360,7 +373,7 @@ impl Backend for Online {
     }
 
     fn project_call(&self, tag: &str, mut payload: Value) -> Result<Value, CoreError> {
-        let project_id = self.project_id()?;
+        let project_id = self.project_ref()?;
         payload["projectId"] = json!(project_id);
         self.call(tag, payload)
     }
@@ -424,6 +437,18 @@ impl Backend for Online {
     fn fonts_plan(&self, branch: &str, ops: &[Op]) -> Result<FontPlan, CoreError> {
         let value = self.project_call("fonts.plan", json!({ "branch": branch, "ops": ops }))?;
         serde_json::from_value(value.clone()).map_err(|e| unexpected("fonts.plan", e, &value))
+    }
+
+    fn server_call(&self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+        self.call(tag, payload)
+    }
+
+    fn project_id(&self) -> Result<String, CoreError> {
+        self.project_ref()
+    }
+
+    fn fonts_fetch(&self, payload: Value) -> Result<Value, CoreError> {
+        crate::client_fonts::fetch(&endpoint::resolve()?, payload)
     }
 }
 

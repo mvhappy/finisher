@@ -97,12 +97,17 @@ pub fn set_value(
     match (&a.value, a.reset) {
         (Some(v), false) => values::parse(spec, &a.path, v, rate).map(Some),
         (None, true) => Ok(None),
-        _ => Err(usage(
-            "give a value or --reset, not both",
-            json!({ "path": a.path }),
-            "pass <value> to set it, or --reset for its default",
-        )),
+        _ => Err(value_or_reset(&a.path)),
     }
+}
+
+/// A `set` given both a value and `--reset`, or neither.
+pub fn value_or_reset(path: &str) -> CoreError {
+    usage(
+        "give a value or --reset, not both",
+        json!({ "path": path }),
+        "pass <value> to set it, or --reset for its default",
+    )
 }
 
 pub fn name(cmd: &TrackCmd) -> &'static str {

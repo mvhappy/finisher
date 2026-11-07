@@ -28,4 +28,5 @@ ulid = "1"
 [dev-dependencies]
 fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 fin-testfonts = { path = "../fin-testfonts" }
+sha2 = "0.11"
 tempfile = "3"

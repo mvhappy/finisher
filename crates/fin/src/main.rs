@@ -4,6 +4,7 @@
 mod addr;
 mod backend;
 mod client;
+mod client_fonts;
 mod commands;
 mod config;
 mod conn;
@@ -13,6 +14,7 @@ mod output;
 mod paths;
 mod registry;
 mod registry_edit;
+mod registry_settings;
 mod values;
 
 use std::ffi::OsString;
@@ -26,12 +28,19 @@ use serde_json::{Map, Value, json};
 use commands::asset::{AssetCmd, AssetEdit};
 use commands::bin::BinCmd;
 use commands::branch::BranchCmd;
+use commands::caption::CaptionCmd;
 use commands::clip::ClipCmd;
+use commands::effect::EffectCmd;
+use commands::eval::EvalCmd;
+use commands::fonts::{FontEdit, FontsCmd};
 use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, UndoArgs};
 use commands::item::ItemCmd;
+use commands::keyframe::KeyframeCmd;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
+use commands::param::ParamCmd;
 use commands::project::ProjectCmd;
+use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
 use commands::track::TrackCmd;
 use commands::transition::TransitionCmd;
@@ -75,6 +84,20 @@ enum Cmd {
     #[command(subcommand)]
     Bin(BinCmd),
     #[command(subcommand)]
+    Param(ParamCmd),
+    #[command(subcommand)]
+    Keyframe(KeyframeCmd),
+    #[command(subcommand)]
+    Effect(EffectCmd),
+    #[command(subcommand)]
+    Caption(CaptionCmd),
+    #[command(subcommand)]
+    Style(StyleCmd),
+    #[command(subcommand)]
+    Eval(EvalCmd),
+    #[command(subcommand)]
+    Fonts(FontsCmd),
+    #[command(subcommand)]
     Branch(BranchCmd),
     Undo(UndoArgs),
     Redo,
@@ -89,6 +112,12 @@ enum Cmd {
     },
     Schema {
         command: Vec<String>,
+        /// `fin schema param` only: a scope, item kind or effect kind.
+        #[arg(long, value_name = "scope")]
+        scope: Option<String>,
+        /// `fin schema param` only: keep the paths it starts.
+        #[arg(long, value_name = "prefix")]
+        path: Option<String>,
     },
 }
 
@@ -174,7 +203,19 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
     match cli.command {
         None | Some(Cmd::Help { topic: None }) => Ok(map::map()),
         Some(Cmd::Help { topic: Some(t) }) => commands::schema::help(&t),
-        Some(Cmd::Schema { command }) => commands::schema::schema(&command),
+        Some(Cmd::Schema {
+            command,
+            scope,
+            path,
+        }) => match command.as_slice() {
+            [p] if p == "param" => commands::schema::params(scope.as_deref(), path.as_deref()),
+            _ if scope.is_some() || path.is_some() => Err(output::usage(
+                "--scope and --path belong to fin schema param",
+                json!({ "command": command }),
+                "run fin schema param [--scope <s>] [--path <p>], or fin schema <cmd> alone",
+            )),
+            _ => commands::schema::schema(&command),
+        },
         Some(Cmd::Status) => commands::view::status(backend()?.as_ref(), g),
         Some(Cmd::View(a)) => commands::view::view(backend()?.as_ref(), g, &a),
         Some(Cmd::Project(ProjectCmd::Create(a))) => {
@@ -210,6 +251,17 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Timeline(c)) => edit(g, Edit::Timeline(c)),
         Some(Cmd::Marker(c)) => edit(g, Edit::Marker(c)),
         Some(Cmd::Bin(c)) => edit(g, Edit::Bin(c)),
+        Some(Cmd::Param(c)) => edit(g, Edit::Param(c)),
+        Some(Cmd::Keyframe(c)) => edit(g, Edit::Keyframe(c)),
+        Some(Cmd::Effect(c)) => edit(g, Edit::Effect(c)),
+        Some(Cmd::Caption(c)) => edit(g, Edit::Caption(c)),
+        Some(Cmd::Style(StyleCmd::Ls)) => commands::style::ls(backend()?.as_ref(), g),
+        Some(Cmd::Style(c)) => edit(g, Edit::Style(c)),
+        Some(Cmd::Eval(c)) => commands::eval::run(backend()?.as_ref(), g, &c),
+        Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
+        Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
+        Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),
+        Some(Cmd::Fonts(c)) => commands::fonts::read(backend()?.as_ref(), g, &c),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
         Some(Cmd::Undo(a)) => commands::history::undo(backend()?.as_ref(), g, &a),
         Some(Cmd::Redo) => commands::history::redo(backend()?.as_ref(), g),
@@ -317,9 +369,33 @@ mod tests {
             "bin remove b2",
             "asset move a1 --bin b1",
             "asset remove a1",
+            "param set c1 opacity 50%",
+            "keyframe set c1 opacity --at 1s 0.5 --interp easeOut",
+            "keyframe remove c1 opacity --at 1s",
+            "effect add c1 blur --at 0 --set radius=4",
+            "effect remove c1 fx1",
+            "effect move c1 fx1 --to 0",
+            "caption import --track t3 --srt s.srt --style preset:bold --at 2s",
+            "caption set-text cap1 Hello",
+            "caption split cap1 --word 2",
+            "caption merge cap1 cap2",
+            "caption style cap1 st1 --set text.size=72px",
+            "style add --name Big --from preset:bold --set text.size=96px",
+            "style set st1 color #fff",
+            "style remove st1",
+            "style ls",
+            "eval frame --at 2s",
+            "eval audio --range 0..2s",
+            "fonts ls --cached --detail",
+            "fonts fetch noto-sans",
+            "fonts status",
+            "fonts pin Inter --weight 700 --italic --fallback 0",
+            "fonts repin Inter|700|normal --catalog-version 2026.11.1",
+            "fonts unpin Inter|700|normal",
             "batch",
             "help clip",
             "schema clip.insert",
+            "schema param --scope style --path text.",
         ];
         let commands: Vec<_> = registry::commands().collect();
         assert_eq!(samples.len(), commands.len());

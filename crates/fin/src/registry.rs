@@ -333,16 +333,27 @@ pub const COMMANDS: &[Command] = &[
         write: false,
         schema: none,
     },
+    Command {
+        name: "schema.param",
+        group: "meta",
+        args: "[--scope <item|effect|track|timeline|marker|style|kind>] [--path <prefix>]",
+        summary: "the settings registry: types, ranges, units, defaults",
+        write: false,
+        schema: none,
+    },
 ];
 
 /// Groups listed after the edit commands.
 const LAST: &[&str] = &["batch", "meta"];
 
-/// Every command: the 4B ones, then the 4C edits, then `batch`, `help` and `schema`.
+/// Every command: the 4B ones, then the 4C edits and settings, then `batch`, `help` and
+/// `schema`.
 pub fn commands() -> impl Iterator<Item = &'static Command> {
     let head = COMMANDS.iter().filter(|c| !LAST.contains(&c.group));
     let tail = COMMANDS.iter().filter(|c| LAST.contains(&c.group));
-    head.chain(crate::registry_edit::EDIT_COMMANDS).chain(tail)
+    head.chain(crate::registry_edit::EDIT_COMMANDS)
+        .chain(crate::registry_settings::SETTINGS_COMMANDS)
+        .chain(tail)
 }
 
 /// Group names in registry order, without duplicates.

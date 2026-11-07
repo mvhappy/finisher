@@ -30,7 +30,7 @@ pub fn map() -> Value {
         "globals": [
             "--project <dir>  # default: nearest ancestor with finisher.project.json",
             "--branch <b>  # branch to read/write (default: `fin try` switch, else main)",
-            "--timeline <tl>  # timeline for track add / marker add (default: the first)",
+            "--timeline <tl>  # timeline for track add, marker add, eval (default: the first)",
             "--dry-run  # validate and show the result without committing (any write)",
             "--idem-key <k>  # retry-safe writes; becomes txId",
         ],

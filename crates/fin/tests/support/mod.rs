@@ -10,7 +10,10 @@
 
 #![allow(dead_code)]
 
-use std::ffi::OsStr;
+pub mod fontserver;
+pub mod settings;
+
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -101,13 +104,25 @@ pub struct Server {
     pub root: PathBuf,
     pub sd: PathBuf,
     pub socket: String,
+    /// Extra environment for finisherd (kept across restarts).
+    pub env: Vec<(String, OsString)>,
 }
 
 impl Server {
     /// Starts a server, or prints why it cannot and returns `None`.
     pub fn start(test: &str) -> Option<Server> {
+        Server::start_with(test, Vec::new(), None)
+    }
+
+    /// Starts a server with extra environment; `extra` is one more reason it may be unable to
+    /// run (a missing test-hooks binary), treated like the others.
+    pub fn start_with(
+        test: &str,
+        env: Vec<(String, OsString)>,
+        extra: Option<String>,
+    ) -> Option<Server> {
         let repo = repo_root();
-        if let Some(reason) = why_unavailable(&repo) {
+        if let Some(reason) = why_unavailable(&repo).or(extra) {
             assert!(!env_on(REQUIRE_ENV), "{test}: {REQUIRE_ENV}=1 but {reason}");
             eprintln!("SKIPPED {test}: {reason}");
             return None;
@@ -120,6 +135,7 @@ impl Server {
             root,
             sd,
             socket: String::new(),
+            env,
         };
         server.spawn();
         Some(server)
@@ -145,6 +161,7 @@ impl Server {
             .arg("--server-data")
             .arg(&self.sd)
             .env_remove("FIN_SERVER")
+            .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
