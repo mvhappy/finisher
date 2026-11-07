@@ -1,0 +1,76 @@
+{
+  "signed": {
+    "_type": "root",
+    "spec_version": "1.0.0",
+    "consistent_snapshot": true,
+    "version": 3,
+    "expires": "2027-11-07T20:31:56Z",
+    "keys": {
+      "bc7b640599a7a6794361e4fccd13b2431f748011220db2ccbfecfcc968e2ec3b": {
+        "keytype": "ed25519",
+        "keyval": {
+          "public": "0f52a5c69bf35084bfb0438556b263bf9f3104800ecba675313b7550998b9f5e"
+        },
+        "scheme": "ed25519"
+      },
+      "78bb094afdb9c37864ef7485daadfa6d9f6796343ab0a348f079f70f38bc34b4": {
+        "keytype": "ed25519",
+        "keyval": {
+          "public": "e194cdf9446c146834f9e7d5a5bcac8f583bdf5da83f9130431cfd51ade8b8e0"
+        },
+        "scheme": "ed25519"
+      },
+      "2b692e9872a696d7c16416c97b861fa77fbed375caff4372848d2cd1cc540af5": {
+        "keytype": "ed25519",
+        "keyval": {
+          "public": "59ad913e73b72c0d5ffac3da55a1e4452f429d2be31888cda2d0c625cfc7a71e"
+        },
+        "scheme": "ed25519"
+      },
+      "be87242f93a95e7ed0355483ed62da0434437f028181a3718fe25b0b67ad4db9": {
+        "keytype": "ed25519",
+        "keyval": {
+          "public": "256405b31fdef8a36f9afea9d6dce9f6e7028e63d79dc396f997a227e08b1f7f"
+        },
+        "scheme": "ed25519"
+      }
+    },
+    "roles": {
+      "timestamp": {
+        "keyids": [
+          "78bb094afdb9c37864ef7485daadfa6d9f6796343ab0a348f079f70f38bc34b4"
+        ],
+        "threshold": 1
+      },
+      "root": {
+        "keyids": [
+          "bc7b640599a7a6794361e4fccd13b2431f748011220db2ccbfecfcc968e2ec3b"
+        ],
+        "threshold": 1
+      },
+      "targets": {
+        "keyids": [
+          "2b692e9872a696d7c16416c97b861fa77fbed375caff4372848d2cd1cc540af5"
+        ],
+        "threshold": 1
+      },
+      "snapshot": {
+        "keyids": [
+          "be87242f93a95e7ed0355483ed62da0434437f028181a3718fe25b0b67ad4db9"
+        ],
+        "threshold": 1
+      }
+    },
+    "custom": {
+      "finisher": {
+        "maxStaleDays": 14
+      }
+    }
+  },
+  "signatures": [
+    {
+      "keyid": "bc7b640599a7a6794361e4fccd13b2431f748011220db2ccbfecfcc968e2ec3b",
+      "sig": "9068946f2505e15f744c68550ef9087f92f3c9a20c7331707c6d1487995df6b0e593c12fcde5f2870615cf4960d7bc658e245b5992106cb138a4963b3c22cb0f"
+    }
+  ]
+}

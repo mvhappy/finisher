@@ -1,0 +1,19 @@
+{
+  "signed": {
+    "_type": "targets",
+    "spec_version": "1.0.0",
+    "version": 1,
+    "expires": "2027-11-07T20:31:56Z",
+    "targets": {},
+    "delegations": {
+      "keys": {},
+      "roles": []
+    }
+  },
+  "signatures": [
+    {
+      "keyid": "2b692e9872a696d7c16416c97b861fa77fbed375caff4372848d2cd1cc540af5",
+      "sig": "4ef092bf02d6c381de49682266de00697f6a370d9e4b4ed2b3b8d37e21fe03ae0d8eb5a9faa7f1974819bdde9b2e6b7644b4833d7f05306badcf8cdc46890507"
+    }
+  ]
+}

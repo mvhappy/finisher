@@ -1,6 +1,7 @@
 //! napi-rs binding exposing `fin-store`, `fin-probe`, the server's fonts (`fin-fonts`,
-//! `fin-text`: the [`fonts`] manager, `FontManager`) and its diagnostics journal
-//! (`fin-journal`: [`journal`], `Journal`) to Node as `@finisher/fin-node`.
+//! `fin-text`: the [`fonts`] manager, `FontManager`), its diagnostics journal
+//! (`fin-journal`: [`journal`], `Journal`) and its plugin store (`fin-registry`: [`registry`],
+//! `Registry`, `validateManifest`) to Node as `@finisher/fin-node`.
 //!
 //! # Threads
 //!
@@ -51,6 +52,7 @@ mod history;
 mod journal;
 mod maintenance;
 mod private_dir;
+mod registry;
 mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]
@@ -61,6 +63,7 @@ pub use engine::Engine;
 pub use fonts::napi::FontManager;
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
+pub use registry::{Registry, validate_manifest};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;
 

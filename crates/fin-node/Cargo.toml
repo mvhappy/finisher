@@ -33,12 +33,15 @@ blake3 = "1"
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
 fin-journal = { path = "../fin-journal" }
+fin-plugin-api = { path = "../fin-plugin-api" }
 fin-probe = { path = "../fin-probe" }
+fin-registry = { path = "../fin-registry" }
 fin-store = { path = "../fin-store" }
 fin-testfonts = { path = "../fin-testfonts", optional = true }
 fin-text = { path = "../fin-text" }
 napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = { version = "3", default-features = false, features = ["strict"] }
+semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
