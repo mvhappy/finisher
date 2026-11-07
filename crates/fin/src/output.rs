@@ -127,6 +127,9 @@ const VALIDATION_CODES: &[&str] = &[
     "FONT_PINNED",
     "FONT_IN_USE",
     "SRT_INVALID",
+    // A caption laid out from its pinned fonts overflows its style's lines or safe zone
+    // (sub-project 4C Tasks 19–20: checked once at the end of a transaction).
+    "CAPTION_OVERFLOW",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).

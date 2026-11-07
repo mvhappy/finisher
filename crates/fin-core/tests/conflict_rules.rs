@@ -585,7 +585,7 @@ fn every_op_has_a_footprint() {
             vec![],
         ),
     ];
-    let styles_fonts = styles_and_fonts(&p);
+    let styles_fonts = styles_and_fonts(&p).into_iter().chain(caption_edits(&p));
     let mut seen = BTreeSet::new();
     for (at, op, tracks) in cases
         .into_iter()
@@ -758,6 +758,31 @@ fn every_op_has_a_footprint() {
             Op::FontRepin(r) => {
                 f.touches == [(format!("font/{}", r.key), Touch::Param("sha256".into()))]
             }
+            Op::CaptionSetText(fin_core::CaptionSetText { item, .. })
+            | Op::CaptionSetWords(fin_core::CaptionSetWords { item, .. }) => {
+                f.touches == [(item.clone(), Touch::Param("caption.words".into()))]
+            }
+            Op::CaptionSplit(s) => {
+                f.touches
+                    == [
+                        (s.item.clone(), Touch::Exists),
+                        (s.item.clone(), Touch::Edge(Edge::End)),
+                    ]
+                    && f.creates == [s.id.clone()]
+            }
+            Op::CaptionMerge(m) => {
+                f.touches
+                    == [
+                        (m.item.clone(), Touch::Exists),
+                        (m.with.clone(), Touch::Exists),
+                        (m.item.clone(), Touch::Edge(Edge::End)),
+                    ]
+                    && f.removes == [m.with.clone()]
+            }
+            Op::CaptionSetStyle(s) => {
+                f.touches == [(s.item.clone(), Touch::Param("caption.style".into()))]
+                    && f.uses.is_empty()
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -765,7 +790,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 44);
+    assert_eq!(seen.len(), 49);
 }
 
 /// The style and font ops (plan 4C Task 18), each at a project where it applies; none is on
@@ -1122,4 +1147,96 @@ fn an_existing_entity_ours_names_is_still_judged() {
         judge_tx(&p, vec![vec![delete("c1")]], ours),
         vec![None, removed("tx-1")]
     );
+}
+
+/// The caption edits (plan 4C Task 19) on caption track `t9`: `cap1` "a b" [0, 2) and `cap2`
+/// "c" [2, 3).
+fn caption_edits(p: &Project) -> Vec<(Project, Op, Vec<&'static str>)> {
+    use fin_core::{CaptionBlock, ItemBody, ItemInsert, Word};
+    use fin_core::{CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSetWords, CaptionSplit};
+    let mut q = p.clone();
+    q.timelines[0]
+        .tracks
+        .push(fin_core::Track::new("t9", TrackKind::Caption, "C9"));
+    let word = |t: &str, s: i64, e: i64| Word {
+        text: t.into(),
+        start: secs(s),
+        end: secs(e),
+    };
+    let cap = |id: &str, at: i64, words: Vec<Word>| -> Op {
+        let duration = words.last().map_or(secs(1), |w| w.end);
+        ItemInsert {
+            id: id.into(),
+            track: "t9".into(),
+            at: secs(at),
+            duration,
+            mode: InsertMode::Overwrite,
+            body: ItemBody::Caption {
+                block: CaptionBlock {
+                    words,
+                    style: "preset:bold".into(),
+                    overrides: Default::default(),
+                    source: None,
+                },
+            },
+        }
+        .into()
+    };
+    let q = apply(
+        &q,
+        vec![
+            cap("$a", 0, vec![word("a", 0, 1), word("b", 1, 2)]),
+            cap("$b", 2, vec![word("c", 0, 1)]),
+        ],
+    )
+    .project;
+    vec![
+        (
+            q.clone(),
+            CaptionSetText {
+                item: "cap1".into(),
+                text: "x y".into(),
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q.clone(),
+            CaptionSetWords {
+                item: "cap1".into(),
+                words: vec![word("z", 0, 2)],
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q.clone(),
+            CaptionSplit {
+                item: "cap1".into(),
+                word: 1,
+                id: "$cap".into(),
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q.clone(),
+            CaptionMerge {
+                item: "cap1".into(),
+                with: "cap2".into(),
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q,
+            CaptionSetStyle {
+                item: "cap1".into(),
+                style: "preset:clean".into(),
+                overrides: None,
+            }
+            .into(),
+            vec!["t9"],
+        ),
+    ]
 }

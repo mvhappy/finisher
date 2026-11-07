@@ -493,6 +493,22 @@
       ],
       "type": "object"
     },
+    "CaptionMerge": {
+      "description": "`caption.merge`: `item` takes in `with`, the next caption on its track.",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "with": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "with"
+      ],
+      "type": "object"
+    },
     "CaptionPlan": {
       "description": "A caption's words at the plan's time, and its layout when it was measured. `layout` is\n`null` when it was not, and `unmeasured` says why (plan 4C Decision 36).",
       "properties": {
@@ -544,6 +560,63 @@
       ],
       "type": "object"
     },
+    "CaptionSetStyle": {
+      "description": "`caption.setStyle`: `item` takes `style`; `overrides`, when given, replace its overrides.",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "overrides": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamValue"
+          },
+          "type": "object"
+        },
+        "style": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "style"
+      ],
+      "type": "object"
+    },
+    "CaptionSetText": {
+      "description": "`caption.setText`: `item`'s words become `text`'s.",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "text"
+      ],
+      "type": "object"
+    },
+    "CaptionSetWords": {
+      "description": "`caption.setWords`: `item`'s words become `words`.",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "words": {
+          "items": {
+            "$ref": "#/$defs/Word"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "item",
+        "words"
+      ],
+      "type": "object"
+    },
     "CaptionSource": {
       "description": "The transcript artifact a caption came from, and its word range (`[first, end)`).",
       "properties": {
@@ -564,6 +637,28 @@
       "required": [
         "artifact",
         "wordRange"
+      ],
+      "type": "object"
+    },
+    "CaptionSplit": {
+      "description": "`caption.split`: cuts `item` before word `word`; the right part is `id`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        },
+        "word": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "word",
+        "id"
       ],
       "type": "object"
     },
@@ -4231,6 +4326,106 @@
             }
           ],
           "description": "Points a pinned font face at another file."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSetText"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "caption.setText",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Gives a caption new text, keeping the times of the words that match."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSetWords"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "caption.setWords",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of the caption edits): sets a caption's words exactly."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSplit"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "caption.split",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Cuts a caption in two before a word; the right part gets a new id."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionMerge"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "caption.merge",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Joins a caption with the next caption on its track."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSetStyle"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "caption.setStyle",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Gives a caption another style, and optionally new overrides."
         },
         {
           "description": "Client alias of `item.insert` of a clip in ripple mode.",

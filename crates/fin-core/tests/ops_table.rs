@@ -426,13 +426,19 @@ fn every_variant() -> Vec<Op> {
             | Op::StyleRemove(_)
             | Op::FontPin(_)
             | Op::FontUnpin(_)
-            | Op::FontRepin(_) => {}
+            | Op::FontRepin(_)
+            | Op::CaptionSetText(_)
+            | Op::CaptionSetWords(_)
+            | Op::CaptionSplit(_)
+            | Op::CaptionMerge(_)
+            | Op::CaptionSetStyle(_) => {}
         }
     }
     ops
 }
 
-/// The style and font ops (plan 4C Task 18): a style copied from a project style, an asset pin.
+/// The style and font ops (plan 4C Task 18): a style copied from a project style, an asset
+/// pin; and the caption edits (Task 19).
 fn styles_and_fonts() -> Vec<Op> {
     use fin_core::{FontFormat, FontPin, FontPinOp, FontRepin, FontSource, FontUnpin};
     use fin_core::{StyleAdd, StyleRemove, StyleSet};
@@ -474,6 +480,37 @@ fn styles_and_fonts() -> Vec<Op> {
         .into(),
         FontUnpin { key: key.clone() }.into(),
         FontRepin { key, pin }.into(),
+        fin_core::CaptionSetText {
+            item: "cap1".into(),
+            text: "Hello there".into(),
+        }
+        .into(),
+        fin_core::CaptionSetWords {
+            item: "cap1".into(),
+            words: vec![Word {
+                text: "hi".into(),
+                start: Rational::from_int(0),
+                end: Rational::from_int(1),
+            }],
+        }
+        .into(),
+        fin_core::CaptionSplit {
+            item: "cap1".into(),
+            word: 1,
+            id: "$cap".into(),
+        }
+        .into(),
+        fin_core::CaptionMerge {
+            item: "cap1".into(),
+            with: "cap2".into(),
+        }
+        .into(),
+        fin_core::CaptionSetStyle {
+            item: "cap1".into(),
+            style: "st2".into(),
+            overrides: Some([("text.size".to_string(), ParamValue::Number(90.0))].into()),
+        }
+        .into(),
     ]
 }
 

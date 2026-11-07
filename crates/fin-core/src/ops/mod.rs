@@ -6,11 +6,12 @@
 //! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove`,
 //! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove`, `param.set`,
 //! `effect.add|remove|move`, `keyframe.set|remove`, `style.add|set|remove`,
-//! `font.pin|unpin|repin` (and the
+//! `font.pin|unpin|repin`, `caption.setText|split|merge|setStyle` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
 //! exist only as inverses (`item.remove`, `item.restore`, `track.restore`,
-//! `timeline.restore`, `effect.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
-//! `item.link` with a literal id); clients sending them get `INVALID_OP`.
+//! `timeline.restore`, `effect.restore`, `caption.setWords`, and `item.trim` in `strict` mode
+//! or `alone`, `item.slide` with `sides`, `item.link` with a literal id); clients sending them
+//! get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
 //! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
@@ -35,6 +36,11 @@ mod asset_remove;
 mod bin_add;
 mod bin_move;
 mod bin_remove;
+mod caption_merge;
+mod caption_set_style;
+mod caption_set_text;
+mod caption_set_words;
+mod caption_split;
 mod defs;
 mod effect_add;
 mod effect_move;
@@ -82,6 +88,11 @@ pub use asset_move::AssetMove;
 pub use bin_add::BinAdd;
 pub use bin_move::BinMove;
 pub use bin_remove::BinRemove;
+pub use caption_merge::CaptionMerge;
+pub use caption_set_style::CaptionSetStyle;
+pub use caption_set_text::CaptionSetText;
+pub use caption_set_words::CaptionSetWords;
+pub use caption_split::CaptionSplit;
 pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
     ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
@@ -359,7 +370,8 @@ impl Op {
 
 /// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op
 /// but `transition.*`, and an alias's runs as the op it stands for. Track, timeline, marker,
-/// bin, asset, `param.set`, `effect.*` and `keyframe.*` ops never part touching items, so it
+/// bin, asset, `param.set`, `effect.*`, `keyframe.*`, `style.*`, `font.*`,
+/// `caption.setText|setWords|setStyle` ops never part touching items, so it
 /// does not run after them either: a track or timeline removal records its own transitions as
 /// removed, and a restore brings them back whole.
 fn prunes(op: &Op) -> bool {
@@ -397,6 +409,9 @@ fn prunes(op: &Op) -> bool {
                 | Op::FontPin(_)
                 | Op::FontUnpin(_)
                 | Op::FontRepin(_)
+                | Op::CaptionSetText(_)
+                | Op::CaptionSetWords(_)
+                | Op::CaptionSetStyle(_)
         )
 }
 
@@ -508,6 +523,11 @@ ops_table! {
     FontPin => font_pin,
     FontUnpin => font_unpin,
     FontRepin => font_repin,
+    CaptionSetText => caption_set_text,
+    CaptionSetWords => caption_set_words,
+    CaptionSplit => caption_split,
+    CaptionMerge => caption_merge,
+    CaptionSetStyle => caption_set_style,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,

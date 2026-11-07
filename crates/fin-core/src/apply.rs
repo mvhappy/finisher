@@ -117,7 +117,8 @@ impl Applier {
                  marker.set, marker.remove, bin.add, bin.move, bin.remove, asset.move, \
                  asset.remove, param.set, effect.add, effect.remove, effect.move, \
                  keyframe.set, keyframe.remove, style.add, style.set, style.remove, font.pin, \
-                 font.unpin or font.repin",
+                 font.unpin, font.repin, caption.setText, caption.split, caption.merge or \
+                 caption.setStyle",
             ))
         } else if self.mode != ApplyMode::Client && op.is_alias() {
             Err(CoreError::new(

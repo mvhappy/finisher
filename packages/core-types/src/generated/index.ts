@@ -187,6 +187,21 @@ export type Op =
   | (FontRepin & {
       op: "font.repin";
     })
+  | (CaptionSetText & {
+      op: "caption.setText";
+    })
+  | (CaptionSetWords & {
+      op: "caption.setWords";
+    })
+  | (CaptionSplit & {
+      op: "caption.split";
+    })
+  | (CaptionMerge & {
+      op: "caption.merge";
+    })
+  | (CaptionSetStyle & {
+      op: "caption.setStyle";
+    })
   | {
       asset: string;
       at: Rational;
@@ -1607,6 +1622,60 @@ export interface FontUnpin {
 export interface FontRepin {
   key: string;
   pin: FontPin;
+}
+/**
+ * `caption.setText`: `item`'s words become `text`'s.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionSetText".
+ */
+export interface CaptionSetText {
+  item: string;
+  text: string;
+}
+/**
+ * `caption.setWords`: `item`'s words become `words`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionSetWords".
+ */
+export interface CaptionSetWords {
+  item: string;
+  words: Word[];
+}
+/**
+ * `caption.split`: cuts `item` before word `word`; the right part is `id`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionSplit".
+ */
+export interface CaptionSplit {
+  id: string;
+  item: string;
+  word: number;
+}
+/**
+ * `caption.merge`: `item` takes in `with`, the next caption on its track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionMerge".
+ */
+export interface CaptionMerge {
+  item: string;
+  with: string;
+}
+/**
+ * `caption.setStyle`: `item` takes `style`; `overrides`, when given, replace its overrides.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionSetStyle".
+ */
+export interface CaptionSetStyle {
+  item: string;
+  overrides?: {
+    [k: string]: ParamValue;
+  };
+  style: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

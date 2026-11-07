@@ -8,10 +8,10 @@ use serde_json::json;
 use crate::captions::{PRESET_PREFIX, find_style};
 use crate::error::CoreError;
 use crate::layout::check_words;
-use crate::model::{CaptionBlock, CaptionStyle, ParamValue, Project, Word};
+use crate::model::{CaptionBlock, CaptionStyle, ItemBody, ParamValue, Project, Word};
 use crate::ops::Bindings;
 use crate::ops::util::param_check::check_value;
-use crate::ops::util::{invalid_range, not_found};
+use crate::ops::util::{TrackAt, invalid_range, item_index, not_found};
 use crate::params::{self, ScopeOf};
 use crate::time::Rational;
 
@@ -87,7 +87,6 @@ pub(crate) fn check_overrides(
 /// A caption's words, structurally: at least one, no control characters, each ending at or
 /// after it starts and none starting before the previous one ends. With `within`, policy
 /// also wants them inside `[0, within]` (out-of-range times are otherwise kept, Decision 13).
-#[allow(dead_code)] // Task 19's caption ops.
 pub(crate) fn check_caption_words(
     words: &[Word],
     within: Option<Rational>,
@@ -147,5 +146,35 @@ pub(crate) fn base_style(project: &Project, from: Option<&str>) -> Result<Captio
     match from {
         Some(f) => Ok(find_style(project, f)?.clone()),
         None => Ok(CaptionStyle::default()),
+    }
+}
+
+/// Where caption item `id` is: `NOT_FOUND` for no item, `INVALID_OP` for an item of another
+/// kind.
+pub(crate) fn caption_at(project: &Project, id: &str) -> Result<(TrackAt, usize), CoreError> {
+    let (ti, i) = item_index(project, id)?;
+    let it = &ti.get(project).items[i];
+    if !matches!(it.body, ItemBody::Caption { .. }) {
+        return Err(CoreError::new(
+            "INVALID_OP",
+            format!("item {id} is a {}, not a caption", it.body.kind_name()),
+        )
+        .with_details(json!({ "item": id, "kind": it.body.kind_name() }))
+        .with_fix("caption edits take caption items"));
+    }
+    Ok((ti, i))
+}
+
+/// The caption block of the item at `(ti, i)`, mutably (the caller checked it is one).
+pub(crate) fn block_mut(
+    project: &mut Project,
+    ti: TrackAt,
+    i: usize,
+) -> Result<&mut CaptionBlock, CoreError> {
+    let it = &mut ti.get_mut(project).items[i];
+    let id = it.id.clone();
+    match &mut it.body {
+        ItemBody::Caption { block } => Ok(block),
+        _ => Err(not_found("caption", &id)),
     }
 }

@@ -117,6 +117,11 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
                     .set
                     .iter_mut()
                     .try_for_each(|(k, v)| normalize_value(k, v)),
+                Op::CaptionSetStyle(c) => c
+                    .overrides
+                    .iter_mut()
+                    .flatten()
+                    .try_for_each(|(k, v)| normalize_value(&format!("overrides.{k}"), v)),
                 Op::StyleSet(s) => match &mut s.value {
                     Some(v) => normalize_value(&s.path, v),
                     None => Ok(()),

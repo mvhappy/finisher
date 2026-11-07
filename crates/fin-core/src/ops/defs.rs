@@ -11,6 +11,7 @@ use crate::ops::asset_move::AssetMove;
 use crate::ops::bin_add::BinAdd;
 use crate::ops::bin_move::BinMove;
 use crate::ops::bin_remove::BinRemove;
+use crate::ops::caption_split::CaptionSplit;
 use crate::ops::effect_add::EffectAdd;
 use crate::ops::effect_move::EffectMove;
 use crate::ops::effect_remove::EffectRemove;
@@ -30,6 +31,8 @@ use crate::ops::track_move::TrackMove;
 use crate::ops::track_remove::TrackRemove;
 use crate::ops::track_restore::TrackRestore;
 use crate::ops::track_set::TrackSet;
+use crate::ops::{caption_merge::CaptionMerge, caption_set_style::CaptionSetStyle};
+use crate::ops::{caption_set_text::CaptionSetText, caption_set_words::CaptionSetWords};
 use crate::ops::{font_pin::FontPinOp, font_repin::FontRepin, font_unpin::FontUnpin};
 use crate::ops::{style_add::StyleAdd, style_remove::StyleRemove, style_set::StyleSet};
 use crate::time::Rational;
@@ -174,6 +177,21 @@ pub enum Op {
     /// Points a pinned font face at another file.
     #[serde(rename = "font.repin")]
     FontRepin(FontRepin),
+    /// Gives a caption new text, keeping the times of the words that match.
+    #[serde(rename = "caption.setText")]
+    CaptionSetText(CaptionSetText),
+    /// Internal (inverse of the caption edits): sets a caption's words exactly.
+    #[serde(rename = "caption.setWords")]
+    CaptionSetWords(CaptionSetWords),
+    /// Cuts a caption in two before a word; the right part gets a new id.
+    #[serde(rename = "caption.split")]
+    CaptionSplit(CaptionSplit),
+    /// Joins a caption with the next caption on its track.
+    #[serde(rename = "caption.merge")]
+    CaptionMerge(CaptionMerge),
+    /// Gives a caption another style, and optionally new overrides.
+    #[serde(rename = "caption.setStyle")]
+    CaptionSetStyle(CaptionSetStyle),
     /// Client alias of `item.insert` of a clip in ripple mode.
     #[serde(rename = "clip.insert")]
     ClipInsert {
