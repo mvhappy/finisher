@@ -157,6 +157,22 @@ describe("Journal", () => {
     expect((bad as FinNodeError).code).toBe("INVALID_ARGS");
   });
 
+  test("the training upload view holds only entries stamped training", async () => {
+    // Recorded before the opt-in: stamped diagnostics alone.
+    let j = open({ diagnostics: "on", training: "off" });
+    for (let i = 0; i < 3; i++) j.record("cli.command", 1, null, JSON.stringify(cli(String(i))), "fin");
+    await j.close();
+    // Reopened with training on, the earlier file is closed (the upload view reads only those).
+    j = open({ diagnostics: "on", training: "on" });
+    expect((await all(j, {}, "diagnostics")).map((e) => e.consent.purposes)).toEqual([["diagnostics"], ["diagnostics"], ["diagnostics"]]);
+    expect(await all(j, {}, "training")).toEqual([]);
+    // Recorded with training on, metadata is stamped for both; its training view says training.
+    for (let i = 0; i < 2; i++) j.record("cli.command", 1, null, JSON.stringify(cli(String(i))), "fin");
+    await j.close();
+    j = open({ diagnostics: "on", training: "on" });
+    expect((await all(j, {}, "training")).map((e) => e.consent.purposes)).toEqual([["training"], ["training"]]);
+  });
+
   test("an engine's project is known while open and unknown after close; setCollect never purges", async () => {
     const j = open();
     engine = await Engine.create(serverData, join(tmp, "Project"), "Demo", "30");

@@ -244,15 +244,21 @@ pub fn park(client: Client) {
 // ---- `cli.command` ----------------------------------------------------------------------------
 
 /// The transaction ids a run's answer names: a `txId` at the top of a success document, or in an
-/// error's details.
+/// error's details. A merge (`merge`, `try keep`) answers `merge.mergeId`: its records are
+/// `<mergeId>-1`, `-2`, …, and its `log.commit` names the first (plan D5), so this does too.
 fn answer_tx_ids(result: &Result<Value, CoreError>) -> Vec<String> {
     let id = match result {
         Ok(doc) => doc.get("txId"),
         Err(e) => e.details.get("txId"),
     };
+    let merge = match result {
+        Ok(doc) => doc.pointer("/merge/mergeId").and_then(Value::as_str),
+        Err(_) => None,
+    };
     id.and_then(Value::as_str)
         .map(str::to_string)
         .into_iter()
+        .chain(merge.map(|m| format!("{m}-1")))
         .collect()
 }
 

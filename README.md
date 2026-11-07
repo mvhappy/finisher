@@ -141,6 +141,69 @@ and the next `finisherd` start replaces the file.
 `pnpm e2e` runs the whole flow (`fin` → `finisherd` → a WebSocket subscriber) in a temp
 directory.
 
+## Privacy and diagnostics
+
+Finisher keeps a local journal of what it does, for two purposes: improving the app
+(**diagnostics**) and, only if a person opts in, training an open-weight video-editing model
+(**training**). Nothing is uploaded: this version has no uploader and no network path for it.
+The design is in §21.1 of the [architecture spec](docs/specs/2026-11-01-finisher-architecture-design.md).
+
+**The consent model** (owner decisions, 2026-11-07):
+
+- **Basic diagnostics are on by default, with an opt-out.** This is metadata only: error codes,
+  timings, counts, ids, keyed hashes, the commands and flag names you ran (never their values),
+  and what became of each edit (accepted, rebased, deduped, undone, conflicted…). Basic
+  diagnostics never hold content, paths, host names or user names.
+- **Training content is opt-in only, and only a person can opt in.** It adds edit intents (the
+  ops of each transaction), error messages and, later, captions, prompts, model conversations,
+  frames and audio. Until someone opts in, training is `undecided` and no content is recorded.
+  An agent's `fin` cannot turn it on.
+- **Closed-model outputs may become training targets, pending counsel.** Every agent turn is
+  recorded with its model's provenance. No training run or upload may use closed-model outputs
+  until counsel has reviewed the providers' terms and a person has recorded the result. Until
+  then the gate stays at `pendingCounsel`. The dataset builder and any upload path (neither
+  exists yet) must drop those examples while it does.
+
+**Where it lives.** `<server-data>/events/`: dated JSONL files (`j-<date>-<id>.jsonl`), `blobs/`
+for large content, `key` (the per-install key that keys every hash and non-ULID id; `0600`)
+and `state.json`. Only `finisherd` writes the journal. `fin` sends its `cli.command` entries
+to the server, and records nothing when no server is running. Files rotate at 8 MiB or once
+a day. Entries are kept for at most 30 days and 128 MiB, blobs included
+(`privacy.retentionDays` and `privacy.maxMiB` in `<server-data>/settings.json`). With
+everything off, no `events/` directory is created at all.
+
+**The switches**, strongest first:
+
+| Switch | Effect |
+|---|---|
+| `DO_NOT_TRACK=1` in `finisherd`'s env | Both purposes off. `fin` with `DO_NOT_TRACK` set sends nothing. |
+| `FIN_DIAGNOSTICS=on\|off`, `FIN_TRAINING=on\|off` in `finisherd`'s env | Override the settings (`basis: env`). Off wins over on. |
+| `finisher.project.json` `"collect": "never"` | Records nothing about this project on any collaborator's server, and purges what each server had once it sees the flag. |
+| `<server-data>/settings.json` `privacy.diagnostics`, `privacy.training` | `on` or `off` (`basis: user`). An absent key takes the default: diagnostics on, training undecided. |
+
+**How to opt in to training:** answer the onboarding question in the Finisher app (coming in a
+later version), set `"privacy": {"training": "on"}` in `<server-data>/settings.json` by hand
+(the running server picks it up within a few seconds), or start `finisherd` with
+`FIN_TRAINING=on` on your own machine. `fin diagnostics consent training on` is refused on
+purpose, with a message that names these three ways.
+
+**See it, change it, delete it:**
+
+```bash
+fin diagnostics show                          # consent and its basis, project flags, files, sizes, counts per kind, drops
+fin diagnostics export --limit 20             # the newest 20 entries, as JSONL (content included: it is your data)
+fin diagnostics export --kind log.commit --since 2026-11-01
+fin diagnostics export --as-upload diagnostics   # exactly what a future uploader could send now
+fin diagnostics consent diagnostics off       # or on, or unset (back to the default)
+fin diagnostics consent training off          # withdraw; unset makes it undecided again
+fin diagnostics project never                 # this project: record nothing, purge its entries (default: follow the settings)
+fin diagnostics purge --project <id>          # or --before 2026-10-01, or --all (also removes the key and every blob)
+```
+
+Withdrawing a purpose takes effect before anything else is written. It stops the upload view
+from offering anything recorded under that purpose. It deletes nothing by itself: use
+`fin diagnostics purge` for that.
+
 ## License
 
 MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

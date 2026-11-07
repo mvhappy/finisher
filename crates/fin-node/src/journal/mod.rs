@@ -117,10 +117,12 @@ fn source_of(s: &str) -> Result<Source> {
     })
 }
 
+/// The upload view's purpose (Decision 31): an entry is kept only when its stamp and the
+/// consent in force both hold it, so `training` is training alone, not every purpose.
 fn purposes_of(s: &str) -> Result<Purposes> {
     match s {
         "diagnostics" => Ok(Purposes::DIAGNOSTICS),
-        "training" => Ok(Purposes::ALL),
+        "training" => Ok(Purposes::TRAINING),
         other => Err(reject(CoreError::new(
             "INVALID_ARGS",
             format!("asUpload is diagnostics or training, not {other:?}"),

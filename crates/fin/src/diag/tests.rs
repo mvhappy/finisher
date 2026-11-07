@@ -189,3 +189,20 @@ fn a_parse_yields_a_name_and_flag_names_never_values() {
     assert_eq!(name, "diagnostics.export");
     assert_eq!(flags, ["as-upload", "kind", "since"]);
 }
+
+#[test]
+fn a_merge_answer_names_its_first_record() {
+    let merged = Ok(json!({ "merge": { "mergeId": "01M6VR9YKSMQQCE4P6N0P7R1S5", "records": 1 } }));
+    assert_eq!(
+        answer_tx_ids(&merged),
+        vec!["01M6VR9YKSMQQCE4P6N0P7R1S5-1".to_string()]
+    );
+    let edit = Ok(json!({ "txId": "01M6VR9YJ3TVG5MW8QPJXC2GWX", "rev": 1 }));
+    assert_eq!(
+        answer_tx_ids(&edit),
+        vec!["01M6VR9YJ3TVG5MW8QPJXC2GWX".to_string()]
+    );
+    let refused = Err(CoreError::new("CONFLICT", "x").with_details(json!({ "txId": "t1" })));
+    assert_eq!(answer_tx_ids(&refused), vec!["t1".to_string()]);
+    assert!(answer_tx_ids(&Ok(json!({ "branches": [] }))).is_empty());
+}
