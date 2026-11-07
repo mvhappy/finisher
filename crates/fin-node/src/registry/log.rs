@@ -19,7 +19,8 @@ use fin_registry::plan::{InstallPlan, PlanAction, SourceKind};
 
 /// What an entry says about the plugin, when known.
 pub(crate) struct About<'a> {
-    pub(crate) id: &'a str,
+    /// `None` when the call never learnt which plugin (a commit of a plan that is gone).
+    pub(crate) id: Option<&'a str>,
     pub(crate) source: SourceKind,
     pub(crate) kind: Option<PluginKind>,
     pub(crate) risk: Option<Risk>,
@@ -30,7 +31,7 @@ pub(crate) struct About<'a> {
 impl<'a> About<'a> {
     pub(crate) fn of_plan(plan: &'a InstallPlan) -> About<'a> {
         About {
-            id: &plan.plugin.id,
+            id: Some(&plan.plugin.id),
             source: plan.source.kind,
             kind: Some(plan.plugin.kind),
             risk: Some(plan.risk),
@@ -60,8 +61,12 @@ pub(crate) fn lifecycle(
     if j.gate().is_none() {
         return;
     }
-    let Some(plugin) = PluginRef::of(about.id, |s| j.hash(s)) else {
-        return;
+    let plugin = match about.id {
+        Some(id) => match PluginRef::of(id, |s| j.hash(s)) {
+            Some(r) => Some(r),
+            None => return,
+        },
+        None => None,
     };
     let (outcome, code) = match result {
         Ok(()) => (PluginOutcome::Ok, None),

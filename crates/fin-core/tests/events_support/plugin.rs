@@ -12,7 +12,7 @@ pub fn samples(hashed: Hashed, code: Code) -> Vec<AnyPayload> {
             action: PLUGIN_ACTIONS.get("install").unwrap(),
             outcome: PluginOutcome::Refused,
             code: Some(code.clone()),
-            plugin: PluginRef::Hashed(hashed),
+            plugin: Some(PluginRef::Hashed(hashed)),
             source: PluginSourceName::Registry,
             kind: PluginKindName::Content,
             permissions_added: 2,

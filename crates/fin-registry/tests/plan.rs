@@ -296,6 +296,39 @@ fn bundled_tree_must_match_its_hash() {
     assert!(listing(&fx.store.staging_dir()).is_empty());
 }
 
+/// The staged copy is re-hashed against the compiled-in hash: a named executable without its
+/// execute bit in the shipped tree stages differently and is refused.
+#[cfg(unix)]
+#[test]
+fn bundled_staged_copy_must_match() {
+    let fx = Fx::new();
+    let m = code("@finisher/tool", "1.0.0", json!([]));
+    let dir = fx.tree(&m, &default_files());
+    let tree_hash = fin_registry::package::tree_hash(&dir).unwrap();
+    let req = PlanRequest {
+        id: "@finisher/tool".into(),
+        ..Default::default()
+    };
+    let e = fx
+        .plan(
+            PlanInput::Bundled {
+                dir: dir.clone(),
+                tree_hash,
+            },
+            &req,
+        )
+        .unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.reason()),
+        ("PLUGIN_BUNDLED_MISMATCH", Some("treeHash"))
+    );
+    assert!(listing(&fx.store.staging_dir()).is_empty());
+    set_exec(&dir.join("bin/tool"));
+    let tree_hash = fin_registry::package::tree_hash(&dir).unwrap();
+    fx.plan(PlanInput::Bundled { dir, tree_hash }, &req)
+        .unwrap();
+}
+
 #[test]
 fn update_and_downgrade_against_the_installed_version() {
     let fx = Fx::new();
@@ -344,9 +377,29 @@ fn update_and_downgrade_against_the_installed_version() {
         .plan(PlanInput::Registry(Box::new(t.clone())), &req)
         .unwrap_err();
     assert_eq!(e.code, "PLUGIN_DOWNGRADE_REFUSED");
+    // A downgrade needs a person naming the exact version.
     req.allow_downgrade = true;
-    let plan = fx.plan(PlanInput::Registry(Box::new(t)), &req).unwrap();
+    let e = fx
+        .plan(PlanInput::Registry(Box::new(t.clone())), &req)
+        .unwrap_err();
+    assert_eq!(e.code, "PLUGIN_DOWNGRADE_REFUSED");
+    req.version = Some(semver::Version::new(1, 2, 0));
+    let e = fx
+        .plan(PlanInput::Registry(Box::new(t.clone())), &req)
+        .unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.reason()),
+        ("PLUGIN_MANIFEST_INVALID", Some("versionMismatch"))
+    );
+    req.version = Some(semver::Version::new(1, 1, 0));
+    let plan = fx
+        .plan(PlanInput::Registry(Box::new(t.clone())), &req)
+        .unwrap();
     assert_eq!(plan.action, PlanAction::Downgrade);
+    // Naming the version alone does not downgrade.
+    req.allow_downgrade = false;
+    let e = fx.plan(PlanInput::Registry(Box::new(t)), &req).unwrap_err();
+    assert_eq!(e.code, "PLUGIN_DOWNGRADE_REFUSED");
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! Plugin ids (8A Decision 2): `@<publisher>/<name>`, publisher `[a-z0-9][a-z0-9-]{1,38}`,
-//! name `[a-z0-9][a-z0-9-]{1,63}`, no `--` and no trailing `-`.
+//! name `[a-z0-9][a-z0-9-]{1,63}`, no `--`, no trailing `-` and no Windows device name
+//! (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`).
 
 use std::borrow::Cow;
 use std::fmt;
@@ -36,10 +37,10 @@ impl fmt::Display for IdError {
         f.write_str(match self {
             IdError::Shape => "a plugin id is @<publisher>/<name>",
             IdError::Publisher => {
-                "a publisher is 2 to 39 of [a-z0-9-], starting with a letter or digit, with no `--` and no trailing `-`"
+                "a publisher is 2 to 39 of [a-z0-9-], starting with a letter or digit, with no `--`, no trailing `-` and no Windows device name"
             }
             IdError::Name => {
-                "a plugin name is 2 to 64 of [a-z0-9-], starting with a letter or digit, with no `--` and no trailing `-`"
+                "a plugin name is 2 to 64 of [a-z0-9-], starting with a letter or digit, with no `--`, no trailing `-` and no Windows device name"
             }
         })
     }
@@ -55,6 +56,19 @@ pub struct PluginId {
 }
 
 /// `[a-z0-9]` then `max_rest` or fewer of `[a-z0-9-]` (at least one), no `--`, no trailing `-`.
+/// Windows device names: a publisher or name directory called this cannot be created on
+/// Windows (`store/@<publisher>/<name>/`, `data/…`), in any case.
+pub const RESERVED_DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+fn is_device_name(s: &str) -> bool {
+    RESERVED_DEVICE_NAMES
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(s))
+}
+
 fn segment_ok(s: &str, max_rest: usize) -> bool {
     let b = s.as_bytes();
     let ok_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
@@ -64,6 +78,7 @@ fn segment_ok(s: &str, max_rest: usize) -> bool {
         && b.iter().all(|&c| ok_char(c) || c == b'-')
         && !s.contains("--")
         && !s.ends_with('-')
+        && !is_device_name(s)
 }
 
 impl PluginId {

@@ -119,6 +119,15 @@ pub(super) fn action(
     m: &Manifest,
     req: &PlanRequest,
 ) -> Result<(PlanAction, Option<String>, Vec<Permission>), RegistryError> {
+    if let Some(want) = req.version.as_ref().filter(|v| **v != m.version) {
+        let mut e = mismatch(
+            "/version",
+            "versionMismatch",
+            format!("the package is {} {}, not {want}", m.id, m.version),
+        );
+        e.details.insert("version".into(), json!(want.to_string()));
+        return Err(e);
+    }
     let Some(installed) = &req.installed else {
         return Ok((PlanAction::Install, None, Vec::new()));
     };
@@ -153,7 +162,9 @@ pub(super) fn action(
     if m.version > have {
         return Ok((PlanAction::Update, from, old));
     }
-    if !req.allow_downgrade {
+    // Only a person naming this exact version downgrades (spec §5.3 step 4); `version` equals
+    // the manifest's here when set.
+    if !req.allow_downgrade || req.version.is_none() {
         return Err(RegistryError::new(
             "PLUGIN_DOWNGRADE_REFUSED",
             format!("{} {} is older than the installed {have}", m.id, m.version),

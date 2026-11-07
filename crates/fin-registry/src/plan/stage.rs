@@ -80,16 +80,8 @@ pub(super) fn bundled(
     tmp: &Path,
     pkg: &Path,
 ) -> Result<Unpacked, RegistryError> {
-    let have = tree_hash(dir)?;
-    if have != expect {
-        return Err(RegistryError::new(
-            "PLUGIN_BUNDLED_MISMATCH",
-            format!(
-                "the bundled tree {} does not match the hash built into the app",
-                dir.display()
-            ),
-            json!({ "reason": "treeHash" }),
-        ));
+    if tree_hash(dir)? != expect {
+        return Err(mismatch(dir));
     }
     // The executables the manifest names; an unreadable manifest fails validation later.
     let executables = std::fs::read(dir.join(MANIFEST_FILE))
@@ -106,5 +98,22 @@ pub(super) fn bundled(
         &Limits::default(),
     );
     let _ = std::fs::remove_file(&archive);
-    Ok(out?)
+    let out = out?;
+    // The staged copy must be the tree that was checked (modes included): the tree may change
+    // while it is packed, or a mode the source has but the manifest does not name is dropped.
+    if out.tree_hash != expect {
+        return Err(mismatch(dir));
+    }
+    Ok(out)
+}
+
+fn mismatch(dir: &Path) -> RegistryError {
+    RegistryError::new(
+        "PLUGIN_BUNDLED_MISMATCH",
+        format!(
+            "the bundled tree {} does not match the hash built into the app",
+            dir.display()
+        ),
+        json!({ "reason": "treeHash" }),
+    )
 }

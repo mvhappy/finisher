@@ -10,9 +10,20 @@
 //! (`finisherd`). A commit re-checks the plan's digest, expiry and acceptances, moves the
 //! staged tree into the store, marks its files read-only and checks its tree hash there; on a
 //! mismatch the tree is deleted (`PLAN_MISMATCH`). Nothing is executed.
+//!
+//! Every change is renames inside `store/@<publisher>/<name>/`, so an installed directory is
+//! always whole: a commit moves its tree in as `.tmp-<planId>` and renames it into place (a
+//! directory already there is re-hashed and, if it differs, moved aside as
+//! `.tmp-old-<rand>`); a removal renames the directory to `.tmp-rm-<rand>` before deleting it.
+//! `.tmp-*` directories are never installed ([`Store::installed_manifests`]) and
+//! [`Store::sweep_store`] deletes those a crash or a failed deletion left behind. Commit,
+//! remove and the sweeps of one `Store` (and its clones) run one at a time; one server owns
+//! its store (the server lock).
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
 use fin_plugin_api::{LicenceClass, MANIFEST_FILE, Manifest, PluginId, PluginKind};
@@ -28,6 +39,21 @@ use crate::plan::{
 #[derive(Debug, Clone)]
 pub struct Store {
     base: PathBuf,
+    /// Held by commit, remove and the sweeps.
+    busy: Arc<Mutex<()>>,
+}
+
+/// A fresh suffix for a temporary name.
+fn rand_suffix() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut h = blake3::Hasher::new();
+    h.update(&COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
+    h.update(&std::process::id().to_le_bytes());
+    let wall = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    h.update(&wall.to_le_bytes());
+    h.finalize().to_hex()[..16].to_string()
 }
 
 fn mkdirs(p: &Path) -> Result<(), RegistryError> {
@@ -48,6 +74,7 @@ impl Store {
     pub fn open(base: &Path) -> Result<Store, RegistryError> {
         let store = Store {
             base: base.to_path_buf(),
+            busy: Arc::new(Mutex::new(())),
         };
         for d in [store.store_dir(), store.staging_dir(), store.data_root()] {
             mkdirs(&d)?;
@@ -104,6 +131,7 @@ impl Store {
         accept: &Accept,
         now: u64,
     ) -> Result<InstalledPlugin, RegistryError> {
+        let _busy = self.lock();
         let plan = self.plan(plan_id)?;
         let staged = self.staging_dir().join(plan_id);
         if plan_digest(&plan) != plan.digest || plan.plan_id != plan_id {
@@ -160,12 +188,7 @@ impl Store {
                 "the staged files changed after the plan was made",
             ));
         }
-        if dest.exists() {
-            // The same version with the same tree is installed already.
-            remove_tree(&moving);
-        } else {
-            fs::rename(&moving, &dest).map_err(|e| RegistryError::io("rename", &moving, e))?;
-        }
+        self.place(&moving, &dest, &plan.tree_hash)?;
         Ok(InstalledPlugin {
             id: plan.plugin.id.clone(),
             version: plan.plugin.version.clone(),
@@ -191,6 +214,7 @@ impl Store {
         version: &semver::Version,
         purge_data: bool,
     ) -> Result<(), RegistryError> {
+        let _busy = self.lock();
         let root = self.plugin_root(id);
         let prefix = format!("{version}-");
         let found: Vec<PathBuf> = fs::read_dir(&root)
@@ -212,8 +236,11 @@ impl Store {
             ));
         }
         for dir in &found {
-            set_read_only(dir, false)?;
-            fs::remove_dir_all(dir).map_err(|e| RegistryError::io("remove", dir, e))?;
+            // Hidden first, so a deletion that fails half way leaves nothing that looks
+            // installed; the sweep finishes it.
+            let hidden = root.join(format!(".tmp-rm-{}", rand_suffix()));
+            fs::rename(dir, &hidden).map_err(|e| RegistryError::io("rename", dir, e))?;
+            remove_tree(&hidden);
         }
         if purge_data {
             let data = self.data_dir(id);
@@ -233,6 +260,7 @@ impl Store {
     /// Deletes expired or unreadable plans (and half-built ones older than a plan's life);
     /// returns how many.
     pub fn sweep_staging(&self, now: u64) -> u32 {
+        let _busy = self.lock();
         let mut n = 0;
         let Ok(entries) = fs::read_dir(self.staging_dir()) else {
             return 0;
@@ -257,17 +285,66 @@ impl Store {
         n
     }
 
+    /// Deletes every `.tmp-*` directory under `store/@<publisher>/<name>/` (a removal that
+    /// failed half way, a tree moved aside, a commit interrupted between its renames) and the
+    /// name and publisher directories left empty; returns how many temporary directories.
+    pub fn sweep_store(&self) -> u32 {
+        let _busy = self.lock();
+        let mut n = 0;
+        for publisher in subdirs(&self.store_dir()) {
+            for name in subdirs(&publisher) {
+                for dir in subdirs(&name) {
+                    let temp = dir
+                        .file_name()
+                        .is_some_and(|f| f.to_string_lossy().starts_with(".tmp-"));
+                    if temp {
+                        remove_tree(&dir);
+                        n += u32::from(!dir.exists());
+                    }
+                }
+                let _ = fs::remove_dir(&name);
+            }
+            let _ = fs::remove_dir(&publisher);
+        }
+        n
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        self.busy.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Puts the verified tree `moving` at `dest`. A directory already at `dest` stays when its
+    /// tree hash is `tree_hash`; otherwise (a file deleted or changed after install) it is
+    /// moved aside and replaced.
+    fn place(&self, moving: &Path, dest: &Path, tree_hash: &str) -> Result<(), RegistryError> {
+        if dest.exists() {
+            if tree_hash_of(dest).as_deref() == Some(tree_hash) {
+                remove_tree(moving);
+                return Ok(());
+            }
+            let root = dest.parent().unwrap_or(dest);
+            let aside = root.join(format!(".tmp-old-{}", rand_suffix()));
+            fs::rename(dest, &aside).map_err(|e| RegistryError::io("rename", dest, e))?;
+            if let Err(e) = fs::rename(moving, dest) {
+                let _ = fs::rename(&aside, dest);
+                return Err(RegistryError::io("rename", moving, e));
+            }
+            remove_tree(&aside);
+            return Ok(());
+        }
+        fs::rename(moving, dest).map_err(|e| RegistryError::io("rename", moving, e))
+    }
+
     /// Every installed package directory with its manifest (for the catalog-id check).
     pub fn installed_manifests(&self) -> Vec<(PathBuf, Manifest)> {
         let mut out = Vec::new();
         let level = |p: &Path| -> Vec<PathBuf> {
-            fs::read_dir(p)
+            subdirs(p)
                 .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .filter(|e| !e.file_name().to_string_lossy().starts_with(".tmp-"))
-                .map(|e| e.path())
+                .filter(|d| {
+                    d.file_name()
+                        .is_some_and(|f| !f.to_string_lossy().starts_with(".tmp-"))
+                })
                 .collect()
         };
         for publisher in level(&self.store_dir()) {
@@ -355,6 +432,21 @@ fn read_only_file(path: &Path, on: bool) -> Result<(), RegistryError> {
         .permissions();
     perms.set_readonly(on);
     fs::set_permissions(path, perms).map_err(|e| RegistryError::io("chmod", path, e))
+}
+
+/// The directories directly under `p`.
+fn subdirs(p: &Path) -> Vec<PathBuf> {
+    fs::read_dir(p)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
+fn tree_hash_of(p: &Path) -> Option<String> {
+    tree_hash(p).ok()
 }
 
 fn remove_tree(p: &Path) {

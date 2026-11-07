@@ -17,6 +17,9 @@ fn ids_follow_the_grammar() {
         "@a1/b2".into(),
         "@ab/x-y-z".into(),
         "@0x/9lives".into(),
+        "@acme/com0".into(),
+        "@acme/console".into(),
+        "@acme/lpt10".into(),
         format!("@{long_pub}/{long_name}"),
     ] {
         let id = PluginId::parse(&ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
@@ -37,6 +40,13 @@ fn ids_follow_the_grammar() {
         ("@acme/to_ols".into(), "idName"),
         ("@acme/tools/x".into(), "idName"),
         (format!("@acme/{}b", "b".repeat(64)), "idName"),
+        // Windows device names, as a publisher or a name (ids are lower case already).
+        ("@con/tools".into(), "idPublisher"),
+        ("@nul/tools".into(), "idPublisher"),
+        ("@lpt9/tools".into(), "idPublisher"),
+        ("@acme/aux".into(), "idName"),
+        ("@acme/prn".into(), "idName"),
+        ("@acme/com1".into(), "idName"),
     ] {
         assert_eq!(
             PluginId::parse(&bad).map_err(|e| e.reason()),

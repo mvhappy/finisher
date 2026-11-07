@@ -53,9 +53,9 @@ fn bad_request(what: &str, e: impl std::fmt::Display) -> Error {
 enum SourceReq {
     Registry {
         registry: String,
+        /// The exact version a person named (`PlanRequest::version`).
         #[serde(default)]
-        #[allow(dead_code)]
-        version: Option<String>,
+        version: Option<semver::Version>,
     },
     #[cfg(feature = "test-hooks")]
     #[serde(rename_all = "camelCase")]
@@ -63,10 +63,22 @@ enum SourceReq {
         archive: String,
         registry_id: String,
         #[serde(default)]
+        version: Option<semver::Version>,
+        #[serde(default)]
         stale_days: Option<u16>,
         #[serde(default)]
         yanked: bool,
     },
+}
+
+impl SourceReq {
+    fn version(&self) -> Option<semver::Version> {
+        match self {
+            SourceReq::Registry { version, .. } => version.clone(),
+            #[cfg(feature = "test-hooks")]
+            SourceReq::Package { version, .. } => version.clone(),
+        }
+    }
 }
 
 /// `Registry.plan`'s request: [`PlanRequest`] and where the package comes from.
@@ -142,11 +154,13 @@ impl Registry {
             let req: PlanReq =
                 serde_json::from_str(&req_json).map_err(|e| bad_request("the plan request", e))?;
             let started = Instant::now();
+            let version = req.source.version();
             let out = plan(
                 &inner,
                 req.source,
                 &PlanRequest {
                     id: req.id.clone(),
+                    version,
                     update: req.update,
                     allow_downgrade: req.allow_downgrade,
                     installed: req.installed,
@@ -157,7 +171,7 @@ impl Registry {
                 Ok(p) => lifecycle(&inner.key, "plan", &About::of_plan(p), Ok(()), started),
                 Err(e) => {
                     let about = About {
-                        id: &req.id,
+                        id: Some(&req.id),
                         source: SourceKind::Registry,
                         kind: None,
                         risk: None,
@@ -191,15 +205,24 @@ impl Registry {
             let staged = inner.store.plan(&plan_id).ok();
             let now = fin_registry::Clock::now_ms(&SystemClock);
             let out = inner.store.commit(&plan_id, &digest, &accept, now);
-            if let Some(p) = &staged {
-                let r = out.as_ref().map(|_| ());
-                lifecycle(
-                    &inner.key,
-                    action_name(p.action),
-                    &About::of_plan(p),
-                    r,
-                    started,
-                );
+            let r = out.as_ref().map(|_| ());
+            match &staged {
+                Some(p) => {
+                    let about = About::of_plan(p);
+                    lifecycle(&inner.key, action_name(p.action), &about, r, started);
+                }
+                // Swept, never made or not a plan id: which plugin is unknown.
+                None => {
+                    let about = About {
+                        id: None,
+                        source: SourceKind::Registry,
+                        kind: None,
+                        risk: None,
+                        permissions_added: 0,
+                        bytes: 0,
+                    };
+                    lifecycle(&inner.key, "install", &about, r, started);
+                }
             }
             encode(&out.map_err(|e| reject(core(e)))?)
         })
@@ -219,7 +242,7 @@ impl Registry {
             let started = Instant::now();
             let out = remove(&inner, &id, &version, purge_data);
             let about = About {
-                id: &id,
+                id: Some(&id),
                 source: SourceKind::Registry,
                 kind: out.as_ref().ok().copied().flatten(),
                 risk: None,
@@ -237,13 +260,14 @@ impl Registry {
         })
     }
 
-    /// Deletes expired and broken plans; resolves to how many.
+    /// Deletes expired and broken plans and the store's leftover temporary directories;
+    /// resolves to how many.
     #[napi(catch_unwind, ts_return_type = "Promise<number>")]
     pub fn sweep<'e>(&self, env: &'e Env) -> Result<Object<'e>> {
         let inner = self.inner.clone();
         on_worker(env, &self.worker, move || {
             let now = fin_registry::Clock::now_ms(&SystemClock);
-            Ok(inner.store.sweep_staging(now))
+            Ok(inner.store.sweep_staging(now) + inner.store.sweep_store())
         })
     }
 }
@@ -277,6 +301,7 @@ fn resolve(inner: &Inner, source: SourceReq) -> std::result::Result<PlanInput, R
             registry_id,
             stale_days,
             yanked,
+            ..
         } => {
             let scratch = inner
                 .store

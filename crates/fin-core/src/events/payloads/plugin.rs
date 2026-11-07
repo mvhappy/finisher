@@ -95,7 +95,11 @@ pub struct PluginLifecycle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Code")]
     pub code: Option<Code>,
-    pub plugin: PluginRef,
+    // Absent when the call never learnt which plugin (a commit of a plan that is gone). Not a
+    // doc comment: it would become `PluginRef`'s description in TypeScript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "PluginRef")]
+    pub plugin: Option<PluginRef>,
     pub source: PluginSourceName,
     pub kind: PluginKindName,
     /// Permissions added or widened against the installed version (all of them for a first

@@ -94,7 +94,16 @@ fn plugin_ref_never_free_text() {
         panic!()
     };
     assert_eq!(p.action, Name::OTHER);
-    assert_eq!(p.plugin, PluginRef::Bundled(Name::OTHER));
+    assert_eq!(p.plugin, Some(PluginRef::Bundled(Name::OTHER)));
+    // A commit of a plan that is gone names no plugin: the field is absent, not free text.
+    let mut gone = raw.clone();
+    gone.as_object_mut().unwrap().remove("plugin");
+    let p = decode_payload(spec, &gone).unwrap();
+    let AnyPayload::PluginLifecycle(l) = &p else {
+        panic!()
+    };
+    assert_eq!(l.plugin, None);
+    assert!(serde_json::to_value(&p).unwrap().get("plugin").is_none());
     let mut bad = raw.clone();
     bad["registry"] = json!("/srv/registries/team");
     let p = validate_payload(spec, &bad, &key, &ScrubCtx::default()).unwrap();
@@ -111,7 +120,7 @@ fn lifecycle_events_hold_no_free_text() {
             action: PLUGIN_ACTIONS.get("install").unwrap(),
             outcome: PluginOutcome::Ok,
             code: None,
-            plugin: PluginRef::of(id, hash).unwrap(),
+            plugin: PluginRef::of(id, hash),
             source: PluginSourceName::Registry,
             kind: PluginKindName::Content,
             permissions_added: 0,

@@ -50,10 +50,14 @@ pub enum PlanInput {
 pub struct PlanRequest {
     /// The plugin asked for; the manifest must carry it.
     pub id: String,
+    /// The exact version asked for, when a person named one; the manifest must carry it, and
+    /// a downgrade needs it.
+    #[serde(default)]
+    pub version: Option<semver::Version>,
     /// An update of the installed version (`installed` must be set).
     #[serde(default)]
     pub update: bool,
-    /// A person named an older version (spec §5.3 step 4).
+    /// A person named an older version (spec §5.3 step 4); needs `version`.
     #[serde(default)]
     pub allow_downgrade: bool,
     /// The installed version and its grants, from `control.db`.

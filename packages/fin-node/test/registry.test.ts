@@ -179,9 +179,11 @@ describe("plugin.lifecycle", () => {
     await r.commit(plan.planId, plan.digest);
     await r.removePlugin(ID, "1.0.0", true);
     await rejection(r.plan(planReq(pkg("p2", manifest("2.0.0", { license: "CC-BY-NC-4.0" })))));
+    // A commit of a plan that is gone: refused, and which plugin is unknown.
+    await rejection(r.commit(plan.planId, plan.digest));
     const lines = await waitFor(async () => {
       const got = await entries(j, { kinds: ["plugin.lifecycle"] });
-      return got.length >= 4 ? got : undefined;
+      return got.length >= 5 ? got : undefined;
     }, 10_000, "plugin.lifecycle");
     const payloads = lines.map((l) => l.payload as Record<string, unknown>);
     expect(payloads.map((p) => [p.action, p.outcome, p.code])).toEqual([
@@ -189,7 +191,11 @@ describe("plugin.lifecycle", () => {
       ["install", "ok", undefined],
       ["remove", "ok", undefined],
       ["plan", "refused", "PLUGIN_MANIFEST_INVALID"],
+      ["install", "refused", "PLAN_EXPIRED"],
     ]);
+    const gone = payloads.pop();
+    expect(gone).toMatchObject({ kind: "unknown", risk: "unknown", source: "registry" });
+    expect(gone?.plugin).toBeUndefined();
     for (const p of payloads) {
       expect(p.source).toBe("registry");
       expect(Object.keys(p.plugin as object)).toEqual(["hashed"]);

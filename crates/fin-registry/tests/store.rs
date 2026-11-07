@@ -8,8 +8,8 @@ use std::fs;
 use fin_plugin_api::PluginId;
 use fin_registry::plan::{Accept, PLAN_TTL_MS, SourceKind};
 use serde_json::json;
-use support::listing;
 use support::plans::*;
+use support::{listing, write_tree};
 
 const OK: Accept = Accept {
     copyleft: false,
@@ -263,4 +263,154 @@ fn staging_swept_after_expiry() {
         listing(&fx.store.staging_dir()),
         [".tmp-p111111111111111111111111"]
     );
+}
+
+/// The directories under `store/@acme/pack/`.
+fn pack_dirs(fx: &Fx) -> Vec<String> {
+    let root = fx.plugins().join("store/@acme/pack");
+    if root.exists() {
+        listing(&root)
+    } else {
+        Vec::new()
+    }
+}
+
+#[test]
+fn half_deleted_install_is_replaced() {
+    let fx = Fx::new();
+    let t = fx.target(&content("@acme/pack", "1.0.0"), &default_files());
+    let install = || {
+        let plan = fx.plan_target(t.clone()).unwrap();
+        let got = fx
+            .store
+            .commit(&plan.plan_id, &plan.digest, &OK, NOW)
+            .unwrap();
+        (plan, got)
+    };
+    let (plan, got) = install();
+    let dir = fx.plugins().join(&got.dir);
+    // A file deleted from the installed tree (the store stays writable to the user).
+    fs::remove_file(dir.join("styles/bold.json")).unwrap();
+    let (_, again) = install();
+    assert_eq!(again.dir, got.dir);
+    assert_eq!(
+        fin_registry::package::tree_hash(&dir).unwrap(),
+        plan.tree_hash
+    );
+    assert!(dir.join("styles/bold.json").exists());
+    assert_eq!(
+        pack_dirs(&fx),
+        [got.dir.rsplit('/').next().unwrap()],
+        "nothing left aside"
+    );
+    // A changed file is replaced the same way; an intact install is kept as it is.
+    let path = dir.join("styles/bold.json");
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    fs::set_permissions(&path, perms).unwrap();
+    fs::write(&path, b"{\"text\": 2}").unwrap();
+    install();
+    assert_eq!(
+        fin_registry::package::tree_hash(&dir).unwrap(),
+        plan.tree_hash
+    );
+    install();
+    assert_eq!(pack_dirs(&fx).len(), 1);
+}
+
+#[test]
+fn remove_hides_the_directory_before_deleting() {
+    let fx = Fx::new();
+    let id = PluginId::parse("@acme/pack").unwrap();
+    let plan = fx
+        .plan_target(fx.target(&content("@acme/pack", "1.0.0"), &default_files()))
+        .unwrap();
+    let got = fx
+        .store
+        .commit(&plan.plan_id, &plan.digest, &OK, NOW)
+        .unwrap();
+    let styles = fx.plugins().join(&got.dir).join("styles");
+    // A deletion that fails half way (a directory the server cannot write; root can, so the
+    // failure only happens for other users).
+    let blocked = cfg!(unix) && {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&styles, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        fs::write(styles.join("probe"), b"").is_err()
+    };
+    fx.store
+        .remove(&id, &semver::Version::new(1, 0, 0), false)
+        .unwrap();
+    assert!(
+        fx.store.installed_manifests().is_empty(),
+        "nothing looks installed"
+    );
+    let e = fx
+        .store
+        .remove(&id, &semver::Version::new(1, 0, 0), false)
+        .unwrap_err();
+    assert_eq!(e.code, "PLUGIN_NOT_INSTALLED");
+    let left = pack_dirs(&fx);
+    if blocked {
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].starts_with(".tmp-rm-"), "{left:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let hidden = fx
+                .plugins()
+                .join("store/@acme/pack")
+                .join(&left[0])
+                .join("styles");
+            fs::set_permissions(&hidden, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(fx.store.sweep_store(), 1);
+    } else {
+        assert!(left.is_empty(), "{left:?}");
+    }
+    assert!(!fx.plugins().join("store/@acme").exists());
+}
+
+#[test]
+fn sweep_store_deletes_leftovers() {
+    let fx = Fx::new();
+    let plan = fx
+        .plan_target(fx.target(&content("@acme/pack", "1.0.0"), &default_files()))
+        .unwrap();
+    let got = fx
+        .store
+        .commit(&plan.plan_id, &plan.digest, &OK, NOW)
+        .unwrap();
+    let root = fx.plugins().join("store/@acme/pack");
+    // A commit interrupted between its renames, a tree moved aside and a failed removal, each
+    // with read-only files as the store leaves them.
+    for name in [".tmp-p0123456789abcdef01234567", ".tmp-old-x", ".tmp-rm-y"] {
+        let d = root.join(name);
+        write_tree(
+            &d,
+            &[("finisher-plugin.json", b"{}"), ("styles/bold.json", b"{}")],
+        );
+        for f in ["finisher-plugin.json", "styles/bold.json"] {
+            let mut p = fs::metadata(d.join(f)).unwrap().permissions();
+            p.set_readonly(true);
+            fs::set_permissions(d.join(f), p).unwrap();
+        }
+    }
+    // Leftovers in another plugin's directory, and a publisher left with nothing installed.
+    write_tree(
+        &fx.plugins().join("store/@gone/thing/.tmp-rm-z"),
+        &[("a", b"x")],
+    );
+    assert_eq!(
+        fx.store.installed_manifests().len(),
+        1,
+        "temporary directories are not installed"
+    );
+    assert_eq!(fx.store.sweep_store(), 4);
+    assert_eq!(pack_dirs(&fx), [got.dir.rsplit('/').next().unwrap()]);
+    assert!(!fx.plugins().join("store/@gone").exists());
+    assert_eq!(fx.store.sweep_store(), 0);
 }

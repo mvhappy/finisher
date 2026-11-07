@@ -2582,7 +2582,7 @@ export interface PluginLifecycle {
    * install), capped at 255.
    */
   permissionsAdded: number;
-  plugin: PluginRef;
+  plugin?: PluginRef;
   risk: RiskName;
   source: PluginSourceName;
 }

@@ -149,8 +149,14 @@ impl Fx {
         }
     }
 
+    /// A bundled tree as the app ships it: its executables carry the execute bit, so the
+    /// compiled-in hash is also the staged copy's.
     pub fn bundled(&self, manifest: &Value, files: &[(&str, Vec<u8>)]) -> PlanInput {
         let dir = self.tree(manifest, files);
+        let m: Manifest = serde_json::from_value(manifest.clone()).unwrap();
+        for exe in m.executables() {
+            set_exec(&dir.join(exe));
+        }
         let tree_hash = tree_hash(&dir).unwrap();
         PlanInput::Bundled { dir, tree_hash }
     }
@@ -182,6 +188,15 @@ impl Fx {
         self.store.base()
     }
 }
+
+#[cfg(unix)]
+pub fn set_exec(p: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(not(unix))]
+pub fn set_exec(_: &Path) {}
 
 /// Every regular file under `root`, relative, sorted.
 pub fn files_under(root: &Path) -> Vec<PathBuf> {

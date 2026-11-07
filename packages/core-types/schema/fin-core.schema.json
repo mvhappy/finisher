@@ -7647,7 +7647,6 @@
       "required": [
         "action",
         "outcome",
-        "plugin",
         "source",
         "kind",
         "permissionsAdded",
