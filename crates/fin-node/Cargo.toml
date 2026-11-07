@@ -28,6 +28,7 @@ blake3 = "1"
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
 fin-journal = { path = "../fin-journal" }
+fin-library = { path = "../fin-library" }
 fin-probe = { path = "../fin-probe" }
 fin-store = { path = "../fin-store" }
 fin-testfonts = { path = "../fin-testfonts", optional = true }

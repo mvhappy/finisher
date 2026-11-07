@@ -501,6 +501,18 @@ export function probe(path) {
   return call(native.probe(path));
 }
 
+export function libraryCanonicalRoot(path, serverData, timeoutMs) {
+  return call(native.libraryCanonicalRoot(path, serverData, timeoutMs ?? null));
+}
+
+export function libraryProbeRoot(root, identityJson, timeoutMs) {
+  return call(native.libraryProbeRoot(root, identityJson, timeoutMs ?? null));
+}
+
+export function libraryProbeStatus() {
+  return native.libraryProbeStatus();
+}
+
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export const testHooks = native.writeFixtureMp4ForTest
   ? {
@@ -531,6 +543,9 @@ export const testHooks = native.writeFixtureMp4ForTest
         } catch (e) {
           throw toFinError(e);
         }
+      },
+      libraryProbeHang(root, hang) {
+        native.libraryProbeHangForTest(root, hang);
       },
     }
   : undefined;

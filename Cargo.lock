@@ -640,6 +640,7 @@ dependencies = [
  "fin-core",
  "fin-fonts",
  "fin-journal",
+ "fin-library",
  "fin-probe",
  "fin-store",
  "fin-testfonts",
