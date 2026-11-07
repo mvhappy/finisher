@@ -8,6 +8,7 @@ mod client_fonts;
 mod commands;
 mod config;
 mod conn;
+mod deadline;
 mod endpoint;
 mod map;
 mod output;
@@ -293,7 +294,7 @@ fn edit(g: &Globals, step: Edit) -> Result<Value, CoreError> {
 
 fn main() {
     output::install_panic_hook();
-    let code = match run(std::env::args_os().collect()) {
+    let code = match deadline::start().and_then(|()| run(std::env::args_os().collect())) {
         Ok(doc) => output::ok(&doc),
         Err(e) => output::error(&e),
     };

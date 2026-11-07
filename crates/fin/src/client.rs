@@ -16,7 +16,8 @@ use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::{ConnectOptions, GenericFilePath};
 use serde_json::{Value, json};
 
-use crate::conn::TimedConn;
+use crate::conn::{MAX_LINE, TimedConn, is_frame_too_large};
+use crate::deadline::{self, Deadline};
 use crate::endpoint::Endpoint;
 use crate::output::unavailable;
 
@@ -203,6 +204,10 @@ pub struct Client {
     timeout: Duration,
     conn: TimedConn,
     next_id: u64,
+    /// The run's overall deadline ([`deadline`]); `None` for excluded long operations.
+    deadline: Option<Deadline>,
+    /// The current operation's timeout is the deadline's remainder, not `timeout`.
+    limited: bool,
 }
 
 impl Client {
@@ -220,12 +225,22 @@ impl Client {
             }
         }
         .map_err(|e| down(e.to_string()))?;
+        let deadline = deadline::current();
+        let wait = match deadline {
+            Some(d) => timeout.min(d.at.saturating_duration_since(std::time::Instant::now())),
+            None => timeout,
+        };
+        if wait.is_zero() {
+            return Err(deadline::exceeded(&deadline.unwrap(), &endpoint.display()));
+        }
         let stream = ConnectOptions::new()
             .name(name)
-            .wait_mode(ConnectWaitMode::Timeout(timeout))
+            .wait_mode(ConnectWaitMode::Timeout(wait))
             .connect_sync()
             .map_err(|e| {
-                if timed_out(&e) {
+                if timed_out(&e) && wait < timeout {
+                    deadline::exceeded(&deadline.unwrap(), &endpoint.display())
+                } else if timed_out(&e) {
                     timeout_error(endpoint, "accept the connection", timeout)
                 } else {
                     down(format!("{:?}", e.kind()))
@@ -237,10 +252,43 @@ impl Client {
             timeout,
             conn: TimedConn::new(stream, timeout),
             next_id: 1,
+            deadline,
+            limited: false,
         })
     }
 
+    /// This client for a long operation the overall deadline does not cover (module `deadline`).
+    pub fn without_deadline(mut self) -> Client {
+        self.deadline = None;
+        self
+    }
+
+    /// Bounds the next operation by what is left of the deadline.
+    fn arm(&mut self) -> Result<(), CoreError> {
+        let Some(d) = self.deadline else {
+            return Ok(());
+        };
+        let left = d.at.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(deadline::exceeded(&d, &self.endpoint.display()));
+        }
+        self.limited = left < self.timeout;
+        self.conn.set_timeout(left.min(self.timeout));
+        Ok(())
+    }
+
     fn io_error(&self, what: &str, e: &io::Error) -> CoreError {
+        if is_frame_too_large(e) {
+            return CoreError::new(
+                "PROTOCOL_ERROR",
+                format!("finisherd sent a frame over {MAX_LINE} bytes"),
+            )
+            .with_details(json!({ "endpoint": self.endpoint.display(), "max": MAX_LINE }))
+            .with_fix("use fin and finisherd from the same Finisher release");
+        }
+        if timed_out(e) && self.limited {
+            return deadline::exceeded(&self.deadline.unwrap(), &self.endpoint.display());
+        }
         if timed_out(e) {
             return timeout_error(&self.endpoint, what, self.timeout);
         }
@@ -252,6 +300,7 @@ impl Client {
     fn send(&mut self, frame: &Value) -> Result<(), CoreError> {
         let mut line = frame.to_string();
         line.push('\n');
+        self.arm()?;
         self.conn
             .write_all(line.as_bytes())
             .map_err(|e| self.io_error("send", &e))
@@ -259,6 +308,7 @@ impl Client {
 
     fn read_frame(&mut self) -> Result<Frame, CoreError> {
         loop {
+            self.arm()?;
             let line = self
                 .conn
                 .read_line()

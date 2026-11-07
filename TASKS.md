@@ -263,7 +263,7 @@ Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3)
 - [ ] Task 7: diagnostics sources and actors from principals; human-only diagnostics
 - [ ] Task 8: the TTY-gated console; graceful stop
 - [ ] Task 9: agent and MCP credentials
-- [ ] Task 10: RPC hardening (`INVALID_PATH`, `fin` frame cap and deadline, `fin` test hooks behind a feature)
+- [x] Task 10: RPC hardening (`INVALID_PATH`, `fin` frame cap and deadline, `fin` test hooks behind a feature)
 - [ ] Task 11: native Windows pipe listener
 - [ ] Task 12: e2e `auth` scenario
 - [ ] Task 13: spec, architecture pointer, README, tracker

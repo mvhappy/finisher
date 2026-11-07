@@ -6,15 +6,71 @@
 //! writes anyway), and the caller waits for each result with a deadline. After a timeout the
 //! worker may still be blocked in the OS call, so the connection is poisoned: every later
 //! operation fails with `TimedOut` too. A stuck worker ends with the process (fin is one-shot).
+//!
+//! Lines are bounded ([`MAX_LINE`]): a server line longer than that fails with
+//! [`FrameTooLarge`] instead of growing fin's memory without limit (5A Decision 36).
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
+/// The longest line fin reads from the server: 16 MiB, the server's own frame limit.
+pub const MAX_LINE: usize = 16 * 1024 * 1024;
+
+/// The error payload of a line longer than [`MAX_LINE`] (`io::ErrorKind::InvalidData`).
+#[derive(Debug)]
+pub struct FrameTooLarge {
+    pub max: usize,
+}
+
+impl std::fmt::Display for FrameTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a server frame is longer than {} bytes", self.max)
+    }
+}
+
+impl std::error::Error for FrameTooLarge {}
+
+/// True when `e` is a [`FrameTooLarge`].
+pub fn is_frame_too_large(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<FrameTooLarge>())
+}
+
 enum Op {
     Write(Vec<u8>),
     ReadLine,
+}
+
+/// Reads up to and including the next `\n`, at most `max` bytes (else [`FrameTooLarge`]).
+fn read_bounded_line(conn: &mut impl BufRead, max: usize) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = match conn.fill_buf() {
+            Ok(b) => b,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            break;
+        }
+        let (take, done) = match available.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (available.len(), false),
+        };
+        if bytes.len() + take > max {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                FrameTooLarge { max },
+            ));
+        }
+        bytes.extend_from_slice(&available[..take]);
+        conn.consume(take);
+        if done {
+            break;
+        }
+    }
+    String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 pub struct TimedConn {
@@ -38,10 +94,7 @@ impl TimedConn {
                             .and_then(|()| out.flush())
                             .map(|()| String::new())
                     }
-                    Op::ReadLine => {
-                        let mut line = String::new();
-                        conn.read_line(&mut line).map(|_| line)
-                    }
+                    Op::ReadLine => read_bounded_line(&mut conn, MAX_LINE),
                 };
                 if result_tx.send(result).is_err() {
                     break;
@@ -54,6 +107,11 @@ impl TimedConn {
             timeout,
             poisoned: false,
         }
+    }
+
+    /// The timeout of later operations (the overall deadline shortens it as it nears).
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     fn run(&mut self, op: Op) -> io::Result<String> {
@@ -123,6 +181,17 @@ mod tests {
             conn.write_all(b"again\n").unwrap_err().kind(),
             io::ErrorKind::TimedOut
         );
+    }
+
+    #[test]
+    fn lines_are_bounded() {
+        let mut ok = io::Cursor::new(b"0123456789\nabc".to_vec());
+        assert_eq!(read_bounded_line(&mut ok, 11).unwrap(), "0123456789\n");
+        assert_eq!(read_bounded_line(&mut ok, 11).unwrap(), "abc");
+        let mut long = BufReader::with_capacity(4, io::Cursor::new(b"0123456789\n".to_vec()));
+        let e = read_bounded_line(&mut long, 10).unwrap_err();
+        assert!(is_frame_too_large(&e));
+        assert!(!is_frame_too_large(&io::Error::other("x")));
     }
 
     #[test]

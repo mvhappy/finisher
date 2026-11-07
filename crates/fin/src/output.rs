@@ -42,6 +42,8 @@ const VALIDATION_CODES: &[&str] = &[
     // A name the rules refuse: an empty or whitespace-only project name, or a branch or
     // checkpoint name outside `[A-Za-z0-9._-]{1,64}` (4B Decision 11).
     "INVALID_NAME",
+    // A path the server got was relative or had `.`/`..` segments (`details.field`).
+    "INVALID_PATH",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -339,6 +341,7 @@ mod tests {
             "SERVER_DATA_UNSAFE",
             "PROJECT_DIR_UNWRITABLE",
             "INVALID_NAME",
+            "INVALID_PATH",
             "IDEM_KEY_REUSED",
             "DB_TOO_NEW",
             "NOT_A_PROJECT_DB",
