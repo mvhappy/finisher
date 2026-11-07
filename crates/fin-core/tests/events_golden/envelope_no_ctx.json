@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "id": "01JC0000000000000000000004",
+  "ts": 1794571200999,
+  "session": "01JC0000000000000000000001",
+  "source": "finisherd",
+  "kind": "session.end",
+  "kv": 1,
+  "consent": {
+    "rev": 4,
+    "purposes": [
+      "diagnostics",
+      "training"
+    ],
+    "basis": "user"
+  },
+  "payload": {
+    "uptimeS": 3600
+  }
+}

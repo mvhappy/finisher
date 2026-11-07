@@ -5,6 +5,77 @@
  */
 
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "IdRef".
+ */
+export type IdRef = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ActorKind".
+ */
+export type ActorKind = "user" | "agent" | "plugin" | "system" | "unknown";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictBy".
+ */
+export type VerdictBy = "user" | "critic" | "agent";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Verdict".
+ */
+export type Verdict = "accepted" | "rejected" | "undone" | "merged" | "abandoned";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentMode".
+ */
+export type AgentMode = "interactive" | "headless" | "other";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentRole".
+ */
+export type AgentRole = "main" | "subagent" | "critic" | "other";
+/**
+ * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Name".
+ */
+export type Name = string;
+/**
+ * Large or structured content (the reserved agent kinds): inline JSON, or a [`BlobRef`] when
+ * it would not fit an entry (Decision 20).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Body".
+ */
+export type Body =
+  | {
+      inline: unknown;
+    }
+  | {
+      blob: BlobRef;
+    };
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BlobHash".
+ */
+export type BlobHash = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Hashed".
+ */
+export type Hashed = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Code".
+ */
+export type Code = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StopReason".
+ */
+export type StopReason = "endTurn" | "toolUse" | "maxTokens" | "stopSequence" | "refusal" | "other";
+/**
  * Horizontal alignment of each line inside the layout box.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -19,30 +90,71 @@ export type Align = "left" | "center" | "right";
  */
 export type Anchor = "top" | "middle" | "bottom";
 /**
- * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AnyPayload".
+ */
+export type AnyPayload =
+  | SessionStart
+  | SessionEnd
+  | SessionUnclean
+  | ConsentChanged
+  | JournalDropped
+  | LogCommit
+  | CliCommand
+  | RpcStats
+  | EvalStats
+  | FontsFetch
+  | StorageState
+  | ErrorInternal
+  | ErrorPanic
+  | AgentSession
+  | AgentTurn
+  | AgentToolCall
+  | AgentToolResult
+  | AgentEditVerdict
+  | UiAction
+  | ReviewVerdict;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Version".
+ */
+export type Version = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Arch".
+ */
+export type Arch = "x86_64" | "aarch64" | "other";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "OsFamily".
+ */
+export type OsFamily = "linux" | "macos" | "windows" | "other";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BuildProfile".
+ */
+export type BuildProfile = "debug" | "release";
+/**
+ * What decided a purpose (Decision 8): the build default, the environment, or the user's
+ * settings. Ordered weakest first; a stamp with two bases carries the weaker
+ * ([`Basis::weaker`]).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Rational".
+ * via the `definition` "Basis".
  */
-export type Rational = string;
+export type Basis = "default" | "env" | "user";
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ChangeKind".
- */
-export type ChangeKind = "added" | "removed" | "updated";
-/**
- * Which edge of an item a trim moves.
+ * A purpose events are recorded for.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Edge".
+ * via the `definition` "Purpose".
  */
-export type Edge = "start" | "end";
+export type Purpose = "diagnostics" | "training";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "EntityKind".
+ * via the `definition` "Purposes".
  */
-export type EntityKind =
-  "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker" | "bin" | "effect" | "style" | "font";
+export type Purposes = Purpose[];
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -222,6 +334,13 @@ export type Op =
       op: "clip.delete";
     };
 /**
+ * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Rational".
+ */
+export type Rational = string;
+/**
  * A font file's container format.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -305,6 +424,13 @@ export type ParamValue =
   | {
       asset: string;
     };
+/**
+ * Which edge of an item a trim moves.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Edge".
+ */
+export type Edge = "start" | "end";
 /**
  * How a trim treats the rest of the track: `ripple` moves every later item by the change;
  * `roll` moves the cut between the item and the neighbour touching that edge (both change,
@@ -447,6 +573,77 @@ export type FontSource =
       type: "asset";
     };
 /**
+ * An edit intent (content `txIntent`): the transactions as committed (an edit's one tx, or a
+ * history call's records, at most 64), or the request's normalised tx on failure.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TxIntent".
+ */
+export type TxIntent = Tx[];
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "IntentOmitted".
+ */
+export type IntentOmitted = "tooLarge";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommitOutcome".
+ */
+export type CommitOutcome = "accepted" | "rebased" | "deduped" | "noOp" | "conflict" | "refused" | "dryRun";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommitRecord".
+ */
+export type CommitRecord =
+  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FetchOutcome".
+ */
+export type FetchOutcome = "ok" | "failed" | "cached";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StorageMode".
+ */
+export type StorageMode = "readOnly" | "writable";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SrcLoc".
+ */
+export type SrcLoc = string;
+/**
+ * Finisher-authored text with paths, the home, data and temp directories, the user name and the host name replaced by placeholders.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Scrubbed".
+ */
+export type Scrubbed = string;
+/**
+ * The thread that panicked (the plan's `thread: Name`, as a closed enum).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PanicThread".
+ */
+export type PanicThread = "main" | "worker" | "tick" | "writer" | "other";
+/**
+ * The process that panicked.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PanicWhere".
+ */
+export type PanicWhere = "finNode" | "finisherd" | "fin";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ChangeKind".
+ */
+export type ChangeKind = "added" | "removed" | "updated";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntityKind".
+ */
+export type EntityKind =
+  "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker" | "bin" | "effect" | "style" | "font";
+/**
  * What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,
  * `lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`
  * colour lookup table).
@@ -529,9 +726,19 @@ export type Link =
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchId".
+ */
+export type BranchId = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UnmeasuredReason".
  */
 export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectId".
+ */
+export type ProjectId = string;
 /**
  * A spec's default, as its value would be written (`null`: none, the value is per entity or
  * the parameter is optional).
@@ -591,6 +798,119 @@ export type EngineEvent =
   | {
       dropped: number;
       type: "lagged";
+    };
+/**
+ * Which program emitted an entry. The server sets it from the transport (local socket →
+ * `fin`, WebSocket → `ui`), never from the payload.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Source".
+ */
+export type Source = "fin" | "finisherd" | "finNode" | "ui" | "agent";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EventPayload".
+ */
+export type EventPayload =
+  | {
+      kind: "session.start";
+      kv: 1;
+      payload: SessionStart;
+    }
+  | {
+      kind: "session.end";
+      kv: 1;
+      payload: SessionEnd;
+    }
+  | {
+      kind: "session.unclean";
+      kv: 1;
+      payload: SessionUnclean;
+    }
+  | {
+      kind: "consent.changed";
+      kv: 1;
+      payload: ConsentChanged;
+    }
+  | {
+      kind: "journal.dropped";
+      kv: 1;
+      payload: JournalDropped;
+    }
+  | {
+      kind: "log.commit";
+      kv: 1;
+      payload: LogCommit;
+    }
+  | {
+      kind: "cli.command";
+      kv: 1;
+      payload: CliCommand;
+    }
+  | {
+      kind: "rpc.stats";
+      kv: 1;
+      payload: RpcStats;
+    }
+  | {
+      kind: "eval.stats";
+      kv: 1;
+      payload: EvalStats;
+    }
+  | {
+      kind: "fonts.fetch";
+      kv: 1;
+      payload: FontsFetch;
+    }
+  | {
+      kind: "storage.state";
+      kv: 1;
+      payload: StorageState;
+    }
+  | {
+      kind: "error.internal";
+      kv: 1;
+      payload: ErrorInternal;
+    }
+  | {
+      kind: "error.panic";
+      kv: 1;
+      payload: ErrorPanic;
+    }
+  | {
+      kind: "agent.session";
+      kv: 0;
+      payload: AgentSession;
+    }
+  | {
+      kind: "agent.turn";
+      kv: 0;
+      payload: AgentTurn;
+    }
+  | {
+      kind: "agent.toolCall";
+      kv: 0;
+      payload: AgentToolCall;
+    }
+  | {
+      kind: "agent.toolResult";
+      kv: 0;
+      payload: AgentToolResult;
+    }
+  | {
+      kind: "agent.editVerdict";
+      kv: 0;
+      payload: AgentEditVerdict;
+    }
+  | {
+      kind: "ui.action";
+      kv: 0;
+      payload: UiAction;
+    }
+  | {
+      kind: "review.verdict";
+      kv: 0;
+      payload: ReviewVerdict;
     };
 /**
  * A catalog file's state in this server (Decision 34).
@@ -738,70 +1058,237 @@ export interface FinCore {
   [k: string]: unknown;
 }
 /**
- * The result of applying a transaction to a project.
+ * Who caused an entry: a person, an agent (with its session and the tool call that ran
+ * `fin`), a plugin or the system. `session` is the agent or UI session (`FIN_SESSION`), not
+ * the envelope's process run; `call` is the harness's tool-call id (`FIN_CALL`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Applied".
+ * via the `definition` "Actor".
  */
-export interface Applied {
+export interface Actor {
+  call?: IdRef;
+  kind: ActorKind;
+  session?: IdRef;
+}
+/**
+ * `agent.editVerdict`: what became of an agent's edits.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentEditVerdict".
+ */
+export interface AgentEditVerdict {
+  by: VerdictBy;
+  txIds: IdRef[];
+  verdict: Verdict;
+}
+/**
+ * `agent.session`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentSession".
+ */
+export interface AgentSession {
+  mode: AgentMode;
+  model: Name;
+  provider: Name;
+  role: AgentRole;
+}
+/**
+ * `agent.toolCall`: the agent ran a command (`callId` is the `FIN_CALL` its `fin` run
+ * carries).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentToolCall".
+ */
+export interface AgentToolCall {
+  args?: Body;
+  argsHash: Hashed;
+  callId: IdRef;
+  command: Name;
+  turnId: IdRef;
+}
+/**
+ * Large content, stored as a blob (Decision 20): its content address, its length and its
+ * media type ([`names::MEDIA_TYPES`]). Allowed only inside a [`super::class::Content`] field
+ * (`x-fin-blob` marks it for the schema checks and [`super::redact::blob_refs`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BlobRef".
+ */
+export interface BlobRef {
+  bytes: number;
+  hash: BlobHash;
+  mediaType: Name;
+}
+/**
+ * `agent.toolResult`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentToolResult".
+ */
+export interface AgentToolResult {
+  callId: IdRef;
+  code?: Code;
+  micros: number;
+  ok: boolean;
+  output?: Body;
+  txIds?: IdRef[];
+}
+/**
+ * `agent.turn`: one model call. Content: the turn's new messages and the output; the system
+ * prompt and the tool definitions by hash.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentTurn".
+ */
+export interface AgentTurn {
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costMicros?: number;
+  inputTokens: number;
+  latencyMs: number;
+  messages?: Body;
+  model: Name;
+  output?: Body;
+  outputTokens: number;
+  provider: Name;
+  stopReason: StopReason;
+  systemHash: Hashed;
+  toolsHash: Hashed;
+  turnId: IdRef;
+}
+/**
+ * The process run began (the journal opened with a purpose on, or one turned on). Platform
+ * facts only (Decision 5): no host, user, IP, serial or hardware model.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SessionStart".
+ */
+export interface SessionStart {
+  app: Version;
+  arch: Arch;
   /**
-   * Placeholder (`$name`) to allocated id.
+   * Logical cores.
    */
-  bindings: {
-    [k: string]: string;
+  cores: number;
+  /**
+   * Memory rounded to a power-of-two GiB.
+   */
+  memGiB: number;
+  os: OsFamily;
+  osMajor: number;
+  profile: BuildProfile;
+  /**
+   * `@finisher/contracts` `PROTOCOL_VERSION`.
+   */
+  protocol: number;
+}
+/**
+ * The run ended cleanly.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SessionEnd".
+ */
+export interface SessionEnd {
+  uptimeS: number;
+}
+/**
+ * A start found the previous run still open in `state.json`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SessionUnclean".
+ */
+export interface SessionUnclean {
+  previous: IdRef;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ConsentChanged".
+ */
+export interface ConsentChanged {
+  basis: Basis;
+  from: Purposes;
+  /**
+   * The new consent revision.
+   */
+  rev: number;
+  to: Purposes;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JournalDropped".
+ */
+export interface JournalDropped {
+  /**
+   * The dropped entries' `approx_bytes`.
+   */
+  bytes: number;
+  count: number;
+  /**
+   * The start of the counting window (ms since the epoch).
+   */
+  since: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LogCommit".
+ */
+export interface LogCommit {
+  /**
+   * The request's `baseRev` (edits only).
+   */
+  baseRev?: number;
+  code?: Code;
+  /**
+   * Conflict code → count, from `CONFLICT`'s `details.conflicts`.
+   */
+  conflicts?: {
+    [k: string]: number;
   };
-  diff: Diff;
-  inverse: Op[];
-  project: Project;
+  /**
+   * Training only: the intent as committed, or as requested on failure.
+   */
+  intent?: TxIntent;
+  intentOmitted?: IntentOmitted;
+  /**
+   * The txIds this record names (an undo's undone units, a merge's copies, a pick's or
+   * revert's target, a recovery's records).
+   */
+  links?: IdRef[];
+  micros: number;
+  /**
+   * Op kind → count (`OP_KINDS`).
+   */
+  ops?: {
+    [k: string]: number;
+  };
+  outcome: CommitOutcome;
+  /**
+   * Committed `baseRev` − request `baseRev`, when `rebased`.
+   */
+  rebasedOver?: number;
+  record: CommitRecord;
 }
 /**
- * What a transaction changed, op by op: each entry names the op that recorded it (`op`),
- * and both lists are in op order. An op may record any number of changes and shifts.
- *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Diff".
+ * via the `definition` "Tx".
  */
-export interface Diff {
-  changes: Change[];
-  shifts: Shift[];
-}
-/**
- * One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction
- * that made the change. The optional fields are omitted on the wire when absent (never
- * `null`):
- * - `track`: for an item, the track it is on (after the op; for a removed item, the track it
- *   was taken off), so a footprint and replay's track check see the tracks of ops that record
- *   no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;
- * - `edge`: the edge an `updated` change moved, if that is all it did to the entity;
- * - `path`: the parameter an `updated` change set (a registry path), if that is all it did;
- * - `by`: the content offset of a start-edge move: every item-relative time of the entity
- *   moved by it (plan 4C Decision 13).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Change".
- */
-export interface Change {
-  by?: Rational;
-  change: ChangeKind;
-  edge?: Edge;
-  id: string;
-  kind: EntityKind;
-  op: number;
-  path?: string;
-  track?: string;
-}
-/**
- * Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the
- * transaction.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Shift".
- */
-export interface Shift {
-  by: Rational;
-  from: Rational;
-  op: number;
-  track: string;
+export interface Tx {
+  /**
+   * What produced the tx, for a client that sends an idempotency key as `txId`:
+   * `blake3:<64 hex>` of the command input (op kinds and canonical args, before they were
+   * resolved against a snapshot). A retry rebuilds `ops` against a newer head (positions
+   * move; the stored tx is rebased), so `ops` cannot tell a retry from another command;
+   * this can. The store refuses a `txId` it holds with another `argsHash`
+   * (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
+   */
+  argsHash?: string | null;
+  author: string;
+  baseRev: number;
+  branch: string;
+  ops: Op[];
+  schemaVersion: number;
+  txId: string;
 }
 /**
  * `asset.add`: what probing found, by kind (plan 4C Task 7). Each kind carries its own
@@ -1695,6 +2182,195 @@ export interface CaptionSetStyle {
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CliCommand".
+ */
+export interface CliCommand {
+  argsHash?: Hashed;
+  code?: Code;
+  dryRun: boolean;
+  exit: number;
+  /**
+   * The flag names parsed, sorted (`CLI_FLAGS`).
+   */
+  flags?: Name[];
+  micros: number;
+  name: Name;
+  online: boolean;
+  txIds?: IdRef[];
+}
+/**
+ * `rpc.stats`: one non-stream RPC method (`RPC_METHODS`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RpcStats".
+ */
+export interface RpcStats {
+  histogram: Histogram;
+  key: Name;
+}
+/**
+ * One window's timings for one key. `buckets[i]` counts the samples with
+ * `2^i ≤ micros < 2^(i+1)` (`buckets[0]` also counts 0, the last bucket everything above);
+ * trailing empty buckets are omitted.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Histogram".
+ */
+export interface Histogram {
+  buckets: number[];
+  count: number;
+  /**
+   * Error code → count.
+   */
+  errors?: {
+    [k: string]: number;
+  };
+  maxMicros: number;
+  /**
+   * The window's start (ms since the epoch) and length.
+   */
+  start: number;
+  windowMs: number;
+}
+/**
+ * `eval.stats`: one of `fin-node`'s eval calls (`EVAL_KEYS`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EvalStats".
+ */
+export interface EvalStats {
+  histogram: Histogram;
+  key: Name;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontsFetch".
+ */
+export interface FontsFetch {
+  bundled: boolean;
+  bytes: number;
+  code?: Code;
+  entry: Hashed;
+  micros: number;
+  outcome: FetchOutcome;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StorageState".
+ */
+export interface StorageState {
+  reason: Code;
+  state: StorageMode;
+}
+/**
+ * An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ErrorInternal".
+ */
+export interface ErrorInternal {
+  call: Name;
+  code: Code;
+  /**
+   * The keys of the error's `details` (`DETAIL_KEYS`), never their values.
+   */
+  details?: Name[];
+}
+/**
+ * A panic or an uncaught error. Under diagnostics, metadata only: the repo-relative
+ * location (or none, with `thirdParty`), the keyed hash of the scrubbed message (so the same
+ * crash groups without its text) and the thread. The scrubbed message itself is content.
+ * No backtrace frames.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ErrorPanic".
+ */
+export interface ErrorPanic {
+  location?: SrcLoc;
+  message?: Scrubbed;
+  messageHash: Hashed;
+  thirdParty: boolean;
+  thread: PanicThread;
+  where: PanicWhere;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UiAction".
+ */
+export interface UiAction {}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewVerdict".
+ */
+export interface ReviewVerdict {}
+/**
+ * The result of applying a transaction to a project.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Applied".
+ */
+export interface Applied {
+  /**
+   * Placeholder (`$name`) to allocated id.
+   */
+  bindings: {
+    [k: string]: string;
+  };
+  diff: Diff;
+  inverse: Op[];
+  project: Project;
+}
+/**
+ * What a transaction changed, op by op: each entry names the op that recorded it (`op`),
+ * and both lists are in op order. An op may record any number of changes and shifts.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Diff".
+ */
+export interface Diff {
+  changes: Change[];
+  shifts: Shift[];
+}
+/**
+ * One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction
+ * that made the change. The optional fields are omitted on the wire when absent (never
+ * `null`):
+ * - `track`: for an item, the track it is on (after the op; for a removed item, the track it
+ *   was taken off), so a footprint and replay's track check see the tracks of ops that record
+ *   no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;
+ * - `edge`: the edge an `updated` change moved, if that is all it did to the entity;
+ * - `path`: the parameter an `updated` change set (a registry path), if that is all it did;
+ * - `by`: the content offset of a start-edge move: every item-relative time of the entity
+ *   moved by it (plan 4C Decision 13).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Change".
+ */
+export interface Change {
+  by?: Rational;
+  change: ChangeKind;
+  edge?: Edge;
+  id: string;
+  kind: EntityKind;
+  op: number;
+  path?: string;
+  track?: string;
+}
+/**
+ * Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the
+ * transaction.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Shift".
+ */
+export interface Shift {
+  by: Rational;
+  from: Rational;
+  op: number;
+  track: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Project".
  */
 export interface Project {
@@ -2005,27 +2681,6 @@ export interface CommittedTx {
   tx: Tx;
 }
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Tx".
- */
-export interface Tx {
-  /**
-   * What produced the tx, for a client that sends an idempotency key as `txId`:
-   * `blake3:<64 hex>` of the command input (op kinds and canonical args, before they were
-   * resolved against a snapshot). A retry rebuilds `ops` against a newer head (positions
-   * move; the stored tx is rebased), so `ops` cannot tell a retry from another command;
-   * this can. The store refuses a `txId` it holds with another `argsHash`
-   * (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
-   */
-  argsHash?: string | null;
-  author: string;
-  baseRev: number;
-  branch: string;
-  ops: Op[];
-  schemaVersion: number;
-  txId: string;
-}
-/**
  * A caption's words at the plan's time, and its layout when it was measured. `layout` is
  * `null` when it was not, and `unmeasured` says why (plan 4C Decision 36).
  *
@@ -2250,6 +2905,18 @@ export interface Conflict {
   txId: string;
 }
 /**
+ * The consent an entry was written under (Decisions 12 and 14): the consent revision, the
+ * purposes in force (recorded ∩ current), and the weaker basis of the two purposes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ConsentStamp".
+ */
+export interface ConsentStamp {
+  basis: Basis;
+  purposes: Purposes;
+  rev: number;
+}
+/**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -2260,6 +2927,20 @@ export interface CoreError {
   details: unknown;
   fix?: string | null;
   message: string;
+}
+/**
+ * What an entry is about: the project, branch and transaction it joins the op log on, the
+ * author (keyed-hashed: `FIN_AUTHOR` is free text) and the actor.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Ctx".
+ */
+export interface Ctx {
+  actor?: Actor;
+  author?: Hashed;
+  branch?: BranchId;
+  project?: ProjectId;
+  txId?: IdRef;
 }
 /**
  * One enabled effect with its parameters resolved at the plan's time. `params` holds the
@@ -2274,6 +2955,43 @@ export interface EffectPlan {
   params?: {
     [k: string]: PlanValue;
   };
+}
+/**
+ * One journal entry (Decision 2). `payload` is a `Value` only on the wire and on disk; in
+ * memory it is an [`AnyPayload`], serialised on the journal's writer thread.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Envelope".
+ */
+export interface Envelope {
+  consent: ConsentStamp;
+  ctx?: Ctx;
+  /**
+   * The entry's ULID.
+   */
+  id: string;
+  /**
+   * A registry kind (`log.commit`).
+   */
+  kind: string;
+  /**
+   * The kind's payload version.
+   */
+  kv: number;
+  payload: unknown;
+  /**
+   * The emitting process run (a ULID).
+   */
+  session: string;
+  source: Source;
+  /**
+   * Milliseconds since the Unix epoch, UTC.
+   */
+  ts: number;
+  /**
+   * [`ENVELOPE_VERSION`].
+   */
+  v: number;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

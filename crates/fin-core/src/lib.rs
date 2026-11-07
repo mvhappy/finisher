@@ -6,6 +6,7 @@ pub mod captions;
 pub mod compose;
 pub mod error;
 pub mod eval;
+pub mod events;
 pub mod history;
 pub mod ids;
 pub mod layout;

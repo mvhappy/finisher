@@ -260,6 +260,9 @@ pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
 macro_rules! ops_table {
     ($($variant:ident => $module:ident),* $(,)?) => {
         impl Op {
+            /// Every op's wire name, in table order (`events::names::OP_KINDS`).
+            pub const NAMES: &'static [&'static str] = &[$($module::NAME),*];
+
             /// The wire name (`"item.insert"`, ...).
             pub fn name(&self) -> &'static str {
                 match self { $(Op::$variant { .. } => $module::NAME,)* }

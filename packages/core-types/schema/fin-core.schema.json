@@ -1,5 +1,263 @@
 {
   "$defs": {
+    "Actor": {
+      "description": "Who caused an entry: a person, an agent (with its session and the tool call that ran\n`fin`), a plugin or the system. `session` is the agent or UI session (`FIN_SESSION`), not\nthe envelope's process run; `call` is the harness's tool-call id (`FIN_CALL`).",
+      "properties": {
+        "call": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "kind": {
+          "$ref": "#/$defs/ActorKind"
+        },
+        "session": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ActorKind": {
+      "enum": [
+        "user",
+        "agent",
+        "plugin",
+        "system",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "AgentEditVerdict": {
+      "description": "`agent.editVerdict`: what became of an agent's edits.",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/VerdictBy"
+        },
+        "txIds": {
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        }
+      },
+      "required": [
+        "txIds",
+        "verdict",
+        "by"
+      ],
+      "type": "object"
+    },
+    "AgentMode": {
+      "enum": [
+        "interactive",
+        "headless",
+        "other"
+      ],
+      "type": "string"
+    },
+    "AgentRole": {
+      "enum": [
+        "main",
+        "subagent",
+        "critic",
+        "other"
+      ],
+      "type": "string"
+    },
+    "AgentSession": {
+      "description": "`agent.session`.",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "model": {
+          "$ref": "#/$defs/Name"
+        },
+        "provider": {
+          "$ref": "#/$defs/Name"
+        },
+        "role": {
+          "$ref": "#/$defs/AgentRole"
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "role",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "AgentToolCall": {
+      "description": "`agent.toolCall`: the agent ran a command (`callId` is the `FIN_CALL` its `fin` run\ncarries).",
+      "properties": {
+        "args": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "toolArgs"
+            }
+          ]
+        },
+        "argsHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "callId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "command": {
+          "$ref": "#/$defs/Name"
+        },
+        "turnId": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "callId",
+        "turnId",
+        "command",
+        "argsHash"
+      ],
+      "type": "object"
+    },
+    "AgentToolResult": {
+      "description": "`agent.toolResult`.",
+      "properties": {
+        "callId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "output": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "toolResult"
+            }
+          ]
+        },
+        "txIds": {
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "callId",
+        "ok",
+        "micros"
+      ],
+      "type": "object"
+    },
+    "AgentTurn": {
+      "description": "`agent.turn`: one model call. Content: the turn's new messages and the output; the system\nprompt and the tool definitions by hash.",
+      "properties": {
+        "cacheReadTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "costMicros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "latencyMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelInput"
+            }
+          ]
+        },
+        "model": {
+          "$ref": "#/$defs/Name"
+        },
+        "output": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelOutput"
+            }
+          ]
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/Name"
+        },
+        "stopReason": {
+          "$ref": "#/$defs/StopReason"
+        },
+        "systemHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "toolsHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "turnId": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "turnId",
+        "provider",
+        "model",
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "latencyMs",
+        "stopReason",
+        "systemHash",
+        "toolsHash"
+      ],
+      "type": "object"
+    },
     "Align": {
       "description": "Horizontal alignment of each line inside the layout box.",
       "enum": [
@@ -17,6 +275,70 @@
         "bottom"
       ],
       "type": "string"
+    },
+    "AnyPayload": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionStart"
+        },
+        {
+          "$ref": "#/$defs/SessionEnd"
+        },
+        {
+          "$ref": "#/$defs/SessionUnclean"
+        },
+        {
+          "$ref": "#/$defs/ConsentChanged"
+        },
+        {
+          "$ref": "#/$defs/JournalDropped"
+        },
+        {
+          "$ref": "#/$defs/LogCommit"
+        },
+        {
+          "$ref": "#/$defs/CliCommand"
+        },
+        {
+          "$ref": "#/$defs/RpcStats"
+        },
+        {
+          "$ref": "#/$defs/EvalStats"
+        },
+        {
+          "$ref": "#/$defs/FontsFetch"
+        },
+        {
+          "$ref": "#/$defs/StorageState"
+        },
+        {
+          "$ref": "#/$defs/ErrorInternal"
+        },
+        {
+          "$ref": "#/$defs/ErrorPanic"
+        },
+        {
+          "$ref": "#/$defs/AgentSession"
+        },
+        {
+          "$ref": "#/$defs/AgentTurn"
+        },
+        {
+          "$ref": "#/$defs/AgentToolCall"
+        },
+        {
+          "$ref": "#/$defs/AgentToolResult"
+        },
+        {
+          "$ref": "#/$defs/AgentEditVerdict"
+        },
+        {
+          "$ref": "#/$defs/UiAction"
+        },
+        {
+          "$ref": "#/$defs/ReviewVerdict"
+        }
+      ]
     },
     "Applied": {
       "description": "The result of applying a transaction to a project.",
@@ -48,6 +370,14 @@
         "bindings"
       ],
       "type": "object"
+    },
+    "Arch": {
+      "enum": [
+        "x86_64",
+        "aarch64",
+        "other"
+      ],
+      "type": "string"
     },
     "ArchiveFormat": {
       "enum": [
@@ -318,6 +648,15 @@
       ],
       "type": "object"
     },
+    "Basis": {
+      "description": "What decided a purpose (Decision 8): the build default, the environment, or the user's\nsettings. Ordered weakest first; a stamp with two bases carries the weaker\n([`Basis::weaker`]).",
+      "enum": [
+        "default",
+        "env",
+        "user"
+      ],
+      "type": "string"
+    },
     "Bin": {
       "description": "A folder of assets; `parent` nests it.",
       "properties": {
@@ -395,6 +734,61 @@
       ],
       "type": "string"
     },
+    "BlobHash": {
+      "pattern": "^kb:[0-9a-f]{64}$",
+      "type": "string",
+      "x-fin-class": "meta"
+    },
+    "BlobRef": {
+      "description": "Large content, stored as a blob (Decision 20): its content address, its length and its\nmedia type ([`names::MEDIA_TYPES`]). Allowed only inside a [`super::class::Content`] field\n(`x-fin-blob` marks it for the schema checks and [`super::redact::blob_refs`]).",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "mediaType": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "hash",
+        "bytes",
+        "mediaType"
+      ],
+      "type": "object",
+      "x-fin-blob": true
+    },
+    "Body": {
+      "description": "Large or structured content (the reserved agent kinds): inline JSON, or a [`BlobRef`] when\nit would not fit an entry (Decision 20).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "inline": true
+          },
+          "required": [
+            "inline"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "blob": {
+              "$ref": "#/$defs/BlobRef"
+            }
+          },
+          "required": [
+            "blob"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "BranchCreated": {
       "additionalProperties": false,
       "description": "The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and\nits `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a\nretry of a committed create answers with that create, `dry_run` false).",
@@ -415,6 +809,11 @@
         "dryRun"
       ],
       "type": "object"
+    },
+    "BranchId": {
+      "pattern": "^(main|br[0-9]{1,9})$",
+      "type": "string",
+      "x-fin-class": "meta"
     },
     "BranchState": {
       "enum": [
@@ -470,6 +869,13 @@
         "createdBy"
       ],
       "type": "object"
+    },
+    "BuildProfile": {
+      "enum": [
+        "debug",
+        "release"
+      ],
+      "type": "string"
     },
     "CaptionBox": {
       "description": "A box behind the block. One equal to the default (transparent, no padding) is no box.",
@@ -971,6 +1377,89 @@
       ],
       "type": "string"
     },
+    "CliCommand": {
+      "properties": {
+        "argsHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "exit": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "flags": {
+          "description": "The flag names parsed, sorted (`CLI_FLAGS`).",
+          "items": {
+            "$ref": "#/$defs/Name"
+          },
+          "type": "array"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        },
+        "online": {
+          "type": "boolean"
+        },
+        "txIds": {
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "micros",
+        "exit",
+        "online",
+        "dryRun"
+      ],
+      "type": "object"
+    },
+    "Code": {
+      "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+      "type": "string",
+      "x-fin-class": "meta"
+    },
+    "CommitOutcome": {
+      "enum": [
+        "accepted",
+        "rebased",
+        "deduped",
+        "noOp",
+        "conflict",
+        "refused",
+        "dryRun"
+      ],
+      "type": "string"
+    },
+    "CommitRecord": {
+      "enum": [
+        "edit",
+        "undo",
+        "redo",
+        "merge",
+        "pick",
+        "revert",
+        "checkpoint",
+        "branch",
+        "branchSet",
+        "recover"
+      ],
+      "type": "string"
+    },
     "CommittedTx": {
       "description": "A transaction as persisted: with its revision, resolved bindings and diff.",
       "properties": {
@@ -1046,6 +1535,54 @@
       ],
       "type": "object"
     },
+    "ConsentChanged": {
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/Basis"
+        },
+        "from": {
+          "$ref": "#/$defs/Purposes"
+        },
+        "rev": {
+          "description": "The new consent revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "$ref": "#/$defs/Purposes"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "basis",
+        "rev"
+      ],
+      "type": "object"
+    },
+    "ConsentStamp": {
+      "description": "The consent an entry was written under (Decisions 12 and 14): the consent revision, the\npurposes in force (recorded ∩ current), and the weaker basis of the two purposes.",
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/Basis"
+        },
+        "purposes": {
+          "$ref": "#/$defs/Purposes"
+        },
+        "rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rev",
+        "purposes",
+        "basis"
+      ],
+      "type": "object"
+    },
     "CoreError": {
       "description": "A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.",
       "properties": {
@@ -1088,6 +1625,27 @@
         "top": {
           "format": "double",
           "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "Ctx": {
+      "description": "What an entry is about: the project, branch and transaction it joins the op log on, the\nauthor (keyed-hashed: `FIN_AUTHOR` is free text) and the actor.",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "author": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "branch": {
+          "$ref": "#/$defs/BranchId"
+        },
+        "project": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "txId": {
+          "$ref": "#/$defs/IdRef"
         }
       },
       "type": "object"
@@ -1467,6 +2025,594 @@
         "effect",
         "style",
         "font"
+      ],
+      "type": "string"
+    },
+    "Envelope": {
+      "description": "One journal entry (Decision 2). `payload` is a `Value` only on the wire and on disk; in\nmemory it is an [`AnyPayload`], serialised on the journal's writer thread.",
+      "properties": {
+        "consent": {
+          "$ref": "#/$defs/ConsentStamp"
+        },
+        "ctx": {
+          "$ref": "#/$defs/Ctx"
+        },
+        "id": {
+          "description": "The entry's ULID.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "A registry kind (`log.commit`).",
+          "type": "string"
+        },
+        "kv": {
+          "description": "The kind's payload version.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "payload": true,
+        "session": {
+          "description": "The emitting process run (a ULID).",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "ts": {
+          "description": "Milliseconds since the Unix epoch, UTC.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "v": {
+          "description": "[`ENVELOPE_VERSION`].",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "id",
+        "ts",
+        "session",
+        "source",
+        "kind",
+        "kv",
+        "consent",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "ErrorInternal": {
+      "description": "An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.",
+      "properties": {
+        "call": {
+          "$ref": "#/$defs/Name"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "details": {
+          "description": "The keys of the error's `details` (`DETAIL_KEYS`), never their values.",
+          "items": {
+            "$ref": "#/$defs/Name"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "call",
+        "code"
+      ],
+      "type": "object"
+    },
+    "ErrorPanic": {
+      "description": "A panic or an uncaught error. Under diagnostics, metadata only: the repo-relative\nlocation (or none, with `thirdParty`), the keyed hash of the scrubbed message (so the same\ncrash groups without its text) and the thread. The scrubbed message itself is content.\nNo backtrace frames.",
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/SrcLoc"
+        },
+        "message": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Scrubbed"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "errorMessage"
+            }
+          ]
+        },
+        "messageHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "thirdParty": {
+          "type": "boolean"
+        },
+        "thread": {
+          "$ref": "#/$defs/PanicThread"
+        },
+        "where": {
+          "$ref": "#/$defs/PanicWhere"
+        }
+      },
+      "required": [
+        "where",
+        "thirdParty",
+        "messageHash",
+        "thread"
+      ],
+      "type": "object"
+    },
+    "EvalStats": {
+      "description": "`eval.stats`: one of `fin-node`'s eval calls (`EVAL_KEYS`).",
+      "properties": {
+        "histogram": {
+          "$ref": "#/$defs/Histogram"
+        },
+        "key": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "key",
+        "histogram"
+      ],
+      "type": "object"
+    },
+    "EventPayload": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "session.start",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/SessionStart"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "session.end",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/SessionEnd"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "session.unclean",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/SessionUnclean"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "consent.changed",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/ConsentChanged"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "journal.dropped",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/JournalDropped"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "log.commit",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/LogCommit"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "cli.command",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/CliCommand"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "rpc.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RpcStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "eval.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/EvalStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "fonts.fetch",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/FontsFetch"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "storage.state",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/StorageState"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "error.internal",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/ErrorInternal"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "error.panic",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/ErrorPanic"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent.session",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AgentSession"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent.turn",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AgentTurn"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent.toolCall",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AgentToolCall"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent.toolResult",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AgentToolResult"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent.editVerdict",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AgentEditVerdict"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "ui.action",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/UiAction"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "review.verdict",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/ReviewVerdict"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FetchOutcome": {
+      "enum": [
+        "ok",
+        "failed",
+        "cached"
       ],
       "type": "string"
     },
@@ -1883,6 +3029,40 @@
       },
       "type": "object"
     },
+    "FontsFetch": {
+      "properties": {
+        "bundled": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "entry": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/FetchOutcome"
+        }
+      },
+      "required": [
+        "entry",
+        "bundled",
+        "bytes",
+        "micros",
+        "outcome"
+      ],
+      "type": "object"
+    },
     "FontsPlan": {
       "description": "`fonts.plan`: the `font.pin` ops a client prepends to its tx, and notes about faces or\nscripts the catalog cannot pin (`FONT_NOT_IN_CATALOG`), which never fail the plan.",
       "properties": {
@@ -2072,6 +3252,65 @@
       ],
       "type": "object"
     },
+    "Hashed": {
+      "pattern": "^k1:[0-9a-f]{32}$",
+      "type": "string",
+      "x-fin-class": "meta"
+    },
+    "Histogram": {
+      "description": "One window's timings for one key. `buckets[i]` counts the samples with\n`2^i ≤ micros < 2^(i+1)` (`buckets[0]` also counts 0, the last bucket everything above);\ntrailing empty buckets are omitted.",
+      "properties": {
+        "buckets": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "errors": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Error code → count.",
+          "propertyNames": {
+            "$ref": "#/$defs/Code"
+          },
+          "type": "object"
+        },
+        "maxMicros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "description": "The window's start (ms since the epoch) and length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "windowMs",
+        "count",
+        "maxMicros",
+        "buckets"
+      ],
+      "type": "object"
+    },
     "HistoryResult": {
       "additionalProperties": false,
       "description": "The answer of a history operation ([`Store::undo`](crate::Store::undo),\n[`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and\nrolled back, `dry_run`; a retry of a committed operation answers with its records,\n`dry_run` false), and what they act on: the units an undo undoes, the undo a redo\nreverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert\ncommitted nothing (`ALREADY_PRESENT`: the target holds the record's origin root;\n`ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.",
@@ -2105,6 +3344,11 @@
       ],
       "type": "object"
     },
+    "IdRef": {
+      "pattern": "^([0-7][0-9A-HJKMNP-TV-Z]{25}|k1:[0-9a-f]{32})$",
+      "type": "string",
+      "x-fin-class": "meta"
+    },
     "ImageInfo": {
       "properties": {
         "height": {
@@ -2129,6 +3373,12 @@
       "enum": [
         "ripple",
         "overwrite"
+      ],
+      "type": "string"
+    },
+    "IntentOmitted": {
+      "enum": [
+        "tooLarge"
       ],
       "type": "string"
     },
@@ -2755,6 +4005,33 @@
       ],
       "type": "object"
     },
+    "JournalDropped": {
+      "properties": {
+        "bytes": {
+          "description": "The dropped entries' `approx_bytes`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "since": {
+          "description": "The start of the counting window (ms since the epoch).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "bytes",
+        "since"
+      ],
+      "type": "object"
+    },
     "Keyframe": {
       "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13).",
       "properties": {
@@ -3197,6 +4474,88 @@
         }
       ]
     },
+    "LogCommit": {
+      "properties": {
+        "baseRev": {
+          "description": "The request's `baseRev` (edits only).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "conflicts": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Conflict code → count, from `CONFLICT`'s `details.conflicts`.",
+          "propertyNames": {
+            "$ref": "#/$defs/Code"
+          },
+          "type": "object"
+        },
+        "intent": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TxIntent"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "txIntent"
+            }
+          ],
+          "description": "Training only: the intent as committed, or as requested on failure."
+        },
+        "intentOmitted": {
+          "$ref": "#/$defs/IntentOmitted"
+        },
+        "links": {
+          "description": "The txIds this record names (an undo's undone units, a merge's copies, a pick's or\nrevert's target, a recovery's records).",
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "type": "array"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ops": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Op kind → count (`OP_KINDS`).",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "type": "object"
+        },
+        "outcome": {
+          "$ref": "#/$defs/CommitOutcome"
+        },
+        "rebasedOver": {
+          "description": "Committed `baseRev` − request `baseRev`, when `rebased`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "record": {
+          "$ref": "#/$defs/CommitRecord"
+        }
+      },
+      "required": [
+        "record",
+        "outcome",
+        "micros"
+      ],
+      "type": "object"
+    },
     "LottieInfo": {
       "description": "A dotLottie template: its canvas, timing, replaceable slots and the font families it names.",
       "properties": {
@@ -3434,6 +4793,12 @@
         "dryRun"
       ],
       "type": "object"
+    },
+    "Name": {
+      "description": "A name from code or a static table (fin-core events::names); \"other\" for a value not in the table.",
+      "pattern": "^[a-z][A-Za-z0-9_./ -]{0,63}$",
+      "type": "string",
+      "x-fin-class": "meta"
     },
     "NestedPlan": {
       "description": "The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and\nits frame size.",
@@ -4516,6 +5881,15 @@
         }
       ]
     },
+    "OsFamily": {
+      "enum": [
+        "linux",
+        "macos",
+        "windows",
+        "other"
+      ],
+      "type": "string"
+    },
     "PanSegment": {
       "description": "Pan over `[from, to)` (−1 left … 1 right; the mixer clamps), read like [`GainSegment`].",
       "properties": {
@@ -4555,6 +5929,26 @@
         "u"
       ],
       "type": "object"
+    },
+    "PanicThread": {
+      "description": "The thread that panicked (the plan's `thread: Name`, as a closed enum).",
+      "enum": [
+        "main",
+        "worker",
+        "tick",
+        "writer",
+        "other"
+      ],
+      "type": "string"
+    },
+    "PanicWhere": {
+      "description": "The process that panicked.",
+      "enum": [
+        "finNode",
+        "finisherd",
+        "fin"
+      ],
+      "type": "string"
     },
     "ParamSet": {
       "description": "`param.set`: sets `path` of `item` to `value`; no `value` resets it to its default.",
@@ -5118,6 +6512,26 @@
       ],
       "type": "object"
     },
+    "ProjectId": {
+      "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$",
+      "type": "string",
+      "x-fin-class": "meta"
+    },
+    "Purpose": {
+      "description": "A purpose events are recorded for.",
+      "enum": [
+        "diagnostics",
+        "training"
+      ],
+      "type": "string"
+    },
+    "Purposes": {
+      "items": {
+        "$ref": "#/$defs/Purpose"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
     "Rational": {
       "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\".",
       "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
@@ -5298,6 +6712,9 @@
       ],
       "type": "object"
     },
+    "ReviewVerdict": {
+      "type": "object"
+    },
     "Role": {
       "description": "Which side of a transition a layer is.",
       "oneOf": [
@@ -5312,6 +6729,22 @@
           "type": "string"
         }
       ]
+    },
+    "RpcStats": {
+      "description": "`rpc.stats`: one non-stream RPC method (`RPC_METHODS`).",
+      "properties": {
+        "histogram": {
+          "$ref": "#/$defs/Histogram"
+        },
+        "key": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "key",
+        "histogram"
+      ],
+      "type": "object"
     },
     "Scope": {
       "description": "Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are\naddressed as `effects.<fx>.<param>`.",
@@ -5400,6 +6833,88 @@
           "type": "object"
         }
       ]
+    },
+    "Scrubbed": {
+      "description": "Finisher-authored text with paths, the home, data and temp directories, the user name and the host name replaced by placeholders.",
+      "type": "string",
+      "x-fin-class": "scrubbed"
+    },
+    "SessionEnd": {
+      "description": "The run ended cleanly.",
+      "properties": {
+        "uptimeS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uptimeS"
+      ],
+      "type": "object"
+    },
+    "SessionStart": {
+      "description": "The process run began (the journal opened with a purpose on, or one turned on). Platform\nfacts only (Decision 5): no host, user, IP, serial or hardware model.",
+      "properties": {
+        "app": {
+          "$ref": "#/$defs/Version"
+        },
+        "arch": {
+          "$ref": "#/$defs/Arch"
+        },
+        "cores": {
+          "description": "Logical cores.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memGiB": {
+          "description": "Memory rounded to a power-of-two GiB.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "os": {
+          "$ref": "#/$defs/OsFamily"
+        },
+        "osMajor": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profile": {
+          "$ref": "#/$defs/BuildProfile"
+        },
+        "protocol": {
+          "description": "`@finisher/contracts` `PROTOCOL_VERSION`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "app",
+        "protocol",
+        "os",
+        "osMajor",
+        "arch",
+        "cores",
+        "memGiB",
+        "profile"
+      ],
+      "type": "object"
+    },
+    "SessionUnclean": {
+      "description": "A start found the previous run still open in `state.json`.",
+      "properties": {
+        "previous": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "previous"
+      ],
+      "type": "object"
     },
     "SetAside": {
       "additionalProperties": false,
@@ -5532,6 +7047,17 @@
       ],
       "type": "object"
     },
+    "Source": {
+      "description": "Which program emitted an entry. The server sets it from the transport (local socket →\n`fin`, WebSocket → `ui`), never from the payload.",
+      "enum": [
+        "fin",
+        "finisherd",
+        "finNode",
+        "ui",
+        "agent"
+      ],
+      "type": "string"
+    },
     "SourceRef": {
       "description": "An asset and the time to read from it, in seconds.",
       "properties": {
@@ -5547,6 +7073,11 @@
         "time"
       ],
       "type": "object"
+    },
+    "SrcLoc": {
+      "pattern": "^(crates|apps)/[a-z0-9_./-]{1,160}:[0-9]{1,7}$",
+      "type": "string",
+      "x-fin-class": "meta"
     },
     "Stacks": {
       "description": "An author's undo and redo stacks on a branch, bottom first (the top is the last entry).",
@@ -5567,6 +7098,39 @@
       "required": [
         "undo",
         "redo"
+      ],
+      "type": "object"
+    },
+    "StopReason": {
+      "enum": [
+        "endTurn",
+        "toolUse",
+        "maxTokens",
+        "stopSequence",
+        "refusal",
+        "other"
+      ],
+      "type": "string"
+    },
+    "StorageMode": {
+      "enum": [
+        "readOnly",
+        "writable"
+      ],
+      "type": "string"
+    },
+    "StorageState": {
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/Code"
+        },
+        "state": {
+          "$ref": "#/$defs/StorageMode"
+        }
+      },
+      "required": [
+        "state",
+        "reason"
       ],
       "type": "object"
     },
@@ -6219,6 +7783,13 @@
       ],
       "type": "object"
     },
+    "TxIntent": {
+      "description": "An edit intent (content `txIntent`): the transactions as committed (an edit's one tx, or a\nhistory call's records, at most 64), or the request's normalised tx on failure.",
+      "items": {
+        "$ref": "#/$defs/Tx"
+      },
+      "type": "array"
+    },
     "TxSetAside": {
       "additionalProperties": false,
       "description": "`tx.get` for a transaction that is not (or no longer) on its branch.",
@@ -6230,6 +7801,9 @@
       "required": [
         "setAside"
       ],
+      "type": "object"
+    },
+    "UiAction": {
       "type": "object"
     },
     "UnitEntry": {
@@ -6345,6 +7919,29 @@
         "wght"
       ],
       "type": "object"
+    },
+    "Verdict": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "undone",
+        "merged",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "VerdictBy": {
+      "enum": [
+        "user",
+        "critic",
+        "agent"
+      ],
+      "type": "string"
+    },
+    "Version": {
+      "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",
+      "type": "string",
+      "x-fin-class": "meta"
     },
     "VideoInfo": {
       "properties": {

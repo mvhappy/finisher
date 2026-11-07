@@ -2,7 +2,9 @@
 //! envelope types the engine sends that live above it (fin-store's [`Generation`],
 //! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`];
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
-//! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout` and `ParamSpec` come from fin-core.
+//! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout` and `ParamSpec` come from fin-core, and
+//! so do the diagnostics event types (`events::Envelope`, `AnyPayload`, the kind-keyed
+//! `EventPayload` and every payload type, by `events::kinds::register_schemas`).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -35,6 +37,10 @@ fn main() {
         g.subschema_for::<FileState>();
         g.subschema_for::<FontsStatus>();
         g.subschema_for::<FontsPlan>();
+        g.subschema_for::<fin_core::events::Envelope>();
+        g.subschema_for::<fin_core::events::AnyPayload>();
+        g.subschema_for::<fin_core::events::EventPayload>();
+        fin_core::events::kinds::register_schemas(g);
     });
     println!(
         "{}",
