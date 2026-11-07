@@ -48,7 +48,13 @@ fn commit(intent: Option<fin_core::Tx>) -> AnyPayload {
         conflicts: Counts::default(),
         links: vec![],
         micros: 812,
-        intent: intent.map(|t| Content(TxIntent(vec![t]))),
+        intent: intent.map(|t| {
+            Content(TxIntent::from_txs([t], &|b: &[u8]| {
+                let mut k = [0u8; 16];
+                k[..b.len().min(16)].copy_from_slice(&b[..b.len().min(16)]);
+                k
+            }))
+        }),
         intent_omitted: None,
     }
     .into()

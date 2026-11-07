@@ -24,9 +24,20 @@ pub fn clock() -> Arc<ManualClock> {
     Arc::new(ManualClock::new(T0 + 3_600_000))
 }
 
+/// A stand-in for the install key (D3): a fixed, test-only keyed hash. Never shipped; the
+/// journal's default has no key.
+pub fn test_key(bytes: &[u8]) -> [u8; 16] {
+    let mut out = [0x5au8; 16];
+    for (i, b) in bytes.iter().enumerate() {
+        out[i % 16] = out[i % 16].rotate_left(3) ^ b;
+    }
+    out
+}
+
 pub fn opts(clock: &Arc<ManualClock>) -> JournalOptions {
     JournalOptions {
         clock: clock.clone(),
+        key: Some(Arc::new(test_key)),
         ..JournalOptions::default()
     }
 }
@@ -88,7 +99,7 @@ pub fn commit_with_intent(n: usize) -> AnyPayload {
     let AnyPayload::LogCommit(mut c) = commit(900) else {
         unreachable!()
     };
-    c.intent = Some(Content(TxIntent(vec![tx(n)])));
+    c.intent = Some(Content(TxIntent::from_txs([tx(n)], &test_key)));
     AnyPayload::LogCommit(c)
 }
 
@@ -120,7 +131,7 @@ pub fn raw_lines(dir: &Path) -> Vec<Envelope> {
 }
 
 pub fn of_kind<'a>(all: &'a [Envelope], kind: &str) -> Vec<&'a Envelope> {
-    all.iter().filter(|e| e.kind == kind).collect()
+    all.iter().filter(|e| e.kind.as_str() == kind).collect()
 }
 
 /// All entries, through the journal (which flushes first).

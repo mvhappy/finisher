@@ -46,7 +46,7 @@ impl Filter {
                     .and_then(|c| c.project.as_ref())
                     .is_some_and(|x| x.as_str() == p)
             })
-            && (self.kinds.is_empty() || self.kinds.contains(&e.kind))
+            && (self.kinds.is_empty() || self.kinds.iter().any(|k| k == e.kind.as_str()))
     }
 }
 
@@ -130,7 +130,7 @@ impl Entries {
                 self.skipped += 1;
                 continue;
             };
-            if kind(&e.kind, e.kv).is_none() {
+            if kind(e.kind.as_str(), e.kv).is_none() {
                 self.unknown += 1;
                 continue;
             }

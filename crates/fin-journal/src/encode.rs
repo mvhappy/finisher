@@ -1,9 +1,10 @@
 //! Everything the journal needs from `fin-core::events` to size and serialise an entry, in
-//! one place (D1's writer path): the caller-side size estimate, and on the writer
-//! `serde_json::to_value`, `redact` against the purposes in force, then the envelope.
+//! one place (D1's writer path): the caller-side size estimate, and on the writer the
+//! payload stripped of content the purposes in force do not allow, then the borrowed
+//! envelope serialised straight to the line (no `Value`).
 
 use fin_core::events::{
-    AnyPayload, ConsentStamp, Ctx, ENVELOPE_VERSION, Envelope, Purposes, kinds, redact,
+    AnyPayload, ConsentStamp, Ctx, EnvelopeRef, Purpose, Purposes, Ulid as EventUlid, kinds, redact,
 };
 use ulid::Ulid;
 
@@ -43,29 +44,28 @@ pub(crate) fn warm() {
 pub(crate) fn encode(
     out: &mut Vec<u8>,
     id: Ulid,
-    session: &str,
+    session: &EventUlid,
     p: Pending,
     purposes: Purposes,
 ) -> serde_json::Result<()> {
-    let spec = p.payload.kind();
-    let mut payload = serde_json::to_value(&p.payload)?;
-    redact(spec, &mut payload, purposes);
-    let env = Envelope {
-        v: ENVELOPE_VERSION,
-        id: id.to_string(),
-        ts: p.ts,
-        session: p.session.as_deref().unwrap_or(session).to_owned(),
-        source: p.source,
-        kind: spec.name.to_owned(),
-        kv: spec.version,
-        consent: ConsentStamp {
+    let mut payload = p.payload;
+    if !purposes.contains(Purpose::Training) {
+        payload.strip_content();
+    }
+    let id = EventUlid::from_u128(id.0);
+    let env = EnvelopeRef::new(
+        &id,
+        p.ts,
+        p.session.as_ref().unwrap_or(session),
+        p.source,
+        ConsentStamp {
             rev: p.stamp.rev,
             purposes,
             basis: p.stamp.basis,
         },
-        ctx: p.ctx,
-        payload,
-    };
+        p.ctx.as_ref(),
+        &payload,
+    );
     let start = out.len();
     if let Err(e) = serde_json::to_writer(&mut *out, &env) {
         out.truncate(start);

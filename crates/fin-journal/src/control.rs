@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::SyncSender;
 
-use fin_core::events::{AnyPayload, Basis, Code, Ctx, Name, Purposes, Source};
+use fin_core::events::{AnyPayload, Basis, Code, Ctx, Name, Purposes, Source, Ulid};
 
 use crate::{JournalError, Metric};
 
@@ -53,7 +53,7 @@ pub(crate) fn unpack(word: u64) -> Stamp {
 pub(crate) struct Pending {
     pub ts: u64,
     /// The envelope's `session` when it is not the journal's own run (`record_value`).
-    pub session: Option<Box<str>>,
+    pub session: Option<Ulid>,
     pub source: Source,
     pub ctx: Option<Ctx>,
     pub payload: AnyPayload,

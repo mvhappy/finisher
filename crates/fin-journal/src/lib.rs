@@ -23,8 +23,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use fin_core::CoreError;
+use fin_core::events::Ulid as EventUlid;
 use fin_core::events::{
-    AnyPayload, Basis, Code, Ctx, IdRef, Name, Purposes, Source, require_kind, validate_payload,
+    AnyPayload, Basis, Code, Ctx, Name, Purposes, Source, WIRE_KINDS, decode_payload, require_kind,
+    validate_payload,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -36,12 +38,14 @@ mod control;
 mod encode;
 mod faults;
 mod files;
+mod options;
 mod read;
 mod stats;
 mod writer;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use faults::Faults;
+pub use options::{JournalOptions, KeyFn};
 pub use read::{Entries, Filter};
 pub use stats::MAX_KEYS;
 
@@ -68,58 +72,6 @@ impl Consent {
         rev: 0,
         basis: Basis::Default,
     };
-}
-
-/// The journal's limits (Decisions 16, 18, 19). [`Default`] is the shipped configuration.
-#[derive(Clone)]
-pub struct JournalOptions {
-    /// A file rotates before it would grow past this (8 MiB).
-    pub max_file_bytes: u64,
-    /// The size cap over every `j-*` file (128 MiB; settings `maxMiB`).
-    pub max_total_bytes: u64,
-    /// The age cap (30 days; settings `retentionDays`).
-    pub max_age: Duration,
-    /// Data channel capacity in entries (8,192).
-    pub channel: usize,
-    /// Data channel capacity in `approx_bytes` in flight (8 MiB).
-    pub channel_bytes: usize,
-    /// The writer flushes this often (1 s) or at `flush_bytes` buffered (64 KiB).
-    pub flush_every: Duration,
-    pub flush_bytes: usize,
-    /// The stats window (1 minute).
-    pub stats_every: Duration,
-    pub clock: Arc<dyn Clock>,
-}
-
-impl Default for JournalOptions {
-    fn default() -> Self {
-        JournalOptions {
-            max_file_bytes: 8 << 20,
-            max_total_bytes: 128 << 20,
-            max_age: Duration::from_secs(30 * 86_400),
-            channel: 8192,
-            channel_bytes: 8 << 20,
-            flush_every: Duration::from_secs(1),
-            flush_bytes: 64 << 10,
-            stats_every: Duration::from_secs(60),
-            clock: Arc::new(SystemClock),
-        }
-    }
-}
-
-impl fmt::Debug for JournalOptions {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JournalOptions")
-            .field("max_file_bytes", &self.max_file_bytes)
-            .field("max_total_bytes", &self.max_total_bytes)
-            .field("max_age", &self.max_age)
-            .field("channel", &self.channel)
-            .field("channel_bytes", &self.channel_bytes)
-            .field("flush_every", &self.flush_every)
-            .field("flush_bytes", &self.flush_bytes)
-            .field("stats_every", &self.stats_every)
-            .finish_non_exhaustive()
-    }
 }
 
 /// A high-rate timing aggregated into per-window histograms (Decision 19).
@@ -212,7 +164,7 @@ pub(crate) struct Shared {
     dropped_total: AtomicU64,
     status: Mutex<Snapshot>,
     /// The process run (a ULID): every entry's `session` unless `record_value` names another.
-    session: String,
+    session: EventUlid,
     opts: JournalOptions,
     faults: Faults,
 }
@@ -310,17 +262,13 @@ impl fmt::Debug for Journal {
     }
 }
 
-fn is_ulid(s: &str) -> bool {
-    IdRef::classify(s).is_ok()
-}
-
 impl Journal {
     /// Opens the journal in `dir` (`<server-data>/events`) under `consent`, already resolved
     /// from the settings and the environment. Never fails: an unusable directory suspends
     /// the journal. The directory is created only by the first write.
     pub fn open(dir: &Path, consent: Consent, opts: JournalOptions) -> Journal {
         let now = opts.clock.now_ms();
-        let session = Ulid::from_parts(now, Ulid::new().random()).to_string();
+        let session = EventUlid::from_u128(Ulid::from_parts(now, Ulid::new().random()).0);
         let (data_tx, data_rx) = mpsc::sync_channel(opts.channel.max(1));
         let (ctl_tx, ctl_rx) = mpsc::channel();
         let sh = Arc::new(Shared {
@@ -411,10 +359,25 @@ impl Journal {
         if !spec.sources.contains(&source) {
             return Err(invalid(format!("{kind} is not emitted by {source:?}")));
         }
-        if !is_ulid(session) {
+        let Some(session) = EventUlid::parse(session) else {
             return Err(invalid("the session is not a ULID".into()));
-        }
-        let p = validate_payload(spec, &payload)?;
+        };
+        let opts = &h.sh.opts;
+        let p = if WIRE_KINDS.contains(&spec.name) {
+            // A wire form keys its ids and hashes: with no key configured it is refused
+            // rather than keyed with a stand-in (D3 supplies the install key).
+            let Some(key) = &opts.key else {
+                return Err(invalid(format!(
+                    "{kind} needs the install key, which is not configured"
+                )));
+            };
+            validate_payload(spec, &payload, &**key, &opts.scrub)?
+        } else {
+            // Not a wire kind: decoded as stored and scrubbed again; no key is involved.
+            let mut p = decode_payload(spec, &payload)?;
+            p.rescrub(&opts.scrub);
+            p
+        };
         let mut pending = h.pending(source, ctx, p, word);
         if pending.bytes > MAX_ENTRY_BYTES {
             return Err(CoreError::new(
@@ -423,7 +386,7 @@ impl Journal {
             )
             .with_details(json!({ "kind": kind, "bytes": pending.bytes })));
         }
-        pending.session = Some(session.into());
+        pending.session = Some(session);
         let bytes = pending.bytes;
         h.send(Data::Entry(Box::new(pending)), bytes);
         Ok(())

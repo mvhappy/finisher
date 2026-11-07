@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 use fin_core::events::payloads::SessionEnd;
 use fin_core::events::{
     Actor, ActorKind, AnyPayload, BranchId, ConsentStamp, Ctx, IdRef, ProjectId, Purposes, Source,
-    kind, validate_payload,
+    decode_payload, kind,
 };
-use fin_journal::{Consent, Filter, Journal, JournalState, Metric};
+use fin_journal::{Consent, Filter, Journal, JournalOptions, JournalState, Metric};
 use support::*;
 
 const PROJECT: &str = "01jb0000000000000000000000";
@@ -98,7 +98,7 @@ fn record_then_read_round_trips() {
     assert_eq!(e.ts, T0 + 3_600_000);
     assert_eq!(Some(e.session.as_str()), j.session());
     assert!(
-        IdRef::classify(&e.id).is_ok(),
+        IdRef::classify(e.id.as_str()).is_ok(),
         "a canonical ULID id: {}",
         e.id
     );
@@ -111,9 +111,9 @@ fn record_then_read_round_trips() {
         }
     );
     assert_eq!(e.ctx, Some(ctx()));
-    let back = validate_payload(kind("log.commit", 1).unwrap(), &e.payload).unwrap();
+    let back = decode_payload(kind("log.commit", 1).unwrap(), &e.payload).unwrap();
     assert_eq!(back, p);
-    assert_eq!(all[1].kind, "session.end");
+    assert_eq!(all[1].kind.as_str(), "session.end");
     assert!(all[1].ctx.is_none());
     assert!(all[0].id < all[1].id, "ids increase in write order");
     let s = j.status();
@@ -185,6 +185,69 @@ fn record_value_validates_and_keeps_the_senders_session() {
     let off = Journal::open(&dir.path().join("off"), Consent::OFF, opts(&c));
     off.record_value(Source::Ui, "x", "nope", 9, None, serde_json::json!(null))
         .unwrap();
+}
+
+#[test]
+fn record_value_without_a_key_refuses_wire_kinds_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let no_key = JournalOptions {
+        key: None,
+        ..opts(&c)
+    };
+    let j = Journal::open(&events(&dir), diagnostics(), no_key);
+    let session = "01JC00000000000000000000FF";
+    let cli = serde_json::json!({
+        "name": "item.trim", "micros": 5, "exit": 0, "online": true, "dryRun": false,
+        "txIds": ["idem-1"],
+    });
+    let e = j
+        .record_value(Source::Fin, session, "cli.command", 1, None, cli)
+        .unwrap_err();
+    assert_eq!(e.code, "EVENT_INVALID");
+    // A kind that is not a wire form needs no key.
+    j.record_value(
+        Source::FinNode,
+        session,
+        "session.end",
+        1,
+        None,
+        serde_json::json!({ "uptimeS": 3 }),
+    )
+    .unwrap();
+    let all = read_all(&j);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].kind.as_str(), "session.end");
+    // The raw id never reached the disk unkeyed.
+    let text = files(&events(&dir))
+        .iter()
+        .map(|f| std::fs::read_to_string(f).unwrap())
+        .collect::<String>();
+    assert!(!text.contains("idem-1"));
+}
+
+#[test]
+fn record_value_keys_the_wire_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let j = Journal::open(&events(&dir), diagnostics(), opts(&c));
+    let cli = serde_json::json!({
+        "name": "item.trim", "micros": 5, "exit": 0, "online": true, "dryRun": false,
+        "txIds": ["idem-1"],
+    });
+    j.record_value(
+        Source::Fin,
+        "01JC00000000000000000000FF",
+        "cli.command",
+        1,
+        None,
+        cli,
+    )
+    .unwrap();
+    let all = read_all(&j);
+    let ids = all[0].payload["txIds"].as_array().unwrap();
+    assert!(ids[0].as_str().unwrap().starts_with("k1:"), "{ids:?}");
+    assert!(!serde_json::to_string(&all[0]).unwrap().contains("idem-1"));
 }
 
 #[test]
