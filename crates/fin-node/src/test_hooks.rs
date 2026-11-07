@@ -1,5 +1,10 @@
 //! Test-only exports (feature `test-hooks`, enabled by the vitest build). Never shipped.
 
+// napi-derive registers a free `#[napi] fn` only under `#[cfg(not(test))]`, so in the cfg(test)
+// build that `cargo clippy --all-targets` compiles (despite `test = false`) the exported
+// functions below have no caller. They are live in the real cdylib build; allow it for tests only.
+#![cfg_attr(test, allow(dead_code))]
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
