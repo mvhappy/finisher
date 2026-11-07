@@ -8,6 +8,7 @@ pub mod branch;
 mod builder;
 pub mod caption;
 pub mod clip;
+pub mod diagnostics;
 pub mod edit;
 pub mod effect;
 pub mod eval;

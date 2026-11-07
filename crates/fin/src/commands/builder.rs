@@ -246,6 +246,7 @@ impl<'a> Builder<'a> {
         if globals.idem_key.is_some() {
             tx.args_hash = Some(args_hash(&self.inputs));
         }
+        crate::diag::note_inputs(&self.inputs);
         let dry = globals.dry_run || self.backend.dry_run_only();
         // A retry (`--idem-key`): ask what became of the key first. Already committed: that
         // commit is the answer (with the pins it was planned with). Set aside (lost to another

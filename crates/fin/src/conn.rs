@@ -57,6 +57,10 @@ impl TimedConn {
     }
 
     fn run(&mut self, op: Op) -> io::Result<String> {
+        self.run_for(op, self.timeout)
+    }
+
+    fn run_for(&mut self, op: Op, timeout: Duration) -> io::Result<String> {
         if self.poisoned {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -65,7 +69,7 @@ impl TimedConn {
         }
         let stopped = || io::Error::new(io::ErrorKind::BrokenPipe, "the connection worker stopped");
         self.ops.send(op).map_err(|_| stopped())?;
-        match self.results.recv_timeout(self.timeout) {
+        match self.results.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 self.poisoned = true;
@@ -78,6 +82,11 @@ impl TimedConn {
     /// Writes and flushes `bytes`.
     pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.run(Op::Write(bytes.to_vec())).map(|_| ())
+    }
+
+    /// [`TimedConn::write_all`] with its own, shorter deadline (the fire-and-forget `cli.command`).
+    pub fn write_all_within(&mut self, bytes: &[u8], within: Duration) -> io::Result<()> {
+        self.run_for(Op::Write(bytes.to_vec()), within).map(|_| ())
     }
 
     /// Reads up to and including the next `\n`; an empty string is end of stream, and a string

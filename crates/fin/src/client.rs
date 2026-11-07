@@ -147,8 +147,9 @@ pub fn parse_frame(line: &str) -> Result<Frame, CoreError> {
     }
 }
 
-pub fn request_frame(id: &str, tag: &str, payload: &Value) -> Value {
-    json!({ "_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": [] })
+/// `headers`: `[name, value]` pairs (the actor of Decision 23a); empty when there is none.
+pub fn request_frame(id: &str, tag: &str, payload: &Value, headers: &[[String; 2]]) -> Value {
+    json!({ "_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": headers })
 }
 
 fn timed_out(e: &io::Error) -> bool {
@@ -203,6 +204,8 @@ pub struct Client {
     timeout: Duration,
     conn: TimedConn,
     next_id: u64,
+    /// The `fin-actor-*` headers of every request (computed once per run).
+    headers: Vec<[String; 2]>,
 }
 
 impl Client {
@@ -237,6 +240,7 @@ impl Client {
             timeout,
             conn: TimedConn::new(stream, timeout),
             next_id: 1,
+            headers: crate::diag::actor_headers(),
         })
     }
 
@@ -294,10 +298,28 @@ impl Client {
             .map_err(|e| in_flight(e, tx_id))
     }
 
+    /// Fire and forget (`cli.command`, `error.panic`): writes the request frame within `budget`
+    /// and never reads its reply. The server enqueues the event before it yields, so closing
+    /// the connection right after loses nothing.
+    pub fn send_only(
+        &mut self,
+        tag: &str,
+        payload: &Value,
+        budget: Duration,
+    ) -> Result<(), CoreError> {
+        let id = self.next_id.to_string();
+        self.next_id += 1;
+        let mut line = request_frame(&id, tag, payload, &self.headers).to_string();
+        line.push('\n');
+        self.conn
+            .write_all_within(line.as_bytes(), budget)
+            .map_err(|e| self.io_error("send", &e))
+    }
+
     fn request(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
         let id = self.next_id.to_string();
         self.next_id += 1;
-        self.send(&request_frame(&id, tag, &payload))?;
+        self.send(&request_frame(&id, tag, &payload, &self.headers))?;
         loop {
             match self.read_frame()? {
                 Frame::Exit { request_id, result } if request_id == id => return result,
