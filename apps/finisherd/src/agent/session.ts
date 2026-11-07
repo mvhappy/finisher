@@ -5,9 +5,9 @@
 //   starting → idle ⇄ running → ended; running ⇄ waitingApproval;
 //   any live state → interrupted (provider exit, server restart, budget stop);
 //   interrupted → idle by resume; ended is final and absorbs every event.
-import { FinError } from "@finisher/contracts";
+import { FinError, type SessionStatus } from "@finisher/contracts";
 
-export type SessionStatus = "starting" | "idle" | "running" | "waitingApproval" | "interrupted" | "ended";
+export type { SessionStatus };
 
 export const SESSION_STATUSES: readonly SessionStatus[] = [
   "starting",

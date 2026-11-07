@@ -1,0 +1,11 @@
+{
+  "name": "unknown",
+  "turns": [
+    [
+      { "emit": [
+        { "type": "rateLimitUpdate", "remaining": 3 },
+        { "type": "message", "role": "assistant", "blocks": [{ "type": "text", "text": "Still here." }] }
+      ] }
+    ]
+  ]
+}

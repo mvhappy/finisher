@@ -1,0 +1,16 @@
+{
+  "name": "simple",
+  "turns": [
+    [
+      { "emit": [
+        { "type": "messageDelta", "text": "Looking" },
+        { "type": "reasoning", "summary": "check the intro" },
+        { "type": "message", "role": "assistant", "blocks": [{ "type": "text", "text": "The intro is fine." }] },
+        { "type": "usage", "input": 1200, "output": 40, "cacheRead": 0, "cacheWrite": 900, "reasoning": 10 }
+      ] }
+    ],
+    [
+      { "emit": [{ "type": "message", "role": "assistant", "blocks": [{ "type": "text", "text": "Second turn." }] }] }
+    ]
+  ]
+}
