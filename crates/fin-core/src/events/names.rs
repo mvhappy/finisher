@@ -145,6 +145,7 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "try.keep",
         "undo",
         "view",
+        "whoami",
         "other",
     ],
 );

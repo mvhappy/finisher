@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { lockExclusive } from "@finisher/fin-node";
 import { socketPath } from "../src/config.ts";
 import { childEnv } from "../src/env.ts";
-import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
+import { addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 /**
  * Windows has no SIGTERM: `stop()` is TerminateProcess, so there is no graceful shutdown (no
@@ -41,7 +41,7 @@ async function start(): Promise<RunningServer> {
 }
 
 async function client(): Promise<NdjsonClient> {
-  const c = await NdjsonClient.connect(server!.info.socket);
+  const c = await connectProved(server!);
   clients.push(c);
   return c;
 }

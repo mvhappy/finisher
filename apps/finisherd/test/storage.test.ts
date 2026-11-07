@@ -10,7 +10,7 @@ import { Effect, Exit, Fiber, PubSub, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { Channel, follower, Hubs } from "../src/hubs.ts";
 import { makeProjectRegistry, type ProjectRegistryShape, type RegistryOptions } from "../src/projects.ts";
-import { addAsset, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
+import { addAsset, connectProved, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
 const servers: RunningServer[] = [];
@@ -32,7 +32,7 @@ afterEach(async () => {
 async function server(name = "sd"): Promise<NdjsonClient> {
   const s = await startServer(join(tmp, name));
   servers.push(s);
-  const c = await NdjsonClient.connect(s.info.socket);
+  const c = await connectProved(s);
   clients.push(c);
   return c;
 }

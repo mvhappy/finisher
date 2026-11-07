@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { isAbsoluteNormalised, requireAbsolute } from "../src/paths.ts";
-import { NdjsonClient, type RunningServer, startServer } from "./support/ndjson-client.ts";
+import { connectProved, NdjsonClient, type RunningServer, startServer } from "./support/ndjson-client.ts";
 
 describe("isAbsoluteNormalised", () => {
   test("POSIX", () => {
@@ -85,7 +85,7 @@ describe("server", () => {
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "paths-"));
     server = await startServer(join(tmp, "sd"));
-    c = await NdjsonClient.connect(server.info.socket);
+    c = await connectProved(server);
   });
 
   afterEach(async () => {

@@ -211,6 +211,10 @@ pub struct Client {
     limited: bool,
     /// The `fin-actor-*` headers of every request (computed once per run).
     headers: Vec<[String; 2]>,
+    /// What the handshake bound (`None`: no credential, so nothing was proved; 5A Decision 11).
+    principal: Option<Value>,
+    /// Why the handshake was retried once, when it was (`keyStale` after a server restart).
+    retried: Option<&'static str>,
 }
 
 impl Client {
@@ -223,7 +227,17 @@ impl Client {
         Client::connect_with(endpoint, timeout, None)
     }
 
+    /// Connects and proves fin's credential (`auth::connect`: one retry, else `SERVER_UNTRUSTED`).
     fn connect_with(
+        endpoint: &Endpoint,
+        timeout: Duration,
+        deadline: Option<Deadline>,
+    ) -> Result<Client, CoreError> {
+        crate::auth::connect(endpoint, |ep| Client::open(ep, timeout, deadline))
+    }
+
+    /// A connection without the handshake (fin's unit tests talk to fake servers through it).
+    pub(crate) fn open(
         endpoint: &Endpoint,
         timeout: Duration,
         deadline: Option<Deadline>,
@@ -271,7 +285,24 @@ impl Client {
             deadline,
             limited: false,
             headers: crate::diag::actor_headers(),
+            principal: None,
+            retried: None,
         })
+    }
+
+    pub(crate) fn set_principal(&mut self, principal: Value, retried: Option<&'static str>) {
+        self.principal = Some(principal);
+        self.retried = retried;
+    }
+
+    /// The principal the server bound to this connection; `None` when fin had no credential.
+    pub fn principal(&self) -> Option<&Value> {
+        self.principal.as_ref()
+    }
+
+    /// Why the handshake needed its one retry (`keyStale`), if it did.
+    pub fn retried(&self) -> Option<&'static str> {
+        self.retried
     }
 
     /// This client for a long operation the overall deadline does not cover (module `deadline`).
@@ -385,7 +416,13 @@ impl Client {
         self.send(&request_frame(&id, tag, &payload, &self.headers))?;
         loop {
             match self.read_frame()? {
-                Frame::Exit { request_id, result } if request_id == id => return result,
+                // Without a credential the server refuses everything but the hello: say why.
+                Frame::Exit { request_id, result } if request_id == id => {
+                    return result.map_err(|e| match self.principal {
+                        None if e.code == "UNAUTHENTICATED" => crate::auth::no_credential(e),
+                        _ => e,
+                    });
+                }
                 Frame::Chunk { request_id, .. } if request_id == id => {
                     self.send(&json!({ "_tag": "Ack", "requestId": id }))?;
                 }

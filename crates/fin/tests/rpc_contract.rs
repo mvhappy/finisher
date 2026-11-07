@@ -77,8 +77,11 @@ impl Conn {
         stream
             .set_recv_timeout(Some(Duration::from_secs(30)))
             .unwrap();
+        let mut io = BufReader::new(stream);
+        // Since 5A Task 4 a connection proves before anything but the hello.
+        support::auth::prove(&mut io, &server.sd, &server.socket, "local");
         Conn {
-            io: BufReader::new(stream),
+            io,
             subst: subst.to_vec(),
         }
     }

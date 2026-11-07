@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "../test/support/ndjson-client.ts";
+import { addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "../test/support/ndjson-client.ts";
 
 const OUT = fileURLToPath(new URL("../../../crates/fin/tests/fixtures/rpc/", import.meta.url));
 const FIXTURE_PROJECT_ID = "01fixtureproject0000000000";
@@ -36,7 +36,7 @@ function write(name: string, client: NdjsonClient): void {
 }
 
 async function scenario(name: string, run: (c: NdjsonClient) => Promise<void>): Promise<void> {
-  const c = await NdjsonClient.connect(server!.info.socket);
+  const c = await connectProved(server!);
   await run(c);
   await c.close();
   write(name, c);
@@ -71,7 +71,7 @@ try {
     ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
   });
 
-  const setup = await NdjsonClient.connect(server.info.socket);
+  const setup = await connectProved(server);
   ok(await setup.call("tx.commit", { projectId, tx: tx("tx-2", 1, [insert(0, 5)]) }));
   ok(await setup.call("tx.commit", { projectId, tx: tx("tx-3", 2, [{ op: "clip.delete", clip: "c1" }]) }));
   await setup.close();
@@ -91,7 +91,7 @@ try {
       if (seen.includes(4)) live();
     });
     while (seen.length < 2) await new Promise((r) => setTimeout(r, 10));
-    const writer = await NdjsonClient.connect(server!.info.socket);
+    const writer = await connectProved(server!);
     ok(await writer.call("tx.commit", { projectId, tx: tx("tx-4", 3, [addAsset("$b")]) }));
     await writer.close();
     await gotLive;
@@ -172,7 +172,7 @@ try {
   // keep their revs. `fixture` is the author. Main is at rev 4 here. The setup between
   // scenarios (a clip, edits on `br1`, a second branch) is mirrored in `rpc_contract.rs`.
   const rpc = async (tag: string, payload: Record<string, unknown>) => {
-    const c = await NdjsonClient.connect(server!.info.socket);
+    const c = await connectProved(server!);
     ok(await c.call(tag, { projectId, ...payload }));
     await c.close();
   };

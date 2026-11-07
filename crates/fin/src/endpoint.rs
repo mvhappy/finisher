@@ -103,6 +103,19 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
     Ok(Endpoint::parse(socket))
 }
 
+/// The `envId` the running server published in `finisherd.json` (5A Task 2), unless `FIN_SERVER`
+/// names the endpoint: the handshake expects it (5A Decision 10).
+pub fn info_env_id() -> Option<String> {
+    if std::env::var_os(SERVER_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let text = std::fs::read_to_string(server_data()?.join(INFO_FILE)).ok()?;
+    let info: Value = serde_json::from_str(&text).ok()?;
+    info.get("envId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// The endpoint to connect to; `SERVER_UNAVAILABLE` (fix "start finisherd") when no server
 /// has published one.
 pub fn resolve() -> Result<Endpoint, CoreError> {

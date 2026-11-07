@@ -6,7 +6,6 @@ import { SERVER_VERSION } from "./config.ts";
 import { withAuthentication } from "./auth/gate.ts";
 import { HandshakeTag } from "./auth/handshake.ts";
 import { ConnectionsTag } from "./connections.ts";
-import { AuditTag } from "./control/audit.ts";
 import { callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
@@ -34,7 +33,6 @@ export const HandlersLive = FinRpcs.toLayer(
     const source = yield* RpcSource;
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
-    const audit = yield* AuditTag;
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
     return withAuthentication(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
@@ -125,6 +123,6 @@ export const HandlersLive = FinRpcs.toLayer(
       "diagnostics.consent": ({ purpose, value }) => guard("diagnostics.consent", diagnostics.consent(source, purpose, value)),
       "diagnostics.record": (req, { client, headers }) =>
         guard("diagnostics.record", diagnostics.record(source, client.id, req, headers)),
-    }), connections, audit, guard);
+    }), connections, guard);
   }),
 );

@@ -326,6 +326,14 @@ pub const COMMANDS: &[Command] = &[
         schema: none,
     },
     Command {
+        name: "whoami",
+        group: "meta",
+        args: "",
+        summary: "the principal this fin proves as (anonymous without a credential)",
+        write: false,
+        schema: none,
+    },
+    Command {
         name: "schema",
         group: "meta",
         args: "<cmd>",

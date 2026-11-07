@@ -2,6 +2,7 @@
 //! codes, no prompts, pagers or colour.
 
 mod addr;
+mod auth;
 mod backend;
 mod client;
 mod client_fonts;
@@ -113,6 +114,7 @@ enum Cmd {
     Revert(RevertArgs),
     Try(TryArgs),
     Batch,
+    Whoami,
     Help {
         topic: Option<String>,
     },
@@ -279,6 +281,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::CherryPick(a)) => commands::history::cherry_pick(backend()?.as_ref(), g, &a),
         Some(Cmd::Revert(a)) => commands::history::revert(backend()?.as_ref(), g, &a),
         Some(Cmd::Try(a)) => commands::try_cmd::run(backend()?.as_ref(), g, &a),
+        Some(Cmd::Whoami) => commands::whoami::run(),
         Some(Cmd::Batch) => {
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input).map_err(|e| {
@@ -414,6 +417,7 @@ mod tests {
             "diagnostics consent training off",
             "batch",
             "help clip",
+            "whoami",
             "schema clip.insert",
             "schema param --scope style --path text.",
         ];

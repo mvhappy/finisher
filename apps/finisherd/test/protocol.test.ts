@@ -1,6 +1,6 @@
 // The connection-aware protocol and the handshake RPCs (plan 5A Task 3): a real finisherd for the
 // handshake, an in-process protocol with a small frame cap for the framing cases.
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -163,14 +163,29 @@ describe("the handshake on a real server", () => {
     await c.closed();
   });
 
-  test("unproved_connection_is_legacy_local_and_audited", async () => {
-    const before = auditRows(serverData, "auth.legacy").length;
+  test("unproved_connection_only_hello", async () => {
     const c = await connect();
+    const dir = join(tmp, "never-created");
+    const refused = await c.call("project.create", { dir, name: "X", rate: "30" });
+    expect(refused.ok ? null : refused.error).toMatchObject({ code: "UNAUTHENTICATED", details: { reason: "unproved" } });
+    // The handler never ran: no project folder.
+    expect(existsSync(dir)).toBe(false);
+    for (const [tag, payload] of [
+      ["fonts.status", {}],
+      ["diagnostics.status", {}],
+      ["diagnostics.record", { kind: "cli.command", kv: 1, payload: {} }],
+    ] as const) {
+      const r = await c.call(tag, payload);
+      expect(r.ok ? null : r.error.code, tag).toBe("UNAUTHENTICATED");
+    }
+    const stream = c.stream("project.events", { projectId: "01aaaaaaaaaaaaaaaaaaaaaaaa" }, () => undefined);
+    const ended = await stream.done;
+    expect(ended.ok ? null : ended.error.code).toBe("UNAUTHENTICATED");
+    // The hello still answers, and after a proof the same connection is served.
+    ok(await c.call("server.hello", {}));
+    ok(await prove(c, server.info, keyOf(serverData)));
     ok(await c.call("fonts.status", {}));
-    ok(await c.call("diagnostics.status", {}));
-    const rows = auditRows(serverData, "auth.legacy");
-    expect(rows.length - before).toBe(1);
-    expect(JSON.parse(rows.at(-1)!.details)).toEqual({ transport: WIN ? "pipe" : "socket" });
+    expect(auditRows(serverData, "auth.legacy")).toEqual([]);
   });
 });
 

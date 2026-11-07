@@ -161,10 +161,15 @@ export async function prove(client: NdjsonClient, info: ServerInfo, key: Buffer,
   return client.call("auth.prove", { mac: b64u.encode(proveMac(key, answer.envId, answer.endpoint, serverNonce, clientNonce)) });
 }
 
-/** Connects to a running server's socket and proves `credential` (default `local`). */
-export async function connectProved(server: { info: ServerInfo }, serverData: string, credential: CredentialName = "local"): Promise<NdjsonClient> {
+/**
+ * Connects to a running server's socket and proves `credential` (default `local`): since 5A
+ * Task 4 an unproved connection may only say hello. The handshake's frames are left out of the
+ * transcript (the RPC fixtures record what comes after).
+ */
+export async function connectProved(server: { info: ServerInfo; serverData: string }, credential: CredentialName = "local"): Promise<NdjsonClient> {
   const client = await NdjsonClient.connect(server.info.socket);
-  ok(await prove(client, server.info, keyOf(serverData, credential), credential));
+  ok(await prove(client, server.info, keyOf(server.serverData, credential), credential));
+  client.transcript.length = 0;
   return client;
 }
 
@@ -186,6 +191,7 @@ export interface ServerInfo {
 
 export interface RunningServer {
   readonly info: ServerInfo;
+  readonly serverData: string;
   readonly child: ChildProcess;
   readonly stderr: () => string;
   /** Sends SIGTERM and resolves with the exit code. */
@@ -216,6 +222,7 @@ export async function startServer(
         if (info.pid === child.pid) {
           return {
             info,
+            serverData,
             child,
             stderr: () => stderr,
             stop: async () => {

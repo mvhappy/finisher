@@ -28,6 +28,7 @@ pub mod track;
 pub mod transition;
 pub mod try_cmd;
 pub mod view;
+pub mod whoami;
 
 pub use builder::Builder;
 use builder::with_detail;

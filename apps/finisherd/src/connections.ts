@@ -19,7 +19,7 @@
 //   `protocol.ts` registers here closes it.
 import type { FinError } from "@finisher/contracts";
 import { Context } from "effect";
-import { ANONYMOUS, isProved, LOCAL, type Principal } from "./principal.ts";
+import { ANONYMOUS, type Principal } from "./principal.ts";
 
 export type Transport = "socket" | "pipe" | "ws";
 
@@ -42,8 +42,6 @@ export interface Connection {
   hello?: Hello | undefined;
   failures: number;
   peer?: { pid?: number; sid?: string };
-  /** Set once the connection's unproved use was audited (`auth.legacy`, this task only). */
-  legacyAudited?: boolean;
 }
 
 /** What the protocol lets this module do to a live connection. */
@@ -55,12 +53,6 @@ export interface Link {
   /** Answers every open request with `error`, then closes. */
   terminate(error: FinError): void;
 }
-
-/**
- * Whether a connection must prove before anything but the hello (Decision 9). `false` in Task 3:
- * an unproved connection is `local`, as before 5A, and audited once as `auth.legacy`.
- */
-export const ENFORCE: { proof: boolean } = { proof: false };
 
 /** The connections of one transport, by Effect RPC client id. */
 export class Connections {
@@ -132,15 +124,13 @@ export class Connections {
     return out;
   }
 
-  /** The principal a request of this connection runs as, binding the legacy `local` when allowed. */
-  principalOf(clientId: number, onLegacy: (c: Connection) => void): Principal {
-    const c = this.get(clientId);
-    if (isProved(c.principal) || ENFORCE.proof) return c.principal;
-    if (!c.legacyAudited) {
-      c.legacyAudited = true;
-      onLegacy(c);
-    }
-    return LOCAL;
+  /**
+   * The principal a request of this connection runs as: `anonymous` until it proves (Decision 9;
+   * Task 3 ran unproved connections as `local`, audited once as `auth.legacy`, until `fin`
+   * proved).
+   */
+  principalOf(clientId: number): Principal {
+    return this.get(clientId).principal;
   }
 }
 

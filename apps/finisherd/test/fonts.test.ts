@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { testHooks } from "@finisher/fin-node";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { catalogJson, FontServer, sha256, waitFor } from "../../../packages/fin-node/test/fontserver.ts";
-import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
+import { addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
 let serverData: string;
@@ -51,7 +51,7 @@ async function start(catalog: string, env: Record<string, string> = {}): Promise
     FIN_FONTS_TEST_NO_PROXY: "1",
     ...env,
   });
-  client = await NdjsonClient.connect(server.info.socket);
+  client = await connectProved(server);
   return client;
 }
 

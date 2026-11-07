@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { settingsPath } from "../src/config.ts";
 import { callMeta, locationOf, makeDiagnostics, TokenBucket } from "../src/diagnostics.ts";
 import { CAPABILITIES } from "../src/handlers.ts";
-import { NdjsonClient, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
+import { connectProved, NdjsonClient, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
 
 const WIN = process.platform === "win32";
 let tmp: string;
@@ -47,7 +47,7 @@ async function start(extra: Record<string, string> = {}): Promise<RunningServer>
 }
 
 async function client(): Promise<NdjsonClient> {
-  const c = await NdjsonClient.connect(server!.info.socket);
+  const c = await connectProved(server!);
   clients.push(c);
   return c;
 }

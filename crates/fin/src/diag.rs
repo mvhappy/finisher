@@ -342,6 +342,10 @@ pub fn finish(result: &Result<Value, CoreError>, exit: i32) {
     if !allowed() {
         return;
     }
+    // A server that did not prove itself gets nothing more from this run (5A Decision 10).
+    if result.as_ref().is_err_and(|e| e.code == "SERVER_UNTRUSTED") {
+        return;
+    }
     let mut s = state();
     if s.name.as_deref() == Some("diagnostics.purge") {
         // A purge is not recorded: `purge --all` leaves nothing behind, not even its own entry.

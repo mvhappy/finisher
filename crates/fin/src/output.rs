@@ -12,6 +12,24 @@ pub const VALIDATION: i32 = 3;
 pub const CONFLICT: i32 = 4;
 pub const UNAVAILABLE: i32 = 5;
 pub const INTERNAL: i32 = 6;
+/// "This needs a different principal, usually a person" (spec §3.5): an agent must not retry.
+pub const DENIED: i32 = 7;
+
+/// Codes that mean denied (exit 7, spec §3.5 and §4.13): the server would not accept this
+/// caller, or this caller would not accept the server (`SERVER_UNTRUSTED`).
+pub const DENIED_CODES: &[&str] = &[
+    "UNAUTHENTICATED",
+    "SERVER_UNTRUSTED",
+    "SCOPE_DENIED",
+    "HUMAN_ONLY",
+    "PATH_NOT_ALLOWED",
+    "BRANCH_PROTECTED",
+    "BRANCH_NOT_ALLOWED",
+    "CREDENTIAL_REVOKED",
+    "APPROVAL_REQUIRED",
+    "CONSOLE_NEEDS_TTY",
+    "CONFIRMATION_REQUIRED",
+];
 
 /// Codes that mean "the request was well-formed but rejected by validation" (exit 3).
 const VALIDATION_CODES: &[&str] = &[
@@ -44,6 +62,9 @@ const VALIDATION_CODES: &[&str] = &[
     "INVALID_NAME",
     // A path the server got was relative or had `.`/`..` segments (`details.field`).
     "INVALID_PATH",
+    // A frame the server could not take: not JSON, an unknown RPC, a payload its schema refuses
+    // (5A Decision 13).
+    "INVALID_REQUEST",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -168,7 +189,13 @@ const CONFLICT_CODES: &[&str] = &[
 /// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
 /// `CONSENT_UI_ONLY` (plan D, Decision 14b): turning `training` on is a person's choice (the
 /// `fix` names the ways in).
-const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE", "CONSENT_UI_ONLY"];
+/// `FRAME_TOO_LARGE`: a request over the server's 16 MiB frame limit (5A Decision 13).
+const USAGE_CODES: &[&str] = &[
+    "USAGE",
+    "TX_TOO_LARGE",
+    "CONSENT_UI_ONLY",
+    "FRAME_TOO_LARGE",
+];
 
 /// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
 /// a resource another process holds (`DB_IN_USE`: a rebuild needs the project database to
@@ -207,6 +234,7 @@ const UNAVAILABLE_CODES: &[&str] = &[
 /// The one place error codes become exit codes.
 pub fn exit_code(code: &str) -> i32 {
     match code {
+        c if DENIED_CODES.contains(&c) => DENIED,
         c if USAGE_CODES.contains(&c) => USAGE,
         c if CONFLICT_CODES.contains(&c) => CONFLICT,
         c if UNAVAILABLE_CODES.contains(&c) => UNAVAILABLE,
