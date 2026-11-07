@@ -417,6 +417,33 @@ fn unpin_in_use_refused() {
     assert_eq!(code(try_apply(&q, vec![unpin(&noto)])), "FONT_IN_USE");
 }
 
+/// The undo of a transaction whose planned `font.pin` a style added earlier already uses
+/// (`fonts.plan` prepends the pin to a caption import) never fails `FONT_IN_USE`: the use
+/// check is for client unpins only. The state it returns to is the pre-import one, which was
+/// valid (a style may name an unpinned face; it is simply unmeasured).
+#[test]
+fn undo_of_a_planned_pin_skips_the_use_check() {
+    let style = StyleAdd {
+        id: "$st".into(),
+        name: "S".into(),
+        from: None,
+        set: BTreeMap::new(),
+    };
+    let before = apply(&with_caption_track(), vec![style.into()]).project;
+    let import = apply(
+        &before,
+        vec![pin(INTER, inter(&sha('a')), None), caption("st1", "hi")],
+    );
+    // A client unpin is still refused: st1 and cap1 use the face.
+    let e = try_apply(&import.project, vec![unpin(INTER)]).unwrap_err();
+    assert_eq!(e.code, "FONT_IN_USE");
+    assert_eq!(e.details["styles"], serde_json::json!(["st1"]));
+    assert_eq!(undo(&import), before);
+    // Replay re-judges nothing either: st1 still uses the face after the unpin.
+    let ops = vec![pin(INTER, inter(&sha('a')), None), unpin(INTER)];
+    assert_eq!(replay(&before, ops).unwrap().project, before);
+}
+
 #[test]
 fn repin_inverse_exact() {
     let p = apply(&project(), vec![pin(INTER, inter(&sha('a')), Some(0))]).project;

@@ -80,9 +80,13 @@ fn settings_commit_and_eval_reads_them() {
         json!([{ "text": "Hello", "start": 0, "end": 1 }, { "text": "world", "start": 1, "end": 2 }]).to_string(),
     )
     .unwrap();
-    run(&[
+    let import = run(&[
         "caption", "import", "--track", "t3", "--words", "w.json", "--style", "st1",
     ]);
+    assert_eq!(
+        import["resolved"]["fonts"]["planned"][0]["key"], "Test Sans|400|normal",
+        "{import}"
+    );
 
     let frame = run(&["eval", "frame", "--at", "1s"]);
     assert_eq!(frame["timeline"], "tl1");
@@ -118,6 +122,14 @@ fn settings_commit_and_eval_reads_them() {
         &["--timeline", "tl9", "eval", "frame", "--at", "0"],
     );
     assert_error(&r, 3, "NOT_FOUND");
+
+    // The import's undo also drops its planned pin, though st1 (added before it) still names
+    // the face: the internal unpin skips the use check.
+    run(&["undo"]);
+    let pins = run(&["fonts", "ls", "--pinned"]);
+    assert_eq!(pins["pins"], json!([]), "{pins}");
+    let view = run(&["view", "--track", "t3"]);
+    assert_eq!(view["tracks"][0]["clips"], json!([]), "{view}");
 }
 
 #[test]
