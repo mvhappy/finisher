@@ -98,7 +98,13 @@ impl Dav1dDecoder {
                     self.polled = false;
                     sent = true;
                 }
-                Status::Again => break,
+                Status::Again => {
+                    // dav1d clears its drain flag on every send with data, taken or not
+                    // (`dav1d_send_data`), so the next ask does not wait: it parses what dav1d
+                    // still holds of the last packet, which is what makes room for this one.
+                    self.polled = false;
+                    break;
+                }
                 Status::Error(e) => {
                     self.waiting.pop_front();
                     self.polled = false;

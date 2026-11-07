@@ -1,6 +1,7 @@
 //! dav1d with worker threads and frames in flight (spec §6.4): bit-exact against one thread,
-//! read sequentially, shuffled and from the end of the stream; the end of the stream drains;
-//! many multi-threaded decodes at once agree (`FIN_DAV1D_STRESS` sets how many, default 50).
+//! read sequentially, shuffled and from the end of the stream; frames come out while packets
+//! keep coming; the end of the stream drains; many multi-threaded decodes at once agree
+//! (`FIN_DAV1D_STRESS` sets how many, default 50).
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -148,6 +149,37 @@ fn the_end_of_the_stream_drains_every_frame_in_flight() {
         read_id_y(&f.planes[0].data, SIZE.width, SIZE.height),
         Some(0)
     );
+}
+
+#[test]
+fn frames_come_out_while_packets_keep_coming() {
+    // Frames in flight delay the output by at most the frame delay (and a temporal unit
+    // dav1d holds part of): the decoder must not sit on packets until `finish`.
+    let file = clip(72);
+    let mut d = Demuxer::open(Cursor::new(file), &Limits::default()).unwrap();
+    let track = d.video().unwrap().clone();
+    for t in THREADED {
+        let delay = fin_codecs::av1::Dav1dDecoder::frame_delay(t) as usize;
+        let mut dec = open_decoder_with(&track, &capabilities(), t).unwrap();
+        let (mut out, mut buf) = (0usize, Vec::new());
+        for n in 0..track.sample_count() {
+            d.read_sample(track.track, n as u32, &mut buf).unwrap();
+            dec.send(&buf, track.sample(n).unwrap().cts).unwrap();
+            while dec.receive().unwrap().is_some() {
+                out += 1;
+            }
+            assert!(
+                out + delay + 2 > n,
+                "{t:?}: {out} frames out after {} packets",
+                n + 1
+            );
+        }
+        dec.finish().unwrap();
+        while dec.receive().unwrap().is_some() {
+            out += 1;
+        }
+        assert_eq!(out, track.sample_count(), "{t:?}");
+    }
 }
 
 #[test]
