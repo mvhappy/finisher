@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { checkPrivateDir, lockExclusive, makePrivateDir } from "@finisher/fin-node";
-import { authDir, KEY_FILES, readKeyFile, rotateKeys, runDir } from "../src/auth/keys.ts";
+import * as fs from "node:fs";
+import { authDir, KEY_FILES, type KeyFs, readKeyFile, rotateKeys, runDir, writeKeyFile } from "../src/auth/keys.ts";
 import { ensureServerData, socketPath } from "../src/config.ts";
 import { lockPath } from "../src/lock.ts";
 import { NdjsonClient, ok, startServer } from "./support/ndjson-client.ts";
@@ -68,6 +69,36 @@ describe("key files", () => {
     writeFileSync(keyFile("credentialMaster"), "garbage\n");
     expect(() => rotateKeys(serverData)).toThrow(expect.objectContaining({ code: "KEY_FILE_INVALID" }));
     expect(readFileSync(keyFile("credentialMaster"), "utf8")).toBe("garbage\n");
+  });
+
+  test("key files are fsynced before and after the rename", () => {
+    const calls: string[] = [];
+    const fds = new Map<number, string>();
+    const io: KeyFs = {
+      openSync: ((p: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+        const fd = fs.openSync(p, flags, mode);
+        fds.set(fd, String(p).endsWith(".tmp") ? "tmp" : String(p) === authDir(serverData) ? "dir" : String(p));
+        calls.push(`open ${fds.get(fd)}`);
+        return fd;
+      }) as typeof fs.openSync,
+      writeSync: (fd, data) => (calls.push(`write ${fds.get(fd)}`), fs.writeSync(fd, data)),
+      fsyncSync: (fd) => (calls.push(`fsync ${fds.get(fd)}`), fs.fsyncSync(fd)),
+      closeSync: (fd) => (calls.push(`close ${fds.get(fd)}`), fs.closeSync(fd)),
+      renameSync: (a, b) => (calls.push("rename"), fs.renameSync(a, b)),
+      rmSync: fs.rmSync,
+      chmodSync: fs.chmodSync,
+    };
+    fs.mkdirSync(authDir(serverData));
+    writeKeyFile(keyFile("credentialMaster"), Buffer.alloc(32, 1), process.platform, io);
+    const expected = ["open tmp", "write tmp", "fsync tmp", "close tmp", "rename"];
+    if (!WIN) expected.push("open dir", "fsync dir", "close dir");
+    expect(calls).toEqual(expected);
+    expect(readKeyFile(keyFile("credentialMaster")).equals(Buffer.alloc(32, 1))).toBe(true);
+    // rotateKeys writes every key that way.
+    calls.length = 0;
+    rotateKeys(serverData, io);
+    expect(calls.filter((c) => c === "fsync tmp")).toHaveLength(2); // the master is kept
+    expect(calls.filter((c) => c === "rename")).toHaveLength(2);
   });
 
   test("socket_lives_in_run_dir", () => {
@@ -163,7 +194,9 @@ describe.skipIf(!WIN)("private directories on Windows", () => {
     const dir = join(tmp, "unsafe");
     makePrivateDir(dir);
     icacls(dir, "/grant", "*S-1-5-11:(R)");
-    expect(() => ensureServerData(dir)).toThrow(expect.objectContaining({ code: "SERVER_DATA_UNSAFE" }));
+    expect(() => ensureServerData(dir)).toThrow(
+      expect.objectContaining({ code: "SERVER_DATA_UNSAFE", fix: expect.stringContaining("only your account") }),
+    );
     // A new one is created private.
     const fresh = join(tmp, "fresh");
     ensureServerData(fresh);

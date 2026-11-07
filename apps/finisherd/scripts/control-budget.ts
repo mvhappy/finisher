@@ -5,12 +5,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Effect } from "effect";
 import { Audit } from "../src/control/audit.ts";
 import { openControlStore } from "../src/control/db.ts";
 
 export interface BudgetResult {
   readonly rows: number;
+  /** Per prepared statement (the spec's budget: p99 ≤ 1 ms). */
   readonly p99Ms: Record<string, number>;
+  /** One whole retention sweep, for information. */
+  readonly sweepMs: number;
 }
 
 function p99(samples: number[]): number {
@@ -56,9 +60,30 @@ export async function measureControlBudget(dir: string, rows = 100_000): Promise
     const since = time(500, () => audit.list({ since: Date.now() - 1000, limit: 50 }));
     const envId = store.db.prepare("SELECT value FROM meta WHERE key = 'envId'");
     const meta = time(2000, () => envId.get());
+    // The hourly sweep over 100k+ rows: its statements (the budget is per statement), and
+    // one whole sweep (three statements and the Effect around them) for information.
+    const sweeper = new Audit(store, () => now, { maxRows: rows });
+    await Effect.runPromise(sweeper.sweep()); // trims the ~4k rows appended above, in batches
+    const agePurge = store.db.prepare("DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE at < ? ORDER BY at LIMIT ?)");
+    const maxId = store.db.prepare("SELECT MAX(id) AS id FROM audit");
+    const rowPurge = store.db.prepare("DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE id <= ? ORDER BY id LIMIT ?)");
+    const sweepAge = time(200, () => agePurge.run(now - 180 * 86_400_000, 500));
+    const sweepMax = time(200, () => maxId.get());
+    const sweepRows = time(200, () => {
+      audit.append(denied);
+      rowPurge.run(((maxId.get() as { id: number }).id ?? 0) - rows, 500);
+    });
+    const sweeps: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      for (let j = 0; j < 10; j++) audit.append(denied);
+      const t = process.hrtime.bigint();
+      await Effect.runPromise(sweeper.sweep());
+      sweeps.push(Number(process.hrtime.bigint() - t) / 1e6);
+    }
     return {
       rows,
-      p99Ms: { append: p99(append), authFail: p99(fail), list: p99(page), listByKind: p99(byKind), listSince: p99(since), meta: p99(meta) },
+      p99Ms: { append: p99(append), authFail: p99(fail), list: p99(page), listByKind: p99(byKind), listSince: p99(since), meta: p99(meta), sweepAge: p99(sweepAge), sweepMax: p99(sweepMax), sweepRows: p99(sweepRows) },
+      sweepMs: p99(sweeps),
     };
   } finally {
     await store.close();

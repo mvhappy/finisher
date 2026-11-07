@@ -1,7 +1,8 @@
 // The always-on local security audit log (plan 5A Decision 4, spec §3.3): rows in
 // `control.db` `audit`. Consent does not gate it and nothing uploads it. It never holds
-// secrets, tokens, MACs, nonces, links, paths or request payloads: callers pass ids, codes and
-// counts in `details`.
+// secrets, tokens, MACs, nonces, links, paths or request payloads: each kind's `details` is a
+// closed schema (`AUDIT_DETAILS` in contracts) of ids, words and counts; details that do not
+// fit are dropped (the row is kept) and counted as a failure.
 //
 // - `append` never throws: a failed write is logged to stderr and counted (`failures()`,
 //   reported by `server.status`); the request it records still gets its answer.
@@ -10,7 +11,7 @@
 // - Retention: 180 days or 100,000 rows, swept at start and hourly (`layerAudit`), in batches
 //   of ≤ 500 rows per `DELETE`, one batch per event-loop turn.
 import type { StatementSync } from "node:sqlite";
-import type { AuditEntry, AuditKind, AuditOutcome } from "@finisher/contracts";
+import { type AuditEntry, type AuditKind, type AuditOutcome, auditDetailsValid } from "@finisher/contracts";
 import { Context, Duration, Effect, Layer, Schedule } from "effect";
 import { type ControlStore, ControlStoreTag } from "./db.ts";
 
@@ -111,6 +112,13 @@ export class Audit {
     try {
       const at = this.#clock();
       if (e.kind === "auth.fail" && this.#aggregate(e, at)) return;
+      let details = e.details ?? {};
+      if (!auditDetailsValid(e.kind, details)) {
+        // A caller bug: the event is still recorded, without the details (never printed).
+        this.#failures++;
+        process.stderr.write(`finisherd: warning: audit details refused for ${e.kind}\n`);
+        details = {};
+      }
       this.#insert ??= this.#store.db.prepare(
         "INSERT INTO audit (at, kind, principalKind, principalId, credentialKind, outcome, code, remote, count, details) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1, ?)",
@@ -123,7 +131,7 @@ export class Audit {
         e.credentialKind ?? null,
         e.outcome,
         e.code ?? null,
-        JSON.stringify(e.details ?? {}),
+        JSON.stringify(details),
       );
       if (e.kind === "auth.fail") this.#failRows.set(failKey(e), Number(r.lastInsertRowid));
     } catch (err) {
@@ -186,20 +194,21 @@ export class Audit {
     }
     if (q.before === undefined) return Effect.succeed(0);
     return this.#store.deleteInBatches(
-      "DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE at < ? ORDER BY id LIMIT ?)",
+      "DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE at < ? ORDER BY at LIMIT ?)",
       [q.before],
     );
   }
 
   /** Applies retention: older than the age limit, then the oldest rows past the row limit. */
   sweep(): Effect.Effect<void> {
+    // Ids only grow, so everything at or below `max(id) - maxRows` is past the limit (with
+    // gaps from purges this keeps fewer than `maxRows`, never more). An index seek, no OFFSET.
     const rowLimit = Effect.suspend(() => {
-      const keep = this.#store.db
-        .prepare("SELECT id FROM audit ORDER BY id DESC LIMIT 1 OFFSET ?")
-        .get(this.#maxRows - 1) as { id: number } | undefined;
-      return keep === undefined
+      const top = this.#store.db.prepare("SELECT MAX(id) AS id FROM audit").get() as { id: number | null };
+      const cut = (top.id ?? 0) - this.#maxRows;
+      return cut <= 0
         ? Effect.succeed(0)
-        : this.#store.deleteInBatches("DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE id < ? ORDER BY id LIMIT ?)", [keep.id]);
+        : this.#store.deleteInBatches("DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE id <= ? ORDER BY id LIMIT ?)", [cut]);
     });
     return Effect.suspend(() => this.purge({ before: this.#clock() - this.#maxAgeMs })).pipe(
       Effect.andThen(rowLimit),

@@ -269,6 +269,10 @@ Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3)
 - [ ] Task 13: spec, architecture pointer, README, tracker
 - [ ] Task 14: cross-platform validation
 
+Notes for later tasks (review of Tasks 1, 2, 10):
+- Task 3: finisherd caps its own inbound lines at 16 MiB (socket and WebSocket, `FRAME_TOO_LARGE`); today only `fin` caps what it reads.
+- Sub-project 9 (packaging): the control store's checkpoint worker is started with `new Worker(new URL("./checkpoint-worker.ts", import.meta.url))` and relies on Node's type stripping; a bundled or packaged finisherd must ship that file (or a compiled `.js`, with the URL changed) next to `control/db.ts`.
+
 ## Diagnostics hooks (D1–D7)
 
 Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md` (batch F′, after 4C Task 26). Spec §21.1, D34. Branch `sp4c-edit-breadth`.

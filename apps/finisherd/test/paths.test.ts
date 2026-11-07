@@ -16,10 +16,55 @@ describe("isAbsoluteNormalised", () => {
   });
 
   test("Windows", () => {
-    for (const ok of ["C:\\", "C:\\a\\b", "c:/a/b", "C:\\a/b\\", "\\\\nas\\share", "\\\\nas\\share\\a", "\\\\?\\C:\\a"]) {
+    for (const ok of [
+      "C:\\",
+      "C:\\a\\b",
+      "c:/a/b",
+      "C:\\a/b\\",
+      "\\\\nas\\share",
+      "\\\\nas\\share\\a",
+      "\\\\?\\C:\\a",
+      "\\\\?\\UNC\\nas\\share\\a",
+      "C:\\a\\b.c.txt",
+      "C:\\a\\console",
+      "C:\\a\\com10",
+      "C:\\a\\.hidden",
+    ]) {
       expect(isAbsoluteNormalised(ok, "win32"), ok).toBe(true);
     }
-    for (const bad of ["C:foo", "C:", "\\foo", "/foo", "foo\\bar", "C:\\a\\..\\b", "C:\\a\\.\\b", "C:\\a\\\\b", "\\\\nas"]) {
+    for (const bad of [
+      "C:foo",
+      "C:",
+      "\\foo",
+      "/foo",
+      "foo\\bar",
+      "C:\\a\\..\\b",
+      "C:\\a\\.\\b",
+      "C:\\a\\\\b",
+      "\\\\nas",
+      // Device namespaces.
+      "\\\\.\\PhysicalDrive0",
+      "\\\\.\\pipe\\finisher-x",
+      "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
+      "\\\\?\\Volume{0}\\a",
+      "//./pipe/x",
+      // Reserved device names, with or without an extension.
+      "C:\\a\\CON",
+      "C:\\a\\nul.txt",
+      "C:\\a\\Com1",
+      "C:\\a\\LPT9.log",
+      "C:\\aux\\b",
+      "C:\\a\\PRN .txt",
+      "\\\\nas\\NUL",
+      // Streams and other colons after the drive.
+      "C:\\a\\b.txt:evil",
+      "C:\\a\\b::$DATA",
+      "C:\\a:b\\c",
+      // Trailing dot or space.
+      "C:\\a\\b.",
+      "C:\\a\\b ",
+      "C:\\a. \\b",
+    ]) {
       expect(isAbsoluteNormalised(bad, "win32"), bad).toBe(false);
     }
   });

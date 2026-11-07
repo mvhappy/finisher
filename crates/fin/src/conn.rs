@@ -15,7 +15,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-/// The longest line fin reads from the server: 16 MiB, the server's own frame limit.
+/// The longest line fin reads from the server: 16 MiB, the frame limit spec §4.3 sets for both
+/// sides (finisherd does not cap its own inbound lines yet: 5A Task 3).
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
 
 /// The error payload of a line longer than [`MAX_LINE`] (`io::ErrorKind::InvalidData`).

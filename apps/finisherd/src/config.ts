@@ -85,10 +85,13 @@ export function infoPath(serverData: string): string {
 export class ServerStartError extends Error {
   readonly code: string;
   readonly details: Record<string, unknown>;
-  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
+  /** What the person can do about it, in words (no command line). */
+  readonly fix: string | undefined;
+  constructor(code: string, message: string, details: Record<string, unknown> = {}, fix?: string) {
     super(message);
     this.code = code;
     this.details = details;
+    this.fix = fix;
   }
 }
 
@@ -102,7 +105,8 @@ export function startFailure(e: unknown): ServerStartError {
   const err = e as { code?: unknown; message?: unknown; details?: unknown; finNode?: unknown; name?: unknown } | null;
   const message = typeof err?.message === "string" ? err.message : String(e);
   if (err?.finNode === true && typeof err.code === "string") {
-    return new ServerStartError(err.code, message, (err.details as Record<string, unknown>) ?? {});
+    const fix = (err as { fix?: unknown }).fix;
+    return new ServerStartError(err.code, message, (err.details as Record<string, unknown>) ?? {}, typeof fix === "string" ? fix : undefined);
   }
   const cause = typeof err?.code === "string" ? err.code : typeof err?.name === "string" ? err.name : "unknown";
   return new ServerStartError("SERVER_START_FAILED", message, { cause });
@@ -130,7 +134,15 @@ export function ensurePrivateDir(dir: string, platform: NodeJS.Platform = proces
     if (created) makePrivateDir(dir);
     const report = checkPrivateDir(dir);
     if (!report.ok) {
-      throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is readable by other accounts`, { path: dir, problems: report.problems });
+      throw new ServerStartError(
+        "SERVER_DATA_UNSAFE",
+        `${dir} can be opened by other accounts on this computer`,
+        { path: dir, problems: report.problems },
+        "finisherd keeps its keys and its control database here, so only your account may open this folder. " +
+          "It probably inherits access for Users or Everyone from the folder it is in. " +
+          "Move the server data to a folder only you can open (the default is in your local application data), " +
+          "or remove the other accounts from this folder's security settings and turn off inheritance.",
+      );
     }
     return;
   }

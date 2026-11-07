@@ -487,21 +487,24 @@ fn rebuild_here(sd: &Path, dir: &Path) -> Result<fin_store::RebuildReport, CoreE
 
 /// `--project <dir>` (with `~` expanded), else the nearest ancestor of the working directory
 /// that holds `finisher.project.json`.
-pub fn project_dir(explicit: Option<&Path>) -> Option<PathBuf> {
+pub fn project_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, CoreError> {
     if let Some(dir) = explicit {
-        return Some(paths::resolve(dir));
+        return paths::resolve_checked(dir).map(Some);
     }
-    let cwd = std::env::current_dir().ok()?;
-    cwd.ancestors()
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(None);
+    };
+    Ok(cwd
+        .ancestors()
         .find(|d| d.join(PROJECT_FILE).is_file())
-        .map(Path::to_path_buf)
+        .map(Path::to_path_buf))
 }
 
 /// The snapshot hook when set (test builds only), otherwise the server.
 pub fn select(project: Option<&Path>) -> Result<Box<dyn Backend>, CoreError> {
     match test_hook(SNAPSHOT_ENV) {
         Some(file) => Ok(Box::new(Offline::load(Path::new(&file))?)),
-        None => Ok(Box::new(Online::new(project_dir(project)))),
+        None => Ok(Box::new(Online::new(project_dir(project)?))),
     }
 }
 

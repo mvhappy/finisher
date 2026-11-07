@@ -8,8 +8,9 @@ import { rootArg, walk } from "./walk.mjs";
 //   `fin/test-hooks`: `FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`): the normal (non-dev)
 //   feature graph of the workspace's default members must not enable one (TEST_HOOKS_IN_BUILD).
 //   Only dev-dependencies (fin's self dev-dependency) and `fin-store-xhost`, built alone, do.
-// - fin's hook variables are read only through `backend::test_hook`, which is off without the
-//   feature: a direct `env::var`/`var_os` of one in `crates/fin/src` is TEST_HOOK_UNGUARDED.
+// - fin's hook variables (`FIN_OFFLINE_SNAPSHOT`, any `FIN_TEST_*`) are read only through
+//   `backend::test_hook`, which is off without the feature: a direct `env::var`/`var_os` of
+//   one in `crates/fin/src`, by name or through its `*_ENV` constant, is TEST_HOOK_UNGUARDED.
 const root = rootArg();
 let failed = false;
 const r = spawnSync(
@@ -39,16 +40,26 @@ for (const file of walk(root)) {
   }
 }
 
-const HOOKS = /env::var(?:_os)?\(\s*(?:SNAPSHOT_ENV|COMMIT_GATE_ENV|"FIN_OFFLINE_SNAPSHOT"|"FIN_TEST_COMMIT_GATE")/;
-for (const file of walk(root)) {
-  if (!file.startsWith("crates/fin/src/") || !file.endsWith(".rs")) continue;
-  readFileSync(join(root, file), "utf8")
-    .split("\n")
-    .forEach((line, i) => {
-      if (HOOKS.test(line)) {
+// Hook names: `FIN_OFFLINE_SNAPSHOT` and every `FIN_TEST_*`, as literals or through the
+// `*_ENV` constants fin defines for them.
+const HOOK_NAME = /^(FIN_OFFLINE_SNAPSHOT|FIN_TEST_[A-Z0-9_]+)$/;
+const finSources = [...walk(root)].filter((f) => f.startsWith("crates/fin/src/") && f.endsWith(".rs"));
+const texts = new Map(finSources.map((f) => [f, readFileSync(join(root, f), "utf8")]));
+const hookConsts = new Set();
+for (const text of texts.values()) {
+  for (const m of text.matchAll(/const\s+([A-Z0-9_]+_ENV)\s*:\s*&str\s*=\s*"([A-Z0-9_]+)"/g)) {
+    if (HOOK_NAME.test(m[2])) hookConsts.add(m[1]);
+  }
+}
+const READ = /env::var(?:_os)?\(\s*(?:"([A-Z0-9_]+)"|(?:[a-z_][a-z0-9_]*::)*([A-Z0-9_]+_ENV)\b)/g;
+for (const [file, text] of texts) {
+  text.split("\n").forEach((line, i) => {
+    for (const m of line.matchAll(READ)) {
+      if ((m[1] !== undefined && HOOK_NAME.test(m[1])) || (m[2] !== undefined && hookConsts.has(m[2]))) {
         console.log(`TEST_HOOK_UNGUARDED: ${file}:${i + 1} reads a test hook directly; use backend::test_hook`);
         failed = true;
       }
-    });
+    }
+  });
 }
 if (failed) process.exitCode = 1;

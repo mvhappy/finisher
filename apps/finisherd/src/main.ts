@@ -95,6 +95,7 @@ function main(argv: ReadonlyArray<string>): void {
         const error = startFailure(Cause.squash(cause));
         const details = Object.keys(error.details).length > 0 ? ` ${JSON.stringify(error.details)}` : "";
         process.stderr.write(`finisherd: ${error.code}: ${error.message}${details}\n`);
+        if (error.fix !== undefined) process.stderr.write(`finisherd: fix: ${error.fix}\n`);
         process.exitCode = 1;
       }),
     ),

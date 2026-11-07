@@ -125,6 +125,20 @@ describe("audit", () => {
     expect(turns).toBeGreaterThanOrEqual(19);
   });
 
+  test("details outside the kind's schema are dropped and counted", () => {
+    const audit = new Audit(store, () => now);
+    audit.append({ ...denied(), details: { path: "/somewhere/film" } });
+    audit.append({ ...denied(), details: { deviceName: "Laptop" } });
+    audit.append({ kind: "device.revoke", principal: { kind: "console", id: "console" }, outcome: "ok", details: { deviceName: "Laptop" } });
+    const [revoke, named, path] = audit.list().entries;
+    expect(path!.details).toEqual({});
+    expect(named!.details).toEqual({});
+    expect(revoke!.details).toEqual({ deviceName: "Laptop" });
+    expect(audit.failures()).toBe(2);
+    const raw = store.db.prepare("SELECT details FROM audit").all().map((r) => r.details).join(" ");
+    expect(raw).not.toContain("somewhere");
+  });
+
   test("audit_failure_never_throws", async () => {
     const other = openControlStore(mkdtempSync(join(tmpdir(), "audit-closed-")), { serverId: "x", checkpoint: false });
     const audit = new Audit(other, () => now);

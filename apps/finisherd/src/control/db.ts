@@ -13,7 +13,7 @@
 // bulk deletes go through `deleteInBatches`, ≤ 500 rows per statement, one statement per turn.
 import { chmodSync, closeSync, existsSync, openSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { FinError } from "@finisher/contracts";
 import { Context, Effect, Layer } from "effect";
@@ -80,7 +80,6 @@ export function controlDbPath(serverData: string): string {
 
 const SQLITE_BUSY = 5;
 const SQLITE_LOCKED = 6;
-const SQLITE_CORRUPT = 11;
 const SQLITE_NOTADB = 26;
 
 function sqliteCode(e: unknown): number | undefined {
@@ -95,10 +94,19 @@ export function isBusy(e: unknown): boolean {
   return /database is locked|database table is locked/i.test(String((e as Error | null)?.message ?? e));
 }
 
-function isCorrupt(e: unknown): boolean {
+/** Not a SQLite database at all (`SQLITE_NOTADB`): the one thrown error that resets the store. */
+function isNotADatabase(e: unknown): boolean {
   const code = sqliteCode(e);
-  if (code !== undefined) return code === SQLITE_CORRUPT || code === SQLITE_NOTADB;
-  return /malformed|not a database|corrupt/i.test(String((e as Error | null)?.message ?? e));
+  if (code !== undefined) return code === SQLITE_NOTADB;
+  return /file is not a database/i.test(String((e as Error | null)?.message ?? e));
+}
+
+/**
+ * A schema this SQLite cannot parse: most likely written by a newer SQLite (a newer
+ * finisherd's Node), not damage, so the start is refused and nothing is reset.
+ */
+function isUnreadableSchema(e: unknown): boolean {
+  return /malformed database schema/i.test(String((e as Error | null)?.message ?? e));
 }
 
 export function controlBusy(e: unknown): FinError {
@@ -172,20 +180,26 @@ function tooNew(tooNew: ReturnType<typeof planMigrations>["tooNew"]): ServerStar
 export function openControlStore(serverData: string, opts: OpenControlOptions): ControlStore {
   const clock = opts.clock ?? Date.now;
   const path = controlDbPath(serverData);
-  let reset: { aside: string; reason: string } | undefined;
+  let reset: { aside: string; reason: "quickCheck" | "notADatabase" } | undefined;
   let db: DatabaseSync;
   try {
     createPrivate(path);
     try {
       db = connect(path);
     } catch (e) {
-      if (!(e instanceof Corrupt) && !isCorrupt(e)) throw e;
-      reset = { aside: moveAside(path, clock()), reason: e instanceof Error ? e.message : String(e) };
+      // Reset only for damage `quick_check` reports, or a file that is not SQLite at all.
+      if (!(e instanceof Corrupt) && !isNotADatabase(e)) throw e;
+      reset = { aside: moveAside(path, clock()), reason: e instanceof Corrupt ? "quickCheck" : "notADatabase" };
       createPrivate(path);
       db = connect(path);
     }
   } catch (e) {
     if (isBusy(e)) throw new ServerStartError("CONTROL_DB_BUSY", "control.db is locked", { cause: String(e) });
+    if (isUnreadableSchema(e)) {
+      throw new ServerStartError("CONTROL_DB_TOO_NEW", "control.db has a schema this finisherd's SQLite cannot read", {
+        cause: String((e as Error).message),
+      });
+    }
     throw startFailure(e);
   }
   try {
@@ -204,7 +218,7 @@ export function openControlStore(serverData: string, opts: OpenControlOptions): 
       if (reset !== undefined) {
         db.prepare(
           "INSERT INTO audit (at, kind, principalKind, principalId, outcome, details) VALUES (?, 'control.reset', 'system', 'finisherd', 'ok', ?)",
-        ).run(now, JSON.stringify({ reason: reset.reason.slice(0, 200) }));
+        ).run(now, JSON.stringify({ reason: reset.reason }));
       }
       db.prepare("INSERT OR IGNORE INTO server_ids (serverId, envId, since) VALUES (?, ?, ?)").run(opts.serverId, envId, now);
     });
@@ -267,6 +281,8 @@ const nextTurn = Effect.promise(() => new Promise<void>((resolve) => setImmediat
 function makeStore(db: DatabaseSync, path: string, envId: string, checkpoint: CheckpointOptions | false | undefined): ControlStore {
   const worker = checkpoint === false ? undefined : startCheckpointWorker(path, checkpoint ?? {});
   let closed: Promise<void> | undefined;
+  // Prepared once per SQL text (the callers pass a few fixed statements).
+  const statements = new Map<string, StatementSync>();
   return {
     db,
     envId,
@@ -274,7 +290,11 @@ function makeStore(db: DatabaseSync, path: string, envId: string, checkpoint: Ch
     deleteInBatches: (sql, params, batch = MAX_BATCH) =>
       Effect.suspend(() => {
         const size = Math.max(1, Math.min(MAX_BATCH, Math.floor(batch)));
-        const stmt = db.prepare(sql);
+        let stmt = statements.get(sql);
+        if (stmt === undefined) {
+          stmt = db.prepare(sql);
+          statements.set(sql, stmt);
+        }
         const loop = (total: number): Effect.Effect<number> =>
           Effect.flatMap(
             Effect.sync(() => Number(stmt.run(...(params as never[]), size as never).changes)),
