@@ -84,6 +84,7 @@ pub fn run_on(mut helper: impl Helper, chan: Channel) -> i32 {
         id: Some(helper.id().to_owned()),
     };
     let _ = shared.out.send(&WorkerMsg::Hello(hello));
+    crate::qos::lower_after_hello();
     let (tx, rx) = mpsc::channel();
     spawn_reader(chan.input, &shared, tx);
     spawn_alive(&shared);

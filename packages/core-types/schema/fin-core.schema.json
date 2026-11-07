@@ -9464,7 +9464,7 @@
     },
     "TestOomParams": {
       "additionalProperties": false,
-      "description": "`test.oom`: allocates and touches `mib` MiB.",
+      "description": "`test.oom`: allocates and touches `mib` MiB, maps `mapFile` (if given) read-only and\nreads every page of it, writes `1` to `readyFile` (if given), then holds.",
       "properties": {
         "holdMs": {
           "description": "Hold the memory this long before answering.",
@@ -9472,10 +9472,18 @@
           "minimum": 0,
           "type": "integer"
         },
+        "mapFile": {
+          "description": "A file (mapped name, or under the job directory) to map: file-backed pages.",
+          "type": "string"
+        },
         "mib": {
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "readyFile": {
+          "description": "A file to write once the memory is held.",
+          "type": "string"
         }
       },
       "required": [

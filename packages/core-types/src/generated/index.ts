@@ -4772,7 +4772,8 @@ export interface TestHelperResult {
   helpers: string[];
 }
 /**
- * `test.oom`: allocates and touches `mib` MiB.
+ * `test.oom`: allocates and touches `mib` MiB, maps `mapFile` (if given) read-only and
+ * reads every page of it, writes `1` to `readyFile` (if given), then holds.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestOomParams".
@@ -4782,7 +4783,15 @@ export interface TestOomParams {
    * Hold the memory this long before answering.
    */
   holdMs?: number;
+  /**
+   * A file (mapped name, or under the job directory) to map: file-backed pages.
+   */
+  mapFile?: string;
   mib: number;
+  /**
+   * A file to write once the memory is held.
+   */
+  readyFile?: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
