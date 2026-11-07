@@ -8,3 +8,11 @@ publish = false
 description = "Pure media types: pixel formats, colour tags, MediaInfo, the sample table and the nearest-frame rule (no I/O; builds for wasm32)."
 
 [dependencies]
+fin-core = { path = "../fin-core" }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# No `fork`/`timeout`, as in fin-core (the wasm32-wasip1 runs).
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }

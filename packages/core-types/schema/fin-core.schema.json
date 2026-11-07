@@ -525,6 +525,28 @@
       ],
       "type": "object"
     },
+    "AudioCodec": {
+      "oneOf": [
+        {
+          "enum": [
+            "aac",
+            "opus",
+            "mp3",
+            "flac",
+            "alac",
+            "pcm",
+            "ac3",
+            "eac3"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "Anything else; the sample entry's four-character code is in `AudioTrackInfo.fourcc`.",
+          "type": "string"
+        }
+      ]
+    },
     "AudioInfo": {
       "properties": {
         "channels": {
@@ -645,6 +667,49 @@
         "from",
         "to",
         "items"
+      ],
+      "type": "object"
+    },
+    "AudioTrackInfo": {
+      "description": "The first audio track.",
+      "properties": {
+        "channels": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "codec": {
+          "$ref": "#/$defs/AudioCodec"
+        },
+        "fourcc": {
+          "type": "string"
+        },
+        "padding": {
+          "description": "Samples to drop at the end.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "priming": {
+          "description": "Samples to drop at the start (encoder delay: edit-list media time, `roll`, Opus\npre-skip).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampleRate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "fourcc",
+        "sampleRate",
+        "channels",
+        "priming",
+        "padding"
       ],
       "type": "object"
     },
@@ -1380,6 +1445,42 @@
       ],
       "type": "string"
     },
+    "Chroma": {
+      "description": "Chroma subsampling.",
+      "enum": [
+        "mono",
+        "yuv420",
+        "yuv422",
+        "yuv444"
+      ],
+      "type": "string"
+    },
+    "ChromaSiting": {
+      "description": "Where 4:2:0 chroma samples sit relative to luma.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "left",
+          "description": "Co-sited horizontally with the left luma sample, centred vertically (MPEG-2, H.264\ndefault).",
+          "type": "string"
+        },
+        {
+          "const": "center",
+          "description": "Centred both ways (MPEG-1, JPEG).",
+          "type": "string"
+        },
+        {
+          "const": "topLeft",
+          "description": "Co-sited with the top-left luma sample (BT.2020, AV1 \"colocated\").",
+          "type": "string"
+        }
+      ]
+    },
     "CliCommand": {
       "properties": {
         "argsHash": {
@@ -1451,6 +1552,33 @@
           "type": "string"
         }
       ]
+    },
+    "ColourTags": {
+      "properties": {
+        "matrix": {
+          "$ref": "#/$defs/Matrix"
+        },
+        "primaries": {
+          "$ref": "#/$defs/Primaries"
+        },
+        "range": {
+          "$ref": "#/$defs/Range"
+        },
+        "siting": {
+          "$ref": "#/$defs/ChromaSiting"
+        },
+        "transfer": {
+          "$ref": "#/$defs/Transfer"
+        }
+      },
+      "required": [
+        "primaries",
+        "transfer",
+        "matrix",
+        "range",
+        "siting"
+      ],
+      "type": "object"
     },
     "CommitOutcome": {
       "enum": [
@@ -1637,6 +1765,44 @@
       ],
       "type": "object"
     },
+    "ContainerKind": {
+      "description": "The container family, from `ftyp`'s brands.",
+      "oneOf": [
+        {
+          "enum": [
+            "mp4"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "mov",
+          "description": "QuickTime (`qt  ` major brand).",
+          "type": "string"
+        }
+      ]
+    },
+    "ContentLight": {
+      "description": "CTA-861.3 content light level (`clli`), in cd/m².",
+      "properties": {
+        "maxCll": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxFall": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxCll",
+        "maxFall"
+      ],
+      "type": "object"
+    },
     "CoreError": {
       "description": "A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.",
       "properties": {
@@ -1765,6 +1931,48 @@
       "required": [
         "changes",
         "shifts"
+      ],
+      "type": "object"
+    },
+    "DolbyVision": {
+      "description": "A Dolby Vision configuration record (`dvcC`/`dvvC`).",
+      "properties": {
+        "baseLayer": {
+          "type": "boolean"
+        },
+        "compatibility": {
+          "description": "The base layer's signal compatibility id (8.1 HDR10, 8.4 HLG, …).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enhancementLayer": {
+          "type": "boolean"
+        },
+        "level": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profile": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rpu": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "profile",
+        "level",
+        "rpu",
+        "enhancementLayer",
+        "baseLayer",
+        "compatibility"
       ],
       "type": "object"
     },
@@ -3363,6 +3571,21 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "HdrInfo": {
+      "description": "HDR metadata a source carries (kept for HDR export later, spec §10.1).",
+      "properties": {
+        "contentLight": {
+          "$ref": "#/$defs/ContentLight"
+        },
+        "dolbyVision": {
+          "$ref": "#/$defs/DolbyVision"
+        },
+        "mastering": {
+          "$ref": "#/$defs/MasteringDisplay"
+        }
+      },
+      "type": "object"
+    },
     "Histogram": {
       "description": "One window's timings for one key. `buckets[i]` counts the samples with\n`2^i ≤ micros < 2^(i+1)` (`buckets[0]` also counts 0, the last bucket everything above);\ntrailing empty buckets are omitted.",
       "properties": {
@@ -3454,6 +3677,25 @@
       "pattern": "^([0-7][0-9A-HJKMNP-TV-Z]{25}|k1:[0-9a-f]{32})$",
       "type": "string",
       "x-fin-class": "meta"
+    },
+    "IgnoredTrack": {
+      "description": "A track `fin-container` does not interpret (a second video or audio track, timecode, …).",
+      "properties": {
+        "handler": {
+          "description": "The `hdlr` handler type (`vide`, `soun`, `tmcd`, …).",
+          "type": "string"
+        },
+        "id": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "handler"
+      ],
+      "type": "object"
     },
     "ImageInfo": {
       "properties": {
@@ -4969,6 +5211,110 @@
         "feather",
         "choke",
         "invert"
+      ],
+      "type": "object"
+    },
+    "MasteringDisplay": {
+      "description": "SMPTE ST 2086 mastering display colour volume (`mdcv`), in the box's own units:\nchromaticities in 0.00002, luminance in 0.0001 cd/m².",
+      "properties": {
+        "maxLuminance": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minLuminance": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "primaries": {
+          "description": "`[x, y]` for green, blue, red (the box's order).",
+          "items": {
+            "items": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array"
+        },
+        "whitePoint": {
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "primaries",
+        "whitePoint",
+        "maxLuminance",
+        "minLuminance"
+      ],
+      "type": "object"
+    },
+    "Matrix": {
+      "oneOf": [
+        {
+          "enum": [
+            "bt709",
+            "bt601",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "bt2020Ncl",
+          "description": "BT.2020 non-constant luminance.",
+          "type": "string"
+        },
+        {
+          "const": "identity",
+          "description": "RGB (GBR) coded directly.",
+          "type": "string"
+        }
+      ]
+    },
+    "MediaInfo": {
+      "description": "What a media file is (spec §6.3).",
+      "properties": {
+        "audio": {
+          "$ref": "#/$defs/AudioTrackInfo"
+        },
+        "container": {
+          "$ref": "#/$defs/ContainerKind"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational",
+          "description": "Seconds: the longest interpreted track after edit lists."
+        },
+        "fragmented": {
+          "type": "boolean"
+        },
+        "ignored": {
+          "items": {
+            "$ref": "#/$defs/IgnoredTrack"
+          },
+          "type": "array"
+        },
+        "video": {
+          "$ref": "#/$defs/VideoTrackInfo"
+        }
+      },
+      "required": [
+        "container",
+        "duration"
       ],
       "type": "object"
     },
@@ -6589,6 +6935,33 @@
       ],
       "description": "A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1."
     },
+    "Primaries": {
+      "oneOf": [
+        {
+          "enum": [
+            "bt709",
+            "bt2020",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "bt601_625",
+          "description": "BT.601 625-line (BT.470 B/G; PAL).",
+          "type": "string"
+        },
+        {
+          "const": "bt601_525",
+          "description": "BT.601 525-line (SMPTE 170M; NTSC).",
+          "type": "string"
+        },
+        {
+          "const": "displayP3",
+          "description": "P3 with a D65 white point (SMPTE EG 432-1).",
+          "type": "string"
+        }
+      ]
+    },
     "PrivacySettings": {
       "description": "`settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown\nkeys are ignored.",
       "properties": {
@@ -6880,6 +7253,21 @@
       "type": "array",
       "uniqueItems": true
     },
+    "Range": {
+      "oneOf": [
+        {
+          "enum": [
+            "full"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "limited",
+          "description": "Video range: Y 16–235, chroma 16–240 (8-bit).",
+          "type": "string"
+        }
+      ]
+    },
     "Rational": {
       "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\".",
       "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
@@ -7077,6 +7465,16 @@
           "type": "string"
         }
       ]
+    },
+    "Rotation": {
+      "description": "Clockwise display rotation in degrees, from the track matrix.",
+      "enum": [
+        0,
+        90,
+        180,
+        270
+      ],
+      "type": "integer"
     },
     "RpcStats": {
       "description": "`rpc.stats`: one non-stream RPC method (`RPC_METHODS`).",
@@ -7347,6 +7745,25 @@
         "from",
         "by",
         "op"
+      ],
+      "type": "object"
+    },
+    "Size": {
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
       ],
       "type": "object"
     },
@@ -7937,6 +8354,33 @@
       ],
       "type": "string"
     },
+    "Transfer": {
+      "oneOf": [
+        {
+          "enum": [
+            "srgb",
+            "linear",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "bt709",
+          "description": "BT.709 (also BT.601 and BT.2020 SDR, whose curves are the same).",
+          "type": "string"
+        },
+        {
+          "const": "pq",
+          "description": "SMPTE ST 2084.",
+          "type": "string"
+        },
+        {
+          "const": "hlg",
+          "description": "ARIB STD-B67.",
+          "type": "string"
+        }
+      ]
+    },
     "Transform": {
       "properties": {
         "anchor": {
@@ -8313,6 +8757,26 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "VideoCodec": {
+      "oneOf": [
+        {
+          "enum": [
+            "av1",
+            "h264",
+            "hevc",
+            "vp9",
+            "vp8",
+            "proRes"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "Anything else; the sample entry's four-character code is in `VideoTrackInfo.fourcc`.",
+          "type": "string"
+        }
+      ]
+    },
     "VideoInfo": {
       "properties": {
         "height": {
@@ -8333,6 +8797,93 @@
         "width",
         "height",
         "rate"
+      ],
+      "type": "object"
+    },
+    "VideoTrackInfo": {
+      "description": "The first video track.",
+      "properties": {
+        "bitDepth": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chroma": {
+          "$ref": "#/$defs/Chroma"
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec"
+        },
+        "coded": {
+          "$ref": "#/$defs/Size",
+          "description": "The sample entry's coded size."
+        },
+        "colour": {
+          "$ref": "#/$defs/ColourTags"
+        },
+        "display": {
+          "$ref": "#/$defs/Size",
+          "description": "`coded` after the pixel aspect and the rotation ([`display_size`])."
+        },
+        "fourcc": {
+          "description": "The sample entry type (`av01`, `hvc1`, …).",
+          "type": "string"
+        },
+        "frames": {
+          "description": "Frames presented, after edit lists.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hdr": {
+          "$ref": "#/$defs/HdrInfo"
+        },
+        "icc": {
+          "description": "An ICC profile was given instead of code points (`colr` `prof`/`rICC`).",
+          "type": "boolean"
+        },
+        "level": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nominalRate": {
+          "$ref": "#/$defs/Rational",
+          "description": "Frames per second of the most common frame duration."
+        },
+        "pixelAspect": {
+          "$ref": "#/$defs/Rational",
+          "description": "Horizontal over vertical spacing (`pasp`); 1 when absent."
+        },
+        "profile": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rotation": {
+          "$ref": "#/$defs/Rotation"
+        },
+        "vfr": {
+          "description": "Frame durations differ by more than 0.1 % (the last frame ignored).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "codec",
+        "fourcc",
+        "bitDepth",
+        "chroma",
+        "coded",
+        "display",
+        "rotation",
+        "pixelAspect",
+        "colour",
+        "nominalRate",
+        "vfr",
+        "frames"
       ],
       "type": "object"
     },

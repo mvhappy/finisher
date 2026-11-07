@@ -491,6 +491,13 @@ dependencies = [
 [[package]]
 name = "fin-media"
 version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "fin-node"
@@ -544,6 +551,7 @@ dependencies = [
  "fin-core",
  "fin-fonts",
  "fin-journal",
+ "fin-media",
  "fin-probe",
  "fin-store",
  "fin-testfonts",

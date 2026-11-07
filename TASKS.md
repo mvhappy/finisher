@@ -273,7 +273,7 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
 - [ ] Spec follow-ups (spec §22): reword core §5.6 and arch §27.10 "fonts always bundled"; arch §18 exception for Electron's ffmpeg if question 2 is (a); D31 and Windows 10 22H2 (question 9)
 - [ ] 6A-1: foundations (branch `sp6a1-media-foundations`)
   - [x] Task 1: crates, licence gates (native build, run-time libraries, crate dependencies), `libm` pinned. As built: `scripts/check-native-deps.mjs` (per `deny.toml` target, `cargo metadata --all-features --filter-platform`; lists `libsqlite3-sys`, `blake3` and `ring`, which already compile bundled C; `blessing` and `CC0-1.0` added to native.json's allow list for SQLite and BLAKE3), `check-runtime-libs.mjs`, `check-crate-deps.mjs` (`fin-node` may link `fin-shm`: Tasks 10 and 12 move job outputs through it, spec §3.4/§18), BLAKE3 for licence files in `scripts/blake3.mjs` (Node has none; checked against the published vectors)
-  - [ ] Task 2: `fin-media` types and the nearest-frame rule
+  - [x] Task 2: `fin-media` types and the nearest-frame rule. As built: `frame_at` compares `2·s·timescale` with `pts(i)+pts(i+1)` in i128 (binary search, earlier wins ties); `SampleTable::with_sync` keeps sync samples an edit list drops so `decode_start` (returns a decode index; open-GOP leading pictures start one GOP earlier) still finds them; `MediaInfo` adds `fourcc`, `icc`, `fragmented` and `ignored` tracks; `Rotation` serialises as degrees
   - [ ] Task 3: frame-id test patterns
   - [ ] Task 4: MP4 muxer over `mp4-atom`
   - [ ] Task 5: demuxer (sample tables, edit lists, fragments, limits)
