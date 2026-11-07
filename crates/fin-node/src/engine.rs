@@ -61,6 +61,8 @@ pub(crate) struct Inner {
     pub(crate) maintenance: Mutex<Option<Maintenance>>,
     /// This engine's place in its server's font manager (pins, status, the shared measurer).
     pub(crate) fonts: crate::fonts::Handle,
+    /// The project's flag in the server's journal, until `close` (unknown afterwards).
+    pub(crate) journal: Mutex<Option<crate::journal::ProjectGuard>>,
     #[cfg(feature = "test-hooks")]
     pub(crate) hooks: crate::test_hooks::Hooks,
 }
@@ -136,6 +138,7 @@ impl Engine {
         status: Option<serde_json::Value>,
         worker: Worker,
         fonts: crate::fonts::Opened,
+        journal: crate::journal::ProjectGuard,
     ) -> Result<Engine> {
         let project_id = store.project_id().to_string();
         let inner = Arc::new_cyclic(|weak| Inner {
@@ -148,6 +151,7 @@ impl Engine {
             auto_queued: AtomicBool::new(false),
             events: EventSink::default(),
             maintenance: Mutex::new(None),
+            journal: Mutex::new(Some(journal)),
             #[cfg(feature = "test-hooks")]
             hooks: Default::default(),
         });
@@ -331,6 +335,14 @@ impl Engine {
         self.long(env, "compact", |s| {
             encode(&s.compact(true).map_err(reject)?)
         })
+    }
+
+    /// Sets the project's collection flag (`default` or `never`) in `finisher.project.json`
+    /// (needs the writer lease: `PROJECT_READ_ONLY` otherwise) and in the server's journal;
+    /// `never` purges the project's entries. Resolves to `{"project", "collect"}` JSON.
+    #[napi(catch_unwind)]
+    pub fn set_collect(&self, collect: String) -> AsyncTask<StoreTask> {
+        self.task(Call::SetCollect { collect })
     }
 
     /// Delivers every later store event (JSON string) to `callback`, replacing an earlier one.

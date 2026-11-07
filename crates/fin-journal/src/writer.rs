@@ -97,6 +97,7 @@ pub(crate) struct Writer {
     pub state: ConsentState,
     pub state_dirty: bool,
     pub state_other: Map<String, Value>,
+    pub session: crate::session::SessionState,
 }
 
 impl Writer {
@@ -136,6 +137,7 @@ impl Writer {
             state: init.state,
             state_dirty: init.dirty,
             state_other: init.other,
+            session: Default::default(),
         }
     }
 

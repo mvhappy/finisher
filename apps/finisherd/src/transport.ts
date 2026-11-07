@@ -10,6 +10,8 @@ import { Effect, Layer } from "effect";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { SocketServer } from "effect/socket/SocketServer";
 import { ServerStartError, startFailure } from "./config.ts";
+import { RpcSource, type Source } from "./diagnostics.ts";
+import { HandlersLive } from "./handlers.ts";
 
 /** One server per server-data: a live finisherd already owns the socket. */
 function serverRunning(socket: string): ServerStartError {
@@ -112,9 +114,15 @@ export function portOf(server: SocketServer["Service"]): number {
   throw new Error("websocket server is not bound to an inet address");
 }
 
-/** `FinRpcs` served over one `SocketServer` with NDJSON framing. */
-export function serveRpc(server: SocketServer["Service"]) {
+/**
+ * `FinRpcs` served over one `SocketServer` with NDJSON framing, by handlers of its own that know
+ * the transport's `source` (plan D, Decision 24: the local socket is `fin`, the WebSocket `ui`).
+ * `fresh`: layers are memoized by reference, so a shared `HandlersLive` would serve both
+ * transports with the first one's source.
+ */
+export function serveRpc(server: SocketServer["Service"], source: Source) {
   return RpcServer.layer(FinRpcs).pipe(
+    Layer.provide(Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.succeed(RpcSource, source)))),
     // `fresh`: layers are memoized by reference, and each transport needs its own protocol.
     Layer.provide(Layer.fresh(RpcServer.layerProtocolSocketServer)),
     Layer.provide(Layer.succeed(SocketServer, server)),

@@ -68,6 +68,8 @@ export interface ServerInfo {
   readonly socket: string;
   readonly token: string;
   readonly protocolVersion: number;
+  /** Whether the server records diagnostics now (plan D, Decision 23: `fin` sends nothing when false). */
+  readonly diagnostics: { readonly enabled: boolean };
 }
 
 export function newToken(): string {
@@ -184,6 +186,40 @@ export function readSettings(serverData: string, last?: Settings): { settings: S
     return { settings: fallback, error: "fonts.autoFetch must be true or false" };
   }
   return { settings: { fonts: { autoFetch: autoFetch ?? DEFAULT_SETTINGS.fonts.autoFetch } } };
+}
+
+/**
+ * `settings.json`'s raw `privacy` section (plan D, Decision 8): `privacy` is what the file
+ * holds (`undefined` when the file or the key is absent); `error` says why a present file can't
+ * be used (unreadable, invalid JSON, not an object), which keeps the last good privacy
+ * settings, or before any is known means recording nothing. The section's own validation
+ * (`on`/`off`, ranges) is the journal's, with the same last-good rule.
+ */
+export function readPrivacy(serverData: string): { privacy?: unknown; error?: string; missing?: true } {
+  let text: string;
+  try {
+    text = readFileSync(settingsPath(serverData), "utf8");
+  } catch (e) {
+    return (e as { code?: unknown }).code === "ENOENT" ? { missing: true } : { error: String(e) };
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { error: "settings must be a JSON object" };
+  return { privacy: (raw as { privacy?: unknown }).privacy };
+}
+
+/**
+ * The `privacy` argument of fin-node's `Journal.open`/`applySettings`: the section's JSON,
+ * `null` when absent, or text that is not JSON for an unusable file (the journal then keeps
+ * the last good settings, or records nothing before any).
+ */
+export function privacyArg(read: { privacy?: unknown; error?: string; missing?: true }): string | null {
+  if (read.error !== undefined) return "<unusable settings.json>";
+  return read.privacy === undefined ? null : JSON.stringify(read.privacy);
 }
 
 export function removeServerInfo(serverData: string): void {
