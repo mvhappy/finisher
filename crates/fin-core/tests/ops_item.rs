@@ -981,6 +981,23 @@ fn asset_add_validates_each_kind() {
         code(|a| a.lut = Some(LutInfo { size: 1 }), AssetKind::Lut),
         Err("INVALID_RANGE".into())
     );
+    // An image or SVG is 1 to 32768 px a side.
+    for (width, height) in [(32_769, 8), (8, 40_000), (0, 8)] {
+        for kind in [AssetKind::Image, AssetKind::Svg] {
+            let mut a = asset_of(kind, "$a");
+            a.image = Some(ImageInfo { width, height });
+            let err = try_apply(&p, vec![a.into()]).unwrap_err();
+            assert_eq!(err.code, "INVALID_RANGE", "{width}×{height}");
+            assert_eq!(err.details["max"], 32_768);
+        }
+    }
+    let edge = |a: &mut AssetAdd| {
+        a.image = Some(ImageInfo {
+            width: 32_768,
+            height: 32_768,
+        });
+    };
+    assert_eq!(code(edge, AssetKind::Image), Ok(()));
     assert_eq!(
         code(|a| a.bin = Some("b1".into()), AssetKind::Image),
         Err("NOT_FOUND".into())

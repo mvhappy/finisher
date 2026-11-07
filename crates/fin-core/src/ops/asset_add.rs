@@ -3,14 +3,14 @@
 //! Structural (value shapes, plan 4C Decision 25): each kind carries its own fields and no
 //! other kind's ([`crate::ops::AssetAdd`]); a `media` or `lottieTemplate` asset has a positive
 //! duration (clips need a source range to point into); a font names its whole-file SHA-256
-//! (64 lowercase hex), a size and at least one face; a LUT has an edge of at least 2; a `bin`
-//! exists. Policy: a `media` asset has a video or an audio stream.
+//! (64 lowercase hex), a size and at least one face; a LUT has an edge of at least 2; an
+//! image or SVG is 1 to [`MAX_IMAGE_DIMENSION`] px a side; a `bin` exists. Policy: a `media` asset has a video or an audio stream.
 
 use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{Asset, AssetKind, Project};
+use crate::model::{Asset, AssetKind, MAX_IMAGE_DIMENSION, Project};
 use crate::ops::util::{OpDiff, invalid_range, not_found, wrong_op};
 use crate::ops::{AssetAdd, Bindings, Op};
 use crate::rebase::Footprint;
@@ -113,6 +113,16 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
             json!({ "size": l.size, "min": 2 }),
             "probe the .cube file again",
         ));
+    }
+    if let Some(i) = &a.image {
+        let side = 1..=MAX_IMAGE_DIMENSION;
+        if !side.contains(&i.width) || !side.contains(&i.height) {
+            return Err(invalid_range(
+                "an image is 1 to 32768 px a side",
+                json!({ "width": i.width, "height": i.height, "max": MAX_IMAGE_DIMENSION }),
+                "probe the file again; scale a larger image down first",
+            ));
+        }
     }
     if let Some(bin) = &a.bin {
         let bin = bindings.resolve(bin)?;

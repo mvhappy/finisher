@@ -1,5 +1,6 @@
 //! WAV: a RIFF/`WAVE` parser for `fmt ` and `data`. The duration is the data's whole frames
-//! over the sample rate; other chunks are skipped.
+//! over the sample rate; other chunks are skipped. A `data` length of `0xFFFFFFFF` is a
+//! streamed (unfinalised) WAV: its data runs to the end of the file.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -76,8 +77,11 @@ pub(crate) fn probe(file: &mut File, size: u64, path: &Path) -> Result<Probe, Co
         let mut header = [0u8; 8];
         file.seek(SeekFrom::Start(at)).map_err(io)?;
         file.read_exact(&mut header).map_err(io)?;
-        let len = u64::from(u32_at(&header, 4));
+        let mut len = u64::from(u32_at(&header, 4));
         let body_at = at + 8;
+        if &header[..4] == b"data" && len == u64::from(u32::MAX) {
+            len = size - body_at;
+        }
         if body_at + len > size {
             return Err(unsupported(path, "truncated WAV chunk"));
         }
