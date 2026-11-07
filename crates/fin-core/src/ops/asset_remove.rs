@@ -9,21 +9,17 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
-use crate::model::{FontSource, Item, ParamValue, Project};
+use crate::model::{FontSource, Item, Project};
 use crate::ops::util::{OpDiff, asset, items, wrong_op};
 use crate::ops::{AssetAdd, Bindings, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
-/// Whether `item` uses asset `id`: it shows it, or one of its effects names it. The ids an
-/// item lists ([`Item::ids`]) cover what it shows (and, with the settings registry, its
-/// effects' asset references); a `lut` effect's `asset` param held as text is read too.
+/// Whether `item` uses asset `id`: it shows it, or one of its effects names it (a `lut`
+/// effect's `asset` param, `{"asset": id}`). [`Item::ids`] lists both.
 fn uses(item: &Item, id: &str) -> bool {
     item.ids().contains(&id)
-        || item.common.effects.iter().any(|e| {
-            e.kind == "lut" && matches!(e.params.get("asset"), Some(ParamValue::Text(a)) if a == id)
-        })
 }
 
 pub(crate) fn validate(

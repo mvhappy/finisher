@@ -25,6 +25,7 @@ pub fn json_schema_with(extra: impl FnOnce(&mut SchemaGenerator)) -> Value {
     generator.subschema_for::<CoreError>();
     generator.subschema_for::<CommittedTx>();
     generator.subschema_for::<Applied>();
+    generator.subschema_for::<crate::params::ParamSpec>();
     extra(&mut generator);
     let mut defs: Map<String, Value> = generator.take_definitions(true);
     for v in defs.values_mut() {

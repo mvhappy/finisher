@@ -590,7 +590,11 @@ fn asset_remove_in_use_lists_items() {
         id: "fx1".into(),
         kind: "lut".into(),
         enabled: true,
-        params: [("asset".to_string(), ParamValue::Text("a4".into()))].into(),
+        params: [(
+            "asset".to_string(),
+            ParamValue::Asset { asset: "a4".into() },
+        )]
+        .into(),
     });
     p.fonts
         .pins

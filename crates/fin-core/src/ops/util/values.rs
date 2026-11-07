@@ -78,14 +78,25 @@ pub(crate) fn body(body: &mut ItemBody) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn param(path: &str, v: &mut ParamValue) -> Result<(), CoreError> {
+/// A keyframe interpolation's floats at `path` (a bézier's control points).
+pub(crate) fn interp(path: &str, v: &mut Interp) -> Result<(), CoreError> {
+    if let Interp::Bezier { x1, y1, x2, y2 } = v {
+        for x in [x1, y1, x2, y2] {
+            number(&format!("keyframes.{path}.interp"), x)?;
+        }
+    }
+    Ok(())
+}
+
+/// One parameter value's floats at `path`: finite, `-0.0` stored as `0.0`.
+pub(crate) fn param(path: &str, v: &mut ParamValue) -> Result<(), CoreError> {
     match v {
         ParamValue::Number(x) => number(path, x),
         ParamValue::Vec2([x, y]) => {
             number(path, x)?;
             number(path, y)
         }
-        ParamValue::Bool(_) | ParamValue::Text(_) => Ok(()),
+        ParamValue::Bool(_) | ParamValue::Text(_) | ParamValue::Asset { .. } => Ok(()),
     }
 }
 

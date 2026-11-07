@@ -4,10 +4,11 @@
 //! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete`, `item.slip`,
 //! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink`, `transition.set`,
 //! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove`,
-//! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove` (and the
+//! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove`, `param.set`,
+//! `effect.add|remove|move`, `keyframe.set|remove` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
 //! exist only as inverses (`item.remove`, `item.restore`, `track.restore`,
-//! `timeline.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
+//! `timeline.restore`, `effect.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
 //! `item.link` with a literal id); clients sending them get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
@@ -34,6 +35,10 @@ mod bin_add;
 mod bin_move;
 mod bin_remove;
 mod defs;
+mod effect_add;
+mod effect_move;
+mod effect_remove;
+mod effect_restore;
 mod item_delete;
 mod item_insert;
 mod item_link;
@@ -45,9 +50,12 @@ mod item_slip;
 mod item_split;
 mod item_trim;
 mod item_unlink;
+mod keyframe_remove;
+mod keyframe_set;
 mod marker_add;
 mod marker_remove;
 mod marker_set;
+mod param_set;
 mod timeline_add;
 mod timeline_remove;
 mod timeline_restore;
@@ -72,9 +80,16 @@ pub use defs::{
     ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
     TransitionRemove, TransitionSet, TrimMode,
 };
+pub use effect_add::EffectAdd;
+pub use effect_move::EffectMove;
+pub use effect_remove::EffectRemove;
+pub use effect_restore::EffectRestore;
+pub use keyframe_remove::KeyframeRemove;
+pub use keyframe_set::KeyframeSet;
 pub use marker_add::MarkerAdd;
 pub use marker_remove::MarkerRemove;
 pub use marker_set::MarkerSet;
+pub use param_set::ParamSet;
 pub use timeline_add::TimelineAdd;
 pub use timeline_remove::TimelineRemove;
 pub use timeline_restore::TimelineRestore;
@@ -297,9 +312,9 @@ macro_rules! ops_table {
 
 /// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op
 /// but `transition.*`, and an alias's runs as the op it stands for. Track, timeline, marker,
-/// bin and asset ops never part touching items, so it does not run after them either: a track
-/// or timeline removal records its own transitions as removed, and a restore brings them back
-/// whole.
+/// bin, asset, `param.set`, `effect.*` and `keyframe.*` ops never part touching items, so it
+/// does not run after them either: a track or timeline removal records its own transitions as
+/// removed, and a restore brings them back whole.
 fn prunes(op: &Op) -> bool {
     !op.is_alias()
         && !matches!(
@@ -322,6 +337,13 @@ fn prunes(op: &Op) -> bool {
                 | Op::BinMove(_)
                 | Op::BinRemove(_)
                 | Op::AssetMove(_)
+                | Op::ParamSet(_)
+                | Op::EffectAdd(_)
+                | Op::EffectRemove(_)
+                | Op::EffectRestore(_)
+                | Op::EffectMove(_)
+                | Op::KeyframeSet(_)
+                | Op::KeyframeRemove(_)
         )
 }
 
@@ -420,6 +442,13 @@ ops_table! {
     AssetRemove => asset_remove,
     ItemRemove => item_remove,
     ItemRestore => item_restore,
+    ParamSet => param_set,
+    EffectAdd => effect_add,
+    EffectRemove => effect_remove,
+    EffectMove => effect_move,
+    KeyframeSet => keyframe_set,
+    KeyframeRemove => keyframe_remove,
+    EffectRestore => effect_restore,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,

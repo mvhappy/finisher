@@ -9,6 +9,7 @@ pub mod ids;
 pub mod layout;
 pub mod model;
 pub mod ops;
+pub mod params;
 pub mod rebase;
 pub mod record;
 pub mod replay;
@@ -25,10 +26,11 @@ pub use model::*;
 pub use ops::{
     AssetAdd, AssetMove, BinAdd, BinMove, BinRemove, DeleteMode, Edge, InsertMode, ItemDelete,
     ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide, ItemSlip, ItemSplit,
-    ItemTrim, ItemUnlink, MarkerAdd, MarkerRemove, MarkerSet, Op, SlideSides, TimelineAdd,
-    TimelineRemove, TimelineRestore, TimelineSet, TrackAdd, TrackMove, TrackRemove, TrackRestore,
-    TrackSet, TransitionRemove, TransitionSet, TrimMode, normalize,
+    ItemTrim, ItemUnlink, MarkerAdd, MarkerRemove, MarkerSet, Op, ParamSet, SlideSides,
+    TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet, TrackAdd, TrackMove, TrackRemove,
+    TrackRestore, TrackSet, TransitionRemove, TransitionSet, TrimMode, normalize,
 };
+pub use ops::{EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeSet};
 pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{
     Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,

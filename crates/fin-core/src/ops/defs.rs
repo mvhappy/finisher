@@ -11,9 +11,16 @@ use crate::ops::asset_move::AssetMove;
 use crate::ops::bin_add::BinAdd;
 use crate::ops::bin_move::BinMove;
 use crate::ops::bin_remove::BinRemove;
+use crate::ops::effect_add::EffectAdd;
+use crate::ops::effect_move::EffectMove;
+use crate::ops::effect_remove::EffectRemove;
+use crate::ops::effect_restore::EffectRestore;
+use crate::ops::keyframe_remove::KeyframeRemove;
+use crate::ops::keyframe_set::KeyframeSet;
 use crate::ops::marker_add::MarkerAdd;
 use crate::ops::marker_remove::MarkerRemove;
 use crate::ops::marker_set::MarkerSet;
+use crate::ops::param_set::ParamSet;
 use crate::ops::timeline_add::TimelineAdd;
 use crate::ops::timeline_remove::TimelineRemove;
 use crate::ops::timeline_restore::TimelineRestore;
@@ -126,6 +133,27 @@ pub enum Op {
     /// Internal (inverse of `item.delete`/`item.remove`): puts an item back at its `start`.
     #[serde(rename = "item.restore")]
     ItemRestore(Box<ItemRestore>),
+    /// Sets (or, with no `value`, resets) one registry parameter of an item.
+    #[serde(rename = "param.set")]
+    ParamSet(ParamSet),
+    /// Adds an effect to an item; `id` is a `$name` placeholder bound to a new `fx<n>` id.
+    #[serde(rename = "effect.add")]
+    EffectAdd(EffectAdd),
+    /// Takes an effect (and the keyframes of its params) off an item.
+    #[serde(rename = "effect.remove")]
+    EffectRemove(EffectRemove),
+    /// Moves an effect to another index of its item's effect list.
+    #[serde(rename = "effect.move")]
+    EffectMove(EffectMove),
+    /// Sets the keyframe of an item's parameter at an item-relative time.
+    #[serde(rename = "keyframe.set")]
+    KeyframeSet(Box<KeyframeSet>),
+    /// Removes the keyframe of an item's parameter at an item-relative time.
+    #[serde(rename = "keyframe.remove")]
+    KeyframeRemove(KeyframeRemove),
+    /// Internal (inverse of `effect.remove`): puts an effect and its keyframes back.
+    #[serde(rename = "effect.restore")]
+    EffectRestore(Box<EffectRestore>),
     /// Client alias of `item.insert` of a clip in ripple mode.
     #[serde(rename = "clip.insert")]
     ClipInsert {

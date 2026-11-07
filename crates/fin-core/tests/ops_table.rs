@@ -5,11 +5,12 @@ use fin_core::{
     AssetAdd, AssetMove, BinAdd, BinMove, BinRemove, BlendMode, CaptionBlock, Curve, DeleteMode,
     Edge, Effect, InsertMode, Interp, Item, ItemBody, ItemDelete, ItemInsert, ItemLink, ItemMove,
     ItemRemove, ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe,
-    Marker, MarkerAdd, MarkerRemove, MarkerSet, Op, ParamValue, Rational, Resolution, SlideSides,
-    Timeline, TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet, Track, TrackAdd,
-    TrackKind, TrackMove, TrackRemove, TrackRestore, TrackSet, Transition, TransitionKind,
-    TransitionRemove, TransitionSet, TrimMode, Word,
+    Marker, MarkerAdd, MarkerRemove, MarkerSet, Op, ParamSet, ParamValue, Rational, Resolution,
+    SlideSides, Timeline, TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet, Track,
+    TrackAdd, TrackKind, TrackMove, TrackRemove, TrackRestore, TrackSet, Transition,
+    TransitionKind, TransitionRemove, TransitionSet, TrimMode, Word,
 };
+use fin_core::{EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeSet};
 use serde_json::json;
 
 /// A clip item with everything that carries an id: effects, a link group, keyframes.
@@ -306,6 +307,73 @@ fn every_variant() -> Vec<Op> {
             delta: r(1),
         },
         Op::ClipDelete { clip: "c1".into() },
+        ParamSet {
+            item: "c1".into(),
+            path: "effects.fx1.asset".into(),
+            value: Some(ParamValue::Asset { asset: "a2".into() }),
+        }
+        .into(),
+        EffectAdd {
+            item: "c1".into(),
+            id: "$fx".into(),
+            kind: "lut".into(),
+            at: Some(0),
+            params: [(
+                "asset".to_string(),
+                ParamValue::Asset { asset: "a2".into() },
+            )]
+            .into(),
+        }
+        .into(),
+        EffectRemove {
+            item: "c1".into(),
+            effect: "fx1".into(),
+        }
+        .into(),
+        EffectMove {
+            item: "c1".into(),
+            effect: "fx1".into(),
+            to: 1,
+        }
+        .into(),
+        KeyframeSet {
+            item: "c1".into(),
+            path: "opacity".into(),
+            at: r(1),
+            value: ParamValue::Number(0.5),
+            interp: Interp::Linear,
+        }
+        .into(),
+        KeyframeRemove {
+            item: "c1".into(),
+            path: "opacity".into(),
+            at: r(1),
+        }
+        .into(),
+        EffectRestore {
+            item: "c1".into(),
+            effect: Effect {
+                id: "fx4".into(),
+                kind: "lut".into(),
+                enabled: true,
+                params: [(
+                    "asset".to_string(),
+                    ParamValue::Asset { asset: "a3".into() },
+                )]
+                .into(),
+            },
+            index: 0,
+            keyframes: [(
+                "effects.fx4.intensity".to_string(),
+                vec![Keyframe {
+                    at: r(0),
+                    value: ParamValue::Number(1.0),
+                    interp: Interp::Hold,
+                }],
+            )]
+            .into(),
+        }
+        .into(),
     ];
     // Adding a variant breaks this match, so the list above cannot silently fall behind.
     for op in &ops {
@@ -343,7 +411,14 @@ fn every_variant() -> Vec<Op> {
             | Op::ItemRestore(_)
             | Op::ClipInsert { .. }
             | Op::ClipTrim { .. }
-            | Op::ClipDelete { .. } => {}
+            | Op::ClipDelete { .. }
+            | Op::ParamSet(_)
+            | Op::EffectAdd(_)
+            | Op::EffectRemove(_)
+            | Op::EffectMove(_)
+            | Op::KeyframeSet(_)
+            | Op::KeyframeRemove(_)
+            | Op::EffectRestore(_) => {}
         }
     }
     ops

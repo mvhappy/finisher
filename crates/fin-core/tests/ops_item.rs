@@ -115,7 +115,17 @@ fn asset_of(kind: AssetKind, id: &str) -> AssetAdd {
                 height: 1920,
                 rate: secs(30),
                 duration: secs(3),
-                slots: Vec::new(),
+                // The slots the graphic inserts below set (checked since Task 11).
+                slots: vec![
+                    fin_core::SlotSpec {
+                        id: "title".into(),
+                        kind: "text".into(),
+                    },
+                    fin_core::SlotSpec {
+                        id: "size".into(),
+                        kind: "number".into(),
+                    },
+                ],
                 fonts: Vec::new(),
             });
         }

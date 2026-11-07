@@ -85,6 +85,12 @@ const VALIDATION_CODES: &[&str] = &[
     "TIMELINE_NESTED",
     "PARAM_UNKNOWN",
     "PARAM_TYPE",
+    // Settings and animation (sub-project 4C Tasks 11 and 14): a graphic slot its template
+    // lacks; a static set of a path keyframes animate; a keyframe on a path that cannot be
+    // animated.
+    "SLOT_UNKNOWN",
+    "PARAM_ANIMATED",
+    "PARAM_NOT_ANIMATABLE",
     // Library (sub-project 4C Task 13): a removal of a bin holding assets or bins; a bin
     // moved into itself or a bin inside it.
     "BIN_NOT_EMPTY",
@@ -270,6 +276,9 @@ mod tests {
             "TIMELINE_NESTED",
             "PARAM_UNKNOWN",
             "PARAM_TYPE",
+            "SLOT_UNKNOWN",
+            "PARAM_ANIMATED",
+            "PARAM_NOT_ANIMATABLE",
             "BIN_NOT_EMPTY",
             "BIN_CYCLE",
         ] {

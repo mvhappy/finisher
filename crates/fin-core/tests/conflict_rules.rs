@@ -281,6 +281,38 @@ fn every_op_has_a_footprint() {
     let p = base();
     let spare = apply(&p, vec![av_asset("$b", secs(10))]).project;
     let deleted = apply(&p, vec![delete("c3")]);
+    // c3 with effects fx1 and fx2 and an opacity keyframe (Task 14).
+    let fx = |kind: &str| -> Op {
+        fin_core::EffectAdd {
+            item: "c3".into(),
+            id: format!("${kind}"),
+            kind: kind.into(),
+            at: None,
+            params: Default::default(),
+        }
+        .into()
+    };
+    let keyed = |at: i64| -> Op {
+        fin_core::KeyframeSet {
+            item: "c3".into(),
+            path: "opacity".into(),
+            at: secs(at),
+            value: fin_core::ParamValue::Number(0.5),
+            interp: fin_core::Interp::Linear,
+        }
+        .into()
+    };
+    let busy = apply(&p, vec![fx("blur"), fx("lut"), keyed(1)]).project;
+    let unfx = apply(
+        &busy,
+        vec![
+            fin_core::EffectRemove {
+                item: "c3".into(),
+                effect: "fx1".into(),
+            }
+            .into(),
+        ],
+    );
     let cases = [
         (p.clone(), av_asset("$b", secs(10)), vec![]),
         (spare, Op::AssetRemove { id: "a2".into() }, vec![]),
@@ -346,6 +378,48 @@ fn every_op_has_a_footprint() {
             .into(),
             vec!["t2"],
         ),
+        (
+            p.clone(),
+            fin_core::ParamSet {
+                item: "c3".into(),
+                path: "opacity".into(),
+                value: Some(fin_core::ParamValue::Number(0.5)),
+            }
+            .into(),
+            vec!["t2"],
+        ),
+        (p.clone(), fx("blur"), vec!["t2"]),
+        (
+            busy.clone(),
+            fin_core::EffectRemove {
+                item: "c3".into(),
+                effect: "fx1".into(),
+            }
+            .into(),
+            vec!["t2"],
+        ),
+        (
+            busy.clone(),
+            fin_core::EffectMove {
+                item: "c3".into(),
+                effect: "fx1".into(),
+                to: 1,
+            }
+            .into(),
+            vec!["t2"],
+        ),
+        (busy.clone(), keyed(2), vec!["t2"]),
+        (
+            busy.clone(),
+            fin_core::KeyframeRemove {
+                item: "c3".into(),
+                path: "opacity".into(),
+                at: secs(1),
+            }
+            .into(),
+            vec!["t2"],
+        ),
+        (unfx.project.clone(), unfx.inverse[0].clone(), vec!["t2"]),
     ];
     let linked = apply(&p, vec![link(&["c1", "c3"], "$g")]).project;
     let more = [
@@ -635,6 +709,29 @@ fn every_op_has_a_footprint() {
             Op::AssetMove(m) => {
                 f.touches == [(m.asset.clone(), Touch::Param("bin".into()))] && f.uses == ["b1"]
             }
+            Op::ParamSet(s) => f.touches == [(s.item.clone(), Touch::Param(s.path.clone()))],
+            Op::EffectAdd(a) => {
+                f.creates == [format!("c3/{}", a.id)] && f.uses == ["c3"] && f.touches.is_empty()
+            }
+            Op::EffectRemove(r) => {
+                f.touches == [(format!("c3/{}", r.effect), Touch::Exists)]
+                    && f.removes == [format!("c3/{}", r.effect)]
+                    && f.uses == ["c3"]
+            }
+            Op::EffectMove(m) => {
+                f.touches == [("c3".to_string(), Touch::Param("effects".into()))]
+                    && f.uses == [format!("c3/{}", m.effect)]
+            }
+            Op::KeyframeSet(k) => {
+                f.touches == [("c3".to_string(), Touch::Param(format!("opacity@{}", k.at)))]
+            }
+            Op::KeyframeRemove(k) => {
+                f.touches == [("c3".to_string(), Touch::Param(format!("opacity@{}", k.at)))]
+            }
+            Op::EffectRestore(r) => {
+                f.creates == [format!("c3/{}", r.effect.id)]
+                    && f.touches == [("c3".to_string(), Touch::Param("effects".into()))]
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -642,7 +739,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 31);
+    assert_eq!(seen.len(), 38);
 }
 
 fn timeline_add() -> Op {

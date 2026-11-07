@@ -43,6 +43,8 @@ pub enum EntityKind {
     Link,
     Marker,
     Bin,
+    // An item's effect, `<item>/<fx>` (plan 4C Decisions 10 and 20).
+    Effect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

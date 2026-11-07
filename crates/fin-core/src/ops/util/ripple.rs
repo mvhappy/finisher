@@ -109,8 +109,8 @@ impl<'a> OpDiff<'a> {
         }
     }
 
-    /// The entity `id` of `kind` on `track` (a transition) was added, removed or changed as a
-    /// whole.
+    /// The entity `id` of `kind` on `track` (a transition; an item's effect, `<item>/<fx>`, on
+    /// its item's track) was added, removed or changed as a whole.
     pub(crate) fn record_on(
         &mut self,
         track: &str,
