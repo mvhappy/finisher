@@ -42,6 +42,7 @@ pub enum EntityKind {
     Transition,
     Link,
     Marker,
+    Bin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

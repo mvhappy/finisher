@@ -7,6 +7,13 @@ use crate::model::{
     AssetKind, AudioInfo, Curve, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo,
     TransitionKind, VideoInfo,
 };
+use crate::ops::asset_move::AssetMove;
+use crate::ops::bin_add::BinAdd;
+use crate::ops::bin_move::BinMove;
+use crate::ops::bin_remove::BinRemove;
+use crate::ops::marker_add::MarkerAdd;
+use crate::ops::marker_remove::MarkerRemove;
+use crate::ops::marker_set::MarkerSet;
 use crate::ops::timeline_add::TimelineAdd;
 use crate::ops::timeline_remove::TimelineRemove;
 use crate::ops::timeline_restore::TimelineRestore;
@@ -83,13 +90,34 @@ pub enum Op {
     /// Takes a timeline off the project with everything on it.
     #[serde(rename = "timeline.remove")]
     TimelineRemove(TimelineRemove),
+    /// Adds a marker to a timeline.
+    #[serde(rename = "marker.add")]
+    MarkerAdd(MarkerAdd),
+    /// Sets (or, with no `value`, clears) one field of a marker.
+    #[serde(rename = "marker.set")]
+    MarkerSet(MarkerSet),
+    /// Takes a marker off its timeline.
+    #[serde(rename = "marker.remove")]
+    MarkerRemove(MarkerRemove),
+    /// Adds a bin.
+    #[serde(rename = "bin.add")]
+    BinAdd(BinAdd),
+    /// Puts a bin inside another one, or at the top.
+    #[serde(rename = "bin.move")]
+    BinMove(BinMove),
+    /// Takes an empty bin off the project.
+    #[serde(rename = "bin.remove")]
+    BinRemove(BinRemove),
+    /// Puts an asset in a bin, or at the top.
+    #[serde(rename = "asset.move")]
+    AssetMove(AssetMove),
     /// Internal (inverse of `track.remove`): puts a whole track back.
     #[serde(rename = "track.restore")]
     TrackRestore(Box<TrackRestore>),
     /// Internal (inverse of `timeline.remove`): puts a whole timeline back.
     #[serde(rename = "timeline.restore")]
     TimelineRestore(Box<TimelineRestore>),
-    /// Internal (inverse of `asset.add`): removes an unused asset.
+    /// Removes an unused asset (also the inverse of `asset.add`).
     #[serde(rename = "asset.remove")]
     AssetRemove { id: String },
     /// Internal (inverse of `item.insert`): removes an item.

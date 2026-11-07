@@ -11,9 +11,9 @@ use fin_core::rebase::{
     Conflict, Conflicts, Footprint, Touch, committed_footprints, entity_conflict, reasons,
 };
 use fin_core::{
-    CommittedTx, CoreError, Edge, InsertMode, MemIds, Op, Project, TimelineAdd, TimelineRemove,
-    TimelineSet, TrackAdd, TrackKind, TrackMove, TrackRemove, TrackSet, apply_internal, apply_tx,
-    resolve_ops,
+    AssetMove, BinAdd, BinMove, BinRemove, CommittedTx, CoreError, Edge, InsertMode, MarkerAdd,
+    MarkerRemove, MarkerSet, MemIds, Op, Project, TimelineAdd, TimelineRemove, TimelineSet,
+    TrackAdd, TrackKind, TrackMove, TrackRemove, TrackSet, apply_internal, apply_tx, resolve_ops,
 };
 use serde_json::json;
 
@@ -450,12 +450,74 @@ fn every_op_has_a_footprint() {
         ),
         (no_tl2.project, no_tl2.inverse[0].clone(), vec![]),
     ];
+    let marker = || -> Op {
+        MarkerAdd {
+            id: "$m".into(),
+            timeline: "tl1".into(),
+            at: secs(1),
+            duration: None,
+            label: "Cue".into(),
+            color: None,
+        }
+        .into()
+    };
+    let bin = |id: &str, parent: Option<&str>| -> Op {
+        BinAdd {
+            id: id.into(),
+            name: "Bin".into(),
+            parent: parent.map(str::to_string),
+        }
+        .into()
+    };
+    let lib = apply(&p, vec![marker(), bin("$b", None), bin("$c", None)]).project;
+    let library = [
+        (p.clone(), marker(), vec![]),
+        (
+            lib.clone(),
+            MarkerSet {
+                marker: "m1".into(),
+                path: "label".into(),
+                value: Some(fin_core::ParamValue::Text("Intro".into())),
+            }
+            .into(),
+            vec![],
+        ),
+        (
+            lib.clone(),
+            MarkerRemove {
+                marker: "m1".into(),
+            }
+            .into(),
+            vec![],
+        ),
+        (p.clone(), bin("$b", None), vec![]),
+        (
+            lib.clone(),
+            BinMove {
+                bin: "b2".into(),
+                parent: Some("b1".into()),
+            }
+            .into(),
+            vec![],
+        ),
+        (lib.clone(), BinRemove { bin: "b2".into() }.into(), vec![]),
+        (
+            lib,
+            AssetMove {
+                asset: "a1".into(),
+                bin: Some("b1".into()),
+            }
+            .into(),
+            vec![],
+        ),
+    ];
     let mut seen = BTreeSet::new();
     for (at, op, tracks) in cases
         .into_iter()
         .chain(more)
         .chain(transitions)
         .chain(structure)
+        .chain(library)
     {
         let (op, f, _) = fp(&at, op);
         seen.insert(op.name());
@@ -558,6 +620,21 @@ fn every_op_has_a_footprint() {
                     && f.touches == [(r.timeline.clone(), Touch::Exists)]
             }
             Op::TimelineRestore(r) => f.creates == [r.timeline.id.clone()],
+            Op::MarkerAdd(a) => f.creates == [a.id.clone()] && f.uses == [a.timeline.clone()],
+            Op::MarkerSet(s) => f.touches == [(s.marker.clone(), Touch::Param(s.path.clone()))],
+            Op::MarkerRemove(r) => {
+                f.removes == [r.marker.clone()] && f.touches == [(r.marker.clone(), Touch::Exists)]
+            }
+            Op::BinAdd(a) => f.creates == [a.id.clone()] && f.uses.is_empty(),
+            Op::BinMove(m) => {
+                f.touches == [(m.bin.clone(), Touch::Param("parent".into()))] && f.uses == ["b1"]
+            }
+            Op::BinRemove(r) => {
+                f.removes == [r.bin.clone()] && f.touches == [(r.bin.clone(), Touch::Exists)]
+            }
+            Op::AssetMove(m) => {
+                f.touches == [(m.asset.clone(), Touch::Param("bin".into()))] && f.uses == ["b1"]
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -565,7 +642,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 24);
+    assert_eq!(seen.len(), 31);
 }
 
 fn timeline_add() -> Op {

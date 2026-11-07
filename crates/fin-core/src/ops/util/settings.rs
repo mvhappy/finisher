@@ -10,7 +10,7 @@
 use serde_json::json;
 
 use crate::error::CoreError;
-use crate::model::{ParamValue, Resolution, Timeline, Track};
+use crate::model::{Marker, ParamValue, Resolution, Timeline, Track};
 use crate::time::Rational;
 
 /// Whose settings a path names.
@@ -386,6 +386,40 @@ pub(crate) fn set_timeline(
             }
         }
         _ => timeline.rate = rational(path, v)?,
+    }
+    Ok(old)
+}
+
+/// The value of `path` of `marker` (`None`: no colour or duration).
+pub(crate) fn get_marker(marker: &Marker, path: &str) -> Result<Option<ParamValue>, CoreError> {
+    spec(Scope::Marker, path)?;
+    Ok(match path {
+        "label" => Some(ParamValue::Text(marker.label.clone())),
+        "color" => marker.color.clone().map(ParamValue::Text),
+        "at" => Some(time(marker.at)),
+        _ => marker.duration.map(time),
+    })
+}
+
+/// Sets `path` of `marker` to a value [`check`] passed (`None` clears a colour or duration; a
+/// label or position cannot be reset), returning the old value.
+pub(crate) fn set_marker(
+    marker: &mut Marker,
+    path: &str,
+    value: Option<ParamValue>,
+) -> Result<Option<ParamValue>, CoreError> {
+    let old = get_marker(marker, path)?;
+    let v = value.as_ref();
+    match path {
+        "label" => marker.label = text(v).ok_or_else(|| required(path))?,
+        "color" => marker.color = text(v),
+        "at" => marker.at = rational(path, v)?,
+        _ => {
+            marker.duration = match v {
+                None => None,
+                Some(_) => Some(rational(path, v)?),
+            }
+        }
     }
     Ok(old)
 }

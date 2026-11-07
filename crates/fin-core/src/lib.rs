@@ -23,8 +23,9 @@ pub use ids::{ID_KINDS, IdAlloc, IdKind, MemIds};
 pub use layout::{FaceRef, Measured, TextLayout, TextMeasurer, TextRequest, TextStyle};
 pub use model::*;
 pub use ops::{
-    AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
-    ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides, TimelineAdd,
+    AssetAdd, AssetMove, BinAdd, BinMove, BinRemove, DeleteMode, Edge, InsertMode, ItemDelete,
+    ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide, ItemSlip, ItemSplit,
+    ItemTrim, ItemUnlink, MarkerAdd, MarkerRemove, MarkerSet, Op, SlideSides, TimelineAdd,
     TimelineRemove, TimelineRestore, TimelineSet, TrackAdd, TrackMove, TrackRemove, TrackRestore,
     TrackSet, TransitionRemove, TransitionSet, TrimMode, normalize,
 };

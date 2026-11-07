@@ -3,9 +3,10 @@
 //!
 //! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete`, `item.slip`,
 //! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink`, `transition.set`,
-//! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove` (and the
+//! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove`,
+//! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
-//! exist only as inverses (`asset.remove`, `item.remove`, `item.restore`, `track.restore`,
+//! exist only as inverses (`item.remove`, `item.restore`, `track.restore`,
 //! `timeline.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
 //! `item.link` with a literal id); clients sending them get `INVALID_OP`.
 //!
@@ -27,7 +28,11 @@ use crate::tx::Diff;
 
 mod alias;
 mod asset_add;
+mod asset_move;
 mod asset_remove;
+mod bin_add;
+mod bin_move;
+mod bin_remove;
 mod defs;
 mod item_delete;
 mod item_insert;
@@ -40,6 +45,9 @@ mod item_slip;
 mod item_split;
 mod item_trim;
 mod item_unlink;
+mod marker_add;
+mod marker_remove;
+mod marker_set;
 mod timeline_add;
 mod timeline_remove;
 mod timeline_restore;
@@ -55,11 +63,18 @@ pub(crate) mod util;
 
 pub use alias::normalize;
 use alias::{clip_delete, clip_insert, clip_trim};
+pub use asset_move::AssetMove;
+pub use bin_add::BinAdd;
+pub use bin_move::BinMove;
+pub use bin_remove::BinRemove;
 pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
     ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
     TransitionRemove, TransitionSet, TrimMode,
 };
+pub use marker_add::MarkerAdd;
+pub use marker_remove::MarkerRemove;
+pub use marker_set::MarkerSet;
 pub use timeline_add::TimelineAdd;
 pub use timeline_remove::TimelineRemove;
 pub use timeline_restore::TimelineRestore;
@@ -281,9 +296,10 @@ macro_rules! ops_table {
 }
 
 /// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op
-/// but `transition.*`, and an alias's runs as the op it stands for. Track and timeline ops
-/// never part touching items, so it does not run after them either: a removal records its own
-/// transitions as removed, and a restore brings them back whole.
+/// but `transition.*`, and an alias's runs as the op it stands for. Track, timeline, marker,
+/// bin and asset ops never part touching items, so it does not run after them either: a track
+/// or timeline removal records its own transitions as removed, and a restore brings them back
+/// whole.
 fn prunes(op: &Op) -> bool {
     !op.is_alias()
         && !matches!(
@@ -299,6 +315,13 @@ fn prunes(op: &Op) -> bool {
                 | Op::TimelineSet(_)
                 | Op::TimelineRemove(_)
                 | Op::TimelineRestore(_)
+                | Op::MarkerAdd(_)
+                | Op::MarkerSet(_)
+                | Op::MarkerRemove(_)
+                | Op::BinAdd(_)
+                | Op::BinMove(_)
+                | Op::BinRemove(_)
+                | Op::AssetMove(_)
         )
 }
 
@@ -367,6 +390,13 @@ ops_table! {
     TimelineAdd => timeline_add,
     TimelineSet => timeline_set,
     TimelineRemove => timeline_remove,
+    MarkerAdd => marker_add,
+    MarkerSet => marker_set,
+    MarkerRemove => marker_remove,
+    BinAdd => bin_add,
+    BinMove => bin_move,
+    BinRemove => bin_remove,
+    AssetMove => asset_move,
     TrackRestore => track_restore,
     TimelineRestore => timeline_restore,
     AssetRemove => asset_remove,

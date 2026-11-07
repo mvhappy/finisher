@@ -435,12 +435,14 @@ fn clients_cannot_send_internal_ops_or_strict_trims() {
             mode: DeleteMode::Ripple,
         }
         .into(),
-        Op::AssetRemove { id: "a1".into() },
         strict("c1", Edge::End, secs(-1)),
     ] {
         let e = try_apply(&p, vec![op.clone()]).unwrap_err();
         assert_eq!(e.code, "INVALID_OP", "{op:?}");
     }
+    // `asset.remove` is a client op since plan 4C Task 13 (a1 is in use here).
+    let e = try_apply(&p, vec![Op::AssetRemove { id: "a1".into() }]).unwrap_err();
+    assert_eq!(e.code, "ASSET_IN_USE");
 }
 
 // ---- item.delete, item.remove, item.restore ----

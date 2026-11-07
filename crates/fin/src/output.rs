@@ -83,6 +83,10 @@ const VALIDATION_CODES: &[&str] = &[
     "TIMELINE_NESTED",
     "PARAM_UNKNOWN",
     "PARAM_TYPE",
+    // Library (sub-project 4C Task 13): a removal of a bin holding assets or bins; a bin
+    // moved into itself or a bin inside it.
+    "BIN_NOT_EMPTY",
+    "BIN_CYCLE",
     "INVALID_ID",
     "BINDINGS_MISMATCH",
     // A stored (migrated) record too large for a segment: export stops at it.
@@ -263,6 +267,8 @@ mod tests {
             "TIMELINE_NESTED",
             "PARAM_UNKNOWN",
             "PARAM_TYPE",
+            "BIN_NOT_EMPTY",
+            "BIN_CYCLE",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

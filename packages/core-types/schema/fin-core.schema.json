@@ -139,6 +139,21 @@
       ],
       "type": "string"
     },
+    "AssetMove": {
+      "description": "`asset.move`: puts `asset` in `bin` (at the top when absent).",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "bin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "type": "object"
+    },
     "AudioInfo": {
       "properties": {
         "channels": {
@@ -195,6 +210,52 @@
       "required": [
         "id",
         "name"
+      ],
+      "type": "object"
+    },
+    "BinAdd": {
+      "description": "`bin.add`: a bin named `name`, inside `parent` when given.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "BinMove": {
+      "description": "`bin.move`: puts `bin` inside `parent` (at the top when absent).",
+      "properties": {
+        "bin": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bin"
+      ],
+      "type": "object"
+    },
+    "BinRemove": {
+      "description": "`bin.remove`: takes the empty `bin` off the project.",
+      "properties": {
+        "bin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bin"
       ],
       "type": "object"
     },
@@ -701,7 +762,8 @@
         "item",
         "transition",
         "link",
-        "marker"
+        "marker",
+        "bin"
       ],
       "type": "string"
     },
@@ -1914,6 +1976,67 @@
       ],
       "type": "object"
     },
+    "MarkerAdd": {
+      "description": "`marker.add`: a marker on `timeline` at `at`.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "color": {
+          "type": "string"
+        },
+        "duration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "timeline",
+        "at",
+        "label"
+      ],
+      "type": "object"
+    },
+    "MarkerRemove": {
+      "description": "`marker.remove`: takes `marker` off its timeline.",
+      "properties": {
+        "marker": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "marker"
+      ],
+      "type": "object"
+    },
+    "MarkerSet": {
+      "description": "`marker.set`: sets `path` of `marker` to `value`; no `value` clears it.",
+      "properties": {
+        "marker": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "marker",
+        "path"
+      ],
+      "type": "object"
+    },
     "Mask": {
       "description": "A matte (an artifact reference) that masks the item.",
       "properties": {
@@ -2372,6 +2495,146 @@
         {
           "allOf": [
             {
+              "$ref": "#/$defs/MarkerAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "marker.add",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds a marker to a timeline."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/MarkerSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "marker.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Sets (or, with no `value`, clears) one field of a marker."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/MarkerRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "marker.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes a marker off its timeline."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/BinAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "bin.add",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds a bin."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/BinMove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "bin.move",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Puts a bin inside another one, or at the top."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/BinRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "bin.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes an empty bin off the project."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/AssetMove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "asset.move",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Puts an asset in a bin, or at the top."
+        },
+        {
+          "allOf": [
+            {
               "$ref": "#/$defs/TrackRestore"
             },
             {
@@ -2410,7 +2673,7 @@
           "description": "Internal (inverse of `timeline.remove`): puts a whole timeline back."
         },
         {
-          "description": "Internal (inverse of `asset.add`): removes an unused asset.",
+          "description": "Removes an unused asset (also the inverse of `asset.add`).",
           "properties": {
             "id": {
               "type": "string"

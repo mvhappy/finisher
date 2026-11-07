@@ -10,8 +10,8 @@ use crate::tx::{Applied, Diff, Tx};
 
 /// Who is applying: clients may only send client ops (the `clip.*` aliases included, each
 /// rewritten to its `item.*` op first, [`crate::normalize`]); internal callers (undo, replaying
-/// inverses) may also send `asset.remove`, `item.remove`, `item.restore` and strict
-/// `item.trim`s, and may name new entities with literal ids, but never an alias.
+/// inverses) may also send `item.remove`, `item.restore`, `track.restore`, `timeline.restore`
+/// and strict `item.trim`s, and may name new entities with literal ids, but never an alias.
 ///
 /// `Replay` re-applies committed history (see [`crate::apply_committed`]): like `Internal`, but
 /// policy checks (the one-frame minimum, the source range, trim limits, `INSERT_INSIDE_CLIP`,
@@ -113,7 +113,9 @@ impl Applier {
                 "use asset.add, item.insert, item.trim (ripple, roll or overwrite), item.delete, \
                  item.slip, item.split, item.move, item.slide, item.link, item.unlink, \
                  transition.set, transition.remove, track.add, track.remove, track.move, \
-                 track.set, timeline.add, timeline.set or timeline.remove",
+                 track.set, timeline.add, timeline.set, timeline.remove, marker.add, \
+                 marker.set, marker.remove, bin.add, bin.move, bin.remove, asset.move or \
+                 asset.remove",
             ))
         } else if self.mode != ApplyMode::Client && op.is_alias() {
             Err(CoreError::new(

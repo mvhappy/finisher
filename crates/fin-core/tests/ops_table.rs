@@ -2,12 +2,13 @@ mod common;
 
 use common::ids_json::{ids_cover_every_id_in_json, ids_cover_json};
 use fin_core::{
-    AssetAdd, BlendMode, CaptionBlock, Curve, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
-    ItemBody, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide,
-    ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe, Marker, Op, ParamValue, Rational,
-    Resolution, SlideSides, Timeline, TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet,
-    Track, TrackAdd, TrackKind, TrackMove, TrackRemove, TrackRestore, TrackSet, Transition,
-    TransitionKind, TransitionRemove, TransitionSet, TrimMode, Word,
+    AssetAdd, AssetMove, BinAdd, BinMove, BinRemove, BlendMode, CaptionBlock, Curve, DeleteMode,
+    Edge, Effect, InsertMode, Interp, Item, ItemBody, ItemDelete, ItemInsert, ItemLink, ItemMove,
+    ItemRemove, ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe,
+    Marker, MarkerAdd, MarkerRemove, MarkerSet, Op, ParamValue, Rational, Resolution, SlideSides,
+    Timeline, TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet, Track, TrackAdd,
+    TrackKind, TrackMove, TrackRemove, TrackRestore, TrackSet, Transition, TransitionKind,
+    TransitionRemove, TransitionSet, TrimMode, Word,
 };
 use serde_json::json;
 
@@ -231,6 +232,42 @@ fn every_variant() -> Vec<Op> {
             timeline: "tl2".into(),
         }
         .into(),
+        MarkerAdd {
+            id: "$m".into(),
+            timeline: "tl1".into(),
+            at: r(2),
+            duration: Some(r(1)),
+            label: "Cue".into(),
+            color: Some("#ff0000".into()),
+        }
+        .into(),
+        MarkerSet {
+            marker: "m1".into(),
+            path: "label".into(),
+            value: Some(ParamValue::Text("Intro".into())),
+        }
+        .into(),
+        MarkerRemove {
+            marker: "m1".into(),
+        }
+        .into(),
+        BinAdd {
+            id: "$b".into(),
+            name: "Footage".into(),
+            parent: Some("b1".into()),
+        }
+        .into(),
+        BinMove {
+            bin: "b2".into(),
+            parent: Some("b1".into()),
+        }
+        .into(),
+        BinRemove { bin: "b2".into() }.into(),
+        AssetMove {
+            asset: "a1".into(),
+            bin: Some("b1".into()),
+        }
+        .into(),
         TrackRestore {
             track: busy_track(),
             timeline: "tl1".into(),
@@ -291,6 +328,13 @@ fn every_variant() -> Vec<Op> {
             | Op::TimelineAdd(_)
             | Op::TimelineSet(_)
             | Op::TimelineRemove(_)
+            | Op::MarkerAdd(_)
+            | Op::MarkerSet(_)
+            | Op::MarkerRemove(_)
+            | Op::BinAdd(_)
+            | Op::BinMove(_)
+            | Op::BinRemove(_)
+            | Op::AssetMove(_)
             | Op::TrackRestore(_)
             | Op::TimelineRestore(_)
             | Op::AssetRemove { .. }

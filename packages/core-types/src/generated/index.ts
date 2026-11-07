@@ -27,7 +27,7 @@ export type Edge = "start" | "end";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EntityKind".
  */
-export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker";
+export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker" | "bin";
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -95,6 +95,27 @@ export type Op =
     })
   | (TimelineRemove & {
       op: "timeline.remove";
+    })
+  | (MarkerAdd & {
+      op: "marker.add";
+    })
+  | (MarkerSet & {
+      op: "marker.set";
+    })
+  | (MarkerRemove & {
+      op: "marker.remove";
+    })
+  | (BinAdd & {
+      op: "bin.add";
+    })
+  | (BinMove & {
+      op: "bin.move";
+    })
+  | (BinRemove & {
+      op: "bin.remove";
+    })
+  | (AssetMove & {
+      op: "asset.move";
     })
   | (TrackRestore & {
       op: "track.restore";
@@ -903,6 +924,80 @@ export interface TimelineSet {
  */
 export interface TimelineRemove {
   timeline: string;
+}
+/**
+ * `marker.add`: a marker on `timeline` at `at`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MarkerAdd".
+ */
+export interface MarkerAdd {
+  at: Rational;
+  color?: string;
+  duration?: Rational;
+  id: string;
+  label: string;
+  timeline: string;
+}
+/**
+ * `marker.set`: sets `path` of `marker` to `value`; no `value` clears it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MarkerSet".
+ */
+export interface MarkerSet {
+  marker: string;
+  path: string;
+  value?: ParamValue;
+}
+/**
+ * `marker.remove`: takes `marker` off its timeline.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MarkerRemove".
+ */
+export interface MarkerRemove {
+  marker: string;
+}
+/**
+ * `bin.add`: a bin named `name`, inside `parent` when given.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BinAdd".
+ */
+export interface BinAdd {
+  id: string;
+  name: string;
+  parent?: string;
+}
+/**
+ * `bin.move`: puts `bin` inside `parent` (at the top when absent).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BinMove".
+ */
+export interface BinMove {
+  bin: string;
+  parent?: string;
+}
+/**
+ * `bin.remove`: takes the empty `bin` off the project.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BinRemove".
+ */
+export interface BinRemove {
+  bin: string;
+}
+/**
+ * `asset.move`: puts `asset` in `bin` (at the top when absent).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetMove".
+ */
+export interface AssetMove {
+  asset: string;
+  bin?: string;
 }
 /**
  * `track.restore` (internal): puts `track` back on `timeline` at `index`.
