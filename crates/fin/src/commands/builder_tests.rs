@@ -119,9 +119,7 @@ fn write_caption(backend: &Planning, globals: &Globals) -> Result<Value, CoreErr
     let mut b = Builder::new(backend, globals)?;
     b.inputs
         .push(json!({ "cmd": "caption.add", "args": { "text": "Hi" } }));
-    let start = b.len();
     b.push(caption())?;
-    b.steps.push(start..b.len());
     b.finish(globals, json!({ "item": "$cap" }))
 }
 

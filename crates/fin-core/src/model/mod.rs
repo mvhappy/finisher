@@ -18,8 +18,8 @@ mod item;
 mod timeline;
 
 pub use asset::{
-    Asset, AssetKind, AudioInfo, FontFace, FontFile, ImageInfo, LottieInfo, LutInfo, SlotSpec,
-    VideoInfo,
+    Asset, AssetKind, AudioInfo, FontFace, FontFile, ImageInfo, LottieInfo, LutInfo,
+    MAX_IMAGE_DIMENSION, SlotSpec, VideoInfo,
 };
 pub use caption::{
     Anchor, CaptionBlock, CaptionBox, CaptionPosition, CaptionSource, CaptionStyle, Stroke, Word,

@@ -177,18 +177,24 @@ fn idem_key_reused(committed: &CommittedTx) -> CoreError {
 
 /// Echoes what was committed rather than what was planned: the server may have rebased the tx
 /// over concurrent commits (moving insert positions), or returned an earlier commit for the same
-/// `--idem-key`. `steps` are each step's op range (planned pins already left out of `ops`); a
-/// step's first clip insert is the one its echo describes.
-fn echo_committed(resolved: &mut Value, ops: &[Op], steps: &[std::ops::Range<usize>]) {
-    let first_clip = |n: usize| {
-        let range = steps.get(n)?;
-        ops.get(range.clone())?.iter().find(|op| {
-            matches!(op, Op::ItemInsert(i) if matches!(i.body, fin_core::ItemBody::Clip { .. }))
+/// `--idem-key` (planned against an earlier state). Each `clip.insert` echo gets the clip its
+/// commit placed, found among the committed ops themselves, by its placeholder (`$clip`, or `$clipN` on batch line
+/// N), not by where this attempt's plan put it: the commit may hold pins, splits or audio ops
+/// this plan does not, or lack some it has.
+fn echo_committed(resolved: &mut Value, ops: &[Op]) {
+    let clip = |placeholder: &str| {
+        ops.iter().find_map(|op| match op {
+            Op::ItemInsert(i)
+                if i.id == placeholder && matches!(i.body, fin_core::ItemBody::Clip { .. }) =>
+            {
+                Some(i)
+            }
+            _ => None,
         })
     };
-    let patch = |r: &mut Value, op: &Op| {
-        if let (Op::ItemInsert(i), Some(map)) = (op, r.as_object_mut())
-            && let fin_core::ItemBody::Clip { source_in, .. } = &i.body
+    let patch = |r: &mut Value, i: &fin_core::ItemInsert| {
+        if let (Some(map), fin_core::ItemBody::Clip { source_in, .. }) =
+            (r.as_object_mut(), &i.body)
         {
             map.insert("at".to_string(), json!(i.at));
             map.insert("in".to_string(), json!(source_in));
@@ -200,15 +206,18 @@ fn echo_committed(resolved: &mut Value, ops: &[Op], steps: &[std::ops::Range<usi
     };
     match resolved {
         Value::Array(lines) => {
-            for (n, line) in lines.iter_mut().enumerate() {
-                if let (Some(r), Some(op)) = (line.get_mut("resolved"), first_clip(n)) {
-                    patch(r, op);
+            for line in lines.iter_mut() {
+                let Some(n) = line.get("line").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if let (Some(r), Some(i)) = (line.get_mut("resolved"), clip(&format!("$clip{n}"))) {
+                    patch(r, i);
                 }
             }
         }
         single => {
-            if let Some(op) = first_clip(0) {
-                patch(single, op);
+            if let Some(i) = clip("$clip") {
+                patch(single, i);
             }
         }
     }
@@ -253,7 +262,6 @@ pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value
     }
     b.inputs.push(hashed);
     let suffix = n.map(|n| n.to_string()).unwrap_or_default();
-    let start = b.len();
     let resolved = match step {
         Write::AssetAdd(a) => asset::plan_add(b, a, &format!("$asset{suffix}")),
         Write::ClipInsert(a) => clip::plan_insert(b, a, &suffix),
@@ -273,7 +281,6 @@ pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value
             Value::Null
         }
     };
-    b.steps.push(start..b.len());
     Ok(resolved)
 }
 

@@ -79,6 +79,13 @@ status: used (sub-project 4C), as Cargo dependencies; no code is copied.
 Not used: `webpki-roots`/`webpki-root-certs` (CDLA-Permissive-2.0; only wasm32 and Android
 would pull them, which `deny.toml` `[graph] targets` leaves out) and `aws-lc-rs`.
 
+## imagesize and roxmltree — `fin-probe` (image and SVG sizes)
+status: used (sub-project 4C), as Cargo dependencies; no code is copied.
+- `imagesize` 0.15 (MIT): PNG, JPEG and WebP sizes from the header;
+- `roxmltree` 0.21 (MIT OR Apache-2.0): the SVG root's size attributes.
+
+dotLottie archives use the `zip` and `flate2` stack listed under `fin-fonts`.
+
 ## Catalog fonts (OFL-1.1) — fetched at run time, never distributed
 status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
 upstream files by SHA-256 at pinned commits and release tags, and each machine downloads

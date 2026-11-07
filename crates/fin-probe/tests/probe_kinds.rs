@@ -615,3 +615,178 @@ fn probe_json_omits_absent_fields() {
     assert_eq!(v["kind"], "image");
     assert_eq!(v["image"], json!({ "width": 2, "height": 2 }));
 }
+
+/// An `<!ENTITY` is refused before any expansion: this 30 KB file expands to 150 MB.
+#[test]
+fn svg_entities_are_refused_before_expansion() {
+    let dir = tempfile::tempdir().unwrap();
+    let ns = r#"xmlns="http://www.w3.org/2000/svg""#;
+    let entity = "a".repeat(30_000);
+    let refs = "&a;".repeat(5_000);
+    let bomb = format!(
+        "<?xml version=\"1.0\"?>\n<!DOCTYPE svg [<!ENTITY a \"{entity}\">]>\n\
+         <svg {ns} width=\"8\" height=\"8\"><text>{refs}</text></svg>"
+    );
+    let path = file(&dir, "bomb.svg", bomb.as_bytes());
+    let started = std::time::Instant::now();
+    assert_eq!(unsupported(&path), "the SVG declares XML entities");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    // Even a single small entity, used or not.
+    let one = format!("<!DOCTYPE svg [<!ENTITY w \"8\">]><svg {ns} width=\"&w;\" height=\"8\"/>");
+    let path = file(&dir, "one.svg", one.as_bytes());
+    assert_eq!(unsupported(&path), "the SVG declares XML entities");
+}
+
+#[test]
+fn svg_percent_sizes_use_the_view_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let ns = r#"xmlns="http://www.w3.org/2000/svg""#;
+    for (attrs, size) in [
+        (
+            r#"width="100%" height="100%" viewBox="0 0 640 360""#,
+            (640, 360),
+        ),
+        (r#"width="50%" viewBox="0 0 640 360""#, (640, 360)),
+        (
+            r#"width="100%" height="90" viewBox="0 0 640 360""#,
+            (160, 90),
+        ),
+    ] {
+        let path = file(&dir, "s.svg", format!("<svg {ns} {attrs}/>").as_bytes());
+        assert_eq!(image(&probe(&path).unwrap()), size, "{attrs}");
+    }
+    let path = file(
+        &dir,
+        "s.svg",
+        format!(r#"<svg {ns} width="100%" height="5"/>"#).as_bytes(),
+    );
+    assert!(unsupported(&path).contains("no viewBox"));
+}
+
+#[test]
+fn images_and_svgs_past_32768_px_are_unsupported() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a");
+    write_jpeg(&path, 32_768, 8);
+    assert_eq!(image(&probe(&path).unwrap()), (32_768, 8));
+    write_jpeg(&path, 32_769, 8);
+    assert!(unsupported(&path).contains("at most 32768 px"));
+    write_webp(&path, 8, 40_000);
+    assert!(unsupported(&path).contains("8×40000"));
+    write_svg(&path, 40_000, 8);
+    assert!(unsupported(&path).contains("at most 32768 px"));
+    write_svg(&path, 32_768, 32_768);
+    assert_eq!(image(&probe(&path).unwrap()), (32_768, 32_768));
+}
+
+/// A dotLottie whose animation is `head`, then `filler` `count` times, then `tail`, written
+/// in pieces (the test never holds the whole member).
+fn streamed_lottie(
+    path: &Path,
+    head: &str,
+    filler: &str,
+    count: usize,
+    tail: &str,
+    deflated: bool,
+) {
+    use std::io::Write;
+    let method = if deflated {
+        zip::CompressionMethod::Deflated
+    } else {
+        zip::CompressionMethod::Stored
+    };
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(method)
+        .large_file(false);
+    let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    w.start_file("manifest.json", opts).unwrap();
+    w.write_all(br#"{"animations":[{"id":"main"}]}"#).unwrap();
+    w.start_file("animations/main.json", opts).unwrap();
+    w.write_all(head.as_bytes()).unwrap();
+    let chunk = filler.repeat(64 * 1024 / filler.len().max(1));
+    let per = 64 * 1024 / filler.len().max(1);
+    let mut left = count;
+    while left > 0 {
+        let n = left.min(per);
+        w.write_all(&chunk.as_bytes()[..n * filler.len()]).unwrap();
+        left -= n;
+    }
+    w.write_all(tail.as_bytes()).unwrap();
+    w.finish().unwrap();
+}
+
+const ANIM_HEAD: &str = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"layers":["#;
+
+/// Big ignored keys cost no tree: a 24 MiB `layers` array (12M numbers, ~400 MB as a JSON
+/// tree) probes fine.
+#[test]
+fn dotlottie_skips_keys_it_does_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("big.lottie");
+    streamed_lottie(&path, ANIM_HEAD, "0,", 12 * 1024 * 1024, "0]}", false);
+    let l = probe(&path).unwrap().lottie.unwrap();
+    assert_eq!((l.width, l.height, l.duration), (64, 36, r(1, 1)));
+}
+
+#[test]
+fn dotlottie_members_are_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.lottie");
+    // Past 32 MiB decompressed (stored, so not by ratio).
+    streamed_lottie(&path, ANIM_HEAD, "0,", 17 * 1024 * 1024, "0]}", false);
+    assert_eq!(
+        unsupported(&path),
+        "dotLottie member animations/main.json is larger than 32 MiB"
+    );
+    // A deflate bomb: ~16 KB expanding to 16 MiB (refused at 100× the compressed size).
+    streamed_lottie(&path, ANIM_HEAD, "0,", 8 * 1024 * 1024, "0]}", true);
+    assert!(std::fs::metadata(&path).unwrap().len() < 100_000);
+    assert_eq!(
+        unsupported(&path),
+        "dotLottie member animations/main.json expands more than 100 times"
+    );
+    // The manifest is at most 1 MiB.
+    let big = format!(
+        r#"{{"animations":[{{"id":"main"}}],"x":"{}"}}"#,
+        "a".repeat(1 << 20)
+    );
+    write_zip(&path, &[("manifest.json", big)], false);
+    assert_eq!(
+        unsupported(&path),
+        "dotLottie member manifest.json is larger than 1 MiB"
+    );
+    // `slots` and `fonts` become trees only up to 1 MiB; `chars` glyphs are read one by one.
+    let head = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"slots":{"s":{"p":{"k":["#;
+    streamed_lottie(&path, head, "0,", 600 * 1024, "0]}}}}", false);
+    assert_eq!(unsupported(&path), "slots is larger than 1 MiB");
+    let glyph = r#"{"ch":"A","size":1,"style":"R","w":1,"fFamily":"I"},"#;
+    let head = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"chars":["#;
+    streamed_lottie(&path, head, glyph, 100_000, r#"{"ch":"B"}]}"#, false);
+    assert_eq!(unsupported(&path), "malformed chars[100000]");
+    streamed_lottie(
+        &path,
+        head,
+        glyph,
+        100_000,
+        &format!("{}]}}", &glyph[..glyph.len() - 1]),
+        false,
+    );
+    assert!(probe(&path).is_ok());
+}
+
+/// A streamed WAV's `data` length of `0xFFFFFFFF` runs to the end of the file.
+#[test]
+fn streamed_wav_data_runs_to_the_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.wav");
+    write_wav(&path, 8_000, 1, 800);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let at = bytes.windows(4).position(|w| w == b"data").unwrap();
+    bytes[at + 4..at + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(probe(&path).unwrap().duration, Some(r(1, 10)));
+    // An odd trailing byte is not a frame.
+    bytes.push(0);
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(probe(&path).unwrap().duration, Some(r(1, 10)));
+}

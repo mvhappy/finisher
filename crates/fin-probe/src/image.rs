@@ -7,7 +7,7 @@ use std::path::Path;
 use fin_core::{AssetKind, CoreError, ImageInfo};
 use imagesize::ImageType;
 
-use crate::{Probe, unsupported};
+use crate::{MAX_DIMENSION, Probe, unsupported};
 
 pub(crate) fn probe(file: &mut File, path: &Path) -> Result<Probe, CoreError> {
     let mut reader = BufReader::new(file);
@@ -22,6 +22,9 @@ pub(crate) fn probe(file: &mut File, path: &Path) -> Result<Probe, CoreError> {
     let (Some(width), Some(height)) = (dim(size.width), dim(size.height)) else {
         return Err(unsupported(path, "image has no pixels"));
     };
+    if width > MAX_DIMENSION || height > MAX_DIMENSION {
+        return Err(unsupported(path, &crate::too_large(width, height)));
+    }
     Ok(Probe {
         image: Some(ImageInfo { width, height }),
         ..Probe::of(AssetKind::Image)

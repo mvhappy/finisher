@@ -75,8 +75,16 @@ impl Probe {
     }
 }
 
-/// Files read whole (SVG, `.cube`, fonts) and dotLottie members are refused above this.
+/// Files read whole (SVG, `.cube`, fonts) are refused above this.
 pub(crate) const READ_LIMIT: u64 = 256 * 1024 * 1024;
+
+/// The widest and tallest image or SVG a probe accepts (`asset.add` checks the same bound).
+pub(crate) const MAX_DIMENSION: u32 = fin_core::MAX_IMAGE_DIMENSION;
+
+/// The reason for an image over [`MAX_DIMENSION`].
+pub(crate) fn too_large(width: u32, height: u32) -> String {
+    format!("the image is {width}×{height} px; at most {MAX_DIMENSION} px a side")
+}
 
 /// Absolute form of `path`: canonical when the file exists, otherwise just absolutised.
 fn absolute(path: &Path) -> PathBuf {
@@ -199,7 +207,7 @@ pub fn probe(path: &Path) -> Result<Probe, CoreError> {
             .unwrap_or_else(|_| Err(unsupported(path, "malformed container"))),
         Sniffed::Image => image::probe(&mut file, path),
         Sniffed::Wav => wav::probe(&mut file, size, path),
-        Sniffed::Zip => lottie::probe(&mut file, path),
+        Sniffed::Zip => lottie::probe(&mut file, size, path),
         Sniffed::Font(format) => font::probe(&mut file, size, format, path),
         Sniffed::Woff => Err(unsupported(path, "WOFF and WOFF2 fonts are not supported")),
         Sniffed::Text => probe_text(&mut file, size, path),

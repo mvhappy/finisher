@@ -43,7 +43,7 @@ pub use record::{
 };
 pub use replay::{BoundIds, apply_committed};
 pub use schema::{json_schema, json_schema_with};
-pub use time::{Rational, check_canonical_times, frame_duration, parse_time};
+pub use time::{Rational, check_canonical_times, frame_duration, ntsc_rate, parse_time};
 pub use tx::*;
 pub use upgrade::{upcast_diff, upcast_record, upcast_snapshot};
 

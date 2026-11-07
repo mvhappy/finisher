@@ -69,6 +69,9 @@ pub struct AudioInfo {
     pub channels: u16,
 }
 
+/// The widest and tallest `image` or `svg` asset, in px (`asset.add` refuses larger).
+pub const MAX_IMAGE_DIMENSION: u32 = 32_768;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageInfo {
