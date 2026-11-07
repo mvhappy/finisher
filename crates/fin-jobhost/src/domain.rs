@@ -1,16 +1,17 @@
 //! Kill domains (Decision 17): the per-OS trait the host drives, on its spawn thread.
 //!
 //! A **group** is one kill domain: a process group (Unix, this task), a delegated cgroup
-//! (Linux, Task 4) or a nested Job (Windows, Task 5). Every process also has a **leaf** in its
+//! (Linux, Task 4) or a nested Job (Windows, `windows/job.rs`). Every process also has a **leaf** in its
 //! group, which carries its `JobLimits` (a leaf Job or leaf cgroup; nothing with process
 //! groups). Each implementation keeps its own state in the handles' `os` box and downcasts
 //! it, so Tasks 4 and 5 add theirs without touching this file.
 //!
 //! The host calls, per group: `open_group` at its first spawn; per process `open_leaf`,
 //! `place` (before the process runs its first instruction), `placed` (once it exists); `kill`
-//! for `kill_group` and the timers; `memory` at `ready`; `foreign` and `exit_facts` at each
-//! exit; once the group is closed and empty `close_leaf` for each process, then `close_group`,
-//! **before** the Unix leader is reaped (so a watchdog's `-g` precedes the reap, Decision 15).
+//! for `kill_group` and the timers; `hello` at the process's `hello`; `memory` at `ready`;
+//! `foreign` and `exit_facts` at each exit; once the group is closed and empty `close_leaf` for
+//! each process, then `close_group`, **before** the Unix leader is reaped (so a watchdog's `-g`
+//! precedes the reap, Decision 15).
 
 use std::any::Any;
 use std::io;
@@ -22,7 +23,7 @@ use crate::spawner::JobLimits;
 use crate::{GroupId, GroupSpec};
 
 /// An open group. `os` is the implementation's own state.
-#[allow(dead_code)] // `spec` and `os` are read by the cgroup and Job domains (Tasks 4, 5).
+#[allow(dead_code)] // `spec` is read by the cgroup domain (Task 4), `os` by the Job domain.
 pub(crate) struct GroupHandle {
     pub id: GroupId,
     pub spec: GroupSpec,
@@ -62,12 +63,13 @@ impl GroupHandle {
 }
 
 /// A process's leaf in its group.
-#[allow(dead_code)] // read by the cgroup and Job domains (Tasks 4, 5).
+#[cfg_attr(unix, allow(dead_code))] // read by the cgroup domain (Task 4).
 pub(crate) struct LeafHandle {
     pub os: Box<dyn Any + Send + Sync>,
 }
 
 impl LeafHandle {
+    #[cfg_attr(windows, allow(dead_code))]
     pub fn none() -> LeafHandle {
         LeafHandle { os: Box::new(()) }
     }
@@ -80,7 +82,8 @@ impl LeafHandle {
 ///   `PR_SET_PDEATHSIG` and before `exec` (a leaf cgroup's `cgroup.procs` ← `"0"`, through an
 ///   fd opened here: nothing is allocated in the child).
 /// - macOS: called on the **suspended** process (`pid` set), before it is resumed.
-/// - Windows (Task 5): on the suspended process, before `ResumeThread`.
+/// - Windows: on the suspended process (assigned to the host, group and leaf Jobs), before
+///   `ResumeThread`.
 #[cfg(target_os = "linux")]
 pub(crate) struct Placement {
     pub pgid: i32,
@@ -103,6 +106,9 @@ pub(crate) struct Placement {
 pub(crate) struct Placement {
     /// The suspended process (`HANDLE`), owned by the spawn code.
     pub process: std::os::windows::io::RawHandle,
+    /// Its primary thread, still suspended (`HANDLE`), owned by the spawn code.
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    pub thread: std::os::windows::io::RawHandle,
     pub pid: u32,
 }
 
@@ -117,8 +123,8 @@ pub(crate) struct ExitFacts {
     pub memory_peak: Option<u64>,
 }
 
-/// One OS's kill domains. Every method runs on the spawn thread except `memory`, `foreign`
-/// and `exit_facts`, which a waiter or the reader may call.
+/// One OS's kill domains. Every method runs on the spawn thread except `hello`, `memory`,
+/// `foreign` and `exit_facts`, which a waiter or a reader may call.
 pub(crate) trait KillDomain: Send + Sync {
     /// The kill tree this domain is.
     fn kill_tree(&self) -> crate::KillTree;
@@ -141,6 +147,9 @@ pub(crate) trait KillDomain: Send + Sync {
     fn placed(&self, _group: &GroupHandle, _leaf: &LeafHandle, _pid: u32) -> io::Result<()> {
         Ok(())
     }
+    /// The process sent `hello`: its own start-up is done (on its stdout reader). Windows
+    /// recognises the process's console host here.
+    fn hello(&self, _group: &GroupHandle, _pid: u32) {}
     /// Kills every process of the group.
     fn kill(&self, group: &GroupHandle) -> io::Result<()>;
     /// The group's current memory figure (Decision 20), if this domain measures one.
@@ -224,6 +233,9 @@ pub(crate) mod double {
                 return Err(io::Error::other("placed fails (test)"));
             }
             self.inner.placed(g, l, pid)
+        }
+        fn hello(&self, group: &GroupHandle, pid: u32) {
+            self.inner.hello(group, pid)
         }
         fn kill(&self, group: &GroupHandle) -> io::Result<()> {
             self.note(format!("kill {}", group.id));

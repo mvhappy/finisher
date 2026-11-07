@@ -10,11 +10,9 @@
 //! worker blocks on its own writes, while the liveness timers do not count that time.
 //!
 //! Kill domains are per OS ([`domain`]): delegated cgroups on Linux where they are ours,
-//! process groups elsewhere on Unix (with the `fin-workers watchdog` for host death), Job
-//! Objects on Windows (Task 5; until then [`HostError::Unsupported`]).
-
-// Until Task 5, Windows builds only the stub domain: the spawn machinery is unused there.
-#![cfg_attr(windows, allow(dead_code))]
+//! process groups elsewhere on Unix (with the `fin-workers watchdog` for host death), and on
+//! Windows a kill-on-close host Job with nested group and leaf Jobs, each process created
+//! suspended and resumed only once it is in them.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -33,7 +31,7 @@ mod proc;
 pub mod spawner;
 #[cfg(all(unix, feature = "test-hooks"))]
 mod test_hooks;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;
 mod timers;
 mod writer;
@@ -46,6 +44,8 @@ use unix as os;
 mod windows;
 #[cfg(windows)]
 use windows as os;
+#[cfg(windows)]
+pub use windows::KILLED_EXIT_CODE;
 
 pub use commands::{Done, SpawnDone};
 pub use exit::{ExitInfo, ExitReason, KillReason};
@@ -109,14 +109,40 @@ pub struct HostOptions {
     /// is decoded leniently (Decision 3).
     pub host_minor: u32,
     pub log: LogFn,
-    /// macOS: how long a spawned process stays suspended after its registration (tests).
+    /// macOS and Windows: how long a spawned process stays suspended after its placement
+    /// (tests).
     #[cfg(feature = "test-hooks")]
     pub resume_delay_for_test: Option<std::time::Duration>,
     /// How long each waiter sleeps before it waits for its process (tests: a process that
     /// looks alive after its kill, so it is abandoned).
     #[cfg(feature = "test-hooks")]
     pub waiter_delay_for_test: Option<std::time::Duration>,
+    /// Windows: called with each process while it is suspended in its Jobs; an error fails
+    /// the spawn as a failed placement would (tests).
+    #[cfg(all(windows, feature = "test-hooks"))]
+    pub suspended_hook_for_test: Option<SuspendedHook>,
+    /// Windows: the completion port's thread is not started, so only process handles and the
+    /// Jobs' own figures report exits (tests).
+    #[cfg(all(windows, feature = "test-hooks"))]
+    pub port_stopped_for_test: bool,
 }
+
+/// What a Windows test hook learns about a process while it is suspended in its Jobs.
+#[cfg(all(windows, feature = "test-hooks"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuspendedProbe {
+    pub pid: u32,
+    /// `IsProcessInJob` for the host, group and leaf Jobs.
+    pub in_host: bool,
+    pub in_group: bool,
+    pub in_leaf: bool,
+    /// The primary thread's suspend count (1: created suspended, not resumed).
+    pub suspend_count: u32,
+}
+
+/// See [`HostOptions::suspended_hook_for_test`].
+#[cfg(all(windows, feature = "test-hooks"))]
+pub type SuspendedHook = Arc<dyn Fn(&SuspendedProbe) -> std::io::Result<()> + Send + Sync>;
 
 impl HostOptions {
     /// Defaults: [`Timing::default`], [`Unsandboxed`], cgroups `auto`, the watchdog on.
@@ -133,6 +159,10 @@ impl HostOptions {
             resume_delay_for_test: None,
             #[cfg(feature = "test-hooks")]
             waiter_delay_for_test: None,
+            #[cfg(all(windows, feature = "test-hooks"))]
+            suspended_hook_for_test: None,
+            #[cfg(all(windows, feature = "test-hooks"))]
+            port_stopped_for_test: false,
         }
     }
 }
@@ -279,7 +309,7 @@ impl EventSink {
 /// Why a host call failed.
 #[derive(Debug)]
 pub enum HostError {
-    /// No kill domain on this OS yet (Windows until Task 5): `JOBHOST_UNSUPPORTED`.
+    /// No kill domain on this OS: `JOBHOST_UNSUPPORTED`.
     Unsupported,
     UnknownGroup(GroupId),
     /// The group is closing or closed.
@@ -307,7 +337,7 @@ impl HostError {
 impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HostError::Unsupported => write!(f, "no job host on this OS yet"),
+            HostError::Unsupported => write!(f, "no job host on this OS"),
             HostError::UnknownGroup(g) => write!(f, "unknown group {g}"),
             HostError::GroupClosed(g) => write!(f, "group {g} is closed"),
             HostError::ShutDown => write!(f, "the job host is shutting down"),

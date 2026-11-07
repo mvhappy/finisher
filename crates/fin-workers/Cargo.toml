@@ -34,9 +34,28 @@ serde_json = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
-# The test family's `EXCEPTION_IN_PAGE_ERROR` (test-hooks only).
+# The test family's `EXCEPTION_IN_PAGE_ERROR` and its Job, breakaway and handle probes
+# (test-hooks only).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug"] }
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# The Windows process tests: Jobs, process state, pipes and handle flags.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 fin-core = { path = "../fin-core" }

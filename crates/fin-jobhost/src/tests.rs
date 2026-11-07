@@ -1,20 +1,51 @@
-//! The host's calls into its kill domain, in order, over the recording double (Unix:
-//! `/bin/sh` stands in for a worker; it never says `hello`).
+//! The host's calls into its kill domain, in order, over the recording double (`/bin/sh` on
+//! Unix and `cmd.exe` on Windows stand in for a worker; they never say `hello`).
 
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::domain::double::Recording;
-use crate::unix::pgroup::ProcessGroups;
 use crate::*;
 
+/// The OS's real domain under the recording double.
+#[cfg(unix)]
+type Real = crate::unix::pgroup::ProcessGroups;
+#[cfg(windows)]
+type Real = crate::windows::job::JobObjects;
+
+#[cfg(unix)]
+fn real(_opts: &HostOptions) -> Real {
+    Real::default()
+}
+
+#[cfg(windows)]
+fn real(opts: &HostOptions) -> Real {
+    Real::new(opts).expect("the host Job")
+}
+
+/// A script that runs for about 30 seconds.
+#[cfg(unix)]
+const LONG: &str = "sleep 30";
+#[cfg(windows)]
+const LONG: &str = "ping -n 31 127.0.0.1 >NUL";
+
+/// A shell running `script` (`exit 3` means the same to both).
 fn sh(script: &str) -> SpawnRequest {
+    #[cfg(unix)]
+    let (program, flag) = (std::path::PathBuf::from("/bin/sh"), "-c");
+    #[cfg(windows)]
+    let (program, flag) = (
+        std::path::PathBuf::from(
+            std::env::var_os("ComSpec").unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".into()),
+        ),
+        "/c",
+    );
     SpawnRequest {
         role: Role::Worker,
         profile: Profile::Plugin,
         family: "sh".into(),
-        program: Program::Path("/bin/sh".into()),
-        args: vec!["-c".into(), script.into()],
+        program: Program::Path(program),
+        args: vec![flag.into(), script.into()],
         env: Vec::new(),
         cwd: std::env::temp_dir(),
         grants: Vec::new(),
@@ -36,7 +67,7 @@ fn wait_for(rx: &mpsc::Receiver<HostEvent>, mut pred: impl FnMut(&HostEvent) -> 
 fn domain_is_driven_in_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let opts = HostOptions::new(std::env::temp_dir());
-    let domain = Box::new(Recording::new(ProcessGroups::default(), calls.clone()));
+    let domain = Box::new(Recording::new(real(&opts), calls.clone()));
     let (sink, rx) = EventSink::channel(64);
     let host = Host::start_with(opts, sink, domain).unwrap();
     let g = host.open_group(GroupSpec {
@@ -109,7 +140,11 @@ fn domain_is_driven_in_order() {
     );
 }
 
-fn test_host(domain: Recording<ProcessGroups>) -> (Host, mpsc::Receiver<HostEvent>) {
+fn recording(calls: &Arc<Mutex<Vec<String>>>) -> Recording<Real> {
+    Recording::new(real(&HostOptions::new(std::env::temp_dir())), calls.clone())
+}
+
+fn test_host(domain: Recording<Real>) -> (Host, mpsc::Receiver<HostEvent>) {
     let (sink, rx) = EventSink::channel(64);
     let host = Host::start_with(
         HostOptions::new(std::env::temp_dir()),
@@ -141,10 +176,10 @@ fn spawn(host: &Host, g: GroupId, req: SpawnRequest) -> Result<ProcId, HostError
 
 /// A failed first registration kills the process's own group and leaves no pgid behind: the
 /// next spawn makes a fresh group.
+#[cfg(unix)]
 #[test]
 fn failed_first_registration_leaves_no_stale_pgid() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let d = Recording::new(ProcessGroups::default(), calls);
+    let d = recording(&Arc::new(Mutex::new(Vec::new())));
     d.fail_placed.store(1, std::sync::atomic::Ordering::Release);
     let (host, _rx) = test_host(d);
     let g = group(&host);
@@ -162,10 +197,14 @@ fn failed_first_registration_leaves_no_stale_pgid() {
 #[test]
 fn failed_spawn_settles_the_group() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let (host, rx) = test_host(Recording::new(ProcessGroups::default(), calls.clone()));
+    let (host, rx) = test_host(recording(&calls));
     let g = group(&host);
     let mut req = sh("exit 0");
-    req.program = Program::Path("/nonexistent/fin-test".into());
+    req.program = Program::Path(
+        std::env::temp_dir()
+            .join("fin-nonexistent")
+            .join("fin-test"),
+    );
     assert!(spawn(&host, g, req).is_err());
     wait_for(
         &rx,
@@ -178,9 +217,9 @@ fn failed_spawn_settles_the_group() {
 #[test]
 fn panicking_callback_skips_nothing() {
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let (host, rx) = test_host(Recording::new(ProcessGroups::default(), calls.clone()));
+    let (host, rx) = test_host(recording(&calls));
     let g = group(&host);
-    spawn(&host, g, sh("sleep 30")).unwrap();
+    spawn(&host, g, sh(LONG)).unwrap();
     host.kill_group(g, KillReason::Test, Box::new(|| panic!("a caller's bug")));
     wait_for(
         &rx,

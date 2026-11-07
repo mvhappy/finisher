@@ -34,7 +34,7 @@ pub enum ExitReason {
     TimedOut,
     /// Over its group's memory limit: the kernel's (cgroup, Job) or the host's sampler.
     Oom,
-    /// The kernel reported a resource fault (Task 4, Task 5).
+    /// The kernel reported a resource fault (Task 4).
     ResourceFault,
     /// A framing or protocol violation (`json`, `seq`, `long`, `otherJob`, `unknownType`,
     /// `order`, `hello`, `role`, `selfSandbox`, …).

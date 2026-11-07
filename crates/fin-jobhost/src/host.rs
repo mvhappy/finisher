@@ -43,7 +43,8 @@ pub(crate) struct Group {
     pub killed_at: Option<Instant>,
     /// Its processes' leaves, released (`close_leaf`) with the group.
     pub leaves: Vec<LeafHandle>,
-    /// A leader whose waiter never started: reaped when the group is released.
+    /// A Unix leader whose waiter never started: reaped when the group is released.
+    #[cfg(unix)]
     pub orphan_leader: Option<u32>,
 }
 
@@ -140,6 +141,7 @@ impl Host {
                 reap: None,
                 killed_at: None,
                 leaves: Vec::new(),
+                #[cfg(unix)]
                 orphan_leader: None,
             },
         );
@@ -292,6 +294,14 @@ impl Inner {
     }
 
     pub fn on_hello(self: &Arc<Self>, p: &Proc) {
+        let handle = self
+            .tables()
+            .groups
+            .get(&p.group)
+            .and_then(|g| g.handle.clone());
+        if let Some(h) = handle {
+            self.domain.hello(&h, p.pid);
+        }
         let at = Instant::now() + ms_(self.opts.timing.hung_ms);
         self.arm(at, p.id, |i, id| i.check_hung(id));
     }

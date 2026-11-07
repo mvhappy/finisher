@@ -401,7 +401,7 @@ fn close(inner: &Arc<Inner>, gid: GroupId) {
     }
 }
 
-/// A closing group is empty: release its domain, then let the leader be reaped.
+/// A closing group is empty: release its leaves and its domain, then let the leader be reaped.
 fn finalize(inner: &Inner, gid: GroupId) {
     let g = {
         let mut t = inner.tables();

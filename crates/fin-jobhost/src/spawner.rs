@@ -86,7 +86,8 @@ pub struct JobLimits {
 }
 
 /// A Windows process-thread attribute (`UpdateProcThreadAttribute`): its id and value bytes
-/// (Task 5 may refine the representation; sub-project 7 is its only producer).
+/// (sub-project 7 is its only producer). `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` and
+/// `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` are the host's own and are refused.
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WinAttribute {
