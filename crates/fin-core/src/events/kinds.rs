@@ -199,6 +199,8 @@ registry! {
     EvalStats(p::EvalStats) = "eval.stats" v 1 [FinNode];
     FontsFetch(p::FontsFetch) = "fonts.fetch" v 1 [FinNode];
     StorageState(p::StorageState) = "storage.state" v 1 [FinNode];
+    PluginLifecycle(p::PluginLifecycle) = "plugin.lifecycle" v 1 [FinNode];
+    RegistryRefresh(p::RegistryRefresh) = "registry.refresh" v 1 [FinNode];
     ErrorInternal(p::ErrorInternal) = "error.internal" v 1 [FinNode, Finisherd];
     ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Finisherd, FinNode];
     AgentSession(p::AgentSession) = "agent.session" v 0 [Agent];
@@ -225,6 +227,8 @@ impl Payload for p::RpcStats {}
 impl Payload for p::EvalStats {}
 impl Payload for p::FontsFetch {}
 impl Payload for p::StorageState {}
+impl Payload for p::PluginLifecycle {}
+impl Payload for p::RegistryRefresh {}
 impl Payload for p::ErrorInternal {}
 impl Payload for p::ErrorPanic {
     fn rescrub(&mut self, ctx: &ScrubCtx) {

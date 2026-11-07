@@ -444,6 +444,33 @@ pub static AGENT_MODELS: NameTable = NameTable::new(
     ],
 );
 
+/// Bundled plugins (sub-project 8 spec §11): the ids of the plugins the app ships, without
+/// the leading `@` (a [`Name`] starts with a letter). `fin-node`'s compiled-in
+/// `BUNDLED_PLUGINS` list (8A Task 10) must be a subset; any other plugin is a keyed `Hashed`.
+pub static BUNDLED_PLUGINS: NameTable =
+    NameTable::new("BUNDLED_PLUGINS", &["finisher/captions-basic"]);
+
+/// `plugin.lifecycle` actions (sub-project 8 spec §11).
+pub static PLUGIN_ACTIONS: NameTable = NameTable::new(
+    "PLUGIN_ACTIONS",
+    &[
+        "plan",
+        "install",
+        "update",
+        "downgrade",
+        "remove",
+        "enable",
+        "disable",
+        "revoke",
+    ],
+);
+
+/// The [`BUNDLED_PLUGINS`] name of plugin id `@publisher/name`, if the table lists it.
+pub fn bundled_plugin_name(id: &str) -> Option<Name> {
+    id.strip_prefix('@')
+        .and_then(|rest| BUNDLED_PLUGINS.get(rest))
+}
+
 /// Every table, for the pattern test.
 pub static TABLES: &[&NameTable] = &[
     &CLI_COMMANDS,
@@ -456,6 +483,8 @@ pub static TABLES: &[&NameTable] = &[
     &DETAIL_KEYS,
     &AGENT_PROVIDERS,
     &AGENT_MODELS,
+    &BUNDLED_PLUGINS,
+    &PLUGIN_ACTIONS,
 ];
 
 // `deserialize_with` helpers: a `Name` field reads through its table.
@@ -493,6 +522,8 @@ table_fns!(one -> Name:
     media_type => MEDIA_TYPES,
     agent_provider => AGENT_PROVIDERS,
     agent_model => AGENT_MODELS,
+    bundled_plugin => BUNDLED_PLUGINS,
+    plugin_action => PLUGIN_ACTIONS,
 );
 table_fns!(many -> Vec<Name>: cli_flags => CLI_FLAGS, detail_keys => DETAIL_KEYS);
 table_fns!(counts -> Counts<Name>: op_counts => OP_KINDS);

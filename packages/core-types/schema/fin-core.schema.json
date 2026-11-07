@@ -312,6 +312,12 @@
           "$ref": "#/$defs/StorageState"
         },
         {
+          "$ref": "#/$defs/PluginLifecycle"
+        },
+        {
+          "$ref": "#/$defs/RegistryRefresh"
+        },
+        {
           "$ref": "#/$defs/ErrorInternal"
         },
         {
@@ -2637,6 +2643,50 @@
             },
             "payload": {
               "$ref": "#/$defs/StorageState"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.lifecycle",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginLifecycle"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "registry.refresh",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RegistryRefresh"
             }
           },
           "required": [
@@ -7231,6 +7281,132 @@
         }
       ]
     },
+    "PluginKindName": {
+      "description": "`content` or `code`; `unknown` when the call failed before a manifest was read.",
+      "enum": [
+        "content",
+        "code",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "PluginLifecycle": {
+      "description": "`plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,\ndisable, revoke).",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Name",
+          "description": "From `PLUGIN_ACTIONS`."
+        },
+        "bytesLog2": {
+          "description": "The package's unpacked bytes as a log₂ bucket ([`log2_bucket`]).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKindName"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginOutcome"
+        },
+        "permissionsAdded": {
+          "description": "Permissions added or widened against the installed version (all of them for a first\ninstall), capped at 255.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "risk": {
+          "$ref": "#/$defs/RiskName"
+        },
+        "source": {
+          "$ref": "#/$defs/PluginSourceName"
+        }
+      },
+      "required": [
+        "action",
+        "outcome",
+        "plugin",
+        "source",
+        "kind",
+        "permissionsAdded",
+        "risk",
+        "bytesLog2",
+        "micros"
+      ],
+      "type": "object"
+    },
+    "PluginOutcome": {
+      "description": "How a plugin or registry call ended.",
+      "oneOf": [
+        {
+          "enum": [
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "Refused by a check (validation, a hash, TUF, a permission): `code` says which.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed for another reason (I/O, internal).",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginRef": {
+      "description": "A plugin as the journal names it: a bundled plugin by its table name, any other by the\njournal's keyed hash of its id.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bundled": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "required": [
+            "bundled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hashed": {
+              "$ref": "#/$defs/Hashed"
+            }
+          },
+          "required": [
+            "hashed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PluginSourceName": {
+      "description": "Where an installed plugin came from (spec §5.2).",
+      "enum": [
+        "bundled",
+        "registry",
+        "dev"
+      ],
+      "type": "string"
+    },
     "PrivacySettings": {
       "description": "`settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown\nkeys are ignored.",
       "properties": {
@@ -7700,6 +7876,56 @@
       ],
       "type": "object"
     },
+    "RegistryRefresh": {
+      "description": "`registry.refresh`: one refresh of a registry's trusted metadata.",
+      "properties": {
+        "byHuman": {
+          "description": "A human principal asked for it (agents' and `system`'s refreshes install nothing).",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/Code",
+          "description": "A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ..."
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginOutcome"
+        },
+        "rolesUpdated": {
+          "description": "Roles whose trusted version changed.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "staleDays": {
+          "description": "Days the registry's metadata is past its expiry (relaxed freshness), when it is.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "targetsLog2": {
+          "description": "Targets listed after the refresh, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "outcome",
+        "rolesUpdated",
+        "targetsLog2",
+        "byHuman",
+        "micros"
+      ],
+      "type": "object"
+    },
     "Resolution": {
       "description": "Frame size in pixels.",
       "properties": {
@@ -7728,6 +7954,16 @@
         "low",
         "medium",
         "high"
+      ],
+      "type": "string"
+    },
+    "RiskName": {
+      "description": "The overall risk shown to people (spec §4.3); `unknown` as for [`PluginKindName`].",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
       ],
       "type": "string"
     },

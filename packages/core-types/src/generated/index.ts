@@ -105,6 +105,8 @@ export type AnyPayload =
   | EvalStats
   | FontsFetch
   | StorageState
+  | PluginLifecycle
+  | RegistryRefresh
   | ErrorInternal
   | ErrorPanic
   | AgentSession
@@ -613,6 +615,48 @@ export type FetchOutcome = "ok" | "failed" | "cached";
  */
 export type StorageMode = "readOnly" | "writable";
 /**
+ * `content` or `code`; `unknown` when the call failed before a manifest was read.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginKindName".
+ */
+export type PluginKindName = "content" | "code" | "unknown";
+/**
+ * How a plugin or registry call ended.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginOutcome".
+ */
+export type PluginOutcome = "ok" | "refused" | "failed";
+/**
+ * A plugin as the journal names it: a bundled plugin by its table name, any other by the
+ * journal's keyed hash of its id.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginRef".
+ */
+export type PluginRef =
+  | {
+      bundled: Name;
+    }
+  | {
+      hashed: Hashed;
+    };
+/**
+ * The overall risk shown to people (spec §4.3); `unknown` as for [`PluginKindName`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RiskName".
+ */
+export type RiskName = "low" | "medium" | "high" | "unknown";
+/**
+ * Where an installed plugin came from (spec §5.2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginSourceName".
+ */
+export type PluginSourceName = "bundled" | "registry" | "dev";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SrcLoc".
  */
@@ -953,6 +997,16 @@ export type EventPayload =
       kind: "storage.state";
       kv: 1;
       payload: StorageState;
+    }
+  | {
+      kind: "plugin.lifecycle";
+      kv: 1;
+      payload: PluginLifecycle;
+    }
+  | {
+      kind: "registry.refresh";
+      kv: 1;
+      payload: RegistryRefresh;
     }
   | {
       kind: "error.internal";
@@ -2482,6 +2536,65 @@ export interface FontsFetch {
 export interface StorageState {
   reason: Code;
   state: StorageMode;
+}
+/**
+ * `plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,
+ * disable, revoke).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginLifecycle".
+ */
+export interface PluginLifecycle {
+  /**
+   * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+   */
+  action: string;
+  /**
+   * The package's unpacked bytes as a log₂ bucket ([`log2_bucket`]).
+   */
+  bytesLog2: number;
+  code?: Code;
+  kind: PluginKindName;
+  micros: number;
+  outcome: PluginOutcome;
+  /**
+   * Permissions added or widened against the installed version (all of them for a first
+   * install), capped at 255.
+   */
+  permissionsAdded: number;
+  plugin: PluginRef;
+  risk: RiskName;
+  source: PluginSourceName;
+}
+/**
+ * `registry.refresh`: one refresh of a registry's trusted metadata.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RegistryRefresh".
+ */
+export interface RegistryRefresh {
+  /**
+   * A human principal asked for it (agents' and `system`'s refreshes install nothing).
+   */
+  byHuman: boolean;
+  /**
+   * A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ...
+   */
+  code?: string;
+  micros: number;
+  outcome: PluginOutcome;
+  /**
+   * Roles whose trusted version changed.
+   */
+  rolesUpdated: number;
+  /**
+   * Days the registry's metadata is past its expiry (relaxed freshness), when it is.
+   */
+  staleDays?: number;
+  /**
+   * Targets listed after the refresh, as a log₂ bucket.
+   */
+  targetsLog2: number;
 }
 /**
  * An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.
