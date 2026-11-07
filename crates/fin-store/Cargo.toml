@@ -35,6 +35,9 @@ fin-fonts = { path = "../fin-fonts" }
 # Only for `examples/export_schema.rs`: the journal's settings, consent, status, filter and
 # purge types in the TS contract. fin-store itself never depends on fin-journal.
 fin-journal = { path = "../fin-journal" }
+# Only for `examples/export_schema.rs`: the plugin manifest, permission, risk and licence
+# types (`fin_plugin_api::schema::register_schemas`).
+fin-plugin-api = { path = "../fin-plugin-api" }
 fin-probe = { path = "../fin-probe" }
 fin-store = { path = ".", features = ["test-hooks"] }
 # `tests/measure.rs`: real layouts from generated fonts.

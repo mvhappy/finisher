@@ -10,6 +10,7 @@ default-members = [
     "crates/fin-fonts",
     "crates/fin-journal",
     "crates/fin-node",
+    "crates/fin-plugin-api",
     "crates/fin-probe",
     "crates/fin-store",
     "crates/fin-testfonts",

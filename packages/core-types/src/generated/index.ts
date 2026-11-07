@@ -762,6 +762,40 @@ export type Switch = "on" | "off";
  */
 export type TrainingState = "on" | "off" | "undecided";
 /**
+ * Every key of spec §4.2, consumed or not.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ContributionKind".
+ */
+export type ContributionKind =
+  | "fontCatalogs"
+  | "captionStyles"
+  | "commands"
+  | "hooks"
+  | "skills"
+  | "prompts"
+  | "roles"
+  | "rubrics"
+  | "analyzers"
+  | "providers"
+  | "codecBackends"
+  | "matteProducers"
+  | "audioProcessors"
+  | "luts"
+  | "effects"
+  | "transitions"
+  | "lottieTemplates"
+  | "formatTemplates"
+  | "exportPresets"
+  | "qaProfiles"
+  | "duckingRules"
+  | "editPresets"
+  | "ui"
+  | "agentProviders"
+  | "slots"
+  | "importers"
+  | "embedders";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectId".
  */
@@ -995,9 +1029,126 @@ export type ItemKind = "clip" | "caption" | "graphic" | "image" | "adjustment" |
 export type Role = "out" | "in";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FsAccess".
+ */
+export type FsAccess = "read" | "readWrite";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FsScope".
+ */
+export type FsScope = "pluginData";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JournalState".
  */
 export type JournalState = "off" | "on" | "suspended";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LicenceClass".
+ */
+export type LicenceClass = "permissive" | "weakCopyleft" | "copyleft" | "nonCommercial" | "unknown";
+/**
+ * `@<publisher>/<name>` (8A Decision 2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginId".
+ */
+export type PluginId = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginKind".
+ */
+export type PluginKind = "content" | "code";
+/**
+ * One permission, tagged by `perm`. The set is closed: an unknown `perm` or field fails the
+ * parse (a unit permission with any other field too, which serde's tagged enums allow).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Permission".
+ */
+export type Permission =
+  | {
+      perm: "project:read";
+    }
+  | {
+      perm: "project:write";
+    }
+  | {
+      perm: "media:read";
+    }
+  | {
+      perm: "media:file";
+    }
+  | {
+      perm: "jobs:submit";
+    }
+  | {
+      perm: "gpu";
+    }
+  | {
+      origins: Origin[];
+      perm: "net";
+    }
+  | {
+      mode: SecretMode;
+      names: string[];
+      perm: "secrets";
+    }
+  | {
+      access: FsAccess;
+      perm: "fs";
+      scope: FsScope;
+    }
+  | {
+      hooks: string[];
+      perm: "hooks:observe";
+    }
+  | {
+      hooks: string[];
+      perm: "hooks:modify";
+    };
+/**
+ * `https://host[:port]`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Origin".
+ */
+export type Origin = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SecretMode".
+ */
+export type SecretMode = "brokered" | "raw";
+/**
+ * The shipped OS and architecture pairs (the triples of `deny.toml`), in Node's spelling.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Platform".
+ */
+export type Platform = "darwin-arm64" | "darwin-x64" | "linux-x64" | "linux-arm64" | "win32-x64" | "win32-arm64";
+/**
+ * How a code plugin runs (spec §3.2). `python` and `wasm` are after v1.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Runtime".
+ */
+export type Runtime =
+  | {
+      exec: {
+        "darwin-arm64"?: string;
+        "darwin-x64"?: string;
+        "linux-arm64"?: string;
+        "linux-x64"?: string;
+        "win32-arm64"?: string;
+        "win32-x64"?: string;
+      };
+      type: "native";
+    }
+  | {
+      main: string;
+      node: string;
+      type: "node";
+    };
 /**
  * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
  * addressed as `effects.<fx>.<param>`.
@@ -1106,6 +1257,11 @@ export type PurgeSelector =
   | {
       before: number;
     };
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Risk".
+ */
+export type Risk = "low" | "medium" | "high";
 /**
  * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
  *
@@ -2853,6 +3009,24 @@ export interface WordPlan {
   text: string;
 }
 /**
+ * A caption style (`fin_core::CaptionStyle` JSON) that `fin style add --from
+ * @pub/pack:<name>` copies into a project.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionStyleContribution".
+ */
+export interface CaptionStyleContribution {
+  file: string;
+  /**
+   * `[a-z0-9][a-z0-9-]{0,63}`, unique in the pack.
+   */
+  name: string;
+  /**
+   * A message key in the `en` catalogue for the style's display name.
+   */
+  title?: string | null;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "CatalogEntry".
  */
@@ -3019,6 +3193,27 @@ export interface ConsentState {
    */
   rev: number;
   training: TrainingState;
+}
+/**
+ * Contributions by kind (spec §4.2): the kinds this host consumes. Validation refuses any
+ * other key as `PLUGIN_CONTRIBUTION_UNSUPPORTED`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Contributes".
+ */
+export interface Contributes {
+  captionStyles?: CaptionStyleContribution[];
+  fontCatalogs?: FontCatalogContribution[];
+}
+/**
+ * A font catalog file (`fin_fonts::FontCatalog` JSON) whose entries join the server's
+ * catalog by entry id (8A Decision 22).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontCatalogContribution".
+ */
+export interface FontCatalogContribution {
+  file: string;
 }
 /**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
@@ -3369,6 +3564,19 @@ export interface HistoryResult {
   undone: string[];
 }
 /**
+ * One violation, shaped as an error `{code, message, details}`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Invalid".
+ */
+export interface Invalid {
+  code: string;
+  details: {
+    [k: string]: unknown;
+  };
+  message: string;
+}
+/**
  * What the journal holds and whether it is writing (`fin diagnostics show`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3401,6 +3609,74 @@ export interface JournalStatus {
    */
   skippedUnknownProject?: number;
   state: JournalState;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Manifest".
+ */
+export interface Manifest {
+  contributes?: Contributes;
+  /**
+   * The host API range this plugin works with (`^1.0`).
+   */
+  hostApi: string;
+  id: PluginId;
+  kind: PluginKind;
+  /**
+   * An SPDX expression.
+   */
+  license: string;
+  locales?: string[];
+  /**
+   * Always 1.
+   */
+  manifestVersion: number;
+  /**
+   * The package directory holding `<locale>.json` ICU catalogues.
+   */
+  messages?: string | null;
+  models?: ModelRef[];
+  permissions?: Permission[];
+  /**
+   * Code plugins only.
+   */
+  platforms?: Platform[];
+  publisher: Publisher;
+  /**
+   * Code plugins only.
+   */
+  runtime?: Runtime | null;
+  /**
+   * Semver 2.0 without build metadata, immutable once published.
+   */
+  version: string;
+}
+/**
+ * A model a code plugin needs (spec §8.2); never inside the package.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ModelRef".
+ */
+export interface ModelRef {
+  attribution?: string | null;
+  bytes: number;
+  id: string;
+  license: string;
+  provenance?: string | null;
+  /**
+   * A message key in the `en` catalogue.
+   */
+  purpose: string;
+  sha256: string;
+  url: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Publisher".
+ */
+export interface Publisher {
+  name: string;
+  url?: string | null;
 }
 /**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
@@ -3451,6 +3727,40 @@ export interface ParamSpec {
   scope: Scope;
   type: ParamType;
   unit?: string | null;
+}
+/**
+ * What an update changes in a plugin's grants. Order inside lists never matters.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PermissionDiff".
+ */
+export interface PermissionDiff {
+  /**
+   * Permissions whose key the old set did not have.
+   */
+  added: Permission[];
+  /**
+   * Keys the new set no longer has.
+   */
+  removed: Permission[];
+  /**
+   * The overall risk rose, or a kept permission's risk rose through a combination.
+   */
+  riskUp: boolean;
+  /**
+   * Permissions of one key where the new one grants more.
+   */
+  widened: Widening[];
+}
+/**
+ * One permission an update widens: the same `perm`, granting more.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Widening".
+ */
+export interface Widening {
+  from: Permission;
+  to: Permission;
 }
 /**
  * `settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown
