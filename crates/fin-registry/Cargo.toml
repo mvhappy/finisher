@@ -5,18 +5,38 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Plugin packages (strict reader, reproducible packer, tree hashes) and, from 8A Task 4a, TUF registries."
+description = "Plugin packages (strict reader, reproducible packer, tree hashes) and TUF registries over local folders (trust store, refresh, repository editor)."
 
 [dependencies]
+# Everything below `tough` is already in its tree: no new licence (8A Task 4a).
+async-trait = "0.1"
+# `tough`'s crypto (8A Decision 8); the editor generates ed25519 keys with it.
+aws-lc-rs = "1"
 blake3 = "1"
+bytes = "1"
 fin-plugin-api = { path = "../fin-plugin-api" }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+hex = "0.4"
+jiff = "0.2"
+olpc-cjson = "0.1"
+pem = "3"
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = ["rt"] }
+# TUF 1.0 client (8A Task 1 gate): no `http` feature; transports are ours.
+tough = { version = "0.24", default-features = false }
 unicode-normalization = "0.1"
+url = "2"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# Windows x64 builds `aws-lc-sys` without NASM from its bundled objects (8A Task 1).
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 
 [dev-dependencies]
 # The hostile-archive corpus writes zip bytes by hand (tests/support/hostile.rs).
 crc32fast = "1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-tempfile = "3"

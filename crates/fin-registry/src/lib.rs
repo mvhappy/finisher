@@ -2,7 +2,15 @@
 //!
 //! - [`package`]: the strict `.finpkg` reader ([`package::unpack`]), the reproducible packer
 //!   ([`package::pack`]) and tree hashes ([`package::tree_hash`], also used by `fin-node`'s
-//!   build script for bundled plugins). It needs no TUF code, so a build-dependency with
-//!   default features off stays small.
+//!   build script for bundled plugins).
+//! - [`tuf`]: the TUF client ([`tuf::TrustedRepo`]) and its per-root trust store.
+//! - [`editor`]: [`editor::RepoBuilder`], which builds and signs registries (used by
+//!   `fin-plugin` and the tests).
+//! - [`transport`]: where registry bytes come from (local folders; HTTP in test builds).
 
+pub mod advisory;
+mod atomic;
+pub mod editor;
 pub mod package;
+pub mod transport;
+pub mod tuf;

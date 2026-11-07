@@ -2,6 +2,7 @@
 //! the root. Packages carry no signature of their own; their identity is the hash and length
 //! in signed targets metadata, and once unpacked, their [`tree_hash`].
 
+mod files;
 mod limits;
 mod names;
 mod pack;
@@ -14,6 +15,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+pub use files::DirFiles;
 pub use limits::Limits;
 pub use names::{check_component, check_path};
 pub use pack::{PackInfo, pack};

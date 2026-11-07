@@ -1,0 +1,39 @@
+{
+  "signed": {
+    "_type": "targets",
+    "spec_version": "1.0.0",
+    "version": 2,
+    "expires": "2027-11-07T20:31:56Z",
+    "targets": {},
+    "delegations": {
+      "keys": {
+        "14aa3cb3f8023be89602597f4fc64be5c6ae7cb6100e497c188465d33de8f6f0": {
+          "keytype": "ed25519",
+          "keyval": {
+            "public": "d4ffe84d57b8e346bc904732afb9b84cb563db297ed0cc5bbdc137c07c3d1fb9"
+          },
+          "scheme": "ed25519"
+        }
+      },
+      "roles": [
+        {
+          "name": "test-only",
+          "keyids": [
+            "14aa3cb3f8023be89602597f4fc64be5c6ae7cb6100e497c188465d33de8f6f0"
+          ],
+          "threshold": 1,
+          "paths": [
+            "test-only/*"
+          ],
+          "terminating": true
+        }
+      ]
+    }
+  },
+  "signatures": [
+    {
+      "keyid": "b89d5d90e9d90bd4e57cf375b637a3941f339411b131748177c0ab95899eca31",
+      "sig": "6cb2d405b16bfdf4a4a4aa40df588dc63019794b009070a540e54209caf3cb1627e314650055080ed64c6a6bfa8134d760abc6052a5a7b022270d71d9654390a"
+    }
+  ]
+}

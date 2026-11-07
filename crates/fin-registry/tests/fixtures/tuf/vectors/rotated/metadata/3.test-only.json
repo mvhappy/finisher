@@ -1,0 +1,50 @@
+{
+  "signed": {
+    "_type": "targets",
+    "spec_version": "1.0.0",
+    "version": 3,
+    "expires": "2027-11-07T20:31:56Z",
+    "targets": {
+      "test-only/pack/1.0.0.finpkg": {
+        "length": 435,
+        "hashes": {
+          "sha256": "30efcca13c2bbda9de04d79abf37a0c45b11c7531599a1a947da25309c9f221a"
+        },
+        "custom": {
+          "version": "1.0.0",
+          "license": "MIT",
+          "bytesUnpacked": 245,
+          "kind": "content",
+          "hostApi": "^1.0",
+          "permissionsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "id": "@test-only/pack",
+          "platforms": [],
+          "manifestSha256": "ff36828ee8d8425e3cb6561ffaecf4e0f626cdc0599a9b10930b8d68e6f9d098"
+        }
+      },
+      "test-only/pack/1.1.0.finpkg": {
+        "length": 434,
+        "hashes": {
+          "sha256": "77e1e8f0904b6686ca00bae8406e2300dbdc53371a9c805b13974c634ff95beb"
+        },
+        "custom": {
+          "bytesUnpacked": 245,
+          "hostApi": "^1.0",
+          "manifestSha256": "4d240af48b71df73f4e084abacd79849fc68f53db8384b4036b9d94967689f24",
+          "kind": "content",
+          "license": "MIT",
+          "version": "1.1.0",
+          "permissionsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "id": "@test-only/pack",
+          "platforms": []
+        }
+      }
+    }
+  },
+  "signatures": [
+    {
+      "keyid": "9a994b1fefe39e899711ee166fc7ae2fa503de3371d08a30bc22d52616d3c2bb",
+      "sig": "548d18ce8b9b3b04d48c3608ef932a9a784d50cf07dc5ef7a93691037896f9b99c0f683a3f2083df6f3f59c2a188cbfb9caa28de15bf2eb32831a21747e71607"
+    }
+  ]
+}
