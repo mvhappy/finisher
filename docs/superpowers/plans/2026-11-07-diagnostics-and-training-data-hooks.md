@@ -5,10 +5,10 @@
 **Goal:** Finisher can record what it needs to improve the app and, later, to fine-tune an open-weight model on video editing. That covers what belongs in an edit and what does not, and everything that passes through an LLM. Upload, agent traces and the dataset builder come in later sub-projects, as additions with no rewrite. After this plan:
 - one versioned event envelope with generated TS types, a closed kind registry, and a class (`meta`, `scrubbed` or `content`) on every payload field;
 - a local, append-only, capped, crash-safe journal in `<server-data>/events/` that never blocks editing and costs nothing when off;
-- consent from day one: `diagnostics` and `training` settings, env overrides, a per-project `collect: never` flag that travels with the project folder, and the consent recorded in every entry;
+- consent from day one, in two tiers: **basic diagnostics** (metadata only, on by default everywhere, opt-out) and **training content** (only after an explicit opt-in), env overrides, a per-project `collect: never` flag that travels with the project folder, and the consent recorded in every entry;
 - the first sources: op-log commits (edits, undo, redo, merges, picks, reverts, branches) linked by `txId`, `fin` invocations, RPC and eval timings, font fetches, storage state, errors, panics and sessions;
 - the reserved agent kinds that sub-project 7 fills in;
-- `fin diagnostics show|export|purge|project`;
+- `fin diagnostics show|consent|export|purge|project`;
 - an `Uploader` boundary with no network implementation.
 
 **Architecture:**
@@ -140,16 +140,19 @@
 
 8. **Settings:** `settings.json` `privacy: {diagnostics?: "on"|"off", training?: "on"|"off", retentionDays?: 1..365, maxMiB?: 16..4096}`.
    - **Effective purpose** = `DO_NOT_TRACK=1` ? off : `FIN_<PURPOSE>` (`on|off`) ?? settings value ?? the build default.
+   - An absent `training` is reported as **`undecided`**, the state before the onboarding question is answered. It records no content, exactly like `off`. Only `undecided` makes the onboarding screen (sub-project 9) ask; an explicit `off` is never asked again.
    - `basis` is `env`, `user` or `default`, after whichever decided. When the two purposes have different bases, the stamp carries the weaker one: `default` < `env` < `user`.
    - An unusable `privacy` section (bad JSON, wrong type, out of range) means **both off** until fixed, with a stderr warning, as `readSettings` does for fonts.
 9. **Defaults live in one table,** `fin_journal::consent::DEFAULTS`.
-   - It holds the recommended answers to Q1 and Q2: **diagnostics on, training off**.
-   - The Docker or headless image sets `FIN_DIAGNOSTICS=off` in its environment, pending Q2.
-   - Changing a default is a one-line change plus a test-golden update.
+   - It holds the owner's decisions (2026-11-07): **diagnostics on everywhere** (desktop, headless and the Docker image alike), **training undecided** (off until an explicit opt-in).
+   - The training default is not configurable: `content_needs_explicit_consent` fails if `DEFAULTS` ever turns training on, so content always has `basis: user` or `env`.
+   - An operator can still turn diagnostics off for a whole server with `FIN_DIAGNOSTICS=off` or `DO_NOT_TRACK=1`.
+   - Changing the diagnostics default is a one-line change plus a test-golden update.
 10. **Purposes.**
     - With `training` on, entries keep their content fields.
     - With only `diagnostics` on, content fields are removed by `fin_core::events::redact` before serialisation, and `KindSpec.training_only` kinds are written as their metadata part. An `agent.turn`, for example, keeps its token counts and latency and drops its messages.
     - With only `training` on, entries are written with both parts and `purposes: [training]`. Training covers diagnostics-class fields too: they are context for the examples.
+    - **Diagnostics alone is already a training signal.** Its metadata says which ops an edit used, whether it was kept, undone, reverted, rebased or conflicted, and how soon. The privacy notice states that basic diagnostics may train models on this metadata. That is the "collected anyway" subset; the content tier adds what was edited and why.
 11. **Off means off. There is no in-memory diagnostic ring.** The gate is an `AtomicU8` of purposes, read with `Relaxed` before any payload is built. Why:
     - it is simple, and provable by a test;
     - "off" then means the same to a user and to a reviewer;
@@ -169,7 +172,14 @@
     - `Store::set_collect` needs the writer lease (`PROJECT_READ_ONLY` otherwise) and writes the file the usual way.
     - `fin-node` pushes each open project's policy into the journal at open and after every re-read. **Unknown means `never`:** a project not open on this server, or whose file can't be read.
     - Setting `never` makes the journal purge that project's entries (Decision 29). Every collaborator's server does the same when it reads the flag.
-14. **Each entry carries the consent at write time** (`consent.rev`, `purposes`, `basis`). A future uploader that accepts only explicit consent can drop every `basis: default` entry.
+14. **Each entry carries the consent at write time** (`consent.rev`, `purposes`, `basis`).
+    - An entry with content never has `basis: default` (Decision 9). A diagnostics-only entry may.
+    - A future uploader can still apply a stricter rule per region, such as dropping `basis: default` entries, without a schema change.
+14a. **Setting consent.** `diagnostics.consent {purpose, value: on|off|unset}` (RPC) and `fin diagnostics consent <diagnostics|training> <on|off|unset>`.
+    - It writes `privacy` in `settings.json` through the settings writer (temp-then-rename) and re-applies it. `unset` removes the key, so training goes back to `undecided`.
+    - The reply is the new `ConsentState`. If an env override wins over the new value, the reply says so (`env`).
+    - The onboarding screen of sub-project 9 is a client of this RPC. It shows one question for content with no answer pre-selected, and a notice about basic diagnostics with a link to turn it off.
+    - Opting in is a human act: when sub-project 7 adds permissions, agents may read consent but never set it.
 
 ### The journal
 
@@ -273,12 +283,13 @@
     - `project <id>`;
     - `before <date>`.
 30. **`fin diagnostics`** (server only; `SERVER_UNAVAILABLE` offline):
-    - `show [--recent <n>]` → `{consent {diagnostics, training, basis, rev}, env, state, files, bytes, kinds: {kind: count}, oldest, newest, dropped, projects: {id: never|default}}`;
+    - `show [--recent <n>]` → `{consent {diagnostics, training (on|off|undecided), basis, rev}, env, state, files, bytes, kinds: {kind: count}, oldest, newest, dropped, projects: {id: never|default}}`;
     - `export [--since <date>] [--project <id>] [--kind <k>]… [--as-upload diagnostics|training]` → JSONL on stdout. Without `--as-upload` it prints what is stored, content included: it is the user's own data. With it, it prints exactly what an uploader would get now;
     - `purge (--all | --project <id> | --before <date>)` → `{removed, files}`;
-    - `project never|default [--project <id>]` → `{project, collect}`.
+    - `project never|default [--project <id>]` → `{project, collect}`;
+    - `consent <diagnostics|training> <on|off|unset>` → `ConsentState` (Decision 14a).
 
-    Purge and `project default` become human-only once permissions exist (a TASKS follow-up for sub-project 7).
+    Purge, `project default` and `consent … on` become human-only once permissions exist (a TASKS follow-up for sub-project 7).
 31. **The upload view and the `Uploader` boundary.**
     ```rust
     pub trait Uploader: Send {
@@ -297,7 +308,7 @@
 32. **RPCs** (`@finisher/contracts`, scope `diagnostics`):
     - `diagnostics.status`, `diagnostics.recent {n}`;
     - `diagnostics.export {filter, cursor?, limit ≤ 1000, asUpload?}` → `{lines, next?}`, paged;
-    - `diagnostics.purge {selector}`, `diagnostics.project {projectId, collect}`;
+    - `diagnostics.purge {selector}`, `diagnostics.project {projectId, collect}`, `diagnostics.consent {purpose, value}` (Decision 14a);
     - `diagnostics.record {kind, kv, ctx?, payload}` (Decision 24).
 33. **New codes:**
     - exit 3: `EVENT_KIND_UNKNOWN`, `EVENT_INVALID`, `EVENT_TOO_LARGE`. These are seen only by `diagnostics.record` callers; `fin` ignores them.
@@ -312,16 +323,16 @@
 
     Nothing in this plan may make that join impossible: `log.commit` carries txIds and links, and `cli.command` carries txIds. The e2e checks the join (Task D7).
 
-## Questions for the owner
+## Owner decisions (2026-11-07)
 
-1. **Default for `training`** (it covers user content and full LLM conversations).
-   - **Recommended:** **off until the user opts in explicitly** (a first-run prompt in sub-project 9). Training on user content and LLM conversations likely needs explicit consent under GDPR Art. 6(1)(a), and user footage and transcripts can contain special-category data (Art. 9). Opt-out consent for this is weak in the EU and the UK.
-   - **Alternative:** on with opt-out, as the request suggests. Then every entry made before a user's explicit choice is stamped `basis: default`, so a later policy can still drop them before upload (Decision 14).
-
-   The plan implements the recommendation until answered; the change is one line.
-2. **Default for `diagnostics`** (metadata only: codes, timings, counts, ids, keyed hashes).
-   - **Recommended:** **on, with opt-out, on desktop; off by default in the Docker/headless image** (`FIN_DIAGNOSTICS=off` baked into the image env). A shared or NAS server records on behalf of other people, so its operator should opt in. This replaces §21's "telemetry opt-in only".
-   - **Alternative:** on everywhere, or off everywhere until the uploader exists. Nothing is uploaded either way in this phase; the first upload will show a notice. A legal check is advised before upload (ePrivacy Art. 5(3) covers reading and storing on the device for analytics).
+1. **Two tiers.**
+   - **Basic diagnostics** is metadata only: codes, timings, counts, ids, keyed hashes, and the edit outcomes of Decision 10. It is on by default **everywhere**, with an opt-out. It is disclosed in the terms and the privacy notice, with a first-run notice in the app. It contains no content, paths or host details, so it can rest on legitimate interest (GDPR Art. 6(1)(f)) rather than consent.
+   - **Training content** is captions, transcripts, prompts, full LLM conversations, file names, media hashes, and later sampled frames. It is recorded only after an explicit opt-in: the onboarding question (sub-project 9), `fin diagnostics consent training on`, or `FIN_TRAINING=on` on the owner's own machines. It is never on by default.
+2. **Why content is opt-in although some editors default it on.**
+   - Cursor's individual plans train on code unless Privacy Mode is on. GitHub Copilot's individual plans moved to training by default in April 2026. Both are criticised for it, and their business plans default off.
+   - Zed keeps telemetry on but takes training data only by opt-in. VS Code sends usage telemetry by default with a notice.
+   - Finisher follows Zed for content and VS Code for metadata. User footage, faces and voices make content riskier than code under GDPR Art. 9. A persuasive onboarding question ("help improve Finisher for everyone") gets most of the data with a clean basis.
+3. **Still to check before the first upload** (a TASKS follow-up): a legal review of the notice wording, ePrivacy Art. 5(3) for storage on the device, and whether some regions need diagnostics consent too. The per-entry `basis` stamp lets the uploader apply a regional rule later without a rewrite.
 
 ## Review Focus
 
@@ -463,6 +474,8 @@ Decisions 6–14, 29, 31. `Store::set_collect` is refused `PROJECT_READ_ONLY` wi
 
 - [ ] **Step 1: Write failing tests:**
   - `resolve_precedence` (a table test: DO_NOT_TRACK > env > settings > default; off wins; basis);
+  - `content_needs_explicit_consent` (`DEFAULTS.training` is never on), `undecided_records_no_content`, `content_entries_never_basis_default`;
+  - `set_consent_writes_settings_and_unset_restores_undecided`;
   - `unusable_privacy_section_means_off`;
   - `consent_rev_is_monotonic_across_reopen`;
   - `withdrawal_is_recorded_then_gate_closes`;
@@ -500,6 +513,7 @@ Decisions 6–14, 29, 31. `Store::set_collect` is refused `PROJECT_READ_ONLY` wi
   - `rpc_timing_reaches_rpc_stats` (an injected clock or a 1 s window under test hooks);
   - `record_rpc_sets_source_from_credential`, `record_rpc_refuses_unlisted_kind`, `record_rpc_rate_limited`, `record_rpc_size_cap`;
   - `diagnostics_status_export_purge_project_rpcs`, `export_pages_with_cursor`;
+  - `consent_rpc_writes_settings_and_reports_env_override`;
   - RPC contract fixtures.
 - [ ] **Step 2: Implement.** **Run** the three gates and `rtk pnpm e2e` → PASS.
 - [ ] **Step 3: Commit** `feat(node,server): journal in finisherd, privacy settings, sessions, RPC stats and diagnostics RPCs`.
@@ -546,10 +560,10 @@ Decisions 6–14, 29, 31. `Store::set_collect` is refused `PROJECT_READ_ONLY` wi
   - `slow_server_never_delays_exit_beyond_budget`;
   - `record_failure_never_changes_exit_or_stdout`;
   - `agent_actor_from_fin_session`;
-  - `diagnostics_show`, `diagnostics_show_recent`, `diagnostics_export_filters_and_as_upload`, `diagnostics_purge_selectors`, `diagnostics_purge_needs_a_selector_is_usage`, `diagnostics_project_never_then_default`, `diagnostics_offline_is_server_unavailable`, `journal_unavailable_exit_5`;
+  - `diagnostics_show`, `diagnostics_show_recent`, `diagnostics_export_filters_and_as_upload`, `diagnostics_purge_selectors`, `diagnostics_purge_needs_a_selector_is_usage`, `diagnostics_project_never_then_default`, `diagnostics_consent_training_on_off_unset` (`show` says `undecided` after `unset`), `diagnostics_offline_is_server_unavailable`, `journal_unavailable_exit_5`;
   - `map_still_under_budget`.
 - [ ] **Step 2: Implement.** **Run** `rtk cargo test -p fin` (`FIN_REQUIRE_SERVER=1`), the gates and `rtk pnpm e2e` → PASS.
-- [ ] **Step 3: Commit** `feat(fin): record command invocations; fin diagnostics show, export, purge and project`.
+- [ ] **Step 3: Commit** `feat(fin): record command invocations; fin diagnostics show, consent, export, purge and project`.
 
 ### Task D7: e2e, docs and tracker — tier: sonnet
 
@@ -559,6 +573,7 @@ Decisions 6–14, 29, 31. `Store::set_collect` is refused `PROJECT_READ_ONLY` wi
 
 - [ ] **Step 1: Write the scenario,** driven by `fin` only:
   1. Start with `FIN_DIAGNOSTICS=off FIN_TRAINING=off`. Make a project, run 3 edits and an undo. Check: `events/` does not exist, and `fin diagnostics show` says off.
+  1a. Restart with no env and no `privacy` settings. Check: `show` says diagnostics `on` (`basis: default`) and training `undecided`, and an edit writes no content.
   2. Restart with diagnostics on. Run 3 edits, an undo, a stale edit that rebases, and a conflicting one. Then check:
      - `export` holds `session.start`, `log.commit` entries with the right outcomes, and `cli.command` entries whose txIds equal the committed ones;
      - the undo's `links` names the undone tx;
@@ -566,19 +581,20 @@ Decisions 6–14, 29, 31. `Store::set_collect` is refused `PROJECT_READ_ONLY` wi
      - **join check:** every `log.commit` txId resolves through the `tx.get` RPC (the e2e RPC helper in `scripts/e2e/lib.mjs`).
   3. **Leak grep** over `events/`: no temp-dir path, `$HOME`, `$USER`, host name or argument marker.
   4. `fin diagnostics project never`, then one edit. Check: no entries for that project, and the earlier ones are purged. A second server following the folder also writes none for it.
-  5. Turn training on, then off. Check:
+  5. `fin diagnostics consent training on`, one edit, then `consent training off`. Check:
      - `consent.changed` entries;
      - `export --as-upload training` is empty after the withdrawal;
      - `purge --all` leaves no `key`.
 - [ ] **Step 2: Docs.**
   - The README section.
-  - In the spec, the §21.1 as-built notes: measured costs, any deviation, and the owner's answers to Q1 and Q2 when given.
+  - In the spec, the §21.1 as-built notes: measured costs, any deviation, and the owner decisions above.
   - TASKS follow-ups:
     - the uploader and its notice;
     - agent kinds and the blob store (7);
     - UI kinds and the consent screens (9);
     - review verdicts (10);
-    - human-only `purge` and `project default` (7);
+    - human-only `purge`, `project default` and opting in (7);
+    - the onboarding consent question and the diagnostics notice (9);
     - the dataset builder;
     - GPU facts (6);
     - a legal review before the first upload.

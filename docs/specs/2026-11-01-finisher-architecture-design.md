@@ -80,7 +80,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 | D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs are not supported |
 | D32 | Distribution | Direct download + auto-update: notarised DMG, signed Windows installer, AppImage/deb/rpm, Docker image for the server. No app stores in v1 |
 | D33 | Internationalisation | i18n-ready from the first commit, English-only at launch: every user-facing string is an ICU message in a catalogue, never a literal; translations are added later without code changes (§17.1). UI language and content language (transcripts, captions, generated text) are separate settings |
-| D34 | Diagnostics and training data | One versioned event envelope (types in `fin-core`, TS generated) written to a local, append-only, size- and age-capped journal in `<server-data>/events/` by `finisherd` only. Two purposes with separate consent, **diagnostics** (metadata only) and **training** (adds user and model content, LLM traffic included); a per-project `collect: never` flag in `finisher.project.json` binds every collaborator; env overrides; off means nothing is recorded. Every payload field is classed `meta`, `scrubbed` or `content`; paths and host details are never stored raw. Events link to the op log by `txId`. No upload until a later sub-project, behind one `Uploader` boundary (§21.1) |
+| D34 | Diagnostics and training data | One versioned event envelope (types in `fin-core`, TS generated) written to a local, append-only, size- and age-capped journal in `<server-data>/events/` by `finisherd` only. Two purposes with separate consent: **diagnostics** (metadata only, on by default everywhere with an opt-out) and **training** (adds user and model content, LLM traffic included; only after an explicit opt-in); a per-project `collect: never` flag in `finisher.project.json` binds every collaborator; env overrides; off means nothing is recorded. Every payload field is classed `meta`, `scrubbed` or `content`; paths and host details are never stored raw. Events link to the op log by `txId`. No upload until a later sub-project, behind one `Uploader` boundary (§21.1) |
 
 ---
 
@@ -700,7 +700,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 | Concern | v1 decision |
 |---|---|
-| Telemetry | D34 (§21.1): a local event journal with consent per purpose (diagnostics, training), a per-project never-collect flag and documented, versioned kinds. Defaults are an owner decision recorded in §21.1. No upload in v1 until the uploader sub-project ships |
+| Telemetry | D34 (§21.1): a local event journal with consent per purpose (diagnostics, training), a per-project never-collect flag and documented, versioned kinds. Basic diagnostics is on by default with an opt-out; training content needs an explicit opt-in (§21.1). No upload in v1 until the uploader sub-project ships |
 | Crash reporting | Panics and uncaught errors are `error.panic` journal events under the diagnostics purpose (§21.1), scrubbed of paths, host and user names. Minidumps from Electron, server and workers come with the uploader, under the same consent |
 | Model downloads | Guided first-run: shows size and purpose, resumable, verified, pausable; app usable before models finish; offline after download |
 | Offline clients | Read cached projections; edits queue only while the local embedded server is reachable (no client-only offline editing in v1) |
@@ -722,7 +722,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 |---|---|
 | Now (sub-project 4C branch) | Envelope and kinds, the journal, consent and the project flag, the first sources (edits, history, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, the `Uploader` trait with no network implementation |
 | Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts) and the large-content blob store |
-| Sub-project 9 | `ui.*` events, the consent screens and first-run prompt, a "what we collect" page |
+| Sub-project 9 | `ui.*` events, the onboarding consent question (content, no pre-selected answer) and the diagnostics notice, a "what we collect" page |
 | Sub-project 10 | `review.*` verdicts (marker resolve, accept/reject per transaction) |
 | Sub-project 11 or the cloud phase | The uploader (HTTPS, batching, backoff), the receiving service, the first-upload notice |
 | After v1, cloud | The dataset builder (below) |
@@ -748,11 +748,15 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Never stored, in any class:** raw paths (a path becomes `{root: project|library|workspace|serverData|other, ext, hash}`), host names, IPs, MAC addresses, user names, serial numbers, credentials, raw `fin` arguments.
 - Keyed hashes are BLAKE3 keyed with a per-install key (`events/key`, 0600), so they join records on this machine without being reversible by dictionary elsewhere. `purge --all` deletes the key.
 
-**Consent**
-- `<server-data>/settings.json` `privacy: {diagnostics: on|off, training: on|off, retentionDays, maxMiB}`. An absent key takes the build default and records `basis: default`; a present one `basis: user`.
+**Consent** (owner decisions of 2026-11-07)
+- **Two tiers.**
+  - **Basic diagnostics** is metadata only. It includes edit outcomes: which ops an edit used, and whether it was kept, undone, reverted, rebased or conflicted. It serves both purposes: improving the app, and training on metadata alone. It is on by default everywhere (desktop, headless, Docker) with an opt-out, and is disclosed in the terms, the privacy notice and a first-run notice. It holds no content, so it can rest on legitimate interest (GDPR Art. 6(1)(f)).
+  - **Training content** adds captions, transcripts, prompts, LLM conversations, file names, media hashes and, later, sampled frames. It needs an explicit opt-in: the onboarding question (sub-project 9, no pre-selected answer), `fin diagnostics consent training on`, or `FIN_TRAINING=on`. Until then training is `undecided` and records no content. The build default can never turn it on; a test enforces it.
+  - **Prior art.** Cursor's and Copilot's individual plans train on code by default and are criticised for it; their business plans default off. Zed keeps telemetry on and takes training data only by opt-in, and VS Code sends telemetry by default with a notice. Finisher follows Zed for content and VS Code for metadata, because footage, faces and voices are riskier than code (Art. 9).
+- `<server-data>/settings.json` `privacy: {diagnostics: on|off, training: on|off, retentionDays, maxMiB}`, written by `diagnostics.consent` and `fin diagnostics consent`. An absent key takes the build default and records `basis: default`; a present one `basis: user`. Agents may read consent but never set it, once permissions exist (sub-project 7).
 - Env overrides: `FIN_DIAGNOSTICS`, `FIN_TRAINING` (`on|off`, `basis: env`); `DO_NOT_TRACK=1` forces both off. Off always wins over on.
 - An unreadable settings file means both off until it is fixed (fail closed, as with fonts).
-- **Training implies content; diagnostics never does.** With only diagnostics on, content fields are removed at write time and training-only kinds are written as their metadata part. Training needs its own explicit `on` in the recommended defaults (owner question, plan Q1): content, LLM conversations above all, likely needs explicit consent under GDPR Art. 6(1)(a), and user footage may carry special-category data (Art. 9).
+- **Training implies content; diagnostics never does.** With only diagnostics on, content fields are removed at write time and training-only kinds are written as their metadata part. Content entries always carry `basis: user` or `env`, never `default`.
 - **Per project:** `finisher.project.json` `collect: "never"` (absent means "follow each user's settings"). It travels with the folder, so every collaborator's server honours it. Setting it needs the writer lease; clearing it is human-only once permissions exist (sub-project 7). While a project's flag is unknown, it counts as `never`. Setting it purges that project's entries from this server's journal; each collaborator's server does the same when it sees the flag.
 - **Off means off.** When no purpose is on, nothing is recorded anywhere: no file, no directory, no in-memory ring. The gate is one atomic load before a payload is even built. Normal stderr logs are unaffected.
 - Each entry carries the consent at write time (`rev`, `purposes`, `basis`). Changes are journaled as `consent.changed` while any purpose is still on. **An uploader re-checks current consent per entry**: withdrawing a purpose stops the upload of everything already recorded for it.
