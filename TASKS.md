@@ -298,6 +298,16 @@ Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `doc
 - [ ] 8G: generation providers
 - [ ] 8H: media interfaces (codec backends, mattes, effects with pins, schema version 3)
 
+## Sub-project 7: agent runtime (designed 2026-11-07)
+
+Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2, answering an independent review; §23). Plan for the first batch: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md`. **7A-1 runs before 5A; 7A-2 after it; 7C's policy, launcher and suites can start now.**
+
+- [ ] Owner questions 1–7 (spec §20): training targets (human edits and open-weight outputs only), CLI capture fidelity, hosts without a sandbox, `auto` merging into `main`, agent egress and what an injected agent can take, Claude Code on a subscription login (Anthropic's terms), Finisher starting a provider login and the sign-in UX for sub-project 9
+- [ ] S9 spike in `archive/` (plan Task 0): seccomp io_uring/x32, macOS mach-lookup allow-list, per-session CLI config dirs and Windows capability SIDs, `--bare`/init/budget-flag checks
+- [ ] 7A-1 pure pieces, before 5A (plan Tasks 1, 3a, 4, 5, 6a, 8a, 9)
+- [ ] 7A-2 runtime core and the built-in agent, after 5A (plan Tasks 2, 3b, 6b, 7, 8b, 10–15)
+- [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox (`fin-sandbox`: agent, hook, worker and plugin profiles; ACL broker) · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
