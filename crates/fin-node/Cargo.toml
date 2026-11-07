@@ -29,6 +29,7 @@ name = "commit_overhead"
 required-features = ["test-hooks"]
 
 [dependencies]
+blake3 = "1"
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
 fin-journal = { path = "../fin-journal" }
@@ -40,6 +41,10 @@ napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = { version = "3", default-features = false, features = ["strict"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Private server-data directories (owner-only DACLs) on Windows (MIT OR Apache-2.0).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [build-dependencies]
 napi-build = "2"

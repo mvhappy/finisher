@@ -1,0 +1,6 @@
+data: {"id":"gen-bad-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok so far"},"finish_reason":null}]}
+
+data: {"id":"gen-bad-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":
+
+data: [DONE]
+

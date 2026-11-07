@@ -39,7 +39,8 @@ fn in_progress(status: &Value) -> Vec<Value> {
 
 /// Sends `fonts.fetch {payload}` and waits for its answer (the server's `FontsStatus`).
 pub fn fetch(endpoint: &Endpoint, payload: Value) -> Result<Value, CoreError> {
-    let mut client = Client::connect(endpoint, FETCH_TIMEOUT)?;
+    // A long, progress-reporting operation: outside fin's overall deadline.
+    let mut client = Client::connect(endpoint, FETCH_TIMEOUT)?.without_deadline();
     let (done, stop) = mpsc::channel::<()>();
     let poller = {
         let endpoint = endpoint.clone();
@@ -47,7 +48,9 @@ pub fn fetch(endpoint: &Endpoint, payload: Value) -> Result<Value, CoreError> {
             let mut status = None;
             while let Err(mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(POLL) {
                 if status.is_none() {
-                    status = Client::connect(&endpoint, TIMEOUT).ok();
+                    status = Client::connect(&endpoint, TIMEOUT)
+                        .ok()
+                        .map(Client::without_deadline);
                 }
                 let Some(c) = status.as_mut() else { continue };
                 match c.call("fonts.status", json!({})) {

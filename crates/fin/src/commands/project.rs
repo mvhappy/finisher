@@ -148,7 +148,7 @@ pub fn create(
         }
         key => key,
     };
-    let dir = paths::resolve_str(&a.dir);
+    let dir = paths::resolve_checked_str(&a.dir)?;
     let resolved = json!({ "dir": dir.display().to_string(), "name": a.name, "rate": rate });
     if globals.dry_run || backend.dry_run_only() {
         let project = new_project("$project".to_string(), a.name.clone(), rate)?;
@@ -166,7 +166,7 @@ pub fn create(
 }
 
 pub fn open(backend: &dyn Backend, a: &OpenArgs) -> Result<Value, CoreError> {
-    let dir = paths::resolve_str(&a.dir);
+    let dir = paths::resolve_checked_str(&a.dir)?;
     let project = backend.open_project(&dir, a.relocate)?;
     Ok(json!({ "project": project, "resolved": { "dir": dir.display().to_string() } }))
 }
@@ -197,7 +197,7 @@ fn recover(backend: &dyn Backend, g: &Globals, a: &RecoverArgs) -> Result<Value,
         fields["create"] = json!(create);
     }
     if let Some(dir) = &a.import {
-        fields["importDir"] = json!(paths::resolve_str(dir).display().to_string());
+        fields["importDir"] = json!(paths::resolve_checked_str(dir)?.display().to_string());
     }
     if let Some(group) = &a.dismiss {
         fields["dismiss"] = json!(group);

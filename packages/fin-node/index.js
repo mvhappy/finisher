@@ -394,6 +394,16 @@ export function rpcMethods() {
   return native.rpcMethods();
 }
 
+/** The BLAKE3 of `data`, 64 lower-case hex digits (the `blake3` crate). */
+export function blake3Hex(data) {
+  return native.blake3Hex(data);
+}
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export function blake3KeyedHex(key, data) {
+  return sync(() => native.blake3KeyedHex(key, data));
+}
+
 /** Every kind name of fin-core's event registry. */
 export function kindNames() {
   return native.kindNames();
@@ -459,6 +469,34 @@ export class FontManager {
 export function lockExclusive(path) {
   try {
     return native.lockExclusive(path);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** This server data's `server-id` (created on first use; renewed for a copied server data). */
+export function serverId(serverData) {
+  try {
+    return native.serverId(serverData);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** Windows: owner and DACL private to this user; elsewhere `{ ok: true }`. */
+export function checkPrivateDir(path) {
+  try {
+    const r = native.checkPrivateDir(path);
+    return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** Creates `path` private to this user (protected owner-only DACL on Windows, 0700 elsewhere). */
+export function makePrivateDir(path) {
+  try {
+    native.makePrivateDir(path);
   } catch (e) {
     throw toFinError(e);
   }

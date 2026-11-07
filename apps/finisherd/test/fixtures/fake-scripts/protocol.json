@@ -1,0 +1,4 @@
+{
+  "name": "protocol",
+  "turns": [[{ "emit": [{ "type": "toolStarted", "tool": "fin" }, { "type": "messageDelta", "text": "never" }] }]]
+}

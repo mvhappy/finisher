@@ -23,6 +23,7 @@ use super::approx::ApproxBytes;
 use super::class::{BlobRef, ScrubCtx};
 use super::payloads::{self as p, body_blobs};
 use super::wire::{self as w, WireForm};
+use super::wire_agent as wa;
 use crate::error::CoreError;
 
 /// One kind of event.
@@ -201,11 +202,13 @@ registry! {
     StorageState(p::StorageState) = "storage.state" v 1 [FinNode];
     ErrorInternal(p::ErrorInternal) = "error.internal" v 1 [FinNode, Finisherd];
     ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Finisherd, FinNode];
-    AgentSession(p::AgentSession) = "agent.session" v 0 [Agent];
-    AgentTurn(p::AgentTurn) = "agent.turn" v 0 training_only true [Agent];
-    AgentToolCall(p::AgentToolCall) = "agent.toolCall" v 0 training_only true [Agent];
-    AgentToolResult(p::AgentToolResult) = "agent.toolResult" v 0 training_only true [Agent];
-    AgentEditVerdict(p::AgentEditVerdict) = "agent.editVerdict" v 0 [Agent];
+    JobDone(p::JobDone) = "job.done" v 1 [Finisherd];
+    WorkerExit(p::WorkerExit) = "worker.exit" v 1 [Finisherd];
+    AgentSession(p::AgentSession) = "agent.session" v 1 via wa::AgentSessionIn [Agent];
+    AgentTurn(p::AgentTurn) = "agent.turn" v 1 training_only true via wa::AgentTurnIn [Agent];
+    AgentToolCall(p::AgentToolCall) = "agent.toolCall" v 1 training_only true via wa::AgentToolCallIn [Agent];
+    AgentToolResult(p::AgentToolResult) = "agent.toolResult" v 1 training_only true via wa::AgentToolResultIn [Agent];
+    AgentApproval(p::AgentApproval) = "agent.approval" v 1 [Agent];
     UiAction(p::UiAction) = "ui.action" v 0 [Ui];
     ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 0 [Ui];
 }
@@ -226,6 +229,8 @@ impl Payload for p::EvalStats {}
 impl Payload for p::FontsFetch {}
 impl Payload for p::StorageState {}
 impl Payload for p::ErrorInternal {}
+impl Payload for p::JobDone {}
+impl Payload for p::WorkerExit {}
 impl Payload for p::ErrorPanic {
     fn rescrub(&mut self, ctx: &ScrubCtx) {
         if let Some(m) = &mut self.message {
@@ -238,18 +243,34 @@ impl Payload for p::ErrorPanic {
     }
 }
 impl Payload for p::AgentSession {}
-impl Payload for p::AgentEditVerdict {}
 impl Payload for p::UiAction {}
 impl Payload for p::ReviewVerdict {}
 
 impl Payload for p::AgentTurn {
     fn blobs(&self) -> Vec<&BlobRef> {
-        body_blobs(&[self.messages.as_ref(), self.output.as_ref()])
+        body_blobs(&[
+            self.messages_delta.as_ref(),
+            self.output.as_ref(),
+            self.system.as_ref(),
+            self.tools.as_ref(),
+        ])
     }
 
     fn strip_content(&mut self) {
-        self.messages = None;
+        self.messages_delta = None;
         self.output = None;
+        self.system = None;
+        self.tools = None;
+    }
+}
+
+impl Payload for p::AgentApproval {
+    fn blobs(&self) -> Vec<&BlobRef> {
+        body_blobs(&[self.subject.as_ref()])
+    }
+
+    fn strip_content(&mut self) {
+        self.subject = None;
     }
 }
 
