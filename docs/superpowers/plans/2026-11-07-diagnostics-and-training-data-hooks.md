@@ -228,7 +228,7 @@
     - Every entry is one line ending in `\n`.
     - On open, the newest file's tail after its last `\n` is truncated. Readers skip lines that don't parse, and count them.
     - Closed files are fsynced, and so is the directory (a no-op on Windows, as in `fin-store::fsio`).
-    - There is no per-line fsync: losing up to the last flush interval on power loss is accepted.
+    - There is no per-line fsync: losing up to the last ~2 s (two flush intervals, Decision 18) on power loss is accepted.
     - A blob is written temp-then-rename and fsynced before the line that references it is written. A crash can leave an unreferenced blob, never a dangling reference; the GC removes the orphan (Decision 20).
     - `error.panic` and `session.end` are written and flushed synchronously, with a timeout (Decision 18).
 18. **Never blocks.**
@@ -237,7 +237,8 @@
     - **The control channel** (`mpsc::channel`) carries consent changes, project policies, purge, export, flush, stats ticks and synchronous records. It is unbounded but carries only these, a few per minute; the writer drains it before each data batch. Nothing on it is dropped.
     - An I/O error suspends the journal (`status.state = suspended`, with the error code), discards data entries while suspended and retries every 60 s.
     - A panic in the writer thread is caught: the journal suspends and editing is unaffected.
-    - The writer waits in `recv_timeout(1 s)`, so an idle journal costs no CPU between flushes. It flushes every second or 64 KiB.
+    - **The writer parks until its timer; data does not wake it.** A send that wakes a sleeping receiver costs the sender a futex call and, on a VM, a cross-CPU interrupt (13 µs p50 on the Linux VM, measured in D5: it put diagnostics at +19–27 µs a commit). So the writer drains the data channel with `try_recv` and, with nothing queued, `park_timeout`s until the buffer's flush is due, or one flush interval (1 s, at most) with an empty buffer. A sender unparks it only when 64 KiB of `approx_bytes` are in flight or the channel is full. Every control message (consent, project policy, purge, export, flush, `record_sync`, close) unparks it at once. An idle journal costs no CPU between timer wakes.
+    - It flushes when the flush interval has passed since the last flush, or at 64 KiB. **Worst-case latency to disk is ~2 s** (two flush intervals): an entry queued just after a wake waits up to one interval for the writer to take it, then up to one more for its buffer's flush. A synchronous record and an explicit flush (`status`, `export`, `purge`, `close`) are not delayed by the timer.
     - **`record_sync(source, ctx, payload, timeout)`** sends on the control channel and waits for the writer's acknowledgement for at most `timeout` (250 ms for `error.panic`, 1 s for `session.end`). A timeout returns and counts a drop.
     - **The writer-thread guard:** a thread-local marks the writer thread. A panic hook that finds itself on that thread does not call `record_sync` (it would wait on itself); the writer's own `catch_unwind` suspends the journal instead (`writer_panic_suspends_not_crashes`).
 19. **High-rate timings are aggregated.**
@@ -267,6 +268,7 @@
 ### Sources
 
 22. **`log.commit`** is one entry per attempt to append to the op log. It is classified and built in `crates/fin-node/src/commit_log.rs`, called **inside `with_store`**, from typed results, never by re-parsing the reply JSON:
+    - **Unparsable requests are not logged.** A request that does not decode (`parse_tx`'s `INVALID_OP`, a history request's `INVALID_OP`, a bad generation, a non-integer count: what a malformed RPC payload gets, and the `INVALID_ARGS`-class refusals before the store is reached) never reaches the store and appends nothing, so it writes no `log.commit`: there is no tx or request to take the txId, author or ops from. It still shows in `rpc.stats` (its error code) and, from `fin`, in `cli.command`. Every request that decodes is logged, refusals included.
     - **Where:** `tasks.rs` `Call::Commit`; `history.rs` `run` for `BranchCreate`, `BranchSet`, `Undo`, `Redo`, `Checkpoint`, `Merge`, `CherryPick` and `Revert`; and `history.rs` `recover` (a long call on the worker) when the request makes or dismisses something. `Branches`, `ResolveBranch`, a listing-only `recover`, `takeover` and project create append no record and log nothing. The test-only commit in `test_hooks.rs` is not logged.
     - **Edit dry runs never reach `fin-node`:** `fin --dry-run` plans an edit on the client. So `dryRun` occurs only for the history, branch and recovery calls, whose requests carry `dryRun`. An edit dry run shows only as `cli.command.dryRun`.
     - **The store's dedupe signal.** `Store::write` (`fin-store/src/write.rs`) is the one place that knows whether a write ran, was a retry of a committed txId, or was rolled back as a plan. All eight call sites go through it: `commit_in`, undo/redo, checkpoint, merge, pick/revert, branch create, branch set and recover. They return five different result types, and only the commit and history results carry a `dryRun` flag, which a deduped retry also reports as `false`. So the signal is a note, not a new return type:
@@ -285,7 +287,7 @@
       - `conflicts`: codes → count, from `CONFLICT`'s `details.conflicts`;
       - `links`: `IdRef`s, from the typed results: an undo's `HistoryResult.undone`, a merge's `MergeReport.merged`, a pick's or revert's `undone`/link target, and a recovery's committed txIds;
       - `micros`;
-      - **training only:** `intent: Option<Content<TxIntent>>`. On success it is the intent as committed: `CommittedTx.tx` for an edit, each record's intent for history calls, at most 64 records. On failure it is the request's normalised tx. An intent that would push the entry past 32 KiB is left out (`intentOmitted: tooLarge`); the builder then takes a committed intent from the op log by txId. **There is no snapshot:** the state at `baseRev` is rebuilt from the op log, whose compacted packs keep full history (§6).
+      - **training only:** `intent: Option<Content<TxIntent>>`. On success it is the intent as committed: `CommittedTx.tx` for an edit, each record's intent for history calls, at most 64 records. On failure it is the request's normalised tx. A `dryRun`, `deduped` or `noOp` entry has none (the plan was not kept; a retry's intent is on the first attempt's entry). An intent that would push the entry past 32 KiB is left out (`intentOmitted: tooLarge`); the builder then takes a committed intent from the op log by txId. **There is no snapshot:** the state at `baseRev` is rebuilt from the op log, whose compacted packs keep full history (§6).
     - **Outcome, in order:**
       - `Err(e)`: `conflict` for `CONFLICT`, else `refused`, with `code`;
       - note `Planned`: `dryRun`;
@@ -293,7 +295,7 @@
       - nothing committed (`HistoryResult.noOp`, an empty `MergeReport.committed`): `noOp`, with `code` = the `noOp` reason when there is one;
       - an edit whose committed `tx.baseRev` ≠ the request's: `rebased`;
       - otherwise `accepted`.
-    - **`ctx`:** project, branch, `txId` (`IdRef`; the committed one, or the request's on failure), author (keyed) and **actor**. The actor comes from the request's RPC headers (Decision 23a), passed by `finisherd` to the engine call as an optional `metaJson` argument. Without one it is `{kind: unknown}`. The UI will set it in sub-project 9.
+    - **`ctx`:** project, branch, `txId` (`IdRef`; the request's, on every path; for a merge or a recovery that is its first record's, `<txId>-1`, what `fin` reports), author (keyed) and **actor**. The actor comes from the request's RPC headers (Decision 23a), passed by `finisherd` to the engine call as an optional `metaJson` argument. Without one it is `{kind: unknown}`. The UI will set it in sub-project 9.
     - **Cost:** nothing is built when `gate()` is `None`. The committed records are moved into the payload after the reply is encoded, so recording clones no tx on success.
     - Undo, redo and revert entries are the **rejection signal**: `links` names the original txIds.
 23. **`cli.command`.**
@@ -372,7 +374,7 @@
 33. **New codes:**
     - exit 2: `CONSENT_UI_ONLY` (Decision 14b), with a `fix` naming the ways in;
     - exit 3: `EVENT_KIND_UNKNOWN`, `EVENT_INVALID`, `EVENT_TOO_LARGE`. These are seen only by `diagnostics.record` callers; `fin` ignores them;
-    - exit 5: `JOURNAL_UNAVAILABLE`, for `fin diagnostics …` when the journal is suspended or the server data is unwritable, and `SETTINGS_INVALID`, when `settings.json` does not parse and a consent change would overwrite it. Each `fix` names the reason.
+    - exit 5: `JOURNAL_UNAVAILABLE`, for `fin diagnostics …` when the journal is suspended or the server data is unwritable, `SETTINGS_INVALID`, when `settings.json` does not parse (or its merged `privacy` section breaks the journal's rules) and a consent change would overwrite it, and `SETTINGS_WRITE_FAILED`, when the consent change could not be written (the file is unchanged; added by the D4 review). Each `fix` names the reason.
 
 ### Later
 

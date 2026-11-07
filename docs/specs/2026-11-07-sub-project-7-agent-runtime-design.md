@@ -1,0 +1,957 @@
+# Sub-project 7: Agent runtime — Design
+
+- **Status:** revision 4 (2026-11-07). Revision 4 records two follow-up owner decisions of the same day (§20, F1 and F2): local OpenAI-compatible servers beside OpenRouter for the built-in agent (§4.4, §4.7, §8.7, §10, §12.2), and no refusal where Landlock is disabled: everything runs, with warnings, and `agents.unsandboxed` is removed (§8.9). Revision 3 recorded the **owner's decisions of 2026-11-07** (§20) and revises the design where they differ from revision 2's recommendations: closed-model outputs may be training targets behind a counsel gate (§12.7); a Linux floor of kernel 6.2 (§8.3, §8.9); an owner-enabled `auto` merge policy (§5.4, §6.5); CLI agents on the user's own sign-in, never copied (§4.5, §4.6, §8.6, §10); and OpenRouter as the built-in agent's one hosted API in v1 (§4.4; revision 4 adds local servers). Revision 2 answered an independent review of revision 1 (§23 maps every finding), applied the coordinator's cross-design ownership decisions (§1.6) and reconciled with sub-project 5 revision 3 (§1.7). Nothing here is built yet.
+- **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §8 (agent runtime), §9 (`fin`), §10 (hooks), §16 (secrets, audit), §21.1 (the reserved agent kinds, `FIN_CALL`), §22 (agents, sandbox) and §27.5–27.7 (spikes S7, S8). Where the two disagree, this document wins for sub-project 7, and arch §27 gets a pointer when each batch merges.
+- **Builds on:** sub-project 4 (4A–4C on stacked branches), the diagnostics hooks D1–D7 (`docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`, cited as *D-plan Decision n*), and the designs of sub-project 5 (`docs/specs/2026-11-07-sub-project-5-control-plane-design.md`, *sp5 §n*) and sub-project 6 (`docs/specs/2026-11-07-sub-project-6-media-engine-design.md`, *sp6 §n*). Both are drafts on their own branches (sub-project 8, `sp8-design`, *sp8 §n*, is the third sibling); this design assumes them as written and lists what it needs from them (§1.4) and asks of them (§1.7).
+- **House style:** as `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`. Each batch gets its own plan; each batch section is rewritten "as built" when it lands.
+
+---
+
+## 1. Goal, scope and batches
+
+### 1.1 Goal
+
+Sub-project 7 makes agents first-class editors of a Finisher project:
+- **three ways to run an agent behind one contract:** the bundled Codex app-server and the user-installed Claude Code CLI, each **on the user's own sign-in to the unmodified CLI** (§8.6), and Finisher's own loop on the user's **OpenRouter** key or on a **local** OpenAI-compatible server (one Chat Completions adapter with two presets; Owner decision 7 as amended by F1), all emitting the same events (D7, D28, D30);
+- **sessions** that are persisted, interrupted on a crash, resumable from any device, each on **its own branch** and identified to the server by its credential (the agent principal's id is the session id, §5.2), with **subagents** on child branches and **roles** and **modes** that map to sub-project 5 scopes;
+- an **OS sandbox** (`fin-sandbox`, profiles `agent`, `hook`, `worker`, `plugin`) around every agent process tree on macOS, Linux and Windows, which is the guarantee (arch §27.6), with provider permission rules as a second layer. Its job is defensive: an agent (or a prompt injected into one) must not read the user's secrets, other projects or other sessions, nor persist anything that later runs outside the sandbox;
+- **hooks** on the events of arch §10 (v1 cuts: `PreOp`/`PostOp` and `modify` replies, §9.1), **workspace artifacts** registered with provenance, the **full `fin`** (`apply`, `batch`, `context`, `guide`, subagents, `mcp`; no `fin tx`, §11.2), **budgets** for tokens, money and render minutes, and an **eval harness** that scores agents' edits;
+- **training capture:** every agent turn, tool call and result as deltas in a dedicated agent-trace store (own cap and retention, §12.1), and every verdict on an agent's edits (from 5E's `review.verdict`, §12.5), recorded under the consent of D34 and joined to the commits they caused through `FIN_CALL` and txIds, so a later dataset builder can fine-tune an open-weight video-editing model. **Every example carries its model provenance** (harness, provider, model, weights class), so any class of outputs can be filtered out later without re-collection; closed-model outputs may be targets, behind a mandatory counsel gate (Owner decision 1, §12.7).
+
+### 1.2 Non-goals
+
+- **The conversation UI, approval cards and the branch bar** (sub-project 9). §3.5 and §7.3 define the RPCs and streams they consume.
+- **The critic's rubrics, the QA gate and review markers** (sub-project 10). Sub-project 7 provides the `critic` role, read-only sessions and child-branch fixes; sub-project 10 provides what the critic looks at and how it scores.
+- **The review workflow itself** (sp5 5E), and **verdicts**: 5E's `review.verdict` is the one source (§12.5). Agents request reviews; people decide them.
+- **Plugin-provided providers, roles and hook handlers** (sub-project 8). The contracts here accept them; nothing loads them yet. (The `plugin` sandbox profile *is* in scope: §8.10.)
+- **Session fork, `fin tx`, a user-selected newer Codex, a Docker uid sandbox, `PreOp`/`modify` hooks, reading the macOS unified log, a structure-distance eval score, and an encrypted secrets file** (cut in revision 2; §23).
+- **Uploading anything and the dataset builder** (D34 phasing). §12 only records, and keeps the builder's join possible.
+- **Hosted model credits and metering** (`finisher-cloud`, arch §5 `ModelGateway`, `Metering`).
+- **An egress allow-list proxy** (after v1; Owner decision 5).
+- **Direct Anthropic Messages and OpenAI Responses adapters** for the built-in agent: v1 has one OpenAI-compatible Chat Completions adapter with an OpenRouter preset and a local preset (Owner decision 7 and F1). A local server that insists on an API key, and managing a local server (pulling or deleting models), are also out of v1; a later release can point the adapter elsewhere.
+
+### 1.3 Success, for every batch
+
+- Every capability is driven and tested through `fin` → `finisherd`, or through `finisherd` console commands (sp5 §4.6) for the human side, with **fake providers** (§16). Real providers run only in validation tasks and in the eval harness, never in CI.
+- `cargo test --workspace`, `pnpm test`, `pnpm gates` and `pnpm e2e` pass on macOS, Windows 11 and the Linux VM; the sandbox escape suites (§8.11) pass on all three.
+- No UI work. No host names, IPs, user names or key names in tracked files, fixtures and recorded transcripts included.
+
+### 1.4 Batches and order
+
+| Batch | Delivers | Depends on | Unblocks |
+|---|---|---|---|
+| **7A-1** Pure runtime pieces (before 5A) | agent kinds v1, the model catalogue and budget ledger, `SecretStore` with the `seal`/`open` seam, the OpenAI-compatible (Chat Completions) client with its OpenRouter and local presets and the fake model server, the pure session state machine, the adapter contract and `fake.ts`, and the `FIN_CALL` idempotency key in `fin` | D1–D7 only | 7A-2 |
+| **7A-2** Runtime core and the built-in agent (after 5A) | contracts and RPCs, the session store, the runtime engine, sessions on their own branches with minted agent credentials (principal id = session id), mode scope sets, the built-in loop and its `fin` tool with per-session default branch and confined file arguments, journal and agent-trace emission, outcome tracking into 5E's `review.verdict`, `finisherd agent …` console commands | 5A, 7A-1 | everything below |
+| **7B** Subagents, roles, rules, approvals | session rollback (§5.3), roles as data, `fin agent spawn|wait|ls|send|stop`, budget reserves for children, saved prompts, command-pattern rules enforced on the server through the exported registry, approvals answerable from any device, review requests and verdicts from 5E, context compaction for the built-in loop, the `auto` merge policy (§6.5; it can be enabled only once sub-project 10's QA gate and critic exist) | 7A, 5E | 7D, 7E, 10 |
+| **7C** OS sandbox | `fin-sandbox` (policy, launcher, the `agent`, `hook`, `worker` and `plugin` profiles), Seatbelt, Landlock + seccomp, AppContainer with the ACL broker, per-session directories and provider config dirs with the shared sign-in store reached in place (§8.6), the agent listener, violation reporting, escape suites in CI, the `Spawner` for 5C, the `worker` profile for sp6 6G and the `plugin` profile for sp8 | policy, launcher and suites: nothing (they can start now); wiring into sessions: 7A-2, 5A | 7D, 7E, 7F, sp6 6G, sp8 8B |
+| **7D** Claude Code adapter | detection, version floor and capability probe, stream-JSON with the control protocol, permission prompts, interrupt and resume, the Windows brokered shell tool, sessions on the user's own sign-in (§8.6), settings isolation without `--bare` | 7C (7B for approvals) | 7H |
+| **7E** Codex adapter | the bundled app-server (the pinned version only), the vendored T3 client checked against a schema generated from the pinned binary, sessions on the user's own sign-in (the CLI's own login, run by the user; account status read over the protocol), approvals, resume and rollback | 7C (7B for approvals) | 7H |
+| **7F** Hooks | the arch §10 events except `PreOp`/`PostOp`, `allow|block|context` replies, command handlers in the `hook` profile, project trust, audit and timeline entries | 7C, 5C (`JobDone`), 5E (merges) | 8, 10 |
+| **7G** Workspace artifacts and the full `fin` | `fin asset add|update` from `workspace/` with provenance, the drafts bin, `fin workspace ls|gc`, `fin apply`, `fin batch` over every write, `fin context`, `fin guide`, `fin note`, `fin mcp`, `fin budget`; wiring of `fin look`/`listen`/`render` | 7A-2, 5C, sp6 6A (6C, 6D, 6E for listen, SVG/Lottie validation, render) | 7H, 11 |
+| **7H** Eval harness | tasks (≥ 20, real permissively licensed speech), scorers, runners per provider and model, paired comparisons with a bootstrap, reports in `archive/evals/` | 7D, 7E, 7G | 11 |
+
+**Order:** **7A-1 now** (it needs D1–D7 and nothing of 5) → (5A lands) → 7A-2 → 7B → (7D ∥ 7E) → 7F → 7G → 7H, with **7C starting now, in parallel**: its policy type, launcher, per-OS profiles and escape suites need only the new `fin-sandbox` crate and the spike of §8.12, not the runtime or 5A. Only the *wiring* (a session's policy, the agent listener, the ACL broker's pipe SIDs) waits for 7A-2 and 5A. 7D and 7E touch disjoint adapter directories and can run in parallel. 7G's sub-project 6 parts land as those batches do; its `fin` parts that need nothing from 6 (`apply`, `batch`, `context`, `guide`, `note`, `mcp`) can move ahead of 7F.
+
+**What 7 needs from 5 and 6, precisely:**
+- **5A:** principals, `control.db`, the audit log, the `agent` credential format and verifier, `FIN_CREDENTIAL`, scopes and `HUMAN_ONLY`, exit 7, and **a mint service that accepts a caller-supplied credential id** (7A-2 passes the session id, so the principal id *is* the session id, §5.2). 7A-2 mints agent credentials through the 5A store (sp5 §4.1 "sub-project 7 mints").
+- **5C:** the `JobDone` bus (hooks, 7F) and job ownership by principal (render-minute budgets).
+- **5E:** `review.request`, **`review.verdict` (the single source of verdicts, §12.5)** and protected branches (7B; landing in 7A works through a person's `fin merge`; the `auto` merge policy of §6.5 merges through 5E's protected-branch path).
+- **6A/6C/6D/6E:** `fin look`, `fin listen`, SVG sanitising and template checks, `fin render` (7G). Workers use 7C's `worker` profile as sp6 Owner decision 6 phases it: **a Linux Landlock `worker` profile from 6B, the full sandbox (seccomp, macOS, Windows) in 6G**, so 7C delivers the Linux Landlock part of the `worker` profile first.
+
+### 1.5 What exists today (the baseline)
+
+- **`fin`** (`crates/fin`): one registry (`registry.rs`, `registry_edit.rs`, `registry_settings.rs`) generating the map (`map.rs`, < 1.5k tokens, asserted), `fin help` and `fin schema`; `fin batch` over four commands (`BATCHABLE`); `fin view --budget` (`view/budget.rs`, plan 4C Decision 46); stable exit codes 0/2/3/4/5/6 (`output.rs`); the endpoint from `FIN_SERVER` or `finisherd.json` (`endpoint.rs`). D6 adds actor headers from `FIN_SESSION`/`FIN_CALL`; 5A adds the handshake, `FIN_CREDENTIAL` and exit 7. Three facts about today's `fin` matter for agents: the default branch and the `fin try` list live in the shared `fin-config.json` in server data (`crates/fin/src/commands/mod.rs:78-80`, `config.rs:24-30`, `try_cmd.rs:73-74`), so one agent's `fin try` would change what every other `fin` run on the project writes (§5.1); `Tx.author` comes from `$FIN_AUTHOR` (`commands/mod.rs:107-110`), so an agent could write as someone else (§5.2); and some commands read files named on the command line by `fin` itself, in the client (`caption import --words`), outside any server-side path check (§5.6).
+- **`finisherd`:** `childEnv()` (`env.ts`) with the arch §27.7 allow-list and `FIN_SERVER`/`FIN_SESSION`; no agent code.
+- **`fin-core::events`:** the reserved v0 kinds `agent.session`, `agent.turn`, `agent.toolCall`, `agent.toolResult`, `agent.editVerdict` (`payloads/agent.rs`), the `Agent` source, `Body` (inline or blob), and the tables `AGENT_PROVIDERS` and `AGENT_MODELS` (`names.rs`).
+- **Spikes:** S7 proved both CLI protocols (arch §27.5); S8 proved Landlock and AppContainer against 90 escapes each, and decided the Windows shell tool is brokered (TASKS.md, S8 follow-up). The installed CLIs on the Linux VM today are Codex CLI 0.167.0 and Claude Code 2.1.319.
+
+### 1.6 Cross-design ownership (coordinator decisions, 2026-11-07)
+
+| Owner | Owns | Others' part |
+|---|---|---|
+| sp5 (5C) | the job system: `fin-jobs` (protocol types, the envelope) and the **single `fin-workers <family>` binary**, the scheduler, the kill tree, warm workers | 5C spawns every process through a `Spawner` that **sp7's `fin-sandbox` implements** (§8.10); unsandboxed with the env allow-list until it exists |
+| sp6 | the **`media` worker family** and the **shared-memory crate** (`fin-shm`) | sp6's `worker` profile requirements (sp6 §3.5) are met by §8.10; 7 never reads a mapped file |
+| **sp7** | **`fin-sandbox` and the ACL broker**, with the profiles **`agent`, `hook`, `worker` and `plugin`** | sp8's `plugin` profile requirements (sp8 §16.1) and sp6's worker needs are the contract of §8.10 |
+| sp8 | plugin processes, manifests, the plugin command registry | plugin commands are named **`plugin:<id>/<cmd>`** in command rules (§7.2); sp8's `hooks:modify`/`PreOp` is not built in v1 (§9.1) |
+
+### 1.7 Reconciliation with sub-project 5 revision 3
+
+- **The socket lives in `<server-data>/run/fin.sock`** and nothing else of server data is reachable from a sandbox (sp5 §4.1, §4.11). Seatbelt names that one path; the Linux agent listener (§8.3) exists only because Landlock cannot mediate pathname sockets and seccomp closes `AF_UNIX`.
+- **Windows reuses 5A's native named-pipe listener in `fin-node`** (`PipeServer`, first-instance flag, explicit DACL, peer SID check). 7C adds per-project container SIDs through `PipeServer.allow(sid)`; there is no second pipe implementation (§8.4).
+- **The HMAC handshake is transport-independent** (sp5 §4.2): the Unix socket, the pipe and the Linux agent listener all run `server.hello`/`auth.prove` with the credential key; the canonical `endpoint` (`tcp:127.0.0.1:<port>` for the listener) is inside both MACs. 7 adds no authentication of its own.
+- **`FIN_CREDENTIAL` discovery:** `fin` looks for the key in `FIN_CREDENTIAL`, else `local.key` (sp5 §4.8). **7 tightens this for agents: when `FIN_CREDENTIAL` is set, `fin` never falls back to the local key** (§8.5).
+- **Human-only operations are in 5A** (sp5 §4.6, console with TTY and typed challenge). 7 makes them hold (the sandbox denies `auth/`, §7.5) and adds its own (§7.5).
+- **What 7 asks of 5** (each is a one-line change in 5's plan, recorded here so neither side forgets):
+  1. **5A:** the mint service takes an optional `id` (the session id); agent credential expiry on a mint from 7 may exceed the 24 h idle / 7 d absolute defaults, and a resume refreshes it.
+  2. **5A:** `project.open` and `project.create` can be left out of a credential (today `project.open` rides on `project.read`/`project.write`, sp5 §4.5); for an `agent` principal the stage-4 reach rule also refuses a directory whose project is not in `projects`.
+  3. **5A:** `Tx.author` for `agent` and `mcp` principals is set by the server from the credential's `author`, and `fin-author` is ignored (§5.2); `auth.whoami` returns the principal's `branches` and `defaultBranch` (§5.1).
+  4. **5A:** the pending class: `APPROVAL_REQUIRED` from the `ask` stage becomes **`APPROVAL_PENDING`, exit 8** ("wait, then repeat"), because exit 7 means "do not retry" (§7.3).
+  5. **5E:** `review.verdict` gains `verdict: undone|reverted|abandoned`, `via`, `sessionId?` and `itemKind: none`, so outcomes outside a review item have one home (§12.5).
+  6. **5A/5E (for the `auto` merge policy, §6.5):** a server-internal actor `{kind: policy, policy: autoMerge, enabledBy}` that may merge into a protected branch only through the policy's checks, never through an RPC any credential can call; the setting is 5E's `branch_policy.autoMerge` in `control.db`, written only by the human-only `review.policy` (sp5 §8.1, §8.5); and `review.verdict` `by: policy`, `via: autoMerge`. (Sp5 revision 4 carries all three.)
+
+---
+
+## 2. Principles
+
+1. **The sandbox is the guarantee; everything else is a second layer.** Provider approval policies can be fooled (arch §27.6). Scopes stop what an agent asks the server; the OS sandbox stops what its processes do to files; neither depends on the model's good behaviour.
+2. **An agent is a principal, never the user.** Every agent session has its own `agent` credential (sp5 §3.2), whose id is the session id and whose scopes come from its mode. Nothing an agent runs can obtain the `local` or `console` key, and `fin` under an agent credential never falls back to them (§8.5).
+3. **Agent edits land on branches and reach protected branches only through a person, or through a policy a person enabled** (D14; Owner decision 4). A session writes its own branch subtree; `main` changes by review, by a person's merge, or by the per-project `auto` merge policy (off by default; human-only to enable; QA gate and critic must pass; audited, §6.5). No agent credential ever holds `branch.protected` or `review.decide`.
+4. **One event model for every provider.** CLI agents and API models produce the same nodes, journal entries and budgets; what a provider cannot report is marked as such, never invented (§12.6).
+5. **What the product needs is stored as product state; what training needs is a copy under consent.** Conversations are kept for resume and display whatever the consent; the journal records its copy only as D34 allows (§12.1).
+6. **Every link a dataset needs is made at the source.** Tool calls carry the `FIN_CALL` id that their commits carry; every agent commit is recorded against its session by the server whatever the call attribution (`session_txs`, §5.2); when the call cannot be set exactly, the attribution says so (§12.3).
+7. **Fakes first.** Every adapter is built against a fake that speaks its protocol, including its failure modes, before a real provider runs (§16).
+8. **Every error is `{code, message, details, fix?}`** with a stable `fin` exit code.
+9. **Defence in depth against our own agents is the point, and the tests prove denial.** The sandbox suites (§8.11) pass only with an *observed* denial; no protection is described without a test that would fail without it.
+
+---
+
+## 3. Runtime model
+
+### 3.1 Where the runtime runs
+
+- **In `finisherd`** (TypeScript, Effect 4), under `apps/finisherd/src/agent/`, as arch §7 assigns orchestration to TS. It owns sessions, the adapters, budgets, approvals, hooks and the verdict tracker.
+- **Rust** provides the sandbox launcher and policy (`crates/fin-sandbox`, 7C), the Windows ACL broker (in `fin-node`, 7C), the eval scorers (`crates/fin-eval`, 7H), and the event types (`fin-core::events`).
+- **Agent processes** (a provider CLI and everything it spawns) are children of `finisherd`, each tree started through `fin-sandbox` (from 7C) with `childEnv()`. The built-in agent has no process of its own: its loop runs in `finisherd` and its tools spawn `fin` (§4.4).
+
+### 3.2 Sessions, runs and nodes
+
+T3's vocabulary (arch §8.1):
+
+```text
+Session {id ULID, projectId, harness, provider, model, role, mode, branch, parent?, status,
+         budget, credentialId, providerRef?, createdBy {principal, actor}, createdAt, title?}
+Run     {id ULID, sessionId, seq, trigger: prompt|steer|subagentResult|reviewFeedback|hook|eval,
+         status, startedAt, endedAt?, headAtStart (branch seq), stopReason?, usage}
+Node    {id ULID, runId, seq, kind, providerId?, payload, createdAt}
+  kind: userMessage | assistantMessage | reasoning | plan | toolCall | toolResult | approval
+        | subagent | usage | notice | error
+```
+
+- A **session** is one agent with one harness and model, rooted on one branch (§5.1). A **run** is one user prompt (or one other trigger) and everything the agent does until it stops. A **node** is one item of the conversation.
+- **Status:** `starting` → `idle` ⇄ `running` → `ended`; `running` → `waitingApproval` → `running`; any live state → `interrupted` on a provider exit, a `finisherd` crash or a budget stop; `interrupted` → `idle` by resume. `ended` is final (by a person, by the agent finishing a subagent brief, or by a fatal error).
+- **`toolCall` nodes get a Finisher call id** (a ULID) at the moment the provider announces the call. That id is `FIN_CALL` (§12.3). The provider's own id is kept as `providerId` (it is not a ULID, so the journal keyed-hashes it).
+
+### 3.3 Storage
+
+- `control.db` (sp5 §3.1) gains `sessions`, `runs`, `nodes`, `approvals`, `budgets`, `session_txs` and `session_state` tables in a sub-project-7 migration chain (`agent`, independent of 5's, sp5 §3.1). **Node payloads up to ~4 KiB are stored inline**; larger ones (tool output, file contents, images, long messages) go to `<server-data>/agents/<sessionId>/blobs/<blake3>` and the node holds a reference, so the hot rows and the WAL stay small (sp5's 1 ms statement budget).
+- **This is product state, not telemetry:** it exists so a session can be resumed, shown on another device and audited by its owner. It is not gated by consent or by `collect: never`, never uploaded, and deleted with the session (`agent.session.delete`, owner-only) or by the session retention setting (default: 90 days after `ended`). **Diagnostics purge and export do not touch conversations**, and the dataset builder never reads `control.db` (§12.1); sub-project 9's "what we collect" page must say so in those words.
+- `<server-data>/agents/<sessionId>/` also holds the per-session directories of §8.5 (credential, temp, provider state). It lives on the server's local disk, never in the project folder (arch §6.7, sp5 principle 5).
+- `workspace/<sessionId>/` in the project folder stays the agent's scratch (arch §6.1, D22).
+
+### 3.4 Crash and resume
+
+- On start, `finisherd` marks every session that was `running`, `waitingApproval` or `starting` as `interrupted` with reason `serverRestart`, and every open run as `interrupted`.
+- **Resume** reopens the provider with its own resume reference (`providerRef`): Claude Code's session id (`--resume`), Codex's thread id (`thread/resume`), or, for the built-in agent, the messages rebuilt from the nodes. A run interrupted mid-tool gets a synthetic `toolResult` node `{ok: false, code: SESSION_INTERRUPTED}` so the model sees what happened.
+- **Never re-run a tool call on resume.** A commit that may have landed is found by its idempotency key: the built-in `fin` tool passes `--idem-key <callId>` on writes, so a retried call is a dedupe, not a second edit.
+
+### 3.5 Streams and RPCs
+
+| RPC | Scope | Notes |
+|---|---|---|
+| `agent.session.start {projectId, harness, model?, role, mode, base?, title?, prompt?, budget?}` | `agent.run` | creates the branch and credential (§5) and optionally the first run |
+| `agent.session.prompt {sessionId, text, attachments?}` | `agent.run` | starts a run; `SESSION_BUSY` while one runs (use `steer`) |
+| `agent.session.steer {sessionId, text}` | `agent.run` | into the running turn where the provider supports it, else queued |
+| `agent.session.interrupt`, `.resume`, `.end {sessionId}` | `agent.run` | interrupt keeps the branch (arch §8.6) |
+| `agent.session.rollback {sessionId, toRun}` (7B) | `agent.run` | §5.3 |
+| `agent.self {}`, `agent.self.try {action: record|setDefault|clear, branch}` | `project.read` / `project.write`, agent principals only | the calling session's own default branch and try list (§5.1) |
+| `agent.session.list {projectId?, status?}`, `.get {sessionId}` | `agent.read` | |
+| `agent.watch {sessionId, fromNode?}` (stream) | `agent.read` | nodes, deltas (message and tool output, ≤ 20 Hz), status, usage, approvals |
+| `agent.session.delete {sessionId}` | `agent.admin` (owner) | removes product state; the journal keeps what consent allowed |
+| `agent.approval.list`, `agent.approval.answer {id, decision, remember?}` | `agent.read` / `agent.approve` (human) | §7.3 |
+| `agent.providers {}` | `server.read` | detection, versions, sign-in state and account label **as the CLI reports them** (never a credential), whether an OpenRouter key is set, the local endpoint's preset and whether it answers (never a key), capabilities (§4.1) |
+
+- **New scopes** (added to sp5's closed vocabulary): `agent.read`; `agent.run` (start and drive sessions: people, and in 7B a parent agent for its own children only); `agent.approve` (human); `agent.admin` (owner: delete sessions, provider settings, the OpenRouter key, the local model endpoint). Enabling the `auto` merge policy is a human-only project setting (§6.5), not a scope any credential carries.
+- Partial deltas are streamed but not stored; the completed node is.
+
+---
+
+## 4. Providers
+
+### 4.1 The adapter contract
+
+Forked in shape from T3's `ProviderAdapterV2` (arch §8.2), written in Effect 4:
+
+```ts
+interface ProviderAdapter {
+  readonly harness: Harness;                 // "builtin" | "claudeCode" | "codex" | "fake" | plugin id (8)
+  detect(): Effect<Detection, ProviderError>; // installed, version, supported range, signed in, capabilities
+  open(spec: SessionSpec): Effect<ProviderSession, ProviderError, Scope>;
+}
+interface ProviderSession {
+  readonly events: Stream<ProviderEvent>;     // one ordered stream per session
+  startTurn(input: TurnInput): Effect<void, ProviderError>;
+  steer(input: UserInput): Effect<void, ProviderError>;
+  interrupt(): Effect<void>;
+  respond(requestId: string, answer: RuntimeAnswer): Effect<void, ProviderError>;
+  rollback(toTurn: number): Effect<void, ProviderError>;   // capability-gated (7B)
+  ref(): ProviderRef | null;                  // what resume needs
+}
+interface Capabilities { steer; rollback; resume; reasoning; images; parallelTools;
+                         costReported; exactCapture; nativeSubagents }
+```
+
+- **`ProviderEvent`** is a closed union: `turnStarted`, `messageDelta`, `message {role, blocks}`, `reasoningDelta`, `reasoning {text?, summary?, encrypted?}`, `plan`, `toolStarted {providerId, tool, input}`, `toolOutputDelta`, `toolCompleted {providerId, ok, output}`, `request {id, kind: approval|userInput, tool?, input?}`, `usage {input, output, cacheRead, cacheWrite, reasoning, costMicros?}`, `turnCompleted {stopReason}`, `turnFailed {error}`, `exited {code, signal}`, and `capture {request, response}` (the exact model traffic, built-in only). The runtime turns them into nodes; adapters never write nodes.
+- **Binding** (arch §27.5): every event is bound to the process (or HTTP stream) that emitted it; events from a replaced process are dropped; a spawn failure or exit fails the pending turn with `PROVIDER_EXITED`.
+- **Unknown events become notices.** A CLI message the adapter does not know (a new event type from a newer CLI version) is recorded as a `notice` node with its type name and never fails the turn; only a message the adapter *needs* and cannot parse is `PROVIDER_PROTOCOL` (§4.5 version policy).
+- **`SessionSpec`** carries the model, the role prompt (§6.2), the tool set, the mode, the working directory `workspace/<sessionId>/`, the session environment (§8.5), the sandbox policy (§8), the budget remaining, and the provider ref when resuming. **Budget facts are never part of the system prompt**: they go in a message at the start of each run (§4.4), so the system prompt stays byte-stable, cacheable and deduplicated in the trace store.
+
+### 4.2 CLI agents and API models
+
+| | Built-in (OpenRouter or local) | Claude Code (CLI) | Codex (CLI) |
+|---|---|---|---|
+| Process | none; HTTP from `finisherd` | `claude -p` per session, stream-JSON on stdio | `codex app-server`, newline-delimited JSON-RPC on stdio |
+| Auth | OpenRouter preset: the key the user pasted, in Finisher's `SecretStore`, via `ModelGateway` (§10); local preset: **no key** (§4.4) | **the user's own sign-in to the unmodified CLI**, done by the user with the CLI's own flow; sessions reach its sign-in store in place, never a copy (§8.6) | likewise: the user's own `codex login` (ChatGPT plan or the user's own key, the CLI's choice); sign-in store reached in place (§8.6) |
+| Tools | Finisher's: `fin`, `workspace_*` (§4.4) | its own (Bash, Read, Edit, Grep, WebFetch…), restricted by flags and by the sandbox | its own (shell, apply_patch, …), likewise |
+| Streaming | SSE from the Chat Completions endpoint (OpenRouter's, or the local server's) | `stream_event` lines with `--include-partial-messages` | `item/*` and `turn/*` notifications |
+| Approvals | the runtime decides before running a tool | `can_use_tool` control requests via `--permission-prompt-tool stdio` | `*/requestApproval` → `accept|decline` |
+| Usage and cost | exact, from the response (OpenRouter's usage accounting, including cost; a local server's `usage` where it reports one, else estimated, and no cost) | reported per result (`usage`, `total_cost_usd`); `costBasis: subscription` when the CLI reports a plan sign-in | token usage notifications; cost priced from the catalogue, or `subscription` on a plan sign-in |
+| Capture fidelity | exact requests and responses | the stream: messages, tool calls and results, thinking where emitted; no system prompt | the stream: items, reasoning summaries; no system prompt |
+| Rollback | Finisher-side | undo the session's transactions, resume (provider history is left as is) | `thread/rollback` where offered |
+
+### 4.3 Tool protocol: `fin`, not MCP, with MCP as an adapter
+
+- **The built-in agent gets one native tool, `fin {argv: string[], stdin?: string}`**, plus `workspace_read`, `workspace_write` and `workspace_list` confined to `workspace/<sessionId>/`. Finisher executes `fin` directly (no shell, no quoting, identical on Windows), with `FIN_CALL` set to the call's id. The system prompt carries the `fin` map (< 1.5k tokens) and the role's skills; `fin help <group>` and `fin schema` are there for the rest. One tool keeps the tool definitions small and cacheable; generated per-command tools are an eval variant (7H), not the default.
+- **CLI agents use `fin` through their own shell** (D16): the binary is on the session `PATH`, the session env names the credential (§8.5). This is the path every agent already knows, and the one the eval harness measures.
+- **`fin mcp`** (7G) is a stdio MCP server generated from the same registry (arch §9.12): one MCP tool per command group, arguments as the `fin schema` input, output as the same JSON. It is offered to CLI agents as configuration (`--mcp-config` for Claude Code, `mcp_servers` for Codex) and becomes the default per provider only if the eval harness shows it better (fewer calls, fewer errors at equal success). It also gives exact `FIN_CALL` attribution (§12.3), because `fin mcp` mints the call id per request.
+- **Rejected:** MCP as the primary interface (contradicts D16; schemas for every command cost tokens on every turn; MCP adds a long-lived process per session); provider-native tool definitions written per provider (three copies of the registry).
+
+### 4.4 The built-in agent
+
+- **Loop:** prompt → model call (streamed) → tool calls (read-only ones may run in parallel, writes in order) → results appended → next call, until `end_turn`, the per-run cap on model calls (default 60), a budget stop or an interrupt.
+- **Model API (D30, narrowed by Owner decision 7, widened by F1): one OpenAI-compatible Chat Completions adapter with two presets.** The `openai` SDK is pointed at a base URL by the session's **preset** (recorded as the session's `provider`):
+  - **`openrouter`** (the default): OpenRouter's base URL (the catalogue's `openrouterBaseUrl`) and the key the user pasted (§10). It reaches every model the catalogue lists, closed and open-weight.
+  - **`local`**: an OpenAI-compatible server the owner runs, such as **Ollama** (default base URL on its usual loopback port), **LM Studio** (likewise) or a **user-supplied base URL** (`agents.local.baseUrl`). **A local URL needs no API key:** the client sends a fixed placeholder as the bearer value, and Finisher stores no secret for it (§10). The URL is validated when the owner sets it (`http` or `https`, a host, no credentials inside the URL), and **only the owner sets it** (`agent.admin`, human-only): never an agent, a project file or a plugin, so a shared project cannot point a session at a service of its own choosing.
+  - **Loopback is allowed for the built-in agent only.** The loop runs inside `finisherd`, outside every sandbox, so its requests to a loopback or LAN server need no change to any sandbox's egress rules: the `agent` profile still denies loopback to a *sandboxed* process (macOS), still limits its TCP ports (Linux ABI ≥ 4) and still gives AppContainers none (§8.2, §8.3, §8.7), and sp8's brokered egress keeps refusing loopback for plugins (sp8 §9.3). CLI agents and hook commands gain no loopback reach from this.
+  **The direct Anthropic Messages and OpenAI Responses adapters are not in v1.** Finisher builds each request body itself and records it exactly (`capture` events); the SDK is transport and streaming only.
+- **OpenRouter specifics** (as OpenRouter documents them; 7A Task 9 re-reads the documentation on the day): usage accounting on every response, including the cost OpenRouter charged (`costBasis: reported`) and the upstream provider that served the call (recorded as `upstream`, §12.2); reasoning requested through OpenRouter's `reasoning` parameter, its returned reasoning details kept and sent back unchanged on the next call; tools as Chat Completions function tools; a model without tool support is refused at start.
+- **Local preset specifics (F1).** Chat Completions with function tools and `stream_options.include_usage`; anything beyond that is a bonus, not a requirement. Usage is taken from the response when the server reports it; when it does not, tokens are estimated (characters ÷ 4) and the turn is marked `usageEstimated`. **No cost is reported or priced** (`costBasis: unknown`): money budgets are not charged for local turns, and the token, wall-clock and call budgets still apply (§13). No `cache_control` breakpoints, no `upstream`. The context window comes from the `localModels` table (§4.7) or the owner's entry (default 8,192 when unknown), and the run stops at 85 % as for every model. A server that rejects tools gives `MODEL_UNKNOWN {reason: noTools}` on the first call; a server that does not answer is `PROVIDER_UNAVAILABLE {provider: local}`; a stream the adapter cannot map is `PROVIDER_PROTOCOL`.
+- **Prompt caching (OpenRouter preset only; the local preset sends none):** `cache_control` breakpoints on the system prompt, the tool list and the last stable message for models the catalogue marks as needing explicit breakpoints (OpenRouter passes them to providers that use them), automatic caching elsewhere. Cache tokens are reported separately and priced as the response or the catalogue says.
+- **Budget facts in a message.** Remaining tokens, money and render minutes, and the run's call caps, go in a short user-role message at the head of each run (and again after a budget raise), never in the system prompt: the system prompt and tools are identical across a role's sessions, which keeps the prompt cache warm and lets the trace store keep one copy (§12.1).
+- **Context:** tool results over 16 KiB are cut to a head and tail with a note naming the node (the full output stays in the node and, under training, in the trace store). `fin view` is called with a `--budget` derived from the remaining window (at most 4k tokens or 5 % of the window). At 85 % of the window the run stops with `MODEL_CONTEXT_EXCEEDED` in 7A; 7B adds compaction (a summary turn that replaces older runs, recorded as a node and in the journal).
+- **Retries:** 429, 502/503 and overloaded responses are retried with the server's `retry-after` or backoff (1 s × 2ⁿ, ≤ 60 s, 5 attempts); other 4xx fail the run with the mapped code (§15).
+
+### 4.5 Claude Code (7D)
+
+- **Launch** (arch §27.5; flags verified against 2.1.319): `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --model <m> --settings <session settings file> --strict-mcp-config [--mcp-config <fin mcp>] --append-system-prompt <role prompt> --disallowedTools <list> --session-id <uuid>`; resume with `--resume <id>`.
+- **The user's own sign-in, not `--bare`** (Owner decisions 6, 7). Finisher holds no Anthropic key, so `--bare` (which accepts only an API key or `apiKeyHelper`) is not used. The isolation `--bare` gave is rebuilt from the parts: the CLI's config dir is the **per-session directory of §8.6** (empty but for Finisher's settings file and the in-place sign-in store), so user-level settings, hooks, MCP servers and memory files are Finisher's only; **`--setting-sources user`** (the narrowest value the CLI accepts, which then names that per-session directory) keeps project and local settings in the project folder from loading; `--strict-mcp-config` drops every MCP server Finisher did not pass; and the `agent` profile **denies reading `CLAUDE.md`, `CLAUDE.local.md` and `.claude/` in the project folder** (the files an injected collaborator could plant), so the CLI's memory discovery finds nothing to load whatever its rules. Plugin sync and auto-memory are switched off in the session settings where the CLI offers a setting. Each of these is checked in the spike (§8.12, H2) and by the capability probe below.
+- **The role goes in `--append-system-prompt`**, never in a `CLAUDE.md` file written into the workspace (the agent could rewrite it and it would outlive the session) and never mixed with budget facts (§4.1).
+- **Budget:** `--max-budget-usd` exists **only in print mode** (`-p`), applies per process, and is not the budget authority: it is a backstop set to the session's remaining money, and the runtime's ledger (§13) decides. If a later adapter ever ran the CLI interactively the flag would be absent.
+- **Native subagents are disabled** (`Task`) so that every agent has a branch, a credential and a budget (§6.3).
+- **Version policy (floor + probe, not a pinned range):**
+  1. a **floor version** per Finisher release, checked at detection (`PROVIDER_VERSION {floor}` below it);
+  2. a **capability probe**: the first time a (version, flags) pair is seen, `finisherd` starts the CLI under the real sandbox with the session's flags and reads the **`system/init` message** (tools, MCP servers, model, permission mode, slash commands, and the kind of sign-in in use). The adapter requires the fields it uses (`tools`, `session_id`, `model`) and the control-protocol messages `can_use_tool` and `result`, and **refuses to start the session if init lists an MCP server or plugin Finisher did not supply** (the check that the isolation without `--bare` holds); a missing capability is `PROVIDER_VERSION` with the missing item named. (Whether init is emitted before any prompt is checked in the spike of §8.12; if not, the probe sends a one-token no-op prompt under a 1-cent budget.) The result is cached per version;
+  3. **unknown events become notices** (§4.1), so a newer CLI that adds a stream event keeps working;
+  4. **the disallowed-tool list is built from the init message's tool list**: every tool in `init.tools` that is not in the role's allow-set (the editor's `Read`, `Edit`, `Write`, `Grep`, `Glob`, `Bash` where it exists, `WebFetch` per rules) is passed in `--disallowedTools`, `Task` and anything new included. A tool a future version adds is denied by default until the allow-set names it.
+  A recorded-transcript contract suite per *tested* version (§16) backs this; versions between tested ones run on the probe alone, with a `notice` on first use.
+- **Settings isolation (Decision 14):** the user's own Claude Code settings, hooks, MCP servers and memory files are not loaded. The session settings file lives in the session directory (read-only to the sandbox); the CLI's config dir is the **per-session directory of §8.6**, never the user's `~/.claude` and never the sign-in home itself.
+- **Windows:** Git Bash/MSYS cannot start in an AppContainer (arch §27.6), so the Bash tool is replaced by a **brokered shell**: an MCP tool `shell {command}` served by `fin-sandbox` outside the container, which runs PowerShell inside a fresh container for the session and returns its output (TASKS.md S8 follow-up). The built-in `Bash` is disallowed on Windows.
+- **Licence and terms:** never bundled; detected on `PATH` or at a configured location (arch §18); run unmodified, with the vendor's flags and settings only; its built-in authentication methods are neither removed nor restricted. The user signs in with the CLI's own flow; Finisher never collects, copies, stores or intermediates the credentials (§8.6, Owner decision 6, where the terms reasoning is recorded).
+
+### 4.6 Codex (7E)
+
+- **Bundled** app-server, the **pinned version only** (Apache-2.0; licence and NOTICE shipped; binary dependencies re-checked at each pin, arch §8.2). The JSON-RPC client is vendored from T3's `effect-codex-app-server` and pinned. A user-installed or user-selected newer `codex` is not used (cut): upgrading is a Finisher release.
+- **Drift gate:** `codex app-server generate-json-schema` of the pinned binary is committed; a test checks the vendored client's messages against it.
+- **Configuration per session** (`-c` overrides, never the user's `config.toml`): `CODEX_HOME` = the per-session directory of §8.6, with the sign-in store reached in place (`-c cli_auth_credentials_store="file"` where the pinned version offers it, so the store is a file and not a keyring item keyed by the home path; §8.6);
+  - **`-c project_doc_max_bytes=0`**: the project's `AGENTS.md` (attacker-controlled content in a shared project) is not loaded (verified: Codex 0.167.0 accepts it);
+  - **the role goes in `developer_instructions`** (verified accepted by 0.167.0), not in a file in the workspace;
+  - `sandbox_mode = "danger-full-access"` **inside** Finisher's sandbox when nested Seatbelt or Landlock is refused, otherwise `workspace-write` as the second layer (7E verifies which per OS); `approval_policy` routed to the runtime; `shell_environment_policy.inherit = "none"` with `set` = the session env of §8.5, so commands see `FIN_SESSION`, `FIN_CREDENTIAL` and `FIN_SERVER` and nothing else.
+- **Sign-in:** the user's own, with the CLI's own login (`codex login`, or `codex login --device-auth` on a headless server), run **by the user** against the sign-in home (§8.6); `finisherd provider signin codex` prints the exact command (the bundled binary's path and the sign-in home) and runs nothing. Finisher never calls the protocol's login methods and never sends a key over them; it reads the account status the app-server reports (`account/read`: signed in or not, plan or key, an account label) and nothing else.
+
+### 4.7 The model catalogue
+
+- Data, bundled and versioned (`apps/finisherd/src/agent/catalogue/models.json`): per model the harness it serves (`builtin` through OpenRouter, or the model ids Claude Code and Codex report), the provider (`openrouter` for the built-in agent's OpenRouter preset; local models are not in the bundled price data, below), the **maker** and the **weights class `open|closed`** (the provenance §12.7 filters on), context window, maximum output, capabilities, and prices per million input, output, cache-read and cache-write tokens, with an `asOf` date. Built-in ids are OpenRouter's model slugs (`<maker>/<model>`, a variant suffix such as `:free` kept in a separate field, since `:` is not a name character).
+- `fin-core::events::names::AGENT_MODELS` must hold every catalogue id and every name in the `localModels` table (a drift test); `AGENT_PROVIDERS` gains `openrouter` and `local` (the built-in agent's two providers) and keeps `anthropic` and `openai` (the Claude Code and Codex harnesses, and OpenRouter upstreams). An OpenRouter model the owner adds in settings (`agents.models`) but the catalogue lacks is recorded as `other` plus a keyed hash of its slug, with weights class `unknown` unless the setting names one, priced from OpenRouter's reported cost.
+- **Local models (F1)** have no prices and no bundled catalogue entry. A small bundled table, `localModels` (`apps/finisherd/src/agent/catalogue/local-models.json`), lists well-known open-weight families by name prefix with their maker, `weights: open`, a default window and a tools capability, so diagnostics and provenance can name them. The owner picks a model from what the server lists (`GET /models` where it offers it) or types a name; one the table does not know is recorded as `other` plus a keyed hash of its name, with `weights: unknown` unless the owner sets `open` (`agents.models: [{id, provider: "local", weights?, window?}]`).
+- Role defaults pick models per harness (§6.2); the user overrides per session.
+
+---
+
+## 5. Sessions, branches and landing edits
+
+### 5.1 One branch subtree per session
+
+- **Start** creates a branch from `base` (default: the head of `main`; or a branch the starter can read) named `agent/<role>-<n>` (display only; ids stay `br<n>`, 4B). The session's **root branch** is recorded on the session.
+- The session may write its root branch and branches it creates beneath it (`fin try`, `fin branch new --from` its own). Writes to any other branch are `BRANCH_NOT_ALLOWED` (exit 7). This is enforced by the agent credential's branch reach (sp5 `agent_sessions.branches`), checked by the same authorisation wrapper as scopes, with branch lineage from `branch.list`.
+- **One live session per root branch.** Starting a session on a branch another live session owns is `BRANCH_IN_USE`.
+- `plan` mode creates no branch: it reads `base`.
+- **With an agent credential, `fin`'s default branch is the session's root, taken from the principal.** `fin` learns it from `auth.whoami` (the principal carries `branches` and `defaultBranch`), so a command with no `--branch` writes the root, never `main`. **Try state is per session and lives on the server** (`session_state {sessionId, defaultBranch, tries JSON}` in `control.db`, read and written through `agent.self` and `agent.self.try`, §3.5), never in the shared `fin-config.json` (`config.rs`, `try_cmd.rs`): under an agent credential `fin` neither reads nor writes that file, so one agent's `fin try` cannot change what a person's or another session's `fin` writes, and a stale `fin-config.json` cannot point an agent at `main`. A `fin try` records its branch (which must be in the session's subtree) and sets the session's default; aborting a try restores the previous default.
+
+### 5.2 The credential, the principal and what is recorded
+
+- **The agent principal's id equals the session id.** `agent.session.start` mints an `agent` principal through 5A's mint service with the **caller-supplied id = the session id** (§1.7), the scope set of the mode (§6.1), `projects: [projectId]`, `branches: [root]` (descendants implied), an expiry that outlasts the session (a resume refreshes it). 5A already makes an agent's actor `{kind: agent, session: <credential id>}` (sp5 §3.4), so the actor session, the journal session, the control.db session and the credential are one id: there is no second identifier to forge or to join on. `FIN_SESSION` in the environment is informational; the server never trusts it.
+- It writes the credential file to `<server-data>/agents/<sessionId>/credential.json` (0600; readable inside the session sandbox only, §8.5) and sets `FIN_CREDENTIAL` to its path.
+- Ending or deleting the session revokes the credential; a resumed session keeps it (agent keys derive from the master and survive restarts, sp5 Decision 3).
+- **`session_txs` records `(txId, sessionId, callId?, at)` for every commit, undo, redo, revert, cherry-pick and merge an agent principal makes**, written by the server's authorisation wrapper after the engine answers (stage 7), keyed by the principal's id, **whatever the call attribution** (§12.3): a commit with `callId` null is still the session's. The verdict tracker, rollback and the journal join read this table, not a header.
+- **`Tx.author` is set by the server for agent principals**, to `agent:<role>:<sessionId>` from the credential's `author` (sp5 §3.2 `Principal.author`). **`FIN_AUTHOR` and `fin-author` headers cannot override it** (§1.7 item 3). Because `undo`/`redo` act on "your" edits by author (`commands/history.rs`), an agent's undo can touch only its own session's transactions.
+
+### 5.3 Turn checkpoints and rollback (7B)
+
+- Each run records `headAtStart` (the root branch's seq) and, through `session_txs`, the txIds its tool calls produced.
+- **Rollback to run *r*** undoes, newest first, every transaction in `session_txs` after *r* started (4B undo units, as the session's author), then rolls the provider back (`rollback` capability) or, for the built-in agent, drops the later nodes from the next request. A conflicting undo fails the rollback with `CONFLICT` and leaves both sides as they were.
+- **Session fork is cut** (v1): a person who wants an alternative starts a new session with `base` set to a branch or checkpoint. Provider-level resume-fork flags are not used.
+
+### 5.4 How edits land
+
+1. The agent works on its branch; every write returns its delta (arch §9.4).
+2. At the end of a brief, the agent calls `fin review request --title … [--summary …]` (5E; in 7A, `fin branch ls` shows the branch and the session ends with a summary node). The `BranchReady` hook runs (7F). A review's accept/reject/merge outcomes are 5E's `review.verdict` entries (§12.5).
+3. **A person** reviews the change list (5E: per-transaction accept or reject, then merge) or, before 5E, merges with `fin merge --from <branch>` as the `local` principal or from the console.
+4. **No agent credential merges into a protected branch** (sp5 §8.5: no `branch.protected`, no `review.decide`), in any mode. **The one exception is the per-project `auto` merge policy** (Owner decision 4, §6.5): off by default, enabled only by a person, it lets the *server* merge an `auto` session's branch into the project's main branch when the QA gate and the critic both pass on that exact head, and audits every merge.
+5. A parent agent may merge a child's branch into its **own** branch (7B), which is how subagent work composes before review.
+
+### 5.5 Concurrency
+
+- Sessions on separate branches run in parallel (D18), limited per server (default 4 live provider processes, 8 built-in sessions; settings) and per provider by its rate limits (§13.3).
+- All writes go through the project's single writer (arch §6.5); a rebase conflict on `tx.commit` is answered to the agent, which re-plans (sp5 §8.4: not a review item).
+
+### 5.6 Path reach and the files `fin` reads itself
+
+- **Server-side reach** (sp5 §4.4 stage 4) for an `agent` principal is **its own project and the libraries that project references**, nothing else: the project folder, the session workspace `workspace/<sessionId>/`, and the roots of registered libraries that the project's assets live in. Another project's folder, an unreferenced library and any other directory are `PATH_NOT_ALLOWED` (exit 7), and `project.create` and `project.open` are not in any mode's scope set (§6.1): the session's project is opened by `finisherd` at start. A directory naming another project is `PROJECT_NOT_FOUND`, which does not reveal that it exists.
+- **Client-side file arguments.** Some `fin` commands read a file named on the command line in the `fin` process itself, before any RPC (`fin caption import --words <file>`, `fin asset add <path>`, `--spec`/`apply` files). **With an agent credential, `fin` confines every such argument to the workspace and the project folder**: the path is made absolute, symlinks resolved (case-folded on Windows and case-insensitive macOS volumes), and must lie under `workspace/<sessionId>/` or the project folder; otherwise `PATH_NOT_ALLOWED` before the file is opened. This is a convenience layer (a CLI agent's own `Read` tool is bounded by the sandbox, §8, not by `fin`); it exists so `fin` is never a confused deputy that reads a file the agent's own process could not (a file outside the sandbox's read policy would fail in the sandbox anyway, and the built-in agent's `fin` tool runs in `finisherd`, where it is the only bound). The same check runs in the built-in `fin` tool before it spawns `fin`, for arguments it can recognise from the registry, and a test lists every command with a client-side path argument (a drift test over the registry's `argKinds: path`).
+
+---
+
+## 6. Roles, modes, subagents, saved prompts
+
+### 6.1 Modes and their scopes
+
+| Mode | Scopes (sp5 §4.4 vocabulary, plus §3.5) | Sandbox writes | Typical use |
+|---|---|---|---|
+| `plan` | `server.read`, `project.read`, `library.read`, `jobs.read`, `diagnostics.read` (redacted); `jobs.submit` for `look` jobs only | `workspace/<session>/` only | read, analyse, propose; no ops |
+| `draft` | `plan` + `project.write` (own branches, §5.1), `jobs.submit` (proxies, analysis, `look`, `listen`), `review.write`, `agent.run` for own children (7B) | `workspace/<session>/`, `workspace/shared/` | edit on its own branch |
+| `auto` | `draft` + `render` and `critic` jobs within the render-minute budget | as `draft` | edit, render, self-review within budget; reaches `main` only through the project's merge policy, when a person enabled it (§6.5) |
+
+- No mode grants a human-only scope, `branch.protected`, `review.decide`, `jobs.control`, `project.admin`, **`project.create`, `project.open`**, `library.admin`, `settings.admin`, `auth.admin` or `plugin.install` (sp5 §4.4 "agent"; §1.7 item 2). A role may narrow its mode, never widen it. Path reach is §5.6.
+- **`plan` may write its own workspace** (notes, scratch): `workspace/` is never canonical state (D22). "Read-only" in arch §8.3 means read-only to the project.
+- `auto`'s critic needs sub-project 10; until then `auto` behaves as `draft` plus render, and the merge policy of §6.5 cannot be enabled.
+
+### 6.2 Roles
+
+- **Data, not code** (`apps/finisherd/src/agent/roles/*.json`, later contributed by plugins): `{name, title, prompt (skill references, `fin guide` topics), modeCeiling, models: {builtin, claudeCode, codex}, rules (allow/ask/deny, §7.2), budget, tools}`.
+- **Bundled:** `editor` (the default main agent), `critic`, `fixer`, `clip-finder`, `caption-stylist`, `colourist`, `mixer` (arch §8.3).
+- **The critic has a `draft` ceiling confined to a child branch** (revision 2: a `plan`-only critic could criticise but never repair, and `plan` creates no branch). A critic session reads any branch of its project; its root branch is a **new child of the branch under review** (`<reviewed>/critic-<n>`), so its credential's reach excludes the reviewed branch itself, and its fixes arrive as a second branch a person (or the reviewed branch's owner, by `fin merge` into its own branch) can take or drop. Alternatively the critic **spawns a `fixer`** (7B, `draft`, same child-branch rule) and only reports. In both cases a critic edit that replaces or undoes an agent's transaction is recorded through 5E's verdict kind with `by: critic`, `via: critic` (§12.5). Default mode for a critic is `plan`; `draft` is chosen by the session starter or by the role's saved prompt. Their prompts are skills borrowed from Uncut (D26), versioned with the server (arch §9.1).
+- `AGENT_ROLES` (a new name table) holds the bundled names plus `other` for plugin roles.
+
+### 6.3 Subagents (7B)
+
+- **`fin agent spawn --role <r> --brief <text> [--mode <m>] [--budget <b>] [--model <m>]`** from a running session starts a child session whose root branch is created from the parent's current branch head. The child's mode is at most the parent's; its credential reaches only its own subtree. Returns `{session, branch}` at once.
+- `fin agent wait <id>… [--any] [--timeout <s>]` returns each child's final summary node, status and branch; `fin agent send <id> <text>` steers; `fin agent stop <id>`; `fin agent ls` lists the parent's children.
+- The parent composes by `fin merge --from <child-branch>` into its own branch. Children cannot spawn beyond depth 3 or past 8 live descendants per root session (settings).
+- **Provider-native subagents** (Claude Code `Task`, Codex's equivalents) are disabled: they would share the parent's branch, credential and budget invisibly. The clip finder's "one child branch per short" (arch §13) is this mechanism.
+- The UI's session tree (arch §8.1) is `parent` links.
+
+### 6.4 Saved prompts (7B)
+
+`/make-shorts 5` and similar (arch §8.6) are data: `{name, role, mode, template with typed parameters, budget}`, expanded by the server into `agent.session.start` + a first prompt. Only people (UI, console) start them; `fin` stays agent-only.
+
+### 6.5 The `auto` merge policy (7B mechanism; enabled once sub-project 10 exists)
+
+Owner decision 4: `auto` may merge into `main` under a per-project owner policy. The policy is a server function, not a scope, so no agent credential ever carries the right to merge into a protected branch.
+- **Setting:** 5E's `branch_policy.autoMerge {enabled: false, into?: <the project's main branch>, roles?: [...]}` per project in this server's `control.db` (sp5 §8.1; local, never in the project folder, so a shared project cannot switch it on for another machine). **Off by default.** Enabling, changing or disabling it is **human-only** through `review.policy` (sp5 §4.6, §8.5: the console with a TTY and a typed challenge, later the UI), audited as `review.policy` with the old and new value. `requireReview: true` on the project overrides it. It can be enabled only when sub-project 10's QA gate and critic are available; until then the setting is refused with `AUTO_MERGE_UNAVAILABLE`.
+- **When it merges:** at `BranchReady` (§9.1) of a session in `auto` mode whose role the policy admits, `finisherd` merges the session's root branch into `into` **only if all hold at one branch head** (the seq recorded with each check):
+  1. the **QA gate** (sub-project 10) passed on that head with no blocking finding;
+  2. a **critic** passed on that head: a separate critic session (§6.2), not the authoring session or one of its descendants, whose verdict names the same head seq;
+  3. no approval of the session is pending, the session is within budget, and no hook blocks (`PreMerge` runs as for any merge);
+  4. the merge applies without conflict (`expect.rev` is the checked head, so a commit after the checks voids them).
+  Otherwise nothing merges and the branch takes the ordinary path: a review request for a person (§5.4).
+- **Who merges:** the server-internal `policy` actor `{kind: policy, policy: autoMerge, enabledBy}` (§1.7 item 6), through 5E's protected-branch merge, never through an RPC a credential can call. The merge is one transaction and can be undone like any other.
+- **Audited and recorded:** every merge is an audit entry `review.merge` with `auto: true` (sp5 §3.3, §8.5) carrying `{projectId, sessionId, branch, headSeq, qaRunId, criticSessionId, txIds, by: policy, enabledBy}`, a `PostMerge` hook event and a `Notification`; the outcome is a `review.verdict` with `by: policy`, `via: autoMerge` (§12.5), so a dataset never mistakes a policy merge for a person's acceptance.
+- **Risk** (§22): a fooled critic becomes the last line before the user's main timeline; that is why the policy is per project, off by default, requires both a deterministic QA gate and a distinct critic on the same head, and leaves a revertible, audited trail.
+
+---
+
+## 7. Permissions, rules, approvals, human-only operations
+
+### 7.1 Layers, from the outside in
+
+1. **OS sandbox** (§8): what processes can touch.
+2. **Scopes and branch reach** (sp5, §5.1, §6.1): what the credential may ask the server.
+3. **Command rules** (§7.2): allow/ask/deny on command patterns, per role, project and user.
+4. **Hooks** (§9): policy code (`PreCommand`, `PreMerge`; `PreOp` is cut in v1).
+5. **Provider permission rules** (Claude Code allow/deny, Codex approval policy): a convenience, never relied on.
+
+### 7.2 Command rules on the server
+
+- Arch §4 rule 6 enforces rules "in the command registry, whatever the transport", but an agent with a credential can call RPCs without `fin`. So rules are enforced **in `finisherd`'s authorisation wrapper**, against command names.
+- **The registry is exported:** `fin schema --registry` writes every command's name, group, the RPC(s) it calls and the payload fields that identify it; the result is committed as `packages/contracts/registry.json` with a drift gate, like the generated types. The server maps each incoming RPC + payload back to its command name (`commandOf`), so a rule on `render` or `plugin.install` holds whether the call came from `fin`, `fin mcp`, a hand-written client or the built-in tool. **Plugin commands are named `plugin:<id>/<cmd>`** (sp8 §3.8, for example `plugin:@acme/tools/trim-silence`): `commandOf` returns that name for the plugin-command RPC, `fin schema --registry` lists it, and rules match it by glob (`deny plugin:@acme/*`, `ask plugin:*/publish`).
+- **Rule syntax:** `{allow|ask|deny: "<command glob>", where?: {branch?, mode?, preset?, bytesOver?, costOver?}}`, layered `managed` > `project` > `user` > `local` > role (arch §8.3); the first `deny` wins, then `ask`, then `allow`; no match is `allow` within the scopes. Project rules are honoured only for trusted projects (§9.4).
+- **Defaults:** `deny plugin.install` (arch §8.3), `ask render` over 10 minutes of output in `draft`, `ask asset.add` of a download without a recorded licence (7G), `ask workspace.gc`.
+
+### 7.3 Approvals
+
+- An `ask` (a rule, a budget extension, a provider permission the policy routes to people, §7.4) creates an **approval**: `{id, sessionId, kind: rule|budget|provider|plugin, subject (command and resolved arguments, server-written), argsHash, requestedAt, expiresAt (default 30 min), decision?, by?, remember?}`. The card text is generated by the server from the subject, never worded by the agent (arch §8.3).
+- **The request does not block an RPC, and pending is not denied.** `fin` gets **`APPROVAL_PENDING` (exit 8, a new class meaning "wait, then repeat")**, with `details.approval`. Exit 7 stays for "do not retry" (`APPROVAL_DENIED`, `RULE_DENIED`, …); an agent that sees 7 must stop, an agent that sees 8 must wait.
+- **`fin approval wait <id> [--timeout <s>]` blocks at most 90 s** (the cap is below every CLI tool timeout: Claude Code's Bash default is 120 s, the built-in tool's is 120 s) and returns **8 `APPROVAL_PENDING` on timeout, which is repeatable**: the agent calls it again. It exits 0 on allow, 7 `APPROVAL_DENIED` on deny or expiry. The built-in loop waits on the approval itself (status `waitingApproval`) and gives the model the outcome as the tool result.
+- **A grant is one-time and exact: keyed by `(sessionId, command, argsHash)`**, where `argsHash` is the hash of the resolved arguments the approval card showed. The first matching request consumes it (committed in the same transaction as the write); a second identical request asks again, a request with different arguments asks again, and another session never inherits it. A grant expires with the approval.
+- Answered from any device (`agent.approval.answer`, scope `agent.approve`, human only), or the console (`finisherd agent approve <id> allow|deny`). `remember: session|project` adds a **rule** (a separate, visible, revocable object), not a standing grant; adding a rule is human-only.
+- Approvals are product state in `control.db` and journal entries (`agent.approval`, §12.2).
+
+### 7.4 Provider permission requests
+
+- Claude Code `can_use_tool` and Codex `requestApproval` are answered by the runtime: **allow** what the sandbox contains (file edits in the workspace, shell commands, reads), **deny** what the mode forbids (writes outside the workspace in `plan`), and route to an approval what a rule marks `ask` (by tool and pattern, for example `WebFetch` or `Bash(curl *)`).
+- The decision is recorded as an `approval` node with `by: policy|user`.
+
+### 7.5 Human-only operations
+
+sp5 §4.5 makes consent changes, content export, purge, `project default`, confirmed takeovers, relocations, library administration, pairing and plugin installation human-only in 5A, ahead of the arch §21.1 phasing. Sub-project 7 adds what only it can:
+- **making them hold:** the sandbox denies agents read access to server data (`local.key`, `console.key`, `credential.master`, `settings.json`, the journal, the agent-trace store, the audit log, `control.db`), so an agent cannot obtain a human credential (sp5 §4.6 residual), and `fin` under an agent credential never falls back to the local key (§8.5);
+- **new human-only operations:** answering approvals; starting, ending, deleting sessions on behalf of a person (`agent.run` is human, except a parent for its own children); setting the OpenRouter key (`finisherd provider key set`; CLI sign-in is done by the user in the CLI itself, §8.6); setting the local model endpoint (`finisherd provider local set`, §10); **enabling the `auto` merge policy** (§6.5); trusting a project's hooks; adding command rules (`remember`).
+
+---
+
+## 8. The OS sandbox (7C)
+
+Everything in this section is **defensive hardening of Finisher's own sandbox**: it describes what an agent's process tree is *prevented* from doing and the tests that must observe the prevention. It contains no attack procedures; the escape suites (§8.11) are written as "attempt X, observe denial" and live in the repository's tests.
+
+### 8.1 The policy
+
+One pure type in `fin-sandbox::policy`, built by the runtime per session, per hook command, per job and per plugin call, applied by the launcher per OS:
+
+```rust
+pub enum Profile { Agent, Hook, Worker, Plugin }          // §8.10
+pub struct SandboxPolicy {
+    pub profile: Profile,
+    pub write: Vec<PathBuf>,        // workspace/<session>, workspace/shared, the session dir's tmp/ and provider/, the harness's sign-in store
+    pub read: ReadPolicy,           // Only(Vec<PathBuf>) for every profile; Everything{except} exists for tests only
+    pub protect: Vec<PathBuf>,      // .finisher/, assets/, finisher.project.json: no write, no link (arch §27.6)
+    pub deny_read: Vec<PathBuf>,    // a second layer inside Only: server data (except the session dir), sensitive home paths
+    pub unix_sockets: Vec<PathBuf>, // the only pathname sockets it may connect to (macOS: run/fin.sock)
+    pub net: Net,                   // Open | Loopback{ports} | None
+    pub mach: Vec<String>,          // macOS: the explicit mach-lookup allow-list (empty = nothing)
+    pub devices: Vec<DeviceRule>,   // GPU nodes and the like (worker, plugin with a grant)
+    pub limits: Limits,             // processes, memory, open files, wall clock (job object / rlimits)
+}
+```
+
+- **Writable:** the session workspace, `workspace/shared/` (not in `plan`), a private temp directory, the session's own provider directory inside `<server-data>/agents/<sessionId>/` (§8.5, §8.6), and, for a CLI session, **the harness's sign-in store in place** (the store file itself, never its directory, §8.6), so the CLI can refresh its own sign-in.
+- **Readable, by allow-list (`Only`)** — revision 2: a deny-list over "everything" always misses a path, so **CLI agents read only**:
+  1. the **toolchains**: the CLI's own install tree and runtime, the shell and coreutils on the session `PATH`, `git`, `fin`, and the system libraries, frameworks and fonts those need (per-OS lists, data, produced by the spike of §8.12 and re-validated per CLI version);
+  2. **the project folder** (read-only except the write roots) and, read-only, **the roots of the libraries the project references** (§5.6);
+  3. **the provider directory** of this session and the harness's sign-in store (§8.6), and the session's `credential.json`, `settings/` and `tmp/`.
+  Everything else — the rest of the home directory, other projects, other sessions' directories, other apps' data, mounted volumes — is simply not in the policy. `deny_read` still lists server data and the sensitive paths (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gcloud`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.config/gh`, browser profiles, password-manager data, the user's own `~/.claude` and `~/.codex`, the rest of `<server-data>/providers/`) and, for Claude Code sessions, the project folder's `CLAUDE.md`, `CLAUDE.local.md` and `.claude/` (§4.5) as a **second layer** that must also hold if a future toolchain entry were widened.
+- **Never writable, never linkable:** `.finisher/`, `assets/`, `finisher.project.json`, the session's own settings and credential files.
+
+### 8.2 macOS: Seatbelt
+
+- `/usr/bin/sandbox-exec -p <profile>` with parameters (`-D`), as S8 did and as Codex and Chromium do. The profile is generated from the policy: **`(deny default)`**, then explicit allows: the read roots of §8.1, the write roots, `(deny file-write* file-link* (subpath protected))`, `(deny file-read* (subpath denied))` followed by the allow of the session directory (last match wins).
+- **`mach-lookup` is denied by default, with an explicit allow-list** (`SandboxPolicy.mach`, data per profile). The earlier draft left it open "for the Keychain"; that left an agent able to ask the system's services to act for it. With it closed, a sandboxed process cannot ask `launchd`, LaunchServices (`open`, which would start Terminal or any app *outside* the sandbox), the Apple Events service (`osascript`), the Security server (keychain items of other apps) or `tccd` to do anything. The allow-list holds only what the supported CLIs need to run (DNS and network configuration, the trust evaluation for TLS, logging), produced in the spike (§8.12) by running each CLI under a log-only profile and reviewing the entries one by one. As defence in depth, `process-exec` of `open`, `osascript`, `launchctl`, `security` and the setuid helpers is denied too; the mach denial, not the exec denial, is the guarantee.
+- **Network:** outbound IP is open for the `agent` profile except **loopback, which is denied** (`(deny network-outbound (remote ip "localhost:*"))` after the general allow), with a single exception for Finisher's own listener where one is used. `fin` reaches `finisherd` through the **unix socket `<server-data>/run/fin.sock`** by `path-literal` (sp5 §4.11), plus `file-read-metadata` on the path's ancestors. Local dev servers, databases and other apps' loopback services are therefore unreachable.
+- **Keychain:** there is **no keychain access in the default profile**. CLI sessions run on the user's own sign-in (§8.6), and the preferred store is a file (Codex `cli_auth_credentials_store="file"`; Claude Code's file store where it uses one). If a CLI keeps its sign-in only in the login Keychain on macOS, that harness's profile gains the Security server in its `mach-lookup` allow-list, and protection of other applications' items then rests on the Keychain's per-item access lists (an item is readable without a prompt only by the application that created it; prompts cannot be answered from the sandbox). The escape suite's "another application's keychain item" case (§8.11) stays mandatory either way. Which store each CLI uses is spike B7.
+- `sandbox-exec` is deprecated but present on macOS 14–26; its removal is a tracked risk (§22).
+
+### 8.3 Linux: Landlock + seccomp
+
+- **Landlock** (`landlock` crate) for files, as S8 confirmed (90/90, ABI 4): write roots enumerated around protected roots (Landlock only adds access); read granted on the enumerated roots of §8.1 (so server data and the sensitive home paths are never under a granted tree); `REFER` only within write roots; `TRUNCATE` handled (ABI ≥ 3). Where ABI ≥ 4, TCP `connect` is limited to the listener's port and ports 80 and 443 (the agent's model API and downloads); other loopback services on other ports are unreachable.
+- **seccomp** (`seccompiler`) for what Landlock cannot see. The filter:
+  - **checks the architecture first.** It accepts only the native ABI: on x86-64 it refuses 32-bit-compat calls and **the x32 ABI** (syscall numbers with the x32 bit set are a second number space that a filter keyed on native numbers would not match), and on aarch64 the 32-bit compat ABI. A call from any other ABI kills the process (`SECCOMP_RET_KILL_PROCESS`, which the launcher reports, §8.8);
+  - **`socket()` policy:** `AF_UNIX` is refused (`EACCES`) for the `agent` and `hook` profiles. Landlock does not mediate `connect()` on pathname sockets (sp5 §14 item 2), and **Landlock's scoping (ABI 6) covers abstract sockets and signals, not pathname sockets, so the D-Bus session bus, `ssh-agent`, `gpg-agent`, `/var/run/docker.sock` and X11 sockets, all pathname sockets, are closed by this refusal and by nothing else.** Only `AF_INET`/`AF_INET6` are allowed (`agent`); `AF_NETLINK` is refused unless validation shows a CLI needs `NETLINK_ROUTE` (then that protocol only); `AF_PACKET`, `AF_VSOCK`, `AF_ALG`, `AF_BLUETOOTH` and the rest are refused. `socketpair()` stays allowed (libuv stdio);
+  - **`io_uring` is refused entirely** (`io_uring_setup`, `io_uring_enter`, `io_uring_register`). Its operations include creating sockets and opening files without going through the filtered `socket()`/`connect()` entry points, so allowing it would bypass the socket policy above. libuv falls back to its thread pool when io_uring is unavailable (the per-CLI validation confirms it);
+  - also refused: `ptrace`, `process_vm_*`, `pidfd_getfd` (taking descriptors from other processes of the same user, including `finisherd`), `keyctl`/`add_key`, `bpf`, `perf_event_open`, `userfaultfd`, mount, namespace and `setns` calls, `personality`, `kexec_*`.
+- **The agent listener (Linux only):** because `AF_UNIX` is closed, `fin` inside the sandbox reaches `finisherd` over a **loopback TCP listener** that accepts only `agent` and `mcp` credentials. It is just another transport for sp5's handshake (§1.7): the canonical endpoint `tcp:127.0.0.1:<port>` is inside both MACs. `FIN_SERVER=tcp:127.0.0.1:<port>`; `fin`'s endpoint parser gains the `tcp:` form.
+- **Floor: Linux kernel ≥ 6.2** (D31, raised by Owner decision 3), so every supported kernel has Landlock ABI ≥ 3. Ubuntu 22.04's original kernel (5.15) and Debian 12 (6.1) are no longer supported hosts. TCP port rules need ABI ≥ 4 (kernel ≥ 6.7): on 6.2–6.6 the Landlock TCP rule is absent and the rest of the profile applies unchanged (§8.7). A supported kernel with **Landlock disabled** (not built in, or not in the boot `lsm=` list, as on some NAS and container hosts) is the one remaining Linux case without a sandbox: everything runs there, unconfined, with warnings (§8.9).
+- **Per-CLI validation list (7C, run for every supported CLI version on the Linux VM).** The `AF_UNIX` refusal and the narrowed environment can break tools that quietly depend on a daemon. The validation records, and fixes in the launcher's environment or the session's git configuration, each of: **SSSD/LDAP user lookup** (NSS reaches SSSD over a unix socket, so `getpwuid` for a directory user can fail; the launcher exports `HOME`, `USER`, `LOGNAME`, `SHELL` explicitly and the suite checks the CLI and `git` still run); **gpg-agent signing** (`git commit -S` needs the agent socket; the session's git configuration sets `commit.gpgsign=false` and a private `GNUPGHOME`, and the user's `~/.gnupg` is denied regardless); **git credential-cache** (a daemon on a unix socket) and **fsmonitor** (a daemon, and a hook program named in repository configuration, which in a shared project is untrusted input): the session sets `GIT_CONFIG_GLOBAL` to a Finisher file, `GIT_CONFIG_NOSYSTEM=1`, `core.fsmonitor=false`, an empty `credential.helper`; plus the CLI's own telemetry, update and keyring paths.
+- **Docker:** Docker's default seccomp profile allows the Landlock syscalls (since 2022), and a stricter filter can be installed under `no_new_privs`; the image's validation row checks both on the reference NAS, whose host kernel must meet the 6.2 floor (with Landlock disabled it runs, unconfined, with warnings, §8.9).
+- **bubblewrap is not used:** it is LGPL-2.0-or-later and cannot ship (AGENTS.md), and it needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor restricts (arch §27.8). This replaces the "bwrap fallback" of arch §8.4.
+
+### 8.4 Windows: AppContainer
+
+As S8 confirmed (arch §27.6): a normal AppContainer (not LPAC), **one container profile per project** (`finisher-<project-uuid>`), allow-only ACLs granted through **one ACL broker in `fin-node`** with a write-ahead log and a startup sweep, protected roots outside write roots (or non-inheriting, with delete-child removed from the parent), a private TEMP and home, a private window station and desktop, a kill-on-close job object with process and memory limits, standard handles only, copies (never moves) into `assets/`.
+- **Sessions of one project share the container SID**, so an ACL granted to that SID would let session A touch session B's directory. **Each session therefore gets a per-session capability SID** (derived from the session id), passed in the process's security capabilities, and the ACLs on `<server-data>/agents/<sessionId>/` and the session's workspace grant that capability SID, not the container SID. **To verify** (spike, §8.12): that ACEs for derived capability SIDs are honoured for a normal (non-LPAC) AppContainer, the cost of the broker's grant and revoke per session, and that a process of session B cannot open session A's directory.
+- **`fin` → `finisherd`: 5A's native named-pipe listener in `fin-node` is reused** (sp5 §4.3: `PipeServer`, `FILE_FLAG_FIRST_PIPE_INSTANCE`, explicit DACL, `PIPE_REJECT_REMOTE_CLIENTS`, peer SID check). 7C only adds the per-project container SIDs through `PipeServer.allow(sid)`; no second pipe implementation. Loopback TCP is blocked for AppContainers.
+- **Shell:** brokered (§4.5).
+- **Credential Manager** is denied inside the container (S8 follow-up), which protects Finisher's secrets there.
+
+### 8.5 The session environment and directories
+
+`<server-data>/agents/<sessionId>/`:
+- `credential.json` (0600; read-only to the sandbox), `settings/` (provider settings Finisher writes; read-only), `tmp/` (`TMPDIR`/`TEMP`), `provider/` (the session's own CLI config directory, §8.6; writable; it reaches the sign-in store in place and never holds a copy of it), `git/` (the session's git configuration), `blobs/` (product state, §3.3; denied to the sandbox).
+
+The environment is `childEnv()` plus exactly: `FIN_SERVER` (the unix socket, the agent listener or the pipe), `FIN_SESSION` (the session id; informational only), `FIN_CREDENTIAL` (the credential path), `FIN_CALL` (only for processes Finisher starts per tool call: the built-in `fin` tool, `fin mcp` requests, the brokered shell), `TMPDIR`, and the provider's directory variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, both pointing into the session directory). `FIN_TRAINING`, `FIN_DIAGNOSTICS`, **`FIN_SERVER_DATA`**, `FIN_AUTHOR`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, `DISPLAY`, `WAYLAND_DISPLAY`, `CLAUDE_CODE_OAUTH_TOKEN` and every `*_API_KEY` never pass (arch §27.7, D-plan Decision 14b).
+
+**`fin` under an agent credential never reaches the local key.** Today `fin` finds server data from `FIN_SERVER_DATA` or the per-OS default and falls back to `local.key` when no credential is found. Three rules close that:
+1. **When `FIN_CREDENTIAL` is set, `fin` never falls back to the local key.** A missing, unreadable, expired or revoked credential file is `UNAUTHENTICATED` (exit 7), not a retry as `local`; the server-data default is not even consulted for keys.
+2. **The tool clears `FIN_SERVER_DATA`.** The built-in `fin` tool deletes it from the environment it builds (`childEnv()` already omits it), and every CLI adapter's launch environment is checked for it; if it is set anyway, `fin` ignores it while `FIN_CREDENTIAL` is set and takes the endpoint from `FIN_SERVER` alone.
+3. **The server decides the author** for agent principals (§5.2), so `FIN_AUTHOR` has no effect.
+A test in `fin` covers (1) and (2) (§16.2).
+
+### 8.6 Provider configuration isolation and the user's own sign-in
+
+S8 made `~/.claude` and `~/.codex` writable to the sandbox. That is a **persistence escape**: an injected agent could add a hook or an MCP server to the user's own Claude Code or Codex configuration, which then runs **unsandboxed** the next time the user starts that CLI. A directory *shared by every session* has the same flaw between sessions: one injected session could plant a hook that a later session (possibly with a wider mode) then runs. Revision 2 answered both with per-session directories into which Finisher **copied** the CLI's auth file and synced refreshes back. **Owner decision 6 rules the copy out: Finisher never copies, stores or intermediates CLI credentials.** Revision 3 therefore splits the CLI's state in two: **the sign-in state is shared, in place; everything else is per session.**
+
+- **The sign-in home, one per harness:** `<server-data>/providers/<harness>/home/`. **The user signs in to the unmodified CLI themselves, with the CLI's own flow**, pointed at that directory: `finisherd provider signin <harness>` prints the exact command to run in a terminal on the server (the CLI's path, for Codex the bundled binary's, and the environment variable naming the sign-in home; device-code forms such as `codex login --device-auth` for a headless server) and **runs nothing**. The CLI writes its sign-in store there itself. **Finisher never opens, reads, parses, copies, backs up, syncs, exports or uploads anything under `providers/`**; it learns whether a CLI is signed in, and as whom, only from what the CLI reports (Claude Code's `system/init`, Codex's `account/read`). Signing out is the CLI's own logout, run the same way. The home is Finisher's, not the user's `~/.claude` or `~/.codex`, so nothing a session can write there is ever loaded by the user's own terminal CLI.
+- **Everything else is per session:** each session gets its own CLI configuration directory (`<server-data>/agents/<sessionId>/provider/`, set through `CLAUDE_CONFIG_DIR` and `CODEX_HOME`), created empty at session start, writable by that session only, deleted with the session. It holds the settings Finisher writes before launch, the transcripts and session state the CLI writes (Claude Code's `projects/`, todos and shell snapshots; Codex's rollouts), hooks and MCP configuration (none but Finisher's), and caches. **Its only connection to the sign-in home is the CLI's sign-in store, reached in place**: a link from the per-session directory to the store's file in the home (Linux and macOS: a symbolic link; Windows: a file symbolic link, which `finisherd` may create under the per-user symlink privilege or Developer Mode, **to verify**), and a sandbox grant of read and write on **the store file itself** (not its directory) and nothing else of `providers/`, so a session can never plant settings, hooks or MCP servers in the sign-in home, where the user's next sign-in command would load them unsandboxed. `finisherd` creates the link; it never follows it. A session that tampers with the rest of its provider directory harms only itself.
+- **Several sessions on one sign-in** behave as several instances of the CLI that one user runs at once, which the vendors support: each instance reads and refreshes the one store itself. There is no copy to go stale, so refresh-token rotation needs no Finisher sync.
+- **Fallback where a link cannot share the store** (spike B7 decides per CLI and OS): if a CLI replaces its store by rename (which would replace the link with a private file) or keys its store by the config directory (a keychain item named after the home path), that harness's sessions on that OS use **the sign-in home itself as their config directory**, with the session's own settings file, `--setting-sources user`/`-c` overrides, `--strict-mcp-config` and `project_doc_max_bytes=0` as before, and the sandbox granting write only to the store and the CLI's state paths, while the home's settings, hook and MCP files stay in `protect` (never writable, never linkable). That widens the shared surface (below) and is recorded per harness and OS in `agent.providers`. If neither works on an OS, that harness's sessions on that OS are refused with `PROVIDER_AUTH {fix: "sign-in cannot be shared on this OS"}`; Finisher does not fall back to copying.
+- **The user's own `~/.claude` and `~/.codex` are denied** for read and write, as is the rest of `<server-data>/providers/`.
+- **Windows:** the session directory carries the per-session capability SID of §8.4, so another session of the same project cannot open it (**to verify**); the sign-in home's store file is granted to every session's capability SID.
+
+**The remaining cross-session trade-off.** The sign-in store is readable and writable by every CLI session of that harness, across projects. An injected session can therefore (i) **read the sign-in token** and send it out over open egress (Owner decision 5; the same residual revision 2 had with a copied token, now without the copy); (ii) **corrupt or delete the store**, signing every session of that harness out until the user signs in again; (iii) **replace it with another account's sign-in**, so that later sessions, possibly of other projects, run on an account the attacker controls and send their prompts and project content to it. Mitigations: `finisherd` records a keyed hash of the account the CLI reports at each session start (never the token) and, when it changes without a sign-in by the user, stops new sessions of that harness, shows the change, and asks a person to confirm (`PROVIDER_ACCOUNT_CHANGED`, exit 5); the store's directory is never in a session's workspace or the project folder; with the fallback above, the shared surface also includes the CLI's transcripts and state of other sessions of that harness, which is why the fallback is recorded and shown. Per-session sign-in (each session signing in itself) would remove (i)–(iii) between sessions, at the cost of a browser or device-code sign-in for every session; it is not the default and is not built in v1.
+
+**Terms compliance (the reasoning, for counsel; Owner decision 6, TASKS counsel item).** Anthropic's published terms for Claude Code (fetched 2026-11-07) say they do not "prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription"; they require that sign-in "complete through Anthropic's own flow", forbid third-party developers to "collect, store, or intermediate Claude.ai credentials or session tokens", to "offer Claude.ai login into their own applications", or to "route requests through Free, Pro, Max, or Ultra plan credentials on behalf of their users", and require that the binary not be modified and its built-in authentication not be removed or restricted. The design keeps to the permitted side as far as Finisher can tell: the binary is unmodified and run with its documented flags; the user signs in with the CLI's own flow, in a terminal, with no Finisher code in the path; Finisher never reads, copies, stores or transmits the credential (the CLI keeps its own store in a directory Finisher designates, as it would in `~/.claude`); Finisher offers no Claude.ai login of its own; and each session is the user driving their own CLI on their own machine for their own project. **What Finisher cannot decide** is whether driving the CLI programmatically for long agent sessions is the "ordinary use" the subscription is "designed to support"; that question, and the same one for ChatGPT-plan sign-ins in Codex under OpenAI's terms, goes to counsel before release.
+
+### 8.7 Network
+
+Agents need egress: their own model API, downloads of media and fonts. In v1 egress is **open** for the `agent` profile and **closed** for `hook`, `worker` and `plugin`. What the sandbox bounds is what an injected agent can *read* before sending: secrets, server data and other projects are out of reach (§8.1), **other local services are out of reach** (macOS: loopback denied except Finisher's listener; Linux ABI ≥ 4: TCP ports limited; Windows: no loopback for AppContainers), but **the project's own media and the agent's workspace are readable and can be sent anywhere, and so can whatever the CLI itself must hold to work: the sign-in token in the shared sign-in store of §8.6 (a plan sign-in, or the user's own key if they signed the CLI in with one).** The built-in agent's OpenRouter key never enters a sandbox (the loop runs in `finisherd`, §10), and its requests, to OpenRouter or to a local model server (loopback included, Owner decision 7 as amended by F1), are made by `finisherd` and are not subject to the sandbox's egress rules at all. Owner decision 5 accepts this residual risk for v1 in those terms; the egress allow-list proxy is the fix after v1, and per-project OpenRouter keys with OpenRouter's own credit limits bound what a leaked built-in key can spend (§10).
+
+### 8.8 Violations
+
+- A denied file or socket operation is an `EACCES`/`EPERM`/`ACCESS_DENIED` to the process; the CLI sees a failed tool call. **Finisher does not read the macOS unified log** (cut): it is slow, racy and a privacy surface of its own, and the escape suites (§8.11), not log scraping, are the evidence that denials hold.
+- `finisherd` writes an audit entry `sandbox.violation {session, op, profile, root kind}` (sp5 reserved kind) and a `notice` node only for events the launcher or the host observes directly: a seccomp `KILL_PROCESS` (an out-of-policy ABI or syscall, seen as `SIGSYS`), a job-object limit notification (memory, process count), the ACL broker refusing a grant, the launcher failing to apply a policy (`SANDBOX_UNAVAILABLE`), and the server-side denials that already exist (`PATH_NOT_ALLOWED`, `BRANCH_NOT_ALLOWED`, `auth.denied`). Paths are stored as root kind and keyed hash only.
+- Tampering that slips past is still caught: assets are content-addressed and verified on use; `.finisher/` segments are hash-chained (arch §8.4, sub-project 4 §3).
+
+### 8.9 Hosts without a usable sandbox
+
+- **The built-in agent always runs:** its tools are `fin` (a credentialed RPC client) and confined workspace file tools executed by `finisherd`; it has no shell. It needs no OS sandbox.
+- **Where Landlock is disabled, everything runs, with warnings (follow-up decision F2).** With the Linux floor at kernel 6.2 (Owner decision 3) no supported kernel lacks the Landlock ABI, so the old-kernel case is gone. What remains is a **supported kernel with Landlock disabled** (not built in, or left out of the boot `lsm=` list: some NAS, container and hardened hosts). On such a host **CLI agents, hook commands, media workers and plugins all run, unconfined**, with every protection that does not depend on the OS in place: the env allow-list, scopes, per-session directories and credentials, the server-side branch, path and rule checks, and no secret in the environment. Nothing is refused and nothing needs an owner override: the `agents.unsandboxed` setting and the `SANDBOX_UNAVAILABLE` refusal for this case are **removed**. Each profile that runs unconfined shows:
+  - **a persistent status warning** `SANDBOX_DISABLED {profile: agent|hook|worker|plugin, os, reason: landlockDisabled, fix}` in `server.status`'s `warnings` (sp5 §4.8) and in `fin status` (and the console's `finisherd status`), for as long as the condition holds; the `fix` names the `lsm=` boot parameter. Sub-project 6's workers report it as `SANDBOX_DISABLED {worker}` with `media.capabilities` `sandbox: none` (sp6 §3.5.1), and sub-project 8 keeps its `PLUGINS_UNCONFINED` name for plugins (sp8 §3.1);
+  - **a diagnostics event** `sandbox.unconfined {profile, os, reason}` (metadata only, no paths), recorded when the first process of that profile starts after each server start and again whenever the condition changes;
+  - for agent sessions, a `notice` node at session start and the warning in `agent.session.get`, so a person sees it on every session.
+- **A sandbox that is present but cannot be applied is a fault, not a configuration.** `sandbox-exec` missing on macOS, AppContainer creation failing, or Landlock enabled but its ruleset failing to apply: starting an agent, a hook command or a plugin call is `SANDBOX_UNAVAILABLE {profile, os, need}` with a `fix`, and a media worker job fails with the same code, so nothing runs unconfined by accident. F2 covers Landlock *disabled* only.
+- A kernel below 6.2 is outside D31: the launcher carries no partial-ABI policy for it (no ABI 1–2 code paths, no tests), and CLI agents there are refused with the D31 requirement named. **There is no uid-sandbox fallback in Docker** (cut): a second isolation mechanism with its own gaps for one deployment is not worth carrying; on a host kernel with Landlock disabled the image runs unconfined, with the warnings above.
+
+### 8.10 Profiles: `agent`, `hook`, `worker`, `plugin`
+
+`fin-sandbox` (sub-project 7 owns it and the ACL broker; §1.6) exposes one launcher and four profiles over the one `SandboxPolicy`. 5C calls it through the `Spawner` trait at every process start (sp5 §6.2), so the same launcher confines agents, hooks, workers and plugins.
+
+| | `agent` | `hook` | `worker` | `plugin` |
+|---|---|---|---|---|
+| Reads | §8.1 allow-list | project read-only, the hook's own file, its toolchain | library roots and project `sources/` (per-file where the OS allows), font cache, media cache (read), the job's `in/` | the plugin's store directory, the runtime (finisherd's Node, or the Electron framework, for `node` plugins), system libraries and frameworks (`/usr/lib`, `/lib`, `/System/Library`, `%SystemRoot%\System32` and the like), ONNX Runtime's library, the model files the manifest names, the call's `in/` |
+| Writes | session workspace, `workspace/shared`, temp, provider dir | a private temp | the job's `out/` and a private temp | the call's `out/`, the plugin's per-project data directory (with `fs pluginData readWrite`), a private temp |
+| Network | open IP; loopback limited (§8.7) | none, unless declared (then the listener only) | **none** | **none**: Linux seccomp refuses `AF_INET`, `AF_INET6`, `AF_NETLINK` and `AF_UNIX` (`socketpair` stays for stdio); macOS `(deny network*)`; Windows AppContainer with **no** `internetClient`, `internetClientServer` or `privateNetworkClientServer` capability and no loopback exemption |
+| Processes | limited tree | limited | **creation denied** (macOS `process-exec`/`process-fork`; Linux exec limited to the worker binary by Landlock `EXECUTE` and `clone` without `CLONE_THREAD` refused; Windows active-process limit 1); helpers are siblings 5C starts | limited to 8 (memory 2 GiB default, up to the manifest's declared need ≤ 16 GiB, 1,024 open files) |
+| Devices | none | none | GPU: macOS Metal and the IOKit user clients it opens (`IOSurfaceRootUserClient`, the accelerator client), IOSurface, and the CoreMedia/VideoToolbox services hardware decode and encode use; Linux `/dev/dri/renderD*` read/write, `/dev/dri/card*` read-only for enumeration where Mesa needs it, the Vulkan ICD and driver files, `/sys/class/drm` and `/sys/dev/char` reads, `/dev/nvidia*` in 6G; Windows D3D11/D3D12 and Media Foundation in a normal AppContainer (to be proven in 6B's validation) | **only with the `gpu` grant**: Linux `/dev/dri/renderD*` (never `card*`) and `/dev/nvidia*` when CUDA is used; macOS only the IOKit user clients Metal needs (the `IOGPU`/`AGXDevice` classes) under `iokit-open`; Windows through the container's graphics access |
+| macOS services | the explicit `mach-lookup` allow-list of §8.2 | as `agent`, smaller | the Metal/VideoToolbox services | **denies `mach-lookup` of `com.apple.tccd`, `com.apple.tccd.system` and `com.apple.coreservices.appleevents`, denies `appleevent-send`, and grants no read root inside TCC-protected folders**, so requests fail closed with no prompt (sp8 §3.2) |
+| Windows grants | per-project container, per-session capability SID (§8.4) | per call | **per-job ACL grants** through the broker | **one container profile per (plugin, project); ACL grants on the call or job directory added before the call and removed after it, write-ahead logged like the session grants; `media:file` grants on a single source file per job** |
+| Never | server data other than the session dir, the credentials of others, `auth/` | credentials unless `fin` is declared | server data, credentials, the agent listener | server data, another plugin's data, another project's plugin data |
+
+- The `worker` and `plugin` columns are the contract sub-projects 6 (§3.5) and 8 (§16.1) wrote; where this table and theirs differ, theirs states the *requirement* and this one the *implementation*, and a difference is a bug in whichever is later.
+- **Cross-OS honesty:** the macOS and Windows GPU rows are unproven (S8 tested no GPU work); 6B's validation and the plugin escape suite prove them. Until the `worker` profile passes its suite on an OS, 5C spawns workers unsandboxed with the env allow-list and `server.status` says so (sp5 §6.2).
+- **Third-party code plugins do not wait for this profile** (sp8 Owner decision 1). Until the `plugin` profile passes its suite on an OS, sp8 runs them with the env allow-list, no credentials, brokered egress and its in/out rules, after a high-risk warning and an explicit approval by a person; **once it passes, 5C applies the `plugin` profile to every plugin process on that OS automatically**, with no opt-out and no re-approval. `SANDBOX_UNAVAILABLE {profile: plugin}` is therefore not a gate on installing or running registry plugins; it is reported only when the profile is expected (its suite passed on that OS) and the launcher fails to apply it, and then the call fails rather than running unconfined. (Linux with Landlock *disabled* is not that case: plugins run unconfined under `PLUGINS_UNCONFINED`, §8.9.)
+
+### 8.11 Escape suites
+
+The S8 suites become tests (arch §22). Each case is "attempt the operation, observe a denial"; a case that does not observe a denial fails, and none is accepted on the absence of an error. They run in CI on all three OSes, in each profile it applies to, and in the validation tasks as a non-elevated user.
+- **S8 core:** the 90 file escapes (protected roots, links, renames, truncation, read denials); the Windows-specific paths (junctions, ADS, 8.3 names, `\\?\`, admin shares, WMI, `schtasks`).
+- **Server data:** reading `local.key`, `console.key`, `credential.master`, `settings.json`, `control.db`, the journal and the agent-trace store; writing the user's `~/.claude/settings.json` and `~/.codex/config.toml`; reading or writing anything under `<server-data>/providers/` other than the session's own harness's sign-in store; truncating a segment; hard-linking out of `assets/`.
+- **Between sessions:** a session cannot read or write another session's directory, credential, provider directory or temp (Linux and macOS by roots; Windows by the capability SID, **to verify**); of `<server-data>/providers/` a session reaches only its harness's sign-in store (§8.6); `finisherd` never opens a file under `providers/` (a file-access spy over a whole scripted session, start to end and sign-in check, §16.2).
+- **Linux:** connecting to a D-Bus session bus, an `ssh-agent` socket, a `gpg-agent` socket, a fake `docker.sock` and an X11 socket (each a pathname socket) is refused; creating a socket **through io_uring** is refused (the io_uring entry points themselves are refused); a call made through the **x32 or a 32-bit compat entry** is refused or kills the process; `pidfd_getfd` of a host process, `ptrace`, `bpf` are refused; with Landlock ABI ≥ 4, a connect to a loopback port outside the allowed set is refused.
+- **macOS:** with `mach-lookup` default-deny, **the agent cannot start a process outside the sandbox** — `open` of an application or of Terminal, `osascript`, `launchctl` each fail, and the suite checks the process tree to prove nothing new ran outside the sandbox — and **cannot read another application's keychain item** (the suite creates a test item whose access list excludes the sandboxed process and attempts to read it with the system tools; and `~/Library/Keychains` is unreadable); loopback ports other than Finisher's listener are refused; TCC-protected folders and Apple Events fail closed.
+- **Windows:** the pipe cannot be opened by another user's process or another project's container; Credential Manager is denied; the shell broker refuses a command outside its container.
+- **`worker` and `plugin` profiles:** the plugin suite of sp8 §16.1 (TCP, UDP, raw, netlink and unix-socket connects; reading server data, another plugin's data, another project's plugin data, the project folder, `~/.ssh` and Documents; writing to `in/`; replacing an `out/` file by a symlink, junction or hard link to a host file; truncating a ring; GPU device nodes without `gpu`; `ptrace` of the host; TCC access to Documents, camera and microphone; an Apple Event to Finder; spawning past the process limit) and the worker suite (network, process creation, reading outside the manifest's files, writing outside `out/`).
+- **The ACL broker:** crash and concurrency tests (WAL replay, the S8 lost-grant race), per-job grant add/remove under a crash between the two.
+
+### 8.12 Spike S9 (in `archive/`; can run now, before any 7C code)
+
+A controller task that resolves the open facts of this section on real hosts, with notes and scripts under `archive/` (git-ignored, AGENTS.md); only durable conclusions come back into this section when 7C, 7D and 7E land "as built". **Checks:**
+- **B5 (Linux, the 6.2 floor and newer: the Linux VM, a 6.2-series kernel, and a supported kernel booted with Landlock left out of `lsm=` to check the warn-and-run path of §8.9: every profile starts, `SANDBOX_DISABLED` shows in `server.status` and `fin status`, the `sandbox.unconfined` event is recorded, nothing is refused):** the seccomp filter refuses io_uring and the x32/compat ABIs as described; libuv and the CLIs fall back cleanly; the per-CLI validation list of §8.3 (SSSD/LDAP lookup, gpg-agent signing, git credential-cache and fsmonitor) against Codex 0.167.0 and Claude Code 2.1.319; whether any newer Landlock ABI mediates pathname sockets.
+- **B6 (macOS 14 and newer):** the minimal `mach-lookup` allow-list per CLI; that `open`, `osascript`, `launchctl` and keychain reads fail under it.
+- **B7 (the user's own sign-in, never copied):** per CLI and OS, where the CLI keeps its sign-in store (file or keychain, and whether a keychain item is keyed by the config directory); whether a per-session `CLAUDE_CONFIG_DIR` / `CODEX_HOME` with a link to the store in the sign-in home works — the CLI reads through the link, and **refreshes in place rather than replacing the link by rename**; parallel sessions on one sign-in refreshing at once; on Windows, creating the file link without elevation; else the fallback of §8.6 (the sign-in home as config directory) and what it shares; that `system/init` and `account/read` report the sign-in kind and an account label; and per-session capability SIDs on a session directory under a normal AppContainer (**to verify**). Every check is run on a test account signed in by a person; no credential file is opened by the spike's scripts.
+- **H2:** Claude Code under `-p` stream-JSON **without `--bare`**: that `--setting-sources user` with a per-session config dir, `--strict-mcp-config` and the `CLAUDE.md`/`.claude/` read denial together load no settings, hooks, MCP servers or memory files from the project folder or the sign-in home (a planted file of each kind in each place, observed not loaded); that `--append-system-prompt` is honoured; whether `system/init` is emitted before the first prompt and what its tool list holds; `--max-budget-usd` behaviour; that a tool missing from the allow-set and listed in `--disallowedTools` is refused; Codex `-c project_doc_max_bytes=0` and `developer_instructions` re-checked at the pinned version (both verified on 0.167.0).
+
+---
+
+## 9. Hooks (7F)
+
+### 9.1 Events and replies
+
+Arch §10's table holds **except `PreOp`/`PostOp`, which are cut from v1** (they sit on the commit path, and their only reason to exist beyond `PreCommand`/`PostCommand` is the `modify` reply, also cut). Sub-project 8's `hooks:modify` grant is therefore not implemented in v1 (§1.6). Wiring:
+
+| Event | Fired by | May |
+|---|---|---|
+| `SessionStart`, `SessionEnd` | the runtime | add context; log |
+| `UserPrompt` | `agent.session.prompt`, saved prompts | add context; block |
+| `PreCommand`, `PostCommand` | the authorisation wrapper, for every command from an `agent` principal (and for every principal when a hook asks for `all`) | block with reason; add context |
+| `BranchReady` | `review.request` from a session, or a session ending with commits | extra QA; gate the critic |
+| `PreMerge`, `PostMerge` | `history.merge`, `review.merge` | enforce policy; notify |
+| `PreRender`, `PostRender`, `JobDone` | the jobs bus (5C) | validate; publish; notify |
+| `Approval`, `Notification` | approvals, session status changes | route to a phone or a chat service |
+
+- **Replies:** `allow | block {reason} | context {text}`. **`modify` replies are cut from v1**: a hook that rewrote a payload would make what the agent asked and what was committed differ in ways the training record, the audit log and the agent could not see. A later release can add them with per-hook human-only grants and both payloads in the audit log.
+- **Cost:** a hook point with no registered hook costs one map lookup. Handlers have 10 s by default, 60 s at most. A timeout is a visible `HOOK_TIMEOUT` notice; whether it blocks is per hook (`onTimeout: allow|block`, default `allow` except `PreMerge`).
+- **Order:** managed, user, project, local, plugin; within a layer, file order. The first `block` stops the chain; `context` replies concatenate.
+
+### 9.2 Handlers
+
+- **Commands:** JSON on stdin (`{event, v, session?, project, payload}`), one JSON reply on stdout; run through `fin-sandbox` in the **`hook` profile** (§8.10) with the cleared environment, `net: None` unless declared, the project read-only, a private temp directory, the timeout, and no credential unless the hook declares `fin` (then a `plan`-scoped agent credential of its own).
+- **Plugin RPC methods:** sub-project 8, same reply shape and timeouts.
+
+### 9.3 Configuration
+
+`hooks` in `managed` settings, `<server-data>/settings.json` (user), `finisher.hooks.json` beside `finisher.project.json` in the project folder (project: it travels with the folder, so it is trust-gated, §9.4), and `<server-data>/projects/<id>/hooks.json` (local).
+
+### 9.4 Project trust
+
+- Project hooks and project command rules stay **disabled until the owner trusts the project** (arch §10): `control.db` `project_trust {projectId, hooksHash, trustedAt, by}`. A change to the project's hooks (hash) disables them again until re-trusted. Trusting is human-only (`finisherd project trust <id>`, later the UI).
+- Hook blocks are audited (`hook.block`, sp5 reserved; `hook.modify` stays reserved and unused).
+
+---
+
+## 10. Secrets and `ModelGateway`
+
+- **`SecretStore`** (TS interface; backends: the OS keychain through 5B's `keyring` binding, and a **file `<server-data>/secrets.json`, mode 0600**, for headless servers, arch §16). 7A-1 ships the file backend behind a **`SecretBox` seam** (`seal(plaintext) → Sealed`, `open(Sealed) → Buffer`); the file backend's box is the identity and the 0600 mode of the private directory is the protection. **The encrypted file (XChaCha20-Poly1305 with a key file beside it) is cut**: a key stored in the same directory under the same user adds nothing against same-user code, and the sandbox already denies the directory to agents (§8.1); it would only add a dependency, a rotation story and the look of protection. The seam lets the keychain backend (5B) seal for real later. Entries: `{provider: openrouter, label, projectId?, createdAt}`; values are never returned by any RPC. **In v1 the only secret Finisher stores is the OpenRouter key the user pastes** (Owner decision 7): no Anthropic or OpenAI key, and nothing of a CLI's sign-in (§8.6). **A local endpoint needs no key and stores none** (F1); a local server that demands a key is out of v1.
+- **Per-project keys** (Owner decision 5): an entry may be bound to a project; a built-in session uses its project's key if one is set, else the server's default key. The user sets a credit limit on each key at OpenRouter, which bounds what a leaked or runaway key can spend; Finisher's own budgets (§13) are the first bound, the provider's limit the second.
+- **`ModelGateway.grant({provider, sessionId, purpose})`** returns a short-lived in-memory handle used by the built-in adapter for one request; the key is read at call time and never leaves `finisherd` (arch §16). Every grant is counted per session; the first grant of a session and every denied grant are audited (`grant`, sp5 reserved).
+- **CLI agents use no Finisher secret.** Claude Code and Codex run on the user's own sign-in, which the user completes in the CLI itself and which Finisher never copies, stores or intermediates (§8.6, Owner decision 6). There is no `apiKeyHelper`, no `--bare`, no key sent over the app-server's login call and no `fin credential model-key` command. A user who prefers to pay per token signs the CLI in with their own key through the CLI's own flow; that key is then the CLI's state, not Finisher's.
+- **The OpenRouter key** is entered and listed only by the owner (`agent.admin`; `finisherd provider key set openrouter [--project <id>]` reading stdin, `provider key ls|rm`). It never leaves `finisherd`: the built-in loop has no process of its own, so the key never enters a sandbox, the environment, a file other than the 0600 store, or the journal.
+- **The local endpoint** is a setting, not a secret: `agents.local.baseUrl` (and which preset it came from), set only by the owner (`agent.admin`; `finisherd provider local set <ollama|lmstudio|url>`, `provider local show|test|rm`). `ModelGateway` hands the built-in adapter the base URL and no key for the `local` preset; the first use per session is audited like a grant. Nothing about it is a credential, and no record (journal, trace, audit, status) holds the URL's host or port: records say `local`.
+- **Sign-in experience for sub-project 9** (Owner decision 7): a "Providers" screen with, per CLI, its detection, version, sign-in state and account label as the CLI reports them, and the exact command to run in a terminal on the server to sign in or out (no in-app sign-in button, no browser flow Finisher starts); and for the built-in agent one OpenRouter key field per server and per project, with a hint to set a credit limit and a link to OpenRouter's key page, and one local-server setting (Ollama, LM Studio or a base URL; no key) with a "test connection" that lists the server's models.
+
+---
+
+## 11. Workspace artifacts and the full `fin` (7G)
+
+### 11.1 Artifacts
+
+- `fin asset add workspace/<session>/logo.svg [--source-url <u> --licence <spdx|unknown>]` hashes the file, validates it (SVG sanitised and rendered by resvg, Lottie templates through `templateCheck`, media probed and proxied: sp6 §3.4, §11), copies it into `assets/` (write-once, copied on Windows, arch §27.6) and records `asset.add` with **provenance** `{author: session, role, tool: callId, prompt node, sourceUrl?, licence}`. `fin asset update <asset> <file>` adds a version.
+- **Limits:** 2 GiB per media file, 16 MiB per SVG or Lottie, types from `fin-probe`'s allow-list; `ASSET_TOO_LARGE`, `ASSET_TYPE_UNSUPPORTED`.
+- **Drafts bin:** `finisherd` lists unregistered files in `workspace/` live (polling on network roots, arch §8.5) as a `workspace.watch` stream for the UI.
+- **`fin workspace ls [--session]`**, **`fin workspace gc`** (asks; deletes only after a person approves, arch §8.5).
+- Unknown-licence assets are flagged for QA (sub-project 10) and by the default `ask` rule.
+
+### 11.2 Commands completed in 7G
+
+- **`fin apply <spec.json|->`** (arch §9.5): a declarative edit list (`{edits: [{cmd, args}], expect?: {rev}}`), validated in full offline by the linked `fin-core`, committed as one transaction; paper edits from quotes (`{cmd: "paper", quotes: ["…"], from: asset}`), resolved against transcripts (sub-project 8) to word ranges and echoed.
+- **`fin batch`** accepts every write command (today four), each line one transaction. **`fin tx begin|commit|abort` is cut**: a server-side open transaction held across tool calls needs expiry, recovery after a crash and a story for what a half-open transaction means to rollback and the training record, and `fin apply` already commits a validated edit list atomically in one call.
+- **`fin context`:** project, branch, session, mode, role, budget left, open approvals, children, recent notes, in ≤ 800 tokens.
+- **`fin guide <task>`:** the role's skills by topic, versioned with the server.
+- **`fin note <text>`:** a note node in the session and a workspace file; content, not a marker.
+- **`fin budget`:** remaining tokens, money, render minutes, wall clock.
+- **`fin mcp`** (§4.3), **`fin agent …`** (7B), **`fin approval wait`** (7B). (Revision 2's `fin credential model-key` is dropped with the CLI API-key path, §10.)
+- **The map stays under 1.5k tokens** (its test); new groups appear in the map by name only.
+
+---
+
+## 12. Diagnostics and training capture
+
+### 12.1 Three stores and what each is for
+
+- **Product state** (§3.3, `control.db`): every node, for resume, display and audit by the owner. Not gated by consent, never uploaded.
+- **The diagnostics journal** (D-plan Decisions 15–20; 128 MiB / 30 days): the *metadata* of agent events (counts, durations, hashes, codes), written under diagnostics consent like every other kind.
+- **The agent-trace store** (new in revision 2): the *content* of agent turns, tool calls and results, written **only under the training consent** of D34. Revision 1 put content in the diagnostics journal as blobs; one long session (tool outputs, images, whole requests re-sent every turn) would have evicted every other diagnostic in a few hours. The trace store is **a second `Journal` instance of the same code in its own directory (`<server-data>/agent-traces/`) with its own cap (default 2 GiB, a setting) and its own retention (default 90 days)**; eviction removes whole sessions, oldest first, never half a conversation. Purge and export of diagnostics address both stores' *entries*; neither touches product state.
+- **What the trace store holds is deltas plus a hash.** An agent request repeats everything before it. Each `agent.turn` content record stores only the **new** messages since the previous turn of the run (`messagesDelta`), the response, and **`bodyHash`, the BLAKE3 of the full request body exactly as sent**, so the dataset builder can rebuild the full request by replaying deltas and check the result against the hash (a mismatch drops the example). `system` and `tools` are blobs stored once per distinct content (§12.2). Budget facts are not in the system prompt (§4.1), which is what lets one system blob serve every session of a role.
+- **Conversations are not touched by purge or export of recorded data**: `diagnostics purge` and `diagnostics export` never read or delete `control.db` nodes, and **the dataset builder never reads `control.db`** (a test asserts it, §16.2). Sub-project 9's "what we collect" page must say so in plain words: *conversations stay on your server for resume until you delete the session or the retention period ends; deleting recorded data does not delete them.*
+- The journal applies D34 to both stores: metadata under diagnostics; content (prompts, outputs, tool arguments and results) only under training, which only a person can turn on; nothing for a project with `collect: never` or unknown. `agent.turn`, `agent.toolCall` and `agent.toolResult` stay training-only kinds (their metadata part is written under diagnostics).
+
+### 12.2 Kinds (version 1, replacing the v0 reservations)
+
+| Kind | Meta | Content (training only) |
+|---|---|---|
+| `agent.session` | `sessionId`, `phase: started|resumed|interrupted|ended`, `harness: builtin|claudeCode|codex|fake|plugin`, `provider` (`AGENT_PROVIDERS`), `model` (`AGENT_MODELS`), `modelHash?`, **`weights: open|closed|unknown`** (from the catalogue at the time), `signIn?: plan|key|unknown` (CLI harnesses, as the CLI reports it), `role` (`AGENT_ROLES`), `mode: plan|draft|auto`, `parent?`, `trigger: user|savedPrompt|subagent|hook|eval`, `reason?` (code), totals at `ended` (turns, tool calls, txs, tokens, `costMicros`, `wallS`) | — |
+| `agent.turn` | `turnId`, `runId`, `seq`, `parentTurnId?`, **`harness`, provider, model, `weights`** (the provenance triple plus weights class on every turn, so each example carries it without a join, §12.7), `upstream?` (`AGENT_PROVIDERS`: the provider OpenRouter routed the call to), input/output/cache-read/cache-write/reasoning tokens, `latencyMs`, `ttftMs`, `stopReason`, `costMicros?`, `costBasis: reported|priced|subscription|unknown`, `capture: exact|stream`, `systemHash`, `toolsHash`, **`bodyHash`** (BLAKE3 of the full request body as sent; exact capture only) | `messagesDelta` (the turn's new input messages), `output`, `system`, `tools` — each a `Body`, a blob when over ~4 KiB; `system` and `tools` are always blobs, so identical prompts are stored once by content address. All in the trace store (§12.1) |
+| `agent.toolCall` | `callId` (the `FIN_CALL` ULID), `turnId`, `tool` (`AGENT_TOOLS`: `fin`, `shell`, `read`, `write`, `edit`, `search`, `webFetch`, `webSearch`, `mcp`, `workspace`, `other`), `command?` (`CLI_COMMANDS`, when the call runs `fin`), `argsHash` | `args` |
+| `agent.toolResult` | `callId`, `ok`, `code?`, `exit?`, `micros`, `txIds`, `attribution: exact|inferred|ambiguous|none` (§12.3), `truncated` | `output` |
+| `agent.approval` (new) | `approvalId`, `sessionId`, `kind: rule|budget|provider|plugin`, `decision: allow|deny|expired`, `by: user|policy`, `latencyMs` | `subject` |
+| ~~`agent.editVerdict`~~ | **retired** (revision 2): verdicts are 5E's **`review.verdict`**, the single source (§12.5) | — |
+
+- These change the reserved v0 payloads in place (allowed for v0, D-plan Decision 3) and set version 1 when 7A-2's emitters land. `agent.approval` is a new kind; the reserved v0 `agent.editVerdict` is removed (it was never emitted).
+- **New tables** in `fin_core::events::names`: `AGENT_ROLES`, `AGENT_TOOLS`; `AGENT_MODELS` grows to the catalogue (§4.7); `AGENT_PROVIDERS` gains `openrouter` and `local`. `harness` and `weights` are closed enums.
+- **Local models in diagnostics (F1).** A local session records `provider: local`. `model` is a name only when it is in the `localModels` table (§4.7, a closed list of well-known open-weight names, so it is an `AGENT_MODELS` entry); any other local model is `other` with a keyed `modelHash`, because a user-typed name can identify a person or a private fine-tune. `weights` is `open` for table names (or when the owner says so) and `unknown` otherwise, never `closed`; `upstream` is absent, `costBasis: unknown`, `capture: exact`. The base URL, its host and its port enter no record.
+
+### 12.3 `FIN_CALL` and attribution
+
+- **Exact:** the call id is set as `FIN_CALL` for every process Finisher starts per tool call (the built-in `fin` tool, `fin mcp` requests, the brokered shell). `fin` sends it in its actor header (D6); 5A lets an `agent` principal set only `call`; every `log.commit` and `cli.command` of that run carries it, and `agent.toolResult.txIds` lists the commits. `attribution: exact`.
+- **Inferred (CLI agents' own shells), with a defined window and key.** Neither Claude Code nor Codex lets a host set environment per tool call, so the runtime matches by what it observed:
+  1. **The window** of a shell `toolCall` opens at the runtime's **allow decision** for it (`can_use_tool` answered allow, or the approval granted) and closes at its **tool result**.
+  2. **The match key is the argv hash.** From the allowed command string the runtime derives, for each `fin` invocation it can see statically, the hash `fin` itself sends with its requests (`argsHash`, the hash of its resolved arguments, D-plan Decision 23a). A request from the session's principal whose `argsHash` equals one derived from an open call, **inside that call's window**, belongs to that call: `attribution: inferred`.
+  3. **Several open calls with the same hash, or no derivable hash** (the command is built by shell expansion), **→ `ambiguous`** on each candidate result, the txIds listed on all of them, no call on the commit.
+  4. **Anything outside a window gets `none`**: in particular **processes a shell tool left running in the background** (`&`, `nohup`, a detached script) whose `fin` calls arrive after the tool result. Their commits are still the session's (`session_txs`, §5.2) with `attribution: none` and no call id.
+- **Rejected:** rewriting the agent's shell command through the permission callback to prefix `FIN_CALL=…` (it changes what the model wrote, shows in its transcript, and corrupts the training record).
+- `fin mcp` makes CLI attribution exact; the eval harness weighs that (§4.3). The dataset builder can drop every non-exact join.
+
+### 12.4 Large content
+
+- `Body::Blob` through `Journal::attach_blob` (D-plan Decision 20), into the **trace store** (§12.1), for anything over ~4 KiB; the 4 MiB blob cap holds, larger outputs are truncated with `truncated: true` (the product node keeps the full output).
+- Images given to or produced by a model are blobs (`image/png`, `image/webp`); frames from `fin look` reach the journal only through these tool results.
+
+### 12.5 Edit verdicts: 5E's `review.verdict` is the single source
+
+- Sub-project 5E defines and emits **`review.verdict`** (sp5 §3.4): per-transaction `accepted`, `rejected`, `merged`, `dismissed`, `changesRequested`, with `txIds`, `by: user|agent|critic` and training-only `reason`. **Sub-project 7 defines no second verdict kind**; the reserved `agent.editVerdict` is retired (§12.2).
+- What a review item does not cover still has to be recorded, or the dataset loses its strongest negative signals (undone, reverted, abandoned) and every plain `fin merge`. **7's outcome tracker therefore emits `review.verdict` entries too**, for outcomes outside a review item, using the extensions 7 asks of 5E (§1.7 items 5 and 6): `itemKind: none`, `verdict: undone|reverted|abandoned|merged`, `via: undo|revert|archive|merge|critic|autoMerge`, `by: …|policy`, `sessionId`. One schema, one reader.
+- **The tracker** (`verdicts.ts`) observes the history RPC results inside `finisherd` and branch status changes, and joins them to `session_txs` (§5.2):
+  - `merged` when a merge copies an agent transaction into a branch outside the session's subtree and **no review item produced it** (a review's merge is already a 5E verdict); `by` from the merging principal;
+  - `undone` / `reverted` when an undo or revert names it (`by`: a person, the agent itself, or a critic session);
+  - `abandoned` when the session's root branch is archived, or the session is deleted, with unmerged transactions;
+  - `by: critic`, `via: critic` when a critic's child-branch fix undoes or replaces them (10);
+  - `merged` with `by: policy`, `via: autoMerge` when the `auto` merge policy merges them (§6.5), so a dataset can tell a policy merge from a person's.
+- **Until 5E's kind exists** (7A-2 lands before 5E), the tracker records each outcome in `session_txs.outcome` (product state) and emits nothing; it emits once the kind is registered (a lookup, not a flag). One verdict per `(txId, via)`; a later verdict does not erase an earlier one (the builder reads the sequence).
+
+### 12.6 Capture fidelity per provider
+
+- **Built-in:** `capture: exact`: the request bodies as sent (system, tools, messages) and the response as received.
+- **CLI agents:** `capture: stream`: what the CLI's stream reports. Claude Code reports messages with thinking blocks where it emits them, tool uses and results, and usage; Codex reports items, reasoning summaries and usage. Neither reports its system prompt or tool definitions, so `system`/`tools` are absent and `systemHash` is the hash of what Finisher added (role prompt, settings). **Owner decision 2: v1 records the stream**; no recording proxy sits in the CLIs' traffic (it would put Finisher in the path of the user's sign-in, §8.6). Exact capture comes from the built-in agent.
+
+### 12.7 The dataset builder's join (kept possible, not built)
+
+Example = state at `log.commit.baseRev` + instruction (the run's `userMessage` and the turns before the call, joined by `turnId` → `callId` → `ctx.actor.call` and `txIds`) + intent (`log.commit.intent`); label = the `review.verdict` sequence for those txIds (D-plan Decision 34's undo/merge/abandon signals live in the same kind, §12.5). Provenance fields (`harness`, `provider`, `model`, `weights`, `upstream`, `capture`, `signIn`) are on every session and turn record, so the builder can choose which outputs are training **targets** by filter, at any time, without re-collection. Local-model turns carry `provider: local` and `weights: open` or `unknown`, never `closed`: `open` records that the weights are published, not that their licence permits training on outputs (counsel item 8.4), and while the gate is `pendingCounsel` or `excluded` the builder drops `unknown` turns exactly as it drops `closed` ones.
+
+**Owner decision 1: closed-model outputs MAY be training targets**, alongside human-authored edits and open-weight outputs. This was chosen against revision 2's recommendation, and the provider terms forbid it as written: Anthropic's commercial terms forbid using its services "to build a competing product or service, including to train competing AI models", and OpenAI's carry a similar clause. Two rules follow:
+- **Counsel gate (mandatory).** No training run and no upload may use closed-model outputs as targets until counsel has reviewed it and a person has recorded the result. The dataset builder and any upload path (neither is built in sub-project 7) **must** read a recorded gate `training.closedModelTargets: pendingCounsel|cleared|excluded`, default **`pendingCounsel`**, and while it is `pendingCounsel` or `excluded` must drop every example whose target comes from a `weights: closed` or `unknown` turn (refusing the run outright if the requested set needs them). Setting it is human-only and audited. The gate is also on TASKS.md's "Counsel before release/upload" item.
+- **Reversibility.** Because every turn carries its provenance, the decision can be reversed later by filter alone, per provider, model, harness or weights class: no example has to be re-collected, and none is recorded differently because of this decision. Recording itself is unchanged (D34 consent).
+
+---
+
+## 13. Cost and budgets
+
+### 13.1 Budgets
+
+- **Kinds:** input+output tokens (cache reads weighted by their price ratio), money (`costMicros`), render minutes (5C jobs owned by the session's principal), wall clock, model calls per run, tool calls per run.
+- **Scopes:** per session (from the role, overridable at start), carved for children from the parent's remaining budget (a reserve that returns unused on the child's end), and per server per day for money (owner setting; off by default for subscription logins, whose usage is shown in tokens only).
+- **Enforcement:** at 80 % a `notice` node and a `Notification` hook; at 100 % the runtime interrupts the current turn at the next safe point (after the running tool call), sets the session `interrupted` with `BUDGET_EXCEEDED`, and opens a `budget` approval to extend. Claude Code also gets `--max-budget-usd` as a backstop; the flag works **only in print mode**, per process, so it cannot be the budget authority (§4.5).
+- **Accounting** is per `agent.turn` from usage events; a CLI that does not report cost is priced from the catalogue (`costBasis: priced`); a subscription login is `costBasis: subscription` with notional cost shown but not charged against money budgets unless the user asks.
+
+### 13.2 Ledger
+
+`control.db` `budgets {scope, kind, limit, used, reserved}` updated per turn in one statement; `fin budget` and `agent.session.get` read it.
+
+### 13.3 Rate limits
+
+Per provider and key: concurrent requests (default 4) and a token bucket from the provider's headers where present; 429 backoff for the built-in agent (§4.4); CLI agents handle their own and their waits show as `notice` nodes.
+
+---
+
+## 14. The eval harness (7H)
+
+### 14.1 What it scores
+
+Arch §9.13 and §22: CLI changes and agents' edits. A **task** (`evals/tasks/<id>/task.json`, tracked) is a brief, a starting project (a `fin batch` script over fixtures), the mode and role, and a **scorer spec**. **Fixtures are real speech under permissive licences** (revision 2: synthetic speech cannot exercise transcript-driven editing, which is most of what agents do): candidate corpora are Common Voice (CC0) and LibriSpeech (CC BY 4.0), and permissively licensed open-movie footage with dialogue for video; **no corpus with a non-commercial, no-derivatives or share-alike term is admitted** (AGENTS.md: evaluation data must be permissively licensed too), each fixture's licence is recorded in its manifest and re-checked at each pin, and no media is committed — fixtures resolve through the local fixture cache (`FIN_MEDIA_FIXTURES`, sp6 §13.3). Synthetic media (sp6's generator) remains for tasks about structure, not speech. Results go to `archive/evals/<date>/` (git-ignored); only conclusions reach a spec.
+
+### 14.2 Scorers (`crates/fin-eval`, linking `fin-core`)
+
+- **State checks:** predicates over the final snapshot of the session branch (`item count by kind`, `caption coverage of a range`, `no CAPTION_OVERFLOW`, `duration within ±0.5 s of target`, `a clip trimmed to word w:240 ± 1 frame`), each pass/fail with a reason.
+- **Reference comparison** (when the task has a reference edit):
+  - **word keep F1:** label each transcript word of the sources kept or dropped by the timeline's coverage of it, compare with the reference (robust to ripple positions);
+  - **cut F1:** output-timeline cut points matched within ±2 frames.
+  The **structure-distance score is cut** (tracks, item kinds, caption blocks, graphics slots): it rewards copying a reference's layout, not editing well, and two equally good edits differ widely on it.
+- **QA** (sub-project 10): the deterministic gate's findings, once it exists.
+- **Process:** success (all required checks), model calls, tool calls, `fin` errors by code, retries (a command repeated after an error), undos, tokens, cost, wall time, approvals asked.
+- **Judge (optional):** the critic role's rubric score, reported beside the others, never a gate.
+
+### 14.3 Runs and reports
+
+- `pnpm eval --tasks <glob> --harness builtin,claudeCode,codex --model <m>… --n 3` drives sessions through the console credential, scores each final branch, and writes JSONL plus a summary per harness × model × task.
+- **Comparing two variants** (two CLI builds, two models, `fin mcp` against shell): **paired by task**, over **at least 20 tasks** with **n ≥ 3 runs per task and variant**. For each task the per-variant pass rate and process metrics are averaged over its runs, the paired difference is taken per task, and the report gives the mean and median difference with a **bootstrap** (10,000 resamples of tasks, percentile 95 % interval). *Better* means: the interval for the pass-rate difference excludes a loss larger than 2 percentage points **and** the interval for calls or tokens per success excludes an increase. Fewer than 20 tasks produce a report marked *descriptive*, with no verdict. The Wilson interval of revision 1 treated runs as independent and ignored that every variant ran the same tasks.
+- **In CI:** the harness itself runs against the scripted fake provider (§16), which tests runners and scorers, not models. Real-provider runs are manual, with the owner's OpenRouter key and the owner's own CLI sign-ins.
+
+---
+
+## 15. Error codes
+
+| Exit | Codes |
+|---|---|
+| 2 | `AGENT_ARGS` (bad `fin agent` usage) |
+| 3 | `SESSION_NOT_FOUND`, `ROLE_UNKNOWN`, `MODE_INVALID` (above the role's ceiling or the parent's mode), `HARNESS_UNKNOWN`, `MODEL_UNKNOWN`, `SAVED_PROMPT_UNKNOWN`, `APPLY_INVALID {index, error}`, `ASSET_TOO_LARGE`, `ASSET_TYPE_UNSUPPORTED`, `APPROVAL_NOT_FOUND` |
+| 4 | `SESSION_BUSY`, `SESSION_ENDED`, `BRANCH_IN_USE`, `AUTO_MERGE_UNAVAILABLE` (the policy needs sub-project 10's QA gate and critic, §6.5); `CONFLICT` for a failed rollback |
+| 5 | `PROVIDER_UNAVAILABLE` (not installed, or the local model server does not answer), `PROVIDER_VERSION {floor | missing capability}`, `PROVIDER_AUTH` (CLI not signed in, OpenRouter key missing or refused, or sign-in cannot be shared on this OS, §8.6), `PROVIDER_ACCOUNT_CHANGED` (the CLI reports a different account than at the last session, without a sign-in by the user; a person confirms, §8.6), `PROVIDER_RATE_LIMITED {retryAfterMs}`, `PROVIDER_OVERLOADED`, `PROVIDER_PROTOCOL` (a message the adapter cannot map: drift), `PROVIDER_EXITED {code}`, `MODEL_CONTEXT_EXCEEDED`, `SANDBOX_UNAVAILABLE {profile, os, need}` (a sandbox that is present but could not be applied; never for Landlock disabled, §8.9), `SESSION_INTERRUPTED` (resumable), `WAIT_TIMEOUT`, `HOOK_TIMEOUT` (when blocking) |
+| 7 | `APPROVAL_DENIED`, `RULE_DENIED {rule, layer}`, `BRANCH_NOT_ALLOWED {branch, root}`, `BUDGET_EXCEEDED {kind, used, limit}`, `HOOK_BLOCKED {hook, reason}`, `MODE_FORBIDS {mode, command}`, `DEPTH_EXCEEDED` |
+| 6 | `INTERNAL` (an adapter bug, as elsewhere) |
+| **8 (new: pending)** | `APPROVAL_PENDING {approval}` (from the `ask` stage and from `fin approval wait` on timeout): wait, then repeat; never a denial (§7.3) |
+
+`SANDBOX_DISABLED {profile, os, reason, fix}` is a persistent status warning, never an error: the process runs (§8.9). Every 7-class `fix` names who can act (a person, with the console command or the approval id). Provider failures leave the session `interrupted` and resumable (arch §19).
+
+---
+
+## 16. Testing
+
+### 16.1 Fake providers
+
+- **`fake` harness (in-process, TS):** a scripted provider (`{on: turnStarted, emit: [...]}` scripts with waits, tool calls, deltas, usage, requests, crashes, late events from a replaced instance). It tests the runtime: the state machine, persistence, resume, budgets, approvals, attribution, verdicts and journal emission.
+- **Fake model server (loopback HTTP, TS):** replays scripted SSE streams in the Chat Completions format as OpenRouter serves it (usage accounting with cost, the upstream provider name, reasoning details, cache usage fields), including 429 with `retry-after`, 502/503, mid-stream disconnects, malformed events, tool calls split across deltas. The built-in adapter runs against it with the real SDK; tests never leave loopback (D-plan rule).
+- **The local preset against the same server (F1):** scripts in the shapes Ollama and LM Studio serve (a `usage` object or none, no cost, no `upstream`, a refusal of tools, a model list from `GET /models`, a connection refused); the built-in adapter is pointed at it by the `local` preset with no key, and the suite asserts that no `Authorization` value other than the fixed placeholder is sent and that no record holds the base URL.
+- **Fake CLIs (`fake-claude`, `fake-codex`, small Rust binaries in `crates/fin-agent-fakes`):** speak stream-JSON with the control protocol (including a `system/init` with a scripted tool list, and unknown events), and newline-delimited JSON-RPC with the app-server methods of arch §27.5 (including `account/read` with a scripted account, and an account change between runs), from a script file; they run under the real sandbox launcher, so 7C's policies are exercised by the same tests (`fin` calls from inside, writes outside the workspace).
+- **Recorded transcripts:** per supported real CLI version, captured on a validation host by a controller task, scrubbed (no paths, user or host names; checked by the same grep as the D-plan's "never raw" test), committed as contract fixtures for the adapters' mapping. Only stream messages are recorded, never a provider's system prompt.
+
+### 16.2 Layers
+
+| Layer | Tests |
+|---|---|
+| `fin-core::events` | kinds v1 round trip; every content field classed; `AGENT_*` tables; catalogue ⊆ `AGENT_MODELS` |
+| Runtime (vitest) | state machine properties (random event scripts never leave a session in an impossible state; resume after any crash point never re-runs a tool), budget ledger, approvals (pending code, ≤ 90 s waits, one-time grants keyed by `(session, command, argsHash)`), rules × layers, attribution exact/inferred/ambiguous/none (the window, the argv-hash key, background processes), `session_txs` for every agent commit, `Tx.author` set by the server, the outcome tracker against scripted commit outcomes, **the dataset builder's input module never opens `control.db`** (an import-graph gate now; a file-access spy test once the builder exists) |
+| Adapters | fake model server and fake CLIs; recorded-transcript contract suites; the Codex schema drift gate; **`finisherd_never_opens_sign_in_store`** (a file-access spy over a scripted CLI session, its sign-in check and its end: no `open` under `<server-data>/providers/`); account-change detection |
+| Sandbox | §8.11 escape suites on every OS and every profile (observed denial or fail); policy unit tests (the `Only` read allow-list, enumeration around protected and denied roots, last-match profile order, the mach allow-list as data); the seccomp filter's architecture check and the io_uring refusal as unit tests of the compiled filter; ACL broker crash and concurrency tests (WAL replay, the S8 lost-grant race); the per-CLI validation list of §8.3; **a stubbed Landlock-disabled host (F2):** every profile starts, `SANDBOX_DISABLED` shows in `server.status` and `fin status`, `sandbox.unconfined` is recorded once per profile per server start, no `SANDBOX_UNAVAILABLE`, and no `agents.unsandboxed` setting exists |
+| `fin` | `tcp:` endpoint, `FIN_CALL` and `FIN_CREDENTIAL`; **`fin_with_credential_never_uses_local_key`** (with `FIN_CREDENTIAL` set to a missing, expired or revoked file and a valid `local.key` readable in the default server data, `fin` answers `UNAUTHENTICATED` and never connects as `local`; with `FIN_SERVER_DATA` set to a directory holding a `local.key`, it is ignored while `FIN_CREDENTIAL` is set); agent default branch and per-session try state (`fin-config.json` neither read nor written); client-side path arguments confined (§5.6); `FIN_AUTHOR` ignored for an agent principal; new commands, the map budget |
+| e2e | an `agent` scenario per batch, driven through the console and `fin`, with the fake providers |
+| Validation | real Codex and Claude Code on the owner's own sign-ins, OpenRouter with one closed and one open-weight model, and a local server (Ollama or LM Studio) with one open-weight model, on macOS, Windows 11 and the Linux VM, as a non-elevated user, with the sandbox on |
+
+---
+
+## 17. Licences and dependencies
+
+Checked against the npm and crates.io registries on 2026-11-07; each batch's plan re-runs `cargo deny` and the JS licence gate.
+
+| Component | Use | Licence | Decision |
+|---|---|---|---|
+| Codex CLI 0.167.0 (`@openai/codex`, repo) | bundled app-server | Apache-2.0 | ship (7E); re-check the binary's dependencies at each pin |
+| Claude Code | user-installed CLI | proprietary | drive, never bundle (D28) |
+| `@anthropic-ai/claude-agent-sdk` 0.3.x | — | "SEE LICENSE IN README.md" | not used (D28) |
+| `@anthropic-ai/sdk` 1.6.0 | — | Apache-2.0 | not used in v1: no direct Anthropic adapter (Owner decision 7) |
+| `openai` 7.53.0 | the built-in Chat Completions adapter, with OpenRouter's or a local server's base URL | Apache-2.0 | use (7A) |
+| `ai` (Vercel AI SDK) 7.0 | — | Apache-2.0 | rejected: hides the exact request bodies we record; an abstraction we do not need over one API |
+| `@modelcontextprotocol/sdk` 1.32.2 | — | MIT | not needed: `fin mcp` is Rust |
+| `rmcp` 3.9.0 | `fin mcp` | Apache-2.0 | candidate (7G); a hand-written stdio server if its async runtime grows `fin` too much |
+| `landlock` 0.4.7 | Linux file sandbox | MIT OR Apache-2.0 | use (7C; S8 used 0.4) |
+| `seccompiler` 0.5.0 | Linux syscall filter | Apache-2.0 OR BSD-3-Clause | use (7C) |
+| `extrasafe` 0.5.1 | — | MIT | rejected: a wrapper over the two above with less control |
+| `birdcage` 0.8.1 | — | GPL-3.0-or-later | excluded |
+| bubblewrap | — | LGPL-2.0-or-later | excluded from shipping; not used (§8.3) |
+| `@anthropic-ai/sandbox-runtime` 0.0.81 | — | Apache-2.0 | reference only (its Linux path needs bubblewrap) |
+| `windows-sys` 0.61.2 | AppContainer, job objects, ACLs, pipe DACLs | MIT OR Apache-2.0 | use (7C; already in the tree) |
+| Seatbelt (`sandbox-exec`) | macOS sandbox | OS component | use |
+| `chacha20poly1305` | — | Apache-2.0 OR MIT | **not used**: the encrypted secrets file is cut (§10) |
+
+---
+
+## 18. Crate and file map
+
+| Place | 7A | Later |
+|---|---|---|
+| `fin-core::events` | agent kinds v1, `agent.approval`, `AGENT_ROLES`, `AGENT_TOOLS`, `AGENT_MODELS` growth | — |
+| `apps/finisherd/src/agent/` | `session.ts`, `store.ts` (migration), `runtime.ts` (runs, events → nodes), `adapter.ts` (contract), `fake.ts`, `builtin/{loop.ts, tools.ts, request.ts, compat.ts}` (`compat.ts` is the OpenAI-compatible Chat Completions client, with the OpenRouter and local presets), `catalogue/{models.json, catalogue.ts}`, `budget.ts`, `credentials.ts` (mint, branch reach), `journal.ts` (emission, attribution), `verdicts.ts`, `rpc.ts`, `console.ts` | `roles/`, `rules.ts`, `approvals.ts`, `subagents.ts`, `auto-merge.ts` (7B); `sandbox.ts` (7C); `claude/` (7D); `codex/` (7E); `hooks/` (7F); `workspace.ts` (7G) |
+| `apps/finisherd/src/secrets/` | `store.ts` (with the `SecretBox` seam), `gateway.ts` | keychain backend (with 5B) |
+| `@finisher/contracts` | `agent.ts` (RPCs, node and event schemas), scopes | `registry.json` (7B) |
+| `fin-node` | — (no `secrets.rs`; the second `Journal` instance for the trace store, if the napi `Journal` needs options) | `acl_broker/` (7C), per-project SIDs on 5A's `PipeServer` (7C) |
+| `crates/fin-sandbox` (new; **owned by 7**) | — (7C can start now) | `policy`, `profile::{agent,hook,worker,plugin}`, `macos`, `linux`, `windows`, launcher binary, the `Spawner` for 5C (7C) |
+| `crates/fin` | `--idem-key` from `FIN_CALL` (7A-1); under an agent credential: no local-key fallback, session default branch and try state, confined path arguments, server-set author (7A-2) | `tcp:` endpoint (7C), `agent`, `approval` (exit 8), `workspace`, `apply`, `context`, `guide`, `note`, `budget`, `mcp`, `schema --registry` (7B, 7G) |
+| `crates/fin-agent-fakes` (new) | — | `fake-claude`, `fake-codex` (7D, 7E) |
+| `crates/fin-eval`, `packages/eval` (new) | — | scorers, runner (7H) |
+
+---
+
+## 19. Decisions taken here
+
+| # | Decision | Section |
+|---|---|---|
+| 1 | The runtime lives in `finisherd` (TS); Rust provides the sandbox, ACL broker, scorers and event types | §3.1 |
+| 2 | Conversations are product state in `control.db`, independent of consent; the journal holds the consented copy | §3.3, §12.1 |
+| 3 | Tool calls get a Finisher ULID at announcement; that id is `FIN_CALL` | §3.2, §12.3 |
+| 4 | The built-in agent's writes use `--idem-key <callId>`; resume never re-runs a tool | §3.4 |
+| 5 | One native `fin` tool (argv, no shell) for the built-in agent; CLI agents use `fin` over their shell; `fin mcp` is an adapter promoted only by evals | §4.3 |
+| 6 | Finisher builds model requests itself; the built-in agent's one adapter in v1 is OpenAI-compatible Chat Completions with an OpenRouter preset and a local preset (Ollama, LM Studio, a user-supplied base URL; no key; loopback allowed for the built-in agent only), with the `openai` SDK as transport (Owner decision 7, F1) | §4.4 |
+| 7 | A session owns a branch subtree; writes elsewhere are `BRANCH_NOT_ALLOWED` | §5.1 |
+| 8 | Rollback undoes the session's transactions after the turn; **session fork is cut** | §5.3 |
+| 9 | `plan` may write its own workspace | §6.1 |
+| 10 | Provider-native subagents are disabled; subagents are Finisher sessions on child branches | §6.3 |
+| 11 | Command rules are enforced on the server against an exported, drift-gated registry | §7.2 |
+| 12 | Approvals never block an RPC: `APPROVAL_PENDING` (exit 8, not 7), `fin approval wait` ≤ 90 s and repeatable, one-time grants keyed by `(session, command, argsHash)` | §7.3 |
+| 13 | Linux sandbox = Landlock (ABI ≥ 3, guaranteed by the kernel ≥ 6.2 floor) + seccomp refusing AF_UNIX sockets, **io_uring and the x32/compat ABIs**; `fin` reaches the server over a credentialed loopback listener; no bubblewrap | §8.3 |
+| 14 | CLIs run on **the user's own sign-in, in a Finisher sign-in home the user signs in to with the CLI's own flow; the sign-in store is shared in place and never copied**; everything else is in **per-session** config dirs; the user's own CLI configs and settings are neither loaded nor writable | §4.5, §4.6, §8.6 |
+| 15 | The built-in agent needs no OS sandbox; CLI agents and hook commands run in one, and where Landlock is disabled on a supported kernel everything runs unconfined with a persistent status warning and a diagnostics event (F2; no uid-sandbox fallback, no override setting, no refusal) | §8.9 |
+| 16 | Windows shell for CLI agents is brokered (S8 follow-up) | §4.5 |
+| 17 | Agent kinds become v1 with harness, named roles, `plan|draft|auto`, tool kinds, attribution, capture fidelity, system/tools as deduplicated blobs; `agent.approval` added; `agent.editVerdict` retired | §12.2 |
+| 18 | **5E's `review.verdict` is the single source of verdicts**; 7's tracker emits it for outcomes outside review items | §12.5 |
+| 19 | Budgets interrupt at a safe point and open an extension approval | §13.1 |
+| 20 | The eval harness scores branch state, reference similarity (word keep F1, cut F1) and process; judges never gate; comparisons are paired over ≥ 20 tasks with a bootstrap, on permissively licensed real speech | §14 |
+| 21 | The agent principal's id is the session id; the server records every agent commit in `session_txs` and sets `Tx.author` | §5.2 |
+| 22 | Under an agent credential `fin` never falls back to the local key; the default branch is the session root; try state is per session on the server; client-side file arguments are confined | §5.1, §5.6, §8.5 |
+| 23 | CLI agents read an allow-list (toolchains, the project, the provider dir), not "everything except"; macOS `mach-lookup` is default-deny | §8.1, §8.2 |
+| 24 | Training content goes to a dedicated agent-trace store as deltas plus a full-body hash; budget facts are in a message | §12.1, §4.4 |
+| 25 | `fin-sandbox` and the ACL broker are 7's, with the `agent`, `hook`, `worker` and `plugin` profiles | §1.6, §8.10 |
+| 26 | Claude Code runs without `--bare` on the user's sign-in, isolated by a per-session config dir, `--setting-sources user`, `--strict-mcp-config` and a read denial of the project's `CLAUDE.md`/`.claude/`; a version floor plus a capability probe replaces a pinned range | §4.5 |
+| 27 | v1 cuts: session fork, `fin tx`, a user-selected newer Codex, the Docker uid sandbox, `PreOp`/`modify` hooks, the unified-log reader, the structure-distance score, the encrypted secrets file; and (revision 3) the direct Anthropic and OpenAI adapters, CLI API-key sessions (local compatible endpoints were cut in revision 3 and restored in revision 4, F1) and `fin credential model-key` | §23, §4.4, §10 |
+| 28 | Closed-model outputs may be training targets, behind a mandatory counsel gate (default `pendingCounsel`); every session and turn carries provenance (harness, provider, model, weights) so the choice is reversible by filter | §12.7 |
+| 29 | `auto` may merge into `main` only through a per-project policy: off by default, human-only to enable, QA gate and a distinct critic passing on the same head, merged by the server's `policy` actor, audited | §6.5 |
+| 30 | The Linux floor is kernel 6.2 (D31); no partial-ABI Landlock paths | §8.3, §8.9 |
+| 31 | The built-in adapter has an OpenRouter preset and a local preset; a local URL needs no key and is set only by the owner; loopback is for the built-in agent only; diagnostics record `local` with the model as a table name or a keyed hash; weights are `open` or `unknown` | §4.4, §4.7, §10, §12.2, §12.7 |
+| 32 | Where Landlock is disabled everything runs, with a persistent `SANDBOX_DISABLED` warning per profile and a diagnostics event; `agents.unsandboxed` and the refusal are removed; a present-but-failing sandbox is still `SANDBOX_UNAVAILABLE` | §8.9 |
+
+---
+
+## 20. Owner decisions (2026-11-07)
+
+Revision 2 asked seven questions with a recommendation each. The owner's answers, and where the design changed:
+
+1. **Which model outputs may become training targets? — Closed-model outputs MAY be training targets** (the owner chose revision 2's option (c), against its recommendation of (a)). Human-authored edits and open-weight outputs remain targets too. The provider terms forbid it as written (Anthropic's commercial terms forbid using its services "to build a competing product or service, including to train competing AI models"; OpenAI's carry a similar clause), so two rules are binding: **a mandatory counsel gate before the first training run or upload** that uses closed-model targets (`training.closedModelTargets`, default `pendingCounsel`, human-only, audited; the builder and any upload path must honour it), and **reversibility**: every session and turn record carries its provenance (harness, provider, model, weights class, upstream), so closed-model targets can be filtered out later without re-collection. §1.1, §12.2, §12.7, §22.
+2. **How exact must CLI agents' LLM traffic be? — Record the stream** (as recommended). No recording proxy; exact capture comes from the built-in agent. §12.6.
+3. **What runs where no OS sandbox is available? — Raise the Linux minimum to kernel 6.2+** (the owner chose option (c)). D31 in the architecture spec changes accordingly: Ubuntu 22.04's stock kernel (5.15) and Debian 12 (6.1) are no longer supported. The launcher drops every path that existed only for older kernels (no Landlock ABI 1–2 policies); Hosts where Landlock is **disabled** on a supported kernel run everything, unconfined, with warnings (follow-up F2 below, which replaced the refusal and the audited `agents.unsandboxed` override that this answer first kept); `SANDBOX_UNAVAILABLE` remains only for a sandbox that is present but cannot be applied (a missing `sandbox-exec`, a failing AppContainer). §8.3, §8.9, §8.12.
+4. **May `auto` mode merge into `main` without a person? — Yes, under a per-project owner policy** (the owner chose option (b)): off by default; enabled only by a human-only setting; merges only when the QA gate and the critic both pass on the same head; every merge audited. No agent credential ever gets `branch.protected` or `review.decide`: the server's `policy` actor merges. The policy is built in 7B and can be enabled only once sub-project 10 provides the QA gate and the critic. Principle 3, §1.7 item 6, §5.4, §6.1, §6.5, §12.5.
+5. **Network egress for agents in v1? — Open egress in v1** (as recommended), documented with the residual risk of §8.7; the egress allow-list proxy after v1; per-project API keys with provider-side spend limits, which in v1 means per-project OpenRouter keys with OpenRouter credit limits (CLI sessions hold no Finisher key). §8.7, §10.
+6. **May Finisher drive Claude Code (and Codex) on the user's own sign-in? — Yes: the user signs in to the unmodified CLI themselves, with the CLI's own flow; Finisher never copies, stores or intermediates the credentials** (the owner's choice). Revision 2's copy-and-sync design (B7) is replaced: sessions share the CLI's sign-in store **in place**, in a Finisher sign-in home the user signs in to, and everything else (settings, transcripts, hooks, `projects/`, rollouts, caches) is per session. The remaining cross-session trade-off (a session can read, corrupt or replace the shared store) and the terms-compliance reasoning are in §8.6; whether programmatic driving is "ordinary use" under the subscription terms, for Anthropic and for OpenAI, goes to counsel. §4.2, §4.5, §4.6, §8.2, §8.6, §10.
+7. **Providers and the sign-in experience — CLI agents use the user's own Claude Code or Codex sign-in; for API-based models the built-in agent supports OpenRouter and, after follow-up F1 below, local OpenAI-compatible servers** (one OpenAI-compatible adapter with two presets; the owner's choice). The direct Anthropic Messages and OpenAI Responses adapters are removed from v1 (local endpoints were removed here first and restored by F1); `AGENT_PROVIDERS` gains `openrouter` and `local`; `AGENT_MODELS` holds the catalogue's OpenRouter slugs, the CLIs' model ids and the `localModels` table's names. **Sign-in UX for sub-project 9:** CLIs are signed in by the user (the Providers screen shows status and the command to run; no in-app sign-in); **Finisher stores only the OpenRouter key the user pastes** for agents (sub-project 8's fal.ai generation key is the one other pasted key, plugins §9.4). §1.1, §4.2, §4.4, §4.7, §10, §17.
+
+**Follow-up decisions (2026-11-07, later the same day).** Four follow-ups were recorded across the specs and numbered F1–F4; two concern this document (F3, the proxy encoders, is sp6 §21; F4, Electron's ffmpeg, is arch §18 and sp6 §21):
+
+F1. **Local models are allowed in v1 (amends 7).** The built-in agent's single OpenAI-compatible adapter may point at OpenRouter **or** at a local OpenAI-compatible server (Ollama, LM Studio, a user-supplied base URL), as two presets of one client. A local URL needs no API key and Finisher stores no secret for it; loopback URLs are allowed for the built-in agent only, since it runs in `finisherd` and needs no sandbox egress change (CLI agents, hooks and plugins gain no loopback reach); diagnostics record the provider as `local` with the model as a table name or a keyed hash; training provenance tags it `open` or `unknown`, never `closed`. §1.1, §1.2, §4.2, §4.4, §4.7, §8.7, §10, §12.2, §12.7, §16.1, the 7A plan's Tasks 4, 5, 9, 12, 13 and 15, arch D30 and §8.2.
+F2. **Hosts where Landlock is disabled run everything, with warnings (amends 3).** A Linux host with kernel ≥ 6.2 and Landlock turned off runs agents, hooks, media workers and plugins, each with a persistent status warning (`server.status` and `fin status`) and a diagnostics event. The refusal, `SANDBOX_UNAVAILABLE` for this case, and the owner-only `agents.unsandboxed` override are removed. §8.3, §8.9, §8.10, §8.12, §15, §16.2; sp5 §4.8 and §6.2, sp6 §3.5.1, sp8 §3.1, arch D36.
+
+## 21. Contradictions and gaps found in earlier documents
+
+1. **The reserved `agent.session` payload** (`role: main|subagent|critic|other`, `mode: interactive|headless|other`) does not match arch §8.3's named roles and `plan|draft|auto` modes, and has no harness: Codex and the built-in agent on an OpenAI key both say `provider: openai`. Resolved by §12.2.
+2. **`agent.toolCall.command` is a `fin` command name**, but CLI agents mostly call their own tools (shell, edit, web fetch), which the reserved payload cannot express. Resolved by `tool` + optional `command` (§12.2).
+3. **"System prompt and tool definitions by hash"** (arch §21.1) keeps no way back to the content, so training would lose them. Resolved by deduplicated blobs (§12.2).
+4. **`FIN_CALL` "set by the agent harness for one `fin` run"** (D-plan Decision 23a) is impossible for Claude Code's and Codex's own shells. Resolved by exact-where-Finisher-executes plus inferred attribution (§12.3).
+5. **Arch §8.4's "Landlock (bwrap fallback)":** bubblewrap is LGPL-2.0-or-later and cannot ship (AGENTS.md), and needs user namespaces that Ubuntu's AppArmor restricts (arch §27.8). Resolved by §8.3 and §8.9 (no fallback).
+6. **Arch §27.6 calls Landlock "confirmed"**, but its escapes covered files only. Landlock does not mediate pathname-socket `connect()`, so D-Bus (Secret Service), `ssh-agent`, `docker.sock` and X11 were reachable. Resolved by seccomp and the agent listener (§8.3), and new escape cases (§8.10).
+7. **Arch §27.6 makes `~/.claude` and `~/.codex` writable**, which lets an agent persist hooks that later run unsandboxed in the user's own terminal. Resolved by §8.6.
+8. **D31 admits Ubuntu 22.04 (kernel 5.15)**, below the Landlock ABI that controls truncation. Resolved by Owner decision 3: D31's Linux floor becomes kernel 6.2 (the architecture spec carries the change).
+9. **Arch §8.4's env allow-list** names only `FIN_SERVER` and `FIN_SESSION`; `FIN_CALL` (D-plan), `FIN_CREDENTIAL` (sp5) and the provider directory variables are also needed, and `FIN_SERVER` cannot name a socket inside server data the sandbox denies. Resolved by §8.5.
+10. **Arch §8.4 "a per-session 0600 credential file inside the session sandbox"** suggests `workspace/`, which is in the project folder and may be synced. Resolved by `<server-data>/agents/<sessionId>/` (§8.5).
+11. **Arch §8.1 "Session = one agent on one branch"** vs `fin try` sub-branches, critic fix branches and subagent children. Resolved as a branch subtree (§5.1).
+12. **Arch §4 rule 6 enforces rules "in the command registry, whatever the transport"**, but the registry lives in `fin`, and an agent can call RPCs directly. Resolved by the exported registry and server-side `commandOf` (§7.2).
+13. **Arch §5 and §16 keep keys inside `finisherd`**, but Claude Code using an API key must hold it. Resolved in revision 3 by giving CLIs no Finisher key at all: they run on the user's own sign-in (§8.6), and the only key Finisher stores, OpenRouter's, never leaves `finisherd` (§10).
+14. **Arch §8.2 lets a user select a newer `codex`**, while the vendored client is pinned. Resolved by dropping the option: the pinned bundled version only (§4.6).
+15. **Arch §8.3 `auto` "runs the critic"**: the critic's rubrics and QA are sub-project 10, and render is sp6 6E. `auto` is partial until both land (§6.1).
+16. **Arch §21.1 phasing puts human-only operations in sub-project 7**; sp5 moved them to 5A. What remains for 7 is making them hold (§7.5).
+17. **`AGENT_MODELS` holds only Claude models**, so every Codex or OpenAI session would be `other`. Resolved by the catalogue drift test (§4.7).
+18. **Arch §8.4's provider config directories and per-session home** conflict with Claude Code keeping its macOS login in the Keychain; whether a separate config dir separates the Keychain item is unverified. Revision 3 shares the sign-in store in place and falls back to the sign-in home as config dir where a link cannot share it (§8.6, spike B7, 7D).
+
+19. **`fin`'s local-key fallback and shared state** (found in review): with `FIN_CREDENTIAL` unset or unusable `fin` falls back to `local.key`; the default branch and `fin try` list live in the shared `fin-config.json`; `Tx.author` follows `$FIN_AUTHOR`; some commands read client-side files with no path check. Resolved by §5.1, §5.2, §5.6, §8.5.
+20. **Revision 1's `mach-lookup` allow "for the Keychain" and its `~`-wide read access** let an agent ask the OS to start processes outside the sandbox and read most of the user's files; a deny-list always misses a path. Resolved by default-deny mach and a read allow-list (§8.1, §8.2).
+21. **A Linux seccomp filter on `socket()` and native syscall numbers** is bypassed by io_uring's socket operation and by the x32 ABI; Landlock's scoping does not cover pathname sockets. Resolved by §8.3.
+22. **A shared provider directory per CLI** lets one session plant configuration that a later one runs. Resolved by per-session directories (§8.6).
+23. **Training content in the 128 MiB / 30-day diagnostics journal** would evict every other diagnostic within hours. Resolved by the agent-trace store (§12.1).
+24. **Two verdict kinds** (`review.verdict` in sp5, `agent.editVerdict` here) would disagree. Resolved by one (§12.5).
+25. **Exit 7 for a pending approval** told an agent "do not retry" for a request that will be answered. Resolved by exit 8 (§7.3).
+26. **Revision 1 said training targets could come from "what people kept"**, which would have admitted closed-model edits merged by a person; revision 2 withdrew it. Owner decision 1 now admits closed-model outputs as targets outright, behind the counsel gate of §12.7, with provenance on every record so the choice can be reversed by filter.
+27. **Claude Code's subscription login in a third-party product** is restricted by Anthropic's published terms in ways revision 1's and revision 2's per-session credential copying may violate. Resolved by Owner decision 6: the user signs in with the CLI's own flow and the store is shared in place, never copied (§8.6); the remaining terms question goes to counsel.
+28. **D30 lists three built-in APIs** (Anthropic Messages, OpenAI Responses, one OpenAI-compatible adapter covering OpenRouter, Ollama, LM Studio); Owner decision 7 narrowed v1 to OpenRouter through that one adapter, and F1 restores local servers (Ollama, LM Studio, a user URL) as a second preset of the same adapter. The architecture spec's D30 and §8.2 carry the change.
+29. **D14 and arch §8.3 say agents never reach protected branches without a person**; Owner decision 4 adds the per-project `auto` merge policy (§6.5). The architecture spec's D14 carries the change.
+
+---
+
+## 22. Risks
+
+| Risk | Mitigation |
+|---|---|
+| CLI protocol drift (Claude Code ships often; stream-JSON and the control protocol are not versioned contracts) | version gate; recorded-transcript contract suites per version; `PROVIDER_PROTOCOL` rather than guessing; the built-in agent as fallback |
+| macOS default-deny `mach-lookup` breaks a CLI (a service we did not list) | the allow-list is derived per CLI in the spike by running under a log-only profile, committed as data, re-validated per CLI version; failures are `PROVIDER_PROTOCOL`-class start failures, not silent widenings |
+| Windows per-session capability SIDs do not work as hoped for a normal AppContainer | marked *to verify* (§8.4); fallback: one container profile per session, at the cost of more broker grants |
+| Apple removes `sandbox-exec` | the profile generator is independent of the launcher; `sandbox_init` from the launcher as a second path; tracked per macOS beta |
+| seccomp's AF_UNIX refusal breaks a CLI or a tool it runs (SSSD user lookup, gpg-agent signing, git credential-cache and fsmonitor) | the per-CLI validation list (§8.3) and spike S9; a narrow allow-list (`socketpair` only) and a test per CLI version; fallback: Landlock ABI 6 scoping (abstract sockets only) plus the env clearing, with the pathname-socket gap recorded |
+| Nested sandboxes (Codex's own Seatbelt/Landlock inside ours) refuse to apply | 7E measures it; Codex's sandbox off inside ours where nesting fails; ours is the guarantee either way |
+| A CLI replaces its sign-in store by rename, or keys it by config dir, so a per-session link cannot share it | spike B7 per CLI and OS; fallback: the sign-in home as config dir, with the wider shared surface recorded (§8.6); never a copy; else that harness is refused on that OS |
+| A session reads, corrupts or replaces the shared sign-in store (account substitution) | the store is outside every workspace and project folder; account changes reported by the CLI stop new sessions until a person confirms (`PROVIDER_ACCOUNT_CHANGED`); open egress is the accepted v1 residual (Owner decision 5) |
+| A fooled critic lets the `auto` policy merge a bad edit into `main` | off by default, per project, human-only to enable; deterministic QA gate plus a distinct critic on the same head; `expect.rev` on the checked head; one undoable transaction, audited and notified (§6.5) |
+| Inferred attribution mislabels commits under parallel shell calls | `ambiguous` instead of a guess; `fin mcp` makes it exact; the builder can drop non-exact joins |
+| Training capture grows fast (tool outputs, images) | a dedicated agent-trace store with its own cap and whole-session eviction; deltas plus a full-body hash; blobs deduplicated by content; the diagnostics journal and product state are separate |
+| Budgets overrun between checks (a long tool call, a big turn) | checks per turn and per tool call; `--max-budget-usd` on Claude Code; per-day money cap |
+| Provider terms and training use (closed-model outputs as targets, Owner decision 1) | the mandatory counsel gate (`training.closedModelTargets`, default `pendingCounsel`) before any training run or upload uses them; provenance on every session and turn so they can be filtered out without re-collection |
+| Provider terms on subscription sign-ins | the user signs in with the CLI's own flow; Finisher never copies, stores or intermediates credentials (§8.6); the "ordinary use" question goes to counsel before release (TASKS.md counsel item) |
+| A host with Landlock disabled runs agents and hooks unconfined (F2) | accepted by the owner: a persistent `SANDBOX_DISABLED` warning in `server.status` and `fin status`, a notice on every session, a diagnostics event; the built-in agent has no shell; scopes, branch reach, path checks and the env allow-list still apply; no override setting to hide it |
+| Local models are weak at tool calls, or a server's OpenAI compatibility is partial (F1) | tools required (`MODEL_UNKNOWN {noTools}`), `PROVIDER_PROTOCOL` for a stream the adapter cannot map, the fake server covers Ollama's and LM Studio's shapes, the eval harness scores local models like any other; nothing else depends on them |
+| A user-supplied base URL points at something that is not a model server (F1) | only the owner sets it (`agent.admin`, human-only); the adapter sends chat requests, and `GET /models` for the owner's "test connection", only; no key or credential is ever sent to it; redirects to another origin are not followed |
+| 7A is large (runtime, the OpenAI-compatible client, budgets, secrets) | split: 7A-1 (pure pieces, before 5A) and 7A-2 (after 5A); the plan's tasks are independent behind the adapter contract; the fake provider lets the runtime merge before the APIs |
+
+---
+
+## 23. Review findings (revision 2) and where they are resolved
+
+| Finding | Resolution |
+|---|---|
+| **B1** an agent's `fin` used the shared `fin-config.json` default branch and tries | §5.1 (default branch = session root from the principal; try state per session on the server), 7A-2 Task 8 |
+| **B2** no reliable session identity for commits | §5.2 (principal id = session id; `session_txs` for every agent commit), 7A-2 Tasks 3, 7 |
+| **B3** `fin` could fall back to the local key; `FIN_AUTHOR` forgeable | §8.5 (no fallback; `FIN_SERVER_DATA` cleared; test), §5.2 (server-set `Tx.author`) |
+| **B4** client-side file arguments and path reach | §5.6 (confined to workspace and project folder; reach = project + referenced libraries), §6.1 (no `project.create`/`project.open`) |
+| **B5** Linux seccomp gaps | §8.3 (io_uring, x32/compat ABI, `pidfd_getfd`; D-Bus pathname sockets not covered by Landlock scoping; 7C per-CLI list), §8.12 |
+| **B6** macOS mach-lookup open | §8.2 (default-deny with allow-list), §8.11 (Terminal/osascript/launchctl and keychain tests) |
+| **B7** shared provider dir; Windows session isolation | §8.6 (per-session dir; revision 3: sign-in store shared in place, never copied, Owner decision 6), §8.4 (capability SID, to verify) |
+| **H1** CLI read scope; loopback; residual risk | §8.1 (allow-list), §8.2/§8.3 (loopback), Owner decision 5 |
+| **H2** CLI integration details | §4.5 (revision 3: isolation without `--bare`; `--append-system-prompt`, print-only budget flag, floor + probe, unknown events, init-derived deny list), §4.6 (`project_doc_max_bytes=0`, developer instructions) |
+| **H3** approvals | §7.3 (exit 8 pending, ≤ 90 s repeatable waits, one-time grants) |
+| **H4** training store | §12.1 (agent-trace store, deltas + full-body hash), §4.1/§4.4 (budget facts in a message) |
+| **H5** training targets; subscription terms; sign-in | Owner decisions 1, 6, 7 (§20; §8.6, §10, §12.7) |
+| **H6** verdict source | §12.5 (5E's `review.verdict`; `agent.editVerdict` retired) |
+| **H7** critic | §6.2 (`draft` ceiling on a child branch, or spawns a fixer) |
+| Conversations vs purge/export; inline limit | §3.3, §12.1 (purge/export do not touch conversations; 9's page; builder never reads `control.db`; inline ~4 KiB) |
+| Eval design | §14 (paired, ≥ 20 tasks, bootstrap; permissively licensed real speech) |
+| `FIN_CALL` inference | §12.3 (window, argv-hash key, background `none`) |
+| Cuts | §1.2, §19 decision 27 |
+| 7A split | §1.4 (7A-1 before 5A; 7A-2 after), the 7A plan |
+| Cross-design ownership; sp5 reconciliation | §1.6, §1.7, §8.10 |

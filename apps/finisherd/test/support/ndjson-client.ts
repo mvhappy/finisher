@@ -51,10 +51,11 @@ export class NdjsonClient {
     return new Promise((resolve) => this.#frames.push(resolve));
   }
 
-  call(tag: string, payload: unknown): Promise<Exit> {
+  /** `headers`: the request frame's `[name, value]` pairs (`fin` sends its actor there). */
+  call(tag: string, payload: unknown, headers: ReadonlyArray<[string, string]> = []): Promise<Exit> {
     const id = String(this.#nextId++);
     const done = new Promise<Exit>((resolve) => this.#pending.set(id, resolve));
-    this.send({ _tag: "Request", id, tag, payload, headers: [] });
+    this.send({ _tag: "Request", id, tag, payload, headers });
     return done;
   }
 
@@ -124,6 +125,7 @@ export interface ServerInfo {
   token: string;
   protocolVersion: number;
   envId: string;
+  diagnostics: { enabled: boolean };
 }
 
 export interface RunningServer {

@@ -16,11 +16,17 @@ doctest = false
 # Test-only exports (`Engine.panicForTest`, the `writeFixture*ForTest` writers, generated test
 # fonts), loopback `http` and `FIN_FONT_CATALOG` in fin-fonts. The vitest build enables it; the
 # plain `build` script does not.
-test-hooks = ["fin-probe/fixtures", "fin-fonts/test-hooks", "dep:fin-testfonts"]
+test-hooks = [
+    "fin-probe/fixtures",
+    "fin-fonts/test-hooks",
+    "fin-journal/test-hooks",
+    "dep:fin-testfonts",
+]
 
 [dependencies]
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
+fin-journal = { path = "../fin-journal" }
 fin-probe = { path = "../fin-probe" }
 fin-store = { path = "../fin-store" }
 fin-testfonts = { path = "../fin-testfonts", optional = true }

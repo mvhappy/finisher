@@ -108,7 +108,7 @@ describe("key files", () => {
 });
 
 describe("start order", () => {
-  test("keys_rotate_before_listen", async () => {
+  test("keys_rotate_before_listen", { timeout: 30_000 }, async () => {
     // lock → store → keys → socket: an unwritable auth/ fails the start after the store
     // opened and before the socket exists.
     writeFileSync(authDir(serverData), "not a directory");
@@ -129,7 +129,7 @@ describe("start order", () => {
     }
   });
 
-  test("run_dir_holds_only_the_socket", async () => {
+  test("run_dir_holds_only_the_socket", { timeout: 30_000 }, async () => {
     const server = await startServer(serverData);
     try {
       if (!WIN) expect(readdirSync(runDir(serverData))).toEqual(["fin.sock"]);

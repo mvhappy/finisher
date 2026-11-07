@@ -335,7 +335,17 @@ impl Online {
         }
         let dir = self.project.as_ref().ok_or_else(no_project)?;
         let opened: ProjectRef = self.call_as("project.open", json!({ "dir": dir }))?;
+        crate::diag::note_project(&opened.project_id);
         Ok(self.project_id.get_or_init(|| opened.project_id).clone())
+    }
+}
+
+impl Drop for Online {
+    /// The run's connection goes to `diag`, which sends the run's `cli.command` on it.
+    fn drop(&mut self) {
+        if let Some(client) = self.client.get_mut().take() {
+            crate::diag::park(client);
+        }
     }
 }
 
@@ -364,6 +374,7 @@ impl Backend for Online {
         if let Some(gate) = test_hook(COMMIT_GATE_ENV) {
             commit_gate(Path::new(&gate))?;
         }
+        crate::diag::note_tx(&tx.tx_id);
         let mut payload = json!({ "projectId": project_id, "tx": tx });
         if let Some(g) = generation {
             payload["generation"] = g.clone();

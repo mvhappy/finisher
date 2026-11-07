@@ -132,6 +132,10 @@ const VALIDATION_CODES: &[&str] = &[
     // A caption laid out from its pinned fonts overflows its style's lines or safe zone
     // (sub-project 4C Tasks 19–20: checked once at the end of a transaction).
     "CAPTION_OVERFLOW",
+    // `diagnostics.record` refused an event (plan D, Decision 33): seen only by direct callers.
+    "EVENT_KIND_UNKNOWN",
+    "EVENT_INVALID",
+    "EVENT_TOO_LARGE",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -162,7 +166,9 @@ const CONFLICT_CODES: &[&str] = &[
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
 /// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
-const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE"];
+/// `CONSENT_UI_ONLY` (plan D, Decision 14b): turning `training` on is a person's choice (the
+/// `fix` names the ways in).
+const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE", "CONSENT_UI_ONLY"];
 
 /// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
 /// a resource another process holds (`DB_IN_USE`: a rebuild needs the project database to
@@ -189,6 +195,13 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // The font cache or catalog is unusable, so `fin fonts …` can fetch nothing until it is
     // repaired; in other replies it is a warning that never blocks edits.
     "FONTS_DAMAGED",
+    // `fin diagnostics …` (plan D, Decision 33): the journal is suspended or the server data is
+    // unwritable; `settings.json` does not parse (or its `privacy` section breaks the journal's
+    // rules) and a consent change would overwrite it; the consent change could not be written
+    // (the file is unchanged). Each `fix` names the reason.
+    "JOURNAL_UNAVAILABLE",
+    "SETTINGS_INVALID",
+    "SETTINGS_WRITE_FAILED",
 ];
 
 /// The one place error codes become exit codes.
@@ -225,9 +238,24 @@ fn print(doc: &Value) {
     let _ = out.flush();
 }
 
+static STREAMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// From here the command's answer is JSONL lines ([`stream_line`], none at all when empty):
+/// [`ok`] prints no document of its own.
+pub fn streaming() {
+    STREAMED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Prints one JSONL line of a streamed answer (`fin diagnostics export`).
+pub fn stream_line(line: &Value) {
+    print(line);
+}
+
 /// Prints a success document and returns exit code 0.
 pub fn ok(doc: &Value) -> i32 {
-    print(doc);
+    if !STREAMED.load(std::sync::atomic::Ordering::Relaxed) {
+        print(doc);
+    }
     OK
 }
 
@@ -240,14 +268,9 @@ pub fn error(e: &CoreError) -> i32 {
 /// Turns panics into an `INTERNAL` error document (exit 6) instead of a stderr-only trace.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let message = match info.payload().downcast_ref::<&str>() {
-            Some(s) => (*s).to_string(),
-            None => info
-                .payload()
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_else(|| "panic".to_string()),
-        };
+        // Best effort and within its budget (`diag`); then the usual document and exit 6.
+        crate::diag::report_panic(info);
+        let message = crate::diag::panic_message(info);
         let location = info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()));
@@ -281,6 +304,13 @@ mod tests {
         assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
         assert_eq!(exit_code("CONTROL_DB_BUSY"), 5);
+        assert_eq!(exit_code("CONSENT_UI_ONLY"), 2);
+        assert_eq!(exit_code("JOURNAL_UNAVAILABLE"), 5);
+        assert_eq!(exit_code("SETTINGS_INVALID"), 5);
+        assert_eq!(exit_code("SETTINGS_WRITE_FAILED"), 5);
+        assert_eq!(exit_code("EVENT_KIND_UNKNOWN"), 3);
+        assert_eq!(exit_code("EVENT_INVALID"), 3);
+        assert_eq!(exit_code("EVENT_TOO_LARGE"), 3);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
         assert_eq!(exit_code("FONTS_DAMAGED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);

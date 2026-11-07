@@ -29,3 +29,41 @@ proptest! {
         check(&base(&lens, linked, trs), &committed, &mine)?;
     }
 }
+
+/// The shrunk case of a workspace run: the head ripples `c4` in after `c3`, at our
+/// overwrite move's anchor on t2, so the rebased move takes `c2` (and its partner `c1` on t1)
+/// ten frames later than where it was written. Our later ripple move of `c1` to its
+/// own end maps through no shift (an overwrite move records none) and lands inside `c1`, and
+/// the re-run refuses it, unblamed (`keyed4c::partner_drift`).
+#[test]
+fn partner_of_overwrite_move_refuses_unblamed() {
+    use keyed4c::Intent::Move;
+    let lens = [vec![31], vec![10, 10], vec![], vec![10]];
+    let committed = [(
+        vec![Move {
+            track: 3,
+            clip: 0,
+            to: 1,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Move {
+            track: 1,
+            clip: 0,
+            to: 1,
+            before: None,
+            overwrite: true,
+        },
+        Move {
+            track: 0,
+            clip: 0,
+            to: 0,
+            before: None,
+            overwrite: false,
+        },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}

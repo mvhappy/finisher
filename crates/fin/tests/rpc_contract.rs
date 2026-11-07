@@ -248,6 +248,7 @@ fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str)
     assert_eq!(relocated["exit"]["value"]["rev"], 4, "{relocated}");
     replay_events(server, subst);
     replay_history(server, subst, project_id);
+    replay_diagnostics(server, subst, project_id);
     let rebuilt = Conn::open(server, subst).replay_to("project-rebuild", REPORT_KEYS);
     assert_eq!(rebuilt["exit"]["value"]["reason"], "manual", "{rebuilt}");
 }
@@ -377,6 +378,43 @@ fn replay_history(server: &Server, subst: &[(String, String)], project_id: &str)
     );
     let recover = Conn::open(server, subst).replay("project-recover-groups");
     assert_eq!(recover["exit"]["value"]["dryRun"], true, "{recover}");
+}
+
+/// The diagnostics RPCs (plan D, Task D4), in the capture script's order. Reports and pages
+/// are compared down to their top-level keys (their counts depend on what this run recorded).
+fn replay_diagnostics(server: &Server, subst: &[(String, String)], project_id: &str) {
+    let recorded = Conn::open(server, subst).replay("diagnostics-record");
+    assert_eq!(
+        recorded["exit"]["value"],
+        json!({ "recorded": true }),
+        "{recorded}"
+    );
+    let unlisted = Conn::open(server, subst).replay("diagnostics-record-unlisted");
+    assert_eq!(
+        unlisted["exit"]["cause"][0]["error"]["code"],
+        "EVENT_INVALID"
+    );
+    let refused = Conn::open(server, subst).replay("diagnostics-consent-training-on");
+    assert_eq!(
+        refused["exit"]["cause"][0]["error"]["code"],
+        "CONSENT_UI_ONLY"
+    );
+    let consent = Conn::open(server, subst).replay_to("diagnostics-consent", REPORT_KEYS);
+    assert_eq!(consent["exit"]["value"]["diagnostics"], "on", "{consent}");
+    // Its `kinds` and `projects` are keyed by what this run holds: compared to the value's keys.
+    let status = Conn::open(server, subst).replay_to("diagnostics-status", REPORT_KEYS - 1);
+    assert_eq!(status["exit"]["value"]["state"], "on", "{status}");
+    let page = Conn::open(server, subst).replay_to("diagnostics-export", REPORT_KEYS);
+    assert_eq!(
+        page["exit"]["value"]["lines"][0]["kind"], "cli.command",
+        "{page}"
+    );
+    let project = Conn::open(server, subst).replay("diagnostics-project");
+    assert_eq!(
+        project["exit"]["value"],
+        json!({ "project": project_id, "collect": "default" })
+    );
+    Conn::open(server, subst).replay("diagnostics-purge");
 }
 
 /// `project-events`: the first chunk (the status now), its ack, then the interrupt. Status

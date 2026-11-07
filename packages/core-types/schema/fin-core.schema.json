@@ -1746,6 +1746,94 @@
       ],
       "type": "string"
     },
+    "DiagnosticsReport": {
+      "description": "`diagnostics.status` (`fin diagnostics show`).",
+      "properties": {
+        "blobBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "blobs": {
+          "description": "Blobs on disk and their bytes (they count against `maxMiB` too).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes": {
+          "description": "The `j-*` files' bytes (blobs not included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "type": "string"
+        },
+        "consent": {
+          "$ref": "#/$defs/ConsentState"
+        },
+        "dropped": {
+          "description": "Entries dropped since the journal opened.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kinds": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Entries stored per kind.",
+          "type": "object"
+        },
+        "newest": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "oldest": {
+          "description": "The oldest entry's `ts` and the newest's (ms since the epoch).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "projects": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProjectPolicy"
+          },
+          "description": "Every project this server was told about, with its flag now.",
+          "type": "object"
+        },
+        "skippedUnknownProject": {
+          "default": 0,
+          "description": "Entries not written since the journal opened because their project's flag was not\nknown (not open here): not drops, but a sign a caller forgot to open a project.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/JournalState"
+        }
+      },
+      "required": [
+        "consent",
+        "state",
+        "files",
+        "bytes",
+        "blobs",
+        "blobBytes",
+        "dropped",
+        "kinds",
+        "projects"
+      ],
+      "type": "object"
+    },
     "Diff": {
       "description": "What a transaction changed, op by op: each entry names the op that recorded it (`op`),\nand both lists are in op order. An op may record any number of changes and shifts.",
       "properties": {
@@ -2678,6 +2766,24 @@
           "type": "object"
         }
       ]
+    },
+    "ExportPage": {
+      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page.",
+      "properties": {
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/Envelope"
+          },
+          "type": "array"
+        },
+        "next": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "lines"
+      ],
+      "type": "object"
     },
     "FetchOutcome": {
       "enum": [

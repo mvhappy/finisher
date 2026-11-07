@@ -1,5 +1,6 @@
-//! napi-rs binding exposing `fin-store`, `fin-probe` and the server's fonts (`fin-fonts`,
-//! `fin-text`: the [`fonts`] manager, `FontManager`) to Node as `@finisher/fin-node`.
+//! napi-rs binding exposing `fin-store`, `fin-probe`, the server's fonts (`fin-fonts`,
+//! `fin-text`: the [`fonts`] manager, `FontManager`) and its diagnostics journal
+//! (`fin-journal`: [`journal`], `Journal`) to Node as `@finisher/fin-node`.
 //!
 //! # Threads
 //!
@@ -41,10 +42,12 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod commit_log;
 mod engine;
 mod eval;
 mod fonts;
 mod history;
+mod journal;
 mod maintenance;
 mod private_dir;
 mod server_lock;
@@ -55,6 +58,7 @@ mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
+pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;

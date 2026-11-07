@@ -82,10 +82,14 @@ pub struct TimedConn {
 }
 
 impl TimedConn {
-    pub fn new<S: Read + Write + Send + 'static>(stream: S, timeout: Duration) -> TimedConn {
+    /// A failure to start the worker thread is an error, not a panic (the panic hook connects).
+    pub fn new<S: Read + Write + Send + 'static>(
+        stream: S,
+        timeout: Duration,
+    ) -> io::Result<TimedConn> {
         let (ops, op_rx) = mpsc::channel::<Op>();
         let (result_tx, results) = mpsc::channel();
-        thread::spawn(move || {
+        thread::Builder::new().spawn(move || {
             let mut conn = BufReader::new(stream);
             for op in op_rx {
                 let result = match op {
@@ -101,13 +105,13 @@ impl TimedConn {
                     break;
                 }
             }
-        });
-        TimedConn {
+        })?;
+        Ok(TimedConn {
             ops,
             results,
             timeout,
             poisoned: false,
-        }
+        })
     }
 
     /// The timeout of later operations (the overall deadline shortens it as it nears).
@@ -116,6 +120,10 @@ impl TimedConn {
     }
 
     fn run(&mut self, op: Op) -> io::Result<String> {
+        self.run_for(op, self.timeout)
+    }
+
+    fn run_for(&mut self, op: Op, timeout: Duration) -> io::Result<String> {
         if self.poisoned {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -124,7 +132,7 @@ impl TimedConn {
         }
         let stopped = || io::Error::new(io::ErrorKind::BrokenPipe, "the connection worker stopped");
         self.ops.send(op).map_err(|_| stopped())?;
-        match self.results.recv_timeout(self.timeout) {
+        match self.results.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 self.poisoned = true;
@@ -137,6 +145,11 @@ impl TimedConn {
     /// Writes and flushes `bytes`.
     pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.run(Op::Write(bytes.to_vec())).map(|_| ())
+    }
+
+    /// [`TimedConn::write_all`] with its own, shorter deadline (the fire-and-forget `cli.command`).
+    pub fn write_all_within(&mut self, bytes: &[u8], within: Duration) -> io::Result<()> {
+        self.run_for(Op::Write(bytes.to_vec()), within).map(|_| ())
     }
 
     /// Reads up to and including the next `\n`; an empty string is end of stream, and a string
@@ -172,7 +185,7 @@ mod tests {
     #[test]
     fn a_blocked_read_times_out_and_poisons_the_connection() {
         let (_hold, rx) = mpsc::channel();
-        let mut conn = TimedConn::new(Silent(rx), Duration::from_millis(100));
+        let mut conn = TimedConn::new(Silent(rx), Duration::from_millis(100)).unwrap();
         conn.write_all(b"hello\n").unwrap();
         assert_eq!(
             conn.read_line().unwrap_err().kind(),
@@ -212,7 +225,7 @@ mod tests {
                 Ok(())
             }
         }
-        let mut conn = TimedConn::new(Rw(data), Duration::from_secs(5));
+        let mut conn = TimedConn::new(Rw(data), Duration::from_secs(5)).unwrap();
         assert_eq!(conn.read_line().unwrap(), "one\n");
         assert_eq!(conn.read_line().unwrap(), "two");
         assert_eq!(conn.read_line().unwrap(), "");

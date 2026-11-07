@@ -9,6 +9,7 @@ mod commands;
 mod config;
 mod conn;
 mod deadline;
+mod diag;
 mod endpoint;
 mod map;
 mod output;
@@ -32,6 +33,7 @@ use commands::bin::BinCmd;
 use commands::branch::BranchCmd;
 use commands::caption::CaptionCmd;
 use commands::clip::ClipCmd;
+use commands::diagnostics::DiagnosticsCmd;
 use commands::effect::EffectCmd;
 use commands::eval::EvalCmd;
 use commands::fonts::{FontEdit, FontsCmd};
@@ -99,6 +101,8 @@ enum Cmd {
     Eval(EvalCmd),
     #[command(subcommand)]
     Fonts(FontsCmd),
+    #[command(subcommand)]
+    Diagnostics(DiagnosticsCmd),
     #[command(subcommand)]
     Branch(BranchCmd),
     Undo(UndoArgs),
@@ -192,9 +196,11 @@ fn clap_usage(err: &clap::Error) -> CoreError {
 }
 
 fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
-    let matches = configure(Cli::command())
-        .try_get_matches_from(args)
+    let mut cmd = configure(Cli::command());
+    let matches = cmd
+        .try_get_matches_from_mut(&args)
         .map_err(|e| clap_usage(&e))?;
+    diag::note_matches(&cmd, &matches);
     Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))
 }
 
@@ -264,6 +270,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
         Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),
         Some(Cmd::Fonts(c)) => commands::fonts::read(backend()?.as_ref(), g, &c),
+        Some(Cmd::Diagnostics(c)) => commands::diagnostics::run(backend()?.as_ref(), g, &c),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
         Some(Cmd::Undo(a)) => commands::history::undo(backend()?.as_ref(), g, &a),
         Some(Cmd::Redo) => commands::history::redo(backend()?.as_ref(), g),
@@ -293,11 +300,17 @@ fn edit(g: &Globals, step: Edit) -> Result<Value, CoreError> {
 }
 
 fn main() {
+    diag::begin();
     output::install_panic_hook();
-    let code = match deadline::start().and_then(|()| run(std::env::args_os().collect())) {
-        Ok(doc) => output::ok(&doc),
-        Err(e) => output::error(&e),
+    // `FIN_TEST_PANIC` (test builds only) before anything else; the overall deadline
+    // (5A Decision 36) bounds the command, not D6's recording, which has its own budget.
+    diag::test_panic();
+    let result = deadline::start().and_then(|()| run(std::env::args_os().collect()));
+    let code = match &result {
+        Ok(doc) => output::ok(doc),
+        Err(e) => output::error(e),
     };
+    diag::finish(&result, code);
     std::process::exit(code);
 }
 
@@ -394,6 +407,11 @@ mod tests {
             "fonts pin Inter --weight 700 --italic --fallback 0",
             "fonts repin Inter|700|normal --catalog-version 2026.11.1",
             "fonts unpin Inter|700|normal",
+            "diagnostics show",
+            "diagnostics export --since 2026-11-01 --project p1 --kind cli.command --limit 9 --as-upload training",
+            "diagnostics purge --before 2026-11-01",
+            "diagnostics project never",
+            "diagnostics consent training off",
             "batch",
             "help clip",
             "schema clip.insert",

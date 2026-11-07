@@ -305,3 +305,26 @@ fn db_snapshot(
 ) -> Result<(), StoreError> {
     crate::db::insert_snapshot(ctx.txn, branch, seq, p)
 }
+
+/// The note is the last write's: a retry loop that is deduped, then writes again (its record
+/// gone, rewound by an import between the two reads) reports `Written`.
+#[test]
+fn retry_loop_reports_last_write() {
+    use crate::WriteOutcome;
+    let (_tmp, mut s) = store();
+    let deduped = s.write("m2", false, |_| -> Result<(), StoreError> {
+        panic!("deduped")
+    });
+    assert!(deduped.unwrap().is_none());
+    assert_eq!(s.write_outcome, Some(WriteOutcome::Deduped));
+    s.conn
+        .execute("DELETE FROM txs WHERE tx_id = 'm2'", [])
+        .unwrap();
+    s.write("m2", false, |_| Ok(())).unwrap().unwrap();
+    assert_eq!(s.take_write_outcome(), Some(WriteOutcome::Written));
+    let err = s.write("t9", false, |_| -> Result<(), StoreError> {
+        Err(fin_core::CoreError::new("TEST_FAULT", "x").into())
+    });
+    assert!(err.is_err());
+    assert_eq!(s.take_write_outcome(), None);
+}

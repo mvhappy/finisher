@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkRevs, parseFrames } from "./e2e.mjs";
 import { clipsOf, failure } from "./e2e/history-lib.mjs";
+import { contentFields, contentProblems, kindDef, leaks, loadContentFields, parseJsonl } from "./e2e/diagnostics-lib.mjs";
 import { audioSummary, blessing, checkGolden, cubicBezier, engineProblem, firstDifference, frameGolden, hashTree, layerSummary } from "./e2e/reel-lib.mjs";
 import { realCache } from "./e2e/reel-real.mjs";
 
@@ -185,4 +186,38 @@ test("the real-font pass skips without a cache, unless FIN_REQUIRE_FONTS=1", () 
   assert.equal(existsSync(missing), false);
   assert.throws(() => realCache({ FIN_FONT_CACHE: missing, FIN_REQUIRE_FONTS: "1" }), /does not exist/);
   assert.equal(realCache({ FIN_FONT_CACHE: tmpdir() }), tmpdir());
+});
+
+test("diagnostics: content fields come from the generated schema's x-fin-class", () => {
+  const schema = {
+    $defs: {
+      LogCommit: { properties: { outcome: { $ref: "#/$defs/Outcome" }, intent: { allOf: [{ $ref: "#/$defs/X" }, { "x-fin-class": "content" }] } } },
+      Plain: { properties: { a: { type: "string" } } },
+    },
+  };
+  assert.deepEqual(contentFields(schema), { LogCommit: new Set(["intent"]) });
+  assert.equal(kindDef("log.commit"), "LogCommit");
+  assert.equal(kindDef("error.panic"), "ErrorPanic");
+  // The real schema classes log.commit's intent as content.
+  assert.ok(loadContentFields().LogCommit?.has("intent"));
+});
+
+test("diagnostics: contentProblems flags a training stamp and a content field", () => {
+  const fields = { LogCommit: new Set(["intent"]) };
+  const ok = { id: "1", kind: "log.commit", consent: { purposes: ["diagnostics"] }, payload: { outcome: "accepted" } };
+  assert.deepEqual(contentProblems(ok, fields), []);
+  const bad = { ...ok, consent: { purposes: ["diagnostics", "training"] }, payload: { intent: [] } };
+  assert.deepEqual(contentProblems(bad, fields), ["log.commit 1 is stamped training", "log.commit 1 has content field intent"]);
+});
+
+test("diagnostics: leaks finds needles and any unkeyed blake3 hash, skipping empty needles", () => {
+  const files = [
+    ["a.jsonl", Buffer.from('{"h":"k1:00ff","p":"/tmp/x"}\n')],
+    ["b.jsonl", Buffer.from('{"h":"blake3:abcd"}\n')],
+  ];
+  assert.deepEqual(leaks(files, ["/tmp/x", "", undefined, "absent"]), [
+    { file: "a.jsonl", needle: "/tmp/x" },
+    { file: "b.jsonl", needle: "blake3:" },
+  ]);
+  assert.deepEqual(parseJsonl('{"a":1}\n\n{"b":2}\n'), [{ a: 1 }, { b: 2 }]);
 });

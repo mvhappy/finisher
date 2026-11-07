@@ -32,6 +32,20 @@ import {
   RecordSuccess,
   RecoverReportSuccess,
 } from "./history.ts";
+import {
+  DiagnosticsConsentPayload,
+  DiagnosticsConsentSuccess,
+  DiagnosticsExportPayload,
+  DiagnosticsExportSuccess,
+  DiagnosticsProjectPayload,
+  DiagnosticsProjectSuccess,
+  DiagnosticsPurgePayload,
+  DiagnosticsPurgeSuccess,
+  DiagnosticsRecordPayload,
+  DiagnosticsRecordSuccess,
+  DiagnosticsStatusPayload,
+  DiagnosticsStatusSuccess,
+} from "./diagnostics.ts";
 
 /**
  * Envelope types generated from the Rust types they carry (`@finisher/core-types`). The Effect
@@ -392,4 +406,11 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.fetch", { payload: FontsFetchPayload, success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.plan", { payload: FontsPlanPayload, success: FontsPlanSchema, error: FinError }),
+  // Scope `diagnostics` (plan D, Decision 32).
+  Rpc.make("diagnostics.status", { payload: DiagnosticsStatusPayload, success: DiagnosticsStatusSuccess, error: FinError }),
+  Rpc.make("diagnostics.export", { payload: DiagnosticsExportPayload, success: DiagnosticsExportSuccess, error: FinError }),
+  Rpc.make("diagnostics.purge", { payload: DiagnosticsPurgePayload, success: DiagnosticsPurgeSuccess, error: FinError }),
+  Rpc.make("diagnostics.project", { payload: DiagnosticsProjectPayload, success: DiagnosticsProjectSuccess, error: FinError }),
+  Rpc.make("diagnostics.consent", { payload: DiagnosticsConsentPayload, success: DiagnosticsConsentSuccess, error: FinError }),
+  Rpc.make("diagnostics.record", { payload: DiagnosticsRecordPayload, success: DiagnosticsRecordSuccess, error: FinError }),
 );

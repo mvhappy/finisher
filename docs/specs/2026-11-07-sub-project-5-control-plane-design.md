@@ -1,6 +1,6 @@
 # Sub-project 5: Control plane breadth — Design
 
-- **Status:** revision 3 (2026-11-07). Revision 2 answered an independent review of revision 1 (`45039ab`; §15 maps every finding). Revision 3 applies the cross-design reconciliation with sub-projects 6, 7 and 8 (§16): 5C owns the shared job system, adds warm workers and helpers, calls sub-project 7's `fin-sandbox`, and is split so its engine can start after 5A Tasks 1–2. Nothing here is built yet.
+- **Status:** revision 3 (2026-11-07). Revision 2 answered an independent review of revision 1 (`45039ab`; §15 maps every finding). Revision 3 applies the cross-design reconciliation with sub-projects 6, 7 and 8 (§16): 5C owns the shared job system, adds warm workers and helpers, calls sub-project 7's `fin-sandbox`, and is split so its engine can start after 5A Tasks 1–2. Revision 4 records the owner's decisions of 2026-11-07 (§12; §17 maps where each one landed): the six sub-project 5 answers as recommended, Node 24 as the repository's Node, `auto` merges under a per-project owner policy, and the platform floor (Windows 11, Linux kernel ≥ 6.2). Nothing here is built yet.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 rule 6, §5 (`AuthProvider`, `ConnectRelay`), §6.4 ("conflicts become review items"), §6.7 (media libraries and indexing jobs), §8.3 (allow/ask/deny), §8.4 (token delivery, the env allow-list), §9.9 (jobs), §11.3 (per-transaction accept/reject), §16 (pairing, auth, security), §20 (library root mapping), §21.1 (sources and human-only operations) and §27.12.5 (the local transport and its WebSocket token). Where the two disagree, this document wins for sub-project 5, and arch §27 gets a pointer when each batch merges.
 - **Builds on:** sub-projects 2 and 4 (4A, 4B, 4C, on stacked branches; 4C is `sp4c-edit-breadth`) and the diagnostics hooks D1–D7 on the 4C branch. **D1 and D2 are done; D3–D7 are not.** 5A's Tasks 1, 2 and 10 can start now; the rest of 5A needs D4 (sources per transport) and D6 (actor headers), which it changes (§3.4).
 - **House style:** as `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`. Each batch gets its own plan; each batch section is rewritten "as built" when it lands.
@@ -75,15 +75,16 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 - **Server data** (`config.ts` `ensureServerData`): created 0700, refused if a symlink or owned by another uid; nothing is checked on Windows.
 - **Identity:** `<server-data>/server-id`, a lowercase ULID with clone detection (`fin-store::server_id`); it is reminted when server data turns up somewhere else.
 - **`fin`** finds the socket through `FIN_SERVER` or `finisherd.json`, sends `headers: []` today, never calls `server.hello`, and exits 0/2/3/4/5/6.
-- **Electron's Node is not the repository's Node** (Electron 44/45 embed Node 24.22.0; the repository pins 26.12.1): see §1.6 for sub-project 9.
+- **Electron's Node is not yet the repository's Node** (Electron 44/45 embed Node 24.22.0; the repository still pins 26.12.1). The owner decided to move the repository to Node 24 (§1.6); until that switch lands, see §3.1.
 - **`TASKS.md` "Follow-ups for sub-project 5":** Windows named-pipe DACL and pipe squatting, server-data ACL check, graceful stop without SIGTERM; decode failures and unknown tags as `FinError`; relative paths refused server-side; a client deadline and frame-size cap; test hooks out of release builds; `childEnv` provider variables (sub-project 7).
 
 ### 1.6 Cross-cutting notes for other sub-projects
 
 - **Sub-project 6 (media):** the job system is 5C's (§6.0). Sub-project 6 contributes the `media` family inside `fin-workers`, its job specs, the mapped-file bulk channel (its own shared-memory crate) and `job.done` `kv` 2 with media fields; `fin look` uses a warm `interactive:media` worker (§6.3). It can build 6A-1 beside 5C-1 against the `JobEngine` API and the `test` family, and needs 5C-2 only for `fin` commands that return job ids.
-- **Sub-project 7 (agent runtime):** owns `fin-sandbox` (profiles `agent`, `hook`, `worker`, `plugin`), which 5C's `Spawner` trait calls at every spawn; owns approvals behind `APPROVAL_REQUIRED` and the rules and hooks of the chain's policy and after stages (§4.4); mints `agent` credentials (§4.1); applies the sandbox reachability rules of §4.11.
-- **Sub-project 8 (plugins):** contributes plugin job adapters, started by 5C as helpers or as a job's only process under the `plugin` profile (§6.4); `worker.exit` records them with a keyed plugin id. Generation providers add `externalRef` to jobs (cut from 5C, §1.2).
-- **Sub-project 9 (frontend and Electron):** **Electron 44 and 45 embed Node 24.22.0, while the repository pins Node 26.12.1.** A `finisherd` started by the desktop shell as an `ELECTRON_RUN_AS_NODE` child therefore runs on Node 24, a Node the server is not tested on today. Checked on 2026-11-07 on Linux x64 with Electron 44.9.3 and 45.0.0: `node:sqlite` loads without an experimental warning, with SQLite 3.53.4, FTS5 and WAL. Sub-project 9 must either ship its own Node 26 for `finisherd` or add Node 24 to the test matrix; sub-project 5 uses only APIs present in both (§3.1). The same applies to `fin-node`'s napi build (it must load in both runtimes; arch §27.1 measured the Electron loads). Sub-project 9 also owns SSH/WSL routes, the device key in the keychain, and the onboarding question that is the only RPC route to training content (§3.4).
+- **Sub-project 7 (agent runtime):** owns `fin-sandbox` (profiles `agent`, `hook`, `worker`, `plugin`), which 5C's `Spawner` trait calls at every spawn; owns approvals behind `APPROVAL_REQUIRED` and the rules and hooks of the chain's policy and after stages (§4.4); mints `agent` credentials (§4.1); runs the `auto` merge policy as the server-internal `policy` actor (§8.5, agent §6.5); applies the sandbox reachability rules of §4.11. Its `SecretStore` uses 5B's secret store; in v1 it holds only the OpenRouter key the user pastes, because CLI agents use the user's own Claude Code or Codex sign-in, which Finisher never copies or stores (agent §8.6).
+- **Sub-project 8 (plugins):** contributes plugin job adapters, started by 5C as helpers or as a job's only process under the `plugin` profile (§6.4); `worker.exit` records them with a keyed plugin id. Third-party code plugins are allowed before sub-project 7's sandbox (owner decision, plugins §20 item 1): installing one stays human-only (`plugin.install`, §4.6), and until `fin-sandbox` exists 5C starts plugin processes like workers, unsandboxed with the env allow-list (§6.2). Generation providers add `externalRef` to jobs (cut from 5C, §1.2).
+- **Node 24 (owner decision, 2026-11-07).** **Electron 44 and 45 embed Node 24.22.0**, so the repository targets **Node 24** too: a `finisherd` started by the desktop shell as an `ELECTRON_RUN_AS_NODE` child then runs on the Node it is tested on, and the desktop ships no second Node. The repository still pins Node 26.12.1; the switch (`engines`, `.nvmrc`/`.node-version`, CI, docs) is a `TASKS.md` item that must verify `node:sqlite` and every Node API in use on Node 24 before it merges. Checked on 2026-11-07 on Linux x64 with Electron 44.9.3 and 45.0.0: `node:sqlite` loads without an experimental warning, with SQLite 3.53.4, FTS5 and WAL. Until the switch lands, sub-project 5 uses only APIs present in both (§3.1). `fin-node`'s napi build targets the same Node-API level in both runtimes (arch §27.1 measured the Electron loads).
+- **Sub-project 9 (frontend and Electron):** owns SSH/WSL routes, the device key in the keychain, and the onboarding question that is the only RPC route to training content (§3.4). It runs `finisherd` on Electron's Node 24, the repository's Node.
 
 ---
 
@@ -91,10 +92,10 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 
 1. **Trust comes from a credential, never from a transport.** Loopback is not local (an SSH tunnel ends on loopback; so does a browser tab after DNS rebinding). A Unix socket is not the user (a sandboxed agent can still `connect()` to it). Every connection proves a credential; with none, it may only say hello.
 2. **The client authenticates the server too,** and both sides bind the proof to the environment and the endpoint. A squatted pipe, a stale `finisherd.json` or a relay to another server never receives a request.
-3. **Human-only is a property of the principal, enforced in one place,** before any handler runs. A request from `fin` (agent-only, D16) can never be human, whatever its headers claim. **Until sub-project 7's sandbox, this is advisory against code running in a raw shell as the user** (it can read key files); Owner question 6.
+3. **Human-only is a property of the principal, enforced in one place,** before any handler runs. A request from `fin` (agent-only, D16) can never be human, whatever its headers claim. **Until sub-project 7's sandbox (7C), this is advisory against code running in a raw shell as the user** (it can read key files); owner decision 6 accepts that and has it documented (§4.6).
 4. **No opt-in to training content from any command line.** The only routes stay D14b's: the onboarding question (sub-project 9), a hand edit of `privacy.training` in `settings.json`, and `FIN_TRAINING` in `finisherd`'s own environment.
 5. **Error fixes address the user and never hand an agent a ready-to-run command** for a human-only operation.
-6. **Least privilege by default, the status quo by explicit grant.** The `local` principal keeps what `fin` can do today, minus the human-only operations (Owner question 5).
+6. **Least privilege by default, the status quo by explicit grant.** The `local` principal keeps what `fin` can do today, minus the human-only operations (owner decision 5).
 7. **Checks happen against resolved, current state.** Branch names, directories and paths are resolved by the store before authorisation, and state-dependent rules (protected branches, an agent's branches) are checked again inside the store's write transaction.
 8. **No secret where an agent or a sync service can read it.** Keys live in `<server-data>/auth/` (0700, local disk) or the OS keychain; the socket lives apart from them in `<server-data>/run/`, the only server-data path a sandbox may reach. Never in a project folder, never in the environment (arch §8.4), never in the journal.
 9. **Decisions that change what a merge does are op-log facts.** A rejection is a record in the log (`drop`, §8.3), so it syncs, survives moves and rebuilds, and binds every later merge.
@@ -112,7 +113,7 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 - **Checkpoints** run on a `worker_thread` with its own connection: `PASSIVE` every 30 s or when the WAL passes 4 MiB, `TRUNCATE` after 60 s idle.
 - **One writer:** `finisherd`'s main thread. Library catalogs are separate databases with their own writer (§7.1).
 - **Event loop:** every statement is prepared once, indexed and small, with a budget of **p99 ≤ 1 ms** per statement (10k jobs, 100k audit rows, Linux VM). Bulk deletes (retention, purges) run in batches of ≤ 500 rows per statement, one batch per tick. Bulk inserts (catalog diffs) never run on the main thread.
-- **Node versions:** only APIs present in both Node 24.22 (Electron 44/45) and Node 26.12 (§1.5).
+- **Node versions:** the target is **Node 24** (owner decision, §1.6), the Node Electron 44/45 embed (24.22). Until the repository's switch from 26.12 lands, only APIs present in both; after it, Node 24 is the only Node tested.
 - **Versioning:** `meta` holds `envId` (§3.7) and `createdAt`; `migrations {chain, n, appliedAt}` records what ran. **Migrations come in independent chains, one per area** (`core`, `auth`, `jobs`, `libraries`, `reviews`, `devices`), each a frozen ordered sequence (`control/migrations/<chain>/0001.ts`) with its own `formatVersion`/`minReaderVersion` in `meta`, and no foreign keys across chains. Batches that run in parallel (5A and 5C-1) therefore never fight over migration numbers. Pending migrations run in one transaction at start, after a `VACUUM INTO control.db.pre-migrate.bak` (the newest two kept). A chain whose `minReaderVersion` is above this code fails the start with `CONTROL_DB_TOO_NEW`.
 - **Damage:** `PRAGMA quick_check` at open. A failure moves the files aside to `control.db.corrupt-<ulid>` and starts empty with an audit entry: the environment id and devices are lost (devices re-pair: fail closed), catalogs rescan, jobs are lost, open reviews are re-derived (§8.1). Rejections are not lost: they are in the op log (§8.3).
 
@@ -149,10 +150,10 @@ Principal {
 ### 3.3 The audit log
 
 - A security record for the owner (arch §16): rows in `control.db` `audit {id, at, kind, principalKind, principalId, credentialKind, outcome, code?, remote?, count, details JSON}`.
-- **Kinds:** `auth.fail` (bad proof, bad ticket, bad DPoP proof, rate-limited), `auth.denied` (a human-only, scope, reach or policy denial: RPC, scope, principal kind), `auth.ticket`, `credential.mint|revoke|expire`, `pair.offer|redeem|approve|reject|expire`, `device.revoke|rename`, `consent.change`, `diagnostics.purge`, `settings.write`, `project.takeoverConfirmed`, `project.relocated`, `listener.start|stop` (with the SPKI pin), `env.moved|adopted|reset`, `library.add|remove|set`, `history.drop`, `review.merge` (protected targets), `console.refused` (a console command refused for lack of a TTY or a confirmation); reserved for 7/8: `grant`, `approval`, `hook.block`, `hook.modify`, `sandbox.violation`, `plugin.install`.
+- **Kinds:** `auth.fail` (bad proof, bad ticket, bad DPoP proof, rate-limited), `auth.denied` (a human-only, scope, reach or policy denial: RPC, scope, principal kind), `auth.ticket`, `credential.mint|revoke|expire`, `pair.offer|redeem|approve|reject|expire`, `device.revoke|rename`, `consent.change`, `diagnostics.purge`, `settings.write`, `project.takeoverConfirmed`, `project.relocated`, `listener.start|stop` (with the SPKI pin), `env.moved|adopted|reset`, `library.add|remove|set`, `history.drop`, `review.merge` (protected targets; `auto: true` for auto merges, §8.5), `review.policy` (old and new value), `console.refused` (a console command refused for lack of a TTY or a confirmation); reserved for 7/8: `grant`, `approval`, `hook.block`, `hook.modify`, `sandbox.violation`, `plugin.install`.
 - **Aggregation:** `auth.fail` rows are aggregated **per credential kind (and remote address, in 5B) per minute**, with `count`, so a flood of connections cannot flood the log.
 - **Always on.** Consent does not gate it, `DO_NOT_TRACK` does not stop it; it is never uploaded, never part of `fin diagnostics export`, never read by the dataset builder.
-- **What it may hold** that the journal may not: device names and, for pairing and failed authentication, remote addresses (Owner question 4). Never secrets, tokens, MACs, nonces, links, paths or request payloads.
+- **What it may hold** that the journal may not (owner decision 4): device names and remote addresses, **for pairing, revocation and failed authentication only** (`pair.*`, `device.revoke`, `credential.revoke`, `auth.fail`); every other kind records neither. Never secrets, tokens, MACs, nonces, links, paths or request payloads.
 - **Retention:** 180 days or 100k rows, swept hourly in batches. Readable and purgeable only by the owner (`auth.audit.list`, `auth.audit.purge`).
 - **Never blocks:** a failed audit write is logged to stderr and counted in `server.status`; the request still gets its answer (denials still deny).
 
@@ -291,10 +292,10 @@ A closed vocabulary in `@finisher/contracts` (`scopes.ts`). **Every RPC declares
 |---|---|
 | `anonymous` | `public` |
 | `console`, `device` | all (training on still `device` only) |
-| `local` | all but the human-only rows; it keeps `branch.protected` and `review.decide` (Owner question 5) |
-| `agent`, `mcp` | exactly the credential's scopes, never a human-only one (a mint that asks for one is refused). The console's mint defaults to `server.read`, `project.read`, `project.write`, `review.write`, `jobs.read`, `jobs.submit`, `library.read`, `library.scan`, `diagnostics.read`, `diagnostics.record`; never `branch.protected`, `review.decide`, `jobs.control`, `project.admin`, `project.create` or `fonts.fetch` unless asked for |
+| `local` | all but the human-only rows; it keeps `branch.protected` and `review.decide` (owner decision 5) |
+| `agent`, `mcp` | exactly the credential's scopes, never a human-only one (a mint that asks for one is refused). The console's mint defaults to `server.read`, `project.read`, `project.write`, `review.write`, `jobs.read`, `jobs.submit`, `library.read`, `library.scan`, `diagnostics.read`, `diagnostics.record`; never `branch.protected`, `review.decide`, `jobs.control`, `project.admin`, `project.create` or `fonts.fetch` unless asked for. No credential carries the right to auto-merge: the `auto` merge policy is a server function (§8.5) |
 
-- **Two scopes where an RPC does two things:** `jobs.submit` of a `library.scan` job needs `jobs.submit` **and** `library.scan` (the kind's scope, found by the resolver); `review.merge` into a protected branch needs `review.decide` only (reviewing is the sanctioned way in, §8.5); `history.drop` into a protected branch needs `review.decide`.
+- **Two scopes where an RPC does two things:** `jobs.submit` of a `library.scan` job needs `jobs.submit` **and** `library.scan` (the kind's scope, found by the resolver); `review.merge` into a protected branch needs `review.decide` only (reviewing is the sanctioned way in; the `auto` merge policy is not an RPC, §8.5); `history.drop` into a protected branch needs `review.decide`.
 - **Non-human `diagnostics.export` is redacted, not refused:** content fields and blob references are removed, as the upload view does for diagnostics-only, and the result says `redacted: true`.
 - **`auth.revokeSelf {}`** revokes the caller's own credential (an agent, MCP or device credential) and closes its connections; it takes no id, so it can never name another principal.
 
@@ -313,17 +314,18 @@ These are refused with **`HUMAN_ONLY`** (exit 7) for every non-human principal, 
 | `library.add`, `library.remove`, `library.set` of hydration or bandwidth | grants read access to a tree; downloads |
 | credential mint and revoke (beyond `revokeSelf`), pairing, devices, audit read and purge, `server.stop`, environment commands | account takeover vectors |
 | settings writes through RPC (5B) | opens the server to the network |
+| `review.policy` writes (5E): protected branches, `requireReview`, auto merge | decides whether an agent can reach `main` without a person (§8.5) |
 | plugin install (sub-project 8 default) | arch §8.3 |
 
-**Before sub-project 7's sandbox, this binds agents that use `fin` or MCP, not code in a raw shell** that can read `console.key` exactly as it can hand-edit `settings.json` (Owner question 6). The mechanism is complete in 5A; sub-project 7 makes it hold by denying agents read access to `<server-data>/auth/`.
+**Before sub-project 7's sandbox (7C), this binds agents that use `fin` or MCP, not code in a raw shell** that can read `console.key` exactly as it can hand-edit `settings.json`, or drive a pseudo-terminal through the console's confirmation. The owner accepted this (decision 6): it is **documented in the README's security model** (5A Task 13), and agent and MCP credentials (`finisherd agent mint`, `finisherd mcp setup`) are offered as the recommended way to run a harness by hand, not forced. The mechanism is complete in 5A; sub-project 7 makes it hold by denying agents read access to `<server-data>/auth/`.
 
 ### 4.7 The console (`finisherd <command>`)
 
 - `finisherd` alone (or `finisherd serve`) serves, as today. Any other first word is a console command that connects to the running server with `console.key`, runs the handshake as `console` and prints text for a person (`--json` for read-only commands).
 - **Read-only and service commands run anywhere:** `status`, `audit` (listing), `stop` (`server.stop`, the graceful stop Windows lacks; service managers need it non-interactively, and a same-user process can kill the server anyway).
-- **Every mutating human-only command needs an interactive terminal and a typed confirmation.** stdin and stdout must be TTYs (`CONSOLE_NEEDS_TTY`, exit 7, otherwise); the command shows what it will do, asks for `console.challenge` (a fresh 6-character code the server issues to this connection, valid 60 s), and the person types the code back. The server refuses the mutating RPC from a `console` principal without a valid challenge answer (`CONFIRMATION_REQUIRED`). This keeps `yes |` pipes and pasted scripts out; it is not a boundary against same-user code driving a pseudo-terminal before sub-project 7 (Owner question 6).
+- **Every mutating human-only command needs an interactive terminal and a typed confirmation.** stdin and stdout must be TTYs (`CONSOLE_NEEDS_TTY`, exit 7, otherwise); the command shows what it will do, asks for `console.challenge` (a fresh 6-character code the server issues to this connection, valid 60 s), and the person types the code back. The server refuses the mutating RPC from a `console` principal without a valid challenge answer (`CONFIRMATION_REQUIRED`). This keeps `yes |` pipes and pasted scripts out; it is not a boundary against same-user code driving a pseudo-terminal before sub-project 7 (owner decision 6, §4.6).
 - **Training cannot be turned on from the console** (§3.4): `finisherd diagnostics consent training on` answers `CONSENT_UI_ONLY` (exit 2).
-- **5A commands:** `status`, `stop`, `audit [--since] [--kind] [--limit]`, `audit purge`, `diagnostics consent <diagnostics|training> <off|unset>` and `diagnostics on|off|unset`, `diagnostics purge`, `diagnostics project default <id>`, `diagnostics export --content`, `project takeover <dir|id> --confirm`, `project open <dir> --relocate`, `agent mint|ls|revoke`, `mcp setup` (mints an `mcp` credential and writes it to the path the person names). 5B adds `pair`, `devices`, `revoke`, `remote …`, `tls show|rotate`, `env show|name|adopt|reset`; 5D adds `library add|rm|set`.
+- **5A commands:** `status`, `stop`, `audit [--since] [--kind] [--limit]`, `audit purge`, `diagnostics consent <diagnostics|training> <off|unset>` and `diagnostics on|off|unset`, `diagnostics purge`, `diagnostics project default <id>`, `diagnostics export --content`, `project takeover <dir|id> --confirm`, `project open <dir> --relocate`, `agent mint|ls|revoke`, `mcp setup` (mints an `mcp` credential and writes it to the path the person names). 5B adds `pair`, `devices`, `revoke`, `remote …`, `tls show|rotate`, `env show|name|adopt|reset`; 5D adds `library add|rm|set`; 5E adds `review policy <project> [--protect <branch>…] [--require-review on|off] [--auto-merge on|off]`.
 - **Output** is English, like `fin` (arch §17.1); errors print `finisherd: <CODE>: <message>` and the fix, with `fin`'s exit codes.
 
 ### 4.8 RPCs and `fin` (5A)
@@ -338,7 +340,7 @@ These are refused with **`HUMAN_ONLY`** (exit 7) for every non-human principal, 
 | `auth.credential.list`, `auth.credential.revoke` | `auth.admin` | — |
 | `auth.audit.list`, `auth.audit.purge` | `auth.admin` | `{since?, kind?, cursor?, limit ≤ 1000}` → `{entries, next?}` |
 | `console.challenge` | `auth.admin` | `{}` → `{code, expiresAt}` (console principals only) |
-| `server.status` | `server.read` | → `{version, protocol, envId, listeners, connections: {kind: count}, journal, auditFailures}` |
+| `server.status` | `server.read` | → `{version, protocol, envId, listeners, connections: {kind: count}, journal, auditFailures, warnings: [{code, …}]}`; `warnings` are persistent (for example `SANDBOX_DISABLED {profile, reason}`, agent §8.9) and `fin status` shows them |
 | `server.stop` | `auth.admin` | → `{}`, then a graceful shutdown |
 
 `fin` changes: the handshake in a new `crates/fin/src/auth.rs` (key discovery: `FIN_CREDENTIAL`, else `<server-data>/auth/local.key`; the retry of §4.2); exit class 7; `fin whoami`; `fin asset add` and `fin asset probe` send `projectId`.
@@ -353,7 +355,7 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 
 | Threat | Mitigation | Residual |
 |---|---|---|
-| Injected agent runs `fin diagnostics consent training on`, `purge --all`, `takeover --confirm` | `HUMAN_ONLY` for every non-human principal at stage 4; training on is device-only | a raw-shell agent before sub-project 7 can read `console.key` (Owner question 6) |
+| Injected agent runs `fin diagnostics consent training on`, `purge --all`, `takeover --confirm` | `HUMAN_ONLY` for every non-human principal at stage 4; training on is device-only | a raw-shell agent before sub-project 7 can read `console.key` (accepted and documented, owner decision 6) |
 | Injected agent is handed a fix text and runs it | fixes never contain a runnable command (§3.5); console mutations need a TTY and a typed challenge | a PTY-driving agent before sub-project 7 |
 | Injected agent opts the user in to training through the console | refused: `CONSENT_UI_ONLY` from every principal but a device | — |
 | Injected agent reads `finisherd.json` to become `ui` | no token in the file; a `local` ticket gives `local` | — |
@@ -371,7 +373,7 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 - **Key files** are written temp-then-rename inside the private directory (the temp file inherits its DACL); rename-over retries sharing violations.
 - **Sandbox reachability** (sub-project 7 applies these; 5A fixes the layout they depend on):
   - **macOS Seatbelt:** `(allow network-outbound (remote unix-socket (path-literal "<server-data>/run/fin.sock")))` plus `file-read-metadata` on the path's ancestors; everything else under server data denied;
-  - **Linux:** Landlock at the ABI spike S8 used (4) does not mediate `connect()` on pathname sockets, so the socket is reachable as long as the path resolves; under the bwrap fallback, `--bind <server-data>/run <server-data>/run` and nothing else of server data;
+  - **Linux** (kernel ≥ 6.2, the platform floor, so Landlock ABI ≥ 3 wherever Landlock is enabled): Landlock does not mediate `connect()` on pathname sockets at any ABI (ABI 6 scopes abstract sockets only), and sub-project 7's seccomp filter refuses `AF_UNIX` for agents, so a sandboxed `fin` reaches `finisherd` over sub-project 7's credentialed loopback agent listener (agent §8.3), never `fin.sock`; server data stays outside every granted tree. There is no bubblewrap fallback (agent §8.3). A host where Landlock is disabled cannot sandbox CLI agents (agent §8.9);
   - **Windows AppContainer:** the pipe's DACL grants the project's AppContainer SID (`finisher-<project-uuid>`) read/write through `PipeServer.allow(sid)`; `auth/` stays owner-only, which an AppContainer cannot read;
   - in every sandbox, `fin` proves with `FIN_CREDENTIAL` (a file inside the sandbox), never with `local.key`.
 - **Clocks:** nothing in 5A compares clocks; TTLs use the server's monotonic clock.
@@ -433,9 +435,9 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 - **Local by default (D6).** Remote listening is off until the owner enables it on the console (`finisherd remote enable [--listen <host:port>]`, TTY-gated), which writes `settings.json` `server.remote {enabled, listen, tls: {mode: selfSigned|files, certFile?, keyFile?}, publicUrl?, origins?, hosts?}`; `FIN_LISTEN` does the same for Docker.
 - **A non-loopback listener is TLS only** (`LISTEN_NEEDS_TLS` at start otherwise), with a **Host allow-list** of its route names, `publicUrl`'s host and `server.remote.hosts`.
 - **Self-signed mode:** the certificate is made by `rcgen` (in `fin-node`, `ring` provider) from the identity key, with the current addresses and names as SANs, and remade with the same key when they change, so the pin never changes.
-- **Pinning** is for the desktop shell and native clients. **Browsers cannot pin:** they reach a remote server only over a route whose certificate they trust (owner-supplied files, a reverse proxy) or over loopback through an SSH tunnel (Owner question 3).
+- **Pinning** is for the desktop shell and native clients. **Browsers cannot pin:** they reach a remote server only over a route whose certificate they trust (owner-supplied files such as `tailscale cert`, a reverse proxy) or over loopback through an SSH tunnel (owner decision 3). No ACME client, and no route that asks a browser to click through a certificate warning.
 - **Rotation is re-pairing** (signed rotation statements are cut, §1.2): `finisherd tls rotate` makes a new identity key (TTY-gated), keeps the `envId`, and every device pairs again.
-- **Secret store** (`fin-node`): `keyring` 3 pinned exactly in `Cargo.toml` (`=3.x.y`, recorded in the 5B plan) with `default-features = false` and `apple-native`, `windows-native`, `async-secret-service`, `async-io`, `crypto-rust` (the pure-Rust `zbus` Secret Service, also pinned; never the `dbus`/libdbus backend). **When the Secret Service is absent, or present but locked** (no unlock prompt is possible for a server), the key goes to the file store and `server.status` says so; the server never prompts and never blocks its start. File store: `<server-data>/secrets/identity.pem` (0600), optionally wrapped with AES-256-GCM under a key from `FIN_SECRETS_KEY_FILE` (a Docker secret).
+- **Secret store** (`fin-node`; it also backs sub-project 7's `SecretStore`, which in v1 holds only the user's OpenRouter key): `keyring` 3 pinned exactly in `Cargo.toml` (`=3.x.y`, recorded in the 5B plan) with `default-features = false` and `apple-native`, `windows-native`, `async-secret-service`, `async-io`, `crypto-rust` (the pure-Rust `zbus` Secret Service, also pinned; never the `dbus`/libdbus backend). **When the Secret Service is absent, or present but locked** (no unlock prompt is possible for a server), the key goes to the file store and `server.status` says so; the server never prompts and never blocks its start. File store: `<server-data>/secrets/identity.pem` (0600), optionally wrapped with AES-256-GCM under a key from `FIN_SECRETS_KEY_FILE` (a Docker secret).
 - **Handshake** (arch §16): `GET /.well-known/finisher` (anonymous) → `{envId, protocol, spki}` only.
 
 ### 5.6 Environments and routes
@@ -536,7 +538,7 @@ HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
   - worker → host: `begin {job, item}`, `item {job, item, value}`, `progress`, `checkpoint {data}`, `alive`, `result {job, value}`, `error {job, error, itemErrors?}`, `ready` (a warm worker is free again, §6.3).
   - Bulk data never travels in the envelope: it goes through the job's mapped files, in the format of the family's channel (sub-project 6's crate for `media`).
 - **Spawning lives in `fin-node`** (`jobhost`), not in `child_process`: it starts the process with an explicit environment (the `childEnv` allow-list computed by `finisherd`, arch §27.7; nothing inherited), frames the envelope, runs the liveness timers and owns the kill tree. The scheduler, persistence and RPCs stay in TypeScript (D24). *Why in Rust:* the process must enter its Job Object before it runs, and `fin-sandbox` (a Rust crate) must wrap the spawn.
-- **Sandboxing:** every spawn goes through a `Spawner` trait in `jobhost`. Its implementation is **`fin-sandbox`** (sub-project 7) with the `worker` profile for workers and codec helpers and the `plugin` profile for plugin processes. **Until `fin-sandbox` exists, 5C spawns unsandboxed with the env allow-list only**, and `server.status` says so.
+- **Sandboxing:** every spawn goes through a `Spawner` trait in `jobhost`. Its implementation is **`fin-sandbox`** (sub-project 7) with the `worker` profile for workers and codec helpers and the `plugin` profile for plugin processes. **Until `fin-sandbox` exists, 5C spawns unsandboxed with the env allow-list only**, and `server.status` says so. This includes third-party code plugins, which the owner allowed before 7C (plugins §20, decision 1); their profile applies automatically once `fin-sandbox` lands, with no change to 5C. Where the OS mechanism is disabled (Linux with Landlock off) every profile runs unconfined, with a `SANDBOX_DISABLED` warning in `server.status` and a diagnostics event (agent §8.9).
 - **The kill tree, owned by the host, on every OS:**
   - **Windows:** one host-owned Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, created at start, and a nested Job per job; every process (worker and helpers) is created **suspended**, assigned to its job, then resumed, so nothing runs outside it. Cancel is `TerminateJobObject` on the job's Job; if `finisherd` dies, the host job's handle closes and everything dies;
   - **Linux:** each job's processes share a process group, and each sets `PR_SET_PDEATHSIG` = SIGKILL at start (exiting if `getppid()` already changed); where cgroup v2 is delegated to `finisherd` (a systemd user service, a container), each job gets a child cgroup, killed with `cgroup.kill`; otherwise the host kills `-pgid`;
@@ -698,8 +700,8 @@ HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
 - **States:** `open` ↔ `changesRequested` → `merged` | `rejected` | `dismissed` | `superseded`.
 - **Change list** (derived at the snapshot, cached): one entry per merge candidate, as `history.merge {dryRun: true}` plans it at `snapshot`: `{txId (origin root), sourceSeq, record kind, author, actor?, ops, at, decision: pending|accept|reject, decidedBy?, status: willMerge|alreadyPresent|dropped|excluded|dependsOnSkipped|conflict}`, plus `conflicts`.
 - `review_events`, `review_comments {id, itemId, principal, actor, body, at?: rational time, txId?, createdAt}`.
-- **Where review items live:** `control.db` of the server that holds the project (Owner question 1). **Rejections are not review state:** they are `drop` records in the op log (§8.3), so they are never lost. What a move loses (in the recommended answer) is open items' comments and their not-yet-merged accept marks; open `branchReview` items for active branches are re-derived.
-- `branch_policy {projectId, protected: [branchId], requireReview}`, default `protected: [main]`, `requireReview: false`.
+- **Where review items live:** `control.db` of the server that holds the project (owner decision 1). **Rejections are not review state:** they are `drop` records in the op log (§8.3), so they are never lost. What a move loses is open items' comments and their not-yet-merged accept marks; open `branchReview` items for active branches are re-derived.
+- `branch_policy {projectId, protected: [branchId], requireReview, autoMerge: {enabled, into?, roles?, changedBy?, changedAt?}}`, default `protected: [main]`, `requireReview: false`, `autoMerge.enabled: false` (§8.5). It lives in this server's `control.db`, never in the project folder, so a shared project cannot switch it on for another machine.
 
 ### 8.2 Workflow
 
@@ -742,6 +744,13 @@ A **history record**, not a primitive op (it has no ops; it is planned and writt
 
 - Whenever any `history.merge` answers `CONFLICT`, `finisherd` opens or updates a **`mergeConflict`** item for `(source, target)` with the conflict list; it becomes `superseded` when a later merge of the pair succeeds or the source is archived. Rebase conflicts on `tx.commit` stay with their writer.
 - **Protected branches:** a write whose resolved target is protected (`tx.commit`, `history.undo|redo|checkpoint|cherryPick|revert|merge`, `branch.set` of it) needs `branch.protected` (stage 4) and is re-checked in the store's write transaction through the guard (§4.4 stage 6): `BRANCH_PROTECTED` (exit 7). `review.merge` and `history.drop` into a protected branch need `review.decide` instead. `review.policy` writes are human-only.
+- **Auto merge (owner decision, agent §20 item 4).** Branches of `auto`-mode agent sessions may be merged into a protected branch, `main` included, **only under a per-project owner policy**:
+  - **off by default** (`branch_policy.autoMerge.enabled: false`); turned on or off only by `review.policy` (`auth.admin`, human-only: the console, TTY-gated, or a device), audited as `review.policy` with the old and new value. Turning it on is refused with `AUTO_MERGE_UNAVAILABLE` until sub-project 10's QA gate and critic exist (agent §6.5);
+  - **the policy is a server function, not a scope:** no credential carries a right to auto-merge, and no RPC triggers one. The merge is made by the server-internal actor `{kind: policy, policy: autoMerge, enabledBy}` (sub-project 7, agent §6.5) through the same `review.merge {itemId, expect, acceptPending: true}` path, on a `branchReview` item whose **QA gate and critic verdicts both pass for that exact snapshot** (sub-project 10 records them on the item). If any check fails (`reason: policyOff|requireReview|verdictMissing|verdictFailed|snapshotMismatch`), nothing merges and the item stays open for a person. Until sub-project 10 delivers both verdicts no auto merge can happen;
+  - `requireReview: true` on the project disables auto merge (a person decides every entry);
+  - the policy stage (§4.4 stage 5) checks the policy and the verdicts; the merge carries the protected-branch guard (§4.4 stage 6) and `sourceUpTo` of the judged snapshot, so nothing outside what the critic saw is merged; `review.policy` writes are serialised with the project's in-flight writes, so an auto merge either completes before the policy is turned off or is refused;
+  - audited as `review.merge` with `auto: true`, the item, the snapshot, the session, the verdict ids and `enabledBy`; the `review.verdict` entry says `by: policy`, `via: autoMerge`, so a dataset never mistakes it for a person's acceptance.
+  Without the policy, agents still reach protected branches only through a person's review.
 
 ### 8.6 RPCs and `fin` (5E)
 
@@ -749,17 +758,17 @@ A **history record**, not a primitive op (it has no ops; it is planned and writt
 |---|---|
 | `review.request`, `review.comment`, `review.refresh` | `review.write` |
 | `review.list`, `review.get`, `review.watch` (stream: item changes, not re-plans) | `project.read` |
-| `review.decide`, `review.merge`, `review.close` | `review.decide` |
+| `review.decide`, `review.merge`, `review.close` | `review.decide` (the `auto` merge policy's actor is server-internal, §8.5) |
 | `history.drop` | `project.write`, or `review.decide` on a protected target |
-| `review.policy`, `review.policy.get` | `auth.admin` (human) / `project.read` |
+| `review.policy` (protected branches, `requireReview`, `autoMerge`), `review.policy.get` | `auth.admin` (human) / `project.read` |
 
 `fin review request|ls|show|refresh|comment|decide|merge`, `fin drop`, `fin merge --include/--up-to`.
 
 ### 8.7 Security, codes, tests (5E)
 
-- **Security:** an agent can open a review and comment, but not decide, drop into or merge into protected branches by default; review text is content; the change list is computed by the server.
-- **Codes:** 3 `REVIEW_NOT_FOUND`, `REVIEW_UNDECIDED`; 4 `REVIEW_STALE`, `REVIEW_HAS_CONFLICTS`, `REVIEW_CLOSED`; 7 `BRANCH_PROTECTED`; merge reasons `DROPPED`, `notIncluded`.
-- **Tests:** `fin-store` properties: a dropped origin is never copied by any merge into the target or its later descendants, whatever the order of drops, undrops, merges and imports; `include`/`sourceUpTo` never copy a record outside them, and a commit that lands between planning and the write transaction is not included; `derived::compute` agrees between a writer and a follower that imported the records in another order; the format goldens of §8.3. Server: `REVIEW_STALE`; pending never means accept outside the snapshot; conflicts open and supersede items; protected `main` refuses an `agent` commit (stage 4 and the in-transaction guard) and accepts `review.merge`; `review.verdict` entries; an e2e `review` scenario with an agent credential and the local principal as reviewer, including a project move that keeps the rejection.
+- **Security:** an agent can open a review and comment, but not decide, drop into or merge into protected branches by default; the one exception is an `auto`-mode merge under an owner-enabled policy with passing QA and critic verdicts for the snapshot (§8.5), which makes a fooled critic the last check before `main` for projects whose owner turned it on; review text is content; the change list is computed by the server.
+- **Codes:** 3 `REVIEW_NOT_FOUND`, `REVIEW_UNDECIDED`; 4 `REVIEW_STALE`, `REVIEW_HAS_CONFLICTS`, `REVIEW_CLOSED`; 7 `BRANCH_PROTECTED`; 4 `AUTO_MERGE_UNAVAILABLE` (enabling the policy before sub-project 10); merge reasons `DROPPED`, `notIncluded`.
+- **Tests:** `fin-store` properties: a dropped origin is never copied by any merge into the target or its later descendants, whatever the order of drops, undrops, merges and imports; `include`/`sourceUpTo` never copy a record outside them, and a commit that lands between planning and the write transaction is not included; `derived::compute` agrees between a writer and a follower that imported the records in another order; the format goldens of §8.3. Server: `REVIEW_STALE`; pending never means accept outside the snapshot; conflicts open and supersede items; protected `main` refuses an `agent` commit (stage 4 and the in-transaction guard) and accepts `review.merge`; auto merge (the `policy` actor driven by a test hook): nothing merges with the policy off (the default), with `requireReview`, without either verdict, with a verdict for an older snapshot, and when the policy is turned off while the merge is in flight; it merges with the policy on and both verdicts passing (fake verdicts until sub-project 10); no RPC from any credential can make an auto merge; a `review.policy` write from an agent is `HUMAN_ONLY`; `review.verdict` entries; an e2e `review` scenario with an agent credential and the local principal as reviewer, including a project move that keeps the rejection.
 
 ---
 
@@ -780,7 +789,7 @@ All over the ticketed WebSocket as a `device` principal:
 
 | Need | Choice | Licence | Batch |
 |---|---|---|---|
-| Control store, catalogs, FTS | `node:sqlite` (Node built-in; checked under Electron 44/45's Node 24.22) | MIT (Node), public domain (SQLite) | 5A, 5D |
+| Control store, catalogs, FTS | `node:sqlite` (Node built-in; Node 24, the target; checked under Electron 44/45's Node 24.22) | MIT (Node), public domain (SQLite) | 5A, 5D |
 | HMAC, ECDSA P-256, AES-GCM, random | `node:crypto`; Rust `hmac` 0.12 + `sha2` 0.10 in `fin` | MIT OR Apache-2.0 | 5A |
 | WebSocket server under our protocol | `ws` 8 (already under `@effect/platform-node`; pinned directly) | MIT | 5A |
 | Windows pipes, ACLs, Job Objects, enumeration | `windows-sys` 0.61 (already in the tree) | MIT OR Apache-2.0 | 5A, 5C, 5D |
@@ -837,17 +846,23 @@ All over the ticketed WebSocket as a `device` principal:
 | 29 | Rejections are `drop` records in the op log (format 3 for those records only; no upcaster) | §8.3 |
 | 30 | `review.verdict` is filled in 5E (not 10) | §3.4 |
 | 31 | Protected branches per server, default `main`; `local` keeps the scope, agents do not | §8.5 |
+| 32 | `auto`-mode branches merge into protected branches only under a per-project, human-only, default-off policy, with passing QA and critic verdicts for the snapshot, made by a server-internal `policy` actor (no scope, no RPC), policy writes serialised with the project's writes, audited | §8.5 |
+| 33 | The repository targets Node 24, Electron's embedded Node | §1.6, §3.1 |
 
 ---
 
-## 12. Owner questions
+## 12. Owner decisions (2026-11-07)
 
-1. **Where do review items live (now that rejections are durable `drop` records in the op log)?** *Recommended:* in `control.db` of the server that holds the project; open `branchReview` items are re-derived after a move. *Trade-off:* comments and not-yet-merged accept marks of open items stay on the server that recorded them. The alternative, write-once review event files in `.finisher/review/` (sync-safe, any server can append, comments from read-only followers), costs a second synced format with its own conflict, compaction and `collect: never` rules.
-2. **Make the human-only operations human-only now (5A), with the TTY-gated `finisherd` console as the human interface until the UI, rather than in sub-project 7?** *Recommended:* yes. *Trade-off:* until sub-project 9, consent changes (except training on, which waits for onboarding or a hand edit), purges, `project default`, confirmed takeovers and relocations need an interactive terminal on the server (`docker exec -it` on a NAS). Agents and tests lose `fin diagnostics consent|purge|project default`, `fin project takeover --confirm` and `--relocate`. Waiting leaves them open to every agent for two more sub-projects.
-3. **How do browsers reach a remote server?** *Recommended:* only over a route whose certificate the browser trusts (owner-supplied files such as `tailscale cert`, or a reverse proxy), or over loopback through an SSH tunnel; SPKI pinning is for the desktop shell and native clients. *Trade-off:* the v1 web client on a LAN needs one setup step. Alternatives: an ACME client (needs public DNS and ports 80/443, wrong for a NAS behind NAT), or clicking through certificate warnings (trains users to accept them).
-4. **May the local audit log keep device names and remote addresses?** *Recommended:* yes, for pairing, revocation and failed authentication only; local, owner-only, never uploaded, 180 days. *Trade-off:* it is the one store holding IP addresses (D34 forbids them in the journal); without them a stolen-link or brute-force incident cannot be traced.
-5. **Should the `local` principal keep `branch.protected` and `review.decide`, so that `fin` run by the user (and, before sub-project 7, any agent harness the user starts in a shell) can still commit and merge into `main`?** *Recommended:* yes for `local`; `agent` and `mcp` credentials never get them by default. *Trade-off:* a hand-run agent using the local key can still write `main` without review until it runs under sub-project 7 or uses an agent credential. Revoking it now forces every `fin` flow and test onto branches and reviews before the runtime that makes those branches exists.
-6. **Until the sub-project 7 sandbox exists, human-only is advisory against agents running in a raw shell (they can read the key files, and can drive a pseudo-terminal through the console's confirmation). Accept that, or require hand-run harnesses to use agent credentials?** *Recommended:* accept it for now, document it in the README's security model, and offer agent and MCP credentials (`finisherd agent mint`, `finisherd mcp setup`) as the recommended way to run a harness by hand, without forcing them. *Trade-off:* forcing credentials (refusing writes from `local`) would not stop a raw-shell agent either (it can read `local.key` or `console.key` as easily as its own credential), so it buys attribution, not security, at the cost of breaking every script and test that drives `fin` directly; the real fix is sub-project 7 denying agents read access to `<server-data>/auth/`.
+The owner answered every question as recommended. The options weighed are kept in revision 3 (`git log` of this file).
+
+1. **Review items live in `control.db` of the server that holds the project.** Open `branchReview` items are re-derived after a move; comments and not-yet-merged accept marks of open items stay on the server that recorded them. Rejections are durable regardless (`drop` records, §8.3). No `.finisher/review/` event files. → §8.1.
+2. **Human-only operations are human-only now (5A), with the TTY-gated `finisherd` console as the human interface until the UI.** Until sub-project 9, consent changes (except training on, which waits for onboarding or a hand edit), purges, `project default`, confirmed takeovers and relocations need an interactive terminal on the server (`docker exec -it` on a NAS). Agents and tests lose `fin diagnostics consent|purge|project default`, `fin project takeover --confirm` and `--relocate`. → §4.6, §4.7.
+3. **Browsers reach a remote server only over a route whose certificate they trust** (owner-supplied files such as `tailscale cert`, or a reverse proxy) **or over loopback through an SSH tunnel.** SPKI pinning is for the desktop shell and native clients. No ACME client, no clicking through certificate warnings; the v1 web client on a LAN needs one setup step. → §5.5.
+4. **The local audit log keeps device names and remote addresses for pairing, revocation and failed authentication only;** local, owner-only, never uploaded, 180 days. It is the one store holding IP addresses (D34 keeps them out of the journal). → §3.3.
+5. **`local` keeps `branch.protected` and `review.decide`;** `agent` and `mcp` credentials never get them by default. A hand-run agent using the local key can still write `main` without review until it runs under sub-project 7 or uses an agent credential. → §4.5. (Sub-project 7's `auto` mode reaches protected branches only through the separate, owner-enabled auto-merge policy, §8.5.)
+6. **Human-only is advisory against raw-shell agents until sub-project 7's sandbox (7C), and this is documented** in the README's security model (5A Task 13). Agent and MCP credentials are offered as the recommended way to run a harness by hand, not forced: forcing them would buy attribution, not security, and break every script and test that drives `fin` directly. The real fix is sub-project 7 denying agents read access to `<server-data>/auth/`. → §2 principle 3, §4.6, §4.7, §4.10.
+
+**Cross-cutting decisions of the same day that change this design:** the repository targets **Node 24** (§1.6, §3.1); **`auto` may merge into `main` under a per-project owner policy** (agent §20 item 4; §8.5 here); **third-party code plugins are allowed before 7C** (plugins §20 item 1; §6.2 here); **v1 API models go through one OpenAI-compatible adapter (OpenRouter or a local server), and CLI agents use the user's own sign-in** (agent §20 items 6–7 and F1; §1.6, §5.5 here); the platform floor is **Windows 11 only and Linux kernel ≥ 6.2** (arch D-table; §4.11 here).
 
 ---
 
@@ -858,11 +873,12 @@ All over the ticketed WebSocket as a `device` principal:
 | Effect 4.0.6's RPC client ids or protocol hooks differ from what §4.3 assumes | 5A Task 3 starts by reading the source and recording the answer; the chain needs only a connection id per request |
 | The native pipe listener (napi threads, overlapped I/O) is new native code | its own task with Windows-only tests; the handshake still protects a libuv pipe if the listener must be disabled |
 | `node:sqlite` blocks the event loop | per-statement budget; no autocheckpoint on the main connection; batched deletes; fallback: the same schema through `rusqlite` in `fin-node` |
-| Electron's Node (24) differs from the repository's (26) | only APIs present in both; sub-project 9 decides whether the desktop ships its own Node for `finisherd` |
+| Electron's Node (24) differs from the repository's (26) until the switch to Node 24 lands | the switch is a `TASKS.md` item that verifies `node:sqlite` and every API in use on Node 24; until then only APIs present in both |
 | Keychain prompts, missing or locked Secret Service | file store with optional wrapping; never prompt |
-| Browsers and self-signed TLS | Owner question 3 |
+| Browsers and self-signed TLS | trusted certificates or an SSH tunnel only (owner decision 3, §5.5) |
 | Warm workers leak memory or carry state between jobs | recycling after 500 jobs / 30 minutes; fresh-vs-reused equality tests per family; a crash loses only the worker |
-| `fin-sandbox` arrives after 5C | the `Spawner` trait; unsandboxed spawns with the env allow-list, reported in `server.status` |
+| `fin-sandbox` arrives after 5C | the `Spawner` trait; unsandboxed spawns with the env allow-list (third-party plugin processes included), reported in `server.status` |
+| A fooled critic auto-merges into `main` | off by default; human-only, per-project switch; both QA and critic verdicts bound to the snapshot; audited; `requireReview` overrides it (§8.5) |
 | NAS scans hang, disks sleep | worker processes, abandonment limits, spin-up-tolerant timeouts, demand polling |
 | Sync providers hydrate on access | enumeration without opening; process-wide materialisation off on macOS; placeholder markers on every OS; an `open` counter in tests |
 | A `drop` record makes a project unreadable to 4C-era servers | by design read-only (`NEWER_FORMAT`), never wrong; written only when someone rejects |
@@ -876,9 +892,9 @@ Contradictions and gaps found while designing this; each batch's "as built" pass
 1. **§21.1 decides trust by transport** (local socket → `fin`, WebSocket → `ui`), but the WebSocket token sits in a file any same-user process can read, and loopback is reachable through SSH tunnels. Resolved by §3.4 and §4.3.
 2. **§8.4 "peer-credential checks on the local socket"** are impossible from Node, Landlock (ABI 4) does not mediate `connect()` on pathname sockets, and libuv's Windows pipes take the default DACL. Resolved by key-file proofs and the native pipe listener (§4.2, §4.3).
 3. **§8.4's env allow-list** lacked a way to hand `fin` its credential without a secret in the environment. Amended: `FIN_CREDENTIAL` (a path).
-4. **§16 pins a self-signed certificate "at pairing"** for every client; browsers cannot pin, and the web client is v1. Owner question 3.
+4. **§16 pins a self-signed certificate "at pairing"** for every client; browsers cannot pin, and the web client is v1. Resolved by owner decision 3 (§5.5).
 5. **§16 DPoP-bound tokens** assume usable client clocks, while §27.9 records clients off by ~10 s for a day. Resolved by server nonces (§5.3).
-6. **§21.1 phasing puts human-only operations in sub-project 7** although permissions are sub-project 5, and §24 puts `review.*` verdicts in sub-project 10 while §11.3's per-transaction accept/reject is sub-project 5's. Owner question 2; Decision 30.
+6. **§21.1 phasing puts human-only operations in sub-project 7** although permissions are sub-project 5, and §24 puts `review.*` verdicts in sub-project 10 while §11.3's per-transaction accept/reject is sub-project 5's. Resolved by owner decision 2 (§4.6) and Decision 30.
 7. **§11.3 review markers `open/review/resolved`** do not exist in the 4C model (`Marker` has no status); sub-project 10 needs an op.
 8. **§6.4 "conflicts become review items"** presumes per-transaction action, but 4B's merge has no inputs for it, and nothing records a rejection. Resolved by `include`/`sourceUpTo` and `drop` records (§8.3, §8.4).
 9. **§5 "single owner"** vs §16's device "role". Resolved: every device is the owner in v1.
@@ -886,9 +902,9 @@ Contradictions and gaps found while designing this; each batch's "as built" pass
 11. **§6.7 fingerprints include mtime,** so copies never match across machines and relinking (§20) falls back to full hashes over the network. Accepted, on demand only (§7.3).
 12. **§6.7 change detection** ignores inotify limits, cloud placeholders (any open or read downloads them, and on macOS whole directories can be dataless), unmounted mount points that look like empty libraries, and NAS hibernation. Resolved by §7.1–7.3.
 13. **§7 gives TS "its own SQLite"** but forbids synchronous calls on the event loop. Resolved by the budget and rules in §3.1.
-14. **§16 audit log vs D34 "never stored raw: host names, IPs"**. Owner question 4.
+14. **§16 audit log vs D34 "never stored raw: host names, IPs"**. Resolved by owner decision 4 (§3.3): the audit log alone, for pairing, revocation and failed authentication.
 15. **4A/4B expose "a person's decision"** (`takeover {confirm}`, `open {relocate}`) to `fin`, which D16 makes agent-only. Resolved by §4.6.
-16. **The repository pins Node 26.12, but Electron 44/45 embed Node 24.22**, so an embedded `finisherd` (arch §4, desktop) runs on a different Node than the one it is tested on. Sub-project 9 must decide; sub-project 5 stays within both (§1.5).
+16. **The repository pins Node 26.12, but Electron 44/45 embed Node 24.22**, so an embedded `finisherd` (arch §4, desktop) runs on a different Node than the one it is tested on. Resolved by the owner's Node 24 decision (§1.6); sub-project 5 stays within both until the switch lands.
 17. **The server id is reminted on a move** (4A), so it cannot be an environment id (§3.7).
 18. **Tracked files hold personal data,** against the public-repo rule: arch §27.8 names the Apple Developer team's owner and team id, and D3 holds an absolute local path.
 
@@ -901,7 +917,7 @@ Contradictions and gaps found while designing this; each batch's "as built" pass
 | **B1** console could opt in to training; console commands scriptable; fixes printed commands | §3.4, §4.6, §4.7 (training on device-only; `CONSENT_UI_ONLY` from the console; TTY + server-issued typed challenge), §3.5 (fix texts) |
 | **B2** plan commits not green; D4/D6 missing | plan reordered: the `fin` handshake is Task 4, enforcement switches on in that commit; Tasks 1, 2 and 10 can start now; Tasks 3+ wait for D4 and D6 |
 | **B3** `exclude` merged unseen commits; pending meant accept | §8.2, §8.4 (`include`/`sourceUpTo` in the write transaction; pending only within the snapshot, and only on request) |
-| **B4** rejections not durable | §8.3 (`drop` records: format 3, no upcaster, derived index); split out of Owner question 1 |
+| **B4** rejections not durable | §8.3 (`drop` records: format 3, no upcaster, derived index); split out of §12 item 1 |
 | **B5** envId = server id | §3.7, §5.8 (separate `envId` in `control.db`, bound to the identity key, `server_ids` map) |
 | **H1** restarts looked like attacks; no MCP principal | §4.2 (one re-read and retry, `keyStale`), §3.2 (`mcp`) |
 | **H2** socket beside secrets; pipe security; sandbox reach; `FIN_CREDENTIAL` | §4.1, §4.3 (native pipe listener decided), §4.11, arch §8.4 amended |
@@ -930,5 +946,23 @@ Contradictions and gaps found while designing this; each batch's "as built" pass
 | Helpers are siblings started by 5C; workers never start processes | §6.2, §6.4 |
 | Sandboxing is sub-project 7's `fin-sandbox`; 5C calls it at spawn, unsandboxed with the env allow-list until then | §6.2 (`Spawner` trait in `fin-node` `jobhost`), §1.2 |
 | 5C runs beside sub-project 6's 6A-1; what it needs from 5A | §6.8, §1.4: 5C-1 needs 5A Tasks 1–2; 5C-2 needs 5A Tasks 3–6; per-area migration chains in `control.db` so they never collide (§3.1) |
-| Electron embeds Node 24 | §1.6 (note for sub-project 9), §1.5, §14 item 16 |
+| Electron embeds Node 24 | §1.6, §1.5, §14 item 16 (revision 4: the repository targets Node 24) |
 | Kill-tree race on Windows | improved: processes are created suspended, assigned to their Job, then resumed (§6.2), instead of assignment by pid after spawn |
+
+---
+
+## 17. Owner decisions applied (revision 4)
+
+| Decision | Where |
+|---|---|
+| 5.1 review state in `control.db` | §8.1, §12 |
+| 5.2 human-only now, TTY console | §4.6, §4.7, §12 |
+| 5.3 browsers: trusted certificates or an SSH tunnel | §5.5, §13, §14 item 4 |
+| 5.4 audit log: device names and addresses for pairing, revocation and failed authentication only | §3.3, §14 item 14 |
+| 5.5 `local` keeps `branch.protected` and `review.decide` | §4.5 |
+| 5.6 human-only advisory against raw-shell agents until 7C, documented | §2, §4.6, §4.7, §4.10; 5A Task 13 (README) |
+| Node 24 | §1.5, §1.6, §3.1, §10, §11 Decision 33, §13, §14 item 16 |
+| `auto` merges under a per-project owner policy (agent 7.4) | §1.6, §3.5, §4.5, §8.1 (`branch_policy.autoMerge`), §8.5, §8.6, §8.7, §11 Decision 32, §13 |
+| Third-party code plugins before 7C (plugins 8.1) | §1.6, §6.2, §13 |
+| OpenRouter or local OpenAI-compatible API models; CLI sign-in by the user (agent 7.6, 7.7, F1) | §1.6, §5.5 |
+| Windows 11 only; Linux kernel ≥ 6.2 | §1.3 (unchanged: already Windows 11), §4.11 |

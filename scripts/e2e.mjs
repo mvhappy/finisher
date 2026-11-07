@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics ...]  (default: every scenario)
 //
 // The "storage" scenario (scripts/e2e/storage.mjs) edits, exports, deletes the database,
 // rebuilds from the folder and checks a second finisherd follows the folder read-only.
@@ -23,6 +23,11 @@
 // equal `scripts/e2e/reel-golden/` (`E2E_REEL_BLESS=1` rewrites them, refused under CI). Its
 // real-font pass needs `FIN_FONT_CACHE` (skipped without it, unless `FIN_REQUIRE_FONTS=1`).
 //
+// The "diagnostics" scenario (scripts/e2e/diagnostics*.mjs) drives the diagnostics journal by
+// `fin` with an agent session: off by env, on by default, every commit outcome, the join of
+// `log.commit`, `cli.command` and the op log, the leak grep, a `never` project on two servers,
+// training by env only, withdrawal and `purge --all` (plan D7).
+//
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -33,12 +38,13 @@ import { checkRevs, run as runBasic } from "./e2e/basic.mjs";
 import { run as runStorage } from "./e2e/storage.mjs";
 import { run as runHistory } from "./e2e/history.mjs";
 import { run as runReel } from "./e2e/reel.mjs";
+import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics };
 
 async function main(argv) {
   if (!argv.includes("--skip-build")) {

@@ -1,6 +1,6 @@
 # Sub-project 8: Plugins and registry — Design
 
-- **Status:** draft for review, revision 2 (2026-11-07). Revision 2 answers the independent review of revision 1 (`848f01f`): the confused-deputy, shared-memory, sandbox-profile and TUF blockers, the high and medium findings, the v1 cuts and the coordinator's ownership decisions (§1.3, §1.6, §22). Nothing here is built yet. The plan for the first sub-batch (8A) is `docs/superpowers/plans/2026-11-07-sub-project-8a-packages-and-registries.md`.
+- **Status:** draft for review, revision 3 (2026-11-07). Revision 2 answers the independent review of revision 1 (`848f01f`): the confused-deputy, shared-memory, sandbox-profile and TUF blockers, the high and medium findings, the v1 cuts and the coordinator's ownership decisions (§1.3, §1.6, §22). Revision 3 records the owner's decisions of 2026-11-07 (§20) and revises the body where they differ from revision 2's recommendations: third-party code plugins run before 7C (§3.1, §5.3, §16.1), and the v1 generation providers are OpenRouter and fal.ai (§9.4). Nothing here is built yet. The plan for the first sub-batch (8A) is `docs/superpowers/plans/2026-11-07-sub-project-8a-packages-and-registries.md`.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited as *arch §n*). This document refines arch §4 rule 6, §6.2–6.3, §8.3, §9.11–9.12, §12.1, §12.6–12.7, §13, §14, §15, §16, §18, §21.1, §22 and §27.4 for sub-project 8. Where the two disagree, this document wins for sub-project 8, and arch §27 gets a pointer when each sub-batch merges.
 - **Builds on:** sub-project 4 (*core §n*: `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`), the diagnostics hooks D1–D7, and the drafts of sub-project 5 (*cp §n*, branch `sp5-design`: principals, scopes, the console, `fin-jobs`, the library stage framework, review items), sub-project 6 (*media §n*, branch `sp6-design`: `fin-worker`, PCM and frame feeds, the codec traits and their conformance suite, masks) and sub-project 7 (*agent §n*, branch `sp7-design`, under revision: branch subtrees per session §5.1, command rules §7.2, approvals §7.3, `fin-sandbox` and the ACL broker §8, hooks §9, `SecretStore` and `ModelGateway` grants §10, budgets §13). §16 lists exactly what sub-project 8 needs from each; the `plugin` sandbox profile is a **cross-design requirement** on sub-project 7 (§16.1, X1).
 - **House style:** as the sub-project 4 spec. Each sub-batch gets its own plan; each section is rewritten "as built" when its sub-batch lands.
@@ -56,15 +56,15 @@ Sub-project 8 makes Finisher extensible without trusting what extends it, and sh
 | Batch | Delivers | Depends on | Unblocks |
 |---|---|---|---|
 | **8A** Packages, registries and lifecycle | `fin-plugin-api` (manifest, permissions, licences; generated types), the `.finpkg` format and its strict reader, `fin-registry` (TUF client and editor over local folders, trusted store, advisories, a test-only HTTP transport), the plugin store, install plans and approvals, install/update/remove/enable, bundled plugins (hash-verified), content packs with consumers (font catalogs, caption styles), `fin-plugin` publisher tooling, `fin plugin …`, `finisherd plugin …` | 5A (Tasks 1–8 and 11 need nothing of 5A) | 8B; sub-project 11 (template and caption packs) |
-| **8B** Plugin host and SDKs | the plugin protocol, process runtimes (`native`, `node`), process keys (§3.3), the `plugin` principal and reach checks, the `fin-jobs` adapter, server-side command expansion with `Tx.via`, plugin command names in `fin` and in sub-project 7's rules, hook handlers with `hooks:observe` and `hooks:modify`, `fin-plugin-sdk` (Rust), `@finisher/plugin-sdk` (TS), `fin-plugin-test`; registry-installed code plugins stay off until 7C's `plugin` profile (owner question 1) | 8A, 5C, 6A (`fin-shm`), 7A; 7C to enable third-party code; 7F for hooks | 8C–8H |
+| **8B** Plugin host and SDKs | the plugin protocol, process runtimes (`native`, `node`), process keys (§3.3), the `plugin` principal and reach checks, the `fin-jobs` adapter, server-side command expansion with `Tx.via`, plugin command names in `fin` and in sub-project 7's rules, hook handlers with `hooks:observe` and `hooks:modify`, `fin-plugin-sdk` (Rust), `@finisher/plugin-sdk` (TS), `fin-plugin-test`; registry-installed code plugins run from 8B on, unconfined until 7C's `plugin` profile lands, behind a high-risk warning and an explicit acceptance at install (owner decision 1, §5.3) | 8A, 5C, 6A (`fin-shm`), 7A; 7C for OS confinement (applied automatically when it lands); 7F for hooks | 8C–8H |
 | **8C** Analysis foundation and speech | fin-core `analysis` types and `ArtifactRef`, the artifact cache and recipes, analysis jobs and library stages, ONNX Runtime and the model manager, `fin-analyze` (the bundled analyzers binary), VAD, transcription, number verbalisation, alignment and boundary correction (retrained and re-selected on permissive labels, §8.3), transcript views, word addressing, captions from transcripts, re-sync and paper edits | 8B, 5C, 5D, 6C | 8D, 8E |
 | **8D** Scenes and audio analysis | scene detectors (PySceneDetect port), loudness curves, speech/music classes, DSP beats, `compose::duck`, markers and splits from analysis | 8C, 6A–6B (frames), 6C | 8E, 8F |
 | **8E** Semantic search | chunking, SigLIP2 embeddings, an exact-scan vector index (then `usearch`), transcript full-text, hybrid `library.search`, `fin search` | 8C, 8D, 5D | sub-project 11 (clip finder) |
 | **8F** Reframe | face and person detection, tracking, shot-aware smoothing, crop paths, `compose::reframe` | 8D, 6B, 6D | sub-project 11 |
-| **8G** Generation providers | the provider contract, catalogs, brokered egress bound to `ModelGateway` grants, paid-call safety, provenance, the first-party providers (owner question 5) | 8B, 7A (`SecretStore`, grants); 7B and agent §13 for agent budgets and approvals | sub-project 11 |
-| **8H** Media interfaces | codec backends as plugins, matte producers and the key matte, WGSL effects, transitions and LUT packs with `plugin.pin`/`unpin`/`repin` and pinned ParamSpecs, offline audio processors, schema version 3 (with owner question 3) | 8B, 6B, 6D, 6E | copyleft repo, after-v1 background removal |
+| **8G** Generation providers | the provider contract, catalogs, brokered egress bound to `ModelGateway` grants, paid-call safety, provenance, the first-party providers OpenRouter and fal.ai (owner decision 5, §9.4) | 8B, 7A (`SecretStore`, grants); 7B and agent §13 for agent budgets and approvals | sub-project 11 |
+| **8H** Media interfaces | codec backends as plugins, matte producers and the key matte, WGSL effects, transitions and LUT packs with `plugin.pin`/`unpin`/`repin` and pinned ParamSpecs, offline audio processors, schema version 3 (with matte assets, owner decision 3) | 8B, 6B, 6D, 6E | copyleft repo, after-v1 background removal |
 
-**Order:** 8A → 8B → 8C → {8D, 8G} → {8E, 8F} → 8H. 8G needs only 8B and 7A and can run beside 8C–8F; 8H needs 8B and sub-project 6's 6D/6E and can run beside 8D–8F. Arch §24 puts sub-project 7 before 8; owner question 1 decides how much of 8B waits for 7C.
+**Order:** 8A → 8B → 8C → {8D, 8G} → {8E, 8F} → 8H. 8G needs only 8B and 7A and can run beside 8C–8F; 8H needs 8B and sub-project 6's 6D/6E and can run beside 8D–8F. Arch §24 puts sub-project 7 before 8; no part of 8B waits for 7C (owner decision 1): 7C adds OS confinement to plugins that already run.
 
 ### 1.6 Ownership across sub-projects (coordinator decision)
 
@@ -89,7 +89,7 @@ Revision 1 named sub-project 5's binary `fin-workers` and sub-project 6's `fin-w
 
 ## 2. Principles
 
-1. **A plugin is untrusted code with declared needs.** It gets exactly what its granted permissions name, through the host, checked per call against the call's context. It never gets ambient authority: no inherited environment, no credentials, no project folder, no socket to `finisherd`, no network.
+1. **A plugin is untrusted code with declared needs.** It gets exactly what its granted permissions name, through the host, checked per call against the call's context. It never gets ambient authority: no inherited environment, no credentials, no project folder, no socket to `finisherd`, no network. The host gives none of these; the OS denies them once 7C's `plugin` profile has landed on that OS, and until then a code plugin could take them with the user's rights (§3.1, owner decision 1).
 2. **No confused deputy.** Everything a plugin does on someone's behalf runs with that someone's rights intersected with the plugin's grants, and nothing a plugin learned for one principal is reachable by another (§3.3, §3.7).
 3. **The host never trusts bytes the plugin can still change.** Inputs live where the plugin can only read; outputs are copied out of plugin-writable files and validated as copies (§3.5).
 4. **Trust comes from signed metadata, not from where a file was found.** Registry packages are verified through TUF metadata against a root the owner pinned; bundled plugins through the app's own signature and hashes compiled into it.
@@ -109,19 +109,28 @@ Revision 1 named sub-project 5's binary `fin-workers` and sub-project 6's `fin-w
 | Kind | What runs | Examples | Isolation |
 |---|---|---|---|
 | **Content pack** | nothing: data validated in Rust by the batch that consumes it | font catalogs, caption styles (8A); skills, saved prompts, agent roles, critic rubrics (when sub-projects 7 and 10 consume them); LUTs, WGSL effects and transitions (8H); templates and presets (sub-projects 6, 10, 11) | none needed; WGSL runs in sub-project 6's render worker after validation (§10.4) |
-| **Code plugin** | OS processes keyed per §3.3, or one per job | commands, hook handlers, analyzers, generation providers, codec backends, matte producers | `fin-sandbox` `plugin` profile (§16.1) + capability-checked host API |
+| **Code plugin** | OS processes keyed per §3.3, or one per job | commands, hook handlers, analyzers, generation providers, codec backends, matte producers | `fin-sandbox` `plugin` profile (§16.1) once 7C lands + capability-checked host API |
+
+**Code plugins before 7C (owner decision 1).** Code plugins, third-party ones from registries included, run from 8B on, before 7C's `plugin` profile exists. Until the profile passes the plugin escape suite on an OS, a plugin process there is **unconfined**: it runs with the user's rights, and what holds is what the host itself does:
+- the environment allow-list (`childEnv()`, §3.3) and no credentials: no `FIN_*` credential, no provider variable, no key handed over except a raw grant (§9.3);
+- brokered egress (§9.3) as the only network path the host offers, and secrets only through grant handles;
+- the `in/`/`out/` rules and copy-then-validate (§3.5), reach checks and invoker ∩ grants (§3.6–3.7);
+- for `node` plugins, Node's permission flags (§3.2: a seat belt, not a sandbox);
+- process limits where the OS gives them without `fin-sandbox` (rlimits on unix, a kill-on-close job object on Windows) and `fin-jobs`' hard kill.
+
+Nothing at the OS level stops an unconfined plugin from opening sockets, reading the user's files or (on macOS) triggering TCC prompts attributed to the app. Hence: installing a **third-party code plugin** (any code plugin not bundled and not a developer plugin) is **high risk whatever its permissions**, its install plan carries the warning `thirdPartyCode` (with `confined: false` while the profile is absent on that OS), and approval needs an explicit acceptance (`accept.thirdPartyCode`, §5.3) on top of the permission grant. Code plugins never update automatically (§5.3). **When 7C lands**, the host starts every plugin process, bundled and third-party alike, through the `plugin` profile on each OS where it passes the escape suite, automatically and without re-approval; access a plugin took without declaring it then fails as a denial (`sandbox.violation`, audited). On a host where Landlock is disabled (Linux kernel ≥ 6.2 with it turned off), plugins keep running unconfined: `server.status` and `fin status` carry the persistent warning `PLUGINS_UNCONFINED` and a diagnostics event is recorded (agent §8.9, follow-up decision F2); nothing is refused for it.
 
 ### 3.2 Runtimes of code plugins
 
 | Runtime | Manifest | Start | When to use |
 |---|---|---|---|
-| `native` | an executable per platform in the package | through `fin-sandbox` | analyzers, codecs, mattes: anything with ONNX Runtime, GPU or SIMD. The bundled analyzers are one native binary, `fin-analyze` (§8.1) |
-| `node` | `main` (one bundled `.mjs` file: no `node_modules`, no install scripts) and **`node`: a minimum Node version** (a semver range; the host refuses with `PLUGIN_NODE_VERSION` when its own Node is older) | finisherd's own Node (`process.execPath`), through `fin-sandbox`, with `--permission --allow-fs-read=<plugin dir>,<call dir>/in --allow-fs-write=<call dir>/out` and no `--allow-child-process`, `--allow-addons`, `--allow-worker` or `--allow-wasi`. Under Electron, `ELECTRON_RUN_AS_NODE=1` is set for that child only | commands, providers, hooks: glue around HTTP APIs |
+| `native` | an executable per platform in the package | through `fin-sandbox` once 7C lands (unconfined before, §3.1) | analyzers, codecs, mattes: anything with ONNX Runtime, GPU or SIMD. The bundled analyzers are one native binary, `fin-analyze` (§8.1) |
+| `node` | `main` (one bundled `.mjs` file: no `node_modules`, no install scripts) and **`node`: a minimum Node version** (a semver range; the host refuses with `PLUGIN_NODE_VERSION` when its own Node is older) | finisherd's own Node (`process.execPath`), through `fin-sandbox` once 7C lands, with `--permission --allow-fs-read=<plugin dir> --allow-fs-read=<call dir>/in --allow-fs-write=<call dir>/out` (one path per flag) and no `--allow-child-process`, `--allow-addons`, `--allow-worker` or `--allow-wasi`. Under Electron, `ELECTRON_RUN_AS_NODE=1` is set for that child only | commands, providers, hooks: glue around HTTP APIs |
 | `python` | — | — | **after v1** (design note: per-plugin virtual environment by `uv` with `--no-build --require-hashes --only-binary :all:`, run as `python -I -m <module>`; `uv` and CPython downloaded by hash on first use, never bundled) |
 | `wasm` | — | — | **after v1** (decision 2) |
 
-- **Node's permission model is a seat belt, not the sandbox** (Node documents that it does not stop malicious code). The `plugin` profile is the guarantee.
-- **Node plugins under the signed app (macOS).** A child the app spawns runs with the app's code signature and entitlements when it is the app's own Electron binary, and macOS attributes TCC decisions (camera, microphone, Documents, Desktop, Downloads, Photos, contacts, screen recording) to the *responsible* process, which is the app for any child, whatever binary it runs. A separate unentitled helper would therefore drop the entitlements but **not** the inherited TCC grants, unless it disclaims responsibility through a private launch attribute. **Decision:** every plugin process (`node` and `native`) runs under a Seatbelt profile that denies `mach-lookup` of `com.apple.tccd` and `com.apple.tccd.system`, denies `appleevent-send` and `mach-lookup` of `com.apple.coreservices.appleevents`, and grants no read root inside TCC-protected folders. Requests then fail closed with no prompt, for every runtime alike, and the plugin escape suite tests it (§16.1). The app's only entitlement is `com.apple.security.cs.allow-jit` (arch §27.8), which a Node child needs anyway.
+- **Node's permission model is a seat belt, not the sandbox** (Node documents that it does not stop malicious code). The `plugin` profile is the guarantee once 7C lands; before it, the seat belt is all a `node` plugin has (§3.1).
+- **Node plugins under the signed app (macOS).** A child the app spawns runs with the app's code signature and entitlements when it is the app's own Electron binary, and macOS attributes TCC decisions (camera, microphone, Documents, Desktop, Downloads, Photos, contacts, screen recording) to the *responsible* process, which is the app for any child, whatever binary it runs. A separate unentitled helper would therefore drop the entitlements but **not** the inherited TCC grants, unless it disclaims responsibility through a private launch attribute. **Decision:** once 7C's `plugin` profile lands on macOS, every plugin process (`node` and `native`) runs under a Seatbelt profile that denies `mach-lookup` of `com.apple.tccd` and `com.apple.tccd.system`, denies `appleevent-send` and `mach-lookup` of `com.apple.coreservices.appleevents`, and grants no read root inside TCC-protected folders. Requests then fail closed with no prompt, for every runtime alike, and the plugin escape suite tests it (§16.1). Before then, a plugin's TCC requests are the app's and may prompt the user in its name (§3.1). The app's only entitlement is `com.apple.security.cs.allow-jit` (arch §27.8), which a Node child needs anyway.
 - **ONNX Runtime is host-provided.** The Rust SDK's `onnx` feature loads the app's pinned ORT shared library from a read-only path given at `initialize`.
 
 ### 3.3 Processes and process keys
@@ -208,7 +217,7 @@ Rules, all implemented once in **`fin-shm`**, which `fin-worker` and the plugin 
 | `plugin.pin`, `plugin.unpin`, `plugin.repin` | 8H | **three ops, one module each**, modelled on `font.pin`/`font.unpin`/`font.repin`, with inverses and footprints |
 | `Project.plugins: BTreeMap<PluginId, PluginPin {version, sha256, effects: [{kind, params: [ParamSpec]}]}>` | 8H | the pack's ParamSpecs are **stored in project state at pin time**; lookup is built-ins ∪ pinned, so the same op log validates identically on every machine whether or not the pack is installed |
 | `ParamSpec.path`, `Scope::Effect.kind` as `Cow<'static, str>` | 8H | built-ins stay `Borrowed`; pinned specs are `Owned`; serialisation unchanged |
-| `AssetKind::Matte`, `Mask.matte` naming an asset | 8H / 6D (owner question 3) | a new enum variant changes the serialised shape |
+| `AssetKind::Matte`, `Mask.matte` naming an asset | 8H / 6D (owner decision 3) | a new enum variant changes the serialised shape |
 | **`SCHEMA_VERSION` 2 → 3** | 8H (or 6D if it lands first) | one bump carries `Project.plugins` and `AssetKind::Matte` together: an upgrade step (`snapshot_v2`, `record_v2`, frozen, with goldens) adds the empty `plugins` map; newer projects are refused by older code per core §2.6 |
 
 ---
@@ -229,7 +238,7 @@ Rules, all implemented once in **`fin-shm`**, which `fin-worker` and the plugin 
   "messages": "i18n", "locales": ["en"],  // ICU catalogues (arch §17.1)
   "platforms": ["darwin-arm64", "win32-x64", "linux-x64", "linux-arm64"],   // code only
   "runtime": { "type": "native", "exec": { "darwin-arm64": "bin/darwin-arm64/plugin", … } }
-           | { "type": "node", "main": "dist/plugin.mjs", "node": ">=26.12" },
+           | { "type": "node", "main": "dist/plugin.mjs", "node": ">=24.22" },
   "permissions": [
     { "perm": "project:read" }, { "perm": "project:write" }, { "perm": "media:read" }, { "perm": "media:file" },
     { "perm": "jobs:submit" }, { "perm": "gpu" },
@@ -272,7 +281,7 @@ A contribution kind is accepted only once a batch consumes it; until then a mani
 |---|---|
 | low | `project:read`, `media:read`, `fs pluginData read` |
 | medium | `project:write`, `jobs:submit`, `fs pluginData readWrite`, `gpu` (kernel GPU drivers become reachable), `hooks:observe` alone, agent-facing content (§4.2) |
-| high | `net`, `secrets`, `media:file`, `hooks:modify`, and **`hooks:observe` together with `net`** (hook payloads carry prompts, commands and ops, and `net` can send them away) |
+| high | `net`, `secrets`, `media:file`, `hooks:modify`, **`hooks:observe` together with `net`** (hook payloads carry prompts, commands and ops, and `net` can send them away), and **any third-party code plugin**, whatever its permissions (§3.1) |
 
 **Widening** is any added permission, an added origin, secret or hook, `brokered` → `raw`, `read` → `readWrite`, a risk increase from a combination (adding `net` to a plugin that has `hooks:observe`), or any change to agent-facing content.
 
@@ -308,8 +317,8 @@ control.db: registries, plugins, plugin_grants, plugin_plans (cp §3.1)
 ### 5.3 Install, update, enable, remove
 
 1. **Plan** (`plugin.plan {id, version?, registry?, update?}`, `plugin.read`): refresh the registry (§6.2), copy the target to `staging/`, verify length and hashes, unpack strictly (§6.4), validate the manifest and match it against the target's signed custom metadata, check `hostApi`, platform and Node version, compute the permission diff, collect warnings (yanked, advisories, look-alike ids, copyleft, staleness) → an **`InstallPlan`** with a `planId` and a `digest`. Nothing runs.
-2. **Approve and install** (`plugin.install {planId, digest, accept: {copyleft?}}`, `plugin.install`, owner, from a plan a **human** made): re-hash the staging tree, rename it into `store/`, record the grants exactly as planned, audit, journal. Content packs become active; code plugins too once a sandbox profile exists for this OS (owner question 1).
-3. **Update:** a plan with `update: true`. **Automatic updates** apply only to content packs with `autoUpdate` on, only when nothing widens, **never to agent-facing content** (skills, prompts, roles, rubrics: an update can change what agents are told) and **never as the result of a refresh a non-human principal triggered**: an agent's or `system`'s `registry.refresh` updates trusted metadata and applies `disable` advisories, but installs nothing. **Code plugins never update automatically** (arch §15 rule 6). A widening update keeps the old version running until a person approves the new grants.
+2. **Approve and install** (`plugin.install {planId, digest, accept: {copyleft?, thirdPartyCode?}}`, `plugin.install`, owner, from a plan a **human** made): re-hash the staging tree, rename it into `store/`, record the grants exactly as planned, audit, journal. A third-party code plugin's plan needs `accept.thirdPartyCode: true` (else `THIRD_PARTY_CODE_NOT_ACCEPTED`): the person has seen the `thirdPartyCode` high-risk warning, and whether the plugin will run confined on this OS, and approves each listed permission (the console prints them one per line and asks for the plugin's id typed back, not `yes`). Content packs become active; code plugins become enableable from 8B on, before 7C too (owner decision 1, §3.1).
+3. **Update:** a plan with `update: true`. **Automatic updates** apply only to content packs with `autoUpdate` on, only when nothing widens, **never to agent-facing content** (skills, prompts, roles, rubrics: an update can change what agents are told) and **never as the result of a refresh a non-human principal triggered**: an agent's or `system`'s `registry.refresh` updates trusted metadata and applies `disable` advisories, but installs nothing. **Code plugins never update automatically** (arch §15 rule 6), bundled ones aside (they update with the app), and a third-party code plugin's update needs a person's plan and `accept.thirdPartyCode` again even when nothing widens. A widening update keeps the old version running until a person approves the new grants.
 4. **Downgrade** only by a person naming the exact version (`--allow-downgrade`); TUF still refuses rolled-back metadata.
 5. **Enable/disable** (owner): per server. Disabling stops the plugin's processes, unregisters its contributions and fails its queued jobs with `PLUGIN_DISABLED`.
 6. **Remove** (owner): disable, delete the store directory, and with `--purge-data` its data. Bundled plugins cannot be removed (`PLUGIN_BUNDLED`).
@@ -317,11 +326,11 @@ control.db: registries, plugins, plugin_grants, plugin_plans (cp §3.1)
 
 ### 5.4 The install plan (what the permission prompt shows)
 
-`InstallPlan {planId, digest, plugin: {id, version, kind, displayName, publisher}, source: {kind, registryId?}, action: install|update|downgrade, from?, permissions: [{perm, risk, details}], diff: {added, widened, removed}, licence: {spdx, class}, bytes, models: [{id, bytes, licence, attribution}], warnings: [{code, details}], registryStaleDays?, expiresAt}`. Sub-project 9 renders it; the console prints it and asks for `yes`. A plan made by a non-human principal is marked and refused by `plugin.install`, even when a person submits its id.
+`InstallPlan {planId, digest, plugin: {id, version, kind, displayName, publisher}, source: {kind, registryId?}, action: install|update|downgrade, from?, permissions: [{perm, risk, details}], diff: {added, widened, removed}, licence: {spdx, class}, bytes, models: [{id, bytes, licence, attribution}], warnings: [{code, details}], registryStaleDays?, expiresAt}`. A third-party code plugin's plan always carries the warning `{code: thirdPartyCode, details: {confined}}`, shown first and as high risk (§3.1). Sub-project 9 renders it; the console prints it and asks for `yes`. A plan made by a non-human principal is marked and refused by `plugin.install`, even when a person submits its id.
 
 ### 5.5 Developer mode
 
-`finisherd --plugin-dir <dir>` (console only) loads one unpacked plugin as `@dev/<name>` without signatures, for that server run only, with grants approved at start on the console. Before 7C's `plugin` profile exists on the OS, a developer plugin runs unsandboxed only with `--plugin-dir-unsandboxed` and a console warning, and it is never reachable from an agent principal. `fin plugin validate <dir>` validates offline.
+`finisherd --plugin-dir <dir>` (console only) loads one unpacked plugin as `@dev/<name>` without signatures, for that server run only, with grants approved at start on the console. Before 7C's `plugin` profile exists on the OS, a developer plugin runs unconfined like every code plugin (§3.1), with a console warning; it is never reachable from an agent principal. `fin plugin validate <dir>` validates offline.
 
 ### 5.6 Publisher tooling (`fin-plugin`, a separate binary, not shipped in the app)
 
@@ -345,7 +354,7 @@ targets/
   <publisher>/advisories.json                       signed advisories (§6.5)
 ```
 
-- **Roles** (arch §15): `root` (threshold ≥ 1 for team registries; ≥ 2 for first-party ones, owner question 7), `targets` (delegates only: one terminating delegation per publisher with paths `<publisher>/*`), `snapshot`, `timestamp`; publishers sign their own delegated role.
+- **Roles** (arch §15): `root` (threshold ≥ 1 for team registries; for first-party ones 2 of 3 offline keys held by the owner, owner decision 7), `targets` (delegates only: one terminating delegation per publisher with paths `<publisher>/*`), `snapshot`, `timestamp`; publishers sign their own delegated role.
 - **Target custom metadata** (signed): `{id, version, kind, hostApi, platforms, license, permissionsDigest, manifestSha256, yanked?, bytesUnpacked}`.
 - **Signatures:** ed25519; canonical JSON as TUF 1.0 specifies (the crate's implementation, never ours).
 
@@ -464,11 +473,11 @@ A harness that runs a plugin against a fake host: fixture snapshots, generated P
 - **Excluded:** MMS (CC-BY-NC), CrisperWhisper (NC weights) and whisper-timestamped (AGPL) on licence; Qwen3-ForcedAligner and NeMo Forced Aligner (80 ms steps) and Parakeet v3 for non-English (cannot force the language) on quality (arch §27.4). **WhisperX** is BSD-2-Clause; it is not used because it needs Python, PyTorch, pyannote's gated models and ffmpeg (through torchcodec), not because of its own licence.
 - **Diarization** is cut from v1; `speaker?` stays reserved in the artifact.
 - **Quality gate** (arch §27.4): ≥ 95 % of word starts and of word ends within [−125, +45] ms of human labels per supported language; p95 against MFA references ≤ 50 ms tracked, not gated; WER tracked.
-- **Re-selection on permissive labels.** Arch §27.4 chose "raw CTC ends" from about 40 candidates measured against labels on the owner's reel and generated TTS clips. Those clips are not permissively licensed, and choosing a rule on them is tuning (owner question 6). 8C rebuilds the human-labelled reference set from permissive speech (Common Voice CC0, LibriSpeech and MLS CC BY 4.0), labelled for Finisher, re-runs the candidate selection and the gate on it, and records both results.
+- **Re-selection on permissive labels.** Arch §27.4 chose "raw CTC ends" from about 40 candidates measured against labels on the owner's reel and generated TTS clips. Those clips are not permissively licensed, and choosing a rule on them is tuning; they are retired from selection and gating (owner decision 6). 8C rebuilds the human-labelled reference set from permissive speech (Common Voice CC0, LibriSpeech and MLS CC BY 4.0), labelled for Finisher, re-runs the candidate selection and the gate on it, and records both results.
 - **Retraining the start correction** (8C):
   - data: LibriSpeech train-clean-100/360 and MLS (de, es, fr, pt; both CC BY 4.0) and Common Voice (CC0; the release, its archive SHA-256 and the download terms accepted for it are pinned in the data card); references from our own Montreal Forced Aligner runs (MFA: MIT; each acoustic model's licence checked, else trained by us on the same data);
-  - augmentation: music under speech at 0–20 dB SNR from **MUSAN, filtered per file**. MUSAN's corpus page states CC BY 4.0, but its music comes from several sources and each file's own licence is listed in the corpus's per-directory LICENSE files; only files whose own licence is public domain, CC0 or CC BY are used, the file list is in the data card, and whether this satisfies the AGENTS.md rule is owner question 6;
-  - objective: the gate window's hit rate; speaker-disjoint splits; held-out evaluation on the permissive human-labelled set;
+  - augmentation: music under speech at 0–20 dB SNR from **MUSAN, filtered per file**. MUSAN's corpus page states CC BY 4.0, but its music comes from several sources and each file's own licence is listed in the corpus's per-directory LICENSE files; only files whose own licence is public domain, CC0 or CC BY are used and the file list is in the data card; the owner reads the AGENTS.md rule as applying to the files used (owner decision 6);
+  - objective: the gate window's hit rate; speaker-disjoint splits; held-out evaluation on the permissive human-labelled set (the owner's footage is evaluation-only and never a training input, §15.3);
   - outputs: the model file (≈ 0.5 MB, shipped) and its data card in `THIRD_PARTY_NOTICES` and the model manager. Training runs live in `archive/` (AGENTS.md).
 - **Transcript artifact** (`fin-core::analysis::Transcript`, kv 1): `{language, models: {asr, aligner, corrector}, words: [{text, spoken?, startMs, endMs, conf, timing: aligned|interpolated|asr, speaker?, filler}], segments: [{startMs, endMs, words: [first, end)}], silences: [{startMs, endMs}]}`, in integer milliseconds of source time (the caption grid, core §5.5).
 
@@ -544,12 +553,24 @@ Word addressing (`w:<n>`, arch §9.2) resolves against the transcript of the cli
 - **Addresses:** the host resolves the name itself and refuses loopback, private (RFC 1918, RFC 4193), link-local, CGNAT and Tailscale (100.64.0.0/10), multicast, unspecified and IPv4-mapped forms of these (`EGRESS_PRIVATE_ADDRESS`); it **connects to the address it checked** (no second resolution), with SNI and `Host` from the origin, so DNS rebinding cannot redirect a checked name.
 - **Redirects:** same-origin redirects are followed (≤ 3) with credentials; a **cross-origin redirect is not followed**: the 3xx response goes back to the plugin with its `Location`, and a request to that origin is a separate call, without credentials unless a secret is bound to that origin.
 - **Secrets are bound to (plugin, name, origins).** The manifest declares `{secret, origins, header, scheme}`; at call time the host asks `ModelGateway` for a **grant handle** (agent §10: `ModelGateway.grant({…})` returns a short-lived in-memory handle) with `{plugin, secret, origins, principal, purpose: "gen:<provider>"}`, injects the header only into requests to a bound origin, and drops the handle after the call. The plugin never sees the key. Grants are counted per plugin and principal; the first per session and every denial are audited (`grant`).
-- **Raw grants** (`secrets` with `mode: raw`, high risk): `secret.grant {name}` returns the value for one call, bound the same way and audited per call, for SDK shapes the broker cannot carry (owner question 2).
+- **Raw grants** (`secrets` with `mode: raw`, high risk): `secret.grant {name}` returns the value for one call, bound the same way and audited per call, for SDK shapes the broker cannot carry. Brokered is the default and raw the audited exception (owner decision 2). Neither first-party provider (§9.4) uses raw grants.
 - **Limits:** response bodies capped per call (default 64 MiB, streamed to `out/`), 120 s per request, a per-plugin rate limit.
 
-### 9.4 First-party providers
+### 9.4 First-party providers (owner decision 5)
 
-Owner question 5. Each first-party provider is a Node plugin installed as a bundled plugin, with brokered egress only.
+v1 ships two first-party providers, each a Node plugin installed as a bundled plugin, with brokered egress only (no raw grants):
+
+| Plugin | Provider | Origin | Modalities in v1 | Secret |
+|---|---|---|---|---|
+| `@finisher/openrouter` | OpenRouter | `https://openrouter.ai` | image (models whose output modality is image) | the OpenRouter key the user pasted: the `SecretStore` entry the built-in agent uses (agent §10; the project's own key where it has one), bound to this plugin and origin |
+| `@finisher/fal` | fal.ai | its queue API origin and the result-file hosts it returns, each declared (result fetches carry no credentials) | image, video, voice (TTS), music, SFX | a fal.ai key the user pastes |
+
+The modalities and origins are the design's target; each is confirmed against the providers' catalogues and API documentation at 8G start, and a modality neither covers becomes a v1 gap like those below.
+
+- **Catalogs are curated subsets.** Both services list far more models than v1 needs, and fal.ai's catalog changes weekly. Each bundled catalog (§9.1) lists only models whose terms and output licence were checked, with `outputLicence.commercialUse` true; a model whose output terms forbid commercial use or are unclear is left out. Catalogs change with app releases only (bundled plugins update with the app, §5.2), so a new upstream model waits for a release.
+- **Paid-call safety** (§9.2) maps onto fal.ai's queue API: the request id it returns is the `externalRef`, polled and fetched as usual. Whether either API takes an idempotency key is checked at 8G start; without one, a crash between submit and `externalRef` ends in `GEN_SUBMIT_UNKNOWN` (§9.2 step 5).
+- **Spend:** generation through OpenRouter draws on the same key, and therefore the same provider-side spend limit, as the built-in agent in that project; Finisher's own budgets (agent §13) count each call against its invoker.
+- **Known v1 gaps.** **Dubbing** (translation re-voiced to the original timing) and **voice cloning** have no first-party provider in v1 unless the curated catalogs cover them; their presence and terms on OpenRouter and fal.ai are to be confirmed against the providers' catalogues at 8G start. Voice cloning, if offered, also needs a consent design (whose voice) that v1 does not have, so it stays out of the v1 catalog either way. The `dubbing` modality stays in the contract (§9.1) for third-party providers.
 
 ### 9.5 Conformance (`provider` profile)
 
@@ -574,7 +595,7 @@ A fake HTTPS provider API: estimates match the catalog; a crash after submit nev
 
 - **Contribution:** `matteProducers: [{id, subjects: [person|foreground|object|key], prompted, temporal, maxSide, resources}]`.
 - **Protocol:** `matte.run {asset, range, size, prompts?}` in a job; rgb8 frames in through an `in/` ring, gray8 alpha out through an `out/` ring, **one per source frame, in order**; the host encodes the luma video with sub-project 6's encoder at the source rate (media §11.3).
-- **Where mattes live:** owner question 3.
+- **Where mattes live** (owner decision 3): a matte a mask uses is a project asset of kind `matte` in `assets/` (write-once, synced), and `Mask.matte` names that asset, so export on another machine never depends on a cache or on a model reproducing its pixels. `AssetKind::Matte` is part of the `SCHEMA_VERSION` 3 bump (§3.9); project folders grow by the encoded matte.
 - **Reference producer:** `@finisher/key-matte` (Rust, no model): chroma and luma keying with spill and edge controls; the conformance fixture and a v1 green-screen feature.
 - **Conformance (`matte` profile):** frame count and order, value range, size, declared determinism, cancel within 2 s, crash recovery.
 - **After v1:** background removal from BiRefNet (MIT), MODNet (Apache-2.0), SAM2 (Apache-2.0) or MediaPipe (Apache-2.0); excluded: RVM (GPL-3.0) and RMBG-2.0 (non-commercial).
@@ -605,7 +626,7 @@ A fake HTTPS provider API: estimates match the catalog; a crash after submit nev
 
 - **Training capture of plugin traffic** is typed, never raw HTTP: command arguments, provider prompts and parameters, output media hashes. Brokered request and response bodies are never journaled.
 - **Never recorded:** plugin stderr, registry paths, publisher names, package file names, model URLs, prompts outside `Content`, artifact payloads.
-- **Audit log** (cp §3.3): `plugin.install|update|remove|enable|disable|revoke|crashLoop`, `plugin.grant` (with the diff), `registry.add|remove|trust|forget`, `registry.verifyFail`, `grant` (secret grant handles and raw grants), `hook.modify`, `sandbox.violation` (from 7C, with `profile: plugin`).
+- **Audit log** (cp §3.3): `plugin.install|update|remove|enable|disable|revoke|crashLoop` (an install or update of third-party code records the `thirdPartyCode` acceptance and `confined`), `plugin.grant` (with the diff), `registry.add|remove|trust|forget`, `registry.verifyFail`, `grant` (secret grant handles and raw grants), `hook.modify`, `sandbox.violation` (from 7C, with `profile: plugin`).
 
 ---
 
@@ -615,21 +636,21 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 
 | Threat | Mitigation | Residual |
 |---|---|---|
-| Malicious plugin reads or writes the user's files | `plugin` sandbox profile (§16.1): read roots limited to the plugin, the runtime, system libraries, ORT, its models and the call's `in/`; write only `out/`, its per-project data and temp | before 7C, only bundled and console-started developer plugins run (owner question 1) |
+| Malicious plugin reads or writes the user's files | `plugin` sandbox profile (§16.1): read roots limited to the plugin, the runtime, system libraries, ORT, its models and the call's `in/`; write only `out/`, its per-project data and temp | **before 7C lands on an OS, every code plugin there, third-party ones included, is unconfined and runs with the user's rights** (owner decision 1, §3.1): the host's rules hold, the OS enforces nothing; third-party code is high risk at install and explicitly accepted; confinement applies automatically when 7C lands |
 | **Confused deputy**: a plugin uses one principal's call to act for another, or a job outlives its invoker's rights | invoker ∩ grants on every call, job and commit; jobs owned by the invoker; reach checks (project, branch subtree, library) on every host call; process keys per (plugin, project, principal class); per-project plugin data | a plugin may still misuse what one invoker could do anyway |
 | Plugin writes the project behind the user's back | ops only, through `tx.commit` under the invoker; `Tx.via` set by the host only; protected branches (cp §8.5) | granted plugins can make bad edits; reviewable and undoable |
 | **Shared-memory TOCTOU and SIGBUS** | the host never maps plugin-writable files; outputs opened without following links, checked (regular, `nlink == 1`, declared size ≤ cap), copied, validated as copies; job outputs after exit; host-created fixed-size rings with slot messages (§3.5) | — |
-| Plugin exfiltrates media or prompts | no network in the sandbox; brokered HTTPS to declared origins only; origins shown at install; `hooks:observe` + `net` is high risk | a granted origin receives what the plugin sends it |
+| Plugin exfiltrates media or prompts | no network in the sandbox; brokered HTTPS to declared origins only; origins shown at install; `hooks:observe` + `net` is high risk | a granted origin receives what the plugin sends it; before 7C an unconfined plugin can open its own sockets |
 | **SSRF through the broker** (the NAS admin page, a router, cloud metadata, `finisherd` itself) | private, loopback, link-local and CGNAT addresses refused after the host's own resolution; connects to the checked address; HTTPS only; cross-origin redirects not followed | — |
 | Credential theft or replay to another origin | secrets bound to (plugin, name, origins); host-side injection through grant handles; no credentials after a cross-origin redirect | raw grants (opt-in) expose a key for one call |
-| **TCC and Apple Events inheritance** (macOS) | Seatbelt denies `tccd` and Apple Events lookups; no read roots in TCC-protected folders (§3.2) | — |
+| **TCC and Apple Events inheritance** (macOS) | Seatbelt denies `tccd` and Apple Events lookups; no read roots in TCC-protected folders (§3.2) | before 7C, TCC prompts from a plugin appear in the app's name |
 | Compromised publisher key | per-publisher terminating delegations; rotation; `disable` advisories applied on any refresh | versions installed before the advisory run until the next refresh |
 | Compromised registry folder or a hostile `git pull` | TUF thresholds, consistent snapshots, rollback checks, length caps; trust kept across registry removal | freeze up to `maxStaleDays` (7 by default) |
 | Malicious archive | strict reader into staging (§6.4) | — |
 | Look-alike ids | ASCII ids, reserved publishers, edit-distance warnings in the plan | a person can still approve |
 | Injected agent installs, enables, widens or updates a plugin | owner scopes; plans from non-humans refused; agent-triggered refreshes install nothing; agent-facing content never auto-updates; suggestions only | — |
 | Hostile content steering agents (skills, prompts, roles) | medium risk, shown at install; never auto-updated; any change is a widening | an approved pack's text is trusted by agents |
-| Hostile model file | models only from signed or bundled manifests, pinned by SHA-256; inference inside the sandboxed process | an ORT exploit runs with the plugin's rights |
+| Hostile model file | models only from signed or bundled manifests, pinned by SHA-256; inference inside the sandboxed process | an ORT exploit runs with the plugin's rights (the user's, before 7C) |
 | GPU driver attack surface | `gpu` is medium risk; only render nodes (Linux), Metal user clients (macOS) and D3D (Windows) are reachable, and only with the grant | a kernel driver bug |
 | Plugin starves the server | `fin-jobs` pools, memory and process limits, idle stop, crash-loop disable | — |
 | Hook handlers see or rewrite agent commands | `hooks:observe` and per-hook `hooks:modify` grants; both payloads audited (agent §9.1) | — |
@@ -643,10 +664,10 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 | 2 | `MANIFEST_TOO_LARGE`, `PLUGIN_MESSAGE_TOO_LARGE` |
 | 3 | `PLUGIN_NOT_FOUND`, `PLUGIN_NOT_INSTALLED`, `PLUGIN_BUNDLED`, `PLUGIN_MANIFEST_INVALID {path, reason}`, `PLUGIN_CONTRIBUTION_UNSUPPORTED {kind, hostApi}`, `PACKAGE_UNSAFE {entry, reason}`, `PACKAGE_TOO_LARGE`, `PLUGIN_HOST_API {range, host}`, `PLUGIN_PLATFORM {platforms}`, `PLUGIN_NODE_VERSION {range, node}`, `PLAN_EXPIRED`, `PLAN_MISMATCH`, `REGISTRY_NOT_FOUND`, `REGISTRY_INVALID`, `PLUGIN_COMMAND_ARGS`, `PLUGIN_TX_INVALID`, `ARTIFACT_NOT_FOUND`, `ANALYZER_NOT_FOUND`, `ANALYSIS_LANGUAGE_UNSUPPORTED`, `WORD_RANGE_INVALID`, `PLUGIN_UNPINNED`, `PLUGIN_PIN_IN_USE`, `GEN_PARAMS_INVALID` |
 | 4 | `PLUGIN_CRASHED`, `PLUGIN_TIMEOUT`, `PLUGIN_PROTOCOL`, `PLUGIN_OUTPUT_INVALID {reason: link\|notRegular\|linked\|size\|truncated\|schema}`, `ANALYSIS_FAILED`, `GEN_PROVIDER_ERROR {status, providerCode?}`, `GEN_SUBMIT_UNKNOWN {idemKey}`, `MODEL_HASH_MISMATCH`, `ARTIFACT_STALE` |
-| 5 | `PLUGIN_DISABLED`, `PLUGIN_CRASH_LOOP`, `PLUGIN_RUNTIME_UNAVAILABLE`, `SANDBOX_UNAVAILABLE {profile: plugin}` (agent §8.9), `PLUGIN_MISSING`, `REGISTRY_UNREACHABLE`, `REGISTRY_STALE` (warning), `MODEL_DOWNLOAD_FAILED`, `MODEL_MISSING`, `GEN_RATE_LIMITED`, `CLOCK_SUSPECT` |
-| 7 | `PLUGIN_PERMISSION_DENIED {perm}`, `PROJECT_NOT_FOUND` and `BRANCH_NOT_ALLOWED` for reach (cp §4.4, agent §5.1), `PLUGIN_REVOKED {advisory}`, `REGISTRY_UNTRUSTED`, `TUF_SIGNATURE`, `TUF_THRESHOLD`, `TUF_ROLLBACK {role, trusted, got}`, `TUF_EXPIRED {role}`, `TUF_TARGET_MISMATCH {hash \| length}`, `TUF_DELEGATION`, `PERMISSIONS_NEED_APPROVAL {diff}`, `COPYLEFT_NOT_ACCEPTED`, `EGRESS_DENIED {origin}`, `EGRESS_NOT_HTTPS`, `EGRESS_PRIVATE_ADDRESS`, `SECRET_MISSING {name}`, `GEN_BUDGET_EXCEEDED`, `GEN_APPROVAL_REQUIRED`; and cp's `HUMAN_ONLY` for installs from agents |
+| 5 | `PLUGIN_DISABLED`, `PLUGIN_CRASH_LOOP`, `PLUGIN_RUNTIME_UNAVAILABLE`, `PLUGIN_MISSING`, `REGISTRY_UNREACHABLE`, `REGISTRY_STALE` (warning), `PLUGINS_UNCONFINED` (status warning, §3.1), `MODEL_DOWNLOAD_FAILED`, `MODEL_MISSING`, `GEN_RATE_LIMITED`, `CLOCK_SUSPECT` |
+| 7 | `PLUGIN_PERMISSION_DENIED {perm}`, `PROJECT_NOT_FOUND` and `BRANCH_NOT_ALLOWED` for reach (cp §4.4, agent §5.1), `PLUGIN_REVOKED {advisory}`, `REGISTRY_UNTRUSTED`, `TUF_SIGNATURE`, `TUF_THRESHOLD`, `TUF_ROLLBACK {role, trusted, got}`, `TUF_EXPIRED {role}`, `TUF_TARGET_MISMATCH {hash \| length}`, `TUF_DELEGATION`, `PERMISSIONS_NEED_APPROVAL {diff}`, `COPYLEFT_NOT_ACCEPTED`, `THIRD_PARTY_CODE_NOT_ACCEPTED`, `EGRESS_DENIED {origin}`, `EGRESS_NOT_HTTPS`, `EGRESS_PRIVATE_ADDRESS`, `SECRET_MISSING {name}`, `GEN_BUDGET_EXCEEDED`, `GEN_APPROVAL_REQUIRED`; and cp's `HUMAN_ONLY` for installs from agents |
 
-A cross-origin redirect is not an error: `net.fetch` returns the 3xx response with `redirectNotFollowed: true`. Codes go into `crates/fin/src/output.rs` and `@finisher/contracts` in the batch that introduces them. TUF failures are exit 7 (a person must look), not 5.
+No plugin is refused for lack of a sandbox: a host with Landlock disabled runs plugins unconfined under `PLUGINS_UNCONFINED`, and sub-project 7's `SANDBOX_UNAVAILABLE` is not used for it (owner decision 1 and follow-up decision F2; it exists only for a failure to apply a profile where the mechanism is enabled, agent §8.9). A cross-origin redirect is not an error: `net.fetch` returns the 3xx response with `redirectNotFollowed: true`. Codes go into `crates/fin/src/output.rs` and `@finisher/contracts` in the batch that introduces them. TUF failures are exit 7 (a person must look), not 5.
 
 ---
 
@@ -654,7 +675,7 @@ A cross-origin redirect is not an error: `net.fetch` returns the 3xx response wi
 
 - **Paths:** Windows reserved names, case-folded duplicates and NFD names are refused in packages on every OS (§6.4); the store is read-only (unix modes; on Windows the read-only attribute and ACLs from the broker).
 - **`fin-shm`:** `O_NOFOLLOW` + `fstat` on unix; `FILE_FLAG_OPEN_REPARSE_POINT` + `GetFileInformationByHandle` (`nNumberOfLinks`, reparse tag) on Windows; positional reads (`pread`; `ReadFile` with an `OVERLAPPED` offset).
-- **Node:** the permission flags exist in Node 26 (finisherd's runtime, cp §1.5); `ELECTRON_RUN_AS_NODE` is set only for Node plugin children (arch §27.7 bans inheriting it).
+- **Node:** finisherd's runtime is Node 24.22, the Node Electron embeds (cp §1.6, the repository's Node 24 target); 8B checks the permission flags of §3.2 on it, one path per `--allow-fs-*` flag; `ELECTRON_RUN_AS_NODE` is set only for Node plugin children (arch §27.7 bans inheriting it).
 - **GPU:** §16.1.
 
 ---
@@ -687,9 +708,9 @@ No media in the repository (media §2.8). Speech fixtures come from the permissi
 | Use | Sources | Licence | Note |
 |---|---|---|---|
 | ASR, alignment, boundary training | LibriSpeech; Multilingual LibriSpeech; Common Voice (release, archive hash and accepted download terms pinned in the data card) | CC BY 4.0; CC BY 4.0; CC0 | — |
-| Human-labelled boundaries (the gate and rule selection) | clips from the sources above, labelled by people for Finisher | as the source | replaces the generated TTS clips (owner question 6) |
-| The owner's footage | evaluation only, never committed, never trained on | a written licence from the owner to the project (owner question 6) | — |
-| Music under speech | MUSAN music, **filtered per file** to public domain, CC0 and CC BY | per file | owner question 6 |
+| Human-labelled boundaries (the gate and rule selection) | clips from the sources above, labelled by people for Finisher | as the source | replaces the generated TTS clips (owner decision 6) |
+| The owner's footage | evaluation only, never committed, never trained on | a written licence from the owner to the project (owner decision 6) | — |
+| Music under speech | MUSAN music, **filtered per file** to public domain, CC0 and CC BY | per file | owner decision 6 |
 | Scenes, reframe, search | Blender Foundation open films (CC BY), the owner's footage as above, with our own labels | CC BY / as above | — |
 | Beats | synthetic click and drum tracks; CC BY music from the filtered MUSAN list, labelled by us | ours / CC BY | — |
 
@@ -716,7 +737,7 @@ No media in the repository (media §2.8). Speech fixtures come from the permissi
 
 ### 16.1 X1: the `plugin` sandbox profile (cross-design requirement on sub-project 7)
 
-Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worker hook for sub-project 6. **Sub-project 8 requires a `plugin` profile in `fin-sandbox` (7C)**, and enabling registry-installed code plugins waits for it (owner question 1):
+Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worker hook for sub-project 6. **Sub-project 8 requires a `plugin` profile in `fin-sandbox` (7C)**. Registry-installed code plugins do not wait for it (owner decision 1): until it passes the plugin escape suite on an OS they run unconfined there (§3.1), and once it does the host starts every plugin process through it automatically, without re-approval. The profile:
 - **Network: none.** Linux: seccomp refuses `socket()` for `AF_INET`, `AF_INET6`, `AF_NETLINK` and `AF_UNIX` (agent §8.3; `socketpair` stays for stdio). macOS: Seatbelt `(deny network*)`. Windows: an AppContainer with **no** `internetClient`, `internetClientServer` or `privateNetworkClientServer` capability, and no loopback exemption.
 - **Files:** read roots = the plugin's store directory, the runtime (finisherd's Node, or the Electron framework, for `node` plugins), system libraries and frameworks (`/usr/lib`, `/lib`, `/System/Library`, `%SystemRoot%\System32` and the like), ONNX Runtime's library, the model files the manifest names, and the call's `in/`; write roots = the call's `out/`, the plugin's per-project data directory (with `fs pluginData readWrite`) and a private temp directory; everything else denied, server data included.
 - **Per-job grants on Windows** through the ACL broker (agent §8.4): one container profile per (plugin, project); ACL grants on the call or job directory added before the call and removed after it, write-ahead logged like the broker's session grants; `media:file` grants on a single source file per job.
@@ -733,7 +754,7 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 | 5C | `fin-jobs`: kinds with resources, `owner`, `externalRef`, `dedupeKey`, idempotency, retries and bisection; hard kill; `jobs.watch`; owner-scoped budgets (agent §13.1) |
 | 5D | the library stage framework keyed by fingerprint and stage version; catalog tables for transcripts (FTS5); library reach for principals |
 | 5E | the reserved `pluginSuggestion` review item kind |
-| 6 | the one `fin-worker` with a decode role for PCM at 16 kHz mono (6C) and frames at analysis sizes (6A–6B); **`fin-shm`** with the rules of §3.5 (6A); the process codec backend and its conformance suite; matte encoding and, with owner question 3, `AssetKind::Matte` and the schema bump (6D); the WGSL effect ABI (6D) |
+| 6 | the one `fin-worker` with a decode role for PCM at 16 kHz mono (6C) and frames at analysis sizes (6A–6B); **`fin-shm`** with the rules of §3.5 (6A); the process codec backend and its conformance suite; matte encoding and, per owner decision 3, `AssetKind::Matte` and the schema bump (6D); the WGSL effect ABI (6D) |
 | 7 | X1 (§16.1); branch reach for agent principals (§5.1); command rules matching `plugin:<id>/<cmd>` (§7.2); approvals of kind `plugin` (§7.3); the hook engine calling plugin handlers in the `plugin` layer with `hooks:observe`/`hooks:modify` (§9); `SecretStore` and `ModelGateway` grant handles bound to (plugin, name, origins) (§10); budgets and the ledger (§13) |
 
 ---
@@ -792,7 +813,7 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 
 **Excluded:** MMS (CC-BY-NC), CrisperWhisper (NC), RMBG-2.0 (NC), InsightFace weights (NC), madmom models (CC BY-NC-SA), RVM (GPL-3.0), Ultralytics YOLO (AGPL-3.0).
 
-- **Model gate** (bundled and first-party manifests): weights under `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `CC0-1.0` or `CC-BY-4.0`, **with no acceptable-use restriction** (OpenRAIL-style use clauses, Llama-style AUPs and NC, ND or SA terms are refused); third-party registries show the licence and flag anything off the list. Training-data notes are shown, and the policy on them is owner question 4.
+- **Model gate** (bundled and first-party manifests): weights under `MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `CC0-1.0` or `CC-BY-4.0`, **with no acceptable-use restriction** (OpenRAIL-style use clauses, Llama-style AUPs and NC, ND or SA terms are refused); third-party registries show the licence and flag anything off the list. Training-data notes are shown; the weight licence governs, and models whose authors warn that their training data is copyrighted or licensed are not defaults (owner decision 4).
 - `THIRD_PARTY_NOTICES` gains ONNX Runtime, each default model with its attribution, the boundary model's data card, PySceneDetect (BSD-3, ported), `tough` and `aws-lc-rs`.
 
 ---
@@ -826,18 +847,28 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 | 23 | Brokered HTTPS only: secrets bound to (plugin, name, origins), private addresses refused after resolution, cross-origin redirects not followed | §9.3 |
 | 24 | Plugin effects pinned by three ops, with their ParamSpecs in project state | §10.4 |
 | 25 | Only the host emits diagnostics; third-party names are keyed hashes | §11 |
+| 26 | Third-party code plugins run before 7C, unconfined, as high risk with an explicit acceptance; the `plugin` profile applies automatically when it lands; no plugin is gated on `SANDBOX_UNAVAILABLE` | §3.1, §5.3, §16.1 |
+| 27 | The v1 first-party generation providers are OpenRouter and fal.ai, with curated catalogs | §9.4 |
 
 ---
 
-## 20. Owner questions
+## 20. Owner decisions (2026-11-07)
 
-1. **Does 8B wait for 7C?** *Recommended:* not as a whole. 8B starts after 8A and 7A and builds the host, the protocol, the SDKs and `fin-plugin-test` against bundled plugins and console-started developer plugins; enabling any registry-installed code plugin answers `SANDBOX_UNAVAILABLE` until 7C's `plugin` profile (X1, §16.1) passes the plugin escape suite on that OS. Bundled analyzers (8C–8F) run before 7C with the env allow-list, no credentials, no network permission and the `in/`/`out/` rules, and move into the profile when it lands. *Trade-off:* until 7C, no third-party commands, providers or codec plugins (including the FFmpeg plugin for Windows HEVC and Linux gaps), and Finisher's own analyzers are not OS-confined for a while (an ORT or model-parsing bug runs with the user's rights). Waiting for 7C entirely delays the v1 analysis (8C–8F) by 7C's length; enabling third-party code before 7C exposes users to arch §16's second threat with only Node's permission flags in the way.
-2. **Do plugins ever see secrets?** *Recommended:* brokered by default: the host injects credentials, from `ModelGateway` grant handles bound to (plugin, secret name, origins), into HTTPS requests to those origins only, and the plugin never sees a key (§9.3); a raw per-call value exists only behind a `secrets` permission with `mode: raw`, shown as high risk and audited per call. *Trade-off:* the host must carry streamed responses and multipart uploads (WebSockets are cut from v1), and vendor SDKs that insist on holding the key need the raw mode. Arch §16's wording ("per-call `ModelGateway` grants") would hand every provider plugin its key on every call.
-3. **Do mattes travel with the project?** *Recommended:* yes: a matte that a mask uses is registered as an asset of kind `matte` in `assets/` (write-once, synced), and `Mask.matte` names that asset, so export on another machine never depends on a regenerable cache or on a model producing the same pixels twice. This changes the serialised model (`AssetKind::Matte`), so it **bumps `SCHEMA_VERSION` to 3 with an upgrade step**, together with `Project.plugins` (§3.9), and older Finisher builds refuse such projects (core §2.6). *Trade-off:* project folders grow by the encoded matte (a few MB per minute of 1080p luma), a schema bump lands in 6D or 8H, and arch §6.2's list of analysis artifacts loses mattes. Keeping them as cache artifacts saves space and the bump, but makes export fail (`MATTE_MISSING`) or differ after a move until they are recomputed. Sub-project 6 (6D) needs the answer before it builds mask edits.
-4. **Which models with permissive weights but restricted or undisclosed training data may ship as defaults?** *Recommended:* the weight licence governs: a model is allowed when its weights are MIT, Apache-2.0, BSD, CC0 or CC-BY (with attribution), **carry no acceptable-use restriction** (no OpenRAIL-style use clauses, no AUP) and its authors place no other limit on use; training-data provenance is recorded and shown, and models whose authors warn that their training data is copyrighted or licensed are not defaults (after v1 they are opt-in). The v1 defaults are Parakeet, whisper turbo, wav2vec2, Silero VAD, YAMNet, SigLIP2, BlazeFace and YOLOX. *Trade-off:* the defaults include models trained on undisclosed or third-party data (whisper, SigLIP2, YAMNet's AudioSet audio); a stricter rule (training data must be permissive too) would exclude them and leave no viable multilingual ASR or visual search.
-5. **Which generation providers ship first-party in v1** (arch §26 question 8)? *Recommended:* ElevenLabs (voice, SFX, music, dubbing) and OpenAI images, as bundled Node plugins with brokered egress; fal.ai (video and an image aggregator) as the first community-style plugin after the contract has been used twice. *Trade-off:* no first-party video generation in v1; shipping all three triples the conformance and terms review, and fal.ai's weekly catalog changes test the "catalog as data" path harder than v1 needs.
-6. **What evaluation data may Finisher use for model selection and gating?** Three cases: (a) the generated TTS clips in arch §27.4's reference set are not permissively licensed, and choosing the end-boundary rule on them was tuning; (b) the owner's own footage; (c) MUSAN, whose music carries per-file licences. *Recommended:* (a) retire the generated clips from selection and gating, replace them with human-labelled clips from CC0 and CC BY speech (Common Voice, LibriSpeech, MLS) labelled for Finisher, and re-run the rule selection and the gate on them in 8C (§8.3); (b) allow the owner's footage for evaluation only, never committed and never trained on, under a written licence from the owner to the project recorded in the data card; (c) allow MUSAN only filtered per file to public domain, CC0 and CC BY, with the file list in the data card, reading the AGENTS.md rule ("no NC or share-alike corpora") as applying to the files used. *Trade-off:* labelling costs time, and the current per-language results (arch §27.4) are re-measured and may drop; (b) keeps realistic creator footage in the loop at the cost of results nobody else can reproduce; a strict corpus-level reading of (c) drops MUSAN and leaves no permissive music-under-speech set but synthetic mixes.
-7. **Who holds the signing keys of Finisher's first-party registries, and when are they made?** These are the registries Finisher publishes outside the app (the copyleft plugin registry, first-party packs between releases, later the public registry's root); bundled plugins need none (§5.2). *Recommended:* the owner holds the root keys: three offline, hardware-backed ed25519 keys with threshold 2, made at a recorded ceremony before the first first-party registry is published (no later than sub-project 11); the `@finisher` delegation key is held offline by the owner; snapshot and timestamp keys are online in release CI with a short timestamp expiry; development and tests use generated keys only. *Trade-off:* root recovery depends on the owner keeping two of the three keys (losing the threshold means shipping a new root in an app update and re-adding registries); CI-held root keys would be simpler but turn a CI compromise into a registry compromise.
+The owner answered revision 2's seven questions on 2026-11-07. Decisions 1 and 5 differ from revision 2's recommendations, and the body is revised for them; the others are as recommended.
+
+1. **Does 8B wait for 7C?** **No, and third-party code plugins are allowed now, before 7C's sandbox** (the owner's choice; revision 2 recommended keeping registry-installed code plugins off until 7C). 8B builds the host, the protocol, the SDKs and `fin-plugin-test`, and registry-installed code plugins can be installed and enabled from 8B on (§3.1, §5.3):
+   - installing a third-party code plugin shows a **high-risk warning** (`thirdPartyCode`, high risk whatever its permissions, §4.3) and needs an **explicit acceptance** by a person (`accept.thirdPartyCode`) on top of approving each permission; nothing installs, enables or widens without a person;
+   - **nothing updates automatically**: code plugins never did (§5.3), and every update of a third-party code plugin is a person's plan with the acceptance again;
+   - the env allow-list, no credentials, brokered egress and the `in/`/`out/` rules still apply, as host-side rules (§3.1);
+   - the `plugin` profile is **enforced automatically once 7C lands** on an OS (§16.1), with no re-approval;
+   - **no `SANDBOX_UNAVAILABLE` gating** for registry plugins: no plugin is refused for lack of a sandbox (§13); a host where Landlock is disabled runs plugins unconfined and shows the persistent warning `PLUGINS_UNCONFINED` (`server.status`, `fin status`) with a diagnostics event.
+   *Consequence, accepted:* until 7C, a malicious or exploited plugin runs with the user's rights (arch §16's second threat with only Node's permission flags and the host's own rules in the way); the plugin escape suite (§16.1) gates 7C, not 8B.
+2. **Do plugins ever see secrets?** **Brokered** (as recommended): the host injects credentials from `ModelGateway` grant handles bound to (plugin, secret name, origins) into HTTPS requests to those origins only, and the plugin never sees a key (§9.3); a raw per-call value exists only behind `secrets` with `mode: raw`, high risk and audited per call.
+3. **Do mattes travel with the project?** **Yes, as project assets** (as recommended): `AssetKind::Matte` in `assets/`, named by `Mask.matte`, carried by the `SCHEMA_VERSION` 3 bump together with `Project.plugins` (§3.9, §10.3). Sub-project 6 (6D) builds mask edits on it.
+4. **Which models may ship as defaults?** **The weight licence governs** (as recommended): MIT, Apache-2.0, BSD, CC0 or CC-BY weights, with **no acceptable-use restriction** and no other limit on use; training-data provenance is recorded and shown, and models whose authors warn that their training data is copyrighted or licensed are not defaults (§18.2). The v1 defaults are Parakeet, whisper turbo, wav2vec2, Silero VAD, YAMNet, SigLIP2, BlazeFace and YOLOX.
+5. **Which generation providers ship first-party in v1** (arch §26 question 8)? **OpenRouter and fal.ai** (the owner's choice, replacing revision 2's ElevenLabs and OpenAI images), as bundled Node plugins with brokered egress and curated catalogs (§9.4). OpenRouter's key is the one the user pastes for the built-in agent (agent §10); fal.ai needs a second pasted key. *Known v1 gaps:* dubbing and voice cloning, unless the curated catalogs cover them (to be confirmed against the providers' catalogues at 8G start); any modality neither covers.
+6. **What evaluation data may Finisher use?** As recommended: (a) **retire the generated TTS clips** from selection and gating, and re-run the rule selection and the gate on human-labelled clips from permissive speech (Common Voice CC0, LibriSpeech and MLS CC BY 4.0) labelled for Finisher (§8.3); (b) **the owner's footage is evaluation-only**, never committed and never trained on, under a written licence from the owner to the project recorded in the data card; (c) **MUSAN filtered per file** to public domain, CC0 and CC BY, the file list in the data card, the AGENTS.md rule read as applying to the files used (§8.3, §15.3).
+7. **Who holds the first-party signing keys, and when are they made?** As recommended: **the owner holds three offline, hardware-backed ed25519 root keys, threshold 2 of 3**, made at a recorded **ceremony before the first first-party registry** is published (no later than sub-project 11); the `@finisher` delegation key is held offline by the owner; snapshot and timestamp keys are online in release CI with a short timestamp expiry; development and tests use generated keys only (§6.1).
 
 ---
 
@@ -847,7 +878,9 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 |---|---|
 | `aws-lc-sys` needs CMake or NASM, grows the bundle, or a second `rustls` provider panics | 8A Task 1 gate with a real HTTPS fetch on three OSes; a provider named on every `ClientConfig`; fallback: fork `tough`'s crypto onto `ring` |
 | `tough`'s `ExpirationEnforcement::Unsafe` skips more than expiry, or it does not save roots atomically or recover by fast-forward | Task 1 verifies each; `fin-registry` wraps root saving and recovery where the crate falls short |
-| 7C's `plugin` profile lands late | owner question 1; bundled analyzers proceed under the `in/`/`out/` rules |
+| 7C's `plugin` profile lands late | every code plugin, third-party included, runs unconfined meanwhile (decision 1): high risk and explicit acceptance at install, the host's own rules (§3.1), no auto-updates, automatic confinement when the profile lands |
+| An unconfined third-party plugin is malicious | the install warning and acceptance, audited installs, `disable` advisories applied on every refresh, crash-loop disable; residual: it acts with the user's rights until it is disabled |
+| A curated provider model changes its terms or disappears | catalog entries name their terms; a model that fails is refused by the provider with `GEN_PROVIDER_ERROR`; the next app release drops or replaces it |
 | `fin-shm`'s copy-then-validate costs throughput on big outputs | measured (§15.4); outputs stream into host staging in chunks while being copied |
 | `ort` 2 stays a release candidate | exact pin, one wrapper module, our own ORT build per platform |
 | Speech models are large (several GB at fp32) | on-demand download per content language; int8 where the gate passes; a shared store |
@@ -855,7 +888,7 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 | The re-labelled permissive set changes the boundary rule or fails the gate | 8C measures before it ships the rule; the gate stays the merge condition |
 | Exact-scan search is too slow on big libraries | `usearch` once reviewed; budgets in §15.4 |
 | Process keys multiply processes with many agent sessions | bounded by live sessions (agent §5.5) and the idle stop |
-| Brokered egress misses an API shape | raw grants (owner question 2); the provider conformance profile exercises streaming and uploads |
+| Brokered egress misses an API shape | raw grants (owner decision 2); the provider conformance profile exercises streaming and uploads |
 
 ---
 
@@ -864,18 +897,18 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 1. **Arch §21.1 `source`** has no `plugin` variant; `ActorKind::Plugin` exists. Resolved by §11: the host emits, and labels with the invoker's actor and `Tx.via`; no new source.
 2. **Arch §13 and §18 name whisper.cpp and sherpa-onnx**, while §27.4 chose Parakeet and whisper turbo through ONNX Runtime. Resolved by §8.3; neither ships.
 3. **Arch §13's "p95 under 50 ms"** is superseded by §27.4's window gate; §13 and §22 should point to it.
-4. **Arch §6.2 lists mattes among regenerable artifacts**, but export needs them on any machine. Owner question 3.
+4. **Arch §6.2 lists mattes among regenerable artifacts**, but export needs them on any machine. Resolved by owner decision 3: mattes are project assets (§10.3); arch §6.2 should drop them from its list.
 5. **No artifact type exists in fin-core.** Resolved by `ArtifactRef` and `fin-core::analysis` without a model change (§3.9).
 6. **Arch §14.4's "per-project lockfile"** has no sync-safe format. Resolved by the pin ops (§10.4).
 7. **Arch §15 "Package: signed archive"** vs TUF. Resolved by §6.4.
 8. **Arch §15 "git and local registries use the same verification"** omits that TUF timestamps expire within days. Resolved by `relaxed` freshness (§6.3); git registries are folders (§5.2).
-9. **Arch §16 "secrets … except per-call `ModelGateway` grants"** hands keys to plugins. Owner question 2.
+9. **Arch §16 "secrets … except per-call `ModelGateway` grants"** hands keys to plugins. Resolved by owner decision 2: brokered by default (§9.3).
 10. **Arch §12.7 "audio effect chain … as plugins"** cannot run in the WebAudio preview with process plugins. Decision 2.
 11. **Arch §14.1 "code plugins in Rust, Node, or Python"**: Python is cut from v1; Node under Electron needs `ELECTRON_RUN_AS_NODE` set explicitly for its children, which arch §27.7 forbids only when inherited (§3.2).
 12. **Core §5.2's `&'static str` ParamSpecs** cannot hold plugin params. Resolved by `Cow<'static, str>` and pinned specs (§3.9).
 13. **Two worker binaries** (cp's `fin-workers`, media's `fin-worker`) and two job systems. Resolved by the coordinator's ownership table (§1.6): one `fin-worker`, and `fin-jobs` from sub-project 5.
 14. **Arch §13 does not cover CC-BY attribution in the UI.** Resolved by §18.2.
-15. **Arch §27.4's reference set** includes generated TTS clips that are not permissively licensed, and the end-boundary rule was chosen on it. Owner question 6; §8.3.
+15. **Arch §27.4's reference set** includes generated TTS clips that are not permissively licensed, and the end-boundary rule was chosen on it. Resolved by owner decision 6: retired, rule re-selected on permissive human labels (§8.3).
 16. **Arch §8.3's agent plugin suggestions** had no producer. Resolved by `plugin.suggest` (§5.3).
 17. **Arch §13 names LanceDB**; v1 starts with an exact scan (§8.6).
 18. **The 4C plan's registry-supplied font catalogs**: resolved by `fontCatalogs` (§4.2).
@@ -883,3 +916,5 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 20. **Arch §8.4's sandbox** and agent §8 define agent, hook and worker policies but no `plugin` profile. X1 (§16.1).
 21. **Agent §10's grant handles** carry no origin binding; §9.3 binds them to (plugin, name, origins) and asks sub-project 7 to add the field.
 22. **Revision 1** of this design proposed a git transport, Python, WASM as an owner question, TUF for bundled plugins, `tuf` as the fallback, a 30-day staleness default, per-plugin rather than per-key processes and memory-mapped plugin outputs; revision 2 replaces each as the review asked (§1.3, §3.3, §3.5, §6).
+23. **Arch §16's sandbox wording** reads as if every plugin is OS-confined; before 7C none is (owner decision 1, §3.1), and arch §16 should say so.
+24. **Arch §26 question 8 (generation providers)** is answered by owner decision 5 (OpenRouter and fal.ai, §9.4).

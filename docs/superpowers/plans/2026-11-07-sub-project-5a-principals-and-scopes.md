@@ -27,11 +27,11 @@
 - **`fin`** gains `auth.rs` (credential discovery, the handshake, the retry), exit class 7, `fin whoami`, `projectId` on probes, a frame cap and an overall deadline, and its test hooks behind a `test-hooks` feature.
 
 **Tech Stack:**
-- Node 26.12 (`node:sqlite`, `node:crypto`), using only APIs that Node 24.22 (Electron 44/45) also has; Effect 4.0.6 (`effect/rpc`); `ws` 8 (MIT; already installed under `@effect/platform-node`, now a direct, pinned dependency); vitest.
+- Node 24, the target (owner decision 2026-11-07, spec §1.6: Electron 44/45 embed Node 24.22). The repository still pins Node 26.12 until the `TASKS.md` switch lands; until then use only APIs present in both, so this plan does not wait for the switch (`node:sqlite`, `node:crypto`); Effect 4.0.6 (`effect/rpc`); `ws` 8 (MIT; already installed under `@effect/platform-node`, now a direct, pinned dependency); vitest.
 - Rust 2024: `hmac` 0.12 and `sha2` 0.10 (MIT OR Apache-2.0) in `fin`; `base64` 0.22 (MIT OR Apache-2.0) if not already in the lock file; `windows-sys` 0.61 (already in the tree) with `Win32_Security`, `Win32_Security_Authorization`, `Win32_System_Pipes`, `Win32_System_Threading`, `Win32_System_IO`, `Win32_Storage_FileSystem` in `fin-node`.
 - **No other new dependency.** No JOSE, TLS, keychain or certificate crates (5B).
 
-**Spec:** `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` revision 2, §1–4, §10–12, §15. Parent: arch §4 rule 6, §8.3, §8.4 (amended: `FIN_CREDENTIAL`), §16, §21.1, §27.12.5. Related: the diagnostics plan (`docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`) Decisions 14a, 14b, 23a, 24, 30, 32.
+**Spec:** `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` revision 4, §1–4, §10–12 (§12: owner decisions of 2026-11-07), §15, §17. Parent: arch §4 rule 6, §8.3, §8.4 (amended: `FIN_CREDENTIAL`), §16, §21.1, §27.12.5. Related: the diagnostics plan (`docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`) Decisions 14a, 14b, 23a, 24, 30, 32.
 
 **Branch:** `sp5a-principals`, stacked on `sp4c-edit-breadth`.
 - **Can start now** (they need only what exists: D1, D2 and 4C as it stands): **Tasks 1, 2 and 10.**
@@ -132,7 +132,7 @@
 ### Credentials
 
 32. **`credentials(id, kind, label, scopes, projects, branches, createdBy, createdAt, lastUsedAt, idleExpiryS, absoluteExpiryAt, revokedAt)`.** Defaults: `agent` 24 h idle and 7 days absolute; `mcp` 30 days idle and no absolute limit (spec §4.1 gives the reasons). `lastUsedAt` is written at most once a minute. Expired or revoked credentials get no proof; revocation and expiry close live connections (a sweep every 60 s for expiry).
-33. **Mint defaults** (spec §4.5) when no scopes are given: `server.read`, `project.read`, `project.write`, `review.write`, `jobs.read`, `jobs.submit`, `library.read`, `library.scan`, `diagnostics.read`, `diagnostics.record`; `branches` defaults to `"*"` for hand-run harnesses (`--branch own` or ids narrow it); human-only scopes are refused (`SCOPE_DENIED` naming them).
+33. **Mint defaults** (spec §4.5) when no scopes are given: `server.read`, `project.read`, `project.write`, `review.write`, `jobs.read`, `jobs.submit`, `library.read`, `library.scan`, `diagnostics.read`, `diagnostics.record`; `branches` defaults to `"*"` for hand-run harnesses (`--branch own` or ids narrow it); human-only scopes are refused (`SCOPE_DENIED` naming them). No scope grants auto merge: sub-project 7's `auto` merge policy is a server-internal actor (spec §8.5).
 34. **`FIN_CREDENTIAL`** joins `childEnv`'s `ChildEnvExtra` (arch §8.4 amended); its value is a path.
 
 ### Hardening and the pipe
@@ -142,14 +142,16 @@
 37. **`fin`'s test hooks** (`FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`) are read only with `fin`'s `test-hooks` feature, enabled for its own tests through a self dev-dependency; `scripts/check-test-hooks.mjs` covers `fin`. `FIN_NODE_BINARY_DIR` (the JS loader) stays a TASKS item for sub-project 9.
 38. **The Windows pipe listener** (Task 11, spec §4.3): `fin-node` `PipeServer(name, {allow: [sid]})` creates instances with `PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED`, `FILE_FLAG_FIRST_PIPE_INSTANCE` on the first, `PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS`, and the SDDL `D:P(A;;GA;;;<user SID>)(A;;GA;;;SY)` plus `(A;;GRGW;;;<sid>)` per allowed SID; it accepts on a dedicated thread, reads each client's pid and token user SID, closes clients that are neither the user nor an allowed SID, and hands the rest to JS as duplex streams that `transport.ts` wraps as an Effect `Socket`. A first-instance failure at start is `PIPE_SQUATTED` (exit 1).
 
-## Questions for the owner
+## Owner decisions (2026-11-07)
 
-This plan implements the recommended answers to spec §12 **Questions 2, 5 and 6**: human-only now with the TTY-gated console; `local` keeps `branch.protected` and `review.decide`; human-only is documented as advisory against raw-shell agents until sub-project 7, and agent/MCP credentials are offered, not forced. If the owner answers otherwise:
-- **Q2 "wait for sub-project 7":** drop Decision 21's escalations and the human-only flags (keep the scopes); Tasks 7 and 8 shrink to `status`, `stop`, `audit`, `agent`, `mcp`.
-- **Q5 "protect `main` from `local` now":** remove `branch.protected` and `review.decide` from `local` in Decision 20; nothing else changes until 5E.
-- **Q6 "require agent credentials for hand-run harnesses":** remove `project.write` and the other write scopes from `local`'s defaults in Decision 20 and move the write tests to minted credentials (Task 4 and Task 12); `fin` run by a person then needs `finisherd agent mint` first.
+The owner answered spec §12 as recommended. This plan implements **decisions 2, 5 and 6**:
+- **2:** human-only operations are human-only now, with the TTY-gated `finisherd` console as the human interface (Decision 21's escalations, Tasks 7 and 8);
+- **5:** `local` keeps `branch.protected` and `review.decide` (Decision 20);
+- **6:** human-only is advisory against raw-shell agents until sub-project 7's sandbox (7C), **documented in the README's security model** (Task 13); agent and MCP credentials are offered, not forced, so `fin` run by a person needs no mint.
 
-Questions 1, 3 and 4 do not affect 5A.
+Decisions 1, 3 and 4 do not affect 5A (review state is 5E; browsers and the audit log's addresses are 5B; 5A's `auth.fail` rows carry no remote address, since every 5A transport is local).
+
+**Cross-cutting decisions that touch 5A:** Node 24 is the target (Tech Stack above; the switch itself is a `TASKS.md` item, not a task here); the `auto` merge policy adds no scope (it is a server-internal `policy` actor, spec §8.5) and is 5E's and sub-project 7's, so 5A changes nothing for it.
 
 ## Review Focus
 
@@ -219,7 +221,7 @@ Decisions 1–4.
   - `migrations_run_once_in_order_with_backup`, `chains_are_independent` (two test chains registered in either order, each applied once; a newer `minReaderVersion` in one chain refuses the start, naming the chain), `newer_min_reader_refuses_start`, `corrupt_db_is_moved_aside_and_audited` (and gets a new `envId`), `busy_maps_to_control_db_busy`;
   - `audit_append_list_cursor_purge`, `auth_fail_aggregates_per_credential_kind_per_minute` (100 failures on 100 connections in one minute → one row, `count` 100), `retention_by_age_and_rows`, `deletes_are_batched` (a purge of 10k rows runs ≥ 20 statements and yields between them), `audit_failure_never_throws`;
   - `control_store_budget` (100k audit rows; prepared-statement p99 ≤ 1 ms on Linux; the test asserts ≤ 5 ms for CI stability and prints the measure).
-- [ ] **Step 2: Implement** with APIs present in Node 24.22 too (check each against Node 24's `node:sqlite` docs; note them in `db.ts`).
+- [ ] **Step 2: Implement** with APIs present in Node 24.22, the target (check each against Node 24's `node:sqlite` docs; note them in `db.ts`, where the Node 24 switch's verification reads them).
 - [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): control store with an environment id, frozen migrations and a local audit log`.
 
 ### Task 2: Key files, private directories, `run/` and the handshake crypto — tier: opus — can start now
