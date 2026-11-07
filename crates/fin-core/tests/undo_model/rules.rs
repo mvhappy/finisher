@@ -141,6 +141,40 @@ fn unmirrored(steps: &[AStep]) -> Vec<(String, Fp)> {
         .collect()
 }
 
+fn reason_of(t: T) -> &'static str {
+    match t {
+        T::Param => reasons::SAME_PARAM,
+        _ => reasons::SAME_EDGE,
+    }
+}
+
+/// As `overwrite_conflict`, after a successful re-run: the first unmirrored record that changed
+/// a clip ours puts back whole (a restore): `SAME_EDGE` when it touched the clip's end edge,
+/// `SAME_PARAM` for any other touch (`start`, or the clip as a whole), creation or removal.
+fn overwrite_conflict(
+    ours: &Fp,
+    own: &HashSet<String>,
+    theirs: &[(String, Fp)],
+) -> Option<(&'static str, String)> {
+    let put_back: Vec<&String> = ours
+        .overwrites
+        .iter()
+        .filter(|x| !own.contains(*x))
+        .collect();
+    theirs.iter().find_map(|(tx, f)| {
+        let reason = put_back.iter().find_map(|x| {
+            if f.touches.contains(&((*x).clone(), T::Edge)) {
+                return Some(reasons::SAME_EDGE);
+            }
+            let other = f.touches.iter().any(|(y, _)| y == *x)
+                || f.creates.contains(x)
+                || f.removes.contains(x);
+            other.then_some(reasons::SAME_PARAM)
+        })?;
+        Some((reason, tx.clone()))
+    })
+}
+
 /// The entity rules: `REMOVED` (the last unmirrored record to remove or create a needed clip
 /// removed it; the earliest such record) before `SAME_EDGE` / `SAME_PARAM` (the first
 /// unmirrored record to touch the same end edge, or the same `start`, of a clip ours touches).
@@ -173,13 +207,7 @@ fn entity_conflict(
                 .find(|(x, t)| {
                     *t != T::Exists && !own.contains(x) && f.touches.contains(&(x.clone(), *t))
                 })
-                .map(|(_, t)| {
-                    let reason = match t {
-                        T::Param => reasons::SAME_PARAM,
-                        _ => reasons::SAME_EDGE,
-                    };
-                    (reason, i)
-                });
+                .map(|(_, t)| (reason_of(*t), i));
         }
     }
     let removed = needed.iter().filter_map(|(_, by)| *by).min();
@@ -257,9 +285,18 @@ pub fn rerun(
                 risky,
             };
         }
-        created.extend(f.creates.iter().cloned());
         match b.run(op, copy) {
             Ok(op) => {
+                // A restore that re-ran would put its snapshot over a later edit of its clip.
+                if let Some((reason, against)) = overwrite_conflict(&f, &created, &theirs) {
+                    let out = Err(pred(k, reason, Some(against)));
+                    return Rerun {
+                        out,
+                        verdict,
+                        risky,
+                    };
+                }
+                created.extend(f.creates.iter().cloned());
                 made.push(op);
                 earlier.push(f);
             }

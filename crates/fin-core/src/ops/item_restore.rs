@@ -94,13 +94,17 @@ pub(crate) fn apply(
     Ok(vec![ItemRemove { id, mode: r.mode }.into()])
 }
 
-/// Creates the item on its track, using the track and the asset it shows.
+/// Creates the item on its track, using the track and the asset it shows, and puts it back
+/// whole (`Footprint::puts_back`): its snapshot sets every edge, parameter and effect, so an
+/// intervening edit of the item or its effects (another author's trim, split or effect edit
+/// of a moved item, before the move's undo) is a conflict, not lost (spec §4.3).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let Op::ItemRestore(r) = op else {
         return Footprint::on(None, op_diff);
     };
     let mut f = Footprint::on(Some(&r.track), op_diff);
     f.creates.push(r.item.id.clone());
+    f.puts_back(&r.item.id);
     f.uses.extend(r.item.asset().map(str::to_string));
     f.uses.push(r.track.clone());
     f

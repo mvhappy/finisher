@@ -2,7 +2,10 @@
 //! A client unpin is refused while the pin is in use (`FONT_IN_USE {key, styles, items}`,
 //! structural): a project style's face, or a caption's (its effective style's face, or a
 //! fallback covering its text, [`crate::layout::key_users`]). The diff records `font/<key>`
-//! (`removed`); the inverse is `font.pin` with the pin and its old fallback index.
+//! (`removed`); the inverse is `font.pin` with the pin and its old fallback index. Besides
+//! needing the pin, its footprint touches the pin's `sha256` and `fallback`: the inverse puts
+//! the old file back, so an unpin after another author's repin or reorder of the key is
+//! `SAME_PARAM` (spec §4.3), where any other removal of an edited entity is not a conflict.
 //!
 //! The use check is for client edits only. An internal unpin (undo, redo, revert, and their
 //! rebased forms) and a replay skip it: an internal unpin is the inverse of a `font.pin`, and
@@ -150,6 +153,14 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
                 .push((entity(&u.key), Touch::Param(FALLBACK.into())));
         } else {
             f.touches.push((entity(&u.key), Touch::Exists));
+            // Its inverse pins the file it took off at its old place in the fallback order: a
+            // snapshot. `font.pin` cannot declare that (a client pin of the same file must
+            // merge), so the unpin meets a later repin or reorder of the key here instead
+            // (`SAME_PARAM`), and an unpin-and-undo cannot put the old file back over it.
+            f.touches
+                .push((entity(&u.key), Touch::Param("sha256".into())));
+            f.touches
+                .push((entity(&u.key), Touch::Param(FALLBACK.into())));
             f.removes.push(entity(&u.key));
         }
     }

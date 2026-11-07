@@ -17,7 +17,10 @@
 //! then on the one it is on when they differ (after any items its carve changed). Inverse
 //! (Decision 23, the shifts mirrored in reverse): per member, last member first, `item.remove`
 //! from its target, then (ripple) `item.restore` where it was, or (overwrite) the carve's
-//! inverses, with the lift restores of every member, last first, at the end.
+//! inverses, with the lift restores of every member, last first, at the end. A restore puts
+//! the member back whole, so an undo after another author's edit of it (a trim, a split, a
+//! move, a parameter, an effect) is `SAME_EDGE`/`SAME_PARAM`, never a silent loss
+//! (`rebase::footprint`, spec §4.3).
 
 use serde_json::json;
 

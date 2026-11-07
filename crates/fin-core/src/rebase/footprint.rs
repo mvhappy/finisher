@@ -12,6 +12,19 @@
 //! - ours touches or uses X, and the last intervening record that removed or created X removed
 //!   it → [`reasons::REMOVED`] (a stale insert of a removed asset included);
 //! - the same [`Edge`] of X → [`reasons::SAME_EDGE`]; the same parameter → [`reasons::SAME_PARAM`];
+//! - ours puts X back whole ([`Footprint::overwrites`]: an inverse that re-creates X from a
+//!   snapshot, such as `item.restore`, `effect.restore`, `track.restore`, `timeline.restore`, or the
+//!   `marker.add`, `asset.add`, `bin.add` and `style.add` of a removal's inverse) and an
+//!   intervening record changed X, an entity nested in it (`X/…`: an item's effects) or what
+//!   lies on it (X among its `tracks` or `uses`: an insert or move onto a put-back track, a
+//!   `marker.add` or `track.add` on a put-back timeline) in any way, touching, creating or
+//!   removing it → `SAME_EDGE` when it moved an edge of a put-back entity, else `SAME_PARAM`
+//!   ([`overwrite_conflict`]). Putting the snapshot back would take that edit
+//!   away without a word: an undo of a move after another author's trim, split or effect edit
+//!   of the item; a merged delete and undo over the target's edit. The engine judges it after
+//!   the op re-ran, so an op that cannot run at all keeps the re-run's reason
+//!   (`ALREADY_PRESENT`, `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that would succeed is
+//!   refused. A `$placeholder` re-creation makes a new entity and puts nothing back;
 //! - an entity an earlier op of our own transaction created is ours: it is never judged. At a
 //!   stale base our placeholders bind the ids the intervening records allocated, and those name
 //!   other entities; the re-run at the head decides whether the creation itself still fits.
@@ -46,7 +59,9 @@ pub enum Touch {
 /// What an op touches. `tracks`: the tracks it changes or places on (4C: every track its link
 /// groups span, and both tracks of a move between tracks); `touches`: entities it changes;
 /// `removes`/`creates`: entities it takes out or brings in; `uses`: entities it refers to
-/// without changing them (an insert's asset and track).
+/// without changing them (an insert's asset and track); `overwrites`: entities it puts back
+/// whole, as its snapshot holds them (with what is nested in them), judged against any
+/// intervening change of them ([`Footprint::puts_back`], module docs).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Footprint {
     pub tracks: BTreeSet<String>,
@@ -54,6 +69,7 @@ pub struct Footprint {
     pub removes: Vec<String>,
     pub creates: Vec<String>,
     pub uses: Vec<String>,
+    pub overwrites: Vec<String>,
 }
 
 impl Footprint {
@@ -67,6 +83,14 @@ impl Footprint {
         Footprint {
             tracks,
             ..Footprint::default()
+        }
+    }
+
+    /// Declares that the op puts entity `id` back whole from a snapshot ([`Self::overwrites`]).
+    /// A `$placeholder` id is a new entity, never one put back, so it is left out.
+    pub(crate) fn puts_back(&mut self, id: &str) {
+        if !id.starts_with('$') && !self.overwrites.iter().any(|x| x == id) {
+            self.overwrites.push(id.to_string());
         }
     }
 
@@ -270,13 +294,70 @@ fn same_touch(
     theirs: &Footprint,
 ) -> Option<&'static str> {
     ours.touches.iter().find_map(|(x, t)| {
-        let reason = match t {
-            Touch::Exists => return None,
-            Touch::Edge(_) => reasons::SAME_EDGE,
-            Touch::Param(_) => reasons::SAME_PARAM,
-        };
-        (!own.contains(x) && theirs.touches.iter().any(|(y, u)| y == x && u == t)).then_some(reason)
+        let r = change_reason(t)?;
+        (!own.contains(x) && theirs.touches.iter().any(|(y, u)| y == x && u == t)).then_some(r)
     })
+}
+
+/// The reason a change of an entity's edge or parameter makes; `None` for [`Touch::Exists`].
+fn change_reason(t: &Touch) -> Option<&'static str> {
+    match t {
+        Touch::Exists => None,
+        Touch::Edge(_) => Some(reasons::SAME_EDGE),
+        Touch::Param(_) => Some(reasons::SAME_PARAM),
+    }
+}
+
+/// The first intervening record (of `theirs`, in order) that changed an entity `ours` puts
+/// back whole ([`Footprint::overwrites`]), one nested in it or what lies on it ([`changed`]),
+/// with the txId to blame: `SAME_EDGE` when it moved an edge of any put-back entity, else
+/// `SAME_PARAM`. Entities in
+/// `own` are never judged (module docs).
+pub(crate) fn overwrite_conflict(
+    ours: &Footprint,
+    own: &BTreeSet<String>,
+    theirs: &[(&str, &Footprint)],
+) -> Option<(&'static str, String)> {
+    let put_back: Vec<&str> = ours
+        .overwrites
+        .iter()
+        .filter(|x| !own.contains(*x))
+        .map(String::as_str)
+        .collect();
+    if put_back.is_empty() {
+        return None;
+    }
+    theirs.iter().find_map(|(tx, f)| {
+        // An edge it moved names the change best, whichever put-back entity it was on (a trim
+        // of an item on a put-back track also lists that track).
+        let edge = put_back.iter().any(|x| moved_edge(x, f));
+        let reason = if edge {
+            reasons::SAME_EDGE
+        } else if put_back.iter().any(|x| changed(x, f)) {
+            reasons::SAME_PARAM
+        } else {
+            return None;
+        };
+        Some((reason, tx.to_string()))
+    })
+}
+
+/// Whether `f` moved an edge of entity `x`.
+fn moved_edge(x: &str, f: &Footprint) -> bool {
+    f.touches
+        .iter()
+        .any(|(y, t)| y == x && matches!(t, Touch::Edge(_)))
+}
+
+/// Whether `f` changed entity `x`, one nested in it (`x/…`) or what lies on it (`x` among its
+/// `tracks` or `uses`: an item put on a put-back track, a marker or track on a put-back
+/// timeline, which the snapshot does not hold): a touch of any kind, a creation or a removal.
+fn changed(x: &str, f: &Footprint) -> bool {
+    let within = |y: &str| y == x || y.strip_prefix(x).is_some_and(|r| r.starts_with('/'));
+    f.touches.iter().any(|(y, _)| within(y))
+        || f.creates.iter().chain(&f.removes).any(|y| within(y))
+        || f.tracks.contains(x)
+        || f.uses.iter().any(|y| y == x)
 }
 
 #[cfg(test)]

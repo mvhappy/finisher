@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::MAX_FRAMES;
-use super::lops::{EDGE, GONE, GONE_EDGE, GONE_PARAM, LOp, THERE, UNSURE};
+use super::lops::{EDGE, GONE, GONE_EDGE, GONE_PARAM, LOp, RESTORE, THERE, UNSURE};
 use super::model::ARec;
 
 /// A gap's entry (no id): a lift removal's, until the strict trim of the same inverse fills it.
@@ -189,7 +189,12 @@ impl MBranch {
             want.is_some_and(|w| sorted(w) != here)
         };
         match op {
-            LOp::Insert { .. } | LOp::RestoreLift { .. } => present.then_some(THERE),
+            LOp::Insert { .. } | LOp::RestoreLift { .. } if present => Some(THERE),
+            // A restore puts its clip back whole, end edge included (`Footprint::overwrites`).
+            LOp::Insert {
+                id, expect, pre, ..
+            } => edge(id, if copy { Some(pre) } else { expect.as_ref() }).then_some(RESTORE),
+            LOp::RestoreLift { .. } => None,
             LOp::Remove { .. } | LOp::RemoveLift { .. } => (!present).then_some(GONE),
             LOp::Move { .. } => (!present).then_some(GONE_PARAM),
             _ if !present => Some(GONE_EDGE),
@@ -219,6 +224,8 @@ impl MBranch {
                 before,
                 stamp,
                 ns,
+                expect,
+                ..
             } => {
                 if self.find(&id).is_some() {
                     return Err(("DUPLICATE_ID", vec![id]));
@@ -235,6 +242,7 @@ impl MBranch {
                 } else {
                     UNSURE
                 };
+                let pre = self.edges.get(&id).cloned().unwrap_or_default();
                 Ok(LOp::Insert {
                     track,
                     id,
@@ -242,6 +250,8 @@ impl MBranch {
                     before,
                     stamp,
                     ns: self.ns[track],
+                    expect,
+                    pre,
                 })
             }
             LOp::Remove { id, .. } => {
@@ -250,6 +260,7 @@ impl MBranch {
                 let (succ, stamp, ns) = self.after_gap(t, i);
                 *self.removals.entry(id.clone()).or_default() += 1;
                 self.norm(t);
+                let post = self.edges.get(&id).cloned().unwrap_or_default();
                 Ok(LOp::Remove {
                     track: t,
                     id,
@@ -257,6 +268,7 @@ impl MBranch {
                     succ,
                     stamp,
                     ns,
+                    post,
                 })
             }
             LOp::Trim {
@@ -320,6 +332,7 @@ impl MBranch {
                 } else {
                     UNSURE
                 };
+                let post = self.edges.get(&id).cloned().unwrap_or_default();
                 Ok(LOp::Move {
                     id,
                     to,
@@ -331,6 +344,7 @@ impl MBranch {
                     succ,
                     sstamp,
                     sns,
+                    post,
                 })
             }
             LOp::Split {
