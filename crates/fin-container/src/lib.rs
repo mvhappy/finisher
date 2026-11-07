@@ -9,4 +9,6 @@ pub mod mux;
 
 pub use demux::{AudioTrack, Demuxer, SampleInfo, VideoTrack};
 pub use limits::Limits;
-pub use mux::{AudioTrackConfig, CodecConfig, Mp4Options, Mp4Writer, TrackRef, VideoTrackConfig};
+pub use mux::{
+    AudioTrackConfig, Brands, CodecConfig, Mp4Options, Mp4Writer, TrackRef, VideoTrackConfig,
+};

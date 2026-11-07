@@ -30,6 +30,11 @@ const VALIDATION_CODES: &[&str] = &[
     "ASSET_NOT_FOUND",
     "ASSET_UNREADABLE",
     "UNSUPPORTED_CONTAINER",
+    // A media file `fin-container` refuses (sub-project 6 spec §17), beside
+    // UNSUPPORTED_CONTAINER: what the file is, not how the request was made.
+    "UNSUPPORTED_TRANSFORM",
+    "MEDIA_CORRUPT",
+    "MEDIA_LIMIT",
     "PROJECT_NOT_FOUND",
     "PROJECT_EXISTS",
     "PROJECT_INVALID",
@@ -274,6 +279,14 @@ mod tests {
         assert_eq!(exit_code("HISTORY_REWOUND"), 4);
         assert_eq!(exit_code("TX_SET_ASIDE"), 4);
         assert_eq!(exit_code("UNSUPPORTED_HASH"), 3);
+        for code in [
+            "UNSUPPORTED_CONTAINER",
+            "UNSUPPORTED_TRANSFORM",
+            "MEDIA_CORRUPT",
+            "MEDIA_LIMIT",
+        ] {
+            assert_eq!(exit_code(code), 3, "{code}");
+        }
         assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);

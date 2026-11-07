@@ -81,6 +81,7 @@ fn main() {
             Mp4Options {
                 moov_reserve: 0,
                 knobs: file,
+                ..Default::default()
             },
         )
         .unwrap();

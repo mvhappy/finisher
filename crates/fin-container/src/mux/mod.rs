@@ -65,11 +65,20 @@ pub struct AudioTrackConfig {
     pub priming: u32,
 }
 
+/// `ftyp`'s brands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Brands {
+    pub major: [u8; 4],
+    pub compatible: Vec<[u8; 4]>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mp4Options {
     /// Bytes reserved after `ftyp` for the `moov`. A `moov` that does not fit is written there
     /// anyway after the media data is moved forward (which reads the output back).
     pub moov_reserve: u64,
+    /// `None`: `isom` with `isom`, `iso6`, `mp41` (and `av01` for AV1).
+    pub brands: Option<Brands>,
     /// Test-only knobs (feature `testing`).
     #[cfg(feature = "testing")]
     pub knobs: crate::mux::knobs::FileKnobs,
@@ -79,6 +88,7 @@ impl Default for Mp4Options {
     fn default() -> Self {
         Mp4Options {
             moov_reserve: 64 << 10,
+            brands: None,
             #[cfg(feature = "testing")]
             knobs: Default::default(),
         }
@@ -229,11 +239,9 @@ impl<W: Read + Write + Seek> Mp4Writer<W> {
     }
 
     pub fn add_audio(&mut self, t: AudioTrackConfig) -> Result<TrackRef, CoreError> {
-        if t.sample_rate > u16::MAX as u32 && !matches!(t.config, CodecConfig::Opus { .. }) {
-            return Err(invalid(
-                "an audio sample rate must fit 16 bits",
-                json!({ "sampleRate": t.sample_rate }),
-            ));
+        // The track's timescale is the rate (the entry's 16.16 field reads 0 past 65,535).
+        if t.sample_rate == 0 {
+            return Err(invalid("an audio sample rate must be positive", json!({})));
         }
         let ts = t.sample_rate;
         self.add(TrackKind::Audio(t), ts)
@@ -261,7 +269,7 @@ impl<W: Read + Write + Seek> Mp4Writer<W> {
     fn start(&mut self) -> Result<(), CoreError> {
         self.started = true;
         self.pos = self.w.stream_position().map_err(|e| io(&e))?;
-        let ftyp = mp4::ftyp(&self.tracks)?;
+        let ftyp = mp4::ftyp(&self.tracks, self.opts.brands.as_ref())?;
         self.put(&ftyp)?;
         if self.fragmented() {
             let moov = mp4::moov(&self.tracks, 0, true)?;

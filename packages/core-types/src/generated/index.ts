@@ -3749,8 +3749,25 @@ export interface Probe {
   kind: AssetKind;
   lottie?: LottieInfo | null;
   lut?: LutInfo | null;
+  media?: MediaInfo1;
   size: number;
   video?: VideoInfo | null;
+}
+/**
+ * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
+ * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
+ * (spec §4.4).
+ */
+export interface MediaInfo1 {
+  audio?: AudioTrackInfo;
+  container: ContainerKind;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  duration: string;
+  fragmented?: boolean;
+  ignored?: IgnoredTrack[];
+  video?: VideoTrackInfo;
 }
 /**
  * What a purge removed.

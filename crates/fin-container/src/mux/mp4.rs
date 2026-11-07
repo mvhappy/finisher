@@ -14,20 +14,29 @@ use super::entries::{audio_entry, boxed, enc, tkhd_size, video_entry};
 use super::{Track, TrackKind};
 use crate::error::invalid;
 
-pub(crate) fn ftyp(tracks: &[Track]) -> Result<Vec<u8>, CoreError> {
-    let mut compatible: Vec<FourCC> = [b"isom", b"iso6", b"mp41"]
-        .iter()
-        .map(|b| FourCC::new(b))
-        .collect();
-    if tracks
-        .iter()
-        .any(|t| matches!(&t.kind, TrackKind::Video(v) if v.config.fourcc() == *b"av01"))
-    {
-        compatible.push(FourCC::new(b"av01"));
-    }
+pub(crate) fn ftyp(tracks: &[Track], brands: Option<&super::Brands>) -> Result<Vec<u8>, CoreError> {
+    let (major, compatible) = match brands {
+        Some(b) => (
+            FourCC::new(&b.major),
+            b.compatible.iter().map(FourCC::new).collect(),
+        ),
+        None => {
+            let mut c: Vec<FourCC> = [b"isom", b"iso6", b"mp41"]
+                .iter()
+                .map(|b| FourCC::new(b))
+                .collect();
+            if tracks
+                .iter()
+                .any(|t| matches!(&t.kind, TrackKind::Video(v) if v.config.fourcc() == *b"av01"))
+            {
+                c.push(FourCC::new(b"av01"));
+            }
+            (FourCC::new(b"isom"), c)
+        }
+    };
     enc(
         &Ftyp {
-            major_brand: FourCC::new(b"isom"),
+            major_brand: major,
             minor_version: 0x200,
             compatible_brands: compatible,
         },

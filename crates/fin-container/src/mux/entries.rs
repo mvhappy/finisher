@@ -168,7 +168,9 @@ pub(crate) fn audio_entry(t: &AudioTrackConfig) -> Result<Vec<u8>, CoreError> {
         data_reference_index: 1,
         channel_count: t.channels,
         sample_size: 16,
-        sample_rate: FixedPoint::new(t.sample_rate.min(u16::MAX as u32) as u16, 0),
+        // 16.16: a rate of 2^16 or more is written as 0 (ISO/IEC 14496-12 §12.2.3); the
+        // track's timescale carries it.
+        sample_rate: FixedPoint::new(u16::try_from(t.sample_rate).unwrap_or(0), 0),
     };
     let mut body = enc(&audio, "audio sample entry")?;
     match &t.config {

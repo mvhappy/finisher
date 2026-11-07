@@ -181,6 +181,27 @@ describe("probe", () => {
     expect(p.audio).toEqual({ sampleRate: 44100, channels: 2 });
     expect(p.fingerprint).toMatch(/\S/);
     expect(p.size).toBeGreaterThan(0);
+    // What the file is (6A Task 8): in the probe answer only.
+    expect(p.media).toMatchObject({ container: "mp4", duration: "2" });
+    expect(p.media.video).toMatchObject({ codec: "h264", coded: { width: 320, height: 180 }, rotation: 0, vfr: false, frames: 50 });
+    expect(p.media.audio).toMatchObject({ codec: "aac", sampleRate: 44100, channels: 2 });
+  });
+
+  test("an asset.add with media is refused; one built from a probe commits without it", async () => {
+    const file = join(tmp, "clip.mp4");
+    testHooks!.writeFixtureMp4(file, { seconds: 2, fps: 25, audio: true, sampleRate: 48000 });
+    const p = JSON.parse(await probe(file));
+    engine = await Engine.create(serverData, projectDir, "Demo", "25");
+    const withMedia = { op: "asset.add", id: "$a", path: file, fingerprint: p.fingerprint, kind: p.kind, duration: p.duration, video: p.video, audio: p.audio, media: p.media };
+    const refused = await rejection(engine.commit(tx("tx-media", 0, [withMedia])));
+    expect(refused.code).toBe("INVALID_OP");
+    expect(refused.details.path).toBe("/ops/0/media");
+    const { media: _media, ...modelOnly } = withMedia;
+    expect(JSON.parse(await engine.commit(tx("tx-add", 0, [modelOnly]))).rev).toBe(1);
+    const [record] = JSON.parse(await engine.opsSince("main", 0));
+    expect(record.tx.ops[0].op).toBe("asset.add");
+    expect(record.tx.ops[0]).not.toHaveProperty("media");
+    expect(JSON.stringify(record)).not.toContain("rotation");
   });
 
   test("each asset kind resolves to its kind and info", async () => {

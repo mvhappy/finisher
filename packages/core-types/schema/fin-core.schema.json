@@ -7080,6 +7080,10 @@
             }
           ]
         },
+        "media": {
+          "$ref": "#/$defs/MediaInfo",
+          "description": "MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,\nHDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it\n(spec §4.4)."
+        },
         "size": {
           "format": "uint64",
           "minimum": 0,
