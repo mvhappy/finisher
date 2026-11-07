@@ -73,6 +73,10 @@ jobs:
         run: pnpm test:gates
       - name: End-to-end (fin → finisherd → WebSocket subscriber)
         run: pnpm e2e
+        env:
+          # The reel scenario's real-font pass seeds its server's cache from the warmed one.
+          FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
+          FIN_REQUIRE_FONTS: "1"
       - name: Install cargo-deny
         if: runner.os != 'Windows'
         run: cargo install cargo-deny --locked --version 0.20.2

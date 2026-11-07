@@ -62,13 +62,13 @@ export function fin(serverData, cwd, args, extraEnv = {}) {
   return r.json;
 }
 
-export async function waitFor(what, predicate, timeoutMs, onTimeout = () => "") {
+export async function waitFor(what, predicate, timeoutMs, onTimeout = () => "", intervalMs = 25) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = predicate();
     if (value) return value;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}${onTimeout()}`);
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
 
@@ -81,13 +81,14 @@ export function serverCommand(serverData) {
 }
 
 /**
- * Starts `finisherd --server-data <dir>` and waits for its `finisherd.json`. If it never
- * becomes ready, the child is stopped before the error propagates.
+ * Starts `finisherd --server-data <dir>` (with `env` added to this process's environment) and
+ * waits for its `finisherd.json`. If it never becomes ready, the child is stopped before the
+ * error propagates.
  */
-export async function startServer(serverData) {
+export async function startServer(serverData, env = {}) {
   const [cmd, args] = serverCommand(serverData);
   rmSync(join(serverData, "finisherd.json"), { force: true }); // a stale file from an earlier run
-  const child = spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"] });
+  const child = spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...env } });
   live.children.add(child);
   child.once("exit", () => live.children.delete(child));
   let stderr = "";

@@ -218,9 +218,10 @@ export declare const testHooks:
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
       ): void;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
-       * (4³), `wav` (1 s, 48 kHz stereo) or `m4a` (2 s, 48 kHz stereo) fixture. */
+       * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
+       * 48 kHz stereo) fixture. */
       writeFixture(
-        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | "m4a",
+        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | `wav:${number}` | "m4a",
         path: string,
       ): void;
     }

@@ -44,15 +44,12 @@ impl Manager {
                         face.weight
                     },
                     italic: face.italic,
-                    keys: keys
-                        .remove(&s.file.sha256)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect(),
+                    keys: Vec::new(),
                     state: self.file_state(&s.file.sha256),
                 }
             })
             .collect();
+        assign_keys(&mut files, &mut keys);
         for (sha, ks) in keys {
             let first = ks.iter().next().cloned().unwrap_or_default();
             let mut parts = first.split('|');
@@ -174,8 +171,82 @@ impl Manager {
     }
 }
 
+/// Moves each key of `keys` whose file has rows in `rows` onto a row: the row of its weight
+/// and slope (a variable file has a row per style), else the file's first row.
+fn assign_keys(rows: &mut [FontFileStatus], keys: &mut BTreeMap<String, BTreeSet<String>>) {
+    let face_of = |key: &str| {
+        let mut parts = key.rsplitn(3, '|');
+        let italic = parts.next() == Some("italic");
+        let weight = parts.next().and_then(|w| w.parse::<u16>().ok());
+        (weight, italic)
+    };
+    for row in rows.iter_mut() {
+        if let Some(ks) = keys.get_mut(&row.sha256) {
+            let (mine, rest) = std::mem::take(ks)
+                .into_iter()
+                .partition(|k| face_of(k) == (Some(row.weight), row.italic));
+            *ks = rest;
+            row.keys = mine.into_iter().collect();
+        }
+    }
+    for row in rows.iter_mut() {
+        if let Some(ks) = keys.remove(&row.sha256) {
+            row.keys.extend(ks);
+            row.keys.sort();
+        }
+    }
+}
+
 fn not_in_catalog(details: Value, message: String) -> CoreError {
     CoreError::new("FONT_NOT_IN_CATALOG", message)
         .with_details(details)
         .with_fix("fin fonts ls --catalog")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(sha: &str, style: &str, weight: u16) -> FontFileStatus {
+        FontFileStatus {
+            sha256: sha.into(),
+            size: 1,
+            entry: Some("inter".into()),
+            style: Some(style.into()),
+            family: "Inter Variable".into(),
+            weight,
+            italic: false,
+            keys: Vec::new(),
+            state: FileState::Missing,
+        }
+    }
+
+    #[test]
+    fn keys_go_to_the_row_of_their_style() {
+        // One variable file serving two styles, and a static file.
+        let mut rows = [
+            row("v", "regular", 400),
+            row("v", "bold", 700),
+            row("s", "regular", 400),
+        ];
+        let mut keys: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut add = |sha: &str, key: &str| {
+            keys.entry(sha.into()).or_default().insert(key.into());
+        };
+        add("v", "Inter|700|normal");
+        add("v", "Inter|900|normal"); // no row of its own: the file's first row
+        add("s", "Other|400|italic"); // a different face of the same file: its only row
+        add("x", "Asset|400|normal"); // not in the catalog: left for the caller
+        assign_keys(&mut rows, &mut keys);
+        let got: Vec<Vec<String>> = rows.iter().map(|r| r.keys.clone()).collect();
+        assert_eq!(
+            got,
+            [
+                vec!["Inter|900|normal".to_string()],
+                vec!["Inter|700|normal".to_string()],
+                vec!["Other|400|italic".to_string()],
+            ]
+        );
+        assert_eq!(keys.keys().collect::<Vec<_>>(), ["x"]);
+    }
 }

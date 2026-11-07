@@ -167,13 +167,21 @@ pub fn write_fixture_mp4_for_test(
 
 /// Writes a small fixture of `kind` to `path`: `png`, `jpeg` and `webp` (64x48), `svg`
 /// (640x360), `dotlottie` (the fixtures' sample template), `cube` (an identity 4³ LUT), `wav`
-/// (1 s of 48 kHz stereo PCM) or `m4a` (2 s of 48 kHz stereo AAC, no video).
+/// (1 s of 48 kHz stereo PCM; `wav:<seconds>` for longer) or `m4a` (2 s of 48 kHz stereo AAC,
+/// no video).
 #[napi(catch_unwind)]
 pub fn write_fixture_for_test(kind: String, path: String) -> Result<()> {
     let path = Path::new(&path);
     guarded(
         || {
+            let wav_seconds = kind
+                .strip_prefix("wav:")
+                .and_then(|n| n.parse::<u32>().ok());
             match kind.as_str() {
+                _ if wav_seconds.is_some_and(|s| (1..=600).contains(&s)) => {
+                    let seconds = wav_seconds.unwrap_or(1);
+                    fixtures::write_wav(path, 48_000, 2, 48_000 * seconds);
+                }
                 "png" => fixtures::write_png(path, 64, 48),
                 "jpeg" => fixtures::write_jpeg(path, 64, 48),
                 "webp" => fixtures::write_webp(path, 64, 48),

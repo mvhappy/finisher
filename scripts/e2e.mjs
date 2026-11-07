@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel ...]  (default: every scenario)
 //
 // The "storage" scenario (scripts/e2e/storage.mjs) edits, exports, deletes the database,
 // rebuilds from the folder and checks a second finisherd follows the folder read-only.
@@ -15,6 +15,13 @@
 // both directions), undo/redo, checkpoints, try, cherry-pick, revert, dry runs and a real
 // `project recover --create` (a second server on a lease-less folder copy diverges, ~12 s of
 // lease catch-up), with WebSocket subscribers checking each record lands on its own branch.
+//
+// The "reel" scenario (scripts/e2e/reel*.mjs) builds a 30 s reel by `fin` only (linked audio,
+// speed, overlays, a graphic, music, captions, keyframes, transitions) on a test font catalog
+// served from loopback: captions are unmeasured while fetching is off, then the fonts fetch by
+// themselves and eval lays them out with the records unchanged; view, frame and audio plans
+// equal `scripts/e2e/reel-golden/` (`E2E_REEL_BLESS=1` rewrites them, refused under CI). Its
+// real-font pass needs `FIN_FONT_CACHE` (skipped without it, unless `FIN_REQUIRE_FONTS=1`).
 //
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
@@ -25,12 +32,13 @@ import { build, live, removeTmp } from "./e2e/lib.mjs";
 import { checkRevs, run as runBasic } from "./e2e/basic.mjs";
 import { run as runStorage } from "./e2e/storage.mjs";
 import { run as runHistory } from "./e2e/history.mjs";
+import { run as runReel } from "./e2e/reel.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel };
 
 async function main(argv) {
   if (!argv.includes("--skip-build")) {

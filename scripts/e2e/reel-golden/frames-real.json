@@ -1,0 +1,30 @@
+[
+  {
+    "t": "0.2s",
+    "sha256": "c0405716a9819b481d57e8e79051e585ecba6bbfc2679a201c3d1c6734cca93b",
+    "layers": [
+      "cap1 caption t3 1 lines, 1 faces, 25384x5530/64 px"
+    ]
+  },
+  {
+    "t": "1.8s",
+    "sha256": "005d8dc8c7fc2266e678e1d97fc7790108b32b5493cc5e6c68295ad512990951",
+    "layers": [
+      "cap2 caption t3 1 lines, 2 faces, 22094x5530/64 px"
+    ]
+  },
+  {
+    "t": "3.2s",
+    "sha256": "f79f3a983d27f420f960a8aaf934479750266551ef3d4170940498ba3b257593",
+    "layers": [
+      "cap3 caption t3 1 lines, 2 faces, 19524x5530/64 px"
+    ]
+  },
+  {
+    "t": "4.8s",
+    "sha256": "0718734efa665214eaddb470c4cea92fe28b9cd301a82e0b3be0f1572801579a",
+    "layers": [
+      "cap4 caption t3 1 lines, 2 faces, 12566x5530/64 px"
+    ]
+  }
+]

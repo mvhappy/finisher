@@ -8,3 +8,5 @@ out/
 __pycache__/
 # Throwaway spikes, evaluations, benchmarks and scratchpads (local only).
 /archive/
+# A reel golden mismatch leaves the actual value beside the golden.
+/scripts/e2e/reel-golden/*.actual
