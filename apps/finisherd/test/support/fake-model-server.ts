@@ -6,8 +6,12 @@ import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 
 export type FakeResponse =
-  /** An SSE body (a fixture's text); `cutAfter` bytes are written and then the socket is destroyed. */
-  | { readonly sse: string; readonly cutAfter?: number; readonly headers?: Record<string, string> }
+  /**
+   * An SSE body (a fixture's text). `cutAfter`: that many characters are written, then the
+   * socket is destroyed. `stallAfter`: that many are written, then nothing more (the
+   * connection stays open until the server closes).
+   */
+  | { readonly sse: string; readonly cutAfter?: number; readonly stallAfter?: number; readonly headers?: Record<string, string> }
   /** A plain JSON error. */
   | { readonly status: number; readonly body: unknown; readonly headers?: Record<string, string> };
 
@@ -30,7 +34,12 @@ export function sse(name: string): string {
   return readFileSync(new URL(`../fixtures/model-streams/openrouter/${name}.sse`, import.meta.url), "utf8");
 }
 
-export async function startFakeModelServer(scripts: readonly FakeResponse[]): Promise<FakeModelServer> {
+export interface FakeServerOptions {
+  /** `GET /api/v1/generation?id=` answers: id → total cost in USD. */
+  readonly generations?: Readonly<Record<string, number>>;
+}
+
+export async function startFakeModelServer(scripts: readonly FakeResponse[], opts: FakeServerOptions = {}): Promise<FakeModelServer> {
   const recorded: RecordedRequest[] = [];
   let next = 0;
   const server = createServer((req, res) => {
@@ -45,6 +54,13 @@ export async function startFakeModelServer(scripts: readonly FakeResponse[]): Pr
         // Recorded as is.
       }
       recorded.push({ method: req.method ?? "", path: req.url ?? "", headers: req.headers, body, json });
+      if (req.method === "GET" && req.url?.startsWith("/api/v1/generation?id=")) {
+        const id = decodeURIComponent(req.url.slice("/api/v1/generation?id=".length));
+        const cost = opts.generations?.[id];
+        if (cost === undefined) res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 404, message: "not found" } }));
+        else res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id, total_cost: cost } }));
+        return;
+      }
       const script = scripts[Math.min(next++, scripts.length - 1)];
       if (script === undefined || req.url !== "/api/v1/chat/completions") {
         res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 404, message: "no such route" } }));
@@ -57,6 +73,10 @@ export async function startFakeModelServer(scripts: readonly FakeResponse[]): Pr
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", ...script.headers });
       if (script.cutAfter !== undefined) {
         res.write(script.sse.slice(0, script.cutAfter), () => res.socket?.destroy());
+        return;
+      }
+      if (script.stallAfter !== undefined) {
+        res.write(script.sse.slice(0, script.stallAfter));
         return;
       }
       res.end(script.sse);

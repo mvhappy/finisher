@@ -2,11 +2,20 @@
 // `<server-data>/secrets.json`, mode 0600, holding sealed values only. In v1 it holds the
 // OpenRouter key the user pastes, once per server and optionally once per project, and
 // nothing else. No method returns a value except `reveal`, which only `ModelGateway` calls.
-// Writes are temp-then-rename, serialised through one in-process queue.
+// Writes are temp-then-rename, serialised through one in-process queue and, across processes,
+// a kernel lock on `secrets.lock` (review M2); the directory is fsynced after the rename.
+//
+// Protection is the private directory and the file mode, so both are checked (and repaired)
+// at every read and write: the directory is ours, not a link, and 0700; the file is ours, a
+// regular file, and 0600. Windows has no mode bits: until the keychain backend (5B) or 5A's
+// `ensurePrivateDir` (an owner-only ACL through fin-node's `makePrivateDir`/`checkPrivateDir`,
+// on `sp5a-principals`) is on this branch, the file backend refuses to run there.
+// TODO(5A): use `ensurePrivateDir` on Windows once 5A is merged, instead of refusing.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { lockExclusive } from "@finisher/fin-node";
 import { type Clock, type Ids, systemClock, systemIds } from "../agent/clock.ts";
 import { finError } from "../errors.ts";
 import { type Sealed, type SecretBox, identityBox } from "./box.ts";
@@ -50,6 +59,9 @@ interface FileDoc {
 }
 
 const FILE = "secrets.json";
+const LOCK = "secrets.lock";
+/** How long a write waits for another process's lock. */
+const LOCK_WAIT_MS = 5000;
 const LABEL = /^[\x20-\x7e]{1,100}$/;
 const PROJECT = /^[0-9a-z]{26}$/;
 /** An API key is 8–1024 bytes of printable ASCII without spaces (checked on the bytes). */
@@ -62,18 +74,85 @@ function isKey(b: Buffer): boolean {
 const corrupt = (message: string, details: unknown = {}) =>
   finError("SECRET_CORRUPT", message, details, "remove the entry with `finisherd provider key rm` and set it again");
 
+const unsafe = (message: string, details: unknown = {}) =>
+  finError("SECRET_STORE_UNSAFE", message, details, "make the server-data directory private to the user finisherd runs as (chmod 700, chown)");
+
+export interface StoreOptions {
+  readonly box?: SecretBox;
+  readonly clock?: Clock;
+  readonly ids?: Ids;
+  /** For tests of the Windows refusal. */
+  readonly platform?: NodeJS.Platform;
+}
+
 export class FileSecretStore implements SecretStore {
   readonly path: string;
+  private readonly box: SecretBox;
+  private readonly clock: Clock;
+  private readonly ids: Ids;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
-    serverData: string,
-    private readonly box: SecretBox = identityBox,
-    private readonly clock: Clock = systemClock,
-    private readonly ids: Ids = systemIds(clock),
+    private readonly dir: string,
+    opts: StoreOptions = {},
   ) {
-    mkdirSync(serverData, { recursive: true, mode: 0o700 });
-    this.path = join(serverData, FILE);
+    if ((opts.platform ?? process.platform) === "win32") {
+      throw finError(
+        "SECRET_STORE_UNAVAILABLE",
+        "the file secret store cannot make its directory private on Windows yet",
+        { platform: "win32" },
+        "the OS keychain backend (sub-project 5B) stores the OpenRouter key on Windows",
+      );
+    }
+    this.box = opts.box ?? identityBox;
+    this.clock = opts.clock ?? systemClock;
+    this.ids = opts.ids ?? systemIds(this.clock);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    this.path = join(dir, FILE);
+    this.ensurePrivate();
+  }
+
+  /** The directory is ours, a real directory and 0700; the file, if any, ours, regular and 0600. */
+  private ensurePrivate(): void {
+    const uid = process.getuid?.();
+    const d = lstatSync(this.dir);
+    if (!d.isDirectory() || d.isSymbolicLink()) throw unsafe("the secrets directory is not a directory", { what: "dir" });
+    if (uid !== undefined && d.uid !== uid) throw unsafe("the secrets directory belongs to another user", { what: "dir" });
+    if ((d.mode & 0o077) !== 0) chmodSync(this.dir, 0o700);
+    let f;
+    try {
+      f = lstatSync(this.path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw e;
+    }
+    if (!f.isFile()) throw unsafe("secrets.json is not a regular file", { what: "file" });
+    if (uid !== undefined && f.uid !== uid) throw unsafe("secrets.json belongs to another user", { what: "file" });
+    if ((f.mode & 0o077) !== 0) chmodSync(this.path, 0o600);
+  }
+
+  /** Runs `f` holding the cross-process lock (retried while another process holds it). */
+  private async locked<A>(f: () => Promise<A>): Promise<A> {
+    // Real time, not the injected clock: this waits on another process.
+    const deadline = Date.now() + LOCK_WAIT_MS;
+    for (;;) {
+      let lock;
+      try {
+        lock = lockExclusive(join(this.dir, LOCK));
+      } catch (e) {
+        if ((e as { code?: string }).code !== "SERVER_RUNNING") throw e;
+        if (Date.now() > deadline) {
+          throw finError("SECRET_STORE_BUSY", "another process holds the secret store's lock", {}, "try again; only finisherd should write secrets.json");
+        }
+        await new Promise((r) => setTimeout(r, 20));
+        continue;
+      }
+      try {
+        return await f();
+      } finally {
+        lock.release();
+      }
+    }
   }
 
   put(e: NewSecret): Promise<string> {
@@ -139,12 +218,14 @@ export class FileSecretStore implements SecretStore {
   }
 
   private serial<A>(f: () => Promise<A>): Promise<A> {
-    const run = this.queue.then(f, f);
+    const g = () => this.locked(f);
+    const run = this.queue.then(g, g);
     this.queue = run.catch(() => undefined);
     return run;
   }
 
   private read(): FileDoc {
+    this.ensurePrivate();
     let text: string;
     try {
       text = readFileSync(this.path, "utf8");
@@ -173,8 +254,9 @@ export class FileSecretStore implements SecretStore {
     return doc;
   }
 
-  /** Temp-then-rename; the temp file is created 0600 before any byte is written. */
+  /** Temp-then-rename; the temp file is created 0600 before any byte is written; the directory is fsynced. */
   private async write(doc: FileDoc): Promise<void> {
+    this.ensurePrivate();
     const tmp = `${this.path}.${randomBytes(6).toString("hex")}.tmp`;
     const fh = await open(tmp, "wx", 0o600);
     try {
@@ -187,5 +269,11 @@ export class FileSecretStore implements SecretStore {
     }
     await fh.close();
     await rename(tmp, this.path);
+    const d = openSync(this.dir, "r");
+    try {
+      fsyncSync(d);
+    } finally {
+      closeSync(d);
+    }
   }
 }

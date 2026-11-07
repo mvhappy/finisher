@@ -1,7 +1,13 @@
 // `ModelGateway` (plan 7A Decision 23; sub-project 7 §10): the only path from a stored key to a
 // model request. It picks the project's OpenRouter key, else the server's default, opens it
-// for one request, and zero-fills the buffer when the request settles. A session that is not
-// running gets no key. The first grant per session and every refusal are audited.
+// for one request, and zero-fills the buffer it was opened into when the request settles. A
+// session that is not running gets no key. The first grant per session and every refusal are
+// audited.
+//
+// What zero-filling does and does not do (review L1): `f` receives the key as a JS string,
+// because the HTTP client needs one; strings are immutable and live until the garbage
+// collector reclaims them, so that copy cannot be wiped. Only the store's plaintext buffer is
+// zero-filled. The bound is that the string is made per request and never kept or logged.
 import type { Clock } from "../agent/clock.ts";
 import { FinError } from "@finisher/contracts";
 import { finError } from "../errors.ts";
@@ -99,7 +105,8 @@ export class ModelGateway {
 }
 
 /**
- * `e`, or when it quotes `key` anywhere (message, stack, fields), a new error in its place:
+ * `e`, or when it quotes `key` anywhere (message, stack, fields, the `cause` chain), a new
+ * error in its place:
  * a `FinError` keeps its code and fix with the key replaced in the message and the details
  * dropped; anything else becomes `PROVIDER_PROTOCOL` with a cleaned message.
  */
@@ -112,9 +119,16 @@ function scrubbed(e: unknown, key: string): unknown {
       return true;
     }
   };
+  /** Whether `x` or anything on its `cause` chain quotes the key (`cause` is not enumerable). */
+  const leaks = (x: unknown, depth: number): boolean => {
+    if (depth > 8) return true;
+    if (!(x instanceof Error)) return quotes(x);
+    if (quotes(x.message) || quotes(x.stack) || quotes({ ...x })) return true;
+    return x.cause !== undefined && leaks(x.cause, depth + 1);
+  };
+  if (!leaks(e, 0)) return e;
   const err = e instanceof Error ? e : undefined;
-  const leaks = err === undefined ? quotes(e) : quotes(err.message) || quotes(err.stack) || quotes({ ...err });
-  if (!leaks) return e;
+  // The replacement has no cause: the chain that quoted the key is dropped whole.
   const message = (err?.message ?? String(e)).split(key).join(REDACTED);
   if (e instanceof FinError) {
     return new FinError({ code: e.code, message, details: {}, ...(e.fix === undefined ? {} : { fix: e.fix }) });

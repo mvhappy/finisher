@@ -10,7 +10,16 @@ export interface Ledger {
   /** null until a limit is set. */
   readonly limit: number | null;
   readonly used: number;
-  /** Carved out for children (7B); returned when they end. */
+  /**
+   * Held, not yet spent: the projected cost of a model call between `Budget.canCall` and its
+   * `charge` (review H3), and in 7B a child's carve-out. Returned when settled.
+   */
+  readonly reserved: number;
+}
+
+/** The server's money for one UTC day across sessions. */
+export interface Daily {
+  readonly used: number;
   readonly reserved: number;
 }
 
@@ -18,16 +27,16 @@ export interface LedgerStore {
   read(sessionId: string, kind: BudgetKind): Ledger;
   add(sessionId: string, kind: BudgetKind, delta: { used?: number; reserved?: number }): Ledger;
   setLimit(sessionId: string, kind: BudgetKind, limit: number): void;
-  /** Money (micros) charged on `utcDay` (`YYYY-MM-DD`) across the server's sessions. */
-  dailyMoney(utcDay: string): number;
-  addDailyMoney(utcDay: string, micros: number): void;
+  /** Money (micros) charged and held on `utcDay` (`YYYY-MM-DD`) across the server's sessions. */
+  daily(utcDay: string): Daily;
+  addDaily(utcDay: string, delta: { used?: number; reserved?: number }): Daily;
 }
 
 const EMPTY: Ledger = { limit: null, used: 0, reserved: 0 };
 
 export class MemoryLedger implements LedgerStore {
   private readonly rows = new Map<string, Ledger>();
-  private readonly days = new Map<string, number>();
+  private readonly days = new Map<string, Daily>();
 
   read(sessionId: string, kind: BudgetKind): Ledger {
     return this.rows.get(`${sessionId}/${kind}`) ?? EMPTY;
@@ -48,12 +57,15 @@ export class MemoryLedger implements LedgerStore {
     this.rows.set(`${sessionId}/${kind}`, { ...this.read(sessionId, kind), limit });
   }
 
-  dailyMoney(utcDay: string): number {
-    return this.days.get(utcDay) ?? 0;
+  daily(utcDay: string): Daily {
+    return this.days.get(utcDay) ?? { used: 0, reserved: 0 };
   }
 
-  addDailyMoney(utcDay: string, micros: number): void {
-    this.days.set(utcDay, this.dailyMoney(utcDay) + micros);
+  addDaily(utcDay: string, delta: { used?: number; reserved?: number }): Daily {
+    const old = this.daily(utcDay);
+    const row = { used: old.used + (delta.used ?? 0), reserved: Math.max(0, old.reserved + (delta.reserved ?? 0)) };
+    this.days.set(utcDay, row);
+    return row;
   }
 }
 

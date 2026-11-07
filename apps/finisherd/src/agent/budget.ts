@@ -1,8 +1,15 @@
 // Session budgets (sub-project 7 §13; plan 7A Decisions 10, 20, 21): tokens, money and wall clock
 // per session in the ledger, money per server per UTC day, and the per-run caps on model and
-// tool calls. Checked before each model call (projected) and after each turn and tool call:
-// a notice once per kind at 80 %, a stop at 100 % (the runtime stops after the running tool
-// call and opens a budget approval).
+// tool calls. Checked before each model call (projected, and the projection is **reserved** in
+// the ledger until the call is charged, so concurrent calls cannot overspend together; review
+// H3) and after each turn and tool call: a notice once per kind at 80 %, a stop at 100 % (the
+// runtime stops after the running tool call and opens a budget approval). Failed and retried
+// attempts are charged too (review B2).
+//
+// What resets (review L4): the per-run call counters belong to the run and start at zero with
+// each run, a resumed one included; the 80 % notices are remembered by this `Budget` only, so
+// after a restart a notice may be shown once more. Both are deliberate: neither is money, and
+// the ledger (used, reserved, limits) is what persists.
 import type { Usage } from "./catalogue/catalogue.ts";
 import type { Clock } from "./clock.ts";
 import { type BudgetKind, BUDGET_KINDS, type LedgerStore, utcDay } from "./ledger.ts";
@@ -36,7 +43,13 @@ export interface Reading {
   readonly limit: number;
 }
 
-export type Allowance = { readonly ok: true } | ({ readonly ok: false } & Reading);
+/** Money held for one model call between `canCall` and `charge` (or `release`). */
+export interface Reservation {
+  readonly micros: number;
+  readonly day: string;
+}
+
+export type Allowance = { readonly ok: true; readonly reservation: Reservation | null } | ({ readonly ok: false } & Reading);
 
 export interface Crossings {
   /** Kinds that crossed 80 % for the first time. */
@@ -46,10 +59,20 @@ export interface Crossings {
 }
 
 export interface BudgetOptions {
-  /** Prices a projected call in micros (the catalogue's `price`); 0 when absent. */
-  readonly price?: (u: Usage) => number;
+  /**
+   * Prices a projected call in micros (the catalogue's `projectedMicros`); null when the price
+   * is unknown, which reserves nothing: such a model is charged after the call only.
+   */
+  readonly price?: (u: Usage) => number | null;
   /** A cache-read token's weight in token budgets (the catalogue's `cacheReadWeight`). */
   readonly cacheReadWeight?: number;
+}
+
+export interface ChargeOptions {
+  /** The reservation `canCall` made for this call: released as the actual cost is charged. */
+  readonly reservation?: Reservation | null;
+  /** Counts as a model call (false for a failed attempt the client retries). Default true. */
+  readonly call?: boolean;
 }
 
 const NOTICE_AT = 0.8;
@@ -96,22 +119,54 @@ export class Budget {
     this.since = null;
   }
 
-  /** Whether a model call projected to use `projected` fits every budget. */
+  /**
+   * Whether a model call projected to use `projected` fits every budget, counting money other
+   * calls hold. When it fits, its projected cost is reserved until `charge` or `release`.
+   */
   canCall(projected: Usage): Allowance {
     this.tick();
     if (this.runCalls >= this.limits.modelCallsPerRun) {
       return { ok: false, kind: "modelCalls", used: this.runCalls, limit: this.limits.modelCallsPerRun };
     }
-    const micros = this.opts.price?.(projected) ?? 0;
+    const micros = Math.max(0, this.opts.price?.(projected) ?? 0);
     const wall = this.read("wallMs");
     if (wall.used >= wall.limit) return { ok: false, ...wall };
     const tokens = this.read("tokens");
     if (tokens.used + this.tokensOf(projected) > tokens.limit) return { ok: false, ...tokens };
-    const money = this.read("money");
-    if (money.used + micros > money.limit) return { ok: false, ...money };
-    const daily = this.daily();
-    if (daily.used + micros > daily.limit) return { ok: false, ...daily };
-    return { ok: true };
+    const money = this.ledger.read(this.sessionId, "money");
+    const moneyLimit = money.limit ?? this.limits.moneyMicros;
+    if (money.used + money.reserved + micros > moneyLimit) {
+      return { ok: false, kind: "money", used: money.used + money.reserved, limit: moneyLimit };
+    }
+    const day = utcDay(this.clock.now());
+    const daily = this.ledger.daily(day);
+    if (daily.used + daily.reserved + micros > this.limits.dailyMoneyMicros) {
+      return { ok: false, kind: "dailyMoney", used: daily.used + daily.reserved, limit: this.limits.dailyMoneyMicros };
+    }
+    if (micros === 0) return { ok: true, reservation: null };
+    this.ledger.add(this.sessionId, "money", { reserved: micros });
+    this.ledger.addDaily(day, { reserved: micros });
+    return { ok: true, reservation: { micros, day } };
+  }
+
+  /** Returns a reservation unused (the call never reached the model). */
+  release(r: Reservation | null | undefined): void {
+    if (!r) return;
+    this.ledger.add(this.sessionId, "money", { reserved: -r.micros });
+    this.ledger.addDaily(r.day, { reserved: -r.micros });
+  }
+
+  /**
+   * After a model call or a failed attempt: charges its tokens and `micros`, settles the
+   * reservation, and counts the call (unless `call: false`).
+   */
+  charge(u: Usage, micros: number, o: ChargeOptions = {}): Crossings {
+    this.release(o.reservation);
+    if (o.call ?? true) this.runCalls += 1;
+    this.ledger.add(this.sessionId, "tokens", { used: this.tokensOf(u) });
+    this.ledger.add(this.sessionId, "money", { used: micros });
+    this.ledger.addDaily(utcDay(this.clock.now()), { used: micros });
+    return this.crossings();
   }
 
   /** Whether one more tool call fits the run's cap. */
@@ -119,16 +174,7 @@ export class Budget {
     if (this.runTools >= this.limits.toolCallsPerRun) {
       return { ok: false, kind: "toolCalls", used: this.runTools, limit: this.limits.toolCallsPerRun };
     }
-    return { ok: true };
-  }
-
-  /** After a model call: charges its tokens and `micros` and counts the call. */
-  charge(u: Usage, micros: number): Crossings {
-    this.runCalls += 1;
-    this.ledger.add(this.sessionId, "tokens", { used: this.tokensOf(u) });
-    this.ledger.add(this.sessionId, "money", { used: micros });
-    this.ledger.addDailyMoney(utcDay(this.clock.now()), micros);
-    return this.crossings();
+    return { ok: true, reservation: null };
   }
 
   /** After a tool call: counts it. */
@@ -149,7 +195,7 @@ export class Budget {
     this.noticed.delete(kind);
   }
 
-  /** Every reading, for the budget facts message at the head of a run. */
+  /** Every reading (money as spent, not held), for the budget facts at the head of a run. */
   readings(): Reading[] {
     this.tick();
     return [
@@ -173,15 +219,14 @@ export class Budget {
   }
 
   private daily(): Reading {
-    const used = this.ledger.dailyMoney(utcDay(this.clock.now()));
+    const used = this.ledger.daily(utcDay(this.clock.now())).used;
     return { kind: "dailyMoney", used, limit: this.limits.dailyMoneyMicros };
   }
 
   private crossings(): Crossings {
-    const all = this.readings();
     const notices: Reading[] = [];
     let stop: Reading | null = null;
-    for (const r of all) {
+    for (const r of this.readings()) {
       if (r.used >= r.limit * NOTICE_AT && !this.noticed.has(r.kind)) {
         this.noticed.add(r.kind);
         notices.push(r);

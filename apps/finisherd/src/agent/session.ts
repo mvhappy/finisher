@@ -136,10 +136,11 @@ export function next(s: SessionState, e: SessionEvent): Transition {
       };
 
     case "approvalOpened": {
-      // An approval opens during a run, or (a budget approval) for an interrupted session;
-      // anywhere else it is stale.
+      // An approval opens during a run, or (a budget approval) for an interrupted session.
+      // Anywhere else nothing can wait on it: it is expired at once, never dropped silently.
       const open = s.status === "running" || s.status === "waitingApproval" || s.status === "interrupted";
-      if (!open || s.approvals.includes(e.id)) return unchanged(s);
+      if (!open) return { state: s, effects: [{ kind: "expireApprovals", ids: [e.id] }] };
+      if (s.approvals.includes(e.id)) return unchanged(s);
       const status = s.status === "interrupted" ? "interrupted" : "waitingApproval";
       return { state: { ...s, status, approvals: [...s.approvals, e.id] }, effects: [] };
     }

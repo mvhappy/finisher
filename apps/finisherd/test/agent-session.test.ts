@@ -112,32 +112,65 @@ describe("state_machine_properties", () => {
     );
   });
 
-  it("every effect list is a function of the transition alone", () => {
-    // Two states with the same status and run, whatever else differs, give the same effects
-    // and the same next status for the same event.
-    const key = (s: SessionState) => `${s.status}/${s.runId}/${s.approvals.join(",")}`;
+  it("every opened approval leaves only by an answer or an expire effect", () => {
     fc.assert(
-      fc.property(fc.array(reachable, { minLength: 2, maxLength: 8 }), event, (states, e) => {
-        const seen = new Map<string, string>();
-        for (const s of states) {
+      fc.property(fc.array(event, { maxLength: 60 }), (es) => {
+        let s = initialState;
+        /** Approvals accepted (in the state, or expired as they opened) and not yet gone. */
+        const live = new Set<string>();
+        for (const e of es) {
+          const before = new Set(s.approvals);
           const t = next(s, e);
-          const out = "error" in t ? `error:${t.error.code}` : `${t.state.status}:${JSON.stringify(t.effects)}`;
-          const k = key(s);
-          if (seen.has(k)) expect(out).toBe(seen.get(k));
-          seen.set(k, out);
+          if ("error" in t) continue;
+          const expired = new Set(t.effects.flatMap((x) => (x.kind === "expireApprovals" ? x.ids : [])));
+          const answered = e.kind === "approvalAnswered" && before.has(e.id) ? e.id : null;
+          if (e.kind === "approvalOpened") {
+            // Accepted into the state, already there, or expired at once: never dropped.
+            expect(t.state.approvals.includes(e.id) || expired.has(e.id)).toBe(true);
+            if (t.state.approvals.includes(e.id)) live.add(e.id);
+          }
+          for (const id of before) {
+            if (!t.state.approvals.includes(id)) {
+              expect(id === answered || expired.has(id), `${id} left without answer or expiry on ${e.kind}`).toBe(true);
+              live.delete(id);
+            }
+          }
+          // Nothing expires that was not open (or opening).
+          for (const id of expired) expect(before.has(id) || (e.kind === "approvalOpened" && e.id === id)).toBe(true);
+          s = t.state;
         }
+        expect([...live].sort()).toEqual([...s.approvals].sort());
       }),
+      { numRuns: 2000 },
     );
   });
 
-  it("an error never changes the state", () => {
+  it("every openRun gets exactly one closeRun", () => {
     fc.assert(
-      fc.property(reachable, event, (s, e) => {
-        const before = JSON.stringify(s);
-        const t = next(s, e);
-        expect(JSON.stringify(s)).toBe(before);
-        if ("error" in t) expect(t.error.message.length).toBeGreaterThan(0);
+      fc.property(fc.array(event, { maxLength: 60 }), (es) => {
+        let s = initialState;
+        const open = new Map<string, number>();
+        let opened = 0;
+        for (const e of es) {
+          const t = next(s, e);
+          if ("error" in t) continue;
+          for (const x of t.effects) {
+            if (x.kind === "openRun") {
+              expect(open.size, "one active run at a time").toBe(0);
+              open.set(x.runId, ++opened);
+            }
+            if (x.kind === "closeRun") {
+              expect(open.has(x.runId), `closeRun of ${x.runId} that is not open`).toBe(true);
+              open.delete(x.runId);
+            }
+            if (x.kind === "closeOpenToolCalls") expect(open.has(x.runId)).toBe(true);
+          }
+          s = t.state;
+          // The state's run is exactly the open one.
+          expect(s.runId === null ? [] : [s.runId]).toEqual([...open.keys()]);
+        }
       }),
+      { numRuns: 2000 },
     );
   });
 });
@@ -207,6 +240,13 @@ describe("transitions", () => {
     expect(next(s, { kind: "ready" })).toEqual({ state: s, effects: [] });
     const end = next(s, { kind: "ended", reason: "user" });
     expect("state" in end && end.effects.map((e) => e.kind)).toEqual(["stopProvider", "revokeCredential", "journal"]);
+  });
+
+  it("an approval opened outside a run is expired at once", () => {
+    const idle = step(initialState, { kind: "ready" });
+    for (const s of [initialState, idle]) {
+      expect(next(s, { kind: "approvalOpened", id: "a9" })).toEqual({ state: s, effects: [{ kind: "expireApprovals", ids: ["a9"] }] });
+    }
   });
 
   it("a crash while starting interrupts the session", () => {

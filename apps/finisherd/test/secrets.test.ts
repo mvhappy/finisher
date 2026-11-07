@@ -1,5 +1,6 @@
 // The secret store, the seal/open seam and ModelGateway (plan 7A Task 5, Decisions 22–24).
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { lockExclusive } from "@finisher/fin-node";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -54,7 +55,7 @@ function xorBox(): SecretBox & { opened: Buffer[]; seals: number } {
 describe("FileSecretStore", () => {
   it("creates secrets.json 0600 in a 0700 directory, holding the sealed form only", async () => {
     const sd = join(dir(), "server-data");
-    const store = new FileSecretStore(sd, identityBox, manualClock(), ids());
+    const store = new FileSecretStore(sd, { box: identityBox, clock: manualClock(), ids: ids() });
     const id = await store.put({ provider: "openrouter", label: "default", value: Buffer.from(KEY) });
     if (unix) {
       expect(statSync(sd).mode & 0o777).toBe(0o700);
@@ -70,7 +71,7 @@ describe("FileSecretStore", () => {
 
   it("crosses plaintext only through the box", async () => {
     const box = xorBox();
-    const store = new FileSecretStore(dir(), box, manualClock(), ids());
+    const store = new FileSecretStore(dir(), { box, clock: manualClock(), ids: ids() });
     const id = await store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) });
     expect(box.seals).toBe(1);
     const text = readFileSync(store.path, "utf8");
@@ -95,7 +96,7 @@ describe("FileSecretStore", () => {
   });
 
   it("a corrupted file or entry is SECRET_CORRUPT", async () => {
-    const store = new FileSecretStore(dir(), identityBox, manualClock(), ids());
+    const store = new FileSecretStore(dir(), { box: identityBox, clock: manualClock(), ids: ids() });
     const id = await store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) });
     const doc = JSON.parse(readFileSync(store.path, "utf8"));
     doc.entries[0].sealed.data = "not base64url!";
@@ -109,7 +110,7 @@ describe("FileSecretStore", () => {
   });
 
   it("replaces the key bound to the same project, keeps the others, and removes by id", async () => {
-    const store = new FileSecretStore(dir(), identityBox, manualClock(), ids());
+    const store = new FileSecretStore(dir(), { box: identityBox, clock: manualClock(), ids: ids() });
     const server = await store.put({ provider: "openrouter", label: "server", value: Buffer.from(KEY) });
     const p1 = await store.put({ provider: "openrouter", label: "p1", projectId: P1, value: Buffer.from(KEY) });
     const p1b = await store.put({ provider: "openrouter", label: "p1 again", projectId: P1, value: Buffer.from(OTHER) });
@@ -122,24 +123,72 @@ describe("FileSecretStore", () => {
 
   it("serialises concurrent puts and writes temp-then-rename", async () => {
     const d = dir();
-    const store = new FileSecretStore(d, identityBox, manualClock(), ids());
+    const store = new FileSecretStore(d, { box: identityBox, clock: manualClock(), ids: ids() });
     const projects = Array.from({ length: 20 }, (_, i) => `01jb00000000000000000000${String(i).padStart(2, "0")}`);
     const puts = projects.map((projectId) => store.put({ provider: "openrouter", label: projectId, projectId, value: Buffer.from(KEY) }));
     const done = await Promise.all(puts);
     expect(new Set(done).size).toBe(20);
     expect(store.list().map((m) => m.projectId).sort()).toEqual(projects);
-    expect(readdirSync(d)).toEqual(["secrets.json"]);
+    expect(readdirSync(d).sort()).toEqual(["secrets.json", "secrets.lock"]);
     // A failing write leaves the old file whole and no temp file behind.
     const before = readFileSync(store.path, "utf8");
     const box = { ...identityBox, seal: () => ({ v: 1, data: "x" }) as Sealed };
-    const broken = new FileSecretStore(d, box, manualClock(), ids());
+    const broken = new FileSecretStore(d, { box, clock: manualClock(), ids: ids() });
     const spy = vi.spyOn(JSON, "stringify").mockImplementationOnce(() => {
       throw new Error("disk full");
     });
     await expect(broken.put({ provider: "openrouter", label: "x", value: Buffer.from(KEY) })).rejects.toThrow("disk full");
     spy.mockRestore();
     expect(readFileSync(store.path, "utf8")).toBe(before);
-    expect(readdirSync(d)).toEqual(["secrets.json"]);
+    expect(readdirSync(d).sort()).toEqual(["secrets.json", "secrets.lock"]);
+  });
+});
+
+describe("FileSecretStore: privacy and locking (review M2)", () => {
+  it.skipIf(!unix)("repairs a loosened directory or file mode at every read and write", async () => {
+    const d = dir();
+    const store = new FileSecretStore(d, { clock: manualClock(), ids: ids() });
+    await store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) });
+    chmodSync(store.path, 0o644);
+    chmodSync(d, 0o755);
+    store.list();
+    expect(statSync(store.path).mode & 0o777).toBe(0o600);
+    expect(statSync(d).mode & 0o777).toBe(0o700);
+    chmodSync(store.path, 0o640);
+    await store.put({ provider: "openrouter", label: "k2", value: Buffer.from(OTHER) });
+    expect(statSync(store.path).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(!unix)("refuses a secrets.json that is a link", async () => {
+    const d = dir();
+    const elsewhere = join(dir(), "planted.json");
+    writeFileSync(elsewhere, JSON.stringify({ v: 1, entries: [] }));
+    symlinkSync(elsewhere, join(d, "secrets.json"));
+    expect(await code(() => new FileSecretStore(d))).toBe("SECRET_STORE_UNSAFE");
+    unlinkSync(join(d, "secrets.json"));
+    const store = new FileSecretStore(d);
+    symlinkSync(elsewhere, store.path);
+    expect(await code(() => store.list())).toBe("SECRET_STORE_UNSAFE");
+  });
+
+  it("refuses to run on Windows until the keychain backend or an ACL helper exists", async () => {
+    expect(await code(() => new FileSecretStore(dir(), { platform: "win32" }))).toBe("SECRET_STORE_UNAVAILABLE");
+  });
+
+  it("waits for another holder of the cross-process lock, then writes", async () => {
+    const d = dir();
+    const store = new FileSecretStore(d, { clock: manualClock(), ids: ids() });
+    const held = lockExclusive(join(d, "secrets.lock"));
+    let done = false;
+    const put = store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) }).then(() => {
+      done = true;
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(done).toBe(false);
+    expect(store.list()).toEqual([]);
+    held.release();
+    await put;
+    expect(store.list().map((m) => m.label)).toEqual(["k"]);
   });
 });
 
@@ -148,7 +197,7 @@ describe("ModelGateway", () => {
 
   async function setup(opts: { server?: boolean; project?: boolean } = { server: true }) {
     const box = xorBox();
-    const store = new FileSecretStore(dir(), box, manualClock(), ids());
+    const store = new FileSecretStore(dir(), { box, clock: manualClock(), ids: ids() });
     if (opts.server) await store.put({ provider: "openrouter", label: "server", value: Buffer.from(KEY) });
     if (opts.project) await store.put({ provider: "openrouter", label: "p1", projectId: P1, value: Buffer.from(OTHER) });
     const running = new Set(["s1", "s2"]);
@@ -219,6 +268,12 @@ describe("ModelGateway", () => {
     expect((err as Error).message).toContain("[redacted]");
     expect(JSON.stringify(err)).not.toContain(KEY);
     expect((err as Error).stack ?? "").not.toContain(KEY);
+    // A key quoted only on the `cause` chain is caught too.
+    const wrapped = new Error("request failed", { cause: new Error(`upstream said ${KEY}`) });
+    const viaCause = await gw.withKey(P1, "s1", async () => Promise.reject(wrapped)).catch((e: unknown) => e);
+    expect(viaCause).not.toBe(wrapped);
+    expect((viaCause as Error).cause).toBeUndefined();
+    expect(String((viaCause as Error).stack)).not.toContain(KEY);
     const refused = await gw.withKey(P1, "s9", async () => 1).catch((e: unknown) => e);
     expect(JSON.stringify(refused)).not.toContain(KEY);
     const ok = await gw.withKey(P1, "s1", async () => ({ status: 200 }));

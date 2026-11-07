@@ -50,10 +50,22 @@ export interface ModelRequest {
   readonly reasoning?: ReasoningSpec;
 }
 
+/**
+ * OpenRouter provider routing (owner decision after review 7A-1): by default every upstream may
+ * serve a call. A per-server or per-model setting may ask for upstreams that do not collect
+ * data (`data_collection: "deny"`) and/or Zero Data Retention endpoints only (`zdr`).
+ */
+export interface Routing {
+  readonly dataCollection?: "deny";
+  readonly zdr?: boolean;
+}
+
 export interface BodyOptions {
   readonly preset: Preset;
   /** The model's caching class (the catalogue's); `explicit` adds `cache_control` breakpoints. */
   readonly caching: Caching;
+  /** OpenRouter only; absent: no `provider` object, every upstream allowed. */
+  readonly routing?: Routing;
 }
 
 const EPHEMERAL = { type: "ephemeral" } as const;
@@ -111,6 +123,12 @@ export function chatBody(req: ModelRequest, opts: BodyOptions): Record<string, u
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (opts.preset === "openrouter" && req.reasoning) {
     body.reasoning = req.reasoning.maxTokens !== undefined ? { max_tokens: req.reasoning.maxTokens } : { effort: req.reasoning.effort ?? "medium" };
+  }
+  if (opts.preset === "openrouter" && opts.routing && (opts.routing.dataCollection === "deny" || opts.routing.zdr === true)) {
+    body.provider = {
+      ...(opts.routing.dataCollection === "deny" ? { data_collection: "deny" } : {}),
+      ...(opts.routing.zdr === true ? { zdr: true } : {}),
+    };
   }
   body.stream = true;
   // Usage on the last chunk: OpenRouter always sends it (this is a no-op there); local servers

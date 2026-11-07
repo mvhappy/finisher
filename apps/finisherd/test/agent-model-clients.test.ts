@@ -1,6 +1,6 @@
 // The built-in agent's OpenAI-compatible client against the fake model server (plan 7A Task 9).
 import { afterEach, describe, expect, it } from "vitest";
-import { blake3 } from "../src/agent/blake3.ts";
+import { blake3Hex } from "@finisher/fin-node";
 import {
   checkBaseUrl,
   type KeySource,
@@ -11,6 +11,7 @@ import {
   noKey,
   openrouterClient,
   retryAfterMs,
+  settleGeneration,
 } from "../src/agent/builtin/compat.ts";
 import { chatBody, type ModelRequest } from "../src/agent/builtin/request.ts";
 import { manualClock } from "../src/agent/clock.ts";
@@ -39,14 +40,15 @@ async function serve(...scripts: FakeResponse[]) {
   return server;
 }
 
+
 const sleeps: number[] = [];
 const fakeSleep = async (ms: number) => {
   sleeps.push(ms);
 };
 
-function client(s: FakeModelServer, caching: "explicit" | "automatic" | "none" = "explicit"): ModelClient {
+function client(s: FakeModelServer, caching: "explicit" | "automatic" | "none" = "explicit", more: Record<string, unknown> = {}): ModelClient {
   sleeps.length = 0;
-  return openrouterClient(s.baseUrl, { cachingFor: () => caching, sleep: fakeSleep, clock: manualClock() });
+  return openrouterClient({ testBaseUrl: s.baseUrl, cachingFor: () => caching, sleep: fakeSleep, clock: manualClock(), ...more });
 }
 
 async function collect(c: ModelClient, r: ModelRequest, k: KeySource = key): Promise<{ events: ModelStreamEvent[]; result: ModelResult }> {
@@ -162,7 +164,8 @@ describe("OpenRouter preset", () => {
     expect(result.capture.request).toBe(received.toString("utf8"));
     expect(JSON.parse(result.capture.request)).toEqual(c.wireBody(r));
     expect(c.wireBody(r)).toEqual(chatBody(r, { preset: "openrouter", caching: "explicit" }));
-    expect(result.bodyHash).toBe(blake3(received).toString("hex"));
+    expect(result.bodyHash).toBe(`blake3:${blake3Hex(received)}`);
+    expect(result.bodyHash).toMatch(/^blake3:[0-9a-f]{64}$/);
     expect(result.capture.response).toHaveLength(4);
   });
 
@@ -175,8 +178,8 @@ describe("OpenRouter preset", () => {
     const { events, result } = await collect(client(s), req());
     const retries = events.filter((e) => e.type === "retry");
     expect(retries).toEqual([
-      { type: "retry", attempt: 1, code: "PROVIDER_RATE_LIMITED", delayMs: 2000 },
-      { type: "retry", attempt: 2, code: "PROVIDER_OVERLOADED", delayMs: 2000 },
+      { type: "retry", attempt: 1, code: "PROVIDER_RATE_LIMITED", delayMs: 2000, cost: { usage: null, usageEstimated: false } },
+      { type: "retry", attempt: 2, code: "PROVIDER_OVERLOADED", delayMs: 2000, cost: { usage: null, usageEstimated: false } },
     ]);
     expect(sleeps).toEqual([2000, 2000]);
     expect(result.text).toBe("The intro runs long.");
@@ -189,7 +192,11 @@ describe("OpenRouter preset", () => {
     const text = sse("text");
     const s = await serve({ sse: text, cutAfter: text.indexOf("runs long") }, { sse: text });
     const { events, result } = await collect(client(s), req());
-    expect(events.filter((e) => e.type === "retry")).toEqual([{ type: "retry", attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 1000 }]);
+    // The cut attempt streamed "The intro " (10 characters): it is charged as an estimate.
+    const retry = events.find((e) => e.type === "retry");
+    expect(retry).toMatchObject({ type: "retry", attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 1000 });
+    expect(retry?.type === "retry" && retry.cost).toMatchObject({ generationId: "gen-text-1", usageEstimated: true, usage: { output: 3 } });
+    expect(retry?.type === "retry" && retry.cost.usage!.input).toBeGreaterThan(0);
     expect(result.text).toBe("The intro runs long.");
   });
 
@@ -205,6 +212,7 @@ describe("OpenRouter preset", () => {
     expect(f.code).toBe("PROVIDER_RATE_LIMITED");
     expect(f.details).toMatchObject({ retryAfterMs: 1000 });
     expect(f.events.filter((e) => e.type === "retry")).toHaveLength(4);
+    expect(f.events.at(-1)).toEqual({ type: "failed", attempt: 5, code: "PROVIDER_RATE_LIMITED", cost: { usage: null, usageEstimated: false } });
     expect(s.requests()).toHaveLength(5);
   });
 
@@ -229,24 +237,96 @@ describe("OpenRouter preset", () => {
   });
 });
 
+describe("failed attempts, stalls and routing (review B2, M4, L3)", () => {
+  it("does not retry an attempt that already streamed past the threshold; charges it", async () => {
+    const text = sse("text");
+    const s = await serve({ sse: text, cutAfter: text.indexOf("finish_reason\":\"stop") }, { sse: text });
+    const f = await failure(client(s, "explicit", { retryStreamedChars: 5 }), req());
+    expect(f.code).toBe("PROVIDER_OVERLOADED");
+    expect(s.requests()).toHaveLength(1);
+    const failed = f.events.at(-1);
+    expect(failed).toMatchObject({ type: "failed", attempt: 1, code: "PROVIDER_OVERLOADED" });
+    expect(failed?.type === "failed" && failed.cost).toMatchObject({ generationId: "gen-text-1", usageEstimated: true, usage: { output: 5 } });
+  });
+
+  it("charges what the stream reported before an error chunk", async () => {
+    const s = await serve({ sse: sse("midstream-error") }, { sse: sse("text") });
+    const { events } = await collect(client(s), req());
+    const retry = events.find((e) => e.type === "retry");
+    expect(retry?.type === "retry" && retry.cost).toMatchObject({ generationId: "gen-err-1", usageEstimated: true, usage: { output: 2 } });
+  });
+
+  it("settles a generation's cost through OpenRouter's generation endpoint", async () => {
+    server = await startFakeModelServer([], { generations: { "gen-err-1": 0.00042 } });
+    expect(await settleGeneration("gen-err-1", key, { testBaseUrl: server.baseUrl })).toEqual({ costMicros: 420 });
+    expect(await settleGeneration("gen-unknown", key, { testBaseUrl: server.baseUrl })).toBeUndefined();
+    const sent = server.requests()[0]!;
+    expect(sent.headers.authorization).toBe(`Bearer ${KEY}`);
+    expect(sent.path).toBe("/api/v1/generation?id=gen-err-1");
+  });
+
+  it("retries a stream that stalls between chunks (the idle timer), separate from the total timeout", async () => {
+    const text = sse("text");
+    const s = await serve({ sse: text, stallAfter: text.indexOf("runs long") - 60 }, { sse: text });
+    const { events, result } = await collect(client(s, "explicit", { idleMs: 150 }), req());
+    expect(events.filter((e) => e.type === "retry").map((e) => (e as { code: string }).code)).toEqual(["PROVIDER_OVERLOADED"]);
+    expect(result.text).toBe("The intro runs long.");
+  });
+
+  it("fails at once on a retry-after longer than the cap, rather than waiting", async () => {
+    const s = await serve({ status: 429, body: { error: { message: "later" } }, headers: { "retry-after": "900" } }, { sse: sse("text") });
+    const f = await failure(client(s), req());
+    expect(f.code).toBe("PROVIDER_RATE_LIMITED");
+    expect(f.details).toMatchObject({ retryAfterMs: 900_000 });
+    expect(sleeps).toEqual([]);
+    expect(s.requests()).toHaveLength(1);
+    // Under the cap it waits the whole retry-after.
+    const t = await serve({ status: 429, body: { error: { message: "soon" } }, headers: { "retry-after": "300" } }, { sse: sse("text") });
+    await collect(client(t), req());
+    expect(sleeps).toEqual([300_000]);
+  });
+
+  it("allows every upstream by default; asks for no data collection and ZDR only when set", async () => {
+    const s = await serve({ sse: sse("text") }, { sse: sse("text") }, { sse: sse("text") });
+    await collect(client(s), req());
+    expect(s.requests()[0]!.json.provider).toBeUndefined();
+    await collect(client(s, "explicit", { routingFor: () => ({ dataCollection: "deny", zdr: true }) }), req());
+    expect(s.requests()[1]!.json.provider).toEqual({ data_collection: "deny", zdr: true });
+    await collect(client(s, "explicit", { routingFor: () => ({ zdr: false }) }), req());
+    expect(s.requests()[2]!.json.provider).toBeUndefined();
+  });
+});
+
 describe("local preset", () => {
-  it("sends no key, no reasoning and no breakpoints, and reports no cost", async () => {
+  it("sends a placeholder bearer, no reasoning, no breakpoints and no routing, and reports no cost", async () => {
     const s = await serve({ sse: sse("local") });
-    const c = localClient(s.baseUrl, { cachingFor: () => "explicit", sleep: fakeSleep });
+    const c = localClient(s.baseUrl, { cachingFor: () => "explicit", routingFor: () => ({ zdr: true }), sleep: fakeSleep });
+    expect(c.warnings).toEqual([]);
     const { result } = await collect(c, req({ model: "llama3.3:70b", reasoning: { effort: "low" } }), noKey);
     expect(result.text).toBe("Local answer.");
     expect(result.usage).toEqual({ input: 50, output: 3, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
     expect(result.costMicros).toBeUndefined();
+    expect(result.usageEstimated).toBe(false);
     const sent = s.requests()[0]!;
-    expect(sent.headers.authorization).toBeUndefined();
+    expect(sent.headers.authorization).toBe("Bearer finisher-local");
     expect(sent.json.reasoning).toBeUndefined();
+    expect(sent.json.provider).toBeUndefined();
     expect(JSON.stringify(sent.json)).not.toContain("cache_control");
     expect(sent.json.model).toBe("llama3.3:70b");
+  });
+
+  it("estimates usage when the server reports none", async () => {
+    const noUsage = sse("local").split("\n\n").filter((e) => !e.includes("usage")).join("\n\n");
+    const s = await serve({ sse: noUsage });
+    const { result } = await collect(localClient(s.baseUrl, { sleep: fakeSleep }), req({ model: "x" }), noKey);
+    expect(result.usageEstimated).toBe(true);
+    expect(result.usage.output).toBe(4); // "Local answer." is 13 characters
+    expect(result.usage.input).toBeGreaterThan(0);
   });
 });
 
 describe("base URLs and retry-after", () => {
-  it("takes https, or http on loopback; the local preset also takes http elsewhere", () => {
+  it("pins the openrouter preset to openrouter.ai; loopback only through the test option", () => {
     const code = (f: () => unknown) => {
       try {
         f();
@@ -256,14 +336,26 @@ describe("base URLs and retry-after", () => {
       }
     };
     expect(code(() => checkBaseUrl("openrouter", "https://openrouter.ai/api/v1"))).toBe("ok");
-    expect(code(() => checkBaseUrl("openrouter", "http://127.0.0.1:9/api/v1"))).toBe("ok");
-    expect(code(() => checkBaseUrl("openrouter", "http://[::1]:9/v1"))).toBe("ok");
-    expect(code(() => checkBaseUrl("openrouter", "http://models.example/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
+    expect(code(() => checkBaseUrl("openrouter", "http://127.0.0.1:9/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
+    expect(code(() => checkBaseUrl("openrouter", "http://127.0.0.1:9/api/v1", true))).toBe("ok");
+    expect(code(() => checkBaseUrl("openrouter", "http://[::1]:9/v1", true))).toBe("ok");
+    expect(code(() => checkBaseUrl("openrouter", "https://models.example/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
+    expect(code(() => checkBaseUrl("openrouter", "https://models.example/api/v1", true))).toBe("PROVIDER_UNAVAILABLE");
+    expect(code(() => checkBaseUrl("openrouter", "https://openrouter.ai:8443/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
     expect(code(() => checkBaseUrl("openrouter", "https://user:pw@openrouter.ai/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
+    expect(code(() => openrouterClient({ testBaseUrl: "http://models.example/api/v1" }))).toBe("PROVIDER_UNAVAILABLE");
+    expect(openrouterClient().warnings).toEqual([]);
     expect(code(() => checkBaseUrl("local", "http://localhost:11434/v1"))).toBe("ok");
-    expect(code(() => checkBaseUrl("local", "http://lan-models.example:1234/v1"))).toBe("ok");
     expect(code(() => checkBaseUrl("local", "file:///etc/passwd"))).toBe("PROVIDER_UNAVAILABLE");
     expect(code(() => checkBaseUrl("local", "not a url"))).toBe("PROVIDER_UNAVAILABLE");
+    expect(code(() => checkBaseUrl("local", "http://u:p@localhost:1/v1"))).toBe("PROVIDER_UNAVAILABLE");
+  });
+
+  it("warns when the local preset uses plain http to another machine", () => {
+    expect(checkBaseUrl("local", "http://localhost:11434/v1").warnings).toEqual([]);
+    expect(checkBaseUrl("local", "https://lan-models.example/v1").warnings).toEqual([]);
+    expect(checkBaseUrl("local", "http://lan-models.example:1234/v1").warnings).toHaveLength(1);
+    expect(localClient("http://lan-models.example:1234/v1").warnings[0]).toMatch(/unencrypted/);
   });
 
   it("reads seconds or an HTTP date", () => {
