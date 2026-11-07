@@ -508,3 +508,89 @@ fn shutdown_closes_stdin_then_kills() {
         Err(HostError::ShutDown)
     ));
 }
+
+/// A member's leftover (a grandchild in the group, not in a session of its own) dies when the
+/// group is released, even when every process the host started has already exited: on
+/// Windows the group Job is terminated, a cgroup is killed, a process group gets
+/// `kill(-pgid)` while its leader is still unreaped.
+#[test]
+fn close_group_ends_what_a_member_left() {
+    let mut h = host();
+    let g = h.group();
+    let p = h.worker(g);
+    h.hello(p);
+    h.start(
+        p,
+        "test.spawn",
+        json!({ "detach": "none", "out": "pids.json" }),
+    );
+    let pids = spawn_pids(&h, "pids.json");
+    // The worker ends on its own: the host kills nothing.
+    kill_pid(pids.worker);
+    assert_eq!(h.exit(p).reason, ExitReason::Exited);
+    h.group_empty(g);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!gone(pids.grandchild), "left behind until the release");
+    h.host.close_group(g);
+    assert!(
+        wait_gone(pids.grandchild),
+        "the grandchild {} outlived its group's release",
+        pids.grandchild
+    );
+}
+
+/// A worker's `result` may arrive before `send(start)` returns: the hook holds `send` until
+/// the reader has handled the answer, so a start named only after it is queued would read
+/// the result as `otherJob`, every time.
+#[test]
+fn an_answer_before_send_returns_is_on_its_job() {
+    use std::sync::{Arc, Condvar, Mutex};
+    let answered = Arc::new((Mutex::new(false), Condvar::new()));
+    let (seen, wait) = (answered.clone(), answered.clone());
+    let mut h = host_observed(
+        |o| {
+            o.after_send_for_test = Some(Arc::new(move |_, msg| {
+                if !matches!(msg, HostMsg::Start(_)) {
+                    return;
+                }
+                let (m, cv) = &*wait;
+                let g = m.lock().unwrap();
+                let (g, t) = cv
+                    .wait_timeout_while(g, WAIT, |answered| !*answered)
+                    .unwrap();
+                assert!(*g && !t.timed_out(), "the worker answered while send held");
+            }));
+        },
+        move |e| {
+            if matches!(
+                e,
+                HostEvent::Message {
+                    msg: WorkerMsg::Result { .. },
+                    ..
+                } | HostEvent::Exit { .. }
+            ) {
+                let (m, cv) = &*seen;
+                *m.lock().unwrap() = true;
+                cv.notify_all();
+            }
+        },
+    );
+    let (p, v) = h.run("test.echo", json!({ "value": 7 }));
+    assert_eq!(v["value"], 7);
+    h.host.close_stdin(p);
+    assert_eq!(h.exit(p).reason, ExitReason::Exited);
+}
+
+/// A spawn whose waiter thread does not start: the spawn thread kills the process, waits for
+/// it and still reports its `Exit` (through its handle on Windows, its pid on Unix).
+#[test]
+fn a_missing_waiter_thread_still_reports_the_exit() {
+    let mut h = host_with(|o| o.fail_waiter_thread_for_test = true);
+    let g = h.group();
+    let p = h.worker(g);
+    let exit = h.exit(p);
+    assert_eq!(exit.reason, ExitReason::SpawnFailed("thread".into()));
+    assert!(killed(&exit), "{exit:?}");
+    h.group_empty(g);
+    h.host.close_group(g);
+}

@@ -6,6 +6,9 @@
 //!                                       appends `--warm` for a warm spawn
 //! fin-workers --helper <name>:<variant> run a helper (test builds: test:ok|exitEarly|hang|spawn|call)
 //! fin-workers watchdog <host pid>       the Unix host watchdog (`watchdog.rs`)
+//! fin-workers --spawn-broker            the Windows host's spawn broker image: created
+//!                                       suspended and never resumed; exits 0 at once if it is
+//!                                       (first thing in `main`)
 //! fin-workers --version                 prints the envelope id
 //! ```
 //!
@@ -30,6 +33,13 @@ fn usage(msg: &str) -> ! {
 }
 
 fn main() {
+    // The spawn broker (Windows) never runs; should something resume it, it does nothing.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "--spawn-broker")
+    {
+        std::process::exit(0);
+    }
     #[cfg(feature = "test-hooks")]
     test_family::capture_start();
     let args: Vec<String> = std::env::args().skip(1).collect();

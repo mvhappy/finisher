@@ -158,15 +158,25 @@ impl Host {
         let p = self.inner.proc(proc).ok_or(SendError::Gone)?;
         // A `start` names the running job before it is queued (the worker may answer before
         // `send` returns); one that was not queued puts the previous job back.
-        let prev = match msg {
-            HostMsg::Start(s) => Some(p.state().job.replace(s.job.id.clone())),
+        // Only while it still names this job: whatever named another since is newer.
+        let named = match msg {
+            HostMsg::Start(s) => Some((s.job.id.clone(), p.state().job.replace(s.job.id.clone()))),
             _ => None,
         };
         let r = p.writer.send(msg);
-        if r.is_err()
-            && let Some(prev) = prev
+        #[cfg(feature = "test-hooks")]
+        if r.is_ok()
+            && let Some(hook) = &self.inner.opts.after_send_for_test
         {
-            p.state().job = prev;
+            hook(proc, msg);
+        }
+        if r.is_err()
+            && let Some((ours, prev)) = named
+        {
+            let mut st = p.state();
+            if st.job.as_deref() == Some(ours.as_str()) {
+                st.job = prev;
+            }
         }
         if let Err(SendError::QueueFull) = r {
             self.inner.kill_for(proc, ExitReason::Hung);

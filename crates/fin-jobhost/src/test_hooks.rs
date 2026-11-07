@@ -1,7 +1,8 @@
-//! Test-only access to the watchdog (feature `test-hooks`).
+//! Test-only access to the watchdog and the spawn broker (feature `test-hooks`).
 
 use crate::Host;
 
+#[cfg(unix)]
 impl Host {
     /// The running watchdog's pid.
     pub fn watchdog_pid_for_test(&self) -> Option<u32> {
@@ -22,5 +23,13 @@ impl Host {
             .watchdog()
             .map(|w| w.groups())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(windows)]
+impl Host {
+    /// The spawn broker's pid and the image it was made from, if there is one.
+    pub fn broker_for_test(&self) -> Option<(u32, std::path::PathBuf)> {
+        self.inner.domain.broker_for_test()
     }
 }

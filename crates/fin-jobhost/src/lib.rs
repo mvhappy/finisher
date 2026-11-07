@@ -29,7 +29,7 @@ mod host;
 mod memory;
 mod proc;
 pub mod spawner;
-#[cfg(all(unix, feature = "test-hooks"))]
+#[cfg(feature = "test-hooks")]
 mod test_hooks;
 #[cfg(test)]
 mod tests;
@@ -125,7 +125,22 @@ pub struct HostOptions {
     /// Jobs' own figures report exits (tests).
     #[cfg(all(windows, feature = "test-hooks"))]
     pub port_stopped_for_test: bool,
+    /// Windows: the images the spawn broker is made from, in place of the bundled binary
+    /// and `cmd.exe` (tests; empty: no broker).
+    #[cfg(all(windows, feature = "test-hooks"))]
+    pub broker_images_for_test: Option<Vec<PathBuf>>,
+    /// Runs after each message `send` queued, before `send` returns (tests: a worker that
+    /// answers before `send` returns).
+    #[cfg(feature = "test-hooks")]
+    pub after_send_for_test: Option<AfterSendHook>,
+    /// The waiter thread of each spawn does not start (tests: the spawn thread's fallback).
+    #[cfg(feature = "test-hooks")]
+    pub fail_waiter_thread_for_test: bool,
 }
+
+/// See [`HostOptions::after_send_for_test`].
+#[cfg(feature = "test-hooks")]
+pub type AfterSendHook = Arc<dyn Fn(ProcId, &fin_jobs::HostMsg) + Send + Sync>;
 
 /// What a Windows test hook learns about a process while it is suspended in its Jobs.
 #[cfg(all(windows, feature = "test-hooks"))]
@@ -163,6 +178,12 @@ impl HostOptions {
             suspended_hook_for_test: None,
             #[cfg(all(windows, feature = "test-hooks"))]
             port_stopped_for_test: false,
+            #[cfg(all(windows, feature = "test-hooks"))]
+            broker_images_for_test: None,
+            #[cfg(feature = "test-hooks")]
+            after_send_for_test: None,
+            #[cfg(feature = "test-hooks")]
+            fail_waiter_thread_for_test: false,
         }
     }
 }
@@ -323,6 +344,13 @@ pub enum HostError {
     Spawner(String),
     /// The OS failed the spawn or the placement.
     Spawn(std::io::Error),
+    /// The host refused the spawn for a known reason ([`HostError::reason`]): `noBroker`
+    /// (Windows: no spawn broker could be made) or `processLimit` (Windows: a Job the host
+    /// runs in allows no more processes).
+    Unavailable {
+        reason: &'static str,
+        detail: String,
+    },
 }
 
 impl HostError {
@@ -332,7 +360,49 @@ impl HostError {
             _ => "WORKER_UNAVAILABLE",
         }
     }
+
+    /// The `reason` detail of a `WORKER_UNAVAILABLE` the host can name.
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            HostError::Unavailable { reason, .. } => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// A spawn's OS error, or the [`Refusal`] it carries.
+    pub(crate) fn from_spawn(e: std::io::Error) -> HostError {
+        match e.get_ref().and_then(|x| x.downcast_ref::<Refusal>()) {
+            Some(r) => HostError::Unavailable {
+                reason: r.reason,
+                detail: r.detail.clone(),
+            },
+            None => HostError::Spawn(e),
+        }
+    }
 }
+
+/// A spawn refused for a named reason, carried inside an `io::Error` up to
+/// [`HostError::from_spawn`].
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub reason: &'static str,
+    pub detail: String,
+}
+
+impl Refusal {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn io(reason: &'static str, detail: String) -> std::io::Error {
+        std::io::Error::other(Refusal { reason, detail })
+    }
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.reason, self.detail)
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -344,6 +414,9 @@ impl fmt::Display for HostError {
             HostError::Program(p) => write!(f, "program refused: {p}"),
             HostError::Spawner(e) => write!(f, "spawner refused: {e}"),
             HostError::Spawn(e) => write!(f, "spawn failed: {e}"),
+            HostError::Unavailable { reason, detail } => {
+                write!(f, "spawn refused ({reason}): {detail}")
+            }
         }
     }
 }

@@ -166,7 +166,7 @@ fn spawn_in(
         Ok(s) => s,
         Err(e) => {
             inner.domain.close_leaf(&handle, leaf);
-            return Err(HostError::Spawn(e));
+            return Err(HostError::from_spawn(e));
         }
     };
     let expect = Expect {
@@ -214,15 +214,20 @@ fn spawn_in(
     } = spawned;
     // Kept here should the waiter not start (`no_waiter` then needs the process handle).
     let slot = Arc::new(std::sync::Mutex::new(Some(os_proc)));
-    let waiter = thread("jobhost-wait", {
-        let (p, w, slot) = (p.clone(), w.clone(), slot.clone());
-        move || {
-            let os = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(os) = os {
-                proc::wait_exit(p, w, os, drain, reap);
+    #[cfg(feature = "test-hooks")]
+    let no_thread = inner.opts.fail_waiter_thread_for_test;
+    #[cfg(not(feature = "test-hooks"))]
+    let no_thread = false;
+    let waiter = !no_thread
+        && thread("jobhost-wait", {
+            let (p, w, slot) = (p.clone(), w.clone(), slot.clone());
+            move || {
+                let os = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(os) = os {
+                    proc::wait_exit(p, w, os, drain, reap);
+                }
             }
-        }
-    });
+        });
     let started = [
         thread("jobhost-out", {
             let (p, w) = (p.clone(), w.clone());

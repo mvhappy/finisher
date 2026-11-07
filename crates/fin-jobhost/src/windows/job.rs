@@ -25,22 +25,22 @@ use std::collections::HashSet;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::io::OwnedHandle;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOBOBJECT_LIMIT_VIOLATION_INFORMATION, JOBOBJECTINFOCLASS, JobObjectBasicAccountingInformation,
-    JobObjectBasicUIRestrictions, JobObjectExtendedLimitInformation,
-    JobObjectLimitViolationInformation, SetInformationJobObject,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_UI_RESTRICTIONS,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOBOBJECT_LIMIT_VIOLATION_INFORMATION,
+    JOBOBJECTINFOCLASS, JobObjectBasicAccountingInformation, JobObjectBasicUIRestrictions,
+    JobObjectExtendedLimitInformation, JobObjectLimitViolationInformation, SetInformationJobObject,
 };
 
 use super::broker::Broker;
 use super::iocp::Port;
-use super::jobapi::{assign, create, in_job, query, set_limits, terminate};
+use super::jobapi::{assign, create, in_job, query, query_own, set_limits, terminate};
 use super::{check, raw};
 use crate::domain::{ExitFacts, GroupHandle, KillDomain, LeafHandle, Placement};
 use crate::spawner::JobLimits;
@@ -116,9 +116,62 @@ pub(crate) struct LeafJob {
 
 pub(crate) struct JobObjects {
     host: Arc<HostJob>,
+    /// The memory limits of the Job the host itself runs in, if any.
+    outer: Option<OuterMemory>,
     port: Arc<Port>,
     #[cfg(feature = "test-hooks")]
     hook: Option<crate::SuspendedHook>,
+}
+
+/// The memory limits of the Job the host runs in (a terminal's, Electron's, a CI runner's),
+/// read through a null Job handle (the host's innermost Job). A commit that limit refused is
+/// recorded only there, in its peaks (which include the refused commit), so an exit after a
+/// new peak above that limit is an OOM, not a crash. Best effort: only the innermost outer
+/// Job is visible, and two processes refused at the same peak count once.
+struct OuterMemory {
+    job_limit: Option<u64>,
+    process_limit: Option<u64>,
+    /// The peaks already accounted for (at the host's start, then at each confirmed OOM).
+    seen_job: AtomicU64,
+    seen_process: AtomicU64,
+}
+
+impl OuterMemory {
+    fn read() -> Option<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
+        query_own::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>(JobObjectExtendedLimitInformation).ok()
+    }
+
+    fn detect() -> Option<OuterMemory> {
+        let e = Self::read()?;
+        let flags = e.BasicLimitInformation.LimitFlags;
+        let job_limit =
+            (flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0).then_some(e.JobMemoryLimit as u64);
+        let process_limit =
+            (flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0).then_some(e.ProcessMemoryLimit as u64);
+        (job_limit.is_some() || process_limit.is_some()).then(|| OuterMemory {
+            job_limit,
+            process_limit,
+            seen_job: AtomicU64::new(e.PeakJobMemoryUsed as u64),
+            seen_process: AtomicU64::new(e.PeakProcessMemoryUsed as u64),
+        })
+    }
+
+    /// A peak above a limit that was not seen before (and is now).
+    fn new_violation(&self) -> bool {
+        let Some(e) = Self::read() else {
+            return false;
+        };
+        let fresh = |limit: Option<u64>, peak: u64, seen: &AtomicU64| {
+            limit.is_some_and(|l| peak > l) && seen.fetch_max(peak, Ordering::AcqRel) < peak
+        };
+        let job = fresh(self.job_limit, e.PeakJobMemoryUsed as u64, &self.seen_job);
+        let process = fresh(
+            self.process_limit,
+            e.PeakProcessMemoryUsed as u64,
+            &self.seen_process,
+        );
+        job || process
+    }
 }
 
 /// A leaf's processes beyond its own.
@@ -157,11 +210,23 @@ impl JobObjects {
         if start {
             port.start()?;
         }
+        #[cfg(feature = "test-hooks")]
+        let images = match &opts.broker_images_for_test {
+            Some(paths) => paths
+                .iter()
+                .map(|p| super::broker::Image {
+                    program: p.clone(),
+                    args: Vec::new(),
+                })
+                .collect(),
+            None => super::broker::default_images(&opts.binary_dir),
+        };
+        #[cfg(not(feature = "test-hooks"))]
+        let images = super::broker::default_images(&opts.binary_dir);
+        let broker = Broker::new(images, &job, opts.log.clone());
         Ok(JobObjects {
-            host: Arc::new(HostJob {
-                job,
-                broker: Broker::new(opts.log.clone()),
-            }),
+            outer: OuterMemory::detect(),
+            host: Arc::new(HostJob { job, broker }),
             port,
             #[cfg(feature = "test-hooks")]
             hook: opts.suspended_hook_for_test.clone(),
@@ -307,6 +372,15 @@ impl KillDomain for JobObjects {
             .map(|l| leaf_foreign(&l))
             .sum();
         Some((g.closed_foreign.load(Ordering::Acquire) + live).saturating_sub(g.conhosts()))
+    }
+
+    #[cfg(feature = "test-hooks")]
+    fn broker_for_test(&self) -> Option<(u32, std::path::PathBuf)> {
+        self.host.broker.current()
+    }
+
+    fn outer_oom(&self) -> bool {
+        self.outer.as_ref().is_some_and(OuterMemory::new_violation)
     }
 
     fn exit_facts(&self, group: &GroupHandle) -> ExitFacts {

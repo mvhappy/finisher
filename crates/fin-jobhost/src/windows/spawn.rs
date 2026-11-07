@@ -4,8 +4,9 @@
 //! EXTENDED_STARTUPINFO_PRESENT` plus its QoS priority class, an explicit environment block,
 //! the host's broker as its parent (`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, `broker.rs`) and
 //! `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming its three pipe ends, copied into the broker for
-//! the call only. Without a broker the ends are made inheritable in the host around the call
-//! instead (`inherit.rs`). The suspended process is then placed in its Jobs (host → group →
+//! the call only. Without a broker there is no spawn (`noBroker`); an outer Job's
+//! active-process limit refuses it as `processLimit`. The suspended process is then placed in
+//! its Jobs (host → group →
 //! leaf) and only then resumed: none of its code runs outside them. A failure at any step
 //! after the creation terminates the suspended process before the error is returned.
 
@@ -14,7 +15,7 @@ use std::io::{self, PipeReader, PipeWriter};
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{ERROR_NOT_ENOUGH_QUOTA, HANDLE};
 use windows_sys::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList,
@@ -26,7 +27,6 @@ use windows_sys::Win32::System::Threading::{
 
 use super::broker::InBroker;
 use super::env_block::{command_line, env_block, wide};
-use super::inherit::Inheritable;
 use super::{KILLED_EXIT_CODE, OsProc, SpawnCtx, Spawned, check, owned, raw};
 use crate::domain::Placement;
 use crate::spawner::{PlatformCommand, Qos};
@@ -133,13 +133,16 @@ impl Drop for AttrList {
     }
 }
 
+/// The reason a spawn an outer Job's active-process limit refused is reported with.
+pub(crate) const PROCESS_LIMIT: &str = "processLimit";
+
 /// Creates `cmd` suspended with `stdio` as its only inherited handles: copies in `broker`,
-/// its parent, or (no broker) our own ends, inheritable for the call only.
+/// its parent, inheritable there for the call only.
 pub(crate) fn spawn_suspended(
     cmd: &PlatformCommand,
     stdio: ChildStdio<'_>,
     flags: PROCESS_CREATION_FLAGS,
-    broker: Option<HANDLE>,
+    broker: HANDLE,
 ) -> io::Result<SuspendedProcess> {
     let handle_list = PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize;
     let parent_attr = PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize;
@@ -159,23 +162,14 @@ pub(crate) fn spawn_suspended(
     let cwd = wide(cmd.cwd.as_os_str())?;
     let ours: [HANDLE; 3] = [raw(stdio.stdin), raw(stdio.stdout), raw(stdio.stderr)];
     // Dropped after the call: the broker's copies close.
-    let in_broker = match broker {
-        Some(b) => Some(InBroker::new(b, &ours)?),
-        None => None,
-    };
-    let handles: [HANDLE; 3] = match &in_broker {
-        Some(ib) => [ib.handles[0], ib.handles[1], ib.handles[2]],
-        None => ours,
-    };
-    let extra = u32::from(broker.is_some());
-    let mut list = AttrList::new(1 + extra + cmd.attributes.len() as u32)?;
-    if let Some(b) = &broker {
-        list.set(
-            parent_attr,
-            (b as *const HANDLE).cast(),
-            size_of::<HANDLE>(),
-        )?;
-    }
+    let in_broker = InBroker::new(broker, &ours)?;
+    let handles: [HANDLE; 3] = [
+        in_broker.handles[0],
+        in_broker.handles[1],
+        in_broker.handles[2],
+    ];
+    let mut list = AttrList::new(2 + cmd.attributes.len() as u32)?;
+    list.set(parent_attr, (&raw const broker).cast(), size_of::<HANDLE>())?;
     list.set(
         handle_list,
         handles.as_ptr().cast(),
@@ -200,10 +194,6 @@ pub(crate) fn spawn_suspended(
     // SAFETY: a plain C struct, filled by the call.
     let mut pi: PROCESS_INFORMATION = unsafe { zeroed() };
     let ok = {
-        let _inherit = match broker {
-            Some(_) => None,
-            None => Some(Inheritable::new(&ours)?),
-        };
         // SAFETY: every pointer is valid and NUL-terminated where it must be, `line` is
         // writable, the attribute list and the handles it names outlive the call.
         unsafe {
@@ -237,7 +227,12 @@ pub(crate) fn spawn_suspended(
         }
     };
     drop(in_broker);
-    check(ok)?;
+    if let Err(e) = check(ok) {
+        if e.raw_os_error() == Some(ERROR_NOT_ENOUGH_QUOTA as i32) {
+            return Err(crate::Refusal::io(PROCESS_LIMIT, e.to_string()));
+        }
+        return Err(e);
+    }
     Ok(SuspendedProcess {
         process: Some(owned(pi.hProcess)?),
         thread: owned(pi.hThread)?,

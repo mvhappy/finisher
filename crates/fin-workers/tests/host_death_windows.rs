@@ -3,7 +3,9 @@
 //! Job's only handle closes with it, so every process in its Jobs dies: a worker, the
 //! grandchild `test.spawn` started, and a `test.hang` worker that reads nothing. With `outer`,
 //! the host first puts itself into a Job of its own, as a terminal or Electron may, and the
-//! nesting still holds.
+//! nesting still holds; with `outer-breakaway` that Job lets children break away silently,
+//! so the processes are born outside it (the broker broke away) and still die with the
+//! host. The outer Job's active-process and memory limits are in `host_broker_windows.rs`.
 
 #![cfg(windows)]
 
@@ -19,6 +21,8 @@ use serde_json::{Value, json};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+    JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, SetInformationJobObject,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -52,7 +56,7 @@ fn child_host() {
         return;
     };
     let out = PathBuf::from(std::env::var(OUT).unwrap());
-    let outer = (mode == "outer").then(|| {
+    let outer = mode.starts_with("outer").then(|| {
         // SAFETY: an unnamed Job with default limits; this process joins it.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         assert!(!job.is_null());
@@ -61,6 +65,24 @@ fn child_host() {
             unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) },
             0
         );
+        if mode == "outer-breakaway" {
+            // SAFETY: a plain C struct; zeros are "no limits".
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            // An extended-class flag: the basic class refuses it.
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+            // SAFETY: the struct this class takes, with its size.
+            assert_ne!(
+                unsafe {
+                    SetInformationJobObject(
+                        job,
+                        JobObjectExtendedLimitInformation,
+                        (&raw const info).cast(),
+                        size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                    )
+                },
+                0
+            );
+        }
         // SAFETY: a fresh handle.
         unsafe { OwnedHandle::from_raw_handle(job as _) }
     });
@@ -132,6 +154,9 @@ fn host_killed(mode: &str) {
     if mode == "outer" {
         assert_eq!(r["inOuter"], true, "nested under the host's own Job: {r}");
     }
+    if mode == "outer-breakaway" {
+        assert_eq!(r["inOuter"], false, "born outside the host's own Job: {r}");
+    }
     // TerminateProcess: the host gets no chance to clean up.
     child.kill().unwrap();
     child.wait().unwrap();
@@ -151,4 +176,9 @@ fn grandchild_gone_after_host_terminate() {
 #[test]
 fn nesting_works_inside_an_outer_job() {
     host_killed("outer");
+}
+
+#[test]
+fn silent_breakaway_outer_job_is_harmless() {
+    host_killed("outer-breakaway");
 }

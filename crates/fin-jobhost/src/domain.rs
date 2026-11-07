@@ -157,6 +157,17 @@ pub(crate) trait KillDomain: Send + Sync {
     /// Processes in the group beyond the `spawned` ones the host started (Decision 22).
     fn foreign(&self, group: &GroupHandle, spawned: u32) -> Option<u32>;
     fn exit_facts(&self, group: &GroupHandle) -> ExitFacts;
+    /// Whether a memory limit of a Job the host itself runs in refused a commit since the
+    /// last time this said so (Windows; asked only for an abnormal exit the group's own facts
+    /// do not explain).
+    fn outer_oom(&self) -> bool {
+        false
+    }
+    /// The spawn broker's pid and image (Windows tests).
+    #[cfg(all(windows, feature = "test-hooks"))]
+    fn broker_for_test(&self) -> Option<(u32, std::path::PathBuf)> {
+        None
+    }
     /// Releases a process's leaf: once its group is closed and empty (before `close_group`),
     /// or at once when the spawn failed. The default does nothing.
     fn close_leaf(&self, _group: &GroupHandle, _leaf: LeafHandle) {}
@@ -250,6 +261,9 @@ pub(crate) mod double {
         fn exit_facts(&self, group: &GroupHandle) -> ExitFacts {
             self.note(format!("exit_facts {}", group.id));
             self.inner.exit_facts(group)
+        }
+        fn outer_oom(&self) -> bool {
+            self.inner.outer_oom()
         }
         fn close_leaf(&self, group: &GroupHandle, leaf: LeafHandle) {
             self.note(format!("close_leaf {}", group.id));

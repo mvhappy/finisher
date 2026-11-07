@@ -45,11 +45,23 @@ pub fn host() -> TestHost {
 }
 
 pub fn host_with(f: impl FnOnce(&mut HostOptions)) -> TestHost {
+    host_observed(f, |_| {})
+}
+
+/// A host whose events `observe` sees first, on the thread that sends them.
+pub fn host_observed(
+    f: impl FnOnce(&mut HostOptions),
+    observe: impl Fn(&HostEvent) + Send + Sync + 'static,
+) -> TestHost {
     let mut opts = HostOptions::new(bin_dir());
     opts.timing = timing();
     opts.watchdog = false;
     f(&mut opts);
-    let (sink, rx) = EventSink::channel(1024);
+    let (tx, rx) = mpsc::sync_channel(1024);
+    let sink = EventSink::new(move |e| {
+        observe(&e);
+        let _ = tx.send(e);
+    });
     let host = Host::start(opts, sink).expect("the host starts");
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("tmp")).unwrap();
@@ -384,6 +396,30 @@ pub fn gone(pid: u32) -> bool {
     // SAFETY: as above, closed once.
     unsafe { CloseHandle(h) };
     !running
+}
+
+/// Ends `pid` from outside the host (`SIGKILL`; `TerminateProcess` with code 1).
+pub fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    // SAFETY: a signal to a process this test started.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL)
+    };
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
+        // SAFETY: opens a process this test started; the handle is closed below.
+        let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        assert!(!h.is_null(), "open {pid}");
+        // SAFETY: a process handle we just opened, closed once.
+        unsafe {
+            TerminateProcess(h, 1);
+            CloseHandle(h);
+        }
+    }
 }
 
 /// Polls [`gone`] for ≤ 5 s.

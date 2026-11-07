@@ -2,7 +2,7 @@
 //! **group Job** per group and one **leaf Job** per process ([`job`]); every process is created
 //! suspended in the host Job, assigned to its group and leaf Jobs and only then resumed
 //! ([`spawn`]); the three child pipe ends reach it through a never-running broker process, so
-//! the host never holds an inheritable handle ([`broker`]; [`inherit`] is the fallback); an
+//! the host never holds an inheritable handle ([`broker`]; without one there is no spawn); an
 //! advisory completion port ([`iocp`]) ends a group at once when it passes its memory limit.
 //! Exits come from the process handle the waiter waits on; the Jobs confirm the facts.
 //!
@@ -25,7 +25,6 @@ use crate::{HostError, HostOptions};
 mod broker;
 mod conhost;
 mod env_block;
-mod inherit;
 mod iocp;
 pub(crate) mod job;
 mod jobapi;

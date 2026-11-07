@@ -32,7 +32,8 @@ pub enum ExitReason {
     Stalled,
     /// The watch's `timeout_ms` passed.
     TimedOut,
-    /// Over its group's memory limit: the kernel's (cgroup, Job) or the host's sampler.
+    /// Over its group's memory limit: the kernel's (cgroup, Job) or the host's sampler; on
+    /// Windows also a limit of a Job the host itself runs in that refused its commit.
     Oom,
     /// The kernel reported a resource fault (Task 4).
     ResourceFault,
@@ -164,7 +165,9 @@ impl Inner {
             None => (Default::default(), None, None),
         };
         let mut info = bare_exit_info(p, raw);
-        if facts.oom && matches!(info.reason, ExitReason::Exited) {
+        if matches!(info.reason, ExitReason::Exited)
+            && (facts.oom || (raw.code != Some(0) && self.domain.outer_oom()))
+        {
             info.reason = ExitReason::Oom;
         }
         info.foreign = foreign;

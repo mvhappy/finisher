@@ -108,7 +108,10 @@ impl KillDomain for ProcessGroups {
         ExitFacts::default()
     }
 
+    /// Ends what a member left in the group (its leader is still unreaped, so the pgid is
+    /// still ours), then takes the group off the watchdog's list.
     fn close_group(&self, group: &GroupHandle) {
+        let _ = super::kill_pgid(group.pgid());
         if let Some(w) = &self.watchdog
             && state(group).listed.load(Ordering::Acquire)
         {

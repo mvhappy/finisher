@@ -65,6 +65,24 @@ pub(super) fn query<T>(job: &OwnedHandle, class: JOBOBJECTINFOCLASS) -> io::Resu
     Ok(out)
 }
 
+/// One class of the host's own innermost Job (a null Job handle); an error when the host
+/// runs in no Job.
+pub(super) fn query_own<T>(class: JOBOBJECTINFOCLASS) -> io::Result<T> {
+    // SAFETY: as in `query`; a null handle names the calling process's innermost Job.
+    let mut out: T = unsafe { zeroed() };
+    // SAFETY: `out` is the struct this class fills, with its size.
+    check(unsafe {
+        QueryInformationJobObject(
+            std::ptr::null_mut(),
+            class,
+            (&raw mut out).cast(),
+            size_of::<T>() as u32,
+            std::ptr::null_mut(),
+        )
+    })?;
+    Ok(out)
+}
+
 pub(super) fn terminate(job: &OwnedHandle) -> io::Result<()> {
     // SAFETY: a Job handle we own, with JOB_OBJECT_TERMINATE access.
     check(unsafe { TerminateJobObject(raw(job), KILLED_EXIT_CODE) })
