@@ -8,7 +8,7 @@
 
 use crate::eval::plan::{CaptionPlan, Unmeasured, UnmeasuredReason, WordPlan};
 use crate::layout::{TextLayout, TextMeasurer};
-use crate::model::{CaptionBlock, Item, Project};
+use crate::model::{CaptionBlock, Item, Project, Resolution};
 use crate::time::Rational;
 
 /// The caption's words (item-relative times clamped to `[0, duration]`, the spoken one
@@ -18,6 +18,7 @@ pub(crate) fn caption_plan(
     item: &Item,
     block: &CaptionBlock,
     local: Rational,
+    resolution: Resolution,
     m: Option<&dyn TextMeasurer>,
 ) -> CaptionPlan {
     let clamp = |t: Rational| t.max(Rational::zero()).min(item.duration);
@@ -34,7 +35,7 @@ pub(crate) fn caption_plan(
             }
         })
         .collect();
-    let (layout, unmeasured) = match measure(project, block, m) {
+    let (layout, unmeasured) = match measure(project, block, resolution, m) {
         Ok(layout) => (Some(layout), None),
         Err(why) => (None, Some(why)),
     };
@@ -50,6 +51,7 @@ pub(crate) fn caption_plan(
 fn measure(
     _project: &Project,
     _block: &CaptionBlock,
+    _resolution: Resolution,
     m: Option<&dyn TextMeasurer>,
 ) -> Result<TextLayout, Unmeasured> {
     let reason = match m {

@@ -2,6 +2,9 @@
 //! and 41). A transition at the cut between A and B spans `[cut − d/2, cut + d/2)`: A continues
 //! past its end and B starts before its start, both reading their handles.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use crate::error::CoreError;
 use crate::eval::interp::progress;
 use crate::eval::plan::{Role, TransitionState};
@@ -41,43 +44,112 @@ impl Window {
     }
 }
 
-/// The track's valid transition windows, ordered by cut.
-pub(crate) fn windows(track: &Track) -> Result<Vec<Window>, CoreError> {
-    let index = |id: &str| track.items.iter().position(|i| i.id == id);
-    let mut out = Vec::new();
-    for tr in &track.transitions {
-        let (Some(a), Some(b)) = (index(&tr.between[0]), index(&tr.between[1])) else {
-            continue;
-        };
-        let cut = track.items[b].start;
-        if a == b || track.items[a].end()? != cut || !tr.duration.is_positive() {
-            continue;
-        }
-        let shorter = track.items[a].duration.min(track.items[b].duration);
-        let half = tr
-            .duration
-            .min(shorter)
-            .checked_div(Rational::from_int(2))?;
-        out.push(Window {
-            id: tr.id.clone(),
-            kind: tr.kind,
-            curve: tr.curve,
-            start: cut.checked_sub(half)?,
-            end: cut.checked_add(half)?,
-            out: a,
-            into: b,
-        });
-    }
-    out.sort_by_key(|w| w.start);
-    Ok(out)
+/// A track indexed for evaluation (plan 4C review of Tasks 15/16): its valid transition
+/// windows, ordered by cut, and for each item the window it comes in by and the one it goes
+/// out by. Built once per track and evaluation in `O(n + w log w)`; the items one time or range
+/// can meet are then found by binary search on `start` (items are sorted by `start` and do
+/// not overlap), so a frame costs no more than the items it meets.
+pub(crate) struct TrackIndex<'a> {
+    pub track: &'a Track,
+    windows: Vec<Window>,
+    /// Per item: the incoming and the outgoing window (indices into `windows`).
+    roles: Vec<(Option<usize>, Option<usize>)>,
 }
 
-/// The windows an item takes part in: as the incoming item, then as the outgoing one.
-pub(crate) fn roles(windows: &[Window], i: usize) -> (Option<&Window>, Option<&Window>) {
-    (
-        windows.iter().find(|w| w.into == i),
-        windows.iter().find(|w| w.out == i),
-    )
+impl<'a> TrackIndex<'a> {
+    pub fn new(track: &'a Track) -> Result<Self, CoreError> {
+        let mut at: HashMap<&str, usize> = HashMap::with_capacity(track.items.len());
+        for (i, item) in track.items.iter().enumerate() {
+            at.entry(item.id.as_str()).or_insert(i);
+        }
+        let mut windows = Vec::new();
+        for tr in &track.transitions {
+            let (Some(&a), Some(&b)) = (
+                at.get(tr.between[0].as_str()),
+                at.get(tr.between[1].as_str()),
+            ) else {
+                continue;
+            };
+            let cut = track.items[b].start;
+            if a == b || track.items[a].end()? != cut || !tr.duration.is_positive() {
+                continue;
+            }
+            let shorter = track.items[a].duration.min(track.items[b].duration);
+            let half = tr
+                .duration
+                .min(shorter)
+                .checked_div(Rational::from_int(2))?;
+            windows.push(Window {
+                id: tr.id.clone(),
+                kind: tr.kind,
+                curve: tr.curve,
+                start: cut.checked_sub(half)?,
+                end: cut.checked_add(half)?,
+                out: a,
+                into: b,
+            });
+        }
+        windows.sort_by_key(|w| w.start);
+        // The first window by cut wins a role, as a linear search would find it.
+        let mut roles = vec![(None, None); track.items.len()];
+        for (w, win) in windows.iter().enumerate() {
+            roles[win.into].0.get_or_insert(w);
+            roles[win.out].1.get_or_insert(w);
+        }
+        Ok(TrackIndex {
+            track,
+            windows,
+            roles,
+        })
+    }
+
+    /// The windows item `i` takes part in: as the incoming item, then as the outgoing one.
+    pub fn roles(&self, i: usize) -> (Option<&Window>, Option<&Window>) {
+        let (into, out) = self.roles[i];
+        (
+            into.map(|w| &self.windows[w]),
+            out.map(|w| &self.windows[w]),
+        )
+    }
+
+    /// The indices of the items whose extent may meet `[from, to)` (`to` included when
+    /// `closed`, for a single time): a window stays within each item's half, so only the item
+    /// before the first one starting at or before `from`, and the one after the last starting
+    /// before `to`, can reach in.
+    pub fn candidates(&self, from: Rational, to: Rational, closed: bool) -> Range<usize> {
+        let items = &self.track.items;
+        let lo = items.partition_point(|i| i.start <= from).saturating_sub(2);
+        let hi = match closed {
+            true => items.partition_point(|i| i.start <= to),
+            false => items.partition_point(|i| i.start < to),
+        };
+        lo..(hi + 1).min(items.len()).max(lo)
+    }
+
+    /// The items shown at `t`, in item order, each with its transition state. Clamped windows
+    /// never hold an item twice at once; were one to, the incoming window would win.
+    pub fn active(
+        &self,
+        t: Rational,
+    ) -> Result<Vec<(&'a Item, Option<TransitionState>)>, CoreError> {
+        let mut out = Vec::new();
+        for i in self.candidates(t, t, true) {
+            let item = &self.track.items[i];
+            let (into, from) = self.roles(i);
+            let state = match (
+                into.filter(|w| w.contains(t)),
+                from.filter(|w| w.contains(t)),
+            ) {
+                (Some(w), _) => Some(w.state(t, Role::In)),
+                (None, Some(w)) => Some(w.state(t, Role::Out)),
+                (None, None) => None,
+            };
+            if state.is_some() || (item.start <= t && t < item.end()?) {
+                out.push((item, state));
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// The item's extent with its transitions: from the incoming window's start (else its own
@@ -93,29 +165,4 @@ pub(crate) fn extent(
         None => item.end()?,
     };
     Ok((start, end))
-}
-
-/// The items of `track` shown at `t`, in item order, each with its transition state. Clamped
-/// windows never hold an item twice at once; were one to, the incoming window would win.
-pub(crate) fn active(
-    track: &Track,
-    t: Rational,
-) -> Result<Vec<(&Item, Option<TransitionState>)>, CoreError> {
-    let windows = windows(track)?;
-    let mut out = Vec::new();
-    for (i, item) in track.items.iter().enumerate() {
-        let (into, from) = roles(&windows, i);
-        let state = match (
-            into.filter(|w| w.contains(t)),
-            from.filter(|w| w.contains(t)),
-        ) {
-            (Some(w), _) => Some(w.state(t, Role::In)),
-            (None, Some(w)) => Some(w.state(t, Role::Out)),
-            (None, None) => None,
-        };
-        if state.is_some() || (item.start <= t && t < item.end()?) {
-            out.push((item, state));
-        }
-    }
-    Ok(out)
 }

@@ -4,8 +4,8 @@
 //!
 //! - The path must be a registry path of the item (structural, as `param.set`'s) that keyframes
 //!   may animate (`PARAM_NOT_ANIMATABLE`, policy); the value has the spec's shape (structural)
-//!   and range (policy); bézier `x1`/`x2` lie in `[0, 1]` (policy) and every number is finite
-//!   (structural).
+//!   and range (policy); bézier `x1`/`x2` lie in `[0, 1]` and `y1`/`y2` in `[-100, 100]`
+//!   (policy) and every number is finite (structural).
 //! - `at` lies in `[0, duration]` when a client sends it (policy). Stored times outside are
 //!   kept (a start trim moves keyframes past the item's start, Decision 13), so inverses and
 //!   replays apply them as they are; evaluation clamps.
@@ -64,15 +64,30 @@ fn payload(op: &Op) -> Result<&KeyframeSet, CoreError> {
     }
 }
 
-/// Bézier `x1`/`x2` in `[0, 1]` (policy).
+/// How far a bézier's `y1`/`y2` may overshoot (policy): an eased value stays within this many
+/// times its keyframes' span of them, so it stays finite and renderable.
+pub(crate) const BEZIER_Y_LIMIT: f64 = 100.0;
+
+/// Bézier `x1`/`x2` in `[0, 1]` and `y1`/`y2` in `[-BEZIER_Y_LIMIT, BEZIER_Y_LIMIT]` (policy).
 fn check_interp(path: &str, interp: &Interp) -> Result<(), CoreError> {
-    if let Interp::Bezier { x1, x2, .. } = interp
-        && [x1, x2].iter().any(|x| !(0.0..=1.0).contains(*x))
-    {
+    let Interp::Bezier { x1, y1, x2, y2 } = interp else {
+        return Ok(());
+    };
+    if [x1, x2].iter().any(|x| !(0.0..=1.0).contains(*x)) {
         return Err(invalid_range(
             format!("the bézier of {path} has x1 {x1} and x2 {x2}; both must lie in 0 to 1"),
             json!({ "path": path, "x1": x1, "x2": x2, "min": 0.0, "max": 1.0 }),
             "use x1 and x2 from 0 to 1 (CSS cubic-bezier)",
+        ));
+    }
+    let lim = BEZIER_Y_LIMIT;
+    if [y1, y2].iter().any(|y| !(-lim..=lim).contains(*y)) {
+        return Err(invalid_range(
+            format!(
+                "the bézier of {path} has y1 {y1} and y2 {y2}; both must lie in -{lim} to {lim}"
+            ),
+            json!({ "path": path, "y1": y1, "y2": y2, "min": -lim, "max": lim }),
+            format!("use y1 and y2 from -{lim} to {lim}"),
         ));
     }
     Ok(())

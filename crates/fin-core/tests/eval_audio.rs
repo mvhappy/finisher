@@ -74,8 +74,9 @@ fn segments_break_at_every_edge() {
     let p = audio_project(vec![a1]);
     let items = plan(&p, "0", "20").items;
     let c1 = &items[0];
-    // Extent [0, 21/2): fade-in end 1, keyframes 2 and 6, fade-out start 17/2, window 19/2.
-    let want: Vec<Rational> = ["0", "1", "2", "6", "17/2", "19/2", "21/2"].map(r).into();
+    // Extent [0, 21/2): fade-in end 1, keyframes 2 and 6, window 19/2. The fade-out is
+    // dropped: the crossfade shapes that side.
+    let want: Vec<Rational> = ["0", "1", "2", "6", "19/2", "21/2"].map(r).into();
     assert_eq!(edges(&c1.gain), want);
     assert_eq!((c1.from, c1.to), (secs(0), r("21/2")));
     // Before the first keyframe the first value holds; the ramp runs 2 → 6; then 0 dB.
@@ -91,7 +92,7 @@ fn segments_break_at_every_edge() {
             shapes: vec![]
         }
     );
-    assert_eq!(c1.gain[3], constant(secs(6), r("17/2"), 0.0, vec![]));
+    assert_eq!(c1.gain[3], constant(secs(6), r("19/2"), 0.0, vec![]));
     let pans: Vec<(Rational, Rational, [f64; 2])> =
         c1.pan.iter().map(|s| (s.from, s.to, s.pan)).collect();
     assert_eq!(
@@ -472,4 +473,156 @@ proptest! {
             prop_assert_eq!(at, item.to);
         }
     }
+}
+
+fn nested(id: &str, start: Rational, duration: Rational, tl: &str, source_in: Rational) -> Item {
+    let body = ItemBody::Nested {
+        timeline: tl.into(),
+        source_in,
+    };
+    Item::new(id, start, duration, body)
+}
+
+/// S2: a side with a crossfade has no fade; the other side's fade runs from the item's own
+/// edge.
+#[test]
+fn fades_are_dropped_on_crossfade_sides() {
+    let fade = |c: Item| with_audio(c, 0.0, 0.0, secs(1), secs(1));
+    let mut t = track(
+        "t2",
+        TrackKind::Audio,
+        vec![
+            fade(clip("c1", secs(0), secs(0), secs(4))),
+            fade(clip("c2", secs(4), secs(0), secs(4))),
+        ],
+    );
+    t.transitions
+        .push(crossfade("tr1", "c1", "c2", secs(2), Curve::EqualPower));
+    let items = plan(&audio_project(vec![t]), "0", "8").items;
+    let kinds = |a: &AudioItem| -> Vec<ShapeKind> {
+        let mut v: Vec<ShapeKind> = a
+            .gain
+            .iter()
+            .flat_map(|s| &s.shapes)
+            .map(|s| s.kind)
+            .collect();
+        v.dedup();
+        v
+    };
+    assert_eq!(kinds(&items[0]), [ShapeKind::FadeIn, ShapeKind::CrossOut]);
+    assert_eq!(kinds(&items[1]), [ShapeKind::CrossIn, ShapeKind::FadeOut]);
+    // c1's fade-in starts at its own start; c2's fade-out ends at its own end.
+    assert_eq!(edges(&items[0].gain)[..2], [secs(0), secs(1)]);
+    assert_eq!(edges(&items[1].gain).last(), Some(&secs(8)));
+}
+
+/// S1: a nested item's audio is its timeline's, moved by `start − sourceIn`, clipped to the
+/// nested item, with mute and solo applied per timeline and the outer track's gain added.
+#[test]
+fn nested_audio_is_flattened() {
+    let inner_clip = with_audio(
+        clip("c9", secs(0), secs(10), secs(30)),
+        -3.0,
+        0.0,
+        secs(0),
+        secs(0),
+    );
+    let mut quiet = track("t9", TrackKind::Audio, vec![inner_clip]);
+    quiet.gain = -1.0;
+    let mut other = track(
+        "t8",
+        TrackKind::Audio,
+        vec![clip("c8", secs(0), secs(0), secs(30))],
+    );
+    other.mute = true;
+    let inner = timeline("tl2", vec![quiet, other]);
+    let mut v = track(
+        "t1",
+        TrackKind::Video,
+        vec![nested("n1", secs(2), secs(5), "tl2", secs(3))],
+    );
+    v.gain = -2.0;
+    let p = project_with(vec![timeline("tl1", vec![v.clone()]), inner.clone()]);
+    let items = plan(&p, "0", "20").items;
+    assert_eq!(items.len(), 1, "{items:?}");
+    let x = &items[0];
+    assert_eq!(
+        (x.item.as_str(), x.track.as_str(), x.via.clone()),
+        ("c9", "t9", vec!["n1".to_string()])
+    );
+    // Outer [2, 7) is inner [3, 8): c9 reads its source from 10 + 3.
+    assert_eq!((x.from, x.to, x.source_from), (secs(2), secs(7), secs(13)));
+    assert_eq!(edges(&x.gain), [secs(2), secs(7)]);
+    assert_eq!(x.gain[0].db, [-6.0, -6.0]);
+    // A range inside it clips the inner range too.
+    let x = only(&p, "4", "5");
+    assert_eq!((x.from, x.to, x.source_from), (secs(4), secs(5), secs(15)));
+    // A soloed outer audio track silences the nested item's (unsoloed) track.
+    let mut a = track(
+        "t2",
+        TrackKind::Audio,
+        vec![clip("c2", secs(0), secs(0), secs(4))],
+    );
+    a.solo = true;
+    let p2 = project_with(vec![timeline("tl1", vec![v.clone(), a]), inner.clone()]);
+    let ids: Vec<String> = plan(&p2, "0", "20")
+        .items
+        .into_iter()
+        .map(|i| i.item)
+        .collect();
+    assert_eq!(ids, ["c2"]);
+    // A muted outer track silences it; a missing timeline is silent.
+    let mut muted = v.clone();
+    muted.mute = true;
+    let p3 = project_with(vec![timeline("tl1", vec![muted]), inner]);
+    assert!(plan(&p3, "0", "20").items.is_empty());
+    let p4 = project_with(vec![timeline("tl1", vec![v])]);
+    assert!(plan(&p4, "0", "20").items.is_empty());
+}
+
+/// Nested audio refuses cycles and more than `MAX_NESTED_LAYERS` nested items in all.
+#[test]
+fn nested_audio_cycles_and_size() {
+    let loop_ = |id: &str, to: &str| {
+        timeline(
+            id,
+            vec![track(
+                "t1",
+                TrackKind::Video,
+                vec![nested("n", secs(0), secs(9), to, secs(0))],
+            )],
+        )
+    };
+    let p = project_with(vec![loop_("tl1", "tl2"), loop_("tl2", "tl1")]);
+    assert_eq!(
+        eval_audio(&p, "tl1", secs(0), secs(1)).unwrap_err().code,
+        "NESTED_CYCLE"
+    );
+    // 101 × 100 nested items sounding at once.
+    let fan = |id: &str, n: usize, to: &str| {
+        let tracks = (0..n)
+            .map(|k| {
+                track(
+                    &format!("t{k}"),
+                    TrackKind::Video,
+                    vec![nested(&format!("n{k}"), secs(0), secs(9), to, secs(0))],
+                )
+            })
+            .collect();
+        timeline(id, tracks)
+    };
+    let leaf = timeline(
+        "tl3",
+        vec![track(
+            "t1",
+            TrackKind::Audio,
+            vec![clip("c1", secs(0), secs(0), secs(9))],
+        )],
+    );
+    let p = project_with(vec![fan("tl1", 101, "tl2"), fan("tl2", 100, "tl3"), leaf]);
+    let e = eval_audio(&p, "tl1", secs(0), secs(1)).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.details["max"].as_u64()),
+        ("NESTED_TOO_LARGE", Some(10_000))
+    );
 }

@@ -1555,7 +1555,9 @@ export interface FontPin {
 export interface CaptionStyle {}
 /**
  * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
- * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order.
+ * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
+ * item of a nested timeline lists the nested items it sounds through in `via`, outermost
+ * first (its `item` and `track` are its own, on the nested timeline).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AudioItem".
@@ -1570,6 +1572,7 @@ export interface AudioItem {
   speed: Rational;
   to: Rational;
   track: string;
+  via?: string[];
 }
 /**
  * Gain over `[from, to)` in dB: `db` are the end values of the keyframe span the segment
@@ -1888,7 +1891,7 @@ export interface Layer {
    * A nested item's layers, bottom first.
    */
   children?: Layer[];
-  crop: Crop;
+  crop: PlanCrop;
   /**
    * Enabled effects, in order.
    */
@@ -1902,8 +1905,21 @@ export interface Layer {
   opacity: number;
   source?: SourceRef;
   track: string;
-  transform: Transform;
+  transform: PlanTransform;
   transition?: TransitionState;
+}
+/**
+ * A layer's crop, resolved at the plan's time: fractions of the item's size cut from each
+ * side, each in `[0, 1]`, every field present.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanCrop".
+ */
+export interface PlanCrop {
+  bottom: number;
+  left: number;
+  right: number;
+  top: number;
 }
 /**
  * A graphic's template, its time (from the item's start) and its slot values.
@@ -1919,7 +1935,7 @@ export interface GraphicPlan {
   time: Rational;
 }
 /**
- * The mask with its values resolved.
+ * The mask with its values resolved (`feather` and `choke` at least 0).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "MaskPlan".
@@ -1945,6 +1961,38 @@ export interface NestedPlan {
 export interface SourceRef {
   asset: string;
   time: Rational;
+}
+/**
+ * A layer's transform, resolved at the plan's time: every field is present (the model's
+ * `Transform` leaves defaults out).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanTransform".
+ */
+export interface PlanTransform {
+  /**
+   * Item-normalised.
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  anchor: [number, number];
+  /**
+   * Pixels from the frame centre.
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  position: [number, number];
+  /**
+   * Degrees.
+   */
+  rotation: number;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  scale: [number, number];
 }
 /**
  * A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.

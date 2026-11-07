@@ -104,9 +104,11 @@ impl Rational {
         self.num < 0
     }
 
-    /// The nearest `f64` to `num / den` after converting each part (both conversions and the
-    /// division are IEEE-754 round-to-nearest, so the result is the same on every platform).
-    /// For evaluation only: positions stay rational.
+    /// `num as f64 / den as f64`: each part is converted, then divided, every step IEEE-754
+    /// round-to-nearest, so the result is the same on every platform. It is the nearest `f64`
+    /// to `num / den` while both parts fit in 2^53; beyond, a part is rounded before the
+    /// division and the result may be one rounding further off. For evaluation only: positions
+    /// stay rational.
     pub fn to_f64(self) -> f64 {
         self.num as f64 / self.den as f64
     }

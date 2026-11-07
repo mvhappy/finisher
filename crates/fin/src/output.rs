@@ -95,6 +95,10 @@ const VALIDATION_CODES: &[&str] = &[
     // moved into itself or a bin inside it.
     "BIN_NOT_EMPTY",
     "BIN_CYCLE",
+    // Evaluation (sub-project 4C Tasks 15–16): a timeline nesting itself or nesting more than
+    // 16 deep (the root counted); nested items holding more than 10,000 layers at once.
+    "NESTED_CYCLE",
+    "NESTED_TOO_LARGE",
     "INVALID_ID",
     "BINDINGS_MISMATCH",
     // A stored (migrated) record too large for a segment: export stops at it.
@@ -281,6 +285,8 @@ mod tests {
             "PARAM_NOT_ANIMATABLE",
             "BIN_NOT_EMPTY",
             "BIN_CYCLE",
+            "NESTED_CYCLE",
+            "NESTED_TOO_LARGE",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

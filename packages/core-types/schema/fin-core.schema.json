@@ -175,7 +175,7 @@
       "type": "object"
     },
     "AudioItem": {
-      "description": "One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the\ntimeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order.",
+      "description": "One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the\ntimeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An\nitem of a nested timeline lists the nested items it sounds through in `via`, outermost\nfirst (its `item` and `track` are its own, on the nested timeline).",
       "properties": {
         "asset": {
           "type": "string"
@@ -209,6 +209,12 @@
         },
         "track": {
           "type": "string"
+        },
+        "via": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -2109,7 +2115,7 @@
           "type": "array"
         },
         "crop": {
-          "$ref": "#/$defs/Crop"
+          "$ref": "#/$defs/PlanCrop"
         },
         "effects": {
           "description": "Enabled effects, in order.",
@@ -2149,7 +2155,7 @@
           "type": "string"
         },
         "transform": {
-          "$ref": "#/$defs/Transform"
+          "$ref": "#/$defs/PlanTransform"
         },
         "transition": {
           "$ref": "#/$defs/TransitionState"
@@ -2612,7 +2618,7 @@
       "type": "object"
     },
     "MaskPlan": {
-      "description": "The mask with its values resolved.",
+      "description": "The mask with its values resolved (`feather` and `choke` at least 0).",
       "properties": {
         "choke": {
           "format": "double",
@@ -3879,6 +3885,80 @@
         }
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
+    },
+    "PlanCrop": {
+      "description": "A layer's crop, resolved at the plan's time: fractions of the item's size cut from each\nside, each in `[0, 1]`, every field present.",
+      "properties": {
+        "bottom": {
+          "format": "double",
+          "type": "number"
+        },
+        "left": {
+          "format": "double",
+          "type": "number"
+        },
+        "right": {
+          "format": "double",
+          "type": "number"
+        },
+        "top": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "left",
+        "right",
+        "top",
+        "bottom"
+      ],
+      "type": "object"
+    },
+    "PlanTransform": {
+      "description": "A layer's transform, resolved at the plan's time: every field is present (the model's\n`Transform` leaves defaults out).",
+      "properties": {
+        "anchor": {
+          "description": "Item-normalised.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "position": {
+          "description": "Pixels from the frame centre.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "rotation": {
+          "description": "Degrees.",
+          "format": "double",
+          "type": "number"
+        },
+        "scale": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "position",
+        "scale",
+        "rotation",
+        "anchor"
+      ],
+      "type": "object"
     },
     "PlanValue": {
       "anyOf": [

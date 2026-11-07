@@ -148,7 +148,7 @@ fn presets_are_css_values() {
 fn hold_linear_bezier_interp() {
     let base = num(7.0);
     let ty = ValueType::Number;
-    let at = |kfs: &[fin_core::Keyframe], t: &str| interpolate(kfs, r(t), &base, &ty);
+    let at = |kfs: &[fin_core::Keyframe], t: &str| interpolate(kfs, r(t), &base, ty);
 
     let hold = [
         kf(secs(0), num(0.0), Interp::Hold),
@@ -193,12 +193,7 @@ fn hold_linear_bezier_interp() {
         kf(secs(1), ParamValue::Vec2([4.0, 20.0]), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(
-            &v,
-            r("1/4"),
-            &ParamValue::Vec2([0.0, 0.0]),
-            &ValueType::Vec2
-        ),
+        interpolate(&v, r("1/4"), &ParamValue::Vec2([0.0, 0.0]), ValueType::Vec2),
         PlanValue::Vec2([1.0, 12.5])
     );
     let b = [
@@ -206,12 +201,12 @@ fn hold_linear_bezier_interp() {
         kf(secs(1), ParamValue::Bool(true), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(&b, r("9/10"), &ParamValue::Bool(false), &ValueType::Step),
+        interpolate(&b, r("9/10"), &ParamValue::Bool(false), ValueType::Step),
         PlanValue::Bool(false)
     );
     // A Step type holds even numbers (enums stored as numbers never blend).
     assert_eq!(
-        interpolate(&lin, r("1"), &base, &ValueType::Step),
+        interpolate(&lin, r("1"), &base, ValueType::Step),
         PlanValue::Number(0.0)
     );
     // Mismatched shapes hold the earlier value.
@@ -220,7 +215,7 @@ fn hold_linear_bezier_interp() {
         kf(secs(1), ParamValue::Vec2([0.0, 0.0]), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(&bad, r("1/2"), &base, &ty),
+        interpolate(&bad, r("1/2"), &base, ty),
         PlanValue::Number(1.0)
     );
 }
@@ -233,7 +228,7 @@ fn unsorted_and_equal_time_keyframes() {
         kf(secs(0), num(0.0), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(&unsorted, secs(1), &num(0.0), &ty),
+        interpolate(&unsorted, secs(1), &num(0.0), ty),
         PlanValue::Number(5.0)
     );
     // Two keyframes at one time: the later one wins from that time on.
@@ -244,15 +239,15 @@ fn unsorted_and_equal_time_keyframes() {
         kf(secs(2), num(7.0), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(&dup, secs(1), &num(0.0), &ty),
+        interpolate(&dup, secs(1), &num(0.0), ty),
         PlanValue::Number(5.0)
     );
     assert_eq!(
-        interpolate(&dup, r("3/2"), &num(0.0), &ty),
+        interpolate(&dup, r("3/2"), &num(0.0), ty),
         PlanValue::Number(6.0)
     );
     assert_eq!(
-        interpolate(&dup, r("1/2"), &num(0.0), &ty),
+        interpolate(&dup, r("1/2"), &num(0.0), ty),
         PlanValue::Number(0.5)
     );
 }
@@ -265,7 +260,7 @@ fn colour_interpolates_per_component() {
         kf(secs(0), text("#000000"), Interp::Linear),
         kf(secs(2), text("#FF336680"), Interp::Linear),
     ];
-    let PlanValue::Color(c) = interpolate(&kfs, secs(1), &text("#000000"), &ty) else {
+    let PlanValue::Color(c) = interpolate(&kfs, secs(1), &text("#000000"), ty) else {
         panic!()
     };
     let half = |b: f64| 0.5 * (b / 255.0);
@@ -273,11 +268,11 @@ fn colour_interpolates_per_component() {
     assert_eq!(colour_hex(c), "#801a33c0");
     // A static colour resolves; an unparsable one stays text.
     assert_eq!(
-        interpolate(&[], secs(0), &text("#ffffff"), &ty),
+        interpolate(&[], secs(0), &text("#ffffff"), ty),
         PlanValue::Color([1.0; 4])
     );
     assert_eq!(
-        interpolate(&[], secs(0), &text("red"), &ty),
+        interpolate(&[], secs(0), &text("red"), ty),
         PlanValue::Text("red".into())
     );
     // Overshooting easing clamps each component.
@@ -291,7 +286,7 @@ fn colour_interpolates_per_component() {
         kf(secs(0), text("#000000"), over),
         kf(secs(1), text("#ffffff"), Interp::Linear),
     ];
-    let PlanValue::Color(lo) = interpolate(&kfs, r("1/4"), &text("#000000"), &ty) else {
+    let PlanValue::Color(lo) = interpolate(&kfs, r("1/4"), &text("#000000"), ty) else {
         panic!()
     };
     assert_eq!(lo, [0.0, 0.0, 0.0, 1.0]);
@@ -330,15 +325,15 @@ fn interp_outside_keyframes_clamps() {
         kf(secs(2), num(5.0), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(&kfs, secs(0), &num(0.0), &ty),
+        interpolate(&kfs, secs(0), &num(0.0), ty),
         PlanValue::Number(3.0)
     );
     assert_eq!(
-        interpolate(&kfs, r("-5"), &num(0.0), &ty),
+        interpolate(&kfs, r("-5"), &num(0.0), ty),
         PlanValue::Number(3.0)
     );
     assert_eq!(
-        interpolate(&kfs, secs(9), &num(0.0), &ty),
+        interpolate(&kfs, secs(9), &num(0.0), ty),
         PlanValue::Number(5.0)
     );
     // Keyframes before the item's start (after a start trim) still shape the curve.
@@ -347,7 +342,7 @@ fn interp_outside_keyframes_clamps() {
         kf(secs(1), num(10.0), Interp::Linear),
     ];
     assert_eq!(
-        interpolate(&trimmed, secs(0), &num(0.0), &ty),
+        interpolate(&trimmed, secs(0), &num(0.0), ty),
         PlanValue::Number(5.0)
     );
 }

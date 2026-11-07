@@ -2,26 +2,40 @@
 //! 41). Gains stay in dB (no `pow` in `fin-core`); the mixer turns them and the shapes into
 //! amplitudes.
 //!
-//! - Only audio tracks sound. A muted track is omitted; when any audio track is soloed, only
-//!   soloed ones sound.
+//! - Audio tracks sound their clips; nested items sound their timeline's audio, on any track.
+//!   A muted track is omitted; when any track that sounds (an audio track, or one holding a
+//!   nested item) is soloed, only soloed ones sound. Mute and solo apply per timeline: a nested
+//!   timeline's own flags decide among its tracks.
 //! - Clip items sound over their extent with transitions (`[cut − d/2, cut + d/2)` extends A
 //!   and starts B early); other kinds on audio tracks are silent in 4C.
-//! - Gain is the track gain plus the item's `audio.gain` (keyframed in dB), times the item's
-//!   shapes: `fadeIn` over the first `fadeIn` of the extent, `fadeOut` over the last
-//!   `fadeOut`, and a crossfade's `crossOut`/`crossIn` over its window with its curve.
+//! - Gain is the track gain plus the item's `audio.gain` (keyframed in dB; only number
+//!   keyframes count), times the item's shapes: `fadeIn` over the item's first `fadeIn`,
+//!   `fadeOut` over its last `fadeOut`, and a crossfade's `crossOut`/`crossIn` over its window
+//!   with its curve. A side with a crossfade has no fade (never a double fade).
+//! - A nested item's audio is its timeline's plan over the matching range (`sourceIn` on),
+//!   clipped to the nested item's extent and moved onto this timeline, with the nested item's
+//!   track gain added; its items list the nested items they sound through (`via`). A missing
+//!   timeline is silent; a cycle is `NESTED_CYCLE`, and more than
+//!   [`super::MAX_NESTED_LAYERS`] nested items in all `NESTED_TOO_LARGE`.
 //! - Gain segments break at gain keyframes, fade ends and transition edges; pan segments at
 //!   pan keyframes; both are clipped to `[from, to)`.
+//! - Each track is indexed once ([`TrackIndex`]) and only the items that can meet the range
+//!   are visited.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::CoreError;
+use crate::eval::MAX_NESTED_LAYERS;
+use crate::eval::frame::{nested_cycle, nested_too_large};
 use crate::eval::segments::{NumberCurve, breakpoints};
 use crate::eval::source::clip_time;
-use crate::eval::transition::{Window, extent, roles, windows};
-use crate::eval::{check_audio, timeline_of};
-use crate::model::{AudioParams, Curve, Interp, Item, ItemBody, Project, Track, TrackKind};
+use crate::eval::transition::{TrackIndex, Window, extent};
+use crate::eval::{MAX_NESTING, check_audio, timeline_of};
+use crate::model::{
+    AudioParams, Curve, Interp, Item, ItemBody, Project, Timeline, Track, TrackKind,
+};
 use crate::time::Rational;
 
 /// The items sounding in `[from, to)` of one timeline, in track then time order.
@@ -35,12 +49,16 @@ pub struct AudioPlan {
 }
 
 /// One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
-/// timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order.
+/// timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
+/// item of a nested timeline lists the nested items it sounds through in `via`, outermost
+/// first (its `item` and `track` are its own, on the nested timeline).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioItem {
     pub item: String,
     pub track: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub via: Vec<String>,
     pub asset: String,
     pub from: Rational,
     pub to: Rational,
@@ -115,20 +133,12 @@ pub fn eval_audio(
         );
     }
     let tl = timeline_of(project, timeline)?;
-    let audio = |t: &&Track| t.kind == TrackKind::Audio;
-    let solo = tl.tracks.iter().filter(audio).any(|t| t.solo);
-    let mut items = Vec::new();
-    for track in tl.tracks.iter().filter(audio) {
-        if track.mute || (solo && !track.solo) {
-            continue;
-        }
-        let windows = windows(track)?;
-        for (i, item) in track.items.iter().enumerate() {
-            if let Some(a) = audio_item(track, &windows, i, item, from, to)? {
-                items.push(a);
-            }
-        }
-    }
+    let mut mix = Mix {
+        project,
+        stack: Vec::new(),
+        nested: 0,
+    };
+    let items = mix.items(tl, from, to)?;
     let plan = AudioPlan {
         timeline: tl.id.clone(),
         from,
@@ -137,6 +147,109 @@ pub fn eval_audio(
     };
     check_audio(&plan)?;
     Ok(plan)
+}
+
+/// One evaluation's walk through nested timelines.
+struct Mix<'a> {
+    project: &'a Project,
+    /// The timelines being evaluated, outermost first.
+    stack: Vec<&'a str>,
+    /// Nested items sounded so far ([`MAX_NESTED_LAYERS`]).
+    nested: usize,
+}
+
+fn is_nested(item: &Item) -> bool {
+    matches!(item.body, ItemBody::Nested { .. })
+}
+
+impl<'a> Mix<'a> {
+    /// The items of `tl` sounding in `[from, to)`, in track then time order.
+    fn items(
+        &mut self,
+        tl: &'a Timeline,
+        from: Rational,
+        to: Rational,
+    ) -> Result<Vec<AudioItem>, CoreError> {
+        if self.stack.contains(&tl.id.as_str()) || self.stack.len() >= MAX_NESTING {
+            return Err(nested_cycle(&self.stack, &tl.id));
+        }
+        self.stack.push(&tl.id);
+        let sounds = |t: &&Track| t.kind == TrackKind::Audio || t.items.iter().any(is_nested);
+        let solo = tl.tracks.iter().filter(sounds).any(|t| t.solo);
+        let mut items = Vec::new();
+        for track in tl.tracks.iter().filter(sounds) {
+            if track.mute || (solo && !track.solo) {
+                continue;
+            }
+            let index = TrackIndex::new(track)?;
+            for i in index.candidates(from, to, false) {
+                let item = &track.items[i];
+                let (into, out) = index.roles(i);
+                if is_nested(item) {
+                    self.nested(track, item, into, out, from, to, &mut items)?;
+                } else if track.kind == TrackKind::Audio
+                    && let Some(a) = audio_item(track, into, out, item, from, to)?
+                {
+                    items.push(a);
+                }
+            }
+        }
+        self.stack.pop();
+        Ok(items)
+    }
+
+    /// The audio of nested item `item` (on `track`) over its extent within `[from, to)`.
+    #[allow(clippy::too_many_arguments)]
+    fn nested(
+        &mut self,
+        track: &Track,
+        item: &Item,
+        into: Option<&Window>,
+        out: Option<&Window>,
+        from: Rational,
+        to: Rational,
+        items: &mut Vec<AudioItem>,
+    ) -> Result<(), CoreError> {
+        let ItemBody::Nested {
+            timeline,
+            source_in,
+        } = &item.body
+        else {
+            return Ok(());
+        };
+        let (start, end) = extent(item, into, out)?;
+        let (a, b) = (start.max(from), end.min(to));
+        if a >= b {
+            return Ok(());
+        }
+        let Ok(inner) = timeline_of(self.project, timeline) else {
+            return Ok(());
+        };
+        self.nested += 1;
+        if self.nested > MAX_NESTED_LAYERS {
+            return Err(nested_too_large(&self.stack));
+        }
+        // Inner time = sourceIn + (outer − start): outer = inner + offset.
+        let offset = item.start.checked_sub(*source_in)?;
+        let inner_from = a.checked_sub(offset)?;
+        let inner_to = b.checked_sub(offset)?;
+        for mut x in self.items(inner, inner_from, inner_to)? {
+            x.from = x.from.checked_add(offset)?;
+            x.to = x.to.checked_add(offset)?;
+            for s in &mut x.gain {
+                s.from = s.from.checked_add(offset)?;
+                s.to = s.to.checked_add(offset)?;
+                s.db = [s.db[0] + track.gain, s.db[1] + track.gain];
+            }
+            for s in &mut x.pan {
+                s.from = s.from.checked_add(offset)?;
+                s.to = s.to.checked_add(offset)?;
+            }
+            x.via.insert(0, item.id.clone());
+            items.push(x);
+        }
+        Ok(())
+    }
 }
 
 /// A shape's window on the timeline.
@@ -149,8 +262,8 @@ struct ShapeWindow {
 
 fn audio_item(
     track: &Track,
-    windows: &[Window],
-    i: usize,
+    into: Option<&Window>,
+    out: Option<&Window>,
     item: &Item,
     from: Rational,
     to: Rational,
@@ -163,14 +276,13 @@ fn audio_item(
     else {
         return Ok(None);
     };
-    let (into, out) = roles(windows, i);
     let (start, end) = extent(item, into, out)?;
     let (a, b) = (start.max(from), end.min(to));
     if a >= b {
         return Ok(None);
     }
     let params = item.common.audio.clone().unwrap_or_default();
-    let shapes = shape_windows(&params, start, end, into, out)?;
+    let shapes = shape_windows(&params, item, into, out)?;
     let kfs = |path: &str| {
         item.common
             .keyframes
@@ -212,6 +324,7 @@ fn audio_item(
     Ok(Some(AudioItem {
         item: item.id.clone(),
         track: track.id.clone(),
+        via: Vec::new(),
         asset: asset.clone(),
         from: a,
         to: b,
@@ -222,11 +335,11 @@ fn audio_item(
     }))
 }
 
-/// The fades (over the extent's first and last stretch; linear) and the crossfade sides.
+/// The fades (over the item's own first and last stretch; linear) and the crossfade sides. A
+/// side with a crossfade has no fade: the crossfade shapes it already.
 fn shape_windows(
     params: &AudioParams,
-    start: Rational,
-    end: Rational,
+    item: &Item,
     into: Option<&Window>,
     out: Option<&Window>,
 ) -> Result<Vec<ShapeWindow>, CoreError> {
@@ -239,11 +352,12 @@ fn shape_windows(
             end,
         })
     };
-    if params.fade_in.is_positive() {
-        let e = start.checked_add(params.fade_in)?;
-        push(ShapeKind::FadeIn, Curve::Linear, start, e);
+    if params.fade_in.is_positive() && into.is_none() {
+        let e = item.start.checked_add(params.fade_in)?;
+        push(ShapeKind::FadeIn, Curve::Linear, item.start, e);
     }
-    if params.fade_out.is_positive() {
+    if params.fade_out.is_positive() && out.is_none() {
+        let end = item.end()?;
         let s = end.checked_sub(params.fade_out)?;
         push(ShapeKind::FadeOut, Curve::Linear, s, end);
     }

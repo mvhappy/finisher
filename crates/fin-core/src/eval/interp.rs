@@ -45,9 +45,9 @@ pub const PRESETS: &[(&str, [f64; 4])] = &[
 /// item still shape the curve, so a trim never changes what stays visible). Between two
 /// keyframes the earlier one's `interp` applies. `kfs` is sorted by `at` (it is sorted here
 /// if not); among equal times the later keyframe wins.
-pub fn interpolate(kfs: &[Keyframe], at: Rational, base: &ParamValue, ty: &ValueType) -> PlanValue {
+pub fn interpolate(kfs: &[Keyframe], at: Rational, base: &ParamValue, ty: ValueType) -> PlanValue {
     if kfs.is_empty() {
-        return resolve(base, *ty);
+        return resolve(base, ty);
     }
     if !kfs.is_sorted_by(|a, b| a.at <= b.at) {
         let mut sorted = kfs.to_vec();
@@ -56,18 +56,18 @@ pub fn interpolate(kfs: &[Keyframe], at: Rational, base: &ParamValue, ty: &Value
     }
     let i = kfs.partition_point(|k| k.at <= at);
     if i == 0 {
-        return resolve(&kfs[0].value, *ty);
+        return resolve(&kfs[0].value, ty);
     }
     if i == kfs.len() {
-        return resolve(&kfs[i - 1].value, *ty);
+        return resolve(&kfs[i - 1].value, ty);
     }
     let (a, b) = (&kfs[i - 1], &kfs[i]);
     let e = match a.interp {
-        Interp::Hold => return resolve(&a.value, *ty),
+        Interp::Hold => return resolve(&a.value, ty),
         Interp::Linear => progress(a.at, b.at, at),
         Interp::Bezier { x1, y1, x2, y2 } => bezier_y([x1, y1, x2, y2], progress(a.at, b.at, at)),
     };
-    mix(&a.value, &b.value, e, *ty).unwrap_or_else(|| resolve(&a.value, *ty))
+    mix(&a.value, &b.value, e, ty).unwrap_or_else(|| resolve(&a.value, ty))
 }
 
 /// `(at − a) / (b − a)` in `[0, 1]`: exact in rationals, then rounded once (an overflow falls

@@ -912,3 +912,38 @@ fn first_keyframe_meets_a_static_set() {
     );
     assert!(got.is_ok());
 }
+
+/// S6: a bézier's `y1`/`y2` are bounded (policy), so an eased value stays renderable; replay
+/// keeps what was stored.
+#[test]
+fn bezier_y_is_bounded() {
+    let p = busy();
+    let eased = |y1: f64| -> Op {
+        KeyframeSet {
+            item: "c2".into(),
+            path: "opacity".into(),
+            at: secs(1),
+            value: ParamValue::Number(0.5),
+            interp: Interp::Bezier {
+                x1: 0.5,
+                y1,
+                x2: 0.5,
+                y2: 1.0,
+            },
+        }
+        .into()
+    };
+    apply(&p, vec![eased(100.0)]);
+    let e = apply_tx(&p, &tx(vec![eased(1e300)]), &mut MemIds::after(&p)).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.details["max"].as_f64()),
+        ("INVALID_RANGE", Some(100.0))
+    );
+    apply_tx_mode(
+        &p,
+        &tx(vec![eased(1e300)]),
+        &mut MemIds::after(&p),
+        ApplyMode::Replay,
+    )
+    .unwrap();
+}

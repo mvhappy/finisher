@@ -15,11 +15,12 @@ mod source;
 mod transition;
 
 pub use audio::{AudioItem, AudioPlan, GainSegment, PanSegment, Shape, ShapeKind, eval_audio};
-pub use frame::{MAX_NESTING, eval_frame};
+pub use frame::{MAX_NESTED_LAYERS, MAX_NESTING, eval_frame};
 pub use interp::{PRESETS, ValueType, bezier_y, colour_hex, interpolate, parse_colour};
 pub use plan::{
     CaptionPlan, EffectPlan, FramePlan, GraphicPlan, ItemKind, Layer, MaskPlan, NestedPlan,
-    PlanValue, Role, SourceRef, TransitionState, Unmeasured, UnmeasuredReason, WordPlan,
+    PlanCrop, PlanTransform, PlanValue, Role, SourceRef, TransitionState, Unmeasured,
+    UnmeasuredReason, WordPlan,
 };
 
 use serde_json::json;

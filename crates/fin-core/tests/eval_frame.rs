@@ -4,11 +4,12 @@ mod eval_common;
 
 use eval_common::*;
 use fin_core::eval::{
-    ItemKind, Layer, MaskPlan, NestedPlan, PlanValue, Role, SourceRef, UnmeasuredReason, eval_frame,
+    ItemKind, Layer, MaskPlan, NestedPlan, PlanCrop, PlanTransform, PlanValue, Role, SourceRef,
+    UnmeasuredReason, eval_frame,
 };
 use fin_core::{
     BlendMode, CoreError, Crop, Curve, Interp, Item, ItemBody, Mask, Measured, ParamValue, Project,
-    Rational, TextMeasurer, TextRequest, TrackKind, Transform, TransitionKind,
+    Rational, TextMeasurer, TextRequest, TrackKind, TransitionKind,
 };
 use proptest::prelude::*;
 
@@ -287,8 +288,14 @@ fn nested_cycle_is_refused() {
             vec![nested("n1", secs(0), secs(9), "tl7", secs(0))],
         )],
     );
-    let e = eval_frame(&project_with(vec![missing]), "tl1", secs(1), None).unwrap_err();
-    assert_eq!(e.code, "NOT_FOUND");
+    // A nested item whose timeline is missing draws nothing; the rest of the frame draws.
+    let mut missing = missing;
+    missing.tracks[0]
+        .items
+        .push(clip("c1", secs(9), secs(0), secs(1)));
+    let p = project_with(vec![missing]);
+    assert!(frame(&p, "1").is_empty());
+    assert_eq!(frame(&p, "9")[0].item, "c1");
 }
 
 #[test]
@@ -320,7 +327,7 @@ fn adjustment_layer_has_effects_only() {
     );
     assert_eq!(
         (l.transform, l.crop),
-        (Transform::default(), Crop::default())
+        (PlanTransform::default(), PlanCrop::default())
     );
     assert_eq!(l.opacity, 0.5);
     let fx: Vec<(&str, Vec<(&str, PlanValue)>)> = l
@@ -453,7 +460,7 @@ fn keyframed_common_params_resolve_and_clamp() {
     assert_eq!(l.opacity, 1.0);
     assert_eq!(
         l.transform,
-        Transform {
+        PlanTransform {
             position: [10.0, -20.0],
             scale: [1.0, 1.0],
             rotation: 90.0,
@@ -462,7 +469,7 @@ fn keyframed_common_params_resolve_and_clamp() {
     );
     assert_eq!(
         l.crop,
-        Crop {
+        PlanCrop {
             left: 0.1,
             right: 0.0,
             top: 0.0,
@@ -938,4 +945,65 @@ fn registry_effects_fill_defaults_and_carry_assets() {
         l.effects[0].params["asset"],
         PlanValue::Asset { asset: "a9".into() }
     );
+}
+
+/// S3: more than `MAX_NESTED_LAYERS` layers inside nested items in all is `NESTED_TOO_LARGE`;
+/// at the cap a frame evaluates.
+#[test]
+fn nested_layer_total_is_capped() {
+    let fan = |id: &str, n: usize, to: &str| {
+        let tracks = (0..n)
+            .map(|k| {
+                let item = nested(&format!("n{k}"), secs(0), secs(9), to, secs(0));
+                track(&format!("t{k}"), TrackKind::Video, vec![item])
+            })
+            .collect();
+        timeline(id, tracks)
+    };
+    let leaf = |n: usize| {
+        let tracks = (0..n)
+            .map(|k| {
+                track(
+                    &format!("t{k}"),
+                    TrackKind::Video,
+                    vec![clip(&format!("c{k}"), secs(0), secs(0), secs(9))],
+                )
+            })
+            .collect();
+        timeline("tl2", tracks)
+    };
+    // 100 nested items of 100 layers each: 10,000, the cap (top-level layers do not count);
+    // one more nested item passes it.
+    let p = project_with(vec![fan("tl1", 100, "tl2"), leaf(100)]);
+    assert_eq!(frame(&p, "1").len(), 100);
+    let p = project_with(vec![fan("tl1", 101, "tl2"), leaf(100)]);
+    let e = eval_frame(&p, "tl1", secs(1), None).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.details["max"].as_u64()),
+        ("NESTED_TOO_LARGE", Some(10_000))
+    );
+}
+
+/// S7: keyframed mask feather and choke never go below 0.
+#[test]
+fn mask_feather_and_choke_clamp_at_zero() {
+    let mut c = clip("c1", secs(0), secs(0), secs(4));
+    c.common.mask = Some(Mask {
+        matte: "c2".into(),
+        feather: 2.0,
+        choke: 1.0,
+        invert: false,
+    });
+    let c = keyed(
+        c,
+        "mask.feather",
+        vec![kf(secs(0), num(-5.0), Interp::Hold)],
+    );
+    let c = keyed(c, "mask.choke", vec![kf(secs(0), num(-1.0), Interp::Hold)]);
+    let p = project_with(vec![timeline(
+        "tl1",
+        vec![track("t1", TrackKind::Video, vec![c])],
+    )]);
+    let m = frame(&p, "1")[0].mask.clone().unwrap();
+    assert_eq!((m.feather, m.choke), (0.0, 0.0));
 }

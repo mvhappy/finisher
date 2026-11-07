@@ -15,8 +15,27 @@
         "asset": "a1",
         "time": "9"
       },
-      "transform": {},
-      "crop": {},
+      "transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "rotation": 0.0,
+        "anchor": [
+          0.5,
+          0.5
+        ]
+      },
+      "crop": {
+        "left": 0.0,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
       "opacity": 1.0,
       "blend": "normal",
       "transition": {
@@ -36,8 +55,27 @@
         "asset": "a1",
         "time": "20"
       },
-      "transform": {},
-      "crop": {},
+      "transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "rotation": 0.0,
+        "anchor": [
+          0.5,
+          0.5
+        ]
+      },
+      "crop": {
+        "left": 0.0,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
       "opacity": 1.0,
       "blend": "normal",
       "transition": {
@@ -57,8 +95,27 @@
         "asset": "a3",
         "time": "1"
       },
-      "transform": {},
-      "crop": {},
+      "transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "rotation": 0.0,
+        "anchor": [
+          0.5,
+          0.5
+        ]
+      },
+      "crop": {
+        "left": 0.0,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
       "opacity": 1.0,
       "blend": "normal",
       "graphic": {
@@ -79,8 +136,27 @@
       "kind": "nested",
       "track": "t5",
       "local": "4",
-      "transform": {},
-      "crop": {},
+      "transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "rotation": 0.0,
+        "anchor": [
+          0.5,
+          0.5
+        ]
+      },
+      "crop": {
+        "left": 0.0,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
       "opacity": 1.0,
       "blend": "normal",
       "nested": {
@@ -101,8 +177,27 @@
             "asset": "a2",
             "time": "0"
           },
-          "transform": {},
-          "crop": {},
+          "transform": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0
+            ],
+            "rotation": 0.0,
+            "anchor": [
+              0.5,
+              0.5
+            ]
+          },
+          "crop": {
+            "left": 0.0,
+            "right": 0.0,
+            "top": 0.0,
+            "bottom": 0.0
+          },
           "opacity": 1.0,
           "blend": "normal"
         }
@@ -113,8 +208,27 @@
       "kind": "caption",
       "track": "t4",
       "local": "1",
-      "transform": {},
-      "crop": {},
+      "transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "rotation": 0.0,
+        "anchor": [
+          0.5,
+          0.5
+        ]
+      },
+      "crop": {
+        "left": 0.0,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
       "opacity": 1.0,
       "blend": "normal",
       "caption": {
@@ -145,8 +259,27 @@
       "kind": "adjustment",
       "track": "t6",
       "local": "4",
-      "transform": {},
-      "crop": {},
+      "transform": {
+        "position": [
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0
+        ],
+        "rotation": 0.0,
+        "anchor": [
+          0.5,
+          0.5
+        ]
+      },
+      "crop": {
+        "left": 0.0,
+        "right": 0.0,
+        "top": 0.0,
+        "bottom": 0.0
+      },
       "opacity": 1.0,
       "blend": "normal",
       "effects": [

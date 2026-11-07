@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::interp::{ValueType, interpolate};
-use crate::eval::plan::{EffectPlan, MaskPlan, PlanValue};
-use crate::model::{Crop, Effect, Item, Keyframe, LottieInfo, ParamValue, Transform};
+use crate::eval::plan::{EffectPlan, MaskPlan, PlanCrop, PlanTransform, PlanValue};
+use crate::model::{Effect, Item, Keyframe, LottieInfo, ParamValue};
 use crate::params::{DefaultValue, ParamSpec, effect_specs};
 use crate::time::Rational;
 
@@ -52,7 +52,7 @@ impl Resolver<'_> {
     }
 
     pub fn value(&self, path: &str, base: &ParamValue, ty: ValueType) -> PlanValue {
-        interpolate(self.keyframes(path), self.local, base, &ty)
+        interpolate(self.keyframes(path), self.local, base, ty)
     }
 
     pub fn number(&self, path: &str, base: f64) -> f64 {
@@ -76,9 +76,9 @@ impl Resolver<'_> {
         }
     }
 
-    pub fn transform(&self) -> Transform {
+    pub fn transform(&self) -> PlanTransform {
         let t = &self.item.common.transform;
-        Transform {
+        PlanTransform {
             position: self.vec2("transform.position", t.position),
             scale: self.vec2("transform.scale", t.scale),
             rotation: self.number("transform.rotation", t.rotation),
@@ -87,10 +87,10 @@ impl Resolver<'_> {
     }
 
     /// Each side clamped to `[0, 1]`.
-    pub fn crop(&self) -> Crop {
+    pub fn crop(&self) -> PlanCrop {
         let c = &self.item.common.crop;
         let side = |path, v| self.number(path, v).clamp(0.0, 1.0);
-        Crop {
+        PlanCrop {
             left: side("crop.left", c.left),
             right: side("crop.right", c.right),
             top: side("crop.top", c.top),
@@ -108,8 +108,8 @@ impl Resolver<'_> {
         let m = self.item.common.mask.as_ref()?;
         Some(MaskPlan {
             matte: m.matte.clone(),
-            feather: self.number("mask.feather", m.feather),
-            choke: self.number("mask.choke", m.choke),
+            feather: self.number("mask.feather", m.feather).max(0.0),
+            choke: self.number("mask.choke", m.choke).max(0.0),
             invert: self.flag("mask.invert", m.invert),
         })
     }

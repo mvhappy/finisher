@@ -8,7 +8,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::TextLayout;
-use crate::model::{BlendMode, Crop, Curve, Resolution, Transform, TransitionKind};
+use crate::model::{BlendMode, Curve, Resolution, TransitionKind};
 use crate::time::Rational;
 
 /// The layers of one timeline at `t`, bottom first.
@@ -58,8 +58,8 @@ pub struct Layer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "SourceRef")]
     pub source: Option<SourceRef>,
-    pub transform: Transform,
-    pub crop: Crop,
+    pub transform: PlanTransform,
+    pub crop: PlanCrop,
     pub opacity: f64,
     pub blend: BlendMode,
     /// Enabled effects, in order.
@@ -85,6 +85,43 @@ pub struct Layer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<Layer>")]
     pub children: Option<Vec<Layer>>,
+}
+
+/// A layer's transform, resolved at the plan's time: every field is present (the model's
+/// `Transform` leaves defaults out).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanTransform {
+    /// Pixels from the frame centre.
+    pub position: [f64; 2],
+    pub scale: [f64; 2],
+    /// Degrees.
+    pub rotation: f64,
+    /// Item-normalised.
+    pub anchor: [f64; 2],
+}
+
+impl Default for PlanTransform {
+    fn default() -> Self {
+        let t = crate::model::Transform::default();
+        PlanTransform {
+            position: t.position,
+            scale: t.scale,
+            rotation: t.rotation,
+            anchor: t.anchor,
+        }
+    }
+}
+
+/// A layer's crop, resolved at the plan's time: fractions of the item's size cut from each
+/// side, each in `[0, 1]`, every field present.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCrop {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
 }
 
 /// An asset and the time to read from it, in seconds.
@@ -121,7 +158,7 @@ pub enum PlanValue {
     },
 }
 
-/// The mask with its values resolved.
+/// The mask with its values resolved (`feather` and `choke` at least 0).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MaskPlan {
