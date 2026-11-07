@@ -647,7 +647,8 @@ fn effect_move_vs_move_same_param() {
     let p = busy();
     let e = rebase_ops(&p, vec![mv("c1", "fx1", 1)], vec![mv("c1", "fx2", 0)]).unwrap_err();
     assert_eq!(reason(&e), "SAME_PARAM");
-    // Appends of two effects merge; one at an index meets a move.
+    // Appends of two effects merge. One at an index after another author's move is carried by
+    // the members that did not move (spec §4.3, `rebase::places`): before fx2 here.
     let got = rebase_ops(
         &p,
         vec![add("c1", "$a", "blur", None)],
@@ -655,13 +656,14 @@ fn effect_move_vs_move_same_param() {
     )
     .unwrap();
     assert_eq!(effect_ids(&got, "c1"), ["fx1", "fx2", "fx3", "fx4"]);
-    let e = rebase_ops(
+    let got = rebase_ops(
         &p,
         vec![mv("c1", "fx1", 1)],
         vec![add("c1", "$b", "blur", Some(0))],
     )
-    .unwrap_err();
-    assert_eq!(reason(&e), "SAME_PARAM");
+    .unwrap();
+    let ids = effect_ids(&got, "c1");
+    assert_eq!(ids[1..], ["fx2", "fx1"]);
 }
 
 #[test]
@@ -811,33 +813,47 @@ fn replays(log: &MemLog, genesis: &Project, n: u64) {
     assert_eq!(p, log.state("main"));
 }
 
-/// S1: Alice removes fx3, Bob removes fx1, Alice undoes: the restore's index is past the end
-/// of the shorter list, so fx3 goes back at the end (and the undo replays).
+/// S1, as built (spec §4.3, ordered lists): Alice removes fx3, Bob removes fx1, Alice undoes.
+/// The restore names the place after fx2 in its own frame (`rebase::places`), and fx3 goes
+/// back there: `[fx2, fx3]`, and the undo replays. The inverse of a move to an index is carried
+/// the same way. (Removing fx2 instead would put it back before fx3, not at the old index.)
 #[test]
 fn undo_of_effect_remove_after_another_removal() {
     let p = three_effects();
+    for first in [remove("c1", "fx3"), mv("c1", "fx3", 0)] {
+        let mut log = MemLog::new(p.clone());
+        log.commit("main", "tx-a", "alice", vec![first.clone()]);
+        log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
+        log.undo("main", "alice", "tx-u").unwrap();
+        assert_eq!(
+            effect_ids(&log.state("main"), "c1"),
+            ["fx2", "fx3"],
+            "{first:?}"
+        );
+        replays(&log, &p, 3);
+    }
+    // The case the old index got wrong: Alice removes fx2, Bob removes fx1, Alice undoes.
     let mut log = MemLog::new(p.clone());
-    log.commit("main", "tx-a", "alice", vec![remove("c1", "fx3")]);
-    log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
-    log.undo("main", "alice", "tx-u").unwrap();
-    assert_eq!(effect_ids(&log.state("main"), "c1"), ["fx2", "fx3"]);
-    replays(&log, &p, 3);
-    // The inverse of a move too: fx3 to the front, fx1 removed, undo moves fx3 to the end.
-    let mut log = MemLog::new(p.clone());
-    log.commit("main", "tx-a", "alice", vec![mv("c1", "fx3", 0)]);
+    log.commit("main", "tx-a", "alice", vec![remove("c1", "fx2")]);
     log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
     log.undo("main", "alice", "tx-u").unwrap();
     assert_eq!(effect_ids(&log.state("main"), "c1"), ["fx2", "fx3"]);
     replays(&log, &p, 3);
 }
 
-/// S1: a re-run that fails on an item's effect list blames the one step that changed it,
-/// even when that step only removed another effect.
+/// S1, as built (spec §4.3): a stale move to an index is carried by the neighbours it names
+/// (`rebase::places`). Moving fx3 to the end after bob removed fx1 puts it after fx2. When
+/// another author's effect stands where the nearest surviving neighbours meet (bob removed
+/// fx1 and added fx4 at the start, alice moves fx3 between fx1 and fx2), the place is taken:
+/// `SAME_PARAM`, blamed on that record.
 #[test]
 fn effect_list_rerun_blames_the_removal() {
     let p = three_effects();
-    let e = rebase_ops(&p, vec![remove("c1", "fx1")], vec![mv("c1", "fx3", 2)]).unwrap_err();
-    assert_eq!(e.code, "CONFLICT", "{e:?}");
+    let got = rebase_ops(&p, vec![remove("c1", "fx1")], vec![mv("c1", "fx3", 2)]).unwrap();
+    assert_eq!(effect_ids(&got, "c1"), ["fx2", "fx3"]);
+    let theirs = vec![remove("c1", "fx1"), add("c1", "$d", "blur", Some(0))];
+    let e = rebase_ops(&p, theirs, vec![mv("c1", "fx3", 1)]).unwrap_err();
+    assert_eq!(reason(&e), "SAME_PARAM", "{e:?}");
     assert_eq!(e.details["againstTx"], "tx-a", "{e:?}");
     // A client's move past the end stays INVALID_RANGE.
     let e = apply_tx(&p, &tx(vec![mv("c1", "fx3", 3)]), &mut MemIds::after(&p)).unwrap_err();

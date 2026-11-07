@@ -276,7 +276,23 @@ pub fn rerun(
         if verdict.is_none() && !created.contains(op.clip()) {
             verdict = b.verdict(op, copy).map(|class| (k, class, r));
         }
-        let f = op.fp();
+        let mut f = op.fp();
+        // As `history::absorbs` marks it: a lift removal whose range the next op's strict trim
+        // takes back into the left part puts the removed clip's content back. Here every such
+        // pair is a split's (or its redo's) inverse: the model has no overwrite inserts, whose
+        // undo has the same two ops and is no conflict.
+        if let (
+            LOp::RemoveLift { id, .. },
+            Some(LOp::Trim {
+                strict: true,
+                delta,
+                ..
+            }),
+        ) = (op, ops.get(k + 1))
+            && *delta > 0
+        {
+            f.overwrites.push(id.clone());
+        }
         if let Some((reason, against)) = entity_conflict(&f, &created, &theirs) {
             let out = Err(pred(k, reason, Some(against)));
             return Rerun {
@@ -304,6 +320,8 @@ pub fn rerun(
                 // As `rerun_conflict`: the ids the op touches or its error names, and what an
                 // earlier op of ours touched to create one of them.
                 let mut named: HashSet<String> = f.touches.iter().map(|(x, _)| x.clone()).collect();
+                // And what the op would create (as `rerun_conflict`).
+                named.extend(f.creates.iter().cloned());
                 named.extend(ids);
                 let creators = named.clone();
                 for e in &earlier {

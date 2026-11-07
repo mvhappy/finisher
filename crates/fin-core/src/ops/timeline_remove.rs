@@ -102,6 +102,7 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     if let Op::TimelineRemove(r) = op {
         f.touches.push((r.timeline.clone(), Touch::Exists));
         f.removes.push(r.timeline.clone());
+        f.uses.push(crate::ops::util::lists::TIMELINES.into());
     }
     f
 }

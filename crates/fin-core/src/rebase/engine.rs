@@ -8,16 +8,19 @@ use crate::apply::{Applier, ApplyEnv, ApplyMode, apply_tx_mode};
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, MemIds};
 use crate::model::Project;
+use crate::ops::Op;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
 use super::footprint::{
-    Footprint, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
+    Footprint, Touch, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
 };
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
+use super::places::{Resolved, Slot, set_index};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
+static NO_OPS: BTreeSet<usize> = BTreeSet::new();
 
 /// What to rebase: `tx` as written, `own` its diff in the frame it was written for (at its
 /// base, or the source record's stored diff for a copy), and the `steps` between that frame
@@ -26,6 +29,10 @@ static NO_IDS: BTreeSet<String> = BTreeSet::new();
 /// `same_origin`: ids on the head bound by records of the same origin chain as `tx` (earlier
 /// copies of it, Decision 18). A re-run that meets one of them (`DUPLICATE_ID`) is
 /// `ALREADY_PRESENT`; any other duplicate is `ID_COLLISION`.
+///
+/// `absorbs`: the indexes of `tx`'s lift `item.remove` ops whose item the next op takes back
+/// into another item: the inverse of a split, as the planner knows it from the records'
+/// links (`history::absorbs`). Each is judged as a put-back of the removed item.
 ///
 /// `env`: what the re-run at the head may use (plan 4C Task 20): with a measurer, the rebased
 /// tx ends with the caption overflow check, and `CAPTION_OVERFLOW` is a conflict.
@@ -36,6 +43,10 @@ pub struct Rebase<'a> {
     pub steps: &'a [Step],
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
+    pub absorbs: &'a BTreeSet<usize>,
+    /// Per op, the place an index op names in its own frame (`places::places`; empty when no
+    /// op names one): the engine carries the index to the head by its neighbours.
+    pub places: &'a [Option<Slot>],
 }
 
 impl<'a> Rebase<'a> {
@@ -47,7 +58,19 @@ impl<'a> Rebase<'a> {
             steps,
             same_origin: &NO_IDS,
             env: ApplyEnv::default(),
+            absorbs: &NO_OPS,
+            places: &[],
         }
+    }
+
+    /// The rebase with the index places `places` (see [`Rebase`]).
+    pub fn with_places(self, places: &'a [Option<Slot>]) -> Rebase<'a> {
+        Rebase { places, ..self }
+    }
+
+    /// The rebase with the split-undo removals `absorbs` (see [`Rebase`]).
+    pub fn with_absorbs(self, absorbs: &'a BTreeSet<usize>) -> Rebase<'a> {
+        Rebase { absorbs, ..self }
     }
 
     /// The rebase re-run with `env`.
@@ -65,6 +88,8 @@ pub struct PreparedRebase<'a> {
     pub steps: &'a [Prepared],
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
+    pub absorbs: &'a BTreeSet<usize>,
+    pub places: &'a [Option<Slot>],
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -99,6 +124,8 @@ pub fn rebase_apply(
         steps: &steps,
         same_origin: r.same_origin,
         env: r.env,
+        absorbs: r.absorbs,
+        places: r.places,
     };
     rebase_prepared(head, &p, ids, mode)
 }
@@ -154,7 +181,41 @@ pub fn rebase_prepared(
                 .map_content(n - k, &item, *v)
                 .map_err(|_| Conflict::from_rerun(&overflow(), tx_id, k, None))?;
         }
-        let fp = footprint(&op, &own[k]);
+        // An index carried to the head by its neighbours (`places`): another author's
+        // placement where ours goes is `SAME_PARAM`, blamed on the first record that changed
+        // the list.
+        if let Some(Some(slot)) = r.places.get(k) {
+            let list = slot.list().to_string();
+            let against = theirs
+                .iter()
+                .find(|(_, f)| f.uses.contains(&list))
+                .map(|(t, _)| t.to_string());
+            // A member another record moved (its `index`) or re-created since anchors nothing.
+            let placed_since = |e: &str| {
+                theirs.iter().any(|(_, f)| {
+                    f.creates.iter().any(|c| c == e)
+                        || f.touches.iter().any(|(x, t)| {
+                            x == e && *t == Touch::Param(crate::ops::util::lists::INDEX.into())
+                        })
+                })
+            };
+            let used = against.is_some();
+            match slot.resolve(run.project(), &op, run.bound(), used, &placed_since) {
+                Resolved::At(index) => set_index(&mut op, index),
+                Resolved::Keep => {}
+                Resolved::Taken => {
+                    return Err(Conflict::new(tx_id, k, reasons::SAME_PARAM, against));
+                }
+            }
+        }
+        let mut fp = footprint(&op, &own[k]);
+        // A removal whose content the next op takes back into another item (an undo of a
+        // split, as the planner marked it) is judged as a put-back of the removed item.
+        if r.absorbs.contains(&k)
+            && let Op::ItemRemove(rm) = &op
+        {
+            fp.puts_back(&rm.id);
+        }
         if let Some((reason, against)) = entity_conflict_in(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
@@ -170,8 +231,10 @@ pub fn rebase_prepared(
             }
         };
         // An op that re-ran and puts an entity back whole would write its snapshot over a
-        // later change of it (`overwrite_conflict`).
-        if let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
+        // later change of it (`overwrite_conflict`). One that wrote nothing at the head (a pin
+        // of a file and place already held) loses nothing.
+        let wrote = !(rerun.changes.is_empty() && rerun.shifts.is_empty());
+        if wrote && let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
         created.extend(fp.creates.iter().cloned());
@@ -252,7 +315,10 @@ pub fn rebase_tx_env(
         Ok(own) => own,
         Err(e) => return Err(failed_at_base(base, head, tx, &steps, ids, e)),
     };
-    let r = Rebase::new(tx, &own.diff, &steps).with_env(env);
+    let places = super::places::places(base, tx, ApplyMode::Client)?;
+    let r = Rebase::new(tx, &own.diff, &steps)
+        .with_env(env)
+        .with_places(&places);
     let mut out = rebase_apply(head, &r, ids, ApplyMode::Client)
         .map_err(|c| CoreError::from(Conflicts::one(c)))?;
     if let Some(last) = newer.last() {
@@ -373,10 +439,10 @@ struct Ours<'a> {
 
 /// A re-run failure of op `k`. `DUPLICATE_ID` is a copy meeting an id that is already taken
 /// (Decision 18). The step to blame is the one unmirrored step (if exactly one) that touched,
-/// created or removed an entity ours touches or the error names, or one an earlier op of ours
-/// touched to create such an entity (the item our split cut, for an overwrite meeting the
-/// right part); tracks and the assets ours only uses are left out, since nearly every step
-/// shares them.
+/// created or removed an entity ours touches, would create (another pin of the key, for a
+/// `FONT_PINNED`) or the error names, or one an earlier op of ours touched to create such an
+/// entity (the item our split cut, for an overwrite meeting the right part); tracks and the
+/// assets ours only uses are left out, since nearly every step shares them.
 fn rerun_conflict(
     e: &CoreError,
     r: &PreparedRebase<'_>,
@@ -386,6 +452,15 @@ fn rerun_conflict(
     head: &Project,
 ) -> Conflict {
     let mut named: BTreeSet<&str> = ours.fp.touches.iter().map(|(x, _)| x.as_str()).collect();
+    // What the op would create: a pin whose key another record pinned since (`FONT_PINNED`) is
+    // blamed on that record. A placeholder names no entity here.
+    named.extend(
+        ours.fp
+            .creates
+            .iter()
+            .map(String::as_str)
+            .filter(|x| !x.starts_with('$')),
+    );
     for key in ["clip", "item", "id", "asset"] {
         named.extend(e.details[key].as_str());
     }

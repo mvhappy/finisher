@@ -82,6 +82,7 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::TimelineAdd(a) = op {
         f.creates.push(a.id.clone());
+        f.uses.push(crate::ops::util::lists::TIMELINES.into());
     }
     f
 }

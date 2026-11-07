@@ -89,6 +89,8 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         f.creates.push(r.timeline.id.clone());
         // The timeline, its markers and tracks (with everything on them), as they were.
         f.puts_back(&r.timeline.id);
+        // Its index is carried to the head by its neighbours (`rebase::places`).
+        f.uses.push(crate::ops::util::lists::TIMELINES.into());
         for m in &r.timeline.markers {
             f.puts_back(&m.id);
         }

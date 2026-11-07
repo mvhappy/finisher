@@ -50,6 +50,7 @@ pub(crate) fn apply(
     let id = track.id.clone();
     tracks.insert(to, track);
     diff.record_path_of(EntityKind::Track, &id, None, INDEX);
+    diff.on_timeline(&id, &project.timelines[at.timeline].id);
     Ok(vec![
         TrackMove {
             track: id,
@@ -67,6 +68,10 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&m.track), op_diff);
     f.touches
         .push((m.track.clone(), Touch::Param(INDEX.into())));
+    // The order is a list entity (`ops::util::lists`); the index is carried to the head by its
+    // neighbours (`rebase::places`).
+    f.uses
+        .extend(crate::ops::util::lists::tracks_of(op_diff, &m.track));
     f
 }
 

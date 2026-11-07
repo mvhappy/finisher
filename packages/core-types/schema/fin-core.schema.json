@@ -1357,6 +1357,9 @@
         "path": {
           "type": "string"
         },
+        "timeline": {
+          "type": "string"
+        },
         "track": {
           "type": "string"
         }

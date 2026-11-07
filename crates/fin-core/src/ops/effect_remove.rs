@@ -107,6 +107,7 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         f.touches
             .push((format!("{}/{}", r.item, r.effect), Touch::Exists));
         f.touches.push((r.item.clone(), Touch::Exists));
+        f.uses.push(crate::ops::util::lists::effects(&r.item));
     }
     f
 }

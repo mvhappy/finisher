@@ -8,8 +8,9 @@
 //! - A key already pinned **to the same SHA-256** is a no-op (empty diff, empty inverse), so two
 //!   edits pinning one face merge, unless the op places the key in the fallback order and the
 //!   order lacks it: then it inserts it there, the diff records `font/<key>`'s `fallback` and
-//!   the inverse is the internal `font.unpin {fallbackOnly}`, so a merge keeps the fallback
-//!   place either edit asked for. Another SHA-256 is `FONT_PINNED` (policy on edits; replay
+//!   the inverse is the internal `font.unpin {fallbackOnly}`. Rebased, the place is carried by
+//!   its neighbours (`rebase::places`): two pins placing the key at different places conflict
+//!   (`SAME_PARAM`), and at the same place the second writes nothing. Another SHA-256 is `FONT_PINNED` (policy on edits; replay
 //!   refuses it too, as valid history cannot produce it): `font.repin` changes a pin's file.
 //! - `fallback` past the end of the order is `INVALID_RANGE` for clients; internal and replay
 //!   applies (an undo of `font.unpin` meeting a shorter order) put it at the end.
@@ -177,11 +178,17 @@ fn insert_fallback(
     Ok(())
 }
 
-/// Creates `font/<key>`, using the font asset it pins.
+/// Creates `font/<key>`, using the font asset it pins, and the fallback order when it places
+/// the key at an index (`ops::util::lists`).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::FontPin(p) = op {
         f.creates.push(entity(&p.key));
+        // Placing the key at an index (a no-op pin records nothing and places nothing): the
+        // index is carried to the head by its neighbours (`rebase::places`).
+        if p.fallback.is_some() && !op_diff.changes.is_empty() {
+            f.uses.push(crate::ops::util::lists::FALLBACK_ORDER.into());
+        }
         if let FontSource::Asset { asset } = &p.pin.source {
             f.uses.push(asset.clone());
         }

@@ -18,6 +18,7 @@ fn change(kind: EntityKind, id: &str, change: ChangeKind, op: u32) -> Change {
         edge: None,
         path: None,
         by: None,
+        timeline: None,
     }
 }
 

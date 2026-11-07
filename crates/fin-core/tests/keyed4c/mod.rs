@@ -1319,4 +1319,36 @@ pub fn comparable(keyed: &[Keyed], since: &[CommittedTx], p: &Project) -> bool {
         && !group_grew(keyed, since)
         && !partner_anchor(keyed, p)
         && !lifted_on(keyed, since)
+        && !index_in_changed_list(keyed, since)
+}
+
+/// Whether one of ours names an index into an ordered list (an item's effects, the font
+/// fallback order) that a committed record changed since. The fresh realisation names the same
+/// absolute index at the head; the stale edit is carried by its neighbours (spec §4.3,
+/// `rebase::places`), which is only the same place while the list kept its base order. That
+/// rule has its own independent oracle (`props_places`); here the stale edit is still
+/// replayed, undone exactly, and refused only for an allowed reason.
+pub fn index_in_changed_list(keyed: &[Keyed], since: &[CommittedTx]) -> bool {
+    let effects = keyed.iter().any(|k| {
+        matches!(
+            k,
+            Keyed::EffectAdd { at: Some(_), .. } | Keyed::EffectMove { .. }
+        )
+    });
+    let fallback = keyed.iter().any(|k| {
+        matches!(
+            k,
+            Keyed::Pin {
+                fallback: Some(_),
+                ..
+            }
+        )
+    });
+    since.iter().flat_map(|c| &c.tx.ops).any(|op| match op {
+        Op::EffectAdd(_) | Op::EffectMove(_) | Op::EffectRemove(_) | Op::EffectRestore(_) => {
+            effects
+        }
+        Op::FontPin(_) | Op::FontUnpin(_) => fallback,
+        _ => false,
+    })
 }

@@ -679,23 +679,40 @@ fn every_op_has_a_footprint() {
                 f.removes == [r.transition.clone()]
                     && f.touches == [(r.transition.clone(), Touch::Exists)]
             }
-            Op::TrackAdd(a) => f.creates == [a.id.clone()] && f.uses == [a.timeline.clone()],
+            // Ordered lists are entities (`ops::util::lists`): every placement uses the list;
+            // an index is carried to the head by its neighbours (`rebase::places`), never by
+            // putting the list back.
+            Op::TrackAdd(a) => {
+                f.creates == [a.id.clone()] && f.uses == [a.timeline.as_str(), "tl1#tracks"]
+            }
             Op::TrackRemove(r) => {
                 f.removes == [r.track.clone(), "c3".into()]
                     && f.touches == [(r.track.clone(), Touch::Exists)]
+                    && f.uses == ["tl1#tracks"]
             }
             Op::TrackRestore(r) => {
-                f.creates == [r.track.id.clone(), "c3".into()] && f.uses == ["tl1", "a1"]
+                f.creates == [r.track.id.clone(), "c3".into()]
+                    && f.uses == ["tl1", "tl1#tracks", "a1"]
+                    && !f.overwrites.contains(&"tl1#tracks".to_string())
             }
-            Op::TrackMove(m) => f.touches == [(m.track.clone(), Touch::Param("index".into()))],
+            Op::TrackMove(m) => {
+                f.touches == [(m.track.clone(), Touch::Param("index".into()))]
+                    && f.uses == ["tl1#tracks"]
+            }
             Op::TrackSet(s) => f.touches == [(s.track.clone(), Touch::Param(s.path.clone()))],
-            Op::TimelineAdd(a) => f.creates == [a.id.clone()] && f.touches.is_empty(),
+            Op::TimelineAdd(a) => {
+                f.creates == [a.id.clone()] && f.touches.is_empty() && f.uses == ["#timelines"]
+            }
             Op::TimelineSet(s) => f.touches == [(s.timeline.clone(), Touch::Param(s.path.clone()))],
             Op::TimelineRemove(r) => {
                 f.removes == [r.timeline.clone()]
                     && f.touches == [(r.timeline.clone(), Touch::Exists)]
+                    && f.uses == ["#timelines"]
             }
-            Op::TimelineRestore(r) => f.creates == [r.timeline.id.clone()],
+            Op::TimelineRestore(r) => {
+                f.creates == [r.timeline.id.clone()]
+                    && !f.overwrites.contains(&"#timelines".to_string())
+            }
             Op::MarkerAdd(a) => f.creates == [a.id.clone()] && f.uses == [a.timeline.clone()],
             Op::MarkerSet(s) => f.touches == [(s.marker.clone(), Touch::Param(s.path.clone()))],
             Op::MarkerRemove(r) => {
@@ -715,7 +732,7 @@ fn every_op_has_a_footprint() {
             Op::EffectAdd(a) => {
                 f.creates == [format!("c2/{}", a.id)]
                     && f.touches == [("c2".to_string(), Touch::Exists)]
-                    && f.uses.is_empty()
+                    && f.uses == ["c2#effects"]
             }
             Op::EffectRemove(r) => {
                 f.touches
@@ -724,11 +741,13 @@ fn every_op_has_a_footprint() {
                         ("c2".to_string(), Touch::Exists),
                     ]
                     && f.removes == [format!("c2/{}", r.effect)]
-                    && f.uses.is_empty()
+                    && f.uses == ["c2#effects"]
             }
+            // The effect order is a list entity judged by neighbours (`rebase::places`), not
+            // a parameter; a move sets its effect's own `index`.
             Op::EffectMove(m) => {
-                f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
-                    && f.uses == [format!("c2/{}", m.effect)]
+                f.touches == [(format!("c2/{}", m.effect), Touch::Param("index".into()))]
+                    && f.uses == [format!("c2/{}", m.effect), "c2#effects".into()]
             }
             Op::KeyframeSet(k) => {
                 f.touches == [("c3".to_string(), Touch::Param(format!("opacity@{}", k.at)))]
@@ -743,14 +762,22 @@ fn every_op_has_a_footprint() {
             }
             Op::EffectRestore(r) => {
                 f.creates == [format!("c2/{}", r.effect.id)]
-                    && f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
+                    && f.touches.is_empty()
+                    && !f.overwrites.contains(&"c2#effects".to_string())
             }
             Op::StyleAdd(a) => f.creates == [a.id.clone()] && f.uses.is_empty(),
             Op::StyleSet(s) => f.touches == [(s.style.clone(), Touch::Param(s.path.clone()))],
             Op::StyleRemove(r) => {
                 f.removes == [r.style.clone()] && f.touches == [(r.style.clone(), Touch::Exists)]
             }
-            Op::FontPin(p) => f.creates == [format!("font/{}", p.key)] && f.uses.is_empty(),
+            Op::FontPin(p) => {
+                let placed: &[&str] = if p.fallback.is_some() {
+                    &["#fonts.fallback"]
+                } else {
+                    &[]
+                };
+                f.creates == [format!("font/{}", p.key)] && f.uses == placed
+            }
             Op::FontUnpin(u) => {
                 // Its inverse pins the old file back: it meets a repin or a reorder (spec §4.3).
                 let e = format!("font/{}", u.key);
@@ -761,6 +788,7 @@ fn every_op_has_a_footprint() {
                             (e.clone(), Touch::Param("sha256".into())),
                             (e, Touch::Param("fallback".into())),
                         ]
+                    && f.uses == ["#fonts.fallback"]
             }
             Op::FontRepin(r) => {
                 f.touches == [(format!("font/{}", r.key), Touch::Param("sha256".into()))]

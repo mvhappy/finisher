@@ -92,6 +92,7 @@ fn change(kind: EntityKind, id: &str, change: ChangeKind) -> Change {
         edge: None,
         path: None,
         by: None,
+        timeline: None,
     }
 }
 

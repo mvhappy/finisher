@@ -13,6 +13,7 @@ mod content;
 pub(crate) mod contents;
 mod group;
 mod limits;
+pub(crate) mod lists;
 mod lock;
 mod lookup;
 pub(crate) mod param_check;

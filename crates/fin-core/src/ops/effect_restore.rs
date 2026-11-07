@@ -17,13 +17,12 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Effect, Keyframe, ParamValue, Project};
-use crate::ops::effect_add::EFFECTS;
 use crate::ops::effect_remove::prefix;
 use crate::ops::util::{
     OpDiff, check_unlocked, item_index, normalize_interp, normalize_value, wrong_op,
 };
 use crate::ops::{Bindings, EffectRemove, Op, check_literal};
-use crate::rebase::{Footprint, Touch};
+use crate::rebase::Footprint;
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -141,9 +140,9 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         // Its params and keyframes as they were: a later edit of the effect is a conflict.
         f.puts_back(&fx);
         f.creates.push(fx);
+        // Its index is carried to the head by its neighbours (`rebase::places`).
+        f.uses.push(crate::ops::util::lists::effects(&r.item));
         f.uses.push(r.item.clone());
-        f.touches
-            .push((r.item.clone(), Touch::Param(EFFECTS.to_string())));
         f.uses.extend(
             r.effect
                 .params

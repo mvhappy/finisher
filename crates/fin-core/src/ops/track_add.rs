@@ -113,6 +113,9 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&a.id), op_diff);
     f.creates.push(a.id.clone());
     f.uses.push(a.timeline.clone());
+    f.uses.push(crate::ops::util::lists::tracks(&a.timeline));
+    // The order is a list entity (`ops::util::lists`); an index is carried to the head by
+    // its neighbours (`rebase::places`).
     f
 }
 

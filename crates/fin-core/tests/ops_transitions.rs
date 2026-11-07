@@ -46,6 +46,7 @@ fn tr(id: &str, op: u32, change: ChangeKind) -> Change {
         edge: None,
         path: None,
         by: None,
+        timeline: None,
     }
 }
 

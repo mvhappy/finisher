@@ -16,15 +16,25 @@
 //!   snapshot, such as `item.restore`, `effect.restore`, `track.restore`, `timeline.restore`, or the
 //!   `marker.add`, `asset.add`, `bin.add` and `style.add` of a removal's inverse) and an
 //!   intervening record changed X, an entity nested in it (`X/…`: an item's effects) or what
-//!   lies on it (X among its `tracks` or `uses`: an insert or move onto a put-back track, a
-//!   `marker.add` or `track.add` on a put-back timeline) in any way, touching, creating or
-//!   removing it → `SAME_EDGE` when it moved an edge of a put-back entity, else `SAME_PARAM`
-//!   ([`overwrite_conflict`]). Putting the snapshot back would take that edit
-//!   away without a word: an undo of a move after another author's trim, split or effect edit
-//!   of the item; a merged delete and undo over the target's edit. The engine judges it after
-//!   the op re-ran, so an op that cannot run at all keeps the re-run's reason
-//!   (`ALREADY_PRESENT`, `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that would succeed is
-//!   refused. A `$placeholder` re-creation makes a new entity and puts nothing back;
+//!   lies on it, in any way, touching, creating or removing it → `SAME_EDGE` when it moved an
+//!   edge of a put-back entity, else `SAME_PARAM` ([`overwrite_conflict`]). What lies on it is
+//!   any put-back entity among the record's `tracks` or `uses`: an insert or move onto a
+//!   put-back track, a `marker.add` or `track.add` on a put-back timeline. Putting the snapshot back would take that edit away without a
+//!   word: an undo of a move after another author's trim, split or effect edit of the item; a
+//!   merged delete and undo over the target's edit. The engine judges it after the op re-ran,
+//!   so an op that cannot run at all keeps the re-run's reason (`ALREADY_PRESENT`,
+//!   `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that would succeed is refused. A
+//!   `$placeholder` re-creation makes a new entity and puts nothing back;
+//! - an ordered list is an entity of its own (`ops::util::lists`) that every op adding, moving
+//!   or removing a member uses; no list is put back and none is a parameter (an item's
+//!   `effects` path change is read as a use). An op that names an index is carried to the head
+//!   by its neighbours (`rebase::places`), which is where an ordering conflict is found;
+//! - a removal whose content the next op takes back into another item (the lift `item.remove`
+//!   of a split's right part, followed by the strict trim that grows the left part over it, as
+//!   the planner marks it from the records' links: `Rebase::absorbs`, `history::absorbs`) is
+//!   judged as a put-back of the removed item. "Removing an entity someone else edited is not
+//!   a conflict" does not hold there, as that edit would be lost inside the item that absorbs
+//!   the range;
 //! - an entity an earlier op of our own transaction created is ours: it is never judged. At a
 //!   stale base our placeholders bind the ids the intervening records allocated, and those name
 //!   other entities; the re-run at the head decides whether the creation itself still fits.
@@ -42,6 +52,9 @@ use crate::error::CoreError;
 use crate::ops::{self, Edge, Op};
 use crate::record::{invalid_format, resolve_ops};
 use crate::tx::{Change, ChangeKind, CommittedTx, Diff, Shift};
+
+/// The diff path of an item's effect order (`effect.add` at an index, `effect.move`).
+const EFFECTS_PATH: &str = "effects";
 
 use super::conflict::reasons;
 
@@ -108,6 +121,11 @@ impl Footprint {
             match c.change {
                 ChangeKind::Removed => add(&mut self.removes, c.id.clone()),
                 ChangeKind::Added => add(&mut self.creates, c.id.clone()),
+                // An item's effect order is a list entity judged by its neighbours
+                // (`rebase::places`), not a parameter: the diff's `effects` path is its use.
+                ChangeKind::Updated if c.path.as_deref() == Some(EFFECTS_PATH) => {
+                    add(&mut self.uses, crate::ops::util::lists::effects(&c.id));
+                }
                 ChangeKind::Updated => {
                     let touch = match (c.edge, &c.path) {
                         (Some(edge), _) => Touch::Edge(edge),
@@ -194,13 +212,19 @@ pub(crate) fn unbind_own(ops: &[Op], mut own: Vec<Diff>) -> Vec<Diff> {
         return own;
     }
     for d in &mut own {
-        d.changes.retain_mut(|c| match bound.get(&c.id) {
-            Some(Some(p)) => {
-                c.id.clone_from(p);
-                true
+        d.changes.retain_mut(|c| {
+            // A track's timeline made by our transaction is named by its placeholder too.
+            if let Some(Some(p)) = c.timeline.as_ref().and_then(|t| bound.get(t)) {
+                c.timeline = Some(p.clone());
             }
-            Some(None) => false,
-            None => true,
+            match bound.get(&c.id) {
+                Some(Some(p)) => {
+                    c.id.clone_from(p);
+                    true
+                }
+                Some(None) => false,
+                None => true,
+            }
         });
     }
     own
@@ -350,8 +374,9 @@ fn moved_edge(x: &str, f: &Footprint) -> bool {
 }
 
 /// Whether `f` changed entity `x`, one nested in it (`x/…`) or what lies on it (`x` among its
-/// `tracks` or `uses`: an item put on a put-back track, a marker or track on a put-back
-/// timeline, which the snapshot does not hold): a touch of any kind, a creation or a removal.
+/// `tracks` or `uses`, for any put-back entity: an item put on a put-back track, a marker or
+/// track on a put-back timeline, none of which the snapshot holds): a touch of any kind, a
+/// creation or a removal.
 fn changed(x: &str, f: &Footprint) -> bool {
     let within = |y: &str| y == x || y.strip_prefix(x).is_some_and(|r| r.starts_with('/'));
     f.touches.iter().any(|(y, _)| within(y))
@@ -436,6 +461,59 @@ mod tests {
         assert_eq!(own[2].shifts.len(), 1);
     }
 
+    /// A track's timeline that the transaction made is named by its placeholder in our own
+    /// diff (`Change::timeline`), as the track ids are: the planning frame's id may name
+    /// another author's timeline at the head.
+    #[test]
+    fn own_diff_names_a_new_timeline_by_its_placeholder() {
+        use crate::model::TrackKind;
+        use crate::ops::{TimelineAdd, TrackAdd, TrackMove};
+        let p = new_project("p".into(), "P".into(), Rational::from_int(30)).unwrap();
+        let ops: Vec<Op> = vec![
+            TimelineAdd {
+                id: "$tl".into(),
+                name: "B".into(),
+                rate: Rational::from_int(30),
+                resolution: crate::model::Resolution {
+                    width: 1920,
+                    height: 1080,
+                },
+            }
+            .into(),
+            TrackAdd {
+                id: "$a".into(),
+                timeline: "$tl".into(),
+                kind: TrackKind::Video,
+                index: None,
+                name: None,
+            }
+            .into(),
+            TrackAdd {
+                id: "$b".into(),
+                timeline: "$tl".into(),
+                kind: TrackKind::Video,
+                index: None,
+                name: None,
+            }
+            .into(),
+            TrackMove {
+                track: "$a".into(),
+                index: 1,
+            }
+            .into(),
+        ];
+        let applied = crate::apply_tx(&p, &tx(ops.clone()), &mut MemIds::after(&p)).unwrap();
+        let own = unbind_own(&ops, split_diff(&ops, &applied.diff).unwrap());
+        let moved = &own[3].changes[0];
+        assert_eq!(moved.id, "$a");
+        assert_eq!(moved.timeline.as_deref(), Some("$tl"));
+        assert!(
+            footprint(&ops[3], &own[3])
+                .uses
+                .contains(&"$tl#tracks".to_string())
+        );
+    }
+
     /// An allocating op that records several `added` changes: which is its placeholder's is
     /// unknown, so they are dropped.
     #[test]
@@ -450,6 +528,7 @@ mod tests {
             edge: None,
             path: None,
             by: None,
+            timeline: None,
         };
         let ops = vec![Op::ClipInsert {
             id: "$c".into(),
