@@ -20,10 +20,12 @@ use url::Url;
 use super::adapter::{self, Adapter, State};
 use super::checks;
 use super::clock::{self, unix_secs};
+use super::custom::ADVISORIES_FILE;
 use super::custom::{self, PackageCustom};
 use super::error::{from_tough, verify_error};
 use super::freshness;
-use super::{Clock, Policy, RefreshReport, TrustState, TrustStore, TufError, Warning};
+use super::{Clock, Layout, Policy, RefreshReport, TrustState, TrustStore, TufError, Warning};
+use crate::advisory::AdvisoryFile;
 use crate::atomic;
 use crate::package::hex;
 use crate::transport::{Transport, TransportError};
@@ -67,6 +69,8 @@ pub(crate) struct Trusted {
     pub snapshot: Option<Signed<Snapshot>>,
     pub targets: Option<Signed<Targets>>,
     pub roles: BTreeMap<String, Signed<Targets>>,
+    /// Verified target bytes kept with the metadata (`kept/<target>` in the generation).
+    pub kept: BTreeMap<String, Vec<u8>>,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(name: &str, b: &[u8]) -> Result<T, TufError> {
@@ -80,6 +84,7 @@ fn parse<T: serde::de::DeserializeOwned>(name: &str, b: &[u8]) -> Result<T, TufE
 }
 
 impl Trusted {
+    /// Loads the trusted set; the caller holds a lock of `store`.
     fn load(store: &TrustStore) -> Result<Trusted, TufError> {
         let (_, root) = store.latest_root()?.ok_or_else(|| {
             TufError::invalid("trustStore", "the trust store holds no root".to_string())
@@ -128,23 +133,28 @@ impl TrustedRepo {
                 json!({ "expected": expect, "got": got }),
             ));
         }
-        if store.exists() {
-            return TrustedRepo::open(store);
+        {
+            let _lock = store.lock()?;
+            if !store.exists() {
+                let parsed: Signed<Root> = parse("root.json", root)?;
+                parsed
+                    .signed
+                    .verify_role(&parsed)
+                    .map_err(|e| verify_error("root", &e))?;
+                checks::root(&parsed)?;
+                store.save_root(parsed.signed.version.get(), root)?;
+            }
         }
-        let parsed: Signed<Root> = parse("root.json", root)?;
-        parsed
-            .signed
-            .verify_role(&parsed)
-            .map_err(|e| verify_error("root", &e))?;
-        checks::root(&parsed)?;
-        store.save_root(parsed.signed.version.get(), root)?;
         TrustedRepo::open(store)
     }
 
-    /// Opens a store that [`TrustedRepo::init`] created.
+    /// Opens a store that [`TrustedRepo::init`] created, first removing what a crash left.
     pub fn open(store: TrustStore) -> Result<Self, TufError> {
-        store.clear_scratch();
-        let trusted = Trusted::load(&store)?;
+        store.recover()?;
+        let trusted = {
+            let _lock = store.lock_shared()?;
+            Trusted::load(&store)?
+        };
         Ok(TrustedRepo {
             store,
             trusted,
@@ -189,10 +199,12 @@ impl TrustedRepo {
     /// The trusted files under non-versioned names: `root.json` (the newest root, as
     /// fetched), `timestamp.json`, `snapshot.json`, `targets.json` and `<role>.json`.
     pub fn trusted_files(&self) -> Result<BTreeMap<String, Vec<u8>>, TufError> {
+        let _lock = self.store.lock_shared()?;
         let mut out: BTreeMap<String, Vec<u8>> = self
             .store
             .current()?
             .into_iter()
+            .filter(|(k, _)| !k.starts_with("kept/"))
             .map(|(k, v)| (k.strip_prefix("roles/").unwrap_or(&k).to_string(), v))
             .collect();
         if let Some((_, root)) = self.store.latest_root()? {
@@ -212,14 +224,20 @@ impl TrustedRepo {
         )
     }
 
-    /// Runs the client workflow against `t` and promotes the result.
+    /// Runs the client workflow against `t` and promotes the result, holding the store's
+    /// exclusive lock throughout (root rotations included). Starts from the trusted set on
+    /// disk, which another process may have refreshed since this one was opened.
     pub fn refresh(
         &mut self,
         t: Arc<dyn Transport>,
         policy: &Policy,
         clock: &dyn Clock,
     ) -> Result<RefreshReport, TufError> {
-        let r = self.refresh_inner(t, policy, clock);
+        let _lock = self.store.lock()?;
+        self.store.clear_scratch();
+        let before = self.versions();
+        self.trusted = Trusted::load(&self.store)?;
+        let r = self.refresh_inner(t, policy, clock, before);
         self.store.clear_scratch();
         r
     }
@@ -229,11 +247,11 @@ impl TrustedRepo {
         t: Arc<dyn Transport>,
         policy: &Policy,
         clock: &dyn Clock,
+        before: (u64, Option<u64>, Option<u64>, Option<u64>),
     ) -> Result<RefreshReport, TufError> {
         let now = clock.now();
         let last = self.store.state()?.last_refresh_at;
         clock::check(now, last)?;
-        let before = self.versions();
         let (anchor_version, anchor) = self
             .store
             .latest_root()?
@@ -250,7 +268,7 @@ impl TrustedRepo {
             ..State::default()
         }));
         let adapter = Adapter {
-            transport: t,
+            transport: t.clone(),
             store: self.store.clone(),
             state: state.clone(),
         };
@@ -286,8 +304,17 @@ impl TrustedRepo {
         };
         checks::root(repo.root())?;
         checks::delegations(repo.targets(), repo.snapshot(), policy.layout)?;
-        let files = promoted_files(&repo, &st.served)?;
-        let fresh = Trusted::from_files(repo.root().clone(), &files)?;
+        let mut files = promoted_files(&repo, &st.served)?;
+        let mut fresh = Trusted::from_files(repo.root().clone(), &files)?;
+        if policy.layout == Layout::Finisher {
+            let advisories: Vec<TargetInfo> = fresh.targets().filter(is_advisories).collect();
+            for info in advisories {
+                let bytes = fetch_verified(t.as_ref(), &info)?;
+                advisory_file(&info.name, &bytes)?;
+                files.insert(format!("kept/{}", info.name), bytes.clone());
+                fresh.kept.insert(info.name, bytes);
+            }
+        }
         let mut report = RefreshReport {
             roots_added: st.roots_added,
             stale_days: freshness::stale_days(&fresh, now),
@@ -300,9 +327,15 @@ impl TrustedRepo {
         if changed {
             self.store.commit(&files)?;
         }
+        // Never past the newest timestamp's expiry: a clock that ran fast during this refresh
+        // cannot lock later refreshes out (`CLOCK_SUSPECT`) for longer than that.
+        let cap = fresh
+            .timestamp
+            .as_ref()
+            .map_or(i64::MAX, |ts| ts.signed.expires.as_second());
         self.trusted = fresh;
         self.store.save_state(&TrustState {
-            last_refresh_at: Some(last.unwrap_or(i64::MIN).max(unix_secs(now))),
+            last_refresh_at: Some(last.unwrap_or(i64::MIN).max(unix_secs(now)).min(cap)),
         })?;
         let after = self.versions();
         report.root_version = after.0;
@@ -316,24 +349,13 @@ impl TrustedRepo {
     /// Every target of the trusted metadata: delegated roles in name order, then the
     /// top-level role's.
     pub fn targets(&self) -> impl Iterator<Item = TargetInfo> + '_ {
-        let roles = self.trusted.roles.iter().map(|(n, s)| (n.as_str(), s));
-        let top = self.trusted.targets.iter().map(|s| ("targets", s));
-        roles.chain(top).flat_map(|(role, s)| {
-            let mut v: Vec<TargetInfo> = s
-                .signed
-                .targets
-                .iter()
-                .map(|(name, t)| TargetInfo {
-                    name: name.raw().to_string(),
-                    role: role.to_string(),
-                    length: t.length,
-                    sha256: hex::encode(t.hashes.sha256.as_ref()),
-                    custom: t.custom.clone().into_iter().collect(),
-                })
-                .collect();
-            v.sort_by(|a, b| a.name.cmp(&b.name));
-            v
-        })
+        self.trusted.targets()
+    }
+
+    /// The bytes of target `name` kept with the trusted metadata (verified when it was
+    /// trusted), if the refresh kept it: the advisories files of a Finisher registry.
+    pub fn kept_target(&self, name: &str) -> Option<&[u8]> {
+        self.trusted.kept.get(name).map(Vec::as_slice)
     }
 
     /// The trusted target named `name`.
@@ -351,20 +373,7 @@ impl TrustedRepo {
                 json!({ "target": name }),
             )
         })?;
-        let bytes = match t.fetch(&info.file_path(), info.length) {
-            Ok(b) => b,
-            Err(TransportError::TooLarge { .. }) => {
-                return Err(TufError::target_mismatch(name, "length"));
-            }
-            Err(e) => return Err(TufError::transport(&e)),
-        };
-        if bytes.len() as u64 != info.length {
-            return Err(TufError::target_mismatch(name, "length"));
-        }
-        if sha256_hex(&bytes) != info.sha256 {
-            return Err(TufError::target_mismatch(name, "hash"));
-        }
-        Ok(bytes)
+        fetch_verified(t, &info)
     }
 
     /// [`TrustedRepo::fetch_target_bytes`], written to `out` (temp then rename).
@@ -372,6 +381,44 @@ impl TrustedRepo {
         let bytes = self.fetch_target_bytes(t, name)?;
         atomic::write(out, &bytes).map_err(|e| TufError::io("write", out, e))
     }
+}
+
+/// Fetches `info` with its signed length as the cap and checks it against its signed length
+/// and SHA-256.
+fn fetch_verified(t: &dyn Transport, info: &TargetInfo) -> Result<Vec<u8>, TufError> {
+    let name = info.name.as_str();
+    let bytes = match t.fetch(&info.file_path(), info.length) {
+        Ok(b) => b,
+        Err(TransportError::TooLarge { .. }) => {
+            return Err(TufError::target_mismatch(name, "length"));
+        }
+        Err(e) => return Err(TufError::transport(&e)),
+    };
+    if bytes.len() as u64 != info.length {
+        return Err(TufError::target_mismatch(name, "length"));
+    }
+    if sha256_hex(&bytes) != info.sha256 {
+        return Err(TufError::target_mismatch(name, "hash"));
+    }
+    Ok(bytes)
+}
+
+/// Whether `t` is an advisories file: `advisories.json` of top-level `targets`, or
+/// `<publisher>/advisories.json` of the publisher's role (spec §6.5).
+pub(crate) fn is_advisories(t: &TargetInfo) -> bool {
+    (t.role == "targets" && t.name == ADVISORIES_FILE)
+        || t.name == format!("{}/{ADVISORIES_FILE}", t.role)
+}
+
+/// Parses an advisories file; one that does not parse is `REGISTRY_INVALID`.
+pub(crate) fn advisory_file(name: &str, bytes: &[u8]) -> Result<AdvisoryFile, TufError> {
+    serde_json::from_slice(bytes).map_err(|e| {
+        TufError::new(
+            "REGISTRY_INVALID",
+            format!("{name}: {e}"),
+            json!({ "reason": "advisories", "target": name }),
+        )
+    })
 }
 
 /// `tough` reports a delegated role's failures as `targets`; name the role it was loading.
@@ -431,12 +478,37 @@ fn get<T: serde::de::DeserializeOwned>(
 }
 
 impl Trusted {
+    fn targets(&self) -> impl Iterator<Item = TargetInfo> + '_ {
+        let roles = self.roles.iter().map(|(n, s)| (n.as_str(), s));
+        let top = self.targets.iter().map(|s| ("targets", s));
+        roles.chain(top).flat_map(|(role, s)| {
+            let mut v: Vec<TargetInfo> = s
+                .signed
+                .targets
+                .iter()
+                .map(|(name, t)| TargetInfo {
+                    name: name.raw().to_string(),
+                    role: role.to_string(),
+                    length: t.length,
+                    sha256: hex::encode(t.hashes.sha256.as_ref()),
+                    custom: t.custom.clone().into_iter().collect(),
+                })
+                .collect();
+            v.sort_by(|a, b| a.name.cmp(&b.name));
+            v
+        })
+    }
+
     fn from_files(
         root: Signed<Root>,
         files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Trusted, TufError> {
         let mut roles = BTreeMap::new();
+        let mut kept = BTreeMap::new();
         for (name, bytes) in files {
+            if let Some(target) = name.strip_prefix("kept/") {
+                kept.insert(target.to_string(), bytes.clone());
+            }
             if let Some(role) = name
                 .strip_prefix("roles/")
                 .and_then(|r| r.strip_suffix(".json"))
@@ -450,6 +522,7 @@ impl Trusted {
             snapshot: get(files, "snapshot.json")?,
             targets: get(files, "targets.json")?,
             roles,
+            kept,
         })
     }
 }

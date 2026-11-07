@@ -34,12 +34,17 @@ USAGE:
   registry init <dir> --keys <keys-dir> --root-keys <k.pem>... --threshold <n> [--max-stale-days <d>]
   registry delegate <dir> --keys <kd> --publisher <name> --key <public-or-private.pem>
   registry publish <dir> <pkg.finpkg> --keys <kd> --key <publisher-key.pem>
+        (a publisher's first publish also signs its delegation into `targets`: the targets
+        key `registry init` made must be in --keys)
   registry yank <dir> <id>@<version> --keys <kd> --key <publisher-key.pem>
   registry advise <dir> --keys <kd> --plugin <id> --versions <range> --action warn|disable
         [--severity low|medium|high|critical] --summary <text> [--url <u>] [--id <id>] --key <k.pem>
   registry rotate-key <dir> --keys <kd> --role root|targets|snapshot|timestamp|<publisher>
         --new <k.pem>... [--threshold <n>]
   registry resign-timestamp <dir> --keys <kd> [--expires <days>]
+  registry trust reset-clock --plugins <server-data>/plugins --id <registry-id>
+        (on the server, by its owner: after fixing a clock that ran fast, clears the time
+        of the last refresh that makes every refresh CLOCK_SUSPECT; nothing else changes)
 
 `init` prints the SHA-256 of 1.root.json: users pin it when they add the registry.
 ";

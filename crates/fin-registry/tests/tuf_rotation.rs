@@ -155,3 +155,102 @@ fn revoked_publisher_key_cannot_publish() {
     assert_eq!(Reg::files(c.store().dir()), before);
     assert!(c.target("acme/pack/6.6.6.finpkg").is_none());
 }
+
+fn current_gen(c: &TrustedRepo) -> u64 {
+    std::fs::read_to_string(c.store().dir().join("current"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+fn generations(c: &TrustedRepo) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(c.store().dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("gen-"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// What a crash leaves after `gen-<k+1>` was renamed into place and before `current` named it.
+fn crashed_generation(c: &TrustedRepo) -> std::path::PathBuf {
+    let dir = c.store().dir();
+    let k = current_gen(c);
+    let stray = dir.join(format!("gen-{}", k + 1));
+    for (rel, bytes) in Reg::files(&dir.join(format!("gen-{k}"))) {
+        let p = stray.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+    std::fs::write(stray.join("timestamp.json"), b"half written").unwrap();
+    stray
+}
+
+#[test]
+fn crash_between_generation_and_current() {
+    let mut r = Reg::new(None);
+    let acme = r.publisher("acme");
+    let mut c = r.client();
+    r.refresh(&mut c).unwrap();
+    let k = current_gen(&c);
+    // The same client refreshes past the stray generation (it used to fail renaming onto it).
+    let stray = crashed_generation(&c);
+    r.b.publish(&r.pkg("@acme/pack", "1.0.0"), &acme).unwrap();
+    let rep = r.refresh(&mut c).unwrap();
+    assert!(rep.changed);
+    assert!(c.target("acme/pack/1.0.0.finpkg").is_some());
+    assert_eq!(current_gen(&c), k + 2);
+    assert!(!stray.exists());
+    assert_eq!(generations(&c), [format!("gen-{}", k + 2)]);
+    // A client opened after the crash deletes the generation `current` does not name.
+    let stray = crashed_generation(&c);
+    let sha = c.store().root_sha256().to_string();
+    drop(c);
+    let mut c = reopen(&r, &sha);
+    assert!(!stray.exists(), "open kept {}", stray.display());
+    assert!(c.target("acme/pack/1.0.0.finpkg").is_some());
+    r.b.publish(&r.pkg("@acme/pack", "1.1.0"), &acme).unwrap();
+    r.refresh(&mut c).unwrap();
+    assert!(c.target("acme/pack/1.1.0.finpkg").is_some());
+    assert_eq!(generations(&c).len(), 1);
+}
+
+#[test]
+fn concurrent_refreshes_share_one_store() {
+    let mut r = Reg::new(None);
+    let acme = r.publisher("acme");
+    let sha = r.client().store().root_sha256().to_string();
+    for round in 0..4 {
+        r.b.publish(&r.pkg("@acme/pack", &format!("1.{round}.0")), &acme)
+            .unwrap();
+        let clients: Vec<TrustedRepo> = (0..6).map(|_| reopen(&r, &sha)).collect();
+        let reports: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = clients
+                .into_iter()
+                .map(|mut c| {
+                    let r = &r;
+                    s.spawn(move || {
+                        let rep = r.refresh(&mut c);
+                        (rep, c)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (rep, c) in &reports {
+            let rep = rep
+                .as_ref()
+                .unwrap_or_else(|e| panic!("round {round}: {e}"));
+            assert_eq!(
+                rep.targets_version,
+                reports[0].0.as_ref().unwrap().targets_version
+            );
+            assert!(c.target(&format!("acme/pack/1.{round}.0.finpkg")).is_some());
+        }
+        let c = &reports[0].1;
+        assert_eq!(generations(c), [format!("gen-{}", current_gen(c))]);
+        assert!(!c.store().dir().join("tmp").exists(), "scratch left behind");
+    }
+}

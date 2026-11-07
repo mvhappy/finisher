@@ -112,6 +112,19 @@ fn hostile_archive_corpus() {
             "notRegular",
         ),
         ("CON", vec![E::file("CON", b"x")], "reservedName"),
+        (
+            "8.3 alias of another entry",
+            vec![
+                E::file("styles/something.json", b"x"),
+                E::file("styles/SOMETH~1.JSO", b"y"),
+            ],
+            "shortName",
+        ),
+        (
+            "8.3 directory",
+            vec![E::file("PROGRA~1/a", b"x")],
+            "shortName",
+        ),
         ("aux.txt", vec![E::file("aux.txt", b"x")], "reservedName"),
         ("COM1", vec![E::file("COM1", b"x")], "reservedName"),
         (

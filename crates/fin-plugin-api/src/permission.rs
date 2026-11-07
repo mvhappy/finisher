@@ -172,16 +172,23 @@ impl Permission {
     }
 
     /// Whether `self` grants something `old` (the same key) did not: an added origin, secret or
-    /// hook, `brokered` → `raw`, `read` → `readWrite`.
+    /// hook, `brokered` → `raw`, `read` → `readWrite`, or another `fs` scope.
     fn widens(&self, old: &Permission) -> bool {
         let more_items = !self.items().is_subset(&old.items());
         match (old, self) {
             (Permission::Secrets { mode: a, .. }, Permission::Secrets { mode: b, .. }) => {
                 more_items || (*a == SecretMode::Brokered && *b == SecretMode::Raw)
             }
-            (Permission::Fs { access: a, .. }, Permission::Fs { access: b, .. }) => {
-                *a == FsAccess::Read && *b == FsAccess::ReadWrite
-            }
+            (
+                Permission::Fs {
+                    scope: sa,
+                    access: a,
+                },
+                Permission::Fs {
+                    scope: sb,
+                    access: b,
+                },
+            ) => sa != sb || (*a == FsAccess::Read && *b == FsAccess::ReadWrite),
             _ => more_items,
         }
     }
@@ -209,8 +216,10 @@ pub struct PermissionDiff {
 }
 
 impl PermissionDiff {
-    /// Anything that needs a person's approval (spec §4.3), agent-facing content aside.
-    pub fn widens(&self) -> bool {
+    /// Whether the permissions widen (spec §4.3): an added or widened permission, or a risk
+    /// increase. Not the whole rule: agent-facing content and kind or runtime changes need a
+    /// person too, so updates decide with [`crate::requires_reapproval`].
+    pub fn permissions_widen(&self) -> bool {
         !self.added.is_empty() || !self.widened.is_empty() || self.risk_up
     }
 }
@@ -240,6 +249,7 @@ fn merge(have: &mut Permission, more: &Permission) {
             *ma = (*ma).max(*mb);
         }
         (Permission::Fs { access: a, .. }, Permission::Fs { access: b, .. }) => *a = (*a).max(*b),
+        // Two scopes under one key (refused by validation) widen against either.
         (Permission::HooksObserve { hooks: a }, Permission::HooksObserve { hooks: b })
         | (Permission::HooksModify { hooks: a }, Permission::HooksModify { hooks: b }) => {
             a.extend(b.clone())

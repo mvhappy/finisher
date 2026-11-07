@@ -12,7 +12,7 @@ use tough::schema::{DelegatedRole, Hashes, PathPattern, PathSet, Signed, Target,
 use super::state::{Change, role_keys};
 use super::{EditorError, PublicKey, RepoBuilder, SigningKey};
 use crate::advisory::{Advisory, AdvisoryFile};
-use crate::package::{DirFiles, Limits, unpack};
+use crate::package::{DirFiles, Limits, unpack_bytes};
 use crate::tuf::TargetInfo;
 use crate::tuf::custom::{self, PackageCustom};
 
@@ -180,7 +180,10 @@ impl RepoBuilder {
     ) -> Result<TargetInfo, EditorError> {
         let tmp = tempfile::tempdir().map_err(|e| EditorError::io("create", pkg, e))?;
         let dest = tmp.path().join("p");
-        let unpacked = unpack(pkg, &dest, |m| m.executables(), &Limits::default())?;
+        // Read once: the bytes unpacked and validated are the bytes hashed and published, even
+        // if the file changes meanwhile.
+        let bytes = std::fs::read(pkg).map_err(|e| EditorError::io("read", pkg, e))?;
+        let unpacked = unpack_bytes(&bytes, &dest, |m| m.executables(), &Limits::default())?;
         let ctx = ValidateCtx {
             host_api: host_api(),
             platform: None,
@@ -217,7 +220,6 @@ impl RepoBuilder {
                 json!({ "id": manifest.id.to_string(), "version": version }),
             ));
         }
-        let bytes = std::fs::read(pkg).map_err(|e| EditorError::io("read", pkg, e))?;
         let bytes_unpacked = unpacked.files.values().map(|f| f.size).sum();
         let custom = PackageCustom::from_manifest(&manifest, &unpacked.manifest, bytes_unpacked);
         let target = target_of(&bytes, custom.to_map());

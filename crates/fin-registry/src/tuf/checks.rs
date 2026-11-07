@@ -1,6 +1,7 @@
 //! Checks `tough` does not make (8A Task 1 notes, spec §6.1–6.2): consistent snapshots,
 //! one terminating delegation per publisher confined to `<publisher>/*`, no nested
-//! delegations, at most 500 delegations, and no delegated role silently left unloaded.
+//! delegations, at most 500 delegations, no delegated role silently left unloaded, and target
+//! names that are plain package paths (top-level `targets`' too).
 
 use fin_plugin_api::PluginId;
 use tough::schema::{PathSet, Root, Signed, Snapshot, Targets};
@@ -8,6 +9,7 @@ use tough::schema::{PathSet, Root, Signed, Snapshot, Targets};
 use super::adapter::MAX_DELEGATIONS;
 use super::custom::TOP_LEVEL_ROLES;
 use super::{Layout, TufError};
+use crate::package::{Limits, check_path};
 
 pub(crate) fn root(root: &Signed<Root>) -> Result<(), TufError> {
     if !root.signed.consistent_snapshot {
@@ -30,11 +32,27 @@ pub(crate) fn publisher_name_ok(name: &str) -> bool {
     !TOP_LEVEL_ROLES.contains(&name) && PluginId::parse(&format!("@{name}/xx")).is_ok()
 }
 
+/// Whether a target name is a plain relative path that names one file on every OS.
+fn target_name_ok(t: &tough::TargetName) -> bool {
+    t.raw() == t.resolved() && check_path(t.raw(), &Limits::default()).is_ok()
+}
+
 pub(crate) fn delegations(
     targets: &Signed<Targets>,
     snapshot: &Signed<Snapshot>,
     layout: Layout,
 ) -> Result<(), TufError> {
+    if layout == Layout::Finisher
+        && let Some(bad) = targets.signed.targets.keys().find(|t| !target_name_ok(t))
+    {
+        let mut e = TufError::delegation(
+            "targets",
+            format!("targets lists {:?}, not a plain path", bad.raw()),
+        );
+        e.details
+            .insert("target".into(), bad.raw().to_string().into());
+        return Err(e);
+    }
     let Some(d) = &targets.signed.delegations else {
         return Ok(());
     };
@@ -94,7 +112,7 @@ pub(crate) fn delegations(
         }
         let prefix = format!("{name}/");
         for target in t.signed.targets.keys() {
-            if !target.raw().starts_with(&prefix) || target.raw() != target.resolved() {
+            if !target.raw().starts_with(&prefix) || !target_name_ok(target) {
                 let mut e = TufError::delegation(
                     name,
                     format!("{name} lists {:?}, outside {want}", target.raw()),
@@ -107,3 +125,7 @@ pub(crate) fn delegations(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "checks_tests.rs"]
+mod tests;

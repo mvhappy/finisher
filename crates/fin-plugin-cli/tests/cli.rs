@@ -572,3 +572,85 @@ fn keys_are_never_printed() {
     }
     assert!(checked >= 5, "checked {checked} key files");
 }
+
+#[test]
+fn trust_reset_clock_clears_only_the_watermark() {
+    use fin_registry::registry::{Registry, RegistryConfig, RootSource};
+    use fin_registry::tuf::{Clock, FixedClock};
+    let r = registry();
+    let plugins = r.env.p("server/plugins");
+    let cfg = RegistryConfig {
+        id: "team".into(),
+        path: PathBuf::from(&r.repo),
+        root_sha256: r.root_sha.clone(),
+    };
+    let mut reg = Registry::add(&plugins, cfg, RootSource::Sha256(r.root_sha.clone())).unwrap();
+    // A clock 2 days fast records a watermark the corrected clock is more than a day behind.
+    let real = SystemClock.now();
+    reg.refresh(&FixedClock::new(
+        real + std::time::Duration::from_secs(2 * 86_400),
+    ))
+    .unwrap();
+    assert_eq!(
+        reg.refresh(&FixedClock::new(real)).unwrap_err().code,
+        "CLOCK_SUSPECT"
+    );
+    let gen_files = |reg: &Registry| {
+        let dir = reg.trusted().store().dir();
+        let k = std::fs::read_to_string(dir.join("current")).unwrap();
+        std::fs::read_dir(dir.join(format!("gen-{}", k.trim())))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = gen_files(&reg);
+    drop(reg);
+    let plugins_s = plugins.display().to_string();
+    let o = r.env.ok(&[
+        "registry",
+        "trust",
+        "reset-clock",
+        "--plugins",
+        &plugins_s,
+        "--id",
+        "team",
+    ]);
+    assert_eq!(o, json!({ "id": "team", "lastRefreshAt": null }));
+    let mut reg = Registry::open(&plugins, "team").unwrap();
+    assert_eq!(reg.trusted().last_refresh_at().unwrap(), None);
+    assert_eq!(gen_files(&reg), before);
+    reg.refresh(&FixedClock::new(real)).unwrap();
+    // An unknown registry, and usage errors.
+    let o = r.env.run(&[
+        "registry",
+        "trust",
+        "reset-clock",
+        "--plugins",
+        &plugins_s,
+        "--id",
+        "nope",
+    ]);
+    assert_eq!(
+        (o.code, o.err()["code"].as_str()),
+        (3, Some("REGISTRY_NOT_FOUND"))
+    );
+    for args in [
+        vec!["registry", "trust"],
+        vec!["registry", "trust", "forget-all"],
+        vec!["registry", "trust", "reset-clock", "--id", "team"],
+    ] {
+        assert_eq!(r.env.run(&args).code, 2, "{args:?}");
+    }
+}
+
+#[test]
+fn registry_help_names_the_targets_key_for_a_first_publish() {
+    let env = Env::new();
+    let o = env.run(&["registry", "--help"]);
+    assert_eq!(o.code, 0);
+    assert!(
+        o.stdout
+            .contains("first publish also signs its delegation into `targets`")
+    );
+    assert!(o.stdout.contains("registry trust reset-clock"));
+}

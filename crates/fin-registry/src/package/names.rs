@@ -2,8 +2,9 @@
 //! OS. Refused: empty, `.` and `..` components, a leading `/`, `\`, NUL and other control
 //! characters, `:` (drive letters, NTFS streams) and Windows' other forbidden characters,
 //! Windows reserved device names in any case and with any extension, trailing dots and spaces,
-//! components over 255 bytes and paths over 1,024, names that are not NFC, and two paths that
-//! differ only by case (a file and a directory included).
+//! components over 255 bytes and paths over 1,024, names that are not NFC, NTFS 8.3 short
+//! names (`PROGRA~1`, `SOMETH~12.JSO`: on Windows one may be another entry's alias), and two
+//! paths that differ only by case (a file and a directory included).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,6 +52,26 @@ const RESERVED: &[&str] = &[
 /// Characters Windows refuses in a name (besides control characters and `\`).
 const WINDOWS_FORBIDDEN: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
 
+/// Whether `c` has the shape of an NTFS 8.3 short name with a numeric tail: a base of at most
+/// 8 characters ending in `~<digits>`, then at most one extension of at most 3 characters.
+/// Windows may give an entry with another name this alias, so the two would be one file.
+fn is_short_name(c: &str) -> bool {
+    let (base, ext) = match c.split_once('.') {
+        Some((b, e)) => (b, Some(e)),
+        None => (c, None),
+    };
+    if ext.is_some_and(|e| e.is_empty() || e.len() > 3 || e.contains('.')) {
+        return false;
+    }
+    let Some((stem, tail)) = base.rsplit_once('~') else {
+        return false;
+    };
+    base.len() <= 8
+        && !stem.is_empty()
+        && !tail.is_empty()
+        && tail.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Checks one path component; `Err` is `(reason, why)`.
 pub fn check_component(c: &str, limits: &Limits) -> Result<(), (&'static str, String)> {
     if c.is_empty() {
@@ -76,6 +97,12 @@ pub fn check_component(c: &str, limits: &Limits) -> Result<(), (&'static str, St
         return Err((
             "trailingDotOrSpace",
             "a name ending in a dot or a space".into(),
+        ));
+    }
+    if is_short_name(c) {
+        return Err((
+            "shortName",
+            format!("{c:?} has the shape of a Windows 8.3 short name"),
         ));
     }
     let stem = c.split('.').next().unwrap_or(c).trim_end_matches(' ');
@@ -204,5 +231,39 @@ impl Names {
     /// Whether a top-level component (any case) is taken by an entry.
     pub(crate) fn top_level_taken(&self, name: &str) -> bool {
         folds(name).iter().any(|k| self.taken.contains_key(k))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_short_name;
+
+    #[test]
+    fn short_names() {
+        for c in [
+            "PROGRA~1",
+            "progra~1",
+            "A~1",
+            "SOMETH~1.JSO",
+            "ab~12.js",
+            "X~123456",
+            "a~1.b",
+        ] {
+            assert!(is_short_name(c), "{c}");
+        }
+        for c in [
+            "PROGRA~1.json",
+            "LONGNAME~1",
+            "a~",
+            "~1",
+            "a~1x",
+            "a~1.",
+            "a~1.b.c",
+            "notes~draft.txt",
+            "file.txt",
+            "a~b~1.txt.bak",
+        ] {
+            assert!(!is_short_name(c), "{c}");
+        }
     }
 }

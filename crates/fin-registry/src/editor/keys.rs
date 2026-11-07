@@ -74,17 +74,12 @@ impl SigningKey {
         pem::encode(&pem::Pem::new("PRIVATE KEY", self.pkcs8.clone()))
     }
 
-    /// Writes the key as PEM (mode 0600 on Unix), temp then rename.
+    /// Writes the key as PEM, temp then rename, the temp file created with mode 0600 on Unix
+    /// (never readable by others, even for a moment). On Windows the file inherits its
+    /// folder's ACL: keep key folders in the owner's profile, where only the owner can read.
     pub fn write(&self, path: &Path) -> Result<(), EditorError> {
-        atomic::write(path, self.to_pem().as_bytes())
-            .map_err(|e| EditorError::io("write", path, e))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-                .map_err(|e| EditorError::io("chmod", path, e))?;
-        }
-        Ok(())
+        atomic::write_private(path, self.to_pem().as_bytes())
+            .map_err(|e| EditorError::io("write", path, e))
     }
 
     pub fn public(&self) -> PublicKey {
@@ -177,8 +172,17 @@ impl KeyRing {
         self.dir.join(format!("{key_id}.pem"))
     }
 
+    /// Saves `key` in the ring; a new ring folder is created owner-only (0700 on Unix).
     pub fn add(&self, key: &SigningKey) -> Result<(), EditorError> {
-        fs::create_dir_all(&self.dir).map_err(|e| EditorError::io("create", &self.dir, e))?;
+        let mut b = fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        b.create(&self.dir)
+            .map_err(|e| EditorError::io("create", &self.dir, e))?;
         key.write(&self.path(&key.public().key_id()))
     }
 

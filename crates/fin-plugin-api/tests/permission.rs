@@ -91,7 +91,7 @@ fn permission_diff_widening_cases() {
     ];
     let d = diff(&base, &reordered);
     assert!(d.added.is_empty() && d.widened.is_empty() && d.removed.is_empty() && !d.risk_up);
-    assert!(!d.widens());
+    assert!(!d.permissions_widen());
 
     let widen = |i: usize, p: Permission| {
         let mut new = base.clone();
@@ -101,7 +101,7 @@ fn permission_diff_widening_cases() {
         assert!(d.added.is_empty() && d.removed.is_empty());
         assert_eq!(d.widened[0].from, base[i]);
         assert_eq!(d.widened[0].to, new[i]);
-        assert!(d.widens());
+        assert!(d.permissions_widen());
     };
     widen(
         1,
@@ -123,7 +123,7 @@ fn permission_diff_widening_cases() {
     let d = diff(&base, &new);
     assert_eq!(d.added, [Permission::Gpu]);
     assert!(
-        d.widens() && !d.risk_up,
+        d.permissions_widen() && !d.risk_up,
         "gpu is medium; base is already high"
     );
 
@@ -134,7 +134,7 @@ fn permission_diff_widening_cases() {
         fs(FsAccess::Read),
     ];
     let d = diff(&base, &narrowed);
-    assert!(!d.widens(), "{d:?}");
+    assert!(!d.permissions_widen(), "{d:?}");
     assert_eq!(
         d.removed,
         [observe(&["PostCommand"]), Permission::ProjectRead]
@@ -143,14 +143,14 @@ fn permission_diff_widening_cases() {
         &[secrets(&["k1"], SecretMode::Raw)],
         &[secrets(&["k1"], SecretMode::Brokered)],
     );
-    assert!(!d.widens());
+    assert!(!d.permissions_widen());
 
     // A risk increase through a combination: adding net to a plugin that observes hooks.
     let old = [observe(&["PostCommand"])];
     let new = [observe(&["PostCommand"]), net(&["https://a.example.org"])];
     let d = diff(&old, &new);
-    assert!(d.risk_up && d.widens());
+    assert!(d.risk_up && d.permissions_widen());
     assert_eq!(d.added, [net(&["https://a.example.org"])]);
     // The reverse lowers the risk.
-    assert!(!diff(&new, &old).widens());
+    assert!(!diff(&new, &old).permissions_widen());
 }

@@ -66,18 +66,7 @@ pub(crate) fn role_keys(ids: Vec<String>, threshold: u64) -> RoleKeys {
 
 /// The key ring must never be inside the folder that is published (or pushed).
 pub(crate) fn refuse_keys_inside(dir: &Path, keys_dir: &Path) -> Result<(), EditorError> {
-    let abs = |p: &Path| {
-        std::path::absolute(p).map(|a| {
-            a.components()
-                .filter(|c| !matches!(c, std::path::Component::CurDir))
-                .collect::<std::path::PathBuf>()
-        })
-    };
-    let (Ok(d), Ok(k)) = (abs(dir), abs(keys_dir)) else {
-        return Ok(());
-    };
-    let real = |p: &std::path::PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-    if k.starts_with(&d) || real(&k).starts_with(real(&d)) {
+    if super::paths::keys_inside(dir, keys_dir) {
         return Err(EditorError::invalid(
             "keysInside",
             "the key ring must not be inside the registry folder: it would be published",

@@ -4,14 +4,22 @@
 //! <server-data>/plugins/trust/<rootSha256>/
 //!   roots/<n>.root.json     every trusted root, the bytes as fetched (never re-serialised)
 //!   current                 the trusted generation's number (replaced atomically)
-//!   gen-<k>/                timestamp.json, snapshot.json, targets.json, roles/<role>.json
+//!   gen-<k>/                timestamp.json, snapshot.json, targets.json, roles/<role>.json,
+//!                           kept/<target> (verified targets kept with the metadata: advisories)
 //!   state.json              {lastRefreshAt} of the last successful refresh
 //!   tmp/                    scratch datastores and staging; emptied on every refresh
+//! <server-data>/plugins/trust/<rootSha256>.lock
 //! ```
 //!
 //! A refresh writes a whole new generation and then replaces `current`, so the trusted set
-//! changes all at once or not at all. `<rootSha256>` is the hash of the root the registry was
-//! added with; the directory outlives the registry's config (removal keeps trust).
+//! changes all at once or not at all. A crash between the two leaves a generation `current`
+//! does not name: the next one is numbered past every generation on disk, and opening the
+//! store deletes them. `<rootSha256>` is the hash of the root the registry was added with; the
+//! directory outlives the registry's config (removal keeps trust).
+//!
+//! Every change happens under an exclusive lock of `<rootSha256>.lock` (beside the directory,
+//! so `forget` can delete the directory while holding it): [`TrustStore::lock`] is held for a
+//! whole refresh, root rotations included, and loading the trusted set takes it shared.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,6 +35,13 @@ const ROOTS: &str = "roots";
 const CURRENT: &str = "current";
 const STATE: &str = "state.json";
 const TMP: &str = "tmp";
+const KEPT: &str = "kept";
+
+/// A lock of a [`TrustStore`], released when dropped.
+#[derive(Debug)]
+pub struct StoreLock {
+    _file: fs::File,
+}
 
 /// The trusted metadata of one root.
 #[derive(Debug, Clone)]
@@ -87,8 +102,49 @@ impl TrustStore {
         self.latest_root().ok().flatten().is_some()
     }
 
+    fn lock_file(&self) -> Result<fs::File, TufError> {
+        let p = self
+            .dir
+            .with_file_name(format!("{}.lock", self.root_sha256));
+        if let Some(parent) = p.parent() {
+            self.mkdir(parent)?;
+        }
+        fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&p)
+            .map_err(|e| TufError::io("open", &p, e))
+    }
+
+    /// The exclusive lock, waiting for other holders (a refresh in another process).
+    pub fn lock(&self) -> Result<StoreLock, TufError> {
+        let f = self.lock_file()?;
+        f.lock().map_err(|e| TufError::io("lock", &self.dir, e))?;
+        Ok(StoreLock { _file: f })
+    }
+
+    /// The shared lock: readers wait for a refresh in progress, never for each other.
+    pub(crate) fn lock_shared(&self) -> Result<StoreLock, TufError> {
+        let f = self.lock_file()?;
+        f.lock_shared()
+            .map_err(|e| TufError::io("lock", &self.dir, e))?;
+        Ok(StoreLock { _file: f })
+    }
+
+    /// The exclusive lock if nobody holds the store, else `None`.
+    pub(crate) fn try_lock(&self) -> Result<Option<StoreLock>, TufError> {
+        let f = self.lock_file()?;
+        match f.try_lock() {
+            Ok(()) => Ok(Some(StoreLock { _file: f })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(TufError::io("lock", &self.dir, e)),
+        }
+    }
+
     /// Deletes every trusted file of this root (`registry forget`).
     pub fn forget(&self) -> Result<(), TufError> {
+        let _lock = self.lock()?;
         match fs::remove_dir_all(&self.dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
@@ -162,6 +218,15 @@ impl TrustStore {
             return Ok(out);
         };
         let dir = self.gen_dir(k);
+        if !dir.is_dir() {
+            return Err(TufError::invalid(
+                "trustStore",
+                format!(
+                    "{} names gen-{k}, which is missing",
+                    self.dir.join(CURRENT).display()
+                ),
+            ));
+        }
         for name in ["timestamp.json", "snapshot.json", "targets.json"] {
             if let Some(b) = read_opt(&dir.join(name))? {
                 out.insert(name.to_string(), b);
@@ -176,17 +241,44 @@ impl TrustStore {
                 out.insert(format!("roles/{name}"), b);
             }
         }
+        read_tree(&dir.join(KEPT), KEPT, &mut out)?;
         Ok(out)
     }
 
+    /// The generations on disk.
+    fn generations(&self) -> Vec<u64> {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()
+                    .and_then(|n| n.strip_prefix("gen-"))
+                    .and_then(|k| k.parse::<u64>().ok())
+            })
+            .collect()
+    }
+
     /// Makes `files` the trusted generation: written in full under a new directory, then
-    /// `current` is replaced, then older generations are deleted.
+    /// `current` is replaced, then older generations are deleted. The caller holds the lock.
     pub(crate) fn commit(&self, files: &BTreeMap<String, Vec<u8>>) -> Result<(), TufError> {
-        let next = self.current_gen()?.map_or(1, |k| k + 1);
+        // Past every generation on disk: one a crash left before `current` named it is never
+        // reused (its rename target would exist).
+        let next = self
+            .generations()
+            .into_iter()
+            .chain(self.current_gen()?)
+            .max()
+            .map_or(1, |k| k + 1);
         let tmp = self.scratch("gen")?;
         self.mkdir(&tmp.join("roles"))?;
         for (name, bytes) in files {
             let p = tmp.join(name);
+            if let Some(parent) = p.parent() {
+                self.mkdir(parent)?;
+            }
             atomic::write(&p, bytes).map_err(|e| TufError::io("write", &p, e))?;
         }
         let dest = self.gen_dir(next);
@@ -199,20 +291,28 @@ impl TrustStore {
         Ok(())
     }
 
-    fn drop_old_generations(&self, keep: u64) {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(k) = name
-                .strip_prefix("gen-")
-                .and_then(|k| k.parse::<u64>().ok())
-                && k != keep
-            {
-                let _ = fs::remove_dir_all(e.path());
+    /// Deletes every generation but `keep` (all of them for `None`).
+    fn drop_old_generations(&self, keep: impl Into<Option<u64>>) {
+        let keep = keep.into();
+        for k in self.generations() {
+            if Some(k) != keep {
+                let _ = fs::remove_dir_all(self.gen_dir(k));
             }
         }
+    }
+
+    /// Removes what a crash or a failed refresh left: `tmp/` and generations `current` does not
+    /// name. Skipped while another holder has the lock (its refresh owns them).
+    pub(crate) fn recover(&self) -> Result<(), TufError> {
+        if !self.dir.is_dir() {
+            return Ok(());
+        }
+        let Some(_lock) = self.try_lock()? else {
+            return Ok(());
+        };
+        self.clear_scratch();
+        self.drop_old_generations(self.current_gen()?);
+        Ok(())
     }
 
     pub(crate) fn state(&self) -> Result<TrustState, TufError> {
@@ -245,4 +345,41 @@ impl TrustStore {
     pub(crate) fn clear_scratch(&self) {
         let _ = fs::remove_dir_all(self.dir.join(TMP));
     }
+
+    /// Clears `lastRefreshAt` only, after the owner fixed a clock that ran fast
+    /// (`fin-plugin registry trust reset-clock`). Trusted metadata stays as it is.
+    pub fn reset_clock(&self) -> Result<(), TufError> {
+        let _lock = self.lock()?;
+        let mut s = self.state()?;
+        s.last_refresh_at = None;
+        self.save_state(&s)
+    }
+}
+
+/// Reads every file under `dir` into `out` as `<prefix>/<relative path>`.
+fn read_tree(
+    dir: &Path,
+    prefix: &str,
+    out: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<(), TufError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(TufError::io("list", dir, e)),
+    };
+    for e in entries {
+        let e = e.map_err(|e| TufError::io("list", dir, e))?;
+        let name = e.file_name().to_string_lossy().into_owned();
+        let key = format!("{prefix}/{name}");
+        let ft = e
+            .file_type()
+            .map_err(|err| TufError::io("stat", &e.path(), err))?;
+        if ft.is_dir() {
+            read_tree(&e.path(), &key, out)?;
+        } else {
+            let b = fs::read(e.path()).map_err(|err| TufError::io("read", &e.path(), err))?;
+            out.insert(key, b);
+        }
+    }
+    Ok(())
 }

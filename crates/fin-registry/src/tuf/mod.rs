@@ -13,7 +13,7 @@ pub mod custom;
 mod error;
 mod freshness;
 mod store;
-mod trusted;
+pub(crate) mod trusted;
 
 pub(crate) use checks::publisher_name_ok as checks_publisher_name;
 pub use clock::{CLOCK_SLACK_SECS, Clock, FixedClock, SystemClock};

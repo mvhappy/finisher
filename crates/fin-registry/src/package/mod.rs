@@ -19,7 +19,7 @@ pub use files::DirFiles;
 pub use limits::Limits;
 pub use names::{check_component, check_path};
 pub use pack::{PackInfo, pack};
-pub use read::unpack;
+pub use read::{unpack, unpack_bytes};
 pub use tree::tree_hash;
 
 /// A file of an unpacked package.

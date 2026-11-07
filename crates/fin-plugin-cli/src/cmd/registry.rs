@@ -41,6 +41,7 @@ pub fn run(raw: &[String]) -> Result<Value, CliError> {
         "advise" => advise(rest),
         "rotate-key" => rotate_key(rest),
         "resign-timestamp" => resign_timestamp(rest),
+        "trust" => trust(rest),
         other => Err(CliError::usage(format!(
             "unknown registry command {other:?}"
         ))),
@@ -214,4 +215,28 @@ fn resign_timestamp(raw: &[String]) -> Result<Value, CliError> {
         .and_then(|v| v["signed"]["version"].as_u64())
         .unwrap_or(0);
     Ok(json!({ "timestamp": { "version": version, "expiresInDays": days } }))
+}
+
+/// `trust reset-clock --plugins <dir> --id <id>`: a person's repair of the consumer side's
+/// trust store (8A review): clears `lastRefreshAt` only. No RPC or agent can do this.
+fn trust(raw: &[String]) -> Result<Value, CliError> {
+    let Some((sub, rest)) = raw.split_first() else {
+        return Err(CliError::usage("expected `registry trust reset-clock`"));
+    };
+    if sub != "reset-clock" {
+        return Err(CliError::usage(format!(
+            "unknown registry trust command {sub:?}"
+        )));
+    }
+    let a = Args::parse(rest, &["--plugins", "--id"], &[])?;
+    a.positionals(0, "registry trust reset-clock --plugins <dir> --id <id>")?;
+    let plugins = Path::new(a.req("--plugins")?);
+    let id = a.req("--id")?;
+    fin_registry::registry::Registry::reset_clock(plugins, id).map_err(|e| CliError {
+        code: e.code.to_string(),
+        message: e.message.clone(),
+        details: e.details.clone(),
+        fix: None,
+    })?;
+    Ok(json!({ "id": id, "lastRefreshAt": null }))
 }

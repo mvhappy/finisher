@@ -172,3 +172,108 @@ fn tampered_advisories_fail_the_refresh() {
     let e = reg.refresh(r.clock.as_ref()).unwrap_err();
     assert_eq!(e.code, "TUF_TARGET_MISMATCH");
 }
+
+fn ids(all: Vec<fin_registry::advisory::SignedAdvisory>) -> Vec<String> {
+    let mut v: Vec<String> = all.into_iter().map(|a| a.advisory.id).collect();
+    v.sort();
+    v
+}
+
+fn reason(e: &fin_registry::tuf::TufError) -> Option<&str> {
+    e.details.get("reason").and_then(|v| v.as_str())
+}
+
+/// The trusted copy of `name` in the store's current generation.
+fn kept_copy(reg: &Registry, name: &str) -> std::path::PathBuf {
+    let dir = reg.trusted().store().dir();
+    let k = std::fs::read_to_string(dir.join("current")).unwrap();
+    dir.join(format!("gen-{}", k.trim()))
+        .join("kept")
+        .join(name)
+}
+
+#[test]
+fn advisories_come_from_the_trusted_copy() {
+    let (mut r, acme, _) = two_publishers();
+    r.b.advise(
+        advisory("A-1", "@acme/pack", "*", AdvisoryAction::Disable),
+        &acme,
+    )
+    .unwrap();
+    let reg = added(&r);
+    let base = r.tmp.path().join("plugins");
+    // The reviewer's repro: the folder's file tampered after the refresh used to open as no
+    // advisories at all. The trusted copy is read instead.
+    let t = reg.trusted().target("acme/advisories.json").unwrap();
+    std::fs::write(r.repo.join(t.file_path()), br#"{"advisories":[]}"#).unwrap();
+    let kept = kept_copy(&reg, "acme/advisories.json");
+    drop(reg);
+    let reg = Registry::open(&base, "team").unwrap();
+    assert_eq!(ids(reg.advisories()), ["A-1"]);
+    drop(reg);
+    // The trusted copy tampered or missing: REGISTRY_INVALID, never an empty list.
+    for bytes in [Some(&br#"{"advisories":[]}"#[..]), Some(b"{"), None] {
+        let good = std::fs::read(&kept).unwrap();
+        match bytes {
+            Some(b) => std::fs::write(&kept, b).unwrap(),
+            None => std::fs::remove_file(&kept).unwrap(),
+        }
+        let e = Registry::open(&base, "team").unwrap_err();
+        assert_eq!(
+            (e.code, reason(&e)),
+            ("REGISTRY_INVALID", Some("advisories")),
+            "{e}"
+        );
+        std::fs::write(&kept, good).unwrap();
+    }
+    assert_eq!(
+        ids(Registry::open(&base, "team").unwrap().advisories()),
+        ["A-1"]
+    );
+}
+
+#[test]
+fn unparseable_signed_advisories_fail_the_refresh() {
+    let (mut r, acme, _) = two_publishers();
+    r.b.advise(
+        advisory("A-1", "@acme/pack", "*", AdvisoryAction::Disable),
+        &acme,
+    )
+    .unwrap();
+    let mut reg = added(&r);
+    let store = reg.trusted().store().dir().to_path_buf();
+    let before = support::tuf::Reg::files(&store);
+    // The publisher's key signs a file that is no advisories file.
+    let bytes = b"{\"advisories\": [{\"id\": 1}]}".to_vec();
+    let name = "acme/advisories.json";
+    let sha = sha256_hex(&bytes);
+    let p = r
+        .repo
+        .join("targets")
+        .join(fin_registry::tuf::custom::consistent_target_path(
+            name, &sha,
+        ));
+    std::fs::write(&p, &bytes).unwrap();
+    let mut role = r.b.role("acme").unwrap().clone();
+    role.targets.insert(
+        tough::TargetName::new(name).unwrap(),
+        tough::schema::Target {
+            length: bytes.len() as u64,
+            hashes: tough::schema::Hashes {
+                sha256: hex::decode(&sha).unwrap().into(),
+                _extra: Default::default(),
+            },
+            custom: Default::default(),
+            _extra: Default::default(),
+        },
+    );
+    r.b.commit_unchecked_role("acme", role, &[acme]).unwrap();
+    let e = reg.refresh(r.clock.as_ref()).unwrap_err();
+    assert_eq!(
+        (e.code, reason(&e)),
+        ("REGISTRY_INVALID", Some("advisories")),
+        "{e}"
+    );
+    assert_eq!(support::tuf::Reg::files(&store), before);
+    assert_eq!(ids(reg.advisories()), ["A-1"]);
+}

@@ -14,6 +14,7 @@
 //! previous timestamp and the previous, complete set.
 
 mod keys;
+mod paths;
 mod publish;
 mod rotate;
 mod state;
@@ -28,6 +29,7 @@ use serde_json::{Map, Value, json};
 use tough::schema::{Signature, Signed};
 
 pub use keys::{KeyRing, PublicKey, SigningKey};
+pub use paths::keys_inside;
 pub use rotate::Role;
 
 use crate::atomic;

@@ -194,3 +194,44 @@ fn clock_suspect_changes_nothing() {
     clock.set(clock.now() + Duration::from_secs(26 * 3600));
     assert!(at(&r, &mut c, &clock, Freshness::Relaxed).unwrap().changed);
 }
+
+#[test]
+fn a_fast_clock_records_no_later_than_the_timestamp_expiry() {
+    let (mut r, mut c, clock) = setup(None);
+    // The timestamp expires in 30 days; the clock runs 33 days fast (stale by 3, a warning).
+    r.b.resign_timestamp(30).unwrap();
+    let real = clock.now();
+    clock.set(real + Duration::from_secs(33 * DAY));
+    let rep = at(&r, &mut c, &clock, Freshness::Relaxed).unwrap();
+    assert_eq!(rep.stale_days, Some(3));
+    let ts: Signed<Timestamp> = r.meta("timestamp.json");
+    let expires = ts.signed.expires.as_second();
+    assert_eq!(c.last_refresh_at().unwrap(), Some(expires));
+    // Corrected by the owner: still a day past the watermark, so CLOCK_SUSPECT ...
+    clock.set(real);
+    r.b.resign_timestamp(30).unwrap();
+    assert_eq!(
+        at(&r, &mut c, &clock, Freshness::Relaxed).unwrap_err().code,
+        "CLOCK_SUSPECT"
+    );
+    // ... until `registry trust reset-clock`, which clears the watermark and nothing else.
+    let before = Reg::files(&c.store().dir().join(format!("gen-{}", current(&c))));
+    c.store().reset_clock().unwrap();
+    assert_eq!(c.last_refresh_at().unwrap(), None);
+    assert_eq!(
+        Reg::files(&c.store().dir().join(format!("gen-{}", current(&c)))),
+        before
+    );
+    let mut c = TrustedRepo::open(c.store().clone()).unwrap();
+    assert!(at(&r, &mut c, &clock, Freshness::Relaxed).unwrap().changed);
+    let last = c.last_refresh_at().unwrap().unwrap();
+    assert!((last - fin_clock_secs(real)).abs() <= 1, "{last}");
+}
+
+fn current(c: &TrustedRepo) -> String {
+    std::fs::read_to_string(c.store().dir().join("current")).unwrap()
+}
+
+fn fin_clock_secs(t: std::time::SystemTime) -> i64 {
+    t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}

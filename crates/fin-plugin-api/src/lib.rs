@@ -9,6 +9,7 @@
 //! `fin-node` implements over `fin-fonts` and `fin-core`. This crate depends on no crate of
 //! ours and builds for `wasm32-unknown-unknown`.
 
+pub mod approval;
 pub mod contribution;
 pub mod licence;
 pub mod manifest;
@@ -17,6 +18,7 @@ pub mod risk;
 pub mod schema;
 pub mod validate;
 
+pub use approval::{Approval, Reapproval, reapproval_reasons, requires_reapproval};
 pub use contribution::{ContributionKind, HOST_API, consumable, host_api};
 pub use licence::{LicenceClass, classify};
 pub use manifest::{

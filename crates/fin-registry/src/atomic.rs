@@ -21,9 +21,29 @@ pub(crate) fn temp_sibling(path: &Path) -> PathBuf {
 
 /// Writes `bytes` to `path` atomically and durably.
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_mode(path, bytes, 0o666)
+}
+
+/// [`write`] for secrets: the temp file is created owner-only (mode 0600 on Unix), so the
+/// bytes are never readable by others, not even before the rename. On Windows the file takes
+/// the ACL of its folder: keep key folders where only their owner can read.
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_mode(path, bytes, 0o600)
+}
+
+fn write_mode(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     let tmp = temp_sibling(path);
     let r = (|| {
-        let mut f = File::create(&tmp)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(mode);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        let mut f = opts.open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -48,4 +68,28 @@ pub(crate) fn sync_dir(dir: &Path) -> std::io::Result<()> {
         let _ = dir;
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn private_files_are_owner_only_from_creation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("k.pem");
+        super::write_private(&p, b"secret").unwrap();
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Replacing a key keeps it owner-only too.
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::write_private(&p, b"other").unwrap();
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read(&p).unwrap(), b"other");
+    }
 }

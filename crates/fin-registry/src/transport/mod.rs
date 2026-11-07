@@ -56,18 +56,55 @@ pub trait Transport: Send + Sync {
     fn fetch(&self, path: &str, max: u64) -> Result<Vec<u8>, TransportError>;
 }
 
-/// Splits a repository path into its components, refusing anything but plain relative names.
+/// Splits a repository path into its components, refusing anything but plain relative names:
+/// no empty, `.` or `..` component, and no `\` (a separator on Windows), `:` (drive letters,
+/// NTFS streams), NUL or other control character in any component.
 pub(crate) fn components(path: &str) -> Result<Vec<&str>, TransportError> {
     let bad = || TransportError::BadPath { path: path.into() };
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
+    if path.starts_with('/') {
         return Err(bad());
     }
     let parts: Vec<&str> = path.split('/').collect();
-    if parts
-        .iter()
-        .any(|c| c.is_empty() || *c == "." || *c == ".." || c.contains(':'))
-    {
+    let plain = |c: &&str| {
+        !c.is_empty()
+            && *c != "."
+            && *c != ".."
+            && !c
+                .chars()
+                .any(|ch| ch == '\\' || ch == ':' || ch.is_control())
+    };
+    if !parts.iter().all(plain) {
         return Err(bad());
     }
     Ok(parts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::components;
+
+    #[test]
+    fn only_plain_relative_paths() {
+        assert_eq!(
+            components("targets/acme/a.finpkg").unwrap(),
+            ["targets", "acme", "a.finpkg"]
+        );
+        for p in [
+            "",
+            "/etc/passwd",
+            "targets//a",
+            "targets/./a",
+            "targets/../a",
+            "targets/a/",
+            "targets\\..\\a",
+            "targets/..\\a",
+            "targets/a\\b",
+            "C:/a",
+            "targets/a:stream",
+            "targets/a\0b",
+            "targets/a\nb",
+        ] {
+            assert!(components(p).is_err(), "{p:?}");
+        }
+    }
 }

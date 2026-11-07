@@ -23,7 +23,7 @@ use crate::advisory::{AdvisoryFile, SignedAdvisory};
 use crate::atomic;
 use crate::search::{self, Listing, PluginInfo, SearchQuery, VersionInfo};
 use crate::transport::{FsTransport, Transport};
-use crate::tuf::custom::ADVISORIES_FILE;
+use crate::tuf::trusted::{advisory_file, is_advisories};
 use crate::tuf::{
     Clock, Freshness, Policy, RefreshReport, TrustStore, TrustedRepo, TufError, sha256_hex,
 };
@@ -224,20 +224,18 @@ impl Registry {
         let p = dir.join("registry.json");
         let bytes = serde_json::to_vec_pretty(&file).expect("a config serialises");
         atomic::write(&p, &bytes).map_err(|e| TufError::io("write", &p, e))?;
-        Ok(Registry::with_repo(cfg, repo))
+        Registry::with_repo(cfg, repo)
     }
 
-    fn with_repo(cfg: RegistryConfig, repo: TrustedRepo) -> Registry {
+    fn with_repo(cfg: RegistryConfig, repo: TrustedRepo) -> Result<Registry, RegistryError> {
         let transport = Arc::new(FsTransport::new(&cfg.path));
-        let mut r = Registry {
+        let advisories = Registry::load_advisories(&repo)?;
+        Ok(Registry {
             cfg,
             repo,
             transport,
-            advisories: Vec::new(),
-        };
-        // Advisories of the trusted set; a refresh fails loudly on a tampered file instead.
-        r.advisories = r.load_advisories().unwrap_or_default();
-        r
+            advisories,
+        })
     }
 
     /// Opens the registry `id` added earlier.
@@ -257,7 +255,7 @@ impl Registry {
             root_sha256: file.trust.root_sha256,
         };
         let store = TrustStore::new(&trust_base(base), &cfg.root_sha256)?;
-        Ok(Registry::with_repo(cfg, TrustedRepo::open(store)?))
+        Registry::with_repo(cfg, TrustedRepo::open(store)?)
     }
 
     /// The ids of the added registries.
@@ -281,6 +279,22 @@ impl Registry {
             return Err(not_found(id));
         }
         std::fs::remove_dir_all(&dir).map_err(|e| TufError::io("remove", &dir, e))
+    }
+
+    /// Clears the recorded time of the last refresh of registry `id`'s trust, after the owner
+    /// corrected a clock that ran fast (`CLOCK_SUSPECT` otherwise until the clock catches up).
+    /// Human-only: nothing in the server or RPC calls it.
+    pub fn reset_clock(base: &Path, id: &str) -> Result<(), RegistryError> {
+        let p = config_dir(base, id).join("registry.json");
+        let bytes = std::fs::read(&p).map_err(|_| not_found(id))?;
+        let file: ConfigFile = serde_json::from_slice(&bytes).map_err(|e| {
+            error(
+                "REGISTRY_INVALID",
+                "config",
+                format!("{}: {e}", p.display()),
+            )
+        })?;
+        TrustStore::new(&trust_base(base), &file.trust.root_sha256)?.reset_clock()
     }
 
     /// Deletes the trusted metadata of a root no registry uses (`registry forget`).
@@ -328,25 +342,34 @@ impl Registry {
         let report = self
             .repo
             .refresh(self.transport.clone(), &Registry::policy(), clock)?;
-        self.advisories = self.load_advisories()?;
+        self.advisories = Registry::load_advisories(&self.repo)?;
         Ok(report)
     }
 
-    fn load_advisories(&self) -> Result<Vec<SignedAdvisory>, RegistryError> {
+    /// The advisories of the trusted set, from the bytes the refresh that trusted them kept
+    /// (never re-read from the folder). A kept file that is missing, does not match its signed
+    /// hash or does not parse is `REGISTRY_INVALID`, never an empty list.
+    fn load_advisories(repo: &TrustedRepo) -> Result<Vec<SignedAdvisory>, RegistryError> {
         let mut out = Vec::new();
-        let files: Vec<_> = self
-            .repo
-            .targets()
-            .filter(|t| {
-                t.name == ADVISORIES_FILE || t.name == format!("{}/{ADVISORIES_FILE}", t.role)
-            })
-            .collect();
+        let files: Vec<_> = repo.targets().filter(is_advisories).collect();
         for t in files {
-            let bytes = self
-                .repo
-                .fetch_target_bytes(self.transport.as_ref(), &t.name)?;
-            let file: AdvisoryFile = serde_json::from_slice(&bytes)
-                .map_err(|e| error("REGISTRY_INVALID", "advisories", format!("{}: {e}", t.name)))?;
+            let broken = |why: &str| {
+                TufError::new(
+                    "REGISTRY_INVALID",
+                    format!(
+                        "the trusted copy of {} {why}; remove the registry, forget its root and add it again",
+                        t.name
+                    ),
+                    json!({ "reason": "advisories", "target": t.name }),
+                )
+            };
+            let bytes = repo
+                .kept_target(&t.name)
+                .ok_or_else(|| broken("is missing"))?;
+            if bytes.len() as u64 != t.length || sha256_hex(bytes) != t.sha256 {
+                return Err(broken("does not match its signed hash"));
+            }
+            let file: AdvisoryFile = advisory_file(&t.name, bytes)?;
             out.extend(file.advisories.into_iter().map(|a| SignedAdvisory {
                 signed_by: t.role.clone(),
                 advisory: a,

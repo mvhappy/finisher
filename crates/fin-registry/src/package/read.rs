@@ -258,7 +258,27 @@ pub fn unpack(
     limits: &Limits,
 ) -> Result<Unpacked, PackageError> {
     let file = fs::File::open(archive).map_err(|e| PackageError::io("open", archive, e))?;
-    let mut zip = ZipArchive::new(BufReader::new(file)).map_err(|e| corrupt("", e))?;
+    unpack_from(BufReader::new(file), dest, executables, limits)
+}
+
+/// [`unpack`] of a package already in memory, for callers that must use the very bytes they
+/// checked (the editor hashes and publishes the bytes it unpacked, read once).
+pub fn unpack_bytes(
+    archive: &[u8],
+    dest: &Path,
+    executables: impl Fn(&Manifest) -> Vec<String>,
+    limits: &Limits,
+) -> Result<Unpacked, PackageError> {
+    unpack_from(std::io::Cursor::new(archive), dest, executables, limits)
+}
+
+fn unpack_from<R: Read + std::io::Seek>(
+    archive: R,
+    dest: &Path,
+    executables: impl Fn(&Manifest) -> Vec<String>,
+    limits: &Limits,
+) -> Result<Unpacked, PackageError> {
+    let mut zip = ZipArchive::new(archive).map_err(|e| corrupt("", e))?;
     let (entries, names) = scan(&mut zip, limits)?;
     let Some(manifest_entry) = entries.iter().find(|e| !e.dir && e.path == MANIFEST_FILE) else {
         return Err(PackageError::manifest(
