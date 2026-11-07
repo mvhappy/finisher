@@ -37,6 +37,24 @@ pub(crate) fn group_figure(
         .or_else(|| pids.iter().map(|&p| sample(p)).sum())
 }
 
+impl Inner {
+    /// The figure attached to `ready`.
+    pub fn group_memory(&self, group: GroupId) -> Option<u64> {
+        let (handle, pids) = {
+            let t = self.tables();
+            let g = t.groups.get(&group)?;
+            let pids: Vec<u32> = g
+                .live
+                .iter()
+                .filter_map(|p| t.procs.get(p))
+                .map(|p| p.pid)
+                .collect();
+            (g.handle.clone()?, pids)
+        };
+        crate::memory::group_figure(&*self.domain, &handle, &pids)
+    }
+}
+
 /// Starts the sampler, unless the kernel enforces the limits.
 pub(crate) fn start_sampler(inner: &Arc<Inner>) {
     if !inner.domain.kernel_memory() && cfg!(unix) {

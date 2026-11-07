@@ -2,6 +2,10 @@
 
 use std::collections::VecDeque;
 
+use crate::GroupId;
+use crate::host::Inner;
+use crate::proc::Proc;
+
 /// Why the host killed a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KillReason {
@@ -139,6 +143,72 @@ impl Tail {
             .position(|&c| (c & 0xC0) != 0x80)
             .unwrap_or(v.len());
         String::from_utf8_lossy(&v[start..]).into_owned()
+    }
+}
+
+impl Inner {
+    pub fn exit_info(&self, p: &Proc, raw: RawExit) -> ExitInfo {
+        let (handle, spawned) = {
+            let t = self.tables();
+            match t.groups.get(&p.group) {
+                Some(g) => (g.handle.clone(), g.spawned),
+                None => (None, 0),
+            }
+        };
+        let (facts, foreign, sampled) = match &handle {
+            Some(h) => (
+                self.domain.exit_facts(h),
+                self.domain.foreign(h, spawned),
+                h.sampled_peak(),
+            ),
+            None => (Default::default(), None, None),
+        };
+        let mut info = bare_exit_info(p, raw);
+        if facts.oom && matches!(info.reason, ExitReason::Exited) {
+            info.reason = ExitReason::Oom;
+        }
+        info.foreign = foreign;
+        info.memory_peak = facts.memory_peak.or(sampled);
+        info
+    }
+
+    /// Counts the group's foreign processes now (at each `result`, Decision 22), so one that
+    /// is gone by the exit is still counted.
+    pub fn scan_foreign(&self, group: GroupId) {
+        let (handle, spawned) = {
+            let t = self.tables();
+            let Some(g) = t.groups.get(&group) else {
+                return;
+            };
+            (g.handle.clone(), g.spawned)
+        };
+        if let Some(h) = handle {
+            self.domain.foreign(&h, spawned);
+        }
+    }
+}
+
+/// `ExitInfo` from the process alone (also when the host is gone).
+pub(crate) fn bare_exit_info(p: &Proc, raw: RawExit) -> ExitInfo {
+    let st = p.state();
+    let reason = match &st.kill {
+        Some(r) => r.clone(),
+        None if !st.hello
+            && p.self_sandbox.is_some()
+            && raw.code == Some(i64::from(fin_jobs::EXIT_SELF_SANDBOX)) =>
+        {
+            ExitReason::SpawnFailed("selfSandbox".into())
+        }
+        None => ExitReason::Exited,
+    };
+    ExitInfo {
+        reason,
+        code: raw.code,
+        signal: raw.signal.map(signal_name),
+        foreign: None,
+        memory_peak: None,
+        stderr_tail: p.stderr_tail(),
+        lifetime_ms: p.started.elapsed().as_millis() as u64,
     }
 }
 

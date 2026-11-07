@@ -11,12 +11,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::ptr;
 
-use super::{SpawnCtx, Spawned, reap, registered};
+use super::{SpawnCtx, Spawned, kill_failed, registered};
 use crate::domain::Placement;
 use crate::spawner::{PlatformCommand, Qos};
 
 const QOS_CLASS_UTILITY: libc::c_uint = 0x11;
-const QOS_CLASS_BACKGROUND: libc::c_uint = 0x09;
 
 unsafe extern "C" {
     // <spawn.h> (libSystem): not in the libc crate.
@@ -85,7 +84,12 @@ pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
     for a in &cmd.args {
         argv_c.push(cstr(a)?);
     }
-    let mut envp_c = Vec::with_capacity(cmd.env.len());
+    let mut envp_c = Vec::with_capacity(cmd.env.len() + 1);
+    // Background starves under load: spawn at utility and let the process lower itself
+    // after `hello` (fin_jobs::qos).
+    if ctx.qos == Qos::Background {
+        envp_c.push(CString::new(format!("{}=background", fin_jobs::qos::ENV)).expect("no NUL"));
+    }
     for (k, v) in &cmd.env {
         let mut kv = k.as_bytes().to_vec();
         kv.push(b'=');
@@ -121,8 +125,7 @@ pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
         check(libc::posix_spawnattr_setsigmask(&mut a.attr, &none))?;
         let qos = match ctx.qos {
             Qos::Normal => None,
-            Qos::Utility => Some(QOS_CLASS_UTILITY),
-            Qos::Background => Some(QOS_CLASS_BACKGROUND),
+            Qos::Utility | Qos::Background => Some(QOS_CLASS_UTILITY),
         };
         if let Some(q) = qos {
             check(posix_spawnattr_set_qos_class_np(&mut a.attr, q))?;
@@ -161,9 +164,7 @@ pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
     let pid = pid as u32;
     let mut place = Placement { pgid, pid };
     if let Err(e) = ctx.domain.place(ctx.group, ctx.leaf, &mut place) {
-        // SAFETY: our suspended child, not yet reaped.
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        reap(pid);
+        kill_failed(ctx, pid);
         return Err(e);
     }
     registered(ctx, pid)?;
@@ -174,9 +175,7 @@ pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
     // SAFETY: resumes our own suspended child.
     if unsafe { libc::kill(pid as i32, libc::SIGCONT) } != 0 {
         let e = io::Error::last_os_error();
-        // SAFETY: as above.
-        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        reap(pid);
+        kill_failed(ctx, pid);
         return Err(e);
     }
     Ok(Spawned {

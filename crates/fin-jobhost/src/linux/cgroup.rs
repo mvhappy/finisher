@@ -385,8 +385,15 @@ impl KillDomain for Cgroups {
         }
     }
 
-    fn close_group(&self, g: GroupHandle) {
-        let dir = group(&g).dir.clone();
+    fn close_leaf(&self, _g: &GroupHandle, leaf: LeafHandle) {
+        let leaf: &CgLeaf = leaf.os.downcast_ref().expect("a cgroup leaf");
+        if let Err(e) = kill_and_remove(&leaf.dir, Duration::from_millis(200)) {
+            (self.log)(&format!("{}: not removed: {e}", leaf.dir.display()));
+        }
+    }
+
+    fn close_group(&self, g: &GroupHandle) {
+        let dir = group(g).dir.clone();
         match kill_and_remove(&dir, Duration::from_millis(200)) {
             Ok(()) => {
                 if let Some(w) = &self.watchdog {

@@ -109,18 +109,30 @@ pub(crate) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
 /// registration. An error kills and reaps the process.
 #[allow(dead_code)]
 fn registered(ctx: &SpawnCtx<'_>, pid: u32) -> io::Result<()> {
+    if let Err(e) = ctx.domain.placed(ctx.group, ctx.leaf, pid) {
+        kill_failed(ctx, pid);
+        return Err(e);
+    }
+    // Only now: a failed first registration leaves no stale pgid for the next spawn.
     if ctx.group.pgid() == 0 {
         ctx.group
             .pgid
             .store(pid as i32, std::sync::atomic::Ordering::Release);
     }
-    ctx.domain
-        .placed(ctx.group, ctx.leaf, pid)
-        .inspect_err(|_| {
-            // SAFETY: our own child, not yet reaped, so the pid is still ours.
-            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-            reap(pid);
-        })
+    Ok(())
+}
+
+/// Kills and reaps a process whose spawn failed after it existed. The group's first process
+/// made its own process group, which is killed whole.
+fn kill_failed(ctx: &SpawnCtx<'_>, pid: u32) {
+    let target = if ctx.group.pgid() == 0 {
+        -(pid as i32)
+    } else {
+        pid as i32
+    };
+    // SAFETY: our own child (or the group it alone made), not yet reaped.
+    unsafe { libc::kill(target, libc::SIGKILL) };
+    reap(pid);
 }
 
 /// The nice value for a QoS (Linux; macOS uses QoS classes).
@@ -219,9 +231,12 @@ pub(crate) fn kill_pgid(pgid: i32) -> io::Result<()> {
         return Ok(());
     }
     let e = io::Error::last_os_error();
-    if e.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(e)
+    match e.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        // macOS answers EPERM for a group of ours whose only member is the zombie leader:
+        // no live member, nothing to kill.
+        #[cfg(target_os = "macos")]
+        Some(libc::EPERM) => Ok(()),
+        _ => Err(e),
     }
 }

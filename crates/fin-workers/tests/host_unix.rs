@@ -107,16 +107,24 @@ fn leader_unreaped_until_close_group() {
     assert_eq!(h.exit(p).reason, ExitReason::Exited);
     h.group_empty(g);
     std::thread::sleep(Duration::from_millis(100));
-    // SAFETY: signal 0 only checks for existence.
-    assert_eq!(
-        unsafe { libc::kill(-pid, 0) },
-        0,
-        "the zombie leader keeps its pgid"
-    );
+    // Linux signals a zombie-only group (0); macOS refuses it with EPERM. Either way not
+    // ESRCH: the pgid is still taken.
+    let probe = || {
+        // SAFETY: signal 0 only checks for existence.
+        match unsafe { libc::kill(-pid, 0) } {
+            0 => 0,
+            _ => std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+        }
+    };
+    let held = if cfg!(target_os = "macos") {
+        libc::EPERM
+    } else {
+        0
+    };
+    assert_eq!(probe(), held, "the zombie leader keeps its pgid");
     h.host.close_group(g);
     let until = Instant::now() + WAIT;
-    // SAFETY: as above.
-    while unsafe { libc::kill(-pid, 0) } == 0 {
+    while probe() != libc::ESRCH {
         assert!(Instant::now() < until, "close_group reaps the leader");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -306,23 +314,30 @@ fn task_priority(pid: u32) -> i32 {
     }
 }
 
+/// macOS: utility and background run below normal; background is spawned at utility and
+/// lowers itself after `hello` (fin_jobs::qos), so it is polled for. Priorities move with
+/// load, so each comparison is retried for a while rather than read once.
 #[cfg(target_os = "macos")]
 #[test]
 fn qos_nice_applied() {
     let mut h = host();
-    let mut prio = Vec::new();
+    let mut pids = Vec::new();
     for qos in [Qos::Normal, Qos::Utility, Qos::Background] {
         let g = h.group();
         let mut req = h.req(&["test"]);
         req.qos = qos;
         let p = h.spawn(g, req).unwrap();
-        prio.push(task_priority(h.hello(p).pid));
-        h.kill(g, KillReason::Test);
+        pids.push(h.hello(p).pid);
     }
-    assert!(
-        prio[0] > prio[1] && prio[1] > prio[2],
-        "QoS lowers the priority: {prio:?}"
-    );
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let prio: Vec<i32> = pids.iter().map(|&p| task_priority(p)).collect();
+        if prio[0] > prio[1] && prio[1] > prio[2] {
+            break;
+        }
+        assert!(Instant::now() < until, "QoS lowers the priority: {prio:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[cfg(target_os = "macos")]

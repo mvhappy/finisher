@@ -86,5 +86,5 @@ impl KillDomain for JobObjects {
     fn exit_facts(&self, _group: &GroupHandle) -> ExitFacts {
         ExitFacts::default()
     }
-    fn close_group(&self, _group: GroupHandle) {}
+    fn close_group(&self, _group: &GroupHandle) {}
 }

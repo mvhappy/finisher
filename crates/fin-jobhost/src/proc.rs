@@ -13,12 +13,11 @@ use std::time::{Duration, Instant};
 use fin_jobs::codec::{self, Line, MAX_LINE};
 use fin_jobs::{HostMsg, JobError, WorkerMsg};
 
-use crate::domain::LeafHandle;
 use crate::exit::{ExitReason, MAX_STDERR_LINE, RawExit, Tail};
 use crate::framing::{Expect, Frame, Framing};
 use crate::host::Inner;
 use crate::writer::Writer;
-use crate::{EventSink, ExitInfo, GroupId, HostEvent, ProcId, Watch};
+use crate::{EventSink, ExitInfo, GroupId, HostEvent, ProcId, SendError, Watch};
 
 /// When a reader started waiting on its pipe, and whether it reached EOF.
 pub(crate) struct Gauge {
@@ -110,8 +109,6 @@ pub(crate) struct Proc {
     emit: Mutex<bool>,
     sink: EventSink,
     tail: Mutex<Tail>,
-    /// The process's leaf domain, held while the process lives (a leaf Job, Task 5).
-    _leaf: LeafHandle,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -126,7 +123,6 @@ impl Proc {
         leader: bool,
         self_sandbox: Option<String>,
         sink: EventSink,
-        leaf: LeafHandle,
     ) -> Proc {
         let started = Instant::now();
         Proc {
@@ -152,7 +148,6 @@ impl Proc {
             emit: Mutex::new(false),
             sink,
             tail: Mutex::default(),
-            _leaf: leaf,
         }
     }
 
@@ -251,11 +246,17 @@ pub(crate) fn read_stdout(p: Arc<Proc>, inner: Weak<Inner>, pipe: PipeReader, ex
             Frame::Alive | Frame::DropUnknown => {}
             Frame::ReplyUnknown(id) => {
                 let error = JobError::new("UNKNOWN_MESSAGE", "this host does not know the message");
-                let _ = p.writer.send(&HostMsg::Reply {
+                let r = p.writer.send(&HostMsg::Reply {
                     id,
                     value: None,
                     error: Some(error),
                 });
+                // As for `Host::send`: a process that does not read its stdin is hung.
+                if r == Err(SendError::QueueFull)
+                    && let Some(i) = inner.upgrade()
+                {
+                    i.kill_for(p.id, ExitReason::Hung);
+                }
             }
             Frame::Fail(reason) => {
                 if let Some(i) = inner.upgrade() {
@@ -355,7 +356,7 @@ pub(crate) fn wait_exit(
     }
     let info = match inner.upgrade() {
         Some(i) => i.exit_info(&p, raw),
-        None => crate::host::bare_exit_info(&p, raw),
+        None => crate::exit::bare_exit_info(&p, raw),
     };
     p.emit_exit(info);
     if let Some(i) = inner.upgrade() {

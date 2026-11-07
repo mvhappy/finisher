@@ -3,6 +3,7 @@
 //! ([`crate::commands`]); `send`, `watch` and `close_stdin` only touch a process's queue.
 
 use std::collections::{BTreeSet, HashMap};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
@@ -11,14 +12,14 @@ use std::time::{Duration, Instant};
 use fin_jobs::HostMsg;
 
 use crate::commands::{Cmd, Done, SpawnDone};
-use crate::domain::{GroupHandle, KillDomain};
-use crate::exit::{ExitReason, RawExit, signal_name};
+use crate::domain::{GroupHandle, KillDomain, LeafHandle};
+use crate::exit::ExitReason;
 use crate::proc::Proc;
 use crate::spawner::SpawnRequest;
 use crate::timers::Timers;
 use crate::{
-    EventSink, ExitInfo, GroupId, GroupSpec, HostCaps, HostError, HostEvent, HostOptions,
-    KillReason, ProcId, SendError, Watch,
+    EventSink, GroupId, GroupSpec, HostCaps, HostError, HostEvent, HostOptions, KillReason, ProcId,
+    SendError, Watch,
 };
 
 /// How often a busy reader's stall is re-checked.
@@ -40,6 +41,10 @@ pub(crate) struct Group {
     pub reap: Option<mpsc::Sender<()>>,
     /// The last kill sent to its domain (the kill wait's start, Decision 18).
     pub killed_at: Option<Instant>,
+    /// Its processes' leaves, released (`close_leaf`) with the group.
+    pub leaves: Vec<LeafHandle>,
+    /// A leader whose waiter never started: reaped when the group is released.
+    pub orphan_leader: Option<u32>,
 }
 
 #[derive(Default)]
@@ -134,6 +139,8 @@ impl Host {
                 kill_done: Vec::new(),
                 reap: None,
                 killed_at: None,
+                leaves: Vec::new(),
+                orphan_leader: None,
             },
         );
         id
@@ -147,12 +154,12 @@ impl Host {
     /// Enqueues `msg` (never blocks). A full queue kills the process as hung.
     pub fn send(&self, proc: ProcId, msg: &HostMsg) -> Result<(), SendError> {
         let p = self.inner.proc(proc).ok_or(SendError::Gone)?;
-        if let HostMsg::Start(s) = msg {
-            p.state().job = Some(s.job.id.clone());
-        }
         let r = p.writer.send(msg);
-        if r == Err(SendError::QueueFull) {
-            self.inner.kill_for(proc, ExitReason::Hung);
+        match (&r, msg) {
+            // Only a `start` that was queued names the running job.
+            (Ok(()), HostMsg::Start(s)) => p.state().job = Some(s.job.id.clone()),
+            (Err(SendError::QueueFull), _) => self.inner.kill_for(proc, ExitReason::Hung),
+            _ => {}
         }
         r
     }
@@ -334,117 +341,49 @@ impl Inner {
         }
     }
 
-    /// The figure attached to `ready`.
-    pub fn group_memory(&self, group: GroupId) -> Option<u64> {
-        let (handle, pids) = {
-            let t = self.tables();
-            let g = t.groups.get(&group)?;
-            let pids: Vec<u32> = g
-                .live
-                .iter()
-                .filter_map(|p| t.procs.get(p))
-                .map(|p| p.pid)
-                .collect();
-            (g.handle.clone()?, pids)
-        };
-        crate::memory::group_figure(&*self.domain, &handle, &pids)
-    }
-
-    pub fn exit_info(&self, p: &Proc, raw: RawExit) -> ExitInfo {
-        let (handle, spawned) = {
-            let t = self.tables();
-            match t.groups.get(&p.group) {
-                Some(g) => (g.handle.clone(), g.spawned),
-                None => (None, 0),
-            }
-        };
-        let (facts, foreign, sampled) = match &handle {
-            Some(h) => (
-                self.domain.exit_facts(h),
-                self.domain.foreign(h, spawned),
-                h.sampled_peak(),
-            ),
-            None => (Default::default(), None, None),
-        };
-        let mut info = bare_exit_info(p, raw);
-        if facts.oom && matches!(info.reason, ExitReason::Exited) {
-            info.reason = ExitReason::Oom;
-        }
-        info.foreign = foreign;
-        info.memory_peak = facts.memory_peak.or(sampled);
-        info
-    }
-
-    /// Counts the group's foreign processes now (at each `result`, Decision 22), so one that
-    /// is gone by the exit is still counted.
-    pub fn scan_foreign(&self, group: GroupId) {
-        let (handle, spawned) = {
-            let t = self.tables();
-            let Some(g) = t.groups.get(&group) else {
-                return;
-            };
-            (g.handle.clone(), g.spawned)
-        };
-        if let Some(h) = handle {
-            self.domain.foreign(&h, spawned);
-        }
-    }
-
-    /// After `Exit`: the tables, `GroupEmpty`, the kill callbacks, a closing group's release
-    /// and the shutdown's end.
+    /// After `Exit`: the tables, then [`Inner::settle`] and the shutdown's end.
     pub fn exited(&self, p: &Proc) {
-        let (empty, waiters, finalize, all_gone) = {
+        let all_gone = {
             let mut t = self.tables();
             t.procs.remove(&p.id);
-            let (empty, waiters, finalize) = match t.groups.get_mut(&p.group) {
-                Some(g) => {
-                    g.live.remove(&p.id);
-                    if g.live.is_empty() && g.pending == 0 {
-                        let w: Vec<Done> = g.kill_done.drain(..).map(|(_, d)| d).collect();
-                        (true, w, g.closing)
-                    } else {
-                        (false, Vec::new(), false)
-                    }
-                }
-                None => (false, Vec::new(), false),
-            };
-            (empty, waiters, finalize, t.shutting && t.procs.is_empty())
+            if let Some(g) = t.groups.get_mut(&p.group) {
+                g.live.remove(&p.id);
+            }
+            t.shutting && t.procs.is_empty()
         };
-        if empty {
-            self.sink.send(HostEvent::GroupEmpty { group: p.group });
-            for w in waiters {
-                w();
-            }
-            if finalize {
-                self.post(Cmd::Finalize(p.group));
-            }
-        }
+        self.settle(p.group);
         if all_gone {
             self.post(Cmd::ShutdownFinish);
         }
     }
-}
 
-/// `ExitInfo` from the process alone (also when the host is gone).
-pub(crate) fn bare_exit_info(p: &Proc, raw: RawExit) -> ExitInfo {
-    let st = p.state();
-    let reason = match &st.kill {
-        Some(r) => r.clone(),
-        None if !st.hello
-            && p.self_sandbox.is_some()
-            && raw.code == Some(i64::from(fin_jobs::EXIT_SELF_SANDBOX)) =>
-        {
-            ExitReason::SpawnFailed("selfSandbox".into())
+    /// A group with no live process and no spawn pending: `GroupEmpty`, its kill callbacks,
+    /// and its release if it is closing. After an exit and after a failed spawn.
+    pub fn settle(&self, gid: GroupId) {
+        let (waiters, finalize) = {
+            let mut t = self.tables();
+            let Some(g) = t.groups.get_mut(&gid) else {
+                return;
+            };
+            if !g.live.is_empty() || g.pending > 0 {
+                return;
+            }
+            let w: Vec<Done> = g.kill_done.drain(..).map(|(_, d)| d).collect();
+            (w, g.closing)
+        };
+        self.sink.send(HostEvent::GroupEmpty { group: gid });
+        for w in waiters {
+            self.run_done(w);
         }
-        None => ExitReason::Exited,
-    };
-    ExitInfo {
-        reason,
-        code: raw.code,
-        signal: raw.signal.map(signal_name),
-        foreign: None,
-        memory_peak: None,
-        stderr_tail: p.stderr_tail(),
-        lifetime_ms: p.started.elapsed().as_millis() as u64,
+        if finalize {
+            self.post(Cmd::Finalize(gid));
+        }
+    }
+
+    /// Runs a caller's callback; a panic is logged, never unwinds into host threads.
+    pub fn run_done(&self, d: Done) {
+        if catch_unwind(AssertUnwindSafe(d)).is_err() {
+            self.log("a host callback panicked");
+        }
     }
 }

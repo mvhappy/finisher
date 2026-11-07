@@ -9,8 +9,8 @@
 //! The host calls, per group: `open_group` at its first spawn; per process `open_leaf`,
 //! `place` (before the process runs its first instruction), `placed` (once it exists); `kill`
 //! for `kill_group` and the timers; `memory` at `ready`; `foreign` and `exit_facts` at each
-//! exit; `close_group` once the group is closed and empty, **before** the Unix leader is
-//! reaped (so a watchdog's `-g` precedes the reap, Decision 15).
+//! exit; once the group is closed and empty `close_leaf` for each process, then `close_group`,
+//! **before** the Unix leader is reaped (so a watchdog's `-g` precedes the reap, Decision 15).
 
 use std::any::Any;
 use std::io;
@@ -148,8 +148,12 @@ pub(crate) trait KillDomain: Send + Sync {
     /// Processes in the group beyond the `spawned` ones the host started (Decision 22).
     fn foreign(&self, group: &GroupHandle, spawned: u32) -> Option<u32>;
     fn exit_facts(&self, group: &GroupHandle) -> ExitFacts;
-    /// The group is closed and empty: release it. On Unix the host reaps the leader after.
-    fn close_group(&self, group: GroupHandle);
+    /// Releases a process's leaf: once its group is closed and empty (before `close_group`),
+    /// or at once when the spawn failed. The default does nothing.
+    fn close_leaf(&self, _group: &GroupHandle, _leaf: LeafHandle) {}
+    /// The group is closed and empty: release it (always called, whoever else still holds a
+    /// reference to the handle). On Unix the host reaps the leader after.
+    fn close_group(&self, group: &GroupHandle);
 }
 
 /// A recording double over another domain: tests check the call order.
@@ -161,6 +165,18 @@ pub(crate) mod double {
     pub(crate) struct Recording<D> {
         pub inner: D,
         pub calls: Arc<Mutex<Vec<String>>>,
+        /// How many `placed` calls fail (from the first).
+        pub fail_placed: std::sync::atomic::AtomicU32,
+    }
+
+    impl<D> Recording<D> {
+        pub fn new(inner: D, calls: Arc<Mutex<Vec<String>>>) -> Recording<D> {
+            Recording {
+                inner,
+                calls,
+                fail_placed: Default::default(),
+            }
+        }
     }
 
     impl<D: KillDomain> Recording<D> {
@@ -197,6 +213,16 @@ pub(crate) mod double {
         }
         fn placed(&self, g: &GroupHandle, l: &LeafHandle, pid: u32) -> io::Result<()> {
             self.note(format!("placed {}", g.id));
+            use std::sync::atomic::Ordering::{AcqRel, Acquire};
+            let n = self.fail_placed.load(Acquire);
+            if n > 0
+                && self
+                    .fail_placed
+                    .compare_exchange(n, n - 1, AcqRel, Acquire)
+                    .is_ok()
+            {
+                return Err(io::Error::other("placed fails (test)"));
+            }
             self.inner.placed(g, l, pid)
         }
         fn kill(&self, group: &GroupHandle) -> io::Result<()> {
@@ -213,7 +239,11 @@ pub(crate) mod double {
             self.note(format!("exit_facts {}", group.id));
             self.inner.exit_facts(group)
         }
-        fn close_group(&self, group: GroupHandle) {
+        fn close_leaf(&self, group: &GroupHandle, leaf: LeafHandle) {
+            self.note(format!("close_leaf {}", group.id));
+            self.inner.close_leaf(group, leaf)
+        }
+        fn close_group(&self, group: &GroupHandle) {
             self.note(format!("close_group {}", group.id));
             self.inner.close_group(group)
         }

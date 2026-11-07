@@ -31,24 +31,12 @@ impl List {
     }
 
     fn line(&mut self, line: &str) {
-        let Some((op, arg)) = line.split_once(' ') else {
-            return;
-        };
-        match op {
-            "+g" | "-g" => {
-                let Ok(pgid) = arg.parse::<i32>() else { return };
-                if op == "+g" {
-                    self.groups.insert(pgid);
-                } else {
-                    self.groups.remove(&pgid);
-                }
-            }
-            "+c" => {
-                self.cgroups.insert(arg.to_owned());
-            }
-            "-c" => {
-                self.cgroups.remove(arg);
-            }
+        let (g, c) = (&mut self.groups, &mut self.cgroups);
+        match line.split_once(' ') {
+            Some(("+g", a)) => _ = a.parse().map(|p| g.insert(p)),
+            Some(("-g", a)) => _ = a.parse().map(|p: i32| g.remove(&p)),
+            Some(("+c", a)) => _ = c.insert(a.to_owned()),
+            Some(("-c", a)) => _ = c.remove(a),
             _ => {}
         }
     }

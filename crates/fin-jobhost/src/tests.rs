@@ -36,10 +36,7 @@ fn wait_for(rx: &mpsc::Receiver<HostEvent>, mut pred: impl FnMut(&HostEvent) -> 
 fn domain_is_driven_in_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let opts = HostOptions::new(std::env::temp_dir());
-    let domain = Box::new(Recording {
-        inner: ProcessGroups::default(),
-        calls: calls.clone(),
-    });
+    let domain = Box::new(Recording::new(ProcessGroups::default(), calls.clone()));
     let (sink, rx) = EventSink::channel(64);
     let host = Host::start_with(opts, sink, domain).unwrap();
     let g = host.open_group(GroupSpec {
@@ -105,5 +102,99 @@ fn domain_is_driven_in_order() {
         calls.iter().filter(|c| c.starts_with("exit_facts")).count(),
         2
     );
-    assert_eq!(calls.last().map(String::as_str), Some("close_group g1"));
+    // Each process's leaf is released, then the group.
+    assert_eq!(
+        calls[calls.len() - 3..],
+        ["close_leaf g1", "close_leaf g1", "close_group g1"]
+    );
+}
+
+fn test_host(domain: Recording<ProcessGroups>) -> (Host, mpsc::Receiver<HostEvent>) {
+    let (sink, rx) = EventSink::channel(64);
+    let host = Host::start_with(
+        HostOptions::new(std::env::temp_dir()),
+        sink,
+        Box::new(domain),
+    );
+    (host.unwrap(), rx)
+}
+
+fn group(host: &Host) -> GroupId {
+    host.open_group(GroupSpec {
+        label: "t".into(),
+        memory_bytes: None,
+        qos: Qos::Normal,
+    })
+}
+
+fn spawn(host: &Host, g: GroupId, req: SpawnRequest) -> Result<ProcId, HostError> {
+    let (tx, rx) = mpsc::channel();
+    host.spawn(
+        g,
+        req,
+        Box::new(move |r| {
+            let _ = tx.send(r);
+        }),
+    );
+    rx.recv_timeout(Duration::from_secs(5)).unwrap()
+}
+
+/// A failed first registration kills the process's own group and leaves no pgid behind: the
+/// next spawn makes a fresh group.
+#[test]
+fn failed_first_registration_leaves_no_stale_pgid() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let d = Recording::new(ProcessGroups::default(), calls);
+    d.fail_placed.store(1, std::sync::atomic::Ordering::Release);
+    let (host, _rx) = test_host(d);
+    let g = group(&host);
+    assert!(matches!(
+        spawn(&host, g, sh("sleep 5")),
+        Err(HostError::Spawn(_))
+    ));
+    let p = spawn(&host, g, sh("sleep 5")).expect("the second spawn works");
+    let pid = host.inner.proc(p).unwrap().pid as i32;
+    // SAFETY: getpgid only reads.
+    assert_eq!(unsafe { libc::getpgid(pid) }, pid, "a group of its own");
+}
+
+/// A failed spawn settles its group like an exit: `GroupEmpty`, then the release.
+#[test]
+fn failed_spawn_settles_the_group() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (host, rx) = test_host(Recording::new(ProcessGroups::default(), calls.clone()));
+    let g = group(&host);
+    let mut req = sh("exit 0");
+    req.program = Program::Path("/nonexistent/fin-test".into());
+    assert!(spawn(&host, g, req).is_err());
+    wait_for(
+        &rx,
+        |e| matches!(e, HostEvent::GroupEmpty { group } if *group == g),
+    );
+}
+
+/// A panicking `kill_group` callback skips no release: the group is still closed and the
+/// shutdown still ends.
+#[test]
+fn panicking_callback_skips_nothing() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let (host, rx) = test_host(Recording::new(ProcessGroups::default(), calls.clone()));
+    let g = group(&host);
+    spawn(&host, g, sh("sleep 30")).unwrap();
+    host.kill_group(g, KillReason::Test, Box::new(|| panic!("a caller's bug")));
+    wait_for(
+        &rx,
+        |e| matches!(e, HostEvent::GroupEmpty { group } if *group == g),
+    );
+    host.close_group(g);
+    let (tx, drx) = mpsc::channel();
+    host.shutdown(
+        0,
+        Box::new(move || {
+            let _ = tx.send(());
+        }),
+    );
+    drx.recv_timeout(Duration::from_secs(5))
+        .expect("the shutdown ends");
+    assert!(calls.lock().unwrap().iter().any(|c| c == "close_group g1"));
 }

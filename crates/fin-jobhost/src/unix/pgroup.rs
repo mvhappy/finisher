@@ -77,10 +77,16 @@ impl KillDomain for ProcessGroups {
     fn placed(&self, group: &GroupHandle, _leaf: &LeafHandle, pid: u32) -> io::Result<()> {
         let st = state(group);
         st.seen.spawned(pid);
+        // The group's pgid is stored once this succeeds; until then the first process's pid
+        // is the pgid.
+        let pgid = match group.pgid() {
+            0 => pid as i32,
+            g => g,
+        };
         if let Some(w) = &self.watchdog
             && !st.listed.swap(true, Ordering::AcqRel)
         {
-            w.add_group(group.pgid());
+            w.add_group(pgid);
         }
         Ok(())
     }
@@ -102,9 +108,9 @@ impl KillDomain for ProcessGroups {
         ExitFacts::default()
     }
 
-    fn close_group(&self, group: GroupHandle) {
+    fn close_group(&self, group: &GroupHandle) {
         if let Some(w) = &self.watchdog
-            && state(&group).listed.load(Ordering::Acquire)
+            && state(group).listed.load(Ordering::Acquire)
         {
             w.remove_group(group.pgid());
         }

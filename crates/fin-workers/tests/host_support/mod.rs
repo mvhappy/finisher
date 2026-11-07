@@ -313,6 +313,25 @@ pub fn gone(pid: u32) -> bool {
     {
         return rest.1.starts_with('Z');
     }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: a zeroed proc_bsdshortinfo is a valid out-buffer; proc_pidinfo fills it
+        // (zombies included) and returns its size.
+        let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as i32;
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+                size,
+            )
+        };
+        if n == size {
+            return info.pbsi_status == libc::SZOMB;
+        }
+    }
     false
 }
 

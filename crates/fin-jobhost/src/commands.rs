@@ -1,7 +1,8 @@
 //! The `jobhost-spawn` thread (Decision 11): every spawn, kill, close and the shutdown run
 //! here, in order. It lives as long as the host, so on Linux `PR_SET_PDEATHSIG` (which follows
-//! the thread that forked) fires only when the host itself goes. `done` callbacks run here
-//! and must be quick.
+//! the thread that forked) fires only when the host itself goes. Callbacks (`done`) run here
+//! or on a waiter thread and must be quick; a panicking one is caught and logged
+//! ([`Inner::run_done`]), so it skips no release, reap or shutdown step.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver};
@@ -99,16 +100,11 @@ fn spawn(inner: &Arc<Inner>, gid: GroupId, req: SpawnRequest) -> Result<ProcId, 
     };
     let r = spawn_in(inner, gid, handle, &spec, req);
     if r.is_err() {
-        let fin = {
-            let mut t = inner.tables();
-            t.groups.get_mut(&gid).is_some_and(|g| {
-                g.pending -= 1;
-                g.closing && g.live.is_empty() && g.pending == 0
-            })
-        };
-        if fin {
-            finalize(inner, gid);
+        if let Some(g) = inner.tables().groups.get_mut(&gid) {
+            g.pending -= 1;
         }
+        // As after an exit: `GroupEmpty`, the kill callbacks, the release if closing.
+        inner.settle(gid);
     }
     r
 }
@@ -166,7 +162,13 @@ fn spawn_in(
         #[cfg(feature = "test-hooks")]
         resume_delay: inner.opts.resume_delay_for_test,
     };
-    let spawned = os::spawn(cmd, &ctx).map_err(HostError::Spawn)?;
+    let spawned = match os::spawn(cmd, &ctx) {
+        Ok(s) => s,
+        Err(e) => {
+            inner.domain.close_leaf(&handle, leaf);
+            return Err(HostError::Spawn(e));
+        }
+    };
     let expect = Expect {
         bundled: matches!(req.program, Program::Bundled(_)),
         helper: matches!(req.role, Role::Helper { .. }),
@@ -184,7 +186,6 @@ fn spawn_in(
             leader,
             self_sandbox,
             inner.sink.clone(),
-            leaf,
         ));
         t.procs.insert(id, p.clone());
         let g = t
@@ -194,6 +195,7 @@ fn spawn_in(
         g.pending -= 1;
         g.spawned += 1;
         g.live.insert(id);
+        g.leaves.push(leaf);
         let reap = leader.then(|| {
             let (tx, rx) = mpsc::channel();
             g.reap = Some(tx);
@@ -210,11 +212,11 @@ fn spawn_in(
         os: os_proc,
         ..
     } = spawned;
+    let waiter = thread("jobhost-wait", {
+        let (p, w) = (p.clone(), w.clone());
+        move || proc::wait_exit(p, w, os_proc, drain, reap)
+    });
     let started = [
-        thread("jobhost-wait", {
-            let (p, w) = (p.clone(), w.clone());
-            move || proc::wait_exit(p, w, os_proc, drain, reap)
-        }),
         thread("jobhost-out", {
             let (p, w) = (p.clone(), w.clone());
             move || proc::read_stdout(p, w, stdout, expect)
@@ -228,12 +230,41 @@ fn spawn_in(
             move || p.writer.run(stdin)
         }),
     ];
-    if started.iter().any(|ok| !ok) {
+    if !waiter {
+        no_waiter(inner, &p);
+    } else if started.iter().any(|ok| !ok) {
         inner.log(&format!("{}: a thread did not start; killing it", p.id));
         kill_for(inner, p.id, ExitReason::SpawnFailed("thread".into()));
     }
     inner.arm_hello(&p);
     Ok(p.id)
+}
+
+/// The waiter did not start: kill the process and do the waiter's work here, so its `Exit`
+/// still goes out. A leader stays a zombie until its group is released.
+#[cfg(unix)]
+fn no_waiter(inner: &Arc<Inner>, p: &Arc<Proc>) {
+    inner.log(&format!("{}: no waiter thread; killing it", p.id));
+    p.mark_kill(ExitReason::SpawnFailed("thread".into()));
+    // SAFETY: our own child, not yet reaped.
+    unsafe { libc::kill(p.pid as i32, libc::SIGKILL) };
+    let raw = os::wait(&(), p.pid, !p.leader).unwrap_or_default();
+    p.state().exited = true;
+    p.writer.kill();
+    if p.leader
+        && let Some(g) = inner.tables().groups.get_mut(&p.group)
+    {
+        g.reap = None;
+        g.orphan_leader = Some(p.pid);
+    }
+    let info = inner.exit_info(p, raw);
+    p.emit_exit(info);
+    inner.exited(p);
+}
+
+#[cfg(not(unix))]
+fn no_waiter(inner: &Arc<Inner>, p: &Arc<Proc>) {
+    kill_for(inner, p.id, ExitReason::SpawnFailed("thread".into()));
 }
 
 fn thread(name: &str, f: impl FnOnce() + Send + 'static) -> bool {
@@ -278,7 +309,7 @@ fn kill(inner: &Arc<Inner>, gid: GroupId, reason: KillReason, done: Option<Done>
         if live.is_empty() {
             drop(t);
             if let Some(d) = done {
-                d();
+                inner.run_done(d);
             }
             return;
         }
@@ -350,7 +381,7 @@ fn kill_wait_over(inner: &Inner, gid: GroupId) {
         inner.exited(&p);
     }
     for (_, d) in due {
-        d();
+        inner.run_done(d);
     }
 }
 
@@ -381,14 +412,18 @@ fn finalize(inner: &Inner, gid: GroupId) {
     };
     let Some(mut g) = g else { return };
     if let Some(h) = g.handle.take() {
-        match Arc::try_unwrap(h) {
-            Ok(h) => inner.domain.close_group(h),
-            Err(_) => inner.log(&format!("{gid}: its handle is still in use; not released")),
+        for leaf in g.leaves.drain(..) {
+            inner.domain.close_leaf(&h, leaf);
         }
+        inner.domain.close_group(&h);
     }
     drop(g.reap.take());
+    #[cfg(unix)]
+    if let Some(pid) = g.orphan_leader {
+        os::reap(pid);
+    }
     for (_, d) in g.kill_done {
-        d();
+        inner.run_done(d);
     }
 }
 
@@ -461,7 +496,7 @@ fn shutdown_finish(inner: &Inner) {
         return;
     }
     for d in close_all(inner) {
-        d();
+        inner.run_done(d);
     }
 }
 
@@ -479,6 +514,6 @@ fn stop(inner: &Arc<Inner>) {
         kill_domain(inner, gid, Some(h));
     }
     for d in close_all(inner) {
-        d();
+        inner.run_done(d);
     }
 }
