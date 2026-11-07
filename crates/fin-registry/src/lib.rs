@@ -6,11 +6,15 @@
 //! - [`tuf`]: the TUF client ([`tuf::TrustedRepo`]) and its per-root trust store.
 //! - [`editor`]: [`editor::RepoBuilder`], which builds and signs registries (used by
 //!   `fin-plugin` and the tests).
+//! - [`registry`]: local-folder registries (config, kept trust, search, yanks, advisories);
+//!   [`search`] reads only signed custom metadata.
 //! - [`transport`]: where registry bytes come from (local folders; HTTP in test builds).
 
 pub mod advisory;
 mod atomic;
 pub mod editor;
 pub mod package;
+pub mod registry;
+pub mod search;
 pub mod transport;
 pub mod tuf;
