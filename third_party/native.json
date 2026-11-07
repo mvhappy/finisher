@@ -1,0 +1,68 @@
+{
+  "libraries": [
+    {
+      "name": "SVT-AV1",
+      "package": "fin-svt-sys",
+      "path": "third_party/svt-av1",
+      "tag": "v4.3.0",
+      "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe",
+      "license": "BSD-3-Clause-Clear AND BSD-2-Clause AND BSD-3-Clause AND MIT AND ISC",
+      "patents": "AOMedia-Patent-License-1.0",
+      "files": {
+        "LICENSE.md": "c99713c43ae030927d5a42d050d23b71c917cda8553cede8651646c705cacc04",
+        "LICENSE-BSD2.md": "313fc5bdf3d24630a2659822e52cac1df7b6a5f3767ab6043ee4eb73a53afdb5",
+        "PATENTS.md": "c7d92215e5fd2f591ea3e484dc46b14237a31ff063f1d4e236a5c40098a76057",
+        "third_party/fastfeat/LICENSE": "ebddd700de8b68d8bfbd286f297b7df51bd7ee0339814f72b11babde90b0b58d",
+        "third_party/safestringlib/LICENSE": "210f9c2bcfd5437c7eb9de1597e8c91b8b5638ed4571f68ccbb678053e3de2e2",
+        "Source/Lib/Codec/vector.c": "1391bed82373db2e753be8bfbb9fa7ac17a4871c7f4eacb550213d0ffe7bcf8c",
+        "Source/Lib/ASM_SSE2/x86inc.asm": "e122f1a42b60653cfa72f5392a5fb7668b855672c9780a4fe0137d00f7b1955a",
+        "Source/Lib/ASM_NEON/dav1d_asm.S": "babcdd39193e4205f54b8f16ad7bab0b47ae1d3d100f70db483d23bf51fdd783"
+      },
+      "note": "the encoder library only (static, no apps, no tests), built with cmake by crates/fin-svt-sys/build.rs: BSD-3-Clause-Clear, BSD-2-Clause (libaom- and dav1d-derived files), BSD-3-Clause (fastfeat), MIT (safestringlib, Source/Lib/Codec/vector.c), ISC (x264's x86inc.asm); the hashed files carry those texts (THIRD_PARTY_NOTICES.md has them in full). crates/fin-svt-sys/csrc/svt_shim.c is Finisher's own (MIT)"
+    },
+    {
+      "name": "rav1d",
+      "package": "rav1d",
+      "version": "1.1",
+      "license": "BSD-2-Clause",
+      "patents": "AOMedia-Patent-License-1.0",
+      "note": "the crate's x86_64 assembly (nasm) and its aarch64 assembly (cc, off until the package ships its headers); Rust port of dav1d"
+    },
+    {
+      "name": "SQLite",
+      "package": "libsqlite3-sys",
+      "version": "0.35",
+      "license": "blessing",
+      "note": "the SQLite amalgamation bundled by libsqlite3-sys (rusqlite's `bundled` feature); SQLite is in the public domain"
+    },
+    {
+      "name": "BLAKE3",
+      "package": "blake3",
+      "version": "1",
+      "license": "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+      "note": "the crate's own C and assembly implementations, compiled by its build script with cc"
+    },
+    {
+      "name": "ring",
+      "package": "ring",
+      "version": "0.17",
+      "license": "Apache-2.0 AND ISC",
+      "note": "the crate's bundled C and assembly (derived from BoringSSL), compiled by its build script"
+    }
+  ],
+  "allow": [
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-3-Clause-Clear",
+    "MIT",
+    "ISC",
+    "Zlib",
+    "Apache-2.0",
+    "CC0-1.0",
+    "blessing"
+  ],
+  "patentLicences": [
+    "AOMedia-Patent-License-1.0",
+    "WebM-Patent-Grant"
+  ]
+}

@@ -145,6 +145,8 @@ pub(crate) enum Control {
         sel: PurgeSelector,
         ack: SyncSender<Result<PurgeReport, JournalError>>,
     },
+    /// The server's run: `session.start` and `session.end` (`session.rs`).
+    Session(crate::session::SessionMsg),
     /// Drain, flush, fsync, stop.
     Close(SyncSender<()>),
 }

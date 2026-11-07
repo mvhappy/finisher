@@ -1,0 +1,16 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "init-1",
+    "response": {
+      "commands": [{ "name": "review", "description": "Review changes", "argumentHint": "[path]" }],
+      "models": [
+        { "value": "default", "displayName": "Default (recommended)", "description": "" },
+        { "value": "test-claude-big", "displayName": "Big", "description": "" },
+        { "value": "test-claude-small", "displayName": "Small", "description": "" },
+        { "displayName": "no value" }
+      ]
+    }
+  }
+}

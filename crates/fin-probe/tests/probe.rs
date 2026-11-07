@@ -160,8 +160,10 @@ fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
     b
 }
 
+/// Sub-project 2 refused fragmented MP4; `fin-container` reads it (6A Task 8). A fragmented
+/// header with no track is still not media.
 #[test]
-fn fragmented_mp4_is_rejected() {
+fn a_fragmented_header_without_tracks_is_not_media() {
     // ftyp + moov{mvhd(v0, zero duration), mvex{trex}}: what a fragmented file starts with.
     let mut mvhd = vec![0u8; 100];
     mvhd[12..16].copy_from_slice(&1000u32.to_be_bytes()); // timescale
@@ -182,7 +184,7 @@ fn fragmented_mp4_is_rejected() {
     std::fs::write(&path, bytes).unwrap();
     let err = probe(&path).unwrap_err();
     assert_eq!(err.code, "UNSUPPORTED_CONTAINER");
-    assert_eq!(err.details["reason"], "fragmented mp4", "{err:?}");
+    assert_eq!(err.details["reason"], "no video or audio track", "{err:?}");
 }
 
 #[test]
@@ -215,7 +217,15 @@ fn probe_json_is_the_serde_form() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        ["audio", "duration", "fingerprint", "kind", "size", "video"]
+        [
+            "audio",
+            "duration",
+            "fingerprint",
+            "kind",
+            "media",
+            "size",
+            "video"
+        ]
     );
     assert_eq!(v["kind"], "media");
     assert_eq!(v["duration"], "2");

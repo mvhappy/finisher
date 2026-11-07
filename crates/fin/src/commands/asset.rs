@@ -83,7 +83,7 @@ pub struct AddArgs {
 }
 
 pub fn plan_add(b: &mut Builder<'_>, a: &AddArgs, placeholder: &str) -> Result<Value, CoreError> {
-    let probed = b.backend.probe(&paths::resolve_str(&a.path))?;
+    let probed = b.backend.probe(&paths::resolve_checked_str(&a.path)?)?;
     let mut resolved = json!({ "path": probed.path, "kind": probed.kind });
     if let Some(d) = probed.duration {
         resolved["duration"] = json!(d);

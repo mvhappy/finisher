@@ -173,7 +173,8 @@ pub struct StepUnit {
 /// An undo whose units are only partly here (a stale base between two units of an
 /// `undo --to`) names them newest first, so the units here come first, and their inverses
 /// lead its ops: it is cut into one part per step of theirs, as above, and one unpaired tail
-/// part for the rest (the inverses of units older than the interval, which stand alone).
+/// part for the rest (the inverses of units older than the interval, which stand alone; empty
+/// when those are no-op edits, whose inverses hold no ops).
 ///
 /// Anything else stands alone: an undo whose units here are not a prefix of the ones it
 /// names, a revert whose group is not all here, a step whose op counts do not add up, and
@@ -233,8 +234,9 @@ pub fn steps_with_units(
             let sizes: Option<Vec<usize>> = t.iter().map(|&j| steps[j].inverse_len()).collect();
             let fits = sizes.as_ref().is_some_and(|sizes| {
                 let ops: usize = sizes.iter().sum();
+                // The older units' tail may be empty: a no-op edit inverts to no ops.
                 if partial {
-                    ops < step.ops.len()
+                    ops <= step.ops.len()
                 } else {
                     ops == step.ops.len()
                 }

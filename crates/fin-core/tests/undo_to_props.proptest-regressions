@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc bf8e4f56da06b2beb9427ef120c980f9a6ff90596c0505904360a9318b47a644 # shrinks to acts = [Edit(1, 7, 5), Checkpoint, Checkpoint, Edit(0, 3, 1), Edit(0, 0, 0)], cpi = 0, redo = false, tail_bob = false, base_pick = 19, skind = 3, sk = 0
+cc 9d2e7f368e8bb3b9be7fe67b648f2a55e2fae07a81078eb2a9117eec32e81d79 # shrinks to shape = Shape { lens: [[], [12, 12], []], linked: false, transitions: true, captions: 0, effects: false, pinned: true }, acts = [Edit(false, [FontPin { which: 0, fallback: None }]), Edit(false, [TrRemove { t: 1, k: 0 }]), Edit(false, [TrSet { t: 1, k: 0, n: 2 }]), Edit(false, [StyleAdd { from: 0, v: 20 }])], cpi = 0, redo = false, base_pick = 6, stale = [TrSet { t: 1, k: 0, n: 2 }]

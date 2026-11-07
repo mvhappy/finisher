@@ -16,8 +16,8 @@
     "binaryName": "fin-node"
   },
   "scripts": {
-    "build": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir . --no-js",
-    "build:test": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir test/native --no-js --features test-hooks"
+    "build": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir . --no-js && node scripts/copy-workers.mjs",
+    "build:test": "napi build --platform --release --manifest-path ../../crates/fin-node/Cargo.toml --output-dir test/native --no-js --features test-hooks && node scripts/copy-workers.mjs --test"
   },
   "devDependencies": {
     "@finisher/core-types": "workspace:*",

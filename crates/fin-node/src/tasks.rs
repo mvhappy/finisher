@@ -15,6 +15,7 @@ pub(crate) enum Call {
     Commit {
         tx_json: String,
         generation_json: Option<String>,
+        meta_json: Option<String>,
     },
     Snapshot {
         branch: String,
@@ -39,36 +40,44 @@ pub(crate) enum Call {
         copy: String,
     },
     // The branch and history calls (`crate::history`); each `req_json` is the camelCase JSON
-    // of the fin-store request.
+    // of the fin-store request, each `meta_json` the caller's actor (`log.commit`).
     BranchCreate {
         req_json: String,
+        meta_json: Option<String>,
     },
     Branches {
         all: bool,
     },
     BranchSet {
         req_json: String,
+        meta_json: Option<String>,
     },
     ResolveBranch {
         name: String,
     },
     Undo {
         req_json: String,
+        meta_json: Option<String>,
     },
     Redo {
         req_json: String,
+        meta_json: Option<String>,
     },
     Checkpoint {
         req_json: String,
+        meta_json: Option<String>,
     },
     Merge {
         req_json: String,
+        meta_json: Option<String>,
     },
     CherryPick {
         req_json: String,
+        meta_json: Option<String>,
     },
     Revert {
         req_json: String,
+        meta_json: Option<String>,
     },
     // Evaluation and pin planning (`crate::eval`).
     EvalFrame {
@@ -85,6 +94,10 @@ pub(crate) enum Call {
     FontsPlan {
         branch: String,
         ops_json: String,
+    },
+    /// `setCollect`: the project's collection flag (`default` or `never`).
+    SetCollect {
+        collect: String,
     },
     /// Test hook: panics while holding the store.
     #[cfg(feature = "test-hooks")]
@@ -124,10 +137,29 @@ fn parse_tx(json: &str) -> Result<Tx> {
         )
     };
     let input: serde_json::Value = serde_json::from_str(json).map_err(bad)?;
+    refuse_media(&input).map_err(reject)?;
     let tx: Tx = serde_json::from_value(input.clone()).map_err(bad)?;
     let decoded = serde_json::to_value(&tx).map_err(bad)?;
     fin_core::check_canonical_times(&input, &decoded).map_err(reject)?;
     Ok(tx)
+}
+
+/// An `asset.add` carries the model's fields only: `MediaInfo` is in the `asset.probe` answer
+/// and never stored (sub-project 6 spec §4.4). Decoding would drop the unknown key silently;
+/// refusing it tells a client that sent it.
+fn refuse_media(input: &serde_json::Value) -> std::result::Result<(), CoreError> {
+    let ops = input
+        .get("ops")
+        .and_then(|o| o.as_array())
+        .map_or(&[][..], |v| v.as_slice());
+    for (i, op) in ops.iter().enumerate() {
+        if op.get("op").and_then(|o| o.as_str()) == Some("asset.add") && op.get("media").is_some() {
+            return Err(CoreError::new("INVALID_OP", "asset.add does not take media facts")
+                .with_details(json!({ "path": format!("/ops/{i}/media") }))
+                .with_fix("send the probe's kind, duration, video and audio only; media stays in the asset.probe answer"));
+        }
+    }
+    Ok(())
 }
 
 fn parse_generation(json: &str) -> Result<Generation> {
@@ -213,12 +245,37 @@ fn status(store: &Shared) -> Result<Reply> {
     Ok(Reply::Json(encode(&value)?))
 }
 
+/// `setCollect`: the flag in the project file (the lease's), then in the journal at once
+/// (the `collect` event the store queued follows with the next tick).
+fn set_collect(store: &Shared, collect: &str) -> Result<Reply> {
+    let policy: fin_store::CollectPolicy =
+        serde_json::from_value(json!(collect)).map_err(|_| {
+            reject(
+                CoreError::new(
+                    "INVALID_ARGS",
+                    format!("collect is default or never, not {collect:?}"),
+                )
+                .with_details(json!({ "collect": collect })),
+            )
+        })?;
+    with_store(store, |s| {
+        s.set_collect(policy).map_err(reject)?;
+        if let Some(g) = lock(&store.journal).as_ref() {
+            g.update(policy);
+        }
+        Ok(Reply::Json(encode(
+            &json!({ "project": s.project_id(), "collect": policy }),
+        )?))
+    })
+}
+
 fn run(store: &Shared, call: Call) -> Result<Reply> {
     match call {
         Call::Head { branch } => with_store(store, |s| Ok(Reply::Number(s.head(&branch)))),
         Call::Commit {
             tx_json,
             generation_json,
+            meta_json,
         } => {
             let tx = parse_tx(&tx_json)?;
             let generation = generation_json
@@ -226,12 +283,18 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
                 .map(parse_generation)
                 .transpose()?;
             with_store(store, |s| {
-                let c = s
-                    .commit_at_generation(tx, generation.as_ref())
-                    .map_err(reject)?;
-                // Decision 34: a commit that changed the pins fetches what they lack.
-                store.fonts.committed(s, &c);
-                Ok(Reply::Json(encode(&c)?))
+                // Logged as `log.commit` from the typed result (`commit_log`).
+                let json = crate::commit_log::commit(
+                    s,
+                    &store.diag,
+                    tx,
+                    generation.as_ref(),
+                    meta_json.as_deref(),
+                    // Decision 34: a commit that changed the pins fetches what they lack.
+                    |s, c| store.fonts.committed(s, c),
+                )
+                .map_err(reject)?;
+                Ok(Reply::Json(json))
             })
         }
         Call::Snapshot { branch } => with_store(store, |s| {
@@ -286,8 +349,38 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         call @ (Call::EvalFrame { .. } | Call::EvalAudio { .. } | Call::FontsPlan { .. }) => {
             crate::eval::run(store, call)
         }
+        Call::SetCollect { collect } => set_collect(store, &collect),
         #[cfg(feature = "test-hooks")]
         Call::Panic => with_store(store, |_| panic!("fin-node test panic")),
+    }
+}
+
+impl Call {
+    /// The RPC method this call serves (`error.internal.call`; `other` for none).
+    fn rpc(&self) -> &'static str {
+        match self {
+            Call::Commit { .. } => "tx.commit",
+            Call::Snapshot { .. } => "snapshot.get",
+            Call::OpsSince { .. } | Call::OpsSinceAt { .. } => "ops.subscribe",
+            Call::Status => "project.status",
+            Call::TxGet { .. } => "tx.get",
+            Call::AcknowledgeRewind { .. } => "project.acknowledgeRewind",
+            Call::AcknowledgeSalvage { .. } => "project.acknowledgeSalvage",
+            Call::BranchCreate { .. } => "branch.create",
+            Call::Branches { .. } | Call::ResolveBranch { .. } => "branch.list",
+            Call::BranchSet { .. } => "branch.set",
+            Call::Undo { .. } => "history.undo",
+            Call::Redo { .. } => "history.redo",
+            Call::Checkpoint { .. } => "history.checkpoint",
+            Call::Merge { .. } => "history.merge",
+            Call::CherryPick { .. } => "history.cherryPick",
+            Call::Revert { .. } => "history.revert",
+            Call::EvalFrame { .. } => "eval.frame",
+            Call::EvalAudio { .. } => "eval.audio",
+            Call::FontsPlan { .. } => "fonts.plan",
+            Call::SetCollect { .. } => "diagnostics.project",
+            _ => "other",
+        }
     }
 }
 
@@ -300,7 +393,8 @@ impl Task for StoreTask {
             return Err(reject(CoreError::new("INTERNAL", "task ran twice")));
         };
         let store = &self.store;
-        guarded(
+        let rpc = call.rpc();
+        let out = guarded(
             || run(store, call),
             || {
                 // Only an open store is given up: the panic happened while using it.
@@ -309,7 +403,14 @@ impl Task for StoreTask {
                     *g = State::Panicked;
                 }
             },
-        )
+        );
+        if let Err(e) = &out
+            && store.diag.gate().is_some()
+        {
+            let e = crate::error_value(e);
+            crate::commit_log::internal(&store.diag, Some(&store.project), rpc, &e);
+        }
+        out
     }
 
     fn resolve(&mut self, _env: Env, reply: Reply) -> Result<Self::JsValue> {

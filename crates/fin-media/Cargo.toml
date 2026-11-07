@@ -1,0 +1,26 @@
+[package]
+name = "fin-media"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Pure media types: pixel formats, colour tags, MediaInfo, the sample table and the nearest-frame rule (no I/O; builds for wasm32)."
+
+[features]
+# Frame-id test patterns (`testing`): generators and readers for tests and fixtures; never in a
+# shipped build.
+testing = []
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+# Transfer functions on the hashed path (spec §13.4): pinned in the workspace.
+libm = { workspace = true }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+fin-media = { path = ".", features = ["testing"] }
+# No `fork`/`timeout`, as in fin-core (the wasm32-wasip1 runs).
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }

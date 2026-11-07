@@ -32,6 +32,20 @@ import {
   RecordSuccess,
   RecoverReportSuccess,
 } from "./history.ts";
+import {
+  DiagnosticsConsentPayload,
+  DiagnosticsConsentSuccess,
+  DiagnosticsExportPayload,
+  DiagnosticsExportSuccess,
+  DiagnosticsProjectPayload,
+  DiagnosticsProjectSuccess,
+  DiagnosticsPurgePayload,
+  DiagnosticsPurgeSuccess,
+  DiagnosticsRecordPayload,
+  DiagnosticsRecordSuccess,
+  DiagnosticsStatusPayload,
+  DiagnosticsStatusSuccess,
+} from "./diagnostics.ts";
 
 /**
  * Envelope types generated from the Rust types they carry (`@finisher/core-types`). The Effect
@@ -130,13 +144,17 @@ export const ProbeSchema = Schema.Struct({
   kind: Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]),
   lottie: Optional(LottieInfoSchema),
   lut: Optional(Schema.Struct({ size: Schema.Number })),
+  // MP4/MOV only: fin-media's `MediaInfo` (the generated type), what the file is (display size,
+  // rotation, colour, HDR, VFR). Validated in Rust and passed through; never in `asset.add`.
+  media: Optional(Schema.Unknown),
   size: Schema.Number,
   video: Optional(Schema.Struct({ height: Schema.Number, rate: Schema.String, width: Schema.Number })),
 });
 export const AssetProbeSuccess = ProbeSchema;
-// The schema's type and the generated `Probe` must stay assignable to each other.
+// The schema's type and the generated `Probe` must stay assignable to each other (`media` is a
+// pass-through, typed by the generated `MediaInfo`).
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-export const probeMatchesGenerated: Same<typeof ProbeSchema.Type, Probe> = true;
+export const probeMatchesGenerated: Same<Omit<typeof ProbeSchema.Type, "media">, Omit<Probe, "media">> = true;
 
 /**
  * What a client read a branch at: the database's `incarnation` (new after every rebuild) and
@@ -392,4 +410,11 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.fetch", { payload: FontsFetchPayload, success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.plan", { payload: FontsPlanPayload, success: FontsPlanSchema, error: FinError }),
+  // Scope `diagnostics` (plan D, Decision 32).
+  Rpc.make("diagnostics.status", { payload: DiagnosticsStatusPayload, success: DiagnosticsStatusSuccess, error: FinError }),
+  Rpc.make("diagnostics.export", { payload: DiagnosticsExportPayload, success: DiagnosticsExportSuccess, error: FinError }),
+  Rpc.make("diagnostics.purge", { payload: DiagnosticsPurgePayload, success: DiagnosticsPurgeSuccess, error: FinError }),
+  Rpc.make("diagnostics.project", { payload: DiagnosticsProjectPayload, success: DiagnosticsProjectSuccess, error: FinError }),
+  Rpc.make("diagnostics.consent", { payload: DiagnosticsConsentPayload, success: DiagnosticsConsentSuccess, error: FinError }),
+  Rpc.make("diagnostics.record", { payload: DiagnosticsRecordPayload, success: DiagnosticsRecordSuccess, error: FinError }),
 );

@@ -1,0 +1,13 @@
+{
+  "name": "crash-late",
+  "turns": [
+    [
+      { "emit": [{ "type": "toolStarted", "providerId": "call_1", "tool": "fin", "input": { "argv": ["item", "trim", "c1"] } }] },
+      { "late": [
+        { "type": "toolCompleted", "providerId": "call_1", "ok": true, "output": { "stale": true } },
+        { "type": "messageDelta", "text": "from the old process" }
+      ] },
+      { "crash": { "code": null, "signal": "SIGKILL" } }
+    ]
+  ]
+}

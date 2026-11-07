@@ -6,9 +6,12 @@
 //! so do the diagnostics event types (`events::Envelope`, `AnyPayload`, the kind-keyed
 //! `EventPayload` and every payload type, by `events::kinds::register_schemas`), and the
 //! journal's (`fin-journal`: `PrivacySettings`, `ConsentState`, `JournalStatus`, `Filter`,
-//! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`; `CollectPolicy` is fin-core's), and the
-//! plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
-//! `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`).
+//! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`, `DiagnosticsReport`, `ExportPage`;
+//! `CollectPolicy` is fin-core's), the media types of `fin-media` (`MediaInfo` and its
+//! parts, sub-project 6), the job envelope of `fin-jobs` with the test kinds' params and
+//! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others),
+//! and the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`,
+//! `Risk`, `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -53,6 +56,11 @@ fn main() {
         g.subschema_for::<fin_journal::PurgeSelector>();
         g.subschema_for::<fin_journal::PurgeReport>();
         g.subschema_for::<fin_journal::ProjectPolicy>();
+        g.subschema_for::<fin_journal::DiagnosticsReport>();
+        g.subschema_for::<fin_journal::ExportPage>();
+        g.subschema_for::<fin_media::MediaInfo>();
+        fin_jobs::register_schemas(g);
+        fin_jobs::test_kinds::register_schemas(g);
         fin_plugin_api::schema::register_schemas(g);
     });
     println!(

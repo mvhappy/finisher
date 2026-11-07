@@ -17,10 +17,11 @@ mod lut;
 mod svg;
 mod wav;
 
+use fin_container::{Demuxer, Limits};
 use fin_core::{
     AssetKind, AudioInfo, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo, Rational, VideoInfo,
 };
-use mp4::{Mp4Reader, Mp4Track, TrackType};
+use fin_media::MediaInfo;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -53,6 +54,12 @@ pub struct Probe {
     pub font: Option<FontFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lut: Option<LutInfo>,
+    /// MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
+    /// HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
+    /// (spec §4.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MediaInfo")]
+    pub media: Option<MediaInfo>,
     pub fingerprint: String,
     pub size: u64,
 }
@@ -69,6 +76,7 @@ impl Probe {
             lottie: None,
             font: None,
             lut: None,
+            media: None,
             fingerprint: String::new(),
             size: 0,
         }
@@ -187,9 +195,9 @@ fn probe_text(file: &mut File, size: u64, path: &Path) -> Result<Probe, CoreErro
 /// do that), and relative paths resolve against the current directory. Error `details.path`
 /// is absolute (canonical when the file exists; on Windows without a `\\?\` verbatim prefix).
 ///
-/// Fragmented MP4 is not supported in sub-project 2: a file with an `mvex` box, or with no
-/// samples and zero duration, fails with `UNSUPPORTED_CONTAINER` and
-/// `details.reason = "fragmented mp4"`.
+/// MP4/MOV (fragmented too) are read by `fin-container`; a broken or hostile file is
+/// `MEDIA_CORRUPT`, `MEDIA_LIMIT`, `UNSUPPORTED_CONTAINER` or `UNSUPPORTED_TRANSFORM` with
+/// `details.path`.
 pub fn probe(path: &Path) -> Result<Probe, CoreError> {
     let mut file = File::open(path).map_err(|e| io_error(path, &e))?;
     let meta = file.metadata().map_err(|e| io_error(path, &e))?;
@@ -202,9 +210,16 @@ pub fn probe(path: &Path) -> Result<Probe, CoreError> {
     file.seek(SeekFrom::Start(0))
         .map_err(|e| io_error(path, &e))?;
     let parsed = match sniff(&head) {
-        // The mp4 crate can panic on malformed boxes; treat that as an unreadable container.
-        Sniffed::Mp4 => catch_unwind(AssertUnwindSafe(|| parse(&file, size, path)))
-            .unwrap_or_else(|_| Err(unsupported(path, "malformed container"))),
+        // fin-container never panics on input (it is fuzzed); a panic is a bug, reported as
+        // a corrupt file rather than taking the server down.
+        Sniffed::Mp4 => {
+            catch_unwind(AssertUnwindSafe(|| parse(&file, path))).unwrap_or_else(|_| {
+                Err(with_path(
+                    CoreError::new("MEDIA_CORRUPT", "the container could not be read"),
+                    path,
+                ))
+            })
+        }
         Sniffed::Image => image::probe(&mut file, path),
         Sniffed::Wav => wav::probe(&mut file, size, path),
         Sniffed::Zip => lottie::probe(&mut file, size, path),
@@ -250,63 +265,65 @@ pub(crate) fn io_error(path: &Path, e: &io::Error) -> CoreError {
         .with_fix("check the file and its parent folders exist and are readable")
 }
 
-fn parse(file: &File, size: u64, path: &Path) -> Result<Probe, CoreError> {
-    let reader = Mp4Reader::read_header(io::BufReader::new(file), size)
-        .map_err(|e| unsupported(path, &e.to_string()))?;
-    let mvhd = &reader.moov.mvhd;
-    let no_samples = reader.tracks().values().all(|t| t.sample_count() == 0);
-    if reader.moov.mvex.is_some() || (mvhd.duration == 0 && no_samples) {
-        return Err(unsupported(path, "fragmented mp4"));
+/// `e` with the file's absolute `details.path` (and the unsupported-container fix).
+fn with_path(mut e: CoreError, path: &Path) -> CoreError {
+    if !e.details.is_object() {
+        e.details = json!({});
     }
-    let duration = i64::try_from(mvhd.duration)
-        .ok()
-        .and_then(|d| Rational::new(d, i64::from(mvhd.timescale)).ok())
-        .ok_or_else(|| unsupported(path, "invalid movie duration"))?;
+    e.details["path"] = json!(absolute(path).to_string_lossy());
+    if e.code == "UNSUPPORTED_CONTAINER" {
+        e.details["reason"] = json!(e.message.trim_start_matches("cannot read this container: "));
+        e.fix = unsupported(path, "").fix;
+    }
+    e
+}
 
-    let mut ids: Vec<u32> = reader.tracks().keys().copied().collect();
-    ids.sort_unstable();
-    let first = |kind: TrackType| {
-        ids.iter()
-            .filter_map(|id| reader.tracks().get(id))
-            .find(|t| t.track_type().is_ok_and(|k| k == kind))
+/// The model's fields keep their 4C meaning (spec §4.4): `width`/`height` the coded size, the
+/// rate the average (`samples × timescale / track duration`), the audio rate the track's
+/// timescale; `media` carries the rest.
+fn parse(file: &File, path: &Path) -> Result<Probe, CoreError> {
+    let d = Demuxer::open(io::BufReader::new(file), &Limits::default())
+        .map_err(|e| with_path(e, path))?;
+    let info = d.info().clone();
+    let video = match (d.video(), &info.video) {
+        (Some(t), Some(v)) => {
+            let total: u64 = (0..t.sample_count())
+                .filter_map(|i| t.sample(i))
+                .map(|s| u64::from(s.duration))
+                .sum();
+            let rate = i64::try_from(t.sample_count() as u64 * u64::from(t.table.timescale()))
+                .ok()
+                .zip(i64::try_from(total).ok())
+                .filter(|(n, d)| *n > 0 && *d > 0)
+                .and_then(|(n, d)| Rational::new(n, d).ok())
+                .ok_or_else(|| unsupported(path, "unknown frame rate"))?;
+            Some(VideoInfo {
+                width: v.coded.width,
+                height: v.coded.height,
+                rate,
+            })
+        }
+        _ => None,
     };
-    let video = first(TrackType::Video)
-        .map(|t| video_info(t, path))
-        .transpose()?;
-    let audio = first(TrackType::Audio).and_then(audio_info);
+    let audio = match (d.audio(), &info.audio) {
+        (Some(t), Some(a)) if a.channels > 0 => Some(AudioInfo {
+            sample_rate: t.timescale,
+            channels: a.channels,
+        }),
+        _ => None,
+    };
     if video.is_none() && audio.is_none() {
         return Err(unsupported(path, "no video or audio track"));
     }
+    if !info.duration.is_positive() {
+        return Err(unsupported(path, "invalid movie duration"));
+    }
     Ok(Probe {
-        duration: Some(duration),
+        duration: Some(info.duration),
         video,
         audio,
+        media: Some(info),
         ..Probe::of(AssetKind::Media)
-    })
-}
-
-/// Exact rate: `sample_count * timescale / track duration (in timescale units)`.
-fn video_info(track: &Mp4Track, path: &Path) -> Result<VideoInfo, CoreError> {
-    let mdhd = &track.trak.mdia.mdhd;
-    let rate = i64::try_from(u64::from(track.sample_count()) * u64::from(mdhd.timescale))
-        .ok()
-        .zip(i64::try_from(mdhd.duration).ok())
-        .filter(|(n, d)| *n > 0 && *d > 0)
-        .and_then(|(n, d)| Rational::new(n, d).ok())
-        .ok_or_else(|| unsupported(path, "unknown frame rate"))?;
-    Ok(VideoInfo {
-        width: track.width() as u32,
-        height: track.height() as u32,
-        rate,
-    })
-}
-
-/// Sample rate is the audio track's `mdhd` timescale; `None` when channels are unknown.
-fn audio_info(track: &Mp4Track) -> Option<AudioInfo> {
-    let mp4a = track.trak.mdia.minf.stbl.stsd.mp4a.as_ref()?;
-    (mp4a.channelcount > 0).then_some(AudioInfo {
-        sample_rate: track.timescale(),
-        channels: mp4a.channelcount,
     })
 }
 

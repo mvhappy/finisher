@@ -1,0 +1,14 @@
+{
+  "asOf": "2026-01-01",
+  "presets": {
+    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1" },
+    "local": { "ollama": "http://127.0.0.1:11434/v1" }
+  },
+  "defaults": { "window": 8192, "maxOutput": 4096 },
+  "families": [
+    { "provider": "openrouter", "prefix": "acme-closed/", "maker": "acme", "weights": "closed", "caching": "explicit" },
+    { "provider": "openrouter", "prefix": "acme-open/", "maker": "acme", "weights": "open", "caching": "automatic" },
+    { "provider": "local", "prefix": "testllama", "maker": "acme", "weights": "open", "window": 65536 }
+  ],
+  "models": []
+}

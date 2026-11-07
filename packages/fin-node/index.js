@@ -87,8 +87,8 @@ export class Engine {
     return call(this.#native.head(branch));
   }
 
-  commit(txJson, generationJson) {
-    return call(generationJson === undefined ? this.#native.commit(txJson) : this.#native.commit(txJson, generationJson));
+  commit(txJson, generationJson, metaJson) {
+    return call(this.#native.commit(txJson, generationJson ?? null, metaJson ?? null));
   }
 
   snapshot(branch) {
@@ -119,48 +119,48 @@ export class Engine {
     return call(this.#native.acknowledgeSalvage(copy));
   }
 
-  branchCreate(reqJson) {
-    return call(this.#native.branchCreate(reqJson));
+  branchCreate(reqJson, metaJson) {
+    return call(this.#native.branchCreate(reqJson, metaJson ?? null));
   }
 
   branches(all) {
     return call(this.#native.branches(all === true));
   }
 
-  branchSet(reqJson) {
-    return call(this.#native.branchSet(reqJson));
+  branchSet(reqJson, metaJson) {
+    return call(this.#native.branchSet(reqJson, metaJson ?? null));
   }
 
   resolveBranch(name) {
     return call(this.#native.resolveBranch(name));
   }
 
-  undo(reqJson) {
-    return call(this.#native.undo(reqJson));
+  undo(reqJson, metaJson) {
+    return call(this.#native.undo(reqJson, metaJson ?? null));
   }
 
-  redo(reqJson) {
-    return call(this.#native.redo(reqJson));
+  redo(reqJson, metaJson) {
+    return call(this.#native.redo(reqJson, metaJson ?? null));
   }
 
-  checkpoint(reqJson) {
-    return call(this.#native.checkpoint(reqJson));
+  checkpoint(reqJson, metaJson) {
+    return call(this.#native.checkpoint(reqJson, metaJson ?? null));
   }
 
-  merge(reqJson) {
-    return call(this.#native.merge(reqJson));
+  merge(reqJson, metaJson) {
+    return call(this.#native.merge(reqJson, metaJson ?? null));
   }
 
-  cherryPick(reqJson) {
-    return call(this.#native.cherryPick(reqJson));
+  cherryPick(reqJson, metaJson) {
+    return call(this.#native.cherryPick(reqJson, metaJson ?? null));
   }
 
-  revert(reqJson) {
-    return call(this.#native.revert(reqJson));
+  revert(reqJson, metaJson) {
+    return call(this.#native.revert(reqJson, metaJson ?? null));
   }
 
-  recover(reqJson) {
-    return call(this.#native.recover(reqJson));
+  recover(reqJson, metaJson) {
+    return call(this.#native.recover(reqJson, metaJson ?? null));
   }
 
   takeover(confirm) {
@@ -208,6 +208,10 @@ export class Engine {
     return call(this.#native.fontsPlan(branch, opsJson));
   }
 
+  setCollect(collect) {
+    return call(this.#native.setCollect(collect));
+  }
+
   async close() {
     await call(this.#native.close());
   }
@@ -250,6 +254,159 @@ export class Engine {
       throw toFinError(e);
     }
   }
+}
+
+/** Runs a synchronous native call, turning a thrown core error into a `FinNodeError`. */
+function sync(f) {
+  try {
+    return f();
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** The diagnostics journal of a server data folder (the engines opened on it record into it). */
+export class Journal {
+  #native;
+
+  /** @internal Use `Journal.open`. */
+  constructor(nativeJournal) {
+    if (!(nativeJournal instanceof native.Journal)) throw new TypeError("use Journal.open");
+    this.#native = nativeJournal;
+  }
+
+  static open(serverData, privacyJson, hostname, testOptions) {
+    const test = testOptions === undefined ? null : JSON.stringify(testOptions);
+    return new Journal(sync(() => native.Journal.open(serverData, privacyJson ?? null, hostname, test)));
+  }
+
+  get openWarning() {
+    return this.#native.openWarning ?? undefined;
+  }
+
+  get session() {
+    return this.#native.session ?? undefined;
+  }
+
+  get enabled() {
+    return this.#native.enabled;
+  }
+
+  applySettings(privacyJson) {
+    return sync(() => this.#native.applySettings(privacyJson ?? null)) ?? undefined;
+  }
+
+  consent() {
+    return sync(() => this.#native.consent());
+  }
+
+  startSession(startJson, timeoutMs = 100) {
+    return sync(() => this.#native.startSession(startJson, timeoutMs));
+  }
+
+  async endSession(uptimeS) {
+    return JSON.parse(await call(sync(() => this.#native.endSession(uptimeS))));
+  }
+
+  record(kind, kv, ctxJson, payloadJson, source, session) {
+    sync(() => this.#native.record(kind, kv, ctxJson ?? null, payloadJson, source, session ?? null));
+  }
+
+  recordSync(kind, kv, ctxJson, payloadJson, source, timeoutMs) {
+    return sync(() => this.#native.recordSync(kind, kv, ctxJson ?? null, payloadJson, source, timeoutMs));
+  }
+
+  observe(metric, key, micros, code) {
+    this.#native.observe(metric, key, micros, code ?? null);
+  }
+
+  async status() {
+    return call(sync(() => this.#native.status()));
+  }
+
+  statusNow() {
+    return sync(() => this.#native.statusNow());
+  }
+
+  async export(filterJson, cursor, limit, asUpload) {
+    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null)));
+  }
+
+  async purge(selectorJson) {
+    return call(sync(() => this.#native.purge(selectorJson)));
+  }
+
+  setProjectPolicy(projectId, policy) {
+    sync(() => this.#native.setProjectPolicy(projectId, policy ?? null));
+  }
+
+  projectPolicies() {
+    return sync(() => this.#native.projectPolicies());
+  }
+
+  async close() {
+    await call(this.#native.close());
+  }
+
+  #hook(name) {
+    if (!this.#native[name]) throw new Error("fin-node was built without the test-hooks feature");
+    return this.#native[name].bind(this.#native);
+  }
+
+  /** @internal Test builds only. */
+  panicOnThreadForTest(thread) {
+    return this.#hook("panicOnThreadForTest")(thread);
+  }
+
+  /** @internal Test builds only. */
+  panicWriterForTest() {
+    this.#hook("panicWriterForTest")();
+  }
+
+  /** @internal Test builds only. */
+  idRefForTest(raw) {
+    return this.#hook("idRefForTest")(raw) ?? undefined;
+  }
+
+  /** @internal Test builds only. */
+  pauseWriterForTest() {
+    return this.#hook("pauseWriterForTest")();
+  }
+
+  /** @internal Test builds only. */
+  resumeWriterForTest() {
+    this.#hook("resumeWriterForTest")();
+  }
+
+  /** @internal Test builds only. */
+  previousHookCallsForTest() {
+    return this.#hook("previousHookCallsForTest")();
+  }
+}
+
+/** fin-core's `RPC_METHODS`: the keys `rpc.stats` accepts (`other` for the rest). */
+export function rpcMethods() {
+  return native.rpcMethods();
+}
+
+/** The BLAKE3 of `data`, 64 lower-case hex digits (the `blake3` crate). */
+export function blake3Hex(data) {
+  return native.blake3Hex(data);
+}
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export function blake3KeyedHex(key, data) {
+  return sync(() => native.blake3KeyedHex(key, data));
+}
+
+/** Every kind name of fin-core's event registry. */
+export function kindNames() {
+  return native.kindNames();
+}
+
+/** Why a `privacy` section (JSON) is not one the journal accepts, naming the key; `undefined` when it is. */
+export function validatePrivacy(privacyJson) {
+  return native.validatePrivacy(privacyJson) ?? undefined;
 }
 
 /** The font manager of a server data folder (shared with the engines opened on it). */
@@ -307,6 +464,34 @@ export class FontManager {
 export function lockExclusive(path) {
   try {
     return native.lockExclusive(path);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** This server data's `server-id` (created on first use; renewed for a copied server data). */
+export function serverId(serverData) {
+  try {
+    return native.serverId(serverData);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** Windows: owner and DACL private to this user; elsewhere `{ ok: true }`. */
+export function checkPrivateDir(path) {
+  try {
+    const r = native.checkPrivateDir(path);
+    return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** Creates `path` private to this user (protected owner-only DACL on Windows, 0700 elsewhere). */
+export function makePrivateDir(path) {
+  try {
+    native.makePrivateDir(path);
   } catch (e) {
     throw toFinError(e);
   }

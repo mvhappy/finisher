@@ -4,6 +4,7 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writ
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
+import { checkPrivateDir, makePrivateDir } from "@finisher/fin-node";
 
 export const SERVER_VERSION = "0.0.0";
 
@@ -20,7 +21,7 @@ export function defaultServerData(
 }
 
 /**
- * Plan decision 5: `<server-data>/fin.sock`, or on Windows the named pipe
+ * Plan decision 5 (5A Task 2: in `run/`): `<server-data>/run/fin.sock`, or on Windows the named pipe
  * `\\.\pipe\finisher-<username>` for the default server-data. Pipe names are global per
  * machine rather than per directory, so any other server-data gets its own pipe
  * `finisher-<username>-<hash>` (12 hex chars of SHA-256 of the lower-cased path): otherwise a
@@ -33,7 +34,7 @@ export function socketPath(
   defaultDir: string = defaultServerData({ ...process.env, FIN_SERVER_DATA: undefined }, platform),
   username: string = userInfo().username,
 ): string {
-  if (platform !== "win32") return join(serverData, "fin.sock");
+  if (platform !== "win32") return join(serverData, "run", "fin.sock");
   const pipe = `\\\\.\\pipe\\finisher-${username}`;
   const key = (dir: string) => dir.replace(/[\\/]+$/, "").toLowerCase();
   if (key(serverData) === key(defaultDir)) return pipe;
@@ -68,6 +69,10 @@ export interface ServerInfo {
   readonly socket: string;
   readonly token: string;
   readonly protocolVersion: number;
+  /** The environment id (`control.db` `meta`, 5A). */
+  readonly envId: string;
+  /** Whether the server records diagnostics now (plan D, Decision 23: `fin` sends nothing when false). */
+  readonly diagnostics: { readonly enabled: boolean };
 }
 
 export function newToken(): string {
@@ -82,10 +87,13 @@ export function infoPath(serverData: string): string {
 export class ServerStartError extends Error {
   readonly code: string;
   readonly details: Record<string, unknown>;
-  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
+  /** What the person can do about it, in words (no command line). */
+  readonly fix: string | undefined;
+  constructor(code: string, message: string, details: Record<string, unknown> = {}, fix?: string) {
     super(message);
     this.code = code;
     this.details = details;
+    this.fix = fix;
   }
 }
 
@@ -99,26 +107,56 @@ export function startFailure(e: unknown): ServerStartError {
   const err = e as { code?: unknown; message?: unknown; details?: unknown; finNode?: unknown; name?: unknown } | null;
   const message = typeof err?.message === "string" ? err.message : String(e);
   if (err?.finNode === true && typeof err.code === "string") {
-    return new ServerStartError(err.code, message, (err.details as Record<string, unknown>) ?? {});
+    const fix = (err as { fix?: unknown }).fix;
+    return new ServerStartError(err.code, message, (err.details as Record<string, unknown>) ?? {}, typeof fix === "string" ? fix : undefined);
   }
   const cause = typeof err?.code === "string" ? err.code : typeof err?.name === "string" ? err.name : "unknown";
   return new ServerStartError("SERVER_START_FAILED", message, { cause });
 }
 
 /**
- * Creates the server-data directory (0700) or checks an existing one: it must be a real
- * directory (not a symlink) owned by this user; group/other permissions are stripped.
+ * Creates `dir` (0700; on Windows a protected owner-only DACL) or checks an existing one: it
+ * must be a real directory (not a symlink) owned by this user. On Unix group/other permissions
+ * are stripped; on Windows a DACL that lets anyone else in is `SERVER_DATA_UNSAFE` (fin-node
+ * `checkPrivateDir`: no `Everyone`, `Users`, `Authenticated Users` or other account).
  */
-export function ensureServerData(serverData: string, platform: NodeJS.Platform = process.platform): void {
-  mkdirSync(serverData, { recursive: true, mode: 0o700 });
-  const st = lstatSync(serverData);
-  if (st.isSymbolicLink()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is a symlink`);
-  if (!st.isDirectory()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is not a directory`);
-  if (platform === "win32") return;
-  if (process.getuid && st.uid !== process.getuid()) {
-    throw new ServerStartError("SERVER_DATA_UNSAFE", `${serverData} is owned by uid ${st.uid}, not this user`);
+export function ensurePrivateDir(dir: string, platform: NodeJS.Platform = process.platform): void {
+  let created = false;
+  try {
+    lstatSync(dir);
+  } catch (e) {
+    if ((e as { code?: unknown }).code !== "ENOENT") throw e;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    created = true;
   }
-  if (st.mode & 0o077) chmodSync(serverData, 0o700);
+  const st = lstatSync(dir);
+  if (st.isSymbolicLink()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is a symlink`);
+  if (!st.isDirectory()) throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is not a directory`);
+  if (platform === "win32") {
+    if (created) makePrivateDir(dir);
+    const report = checkPrivateDir(dir);
+    if (!report.ok) {
+      throw new ServerStartError(
+        "SERVER_DATA_UNSAFE",
+        `${dir} can be opened by other accounts on this computer`,
+        { path: dir, problems: report.problems },
+        "finisherd keeps its keys and its control database here, so only your account may open this folder. " +
+          "It probably inherits access for Users or Everyone from the folder it is in. " +
+          "Move the server data to a folder only you can open (the default is in your local application data), " +
+          "or remove the other accounts from this folder's security settings and turn off inheritance.",
+      );
+    }
+    return;
+  }
+  if (process.getuid && st.uid !== process.getuid()) {
+    throw new ServerStartError("SERVER_DATA_UNSAFE", `${dir} is owned by uid ${st.uid}, not this user`);
+  }
+  if (st.mode & 0o077) chmodSync(dir, 0o700);
+}
+
+/** The server-data directory itself (see `ensurePrivateDir`). */
+export function ensureServerData(serverData: string, platform: NodeJS.Platform = process.platform): void {
+  ensurePrivateDir(serverData, platform);
 }
 
 /** Writes the discovery file atomically: a private `<file>.<pid>.tmp` (0600, `wx`) renamed into place. */
@@ -184,6 +222,40 @@ export function readSettings(serverData: string, last?: Settings): { settings: S
     return { settings: fallback, error: "fonts.autoFetch must be true or false" };
   }
   return { settings: { fonts: { autoFetch: autoFetch ?? DEFAULT_SETTINGS.fonts.autoFetch } } };
+}
+
+/**
+ * `settings.json`'s raw `privacy` section (plan D, Decision 8): `privacy` is what the file
+ * holds (`undefined` when the file or the key is absent); `error` says why a present file can't
+ * be used (unreadable, invalid JSON, not an object), which keeps the last good privacy
+ * settings, or before any is known means recording nothing. The section's own validation
+ * (`on`/`off`, ranges) is the journal's, with the same last-good rule.
+ */
+export function readPrivacy(serverData: string): { privacy?: unknown; error?: string; missing?: true } {
+  let text: string;
+  try {
+    text = readFileSync(settingsPath(serverData), "utf8");
+  } catch (e) {
+    return (e as { code?: unknown }).code === "ENOENT" ? { missing: true } : { error: String(e) };
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { error: "settings must be a JSON object" };
+  return { privacy: (raw as { privacy?: unknown }).privacy };
+}
+
+/**
+ * The `privacy` argument of fin-node's `Journal.open`/`applySettings`: the section's JSON,
+ * `null` when absent, or text that is not JSON for an unusable file (the journal then keeps
+ * the last good settings, or records nothing before any).
+ */
+export function privacyArg(read: { privacy?: unknown; error?: string; missing?: true }): string | null {
+  if (read.error !== undefined) return "<unusable settings.json>";
+  return read.privacy === undefined ? null : JSON.stringify(read.privacy);
 }
 
 export function removeServerInfo(serverData: string): void {

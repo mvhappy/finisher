@@ -44,8 +44,10 @@ export declare class Engine {
    * Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generationJson`
    * (`{"incarnation": string, "n": number}`, from `opsSinceAt` or `status`), rejects with
    * `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
+   * `metaJson` (`{actor: {kind, session?, call?}}`, finisherd's `callMeta`) is the actor of the
+   * `log.commit` diagnostics entry; every writing branch and history call takes it too.
    */
-  commit(txJson: string, generationJson?: string): Promise<string>;
+  commit(txJson: string, generationJson?: string, metaJson?: string): Promise<string>;
   /** Resolves to `{ rev, project, generation: { incarnation, n } }` JSON, read together. */
   snapshot(branch: string): Promise<string>;
   /** Resolves to the `CommittedTx[]` JSON with `rev > rev`. */
@@ -70,27 +72,27 @@ export declare class Engine {
   /** Acknowledges the incomplete salvage of kept copy `copy`; `false` if none is listed. */
   acknowledgeSalvage(copy: string): Promise<boolean>;
   /** Makes a branch: `BranchCreate` JSON (camelCase); resolves to the `BranchCreated` JSON. */
-  branchCreate(reqJson: string): Promise<string>;
+  branchCreate(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the `BranchView[]` JSON (`main` first; with `all`, archived ones too). */
   branches(all: boolean): Promise<string>;
   /** Renames, archives or restores a branch: `BranchSet` JSON; resolves to the `CommittedTx` JSON. */
-  branchSet(reqJson: string): Promise<string>;
+  branchSet(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the JSON string of the id a branch reference (id, name, `<name>#<id>`) names. */
   resolveBranch(name: string): Promise<string>;
   /** `HistoryReq` JSON (`to`: undo back to a checkpoint); resolves to the `HistoryResult` JSON. */
-  undo(reqJson: string): Promise<string>;
+  undo(reqJson: string, metaJson?: string): Promise<string>;
   /** `HistoryReq` JSON; resolves to the `HistoryResult` JSON. */
-  redo(reqJson: string): Promise<string>;
+  redo(reqJson: string, metaJson?: string): Promise<string>;
   /** `CheckpointReq` JSON; resolves to the `CommittedTx` JSON. */
-  checkpoint(reqJson: string): Promise<string>;
+  checkpoint(reqJson: string, metaJson?: string): Promise<string>;
   /** `MergeReq` JSON; resolves to the `MergeReport` JSON. */
-  merge(reqJson: string): Promise<string>;
+  merge(reqJson: string, metaJson?: string): Promise<string>;
   /** `CherryPickReq` JSON; resolves to the `HistoryResult` JSON. */
-  cherryPick(reqJson: string): Promise<string>;
+  cherryPick(reqJson: string, metaJson?: string): Promise<string>;
   /** `RevertReq` JSON; resolves to the `HistoryResult` JSON. */
-  revert(reqJson: string): Promise<string>;
+  revert(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: lists recoverable groups and, with `create`, makes their branches (`RecoverReq` JSON); resolves to the `RecoverReport` JSON. */
-  recover(reqJson: string): Promise<string>;
+  recover(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: takes the lease over; resolves to the `ProjectStatus` JSON. */
   takeover(confirm: boolean): Promise<string>;
   /** Long call: resolves to the `VerifyReport` JSON (`{ ok, checks: [{ name, ok, details }] }`). */
@@ -133,6 +135,12 @@ export declare class Engine {
    */
   fontsPlan(branch: string, opsJson: string): Promise<string>;
   /**
+   * Sets the project's collection flag in `finisher.project.json` (needs the writer lease:
+   * `PROJECT_READ_ONLY` otherwise) and in the server's journal; `never` purges the project's
+   * diagnostics entries. Resolves to `{ project, collect }` JSON.
+   */
+  setCollect(collect: "default" | "never"): Promise<string>;
+  /**
    * Stops maintenance, flushes the export and closes the database (after long calls queued
    * before it); later calls reject with `ENGINE_CLOSED`. Idempotent.
    */
@@ -154,6 +162,109 @@ export declare class Engine {
    */
   fontPublishRaceForTest(txJson: string): void;
 }
+
+/**
+ * The diagnostics journal of a server data folder (`<serverData>/events/`, spec §21.1), which
+ * the engines opened on it record into. Calls that only queue or read memory return at once;
+ * those that flush or read the files return promises and run off the JS thread. JSON values
+ * follow the generated types of `@finisher/core-types` (`ConsentState`, `DiagnosticsReport`,
+ * `JournalStatus`, `ExportPage`, `PurgeReport`, `Filter`, `PurgeSelector`, `SessionStart`).
+ * Rejects and throws `FinNodeError`s.
+ */
+export declare class Journal {
+  private constructor();
+  /**
+   * Opens the journal under the consent resolved from `privacyJson` (the raw `privacy`
+   * section of `settings.json`; `null` when absent; text that is not JSON when the file is
+   * unusable: then off) and this process's `DO_NOT_TRACK`, `FIN_DIAGNOSTICS`, `FIN_TRAINING`.
+   * `hostname` is `os.hostname()`, scrubbed from received text. Replaces a journal already
+   * open on the folder; installs the chained panic hook. `testOptions` apply only to
+   * `test-hooks` builds.
+   */
+  static open(
+    serverData: string,
+    privacyJson: string | null,
+    hostname: string,
+    testOptions?: { statsEveryMs?: number; flushEveryMs?: number },
+  ): Journal;
+  /** Why the `privacy` section given to `open` was unusable (recording is then off). */
+  readonly openWarning: string | undefined;
+  /** This process run's id (a ULID). */
+  readonly session: string | undefined;
+  /** Whether any purpose is on. */
+  readonly enabled: boolean;
+  /** Applies a new raw `privacy` section; returns why it was unusable (the last good one stays). */
+  applySettings(privacyJson: string | null): string | undefined;
+  /** The `ConsentState` JSON in force. */
+  consent(): string;
+  /**
+   * Announces this run (`SessionStart` JSON): `session.start` (after `session.unclean`) now or
+   * once on. Waits at most `timeoutMs` (default 100, at most 1000) for the writer: true when
+   * they are on disk (or nothing was due), false on a timeout (the start still happens).
+   */
+  startSession(startJson: string, timeoutMs?: number): boolean;
+  /** A clean shutdown: `session.end`, `openSession` cleared; resolves to whether it is on disk. */
+  endSession(uptimeS: number): Promise<boolean>;
+  /**
+   * Queues an entry (a wire-form payload for `cli.command`/`error.panic`). `ctxJson`:
+   * `{ project?, branch?, txId?, author?, actor?: { kind, session?, call? } }` with raw ids.
+   * `session`: the sender's run (a ULID), this journal's own when omitted. Throws
+   * `EVENT_KIND_UNKNOWN`, `EVENT_INVALID`, `EVENT_TOO_LARGE`; builds nothing while off.
+   */
+  record(kind: string, kv: number, ctxJson: string | null | undefined, payloadJson: string, source: string, session?: string): void;
+  /** `record`, written and flushed before it returns (at most `timeoutMs`); true when on disk. */
+  recordSync(kind: string, kv: number, ctxJson: string | null | undefined, payloadJson: string, source: string, timeoutMs: number): boolean;
+  /** One timing: `rpc` keyed by an RPC method, `eval` by an eval key; `code` for a failure. */
+  observe(metric: "rpc" | "eval", key: string, micros: number, code?: string): void;
+  /** Resolves to the `DiagnosticsReport` JSON (after a flush; reads every file). */
+  status(): Promise<string>;
+  /** The `JournalStatus` JSON as last published, without waiting. */
+  statusNow(): string;
+  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`). */
+  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training"): Promise<string>;
+  /** Purges (`PurgeSelector` JSON); resolves to the `PurgeReport` JSON. */
+  purge(selectorJson: string): Promise<string>;
+  /** What this server knows of a project's flag (`null`: unknown). Engines set it themselves. */
+  setProjectPolicy(projectId: string, policy: "default" | "never" | null): void;
+  /** `{ [projectId]: "default" | "never" | "unknown" }` JSON. */
+  projectPolicies(): string;
+  /** Drains, flushes and stops the writer. */
+  close(): Promise<void>;
+  /** @internal Test builds only: panics on a thread named `thread`; true when caught. */
+  panicOnThreadForTest(thread: string): boolean;
+  /** @internal Test builds only: the writer panics at its next message. */
+  panicWriterForTest(): void;
+  /** @internal Test builds only: `raw` as entries store an id (a ULID kept, else keyed); undefined while off. */
+  idRefForTest(raw: string): string | undefined;
+  /** @internal Test builds only: stalls the writer until `resumeWriterForTest` (false when off). */
+  pauseWriterForTest(): boolean;
+  /** @internal Test builds only: lets a stalled writer go on. */
+  resumeWriterForTest(): void;
+  /** @internal Test builds only: how often the previous panic hook ran. */
+  previousHookCallsForTest(): number;
+}
+
+/** fin-core's `RPC_METHODS` table: the keys `rpc.stats` accepts (`other` last). */
+export declare function rpcMethods(): string[];
+
+/**
+ * The BLAKE3 of `data` (unkeyed), 64 lower-case hex digits: the agent runtime's `bodyHash`,
+ * `systemHash` and `toolsHash` as it sends them (`blake3:<hex>`); the journal keys them when it
+ * records a turn.
+ */
+export declare function blake3Hex(data: Uint8Array): string;
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export declare function blake3KeyedHex(key: Uint8Array, data: Uint8Array): string;
+
+/** Every kind name of fin-core's event registry. */
+export declare function kindNames(): string[];
+
+/**
+ * Why a `privacy` section (JSON; `"null"` for none) is not one the journal accepts, naming the
+ * first bad key (`privacy.retentionDays: …`); `undefined` when it is.
+ */
+export declare function validatePrivacy(privacyJson: string): string | undefined;
 
 /**
  * The font manager of a server data folder: the content-addressed cache
@@ -198,6 +309,35 @@ export declare class ServerLock {
  * `SERVER_START_FAILED` on I/O errors. The pid is written into the file for diagnostics only.
  */
 export declare function lockExclusive(path: string): ServerLock;
+
+/**
+ * This server data's current `server-id`, a lowercase ULID: created on first use, renewed when
+ * the server data turns out to be a copy (`fin-store` `server_identity`). Throws `IO_ERROR`.
+ */
+export declare function serverId(serverData: string): string;
+
+/** What `checkPrivateDir` found. */
+export interface PrivateDirReport {
+  ok: boolean;
+  /** The owner's SID (Windows only). */
+  owner?: string | undefined;
+  /** Why it is not private: `owner <sid>`, `allows <sid>`, `null dacl`, `unsupported ace <type>`. */
+  problems: string[];
+}
+
+/**
+ * Windows: the directory's owner is this user (or Administrators) and its DACL allows nobody
+ * but this user, SYSTEM, Administrators and CREATOR OWNER. Elsewhere `{ ok: true }` (POSIX
+ * modes are checked by the caller). Throws `SERVER_DATA_UNSAFE` when the path cannot be read.
+ */
+export declare function checkPrivateDir(path: string): PrivateDirReport;
+
+/**
+ * Creates `path` (and parents) private to this user: on Windows a protected DACL
+ * `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` owned by the user; elsewhere
+ * mode 0700. Throws `SERVER_DATA_UNSAFE`.
+ */
+export declare function makePrivateDir(path: string): void;
 
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font

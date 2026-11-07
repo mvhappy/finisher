@@ -34,6 +34,20 @@ use crate::{Head, Store, StoreError, branch_not_found, refresh};
 /// diverged tail, which import sets aside (spec §3.6 step 7).
 pub(crate) const TRUSTS_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// What the last [`Store::write`] did (plan D, Decision 22), noted on the store and read with
+/// [`Store::take_write_outcome`]: it is the one place that knows whether a write ran, was a
+/// retry of a committed txId, or was rolled back as a plan, whatever result type its caller
+/// returns. A write that fails leaves no note; a retry loop that writes again overwrites it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    /// Committed.
+    Written,
+    /// A retry of a committed txId, answered from the log; nothing was written.
+    Deduped,
+    /// A dry run: planned and rolled back.
+    Planned,
+}
+
 /// One record to append: its link, intent (`baseRev` = the head it applies to), and the
 /// inverse, bindings, diff and resulting project of that apply.
 #[derive(Debug, Clone)]
@@ -208,15 +222,18 @@ impl Store {
     /// transaction, `f`, `lease.quick_check()` at the same epoch (`PROJECT_READ_ONLY`,
     /// reason `LEASE_LOST`), commit; then the heads `f` moved are cached. `dry_run`: an
     /// IMMEDIATE transaction with no read-only, lease or fence check (`epoch: None`), `f`,
-    /// rollback; nothing is cached or consumed. Any error rolls everything back.
+    /// rollback; nothing is cached or consumed. Any error rolls everything back. Each `Ok`
+    /// return notes its [`WriteOutcome`]; an error leaves none.
     pub(crate) fn write<R>(
         &mut self,
         first_tx_id: &str,
         dry_run: bool,
         f: impl FnOnce(&mut WriteCtx<'_>) -> Result<R, StoreError>,
     ) -> Result<Option<R>, StoreError> {
+        self.write_outcome = None;
         // A retry of a committed write is answered whatever the state (it writes nothing).
         if committed(&self.conn, first_tx_id)? {
+            self.write_outcome = Some(WriteOutcome::Deduped);
             return Ok(None);
         }
         let fenced = if dry_run {
@@ -234,6 +251,8 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if committed(&txn, first_tx_id)? {
+            drop(txn);
+            self.write_outcome = Some(WriteOutcome::Deduped);
             return Ok(None);
         }
         let epoch = fenced
@@ -256,6 +275,7 @@ impl Store {
         let WriteCtx { staged, .. } = ctx;
         let Some(epoch) = epoch else {
             txn.rollback()?;
+            self.write_outcome = Some(WriteOutcome::Planned);
             return Ok(Some(out));
         };
         // In memory only, under the lock: still the same lease, not lost since (the
@@ -283,6 +303,7 @@ impl Store {
         }
         txn.commit()?;
         self.heads.get_mut().extend(staged);
+        self.write_outcome = Some(WriteOutcome::Written);
         Ok(Some(out))
     }
 }
