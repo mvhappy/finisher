@@ -1,0 +1,63 @@
+//! A caption layer's words and layout. Measurement never blocks a plan (plan 4C Decision 36):
+//! without a layout the plan says why.
+//!
+//! As built in Task 15, no caption is measured yet: styles carry no text style until Task 18
+//! and faces are resolved from pins by `layout::faces_for` in Task 20, which replaces
+//! [`measure`] here. Until then a plan reports `noMeasurer` when none was given and
+//! `fontUnpinned` (no face resolves) when one was, and never calls the measurer.
+
+use crate::eval::plan::{CaptionPlan, Unmeasured, UnmeasuredReason, WordPlan};
+use crate::layout::{TextLayout, TextMeasurer};
+use crate::model::{CaptionBlock, Item, Project};
+use crate::time::Rational;
+
+/// The caption's words (item-relative times clamped to `[0, duration]`, the spoken one
+/// marked) and its layout or the reason it has none.
+pub(crate) fn caption_plan(
+    project: &Project,
+    item: &Item,
+    block: &CaptionBlock,
+    local: Rational,
+    m: Option<&dyn TextMeasurer>,
+) -> CaptionPlan {
+    let clamp = |t: Rational| t.max(Rational::zero()).min(item.duration);
+    let words = block
+        .words
+        .iter()
+        .map(|w| {
+            let (start, end) = (clamp(w.start), clamp(w.end));
+            WordPlan {
+                text: w.text.clone(),
+                start,
+                end,
+                active: start <= local && local < end,
+            }
+        })
+        .collect();
+    let (layout, unmeasured) = match measure(project, block, m) {
+        Ok(layout) => (Some(layout), None),
+        Err(why) => (None, Some(why)),
+    };
+    CaptionPlan {
+        words,
+        style: block.style.clone(),
+        layout,
+        unmeasured,
+    }
+}
+
+/// The caption's layout, or why there is none.
+fn measure(
+    _project: &Project,
+    _block: &CaptionBlock,
+    m: Option<&dyn TextMeasurer>,
+) -> Result<TextLayout, Unmeasured> {
+    let reason = match m {
+        None => UnmeasuredReason::NoMeasurer,
+        Some(_) => UnmeasuredReason::FontUnpinned,
+    };
+    Err(Unmeasured {
+        reason,
+        keys: Vec::new(),
+    })
+}

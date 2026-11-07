@@ -4,6 +4,7 @@ pub mod apply;
 pub mod branch;
 pub mod compose;
 pub mod error;
+pub mod eval;
 pub mod history;
 pub mod ids;
 pub mod layout;

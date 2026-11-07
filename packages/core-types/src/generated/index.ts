@@ -409,6 +409,11 @@ export type FontSource =
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ShapeKind".
+ */
+export type ShapeKind = "fadeIn" | "fadeOut" | "crossIn" | "crossOut";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "BranchState".
  */
 export type BranchState = "active" | "archived" | "merged";
@@ -470,6 +475,11 @@ export type Link =
       recovers?: string | null;
     };
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UnmeasuredReason".
+ */
+export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
+/**
  * A spec's default, as its value would be written (`null`: none, the value is per entity or
  * the parameter is optional).
  *
@@ -477,6 +487,21 @@ export type Link =
  * via the `definition` "DefaultValue".
  */
 export type DefaultValue = null | boolean | number | [number, number] | string;
+/**
+ * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanValue".
+ */
+export type PlanValue =
+  | boolean
+  | number
+  | [number, number]
+  | [number, number, number, number]
+  | string
+  | {
+      asset: string;
+    };
 /**
  * One engine event (`Engine.onEvent`), tagged by `type`.
  *
@@ -514,6 +539,20 @@ export type EngineEvent =
       dropped: number;
       type: "lagged";
     };
+/**
+ * The item kinds, as they appear in plans.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemKind".
+ */
+export type ItemKind = "clip" | "caption" | "graphic" | "image" | "adjustment" | "nested";
+/**
+ * Which side of a transition a layer is.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Role".
+ */
+export type Role = "out" | "in";
 /**
  * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
  * addressed as `effects.<fx>.<param>`.
@@ -1515,6 +1554,100 @@ export interface FontPin {
  */
 export interface CaptionStyle {}
 /**
+ * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
+ * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioItem".
+ */
+export interface AudioItem {
+  asset: string;
+  from: Rational;
+  gain: GainSegment[];
+  item: string;
+  pan: PanSegment[];
+  sourceFrom: Rational;
+  speed: Rational;
+  to: Rational;
+  track: string;
+}
+/**
+ * Gain over `[from, to)` in dB: `db` are the end values of the keyframe span the segment
+ * lies in, `u` the segment's progress range through that span, so the dB at progress `x` of
+ * the segment is `lerp(db[0], db[1], ease(lerp(u[0], u[1], x)))` with `ease` from `interp`
+ * (`hold`: `db[0]` throughout). The `shapes` multiply the amplitude.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GainSegment".
+ */
+export interface GainSegment {
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  db: [number, number];
+  from: Rational;
+  interp: Interp;
+  shapes?: Shape[];
+  to: Rational;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  u: [number, number];
+}
+/**
+ * A fade or crossfade side over a segment: `p` is its progress at the segment's ends (0 → 1
+ * across the whole fade). Its amplitude factor is `curve(p)` for `fadeIn`/`crossIn` and
+ * `curve(1 − p)` for `fadeOut`/`crossOut` (`linear`: `x`; `equalPower`: `sqrt(x)`-shaped, as
+ * the mixer defines it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Shape".
+ */
+export interface Shape {
+  curve: Curve;
+  kind: ShapeKind;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  p: [number, number];
+}
+/**
+ * Pan over `[from, to)` (−1 left … 1 right; the mixer clamps), read like [`GainSegment`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PanSegment".
+ */
+export interface PanSegment {
+  from: Rational;
+  interp: Interp;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  pan: [number, number];
+  to: Rational;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  u: [number, number];
+}
+/**
+ * The items sounding in `[from, to)` of one timeline, in track then time order.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioPlan".
+ */
+export interface AudioPlan {
+  from: Rational;
+  items: AudioItem[];
+  timeline: string;
+  to: Rational;
+}
+/**
  * The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and
  * its `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a
  * retry of a committed create answers with that create, `dry_run` false).
@@ -1587,6 +1720,91 @@ export interface Tx {
   txId: string;
 }
 /**
+ * A caption's words at the plan's time, and its layout when it was measured. `layout` is
+ * `null` when it was not, and `unmeasured` says why (plan 4C Decision 36).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionPlan".
+ */
+export interface CaptionPlan {
+  layout: TextLayout | null;
+  style: string;
+  unmeasured?: Unmeasured;
+  /**
+   * Every word, in order (indices match the layout's word boxes).
+   */
+  words: WordPlan[];
+}
+/**
+ * A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the
+ * lines' total advance. `overflow` is set when a line is wider than `max_width` or there are
+ * more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
+ * `faces` the sha256s whose glyphs the layout uses, in request order.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TextLayout".
+ */
+export interface TextLayout {
+  faces: string[];
+  height: number;
+  lines: LineBox[];
+  missing: number[];
+  overflow: boolean;
+  width: number;
+  words: WordBox[];
+}
+/**
+ * One line. `x` is the left edge of its ink box after alignment, `top` its top; `baseline` is
+ * measured from the layout's top. `words` is the half-open range of word indices on it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LineBox".
+ */
+export interface LineBox {
+  baseline: number;
+  endWord: number;
+  firstWord: number;
+  height: number;
+  rtl: boolean;
+  top: number;
+  width: number;
+  x: number;
+}
+/**
+ * One word's horizontal extent on its line (visual order is given by `x`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WordBox".
+ */
+export interface WordBox {
+  line: number;
+  width: number;
+  x: number;
+}
+/**
+ * Why a caption has no layout, and the font keys concerned.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Unmeasured".
+ */
+export interface Unmeasured {
+  keys: string[];
+  reason: UnmeasuredReason;
+}
+/**
+ * One word: item-relative times clamped to the item, and whether it is spoken at the plan's
+ * time (`start ≤ local < end`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WordPlan".
+ */
+export interface WordPlan {
+  active: boolean;
+  end: Rational;
+  start: Rational;
+  text: string;
+}
+/**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
  * record to blame when there is one (else null), and what to do. A re-run failure keeps its
  * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
@@ -1618,6 +1836,128 @@ export interface CoreError {
   details: unknown;
   fix?: string | null;
   message: string;
+}
+/**
+ * One enabled effect with its parameters resolved at the plan's time. `params` holds the
+ * effect's stored and keyframed parameters (the registry's defaults fill the rest).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EffectPlan".
+ */
+export interface EffectPlan {
+  id: string;
+  kind: string;
+  params?: {
+    [k: string]: PlanValue;
+  };
+}
+/**
+ * The layers of one timeline at `t`, bottom first.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FramePlan".
+ */
+export interface FramePlan {
+  /**
+   * Bottom first: tracks in compositing order, items in time order within a track (a
+   * transition's outgoing item before its incoming one).
+   */
+  layers: Layer[];
+  resolution: Resolution;
+  t: Rational;
+  /**
+   * The text engine (`TextMeasurer::fingerprint`) that produced the plan's caption layouts;
+   * absent when no caption was measured.
+   */
+  textEngine?: string;
+  timeline: string;
+}
+/**
+ * One item drawn at the plan's time. `local` is the time from the item's start: negative for
+ * a transition's incoming item before its cut, past `duration` for the outgoing one after it.
+ * An adjustment layer carries effects only (its transform and crop are the defaults); a
+ * nested item is a group layer whose `children` are its timeline's layers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Layer".
+ */
+export interface Layer {
+  blend: BlendMode;
+  caption?: CaptionPlan;
+  /**
+   * A nested item's layers, bottom first.
+   */
+  children?: Layer[];
+  crop: Crop;
+  /**
+   * Enabled effects, in order.
+   */
+  effects?: EffectPlan[];
+  graphic?: GraphicPlan;
+  item: string;
+  kind: ItemKind;
+  local: Rational;
+  mask?: MaskPlan;
+  nested?: NestedPlan;
+  opacity: number;
+  source?: SourceRef;
+  track: string;
+  transform: Transform;
+  transition?: TransitionState;
+}
+/**
+ * A graphic's template, its time (from the item's start) and its slot values.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GraphicPlan".
+ */
+export interface GraphicPlan {
+  asset: string;
+  slots?: {
+    [k: string]: PlanValue;
+  };
+  time: Rational;
+}
+/**
+ * The mask with its values resolved.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MaskPlan".
+ */
+export interface MaskPlan {
+  choke: number;
+  feather: number;
+  invert: boolean;
+  matte: string;
+}
+/**
+ * A nested item's timeline, time and frame size.
+ */
+export interface NestedPlan {
+  resolution: Resolution;
+  time: Rational;
+  timeline: string;
+}
+/**
+ * The asset and its time: a clip's source time (through speed), an image's 0, a
+ * graphic's template time.
+ */
+export interface SourceRef {
+  asset: string;
+  time: Rational;
+}
+/**
+ * A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TransitionState".
+ */
+export interface TransitionState {
+  curve: Curve;
+  id: string;
+  kind: TransitionKind;
+  progress: number;
+  role: Role;
 }
 /**
  * A branch generation as a caller holds it: the database's incarnation and the branch's
@@ -1669,6 +2009,18 @@ export interface MergeReport {
   merged: string[];
   skipped: Conflict[];
   sourceState: BranchState;
+}
+/**
+ * The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and
+ * its frame size.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NestedPlan".
+ */
+export interface NestedPlan1 {
+  resolution: Resolution;
+  time: Rational;
+  timeline: string;
 }
 /**
  * One parameter: its path in its scope, type, whether keyframes may animate it, default, unit
@@ -1789,6 +2141,16 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
+}
+/**
+ * An asset and the time to read from it, in seconds.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SourceRef".
+ */
+export interface SourceRef1 {
+  asset: string;
+  time: Rational;
 }
 /**
  * An author's undo and redo stacks on a branch, bottom first (the top is the last entry).

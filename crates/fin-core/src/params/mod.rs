@@ -37,6 +37,7 @@ pub use access::{get, set};
 pub(crate) use check::fill as fill_fix;
 pub use check::{check_range, check_shape, validate};
 pub use effects::effect_kinds;
+pub(crate) use effects::of as effect_specs;
 pub use item::slot_spec;
 pub use scopes::{get_marker, get_timeline, get_track, set_marker, set_timeline, set_track};
 

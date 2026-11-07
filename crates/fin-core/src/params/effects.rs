@@ -145,7 +145,8 @@ pub(super) const SPECS: &[ParamSpec] = &[
     ),
 ];
 
-fn of(kind: &str) -> impl Iterator<Item = &'static ParamSpec> + '_ {
+/// The specs of effect kind `kind` (`enabled` included), in registry order.
+pub(crate) fn of(kind: &str) -> impl Iterator<Item = &'static ParamSpec> + '_ {
     SPECS
         .iter()
         .filter(move |s| matches!(s.scope, Scope::Effect { kind: k } if k == kind))

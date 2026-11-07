@@ -1,0 +1,167 @@
+{
+  "timeline": "tl1",
+  "t": "4",
+  "resolution": {
+    "width": 1080,
+    "height": 1920
+  },
+  "layers": [
+    {
+      "item": "c1",
+      "kind": "clip",
+      "track": "t1",
+      "local": "4",
+      "source": {
+        "asset": "a1",
+        "time": "9"
+      },
+      "transform": {},
+      "crop": {},
+      "opacity": 1.0,
+      "blend": "normal",
+      "transition": {
+        "id": "tr1",
+        "kind": "crossfade",
+        "curve": "linear",
+        "progress": 0.5,
+        "role": "out"
+      }
+    },
+    {
+      "item": "c2",
+      "kind": "clip",
+      "track": "t1",
+      "local": "0",
+      "source": {
+        "asset": "a1",
+        "time": "20"
+      },
+      "transform": {},
+      "crop": {},
+      "opacity": 1.0,
+      "blend": "normal",
+      "transition": {
+        "id": "tr1",
+        "kind": "crossfade",
+        "curve": "linear",
+        "progress": 0.5,
+        "role": "in"
+      }
+    },
+    {
+      "item": "g1",
+      "kind": "graphic",
+      "track": "t3",
+      "local": "1",
+      "source": {
+        "asset": "a3",
+        "time": "1"
+      },
+      "transform": {},
+      "crop": {},
+      "opacity": 1.0,
+      "blend": "normal",
+      "graphic": {
+        "asset": "a3",
+        "time": "1",
+        "slots": {
+          "tint": [
+            0.2,
+            0.4,
+            0.6,
+            1.0
+          ]
+        }
+      }
+    },
+    {
+      "item": "n1",
+      "kind": "nested",
+      "track": "t5",
+      "local": "4",
+      "transform": {},
+      "crop": {},
+      "opacity": 1.0,
+      "blend": "normal",
+      "nested": {
+        "timeline": "tl2",
+        "time": "13/3",
+        "resolution": {
+          "width": 1080,
+          "height": 1920
+        }
+      },
+      "children": [
+        {
+          "item": "img1",
+          "kind": "image",
+          "track": "t9",
+          "local": "13/3",
+          "source": {
+            "asset": "a2",
+            "time": "0"
+          },
+          "transform": {},
+          "crop": {},
+          "opacity": 1.0,
+          "blend": "normal"
+        }
+      ]
+    },
+    {
+      "item": "cap1",
+      "kind": "caption",
+      "track": "t4",
+      "local": "1",
+      "transform": {},
+      "crop": {},
+      "opacity": 1.0,
+      "blend": "normal",
+      "caption": {
+        "words": [
+          {
+            "text": "One",
+            "start": "0",
+            "end": "1",
+            "active": false
+          },
+          {
+            "text": "two",
+            "start": "1",
+            "end": "2",
+            "active": true
+          }
+        ],
+        "style": "preset:bold",
+        "layout": null,
+        "unmeasured": {
+          "reason": "noMeasurer",
+          "keys": []
+        }
+      }
+    },
+    {
+      "item": "adj1",
+      "kind": "adjustment",
+      "track": "t6",
+      "local": "4",
+      "transform": {},
+      "crop": {},
+      "opacity": 1.0,
+      "blend": "normal",
+      "effects": [
+        {
+          "id": "fx1",
+          "kind": "colorAdjust",
+          "params": {
+            "contrast": 0.0,
+            "exposure": 0.0,
+            "saturation": 0.5,
+            "temperature": 0.0,
+            "tint": 0.0
+          }
+        }
+      ]
+    }
+  ]
+}
