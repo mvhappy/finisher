@@ -283,7 +283,7 @@ fn all_orders_converge(e: &Env, n_files: usize, n_aside: usize) {
             })
             .collect();
     }
-    for (k, order) in orders.iter().enumerate() {
+    par_each(&orders, |k, order| {
         let dir = e.root.join(format!("order-{k}"));
         copy_dir(&e.dir, &dir);
         for p in all_segments(&dir) {
@@ -305,7 +305,7 @@ fn all_orders_converge(e: &Env, n_files: usize, n_aside: usize) {
         assert_ne!(x.read_only(), Some(ReadOnlyReason::ChainFork), "{seen:?}");
         assert!(x.status().unknown_branches.is_empty(), "{seen:?}");
         assert_verifies(&x);
-    }
+    });
 }
 
 /// Review E4: A's late line (its `br1` and an edit on it) reaches F first; B's own `br1`

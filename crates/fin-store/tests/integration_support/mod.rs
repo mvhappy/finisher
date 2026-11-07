@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use fin_core::{CommittedTx, CoreError, Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
@@ -232,6 +233,28 @@ pub fn copy_dir(from: &Path, to: &Path) {
             fs::copy(e.path(), target).unwrap();
         }
     }
+}
+
+/// Runs `f(k, &items[k])` for every item on up to 8 threads. For the arrival-order tests, whose
+/// cases are independent (a folder copy and a server of their own each) and CPU-bound. Every
+/// item runs; a panic fails the call once all have finished (its message prints as usual).
+pub fn par_each<T: Sync>(items: &[T], f: impl Fn(usize, &T) + Sync) {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8)
+        .min(items.len());
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let k = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(k) else { break };
+                    f(k, item);
+                }
+            });
+        }
+    });
 }
 
 /// Edits `finisher.project.json` in `dir`.

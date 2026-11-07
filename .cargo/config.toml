@@ -1,0 +1,4 @@
+# Linux test binaries keep their temp dirs on tmpfs: the store tests are fsync-bound on a disk
+# (scripts/tmpfs-test-runner.sh says why and how to opt out).
+[target.'cfg(target_os = "linux")']
+runner = "scripts/tmpfs-test-runner.sh"
