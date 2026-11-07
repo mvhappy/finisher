@@ -1,6 +1,7 @@
-//! `FIN_CALL` as the default idempotency key (plan 7A Task 8a, Decision 14): offline against
-//! the `FIN_OFFLINE_SNAPSHOT` hook (every write a dry run, which still names its txId) and
-//! against a real `finisherd` for the dedupe of a retried call.
+//! `FIN_CALL` as the default idempotency key when `FIN_CALL_IDEM=1` marks a single-shot `fin`
+//! (plan 7A Task 8a, Decision 14; review B1): offline against the `FIN_OFFLINE_SNAPSHOT` hook
+//! (every write a dry run, which still names its txId) and against a real `finisherd` for the
+//! dedupe of a retried call and for a shell that runs several `fin`s under one call id.
 
 mod support;
 
@@ -32,8 +33,13 @@ fn snapshot() -> Value {
     })
 }
 
-/// `fin` against the offline snapshot, with `FIN_CALL` set to `call` (or removed) and `stdin`.
+/// `fin` against the offline snapshot as the built-in tool runs it: `FIN_CALL` set to `call`
+/// (or removed) with `FIN_CALL_IDEM=1`.
 fn offline(call: Option<&str>, args: &[&str], stdin: &str) -> Run {
+    offline_with(call, true, args, stdin)
+}
+
+fn offline_with(call: Option<&str>, single_shot: bool, args: &[&str], stdin: &str) -> Run {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("snapshot.json");
@@ -45,6 +51,9 @@ fn offline(call: Option<&str>, args: &[&str], stdin: &str) -> Run {
         Some(c) => cmd.env("FIN_CALL", c),
         None => cmd.env_remove("FIN_CALL"),
     };
+    if single_shot {
+        cmd.env("FIN_CALL_IDEM", "1");
+    }
     let mut child = cmd.spawn().unwrap();
     child
         .stdin
@@ -78,6 +87,32 @@ fn batch_lines_share_the_call_key() {
 }
 
 #[test]
+fn fin_call_without_the_single_shot_marker_is_not_a_key() {
+    // A shell's `fin`: FIN_CALL is only the actor header's call, never the txId.
+    for marker in [None, Some("0"), Some("yes")] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("snapshot.json");
+        std::fs::write(&file, snapshot().to_string()).unwrap();
+        let args = ["clip", "delete", "c1"];
+        let mut cmd = fin_cmd(&dir.path().join("no-server"), dir.path(), &args);
+        cmd.env("FIN_OFFLINE_SNAPSHOT", &file).env("FIN_CALL", CALL);
+        if let Some(m) = marker {
+            cmd.env("FIN_CALL_IDEM", m);
+        }
+        let doc = ok(finish(&args, cmd.output().unwrap()));
+        assert_ne!(doc["txId"], CALL, "{marker:?}: {doc}");
+        assert_eq!(doc["txId"].as_str().unwrap().len(), 26);
+    }
+    // Nor does a malformed FIN_CALL matter without the marker.
+    ok(offline_with(
+        Some("not a call"),
+        false,
+        &["clip", "delete", "c1"],
+        "",
+    ));
+}
+
+#[test]
 fn explicit_idem_key_wins() {
     let doc = ok(offline(
         Some(CALL),
@@ -89,8 +124,8 @@ fn explicit_idem_key_wins() {
 
 #[test]
 fn no_fin_call_no_change() {
-    let a = ok(offline(None, &["clip", "delete", "c1"], ""));
-    let b = ok(offline(None, &["clip", "delete", "c1"], ""));
+    let a = ok(offline_with(None, false, &["clip", "delete", "c1"], ""));
+    let b = ok(offline_with(None, false, &["clip", "delete", "c1"], ""));
     let (a, b) = (a["txId"].as_str().unwrap(), b["txId"].as_str().unwrap());
     assert_eq!(a.len(), 26, "a fresh ULID: {a}");
     assert_ne!(a, b);
@@ -115,6 +150,8 @@ fn a_malformed_fin_call_is_refused_for_a_write() {
         assert_error(&run, 2, "USAGE");
         assert_eq!(run.json["error"]["details"]["field"], "FIN_CALL");
     }
+    // The single-shot marker without a call id is refused too.
+    assert_error(&offline(None, &["clip", "delete", "c1"], ""), 2, "USAGE");
 }
 
 /// A server and a project `film` holding asset a1.
@@ -136,8 +173,52 @@ fn project(test: &str) -> Option<(Server, PathBuf)> {
     Some((server, dir))
 }
 
+/// The built-in `fin` tool's environment: one `fin` per call.
 fn with_call(server: &Server, dir: &Path, call: &str, args: &[&str]) -> Run {
+    fin_env(
+        &server.sd,
+        dir,
+        args,
+        &[
+            ("FIN_CALL", OsStr::new(call)),
+            ("FIN_CALL_IDEM", OsStr::new("1")),
+        ],
+    )
+}
+
+/// A shell tool call's environment: `FIN_CALL` for the join, no single-shot marker.
+fn in_shell(server: &Server, dir: &Path, call: &str, args: &[&str]) -> Run {
     fin_env(&server.sd, dir, args, &[("FIN_CALL", OsStr::new(call))])
+}
+
+#[test]
+fn a_shell_running_several_fins_under_one_call_runs_every_command() {
+    let Some((server, dir)) =
+        project("a_shell_running_several_fins_under_one_call_runs_every_command")
+    else {
+        return;
+    };
+    let insert = [
+        "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s",
+    ];
+    // `fin clip insert …; fin clip insert …; fin clip insert --dur 2s …` in one shell call.
+    let a = ok(in_shell(&server, &dir, CALL, &insert));
+    let b = ok(in_shell(&server, &dir, CALL, &insert));
+    let mut longer = insert.to_vec();
+    longer[9] = "2s";
+    let c = ok(in_shell(&server, &dir, CALL, &longer));
+    for doc in [&a, &b, &c] {
+        assert_ne!(doc["txId"], CALL, "{doc}");
+    }
+    assert!(b["rev"].as_u64() > a["rev"].as_u64() && c["rev"].as_u64() > b["rev"].as_u64());
+    let view = ok(support::fin(&server.sd, &dir, &["view"]));
+    assert_eq!(support::view_items(&view).len(), 3, "{view}");
+    // `fin undo; fin undo`: two undos, not one deduped.
+    let u1 = ok(in_shell(&server, &dir, CALL, &["undo"]));
+    let u2 = ok(in_shell(&server, &dir, CALL, &["undo"]));
+    assert_ne!(u1["txId"], u2["txId"]);
+    let view = ok(support::fin(&server.sd, &dir, &["view"]));
+    assert_eq!(support::view_items(&view).len(), 1, "{view}");
 }
 
 #[test]
