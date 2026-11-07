@@ -4,20 +4,21 @@
 //! (`timeline.restore`), an effect's among its item's (`effect.add` with `at`,
 //! `effect.move`, `effect.restore`), a key's in the font fallback order (`font.pin` placing
 //! it). An index does not map through later list changes, so the planner reads, in the op's
-//! own frame, what the index names: the members right before and after the place (`Place`;
-//! a moved member is left out of its list). The engine looks for them in the head's list
-//! right before the op runs and puts the op there ([`Slot::resolve`]):
-//! - both are still neighbours → between them;
-//! - one is gone → next to the other (right after the one before, or right before the one
-//!   after);
-//! - an end place (the list's start or end is one neighbour): its member still at that end,
-//!   or gone → at that end;
-//! - something now stands between them (at an end: before or after its member), nothing is
-//!   left of either, or the list was empty and is not now → another author placed a member
-//!   where ours goes: `SAME_PARAM`, blamed on the first record that changed the list (the
-//!   list's entity, `ops::util::lists`);
-//! - a `font.pin` whose key someone placed since keeps its index only when the key already
-//!   sits where ours would put it (the same edit), else `SAME_PARAM`.
+//! own frame, the list and the place the index names (`Place`; a moved member is left out of
+//! its list). Right before the op runs at the head, the engine takes on each side of the place
+//! the nearest frame member that is still in the list and that no other record moved or
+//! re-created since (its `index` touched, or created), the list's ends counting as such
+//! members ([`Slot::resolve`]):
+//! - those two are neighbours at the head → the op goes between them;
+//! - otherwise another author's member, or a moved one, stands where ours goes, and more than
+//!   one place would keep the member's frame order with the unmoved survivors: `SAME_PARAM`,
+//!   blamed on the first record that changed the list (the list's entity, `ops::util::lists`).
+//!
+//! So a placement keeps its frame order with every frame member that is still there and that
+//! nobody moved, and is refused when that order allows more than one place: a lone surviving
+//! neighbour is never trusted alone. A `font.pin` whose key someone placed since keeps its
+//! index only when the key already sits where ours would put it (the same edit), else
+//! `SAME_PARAM`.
 //!
 //! Members are named canonically on both sides: an id that an earlier op of the same
 //! transaction bound is named by its placeholder (through the applier's bindings: the
@@ -25,9 +26,10 @@
 //! id never stands for another author's entity at the head. Containers and members named by
 //! a placeholder resolve the same way. An index op whose place cannot be read (`Slot::
 //! Unplaced`: a pin of a key placed already in its own frame) is refused when another record
-//! used its list: a stale absolute index is never carried silently.
+//! used its list, unless the head still holds the same file pinned (the same edit): a stale
+//! absolute index is never carried silently.
 //!
-//! So appends and removals elsewhere in the list never stop an index op, and an undo of a
+//! So appends and removals away from the place never stop an index op, and an undo of a
 //! removal puts the member back between the neighbours it had. The stored ops keep their
 //! format: only the index field is rewritten at the head.
 
@@ -77,33 +79,64 @@ impl Slot {
     }
 
     /// Where the op goes in `project`'s list (`bound`: the head applier's bindings), when some
-    /// other record used the list (`used`) or not.
-    pub fn resolve(&self, project: &Project, op: &Op, bound: &Bound, used: bool) -> Resolved {
+    /// other record used the list (`used`) or not. `placed_since`: whether another record
+    /// moved or re-created an entity since (a member id is made one by [`Place`]).
+    pub fn resolve(
+        &self,
+        project: &Project,
+        op: &Op,
+        bound: &Bound,
+        used: bool,
+        placed_since: &dyn Fn(&str) -> bool,
+    ) -> Resolved {
         match self {
-            Slot::Place(p) => p.resolve(project, op, bound),
+            Slot::Place(p) => p.resolve(project, op, bound, placed_since),
+            // A pin of a key placed already in its own frame: the same file still pinned at
+            // the head is the same edit (its re-run writes nothing).
+            Slot::Unplaced { .. } if same_pin(project, op) => Resolved::Keep,
             Slot::Unplaced { .. } if used => Resolved::Taken,
             Slot::Unplaced { .. } => Resolved::Keep,
         }
     }
 }
 
-/// Where an index op puts its member, as its own frame names it. Member ids are canonical: an
-/// id that an earlier op of the same transaction bound is named by its placeholder, so the
-/// planning frame's fresh ids never stand for another author's entities at the head.
+/// Whether `op` is a pin of a key `project` holds pinned to the same file.
+fn same_pin(project: &Project, op: &Op) -> bool {
+    matches!(op, Op::FontPin(p)
+        if project.fonts.pins.get(&p.key).is_some_and(|h| h.sha256 == p.pin.sha256))
+}
+
+/// Where an index op puts its member, as its own frame names it: the list there (the member
+/// left out) and the index into it. Member ids are canonical: an id that an earlier op of the
+/// same transaction bound is named by its placeholder, so the planning frame's fresh ids never
+/// stand for another author's entities at the head.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     /// The list's entity (for blame): `<timeline>#tracks`, `#timelines`, `<item>#effects`,
     /// `#fonts.fallback`.
     pub list: String,
-    /// The member the op places, left out of the list it is read from.
+    /// The member the op places.
     member: String,
-    /// The members right before and after the place (`None`: that end of the list).
-    before: Option<String>,
-    after: Option<String>,
+    /// The list in the op's own frame, without the member, and the index into it.
+    frame: Vec<String>,
+    index: usize,
+    /// What makes a member id an entity id (`<item>/` for effects, `font/` for pins).
+    entity: String,
 }
 
 impl Place {
-    fn resolve(&self, project: &Project, op: &Op, bound: &Bound) -> Resolved {
+    /// The nearest frame member on each side that is still in the list and that no other
+    /// record moved or re-created since (the list's ends count as such members) must be
+    /// neighbours at the head: the op goes between them. Otherwise another author's placement
+    /// (or a moved member) stands where ours goes, and more than one place would keep the
+    /// member's order with the others: `Taken`.
+    fn resolve(
+        &self,
+        project: &Project,
+        op: &Op,
+        bound: &Bound,
+        placed_since: &dyn Fn(&str) -> bool,
+    ) -> Resolved {
         let Some(found) = list_of(project, op, bound) else {
             return Resolved::Keep;
         };
@@ -112,35 +145,23 @@ impl Place {
             .iter()
             .filter(|m| **m != self.member)
             .collect();
-        let at = |m: &Option<String>| m.as_ref().and_then(|m| list.iter().position(|x| *x == m));
-        let last = list.len();
-        let index = match (&self.before, &self.after) {
-            (None, None) if list.is_empty() => 0,
-            (None, None) => return Resolved::Taken,
-            // An end place: its neighbour still at that end, or gone (the end itself is the
-            // other neighbour). Something now after (before) it is a placement at that end.
-            (Some(_), None) => match at(&self.before) {
-                Some(i) if i + 1 == last => last,
-                None => last,
-                Some(_) => return Resolved::Taken,
-            },
-            (None, Some(_)) => match at(&self.after) {
-                Some(0) | None => 0,
-                Some(_) => return Resolved::Taken,
-            },
-            (Some(_), Some(_)) => match (at(&self.before), at(&self.after)) {
-                (Some(b), Some(a)) if a == b + 1 => a,
-                (Some(b), None) => b + 1,
-                (None, Some(a)) => a,
-                _ => return Resolved::Taken,
-            },
+        let pos = |m: &String| list.iter().position(|x| *x == m);
+        let anchor = |m: &&String| {
+            pos(m).is_some() && !placed_since(&format!("{}{}", self.entity, real(m, bound)))
         };
-        let Ok(index) = u32::try_from(index) else {
+        let left = self.frame[..self.index].iter().rev().find(anchor);
+        let right = self.frame[self.index..].iter().find(anchor);
+        let after_left = left.and_then(pos).map_or(0, |i| i + 1);
+        let at_right = right.and_then(pos).unwrap_or(list.len());
+        if after_left != at_right {
+            return Resolved::Taken;
+        }
+        let Ok(index) = u32::try_from(at_right) else {
             return Resolved::Taken;
         };
         // A pin of a key someone placed since: kept only where ours would put it.
         match found.placed {
-            Some(j) if j == index as usize => Resolved::Keep,
+            Some(j) if j == at_right => Resolved::Keep,
             Some(_) => Resolved::Taken,
             None => Resolved::At(index),
         }
@@ -299,7 +320,7 @@ fn list_entity(project: &Project, op: &Op, bound: &Bound) -> Option<String> {
             .timelines
             .iter()
             .find(|t| t.tracks.iter().any(|x| x.id == track))?;
-        return Some(lists::tracks(&tl.id));
+        return Some(lists::tracks(&canonical(&tl.id, bound)));
     }
     Some(list)
 }
@@ -316,12 +337,20 @@ fn slot(project: &Project, op: &Op, bound: &Bound) -> Option<Slot> {
         return unplaced();
     }
     let member = canonical(real(&names(op)?.1, bound), bound);
-    let rest: Vec<String> = found.members.into_iter().filter(|m| *m != member).collect();
-    let index = index.min(rest.len());
+    let frame: Vec<String> = found.members.into_iter().filter(|m| *m != member).collect();
+    let index = index.min(frame.len());
+    let entity = match op {
+        Op::EffectAdd(a) => format!("{}/", real(&a.item, bound)),
+        Op::EffectMove(m) => format!("{}/", real(&m.item, bound)),
+        Op::EffectRestore(r) => format!("{}/", real(&r.item, bound)),
+        Op::FontPin(_) => "font/".into(),
+        _ => String::new(),
+    };
     Some(Slot::Place(Place {
         list: list.clone(),
         member,
-        before: index.checked_sub(1).map(|i| rest[i].clone()),
-        after: rest.get(index).cloned(),
+        frame,
+        index,
+        entity,
     }))
 }

@@ -2,9 +2,9 @@
 //! timeline, the timeline order, an item's effect order, the font fallback order. Every op
 //! that adds, moves or removes a member lists the list's entity in its `uses`. An op that names
 //! an absolute index is carried to the head by the neighbours the index names in its own frame
-//! (`rebase::places`); when another author placed a member where ours goes, the conflict is
-//! blamed on the first record that used the list. Appends, removals and placements elsewhere
-//! in the list never meet it.
+//! (`rebase::places`); when another author placed or moved a member where ours goes, the
+//! conflict is blamed on the first record that used the list. Appends, removals and
+//! placements away from the place never meet it: no list is a parameter or put back.
 //!
 //! The track order is one per timeline (`<timeline>#tracks`): `track.add` and `track.restore`
 //! name their timeline, and `track.move` and `track.remove` record it on their track's change
@@ -26,6 +26,9 @@ pub(crate) fn tracks_of(own: &Diff, track: &str) -> Option<String> {
         .and_then(|c| c.timeline.as_deref())
         .map(tracks)
 }
+/// The parameter a member's own place is (a moved track's or effect's, `rebase::places`).
+pub(crate) const INDEX: &str = "index";
+
 /// The project's timeline order.
 pub(crate) const TIMELINES: &str = "#timelines";
 /// The project's font fallback order.

@@ -743,8 +743,10 @@ fn every_op_has_a_footprint() {
                     && f.removes == [format!("c2/{}", r.effect)]
                     && f.uses == ["c2#effects"]
             }
+            // The effect order is a list entity judged by neighbours (`rebase::places`), not
+            // a parameter; a move sets its effect's own `index`.
             Op::EffectMove(m) => {
-                f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
+                f.touches == [(format!("c2/{}", m.effect), Touch::Param("index".into()))]
                     && f.uses == [format!("c2/{}", m.effect), "c2#effects".into()]
             }
             Op::KeyframeSet(k) => {
@@ -760,7 +762,7 @@ fn every_op_has_a_footprint() {
             }
             Op::EffectRestore(r) => {
                 f.creates == [format!("c2/{}", r.effect.id)]
-                    && f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
+                    && f.touches.is_empty()
                     && !f.overwrites.contains(&"c2#effects".to_string())
             }
             Op::StyleAdd(a) => f.creates == [a.id.clone()] && f.uses.is_empty(),

@@ -183,10 +183,6 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         f.creates.push(format!("{}/{}", a.item, a.id));
         f.touches.push((a.item.clone(), Touch::Exists));
         f.uses.push(crate::ops::util::lists::effects(&a.item));
-        if a.at.is_some() {
-            f.touches
-                .push((a.item.clone(), Touch::Param(EFFECTS.to_string())));
-        }
         f.uses.extend(
             a.params
                 .values()

@@ -647,7 +647,8 @@ fn effect_move_vs_move_same_param() {
     let p = busy();
     let e = rebase_ops(&p, vec![mv("c1", "fx1", 1)], vec![mv("c1", "fx2", 0)]).unwrap_err();
     assert_eq!(reason(&e), "SAME_PARAM");
-    // Appends of two effects merge; one at an index meets a move.
+    // Appends of two effects merge. One at an index after another author's move is carried by
+    // the members that did not move (spec §4.3, `rebase::places`): before fx2 here.
     let got = rebase_ops(
         &p,
         vec![add("c1", "$a", "blur", None)],
@@ -655,13 +656,14 @@ fn effect_move_vs_move_same_param() {
     )
     .unwrap();
     assert_eq!(effect_ids(&got, "c1"), ["fx1", "fx2", "fx3", "fx4"]);
-    let e = rebase_ops(
+    let got = rebase_ops(
         &p,
         vec![mv("c1", "fx1", 1)],
         vec![add("c1", "$b", "blur", Some(0))],
     )
-    .unwrap_err();
-    assert_eq!(reason(&e), "SAME_PARAM");
+    .unwrap();
+    let ids = effect_ids(&got, "c1");
+    assert_eq!(ids[1..], ["fx2", "fx1"]);
 }
 
 #[test]
@@ -840,16 +842,17 @@ fn undo_of_effect_remove_after_another_removal() {
 }
 
 /// S1, as built (spec §4.3): a stale move to an index is carried by the neighbours it names
-/// (`rebase::places`). Moving fx3 to the end after bob removed fx1 puts it after fx2; when
-/// both neighbours are gone, nothing anchors the place: `SAME_PARAM`, blamed on the record
-/// that changed the list even though it only removed other effects.
+/// (`rebase::places`). Moving fx3 to the end after bob removed fx1 puts it after fx2. When
+/// another author's effect stands where the nearest surviving neighbours meet (bob removed
+/// fx1 and added fx4 at the start, alice moves fx3 between fx1 and fx2), the place is taken:
+/// `SAME_PARAM`, blamed on that record.
 #[test]
 fn effect_list_rerun_blames_the_removal() {
     let p = three_effects();
     let got = rebase_ops(&p, vec![remove("c1", "fx1")], vec![mv("c1", "fx3", 2)]).unwrap();
     assert_eq!(effect_ids(&got, "c1"), ["fx2", "fx3"]);
-    let both = vec![remove("c1", "fx1"), remove("c1", "fx2")];
-    let e = rebase_ops(&p, both, vec![mv("c1", "fx3", 1)]).unwrap_err();
+    let theirs = vec![remove("c1", "fx1"), add("c1", "$d", "blur", Some(0))];
+    let e = rebase_ops(&p, theirs, vec![mv("c1", "fx3", 1)]).unwrap_err();
     assert_eq!(reason(&e), "SAME_PARAM", "{e:?}");
     assert_eq!(e.details["againstTx"], "tx-a", "{e:?}");
     // A client's move past the end stays INVALID_RANGE.

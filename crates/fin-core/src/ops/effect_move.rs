@@ -84,12 +84,16 @@ pub(crate) fn apply(
     ])
 }
 
-/// Touches the item's effect order and needs `<item>/<fx>`.
+/// Uses the item's effect order (a list entity, `ops::util::lists`, judged by its neighbours:
+/// `rebase::places`) and needs `<item>/<fx>`, whose place it sets (`index`: two moves of one
+/// effect are `SAME_PARAM`, and a moved effect is no neighbour to carry a place by).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::EffectMove(m) = op {
-        f.touches
-            .push((m.item.clone(), Touch::Param(EFFECTS.to_string())));
+        f.touches.push((
+            format!("{}/{}", m.item, m.effect),
+            Touch::Param(crate::ops::util::lists::INDEX.to_string()),
+        ));
         f.uses.push(format!("{}/{}", m.item, m.effect));
         f.uses.push(crate::ops::util::lists::effects(&m.item));
     }

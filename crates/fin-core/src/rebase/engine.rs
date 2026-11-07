@@ -13,7 +13,7 @@ use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
 use super::footprint::{
-    Footprint, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
+    Footprint, Touch, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
 };
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
 use super::places::{Resolved, Slot, set_index};
@@ -190,7 +190,17 @@ pub fn rebase_prepared(
                 .iter()
                 .find(|(_, f)| f.uses.contains(&list))
                 .map(|(t, _)| t.to_string());
-            match slot.resolve(run.project(), &op, run.bound(), against.is_some()) {
+            // A member another record moved (its `index`) or re-created since anchors nothing.
+            let placed_since = |e: &str| {
+                theirs.iter().any(|(_, f)| {
+                    f.creates.iter().any(|c| c == e)
+                        || f.touches.iter().any(|(x, t)| {
+                            x == e && *t == Touch::Param(crate::ops::util::lists::INDEX.into())
+                        })
+                })
+            };
+            let used = against.is_some();
+            match slot.resolve(run.project(), &op, run.bound(), used, &placed_since) {
                 Resolved::At(index) => set_index(&mut op, index),
                 Resolved::Keep => {}
                 Resolved::Taken => {

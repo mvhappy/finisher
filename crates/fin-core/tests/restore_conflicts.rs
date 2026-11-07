@@ -1103,3 +1103,156 @@ fn end_place_whose_neighbour_is_gone_goes_to_that_end() {
         assert_eq!(fx_ids(&log), [b["$fa"].clone(), b["$fc"].clone()], "{mine}");
     }
 }
+
+/// tl1 `[t1, t2, s2, s3, s4]` (s2..s4 added after t2).
+fn five_tracks() -> (MemLog, Ids) {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let ops = vec![
+        add_track("$s2", TrackKind::Video, None),
+        add_track("$s3", TrackKind::Video, None),
+        add_track("$s4", TrackKind::Video, None),
+    ];
+    let b = log.commit("main", "s0", "setup", ops).record.bindings;
+    (log, b)
+}
+
+fn remove_track(track: &str) -> Op {
+    TrackRemove {
+        track: track.into(),
+        with_items: true,
+    }
+    .into()
+}
+
+/// A lone surviving neighbour is never trusted alone (spec §4.3): the nearest frame members on
+/// both sides that are still there and that no other author moved since (list ends included)
+/// must still be neighbours. So a placement keeps its frame order with every such member, and
+/// is refused (`SAME_PARAM`, nothing written) when more than one place would. Each case landed
+/// silently out of that order at b7f438e.
+#[test]
+fn surviving_neighbours_on_both_sides_must_still_meet() {
+    let names = |log: &MemLog, b: &Ids, extra: &Ids| -> Vec<String> {
+        let mut all = b.clone();
+        all.extend(extra.clone());
+        track_names(log, &all)
+    };
+    // Bob removes s2 and moves s3 to the end; alice's stale add at 3 (between s2 and s3). s3
+    // moved, so x keeps its order with t2 and s4: `[t1, t2, $x, s4, s3]` (b7f438e put it
+    // after s4).
+    let (mut log, b) = five_tracks();
+    let base = log.head_seq("main");
+    log.commit("main", "b1", "bob", vec![remove_track(&b["$s2"])]);
+    log.commit("main", "b2", "bob", vec![move_track(&b["$s3"], 3)]);
+    let x = add_track("$x", TrackKind::Video, Some(3));
+    let r = log.commit_at("main", "a1", "alice", base, vec![x]).unwrap();
+    let got = names(&log, &b, &r.record.bindings);
+    assert_eq!(got, ["t1", "t2", "$x", "$s4", "$s3"]);
+    // Alice removes s2; bob removes t2 and moves s3 to the end; alice undoes: s2 goes back
+    // before s4 (b7f438e flipped it past s4).
+    let (mut log, b) = five_tracks();
+    log.commit("main", "x1", "alice", vec![remove_track(&b["$s2"])]);
+    log.commit("main", "b1", "bob", vec![remove_t2()]);
+    log.commit("main", "b2", "bob", vec![move_track(&b["$s3"], 2)]);
+    log.undo("main", "alice", "u1").unwrap();
+    assert_eq!(names(&log, &b, &Ids::new()), ["t1", "$s2", "$s4", "$s3"]);
+    // Bob inserts z between s2 and s3, then removes s2; alice's stale add at 3 (between s2
+    // and s3), or at 2 (between t2 and s2): either side of z keeps her order, a conflict.
+    for at in [3, 2] {
+        let (mut log, b) = five_tracks();
+        let base = log.head_seq("main");
+        log.commit(
+            "main",
+            "b1",
+            "bob",
+            vec![add_track("$z", TrackKind::Video, Some(3))],
+        );
+        log.commit("main", "b2", "bob", vec![remove_track(&b["$s2"])]);
+        let before = log.state("main");
+        let x = add_track("$x", TrackKind::Video, Some(at));
+        let e = log
+            .commit_at("main", "a1", "alice", base, vec![x])
+            .unwrap_err();
+        assert_eq!(blame(&e).0, "SAME_PARAM", "at {at}: {e:?}");
+        assert_eq!(log.state("main"), before, "at {at}");
+    }
+    // The end variant: alice removes the last s4; bob appends z and removes s3; alice undoes.
+    let (mut log, b) = five_tracks();
+    log.commit("main", "x1", "alice", vec![remove_track(&b["$s4"])]);
+    log.commit(
+        "main",
+        "b1",
+        "bob",
+        vec![add_track("$z", TrackKind::Video, None)],
+    );
+    log.commit("main", "b2", "bob", vec![remove_track(&b["$s3"])]);
+    let e = log.undo("main", "alice", "u1").unwrap_err();
+    assert_eq!(blame(&e).0, "SAME_PARAM", "{e:?}");
+    // `[A, B, C]` minus B still merges.
+    let (mut log, b) = five_tracks();
+    log.commit("main", "x1", "alice", vec![remove_track(&b["$s3"])]);
+    log.commit("main", "b1", "bob", vec![remove_track(&b["$s2"])]);
+    log.undo("main", "alice", "u1").unwrap();
+    assert_eq!(names(&log, &b, &Ids::new()), ["t1", "t2", "$s3", "$s4"]);
+}
+
+/// A stale pin of a key that is pinned and placed already in its own frame, with the same
+/// file still pinned at the head, is the same edit: it merges even when someone placed
+/// another key since. `[Lora, Roboto]`; bob pins Inter at 0; alice's stale `pin Lora at 0`.
+#[test]
+fn a_no_op_identical_pin_merges() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let ops = vec![
+        pin_at(LORA, "Lora", 'a', Some(0)),
+        pin_at(ROBOTO, "Roboto", 'b', Some(1)),
+    ];
+    log.commit("main", "s0", "setup", ops);
+    let base = log.head_seq("main");
+    let inter = FontPinOp {
+        key: INTER.into(),
+        pin: inter('c'),
+        fallback: Some(0),
+    };
+    log.commit("main", "b1", "bob", vec![inter.into()]);
+    let again = pin_at(LORA, "Lora", 'a', Some(0));
+    log.commit_at("main", "a1", "alice", base, vec![again])
+        .unwrap();
+    assert_eq!(log.state("main").fonts.fallback, [INTER, LORA, ROBOTO]);
+}
+
+/// Effect placements elsewhere in the list never meet (spec §4.3): no `effects` parameter
+/// stands for the order any more. Bob adds an effect at the start; alice's stale move of fc
+/// before fb and her stale add at the end both merge.
+#[test]
+fn effect_placements_elsewhere_merge() {
+    let (mut log, b) = three_fx();
+    let base = log.head_seq("main");
+    let first = EffectAdd {
+        item: "c1".into(),
+        id: "$fd".into(),
+        kind: "blur".into(),
+        at: Some(0),
+        params: BTreeMap::new(),
+    };
+    let fd = log
+        .commit("main", "b1", "bob", vec![first.into()])
+        .record
+        .bindings["$fd"]
+        .clone();
+    let fc_before_fb = fin_core::EffectMove {
+        item: "c1".into(),
+        effect: b["$fc"].clone(),
+        to: 1,
+    };
+    let last = EffectAdd {
+        item: "c1".into(),
+        id: "$fe".into(),
+        kind: "blur".into(),
+        at: Some(3),
+        params: BTreeMap::new(),
+    };
+    let ops = vec![fc_before_fb.into(), last.into()];
+    let r = log.commit_at("main", "a1", "alice", base, ops).unwrap();
+    let fe = r.record.bindings["$fe"].clone();
+    let want = [fd, b["$fa"].clone(), b["$fc"].clone(), b["$fb"].clone(), fe];
+    assert_eq!(fx_ids(&log), want);
+}

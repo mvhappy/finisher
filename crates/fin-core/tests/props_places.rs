@@ -1,281 +1,519 @@
-//! Index placements carried by their neighbours (spec §4.3, `rebase::places`), under a stale
-//! rebase and a merge, with index ops chained through placeholders in one transaction: a
-//! `track.add $x` at an index, then ops that name `$x` as the member they move or as a
-//! neighbour of a later placement. Bob commits list edits on main (adds at an index or at the
-//! end, removals, moves); alice's transaction, written against the base, is committed stale or
-//! made on a side branch and merged. An independent list model on names (base ids, bob's ids,
-//! alice's placeholders) applies the rule: each placement goes between the neighbours its
-//! index names in alice's own frame, next to the survivor when one is gone, at its end when an
-//! end place's neighbour is gone; another member between them, both gone, or a non-empty list
-//! where an empty one was is a conflict. The real planner must agree: the same order, or a
-//! `SAME_PARAM` refusal (`REMOVED`/`NOT_FOUND` when alice moves a track bob removed).
+//! Index placements under rebase (spec §4.3, `rebase::places`), checked by an independent
+//! oracle. Three ordered lists (a timeline's tracks, an item's effects, the font fallback
+//! order) and six routes: a stale commit, a merge, cherry-picks, an undo, a redo, a revert.
+//! Alice's one to three records chain index ops through placeholders (an add at an index,
+//! then moves of it and placements next to it); bob edits the list on main in between (adds
+//! at an index or the end, removals, moves).
+//!
+//! **The oracle** never reads the engine's anchors. For each op alice's transaction applies
+//! (its ops as written, or the stored inverse an undo, redo or revert takes), in its own frame
+//! and at the head as it is right before the op:
+//! - a placement of x at index i must keep x's frame order relative to every member of the
+//!   frame list that is still at the head and that no other author moved since: x after the
+//!   ones before i, before the ones from i on. Counting the head positions that do so, exactly
+//!   one is the placement; none or several is a conflict, `SAME_PARAM`;
+//! - a move of a member someone removed or moved, a removal of a member someone removed, a
+//!   placement of a member that is there already: a conflict of any reason.
+//!
+//! The engine must give that order, or refuse when the oracle says so.
 
 mod common;
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use common::memlog::MemLog;
 use common::*;
-use fin_core::{Op, TrackAdd, TrackKind, TrackMove, TrackRemove};
+use fin_core::history::{LogRec, LogView};
+use fin_core::{
+    CoreError, EffectAdd, EffectMove, EffectRemove, FontFormat, FontPin, FontPinOp, FontSource,
+    FontUnpin, Op, Project, TrackAdd, TrackKind, TrackMove, TrackRemove,
+};
 use proptest::prelude::*;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    Tracks,
+    Effects,
+    Fonts,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Route {
+    Stale,
+    Merge,
+    Pick,
+    Undo,
+    Redo,
+    Revert,
+}
+
+/// An edit as generated (indexes taken modulo what the list allows when it is made).
 #[derive(Debug, Clone)]
-enum Bob {
+enum Gen {
     Add(Option<usize>),
     Remove(usize),
+    /// Move one of the record's own new members (by creation order).
+    MoveNew(usize, usize),
     Move(usize, usize),
 }
 
+/// A list op on member names (ids, or placeholders not bound).
 #[derive(Debug, Clone)]
-enum Alice {
-    Add(Option<usize>),
-    /// Move one of alice's own new tracks (by its order of creation), or a base track.
-    MoveNew(usize, usize),
-    MoveOld(usize, usize),
+enum LOp {
+    Append(String),
+    Place(String, usize),
+    Move(String, usize),
+    Remove(String),
 }
 
-fn add(id: &str, index: Option<usize>) -> Op {
-    TrackAdd {
-        id: id.into(),
-        timeline: "tl1".into(),
-        kind: TrackKind::Video,
-        index: index.map(|i| i as u32),
-        name: None,
-    }
-    .into()
+type Names = BTreeMap<String, String>;
+
+fn key(family: &str) -> String {
+    format!("{family}|400|normal")
 }
 
-fn mv(track: &str, index: usize) -> Op {
-    TrackMove {
-        track: track.into(),
-        index: index as u32,
-    }
-    .into()
-}
-
-fn names(log: &MemLog, b: &str, rename: &[(String, String)]) -> Vec<String> {
-    let p = log.state(b);
-    p.timelines[0]
-        .tracks
-        .iter()
-        .map(|t| {
-            rename
-                .iter()
-                .find(|(_, id)| *id == t.id)
-                .map_or_else(|| t.id.clone(), |(n, _)| n.clone())
-        })
-        .collect()
-}
-
-/// The rule (module docs) on names: the index in `head` (without the member), or `None`.
-fn resolve(head: &[String], before: Option<&String>, after: Option<&String>) -> Option<usize> {
-    let at = |m: Option<&String>| m.and_then(|m| head.iter().position(|x| x == m));
-    match (before, after) {
-        (None, None) => head.is_empty().then_some(0),
-        (Some(_), None) => match at(before) {
-            Some(i) if i + 1 == head.len() => Some(head.len()),
-            None => Some(head.len()),
-            Some(_) => None,
-        },
-        (None, Some(_)) => match at(after) {
-            Some(0) | None => Some(0),
-            Some(_) => None,
-        },
-        (Some(_), Some(_)) => match (at(before), at(after)) {
-            (Some(b), Some(a)) if a == b + 1 => Some(a),
-            (Some(b), None) => Some(b + 1),
-            (None, Some(a)) => Some(a),
-            _ => None,
+fn face(family: &str) -> FontPin {
+    FontPin {
+        family: family.into(),
+        weight: 400,
+        italic: false,
+        face: 0,
+        sha256: "a".repeat(64),
+        size: 1000,
+        format: FontFormat::Ttf,
+        scripts: vec!["Latn".into()],
+        source: FontSource::Catalog {
+            entry: family.to_lowercase(),
+            style: "regular".into(),
+            catalog: "2026.11.1".into(),
         },
     }
 }
 
-/// What the model expects: the final order on names, or a conflict (`true`: a refusal of any
-/// reason is right, alice's moved track being gone).
+fn genesis(kind: Kind) -> Project {
+    match kind {
+        Kind::Effects => with_clips(&[2]),
+        _ => project(),
+    }
+}
+
+fn list(p: &Project, kind: Kind) -> Vec<String> {
+    match kind {
+        Kind::Tracks => p.timelines[0].tracks.iter().map(|t| t.id.clone()).collect(),
+        Kind::Effects => {
+            let c1 = p.timelines[0].tracks[0].items.iter().find(|i| i.id == "c1");
+            c1.map_or(Vec::new(), |c| {
+                c.common.effects.iter().map(|e| e.id.clone()).collect()
+            })
+        }
+        Kind::Fonts => p.fonts.fallback.clone(),
+    }
+}
+
+/// A new member's name: a placeholder, or (fonts, keyed by family) its key.
+fn fresh(kind: Kind, base: &str) -> String {
+    match kind {
+        Kind::Fonts => key(base),
+        _ => format!("${base}"),
+    }
+}
+
+/// An add of `name` (from [`fresh`]) at `index` (the end when `None`) into a list of `len`.
+fn add(kind: Kind, name: &str, index: Option<usize>, len: usize) -> Op {
+    let index = index.map(|i| i.min(len) as u32);
+    match kind {
+        Kind::Tracks => TrackAdd {
+            id: name.into(),
+            timeline: "tl1".into(),
+            kind: TrackKind::Video,
+            index,
+            name: None,
+        }
+        .into(),
+        Kind::Effects => EffectAdd {
+            item: "c1".into(),
+            id: name.into(),
+            kind: "blur".into(),
+            at: index,
+            params: BTreeMap::new(),
+        }
+        .into(),
+        Kind::Fonts => FontPinOp {
+            key: name.into(),
+            pin: face(name.trim_end_matches("|400|normal")),
+            fallback: Some(index.unwrap_or(len as u32)),
+        }
+        .into(),
+    }
+}
+
+fn remove(kind: Kind, member: &str) -> Op {
+    match kind {
+        Kind::Tracks => TrackRemove {
+            track: member.into(),
+            with_items: true,
+        }
+        .into(),
+        Kind::Effects => EffectRemove {
+            item: "c1".into(),
+            effect: member.into(),
+        }
+        .into(),
+        Kind::Fonts => FontUnpin::new(member).into(),
+    }
+}
+
+fn mv(kind: Kind, member: &str, to: usize) -> Op {
+    match kind {
+        Kind::Tracks => TrackMove {
+            track: member.into(),
+            index: to as u32,
+        }
+        .into(),
+        _ => EffectMove {
+            item: "c1".into(),
+            effect: member.into(),
+            to: to as u32,
+        }
+        .into(),
+    }
+}
+
+/// The list op `op` makes, its ids named through `names` (placeholder → id).
+fn list_op(op: &Op, names: &Names) -> Option<LOp> {
+    let n = |id: &str| names.get(id).cloned().unwrap_or_else(|| id.to_string());
+    let at = |i: u32| i as usize;
+    Some(match op {
+        Op::TrackAdd(a) => match a.index {
+            Some(i) => LOp::Place(n(&a.id), at(i)),
+            None => LOp::Append(n(&a.id)),
+        },
+        Op::TrackRemove(r) => LOp::Remove(n(&r.track)),
+        Op::TrackRestore(r) => LOp::Place(n(&r.track.id), at(r.index)),
+        Op::TrackMove(m) => LOp::Move(n(&m.track), at(m.index)),
+        Op::EffectAdd(a) => match a.at {
+            Some(i) => LOp::Place(n(&a.id), at(i)),
+            None => LOp::Append(n(&a.id)),
+        },
+        Op::EffectRemove(r) => LOp::Remove(n(&r.effect)),
+        Op::EffectRestore(r) => LOp::Place(n(&r.effect.id), at(r.index)),
+        Op::EffectMove(m) => LOp::Move(n(&m.effect), at(m.to)),
+        Op::FontPin(p) => LOp::Place(p.key.clone(), at(p.fallback?)),
+        Op::FontUnpin(u) if !u.fallback_only => LOp::Remove(u.key.clone()),
+        _ => return None,
+    })
+}
+
+fn lops(ops: &[Op], names: &Names) -> Vec<LOp> {
+    ops.iter().filter_map(|o| list_op(o, names)).collect()
+}
+
+/// What the oracle expects.
+#[derive(Debug)]
 enum Want {
     Order(Vec<String>),
-    Conflict { gone: bool },
+    /// A conflict; `same_param`: of that reason.
+    Conflict {
+        same_param: bool,
+    },
 }
 
-/// `ops`: alice's ops as made, each with its name and (a move) the member it moves; `moved`:
-/// the tracks bob moved (two moves of one track meet on its `index`: `SAME_PARAM`).
-fn model(
-    base: &[String],
-    head: &[String],
-    ops: &[(String, Alice, String)],
-    bob_moved: &[String],
-) -> Want {
-    let (mut f, mut h) = (base.to_vec(), head.to_vec());
-    for (name, op, moved) in ops {
-        let (member, index) = match op {
-            Alice::Add(None) => {
-                f.push(name.clone());
-                h.push(name.clone());
+/// The oracle (module docs): `ops` from `frame`, at `head`; `moved`: what other authors moved.
+fn oracle(frame: &[String], head: &[String], ops: &[LOp], moved: &BTreeSet<String>) -> Want {
+    let (mut f, mut h) = (frame.to_vec(), head.to_vec());
+    let any = Want::Conflict { same_param: false };
+    for op in ops {
+        let (m, i) = match op {
+            LOp::Append(m) => {
+                f.push(m.clone());
+                h.push(m.clone());
                 continue;
             }
-            Alice::Add(Some(i)) => (name.clone(), *i),
-            Alice::MoveNew(_, i) | Alice::MoveOld(_, i) => (moved.clone(), *i),
+            LOp::Remove(m) => {
+                if !f.contains(m) {
+                    continue;
+                }
+                if !h.contains(m) {
+                    return any;
+                }
+                f.retain(|x| x != m);
+                h.retain(|x| x != m);
+                continue;
+            }
+            LOp::Move(m, _) if !h.contains(m) || moved.contains(m) => return any,
+            LOp::Place(m, _) if h.contains(m) => return any,
+            LOp::Move(m, i) | LOp::Place(m, i) => (m.clone(), *i),
         };
-        let rest: Vec<String> = f.iter().filter(|x| **x != member).cloned().collect();
-        let i = index.min(rest.len());
-        let hrest: Vec<String> = h.iter().filter(|x| **x != member).cloned().collect();
-        if matches!(op, Alice::MoveOld(..)) && !h.contains(&member) {
-            return Want::Conflict { gone: true };
-        }
-        if matches!(op, Alice::MoveOld(..)) && bob_moved.contains(&member) {
-            return Want::Conflict { gone: false };
-        }
-        let Some(j) = resolve(&hrest, i.checked_sub(1).map(|k| &rest[k]), rest.get(i)) else {
-            return Want::Conflict { gone: false };
+        let fr: Vec<String> = f.iter().filter(|x| **x != m).cloned().collect();
+        let i = i.min(fr.len());
+        let hr: Vec<String> = h.iter().filter(|x| **x != m).cloned().collect();
+        // Every surviving, unmoved frame member: whether it comes before x, its head position.
+        let keep: Vec<(bool, usize)> = fr
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !moved.contains(*s))
+            .filter_map(|(k, s)| hr.iter().position(|y| y == s).map(|p| (k < i, p)))
+            .collect();
+        let fits: Vec<usize> = (0..=hr.len())
+            .filter(|&p| {
+                keep.iter()
+                    .all(|&(before, q)| if before { q < p } else { q >= p })
+            })
+            .collect();
+        let [p] = fits[..] else {
+            return Want::Conflict { same_param: true };
         };
-        f = rest;
-        f.insert(i, member.clone());
-        h = hrest;
-        h.insert(j, member);
+        f = fr;
+        f.insert(i, m.clone());
+        h = hr;
+        h.insert(p, m);
     }
     Want::Order(h)
 }
 
-/// The member a move names: one of alice's new tracks made so far, or a base track.
-fn ops_member(op: &Alice, m: usize, base: &[String], made: &[(String, Alice, String)]) -> String {
-    let new: Vec<&String> = made
-        .iter()
-        .filter(|(_, o, _)| matches!(o, Alice::Add(_)))
-        .map(|(n, _, _)| n)
-        .collect();
-    match op {
-        Alice::MoveNew(..) => new[m % new.len()].clone(),
-        _ => base[m % base.len()].clone(),
-    }
-}
-
-fn bob_op() -> impl Strategy<Value = Bob> {
-    prop_oneof![
-        proptest::option::of(0usize..6).prop_map(Bob::Add),
-        (0usize..6).prop_map(Bob::Remove),
-        (0usize..6, 0usize..6).prop_map(|(k, to)| Bob::Move(k, to)),
-    ]
-}
-
-fn alice_op() -> impl Strategy<Value = Alice> {
-    prop_oneof![
-        3 => proptest::option::of(0usize..7).prop_map(Alice::Add),
-        2 => (0usize..4, 0usize..7).prop_map(|(m, to)| Alice::MoveNew(m, to)),
-        1 => (0usize..6, 0usize..7).prop_map(|(m, to)| Alice::MoveOld(m, to)),
-    ]
-}
-
-/// Runs one case; `merge`: alice's transaction made on `br1` and merged, else committed stale.
-fn run(extra: usize, bob: &[Bob], alice: &[Alice], merge: bool) -> Result<(), TestCaseError> {
-    let mut log = MemLog::new(project());
-    let setup: Vec<Op> = (0..extra).map(|i| add(&format!("$s{i}"), None)).collect();
-    if !setup.is_empty() {
-        log.commit("main", "s0", "setup", setup);
-    }
-    let base_seq = log.head_seq("main");
-    let base = names(&log, "main", &[]);
-    if merge {
-        log.fork("br1", "main", base_seq);
-    }
-    // Bob's edits, one record each, resolved against the state they meet.
-    let mut moved = Vec::new();
-    for (n, op) in bob.iter().enumerate() {
-        let now = names(&log, "main", &[]);
-        let op = match op {
-            Bob::Add(i) => add(&format!("$b{n}"), i.map(|i| i.min(now.len()))),
-            Bob::Remove(_) if now.len() < 2 => continue,
-            Bob::Remove(k) => TrackRemove {
-                track: now[k % now.len()].clone(),
-                with_items: false,
+/// Alice's record from `gens`, made against `now` (the list as she sees it); `n` names its new
+/// members.
+fn alice_ops(kind: Kind, now: &[String], gens: &[Gen], n: usize) -> Vec<Op> {
+    let mut l = now.to_vec();
+    let mut ops = Vec::new();
+    let mut new: Vec<String> = Vec::new();
+    for (j, g) in gens.iter().enumerate() {
+        match g {
+            Gen::Add(i) => {
+                let name = fresh(kind, &format!("A{n}x{j}"));
+                ops.push(add(kind, &name, *i, l.len()));
+                match (kind, i) {
+                    (Kind::Fonts, _) | (_, Some(_)) => {
+                        let at = i.unwrap_or(l.len()).min(l.len());
+                        l.insert(at, name.clone());
+                    }
+                    _ => l.push(name.clone()),
+                }
+                new.push(name);
             }
-            .into(),
-            Bob::Move(k, to) => {
-                moved.push(now[k % now.len()].clone());
-                mv(&now[k % now.len()], to % now.len())
+            Gen::Remove(k) => {
+                if l.len() < 2 {
+                    continue;
+                }
+                let m = l[k % l.len()].clone();
+                if new.contains(&m) {
+                    continue;
+                }
+                l.retain(|x| *x != m);
+                ops.push(remove(kind, &m));
+            }
+            Gen::MoveNew(..) | Gen::Move(..) if kind == Kind::Fonts || l.is_empty() => {}
+            Gen::MoveNew(k, to) | Gen::Move(k, to) => {
+                let m = match g {
+                    Gen::MoveNew(..) if new.is_empty() => continue,
+                    Gen::MoveNew(..) => new[k % new.len()].clone(),
+                    _ => l[k % l.len()].clone(),
+                };
+                let to = to % l.len();
+                l.retain(|x| *x != m);
+                l.insert(to, m.clone());
+                ops.push(mv(kind, &m, to));
+            }
+        }
+    }
+    ops
+}
+
+/// Bob's edits on main, one record each: the members he moved.
+fn bob(log: &mut MemLog, kind: Kind, gens: &[Gen]) -> BTreeSet<String> {
+    let mut moved = BTreeSet::new();
+    for (n, g) in gens.iter().enumerate() {
+        let now = list(&log.state("main"), kind);
+        let op = match g {
+            Gen::Add(i) => add(kind, &fresh(kind, &format!("B{n}")), *i, now.len()),
+            Gen::Remove(_) if now.len() < 2 => continue,
+            Gen::Remove(k) => remove(kind, &now[k % now.len()]),
+            Gen::MoveNew(..) | Gen::Move(..) if kind == Kind::Fonts || now.is_empty() => continue,
+            Gen::MoveNew(k, to) | Gen::Move(k, to) => {
+                let m = now[k % now.len()].clone();
+                moved.insert(m.clone());
+                mv(kind, &m, to % now.len())
             }
         };
         log.commit("main", &format!("b{n}"), "bob", vec![op]);
     }
-    let head = names(&log, "main", &[]);
-    // Alice's transaction, against the base, naming her new tracks by placeholder.
-    let mut ops = Vec::new();
-    let mut named: Vec<(String, Alice, String)> = Vec::new();
-    let mut frame = base.clone();
-    for (n, op) in alice.iter().enumerate() {
-        let name = format!("$x{n}");
-        let real = match op {
-            Alice::Add(i) => {
-                let i = i.map(|i| i.min(frame.len()));
-                let o = add(&name, i);
-                match i {
-                    Some(i) => frame.insert(i, name.clone()),
-                    None => frame.push(name.clone()),
-                }
-                named.push((name.clone(), Alice::Add(i), String::new()));
-                o
-            }
-            Alice::MoveNew(m, to) | Alice::MoveOld(m, to) => {
-                let new = named.iter().any(|(_, o, _)| matches!(o, Alice::Add(_)));
-                if matches!(op, Alice::MoveNew(..)) && !new {
-                    continue;
-                }
-                let member = ops_member(op, *m, &base, &named);
-                let to = to % frame.len();
-                frame.retain(|x| *x != member);
-                frame.insert(to, member.clone());
-                let kept = match op {
-                    Alice::MoveNew(..) => Alice::MoveNew(*m, to),
-                    _ => Alice::MoveOld(*m, to),
-                };
-                let o = mv(&member, to);
-                named.push((name.clone(), kept, member));
-                o
-            }
-        };
-        ops.push(real);
-    }
-    if ops.is_empty() {
-        return Ok(());
-    }
-    let got = if merge {
-        let rec = log.commit("br1", "a1", "alice", ops);
-        log.merge("br1", "main", "carol", "g1", false)
-            .map(|_| rec.record.bindings)
-    } else {
-        log.commit_at("main", "a1", "alice", base_seq, ops)
-            .map(|rec| rec.record.bindings)
-    };
-    let what = format!("base {base:?} head {head:?} alice {named:?}");
-    match (model(&base, &head, &named, &moved), got) {
-        (Want::Order(want), Ok(bindings)) => {
-            let rename: Vec<(String, String)> = bindings.into_iter().collect();
-            prop_assert_eq!(names(&log, "main", &rename), want, "{}", what);
-        }
-        (Want::Order(want), Err(e)) => {
-            prop_assert!(false, "{what}: want {want:?}, got {e:?}");
-        }
-        (Want::Conflict { gone }, Err(e)) => {
+    moved
+}
+
+fn check(
+    what: &str,
+    want: Want,
+    got: Result<(), CoreError>,
+    now: Vec<String>,
+) -> Result<(), TestCaseError> {
+    match (want, got) {
+        (Want::Order(want), Ok(())) => prop_assert_eq!(now, want, "{}", what),
+        (Want::Order(want), Err(e)) => prop_assert!(false, "{what}: want {want:?}, got {e:?}"),
+        (Want::Conflict { same_param }, Err(e)) => {
             let reason = e.details["reason"].as_str().unwrap_or(e.code.as_str());
             prop_assert!(
-                gone || reason == "SAME_PARAM",
-                "{what}: conflict {reason}: {e:?}"
+                !same_param || reason == "SAME_PARAM",
+                "{what}: {reason}: {e:?}"
             );
         }
-        (Want::Conflict { .. }, Ok(_)) => {
-            let now = names(&log, "main", &[]);
-            prop_assert!(false, "{what}: want a conflict, got {now:?}");
+        (Want::Conflict { .. }, Ok(())) => {
+            prop_assert!(false, "{what}: want a conflict, got {now:?}")
         }
     }
     Ok(())
 }
 
+fn run(
+    kind: Kind,
+    extra: usize,
+    recs: &[Vec<Gen>],
+    bobs: &[Gen],
+    route: Route,
+) -> Result<(), TestCaseError> {
+    let mut log = MemLog::new(genesis(kind));
+    let setup: Vec<Op> = (0..=extra)
+        .map(|i| add(kind, &fresh(kind, &format!("S{i}")), None, i))
+        .collect();
+    log.commit("main", "s0", "setup", setup);
+    let base_seq = log.head_seq("main");
+    let base = list(&log.state("main"), kind);
+    let what = format!("{kind:?} {route:?} base {base:?} bob {bobs:?}");
+    let now = |log: &MemLog| list(&log.state("main"), kind);
+    match route {
+        Route::Stale => {
+            let ops = alice_ops(kind, &base, &recs.concat(), 0);
+            if ops.is_empty() {
+                return Ok(());
+            }
+            let moved = bob(&mut log, kind, bobs);
+            let head = now(&log);
+            let got = log.commit_at("main", "a0", "alice", base_seq, ops.clone());
+            let names = got
+                .as_ref()
+                .map(|r| r.record.bindings.clone())
+                .unwrap_or_default();
+            let want = oracle(&base, &head, &lops(&ops, &names), &moved);
+            let what = format!("{what} head {head:?} ops {ops:?}");
+            check(&what, want, got.map(|_| ()), now(&log))
+        }
+        Route::Merge | Route::Pick | Route::Revert => {
+            log.fork("br1", "main", base_seq);
+            let mut per: Vec<(String, Vec<LOp>)> = Vec::new();
+            for (n, gens) in recs.iter().enumerate() {
+                let ops = alice_ops(kind, &list(&log.state("br1"), kind), gens, n);
+                if !ops.is_empty() {
+                    let rec = log.commit("br1", &format!("a{n}"), "alice", ops);
+                    per.push((
+                        rec.record.tx_id.clone(),
+                        lops(&rec.record.resolved, &Names::new()),
+                    ));
+                }
+            }
+            if per.is_empty() {
+                return Ok(());
+            }
+            if let Route::Revert = route {
+                log.merge("br1", "main", "carol", "g1", false).unwrap();
+                let frame = now(&log);
+                let group: Vec<LogRec> = log
+                    .records("main", base_seq, log.head_seq("main"))
+                    .unwrap()
+                    .into_iter()
+                    .filter(|r| r.record.merge_id.as_deref() == Some("g1"))
+                    .collect();
+                let moved = bob(&mut log, kind, bobs);
+                let head = now(&log);
+                let inv: Vec<LOp> = group
+                    .iter()
+                    .rev()
+                    .flat_map(|r| lops(&r.record.inverse, &Names::new()))
+                    .collect();
+                let got = log.revert("g1", "main", "carol", "v1").map(|_| ());
+                let what = format!("{what} frame {frame:?} head {head:?} inverse {inv:?}");
+                let want = oracle(&frame, &head, &inv, &moved);
+                return check(&what, want, got, now(&log));
+            }
+            let moved = bob(&mut log, kind, bobs);
+            let head = now(&log);
+            let what = format!("{what} head {head:?} alice {per:?}");
+            if let Route::Merge = route {
+                let all: Vec<LOp> = per.iter().flat_map(|(_, l)| l.iter().cloned()).collect();
+                let want = oracle(&base, &head, &all, &moved);
+                let got = log.merge("br1", "main", "carol", "g1", false).map(|_| ());
+                return check(&what, want, got, now(&log));
+            }
+            // Picks in order, until one is refused.
+            let mut done: Vec<LOp> = Vec::new();
+            for (tx, l) in &per {
+                let mut all = done.clone();
+                all.extend(l.iter().cloned());
+                let want = oracle(&base, &head, &all, &moved);
+                let got = log
+                    .pick(tx, "main", "carol", &format!("p-{tx}"))
+                    .map(|_| ());
+                let refused = got.is_err();
+                check(&what, want, got, now(&log))?;
+                if refused {
+                    break;
+                }
+                done = all;
+            }
+            Ok(())
+        }
+        Route::Undo | Route::Redo => {
+            let mut last = None;
+            for (n, gens) in recs.iter().enumerate() {
+                let ops = alice_ops(kind, &now(&log), gens, n);
+                if !ops.is_empty() {
+                    last = Some(log.commit("main", &format!("a{n}"), "alice", ops));
+                }
+            }
+            let Some(mut unit) = last else {
+                return Ok(());
+            };
+            if let Route::Redo = route {
+                unit = log.undo("main", "alice", "u0").unwrap();
+            }
+            let frame = now(&log);
+            let moved = bob(&mut log, kind, bobs);
+            let head = now(&log);
+            let inv = lops(&unit.record.inverse, &Names::new());
+            let got = match route {
+                Route::Undo => log.undo("main", "alice", "u1").map(|_| ()),
+                _ => log.redo("main", "alice", "r1").map(|_| ()),
+            };
+            let what = format!("{what} frame {frame:?} head {head:?} inverse {inv:?}");
+            check(&what, oracle(&frame, &head, &inv, &moved), got, now(&log))
+        }
+    }
+}
+
+fn gen_op() -> impl Strategy<Value = Gen> {
+    prop_oneof![
+        3 => proptest::option::of(0usize..7).prop_map(Gen::Add),
+        2 => (0usize..7).prop_map(Gen::Remove),
+        2 => (0usize..4, 0usize..7).prop_map(|(m, to)| Gen::MoveNew(m, to)),
+        2 => (0usize..7, 0usize..7).prop_map(|(m, to)| Gen::Move(m, to)),
+    ]
+}
+
 proptest! {
     #![proptest_config(prop_config(256))]
     #[test]
-    fn chained_index_ops_follow_their_neighbours(
+    fn index_ops_keep_their_order_with_unmoved_neighbours(
+        kind in prop_oneof![Just(Kind::Tracks), Just(Kind::Effects), Just(Kind::Fonts)],
         extra in 0usize..4,
-        bob in proptest::collection::vec(bob_op(), 0..4),
-        alice in proptest::collection::vec(alice_op(), 1..5),
-        merge in any::<bool>(),
+        recs in proptest::collection::vec(proptest::collection::vec(gen_op(), 1..4), 1..4),
+        bobs in proptest::collection::vec(gen_op(), 0..4),
+        route in prop_oneof![
+            Just(Route::Stale),
+            Just(Route::Merge),
+            Just(Route::Pick),
+            Just(Route::Undo),
+            Just(Route::Redo),
+            Just(Route::Revert),
+        ],
     ) {
-        run(extra, &bob, &alice, merge)?;
+        run(kind, extra, &recs, &bobs, route)?;
     }
 }
