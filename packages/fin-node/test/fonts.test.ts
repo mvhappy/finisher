@@ -199,9 +199,11 @@ describe("font manager", () => {
     useCatalog([f]);
     FontManager.open(serverData).setAutoFetch(false);
     const { engine, events } = await open();
-    // A refresh computes the summary without pins and pauses; meanwhile a pin is injected
+    // A refresh computes the summary without pins and pauses; meanwhile a pin is committed
     // and its refresh (on the jobs thread) must wait, then publish last.
-    engine.fontPublishRaceForTest(catalogPin(f).fonts);
+    const { pins } = JSON.parse(catalogPin(f).fonts) as { pins: Record<string, unknown> };
+    const ops = Object.entries(pins).map(([key, pin]) => ({ op: "font.pin", key, pin }));
+    engine.fontPublishRaceForTest(JSON.stringify({ txId: "race", author: "a", branch: "main", baseRev: await engine.head("main"), schemaVersion: 2, ops }));
     await waitFor(() => (events.some((s) => s.fonts.missing.length === 1) ? true : undefined), 5_000, "the newer summary");
     await new Promise((r) => setTimeout(r, 300));
     // Without the publish lock the paused (older) summary lands after the newer one.
@@ -233,6 +235,40 @@ describe("font manager", () => {
     expect(JSON.parse(hooks.measure(serverData, request(sha))).kind).toBe("unavailable");
     await waitFor(() => (JSON.parse(hooks.measure(serverData, request(sha))).kind === "layout" ? true : undefined), 10_000, "measured");
     expect(server.hitsOf("sans.ttf")).toBe(1);
+  });
+
+  test("captions measure with pinned bytes: eval lays them out, an overflowing edit is CAPTION_OVERFLOW, unpinned text warns FONT_UNPINNED", async () => {
+    const f = file("sans", hooks.testFont("sans"));
+    useCatalog([f]);
+    const { engine } = await open();
+    await pinFonts(engine, catalogPin(f).fonts);
+    await waitFor(async () => {
+      const s = await status(engine);
+      return s.fonts.missing.length === 0 && s.fonts.fetching.length === 0 ? true : undefined;
+    }, 10_000, "the pinned file fetched");
+    const caption = (id: string, at: string, text: string) => ({
+      op: "item.insert", id, track: "t3", at, duration: "2", mode: "overwrite", kind: "caption", style: "st1",
+      words: text.split(" ").map((t) => ({ text: t, start: "0", end: "0" })),
+    });
+    const commitOps = async (txId: string, ops: unknown[]) =>
+      engine.commit(JSON.stringify({ txId, author: "a", branch: "main", baseRev: await engine.head("main"), schemaVersion: 2, ops }));
+    await commitOps("c1", [
+      { op: "track.add", id: "$k", timeline: "tl1", kind: "caption" },
+      { op: "style.add", id: "$s", name: "Test", set: { "text.family": "Test sans", "text.weight": 400 } },
+      caption("$c", "0", "hi there"),
+    ]);
+    const plan = JSON.parse(await engine.evalFrame("main", null, "1")) as { layers: Array<{ caption?: { layout: { faces: string[] } | null } }>; textEngine?: string };
+    expect(plan.layers[0]?.caption?.layout?.faces).toEqual([sha256(f.bytes)]);
+    expect(plan.textEngine).toContain("fin-text/");
+    // A word far wider than the safe zone: refused with the measured numbers.
+    const e = await rejection(commitOps("c2", [caption("$d", "3", "x".repeat(200))]));
+    expect(e.code).toBe("CAPTION_OVERFLOW");
+    expect(e.details?.item).toBe("cap2");
+    // Hebrew text no pin covers: accepted, unmeasured, and the status says so.
+    await commitOps("c3", [caption("$h", "6", "שלום")]);
+    const w = (await status(engine)).warnings.find((x) => x.code === "FONT_UNPINNED");
+    expect(w?.details).toEqual({ key: "script:Hebr", items: ["cap2"] });
+    expect(w?.fix).toContain("fin fonts pin");
   });
 
   test("an asset font pin measures from the asset file; a changed file is a hash mismatch", async () => {

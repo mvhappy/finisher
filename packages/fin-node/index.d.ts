@@ -147,14 +147,12 @@ export declare class Engine {
   emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */
   maintenanceRunningForTest(): boolean;
-  /** @internal Test builds only: pins the model's `Fonts` JSON as if main's head held them. */
-  injectFontPinsForTest(fontsJson: string): void;
   /**
    * @internal Test builds only: a status refresh computes the summary of the pins now and
-   * pauses before publishing it while `fontsJson` is injected; the newer summary must be the
-   * last one published.
+   * pauses before publishing it while `txJson` is committed (rescanning the pins); the newer
+   * summary must be the last one published.
    */
-  fontPublishRaceForTest(fontsJson: string): void;
+  fontPublishRaceForTest(txJson: string): void;
 }
 
 /**

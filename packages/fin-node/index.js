@@ -242,19 +242,10 @@ export class Engine {
     return this.#hook("maintenanceRunningForTest")();
   }
 
-  /** @internal Test builds only: pins `Fonts` JSON as if main's head held them. */
-  injectFontPinsForTest(fontsJson) {
+  /** @internal Test builds only: forces two font status refreshes to interleave around a commit of `txJson`. */
+  fontPublishRaceForTest(txJson) {
     try {
-      this.#hook("injectFontPinsForTest")(fontsJson);
-    } catch (e) {
-      throw toFinError(e);
-    }
-  }
-
-  /** @internal Test builds only: forces two font status refreshes to interleave. */
-  fontPublishRaceForTest(fontsJson) {
-    try {
-      this.#hook("fontPublishRaceForTest")(fontsJson);
+      this.#hook("fontPublishRaceForTest")(txJson);
     } catch (e) {
       throw toFinError(e);
     }

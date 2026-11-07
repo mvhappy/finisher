@@ -44,6 +44,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fin_core::CoreError;
+use fin_core::layout::TextMeasurer;
 use serde_json::json;
 
 use crate::lease::{MonoClock, Params, ServerLock, SystemClock};
@@ -56,7 +57,7 @@ use crate::{
 
 /// How a store is opened. [`OpenOptions::default`] is production: the system's monotonic
 /// clock and the spec's lease timing.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct OpenOptions {
     /// The monotonic clock of the lease and of the ordering rule's wait (tests: a
     /// [`FakeClock`](crate::lease::FakeClock)).
@@ -67,6 +68,21 @@ pub struct OpenOptions {
     /// it even though its recorded folder cannot be reached (`PROJECT_ORIGINAL_UNREACHABLE`).
     /// Never set automatically.
     pub relocate: bool,
+    /// What edits, history writes and recovery check caption overflow with (plan 4C Task 20;
+    /// [`Store::set_measurer`] changes it later). `None` measures nothing. Replay (import,
+    /// rebuild) never measures.
+    pub measurer: Option<Arc<dyn TextMeasurer>>,
+}
+
+impl std::fmt::Debug for OpenOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenOptions")
+            .field("clock", &self.clock)
+            .field("poll", &self.poll)
+            .field("relocate", &self.relocate)
+            .field("measurer", &self.measurer.as_ref().map(|m| m.fingerprint()))
+            .finish()
+    }
 }
 
 impl OpenOptions {
@@ -200,6 +216,7 @@ impl Store {
             damage: RefCell::new(crate::verify::DamageSeen::default()),
             quarantine_seen: RefCell::new(None),
             compact: crate::compact::CompactState::default(),
+            measurer: opts.measurer.clone(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }

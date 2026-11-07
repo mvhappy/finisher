@@ -2,14 +2,16 @@
 //! own records and the state after each of them, and forks from its parent at a seq.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
 use fin_core::history::{
     Lineage, LogRec, LogView, MergePlan, Planned, StackRec, Stacks, derive_stacks,
     plan_cherry_pick, plan_merge, plan_redo, plan_revert, plan_undo, plan_undo_to,
 };
+use fin_core::layout::TextMeasurer;
 use fin_core::{
-    Applied, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
-    SCHEMA_VERSION, Tx, apply_tx_mode, rebase_tx, resolve_ops,
+    Applied, ApplyEnv, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
+    SCHEMA_VERSION, Tx, apply_tx_env, apply_tx_mode, rebase_tx_env, resolve_ops,
 };
 
 struct Br {
@@ -24,6 +26,8 @@ pub struct MemLog {
     branches: BTreeMap<String, Br>,
     /// One id counter for the whole log, as the store's.
     pub ids: MemIds,
+    /// What edits and the planners measure captions with (plan 4C Task 20); none by default.
+    pub measurer: Option<Arc<dyn TextMeasurer>>,
 }
 
 impl MemLog {
@@ -39,6 +43,7 @@ impl MemLog {
         MemLog {
             branches: BTreeMap::from([("main".to_string(), main)]),
             ids,
+            measurer: None,
         }
     }
 
@@ -74,10 +79,22 @@ impl MemLog {
 
     /// An edit at the head of `b`, applied as a client tx.
     pub fn commit(&mut self, b: &str, tx_id: &str, author: &str, ops: Vec<Op>) -> LogRec {
+        self.try_commit(b, tx_id, author, ops)
+            .unwrap_or_else(|e| panic!("{tx_id}: {e:?}"))
+    }
+
+    /// [`MemLog::commit`], or the apply's error.
+    pub fn try_commit(
+        &mut self,
+        b: &str,
+        tx_id: &str,
+        author: &str,
+        ops: Vec<Op>,
+    ) -> Result<LogRec, CoreError> {
         let tx = self.tx(b, tx_id, author, self.head_seq(b), ops);
-        let applied = apply_tx_mode(&self.state(b), &tx, &mut self.ids, ApplyMode::Client)
-            .unwrap_or_else(|e| panic!("{tx_id}: {e:?}"));
-        self.push(b, Link::Edit, tx, applied)
+        let env = ApplyEnv::measuring(self.measurer.as_deref());
+        let applied = apply_tx_env(&self.state(b), &tx, &mut self.ids, ApplyMode::Client, env)?;
+        Ok(self.push(b, Link::Edit, tx, applied))
     }
 
     /// An edit written at `base` on `b`, rebased over the branch's records since (stale).
@@ -96,7 +113,8 @@ impl MemLog {
             .map(LogRec::committed)
             .collect::<Result<Vec<_>, _>>()?;
         let at_base = self.state_at(b, base)?;
-        let r = rebase_tx(&at_base, &self.state(b), &tx, &since, &mut self.ids)?;
+        let env = ApplyEnv::measuring(self.measurer.as_deref());
+        let r = rebase_tx_env(&at_base, &self.state(b), &tx, &since, &mut self.ids, env)?;
         Ok(self.push(b, Link::Edit, r.tx, r.applied))
     }
 
@@ -285,6 +303,10 @@ impl MemLog {
 }
 
 impl LogView for MemLog {
+    fn measurer(&self) -> Option<&dyn TextMeasurer> {
+        self.measurer.as_deref()
+    }
+
     fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {
         let mut segs = vec![];
         let (mut cur, mut through) = (branch.to_string(), None::<u64>);

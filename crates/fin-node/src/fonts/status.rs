@@ -1,9 +1,10 @@
 //! What a project's pins lack, as its status reports it (4C Decision 34): `fonts {missing,
 //! fetching, failed}` and the warnings `FONT_MISSING`, `FONT_FETCH_FAILED` and
-//! `FONTS_DAMAGED`, each with its fix. Warnings, never errors: a missing font leaves
-//! captions unmeasured and never blocks an edit (Decision 36).
+//! `FONTS_DAMAGED`, and `FONT_UNPINNED` for what captions need that nothing pins (Decision
+//! 35), each with its fix. Warnings, never errors: a missing or unpinned font leaves captions
+//! unmeasured and never blocks an edit (Decision 36).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fin_fonts::{FileState, FontCatalog};
 use serde_json::{Value, json};
@@ -50,9 +51,41 @@ fn missing_fix(key: &str, reason: &str, asset: bool) -> String {
     }
 }
 
+/// `FONT_UNPINNED` for `key` (a face key or `script:<code>`) and the captions needing it.
+fn unpinned_warning(key: &str, items: &BTreeSet<String>) -> Value {
+    let fix = match key.strip_prefix("script:") {
+        Some(script) => format!(
+            "pin a font that covers {script} in the fallback order: fin fonts pin <family> --fallback <n> (fin fonts ls --catalog lists them)"
+        ),
+        None => {
+            let mut parts = key.split('|');
+            let (family, weight, slope) = (
+                parts.next().unwrap_or_default(),
+                parts.next().unwrap_or("400"),
+                parts.next().unwrap_or("normal"),
+            );
+            let italic = if slope == "italic" { " --italic" } else { "" };
+            format!("fin fonts pin \"{family}\" --weight {weight}{italic}")
+        }
+    };
+    warning(
+        "FONT_UNPINNED",
+        format!(
+            "{} caption(s) need {key}, which no font pin provides; they are unmeasured",
+            items.len()
+        ),
+        json!({ "key": key, "items": items }),
+        fix,
+    )
+}
+
 impl Manager {
-    /// The summary of `needs` now.
-    pub(crate) fn summary(&self, needs: &BTreeSet<Need>) -> Summary {
+    /// The summary of `needs` (and of what captions need with no pin, `unpinned`) now.
+    pub(crate) fn summary(
+        &self,
+        needs: &BTreeSet<Need>,
+        unpinned: &BTreeMap<String, BTreeSet<String>>,
+    ) -> Summary {
         let (mut missing, mut fetching, mut failed) = (Vec::new(), Vec::new(), Vec::new());
         let mut warnings = Vec::new();
         if let Some(e) = &self.damaged {
@@ -118,6 +151,7 @@ impl Manager {
                 ));
             }
         }
+        warnings.extend(unpinned.iter().map(|(k, items)| unpinned_warning(k, items)));
         let strip = |v: &Vec<Value>| -> Vec<Value> {
             v.iter()
                 .map(|f| json!({ "key": f["key"], "sha256": f["sha256"] }))

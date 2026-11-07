@@ -12,15 +12,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use fin_core::eval::{AudioPlan, FramePlan, Layer, eval_audio, eval_frame};
-use fin_core::layout::{LineBox, Measured, TextLayout, TextMeasurer, TextRequest, WordBox};
+use fin_core::layout::TextMeasurer;
+use fin_core::layout::testing::FakeMeasurer;
 use fin_core::params::{ParamType, Scope, specs};
-use fin_core::{
-    CoreError, Curve, Interp, Item, ItemBody, Project, Rational, Timeline, upcast_snapshot,
-};
+use fin_core::{Curve, Interp, Item, ItemBody, Project, Rational, Timeline, upcast_snapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DIR: &str = "tests/eval_corpus";
+
+/// Fixed advances (`layout::testing`), so the corpus pins plan shapes, not a font engine.
+static FAKE: FakeMeasurer = FakeMeasurer {
+    missing: Vec::new(),
+};
 
 /// One corpus file: a project and the times and ranges evaluated on `timeline`.
 #[derive(Deserialize)]
@@ -33,8 +37,8 @@ struct Case {
     #[serde(default)]
     measurer: bool,
     /// Whether some caption layer of the case's frames has a layout. Required on every case
-    /// with a measurer and checked both ways, so the case says what its plans hold: `false`
-    /// until captions are measured (fonts resolved from pins, plan 4C Task 20), which flips it.
+    /// with a measurer and checked both ways, so the case says what its plans hold (captions are
+    /// measured once their faces resolve to pins, plan 4C Task 20).
     #[serde(default)]
     requires_measured_caption: Option<bool>,
     frames: Vec<Rational>,
@@ -86,71 +90,6 @@ fn cases() -> Vec<(String, Case, Project)> {
         .collect()
 }
 
-/// A measurer with fixed advances (1/64 px integers only): each character 0.5 em wide, a
-/// space 0.25 em, one line unless `max_width` breaks it. Real-font layouts are pinned by
-/// `fin-text`'s corpora and e2e.
-struct FakeMeasurer;
-
-impl TextMeasurer for FakeMeasurer {
-    fn measure(&self, req: &TextRequest) -> Result<Measured, CoreError> {
-        let em = (req.style.size * 64.0).floor() as i32;
-        let line_h = (req.style.size * req.style.line_height * 64.0).floor() as i32;
-        let space = em / 4;
-        let max = req.max_width.map(|w| (w * 64.0).floor() as i32);
-        let mut lines: Vec<LineBox> = Vec::new();
-        let mut words = Vec::new();
-        let (mut x, mut first) = (0, 0u32);
-        for (i, w) in req.words.iter().enumerate() {
-            let width = w.chars().count() as i32 * em / 2;
-            if x > 0 && max.is_some_and(|m| x + space + width > m) {
-                lines.push(line(lines.len(), first, i as u32, x - space, line_h));
-                (x, first) = (0, i as u32);
-            }
-            words.push(WordBox {
-                line: lines.len() as u32,
-                x,
-                width,
-            });
-            x += width + space;
-        }
-        lines.push(line(
-            lines.len(),
-            first,
-            req.words.len() as u32,
-            (x - space).max(0),
-            line_h,
-        ));
-        let width = lines.iter().map(|l| l.width).max().unwrap_or(0);
-        let overflow =
-            max.is_some_and(|m| width > m) || req.max_lines.is_some_and(|n| lines.len() as u32 > n);
-        Ok(Measured::Layout(TextLayout {
-            height: line_h * lines.len() as i32,
-            lines,
-            words,
-            width,
-            overflow,
-            missing: Vec::new(),
-            faces: req.faces.iter().map(|f| f.sha256.clone()).collect(),
-        }))
-    }
-    fn fingerprint(&self) -> String {
-        "fake/1".into()
-    }
-}
-
-fn line(n: usize, first: u32, end: u32, width: i32, height: i32) -> LineBox {
-    LineBox {
-        x: 0,
-        top: n as i32 * height,
-        width,
-        height,
-        baseline: n as i32 * height + height * 4 / 5,
-        rtl: false,
-        first_word: first,
-        end_word: end,
-    }
-}
-
 fn hash(plan: &impl Serialize) -> (String, String) {
     let json = serde_json::to_string(plan).unwrap();
     (blake3::hash(json.as_bytes()).to_hex().to_string(), json)
@@ -161,7 +100,7 @@ fn hash(plan: &impl Serialize) -> (String, String) {
 fn computed() -> Vec<(Entry, String)> {
     let mut out = Vec::new();
     for (id, case, project) in cases() {
-        let m: Option<&dyn TextMeasurer> = case.measurer.then_some(&FakeMeasurer);
+        let m: Option<&dyn TextMeasurer> = case.measurer.then_some(&FAKE);
         for &t in &case.frames {
             let plan = eval_frame(&project, &case.timeline, t, m)
                 .unwrap_or_else(|e| panic!("{id} t={t}: {e:?}"));
@@ -409,7 +348,7 @@ fn measured_caption_flag_matches_the_plans() {
         let mut captions = 0;
         let mut measured = false;
         for &t in &case.frames {
-            let plan = eval_frame(&project, &case.timeline, t, Some(&FakeMeasurer)).unwrap();
+            let plan = eval_frame(&project, &case.timeline, t, Some(&FAKE)).unwrap();
             for c in layers(&plan).into_iter().filter_map(|l| l.caption.as_ref()) {
                 captions += 1;
                 measured |= c.layout.is_some();

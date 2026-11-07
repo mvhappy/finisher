@@ -94,8 +94,10 @@ impl Store {
         self.pick(&common, Which::CherryPick, |ctx| {
             let txn = ctx.txn;
             let into = writable(txn, &r.into)?.id;
+            let measurer = ctx.measurer.clone();
             let head = ctx.head(&into)?;
-            let log = SqlLog::with_head(txn, &into, head.rev, &head.project);
+            let log = SqlLog::with_head(txn, &into, head.rev, &head.project)
+                .measuring(measurer.as_deref());
             let mut p = match plan_cherry_pick(&log, &r.origin, &into, &r.author, &r.tx_id)? {
                 Outcome::Append(p) => p,
                 Outcome::Nothing(why) => return Ok(Err(why)),
@@ -129,8 +131,10 @@ impl Store {
             let txn = ctx.txn;
             let branch = writable(txn, &r.branch)?.id;
             let mut ids = Counters::load(txn)?;
+            let measurer = ctx.measurer.clone();
             let head = ctx.head(&branch)?;
-            let log = SqlLog::with_head(txn, &branch, head.rev, &head.project);
+            let log = SqlLog::with_head(txn, &branch, head.rev, &head.project)
+                .measuring(measurer.as_deref());
             let planned = plan_revert(&log, &r.merge_id, &branch, &r.author, &r.tx_id, &mut ids)?;
             ids.save(txn)?;
             Ok(match planned {

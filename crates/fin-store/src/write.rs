@@ -64,6 +64,9 @@ pub(crate) struct WriteCtx<'a> {
     changes_at_start: u64,
     /// Branches whose `merged` flag this write's records can change ([`WriteCtx::settle`]).
     touched: crate::derived::Touched,
+    /// The store's measurer ([`crate::Store::set_measurer`]): what this write's re-runs
+    /// check caption overflow with.
+    pub measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
 }
 
 impl WriteCtx<'_> {
@@ -236,7 +239,9 @@ impl Store {
         let epoch = fenced
             .transpose()
             .map_err(|e| crate::import::lease_lost_error(&self.project_id, &e))?;
+        let measurer = self.measurer.clone();
         let mut ctx = WriteCtx {
+            measurer,
             txn: &txn,
             epoch,
             dry_run,

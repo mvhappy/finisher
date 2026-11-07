@@ -30,8 +30,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 [dev-dependencies]
 # Only for `examples/export_schema.rs`, which puts `fin_probe::Probe` and the font wire types
 # (`fin_fonts::{FontCatalog, FileState, FontsStatus, FontsPlan}`) in the TS contract.
+fin-core = { path = "../fin-core", features = ["test-measurer"] }
 fin-fonts = { path = "../fin-fonts" }
 fin-probe = { path = "../fin-probe" }
 fin-store = { path = ".", features = ["test-hooks"] }
+# `tests/measure.rs`: real layouts from generated fonts.
+fin-testfonts = { path = "../fin-testfonts" }
+fin-text = { path = "../fin-text" }
 proptest = "1"
 tempfile = "3"

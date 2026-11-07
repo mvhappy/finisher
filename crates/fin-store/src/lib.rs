@@ -238,6 +238,8 @@ pub struct Store {
     /// The last quarantine summary and the database version it was read at
     /// (`status::warnings::quarantine_summary`): status asks on every poll.
     quarantine_seen: RefCell<Option<((i64, u64), QuarantineSummary)>>,
+    /// What writes check caption overflow with ([`OpenOptions::measurer`]).
+    measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
@@ -253,6 +255,13 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
+    /// What later writes check caption overflow with (plan 4C Task 20): edits, stale commits,
+    /// undo, redo, merge, cherry-pick, revert and recovery re-runs. `None` measures nothing;
+    /// replay (import, rebuild, open) never measures.
+    pub fn set_measurer(&mut self, m: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>) {
+        self.measurer = m;
+    }
+
     /// The storage kind in use: the project's `storageOverride`, else detected at open.
     pub fn storage_kind(&self) -> storage_kind::StorageKind {
         self.import.kind

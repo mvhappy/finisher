@@ -31,9 +31,11 @@ mod run;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
+use fin_core::layout::TextMeasurer;
 use fin_core::{CommittedTx, Conflict, CoreError, Link, RecordKind};
 use rusqlite::Connection;
 use serde_json::json;
@@ -110,11 +112,17 @@ fn makes_branch(forest: &Forest, g: &Group) -> bool {
 
 /// The groups over `conn`, planned, named (unique among the branches and each other, in
 /// listing order, for the recoverable ones), as listed.
-fn listing(conn: &Connection, writers: &Writers, author: &str) -> Result<Listing, StoreError> {
+/// `measurer`: what the plan's re-runs check caption overflow with, as the write's will.
+fn listing(
+    conn: &Connection,
+    writers: &Writers,
+    author: &str,
+    measurer: Option<Arc<dyn TextMeasurer>>,
+) -> Result<Listing, StoreError> {
     let forest = Forest::load(conn)?;
     let (groups, order) = forest.groups();
     let (problems, notes, shown) = {
-        let mut r = Runner::new(conn, &forest, &groups, author, "plan")?;
+        let mut r = Runner::new(conn, &forest, &groups, author, "plan")?.measuring(measurer);
         r.run(&order)?;
         (r.problems, r.notes, r.shown)
     };
@@ -235,7 +243,7 @@ impl Store {
     /// The quarantined records not recovered (nor dismissed) yet, as groups (module docs),
     /// parents before their children.
     pub fn recover_groups(&self) -> Result<Vec<RecoverGroup>, StoreError> {
-        Ok(listing(&self.conn, &self.writers()?, "")?.out)
+        Ok(listing(&self.conn, &self.writers()?, "", self.measurer.clone())?.out)
     }
 
     fn writers(&self) -> Result<Writers, StoreError> {
@@ -270,7 +278,7 @@ impl Store {
             }
             if let Some(id) = &r.dismiss {
                 let writers = Writers::new(&txn, &self.server_id, &self.project_dir)?;
-                dismissed = dismiss_group(&txn, &writers, id)?;
+                dismissed = dismiss_group(&txn, &writers, id, self.measurer.clone())?;
             }
             txn.commit()?;
         }
@@ -309,7 +317,7 @@ impl Store {
                         imp = import_dir::run(ctx.txn, &project_id, dir)?;
                     }
                     if let Some(id) = &r.dismiss {
-                        dis = dismiss_group(ctx.txn, &writers, id)?;
+                        dis = dismiss_group(ctx.txn, &writers, id, ctx.measurer.clone())?;
                     }
                 }
                 Ok((create(ctx, &r, &writers)?, imp, dis))
@@ -368,8 +376,13 @@ impl Store {
 }
 
 /// Dismisses group `id` (it must not be recoverable); returns the rows newly dismissed.
-fn dismiss_group(conn: &Connection, writers: &Writers, id: &str) -> Result<usize, StoreError> {
-    let l = listing(conn, writers, "")?;
+fn dismiss_group(
+    conn: &Connection,
+    writers: &Writers,
+    id: &str,
+    measurer: Option<Arc<dyn TextMeasurer>>,
+) -> Result<usize, StoreError> {
+    let l = listing(conn, writers, "", measurer)?;
     let (g, _) = find(&l, id)?;
     if l.problems[g].is_empty() {
         return Err(CoreError::new(
@@ -397,7 +410,7 @@ fn create(
     writers: &Writers,
 ) -> Result<Created, StoreError> {
     let txn = ctx.txn;
-    let l = listing(txn, writers, &r.author)?;
+    let l = listing(txn, writers, &r.author, ctx.measurer.clone())?;
     let Some(sel) = &r.create else {
         return Ok((l.out, vec![], vec![]));
     };
@@ -415,8 +428,9 @@ fn create(
         .map(|&g| (g, l.names.get(&g).cloned().unwrap_or_default()))
         .collect();
     let (created_groups, committed) = {
-        let mut runner =
-            Runner::new(txn, &l.forest, &l.groups, &r.author, &r.tx_id)?.writing(ctx, create);
+        let mut runner = Runner::new(txn, &l.forest, &l.groups, &r.author, &r.tx_id)?
+            .measuring(ctx.measurer.clone())
+            .writing(ctx, create);
         runner.run(&l.order)?;
         (runner.created, runner.committed)
     };

@@ -78,37 +78,24 @@ impl Engine {
             .emit(crate::maintenance::event_json(&event, Some(&incarnation)));
     }
 
-    /// Pins `fonts_json` (the model's `Fonts`: `{pins: {key: FontPin}, fallback}`) for this
-    /// engine as if main's head held them (asset pins resolve through main's assets), until
-    /// the model's `font.*` ops exist (Task 18). Triggers what a commit pinning them would.
-    #[napi(catch_unwind)]
-    pub fn inject_font_pins_for_test(&self, fonts_json: String) -> Result<()> {
-        let fonts: fin_core::Fonts = serde_json::from_str(&fonts_json)
-            .map_err(|e| crate::reject(fin_core::CoreError::new("INVALID_OP", e.to_string())))?;
-        let scanned = crate::engine::with_store(&self.inner, |s| {
-            let (_, mut project) = s.snapshot("main").map_err(crate::reject)?;
-            project.fonts = fonts;
-            Ok(crate::fonts::scan::of_project(&project, s.project_dir()))
-        })?;
-        self.inner.fonts.inject(scanned);
-        Ok(())
-    }
-
     /// Forces two status refreshes to interleave: one computes the summary of the pins now
-    /// and pauses (300 ms) before comparing and publishing it while `fonts_json` is injected
-    /// as `injectFontPinsForTest` would, whose refresh runs on the jobs thread. The newer
-    /// summary must be the last one published.
+    /// and pauses (300 ms) before comparing and publishing it while `tx_json` is committed
+    /// (as `Engine.commit` would, rescanning the pins), whose refresh runs on the jobs thread.
+    /// The newer summary must be the last one published. Rejects with the commit's error.
     #[napi(catch_unwind)]
-    pub fn font_publish_race_for_test(&self, fonts_json: String) -> Result<()> {
-        let fonts: fin_core::Fonts = serde_json::from_str(&fonts_json)
-            .map_err(|e| crate::reject(fin_core::CoreError::new("INVALID_OP", e.to_string())))?;
-        let scanned = crate::engine::with_store(&self.inner, |s| {
-            let (_, mut project) = s.snapshot("main").map_err(crate::reject)?;
-            project.fonts = fonts;
-            Ok(crate::fonts::scan::of_project(&project, s.project_dir()))
-        })?;
-        self.inner.fonts.publish_race(scanned);
-        Ok(())
+    pub fn font_publish_race_for_test(&self, tx_json: String) -> Result<()> {
+        let tx: fin_core::Tx = serde_json::from_str(&tx_json)
+            .map_err(|e| crate::reject(fin_core::CoreError::new("INVALID_TX", e.to_string())))?;
+        let inner = self.inner.clone();
+        let mut outcome = Ok(());
+        self.inner.fonts.publish_race(|| {
+            outcome = crate::engine::with_store(&inner, |s| {
+                let c = s.commit(tx).map_err(crate::reject)?;
+                inner.fonts.committed(s, &c);
+                Ok(())
+            });
+        });
+        outcome
     }
 
     /// Whether the maintenance thread runs.
@@ -145,7 +132,7 @@ pub fn test_font_for_test(name: String) -> Result<Buffer> {
 }
 
 /// Measures a `TextRequest` (JSON) with the shared measurer of `server_data`; resolves to
-/// the `Measured` JSON. Caption measurement in eval arrives with Task 20.
+/// the `Measured` JSON.
 #[napi(catch_unwind)]
 pub fn measure_for_test(server_data: String, request_json: String) -> Result<String> {
     let req: fin_core::TextRequest = serde_json::from_str(&request_json)

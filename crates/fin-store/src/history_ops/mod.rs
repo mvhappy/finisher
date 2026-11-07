@@ -20,6 +20,7 @@ mod stack_rows_tests;
 use std::collections::{HashMap, HashSet};
 
 use fin_core::history::{Lineage, LogRec, LogView, StackRec};
+use fin_core::layout::TextMeasurer;
 use fin_core::{CoreError, Link, Project, RecordKind};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -33,11 +34,24 @@ use crate::{StoreError, diffs};
 pub(crate) struct SqlLog<'a> {
     conn: &'a Connection,
     head: Option<(&'a str, u64, &'a Project)>,
+    measurer: Option<&'a dyn TextMeasurer>,
 }
 
 impl<'a> SqlLog<'a> {
     pub(crate) fn new(conn: &'a Connection) -> SqlLog<'a> {
-        SqlLog { conn, head: None }
+        SqlLog {
+            conn,
+            head: None,
+            measurer: None,
+        }
+    }
+
+    /// The log whose planners' re-runs check caption overflow with `m`.
+    pub(crate) fn measuring(self, m: Option<&'a dyn TextMeasurer>) -> SqlLog<'a> {
+        SqlLog {
+            measurer: m,
+            ..self
+        }
     }
 
     pub(crate) fn with_head(
@@ -49,6 +63,7 @@ impl<'a> SqlLog<'a> {
         SqlLog {
             conn,
             head: Some((branch, rev, project)),
+            measurer: None,
         }
     }
 
@@ -216,6 +231,10 @@ fn log_rec(branch: &str, seq: u64, bytes: &[u8], diff: &str) -> Result<LogRec, S
 }
 
 impl LogView for SqlLog<'_> {
+    fn measurer(&self) -> Option<&dyn TextMeasurer> {
+        self.measurer
+    }
+
     fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {
         let segs = lineage::lineage(self.conn, branch)?;
         Ok(Lineage {

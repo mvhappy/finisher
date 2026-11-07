@@ -1,18 +1,18 @@
 //! A caption layer's words and layout. Measurement never blocks a plan (plan 4C Decision 36):
-//! without a layout the plan says why.
-//!
-//! As built in Task 15, no caption is measured yet. Task 18 gave styles their text style
-//! (`captions::resolve_style`) and the face resolution from pins (`layout::faces_for`); Task
-//! 20 wires them into [`measure`] here. Until then a plan reports `noMeasurer` when none was
-//! given and `fontUnpinned` (no face resolves) when one was, and never calls the measurer.
+//! without a layout the plan says why — `noMeasurer`, `fontUnpinned` (the keys with no pin) or
+//! `fontMissing` (the pinned keys whose bytes the measurer lacks). The request is the one the
+//! edit path's overflow check builds ([`measure_caption`]).
 
+use crate::captions::measure_caption;
+use crate::error::CoreError;
 use crate::eval::plan::{CaptionPlan, Unmeasured, UnmeasuredReason, WordPlan};
-use crate::layout::{TextLayout, TextMeasurer};
+use crate::layout::TextMeasurer;
 use crate::model::{CaptionBlock, Item, Project, Resolution};
 use crate::time::Rational;
 
 /// The caption's words (item-relative times clamped to `[0, duration]`, the spoken one
-/// marked) and its layout or the reason it has none.
+/// marked) and its layout or the reason it has none. `Err` only when the measurer refuses the
+/// request.
 pub(crate) fn caption_plan(
     project: &Project,
     item: &Item,
@@ -20,7 +20,7 @@ pub(crate) fn caption_plan(
     local: Rational,
     resolution: Resolution,
     m: Option<&dyn TextMeasurer>,
-) -> CaptionPlan {
+) -> Result<CaptionPlan, CoreError> {
     let clamp = |t: Rational| t.max(Rational::zero()).min(item.duration);
     let words = block
         .words
@@ -35,31 +35,21 @@ pub(crate) fn caption_plan(
             }
         })
         .collect();
-    let (layout, unmeasured) = match measure(project, block, resolution, m) {
+    let measured = match m {
+        Some(m) => measure_caption(project, block, resolution, m)?,
+        None => Err(Unmeasured {
+            reason: UnmeasuredReason::NoMeasurer,
+            keys: Vec::new(),
+        }),
+    };
+    let (layout, unmeasured) = match measured {
         Ok(layout) => (Some(layout), None),
         Err(why) => (None, Some(why)),
     };
-    CaptionPlan {
+    Ok(CaptionPlan {
         words,
         style: block.style.clone(),
         layout,
         unmeasured,
-    }
-}
-
-/// The caption's layout, or why there is none.
-fn measure(
-    _project: &Project,
-    _block: &CaptionBlock,
-    _resolution: Resolution,
-    m: Option<&dyn TextMeasurer>,
-) -> Result<TextLayout, Unmeasured> {
-    let reason = match m {
-        None => UnmeasuredReason::NoMeasurer,
-        Some(_) => UnmeasuredReason::FontUnpinned,
-    };
-    Err(Unmeasured {
-        reason,
-        keys: Vec::new(),
     })
 }

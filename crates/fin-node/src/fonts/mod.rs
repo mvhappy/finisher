@@ -82,24 +82,28 @@ struct Attached {
     project_id: String,
     inner: Weak<Inner>,
     branches: BTreeMap<String, BranchFonts>,
-    /// Test builds: pins set by `injectFontPinsForTest`, beside the branches' (until the
-    /// model's `font.*` ops exist, Task 18).
-    #[cfg(feature = "test-hooks")]
-    injected: BranchFonts,
     /// The last summary published (as a status event or a status answer) and when.
     published: Option<(Summary, Instant)>,
 }
 
 impl Attached {
     fn all(&self) -> impl Iterator<Item = &BranchFonts> {
-        let all = self.branches.values();
-        #[cfg(feature = "test-hooks")]
-        let all = all.chain(std::iter::once(&self.injected));
-        all
+        self.branches.values()
     }
 
     fn needs(&self) -> BTreeSet<Need> {
         self.all().flat_map(|b| b.needs.iter().cloned()).collect()
+    }
+
+    /// What the branches' captions need with no pin, each key with its captions.
+    fn unpinned(&self) -> BTreeMap<String, BTreeSet<String>> {
+        let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (k, items) in self.all().flat_map(|b| b.unpinned.iter()) {
+            out.entry(k.clone())
+                .or_default()
+                .extend(items.iter().cloned());
+        }
+        out
     }
 }
 
@@ -223,7 +227,7 @@ impl Manager {
         &self.catalog
     }
 
-    /// The shared measurer (Task 20 threads it through the edit path).
+    /// The shared measurer: eval's, and every open store's (the edit path's overflow check).
     pub(crate) fn measurer(&self) -> Arc<dyn TextMeasurer> {
         self.measurer.clone()
     }
@@ -311,8 +315,6 @@ impl Manager {
                 project_id,
                 inner,
                 branches,
-                #[cfg(feature = "test-hooks")]
-                injected: BranchFonts::default(),
                 published: None,
             },
         );
@@ -371,18 +373,6 @@ impl Manager {
         };
         self.update_assets();
         self.post(Job::Need(added));
-        self.post(Job::Refresh(Some(key)));
-    }
-
-    /// Test builds: sets the engine's injected pins, as a commit pinning them would.
-    #[cfg(feature = "test-hooks")]
-    fn inject(&self, key: u64, fonts: BranchFonts) {
-        let needs: Vec<Need> = fonts.needs.iter().cloned().collect();
-        if let Some(a) = lock(&self.engines).get_mut(&key) {
-            a.injected = fonts;
-        }
-        self.update_assets();
-        self.post(Job::Need(needs));
         self.post(Job::Refresh(Some(key)));
     }
 
@@ -461,14 +451,11 @@ impl Handle {
         self.manager.detach(self.key);
     }
 
+    /// Test builds: a refresh that pauses after computing its summary, while `during` runs
+    /// (a commit changing the pins, whose refresh must publish after it).
     #[cfg(feature = "test-hooks")]
-    pub(crate) fn inject(&self, fonts: BranchFonts) {
-        self.manager.inject(self.key, fonts);
-    }
-
-    #[cfg(feature = "test-hooks")]
-    pub(crate) fn publish_race(&self, fonts: BranchFonts) {
-        self.manager.publish_race(self.key, fonts);
+    pub(crate) fn publish_race(&self, during: impl FnOnce()) {
+        self.manager.publish_race(self.key, during);
     }
 }
 

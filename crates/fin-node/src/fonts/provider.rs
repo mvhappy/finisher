@@ -108,12 +108,52 @@ impl FontBytes for Provider {
     }
 }
 
-/// The one measurer of a server's data: `fin-text` over [`Provider`]. A measurement that
-/// finds bytes missing asks the manager to fetch them (in the background, unless fetching
-/// is off); the answer stays `Unavailable` until they arrive.
+/// How many layouts the measurer keeps (least recently used out first).
+pub(crate) const LAYOUTS_CACHED: usize = 1024;
+
+/// Layouts by request: the SHA-256 of the request's JSON, which names the caption's words,
+/// its effective style (overrides applied), its pinned faces by SHA-256 and its box (the
+/// timeline's resolution); the engine fingerprint is the process's. Only layouts are kept:
+/// an `Unavailable` answer is asked again, so measurement resumes once bytes arrive.
+#[derive(Default)]
+struct Layouts {
+    map: HashMap<String, (u64, Measured)>,
+    tick: u64,
+}
+
+impl Layouts {
+    fn get(&mut self, key: &str) -> Option<Measured> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.get_mut(key).map(|(at, m)| {
+            *at = tick;
+            m.clone()
+        })
+    }
+
+    fn put(&mut self, key: String, m: Measured) {
+        self.tick += 1;
+        if self.map.len() >= LAYOUTS_CACHED
+            && let Some(old) = self
+                .map
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(k, _)| k.clone())
+        {
+            self.map.remove(&old);
+        }
+        self.map.insert(key, (self.tick, m));
+    }
+}
+
+/// The one measurer of a server's data: `fin-text` over [`Provider`], with a layout cache
+/// ([`Layouts`]: the overflow check and eval measure the same captions again and again). A
+/// measurement that finds bytes missing asks the manager to fetch them (in the background,
+/// unless fetching is off); the answer stays `Unavailable` until they arrive.
 pub(crate) struct Measurer {
     text: fin_text::Measurer,
     manager: Weak<Manager>,
+    layouts: Mutex<Layouts>,
 }
 
 impl Measurer {
@@ -121,22 +161,88 @@ impl Measurer {
         Measurer {
             text: fin_text::Measurer::new(provider),
             manager,
+            layouts: Mutex::new(Layouts::default()),
         }
     }
 }
 
 impl TextMeasurer for Measurer {
     fn measure(&self, req: &TextRequest) -> Result<Measured, CoreError> {
+        let key = serde_json::to_vec(req).map(|j| sha256_hex(&j)).ok();
+        if let Some(hit) = key.as_deref().and_then(|k| lock(&self.layouts).get(k)) {
+            return Ok(hit);
+        }
         let measured = self.text.measure(req)?;
-        if let Measured::Unavailable { missing } = &measured
-            && let Some(m) = self.manager.upgrade()
-        {
-            m.request(missing.iter().map(String::as_str));
+        match &measured {
+            Measured::Unavailable { missing } => {
+                if let Some(m) = self.manager.upgrade() {
+                    m.request(missing.iter().map(String::as_str));
+                }
+            }
+            Measured::Layout(_) => {
+                if let Some(k) = key {
+                    lock(&self.layouts).put(k, measured.clone());
+                }
+            }
         }
         Ok(measured)
     }
 
     fn fingerprint(&self) -> String {
         self.text.fingerprint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fin_core::layout::TextLayout;
+
+    fn layout(width: i32) -> Measured {
+        Measured::Layout(TextLayout {
+            lines: Vec::new(),
+            words: Vec::new(),
+            width,
+            height: 0,
+            overflow: false,
+            missing: Vec::new(),
+            faces: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn layouts_keep_the_most_recently_used() {
+        let mut c = Layouts::default();
+        for i in 0..LAYOUTS_CACHED {
+            c.put(format!("k{i}"), layout(i as i32));
+        }
+        // k0 is used again, so k1 is the least recently used when k-new comes in.
+        assert_eq!(c.get("k0"), Some(layout(0)));
+        c.put("k-new".into(), layout(-1));
+        assert_eq!(c.map.len(), LAYOUTS_CACHED);
+        assert!(c.get("k1").is_none());
+        assert_eq!(c.get("k0"), Some(layout(0)));
+        assert_eq!(c.get("k-new"), Some(layout(-1)));
+    }
+
+    #[test]
+    fn unavailable_answers_are_not_kept() {
+        // No cache and no assets: every face is missing, asked again each time.
+        let m = Measurer::new(Arc::new(Provider::new(None)), Weak::new());
+        let req: TextRequest = serde_json::from_value(serde_json::json!({
+            "words": ["hi"],
+            "style": { "family": "X", "weight": 400, "italic": false, "size": 64.0,
+                       "lineHeight": 1.2, "letterSpacing": 0.0, "align": "center" },
+            "faces": [{ "sha256": "a".repeat(64), "face": 0, "family": "X", "weight": 400,
+                        "italic": false }],
+            "maxWidth": 100.0,
+            "maxLines": 2
+        }))
+        .unwrap();
+        assert!(matches!(
+            m.measure(&req).unwrap(),
+            Measured::Unavailable { .. }
+        ));
+        assert!(lock(&m.layouts).map.is_empty());
     }
 }

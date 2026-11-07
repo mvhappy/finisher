@@ -1,6 +1,6 @@
 //! Caption item edits (plan 4C Task 19): `caption.setText`, internal `caption.setWords`,
 //! `caption.split`, `caption.merge`, `caption.setStyle`; and which captions a transaction
-//! asks the end-of-transaction overflow check to measure (`captions::to_check`, Task 20 wires
+//! asks the end-of-transaction overflow check to measure (`captions::to_check`; Task 20 wires
 //! the measurer).
 
 mod common;

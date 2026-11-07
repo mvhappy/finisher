@@ -4,12 +4,12 @@
 //!
 //! - `evalFrame` measures captions with the server's shared measurer; a caption whose bytes
 //!   are missing is unmeasured (never an error), and the measurement asks for them.
-//! - `fontsPlan` answers the `font.pin` ops a client prepends to its own tx. The server never
-//!   alters a client's tx. The ops are applied to a copy of the head without a measurer,
-//!   so a tx that cannot apply fails here as it would at commit.
+//! - `fontsPlan` answers the `font.pin` ops a client prepends to its own tx
+//!   ([`fin_fonts::plan::plan_pins`]). The server never alters a client's tx. The ops are
+//!   applied to a copy of the head without a measurer, so a tx that cannot apply fails here
+//!   as it would at commit.
 
-use fin_core::{CoreError, MemIds, Op, Project, Rational, SCHEMA_VERSION, Tx};
-use fin_fonts::{FontCatalog, FontsPlan};
+use fin_core::{CoreError, Op, Project, Rational};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{Value, json};
@@ -78,9 +78,10 @@ pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
                         .with_fix("send the ops of the tx about to be committed"),
                 )
             })?;
-            let (rev, project) = head(store, &branch)?;
+            let (_, project) = head(store, &branch)?;
             let manager = store.fonts.manager();
-            let planned = plan(&project, &branch, rev, ops, manager.catalog()).map_err(reject)?;
+            let planned =
+                fin_fonts::plan::plan_pins(&project, &ops, manager.catalog()).map_err(reject)?;
             // Decision 34: planned files are fetched at once (in the background).
             let value = serde_json::to_value(&planned).unwrap_or(Value::Null);
             manager.request(planned_shas(&value).into_iter());
@@ -99,35 +100,6 @@ fn planned_shas(plan: &Value) -> Vec<&str> {
         .filter(|op| op["op"] == "font.pin")
         .filter_map(|op| op["pin"]["sha256"].as_str())
         .collect()
-}
-
-/// Decision 35: the client's ops, applied to a copy of the head without a measurer (so a tx
-/// that cannot apply fails as it would at commit), then the pins its fonts need.
-///
-/// As built in Task 22 the model has no caption styles or `font.*` ops yet (Tasks 18–19), so
-/// nothing needs a pin and the plan is empty. Task 20 replaces the empty plan with
-/// `fin_fonts::plan::plan_pins(head, &tx.ops, catalog)`.
-fn plan(
-    head: &Project,
-    branch: &str,
-    rev: u64,
-    ops: Vec<Op>,
-    _catalog: &FontCatalog,
-) -> std::result::Result<FontsPlan, CoreError> {
-    let tx = fin_core::normalize(Tx {
-        tx_id: "fonts.plan".to_string(),
-        author: "fonts.plan".to_string(),
-        branch: branch.to_string(),
-        base_rev: rev,
-        schema_version: SCHEMA_VERSION,
-        ops,
-        args_hash: None,
-    })?;
-    fin_core::apply_tx(head, &tx, &mut MemIds::after(head))?;
-    Ok(FontsPlan {
-        ops: Vec::new(),
-        notes: Vec::new(),
-    })
 }
 
 #[napi]

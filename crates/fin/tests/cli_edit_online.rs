@@ -1,8 +1,7 @@
 //! `fin` edit commands (plan 4C Task 23) committed through a real `finisherd`: linked audio,
 //! composed splits and transitions, every structural group, refusals with their exit codes,
-//! undo of a composed tx, and `--idem-key` retries of composed commands. Image and graphic
-//! inserts need probed image and template assets (Task 21), so only their dry runs are tested
-//! (`cli_edit.rs`).
+//! undo of a composed tx, `--idem-key` retries of composed commands, and image and graphic
+//! inserts of probed image and Lottie template assets.
 
 mod support;
 
@@ -325,6 +324,104 @@ fn composed_retry_with_idem_key_is_answered_once() {
         3,
         "NOT_FOUND",
     );
+}
+
+#[test]
+fn image_and_graphic_inserts_commit() {
+    let Some((server, dir)) = project("image_and_graphic_inserts_commit") else {
+        return;
+    };
+    let run = |args: &[&str]| ok(fin(&server.sd, &dir, args));
+    fin_probe::fixtures::write_png(&dir.join("logo.png"), 640, 360);
+    fin_probe::fixtures::write_dotlottie(
+        &dir.join("title.lottie"),
+        &fin_probe::fixtures::sample_lottie(),
+        true,
+    );
+    assert_eq!(
+        run(&["asset", "add", "logo.png"])["resolved"]["kind"],
+        "image"
+    );
+    assert_eq!(
+        run(&["asset", "add", "title.lottie"])["resolved"]["kind"],
+        "lottieTemplate"
+    );
+    let img = run(&[
+        "image", "insert", "--track", "t1", "--at", "0", "--asset", "a3", "--dur", "2s",
+    ]);
+    assert_eq!(img["bindings"], json!({ "$image": "img1" }));
+    let g = run(&[
+        "graphic",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "end",
+        "--template",
+        "a4",
+        "--slot",
+        "title=Hi",
+        "--slot",
+        "accent=#F80",
+    ]);
+    assert_eq!(g["bindings"], json!({ "$graphic": "g1" }));
+    assert_eq!(g["resolved"]["at"], "2");
+    assert_eq!(g["resolved"]["duration"], "3", "the template's duration");
+    assert_eq!(
+        g["resolved"]["slots"],
+        json!({ "title": "Hi", "accent": "#ff8800" })
+    );
+    let view = run(&["view", "--track", "t1"]);
+    let items: Vec<(&str, &str)> = view["tracks"][0]["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["id"].as_str().unwrap(), c["start"].as_str().unwrap()))
+        .collect();
+    assert_eq!(items, [("img1", "0"), ("g1", "2")], "{view}");
+    // Refusals from the live head: a slot the template lacks, a media asset as a template.
+    assert_error(
+        &fin(
+            &server.sd,
+            &dir,
+            &[
+                "graphic",
+                "insert",
+                "--track",
+                "t1",
+                "--at",
+                "end",
+                "--template",
+                "a4",
+                "--slot",
+                "nope=1",
+            ],
+        ),
+        3,
+        "SLOT_UNKNOWN",
+    );
+    assert_error(
+        &fin(
+            &server.sd,
+            &dir,
+            &[
+                "graphic",
+                "insert",
+                "--track",
+                "t1",
+                "--at",
+                "end",
+                "--template",
+                "a3",
+            ],
+        ),
+        3,
+        "INVALID_OP",
+    );
+    // Undo takes the graphic back.
+    run(&["undo"]);
+    let view = run(&["view", "--track", "t1"]);
+    assert_eq!(view["tracks"][0]["clips"].as_array().unwrap().len(), 1);
 }
 
 #[test]

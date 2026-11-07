@@ -1,8 +1,8 @@
 {
-  "what": "caption tracks evaluated with a fake measurer; a muted caption track is hidden",
+  "what": "caption tracks measured with a fake measurer over pinned faces (a Hebrew fallback); a muted caption track is hidden",
   "timeline": "tl1",
   "measurer": true,
-  "requiresMeasuredCaption": false,
+  "requiresMeasuredCaption": true,
   "frames": [
     "0",
     "1/4",
@@ -254,6 +254,51 @@
           "channels": 2
         }
       }
+    },
+    "fonts": {
+      "pins": {
+        "Inter|700|normal": {
+          "family": "Inter",
+          "weight": 700,
+          "italic": false,
+          "face": 0,
+          "sha256": "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+          "size": 879708,
+          "format": "ttf",
+          "scripts": [
+            "Cyrl",
+            "Grek",
+            "Latn"
+          ],
+          "source": {
+            "type": "catalog",
+            "entry": "inter",
+            "style": "bold",
+            "catalog": "2026.11.1"
+          }
+        },
+        "Noto Sans Hebrew|400|normal": {
+          "family": "Noto Sans Hebrew",
+          "weight": 400,
+          "italic": false,
+          "face": 0,
+          "sha256": "04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853",
+          "size": 16836,
+          "format": "ttf",
+          "scripts": [
+            "Hebr"
+          ],
+          "source": {
+            "type": "catalog",
+            "entry": "noto-sans-hebrew",
+            "style": "regular",
+            "catalog": "2026.11.1"
+          }
+        }
+      },
+      "fallback": [
+        "Noto Sans Hebrew|400|normal"
+      ]
     }
   }
 }

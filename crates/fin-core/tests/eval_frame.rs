@@ -576,7 +576,7 @@ fn caption_words_and_unmeasured() {
         serde_json::json!({"reason": "noMeasurer", "keys": []})
     );
 
-    // With a measurer but no resolvable face (styles arrive in Task 18, faces in Task 20).
+    // With a measurer but no pin for the style's face: unmeasured, the measurer never asked.
     let plan = eval_frame(&p, "tl1", secs(4), Some(&Refuse)).unwrap();
     let c = plan.layers[0].caption.as_ref().unwrap();
     assert_eq!(

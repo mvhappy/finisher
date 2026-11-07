@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# `layout::testing` measurers (fake, panicking, counting) for tests; never in a shipped build.
+test-measurer = []
+
 [dependencies]
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -14,5 +18,6 @@ unicode-script = "0.5"
 
 [dev-dependencies]
 blake3 = "1"
+fin-core = { path = ".", features = ["test-measurer"] }
 # No `fork`/`timeout` (wait-timeout does not build for wasm32-wasip1, where the eval corpus runs).
 proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }

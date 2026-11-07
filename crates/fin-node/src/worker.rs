@@ -83,9 +83,10 @@ pub(crate) fn open<'e>(
     worker.submit(Box::new(move || {
         let opened = guarded(
             || {
-                // The server's font manager: its shared measurer is what Task 20 passes as
-                // `OpenOptions.measurer` (the edit path's overflow check).
+                // The server's font manager: its shared measurer is the store's, so edits,
+                // history writes and recovery check caption overflow (plan 4C Task 20).
                 let manager = crate::fonts::for_server(&server_data);
+                let measurer = Some(manager.measurer());
                 let store = match &create {
                     Some((name, rate, idem)) => {
                         let rate: Rational = rate.parse().map_err(reject)?;
@@ -96,11 +97,13 @@ pub(crate) fn open<'e>(
                         &project_dir,
                         OpenOptions {
                             relocate,
+                            measurer: measurer.clone(),
                             ..OpenOptions::default()
                         },
                     ),
                 };
-                let store = store.map_err(reject)?;
+                let mut store = store.map_err(reject)?;
+                store.set_measurer(measurer);
                 let status = serde_json::to_value(store.status()).ok();
                 // Read here, off the JS thread: what every branch pins, its files hashed and
                 // what of it is missing queued (Decision 34's open trigger).

@@ -432,6 +432,7 @@ name = "fin-core"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "fin-core",
  "proptest",
  "schemars",
  "serde",
@@ -507,6 +508,8 @@ dependencies = [
  "fin-fonts",
  "fin-probe",
  "fin-store",
+ "fin-testfonts",
+ "fin-text",
  "libc",
  "proptest",
  "rusqlite",

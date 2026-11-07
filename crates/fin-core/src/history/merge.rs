@@ -333,6 +333,7 @@ pub fn plan_merge(
             own: &src.diff,
             steps: &steps,
             same_origin: &same_origin,
+            env: super::env_of(log),
         };
         let rerun = BoundIds::new(&r.intent.ops, &r.bindings)
             .map_err(|e| Conflict::from_rerun(&e, &r.tx_id, 0, None))

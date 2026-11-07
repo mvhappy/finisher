@@ -6,7 +6,7 @@
 //! Evaluation-pure (Global Constraints, Determinism): exact rationals, and `f64` arithmetic
 //! only.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use crate::error::CoreError;
 use crate::layout::key_users;
@@ -17,11 +17,13 @@ use crate::tx::{ChangeKind, Diff, EntityKind};
 
 pub(crate) mod align;
 mod blocks;
+mod overflow;
 mod presets;
 mod srt;
 
 pub use align::{GRID, align_text};
 pub use blocks::{BlockDraft, blocks};
+pub use overflow::{caption_request, check_overflow, measure_caption};
 pub use presets::{SafeZone, preset, presets, safe_box, safe_zone, safe_zones};
 pub use srt::{Srt, SrtWarning, parse_srt};
 
@@ -63,33 +65,41 @@ pub fn resolve_style(project: &Project, block: &CaptionBlock) -> Result<CaptionS
 /// a timeline it added or whose resolution it changed, and of a track it added. Removed
 /// entities need nothing measured; ripple shifts move captions without changing them.
 pub fn to_check(project: &Project, diff: &Diff) -> Vec<String> {
-    let (mut items, mut styles) = (BTreeSet::new(), BTreeSet::new());
-    let (mut timelines, mut tracks) = (BTreeSet::new(), BTreeSet::new());
+    to_check_at(project, diff)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// [`to_check`], each caption with the last op of the diff that put it on the list.
+pub fn to_check_at(project: &Project, diff: &Diff) -> Vec<(String, u32)> {
+    fn note(map: &mut BTreeMap<String, u32>, id: &str, op: u32) {
+        let at = map.entry(id.to_string()).or_insert(op);
+        *at = (*at).max(op);
+    }
+    let (mut items, mut styles) = (BTreeMap::new(), BTreeMap::new());
+    let (mut timelines, mut tracks) = (BTreeMap::new(), BTreeMap::new());
     for c in diff
         .changes
         .iter()
         .filter(|c| c.change != ChangeKind::Removed)
     {
         match c.kind {
-            EntityKind::Item => {
-                items.insert(c.id.clone());
-            }
-            EntityKind::Style => {
-                styles.insert(c.id.clone());
-            }
+            EntityKind::Item => note(&mut items, &c.id, c.op),
+            EntityKind::Style => note(&mut styles, &c.id, c.op),
             EntityKind::Font => {
                 if let Some(key) = c.id.strip_prefix("font/") {
-                    items.extend(key_users(project, key).1);
+                    for it in key_users(project, key).1 {
+                        note(&mut items, &it, c.op);
+                    }
                 }
             }
             EntityKind::Timeline
                 if c.change == ChangeKind::Added || c.path.as_deref() == Some("resolution") =>
             {
-                timelines.insert(c.id.clone());
+                note(&mut timelines, &c.id, c.op);
             }
-            EntityKind::Track if c.change == ChangeKind::Added => {
-                tracks.insert(c.id.clone());
-            }
+            EntityKind::Track if c.change == ChangeKind::Added => note(&mut tracks, &c.id, c.op),
             _ => {}
         }
     }
@@ -100,12 +110,17 @@ pub fn to_check(project: &Project, diff: &Diff) -> Vec<String> {
                 let ItemBody::Caption { block } = &it.body else {
                     continue;
                 };
-                if items.contains(&it.id)
-                    || styles.contains(&block.style)
-                    || timelines.contains(&tl.id)
-                    || tracks.contains(&t.id)
-                {
-                    out.push(it.id.clone());
+                let op = [
+                    items.get(&it.id),
+                    styles.get(&block.style),
+                    timelines.get(&tl.id),
+                    tracks.get(&t.id),
+                ]
+                .into_iter()
+                .flatten()
+                .max();
+                if let Some(op) = op {
+                    out.push((it.id.clone(), *op));
                 }
             }
         }

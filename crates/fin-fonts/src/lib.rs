@@ -22,6 +22,7 @@ mod download;
 mod fetch;
 mod http;
 mod lock;
+pub mod plan;
 mod slot;
 mod validate;
 mod wire;

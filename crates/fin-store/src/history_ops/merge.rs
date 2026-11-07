@@ -144,8 +144,9 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
     taken(txn, &r.tx_id, &r.tx_id)?;
     let from = index::resolve(txn, &r.from)?.id;
     let into = writable(txn, &r.into)?.id;
+    let measurer = ctx.measurer.clone();
     let head = ctx.head(&into)?;
-    let log = SqlLog::with_head(txn, &into, head.rev, &head.project);
+    let log = SqlLog::with_head(txn, &into, head.rev, &head.project).measuring(measurer.as_deref());
     let plan = plan_merge(&log, &from, &into, &r.author, &r.tx_id, r.skip_conflicting)?;
     let mut committed = Vec::with_capacity(plan.planned.len());
     for (n, p) in plan.planned.into_iter().enumerate() {

@@ -1,4 +1,5 @@
-// `evalFrame`, `evalAudio` and `fontsPlan` (plan 4C Task 22).
+// `evalFrame`, `evalAudio` and `fontsPlan` (plan 4C Tasks 20 and 22). Fetching is off: the
+// planned catalog files are never downloaded here.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,11 +12,13 @@ let engine: Engine | undefined;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "fin-node-eval-"));
+  process.env.FIN_FONTS_OFFLINE = "1";
 });
 
 afterEach(async () => {
   await engine?.close();
   engine = undefined;
+  delete process.env.FIN_FONTS_OFFLINE;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -94,12 +97,23 @@ describe("eval", () => {
     expect((await rejection(e.evalAudio("main", null, "3", "1"))).code).toBe("INVALID_RANGE");
   });
 
-  test("fontsPlan applies the ops to a copy and plans no pins before captions have styles", async () => {
+  test("fontsPlan applies the ops to a copy and plans the pins their captions need", async () => {
     const e = await project();
+    // preset:bold is Inter 700: the catalog's Inter Bold, from the catalog version in use.
     const plan = JSON.parse(await e.fontsPlan("main", JSON.stringify([{ ...clip, at: "5" }]))) as FontsPlan;
-    expect(plan).toEqual({ ops: [], notes: [] });
-    // Nothing was committed.
+    expect(plan.notes).toEqual([]);
+    expect(plan.ops.map((o) => [o.op, (o as { key?: string }).key])).toEqual([["font.pin", "Inter|700|normal"]]);
+    // Nothing was committed; prepended, the ops commit and the caption's faces resolve.
     expect(await e.head("main")).toBe(1);
+    await e.commit(tx("t2", 1, [...plan.ops, { ...clip, at: "5" }]));
+    const frame = JSON.parse(await e.evalFrame("main", null, "1")) as FramePlan;
+    expect(frame.layers[1]!.caption!.unmeasured).toEqual({ reason: "fontMissing", keys: ["Inter|700|normal"] });
+    expect(JSON.parse(await e.fontsPlan("main", "[]"))).toEqual({ ops: [], notes: [] });
+    // A face the catalog lacks is a note, not an error.
+    const style = { op: "style.add", id: "$s", name: "Odd", set: { "text.family": "Nope Sans" } };
+    const odd = JSON.parse(await e.fontsPlan("main", JSON.stringify([style, { ...captions[1], id: "$x", track: "t3", at: "8", style: "$s" }]))) as FontsPlan;
+    expect(odd.ops).toEqual([]);
+    expect(odd.notes.map((n) => n.code)).toEqual(["FONT_NOT_IN_CATALOG"]);
     expect((await rejection(e.fontsPlan("main", JSON.stringify([{ op: "clip.delete", clip: "c9" }])))).code).toBe("NOT_FOUND");
     expect((await rejection(e.fontsPlan("main", "{"))).code).toBe("INVALID_OP");
   });

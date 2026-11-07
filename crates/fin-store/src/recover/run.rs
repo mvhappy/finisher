@@ -12,7 +12,9 @@
 //! no branch: its children fork where it does (its records change no state).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use fin_core::layout::TextMeasurer;
 use fin_core::rebase::reasons;
 use fin_core::{CommittedTx, Conflict, CoreError, Project, RecordKind};
 use rusqlite::Connection;
@@ -78,6 +80,8 @@ pub(crate) struct Runner<'a, 'c, 'w> {
     /// The branch each written group made, in the order they were made.
     pub created: Vec<(usize, String)>,
     pub committed: Vec<CommittedTx>,
+    /// What the rows' re-runs check caption overflow with (plan 4C Task 20).
+    pub(super) measurer: Option<Arc<dyn TextMeasurer>>,
 }
 
 impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
@@ -106,7 +110,14 @@ impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
             shown: vec![Shown::default(); groups.len()],
             created: vec![],
             committed: vec![],
+            measurer: None,
         })
+    }
+
+    /// The run re-running its rows with `m` (the store's measurer).
+    pub(crate) fn measuring(mut self, m: Option<Arc<dyn TextMeasurer>>) -> Self {
+        self.measurer = m;
+        self
     }
 
     /// Writes the groups of `create` (with their names) through `ctx`.

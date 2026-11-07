@@ -158,7 +158,7 @@ impl<'a> Ctx<'a> {
                 layer.crop = PlanCrop::default();
             }
             ItemBody::Caption { block } => {
-                let plan = caption_plan(self.project, item, block, local, resolution, self.m);
+                let plan = caption_plan(self.project, item, block, local, resolution, self.m)?;
                 self.measured |= plan.layout.is_some();
                 layer.caption = Some(plan);
             }

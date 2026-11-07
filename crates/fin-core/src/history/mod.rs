@@ -25,7 +25,9 @@ pub mod undo;
 
 use std::collections::HashSet;
 
+use crate::apply::ApplyEnv;
 use crate::error::CoreError;
+use crate::layout::TextMeasurer;
 use crate::model::Project;
 use crate::record::{Link, Record, RecordKind};
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
@@ -116,6 +118,16 @@ pub trait LogView {
     /// `from = branch` on a branch that is not a descendant of `branch` (Decision 22).
     /// Cherry-picks never count.
     fn merged_away(&self, branch: &str) -> Result<HashSet<String>, CoreError>;
+    /// The measurer the planned record's re-run at the head checks caption overflow with
+    /// (plan 4C Task 20); `None` (the default) measures nothing.
+    fn measurer(&self) -> Option<&dyn TextMeasurer> {
+        None
+    }
+}
+
+/// The env a planner re-runs with at the head: the log's measurer.
+pub(crate) fn env_of(log: &dyn LogView) -> ApplyEnv<'_> {
+    ApplyEnv::measuring(log.measurer())
 }
 
 /// What the cherry-pick and revert planners decide: a record to append, or nothing to do and

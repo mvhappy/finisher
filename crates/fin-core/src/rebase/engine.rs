@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use crate::apply::{Applier, ApplyMode, apply_tx_mode};
+use crate::apply::{Applier, ApplyEnv, ApplyMode, apply_tx_mode};
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, MemIds};
 use crate::model::Project;
@@ -24,12 +24,16 @@ static NO_IDS: BTreeSet<String> = BTreeSet::new();
 /// `same_origin`: ids on the head bound by records of the same origin chain as `tx` (earlier
 /// copies of it, Decision 18). A re-run that meets one of them (`DUPLICATE_ID`) is
 /// `ALREADY_PRESENT`; any other duplicate is `ID_COLLISION`.
+///
+/// `env`: what the re-run at the head may use (plan 4C Task 20): with a measurer, the rebased
+/// tx ends with the caption overflow check, and `CAPTION_OVERFLOW` is a conflict.
 #[derive(Debug, Clone, Copy)]
 pub struct Rebase<'a> {
     pub tx: &'a Tx,
     pub own: &'a Diff,
     pub steps: &'a [Step],
     pub same_origin: &'a BTreeSet<String>,
+    pub env: ApplyEnv<'a>,
 }
 
 impl<'a> Rebase<'a> {
@@ -40,7 +44,13 @@ impl<'a> Rebase<'a> {
             own,
             steps,
             same_origin: &NO_IDS,
+            env: ApplyEnv::default(),
         }
+    }
+
+    /// The rebase re-run with `env`.
+    pub fn with_env(self, env: ApplyEnv<'a>) -> Rebase<'a> {
+        Rebase { env, ..self }
     }
 }
 
@@ -52,6 +62,7 @@ pub struct PreparedRebase<'a> {
     pub own: &'a Diff,
     pub steps: &'a [Prepared],
     pub same_origin: &'a BTreeSet<String>,
+    pub env: ApplyEnv<'a>,
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -85,6 +96,7 @@ pub fn rebase_apply(
         own: r.own,
         steps: &steps,
         same_origin: r.same_origin,
+        env: r.env,
     };
     rebase_prepared(head, &p, ids, mode)
 }
@@ -117,7 +129,7 @@ pub fn rebase_prepared(
             .contains(&i)
             .then(|| r.steps[i - n].tx_id.to_string())
     };
-    let mut run = Applier::new(head, r.tx.schema_version, mode).map_err(bad)?;
+    let mut run = Applier::new(head, r.tx.schema_version, mode, r.env).map_err(bad)?;
     let mut ops = Vec::with_capacity(n);
     let mut created = BTreeSet::new();
     // Our earlier ops' footprints: an entity one of them created is blamed through what that
@@ -161,14 +173,19 @@ pub fn rebase_prepared(
         earlier.push(fp);
         ops.push(op);
     }
+    // The end-of-transaction overflow check: its error names the op (`opIndex`).
+    let applied = run.finish().map_err(|e| {
+        let k = e.details["opIndex"]
+            .as_u64()
+            .and_then(|k| usize::try_from(k).ok())
+            .unwrap_or(n.saturating_sub(1));
+        Conflict::from_rerun(&e, tx_id, k, None)
+    })?;
     let tx = Tx {
         ops,
         ..r.tx.clone()
     };
-    Ok(Rebased {
-        tx,
-        applied: run.finish(),
-    })
+    Ok(Rebased { tx, applied })
 }
 
 /// The map of one of our ops as re-run at the head (`rerun`: what it recorded there). Its
@@ -208,6 +225,19 @@ pub fn rebase_tx(
     since: &[CommittedTx],
     ids: &mut dyn IdAlloc,
 ) -> Result<Rebased, CoreError> {
+    rebase_tx_env(base, head, tx, since, ids, ApplyEnv::default())
+}
+
+/// [`rebase_tx`] re-run at the head with `env` (its measurer checks caption overflow there;
+/// the apply at the base, which only records the frame, measures nothing).
+pub fn rebase_tx_env(
+    base: &Project,
+    head: &Project,
+    tx: &Tx,
+    since: &[CommittedTx],
+    ids: &mut dyn IdAlloc,
+    env: ApplyEnv<'_>,
+) -> Result<Rebased, CoreError> {
     let mut newer: Vec<&CommittedTx> = since.iter().filter(|c| c.rev > tx.base_rev).collect();
     newer.sort_by_key(|c| c.rev);
     let steps = steps_from(&newer)?;
@@ -215,7 +245,7 @@ pub fn rebase_tx(
         Ok(own) => own,
         Err(e) => return Err(failed_at_base(base, head, tx, &steps, ids, e)),
     };
-    let r = Rebase::new(tx, &own.diff, &steps);
+    let r = Rebase::new(tx, &own.diff, &steps).with_env(env);
     let mut out = rebase_apply(head, &r, ids, ApplyMode::Client)
         .map_err(|c| CoreError::from(Conflicts::one(c)))?;
     if let Some(last) = newer.last() {

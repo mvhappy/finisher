@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use fin_core::{ApplyMode, Conflict, Link, Project, Record, RecordKind, apply_tx_mode};
+use fin_core::{ApplyEnv, ApplyMode, Conflict, Link, Project, Record, RecordKind, apply_tx_env};
 
 use super::groups::{Fork, resolve_fork};
 use super::ids::{Preset, Root, root};
@@ -118,7 +118,8 @@ impl Runner<'_, '_, '_> {
             queue,
             ids: &mut self.ids,
         };
-        let applied = match apply_tx_mode(state, &tx, &mut alloc, ApplyMode::Internal) {
+        let env = ApplyEnv::measuring(self.measurer.as_deref());
+        let applied = match apply_tx_env(state, &tx, &mut alloc, ApplyMode::Internal, env) {
             Ok(a) => a,
             Err(e) => {
                 let op = e.details.get("opIndex").and_then(serde_json::Value::as_u64);

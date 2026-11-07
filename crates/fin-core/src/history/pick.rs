@@ -121,6 +121,7 @@ pub fn plan_cherry_pick(
         own: &rec.diff,
         steps: &steps,
         same_origin: &same_origin,
+        env: super::env_of(log),
     };
     // Earlier source records stand in the steps as unmirrored inverses unless the target
     // holds a copy: what depends on them depends on a record not picked.

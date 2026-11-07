@@ -167,7 +167,7 @@ fn rebase_steps(
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
     Ok(rebase_apply(
         head,
-        &Rebase::new(tx, &own.diff, &steps),
+        &Rebase::new(tx, &own.diff, &steps).with_env(super::env_of(log)),
         ids,
         ApplyMode::Internal,
     ))

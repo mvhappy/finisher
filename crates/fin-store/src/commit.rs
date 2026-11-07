@@ -4,7 +4,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fin_core::{CommittedTx, CoreError, Link, Tx, apply_tx, rebase_tx};
+use fin_core::{
+    ApplyEnv, ApplyMode, CommittedTx, CoreError, Link, Tx, apply_tx_env, rebase_tx_env,
+};
 use serde_json::{Value, json};
 
 use crate::branch::lineage;
@@ -124,6 +126,8 @@ fn plan(
         ..tx.clone()
     };
     // One head for the whole plan (`txn` is a copy of the reference, so it reads beside it).
+    let measurer = ctx.measurer.clone();
+    let env = ApplyEnv::measuring(measurer.as_deref());
     let head = ctx.head(&tx.branch)?;
     if let Some(g) = generation {
         crate::history::check(txn, &tx.branch, g, tx.base_rev)?;
@@ -143,11 +147,12 @@ fn plan(
         // that writes then serve `state_near_head`.
         let since = lineage::records_since(txn, &tx.branch, tx.base_rev)?;
         let base = lineage::state_near_head(txn, &tx.branch, tx.base_rev, head.rev, &head.project)?;
-        let rebased = rebase_tx(&base, &head.project, tx, &since, &mut ids)
+        let rebased = rebase_tx_env(&base, &head.project, tx, &since, &mut ids, env)
             .map_err(|e| with_tx_id(e, &tx.tx_id))?;
         (rebased.tx, rebased.applied)
     } else {
-        (tx.clone(), apply_tx(&head.project, tx, &mut ids)?)
+        let applied = apply_tx_env(&head.project, tx, &mut ids, ApplyMode::Client, env)?;
+        (tx.clone(), applied)
     };
     ids.save(txn)?;
     ctx.append(Draft {

@@ -2,8 +2,10 @@
 
 use serde_json::{Value, json};
 
+use crate::captions::check_overflow;
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
+use crate::layout::TextMeasurer;
 use crate::model::{Project, SCHEMA_VERSION};
 use crate::ops::{self, Bindings, Op};
 use crate::tx::{Applied, Diff, Tx};
@@ -25,6 +27,30 @@ pub enum ApplyMode {
     Client,
     Internal,
     Replay,
+}
+
+/// What an apply may use beyond the project (plan 4C Task 20), passed explicitly (no global
+/// state). With a `measurer`, every apply but a replay ends with the caption overflow check
+/// ([`check_overflow`]): once per transaction, never per op. Without one (offline, planning,
+/// replay) nothing is measured.
+#[derive(Clone, Copy, Default)]
+pub struct ApplyEnv<'a> {
+    pub measurer: Option<&'a dyn TextMeasurer>,
+}
+
+impl<'a> ApplyEnv<'a> {
+    /// An env measuring with `m`, if any.
+    pub fn measuring(m: Option<&'a dyn TextMeasurer>) -> ApplyEnv<'a> {
+        ApplyEnv { measurer: m }
+    }
+}
+
+impl std::fmt::Debug for ApplyEnv<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApplyEnv")
+            .field("measurer", &self.measurer.map(|m| m.fingerprint()))
+            .finish()
+    }
 }
 
 /// Applies a client transaction. See [`apply_tx_mode`].
@@ -51,31 +77,45 @@ pub fn apply_tx_mode(
     ids: &mut dyn IdAlloc,
     mode: ApplyMode,
 ) -> Result<Applied, CoreError> {
-    let mut run = Applier::new(project, tx.schema_version, mode)?;
+    apply_tx_env(project, tx, ids, mode, ApplyEnv::default())
+}
+
+/// [`apply_tx_mode`] with `env`: its measurer checks caption overflow at the end of the
+/// transaction (`CAPTION_OVERFLOW`, except in [`ApplyMode::Replay`]).
+pub fn apply_tx_env(
+    project: &Project,
+    tx: &Tx,
+    ids: &mut dyn IdAlloc,
+    mode: ApplyMode,
+    env: ApplyEnv<'_>,
+) -> Result<Applied, CoreError> {
+    let mut run = Applier::new(project, tx.schema_version, mode, env)?;
     for (i, op) in tx.ops.iter().enumerate() {
         run.op(i, op, ids)?;
     }
-    Ok(run.finish())
+    run.finish()
 }
 
 /// One transaction applied op by op (the rebase engine re-runs each op as soon as its
 /// positions are mapped): the evolving project, bindings, diff and inverses. Dropped on error,
 /// like [`apply_tx_mode`]'s copy.
-pub(crate) struct Applier {
+pub(crate) struct Applier<'e> {
     project: Project,
     bindings: Bindings,
     diff: Diff,
     inverses: Vec<Vec<Op>>,
     mode: ApplyMode,
+    env: ApplyEnv<'e>,
 }
 
-impl Applier {
+impl<'e> Applier<'e> {
     /// `SCHEMA_VERSION` when `schema_version` is not the current one.
     pub(crate) fn new(
         project: &Project,
         schema_version: u32,
         mode: ApplyMode,
-    ) -> Result<Applier, CoreError> {
+        env: ApplyEnv<'e>,
+    ) -> Result<Applier<'e>, CoreError> {
         if schema_version != SCHEMA_VERSION {
             return Err(CoreError::new(
                 "SCHEMA_VERSION",
@@ -90,6 +130,7 @@ impl Applier {
             diff: Diff::default(),
             inverses: Vec::new(),
             mode,
+            env,
         })
     }
 
@@ -167,14 +208,19 @@ impl Applier {
         &self.bindings.map
     }
 
-    /// The result: the inverse lists each op's inverse in reverse op order.
-    pub(crate) fn finish(self) -> Applied {
-        Applied {
+    /// The result: the inverse lists each op's inverse in reverse op order. With a measurer
+    /// (and not replaying), the captions the transaction changed are measured once here
+    /// (`CAPTION_OVERFLOW` with `details.opIndex`).
+    pub(crate) fn finish(self) -> Result<Applied, CoreError> {
+        if let (Some(m), true) = (self.env.measurer, self.mode != ApplyMode::Replay) {
+            check_overflow(&self.project, &self.diff, m)?;
+        }
+        Ok(Applied {
             project: self.project,
             diff: self.diff,
             inverse: self.inverses.into_iter().rev().flatten().collect(),
             bindings: self.bindings.map,
-        }
+        })
     }
 }
 

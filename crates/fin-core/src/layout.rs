@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use unicode_script::{Script, UnicodeScript};
 
+#[cfg(feature = "test-measurer")]
+pub mod testing;
+
 use crate::captions::resolve_style;
 use crate::error::CoreError;
 use crate::model::{CaptionBlock, CaptionStyle, FontPin, Item, ItemBody, Project, Word, font_key};

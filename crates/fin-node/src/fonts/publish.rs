@@ -12,8 +12,6 @@ use std::time::Instant;
 use fin_store::EngineEvent;
 use serde_json::Value;
 
-#[cfg(feature = "test-hooks")]
-use super::scan::BranchFonts;
 use super::{Job, Manager, PROGRESS_EVERY, Summary, status};
 use crate::engine::lock;
 use crate::maintenance::EventSink;
@@ -21,8 +19,12 @@ use crate::maintenance::EventSink;
 impl Manager {
     /// The summary of an engine's pins now (`None` once detached).
     pub(super) fn summary_of(&self, key: u64) -> Option<Summary> {
-        let needs = lock(&self.engines).get(&key)?.needs();
-        Some(self.summary(&needs))
+        let (needs, unpinned) = {
+            let engines = lock(&self.engines);
+            let a = engines.get(&key)?;
+            (a.needs(), a.unpinned())
+        };
+        Some(self.summary(&needs, &unpinned))
     }
 
     /// `raw` (the store's status) with the engine's font summary now merged, which counts
@@ -133,9 +135,10 @@ impl Manager {
     }
 
     /// Test builds: a refresh computes the summary of the engine's pins now, then (holding
-    /// `publish`) waits while `fonts` are injected, whose refresh must publish after it.
+    /// `publish`) waits while `during` changes them (a commit, whose refresh must publish
+    /// after it).
     #[cfg(feature = "test-hooks")]
-    pub(super) fn publish_race(self: &Arc<Self>, key: u64, fonts: BranchFonts) {
+    pub(super) fn publish_race(self: &Arc<Self>, key: u64, during: impl FnOnce()) {
         let (tx, rx) = mpsc::channel();
         if let Some(a) = lock(&self.engines).get_mut(&key) {
             a.published = None;
@@ -148,7 +151,7 @@ impl Manager {
             });
         });
         let _ = rx.recv();
-        self.inject(key, fonts);
+        during();
         let _ = first.join();
     }
 }

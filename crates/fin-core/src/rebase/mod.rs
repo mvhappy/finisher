@@ -16,7 +16,9 @@ pub mod map;
 mod steps;
 
 pub use conflict::{Conflict, Conflicts, reasons};
-pub use engine::{PreparedRebase, Rebase, Rebased, rebase_apply, rebase_prepared, rebase_tx};
+pub use engine::{
+    PreparedRebase, Rebase, Rebased, rebase_apply, rebase_prepared, rebase_tx, rebase_tx_env,
+};
 pub use footprint::{
     Footprint, Touch, committed_footprints, committed_ops, entity_conflict, footprint, split_diff,
 };
