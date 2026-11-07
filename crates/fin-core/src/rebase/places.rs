@@ -6,19 +6,32 @@
 //! it). An index does not map through later list changes, so the planner reads, in the op's
 //! own frame, what the index names: the members right before and after the place (`Place`;
 //! a moved member is left out of its list). The engine looks for them in the head's list
-//! right before the op runs and puts the op there ([`Place::resolve`]):
-//! - both are still neighbours (or the list's ends are) → between them;
+//! right before the op runs and puts the op there ([`Slot::resolve`]):
+//! - both are still neighbours → between them;
 //! - one is gone → next to the other (right after the one before, or right before the one
 //!   after);
-//! - something now stands between them, nothing is left of either, or the list was empty and
-//!   is not now → another author placed a member where ours goes: `SAME_PARAM`, blamed on the
-//!   first record that changed the list (the list's entity, `ops::util::lists`).
+//! - an end place (the list's start or end is one neighbour): its member still at that end,
+//!   or gone → at that end;
+//! - something now stands between them (at an end: before or after its member), nothing is
+//!   left of either, or the list was empty and is not now → another author placed a member
+//!   where ours goes: `SAME_PARAM`, blamed on the first record that changed the list (the
+//!   list's entity, `ops::util::lists`);
+//! - a `font.pin` whose key someone placed since keeps its index only when the key already
+//!   sits where ours would put it (the same edit), else `SAME_PARAM`.
+//!
+//! Members are named canonically on both sides: an id that an earlier op of the same
+//! transaction bound is named by its placeholder (through the applier's bindings: the
+//! planning frame's fresh ids for the planning side, the head's for the head), so a planning
+//! id never stands for another author's entity at the head. Containers and members named by
+//! a placeholder resolve the same way. An index op whose place cannot be read (`Slot::
+//! Unplaced`: a pin of a key placed already in its own frame) is refused when another record
+//! used its list: a stale absolute index is never carried silently.
 //!
 //! So appends and removals elsewhere in the list never stop an index op, and an undo of a
 //! removal puts the member back between the neighbours it had. The stored ops keep their
-//! format: only the index field is rewritten at the head. A container named by a placeholder
-//! (a timeline or item made in the same transaction) holds nothing anyone else placed, and
-//! is left as it is.
+//! format: only the index field is rewritten at the head.
+
+use std::collections::BTreeMap;
 
 use crate::apply::{Applier, ApplyEnv, ApplyMode};
 use crate::error::CoreError;
@@ -28,19 +41,55 @@ use crate::ops::Op;
 use crate::ops::util::{find_item, lists};
 use crate::tx::Tx;
 
-/// What [`Place::resolve`] finds at the head.
+/// The placeholders an applier bound so far, to the ids they name.
+pub type Bound = BTreeMap<String, String>;
+
+/// What [`Slot::resolve`] finds at the head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolved {
-    /// No list there (its container is gone, or a pin's key is placed already): the op keeps
-    /// its index and its re-run decides.
+    /// The op keeps its index: no list there (its container is gone: its re-run decides), or
+    /// a pin whose key already sits where ours goes.
     Keep,
     /// The index to use.
     At(u32),
-    /// Another author placed a member where ours goes.
+    /// Another author placed a member where ours goes, or the place cannot be carried.
     Taken,
 }
 
-/// Where an index op puts its member, as its own frame names it.
+/// What an index op names, read in its own frame (module docs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    /// The place, by its neighbours.
+    Place(Place),
+    /// An index op whose place could not be read (a pin of a key placed already in its own
+    /// frame): at the head it is refused when another author used `list`, and keeps its index
+    /// otherwise. A stale absolute index is never carried silently.
+    Unplaced { list: String },
+}
+
+impl Slot {
+    /// The list's entity, for blame.
+    pub fn list(&self) -> &str {
+        match self {
+            Slot::Place(p) => &p.list,
+            Slot::Unplaced { list } => list,
+        }
+    }
+
+    /// Where the op goes in `project`'s list (`bound`: the head applier's bindings), when some
+    /// other record used the list (`used`) or not.
+    pub fn resolve(&self, project: &Project, op: &Op, bound: &Bound, used: bool) -> Resolved {
+        match self {
+            Slot::Place(p) => p.resolve(project, op, bound),
+            Slot::Unplaced { .. } if used => Resolved::Taken,
+            Slot::Unplaced { .. } => Resolved::Keep,
+        }
+    }
+}
+
+/// Where an index op puts its member, as its own frame names it. Member ids are canonical: an
+/// id that an earlier op of the same transaction bound is named by its placeholder, so the
+/// planning frame's fresh ids never stand for another author's entities at the head.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     /// The list's entity (for blame): `<timeline>#tracks`, `#timelines`, `<item>#effects`,
@@ -54,22 +103,30 @@ pub struct Place {
 }
 
 impl Place {
-    /// Where the op goes in `project`'s list (module docs).
-    pub fn resolve(&self, project: &Project, op: &Op) -> Resolved {
-        let Some((_, members)) = list_of(project, op) else {
+    fn resolve(&self, project: &Project, op: &Op, bound: &Bound) -> Resolved {
+        let Some(found) = list_of(project, op, bound) else {
             return Resolved::Keep;
         };
-        let list: Vec<&String> = members.iter().filter(|m| **m != self.member).collect();
+        let list: Vec<&String> = found
+            .members
+            .iter()
+            .filter(|m| **m != self.member)
+            .collect();
         let at = |m: &Option<String>| m.as_ref().and_then(|m| list.iter().position(|x| *x == m));
+        let last = list.len();
         let index = match (&self.before, &self.after) {
             (None, None) if list.is_empty() => 0,
+            (None, None) => return Resolved::Taken,
+            // An end place: its neighbour still at that end, or gone (the end itself is the
+            // other neighbour). Something now after (before) it is a placement at that end.
             (Some(_), None) => match at(&self.before) {
-                Some(i) if i + 1 == list.len() => i + 1,
-                _ => return Resolved::Taken,
+                Some(i) if i + 1 == last => last,
+                None => last,
+                Some(_) => return Resolved::Taken,
             },
             (None, Some(_)) => match at(&self.after) {
-                Some(0) => 0,
-                _ => return Resolved::Taken,
+                Some(0) | None => 0,
+                Some(_) => return Resolved::Taken,
             },
             (Some(_), Some(_)) => match (at(&self.before), at(&self.after)) {
                 (Some(b), Some(a)) if a == b + 1 => a,
@@ -77,15 +134,23 @@ impl Place {
                 (None, Some(a)) => a,
                 _ => return Resolved::Taken,
             },
-            (None, None) => return Resolved::Taken,
         };
-        u32::try_from(index).map_or(Resolved::Taken, Resolved::At)
+        let Ok(index) = u32::try_from(index) else {
+            return Resolved::Taken;
+        };
+        // A pin of a key someone placed since: kept only where ours would put it.
+        match found.placed {
+            Some(j) if j == index as usize => Resolved::Keep,
+            Some(_) => Resolved::Taken,
+            None => Resolved::At(index),
+        }
     }
 }
 
-/// The place of each op of `tx` that names an index, read in its own frame: `frame` with the
-/// earlier ops applied (as `mode` applies them, with fresh ids for placeholders).
-pub fn places(frame: &Project, tx: &Tx, mode: ApplyMode) -> Result<Vec<Option<Place>>, CoreError> {
+/// The slot of each op of `tx` that names an index, read in its own frame: `frame` with the
+/// earlier ops applied (as `mode` applies them, with fresh ids for placeholders, which the
+/// slots name by their placeholders).
+pub fn places(frame: &Project, tx: &Tx, mode: ApplyMode) -> Result<Vec<Option<Slot>>, CoreError> {
     if !tx.ops.iter().any(names_index) {
         return Ok(Vec::new());
     }
@@ -93,7 +158,7 @@ pub fn places(frame: &Project, tx: &Tx, mode: ApplyMode) -> Result<Vec<Option<Pl
     let mut run = Applier::new(frame, tx.schema_version, mode, ApplyEnv::default())?;
     let ids = &mut MemIds::after(frame);
     for (k, op) in tx.ops.iter().enumerate() {
-        out.push(place(run.project(), op));
+        out.push(slot(run.project(), op, run.bound()));
         run.op(k, op, ids)?;
     }
     Ok(out)
@@ -149,83 +214,114 @@ fn index_of(op: &Op) -> Option<u32> {
     }
 }
 
-/// The list `op` places into in `project` (its entity, and its members' ids), with the member
-/// it places. `None` when the op names no index, its container is a placeholder or missing,
-/// or (a pin) the key is in the order already.
-fn list_of(project: &Project, op: &Op) -> Option<((String, String), Vec<String>)> {
-    let literal = |id: &str| (!id.starts_with('$')).then_some(());
-    let tracks = |tl: &str| -> Option<Vec<String>> {
-        let t = project.timelines.iter().find(|t| t.id == tl)?;
-        Some(t.tracks.iter().map(|t| t.id.clone()).collect())
-    };
-    let effects = |item: &str| -> Option<Vec<String>> {
-        let (t, i) = find_item(project, item)?;
-        let it = &t.get(project).items[i];
-        Some(it.common.effects.iter().map(|e| e.id.clone()).collect())
-    };
-    let timeline_of = |track: &str| {
-        project
-            .timelines
-            .iter()
-            .find(|t| t.tracks.iter().any(|x| x.id == track))
-            .map(|t| t.id.clone())
-    };
+/// The list an index op places into, read in some project.
+struct Found {
+    /// The member ids, canonical ([`Place`]).
+    members: Vec<String>,
+    /// A pin's key already in the order: its index there.
+    placed: Option<usize>,
+}
+
+/// `id` as the project names it: a placeholder an earlier op bound is its id.
+fn real<'a>(id: &'a str, bound: &'a Bound) -> &'a str {
+    bound.get(id).map_or(id, String::as_str)
+}
+
+/// `id` canonical: the placeholder that bound it, if an earlier op of the transaction did.
+fn canonical(id: &str, bound: &Bound) -> String {
+    bound
+        .iter()
+        .find(|(_, v)| v.as_str() == id)
+        .map_or_else(|| id.to_string(), |(p, _)| p.clone())
+}
+
+/// The list's entity and member `op` places into, by the ids it names (canonical).
+fn names(op: &Op) -> Option<(String, String)> {
     Some(match op {
-        Op::TrackAdd(a) => {
-            literal(&a.timeline)?;
-            let l = (lists::tracks(&a.timeline), a.id.clone());
-            (l, tracks(&a.timeline)?)
-        }
-        Op::TrackRestore(r) => {
-            literal(&r.timeline)?;
-            let l = (lists::tracks(&r.timeline), r.track.id.clone());
-            (l, tracks(&r.timeline)?)
-        }
-        Op::TrackMove(m) => {
-            let tl = timeline_of(&m.track)?;
-            ((lists::tracks(&tl), m.track.clone()), tracks(&tl)?)
-        }
-        Op::TimelineRestore(r) => {
-            let ids = project.timelines.iter().map(|t| t.id.clone()).collect();
-            ((lists::TIMELINES.into(), r.timeline.id.clone()), ids)
-        }
-        Op::EffectAdd(a) => {
-            literal(&a.item)?;
-            ((lists::effects(&a.item), a.id.clone()), effects(&a.item)?)
-        }
-        Op::EffectMove(m) => {
-            literal(&m.item)?;
-            (
-                (lists::effects(&m.item), m.effect.clone()),
-                effects(&m.item)?,
-            )
-        }
-        Op::EffectRestore(r) => {
-            literal(&r.item)?;
-            let l = (lists::effects(&r.item), r.effect.id.clone());
-            (l, effects(&r.item)?)
-        }
-        Op::FontPin(p) => {
-            if project.fonts.fallback.contains(&p.key) {
-                return None;
-            }
-            let l = (lists::FALLBACK_ORDER.into(), p.key.clone());
-            (l, project.fonts.fallback.clone())
-        }
+        Op::TrackAdd(a) => (lists::tracks(&a.timeline), a.id.clone()),
+        Op::TrackRestore(r) => (lists::tracks(&r.timeline), r.track.id.clone()),
+        Op::TrackMove(m) => (lists::tracks(""), m.track.clone()),
+        Op::TimelineRestore(r) => (lists::TIMELINES.into(), r.timeline.id.clone()),
+        Op::EffectAdd(a) => (lists::effects(&a.item), a.id.clone()),
+        Op::EffectMove(m) => (lists::effects(&m.item), m.effect.clone()),
+        Op::EffectRestore(r) => (lists::effects(&r.item), r.effect.id.clone()),
+        Op::FontPin(p) => (lists::FALLBACK_ORDER.into(), p.key.clone()),
         _ => return None,
     })
 }
 
-/// The place `op` names in `project` (its own frame), if it names an index.
-fn place(project: &Project, op: &Op) -> Option<Place> {
+/// The list `op` places into in `project` (`bound`: that applier's bindings), with its entity.
+/// `None` when the op names no index or its container is missing.
+fn list_of(project: &Project, op: &Op, bound: &Bound) -> Option<Found> {
+    let ids =
+        |v: Vec<&String>| -> Vec<String> { v.into_iter().map(|m| canonical(m, bound)).collect() };
+    let tracks = |tl: &str| -> Option<Vec<String>> {
+        let t = project.timelines.iter().find(|t| t.id == real(tl, bound))?;
+        Some(ids(t.tracks.iter().map(|t| &t.id).collect()))
+    };
+    let effects = |item: &str| -> Option<Vec<String>> {
+        let (t, i) = find_item(project, real(item, bound))?;
+        let it = &t.get(project).items[i];
+        Some(ids(it.common.effects.iter().map(|e| &e.id).collect()))
+    };
+    let mut placed = None;
+    let members = match op {
+        Op::TrackAdd(a) => tracks(&a.timeline)?,
+        Op::TrackRestore(r) => tracks(&r.timeline)?,
+        Op::TrackMove(m) => {
+            let track = real(&m.track, bound);
+            let tl = project
+                .timelines
+                .iter()
+                .find(|t| t.tracks.iter().any(|x| x.id == track))?;
+            ids(tl.tracks.iter().map(|t| &t.id).collect())
+        }
+        Op::TimelineRestore(_) => ids(project.timelines.iter().map(|t| &t.id).collect()),
+        Op::EffectAdd(a) => effects(&a.item)?,
+        Op::EffectMove(m) => effects(&m.item)?,
+        Op::EffectRestore(r) => effects(&r.item)?,
+        Op::FontPin(p) => {
+            let order = &project.fonts.fallback;
+            placed = order.iter().position(|k| *k == p.key);
+            order.iter().filter(|k| **k != p.key).cloned().collect()
+        }
+        _ => return None,
+    };
+    Some(Found { members, placed })
+}
+
+/// The list entity of `op` in `project` (a `track.move` names its track's timeline there).
+fn list_entity(project: &Project, op: &Op, bound: &Bound) -> Option<String> {
+    let (list, _) = names(op)?;
+    if let Op::TrackMove(m) = op {
+        let track = real(&m.track, bound);
+        let tl = project
+            .timelines
+            .iter()
+            .find(|t| t.tracks.iter().any(|x| x.id == track))?;
+        return Some(lists::tracks(&tl.id));
+    }
+    Some(list)
+}
+
+/// The slot `op` names in `project` (its own frame), if it names an index.
+fn slot(project: &Project, op: &Op, bound: &Bound) -> Option<Slot> {
     let index = usize::try_from(index_of(op)?).ok()?;
-    let ((list, member), members) = list_of(project, op)?;
-    let rest: Vec<String> = members.into_iter().filter(|m| *m != member).collect();
+    let list = list_entity(project, op, bound).unwrap_or_default();
+    let unplaced = || Some(Slot::Unplaced { list: list.clone() });
+    let Some(found) = list_of(project, op, bound) else {
+        return unplaced();
+    };
+    if found.placed.is_some() {
+        return unplaced();
+    }
+    let member = canonical(real(&names(op)?.1, bound), bound);
+    let rest: Vec<String> = found.members.into_iter().filter(|m| *m != member).collect();
     let index = index.min(rest.len());
-    Some(Place {
-        list,
+    Some(Slot::Place(Place {
+        list: list.clone(),
         member,
         before: index.checked_sub(1).map(|i| rest[i].clone()),
         after: rest.get(index).cloned(),
-    })
+    }))
 }

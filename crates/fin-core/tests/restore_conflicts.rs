@@ -958,3 +958,148 @@ fn index_ops_merge_with_appends_and_removals_elsewhere() {
     log.merge("br1", "main", "carol", "g1", false).unwrap();
     assert_eq!(fx_ids(&log), ids(&b, &["$fb", "$fc"]));
 }
+
+/// `tl1`'s track ids, with alice's bound ids named by their placeholders.
+fn track_names(log: &MemLog, bound: &Ids) -> Vec<String> {
+    let p = log.state("main");
+    p.timelines[0]
+        .tracks
+        .iter()
+        .map(|t| {
+            bound
+                .iter()
+                .find(|(_, id)| **id == t.id)
+                .map_or_else(|| t.id.clone(), |(n, _)| n.clone())
+        })
+        .collect()
+}
+
+/// A neighbour that an earlier op of the same transaction made is named by its placeholder,
+/// never by the id the planning frame gave it (which can name another author's track at the
+/// head). tl1 `[t1, t2, t3]`; bob appends t4 and removes t2; alice's stale `[add $x at 1,
+/// add $y at 2]` gives `[t1, $x, $y, t3, t4]`, stale or through a merge.
+#[test]
+fn placeholder_neighbours_are_carried_by_their_placeholders() {
+    for merge in [false, true] {
+        let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+        log.commit(
+            "main",
+            "s0",
+            "setup",
+            vec![add_track("$t3", TrackKind::Video, None)],
+        );
+        let base = log.head_seq("main");
+        if merge {
+            log.fork("br1", "main", base);
+        }
+        log.commit(
+            "main",
+            "b1",
+            "bob",
+            vec![add_track("$z", TrackKind::Video, None)],
+        );
+        log.commit("main", "b2", "bob", vec![remove_t2()]);
+        let ops = vec![
+            add_track("$x", TrackKind::Video, Some(1)),
+            add_track("$y", TrackKind::Video, Some(2)),
+        ];
+        let bound = if merge {
+            let rec = log.commit("br1", "a1", "alice", ops);
+            log.merge("br1", "main", "carol", "g1", false).unwrap();
+            rec.record.bindings
+        } else {
+            log.commit_at("main", "a1", "alice", base, ops)
+                .unwrap()
+                .record
+                .bindings
+        };
+        assert_eq!(
+            track_names(&log, &bound),
+            ["t1", "$x", "$y", "t3", "t4"],
+            "merge {merge}"
+        );
+    }
+}
+
+/// A `track.move` of a track made in the same transaction is carried by its neighbours too.
+/// tl1 `[t1, t2, t3]`; bob removes t1; alice's stale `[add $n, move $n to 1]` (after t1, before
+/// t2 in her frame) gives `[$n, t2, t3]`.
+#[test]
+fn move_of_a_new_track_is_carried_by_its_neighbours() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    log.commit(
+        "main",
+        "s0",
+        "setup",
+        vec![add_track("$t3", TrackKind::Video, None)],
+    );
+    let base = log.head_seq("main");
+    let remove_t1 = TrackRemove {
+        track: "t1".into(),
+        with_items: true,
+    };
+    log.commit("main", "b1", "bob", vec![remove_t1.into()]);
+    let ops = vec![add_track("$n", TrackKind::Video, None), move_track("$n", 1)];
+    let bound = log
+        .commit_at("main", "a1", "alice", base, ops)
+        .unwrap()
+        .record
+        .bindings;
+    assert_eq!(track_names(&log, &bound), ["$n", "t2", "t3"]);
+}
+
+/// Two pins of one key and file at different fallback places do not merge silently: the
+/// stale one would leave the key where the other put it. `[Lora, Roboto]`; alice pins Inter at
+/// 2; bob's stale identical pin at 0 is `SAME_PARAM` against alice.
+#[test]
+fn identical_pins_at_different_places_conflict() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let ops = vec![
+        pin_at(LORA, "Lora", 'a', Some(0)),
+        pin_at(ROBOTO, "Roboto", 'b', Some(1)),
+    ];
+    log.commit("main", "s0", "setup", ops);
+    let base = log.head_seq("main");
+    let inter_at = |i: u32| -> Op {
+        FontPinOp {
+            key: INTER.into(),
+            pin: inter('c'),
+            fallback: Some(i),
+        }
+        .into()
+    };
+    log.commit("main", "a1", "alice", vec![inter_at(2)]);
+    let before = log.state("main");
+    let e = log
+        .commit_at("main", "b1", "bob", base, vec![inter_at(0)])
+        .unwrap_err();
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "a1".into()));
+    assert_eq!(log.state("main"), before);
+    // At the same place it is the same edit: it merges (written nothing).
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    log.commit(
+        "main",
+        "s0",
+        "setup",
+        vec![pin_at(LORA, "Lora", 'a', Some(0))],
+    );
+    let base = log.head_seq("main");
+    log.commit("main", "a1", "alice", vec![inter_at(1)]);
+    log.commit_at("main", "b1", "bob", base, vec![inter_at(1)])
+        .unwrap();
+    assert_eq!(log.state("main").fonts.fallback, [LORA, INTER]);
+}
+
+/// An end place whose only neighbour is gone goes to that end (the end is its other
+/// neighbour). Your removal of the last fc, bob removes fb, you undo: `[fa, fc]`. Your
+/// removal of the first fa, bob removes fb, you undo: `[fa, fc]`.
+#[test]
+fn end_place_whose_neighbour_is_gone_goes_to_that_end() {
+    for (mine, theirs) in [("$fc", "$fb"), ("$fa", "$fb")] {
+        let (mut log, b) = three_fx();
+        log.commit("main", "x1", "alice", vec![remove_fx("c1", &b[mine])]);
+        log.commit("main", "b1", "bob", vec![remove_fx("c1", &b[theirs])]);
+        log.undo("main", "alice", "u1").unwrap();
+        assert_eq!(fx_ids(&log), [b["$fa"].clone(), b["$fc"].clone()], "{mine}");
+    }
+}

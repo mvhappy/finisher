@@ -8,8 +8,9 @@
 //! - A key already pinned **to the same SHA-256** is a no-op (empty diff, empty inverse), so two
 //!   edits pinning one face merge, unless the op places the key in the fallback order and the
 //!   order lacks it: then it inserts it there, the diff records `font/<key>`'s `fallback` and
-//!   the inverse is the internal `font.unpin {fallbackOnly}`, so a merge keeps the fallback
-//!   place either edit asked for. Another SHA-256 is `FONT_PINNED` (policy on edits; replay
+//!   the inverse is the internal `font.unpin {fallbackOnly}`. Rebased, the place is carried by
+//!   its neighbours (`rebase::places`): two pins placing the key at different places conflict
+//!   (`SAME_PARAM`), and at the same place the second writes nothing. Another SHA-256 is `FONT_PINNED` (policy on edits; replay
 //!   refuses it too, as valid history cannot produce it): `font.repin` changes a pin's file.
 //! - `fallback` past the end of the order is `INVALID_RANGE` for clients; internal and replay
 //!   applies (an undo of `font.unpin` meeting a shorter order) put it at the end.

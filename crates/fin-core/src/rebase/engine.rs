@@ -16,7 +16,7 @@ use super::footprint::{
     Footprint, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
 };
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
-use super::places::{Place, Resolved, set_index};
+use super::places::{Resolved, Slot, set_index};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
@@ -46,7 +46,7 @@ pub struct Rebase<'a> {
     pub absorbs: &'a BTreeSet<usize>,
     /// Per op, the place an index op names in its own frame (`places::places`; empty when no
     /// op names one): the engine carries the index to the head by its neighbours.
-    pub places: &'a [Option<Place>],
+    pub places: &'a [Option<Slot>],
 }
 
 impl<'a> Rebase<'a> {
@@ -64,7 +64,7 @@ impl<'a> Rebase<'a> {
     }
 
     /// The rebase with the index places `places` (see [`Rebase`]).
-    pub fn with_places(self, places: &'a [Option<Place>]) -> Rebase<'a> {
+    pub fn with_places(self, places: &'a [Option<Slot>]) -> Rebase<'a> {
         Rebase { places, ..self }
     }
 
@@ -89,7 +89,7 @@ pub struct PreparedRebase<'a> {
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
     pub absorbs: &'a BTreeSet<usize>,
-    pub places: &'a [Option<Place>],
+    pub places: &'a [Option<Slot>],
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -184,15 +184,16 @@ pub fn rebase_prepared(
         // An index carried to the head by its neighbours (`places`): another author's
         // placement where ours goes is `SAME_PARAM`, blamed on the first record that changed
         // the list.
-        if let Some(Some(place)) = r.places.get(k) {
-            match place.resolve(run.project(), &op) {
+        if let Some(Some(slot)) = r.places.get(k) {
+            let list = slot.list().to_string();
+            let against = theirs
+                .iter()
+                .find(|(_, f)| f.uses.contains(&list))
+                .map(|(t, _)| t.to_string());
+            match slot.resolve(run.project(), &op, run.bound(), against.is_some()) {
                 Resolved::At(index) => set_index(&mut op, index),
                 Resolved::Keep => {}
                 Resolved::Taken => {
-                    let against = theirs
-                        .iter()
-                        .find(|(_, f)| f.uses.contains(&place.list))
-                        .map(|(t, _)| t.to_string());
                     return Err(Conflict::new(tx_id, k, reasons::SAME_PARAM, against));
                 }
             }

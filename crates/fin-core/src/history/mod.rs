@@ -134,7 +134,7 @@ pub(crate) fn source_places(
     rec: &LogRec,
     tx: &crate::tx::Tx,
     mode: crate::apply::ApplyMode,
-) -> Result<Vec<Option<crate::rebase::places::Place>>, CoreError> {
+) -> Result<Vec<Option<crate::rebase::places::Slot>>, CoreError> {
     if !crate::rebase::places::any(&tx.ops) {
         return Ok(Vec::new());
     }
