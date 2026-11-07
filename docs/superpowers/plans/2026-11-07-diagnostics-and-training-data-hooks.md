@@ -374,7 +374,7 @@
 33. **New codes:**
     - exit 2: `CONSENT_UI_ONLY` (Decision 14b), with a `fix` naming the ways in;
     - exit 3: `EVENT_KIND_UNKNOWN`, `EVENT_INVALID`, `EVENT_TOO_LARGE`. These are seen only by `diagnostics.record` callers; `fin` ignores them;
-    - exit 5: `JOURNAL_UNAVAILABLE`, for `fin diagnostics …` when the journal is suspended or the server data is unwritable, and `SETTINGS_INVALID`, when `settings.json` does not parse and a consent change would overwrite it. Each `fix` names the reason.
+    - exit 5: `JOURNAL_UNAVAILABLE`, for `fin diagnostics …` when the journal is suspended or the server data is unwritable, `SETTINGS_INVALID`, when `settings.json` does not parse (or its merged `privacy` section breaks the journal's rules) and a consent change would overwrite it, and `SETTINGS_WRITE_FAILED`, when the consent change could not be written (the file is unchanged; added by the D4 review). Each `fix` names the reason.
 
 ### Later
 

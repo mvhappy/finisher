@@ -55,7 +55,8 @@ export const DiagnosticsProjectSuccess = Schema.Struct({
  * `undecided` again) and answers the `ConsentState` in force, which says when an environment
  * override wins (`env`). `training: on` is refused `CONSENT_UI_ONLY` unless the connection is
  * the UI's: opting in to content is a person's choice. `SETTINGS_INVALID` when `settings.json`
- * does not parse (a hand edit is never overwritten).
+ * does not parse or the merged `privacy` section breaks the journal's rules (a hand edit is never
+ * overwritten); `SETTINGS_WRITE_FAILED` when the write fails (the file is unchanged).
  */
 export const DiagnosticsConsentPayload = Schema.Struct({
   purpose: Schema.Literals(["diagnostics", "training"]),
