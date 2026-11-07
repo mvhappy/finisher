@@ -300,8 +300,8 @@ export class Journal {
     return sync(() => this.#native.consent());
   }
 
-  startSession(startJson) {
-    sync(() => this.#native.startSession(startJson));
+  startSession(startJson, timeoutMs = 100) {
+    return sync(() => this.#native.startSession(startJson, timeoutMs));
   }
 
   async endSession(uptimeS) {
@@ -372,6 +372,16 @@ export class Journal {
 /** fin-core's `RPC_METHODS`: the keys `rpc.stats` accepts (`other` for the rest). */
 export function rpcMethods() {
   return native.rpcMethods();
+}
+
+/** Every kind name of fin-core's event registry. */
+export function kindNames() {
+  return native.kindNames();
+}
+
+/** Why a `privacy` section (JSON) is not one the journal accepts, naming the key; `undefined` when it is. */
+export function validatePrivacy(privacyJson) {
+  return native.validatePrivacy(privacyJson) ?? undefined;
 }
 
 /** The font manager of a server data folder (shared with the engines opened on it). */

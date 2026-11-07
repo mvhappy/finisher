@@ -20,8 +20,12 @@ pub(crate) const OPEN_SESSION: &str = "openSession";
 
 /// What the server tells the writer about its run.
 pub(crate) enum SessionMsg {
-    /// The run's platform facts: `session.start` now if on, else when a purpose turns on.
-    Start(Box<SessionStart>),
+    /// The run's platform facts: `session.start` now if on, else when a purpose turns on;
+    /// then the ack (`session.start` and `openSession` are on disk, or nothing is due).
+    Start {
+        start: Box<SessionStart>,
+        ack: SyncSender<bool>,
+    },
     /// A clean shutdown: `session.end` if on, `openSession` cleared; then the ack.
     End {
         uptime_s: u64,
@@ -40,14 +44,14 @@ pub(crate) struct SessionState {
 impl Writer {
     pub fn on_session(&mut self, m: SessionMsg) {
         match m {
-            SessionMsg::Start(p) => {
-                self.session.start = Some(*p);
+            SessionMsg::Start { start, ack } => {
+                self.session.start = Some(*start);
                 // The consent as of this message (`state`, which consent changes update in
                 // channel order), not the gate word: a change sent after this message has
                 // already stored its gate, and its `consent.changed` starts the run itself.
-                if !self.state.purposes().is_empty() {
-                    self.begin_session();
-                }
+                let on = !self.state.purposes().is_empty();
+                let ok = !on || self.begin_session();
+                let _ = ack.try_send(ok);
             }
             SessionMsg::End { uptime_s, ack } => {
                 let ok = self.end_session(uptime_s);
@@ -59,15 +63,15 @@ impl Writer {
     /// A purpose turned on (`on_consent`): the run starts now, if the server announced it.
     pub fn session_turned_on(&mut self) {
         if self.session.start.is_some() {
-            self.begin_session();
+            let _ = self.begin_session();
         }
     }
 
     /// `session.unclean` for a previous run still open, `session.start`, and `openSession`
     /// set to this run (persisted with the first line).
-    fn begin_session(&mut self) {
+    fn begin_session(&mut self) -> bool {
         let Some(start) = self.session.start.clone() else {
-            return;
+            return false;
         };
         let own = self.sh.session.as_str().to_owned();
         let previous = self
@@ -85,13 +89,15 @@ impl Writer {
                 self.write_own(Source::Finisherd, SessionUnclean { previous }.into(), now);
             }
         }
-        if self.write_own(Source::Finisherd, start.into(), now) {
+        let written = self.write_own(Source::Finisherd, start.into(), now);
+        if written {
             self.session.open = true;
             self.state_other
                 .insert(OPEN_SESSION.to_owned(), Value::String(own));
             self.state_dirty = true;
         }
-        let _ = self.flush();
+        // The flush writes `state.json` (with `openSession`) before the line.
+        self.flush().is_ok() && written
     }
 
     /// `session.end` (when on and started) and `openSession` cleared, flushed. True when
@@ -120,11 +126,23 @@ impl Writer {
 impl Journal {
     /// Announces this run (Decision 25) with its platform facts. The writer journals
     /// `session.start` (after `session.unclean` when `state.json` still names an earlier
-    /// run) now if a purpose is on, else when one turns on. Never blocks.
-    pub fn start_session(&self, start: SessionStart) {
-        if let Some(h) = &self.h {
-            h.control(Control::Session(SessionMsg::Start(Box::new(start))));
+    /// run) now if a purpose is on, else when one turns on. Waits at most `timeout` for the
+    /// writer: true when the start and `openSession` are on disk, or nothing was due (off).
+    /// A server announces before it reports ready, so a kill right after cannot lose them.
+    pub fn start_session(&self, start: SessionStart, timeout: Duration) -> bool {
+        let Some(h) = &self.h else { return false };
+        if Journal::on_writer_thread() {
+            return false;
         }
+        let (ack, rx) = mpsc::sync_channel(1);
+        let msg = SessionMsg::Start {
+            start: Box::new(start),
+            ack,
+        };
+        if !h.control(Control::Session(msg)) {
+            return false;
+        }
+        rx.recv_timeout(timeout).unwrap_or(false)
     }
 
     /// A clean shutdown: journals `session.end` (when the run started) and clears

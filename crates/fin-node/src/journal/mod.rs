@@ -241,12 +241,14 @@ impl JournalHandle {
     }
 
     /// Announces this run (`SessionStart` JSON): `session.start` now if on, else when a
-    /// purpose turns on; `session.unclean` first when the previous run never ended.
+    /// purpose turns on; `session.unclean` first when the previous run never ended. Waits at
+    /// most `timeout_ms` (≤ 1 s) for the writer: true when they are on disk (or nothing was
+    /// due), false on a timeout (the start is still made).
     #[napi(catch_unwind)]
-    pub fn start_session(&self, start_json: String) -> Result<()> {
+    pub fn start_session(&self, start_json: String, timeout_ms: u32) -> Result<bool> {
         let start: SessionStart = parse("session start", &start_json)?;
-        self.journal.start_session(start);
-        Ok(())
+        let timeout = Duration::from_millis(u64::from(timeout_ms.min(1_000)));
+        Ok(self.journal.start_session(start, timeout))
     }
 
     /// A clean shutdown: `session.end` and `openSession` cleared, waiting at most 1 s.
@@ -481,4 +483,43 @@ pub fn rpc_methods() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+/// Every kind name of fin-core's registry (`diagnostics.record` tells an unknown kind,
+/// `EVENT_KIND_UNKNOWN`, from one a source may not send, `EVENT_INVALID`).
+#[napi(catch_unwind)]
+pub fn kind_names() -> Vec<String> {
+    let mut names: Vec<String> = fin_core::events::kinds()
+        .iter()
+        .map(|k| k.name.to_owned())
+        .collect();
+    names.dedup();
+    names
+}
+
+/// Whether `privacy_json` (a `privacy` section, `null` for none) is one the journal accepts:
+/// `null` when it is, else why not, naming the first bad key (`privacy.retentionDays: …`).
+/// The settings writer checks the merged section with it before it replaces the file.
+#[napi(catch_unwind)]
+pub fn validate_privacy(privacy_json: String) -> Option<String> {
+    let v: Value = match serde_json::from_str(&privacy_json) {
+        Ok(v) => v,
+        Err(e) => return Some(format!("privacy: not JSON ({e})")),
+    };
+    let obj = match &v {
+        Value::Null => return None,
+        Value::Object(o) => o,
+        _ => return Some("privacy: not an object".to_owned()),
+    };
+    for (key, value) in obj {
+        let one = Value::Object([(key.clone(), value.clone())].into_iter().collect());
+        if let Err(e) = fin_journal::PrivacySettings::parse(Some(&one)) {
+            let e = e.strip_prefix("privacy: ").unwrap_or(&e).to_owned();
+            return Some(match e.starts_with(&format!("privacy.{key}")) {
+                true => e,
+                false => format!("privacy.{key}: {e}"),
+            });
+        }
+    }
+    None
 }

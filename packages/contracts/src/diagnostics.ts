@@ -72,7 +72,8 @@ export const DiagnosticsConsentSuccess = Schema.Unknown;
  */
 export const DiagnosticsRecordPayload = Schema.Struct({
   kind: Schema.String,
-  kv: Schema.Number,
+  /** The kind's payload version (0–65535). */
+  kv: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 })),
   ctx: Schema.optional(
     Schema.Struct({
       project: Schema.optional(Schema.String),

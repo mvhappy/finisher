@@ -31,12 +31,30 @@ function syncDir(dir: string): void {
   }
 }
 
+function writeFailed(file: string, e: unknown): FinError {
+  const cause = (e as { code?: unknown } | null)?.code;
+  return finError(
+    "SETTINGS_WRITE_FAILED",
+    `${file} could not be written: ${(e as Error)?.message ?? String(e)}`,
+    { file, ...(typeof cause === "string" ? { cause } : {}) },
+    `check that ${file} and its folder are writable, then retry`,
+  );
+}
+
 /**
  * Applies `patch` to `privacy` in `settings.json` and returns the new `privacy` section
- * (`undefined` when it ended up empty and was removed). Throws `SETTINGS_INVALID` when the
- * file does not parse, is not an object, or its `privacy` is not an object.
+ * (`undefined` when it ended up empty and was removed). `validate` checks the merged section
+ * (the journal's own rules: `validatePrivacy`) before anything is written, so a change is
+ * never stored beside a key the journal would refuse (it would keep the last good settings and
+ * the change would not apply). Throws `SETTINGS_INVALID` when the file does not parse, is not an
+ * object, its `privacy` is not an object, or the merged section is refused (naming the key);
+ * `SETTINGS_WRITE_FAILED` when the write fails (the temp file is removed, the file unchanged).
  */
-export function mergeSettings(serverData: string, patch: PrivacyPatch): Record<string, unknown> | undefined {
+export function mergeSettings(
+  serverData: string,
+  patch: PrivacyPatch,
+  validate: (privacy: Record<string, unknown> | undefined) => string | undefined = () => undefined,
+): Record<string, unknown> | undefined {
   const file = settingsPath(serverData);
   let raw: unknown = {};
   let text: string | undefined;
@@ -65,17 +83,27 @@ export function mergeSettings(serverData: string, patch: PrivacyPatch): Record<s
   }
   if (Object.keys(privacy).length === 0) delete settings.privacy;
   else settings.privacy = privacy;
+  const refused = validate(settings.privacy as Record<string, unknown> | undefined);
+  if (refused !== undefined) {
+    const key = /^(privacy\.[A-Za-z]+)/.exec(refused)?.[1] ?? "privacy";
+    throw finError("SETTINGS_INVALID", `${file} cannot be updated: ${refused}`, { file, key, reason: refused }, `fix or remove ${key} in ${file} by hand, then retry`);
+  }
 
   const tmp = `${file}.${process.pid}.tmp`;
-  rmSync(tmp, { force: true });
-  const fd = openSync(tmp, "wx", 0o600);
   try {
-    writeSync(fd, `${JSON.stringify(settings, null, 2)}\n`);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    rmSync(tmp, { force: true });
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeSync(fd, `${JSON.stringify(settings, null, 2)}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+    syncDir(dirname(file));
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw writeFailed(file, e);
   }
-  renameSync(tmp, file);
-  syncDir(dirname(file));
   return settings.privacy as Record<string, unknown> | undefined;
 }

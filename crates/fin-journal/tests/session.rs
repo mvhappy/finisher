@@ -12,6 +12,8 @@ use fin_journal::{EnvOverrides, Filter, Journal, MAX_PAGE};
 use serde_json::{Value, json};
 use support::*;
 
+const WAIT: Duration = Duration::from_secs(2);
+
 fn start() -> SessionStart {
     SessionStart {
         app: Version::parse("0.0.0").unwrap(),
@@ -49,7 +51,7 @@ fn session_start_end_and_unclean() {
     let dir = tempfile::tempdir().unwrap();
     // A clean run: start, end, `openSession` cleared.
     let j = open(&dir, json!({}));
-    j.start_session(start());
+    assert!(j.start_session(start(), WAIT));
     j.flush().unwrap();
     assert_eq!(state_json(&dir)["openSession"], j.session().unwrap());
     assert!(j.end_session(3, Duration::from_secs(1)));
@@ -62,14 +64,14 @@ fn session_start_end_and_unclean() {
 
     // A run that never ended: the next start reports it.
     let j = open(&dir, json!({}));
-    j.start_session(start());
+    assert!(j.start_session(start(), WAIT));
     j.flush().unwrap();
     let crashed = j.session().unwrap().to_owned();
     drop(j); // no end_session: `openSession` stays
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(state_json(&dir)["openSession"], crashed.as_str());
     let j = open(&dir, json!({}));
-    j.start_session(start());
+    assert!(j.start_session(start(), WAIT));
     let all = read_all(&j);
     let unclean = of_kind(&all, "session.unclean");
     assert_eq!(unclean.len(), 1);
@@ -87,11 +89,11 @@ fn session_start_end_and_unclean() {
 fn session_start_waits_for_a_purpose_and_off_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let j = open(&dir, json!({ "diagnostics": "off" }));
-    j.start_session(start());
+    assert!(j.start_session(start(), WAIT));
     assert!(!j.end_session(1, Duration::from_secs(1)));
     j.flush().unwrap();
     assert!(!events(&dir).exists(), "off creates nothing");
-    j.start_session(start());
+    assert!(j.start_session(start(), WAIT));
     j.apply_settings(Some(&json!({ "diagnostics": "on" })));
     let all = read_all(&j);
     assert_eq!(kinds(&all), ["consent.changed", "session.start"]);
@@ -190,5 +192,33 @@ fn export_pages_with_cursor_and_limit() {
         j.export_page(&f, None, Some("nope"), 3).unwrap_err().code,
         "INVALID_ARGS"
     );
+    j.close();
+}
+
+#[test]
+fn start_session_is_on_disk_when_it_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = open(&dir, json!({}));
+    assert!(j.start_session(start(), WAIT));
+    // No flush: the ack means the line and `openSession` are written already.
+    assert_eq!(kinds(&raw_lines(&events(&dir))), ["session.start"]);
+    assert_eq!(state_json(&dir)["openSession"], j.session().unwrap());
+    j.close();
+}
+
+#[cfg(unix)]
+#[test]
+fn every_directory_made_is_0700() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let deep = dir.path().join("a").join("b").join("events");
+    let c = clock();
+    let j =
+        Journal::open_with_settings(&deep, Some(&json!({})), EnvOverrides::default(), opts(&c)).0;
+    assert!(j.start_session(start(), WAIT));
+    for d in [dir.path().join("a"), dir.path().join("a/b"), deep.clone()] {
+        let mode = std::fs::metadata(&d).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", d.display());
+    }
     j.close();
 }

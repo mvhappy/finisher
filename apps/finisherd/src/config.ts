@@ -195,12 +195,12 @@ export function readSettings(serverData: string, last?: Settings): { settings: S
  * settings, or before any is known means recording nothing. The section's own validation
  * (`on`/`off`, ranges) is the journal's, with the same last-good rule.
  */
-export function readPrivacy(serverData: string): { privacy?: unknown; error?: string } {
+export function readPrivacy(serverData: string): { privacy?: unknown; error?: string; missing?: true } {
   let text: string;
   try {
     text = readFileSync(settingsPath(serverData), "utf8");
   } catch (e) {
-    return (e as { code?: unknown }).code === "ENOENT" ? {} : { error: String(e) };
+    return (e as { code?: unknown }).code === "ENOENT" ? { missing: true } : { error: String(e) };
   }
   let raw: unknown;
   try {
@@ -217,7 +217,7 @@ export function readPrivacy(serverData: string): { privacy?: unknown; error?: st
  * `null` when absent, or text that is not JSON for an unusable file (the journal then keeps
  * the last good settings, or records nothing before any).
  */
-export function privacyArg(read: { privacy?: unknown; error?: string }): string | null {
+export function privacyArg(read: { privacy?: unknown; error?: string; missing?: true }): string | null {
   if (read.error !== undefined) return "<unusable settings.json>";
   return read.privacy === undefined ? null : JSON.stringify(read.privacy);
 }

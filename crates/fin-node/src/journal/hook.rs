@@ -69,6 +69,9 @@ pub(crate) fn panic_payload(info: &PanicHookInfo<'_>) -> Value {
     v
 }
 
+/// How long a panic may wait for the journals in all (it may be on the JS thread).
+const PANIC_BUDGET: Duration = Duration::from_millis(50);
+
 fn report_panic(info: &PanicHookInfo<'_>) {
     // `try_lock`: a panic while the registry is held must not deadlock on it.
     let journals: Vec<fin_journal::Journal> = match JOURNALS.try_lock() {
@@ -79,7 +82,13 @@ fn report_panic(info: &PanicHookInfo<'_>) {
         return;
     }
     let payload = panic_payload(info);
+    // One budget for every journal: a panic on the JS thread (a sync napi call) blocks it.
+    let deadline = std::time::Instant::now() + PANIC_BUDGET;
     for j in journals {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
         let Some(session) = j.session().map(str::to_owned) else {
             continue;
         };
@@ -90,7 +99,7 @@ fn report_panic(info: &PanicHookInfo<'_>) {
             1,
             None,
             payload.clone(),
-            Duration::from_millis(250),
+            left,
         );
     }
 }

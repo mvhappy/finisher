@@ -195,8 +195,12 @@ export declare class Journal {
   applySettings(privacyJson: string | null): string | undefined;
   /** The `ConsentState` JSON in force. */
   consent(): string;
-  /** Announces this run (`SessionStart` JSON): `session.start` (after `session.unclean`) now or once on. */
-  startSession(startJson: string): void;
+  /**
+   * Announces this run (`SessionStart` JSON): `session.start` (after `session.unclean`) now or
+   * once on. Waits at most `timeoutMs` (default 100, at most 1000) for the writer: true when
+   * they are on disk (or nothing was due), false on a timeout (the start still happens).
+   */
+  startSession(startJson: string, timeoutMs?: number): boolean;
   /** A clean shutdown: `session.end`, `openSession` cleared; resolves to whether it is on disk. */
   endSession(uptimeS: number): Promise<boolean>;
   /**
@@ -234,6 +238,15 @@ export declare class Journal {
 
 /** fin-core's `RPC_METHODS` table: the keys `rpc.stats` accepts (`other` last). */
 export declare function rpcMethods(): string[];
+
+/** Every kind name of fin-core's event registry. */
+export declare function kindNames(): string[];
+
+/**
+ * Why a `privacy` section (JSON; `"null"` for none) is not one the journal accepts, naming the
+ * first bad key (`privacy.retentionDays: …`); `undefined` when it is.
+ */
+export declare function validatePrivacy(privacyJson: string): string | undefined;
 
 /**
  * The font manager of a server data folder: the content-addressed cache

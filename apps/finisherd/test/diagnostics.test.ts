@@ -165,6 +165,52 @@ describe("settings and the journal", () => {
     expect(existsSync(join(serverData, "events"))).toBe(false);
   });
 
+  test("consent_rpc_refuses_a_change_beside_an_invalid_key (the opt-out applies or fails)", async () => {
+    writeSettings({ privacy: { diagnostics: "on" } });
+    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await inProcess(async (d) => {
+        // A hand edit adds a key the journal refuses: it keeps the last good settings.
+        writeSettings({ privacy: { diagnostics: "on", retentionDays: 0 } });
+        await until(() => warn.mock.calls.some(([m]) => String(m).includes("retentionDays")));
+        const before = readFileSync(settingsPath(serverData), "utf8");
+        const e = await Effect.runPromise(Effect.flip(d.consent("fin", "diagnostics", "off")));
+        expect(e.code).toBe("SETTINGS_INVALID");
+        expect(e.fix).toContain("privacy.retentionDays");
+        expect(readFileSync(settingsPath(serverData), "utf8")).toBe(before);
+        expect(d.enabled()).toBe(true);
+        // Fixed by hand: the opt-out applies and says so.
+        writeSettings({ privacy: { diagnostics: "on" } });
+        const c = await Effect.runPromise(d.consent("fin", "diagnostics", "off"));
+        expect(c.diagnostics).toBe("off");
+        expect(d.enabled()).toBe(false);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a_vanished_settings_file_does_not_turn_an_opt_out_on", async () => {
+    writeSettings({ privacy: { diagnostics: "off" } });
+    await inProcess(async (d) => {
+      const seen: boolean[] = [];
+      d.onEnabledChange((e) => seen.push(e));
+      // An editor saving by rename: the file is gone for less than two polls.
+      for (let i = 0; i < 5; i++) {
+        rmSync(settingsPath(serverData));
+        await new Promise((r) => setTimeout(r, 60));
+        writeSettings({ privacy: { diagnostics: "off" } });
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      expect(seen).toEqual([]);
+      expect(d.enabled()).toBe(false);
+      // Removed for good: the defaults apply after the polls agree.
+      rmSync(settingsPath(serverData));
+      await until(() => d.enabled());
+      expect(seen).toEqual([true]);
+    }, 50);
+  });
+
   test("env_overrides_settings and server_info_reflects_gate", async () => {
     writeSettings({ privacy: { diagnostics: "off" } });
     const { info } = await start({ FIN_DIAGNOSTICS: "on" });
@@ -207,6 +253,10 @@ describe("sessions and errors", () => {
     expect(state.openSession).toBeUndefined();
 
     await start();
+    // Ready means the writer confirmed the start; the test checks it rather than trusting it.
+    await until(() => onDisk().filter((e) => e.kind === "session.start").length === 2, 2000);
+    const open = JSON.parse(readFileSync(join(serverData, "events", "state.json"), "utf8")).openSession;
+    expect(open).toBe(onDisk().at(-1)!.session);
     server!.child.kill("SIGKILL");
     await new Promise((r) => server!.child.once("exit", r));
     server = undefined;
@@ -352,6 +402,10 @@ describe("sources and diagnostics.record", () => {
     const c = await client();
     const unlisted = await record(c, { record: "edit" }, "log.commit");
     expect(!unlisted.ok && unlisted.error.code).toBe("EVENT_INVALID");
+    const unknown = await record(c, {}, "no.suchKind");
+    expect(!unknown.ok && unknown.error.code).toBe("EVENT_KIND_UNKNOWN");
+    const badKv = await c.call("diagnostics.record", { kind: "cli.command", kv: 1.5, payload: cli() });
+    expect(badKv.ok).toBe(false);
     const big = await record(c, { ...cli(), padding: "x".repeat(70 * 1024) });
     expect(!big.ok && big.error.code).toBe("EVENT_TOO_LARGE");
     const bad = await record(c, { name: 1 });
@@ -376,6 +430,10 @@ describe("sources and diagnostics.record", () => {
     });
     expect(callMeta([["fin-actor-kind", "root"]])).toEqual({ actor: { kind: "unknown" } });
     expect(callMeta(undefined)).toEqual({ actor: { kind: "unknown" } });
+    // `fin` may claim only a person or an agent; the UI's connection more.
+    expect(callMeta({ "fin-actor-kind": "system" }, "fin")).toEqual({ actor: { kind: "unknown" } });
+    expect(callMeta({ "fin-actor-kind": "plugin" }, "fin")).toEqual({ actor: { kind: "unknown" } });
+    expect(callMeta({ "fin-actor-kind": "system" }, "ui")).toEqual({ actor: { kind: "system" } });
     await start();
     const c = await client();
     const headers: Array<[string, string]> = [

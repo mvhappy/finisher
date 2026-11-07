@@ -2,15 +2,14 @@
 // server data, opened after `settings.json`'s `privacy` was read and kept in step with it;
 // sessions; uncaught errors as `error.panic`; RPC timings; and the `diagnostics.*` calls with
 // their trust rules (the source comes from the transport, never from the request).
-import { unwatchFile, watchFile } from "node:fs";
 import { arch, availableParallelism, hostname, platform, release, totalmem } from "node:os";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ConsentState, DiagnosticsReport, ExportPage, PurgeReport } from "@finisher/core-types";
 import { type FinError, PROTOCOL_VERSION } from "@finisher/contracts";
-import { Journal } from "@finisher/fin-node";
+import { Journal, kindNames, validatePrivacy } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope } from "effect";
-import { privacyArg, readPrivacy, SERVER_VERSION, settingsPath } from "./config.ts";
+import { privacyArg, readPrivacy, SERVER_VERSION } from "./config.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { mergeSettings } from "./settings-write.ts";
 
@@ -33,7 +32,11 @@ export const MAX_RECORD_BYTES = 64 * 1024;
 /** `MAX_RAW_ID` of fin-core: a longer id from a header is dropped. */
 export const MAX_HEADER_ID = 256;
 
-const ACTOR_KINDS = new Set(["user", "agent", "plugin", "system", "unknown"]);
+/** The actor kinds a source may claim; any other becomes `unknown`. `fin` is a person's or an agent's. */
+const ACTOR_KINDS: Readonly<Record<Source, ReadonlySet<string>>> = {
+  fin: new Set(["user", "agent", "unknown"]),
+  ui: new Set(["user", "agent", "plugin", "system", "unknown"]),
+};
 
 /** The actor of a request (Decision 23a), from its `fin-actor-*` headers, validated. */
 export interface CallMeta {
@@ -41,11 +44,12 @@ export interface CallMeta {
 }
 
 /**
- * `callMeta(headers)`: Effect RPC hands a handler the request's headers as a record of lower-case
- * names (pairs are accepted too). An unknown or missing kind is `unknown`; an empty or over-long
- * id is dropped. The ids stay raw: the journal keys every one that is not a ULID.
+ * `callMeta(headers, source)`: Effect RPC hands a handler the request's headers as a record of
+ * lower-case names (pairs are accepted too). A missing kind, or one the source may not claim
+ * (`fin`: `user`, `agent`), is `unknown`; an empty or over-long id is dropped. The ids stay raw:
+ * the journal keys every one that is not a ULID.
  */
-export function callMeta(headers: unknown): CallMeta {
+export function callMeta(headers: unknown, source: Source = "fin"): CallMeta {
   const get = (name: string): string | undefined => {
     if (Array.isArray(headers)) {
       const hit = headers.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === name);
@@ -60,7 +64,7 @@ export function callMeta(headers: unknown): CallMeta {
   const call = id(get("fin-actor-call"));
   return {
     actor: {
-      kind: kind !== undefined && ACTOR_KINDS.has(kind) ? kind : "unknown",
+      kind: kind !== undefined && ACTOR_KINDS[source].has(kind) ? kind : "unknown",
       ...(session === undefined ? {} : { session }),
       ...(call === undefined ? {} : { call }),
     },
@@ -222,6 +226,14 @@ export interface DiagnosticsOptions {
 const TRAINING_WAYS_IN =
   "a person opts in: in the Finisher app, by setting privacy.training to \"on\" in <server-data>/settings.json, or by starting finisherd with FIN_TRAINING=on";
 
+/** How long startup waits for the writer to confirm `session.start` (then it goes on). */
+const START_ACK_MS = 100;
+/** The `privacy` argument for a settings file that is unusable (here: vanished for one poll). */
+const UNUSABLE = privacyArg({ error: "settings.json vanished" });
+const NONE: unique symbol = Symbol("none");
+/** Every kind of fin-core's registry: an unknown one is `EVENT_KIND_UNKNOWN`. */
+const KNOWN_KINDS: ReadonlySet<string> = new Set(kindNames());
+
 /** Test-only journal options from the environment (honoured by `test-hooks` builds of fin-node only). */
 function testOptions(): { statsEveryMs?: number } | undefined {
   const ms = Number(process.env.FIN_TEST_JOURNAL_STATS_MS);
@@ -236,12 +248,17 @@ function testOptions(): { statsEveryMs?: number } | undefined {
 export function makeDiagnostics(serverData: string, options: DiagnosticsOptions = {}): Effect.Effect<DiagnosticsShape, never, Scope.Scope> {
   return Effect.gen(function* () {
     const started = performance.now();
-    const journal = Journal.open(serverData, privacyArg(readPrivacy(serverData)), hostname(), testOptions());
+    const first = readPrivacy(serverData);
+    const journal = Journal.open(serverData, privacyArg(first), hostname(), testOptions());
     const warn = (w: string | undefined) => {
       if (w !== undefined) process.stderr.write(`finisherd: warning: settings.json privacy: ${w}\n`);
     };
     warn(journal.openWarning);
-    journal.startSession(JSON.stringify(sessionStart()));
+    // Acknowledged by the writer (bounded) before the server reports ready, so a kill right
+    // after ready cannot lose `session.start` and `openSession`; a slow disk only delays it.
+    if (!journal.startSession(JSON.stringify(sessionStart()), START_ACK_MS)) {
+      process.stderr.write("finisherd: warning: the diagnostics journal did not confirm the session start in time\n");
+    }
 
     const listeners: Array<(enabled: boolean) => void> = [];
     let enabled = journal.enabled;
@@ -250,14 +267,37 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
       enabled = journal.enabled;
       for (const f of listeners) f(enabled);
     };
-    const apply = () => {
-      warn(journal.applySettings(privacyArg(readPrivacy(serverData))));
+    // The settings watch (polled). Two rules keep an opt-out from flipping on by accident:
+    // - a file that vanishes is unusable for one poll (an editor saving by rename leaves a gap,
+    //   and a missing file would read as the defaults: diagnostics on);
+    // - while recording is off, a change applies only once two consecutive polls agree.
+    let applied = privacyArg(first);
+    let hadFile = first.missing !== true;
+    let candidate: string | null | typeof NONE = NONE;
+    const poll = () => {
+      const read = readPrivacy(serverData);
+      const arg = read.missing === true && hadFile ? UNUSABLE : privacyArg(read);
+      hadFile = read.missing !== true;
+      if (arg === applied) {
+        candidate = NONE;
+        return;
+      }
+      if (!journal.enabled && arg !== candidate) {
+        candidate = arg;
+        return;
+      }
+      candidate = NONE;
+      applied = arg;
+      warn(journal.applySettings(arg));
       changed();
     };
-    const path = settingsPath(serverData);
     yield* Effect.acquireRelease(
-      Effect.sync(() => watchFile(path, { interval: options.settingsPollMs ?? 1000, persistent: false }, apply)),
-      () => Effect.sync(() => unwatchFile(path, apply)),
+      Effect.sync(() => {
+        const timer = setInterval(poll, options.settingsPollMs ?? 1000);
+        timer.unref();
+        return timer;
+      }),
+      (timer) => Effect.sync(() => clearInterval(timer)),
     );
     yield* Effect.acquireRelease(
       Effect.sync(() => installUncaughtHandlers(journal)),
@@ -276,12 +316,14 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
     };
     let rateLimited = 0;
     // One run id per connection (`fin` makes one connection per run), the newest 1024 kept.
-    const sessions = new Map<number, string>();
-    const sessionOf = (client: number) => {
-      let s = sessions.get(client);
+    // Client ids are per transport: the key names the source too.
+    const sessions = new Map<string, string>();
+    const sessionOf = (source: Source, client: number) => {
+      const key = `${source}:${client}`;
+      let s = sessions.get(key);
       if (s === undefined) {
         s = ulid();
-        sessions.set(client, s);
+        sessions.set(key, s);
         if (sessions.size > 1024) sessions.delete(sessions.keys().next().value!);
       }
       return s;
@@ -305,6 +347,9 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
         }),
       record: (source, client, req, headers) =>
         Effect.gen(function* () {
+          if (!KNOWN_KINDS.has(req.kind)) {
+            return yield* Effect.fail(finError("EVENT_KIND_UNKNOWN", `${req.kind} is not a known event kind`, { kind: req.kind }));
+          }
           if (!RECORD_KINDS[source].includes(req.kind)) {
             return yield* Effect.fail(
               finError("EVENT_INVALID", `${req.kind} is not accepted from ${source}`, { kind: req.kind, source }),
@@ -321,8 +366,8 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
               finError("EVENT_TOO_LARGE", `the ${req.kind} payload is over ${MAX_RECORD_BYTES} bytes`, { kind: req.kind }),
             );
           }
-          const ctx = { ...(req.ctx ?? {}), actor: callMeta(headers).actor };
-          yield* sync(() => journal.record(req.kind, req.kv, JSON.stringify(ctx), payload, source, sessionOf(client)));
+          const ctx = { ...(req.ctx ?? {}), actor: callMeta(headers, source).actor };
+          yield* sync(() => journal.record(req.kind, req.kv, JSON.stringify(ctx), payload, source, sessionOf(source, client)));
           return { recorded: true };
         }),
       consent: (source, purpose, value) =>
@@ -332,9 +377,22 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
               finError("CONSENT_UI_ONLY", "turning training on is a person's choice, not a command's", { purpose, value, source }, TRAINING_WAYS_IN),
             );
           }
-          const privacy = yield* sync(() => mergeSettings(serverData, { [purpose]: value === "unset" ? null : value }));
-          warn(journal.applySettings(privacy === undefined ? null : JSON.stringify(privacy)));
+          // The merged section is checked with the journal's own rules before it is written:
+          // a change stored beside a key the journal refuses would answer success and not apply.
+          const privacy = yield* sync(() =>
+            mergeSettings(serverData, { [purpose]: value === "unset" ? null : value }, (p) => validatePrivacy(JSON.stringify(p ?? null))),
+          );
+          const arg = privacy === undefined ? null : JSON.stringify(privacy);
+          applied = arg;
+          hadFile = true;
+          candidate = NONE;
+          const refused = journal.applySettings(arg);
           changed();
+          if (refused !== undefined) {
+            return yield* Effect.fail(
+              finError("SETTINGS_INVALID", `the privacy settings were written but not applied: ${refused}`, { reason: refused }, "fix privacy in <server-data>/settings.json by hand, then retry"),
+            );
+          }
           return JSON.parse(journal.consent()) as ConsentState;
         }),
       status: () => attemptJson<DiagnosticsReport>(() => journal.status()),

@@ -144,22 +144,27 @@ pub(crate) fn ensure_dir(dir: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         b.mode(0o700);
     }
-    let existed = dir.exists();
+    // The directories this call makes, deepest first: each gets 0700 whatever the process
+    // umask was meanwhile (finisherd narrows it to 0177 while it makes its socket, which would
+    // leave no search bit). One that existed keeps its mode: an unwritable one suspends the
+    // journal.
+    let made: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|d| !d.as_os_str().is_empty() && !d.exists())
+        .collect();
     b.create(dir)?;
-    let meta = fs::metadata(dir)?;
-    if !meta.is_dir() {
+    if !fs::metadata(dir)?.is_dir() {
         return Err(io::Error::new(ErrorKind::NotADirectory, "not a directory"));
     }
-    // A directory made here gets 0700 whatever the process umask was meanwhile (finisherd
-    // narrows it to 0177 while it makes its socket, which would leave no search bit). One that
-    // existed keeps its mode: an unwritable one suspends the journal.
     #[cfg(unix)]
-    if !existed {
+    for d in made.iter().rev() {
         use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o777 != 0o700 {
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        if fs::metadata(d)?.permissions().mode() & 0o777 != 0o700 {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700))?;
         }
     }
+    #[cfg(not(unix))]
+    let _ = made;
     Ok(())
 }
 

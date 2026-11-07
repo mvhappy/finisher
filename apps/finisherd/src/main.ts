@@ -59,12 +59,19 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
 
       const publish = (enabled: boolean) =>
         writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, diagnostics: { enabled } });
+      // Set when `finisherd.json` is removed: a late gate change must not bring it back.
+      let stopped = false;
       const info = yield* Effect.acquireRelease(
         Effect.try({ try: () => publish(diagnostics.enabled()), catch: startFailure }),
-        () => Effect.sync(() => removeServerInfo(serverData)),
+        () =>
+          Effect.sync(() => {
+            stopped = true;
+            removeServerInfo(serverData);
+          }),
       );
       // `fin` reads `diagnostics.enabled` to decide whether to send anything (Decision 23).
       diagnostics.onEnabledChange((enabled) => {
+        if (stopped) return;
         try {
           publish(enabled);
         } catch (e) {

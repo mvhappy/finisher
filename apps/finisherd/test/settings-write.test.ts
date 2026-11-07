@@ -1,6 +1,6 @@
 // `mergeSettings` (plan D, Decision 8): only the patched `privacy` keys change, everything else
 // is kept, a file that does not parse is never overwritten, and the write is temp-then-rename.
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -61,6 +61,32 @@ describe("mergeSettings", () => {
       expect(readFileSync(settingsPath(dir), "utf8")).toBe(text);
     });
   }
+
+  test("a merged section the validator refuses is not written, naming the key", () => {
+    writeFileSync(settingsPath(dir), JSON.stringify({ privacy: { diagnostics: "on", retentionDays: 0 } }));
+    const before = readFileSync(settingsPath(dir), "utf8");
+    const e = thrown(() =>
+      mergeSettings(dir, { diagnostics: "off" }, (p) => (p?.retentionDays === 0 ? "privacy.retentionDays is not 1–365" : undefined)),
+    );
+    expect(e.code).toBe("SETTINGS_INVALID");
+    expect(e.fix).toContain("privacy.retentionDays");
+    expect(e.details.key).toBe("privacy.retentionDays");
+    expect(readFileSync(settingsPath(dir), "utf8")).toBe(before);
+  });
+
+  test.skipIf(WIN || process.getuid?.() === 0)("a failed write is SETTINGS_WRITE_FAILED and leaves no temp file", () => {
+    writeFileSync(settingsPath(dir), "{}");
+    chmodSync(dir, 0o500);
+    try {
+      const e = thrown(() => mergeSettings(dir, { training: "off" }));
+      expect(e.code).toBe("SETTINGS_WRITE_FAILED");
+      expect(e.fix).toContain(settingsPath(dir));
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    expect(readdirSync(dir)).toEqual(["settings.json"]);
+    expect(readFileSync(settingsPath(dir), "utf8")).toBe("{}");
+  });
 
   test("settings_writer_is_temp_then_rename", () => {
     writeFileSync(settingsPath(dir), "{}");

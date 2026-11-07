@@ -56,7 +56,7 @@ mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
-pub use journal::{JournalHandle, rpc_methods};
+pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
 pub use server_lock::{ServerLock, lock_exclusive};
 pub use tasks::StoreTask;
 

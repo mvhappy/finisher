@@ -5,7 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConsentState, DiagnosticsReport, Envelope, ExportPage, JournalStatus } from "@finisher/core-types";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { Engine, type FinNodeError, Journal } from "../index.js";
+import { Engine, type FinNodeError, Journal, kindNames, validatePrivacy } from "../index.js";
 
 let tmp: string;
 let serverData: string;
@@ -70,6 +70,21 @@ const cli = (marker = "x") => ({
   online: true,
   dryRun: false,
   txIds: [`idem-${marker}`],
+});
+
+describe("validatePrivacy and kindNames", () => {
+  test("validatePrivacy names the first bad key and accepts good or absent sections", () => {
+    expect(validatePrivacy("null")).toBeUndefined();
+    expect(validatePrivacy(JSON.stringify({ diagnostics: "off", training: "on", retentionDays: 7, maxMiB: 64, extra: 1 }))).toBeUndefined();
+    expect(validatePrivacy(JSON.stringify({ diagnostics: "off", retentionDays: 0 }))).toMatch(/^privacy\.retentionDays/);
+    expect(validatePrivacy(JSON.stringify({ maxMiB: 1 }))).toMatch(/^privacy\.maxMiB/);
+    expect(validatePrivacy(JSON.stringify({ training: "maybe" }))).toMatch(/^privacy\.training/);
+    expect(validatePrivacy(JSON.stringify("on"))).toMatch(/not an object/);
+  });
+
+  test("kindNames lists the registry", () => {
+    expect(kindNames()).toEqual(expect.arrayContaining(["cli.command", "error.panic", "log.commit", "session.start"]));
+  });
 });
 
 describe("Journal", () => {
@@ -166,7 +181,9 @@ describe("Journal", () => {
 
   test("sessions: start, end and unclean", async () => {
     let j = open();
-    j.startSession(START);
+    expect(j.startSession(START, 1000)).toBe(true);
+    // Acknowledged: on disk before any flush.
+    expect(existsSync(join(serverData, "events", "state.json"))).toBe(true);
     const first = j.session;
     // Not ended: the next run reports it.
     await j.close();
