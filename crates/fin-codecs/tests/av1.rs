@@ -1,4 +1,4 @@
-//! Software AV1 round trips (spec §13.5): SVT-AV1 encodes frame-id patterns, `rav1d` decodes
+//! Software AV1 round trips (spec §13.5): SVT-AV1 encodes frame-id patterns, dav1d decodes
 //! them back with the right ids and quality; broken input is a typed error; encoding is
 //! deterministic with one thread.
 
@@ -86,7 +86,7 @@ fn a_truncated_sample_is_decode_failed_without_a_panic() {
     }
     let e = failed.expect("a cut keyframe fails to decode");
     assert_eq!(e.code, "DECODE_FAILED");
-    assert_eq!(e.details["backend"], "rav1d");
+    assert_eq!(e.details["backend"], "dav1d");
 }
 
 #[test]

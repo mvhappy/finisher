@@ -4,9 +4,10 @@ members = ["crates/*"]
 # Everything but the cross-host harness, which enables `fin-store/test-hooks`: a build or test
 # of the default members never unifies that feature into `fin` or `fin-node`
 # (`scripts/check-test-hooks.mjs`). Build the harness alone: `cargo build -p fin-store-xhost`.
-# Nor the codecs (`fin-codecs`, `fin-svt-sys`), whose SVT-AV1 build needs cmake, nasm on x86_64
-# and the `third_party/svt-av1` submodule: `cargo test -p fin-codecs --features testing`. They
-# join the default members when 6A-2's media worker needs them.
+# Nor the codecs (`fin-codecs`, `fin-svt-sys`, `fin-dav1d-sys`), whose SVT-AV1 and dav1d builds
+# need cmake, nasm on x86_64 and the `third_party/svt-av1` and `third_party/dav1d` submodules:
+# `cargo test -p fin-codecs --features testing`. They join the default members when 6A-2's
+# media worker needs them.
 default-members = [
     "crates/fin",
     "crates/fin-compositor",
@@ -43,8 +44,3 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
-
-# The AV1 decoder runs pure Rust on aarch64 (fin-codecs/Cargo.toml); unoptimised, the codec
-# tests would take minutes.
-[profile.dev.package.rav1d]
-opt-level = 3

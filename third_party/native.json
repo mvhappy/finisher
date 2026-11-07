@@ -21,12 +21,18 @@
       "note": "the encoder library only (static, no apps, no tests), built with cmake by crates/fin-svt-sys/build.rs: BSD-3-Clause-Clear, BSD-2-Clause (libaom- and dav1d-derived files), BSD-3-Clause (fastfeat), MIT (safestringlib, Source/Lib/Codec/vector.c), ISC (x264's x86inc.asm); the hashed files carry those texts (THIRD_PARTY_NOTICES.md has them in full). crates/fin-svt-sys/csrc/svt_shim.c is Finisher's own (MIT)"
     },
     {
-      "name": "rav1d",
-      "package": "rav1d",
-      "version": "1.1",
-      "license": "BSD-2-Clause",
+      "name": "dav1d",
+      "package": "fin-dav1d-sys",
+      "path": "third_party/dav1d",
+      "tag": "1.5.4",
+      "commit": "54706fc6bc0cdecab7e9593974a4039cc038fca7",
+      "license": "BSD-2-Clause AND ISC",
       "patents": "AOMedia-Patent-License-1.0",
-      "note": "the crate's x86_64 assembly (nasm) and its aarch64 assembly (cc, off until the package ships its headers); Rust port of dav1d"
+      "files": {
+        "COPYING": "52ffbd1e6d02b96fc5cf5ad25ae56e0e34a44edb38af53c65b6a6b98277ebb2a",
+        "src/ext/x86/x86inc.asm": "85c26e2a6f5c8f5e5061ed9deea921b0b2a64e4dc7809fa20958dc1659eb4799"
+      },
+      "note": "the decoder library only (static, 8- and 16-bit, no tools), compiled by crates/fin-dav1d-sys/build.rs with cc (no meson): BSD-2-Clause (VideoLAN and dav1d authors, Two Orioles, Martin Storsjo, Janne Grunau, The rav1e contributors and others, all with the COPYING text), ISC (x264's x86inc.asm, %included by the x86_64 assembly); the hashed files carry those texts (THIRD_PARTY_NOTICES.md has them in full). crates/fin-dav1d-sys/csrc/dav1d_shim.c is Finisher's own (MIT)"
     },
     {
       "name": "SQLite",
