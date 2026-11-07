@@ -1,6 +1,7 @@
 //! Shared fixtures for the op tests.
 #![allow(dead_code)]
 
+pub mod gen4c;
 pub mod ids_json;
 pub mod memlog;
 pub mod moves;
@@ -168,15 +169,19 @@ pub fn with_clips(durations: &[i64]) -> Project {
     apply(&project(), ops).project
 }
 
-/// Sorted by start, non-overlapping, non-negative, positive durations, on every track.
+/// Sorted by start, non-overlapping, non-negative, positive durations, on every track; clips
+/// within their asset.
 pub fn assert_well_formed(p: &Project) {
     for track in &p.timelines[0].tracks {
         for c in &track.items {
             assert!(c.start >= Rational::zero(), "negative start {c:?}");
-            let source_in = c.source_in().unwrap();
-            assert!(source_in >= Rational::zero(), "negative sourceIn {c:?}");
             assert!(c.duration.is_positive(), "non-positive duration {c:?}");
-            let asset = &p.assets[c.asset().unwrap()];
+            // Clips (captions and the other kinds have no source in an asset).
+            let (Some(source_in), Some(asset)) = (c.source_in(), c.asset()) else {
+                continue;
+            };
+            assert!(source_in >= Rational::zero(), "negative sourceIn {c:?}");
+            let asset = &p.assets[asset];
             assert!(
                 (source_in + c.duration).unwrap() <= asset.duration.unwrap(),
                 "past asset end {c:?}"
