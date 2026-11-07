@@ -338,7 +338,7 @@ pub fn killed(exit: &ExitInfo) -> bool {
     return exit.signal.is_none() && exit.code == Some(i64::from(KILLED_EXIT_CODE));
 }
 
-/// Whether `pid` is gone: no such process, or (Linux) a zombie nobody has reaped yet.
+/// Whether `pid` is gone: no such process, or a zombie nobody has reaped yet.
 #[cfg(unix)]
 pub fn gone(pid: u32) -> bool {
     // SAFETY: signal 0 only checks for existence.
@@ -353,8 +353,10 @@ pub fn gone(pid: u32) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
+        // A zombie answers `kill(pid, 0)`, but `proc_pidinfo` refuses it with ESRCH (macOS
+        // 27; older releases filled in `SZOMB`), so either counts as gone.
         // SAFETY: a zeroed proc_bsdshortinfo is a valid out-buffer; proc_pidinfo fills it
-        // (zombies included) and returns its size.
+        // and returns its size.
         let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as i32;
         let n = unsafe {
@@ -369,7 +371,9 @@ pub fn gone(pid: u32) -> bool {
         if n == size {
             return info.pbsi_status == libc::SZOMB;
         }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
+    #[cfg(not(target_os = "macos"))]
     false
 }
 

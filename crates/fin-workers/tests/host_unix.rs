@@ -130,6 +130,34 @@ fn leader_unreaped_until_close_group() {
     }
 }
 
+/// `gone` counts an unreaped zombie as gone (a group leader stays one until `close_group`),
+/// and a live process as not gone.
+#[test]
+fn gone_sees_a_zombie() {
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    assert!(!gone(pid), "a sleeping process is not gone");
+    kill_pid(pid);
+    // SAFETY: a zeroed siginfo_t is a valid out-buffer; WNOWAIT leaves the zombie.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let r = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOWAIT,
+        )
+    };
+    assert_eq!(r, 0);
+    // SAFETY: signal 0 only checks for existence.
+    assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0, "still a zombie");
+    assert!(gone(pid), "a zombie is gone");
+    child.wait().unwrap();
+}
+
 #[test]
 fn kill_on_closed_group_is_a_no_op() {
     let mut h = host();
