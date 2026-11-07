@@ -9,12 +9,26 @@
 //! it as `SAME_PARAM`. Appends and removals name no index: they still merge with each other,
 //! since `uses` is never judged against `uses`.
 //!
-//! Track and timeline footprints cannot always name their timeline (a `track.move` names only
-//! its track), so the track list is one entity for the project: coarser than per timeline,
-//! never finer than needed.
+//! The track order is one per timeline (`<timeline>#tracks`): `track.add` and `track.restore`
+//! name their timeline, and `track.move` and `track.remove` record it on their track's change
+//! (`Change::timeline`), so edits on disjoint timelines never meet here.
 
-/// Every timeline's track order.
-pub(crate) const TRACKS: &str = "#tracks";
+use crate::tx::{Diff, EntityKind};
+
+/// The track order of `timeline`.
+pub(crate) fn tracks(timeline: &str) -> String {
+    format!("{timeline}#tracks")
+}
+
+/// The track order of the timeline that `own` (a `track.move`'s or `track.remove`'s own diff)
+/// records for track `track`.
+pub(crate) fn tracks_of(own: &Diff, track: &str) -> Option<String> {
+    own.changes
+        .iter()
+        .find(|c| c.kind == EntityKind::Track && c.id == track)
+        .and_then(|c| c.timeline.as_deref())
+        .map(tracks)
+}
 /// The project's timeline order.
 pub(crate) const TIMELINES: &str = "#timelines";
 /// The project's font fallback order.

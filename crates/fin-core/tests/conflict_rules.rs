@@ -682,21 +682,21 @@ fn every_op_has_a_footprint() {
             // Ordered lists are entities (`ops::util::lists`): every placement uses the list,
             // and a put-back at an old index puts the list back.
             Op::TrackAdd(a) => {
-                f.creates == [a.id.clone()] && f.uses == [a.timeline.as_str(), "#tracks"]
+                f.creates == [a.id.clone()] && f.uses == [a.timeline.as_str(), "tl1#tracks"]
             }
             Op::TrackRemove(r) => {
                 f.removes == [r.track.clone(), "c3".into()]
                     && f.touches == [(r.track.clone(), Touch::Exists)]
-                    && f.uses == ["#tracks"]
+                    && f.uses == ["tl1#tracks"]
             }
             Op::TrackRestore(r) => {
                 f.creates == [r.track.id.clone(), "c3".into()]
-                    && f.uses == ["tl1", "#tracks", "a1"]
-                    && f.overwrites.contains(&"#tracks".to_string())
+                    && f.uses == ["tl1", "tl1#tracks", "a1"]
+                    && f.overwrites.contains(&"tl1#tracks".to_string())
             }
             Op::TrackMove(m) => {
                 f.touches == [(m.track.clone(), Touch::Param("index".into()))]
-                    && f.uses == ["#tracks"]
+                    && f.uses == ["tl1#tracks"]
             }
             Op::TrackSet(s) => f.touches == [(s.track.clone(), Touch::Param(s.path.clone()))],
             Op::TimelineAdd(a) => {

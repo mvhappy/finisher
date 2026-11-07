@@ -2363,6 +2363,7 @@ export interface Change {
   kind: EntityKind;
   op: number;
   path?: string;
+  timeline?: string;
   track?: string;
 }
 /**

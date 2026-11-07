@@ -21,6 +21,7 @@ fn by_change(id: &str, by: Option<Rational>) -> Change {
         edge: Some(Edge::Start),
         path: None,
         by,
+        timeline: None,
     }
 }
 

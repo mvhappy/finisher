@@ -31,10 +31,12 @@
 //!   (`track.restore`, `timeline.restore`, `effect.restore`, a placing `font.pin`) puts the
 //!   list back. So a later placement by someone else meets that put-back (`SAME_PARAM`), while
 //!   two placements still merge;
-//! - a removal whose content the next op takes back into another item (a lift `item.remove`
-//!   followed by a growing `strict` trim: the inverse of a split, [`absorbed`]) is judged as a
-//!   put-back of the removed item. "Removing an entity someone else edited is not a conflict"
-//!   does not hold there, as that edit would be lost inside the item that absorbs the range;
+//! - a removal whose content the next op takes back into another item (the lift `item.remove`
+//!   of a split's right part, followed by the strict trim that grows the left part over it, as
+//!   the planner marks it from the records' links: `Rebase::absorbs`, `history::absorbs`) is
+//!   judged as a put-back of the removed item. "Removing an entity someone else edited is not
+//!   a conflict" does not hold there, as that edit would be lost inside the item that absorbs
+//!   the range;
 //! - an entity an earlier op of our own transaction created is ours: it is never judged. At a
 //!   stale base our placeholders bind the ids the intervening records allocated, and those name
 //!   other entities; the re-run at the head decides whether the creation itself still fits.
@@ -352,20 +354,6 @@ pub(crate) fn overwrite_conflict(
     })
 }
 
-/// The item that op `k` of `ops` removes when the next op takes its range back into another
-/// item: a lift `item.remove` followed by a `strict` trim that grows an end, as the inverse of
-/// `item.split` and `caption.split` is. The trim puts the removed item's content back into the
-/// left part, so a later change of the removed item by someone else would be lost without a
-/// word: the engine judges the removal as a put-back of it ([`overwrite_conflict`]), and the
-/// rule "removing an entity someone else edited is not a conflict" does not apply.
-pub(crate) fn absorbed(ops: &[Op], k: usize) -> Option<&str> {
-    let (Some(Op::ItemRemove(r)), Some(Op::ItemTrim(t))) = (ops.get(k), ops.get(k + 1)) else {
-        return None;
-    };
-    let fills = t.mode == ops::TrimMode::Strict && t.edge == Edge::End && t.delta.is_positive();
-    (r.mode == ops::DeleteMode::Lift && fills).then_some(r.id.as_str())
-}
-
 /// Whether `f` moved an edge of entity `x`.
 fn moved_edge(x: &str, f: &Footprint) -> bool {
     f.touches
@@ -475,6 +463,7 @@ mod tests {
             edge: None,
             path: None,
             by: None,
+            timeline: None,
         };
         let ops = vec![Op::ClipInsert {
             id: "$c".into(),

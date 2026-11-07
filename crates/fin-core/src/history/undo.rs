@@ -26,7 +26,7 @@
 //! with the top undo record's inverse. One op per op, in order, so an undo's ops stay its
 //! units' inverses, newest unit first, and a later stale rebase can pair them again.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -229,14 +229,18 @@ pub fn plan_undo(
     let first = unit.last_seq.saturating_sub(sources.len() as u64);
     let read = log.records(branch, first.max(r.fork), r.head_seq)?;
     let mut ops = Vec::new();
+    let mut recs = Vec::new();
     for id in sources.iter().rev() {
-        ops.extend(own_record(&read, id)?.record.inverse.iter().cloned());
+        let rec = own_record(&read, id)?;
+        ops.extend(rec.record.inverse.iter().cloned());
+        recs.push(rec);
     }
+    let absorbs = super::absorbs::of_inverses(log, &recs)?;
     let link = Link::Undo {
         undoes: vec![unit.id.clone()],
     };
     let tx = intent(tx_id, author, branch, unit.last_seq, ops);
-    rebase_inverse(log, &r, &read, unit.last_seq, tx, link, ids)
+    rebase_inverse(log, &r, &read, unit.last_seq, (tx, &absorbs), link, ids)
 }
 
 /// The `redo` record of `author`'s top undo on `branch`: `Redo { redoes: <undo txId> }` with
@@ -254,12 +258,14 @@ pub fn plan_redo(
         return Err(nothing("NOTHING_TO_REDO", "redo", branch, author));
     };
     let read = log.records(branch, undo.last_seq.saturating_sub(1), r.head_seq)?;
-    let ops = own_record(&read, &undo.id)?.record.inverse.clone();
+    let rec = own_record(&read, &undo.id)?;
+    let ops = rec.record.inverse.clone();
+    let absorbs = super::absorbs::of_inverses(log, &[rec])?;
     let link = Link::Redo {
         redoes: undo.id.clone(),
     };
     let tx = intent(tx_id, author, branch, undo.last_seq, ops);
-    rebase_inverse(log, &r, &read, undo.last_seq, tx, link, ids)
+    rebase_inverse(log, &r, &read, undo.last_seq, (tx, &absorbs), link, ids)
 }
 
 pub(super) fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<Op>) -> Tx {
@@ -274,14 +280,15 @@ pub(super) fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<
     }
 }
 
-/// `tx` (inverses written for the state after seq `at`) rebased over the branch's own records
-/// after `at` (`read` holds them, oldest first) and applied at the head.
+/// `tx` (inverses written for the state after seq `at`, with its split-undo removals: see
+/// `Rebase::absorbs`) rebased over the branch's own records after `at` (`read` holds them,
+/// oldest first) and applied at the head.
 fn rebase_inverse(
     log: &dyn LogView,
     r: &Read,
     read: &[LogRec],
     at: u64,
-    tx: Tx,
+    tx: (Tx, &BTreeSet<usize>),
     link: Link,
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
@@ -297,7 +304,7 @@ pub(super) fn rebase_over(
     log: &dyn LogView,
     head: (u64, &crate::model::Project),
     since: &[LogRec],
-    tx: Tx,
+    tx: (Tx, &BTreeSet<usize>),
     link: Link,
     ids: &mut dyn IdAlloc,
 ) -> Result<Planned, CoreError> {
@@ -311,7 +318,7 @@ pub(super) fn try_rebase_over(
     log: &dyn LogView,
     (head_seq, head): (u64, &crate::model::Project),
     since: &[LogRec],
-    tx: Tx,
+    (tx, absorbs): (Tx, &BTreeSet<usize>),
     link: Link,
     ids: &mut dyn IdAlloc,
 ) -> Result<Result<Planned, Conflict>, CoreError> {
@@ -325,7 +332,9 @@ pub(super) fn try_rebase_over(
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
     Ok(rebase_apply(
         head,
-        &Rebase::new(&tx, &own.diff, &steps).with_env(super::env_of(log)),
+        &Rebase::new(&tx, &own.diff, &steps)
+            .with_env(super::env_of(log))
+            .with_absorbs(absorbs),
         ids,
         ApplyMode::Internal,
     )

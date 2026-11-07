@@ -8,6 +8,7 @@ use crate::apply::{Applier, ApplyEnv, ApplyMode, apply_tx_mode};
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, MemIds};
 use crate::model::Project;
+use crate::ops::Op;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 use super::conflict::{Conflict, Conflicts, reasons};
@@ -18,6 +19,7 @@ use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
+static NO_OPS: BTreeSet<usize> = BTreeSet::new();
 
 /// What to rebase: `tx` as written, `own` its diff in the frame it was written for (at its
 /// base, or the source record's stored diff for a copy), and the `steps` between that frame
@@ -26,6 +28,10 @@ static NO_IDS: BTreeSet<String> = BTreeSet::new();
 /// `same_origin`: ids on the head bound by records of the same origin chain as `tx` (earlier
 /// copies of it, Decision 18). A re-run that meets one of them (`DUPLICATE_ID`) is
 /// `ALREADY_PRESENT`; any other duplicate is `ID_COLLISION`.
+///
+/// `absorbs`: the indexes of `tx`'s lift `item.remove` ops whose item the next op takes back
+/// into another item: the inverse of a split, as the planner knows it from the records'
+/// links (`history::absorbs`). Each is judged as a put-back of the removed item.
 ///
 /// `env`: what the re-run at the head may use (plan 4C Task 20): with a measurer, the rebased
 /// tx ends with the caption overflow check, and `CAPTION_OVERFLOW` is a conflict.
@@ -36,6 +42,7 @@ pub struct Rebase<'a> {
     pub steps: &'a [Step],
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
+    pub absorbs: &'a BTreeSet<usize>,
 }
 
 impl<'a> Rebase<'a> {
@@ -47,7 +54,13 @@ impl<'a> Rebase<'a> {
             steps,
             same_origin: &NO_IDS,
             env: ApplyEnv::default(),
+            absorbs: &NO_OPS,
         }
+    }
+
+    /// The rebase with the split-undo removals `absorbs` (see [`Rebase`]).
+    pub fn with_absorbs(self, absorbs: &'a BTreeSet<usize>) -> Rebase<'a> {
+        Rebase { absorbs, ..self }
     }
 
     /// The rebase re-run with `env`.
@@ -65,6 +78,7 @@ pub struct PreparedRebase<'a> {
     pub steps: &'a [Prepared],
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
+    pub absorbs: &'a BTreeSet<usize>,
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -99,6 +113,7 @@ pub fn rebase_apply(
         steps: &steps,
         same_origin: r.same_origin,
         env: r.env,
+        absorbs: r.absorbs,
     };
     rebase_prepared(head, &p, ids, mode)
 }
@@ -156,9 +171,11 @@ pub fn rebase_prepared(
         }
         let mut fp = footprint(&op, &own[k]);
         // A removal whose content the next op takes back into another item (an undo of a
-        // split) is judged as a put-back of the removed item.
-        if let Some(x) = super::footprint::absorbed(&r.tx.ops, k) {
-            fp.puts_back(x);
+        // split, as the planner marked it) is judged as a put-back of the removed item.
+        if r.absorbs.contains(&k)
+            && let Op::ItemRemove(rm) = &op
+        {
+            fp.puts_back(&rm.id);
         }
         if let Some((reason, against)) = entity_conflict_in(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
@@ -175,8 +192,10 @@ pub fn rebase_prepared(
             }
         };
         // An op that re-ran and puts an entity back whole would write its snapshot over a
-        // later change of it (`overwrite_conflict`).
-        if let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
+        // later change of it (`overwrite_conflict`). One that wrote nothing at the head (a pin
+        // of a file and place already held) loses nothing.
+        let wrote = !(rerun.changes.is_empty() && rerun.shifts.is_empty());
+        if wrote && let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
         created.extend(fp.creates.iter().cloned());

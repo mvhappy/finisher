@@ -277,8 +277,10 @@ pub fn rerun(
             verdict = b.verdict(op, copy).map(|class| (k, class, r));
         }
         let mut f = op.fp();
-        // As `footprint::absorbed`: a lift removal whose range the next op's strict trim takes
-        // back into the left part (a split's inverse) puts the removed clip's content back.
+        // As `history::absorbs` marks it: a lift removal whose range the next op's strict trim
+        // takes back into the left part puts the removed clip's content back. Here every such
+        // pair is a split's (or its redo's) inverse: the model has no overwrite inserts, whose
+        // undo has the same two ops and is no conflict.
         if let (
             LOp::RemoveLift { id, .. },
             Some(LOp::Trim {

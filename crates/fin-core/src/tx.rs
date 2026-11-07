@@ -90,6 +90,11 @@ pub struct Change {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Rational")]
     pub by: Option<Rational>,
+    // A track's timeline, on the change of a `track.move` or `track.remove` (whose ops name
+    // only the track): its track order is an entity of its own (`ops::util::lists`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub timeline: Option<String>,
 }
 
 /// Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the

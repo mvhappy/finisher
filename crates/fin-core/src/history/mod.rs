@@ -15,6 +15,7 @@
 //! - [`origin`]: origin chains and their roots ([`root_of`]), and what they say about a
 //!   merge's records ([`Roots`]).
 
+mod absorbs;
 pub mod candidates;
 pub mod checkpoint;
 pub mod merge;

@@ -738,3 +738,137 @@ fn undo_of_unpin_after_another_pin_blames_it() {
     let e = log.undo("main", "alice", "u1").expect_err("a conflict");
     assert_eq!(blame(&e), ("FONT_PINNED".into(), "b1".into()), "{e:?}");
 }
+
+// Must merge: what the put-back rules leave alone (spec §4.3).
+
+fn move_track(track: &str, index: u32) -> Op {
+    fin_core::TrackMove {
+        track: track.into(),
+        index,
+    }
+    .into()
+}
+
+/// A second timeline `tl2` with tracks `ta`, `tb` (bound by the returned ids).
+fn with_tl2(log: &mut MemLog) -> Ids {
+    let tl2 = TrackAdd {
+        id: "$ta".into(),
+        timeline: "$tl".into(),
+        kind: TrackKind::Video,
+        index: None,
+        name: None,
+    };
+    let tb = TrackAdd {
+        id: "$tb".into(),
+        ..tl2.clone()
+    };
+    let ops = vec![timeline(), tl2.into(), tb.into()];
+    log.commit("main", "s0", "setup", ops).record.bindings
+}
+
+/// An op that writes nothing loses nothing: two identical pins placing one key (spec §4.3:
+/// the same pin on both sides merges). Bob's stale pin re-runs as a no-op.
+#[test]
+fn identical_placing_pins_merge() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    log.commit(
+        "main",
+        "a1",
+        "alice",
+        vec![pin_at(LORA, "Lora", 'a', Some(0))],
+    );
+    let pin = pin_at(LORA, "Lora", 'a', Some(0));
+    log.commit_at("main", "b1", "bob", 0, vec![pin]).unwrap();
+    assert_eq!(log.state("main").fonts.fallback, [LORA]);
+}
+
+/// The undo of an overwrite insert has the shape of a split's undo (a lift removal, then a
+/// strict trim growing the cut item back), but it removes alice's own new item: bob's edit
+/// of it goes with it, as any removal of an edited entity (spec §4.3).
+#[test]
+fn undo_of_overwrite_insert_after_an_edit_of_it_applies() {
+    let mut log = MemLog::new(with_clips(&[4]));
+    let n = fin_core::ItemInsert {
+        id: "$n".into(),
+        track: "t1".into(),
+        at: secs(2),
+        duration: secs(2),
+        mode: InsertMode::Overwrite,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(10),
+            speed: secs(1),
+        },
+    };
+    let n = log
+        .commit("main", "a1", "alice", vec![n.into()])
+        .record
+        .bindings["$n"]
+        .clone();
+    let opacity = ParamSet {
+        item: n,
+        path: "opacity".into(),
+        value: Some(ParamValue::Number(0.5)),
+    };
+    log.commit("main", "b1", "bob", vec![opacity.into()]);
+    log.undo("main", "alice", "u1").unwrap();
+    let items = &log.state("main").timelines[0].tracks[0].items;
+    assert_eq!(items.len(), 1);
+    assert_eq!((items[0].id.as_str(), items[0].duration), ("c1", secs(4)));
+}
+
+/// Track orders are per timeline (`<timeline>#tracks`): edits of disjoint timelines never
+/// meet. A move on tl1 and a stale move on tl2; an append on tl2 and a stale move on tl1;
+/// and an undo of removing t2 on tl1 after a track append on tl2: all apply.
+#[test]
+fn track_orders_of_different_timelines_merge() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let b = with_tl2(&mut log);
+    let base = log.head_seq("main");
+    log.commit("main", "a1", "alice", vec![move_track("t1", 1)]);
+    log.commit_at("main", "b1", "bob", base, vec![move_track(&b["$ta"], 1)])
+        .unwrap();
+    let p = log.state("main");
+    let ids = |tl: usize| -> Vec<String> {
+        p.timelines[tl]
+            .tracks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect()
+    };
+    assert_eq!(ids(0), ["t2", "t1"]);
+    assert_eq!(ids(1), [b["$tb"].clone(), b["$ta"].clone()]);
+
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let b = with_tl2(&mut log);
+    let base = log.head_seq("main");
+    let append = TrackAdd {
+        id: "$tc".into(),
+        timeline: b["$tl"].clone(),
+        kind: TrackKind::Video,
+        index: None,
+        name: None,
+    };
+    log.commit("main", "a1", "alice", vec![append.clone().into()]);
+    log.commit_at("main", "b1", "bob", base, vec![move_track("t1", 1)])
+        .unwrap();
+    assert_eq!(log.state("main").timelines[0].tracks[1].id, "t1");
+
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let b = with_tl2(&mut log);
+    log.commit("main", "x1", "alice", vec![remove_t2()]);
+    let append = TrackAdd {
+        timeline: b["$tl"].clone(),
+        ..append
+    };
+    log.commit("main", "b1", "bob", vec![append.into()]);
+    log.undo("main", "alice", "u1").unwrap();
+    let p = log.state("main");
+    let ids: Vec<&str> = p.timelines[0]
+        .tracks
+        .iter()
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(ids, ["t1", "t2"]);
+    assert_eq!(p.timelines[1].tracks.len(), 3);
+}

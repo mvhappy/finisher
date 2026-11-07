@@ -92,6 +92,7 @@ fn change(kind: EntityKind, id: &str, change: ChangeKind, track: Option<&str>) -
         edge: None,
         path: None,
         by: None,
+        timeline: None,
     }
 }
 
@@ -99,6 +100,14 @@ fn param(kind: EntityKind, id: &str, path: &str) -> Change {
     Change {
         path: Some(path.into()),
         ..change(kind, id, ChangeKind::Updated, None)
+    }
+}
+
+/// `c` naming the track's timeline `tl1` (`Change::timeline`: a `track.move` or `track.remove`).
+fn on_tl1(c: Change) -> Change {
+    Change {
+        timeline: Some("tl1".into()),
+        ..c
     }
 }
 
@@ -217,7 +226,7 @@ fn track_add_appends_or_inserts() {
     // The track order is an entity it uses (`ops::util::lists`); no index, so no put-back.
     assert_eq!(
         (f.creates, f.uses),
-        (vec!["t3".into()], vec!["tl1".into(), "#tracks".into()])
+        (vec!["t3".into()], vec!["tl1".into(), "tl1#tracks".into()])
     );
     assert!(f.overwrites.is_empty());
     // At the bottom, named.
@@ -247,7 +256,12 @@ fn track_remove_takes_an_empty_track_off() {
     assert_eq!(tracks(&a.project, 0), [pair("t1", "V1")]);
     assert_eq!(
         a.diff.changes,
-        [change(EntityKind::Track, "t2", ChangeKind::Removed, None)]
+        [on_tl1(change(
+            EntityKind::Track,
+            "t2",
+            ChangeKind::Removed,
+            None
+        ))]
     );
     let Op::TrackRestore(r) = &a.inverse[0] else {
         panic!("{:?}", a.inverse)
@@ -308,7 +322,7 @@ fn track_remove_with_items_inverse_restores_items_transitions_links() {
                 ChangeKind::Removed,
                 Some("t1")
             ),
-            change(EntityKind::Track, "t1", ChangeKind::Removed, None),
+            on_tl1(change(EntityKind::Track, "t1", ChangeKind::Removed, None)),
             change(EntityKind::Link, "lk1", ChangeKind::Removed, None),
             Change {
                 path: Some("link".into()),
@@ -398,7 +412,10 @@ fn track_move_reorders() {
     let p = project();
     let a = golden_apply(&p, vec![move_track("t1", 1)]);
     assert_eq!(tracks(&a.project, 0), [pair("t2", "A1"), pair("t1", "V1")]);
-    assert_eq!(a.diff.changes, [param(EntityKind::Track, "t1", "index")]);
+    assert_eq!(
+        a.diff.changes,
+        [on_tl1(param(EntityKind::Track, "t1", "index"))]
+    );
     assert!(a.diff.shifts.is_empty());
     assert_eq!(a.inverse, [move_track("t1", 0)]);
     let f = fp(&move_track("t1", 1), &a);

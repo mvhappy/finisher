@@ -75,9 +75,9 @@
 //!   `SAME_EDGE` for its end edge, else `SAME_PARAM`; the model has no nested entities or
 //!   ordered lists, which the fixed cases of `restore_conflicts` cover). A split's inverse puts
 //!   its right part back the same way: the lift removal that the strict trim's range then
-//!   takes back into the left part is judged as a put-back of the right part
-//!   (`footprint::absorbed`). The heads, which the transcribed part never computes, are
-//!   checked by the list model alone.
+//!   takes back into the left part is judged as a put-back of the right part (the engine has
+//!   it from the records' links, `history::absorbs`; every such pair here is a split's). The
+//!   heads, which the transcribed part never computes, are checked by the list model alone.
 //!
 //! **Exclusions** (4C; none of them arises from 4B ops):
 //! - *Gaps.* The run stops at the first state with a gap: a lift removal the strict trim does

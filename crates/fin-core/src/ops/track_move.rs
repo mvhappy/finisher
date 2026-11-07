@@ -50,6 +50,7 @@ pub(crate) fn apply(
     let id = track.id.clone();
     tracks.insert(to, track);
     diff.record_path_of(EntityKind::Track, &id, None, INDEX);
+    diff.on_timeline(&id, &project.timelines[at.timeline].id);
     Ok(vec![
         TrackMove {
             track: id,
@@ -67,9 +68,12 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&m.track), op_diff);
     f.touches
         .push((m.track.clone(), Touch::Param(INDEX.into())));
-    f.uses.push(crate::ops::util::lists::TRACKS.into());
+    let order = crate::ops::util::lists::tracks_of(op_diff, &m.track);
+    f.uses.extend(order.clone());
     // An explicit index (its inverse's too) holds only in the order it was chosen in.
-    f.puts_back(crate::ops::util::lists::TRACKS);
+    if let Some(order) = &order {
+        f.puts_back(order);
+    }
     f
 }
 

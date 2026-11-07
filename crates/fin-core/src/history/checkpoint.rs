@@ -87,7 +87,13 @@ pub fn plan_undo_to(
         since.extend(planned.iter().cloned());
         // The inverses name literal ids; a scratch allocator keeps `ids` for the final apply.
         let mut scratch = MemIds::after(&head);
-        match rebase_steps(log, &head, &since, &tx, &mut scratch)? {
+        let recs = unit_sources(unit)
+            .iter()
+            .rev()
+            .map(|id| own_record(&own, id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let absorbs = super::absorbs::of_inverses(log, &recs)?;
+        match rebase_steps(log, &head, &since, (&tx, &absorbs), &mut scratch)? {
             Ok(rebased) => {
                 seq += 1;
                 ops.extend(rebased.tx.ops.iter().cloned());
@@ -158,7 +164,7 @@ fn rebase_steps(
     log: &dyn LogView,
     head: &Project,
     since: &[CommittedTx],
-    tx: &Tx,
+    (tx, absorbs): (&Tx, &std::collections::BTreeSet<usize>),
     ids: &mut dyn IdAlloc,
 ) -> Result<Result<Rebased, Conflict>, CoreError> {
     let frame = log.state_at(&tx.branch, tx.base_rev)?;
@@ -167,7 +173,9 @@ fn rebase_steps(
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
     Ok(rebase_apply(
         head,
-        &Rebase::new(tx, &own.diff, &steps).with_env(super::env_of(log)),
+        &Rebase::new(tx, &own.diff, &steps)
+            .with_env(super::env_of(log))
+            .with_absorbs(absorbs),
         ids,
         ApplyMode::Internal,
     ))

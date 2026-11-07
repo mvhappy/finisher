@@ -66,6 +66,7 @@ pub(crate) fn apply(
     let timeline = &mut project.timelines[at.timeline];
     let track = timeline.tracks.remove(at.track);
     record_track(&track, ChangeKind::Removed, diff);
+    diff.on_timeline(&track.id, &timeline.id);
     Ok(vec![
         TrackRestore {
             track,
@@ -84,7 +85,8 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&r.track), op_diff);
     f.touches.push((r.track.clone(), Touch::Exists));
     f.removes.push(r.track.clone());
-    f.uses.push(crate::ops::util::lists::TRACKS.into());
+    f.uses
+        .extend(crate::ops::util::lists::tracks_of(op_diff, &r.track));
     f
 }
 

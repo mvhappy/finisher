@@ -75,6 +75,7 @@ fn change(id: &str, change: ChangeKind, edge: Option<Edge>, by: Option<Rational>
         edge,
         path: None,
         by,
+        timeline: None,
     }
 }
 

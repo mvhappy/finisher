@@ -328,12 +328,14 @@ pub fn plan_merge(
             ..r.intent.clone()
         };
         let mode = rerun_mode(r);
+        let absorbs = super::absorbs::of_ops(log, src)?;
         let rebase = PreparedRebase {
             tx: &tx,
             own: &src.diff,
             steps: &steps,
             same_origin: &same_origin,
             env: super::env_of(log),
+            absorbs: &absorbs,
         };
         let rerun = BoundIds::new(&r.intent.ops, &r.bindings)
             .map_err(|e| Conflict::from_rerun(&e, &r.tx_id, 0, None))

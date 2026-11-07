@@ -84,6 +84,7 @@ impl<'a> OpDiff<'a> {
             edge: None,
             path: None,
             by: None,
+            timeline: None,
         });
         let last = self.diff.changes.len() - 1;
         &mut self.diff.changes[last]
@@ -124,6 +125,16 @@ impl<'a> OpDiff<'a> {
     /// The entity `id`, on no track (an asset), was added, removed or changed as a whole.
     pub(crate) fn record(&mut self, kind: EntityKind, id: &str, change: ChangeKind) {
         self.push(None, kind, id, change);
+    }
+
+    /// Names `timeline` on this op's changes of track `id` (`Change::timeline`).
+    pub(crate) fn on_timeline(&mut self, id: &str, timeline: &str) {
+        let op = self.op;
+        for c in self.diff.changes.iter_mut().filter(|c| c.op == op) {
+            if c.kind == EntityKind::Track && c.id == id {
+                c.timeline = Some(timeline.to_string());
+            }
+        }
     }
 
     /// Item `id` on `track` was added, removed or changed as a whole.

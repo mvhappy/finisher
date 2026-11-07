@@ -116,12 +116,14 @@ pub fn plan_cherry_pick(
         ..r.intent.clone()
     };
     let mode = rerun_mode(r);
+    let absorbs = super::absorbs::of_ops(log, &rec)?;
     let rebase = Rebase {
         tx: &tx,
         own: &rec.diff,
         steps: &steps,
         same_origin: &same_origin,
         env: super::env_of(log),
+        absorbs: &absorbs,
     };
     // Earlier source records stand in the steps as unmirrored inverses unless the target
     // holds a copy: what depends on them depends on a record not picked.
@@ -204,7 +206,22 @@ pub fn plan_revert(
             .flat_map(|((_, ops), _)| ops.iter().cloned())
             .collect();
         let tx = intent(tx_id, author, branch, last.seq, ops);
-        try_rebase_over(log, (head.0, &head.1), &since, tx, link.clone(), ids)
+        let kept: Vec<&LogRec> = group
+            .iter()
+            .rev()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .map(|(r, _)| r)
+            .collect();
+        let absorbs = super::absorbs::of_inverses(log, &kept)?;
+        try_rebase_over(
+            log,
+            (head.0, &head.1),
+            &since,
+            (tx, &absorbs),
+            link.clone(),
+            ids,
+        )
     };
     let mut keep = vec![true; parts.len()];
     let first = match plan(&keep, ids)? {

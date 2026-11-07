@@ -31,6 +31,7 @@ fn moved(id: &str, track: &str) -> Change {
         edge: None,
         path: Some("start".into()),
         by: None,
+        timeline: None,
     }
 }
 
