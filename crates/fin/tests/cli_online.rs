@@ -76,7 +76,7 @@ fn full_editing_flow() {
     assert_eq!(deleted["rev"], 5);
     assert_eq!(
         deleted["diff"]["changes"],
-        json!([{ "kind": "item", "id": "c1", "change": "removed", "op": 0 }])
+        json!([{ "kind": "item", "id": "c1", "change": "removed", "op": 0, "track": "t1" }])
     );
 
     let view = run(&["view"]);
