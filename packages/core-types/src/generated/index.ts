@@ -1105,21 +1105,9 @@ export type FsAccess = "read" | "readWrite";
 export type FsScope = "pluginData";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "LicenceClass".
+ * via the `definition` "PlanAction".
  */
-export type LicenceClass = "permissive" | "weakCopyleft" | "copyleft" | "nonCommercial" | "unknown";
-/**
- * `@<publisher>/<name>` (8A Decision 2).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PluginId".
- */
-export type PluginId = string;
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PluginKind".
- */
-export type PluginKind = "content" | "code";
+export type PlanAction = "install" | "update" | "downgrade";
 /**
  * One permission, tagged by `perm`. The set is closed: an unknown `perm` or field fails the
  * parse (a unit permission with any other field too, which serde's tagged enums allow).
@@ -1180,6 +1168,33 @@ export type Origin = string;
  * via the `definition` "SecretMode".
  */
 export type SecretMode = "brokered" | "raw";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LicenceClass".
+ */
+export type LicenceClass = "permissive" | "weakCopyleft" | "copyleft" | "nonCommercial" | "unknown";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginKind".
+ */
+export type PluginKind = "content" | "code";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Risk".
+ */
+export type Risk = "low" | "medium" | "high";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SourceKind".
+ */
+export type SourceKind = "bundled" | "registry" | "dev";
+/**
+ * `@<publisher>/<name>` (8A Decision 2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginId".
+ */
+export type PluginId = string;
 /**
  * The shipped OS and architecture pairs (the triples of `deny.toml`), in Node's spelling.
  *
@@ -1312,11 +1327,6 @@ export type PurgeSelector =
       before: number;
     };
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Risk".
- */
-export type Risk = "low" | "medium" | "high";
-/**
  * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1333,6 +1343,16 @@ export type UnitSource =
 
 export interface FinCore {
   [k: string]: unknown;
+}
+/**
+ * What a person accepted with an approval, beyond the permissions (spec §5.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Accept".
+ */
+export interface Accept {
+  copyleft?: boolean;
+  thirdPartyCode?: boolean;
 }
 /**
  * Who caused an entry: a person, an agent (with its session and the tool call that ran
@@ -3735,6 +3755,183 @@ export interface HistoryResult {
   undone: string[];
 }
 /**
+ * What a person approves: made by [`super::make_plan`], kept in `staging/<planId>/plan.json`
+ * beside the staged tree, committed by [`crate::store::Store::commit`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "InstallPlan".
+ */
+export interface InstallPlan {
+  action: PlanAction;
+  /**
+   * Unpacked bytes.
+   */
+  bytes: number;
+  diff: PermissionDiff;
+  /**
+   * BLAKE3 (hex) of the plan's canonical JSON with `digest` empty ([`super::plan_digest`]):
+   * it binds the permissions, risks, licence and the staged tree hash.
+   */
+  digest: string;
+  /**
+   * Unix ms.
+   */
+  expiresAt: number;
+  /**
+   * The installed version an update or downgrade replaces.
+   */
+  from?: string | null;
+  licence: PlanLicence;
+  models?: PlanModel[];
+  /**
+   * Every permission of the new version with its risk, in manifest order.
+   */
+  permissions: PlannedPermission[];
+  planId: string;
+  plugin: PlanPlugin;
+  registryStaleDays?: number | null;
+  risk: Risk;
+  source: PlanSource;
+  /**
+   * The signed target's SHA-256, for registry plans.
+   */
+  targetSha256?: string | null;
+  /**
+   * `package::tree_hash` of the staged tree; re-checked at commit.
+   */
+  treeHash: string;
+  /**
+   * `thirdPartyCode` first when present (spec §3.1), then the others.
+   */
+  warnings?: PlanWarning[];
+}
+/**
+ * What an update changes in a plugin's grants. Order inside lists never matters.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PermissionDiff".
+ */
+export interface PermissionDiff {
+  /**
+   * Permissions whose key the old set did not have.
+   */
+  added: Permission[];
+  /**
+   * Keys the new set no longer has.
+   */
+  removed: Permission[];
+  /**
+   * The overall risk rose, or a kept permission's risk rose through a combination.
+   */
+  riskUp: boolean;
+  /**
+   * Permissions of one key where the new one grants more.
+   */
+  widened: Widening[];
+}
+/**
+ * One permission an update widens: the same `perm`, granting more.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Widening".
+ */
+export interface Widening {
+  from: Permission;
+  to: Permission;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanLicence".
+ */
+export interface PlanLicence {
+  class: LicenceClass;
+  spdx: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanModel".
+ */
+export interface PlanModel {
+  attribution?: string | null;
+  bytes: number;
+  id: string;
+  licence: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlannedPermission".
+ */
+export interface PlannedPermission {
+  permission: Permission;
+  /**
+   * Within the whole set (combinations count, spec §4.3).
+   */
+  risk: "low" | "medium" | "high";
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanPlugin".
+ */
+export interface PlanPlugin {
+  /**
+   * The id's name until manifests carry a display name.
+   */
+  displayName: string;
+  id: string;
+  kind: PluginKind;
+  /**
+   * The manifest's publisher name (shown to people, never journaled).
+   */
+  publisher: string;
+  version: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanSource".
+ */
+export interface PlanSource {
+  kind: SourceKind;
+  registryId?: string | null;
+}
+/**
+ * A warning shown with the plan: `thirdPartyCode {confined}`, `yanked`, `advisory` (from the
+ * registry), `lookalikeId {similar}`, `copyleft {spdx}`, `licenceUnknown {spdx}`,
+ * `registryStale {days}`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanWarning".
+ */
+export interface PlanWarning {
+  code: string;
+  details?: {
+    [k: string]: unknown;
+  };
+}
+/**
+ * The installed version a plan is made against (from `control.db` in `finisherd`), and what a
+ * commit returns.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "InstalledPlugin".
+ */
+export interface InstalledPlugin {
+  /**
+   * The package directory, relative to `<server-data>/plugins` (`/`-separated).
+   */
+  dir: string;
+  id: string;
+  kind: PluginKind;
+  /**
+   * The granted permissions.
+   */
+  permissions?: Permission[];
+  registryId?: string | null;
+  source: SourceKind;
+  targetSha256?: string | null;
+  treeHash: string;
+  version: string;
+}
+/**
  * One violation, shaped as an error `{code, message, details}`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3898,40 +4095,6 @@ export interface ParamSpec {
   scope: Scope;
   type: ParamType;
   unit?: string | null;
-}
-/**
- * What an update changes in a plugin's grants. Order inside lists never matters.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PermissionDiff".
- */
-export interface PermissionDiff {
-  /**
-   * Permissions whose key the old set did not have.
-   */
-  added: Permission[];
-  /**
-   * Keys the new set no longer has.
-   */
-  removed: Permission[];
-  /**
-   * The overall risk rose, or a kept permission's risk rose through a combination.
-   */
-  riskUp: boolean;
-  /**
-   * Permissions of one key where the new one grants more.
-   */
-  widened: Widening[];
-}
-/**
- * One permission an update widens: the same `perm`, granting more.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Widening".
- */
-export interface Widening {
-  from: Permission;
-  to: Permission;
 }
 /**
  * `settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown
@@ -4138,6 +4301,30 @@ export interface UnitEntry {
       };
 }
 /**
+ * A target's signed custom metadata (`custom` in the delegated targets role).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TargetCustom".
+ */
+export interface TargetCustom {
+  bytesUnpacked: number;
+  hostApi: string;
+  id: string;
+  kind: PluginKind;
+  license: string;
+  /**
+   * Lowercase hex SHA-256 of `finisher-plugin.json`.
+   */
+  manifestSha256: string;
+  /**
+   * [`permissions_digest`] of the manifest's permissions.
+   */
+  permissionsDigest: string;
+  platforms?: Platform[];
+  version: string;
+  yanked?: boolean;
+}
+/**
  * `tx.get` for a transaction that is not (or no longer) on its branch.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4145,4 +4332,15 @@ export interface UnitEntry {
  */
 export interface TxSetAside {
   setAside: SetAside;
+}
+/**
+ * `validateManifest`: the manifest when valid, else every violation.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ValidationReport".
+ */
+export interface ValidationReport {
+  errors: Invalid[];
+  manifest?: Manifest | null;
+  ok: boolean;
 }

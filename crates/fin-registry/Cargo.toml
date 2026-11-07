@@ -5,11 +5,14 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Plugin packages (strict reader, reproducible packer, tree hashes) and, from 8A Task 4a, TUF registries."
+description = "Plugin packages (strict reader, reproducible packer, tree hashes), install plans and the plugin store; from 8A Task 4a, TUF registries."
 
 [dependencies]
 blake3 = "1"
 fin-plugin-api = { path = "../fin-plugin-api" }
+schemars = { version = "1", features = ["semver1"] }
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 unicode-normalization = "0.1"

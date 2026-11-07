@@ -9,7 +9,8 @@
 //! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`, `DiagnosticsReport`, `ExportPage`;
 //! `CollectPolicy` is fin-core's), and the plugin model's (`fin-plugin-api`: `Manifest`,
 //! `Permission`, `PermissionDiff`, `Risk`, `LicenceClass`, `ContributionKind`, `Invalid`,
-//! by `schema::register_schemas`).
+//! by `schema::register_schemas`) and its store's (`fin-registry`: `InstallPlan`,
+//! `InstalledPlugin`, `Accept`, `ValidationReport`, `TargetCustom`).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -57,6 +58,7 @@ fn main() {
         g.subschema_for::<fin_journal::DiagnosticsReport>();
         g.subschema_for::<fin_journal::ExportPage>();
         fin_plugin_api::schema::register_schemas(g);
+        fin_registry::schema::register_schemas(g);
     });
     println!(
         "{}",

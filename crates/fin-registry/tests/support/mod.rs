@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod hostile;
+pub mod plans;
 
 use std::path::Path;
 

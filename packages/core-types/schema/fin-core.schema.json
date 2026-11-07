@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "Accept": {
+      "additionalProperties": false,
+      "description": "What a person accepted with an approval, beyond the permissions (spec §5.3).",
+      "properties": {
+        "copyleft": {
+          "default": false,
+          "type": "boolean"
+        },
+        "thirdPartyCode": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Actor": {
       "description": "Who caused an entry: a person, an agent (with its session and the tool call that ran\n`fin`), a plugin or the system. `session` is the agent or UI session (`FIN_SESSION`), not\nthe envelope's process run; `call` is the harness's tool-call id (`FIN_CALL`).",
       "properties": {
@@ -3746,6 +3761,165 @@
       ],
       "type": "string"
     },
+    "InstallPlan": {
+      "additionalProperties": false,
+      "description": "What a person approves: made by [`super::make_plan`], kept in `staging/<planId>/plan.json`\nbeside the staged tree, committed by [`crate::store::Store::commit`].",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PlanAction"
+        },
+        "bytes": {
+          "description": "Unpacked bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "diff": {
+          "$ref": "#/$defs/PermissionDiff"
+        },
+        "digest": {
+          "description": "BLAKE3 (hex) of the plan's canonical JSON with `digest` empty ([`super::plan_digest`]):\nit binds the permissions, risks, licence and the staged tree hash.",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Unix ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from": {
+          "description": "The installed version an update or downgrade replaces.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence": {
+          "$ref": "#/$defs/PlanLicence"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/PlanModel"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "description": "Every permission of the new version with its risk, in manifest order.",
+          "items": {
+            "$ref": "#/$defs/PlannedPermission"
+          },
+          "type": "array"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PlanPlugin"
+        },
+        "registryStaleDays": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "risk": {
+          "$ref": "#/$defs/Risk"
+        },
+        "source": {
+          "$ref": "#/$defs/PlanSource"
+        },
+        "targetSha256": {
+          "description": "The signed target's SHA-256, for registry plans.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "treeHash": {
+          "description": "`package::tree_hash` of the staged tree; re-checked at commit.",
+          "type": "string"
+        },
+        "warnings": {
+          "description": "`thirdPartyCode` first when present (spec §3.1), then the others.",
+          "items": {
+            "$ref": "#/$defs/PlanWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "planId",
+        "digest",
+        "plugin",
+        "source",
+        "action",
+        "permissions",
+        "diff",
+        "risk",
+        "licence",
+        "bytes",
+        "treeHash",
+        "expiresAt"
+      ],
+      "type": "object"
+    },
+    "InstalledPlugin": {
+      "additionalProperties": false,
+      "description": "The installed version a plan is made against (from `control.db` in `finisherd`), and what a\ncommit returns.",
+      "properties": {
+        "dir": {
+          "description": "The package directory, relative to `<server-data>/plugins` (`/`-separated).",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "permissions": {
+          "default": [],
+          "description": "The granted permissions.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "registryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/SourceKind"
+        },
+        "targetSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "treeHash": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "kind",
+        "source",
+        "treeHash",
+        "dir"
+      ],
+      "type": "object"
+    },
     "IntentOmitted": {
       "enum": [
         "tooLarge"
@@ -7131,6 +7305,14 @@
       ],
       "type": "object"
     },
+    "PlanAction": {
+      "enum": [
+        "install",
+        "update",
+        "downgrade"
+      ],
+      "type": "string"
+    },
     "PlanCrop": {
       "description": "A layer's crop, resolved at the plan's time: fractions of the item's size cut from each\nside, each in `[0, 1]`, every field present.",
       "properties": {
@@ -7156,6 +7338,98 @@
         "right",
         "top",
         "bottom"
+      ],
+      "type": "object"
+    },
+    "PlanLicence": {
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/LicenceClass"
+        },
+        "spdx": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "spdx",
+        "class"
+      ],
+      "type": "object"
+    },
+    "PlanModel": {
+      "additionalProperties": false,
+      "properties": {
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "licence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "bytes",
+        "licence"
+      ],
+      "type": "object"
+    },
+    "PlanPlugin": {
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "description": "The id's name until manifests carry a display name.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "publisher": {
+          "description": "The manifest's publisher name (shown to people, never journaled).",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "kind",
+        "displayName",
+        "publisher"
+      ],
+      "type": "object"
+    },
+    "PlanSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind"
+        },
+        "registryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
       ],
       "type": "object"
     },
@@ -7249,6 +7523,41 @@
         }
       ],
       "description": "A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1."
+    },
+    "PlanWarning": {
+      "additionalProperties": false,
+      "description": "A warning shown with the plan: `thirdPartyCode {confined}`, `yanked`, `advisory` (from the\nregistry), `lookalikeId {similar}`, `copyleft {spdx}`, `licenceUnknown {spdx}`,\n`registryStale {days}`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "PlannedPermission": {
+      "additionalProperties": false,
+      "properties": {
+        "permission": {
+          "$ref": "#/$defs/Permission"
+        },
+        "risk": {
+          "$ref": "#/$defs/Risk",
+          "description": "Within the whole set (combinations count, spec §4.3)."
+        }
+      },
+      "required": [
+        "permission",
+        "risk"
+      ],
+      "type": "object"
     },
     "Platform": {
       "description": "The shipped OS and architecture pairs (the triples of `deny.toml`), in Node's spelling.",
@@ -8390,6 +8699,14 @@
       ],
       "type": "string"
     },
+    "SourceKind": {
+      "enum": [
+        "bundled",
+        "registry",
+        "dev"
+      ],
+      "type": "string"
+    },
     "SourceRef": {
       "description": "An asset and the time to read from it, in seconds.",
       "properties": {
@@ -8546,6 +8863,60 @@
         "off"
       ],
       "type": "string"
+    },
+    "TargetCustom": {
+      "additionalProperties": false,
+      "description": "A target's signed custom metadata (`custom` in the delegated targets role).",
+      "properties": {
+        "bytesUnpacked": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostApi": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "license": {
+          "type": "string"
+        },
+        "manifestSha256": {
+          "description": "Lowercase hex SHA-256 of `finisher-plugin.json`.",
+          "type": "string"
+        },
+        "permissionsDigest": {
+          "description": "[`permissions_digest`] of the manifest's permissions.",
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "kind",
+        "hostApi",
+        "license",
+        "permissionsDigest",
+        "manifestSha256",
+        "bytesUnpacked"
+      ],
+      "type": "object"
     },
     "TextLayout": {
       "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the\nlines' total advance. `overflow` is set when a line is wider than `max_width` or there are\nmore lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
@@ -9252,6 +9623,35 @@
         "noMeasurer"
       ],
       "type": "string"
+    },
+    "ValidationReport": {
+      "description": "`validateManifest`: the manifest when valid, else every violation.",
+      "properties": {
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/Invalid"
+          },
+          "type": "array"
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Manifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "errors"
+      ],
+      "type": "object"
     },
     "Variable": {
       "additionalProperties": false,
