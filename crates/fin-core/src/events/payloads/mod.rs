@@ -1,5 +1,5 @@
 //! The payload of every kind (plan D, Decisions 22–28), one module per domain, and the shared
-//! shapes: [`Counts`], [`TxIntent`] and [`Body`]. Every payload field is classed by its type
+//! shapes: [`Counts`], [`TxIntent`] (from `intent.rs`) and [`Body`]. Every payload field is classed by its type
 //! (`class.rs`); content fields are optional, so a redacted payload still decodes.
 //!
 //! Serde conventions, as in the rest of `fin-core`: camelCase; optional fields are omitted
@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::approx::{ApproxBytes, approx_fixed};
 use super::class::BlobRef;
-use crate::tx::Tx;
+pub use super::intent::{IntentTx, TxIntent};
 
 pub mod agent;
 pub mod cli;
@@ -86,18 +86,6 @@ impl<K: Ord + JsonSchema> JsonSchema for Counts<K> {
 }
 
 impl<K: Ord + ApproxBytes> ApproxBytes for Counts<K> {
-    fn approx_bytes(&self) -> usize {
-        self.0.approx_bytes()
-    }
-}
-
-/// An edit intent (content `txIntent`): the transactions as committed (an edit's one tx, or a
-/// history call's records, at most 64), or the request's normalised tx on failure.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-pub struct TxIntent(pub Vec<Tx>);
-
-impl ApproxBytes for TxIntent {
     fn approx_bytes(&self) -> usize {
         self.0.approx_bytes()
     }

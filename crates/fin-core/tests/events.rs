@@ -15,6 +15,16 @@ use serde_json::{Map, Value, json};
 const TX: &str = "01JC0000000000000000000002";
 const SESSION: &str = "01JC0000000000000000000003";
 
+/// A test key: BLAKE3 keyed with a fixed key, truncated to 16 bytes (as the journal's).
+fn key(data: &[u8]) -> [u8; 16] {
+    let full = blake3::keyed_hash(&[9; 32], data);
+    full.as_bytes()[..16].try_into().unwrap()
+}
+
+fn ulid(s: &str) -> Ulid {
+    Ulid::parse(s).unwrap()
+}
+
 fn h(c: char) -> Hashed {
     Hashed::parse(&format!("k1:{}", c.to_string().repeat(32))).unwrap()
 }
@@ -61,7 +71,7 @@ fn log_commit() -> LogCommit {
         conflicts: Counts::default(),
         links: vec![],
         micros: 812,
-        intent: Some(Content(TxIntent(vec![tx()]))),
+        intent: Some(Content(TxIntent::from_txs([tx()], &key))),
         intent_omitted: None,
     }
 }
@@ -246,11 +256,11 @@ fn envelope_json_matches_golden() {
     };
     let with_ctx = Envelope {
         v: ENVELOPE_VERSION,
-        id: "01JC0000000000000000000000".into(),
+        id: ulid("01JC0000000000000000000000"),
         ts: 1_794_571_200_123,
-        session: "01JC0000000000000000000001".into(),
+        session: ulid("01JC0000000000000000000001"),
         source: Source::FinNode,
-        kind: "log.commit".into(),
+        kind: KindName::parse("log.commit").unwrap(),
         kv: 1,
         consent: ConsentStamp {
             rev: 3,
@@ -277,10 +287,10 @@ fn envelope_json_matches_golden() {
     assert_eq!(serde_json::from_str::<Envelope>(&text).unwrap(), with_ctx);
 
     let no_ctx = Envelope {
-        id: "01JC0000000000000000000004".into(),
+        id: ulid("01JC0000000000000000000004"),
         ts: 1_794_571_200_999,
         source: Source::Finisherd,
-        kind: "session.end".into(),
+        kind: KindName::of(kind("session.end", 1).unwrap()),
         consent: ConsentStamp {
             rev: 4,
             purposes: Purposes::ALL,
@@ -321,7 +331,7 @@ fn every_kind_round_trips() {
     for p in samples() {
         let spec = p.kind();
         let v = serde_json::to_value(&p).unwrap();
-        let back = validate_payload(spec, &v).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+        let back = decode_payload(spec, &v).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
         assert_eq!(back, p, "{}", spec.name);
         assert_eq!(serde_json::to_value(&back).unwrap(), v, "{}", spec.name);
     }
@@ -385,14 +395,25 @@ fn approx_bytes_bounds_serialised_size() {
 }
 
 /// An independent walk of a kind's schema (not `redact`'s): every string leaf outside content
-/// is an enum or classed, every map key is classed, nothing is an any-schema outside content,
-/// and a `BlobRef` appears only inside content.
+/// is an enum or classed, every meta string has a pattern or an enum, every map key is
+/// classed, nothing is an any-schema outside content, and a `BlobRef` appears only inside
+/// content. Inside content it goes on: the plain strings there are listed (`raw_in_content`),
+/// so a test can say where content may hold free text. An unresolved `$ref` panics.
 #[derive(Default)]
 struct Check {
     issues: Vec<String>,
     content: Vec<(String, Option<String>)>,
     scrubbed_outside: Vec<String>,
     blobs_inside: Vec<String>,
+    raw_in_content: Vec<String>,
+}
+
+fn is_string_schema(obj: &Map<String, Value>) -> bool {
+    let ty = obj.get("type");
+    ty == Some(&json!("string"))
+        || ty
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.contains(&json!("string")))
 }
 
 impl Check {
@@ -443,7 +464,16 @@ impl Check {
                 }
                 in_content = true;
             }
-            Some("meta") => return,
+            Some("meta") => {
+                let checked = ["pattern", "enum", "const"]
+                    .iter()
+                    .any(|k| obj.contains_key(*k));
+                if is_string_schema(obj) && !checked {
+                    self.issues
+                        .push(format!("{path}: meta string without a pattern"));
+                }
+                return;
+            }
             Some("scrubbed") => {
                 if !in_content {
                     self.scrubbed_outside.push(path.to_string());
@@ -465,18 +495,21 @@ impl Check {
             let name = r.rsplit('/').next().unwrap().to_string();
             if !stack.contains(&name) {
                 stack.push(name.clone());
-                let def = defs.get(&name).cloned().unwrap_or(Value::Bool(false));
+                let def = defs
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("{path}: unresolved $ref {r}"));
                 self.walk(defs, &def, path, field.clone(), in_content, stack);
                 stack.pop();
             }
         }
+        let plain =
+            is_string_schema(obj) && !obj.contains_key("enum") && !obj.contains_key("const");
+        if plain && in_content {
+            self.raw_in_content.push(path.to_string());
+        }
         if !in_content {
-            let ty = obj.get("type");
-            let string = ty == Some(&json!("string"))
-                || ty
-                    .and_then(Value::as_array)
-                    .is_some_and(|a| a.contains(&json!("string")));
-            if string && !obj.contains_key("enum") && !obj.contains_key("const") {
+            if plain {
                 self.issues.push(format!("{path}: unclassified string"));
             }
             let open_map = obj
@@ -635,7 +668,7 @@ fn blob_refs_follow_content() {
     assert_eq!(blob_refs(spec, &v), [blob()]);
     redact(spec, &mut v, Purposes::DIAGNOSTICS);
     assert!(blob_refs(spec, &v).is_empty());
-    assert_eq!(validate_payload(spec, &v).unwrap().blobs().count(), 0);
+    assert_eq!(decode_payload(spec, &v).unwrap().blobs().count(), 0);
     let others: usize = samples()
         .iter()
         .filter(|p| p.kind().name != "agent.turn")
@@ -708,9 +741,13 @@ fn name_has_no_free_constructor() {
             assert!(flat[i..].starts_with("pub struct Name(&'static str);"));
         }
     }
-    // The compile-fail doctests on `Name` stay.
+    // The compile-fail doctests on `Name` stay, and its constructors are crate-private.
     let class = std::fs::read_to_string(events_dir().join("class.rs")).unwrap();
-    assert!(class.matches("```compile_fail").count() >= 3);
+    assert!(class.matches("```compile_fail").count() >= 5);
+    assert!(class.contains("pub(crate) const fn from_static(s: &'static str) -> Name"));
+    assert!(!class.contains("debug_assert!(is_valid_name"));
+    let names_rs = std::fs::read_to_string(events_dir().join("names.rs")).unwrap();
+    assert!(names_rs.contains("pub(crate) const fn new("));
 
     // Every `Name::from_static` call in the workspace takes a literal that matches the pattern
     // (`NameTable::get`'s, over a static table, is the one exception).
@@ -719,8 +756,14 @@ fn name_has_no_free_constructor() {
         if path.ends_with("fin-core/tests/events.rs") {
             continue;
         }
-        for (i, _) in text.match_indices("Name::from_static(") {
-            let rest = &text[i + "Name::from_static(".len()..];
+        // Doc comments (the compile-fail doctests) are not code.
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("///"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        for (i, _) in code.match_indices("Name::from_static(") {
+            let rest = &code[i + "Name::from_static(".len()..];
             if path.ends_with("events/names.rs") && rest.starts_with("e)") {
                 continue;
             }
@@ -773,7 +816,9 @@ fn unknown_table_value_reads_as_other() {
         "name": "rm -rf /home/someone", "flags": ["dry-run", "--secret value"], "micros": 1,
         "exit": 0, "online": true, "dryRun": false,
     });
-    let AnyPayload::CliCommand(c) = validate_payload(spec, &raw).unwrap() else {
+    let AnyPayload::CliCommand(c) =
+        validate_payload(spec, &raw, &key, &ScrubCtx::default()).unwrap()
+    else {
         panic!()
     };
     assert_eq!(c.name, Name::OTHER);
@@ -787,7 +832,7 @@ fn unknown_table_value_reads_as_other() {
         "record": "edit", "outcome": "accepted", "micros": 3,
         "ops": { "item.trim": 1, "made.up": 2, "also.made.up": 3 },
     });
-    let AnyPayload::LogCommit(c) = validate_payload(spec, &raw).unwrap() else {
+    let AnyPayload::LogCommit(c) = decode_payload(spec, &raw).unwrap() else {
         panic!()
     };
     let ops: Vec<(&str, u64)> = c.ops.0.iter().map(|(k, n)| (k.as_str(), *n)).collect();
@@ -832,7 +877,7 @@ fn id_ref_keeps_only_ulids_raw() {
     let spec = kind("agent.editVerdict", 0).unwrap();
     let raw = json!({ "txIds": ["idem-key-7f3a"], "verdict": "undone", "by": "user" });
     assert_eq!(
-        validate_payload(spec, &raw).unwrap_err().code,
+        decode_payload(spec, &raw).unwrap_err().code,
         "EVENT_INVALID"
     );
 }
@@ -954,7 +999,7 @@ fn redact_removes_every_content_path() {
                 removed += at(&full, &c.path).len();
                 assert!(at(&v, &c.path).is_empty(), "{}: {c} survived", spec.name);
             }
-            let back = validate_payload(spec, &v).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+            let back = decode_payload(spec, &v).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
             assert_eq!(back.blobs().count(), 0, "{}", spec.name);
         }
     }
@@ -994,7 +1039,7 @@ fn training_only_kinds_keep_metadata_under_diagnostics() {
             spec.name
         );
         assert!(!kept.is_empty(), "{}", spec.name);
-        validate_payload(spec, &v).unwrap();
+        decode_payload(spec, &v).unwrap();
     }
     let turn = samples()
         .into_iter()
@@ -1029,7 +1074,13 @@ fn unknown_kind_and_version_refused() {
         schema: || json!({}),
     };
     assert_eq!(
-        validate_payload(&fake, &json!({})).unwrap_err().code,
+        decode_payload(&fake, &json!({})).unwrap_err().code,
+        "EVENT_KIND_UNKNOWN"
+    );
+    assert_eq!(
+        validate_payload(&fake, &json!({}), &key, &ScrubCtx::default())
+            .unwrap_err()
+            .code,
         "EVENT_KIND_UNKNOWN"
     );
     let commit = kind("log.commit", 1).unwrap();
@@ -1039,7 +1090,7 @@ fn unknown_kind_and_version_refused() {
         json!({ "record": "edit", "outcome": "accepted", "micros": 1, "code": "not a code" }),
     ] {
         assert_eq!(
-            validate_payload(commit, &bad).unwrap_err().code,
+            decode_payload(commit, &bad).unwrap_err().code,
             "EVENT_INVALID",
             "{bad}"
         );
@@ -1063,6 +1114,7 @@ fn oversized_name_or_code_rejected_by_pattern() {
             && !is_valid_name("Upper")
             && !is_valid_name("a\nb")
             && !is_valid_name("a\"b")
+            && !is_valid_name("item trim")
     );
     for bad in [
         format!("k1:{}", long('a', 31)),
@@ -1085,8 +1137,10 @@ fn oversized_name_or_code_rejected_by_pattern() {
     ] {
         assert!(Version::parse(bad).is_none(), "{bad}");
     }
+    // Any digit count, as the store accepts.
     assert!(BranchId::parse("br123456789").is_some());
-    for bad in ["br1234567890", "br", "feature-x", "Main", "br1a"] {
+    assert!(BranchId::parse("br12345678901234567890").is_some());
+    for bad in ["br", "feature-x", "Main", "br1a", "BR1", "br-1"] {
         assert!(BranchId::parse(bad).is_none(), "{bad}");
     }
     assert!(ProjectId::parse("01jb0000000000000000000000").is_some());
@@ -1104,31 +1158,83 @@ fn scrub_replaces_home_data_tmp_user_host_and_absolute_paths() {
         host: Some("alice-laptop".into()),
     };
     let s = |t: &str| Scrubbed::new(t, &posix).as_str().to_string();
+    // A directory keeps its placeholder; the rest of its path goes.
     assert_eq!(
         s("open /home/alice/.local/share/finisher/p/x.fdb failed"),
-        "open <data>/p/x.fdb failed"
+        "open <data>/<path> failed"
     );
-    assert_eq!(
-        s("read /home/alice/Videos/a.mp4"),
-        "read <home>/Videos/a.mp4"
-    );
-    assert_eq!(s("in /tmp/fin-1/x"), "in <tmp>/fin-1/x");
+    assert_eq!(s("read /home/alice/Videos/a.mp4"), "read <home>/<path>");
+    assert_eq!(s("in /tmp/fin-1/x"), "in <tmp>/<path>");
+    assert_eq!(s("cwd is /home/alice"), "cwd is <home>");
+    // Not inside a longer name: `/home/alice2` is another path.
+    assert_eq!(s("see /home/alice2/x"), "see <path>");
     assert_eq!(s("Alice on ALICE-LAPTOP"), "<user> on <host>");
     assert_eq!(s("open /var/lib/thing/file: denied"), "open <path> denied");
     assert_eq!(s("path=\"/etc/x\" (~/notes/y)"), "path=\"<path>\" (<path>)");
     assert_eq!(s("ratio 3/4, and/or 1 / 2"), "ratio 3/4, and/or 1 / 2");
     assert_eq!(s("x at /"), "x at /");
+    // A path right after a quote runs to the matching quote, spaces and all.
+    assert_eq!(
+        s("open \"/home/alice/My Videos/a b.mp4\" failed"),
+        "open \"<home>/<path>\" failed"
+    );
+    assert_eq!(s("open '/srv/My Media/a.mov' now"), "open '<path>' now");
+    // Unquoted, a path goes on over a word or two when one holds a separator.
+    assert_eq!(
+        s("load /Users/x/My Movies/a.mov failed"),
+        "load <path> failed"
+    );
+    assert_eq!(s("copy /a/b to /c/d"), "copy <path> to <path>");
+    // `~user/` and `~\`.
+    assert_eq!(s("open ~bob/notes/x and ~\\y\\z"), "open <path> and <path>");
+    // A user name inside a placeholder is not replaced; a user named like one is.
+    let odd = ScrubCtx {
+        user: Some("path".into()),
+        ..ScrubCtx::default()
+    };
+    assert_eq!(
+        Scrubbed::new("path /a/b of path", &odd).as_str(),
+        "<user> <path> of <user>"
+    );
+
     let windows = ScrubCtx {
         home: Some("C:\\Users\\Bob".into()),
         user: Some("bob".into()),
         ..ScrubCtx::default()
     };
     let w = |t: &str| Scrubbed::new(t, &windows).as_str().to_string();
-    assert_eq!(w("load c:\\users\\bob\\clip.mov"), "load <home>\\clip.mov");
+    assert_eq!(w("load c:\\users\\bob\\clip.mov"), "load <home>\\<path>");
     assert_eq!(w("D:\\media\\a.wav not found"), "<path> not found");
     assert_eq!(w("D:/media/a.wav not found"), "<path> not found");
     assert_eq!(w("share \\\\nas\\bob\\x"), "share <path>");
     assert_eq!(w("hello bob, bobby"), "hello <user>, <user>by");
+    assert_eq!(
+        w("run C:\\Program Files\\App\\x.dll failed"),
+        "run <path> failed"
+    );
+    assert_eq!(
+        w("run C:\\Program Files (x86)\\App\\x.dll failed"),
+        "run <path> failed"
+    );
+    assert_eq!(
+        w("run \"C:\\Program Files\\My App\\x.exe\" -v"),
+        "run \"<path>\" -v"
+    );
+    assert_eq!(
+        w("open \"C:\\Users\\Bob\\My Documents\\a.mov\""),
+        "open \"<home>\\<path>\""
+    );
+    // Unicode case: the user and host match in any case.
+    let unicode = ScrubCtx {
+        home: Some("/home/Ölçü".into()),
+        user: Some("Ölçü".into()),
+        host: Some("ÉCRAN-PC".into()),
+        ..ScrubCtx::default()
+    };
+    assert_eq!(
+        Scrubbed::new("ölçü@écran-pc in /HOME/ÖLÇÜ/x", &unicode).as_str(),
+        "<user>@<host> in <home>/<path>"
+    );
     // A name shorter than 3 characters is replaced only as a whole word.
     let short = ScrubCtx {
         user: Some("al".into()),
@@ -1138,10 +1244,16 @@ fn scrub_replaces_home_data_tmp_user_host_and_absolute_paths() {
         Scrubbed::new("al: also albert", &short).as_str(),
         "<user>: also albert"
     );
-    // Long text is cut on a character boundary.
+    // Long text is cut on a character boundary, and the input is capped first.
     let long = "é".repeat(MAX_SCRUBBED);
     let cut = Scrubbed::new(&long, &ScrubCtx::default());
     assert!(cut.as_str().len() <= MAX_SCRUBBED && cut.as_str().ends_with('…'));
+    let huge = format!(
+        "{} /home/alice/x",
+        "a".repeat(fin_core::events::scrub::MAX_INPUT)
+    );
+    let cut = Scrubbed::new(&huge, &posix);
+    assert!(cut.as_str().len() <= MAX_SCRUBBED && !cut.as_str().contains("alice"));
     // A received value is scrubbed again (absolute paths at least), and with a context too.
     let read: Scrubbed = serde_json::from_value(json!("bad /home/alice/x for alice")).unwrap();
     assert_eq!(read.as_str(), "bad <path> for alice");
@@ -1173,6 +1285,13 @@ fn path_ref_never_keeps_the_path() {
 #[test]
 fn events_module_is_pure() {
     for (path, text) in sources(&events_dir()) {
+        // `intent.rs`'s size counter implements `io::Write` and does no I/O.
+        let text = if path.ends_with("events/intent.rs") {
+            text.replace("std::io::Write", "")
+                .replace("std::io::Result", "")
+        } else {
+            text
+        };
         for banned in [
             "std::time",
             "SystemTime",
@@ -1189,5 +1308,180 @@ fn events_module_is_pure() {
         ] {
             assert!(!text.contains(banned), "{}: {banned}", path.display());
         }
+    }
+}
+
+#[test]
+fn strip_content_matches_redact() {
+    for p in samples() {
+        let spec = p.kind();
+        let mut want = serde_json::to_value(&p).unwrap();
+        redact(spec, &mut want, Purposes::DIAGNOSTICS);
+        let mut typed = p.clone();
+        typed.strip_content();
+        assert_eq!(serde_json::to_value(&typed).unwrap(), want, "{}", spec.name);
+        assert_eq!(typed.blobs().count(), 0, "{}", spec.name);
+    }
+}
+
+#[test]
+fn envelope_ref_serialises_as_envelope() {
+    let mut payload = AnyPayload::from(log_commit());
+    let (eid, session) = (ulid("01JC0000000000000000000000"), ulid(SESSION));
+    let ctx = Ctx {
+        project: ProjectId::parse("01jb0000000000000000000000"),
+        tx_id: Some(id(TX)),
+        ..Ctx::default()
+    };
+    let consent = ConsentStamp {
+        rev: 1,
+        purposes: Purposes::DIAGNOSTICS,
+        basis: Basis::Default,
+    };
+    payload.strip_content();
+    let borrowed = EnvelopeRef::new(
+        &eid,
+        7,
+        &session,
+        Source::FinNode,
+        consent,
+        Some(&ctx),
+        &payload,
+    );
+    let owned = Envelope {
+        v: ENVELOPE_VERSION,
+        id: eid.clone(),
+        ts: 7,
+        session: session.clone(),
+        source: Source::FinNode,
+        kind: KindName::of(payload.kind()),
+        kv: payload.kind().version,
+        consent,
+        ctx: Some(ctx.clone()),
+        payload: serde_json::to_value(&payload).unwrap(),
+    };
+    let text = serde_json::to_string(&borrowed).unwrap();
+    assert_eq!(
+        serde_json::to_value(borrowed).unwrap(),
+        serde_json::to_value(&owned).unwrap()
+    );
+    assert_eq!(serde_json::from_str::<Envelope>(&text).unwrap(), owned);
+    assert!(!text.contains("\"intent\""));
+    let none = EnvelopeRef {
+        ctx: None,
+        ..borrowed
+    };
+    assert!(!serde_json::to_string(&none).unwrap().contains("\"ctx\""));
+}
+
+#[test]
+fn envelope_strings_are_classified() {
+    let schema = serde_json::to_value(schemars::schema_for!(Envelope)).unwrap();
+    let c = Check::of(&schema);
+    assert!(c.issues.is_empty(), "{:?}", c.issues);
+    for (field, def) in [("id", "Ulid"), ("session", "Ulid"), ("kind", "KindName")] {
+        assert_eq!(
+            schema["properties"][field]["$ref"],
+            json!(format!("#/$defs/{def}")),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        schema["properties"]["payload"]["$ref"],
+        json!("#/$defs/AnyPayload")
+    );
+    for bad in ["log", "Log.commit", "log.commit.x", "log.co mmit", ""] {
+        assert!(KindName::parse(bad).is_none(), "{bad}");
+    }
+    for k in kinds() {
+        assert_eq!(KindName::of(k).as_str(), k.name);
+    }
+    for bad in [
+        "01jc0000000000000000000000",
+        "81JC0000000000000000000000",
+        "x",
+    ] {
+        assert!(Ulid::parse(bad).is_none(), "{bad}");
+    }
+}
+
+#[test]
+fn ulid_from_u128_is_canonical() {
+    assert_eq!(Ulid::from_u128(0).as_str(), "00000000000000000000000000");
+    assert_eq!(
+        Ulid::from_u128(u128::MAX).as_str(),
+        "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"
+    );
+    let u = Ulid::from_u128((1_794_571_200_123u128 << 80) | 0xdead_beef);
+    assert_eq!(Ulid::parse(u.as_str()), Some(u.clone()));
+    assert!(!IdRef::from(u).is_hashed());
+}
+
+#[test]
+fn meta_string_without_pattern_is_flagged() {
+    let c = Check::of(&json!({
+        "type": "object",
+        "properties": {
+            "loose": { "type": "string", "x-fin-class": "meta" },
+            "fine": { "type": "string", "x-fin-class": "meta", "pattern": "^a$" },
+        },
+    }));
+    assert_eq!(c.issues, ["loose: meta string without a pattern"]);
+}
+
+#[test]
+#[should_panic(expected = "unresolved $ref")]
+fn test_walk_panics_on_unresolved_ref() {
+    Check::of(&json!({ "properties": { "x": { "$ref": "#/$defs/Missing" } } }));
+}
+
+#[test]
+#[should_panic(expected = "unresolved $ref")]
+fn redact_walk_panics_on_unresolved_ref() {
+    let fake = KindSpec {
+        name: "made.up",
+        version: 1,
+        reserved: false,
+        training_only: false,
+        sources: &[Source::Fin],
+        schema: || json!({ "properties": { "x": { "$ref": "#/$defs/Missing" } } }),
+    };
+    content_paths(&fake);
+}
+
+#[test]
+fn intent_content_holds_free_text_only_in_ops() {
+    let c = check("log.commit", 1);
+    assert!(c.issues.is_empty(), "{:?}", c.issues);
+    assert!(!c.raw_in_content.is_empty());
+    for raw in &c.raw_in_content {
+        assert!(
+            raw.starts_with("intent[].ops[]"),
+            "{raw}: free text outside the ops"
+        );
+    }
+    let schema = (kind("log.commit", 1).unwrap().schema)();
+    let tx = &schema["$defs"]["IntentTx"]["properties"];
+    for (field, def) in [
+        ("txId", "IdRef"),
+        ("author", "Hashed"),
+        ("branch", "BranchId"),
+        ("argsHash", "Hashed"),
+    ] {
+        assert_eq!(
+            tx[field]["$ref"],
+            json!(format!("#/$defs/{def}")),
+            "{field}"
+        );
+    }
+    // Every other kind's content is classed or opaque JSON: no free text field.
+    for k in kinds().iter().filter(|k| k.name != "log.commit") {
+        let c = Check::of(&(k.schema)());
+        assert!(
+            c.raw_in_content.is_empty(),
+            "{}: {:?}",
+            k.name,
+            c.raw_in_content
+        );
     }
 }

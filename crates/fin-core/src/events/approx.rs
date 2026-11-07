@@ -2,17 +2,17 @@
 //! The journal's in-flight byte bound counts it in the caller. Strings and vectors count
 //! their lengths, scalars and enums a fixed width, structs their field names and punctuation
 //! ([`approx_struct!`]). An estimate, within 2× of the serialised size on the samples
-//! (`approx_bytes_bounds_serialised_size`).
+//! (`approx_bytes_bounds_serialised_size`). An edit intent is the exception: its exact size
+//! is computed once when it is built ([`super::intent`]).
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
 use super::class::{
-    BlobHash, BlobRef, BranchId, Code, Content, Hashed, IdRef, Name, PathRef, ProjectId, Scrubbed,
-    SrcLoc, Version,
+    BlobHash, BlobRef, BranchId, Code, Content, Hashed, IdRef, KindName, Name, PathRef, ProjectId,
+    Scrubbed, SrcLoc, Ulid, Version,
 };
-use crate::tx::Tx;
 
 /// An estimate of the serialised JSON size, in bytes.
 pub trait ApproxBytes {
@@ -72,7 +72,8 @@ macro_rules! approx_as_str {
     )*};
 }
 approx_as_str!(
-    Name, Code, Hashed, IdRef, BlobHash, ProjectId, BranchId, Version, SrcLoc, Scrubbed
+    Name, Code, Hashed, IdRef, BlobHash, ProjectId, BranchId, Version, SrcLoc, Scrubbed, Ulid,
+    KindName
 );
 
 impl<T: ApproxBytes + ?Sized> ApproxBytes for &T {
@@ -143,21 +144,5 @@ impl ApproxBytes for BlobRef {
 impl ApproxBytes for PathRef {
     fn approx_bytes(&self) -> usize {
         36 + self.ext.approx_bytes() + self.hash.approx_bytes()
-    }
-}
-
-/// The serialised width of one op, on average (ids, positions and field names). An op's own
-/// strings are not walked: that would allocate in the caller ([`crate::Op::ids`]), and the
-/// estimate only bounds the journal's queue.
-const OP_BYTES: usize = 110;
-
-impl ApproxBytes for Tx {
-    fn approx_bytes(&self) -> usize {
-        let ops: usize = self.ops.iter().map(|op| OP_BYTES + op.name().len()).sum();
-        80 + self.tx_id.len()
-            + self.author.len()
-            + self.branch.len()
-            + self.args_hash.as_ref().map_or(0, |h| h.len() + 12)
-            + ops
     }
 }

@@ -20,8 +20,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub use super::refs::{
-    BlobHash, BlobRef, BranchId, Code, Hashed, IdRef, NeedsHash, PathRef, PathRoot, ProjectId,
-    SrcLoc, Version,
+    Blake3Hex, BlobHash, BlobRef, BranchId, Code, Hashed, IdRef, KindName, MAX_RAW_ID, NeedsHash,
+    PathRef, PathRoot, ProjectId, RawId, SrcLoc, Ulid, Version,
 };
 use super::scrub::scrub;
 
@@ -177,10 +177,11 @@ impl JsonSchema for Scrubbed {
     }
 }
 
-/// The `Name` pattern: `^[a-z][A-Za-z0-9_./ -]{0,63}$`. Wider than the plan's
+/// The `Name` pattern: `^[a-z][A-Za-z0-9_./-]{0,63}$`. Wider than the plan's first
 /// `^[a-z][a-z0-9_. -]{0,63}$`, which the tables it names do not fit: RPC methods are camel
-/// case (`history.cherryPick`) and media types hold a slash (`image/webp`).
-pub const NAME_PATTERN: &str = r"^[a-z][A-Za-z0-9_./ -]{0,63}$";
+/// case (`history.cherryPick`) and media types hold a slash (`image/webp`). No space: every
+/// table name is dotted (`item.trim`).
+pub const NAME_PATTERN: &str = r"^[a-z][A-Za-z0-9_./-]{0,63}$";
 
 /// Whether `s` matches [`NAME_PATTERN`].
 pub const fn is_valid_name(s: &str) -> bool {
@@ -191,7 +192,7 @@ pub const fn is_valid_name(s: &str) -> bool {
     let mut i = 1;
     while i < b.len() {
         let c = b[i];
-        if !(c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'/' | b' ' | b'-')) {
+        if !(c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'/' | b'-')) {
             return false;
         }
         i += 1;
@@ -201,8 +202,10 @@ pub const fn is_valid_name(s: &str) -> bool {
 
 /// A name from code or a static table: a command, a flag, an RPC method, a media extension or
 /// type, an op kind, an error-detail key. Its field is private and holds a `&'static str`, so
-/// nothing a user typed can become one: it is built only by [`Name::from_static`] (with a
-/// string literal; a test scans every use) or by [`super::names::NameTable::get`]. There is no
+/// nothing a user typed can become one. Outside `fin-core` a `Name` comes only from a table
+/// ([`super::names::NameTable::get`], [`super::names::NameTable::get_or_other`]) or is
+/// [`Name::OTHER`]; inside, [`Name::from_static`] (crate-private, a string literal, checked
+/// against [`NAME_PATTERN`] in every build) is the one constructor. There is no
 /// `From<String>`, `FromStr`, `Default` or `Deserialize`: a `Name` field deserialises through
 /// its table (`#[serde(deserialize_with = "names::cli_command")]`), and a value not in the
 /// table reads as `"other"`.
@@ -218,6 +221,16 @@ pub const fn is_valid_name(s: &str) -> bool {
 /// ```compile_fail
 /// let n: fin_core::events::Name = "item.trim".parse().unwrap();
 /// ```
+///
+/// ```compile_fail
+/// let leaked: &'static str = Box::leak(String::from("typed by a user").into_boxed_str());
+/// let n = fin_core::events::Name::from_static(leaked);
+/// ```
+///
+/// ```compile_fail
+/// static T: fin_core::events::names::NameTable =
+///     fin_core::events::names::NameTable::new("T", &["typed"]);
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(&'static str);
 
@@ -225,9 +238,10 @@ impl Name {
     /// The fallback for a value not in a table.
     pub const OTHER: Name = Name("other");
 
-    /// A name written in code. Debug builds check [`NAME_PATTERN`].
-    pub const fn from_static(s: &'static str) -> Name {
-        debug_assert!(is_valid_name(s), "a Name must match NAME_PATTERN");
+    /// A name written in code or held by a static table. Checks [`NAME_PATTERN`] in every
+    /// build: at compile time in a `const` or `static`, else when called.
+    pub(crate) const fn from_static(s: &'static str) -> Name {
+        assert!(is_valid_name(s), "a Name must match NAME_PATTERN");
         Name(s)
     }
 

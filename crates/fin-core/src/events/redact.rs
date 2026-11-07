@@ -94,9 +94,13 @@ impl<'a> Walk<'a> {
         }
         if let Some(r) = obj.get("$ref").and_then(Value::as_str) {
             let name = r.rsplit('/').next().unwrap_or(r);
-            if let Some(def) = self.defs.and_then(|d| d.get(name))
-                && !self.stack.contains(&name)
-            {
+            // Our schemas are generated with their `$defs`: an unresolved `$ref` is a bug, and
+            // skipping it could miss a content field.
+            let def = self
+                .defs
+                .and_then(|d| d.get(name))
+                .unwrap_or_else(|| panic!("unresolved $ref {r} in an event schema"));
+            if !self.stack.contains(&name) {
                 self.stack.push(name);
                 self.node(def, path, in_content, field);
                 self.stack.pop();

@@ -20,7 +20,17 @@ pub struct NameTable {
 }
 
 impl NameTable {
-    pub const fn new(table: &'static str, entries: &'static [&'static str]) -> NameTable {
+    /// A table; every entry must match [`super::class::NAME_PATTERN`], checked when the
+    /// `static` is evaluated (a compile error).
+    pub(crate) const fn new(table: &'static str, entries: &'static [&'static str]) -> NameTable {
+        let mut i = 0;
+        while i < entries.len() {
+            assert!(
+                super::class::is_valid_name(entries[i]),
+                "a NameTable entry must match NAME_PATTERN"
+            );
+            i += 1;
+        }
         NameTable { table, entries }
     }
 

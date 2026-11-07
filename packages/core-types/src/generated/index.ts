@@ -156,6 +156,11 @@ export type Purpose = "diagnostics" | "training";
  */
 export type Purposes = Purpose[];
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchId".
+ */
+export type BranchId = string;
+/**
  * A primitive edit operation, tagged by `op`.
  *
  * `clip.insert`, `clip.trim` and `clip.delete` are client aliases of the `item.*` ops (plan 4C
@@ -574,12 +579,13 @@ export type FontSource =
     };
 /**
  * An edit intent (content `txIntent`): the transactions as committed (an edit's one tx, or a
- * history call's records, at most 64), or the request's normalised tx on failure.
+ * history call's records, at most [`MAX_INTENT_TXS`]), or the request's normalised tx on
+ * failure.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TxIntent".
  */
-export type TxIntent = Tx[];
+export type TxIntent = IntentTx[];
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "IntentOmitted".
@@ -726,11 +732,6 @@ export type Link =
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "BranchId".
- */
-export type BranchId = string;
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UnmeasuredReason".
  */
 export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
@@ -799,6 +800,16 @@ export type EngineEvent =
       dropped: number;
       type: "lagged";
     };
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Ulid".
+ */
+export type Ulid = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KindName".
+ */
+export type KindName = string;
 /**
  * Which program emitted an entry. The server sets it from the transport (local socket →
  * `fin`, WebSocket → `ui`), never from the payload.
@@ -1270,25 +1281,23 @@ export interface LogCommit {
   record: CommitRecord;
 }
 /**
+ * One transaction of an intent. Built only by [`IntentTx::from_tx`] (or decoded, which
+ * refuses a raw `asset.add` path); its fields are read through accessors.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Tx".
+ * via the `definition` "IntentTx".
  */
-export interface Tx {
-  /**
-   * What produced the tx, for a client that sends an idempotency key as `txId`:
-   * `blake3:<64 hex>` of the command input (op kinds and canonical args, before they were
-   * resolved against a snapshot). A retry rebuilds `ops` against a newer head (positions
-   * move; the stored tx is rebased), so `ops` cannot tell a retry from another command;
-   * this can. The store refuses a `txId` it holds with another `argsHash`
-   * (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
-   */
-  argsHash?: string | null;
-  author: string;
+export interface IntentTx {
+  argsHash?: Hashed;
+  author: Hashed;
   baseRev: number;
-  branch: string;
+  branch?: BranchId;
+  /**
+   * The ops, each `asset.add` path a keyed path token ([`PathRef::token`]).
+   */
   ops: Op[];
   schemaVersion: number;
-  txId: string;
+  txId: IdRef;
 }
 /**
  * `asset.add`: what probing found, by kind (plan 4C Task 7). Each kind carries its own
@@ -2681,6 +2690,27 @@ export interface CommittedTx {
   tx: Tx;
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Tx".
+ */
+export interface Tx {
+  /**
+   * What produced the tx, for a client that sends an idempotency key as `txId`:
+   * `blake3:<64 hex>` of the command input (op kinds and canonical args, before they were
+   * resolved against a snapshot). A retry rebuilds `ops` against a newer head (positions
+   * move; the stored tx is rebased), so `ops` cannot tell a retry from another command;
+   * this can. The store refuses a `txId` it holds with another `argsHash`
+   * (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
+   */
+  argsHash?: string | null;
+  author: string;
+  baseRev: number;
+  branch: string;
+  ops: Op[];
+  schemaVersion: number;
+  txId: string;
+}
+/**
  * A caption's words at the plan's time, and its layout when it was measured. `layout` is
  * `null` when it was not, and `unmeasured` says why (plan 4C Decision 36).
  *
@@ -2957,8 +2987,9 @@ export interface EffectPlan {
   };
 }
 /**
- * One journal entry (Decision 2). `payload` is a `Value` only on the wire and on disk; in
- * memory it is an [`AnyPayload`], serialised on the journal's writer thread.
+ * One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
+ * is [`AnyPayload`]'s). In memory a payload is an [`AnyPayload`], and the journal's writer
+ * thread serialises an [`EnvelopeRef`], which has the same JSON.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Envelope".
@@ -2966,23 +2997,14 @@ export interface EffectPlan {
 export interface Envelope {
   consent: ConsentStamp;
   ctx?: Ctx;
-  /**
-   * The entry's ULID.
-   */
-  id: string;
-  /**
-   * A registry kind (`log.commit`).
-   */
-  kind: string;
+  id: Ulid;
+  kind: KindName;
   /**
    * The kind's payload version.
    */
   kv: number;
-  payload: unknown;
-  /**
-   * The emitting process run (a ULID).
-   */
-  session: string;
+  payload: AnyPayload;
+  session: Ulid;
   source: Source;
   /**
    * Milliseconds since the Unix epoch, UTC.

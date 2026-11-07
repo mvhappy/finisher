@@ -732,7 +732,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 {"v":1,"id":"01JC…","ts":1794571200123,"session":"01JC…","source":"finNode",
  "kind":"log.commit","kv":1,
  "consent":{"rev":3,"purposes":["diagnostics"],"basis":"default"},
- "ctx":{"project":"01JB…","branch":"br1","txId":"01JC…","author":"k1:3f…",
+ "ctx":{"project":"01jb…","branch":"br1","txId":"01JC…","author":"k1:3f…",
         "actor":{"kind":"agent","session":"01JC…","call":"k1:9a…"}},
  "payload":{"record":"edit","outcome":"rebased","baseRev":41,"rebasedOver":2,"ops":{"item.trim":1},"micros":812}}
 ```

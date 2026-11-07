@@ -113,10 +113,24 @@ fn is_project_id(s: &str) -> bool {
     s.len() == 26 && is_ulid(&s.to_ascii_uppercase()) && !s.bytes().any(|c| c.is_ascii_uppercase())
 }
 
+/// `main` or `br` and any number of digits, as `fin-store` accepts them (`valid_branch`).
 fn is_branch_id(s: &str) -> bool {
     s == "main"
         || s.strip_prefix("br")
-            .is_some_and(|d| (1..=9).contains(&d.len()) && d.bytes().all(|c| c.is_ascii_digit()))
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// A registry kind name: `domain.verb`, each segment lower camel case.
+fn is_kind_name(s: &str) -> bool {
+    let seg = |p: &str| {
+        p.starts_with(|c: char| c.is_ascii_lowercase())
+            && p.bytes().all(|c| c.is_ascii_alphanumeric())
+    };
+    s.len() <= 64 && s.split_once('.').is_some_and(|(d, v)| seg(d) && seg(v))
+}
+
+fn is_blake3_hex(s: &str) -> bool {
+    s.strip_prefix("blake3:").is_some_and(|h| hex_lower(h, 64))
 }
 
 fn is_code(s: &str) -> bool {
@@ -183,6 +197,11 @@ impl Hashed {
     pub fn from_bytes(digest: &[u8; 16]) -> Hashed {
         Hashed(format!("k1:{}", hex(digest)))
     }
+
+    /// The keyed hash of `data`; `key` is the journal's keyed BLAKE3, truncated to 16 bytes.
+    pub fn keyed(data: &[u8], key: &dyn Fn(&[u8]) -> [u8; 16]) -> Hashed {
+        Hashed::from_bytes(&key(data))
+    }
 }
 
 pattern_string!(
@@ -242,6 +261,12 @@ impl IdRef {
     pub fn is_hashed(&self) -> bool {
         self.0.starts_with("k1:")
     }
+
+    /// [`IdRef::classify`], hashing with `key` what it refuses.
+    pub fn keyed(raw: &str, key: &dyn Fn(&[u8]) -> [u8; 16]) -> IdRef {
+        IdRef::classify(raw)
+            .unwrap_or_else(|_| IdRef::from_hashed(Hashed::keyed(raw.as_bytes(), key)))
+    }
 }
 
 pattern_string!(
@@ -257,9 +282,100 @@ pattern_string!(
     /// A branch id (`ctx.branch`): `main` or `br<n>`, allocated by the store. Branch names,
     /// which a user types, are never stored.
     BranchId,
-    r"^(main|br[0-9]{1,9})$",
+    r"^(main|br[0-9]+)$",
     is_branch_id
 );
+
+pattern_string!(
+    /// A canonical ULID (an envelope's `id` and `session`): 26 Crockford base-32 characters,
+    /// upper case, the first `0`–`7`.
+    Ulid,
+    r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+    is_ulid
+);
+
+impl Ulid {
+    /// The canonical text of a 128-bit ULID (48 bits of milliseconds, 80 random), which the
+    /// emitter makes.
+    pub fn from_u128(n: u128) -> Ulid {
+        const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        let text = (0..26)
+            .rev()
+            .map(|i| CROCKFORD[((n >> (5 * i)) & 31) as usize] as char)
+            .collect();
+        Ulid(text)
+    }
+}
+
+impl From<Ulid> for IdRef {
+    fn from(u: Ulid) -> IdRef {
+        IdRef(u.0)
+    }
+}
+
+pattern_string!(
+    /// A registry kind name (an envelope's `kind`): `domain.verb`, each segment lower camel
+    /// case (`log.commit`, `agent.toolCall`). Whether the registry has it at the entry's `kv`
+    /// is [`super::kinds::require_kind`]'s to say.
+    KindName,
+    r"^[a-z][A-Za-z0-9]*\.[a-z][A-Za-z0-9]*$",
+    is_kind_name
+);
+
+impl KindName {
+    /// The name of a registry kind.
+    pub fn of(spec: &super::kinds::KindSpec) -> KindName {
+        KindName(spec.name.to_string())
+    }
+}
+
+pattern_string!(
+    /// `fin`'s unkeyed `argsHash` as it arrives on the wire (`blake3:<64 hex>`, Decision 6).
+    /// Wire-only: never stored. [`super::wire`] keys it into a [`Hashed`].
+    Blake3Hex,
+    r"^blake3:[0-9a-f]{64}$",
+    is_blake3_hex
+);
+
+/// The longest raw id a wire payload may carry, in bytes.
+pub const MAX_RAW_ID: usize = 256;
+
+/// A raw id as it arrives on the wire (a txId that may be an idempotency key, Decision 7).
+/// Wire-only: never stored. [`super::wire`] turns it into an [`IdRef`] (a ULID kept, anything
+/// else keyed). At most [`MAX_RAW_ID`] bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RawId(String);
+
+impl RawId {
+    pub fn new(s: &str) -> Option<RawId> {
+        (s.len() <= MAX_RAW_ID).then(|| RawId(s.to_string()))
+    }
+
+    /// The [`IdRef`] of the id: kept when it is a canonical ULID, else keyed with `key`.
+    pub fn into_id_ref(self, key: &dyn Fn(&[u8]) -> [u8; 16]) -> IdRef {
+        IdRef::keyed(&self.0, key)
+    }
+}
+
+// The value is not shown: it may be raw.
+impl fmt::Debug for RawId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RawId({} bytes)", self.0.len())
+    }
+}
+
+impl Serialize for RawId {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        RawId::new(&s).ok_or_else(|| D::Error::custom("a raw id is too long"))
+    }
+}
 
 pattern_string!(
     /// A release version from the build (`0.4.0`, `1.2.3-rc.1`).

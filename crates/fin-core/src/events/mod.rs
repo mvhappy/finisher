@@ -1,7 +1,7 @@
 //! Diagnostics and training events (spec §21.1, D34; plan D, Decisions 1–7): the versioned
 //! envelope, the closed kind registry and payload enum ([`kinds`]), the field classes
-//! ([`class`]), the static name tables ([`names`]), redaction ([`redact`]) and scrubbing
-//! ([`scrub`]).
+//! ([`class`]), the static name tables ([`names`]), redaction ([`redact`]), scrubbing
+//! ([`scrub`]), edit intents ([`intent`]) and the wire forms of received kinds ([`wire`]).
 //!
 //! Pure, like the rest of `fin-core`: nothing here reads a clock, the environment or a random
 //! source, or does I/O. The emitter (`fin-journal`, through `fin-node`, `finisherd` and `fin`)
@@ -14,46 +14,102 @@ use serde_json::Value;
 
 pub mod approx;
 pub mod class;
+pub mod intent;
 pub mod kinds;
 pub mod names;
 pub mod payloads;
 pub mod redact;
 mod refs;
 pub mod scrub;
+pub mod wire;
 
 pub use class::{
-    BlobHash, BlobRef, BranchId, Code, Content, ContentKind, Hashed, IdRef, Name, NeedsHash,
-    PathRef, PathRoot, ProjectId, ScrubCtx, Scrubbed, SrcLoc, Version,
+    Blake3Hex, BlobHash, BlobRef, BranchId, Code, Content, ContentKind, Hashed, IdRef, KindName,
+    MAX_RAW_ID, Name, NeedsHash, PathRef, PathRoot, ProjectId, RawId, ScrubCtx, Scrubbed, SrcLoc,
+    Ulid, Version,
 };
-pub use kinds::{AnyPayload, EventPayload, KindSpec, kind, kinds, require_kind, validate_payload};
+pub use intent::{IntentTx, MAX_INTENT_ENTRY_BYTES, TxIntent};
+pub use kinds::{
+    AnyPayload, EventPayload, KindSpec, WIRE_KINDS, decode_payload, kind, kinds, require_kind,
+    validate_payload,
+};
 pub use redact::{ContentPath, Seg, blob_refs, content_paths, redact};
+pub use wire::{CliCommandIn, ErrorPanicIn, WireForm};
 
 /// The envelope version (`v`).
 pub const ENVELOPE_VERSION: u16 = 1;
 
-/// One journal entry (Decision 2). `payload` is a `Value` only on the wire and on disk; in
-/// memory it is an [`AnyPayload`], serialised on the journal's writer thread.
+/// One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
+/// is [`AnyPayload`]'s). In memory a payload is an [`AnyPayload`], and the journal's writer
+/// thread serialises an [`EnvelopeRef`], which has the same JSON.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Envelope {
     /// [`ENVELOPE_VERSION`].
     pub v: u16,
-    /// The entry's ULID.
-    pub id: String,
+    // The entry's ULID. (Plain comments on `$ref` fields: a doc comment would inline the type
+    // in the generated TypeScript.)
+    pub id: Ulid,
     /// Milliseconds since the Unix epoch, UTC.
     pub ts: u64,
-    /// The emitting process run (a ULID).
-    pub session: String,
+    // The emitting process run.
+    pub session: Ulid,
     pub source: Source,
-    /// A registry kind (`log.commit`).
-    pub kind: String,
+    // A registry kind (`log.commit`).
+    pub kind: KindName,
     /// The kind's payload version.
     pub kv: u16,
     pub consent: ConsentStamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Ctx")]
     pub ctx: Option<Ctx>,
+    #[schemars(with = "AnyPayload")]
     pub payload: Value,
+}
+
+/// An entry to write, borrowed (Decision 2): the JSON of an [`Envelope`] without building a
+/// `Value`. `kind` and `kv` come from the payload ([`EnvelopeRef::new`]); a payload recorded
+/// without training has had [`AnyPayload::strip_content`].
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvelopeRef<'a> {
+    pub v: u16,
+    pub id: &'a Ulid,
+    pub ts: u64,
+    pub session: &'a Ulid,
+    pub source: Source,
+    pub kind: &'static str,
+    pub kv: u16,
+    pub consent: ConsentStamp,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctx: Option<&'a Ctx>,
+    pub payload: &'a AnyPayload,
+}
+
+impl<'a> EnvelopeRef<'a> {
+    pub fn new(
+        id: &'a Ulid,
+        ts: u64,
+        session: &'a Ulid,
+        source: Source,
+        consent: ConsentStamp,
+        ctx: Option<&'a Ctx>,
+        payload: &'a AnyPayload,
+    ) -> EnvelopeRef<'a> {
+        let spec = payload.kind();
+        EnvelopeRef {
+            v: ENVELOPE_VERSION,
+            id,
+            ts,
+            session,
+            source,
+            kind: spec.name,
+            kv: spec.version,
+            consent,
+            ctx,
+            payload,
+        }
+    }
 }
 
 /// Which program emitted an entry. The server sets it from the transport (local socket →

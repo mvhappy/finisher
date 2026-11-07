@@ -811,7 +811,7 @@
       "type": "object"
     },
     "BranchId": {
-      "pattern": "^(main|br[0-9]{1,9})$",
+      "pattern": "^(main|br[0-9]+)$",
       "type": "string",
       "x-fin-class": "meta"
     },
@@ -2029,7 +2029,7 @@
       "type": "string"
     },
     "Envelope": {
-      "description": "One journal entry (Decision 2). `payload` is a `Value` only on the wire and on disk; in\nmemory it is an [`AnyPayload`], serialised on the journal's writer thread.",
+      "description": "One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema\nis [`AnyPayload`]'s). In memory a payload is an [`AnyPayload`], and the journal's writer\nthread serialises an [`EnvelopeRef`], which has the same JSON.",
       "properties": {
         "consent": {
           "$ref": "#/$defs/ConsentStamp"
@@ -2038,12 +2038,10 @@
           "$ref": "#/$defs/Ctx"
         },
         "id": {
-          "description": "The entry's ULID.",
-          "type": "string"
+          "$ref": "#/$defs/Ulid"
         },
         "kind": {
-          "description": "A registry kind (`log.commit`).",
-          "type": "string"
+          "$ref": "#/$defs/KindName"
         },
         "kv": {
           "description": "The kind's payload version.",
@@ -2052,10 +2050,11 @@
           "minimum": 0,
           "type": "integer"
         },
-        "payload": true,
+        "payload": {
+          "$ref": "#/$defs/AnyPayload"
+        },
         "session": {
-          "description": "The emitting process run (a ULID).",
-          "type": "string"
+          "$ref": "#/$defs/Ulid"
         },
         "source": {
           "$ref": "#/$defs/Source"
@@ -3382,6 +3381,48 @@
       ],
       "type": "string"
     },
+    "IntentTx": {
+      "description": "One transaction of an intent. Built only by [`IntentTx::from_tx`] (or decoded, which\nrefuses a raw `asset.add` path); its fields are read through accessors.",
+      "properties": {
+        "argsHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "author": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "baseRev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "branch": {
+          "$ref": "#/$defs/BranchId"
+        },
+        "ops": {
+          "description": "The ops, each `asset.add` path a keyed path token ([`PathRef::token`]).",
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": "array"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "txId": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "txId",
+        "author",
+        "baseRev",
+        "schemaVersion",
+        "ops"
+      ],
+      "type": "object"
+    },
     "Interp": {
       "description": "How a keyframe's value moves to the next one.",
       "oneOf": [
@@ -4100,6 +4141,11 @@
       ],
       "type": "object"
     },
+    "KindName": {
+      "pattern": "^[a-z][A-Za-z0-9]*\\.[a-z][A-Za-z0-9]*$",
+      "type": "string",
+      "x-fin-class": "meta"
+    },
     "Layer": {
       "description": "One item drawn at the plan's time. `local` is the time from the item's start: negative for\na transition's incoming item before its cut, past `duration` for the outgoing one after it.\nAn adjustment layer carries effects only (its transform and crop are the defaults); a\nnested item is a group layer whose `children` are its timeline's layers.",
       "properties": {
@@ -4796,7 +4842,7 @@
     },
     "Name": {
       "description": "A name from code or a static table (fin-core events::names); \"other\" for a value not in the table.",
-      "pattern": "^[a-z][A-Za-z0-9_./ -]{0,63}$",
+      "pattern": "^[a-z][A-Za-z0-9_./-]{0,63}$",
       "type": "string",
       "x-fin-class": "meta"
     },
@@ -7784,9 +7830,9 @@
       "type": "object"
     },
     "TxIntent": {
-      "description": "An edit intent (content `txIntent`): the transactions as committed (an edit's one tx, or a\nhistory call's records, at most 64), or the request's normalised tx on failure.",
+      "description": "An edit intent (content `txIntent`): the transactions as committed (an edit's one tx, or a\nhistory call's records, at most [`MAX_INTENT_TXS`]), or the request's normalised tx on\nfailure.",
       "items": {
-        "$ref": "#/$defs/Tx"
+        "$ref": "#/$defs/IntentTx"
       },
       "type": "array"
     },
@@ -7805,6 +7851,11 @@
     },
     "UiAction": {
       "type": "object"
+    },
+    "Ulid": {
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string",
+      "x-fin-class": "meta"
     },
     "UnitEntry": {
       "description": "One entry of an undo or redo stack.\n\n- `id`: what an `undo` names in `undoes` (a record's txId, a merge group's `mergeId`, the\n  redo record's txId for a redo unit), or, on the redo stack, the undo record's txId;\n- `records`: the txIds of its records, oldest first: whose stored `inverse` an undo (or,\n  for an undo record, a redo) takes;\n- `last_seq`: the seq of its last record, the frame its inverses apply in.",

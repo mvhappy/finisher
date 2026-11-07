@@ -6,8 +6,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{Counts, TxIntent};
-use crate::events::approx::approx_struct;
+use crate::events::approx::{ApproxBytes, approx_struct};
 use crate::events::class::{Code, Content, IdRef, Name};
+use crate::events::intent::MAX_INTENT_ENTRY_BYTES;
 use crate::events::names;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -65,6 +66,26 @@ approx_struct!(LogCommit {
     intent,
     intent_omitted,
 });
+
+impl LogCommit {
+    /// Sets `intent`, or, when the entry would pass [`MAX_INTENT_ENTRY_BYTES`] with it,
+    /// `intentOmitted: tooLarge` (Decision 22), so an oversized intent is dropped before the
+    /// entry is enqueued. `rest_bytes` is the rest of the entry as the caller counts it (the
+    /// envelope's fields and `ctx`); the payload's own fields are counted here. Call it only
+    /// when training is on. Returns whether the intent was kept.
+    pub fn attach_intent(&mut self, intent: TxIntent, rest_bytes: usize) -> bool {
+        self.intent = None;
+        self.intent_omitted = None;
+        let with = rest_bytes + self.approx_bytes() + "intent".len() + 4 + intent.bytes();
+        if with <= MAX_INTENT_ENTRY_BYTES {
+            self.intent = Some(Content(intent));
+            true
+        } else {
+            self.intent_omitted = Some(IntentOmitted::TooLarge);
+            false
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
