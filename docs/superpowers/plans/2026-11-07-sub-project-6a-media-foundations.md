@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task names a **model tier** for its implementer: `opus` for semantics (container interpretation, the sampling rule, colour and geometry maths, the CPU reference, the GPU compositor, the mapped-file channel, the media worker family, tolerance tooling), `sonnet` for plumbing (crate skeletons, gates, bindings, RPC, CLI, CI, docs).
 
-**Revision 2** (2026-11-07), after the review of `e6f7e64`: sub-project 5C owns jobs and the worker binary, so this plan has no supervisor or job store of its own; the sampling rule is the nearest frame; the plan is split into **6A-1** (Tasks 1–8, ready now) and **6A-2** (Tasks 9–16, after 5C). Spec §24 maps every finding.
+**Revision 2** (2026-11-07), after the review of `e6f7e64`: sub-project 5C owns jobs and the worker binary, so this plan has no supervisor or job store of its own; the sampling rule is the nearest frame; the plan is split into **6A-1** (Tasks 1–8, ready now) and **6A-2** (Tasks 9–16, after 5C). Spec §24 maps every finding. **Owner decisions of 2026-11-07** (spec §21) are applied: contain is the base box, 5C-1 runs alongside 6A-1, GPU ids are recorded as numeric `meta`, and the repository targets Node 24.
 
 **Goal:** the first frames rendered from frame plans, on every OS, through the architecture the rest of sub-project 6 builds on:
 - `fin look --at <t>` makes `finisherd` submit a `media.look` job through 5C's `JobEngine`; 5C runs it on a warm `interactive:media` worker (`fin-workers media`), which evaluates the plan from a pinned snapshot, decodes AV1 sources in software, composites them on the GPU and writes PNGs;
@@ -24,7 +24,7 @@
 **Tech stack:**
 - Rust 2024; `wgpu` 30 (MIT OR Apache-2.0); `rav1d` 1.1 (BSD-2-Clause); `mp4-atom` 0.17 (MIT OR Apache-2.0); SVT-AV1 C sources as a git submodule at a pinned release tag (BSD-3-Clause-Clear + AOMedia Patent License 1.0), built with `cmake`; `png` (MIT OR Apache-2.0); `memmap2` (MIT OR Apache-2.0); `libm` **pinned `=0.2.16`** (the version 4C resolves); `pollster` (Apache-2.0 OR MIT) to block on wgpu futures in the worker.
 - Each new crate is checked with `cargo deny` in the task that adds it; native sources and run-time-loaded libraries go into `third_party/native.json` and `third_party/runtime.json` (Task 1).
-- Node 26, Effect 4, vitest; CI adds `cmake` and `nasm` (Windows, Linux) and Mesa's lavapipe (Linux).
+- Node 24 (owner decision 2026-11-07, matching Electron's embedded Node; until TASKS.md's "switch repo Node 26 → 24" item lands, the version `.superpowers/env.sh` pins), Effect 4, vitest; CI adds `cmake` and `nasm` (Windows, Linux) and Mesa's lavapipe (Linux).
 
 ## Global Constraints
 
@@ -55,7 +55,7 @@
 - **GPU tests** pick an adapter with `FIN_GPU=auto|software|<backend>`. Without any adapter they print a notice and skip; `FIN_REQUIRE_GPU=1` (set in CI on Linux with lavapipe and on Windows with WARP) makes them fail instead. macOS CI uses the runner's Metal device if one is exposed, else skips; the validation task (Task 16) covers real GPUs.
 - **Before each commit, every task runs** `rtk cargo test --workspace`, `rtk pnpm test` and `rtk pnpm gates`. Tasks that touch TS or `fin` also run `rtk pnpm e2e` once at the end.
 - Commits use Conventional Commits, author `mvhappy <333925574+mvhappy@users.noreply.github.com>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Prefix shell commands with `rtk`, after `source .superpowers/env.sh` (Node 26). Builds may set `CARGO_TARGET_DIR` to a large volume.
+- Prefix shell commands with `rtk`, after `source .superpowers/env.sh` (Node 24 once the switch item lands). Builds may set `CARGO_TARGET_DIR` to a large volume.
 - **The repo is public:** no host names, IPs, user names or key names in tracked files. Cross-host notes stay in `archive/hosts.md`; benchmarks go in `archive/`.
 - **Tracker:** each task ticks its line in `TASKS.md` under "Sub-project 6A", in the same commit. Task 1 adds the section.
 - **Batches** (each green before the next):
@@ -70,7 +70,7 @@
 
 ## Decisions taken here
 
-1. **Owner questions 4 and 6 (spec §21) proceed on their recommendations** unless the owner answers otherwise before Batch C: the base box is "contain"; media workers run with 5C's cleared environment and no OS sandbox in 6A (the Linux Landlock profile of question 6 (b) is 6B). Question 5 (5C alongside 6A-1) shapes the split above. Each choice is isolated so a different answer is a contained change.
+1. **Owner decisions 4, 5 and 6 (spec §21, 2026-11-07):** the base box is "contain" (decision 4); media workers run with 5C's cleared environment and no OS sandbox in 6A, the Linux Landlock profile is 6B-1 and the full `worker` profile 6G (decision 6, spec §3.5.1); 5C-1 runs alongside 6A-1, which shapes the split above (decision 5).
 2. **Snapshot format for jobs:** the JSON of `fin_core::Project` at `(branch, rev)`, exactly what `fin-node`'s existing `snapshot` returns, plus `{branch, rev}` beside it. No new format.
 3. **Measurer in workers:** the worker builds the same `fin-text` measurer `fin-node` uses, over `fin_fonts::FontCache` opened read-only on the server's font cache plus the project's font assets (paths from the manifest). The plan samples (spec §3.3) prove the two agree.
 4. **Plan samples:** BLAKE3 of the compact JSON of `FramePlan`, as the 4C corpus hashes it (`crates/fin-core/tests/eval_corpus.rs`), at every requested `fin look` time.
@@ -120,7 +120,7 @@
 - `license` must be in `allow`; `THIRD_PARTY_NOTICES.md` must name the library and its tag;
 - MPL-2.0 packages in the graph must be named in `THIRD_PARTY_NOTICES.md`'s MPL §3.2 section with their version.
 
-**Run-time library gate (`check-runtime-libs.mjs`)** (spec §16.3 item 2): `runtime.json` lists `{name, provider: os|driver|bundled, license, note}`; the gate greps Rust and TS sources for `libloading::Library::new`, `dlopen`, `LoadLibrary` and `process.dlopen` and fails on a name not listed. Initial entries: none loaded by Finisher in 6A; Electron's `ffmpeg` entry is added in 6F, `libva` in 6B-2.
+**Run-time library gate (`check-runtime-libs.mjs`)** (spec §16.3 item 2): `runtime.json` lists `{name, provider: os|driver|bundled, license, note}`; the gate greps Rust and TS sources for `libloading::Library::new`, `dlopen`, `LoadLibrary` and `process.dlopen` and fails on a name not listed. Initial entries: none loaded by Finisher in 6A; Electron's `ffmpeg` entry (the open-codecs build, spec §16.1) is added in 6F, `libva` in 6B-2.
 
 **Tests:** the native gate on a fake metadata document with an unlisted `links` package, a GPL licence, a changed licence hash and a missing notice → four failures; the run-time gate on a fake source with an unlisted `dlopen("libfoo.so")` → one failure; the crate-deps gate on a fake graph where `fin` depends on `fin-codecs` → one failure.
 
@@ -504,7 +504,7 @@ prepareMediaJob(projectId: string, branch: string, timeline: string, at: string[
 **Files:**
 - Modify: `crates/fin-core/src/events/{kinds.rs, payloads/…}` (5C's `job.done` goes to `kv` 2 with an optional `media` object, cp §3.4; new kinds `media.capabilities` v1, `render.stats` v1; `preview.stats` v0 and `render.sample` v0 (`training_only`) reserved); the kind registry tests; `crates/fin-workers/src/media/` (emission); regenerate types.
 
-**Fields** (spec §15, all `meta`): `job.done.media = {codec, backend, hw, resolution (bucket), frames, rtFactor, cacheHit, copyPath}`; `media.capabilities` per codec/profile `hw|sw|none`, backend names from `fin-media` static tables, GPU backend and adapter type, and vendor/device ids only if owner question 7 is answered yes (a constant in `fin-media`, default off until then); `render.stats` per-minute histograms of decode, composite and readback micros by backend.
+**Fields** (spec §15, all `meta`): `job.done.media = {codec, backend, hw, resolution (bucket), frames, rtFactor, cacheHit, copyPath}`; `media.capabilities` per codec/profile `hw|sw|none`, backend names from `fin-media` static tables, GPU backend and adapter type, and (owner decision 7) the PCI vendor id, device id and driver major version as numbers, never a driver's name string; the `sandbox` field (`none` in 6A; spec §15); `render.stats` per-minute histograms of decode, composite and readback micros by backend.
 - **No new `Source` variant** (the diagnostics spec owns the enum); emission goes through 5C's forwarding of worker diagnostics.
 - With diagnostics off (5C passes the gate to workers), the family builds no payload (a test counts zero emissions).
 
@@ -533,7 +533,7 @@ prepareMediaJob(projectId: string, branch: string, timeline: string, at: string[
 - Modify: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (status line, "as built" notes for §3, §6.1, §6.3, §6.4, §10.2, §13.2 with measured T1 numbers per adapter), `docs/specs/2026-11-01-finisher-architecture-design.md` §27 (a pointer item for 6A), `TASKS.md`.
 - Archive only: `archive/sp6/6a-validation.md` (numbers, hosts by role, never by name).
 
-**Validation rows** (each on macOS arm64, Windows 11 x64 with a discrete GPU, Linux x64 with an Intel iGPU, the software adapters, and the D31-minimum machine of spec §14 where available):
+**Validation rows** (each on macOS arm64, Windows 11 x64 with a discrete GPU, Linux x64 (kernel ≥ 6.2, D31) with an Intel iGPU, the software adapters, and the D31-minimum machine of spec §14 where available):
 1. `cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e` green.
 2. T0 hashes identical on all three OSes and wasm32.
 3. T1 per adapter: PSNR, max |Δ| and the share of channels over 2/255, for the corpus and the e2e frames; the worst case named (expect it on rotated edges or mips).
@@ -566,6 +566,6 @@ prepareMediaJob(projectId: string, branch: string, timeline: string, at: string[
 | — | 10 `fin-shm` (new) |
 | 15, 16 | 15, 16 |
 
-## Questions for the owner
+## Owner decisions (2026-11-07)
 
-6A proceeds on the recommendations of spec §21 questions 4 and 6 (Decision 1) and records question 7's answer as a constant (Task 14). Question 5 (5C alongside 6A-1) decides when 6A-2 can start. Questions 1, 2, 3, 8 and 9 do not block 6A; they should be answered before 6B-1's plan is written.
+The owner answered spec §21's nine questions on 2026-11-07, all as recommended (question 9 also drops Windows 10 from D31). For 6A: decisions 4 and 6 are Decision 1 above; decision 5 schedules 5C-1 alongside 6A-1, so 6A-2 starts when both are in; decision 7 records GPU ids as numeric `meta` (Task 14). Decisions 1, 2, 3, 8 and 9 shape 6B–6G (Linux AAC-LC through symphonia and vo-aacenc in 6C; Electron's open-codecs ffmpeg in 6F; no codec drivers in the Docker image; 6B on all three OSes with NVIDIA on Linux in 6G; export through OS vendors' encoders only and no built-in HEVC template in 6B-1 and 6E). None changes a 6A task.
