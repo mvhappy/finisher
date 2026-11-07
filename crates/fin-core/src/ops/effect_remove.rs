@@ -98,13 +98,14 @@ pub(crate) fn apply(
     ])
 }
 
-/// Needs `<item>/<fx>` and the item, and removes the effect.
+/// Needs `<item>/<fx>` and removes the effect; touches the item as a whole, so a re-run that
+/// fails on the item's effect list (an undo's restore index) blames it.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::EffectRemove(r) = op {
         f.touches
             .push((format!("{}/{}", r.item, r.effect), Touch::Exists));
-        f.uses.push(r.item.clone());
+        f.touches.push((r.item.clone(), Touch::Exists));
     }
     f
 }

@@ -13,7 +13,8 @@
 //!   move's `by`, so a stale edit meets the keyframe the move carried along.
 //! - The change is the item's (or, on `effects.<fx>.<param>`, the effect's `<item>/<fx>`) with
 //!   `path: "<path>@<at>"`: edits of one keyframe conflict (`SAME_PARAM`), keyframes at other
-//!   times merge.
+//!   times merge. The first keyframe of a path also changes `path` itself (it is no longer
+//!   static), so it conflicts with a concurrent `param.set` of it.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ use crate::ids::IdAlloc;
 use crate::model::{Interp, ItemBody, Keyframe, ParamValue, Project};
 use crate::ops::param_set::entity;
 use crate::ops::util::param_check::{about_item, check_value};
+use crate::ops::util::paths::resolve_path;
 use crate::ops::util::{
     OpDiff, asset, check_unlocked, invalid_range, item_index, normalize_interp, wrong_op,
 };
@@ -91,9 +93,10 @@ pub(crate) fn apply(
     let k = payload(op)?;
     let id = bindings.resolve(&k.item)?;
     let (ti, ci) = item_index(project, &id)?;
+    let path = resolve_path(bindings, &k.path)?;
     let mut value = k.value.clone();
     let mut interp = k.interp;
-    normalize_interp(&k.path, &mut interp)?;
+    normalize_interp(&path, &mut interp)?;
     {
         let track = ti.get(project);
         let it = &track.items[ci];
@@ -102,19 +105,18 @@ pub(crate) fn apply(
             _ => None,
         };
         let scope = ScopeOf::Item { item: it, template };
-        let spec = params::find(&scope, &k.path).map_err(|e| about_item(e, &id))?;
-        check_value(project, spec, &k.path, &mut value, bindings)
-            .map_err(|e| about_item(e, &id))?;
+        let spec = params::find(&scope, &path).map_err(|e| about_item(e, &id))?;
+        check_value(project, spec, &path, &mut value, bindings).map_err(|e| about_item(e, &id))?;
         if bindings.policy() {
             if !spec.animatable {
                 return Err(CoreError::new(
                     "PARAM_NOT_ANIMATABLE",
-                    format!("{} cannot be animated", k.path),
+                    format!("{path} cannot be animated"),
                 )
-                .with_details(json!({ "item": id, "path": k.path }))
+                .with_details(json!({ "item": id, "path": path }))
                 .with_fix("set it with param.set"));
             }
-            check_interp(&k.path, &interp)?;
+            check_interp(&path, &interp)?;
             check_unlocked(track, Some(&id), bindings)?;
         }
         if !bindings.internal() && (k.at < Rational::zero() || k.at > it.duration) {
@@ -123,7 +125,7 @@ pub(crate) fn apply(
                     "a keyframe at {} is outside item {id} (0 to {})",
                     k.at, it.duration
                 ),
-                json!({ "item": id, "path": k.path, "at": k.at, "min": Rational::zero(),
+                json!({ "item": id, "path": path, "at": k.at, "min": Rational::zero(),
                         "max": it.duration, "unit": "s" }),
                 format!("set it at a time from 0 to {} (item-relative)", it.duration),
             ));
@@ -134,13 +136,14 @@ pub(crate) fn apply(
     let list = track.items[ci]
         .common
         .keyframes
-        .entry(k.path.clone())
+        .entry(path.clone())
         .or_default();
     let new = Keyframe {
         at: k.at,
         value,
         interp,
     };
+    let first = list.is_empty();
     let i = list.partition_point(|x| x.at < k.at);
     let old = if list.get(i).is_some_and(|x| x.at == k.at) {
         Some(std::mem::replace(&mut list[i], new))
@@ -148,12 +151,16 @@ pub(crate) fn apply(
         list.insert(i, new);
         None
     };
-    let (kind, entity) = entity(&id, &k.path);
-    diff.record_path_of(kind, &entity, Some(&track_id), &key(&k.path, k.at));
+    let (kind, entity) = entity(&id, &path);
+    diff.record_path_of(kind, &entity, Some(&track_id), &key(&path, k.at));
+    if first {
+        // The path stops being static: a concurrent `param.set` of it is `SAME_PARAM`.
+        diff.record_path_of(kind, &entity, Some(&track_id), &path);
+    }
     Ok(vec![match old {
         Some(old) => KeyframeSet {
             item: id,
-            path: k.path.clone(),
+            path: path.clone(),
             at: old.at,
             value: old.value,
             interp: old.interp,
@@ -161,7 +168,7 @@ pub(crate) fn apply(
         .into(),
         None => KeyframeRemove {
             item: id,
-            path: k.path.clone(),
+            path: path.clone(),
             at: k.at,
         }
         .into(),

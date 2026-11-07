@@ -19,6 +19,7 @@ use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::{ItemBody, ParamValue, Project};
 use crate::ops::util::param_check::{about_item, check_value};
+use crate::ops::util::paths::resolve_path;
 use crate::ops::util::{
     OpDiff, asset, check_source, check_speed, check_unlocked, frame_of, item_index, wrong_op,
 };
@@ -93,6 +94,7 @@ pub(crate) fn apply(
     let s = payload(op)?;
     let id = bindings.resolve(&s.item)?;
     let (ti, ci) = item_index(project, &id)?;
+    let path = resolve_path(bindings, &s.path)?;
     let mut value = s.value.clone();
     {
         let track = ti.get(project);
@@ -102,26 +104,26 @@ pub(crate) fn apply(
             _ => None,
         };
         let scope = ScopeOf::Item { item: it, template };
-        let spec = params::find(&scope, &s.path).map_err(|e| about_item(e, &id))?;
+        let spec = params::find(&scope, &path).map_err(|e| about_item(e, &id))?;
         if let Some(v) = &mut value {
-            check_value(project, spec, &s.path, v, bindings).map_err(|e| about_item(e, &id))?;
+            check_value(project, spec, &path, v, bindings).map_err(|e| about_item(e, &id))?;
         }
-        if s.path == "speed" {
+        if path == "speed" {
             check_speed_value(project, ti, ci, value.as_ref(), bindings)?;
         }
         check_unlocked(track, Some(&id), bindings)?;
-        let animated = it.common.keyframes.get(&s.path).map_or(0, Vec::len);
-        check_static(animated, &id, &s.path, bindings)?;
+        let animated = it.common.keyframes.get(&path).map_or(0, Vec::len);
+        check_static(animated, &id, &path, bindings)?;
     }
     let track = ti.get_mut(project);
     let track_id = track.id.clone();
-    let old = params::set(&mut track.items[ci], &s.path, value)?;
-    let (kind, entity) = entity(&id, &s.path);
-    diff.record_path_of(kind, &entity, Some(&track_id), &s.path);
+    let old = params::set(&mut track.items[ci], &path, value)?;
+    let (kind, entity) = entity(&id, &path);
+    diff.record_path_of(kind, &entity, Some(&track_id), &path);
     Ok(vec![
         ParamSet {
             item: id,
-            path: s.path.clone(),
+            path,
             value: old,
         }
         .into(),

@@ -15,6 +15,8 @@ use fin_store::segment::{self, Segment};
 use fin_store::{MAIN, OpenOptions, Store, TickReport};
 use tempfile::TempDir;
 
+pub mod diverge;
+
 pub struct Env {
     _tmp: TempDir,
     pub root: PathBuf,

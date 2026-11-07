@@ -694,3 +694,221 @@ fn edits_of_a_removed_effect_conflict_removed() {
     assert_eq!(effect_ids(&got, "c1"), ["fx1"]);
     assert!(!item(&got, "c1").common.effects[0].enabled);
 }
+
+// ---- review of Tasks 11/14 ----
+
+/// B1: a later op of the transaction names a new effect by its placeholder inside a path
+/// (`effects.$b.<param>`); it resolves at apply and in the resolved ops, and the inverse names
+/// the bound id.
+#[test]
+fn effect_placeholder_resolves_inside_paths() {
+    let p = busy();
+    let off: Op = ParamSet {
+        item: "c2".into(),
+        path: "effects.$b.enabled".into(),
+        value: Some(ParamValue::Bool(false)),
+    }
+    .into();
+    let ops = vec![
+        add("c2", "$b", "blur", None),
+        key("c2", "effects.$b.radius", secs(1), 4.0),
+        off.clone(),
+    ];
+    assert_eq!(ops[1].ids(), ["c2", "$b"]);
+    let a = golden_apply(&p, ops.clone());
+    let fx = a.bindings["$b"].clone();
+    assert_eq!(fx, "fx3");
+    let path = format!("effects.{fx}.radius");
+    assert_eq!(
+        keys(&a.project, "c2", &path),
+        [(secs(1), ParamValue::Number(4.0))]
+    );
+    assert!(!item(&a.project, "c2").common.effects[0].enabled);
+    let resolved = fin_core::resolve_ops(&ops, &a.bindings).unwrap();
+    assert_eq!(resolved[1], key("c2", &path, secs(1), 4.0));
+    assert!(
+        a.inverse.iter().all(|op| !format!("{op:?}").contains('$')),
+        "{:?}",
+        a.inverse
+    );
+    // An unbound one is UNBOUND_PLACEHOLDER.
+    let e = apply_tx(
+        &p,
+        &tx(vec![key("c2", "effects.$z.radius", secs(1), 4.0)]),
+        &mut MemIds::after(&p),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "UNBOUND_PLACEHOLDER");
+}
+
+/// B1: `for_each_ref` reaches the effect segment of a path and of a keyframe map's keys, and
+/// renames keys together (a swap keeps both lists).
+#[test]
+fn for_each_ref_renames_effect_paths() {
+    let mut op = remove_inverse(&busy(), "fx1");
+    let swap = |r: &mut String| match r.as_str() {
+        "fx1" => *r = "fx2".into(),
+        "fx2" => *r = "fx1".into(),
+        _ => {}
+    };
+    let Op::EffectRestore(r) = &mut op else {
+        panic!()
+    };
+    r.keyframes.insert(
+        "effects.fx2.radius".into(),
+        r.keyframes["effects.fx1.radius"][..1].to_vec(),
+    );
+    op.for_each_ref(swap);
+    let Op::EffectRestore(r) = &op else { panic!() };
+    assert_eq!(r.effect.id, "fx2");
+    assert_eq!(r.keyframes["effects.fx2.radius"].len(), 2);
+    assert_eq!(r.keyframes["effects.fx1.radius"].len(), 1);
+    let mut set = key("c1", "effects.fx1.radius", secs(1), 1.0);
+    set.for_each_ref(swap);
+    assert_eq!(set, key("c1", "effects.fx2.radius", secs(1), 1.0));
+    assert_eq!(set.ids(), ["c1", "fx2"]);
+}
+
+fn remove_inverse(p: &Project, fx: &str) -> Op {
+    apply(p, vec![remove("c1", fx)]).inverse.remove(0)
+}
+
+/// `c1` with `fx1`..`fx3`.
+fn three_effects() -> Project {
+    apply(&busy(), vec![add("c1", "$c", "colorAdjust", None)]).project
+}
+
+/// Replays every record of `main` from its genesis (what a rebuild does).
+fn replays(log: &MemLog, genesis: &Project, n: u64) {
+    use fin_core::history::LogView;
+    let mut p = genesis.clone();
+    for rec in log.records("main", 0, n).unwrap() {
+        p = fin_core::apply_committed(&p, &rec.record.intent, &rec.record.bindings)
+            .unwrap_or_else(|e| panic!("seq {}: {e:?}", rec.seq))
+            .project;
+    }
+    assert_eq!(p, log.state("main"));
+}
+
+/// S1: Alice removes fx3, Bob removes fx1, Alice undoes: the restore's index is past the end
+/// of the shorter list, so fx3 goes back at the end (and the undo replays).
+#[test]
+fn undo_of_effect_remove_after_another_removal() {
+    let p = three_effects();
+    let mut log = MemLog::new(p.clone());
+    log.commit("main", "tx-a", "alice", vec![remove("c1", "fx3")]);
+    log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
+    log.undo("main", "alice", "tx-u").unwrap();
+    assert_eq!(effect_ids(&log.state("main"), "c1"), ["fx2", "fx3"]);
+    replays(&log, &p, 3);
+    // The inverse of a move too: fx3 to the front, fx1 removed, undo moves fx3 to the end.
+    let mut log = MemLog::new(p.clone());
+    log.commit("main", "tx-a", "alice", vec![mv("c1", "fx3", 0)]);
+    log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
+    log.undo("main", "alice", "tx-u").unwrap();
+    assert_eq!(effect_ids(&log.state("main"), "c1"), ["fx2", "fx3"]);
+    replays(&log, &p, 3);
+}
+
+/// S1: a re-run that fails on an item's effect list blames the one step that changed it,
+/// even when that step only removed another effect.
+#[test]
+fn effect_list_rerun_blames_the_removal() {
+    let p = three_effects();
+    let e = rebase_ops(&p, vec![remove("c1", "fx1")], vec![mv("c1", "fx3", 2)]).unwrap_err();
+    assert_eq!(e.code, "CONFLICT", "{e:?}");
+    assert_eq!(e.details["againstTx"], "tx-a", "{e:?}");
+    // A client's move past the end stays INVALID_RANGE.
+    let e = apply_tx(&p, &tx(vec![mv("c1", "fx3", 3)]), &mut MemIds::after(&p)).unwrap_err();
+    assert_eq!(e.code, "INVALID_RANGE");
+}
+
+/// `effect.restore` keyframe lists are non-empty and strictly in time order (structural).
+#[test]
+fn effect_restore_checks_keyframe_lists() {
+    let p = busy();
+    let a = apply(&p, vec![remove("c1", "fx1")]);
+    let Op::EffectRestore(good) = &a.inverse[0] else {
+        panic!()
+    };
+    let path = "effects.fx1.radius";
+    let mut bad = [(**good).clone(), (**good).clone(), (**good).clone()];
+    bad[0].keyframes.get_mut(path).unwrap().reverse();
+    let dup = bad[1].keyframes[path][0].clone();
+    bad[1].keyframes.get_mut(path).unwrap().push(dup);
+    bad[2].keyframes.get_mut(path).unwrap().clear();
+    for r in bad {
+        for mode in [ApplyMode::Internal, ApplyMode::Replay] {
+            let e = apply_tx_mode(
+                &a.project,
+                &tx(vec![r.clone().into()]),
+                &mut MemIds::after(&p),
+                mode,
+            )
+            .unwrap_err();
+            assert_eq!(e.code, "INVALID_OP", "{e:?}");
+        }
+    }
+}
+
+/// Built-in effects are visual: refused on an audio track's item (policy), replayed as stored.
+#[test]
+fn visual_effects_refused_on_audio_items() {
+    let p = apply(
+        &busy(),
+        vec![insert("$x", "t2", secs(0), "a1", secs(0), secs(2))],
+    )
+    .project;
+    let op = add("c3", "$b", "blur", None);
+    let e = apply_tx(&p, &tx(vec![op.clone()]), &mut MemIds::after(&p)).unwrap_err();
+    assert_eq!(e.code, "TRACK_KIND_MISMATCH");
+    assert_eq!(e.details["trackKind"], "audio");
+    let mut literal = op;
+    literal.for_each_ref(|r| {
+        if r == "$b" {
+            *r = "fx9".into();
+        }
+    });
+    apply_tx_mode(
+        &p,
+        &tx(vec![literal]),
+        &mut MemIds::after(&p),
+        ApplyMode::Replay,
+    )
+    .unwrap();
+}
+
+/// A path's first keyframe (it stops being static) meets a concurrent `param.set` of it, and
+/// removing its last keyframe does too.
+#[test]
+fn first_keyframe_meets_a_static_set() {
+    let p = busy();
+    for (theirs, ours) in [
+        (
+            set("c2", "opacity", 0.5),
+            key("c2", "opacity", secs(1), 0.25),
+        ),
+        (
+            key("c2", "opacity", secs(1), 0.25),
+            set("c2", "opacity", 0.5),
+        ),
+    ] {
+        let e = rebase_ops(&p, vec![theirs], vec![ours]).unwrap_err();
+        assert_eq!(reason(&e), "SAME_PARAM");
+    }
+    let one = apply(&p, vec![key("c2", "opacity", secs(1), 0.25)]).project;
+    let e = rebase_ops(
+        &one,
+        vec![unkey("c2", "opacity", secs(1))],
+        vec![set("c2", "opacity", 0.5)],
+    )
+    .unwrap_err();
+    assert_eq!(reason(&e), "SAME_PARAM");
+    // A keyframe on a path already animated stays at its own time.
+    let got = rebase_ops(
+        &p,
+        vec![set("c2", "opacity", 0.5)],
+        vec![key("c1", "opacity", secs(3), 0.5)],
+    );
+    assert!(got.is_ok());
+}

@@ -854,3 +854,21 @@ fn find_by_scope() {
         json!(["colorAdjust", "lut", "blur"])
     );
 }
+
+/// A size's bounds are its range (policy), not its shape: whole non-negative pixels of any
+/// size are well-formed, so a stored size past today's maximum still replays.
+#[test]
+fn size_bounds_are_a_range() {
+    let spec = find(&ScopeOf::Timeline, "resolution").unwrap();
+    let ParamType::Size { max, .. } = spec.ty else {
+        panic!("{spec:?}")
+    };
+    let big = ParamValue::Vec2([f64::from(max) + 2.0, 2.0]);
+    params::check_shape(spec, "resolution", &big).unwrap();
+    let e = params::check_range(spec, "resolution", &big).unwrap_err();
+    assert_eq!(e.code, "INVALID_RANGE");
+    for bad in [[1.5, 2.0], [-2.0, 2.0], [f64::from(u32::MAX) + 1.0, 2.0]] {
+        let e = params::check_shape(spec, "resolution", &ParamValue::Vec2(bad)).unwrap_err();
+        assert_eq!(e.code, "PARAM_TYPE", "{bad:?}");
+    }
+}

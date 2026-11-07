@@ -1,6 +1,7 @@
 //! `keyframe.remove`: removes the keyframe of `path` of an item at item-relative time `at`
 //! (`NOT_FOUND` "keyframe" when there is none: structural). Removing a path's last keyframe
-//! drops the path's list, so the path is static again. No range check: a keyframe a trim
+//! drops the path's list, so the path is static again (and the change names `path` too, as
+//! the first `keyframe.set` of it does). No range check: a keyframe a trim
 //! carried outside the item can still be removed. `at` is a content offset (Decision 16), and
 //! the footprint is `keyframe.set`'s. The inverse is `keyframe.set` of the removed keyframe.
 
@@ -12,6 +13,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::keyframe_set::{key, keyframe_footprint};
 use crate::ops::param_set::entity;
+use crate::ops::util::paths::resolve_path;
 use crate::ops::util::{OpDiff, check_unlocked, item_index, not_found, wrong_op};
 use crate::ops::{Bindings, KeyframeSet, Op};
 use crate::rebase::Footprint;
@@ -50,28 +52,34 @@ pub(crate) fn apply(
     };
     let id = bindings.resolve(&k.item)?;
     let (ti, ci) = item_index(project, &id)?;
-    let missing = || not_found("keyframe", &format!("{id} {}", key(&k.path, k.at)));
+    let path = resolve_path(bindings, &k.path)?;
+    let missing = || not_found("keyframe", &format!("{id} {}", key(&path, k.at)));
     let i = ti.get(project).items[ci]
         .common
         .keyframes
-        .get(&k.path)
+        .get(&path)
         .and_then(|list| list.iter().position(|x| x.at == k.at))
         .ok_or_else(missing)?;
     check_unlocked(ti.get(project), Some(&id), bindings)?;
     let track = ti.get_mut(project);
     let track_id = track.id.clone();
     let keyframes = &mut track.items[ci].common.keyframes;
-    let list = keyframes.get_mut(&k.path).ok_or_else(missing)?;
+    let list = keyframes.get_mut(&path).ok_or_else(missing)?;
     let old = list.remove(i);
-    if list.is_empty() {
-        keyframes.remove(&k.path);
+    let last = list.is_empty();
+    if last {
+        keyframes.remove(&path);
     }
-    let (kind, entity) = entity(&id, &k.path);
-    diff.record_path_of(kind, &entity, Some(&track_id), &key(&k.path, k.at));
+    let (kind, entity) = entity(&id, &path);
+    diff.record_path_of(kind, &entity, Some(&track_id), &key(&path, k.at));
+    if last {
+        // The path is static again: as with its first keyframe, `path` itself changes.
+        diff.record_path_of(kind, &entity, Some(&track_id), &path);
+    }
     Ok(vec![
         KeyframeSet {
             item: id,
-            path: k.path.clone(),
+            path: path.clone(),
             at: old.at,
             value: old.value,
             interp: old.interp,

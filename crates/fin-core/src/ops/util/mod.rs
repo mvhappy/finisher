@@ -15,6 +15,7 @@ mod limits;
 mod lock;
 mod lookup;
 pub(crate) mod param_check;
+pub(crate) mod paths;
 mod prune;
 mod ripple;
 pub(crate) mod roll;

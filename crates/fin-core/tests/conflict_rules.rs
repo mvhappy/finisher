@@ -281,10 +281,10 @@ fn every_op_has_a_footprint() {
     let p = base();
     let spare = apply(&p, vec![av_asset("$b", secs(10))]).project;
     let deleted = apply(&p, vec![delete("c3")]);
-    // c3 with effects fx1 and fx2 and an opacity keyframe (Task 14).
+    // c2 (video) with effects fx1 and fx2, c3 with an opacity keyframe (Task 14).
     let fx = |kind: &str| -> Op {
         fin_core::EffectAdd {
-            item: "c3".into(),
+            item: "c2".into(),
             id: format!("${kind}"),
             kind: kind.into(),
             at: None,
@@ -307,7 +307,7 @@ fn every_op_has_a_footprint() {
         &busy,
         vec![
             fin_core::EffectRemove {
-                item: "c3".into(),
+                item: "c2".into(),
                 effect: "fx1".into(),
             }
             .into(),
@@ -388,25 +388,25 @@ fn every_op_has_a_footprint() {
             .into(),
             vec!["t2"],
         ),
-        (p.clone(), fx("blur"), vec!["t2"]),
+        (p.clone(), fx("blur"), vec!["t1"]),
         (
             busy.clone(),
             fin_core::EffectRemove {
-                item: "c3".into(),
+                item: "c2".into(),
                 effect: "fx1".into(),
             }
             .into(),
-            vec!["t2"],
+            vec!["t1"],
         ),
         (
             busy.clone(),
             fin_core::EffectMove {
-                item: "c3".into(),
+                item: "c2".into(),
                 effect: "fx1".into(),
                 to: 1,
             }
             .into(),
-            vec!["t2"],
+            vec!["t1"],
         ),
         (busy.clone(), keyed(2), vec!["t2"]),
         (
@@ -419,7 +419,7 @@ fn every_op_has_a_footprint() {
             .into(),
             vec!["t2"],
         ),
-        (unfx.project.clone(), unfx.inverse[0].clone(), vec!["t2"]),
+        (unfx.project.clone(), unfx.inverse[0].clone(), vec!["t1"]),
     ];
     let linked = apply(&p, vec![link(&["c1", "c3"], "$g")]).project;
     let more = [
@@ -711,26 +711,37 @@ fn every_op_has_a_footprint() {
             }
             Op::ParamSet(s) => f.touches == [(s.item.clone(), Touch::Param(s.path.clone()))],
             Op::EffectAdd(a) => {
-                f.creates == [format!("c3/{}", a.id)] && f.uses == ["c3"] && f.touches.is_empty()
+                f.creates == [format!("c2/{}", a.id)]
+                    && f.touches == [("c2".to_string(), Touch::Exists)]
+                    && f.uses.is_empty()
             }
             Op::EffectRemove(r) => {
-                f.touches == [(format!("c3/{}", r.effect), Touch::Exists)]
-                    && f.removes == [format!("c3/{}", r.effect)]
-                    && f.uses == ["c3"]
+                f.touches
+                    == [
+                        (format!("c2/{}", r.effect), Touch::Exists),
+                        ("c2".to_string(), Touch::Exists),
+                    ]
+                    && f.removes == [format!("c2/{}", r.effect)]
+                    && f.uses.is_empty()
             }
             Op::EffectMove(m) => {
-                f.touches == [("c3".to_string(), Touch::Param("effects".into()))]
-                    && f.uses == [format!("c3/{}", m.effect)]
+                f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
+                    && f.uses == [format!("c2/{}", m.effect)]
             }
             Op::KeyframeSet(k) => {
                 f.touches == [("c3".to_string(), Touch::Param(format!("opacity@{}", k.at)))]
             }
+            // The path's last keyframe: the path itself changes too.
             Op::KeyframeRemove(k) => {
-                f.touches == [("c3".to_string(), Touch::Param(format!("opacity@{}", k.at)))]
+                f.touches
+                    == [
+                        ("c3".to_string(), Touch::Param(format!("opacity@{}", k.at))),
+                        ("c3".to_string(), Touch::Param("opacity".into())),
+                    ]
             }
             Op::EffectRestore(r) => {
-                f.creates == [format!("c3/{}", r.effect.id)]
-                    && f.touches == [("c3".to_string(), Touch::Param("effects".into()))]
+                f.creates == [format!("c2/{}", r.effect.id)]
+                    && f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
             }
         };
         assert!(want, "{}: {f:?}", op.name());

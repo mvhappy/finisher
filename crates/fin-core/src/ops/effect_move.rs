@@ -1,6 +1,7 @@
 //! `effect.move`: moves an effect of an item to index `to` of its effect list (the index it
-//! has afterwards). An index past the end is structural (`INVALID_RANGE`). The change is the
-//! item's with `path: "effects"`, so two moves of one item's effects conflict (`SAME_PARAM`,
+//! has afterwards). A client's index past the end is `INVALID_RANGE`; an internal apply (an
+//! undo's inverse re-run after other effects were removed, and its replay) moves it to the
+//! end. The change is the item's with `path: "effects"`, so two moves of one item's effects conflict (`SAME_PARAM`,
 //! Decision 20); the footprint needs `<item>/<fx>`, so a move of a removed effect is
 //! `REMOVED`. The inverse moves it back.
 
@@ -54,7 +55,9 @@ pub(crate) fn apply(
     let it = &ti.get(project).items[ci];
     let from = effect_index(it, &m.effect)?;
     let len = it.common.effects.len();
-    if m.to as usize >= len {
+    // An internal apply (an undo's inverse re-run after other effects were removed, and the
+    // replay of what it committed) moves to the end instead; a client's index is exact.
+    if m.to as usize >= len && !bindings.internal() {
         let max = len - 1;
         return Err(invalid_range(
             format!("item {item} has {len} effects: there is no index {}", m.to),
@@ -66,7 +69,8 @@ pub(crate) fn apply(
     let track = ti.get_mut(project);
     let effects = &mut track.items[ci].common.effects;
     let effect = effects.remove(from);
-    effects.insert(m.to as usize, effect);
+    let to = (m.to as usize).min(effects.len());
+    effects.insert(to, effect);
     let track_id = track.id.clone();
     diff.record_path(&track_id, &item, EFFECTS);
     Ok(vec![

@@ -22,6 +22,18 @@ pub(crate) struct Remap {
     map: BTreeMap<String, String>,
 }
 
+/// Why [`Remap::prepare`] stopped renaming: a store error, or a literal id bound elsewhere.
+enum Stop {
+    Store(StoreError),
+    Collision(String),
+}
+
+impl From<StoreError> for Stop {
+    fn from(e: StoreError) -> Self {
+        Stop::Store(e)
+    }
+}
+
 /// Every entity id in `project` ([`Project::entity_ids`]).
 pub(crate) fn entity_ids(project: &Project) -> BTreeSet<String> {
     project.entity_ids().into_iter().map(String::from).collect()
@@ -45,23 +57,32 @@ impl Remap {
             .map(|(k, v)| (v.as_str(), k.as_str()))
             .collect();
         let mut tx = rec.intent.clone();
+        // The effect ids inside parameter paths are renamed too (plan 4C Decision 24).
         for (i, op) in tx.ops.iter_mut().enumerate() {
-            for r in op.refs_mut() {
+            let renamed = op.try_for_each_ref(|r| {
                 if r.starts_with('$') {
-                    continue;
+                    return Ok(());
                 }
                 if let Some(p) = placeholder.get(r.as_str()) {
                     *r = (*p).to_string();
                 } else if let Some(new) = self.map.get(r.as_str()) {
                     *r = new.clone();
                 } else if !fork_ids.contains(r.as_str()) && bound_elsewhere(r)? {
+                    return Err(Stop::Collision(r.clone()));
+                }
+                Ok(())
+            });
+            match renamed {
+                Ok(()) => {}
+                Err(Stop::Store(e)) => return Err(e),
+                Err(Stop::Collision(id)) => {
                     let mut c = Conflict::new(
                         rec.tx_id.clone(),
                         i,
                         fin_core::rebase::reasons::ID_COLLISION,
                         None,
                     );
-                    c.details = Some(Box::new(serde_json::json!({ "id": r.as_str() })));
+                    c.details = Some(Box::new(serde_json::json!({ "id": id })));
                     return Ok(Err(c));
                 }
             }

@@ -27,9 +27,9 @@ pub fn check_shape(spec: &ParamSpec, path: &str, value: &ParamValue) -> Result<(
         (ParamType::Time { .. } | ParamType::Rational { .. }, ParamValue::Text(s)) => {
             s.parse::<Rational>().is_ok()
         }
-        (ParamType::Size { max, .. }, ParamValue::Vec2(v)) => v
+        (ParamType::Size { .. }, ParamValue::Vec2(v)) => v
             .iter()
-            .all(|x| *x >= 0.0 && *x <= f64::from(*max) && *x == x.floor()),
+            .all(|x| *x >= 0.0 && *x <= f64::from(u32::MAX) && *x == x.floor()),
         _ => false,
     };
     if ok {
@@ -85,7 +85,8 @@ pub fn check_range(spec: &ParamSpec, path: &str, value: &ParamValue) -> Result<(
             ))
         }
         (ParamType::Size { min, max }, ParamValue::Vec2(v))
-            if v.iter().any(|x| *x < f64::from(*min)) =>
+            if v.iter()
+                .any(|x| *x < f64::from(*min) || *x > f64::from(*max)) =>
         {
             Err(out(
                 vec2(*v),

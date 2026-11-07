@@ -3,8 +3,10 @@
 //! the id it had); its keyframe times are item-relative, so a rebase maps them through content
 //! offsets like a `keyframe.set`'s `at` (Decision 16). Structural: the index fits, the item has
 //! no effect with that id, each keyframe path is the effect's (`effects.<fx>.`) and not already
-//! animated, and the values are finite. The change is the effect's `added`; the footprint also
-//! touches the item's effect order.
+//! animated, each list is non-empty and strictly in time order, and the values are finite. An
+//! index past the end (an undo re-run after other effects were removed) is the end, in every
+//! mode, so the replay of what the undo committed puts it where the undo did. The change is
+//! the effect's `added`; the footprint also touches the item's effect order.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +20,7 @@ use crate::model::{Effect, Keyframe, ParamValue, Project};
 use crate::ops::effect_add::EFFECTS;
 use crate::ops::effect_remove::prefix;
 use crate::ops::util::{
-    OpDiff, check_unlocked, invalid_range, item_index, normalize_interp, normalize_value, wrong_op,
+    OpDiff, check_unlocked, item_index, normalize_interp, normalize_value, wrong_op,
 };
 use crate::ops::{Bindings, EffectRemove, Op, check_literal};
 use crate::rebase::{Footprint, Touch};
@@ -57,6 +59,13 @@ fn canonical(r: &EffectRestore) -> Result<(Effect, BTreeMap<String, Vec<Keyframe
     }
     let mut keyframes = r.keyframes.clone();
     for (path, keys) in &mut keyframes {
+        if keys.is_empty() || keys.windows(2).any(|w| w[0].at >= w[1].at) {
+            return Err(CoreError::new(
+                "INVALID_OP",
+                format!("the keyframes of {path} are not a non-empty list in time order"),
+            )
+            .with_details(json!({ "path": path })));
+        }
         for k in keys {
             normalize_value(path, &mut k.value)?;
             normalize_interp(path, &mut k.interp)?;
@@ -86,17 +95,6 @@ pub(crate) fn apply(
     }
     {
         let it = &ti.get(project).items[ci];
-        let len = it.common.effects.len();
-        if r.index as usize > len {
-            return Err(invalid_range(
-                format!(
-                    "item {item} has {len} effects: there is no index {}",
-                    r.index
-                ),
-                json!({ "item": item, "at": r.index, "min": 0, "max": len }),
-                format!("use an index from 0 to {len}"),
-            ));
-        }
         if it.common.effects.iter().any(|e| e.id == effect.id) {
             return Err(CoreError::new(
                 "DUPLICATE_ID",
@@ -121,7 +119,10 @@ pub(crate) fn apply(
     let track_id = track.id.clone();
     let common = &mut track.items[ci].common;
     let fx = effect.id.clone();
-    common.effects.insert(r.index as usize, effect);
+    // An undo re-run after other effects were removed may name an index past the end: it is
+    // the end (and so in the replay of what it committed).
+    let index = (r.index as usize).min(common.effects.len());
+    common.effects.insert(index, effect);
     common.keyframes.extend(keyframes);
     diff.record_on(
         &track_id,
@@ -144,6 +145,7 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
             r.effect
                 .params
                 .values()
+                .chain(r.keyframes.values().flatten().map(|k| &k.value))
                 .filter_map(ParamValue::asset)
                 .map(str::to_string),
         );
@@ -176,14 +178,26 @@ pub(crate) const NAME: &str = "effect.restore";
 /// Whether the op is produced only as an inverse and never accepted from clients.
 pub(crate) const INTERNAL: bool = true;
 
-/// Every id reference the op carries, mutably: the item, the effect's id and the assets its
-/// params name.
+/// Every id reference the op carries, mutably: the item, the effect's id, the assets its
+/// params name and the assets its keyframe values name (the effect ids in the keyframe paths
+/// are reached through [`Op::try_for_each_ref`]).
 pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
     match op {
         Op::EffectRestore(r) => {
-            let EffectRestore { item, effect, .. } = &mut **r;
+            let EffectRestore {
+                item,
+                effect,
+                keyframes,
+                ..
+            } = &mut **r;
             let mut out = vec![item];
             out.extend(effect.refs_mut());
+            out.extend(
+                keyframes
+                    .values_mut()
+                    .flatten()
+                    .filter_map(|k| k.value.asset_mut()),
+            );
             out
         }
         _ => Vec::new(),
@@ -196,6 +210,12 @@ pub(crate) fn ids(op: &Op) -> Vec<&str> {
         Op::EffectRestore(r) => {
             let mut out = vec![r.item.as_str()];
             out.extend(r.effect.ids());
+            out.extend(
+                r.keyframes
+                    .values()
+                    .flatten()
+                    .filter_map(|k| k.value.asset()),
+            );
             out
         }
         _ => Vec::new(),

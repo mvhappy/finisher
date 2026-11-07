@@ -8,6 +8,8 @@
 //! of its shape (structural) and range (policy). `enabled` is not a param: added effects are
 //! enabled (`param.set effects.<fx>.enabled` turns one off). The change is the effect's
 //! `added`, plus the item's `effects` order when `at` is given; the inverse is `effect.remove`.
+//! Built-in effects are visual: on an item of an audio track they are `TRACK_KIND_MISMATCH`
+//! (policy).
 
 use std::collections::BTreeMap;
 
@@ -17,7 +19,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{Effect, ParamValue, Project};
+use crate::model::{Effect, ParamValue, Project, Track, TrackKind};
 use crate::ops::util::param_check::{about_item, check_value};
 use crate::ops::util::{
     OpDiff, check_unlocked, invalid_range, item_index, normalize_value, wrong_op,
@@ -94,6 +96,31 @@ fn checked_params(
     Ok(out)
 }
 
+/// Every built-in effect is visual: one on an item of an audio track is `TRACK_KIND_MISMATCH`
+/// (policy).
+fn check_visual_track(
+    track: &Track,
+    item: &str,
+    kind: &str,
+    bindings: &Bindings,
+) -> Result<(), CoreError> {
+    if !bindings.policy()
+        || track.kind != TrackKind::Audio
+        || !params::effect_kinds().contains(&kind)
+    {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        "TRACK_KIND_MISMATCH",
+        format!(
+            "{kind} is a visual effect; item {item} is on audio track {}",
+            track.id
+        ),
+    )
+    .with_details(json!({ "item": item, "kind": kind, "track": track.id, "trackKind": "audio" }))
+    .with_fix("add visual effects to items on video tracks"))
+}
+
 /// The inverse is one `effect.remove`.
 pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
     1
@@ -122,6 +149,7 @@ pub(crate) fn apply(
         None => len,
     };
     check_unlocked(ti.get(project), Some(&item), bindings)?;
+    check_visual_track(ti.get(project), &item, &a.kind, bindings)?;
     let params = checked_params(project, a, bindings).map_err(|e| about_item(e, &item))?;
     let fx = bindings.create(project, &a.id, IdKind::Effect, ids)?;
     let track = ti.get_mut(project);
@@ -147,12 +175,13 @@ pub(crate) fn apply(
     Ok(vec![EffectRemove { item, effect: fx }.into()])
 }
 
-/// Creates `<item>/<fx>` and needs the item; an index touches the item's effect order.
+/// Creates `<item>/<fx>` and touches the item as a whole (so a re-run that fails on the
+/// item's effect list blames it); an index touches the item's effect order.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::EffectAdd(a) = op {
         f.creates.push(format!("{}/{}", a.item, a.id));
-        f.uses.push(a.item.clone());
+        f.touches.push((a.item.clone(), Touch::Exists));
         if a.at.is_some() {
             f.touches
                 .push((a.item.clone(), Touch::Param(EFFECTS.to_string())));

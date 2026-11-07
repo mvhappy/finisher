@@ -438,11 +438,12 @@ fn ops_table_lists_every_variant() {
         assert_eq!(&back, op);
         ids_cover_every_id_in_json(op);
         let mut m = op.clone();
-        let refs: Vec<String> = m.refs_mut().into_iter().map(|s| s.clone()).collect();
+        let mut refs: Vec<String> = Vec::new();
+        m.for_each_ref(|r| refs.push(r.clone()));
         assert_eq!(
             op.ids(),
             refs,
-            "{}: ids lists what refs_mut does",
+            "{}: ids lists what for_each_ref reaches",
             op.name()
         );
         assert_eq!(op.is_alias(), op.name().starts_with("clip."));

@@ -7,9 +7,8 @@
 
 mod integration_support;
 
-use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use fin_core::{
     CommittedTx, Edge, Link, Op, Project, Rational, Record, SCHEMA_VERSION, Tx, encode_record,
@@ -18,22 +17,9 @@ use fin_store::{
     BranchCreate, CheckpointReq, HistoryReq, MAIN, ReadOnlyReason, RecoverReport, RecoverReq,
     RecoverSel, Store,
 };
+use integration_support::diverge::*;
 use integration_support::*;
 use rusqlite::{Connection, params};
-
-fn freeze(s: &Store) {
-    s.lease().expect("holding").fail_heartbeats(u32::MAX);
-}
-
-fn poll_until_held(e: &Env, s: &mut Store, max: u64) {
-    let mut waited = 0;
-    while held_epoch(s).is_none() {
-        assert!(waited <= max, "not acquired: {:?}", s.lease_state());
-        e.advance(2);
-        waited += 2;
-        e.poll(s);
-    }
-}
 
 fn on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx {
     let base = s.head(branch);
@@ -66,82 +52,6 @@ fn branch(s: &mut Store, tx_id: &str, name: &str, from: &str) -> String {
     .unwrap()
     .branch
     .id
-}
-
-fn all_segments(dir: &Path) -> Vec<PathBuf> {
-    let root = dir.join(".finisher").join("segments");
-    let mut out = vec![];
-    for d in fs::read_dir(&root).into_iter().flatten().flatten() {
-        if d.path().is_dir() {
-            for f in fs::read_dir(d.path()).unwrap().flatten() {
-                out.push(f.path());
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-struct Split {
-    a: Store,
-    b: Store,
-    f: Store,
-}
-
-/// As `tests/cascade.rs`: A commits `t0` (an asset) and `before`, exports, pauses; B takes
-/// over (epoch 2); A's `late` writes (still epoch 1, test lease) are exported and F applies
-/// them before B, which does not see them, writes `won` and exports.
-fn split(
-    e: &Env,
-    before: impl FnOnce(&mut Store),
-    late: impl FnOnce(&mut Store),
-    won: impl FnOnce(&mut Store),
-) -> Split {
-    let mut a = e.create("a");
-    commit(&mut a, "t0", vec![asset("/m/0.mov")]);
-    before(&mut a);
-    e.flush(&mut a);
-    let mut f = e.open("f");
-    let mut b = e.open("b");
-    freeze(&a);
-    poll_until_held(e, &mut b, 80);
-    assert_eq!(held_epoch(&b), Some(2));
-    e.advance(10);
-    e.poll(&mut b);
-    assert_eq!(b.read_only(), None);
-    a.set_test_lease(1, true);
-    let had: BTreeSet<PathBuf> = all_segments(&e.dir).into_iter().collect();
-    late(&mut a);
-    e.flush(&mut a);
-    let late_files: Vec<PathBuf> = all_segments(&e.dir)
-        .into_iter()
-        .filter(|p| !had.contains(p))
-        .collect();
-    e.poll(&mut f);
-    for p in &late_files {
-        fin_store::scan::hide_for_test(p);
-    }
-    won(&mut b);
-    e.flush(&mut b);
-    for p in &late_files {
-        fin_store::scan::unhide_for_test(p);
-    }
-    Split { a, b, f }
-}
-
-fn winner(b: &mut Store) {
-    commit(b, "u1", vec![insert(0, "a1")]);
-}
-
-/// A's unexported `tail` loses to B's `u1`: a diverged tail on A, which then holds a test
-/// lease at epoch 3 to write.
-fn diverged(e: &Env, tail: impl FnOnce(&mut Store)) -> Split {
-    let mut s = split(e, |_| {}, |_| {}, winner);
-    tail(&mut s.a);
-    s.a.set_test_lease(1, false);
-    e.poll(&mut s.a);
-    s.a.set_test_lease(3, true);
-    s
 }
 
 fn req(tx_id: &str, create: Option<RecoverSel>) -> RecoverReq {
@@ -1471,5 +1381,47 @@ fn verify_checks_quarantine_marks() {
     assert!(
         !c.ok && c.details["marks"].as_array().unwrap().len() == 1,
         "{c:#?}"
+    );
+}
+
+/// Plan 4C review B1: a tail that edits an effect it added comes back on the effect's new id
+/// (the effect segment of a parameter path is remapped like any other id).
+#[test]
+fn recovered_tail_follows_the_effect_it_added() {
+    let e = env();
+    let Split { mut a, .. } = diverged(&e, |a| {
+        on(a, "x1", MAIN, vec![insert(0, "a1")]);
+        let fx = fin_core::EffectAdd {
+            item: "c1".into(),
+            id: "$fx".into(),
+            kind: "blur".into(),
+            at: None,
+            params: Default::default(),
+        };
+        let x2 = on(a, "x2", MAIN, vec![fx.into()]);
+        let path = format!("effects.{}.radius", x2.bindings["$fx"]);
+        let value = Some(fin_core::ParamValue::Number(5.0));
+        let set = fin_core::ParamSet {
+            item: "c1".into(),
+            path,
+            value,
+        };
+        on(a, "x3", MAIN, vec![set.into()]);
+    });
+    let groups = a.recover_groups().unwrap();
+    assert!(groups.iter().all(|g| g.recoverable), "{groups:#?}");
+    let r = create_all(&mut a, "rec");
+    // `committed[0]` is the recovered branch's `branch` record.
+    let Op::ParamSet(set) = &r.committed[3].tx.ops[0] else {
+        panic!("{:?}", r.committed)
+    };
+    let (c, fx) = (
+        &r.committed[1].bindings["$c"],
+        &r.committed[2].bindings["$fx"],
+    );
+    assert!(c != "c1" && fx != "fx1", "fresh ids: {c} {fx}");
+    assert_eq!(
+        (set.item.as_str(), set.path.clone()),
+        (c.as_str(), format!("effects.{fx}.radius"))
     );
 }

@@ -203,9 +203,9 @@ pub fn resolve_ops(ops: &[Op], bindings: &BTreeMap<String, String>) -> Result<Ve
         .enumerate()
         .map(|(i, op)| {
             let mut op = op.clone();
-            for r in op.refs_mut() {
+            op.try_for_each_ref(|r| {
                 if !r.starts_with('$') {
-                    continue;
+                    return Ok(());
                 }
                 let Some(id) = bindings.get(r.as_str()) else {
                     return Err(CoreError::new(
@@ -215,7 +215,8 @@ pub fn resolve_ops(ops: &[Op], bindings: &BTreeMap<String, String>) -> Result<Ve
                     .with_details(json!({ "placeholder": r, "opIndex": i })));
                 };
                 *r = id.clone();
-            }
+                Ok(())
+            })?;
             Ok(op)
         })
         .collect()

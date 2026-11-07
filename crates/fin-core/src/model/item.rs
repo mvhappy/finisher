@@ -372,7 +372,9 @@ impl Item {
 
     /// Every id the item carries (plan 4C Decision 24), mutably: its own, what its body
     /// names (an asset, a nested timeline, a caption style, the assets its slots name), its
-    /// effects' (with the assets their params name) and its link group.
+    /// effects' (with the assets their params name), its link group and the assets its
+    /// keyframe values name. The effect ids in its keyframe paths are reached through
+    /// [`crate::Op::try_for_each_ref`].
     pub fn refs_mut(&mut self) -> Vec<&mut String> {
         let mut out = vec![&mut self.id];
         out.extend(self.body.refs_mut());
@@ -380,6 +382,13 @@ impl Item {
             out.extend(e.refs_mut());
         }
         out.extend(self.common.link.as_mut());
+        out.extend(
+            self.common
+                .keyframes
+                .values_mut()
+                .flatten()
+                .filter_map(|k| k.value.asset_mut()),
+        );
         out
     }
 
@@ -391,6 +400,13 @@ impl Item {
             out.extend(e.ids());
         }
         out.extend(self.common.link.as_deref());
+        out.extend(
+            self.common
+                .keyframes
+                .values()
+                .flatten()
+                .filter_map(|k| k.value.asset()),
+        );
         out
     }
 

@@ -249,7 +249,9 @@ macro_rules! ops_table {
             /// Every id reference in the op (new-entity ids, tracks, assets, items, and the ids
             /// nested in a restored item, plan 4C Decision 24), mutably,
             /// so placeholders can be substituted in one place, and ids renamed (a recovered
-            /// record re-run under fresh ids, plan 4B Decision 27).
+            /// record re-run under fresh ids, plan 4B Decision 27). The effect ids inside
+            /// parameter paths are not fields of their own: [`Op::try_for_each_ref`] reaches
+            /// these and those, and is what renames ids.
             pub fn refs_mut(&mut self) -> Vec<&mut String> {
                 match self { $(Op::$variant { .. } => $module::refs_mut(self),)* }
             }
@@ -258,8 +260,12 @@ macro_rules! ops_table {
             /// placeholders are resolved these are real ids; replay accepts literal ones,
             /// which the store's id counters must see too. Lists the same fields as
             /// `refs_mut`.
+            /// Then the effect ids inside its parameter paths (`effects.<fx>.<param>`, the
+            /// keys of the keyframe maps it carries), which [`Op::try_for_each_ref`] rewrites.
             pub fn ids(&self) -> Vec<&str> {
-                match self { $(Op::$variant { .. } => $module::ids(self),)* }
+                let mut out = match self { $(Op::$variant { .. } => $module::ids(self),)* };
+                out.extend(util::paths::path_ids(self));
+                out
             }
 
             /// The placeholder this op binds to a newly allocated id, if any (in op order
@@ -308,6 +314,34 @@ macro_rules! ops_table {
             match op { $(Op::$variant { .. } => $module::footprint(op, op_diff),)* }
         }
     };
+}
+
+impl Op {
+    /// Passes every id reference of the op through `f`: the fields [`Op::refs_mut`] lists,
+    /// then the effect segment of each parameter path it carries (`effects.<fx>.<param>`, in a
+    /// `param.set`/`keyframe.*` path and in the keys of a keyframe map), written back when `f`
+    /// changes it (plan 4C Decision 24). Stops at the first error.
+    pub fn try_for_each_ref<E>(
+        &mut self,
+        mut f: impl FnMut(&mut String) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for r in self.refs_mut() {
+            f(r)?;
+        }
+        for p in util::paths::paths_mut(self) {
+            p.try_each(&mut f)?;
+        }
+        Ok(())
+    }
+
+    /// [`Op::try_for_each_ref`] with an `f` that cannot fail.
+    pub fn for_each_ref(&mut self, mut f: impl FnMut(&mut String)) {
+        let done: Result<(), std::convert::Infallible> = self.try_for_each_ref(|r| {
+            f(r);
+            Ok(())
+        });
+        let Ok(()) = done;
+    }
 }
 
 /// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op

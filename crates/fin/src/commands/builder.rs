@@ -75,11 +75,11 @@ impl<'a> Builder<'a> {
         let mut local = op.clone();
         // New-entity placeholders stay as written: the work copy binds them itself.
         let allocated = local.allocates().map(str::to_string);
-        for r in local.refs_mut() {
+        local.for_each_ref(|r| {
             if allocated.as_deref() != Some(r.as_str()) {
                 *r = self.id(r);
             }
-        }
+        });
         let tx = self.tx(vec![local]);
         let applied = match apply_tx(&self.work, &tx, &mut self.ids) {
             Ok(applied) => applied,
