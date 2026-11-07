@@ -33,6 +33,7 @@ mod item_restore;
 mod item_slip;
 mod item_split;
 mod item_trim;
+mod param_set;
 pub(crate) mod util;
 
 pub use alias::normalize;
@@ -41,6 +42,7 @@ pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
     ItemSlip, ItemSplit, ItemTrim, Op, TrimMode,
 };
+pub use param_set::ParamSet;
 
 /// `$name` placeholders bound during one transaction, in op order.
 pub(crate) struct Bindings {
@@ -258,6 +260,7 @@ ops_table! {
     AssetRemove => asset_remove,
     ItemRemove => item_remove,
     ItemRestore => item_restore,
+    ParamSet => param_set,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,

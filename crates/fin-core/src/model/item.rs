@@ -243,6 +243,22 @@ fn yes() -> bool {
     true
 }
 
+impl Effect {
+    /// Every id the effect carries, mutably: its own and the assets its params name.
+    pub fn refs_mut(&mut self) -> Vec<&mut String> {
+        let mut out = vec![&mut self.id];
+        out.extend(self.params.values_mut().filter_map(ParamValue::asset_mut));
+        out
+    }
+
+    /// The ids [`Effect::refs_mut`] lists.
+    pub fn ids(&self) -> Vec<&str> {
+        let mut out = vec![self.id.as_str()];
+        out.extend(self.params.values().filter_map(ParamValue::asset));
+        out
+    }
+}
+
 /// A matte (an artifact reference) that masks the item.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -295,7 +311,9 @@ pub enum Interp {
 }
 
 /// A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's
-/// `float_roundtrip`).
+/// `float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an
+/// asset reference is `{"asset": id}`, so every id a value carries is found without the
+/// registry (plan 4C Decision 24).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ParamValue {
@@ -303,6 +321,25 @@ pub enum ParamValue {
     Number(f64),
     Vec2([f64; 2]),
     Text(String),
+    Asset { asset: String },
+}
+
+impl ParamValue {
+    /// The asset id the value names, mutably.
+    pub fn asset_mut(&mut self) -> Option<&mut String> {
+        match self {
+            ParamValue::Asset { asset } => Some(asset),
+            _ => None,
+        }
+    }
+
+    /// The asset id the value names.
+    pub fn asset(&self) -> Option<&str> {
+        match self {
+            ParamValue::Asset { asset } => Some(asset),
+            _ => None,
+        }
+    }
 }
 
 impl Item {
@@ -334,11 +371,14 @@ impl Item {
     }
 
     /// Every id the item carries (plan 4C Decision 24), mutably: its own, what its body
-    /// names (an asset, a nested timeline, a caption style), its effects' and its link group.
+    /// names (an asset, a nested timeline, a caption style, the assets its slots name), its
+    /// effects' (with the assets their params name) and its link group.
     pub fn refs_mut(&mut self) -> Vec<&mut String> {
         let mut out = vec![&mut self.id];
         out.extend(self.body.refs_mut());
-        out.extend(self.common.effects.iter_mut().map(|e| &mut e.id));
+        for e in &mut self.common.effects {
+            out.extend(e.refs_mut());
+        }
         out.extend(self.common.link.as_mut());
         out
     }
@@ -347,7 +387,9 @@ impl Item {
     pub fn ids(&self) -> Vec<&str> {
         let mut out = vec![self.id.as_str()];
         out.extend(self.body.ids());
-        out.extend(self.common.effects.iter().map(|e| e.id.as_str()));
+        for e in &self.common.effects {
+            out.extend(e.ids());
+        }
         out.extend(self.common.link.as_deref());
         out
     }
@@ -401,12 +443,16 @@ impl ItemBody {
         }
     }
 
-    /// Every id the body names (an asset, a nested timeline, a caption style), mutably.
+    /// Every id the body names (an asset, a nested timeline, a caption style, the assets a
+    /// graphic's slots name), mutably.
     pub fn refs_mut(&mut self) -> Vec<&mut String> {
         match self {
-            ItemBody::Clip { asset, .. }
-            | ItemBody::Graphic { asset, .. }
-            | ItemBody::Image { asset } => vec![asset],
+            ItemBody::Graphic { asset, slots } => {
+                let mut out = vec![asset];
+                out.extend(slots.values_mut().filter_map(ParamValue::asset_mut));
+                out
+            }
+            ItemBody::Clip { asset, .. } | ItemBody::Image { asset } => vec![asset],
             ItemBody::Nested { timeline, .. } => vec![timeline],
             ItemBody::Caption { block } => vec![&mut block.style],
             ItemBody::Adjustment {} => Vec::new(),
@@ -416,9 +462,12 @@ impl ItemBody {
     /// The ids [`ItemBody::refs_mut`] lists.
     pub fn ids(&self) -> Vec<&str> {
         match self {
-            ItemBody::Clip { asset, .. }
-            | ItemBody::Graphic { asset, .. }
-            | ItemBody::Image { asset } => vec![asset],
+            ItemBody::Graphic { asset, slots } => {
+                let mut out = vec![asset.as_str()];
+                out.extend(slots.values().filter_map(ParamValue::asset));
+                out
+            }
+            ItemBody::Clip { asset, .. } | ItemBody::Image { asset } => vec![asset],
             ItemBody::Nested { timeline, .. } => vec![timeline],
             ItemBody::Caption { block } => vec![&block.style],
             ItemBody::Adjustment {} => Vec::new(),

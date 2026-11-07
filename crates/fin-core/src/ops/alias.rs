@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::model::{AssetKind, ItemBody, SCHEMA_VERSION};
-use crate::ops::util::normalize_body;
+use crate::ops::util::{normalize_body, normalize_value};
 use crate::ops::{DeleteMode, InsertMode, ItemDelete, ItemInsert, ItemTrim, Op, TrimMode};
 use crate::time::Rational;
 use crate::tx::Tx;
@@ -100,14 +100,20 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
             if op.is_alias() {
                 *op = to_item(op);
             }
-            if let Op::ItemInsert(insert) = op {
-                normalize_body(&mut insert.body).map_err(|mut e| {
-                    if let serde_json::Value::Object(d) = &mut e.details {
-                        d.insert("opIndex".into(), json!(i));
-                    }
-                    e
-                })?;
-            }
+            let canonical = match op {
+                Op::ItemInsert(insert) => normalize_body(&mut insert.body),
+                Op::ParamSet(s) => match &mut s.value {
+                    Some(v) => normalize_value(&s.path, v),
+                    None => Ok(()),
+                },
+                _ => Ok(()),
+            };
+            canonical.map_err(|mut e| {
+                if let serde_json::Value::Object(d) = &mut e.details {
+                    d.insert("opIndex".into(), json!(i));
+                }
+                e
+            })?;
         }
     }
     Ok(tx)

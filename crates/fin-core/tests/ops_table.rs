@@ -4,7 +4,7 @@ use common::ids_json::{ids_cover_every_id_in_json, ids_cover_json};
 use fin_core::{
     AssetAdd, BlendMode, CaptionBlock, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
     ItemBody, ItemDelete, ItemInsert, ItemRemove, ItemRestore, ItemSlip, ItemSplit, ItemTrim,
-    Keyframe, Op, ParamValue, Rational, TrimMode, Word,
+    Keyframe, Op, ParamSet, ParamValue, Rational, TrimMode, Word,
 };
 use serde_json::json;
 
@@ -128,6 +128,12 @@ fn every_variant() -> Vec<Op> {
             delta: r(1),
         },
         Op::ClipDelete { clip: "c1".into() },
+        ParamSet {
+            item: "c1".into(),
+            path: "effects.fx1.asset".into(),
+            value: Some(ParamValue::Asset { asset: "a2".into() }),
+        }
+        .into(),
     ];
     // Adding a variant breaks this match, so the list above cannot silently fall behind.
     for op in &ops {
@@ -143,7 +149,8 @@ fn every_variant() -> Vec<Op> {
             | Op::ItemRestore(_)
             | Op::ClipInsert { .. }
             | Op::ClipTrim { .. }
-            | Op::ClipDelete { .. } => {}
+            | Op::ClipDelete { .. }
+            | Op::ParamSet(_) => {}
         }
     }
     ops

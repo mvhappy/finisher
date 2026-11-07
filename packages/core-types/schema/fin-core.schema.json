@@ -487,6 +487,33 @@
       ],
       "type": "string"
     },
+    "DefaultValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A spec's default, as its value would be written (`null`: none, the value is per entity or\nthe parameter is optional)."
+    },
     "DeleteMode": {
       "description": "How a delete leaves its range: `ripple` closes the gap, `lift` leaves it.",
       "enum": [
@@ -699,7 +726,8 @@
         "track",
         "timeline",
         "item",
-        "transition"
+        "transition",
+        "effect"
       ],
       "type": "string"
     },
@@ -2087,6 +2115,26 @@
           "description": "Internal (inverse of `item.delete`/`item.remove`): puts an item back at its `start`."
         },
         {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ParamSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "param.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Sets (or, with no `value`, resets) one registry parameter of an item."
+        },
+        {
           "description": "Client alias of `item.insert` of a clip in ripple mode.",
           "properties": {
             "asset": {
@@ -2167,6 +2215,264 @@
         }
       ]
     },
+    "ParamSet": {
+      "description": "`param.set`: sets `path` of `item` to `value`; no `value` resets it to its default.",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "item",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ParamSpec": {
+      "description": "One parameter: its path in its scope, type, whether keyframes may animate it, default, unit\nand fix text (`{min}`, `{max}`, `{unit}` and `{path}` are filled in errors).",
+      "properties": {
+        "animatable": {
+          "type": "boolean"
+        },
+        "default": {
+          "$ref": "#/$defs/DefaultValue"
+        },
+        "fix": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        },
+        "type": {
+          "$ref": "#/$defs/ParamType"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "scope",
+        "type",
+        "animatable",
+        "default",
+        "fix"
+      ],
+      "type": "object"
+    },
+    "ParamType": {
+      "description": "A parameter's value type. Times and rationals are canonical rational text (`\"1/2\"`),\ncolours `#rrggbb` or `#rrggbbaa` (lowercase), enums their names; a size is whole pixels as\na `vec2`; an asset reference is `{\"asset\": id}` of one of `kinds`. Ranges are inclusive.",
+      "oneOf": [
+        {
+          "properties": {
+            "max": {
+              "format": "double",
+              "type": "number"
+            },
+            "min": {
+              "format": "double",
+              "type": "number"
+            },
+            "type": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "bool",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "enum",
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "color",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "max": {
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "min": {
+              "items": {
+                "format": "double",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": {
+              "const": "vec2",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "min": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "max": {
+              "type": "string"
+            },
+            "min": {
+              "type": "string"
+            },
+            "type": {
+              "const": "rational",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "max": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "min": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "size",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "maxLen": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "maxLen"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kinds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "assetRef",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kinds"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ParamValue": {
       "anyOf": [
         {
@@ -2187,9 +2493,20 @@
         },
         {
           "type": "string"
+        },
+        {
+          "properties": {
+            "asset": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "asset"
+          ],
+          "type": "object"
         }
       ],
-      "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`)."
+      "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
     },
     "Probe": {
       "description": "What the server needs to register a media asset. Its serde form is what `asset.probe`\nanswers (`@finisher/core-types` exports it as `Probe`).",
@@ -2467,6 +2784,94 @@
         "height"
       ],
       "type": "object"
+    },
+    "Scope": {
+      "description": "Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are\naddressed as `effects.<fx>.<param>`.",
+      "oneOf": [
+        {
+          "properties": {
+            "kinds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "item",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kinds"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "type": {
+              "const": "effect",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "track",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "timeline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "marker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "style",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SetAside": {
       "additionalProperties": false,

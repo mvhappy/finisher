@@ -13,13 +13,16 @@
 //!   (`TRACK_KIND_MISMATCH`, structural) and a positive speed (structural);
 //! - `image` (an `image`/`svg` asset), `graphic` (a `lottieTemplate` asset) and `adjustment`
 //!   go on video tracks; `caption` goes on caption tracks;
-//! - `nested` is `INVALID_OP` (its edits arrive in sub-project 6).
+//! - `nested` is `INVALID_OP` (its edits arrive in sub-project 6);
+//! - a graphic's slots must be its template's (`SLOT_UNKNOWN`) with values of the slot's kind
+//!   (`PARAM_TYPE`), both structural, in range (policy; plan 4C Task 11).
 
 use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{Asset, AssetKind, Item, ItemBody, Project, Track, TrackKind};
+use crate::model::{Asset, AssetKind, Item, ItemBody, ParamValue, Project, Track, TrackKind};
+use crate::ops::util::param_check::check_value;
 use crate::ops::util::{
     OpDiff, TrackAt, asset, carve, check_frame, check_kind, check_source, check_speed,
     check_unlocked, clip_containing, frame_of, insert_inside, invalid_range, kind_name,
@@ -70,8 +73,15 @@ pub(crate) fn check_body(
             named(a)?;
             (TrackKind::Video, &[AssetKind::Image, AssetKind::Svg])
         }
-        ItemBody::Graphic { asset: a, .. } => {
-            named(a)?;
+        ItemBody::Graphic { asset: a, slots } => {
+            // Slots are checked against the template's (plan 4C Task 11).
+            if let Some(template) = &named(a)?.lottie {
+                for (slot, v) in slots {
+                    let spec = crate::params::slot_spec(template, a, slot)?;
+                    let path = format!("slots.{slot}");
+                    check_value(project, spec, &path, &mut v.clone(), bindings)?;
+                }
+            }
             (TrackKind::Video, &[AssetKind::LottieTemplate])
         }
         ItemBody::Adjustment {} => (TrackKind::Video, &[]),
@@ -209,6 +219,14 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&i.track), op_diff);
     f.creates.push(i.id.clone());
     f.uses.extend(i.body.asset().map(str::to_string));
+    if let ItemBody::Graphic { slots, .. } = &i.body {
+        f.uses.extend(
+            slots
+                .values()
+                .filter_map(ParamValue::asset)
+                .map(str::to_string),
+        );
+    }
     f.uses.push(i.track.clone());
     f
 }

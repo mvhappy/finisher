@@ -110,8 +110,19 @@ impl<'a> OpDiff<'a> {
     /// One parameter of item `id` on `track` (its registry path, or `sourceIn` for a slip) was
     /// set.
     pub(crate) fn record_path(&mut self, track: &str, id: &str, path: &str) {
-        self.push(Some(track), EntityKind::Item, id, ChangeKind::Updated)
-            .path = Some(path.to_string());
+        self.record_path_of(EntityKind::Item, id, Some(track), path);
+    }
+
+    /// One parameter of entity `id` of `kind` was set: an item's effect (`<item>/<fx>`, on its
+    /// item's track), a track, a timeline, a marker. `track` is the track it is on, if any.
+    pub(crate) fn record_path_of(
+        &mut self,
+        kind: EntityKind,
+        id: &str,
+        track: Option<&str>,
+        path: &str,
+    ) {
+        self.push(track, kind, id, ChangeKind::Updated).path = Some(path.to_string());
     }
 
     /// Items on `track` at or after `from` moved by `by`.

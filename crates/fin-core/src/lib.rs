@@ -9,6 +9,7 @@ pub mod ids;
 pub mod layout;
 pub mod model;
 pub mod ops;
+pub mod params;
 pub mod rebase;
 pub mod record;
 pub mod replay;
@@ -24,7 +25,7 @@ pub use layout::{FaceRef, Measured, TextLayout, TextMeasurer, TextRequest, TextS
 pub use model::*;
 pub use ops::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
-    ItemSlip, ItemSplit, ItemTrim, Op, TrimMode, normalize,
+    ItemSlip, ItemSplit, ItemTrim, Op, ParamSet, TrimMode, normalize,
 };
 pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{

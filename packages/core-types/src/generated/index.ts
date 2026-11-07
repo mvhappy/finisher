@@ -27,7 +27,7 @@ export type Edge = "start" | "end";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EntityKind".
  */
-export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition";
+export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "effect";
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -66,6 +66,9 @@ export type Op =
     })
   | (ItemRestore & {
       op: "item.restore";
+    })
+  | (ParamSet & {
+      op: "param.set";
     })
   | {
       asset: string;
@@ -155,12 +158,21 @@ export type ItemInsert1 =
     };
 /**
  * A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's
- * `float_roundtrip`).
+ * `float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an
+ * asset reference is `{"asset": id}`, so every id a value carries is found without the
+ * registry (plan 4C Decision 24).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ParamValue".
  */
-export type ParamValue = boolean | number | [number, number] | string;
+export type ParamValue =
+  | boolean
+  | number
+  | [number, number]
+  | string
+  | {
+      asset: string;
+    };
 /**
  * How a trim treats the rest of the track: `ripple` moves every later item by the change;
  * `roll` moves the cut between the item and the neighbour touching that edge (both change,
@@ -374,6 +386,14 @@ export type Link =
       recovers?: string | null;
     };
 /**
+ * A spec's default, as its value would be written (`null`: none, the value is per entity or
+ * the parameter is optional).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DefaultValue".
+ */
+export type DefaultValue = null | boolean | number | [number, number] | string;
+/**
  * One engine event (`Engine.onEvent`), tagged by `type`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -409,6 +429,93 @@ export type EngineEvent =
   | {
       dropped: number;
       type: "lagged";
+    };
+/**
+ * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
+ * addressed as `effects.<fx>.<param>`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Scope".
+ */
+export type Scope =
+  | {
+      kinds: string[];
+      type: "item";
+    }
+  | {
+      kind: string;
+      type: "effect";
+    }
+  | {
+      type: "track";
+    }
+  | {
+      type: "timeline";
+    }
+  | {
+      type: "marker";
+    }
+  | {
+      type: "style";
+    };
+/**
+ * A parameter's value type. Times and rationals are canonical rational text (`"1/2"`),
+ * colours `#rrggbb` or `#rrggbbaa` (lowercase), enums their names; a size is whole pixels as
+ * a `vec2`; an asset reference is `{"asset": id}` of one of `kinds`. Ranges are inclusive.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamType".
+ */
+export type ParamType =
+  | {
+      max: number;
+      min: number;
+      type: "number";
+    }
+  | {
+      type: "bool";
+    }
+  | {
+      type: "enum";
+      values: string[];
+    }
+  | {
+      type: "color";
+    }
+  | {
+      /**
+       * @minItems 2
+       * @maxItems 2
+       */
+      max: [number, number];
+      /**
+       * @minItems 2
+       * @maxItems 2
+       */
+      min: [number, number];
+      type: "vec2";
+    }
+  | {
+      min?: string | null;
+      type: "time";
+    }
+  | {
+      max: string;
+      min: string;
+      type: "rational";
+    }
+  | {
+      max: number;
+      min: number;
+      type: "size";
+    }
+  | {
+      maxLen: number;
+      type: "text";
+    }
+  | {
+      kinds: string[];
+      type: "assetRef";
     };
 /**
  * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
@@ -791,6 +898,17 @@ export interface Transform {
   scale?: [number, number];
 }
 /**
+ * `param.set`: sets `path` of `item` to `value`; no `value` resets it to its default.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamSet".
+ */
+export interface ParamSet {
+  item: string;
+  path: string;
+  value?: ParamValue;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Project".
  */
@@ -1124,6 +1242,22 @@ export interface MergeReport {
   merged: string[];
   skipped: Conflict[];
   sourceState: BranchState;
+}
+/**
+ * One parameter: its path in its scope, type, whether keyframes may animate it, default, unit
+ * and fix text (`{min}`, `{max}`, `{unit}` and `{path}` are filled in errors).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamSpec".
+ */
+export interface ParamSpec {
+  animatable: boolean;
+  default: DefaultValue;
+  fix: string;
+  path: string;
+  scope: Scope;
+  type: ParamType;
+  unit?: string | null;
 }
 /**
  * What the server needs to register a media asset. Its serde form is what `asset.probe`

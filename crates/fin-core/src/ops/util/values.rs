@@ -78,14 +78,15 @@ pub(crate) fn body(body: &mut ItemBody) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn param(path: &str, v: &mut ParamValue) -> Result<(), CoreError> {
+/// One parameter value's floats at `path`: finite, `-0.0` stored as `0.0`.
+pub(crate) fn param(path: &str, v: &mut ParamValue) -> Result<(), CoreError> {
     match v {
         ParamValue::Number(x) => number(path, x),
         ParamValue::Vec2([x, y]) => {
             number(path, x)?;
             number(path, y)
         }
-        ParamValue::Bool(_) | ParamValue::Text(_) => Ok(()),
+        ParamValue::Bool(_) | ParamValue::Text(_) | ParamValue::Asset { .. } => Ok(()),
     }
 }
 

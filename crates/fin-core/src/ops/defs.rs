@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::{
     AssetKind, AudioInfo, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo, VideoInfo,
 };
+use crate::ops::param_set::ParamSet;
 use crate::time::Rational;
 
 /// A primitive edit operation, tagged by `op`.
@@ -43,6 +44,9 @@ pub enum Op {
     /// Internal (inverse of `item.delete`/`item.remove`): puts an item back at its `start`.
     #[serde(rename = "item.restore")]
     ItemRestore(Box<ItemRestore>),
+    /// Sets (or, with no `value`, resets) one registry parameter of an item.
+    #[serde(rename = "param.set")]
+    ParamSet(ParamSet),
     /// Client alias of `item.insert` of a clip in ripple mode.
     #[serde(rename = "clip.insert")]
     ClipInsert {

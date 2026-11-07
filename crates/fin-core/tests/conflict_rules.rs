@@ -342,6 +342,16 @@ fn every_op_has_a_footprint() {
             .into(),
             vec!["t2"],
         ),
+        (
+            p.clone(),
+            fin_core::ParamSet {
+                item: "c3".into(),
+                path: "opacity".into(),
+                value: Some(fin_core::ParamValue::Number(0.5)),
+            }
+            .into(),
+            vec!["t2"],
+        ),
     ];
     let mut seen = BTreeSet::new();
     for (at, op, tracks) in cases {
@@ -380,6 +390,7 @@ fn every_op_has_a_footprint() {
             Op::ItemSplit(s) => {
                 f.touches == [(s.item.clone(), Touch::Exists)] && f.creates == [s.id.clone()]
             }
+            Op::ParamSet(s) => f.touches == [(s.item.clone(), Touch::Param(s.path.clone()))],
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -387,7 +398,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 9);
+    assert_eq!(seen.len(), 10);
 }
 
 #[test]
