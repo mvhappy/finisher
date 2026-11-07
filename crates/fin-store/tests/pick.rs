@@ -914,8 +914,8 @@ fn merged_state_converges_when_copies_arrive_first() {
             })
             .collect();
     }
-    let mut bad = vec![];
-    for (k, order) in orders.iter().enumerate() {
+    let bad = std::sync::Mutex::new(vec![]);
+    is::par_each(&orders, |k, order| {
         let dir = e.root.join(format!("order-{k}"));
         is::copy_dir(&e.dir, &dir);
         for p in all_segments(&dir) {
@@ -937,13 +937,17 @@ fn merged_state_converges_when_copies_arrive_first() {
             let v = x.verify();
             (states(&x) == target && v.ok, format!("{:?}", states(&x)))
         }));
-        match r {
-            Ok((true, _)) => {}
-            Ok((false, st)) => bad.push(format!("{seen:?}: {st}")),
-            Err(_) => bad.push(format!("{seen:?}: PANIC")),
-        }
+        let failure = match r {
+            Ok((true, _)) => None,
+            Ok((false, st)) => Some(format!("{seen:?}: {st}")),
+            Err(_) => Some(format!("{seen:?}: PANIC")),
+        };
+        bad.lock().unwrap().extend(failure.map(|f| (k, f)));
         let _ = fs::remove_dir_all(&dir);
-    }
+    });
+    let mut bad = bad.into_inner().unwrap();
+    bad.sort();
+    let bad: Vec<String> = bad.into_iter().map(|(_, f)| f).collect();
     assert!(
         bad.is_empty(),
         "{} of {} orders differ from {target:?}:\n{}",
