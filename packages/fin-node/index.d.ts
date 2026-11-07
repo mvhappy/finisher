@@ -151,6 +151,8 @@ export declare class Engine {
   panicNextTickForTest(): void;
   /** @internal Test builds only: the next long call keeps the store `ms` longer. */
   delayNextLongCallForTest(ms: number): void;
+  /** @internal Test builds only: lets the maintenance thread queue the daily backup and compaction (off at open). */
+  setAutoWorkForTest(enabled: boolean): void;
   /** @internal Test builds only: emits a synthetic `rewound` event. */
   emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */

@@ -1,6 +1,6 @@
 // The napi `Journal` (plan D, Task D4): open under resolved settings, records, the report,
 // paged export, purge, the project flags the engines set, and the chained panic hook.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConsentState, DiagnosticsReport, Envelope, ExportPage, JournalStatus } from "@finisher/core-types";
@@ -13,7 +13,9 @@ let journal: Journal | undefined;
 let engine: Engine | undefined;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "fin-node-journal-"));
+  // Canonical: the journal registry is keyed by canonical server data, and `Journal.open` runs
+  // before the folder exists (macOS's temp dir is a symlink, so the keys would differ).
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "fin-node-journal-")));
   serverData = join(tmp, "server-data");
 });
 
