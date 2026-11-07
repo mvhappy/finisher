@@ -3,14 +3,14 @@
     "_type": "targets",
     "spec_version": "1.0.0",
     "version": 2,
-    "expires": "2027-11-07T20:31:56Z",
+    "expires": "2027-11-07T23:53:01Z",
     "targets": {},
     "delegations": {
       "keys": {
-        "0eb3c42404ddf359eda7257b927f0cbb8c651a2fa7ed103ee4fb90aeda981bee": {
+        "7ee18a2b6a6b96f82b5358b8438b6825e4af90c41a00c10122d4155bd63dabff": {
           "keytype": "ed25519",
           "keyval": {
-            "public": "2fbf98301f719d7b71c7bb96e6ed9851eff55d5e484f32f697822f74ca6c4dd8"
+            "public": "088a3f3aeca5123b8b6c09f466d30ac20711c4b76ae6924ef0ae0873f41b4c6d"
           },
           "scheme": "ed25519"
         }
@@ -19,7 +19,7 @@
         {
           "name": "test-only",
           "keyids": [
-            "0eb3c42404ddf359eda7257b927f0cbb8c651a2fa7ed103ee4fb90aeda981bee"
+            "7ee18a2b6a6b96f82b5358b8438b6825e4af90c41a00c10122d4155bd63dabff"
           ],
           "threshold": 1,
           "paths": [
@@ -32,8 +32,8 @@
   },
   "signatures": [
     {
-      "keyid": "2b692e9872a696d7c16416c97b861fa77fbed375caff4372848d2cd1cc540af5",
-      "sig": "08309002c05f07b865b0c86f31d39649e7b13ee78cc30797fe6e6e66305040f2fcedfa2de5e6f72a7130ec1eb5c80b50b079ae3f640d21466568906b2712430f"
+      "keyid": "5149b79098e28d07592e11ddfcc2f888071573278cfb292dba9a53c228ef7be6",
+      "sig": "a998a8e6955dff5578e2015e7986e59dcd8d41131a16980a16a6ede5aba92285345462ea8228d4e204f93dd2da481dda2b540f414e41ef3138d851f926384905"
     }
   ]
 }

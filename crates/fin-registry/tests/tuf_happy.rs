@@ -6,7 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use fin_plugin_api::{Manifest, Permission};
 use fin_registry::package::unpack;
+use fin_registry::target::{TargetCustom, custom_for};
 use fin_registry::transport::FsTransport;
 use fin_registry::tuf::{
     FixedClock, PackageCustom, Policy, TrustStore, TrustedRepo, permissions_digest, sha256_hex,
@@ -105,6 +107,14 @@ fn custom_metadata_round_trips() {
             "platforms": [], "license": "MIT", "permissionsDigest": want.permissions_digest,
             "manifestSha256": want.manifest_sha256, "bytesUnpacked": want.bytes_unpacked,
         })
+    );
+    // What the editor signs is what the install plan checks: `plan::checks` reads the signed
+    // custom metadata as `TargetCustom` and compares it with `custom_for` of the package.
+    let manifest: Manifest = serde_json::from_slice(&u.manifest).unwrap();
+    let signed: TargetCustom = serde_json::from_value(Value::Object(t.custom.clone())).unwrap();
+    assert_eq!(
+        signed,
+        custom_for(&manifest, &u.manifest, want.bytes_unpacked)
     );
     // The root's maxStaleDays defaults to 7.
     let d = Reg::new(None);
@@ -231,6 +241,16 @@ fn fixture_vectors_verify_identically() {
         )
         .unwrap();
         assert_eq!(listing(&c), expected["trusted"], "{name}");
+        // The vectors' packages have no permissions: their signed digest is today's definition
+        // (a vector signed with an older one would fail `plan::checks`; regenerate instead).
+        for t in c.targets() {
+            assert_eq!(
+                t.package().unwrap().permissions_digest,
+                permissions_digest(&[]),
+                "{name}: {} was signed with another permissionsDigest; regenerate the vectors",
+                t.name
+            );
+        }
         // Every trusted root is kept byte for byte as the repository serves it.
         for (rel, bytes) in Reg::files(c.store().dir()) {
             if let Some(file) = rel.strip_prefix("roots/") {
@@ -241,6 +261,25 @@ fn fixture_vectors_verify_identically() {
             }
         }
     }
+}
+
+/// `permissionsDigest` is BLAKE3 (hex) over the permissions' canonical JSON (sorted keys),
+/// the list sorted and deduplicated. Changing it changes every signed digest: regenerate the
+/// fixed vectors (`FIN_REGEN_TUF_VECTORS=1`) in the same change.
+#[test]
+fn permissions_digest_is_pinned() {
+    let b3 = |s: &[u8]| blake3::hash(s).to_hex().to_string();
+    assert_eq!(permissions_digest(&[]), b3(b"[]"));
+    let perms: Vec<Permission> = serde_json::from_value(json!([
+        { "perm": "gpu" },
+        { "perm": "fs", "scope": "pluginData", "access": "read" },
+        { "perm": "gpu" },
+    ]))
+    .unwrap();
+    let want = b3(br#"[{"access":"read","perm":"fs","scope":"pluginData"},{"perm":"gpu"}]"#);
+    assert_eq!(permissions_digest(&perms), want);
+    let reversed: Vec<Permission> = perms.iter().rev().cloned().collect();
+    assert_eq!(permissions_digest(&reversed), want);
 }
 
 fn listing(c: &TrustedRepo) -> Value {

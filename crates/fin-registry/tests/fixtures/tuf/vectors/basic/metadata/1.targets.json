@@ -3,7 +3,7 @@
     "_type": "targets",
     "spec_version": "1.0.0",
     "version": 1,
-    "expires": "2027-11-07T20:31:56Z",
+    "expires": "2027-11-07T23:53:01Z",
     "targets": {},
     "delegations": {
       "keys": {},
@@ -12,8 +12,8 @@
   },
   "signatures": [
     {
-      "keyid": "b89d5d90e9d90bd4e57cf375b637a3941f339411b131748177c0ab95899eca31",
-      "sig": "ea9dc1c168c7b381693cfbf21bfb7daccb1dad0698385f7ba479c1e3ed8d3234da616b693baef1d52a8228ede47ee3d11b4fc6c3b87c49e144080d2007ffa202"
+      "keyid": "9e340bff4f05be526af2d19d1c35d3d122880641404672748536960eb92e5cf2",
+      "sig": "d3c43dd514eb5fd2b19a5d0c1e5dad56ed891123805267c39b0effcdbe31d381c7993aa0fc0f3b9b868080cf0138f7cdd29b911359c2e0abac736bb97ef5e80c"
     }
   ]
 }

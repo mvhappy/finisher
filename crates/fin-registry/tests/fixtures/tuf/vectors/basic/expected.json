@@ -1,6 +1,6 @@
 {
-  "createdAt": 1794083516,
-  "rootSha256": "673e7bfbddb36cf6ca0237bd2edba872fce1f1ff2917b4ae73f9ae9a897f5271",
+  "createdAt": 1794095581,
+  "rootSha256": "74693b6de431884cfd0b1a6db634621c312f9b5706a000b3f1af1165455c094d",
   "trusted": {
     "maxStaleDays": 7,
     "targets": [
