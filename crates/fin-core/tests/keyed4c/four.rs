@@ -148,8 +148,14 @@ pub fn slips(since: &[CommittedTx]) -> BTreeMap<String, Rational> {
 /// Whether a stale refusal is one the spec allows where the fresh edit applies (plan 4C Task
 /// 26, prop 3): every conflict is `SAME_EDGE`, `SAME_PARAM`, `REMOVED` or `FONT_PINNED`, or a
 /// re-run's policy code the head explains: blamed on a committed record, or naming in its
-/// details an entity a committed record changed (spec §4.3 blames only when one step did).
-pub fn refusal_allowed(e: &CoreError, since: &[CommittedTx]) -> Result<(), String> {
+/// details an entity a committed record changed (spec §4.3 blames only when one step did), or
+/// raised at one of the `drifted` op indexes ([`super::partner_drift`]), where our own
+/// shift-less move put a partner somewhere our later op's position does not follow.
+pub fn refusal_allowed(
+    e: &CoreError,
+    since: &[CommittedTx],
+    drifted: &std::collections::BTreeSet<usize>,
+) -> Result<(), String> {
     if e.code != "CONFLICT" {
         return Err(format!("not a conflict: {e:?}"));
     }
@@ -176,14 +182,15 @@ pub fn refusal_allowed(e: &CoreError, since: &[CommittedTx]) -> Result<(), Strin
             "FONT_PINNED",
         ]
         .contains(&c.reason.as_str());
-        let policy = c
+        let code = c
             .reason
             .bytes()
-            .all(|b| b.is_ascii_uppercase() || b == b'_')
-            && (c
-                .against_tx
-                .as_ref()
-                .is_some_and(|t| since.iter().any(|s| s.tx.tx_id == *t))
+            .all(|b| b.is_ascii_uppercase() || b == b'_');
+        let policy = code
+            && (drifted.contains(&c.op_index)
+                || c.against_tx
+                    .as_ref()
+                    .is_some_and(|t| since.iter().any(|s| s.tx.tx_id == *t))
                 || c.details.as_ref().is_some_and(|d| names(d, &changed)));
         if !named && !policy {
             return Err(format!("{c:?}"));

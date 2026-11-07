@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8a8a583fa1f532348a2cf62a7e0a5710c34eff06a5767f71020567493a6fcafe # shrinks to lens = [[31], [10, 10], [], [10]], linked = true, trs = false, committed = [([Move { track: 3, clip: 0, to: 1, before: None, overwrite: false }], false)], mine = [Move { track: 1, clip: 0, to: 1, before: None, overwrite: true }, Move { track: 0, clip: 0, to: 0, before: None, overwrite: false }]

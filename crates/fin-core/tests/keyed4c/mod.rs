@@ -1088,6 +1088,49 @@ pub fn partner_anchor(keyed: &[Keyed], base: &Project) -> bool {
     })
 }
 
+/// The ops of ours that [`partner_anchor`] covers after an overwrite move (no shift on any
+/// track, spec §4.3): a positional op on another track than the move's. At the head the
+/// rebased move carries each partner by the head's delta of the named item (the head may
+/// have put something at its anchor), while the later op's position maps through shifts only
+/// and none were recorded, so it keeps the delta the move had where it was written. It can
+/// then land inside the partner it names, and the re-run's policy refuses it
+/// (`MOVE_INTO_ITSELF`, with a fix naming the free places) although no committed record
+/// changed an entity the op names, so nothing is blamed. That refusal is right for the op as
+/// mapped, so it is allowed here.
+pub fn partner_drift(keyed: &[Keyed], base: &Project) -> std::collections::BTreeSet<usize> {
+    let linked: std::collections::BTreeSet<&str> = base.timelines[0]
+        .tracks
+        .iter()
+        .flat_map(|t| &t.items)
+        .filter(|c| c.common.link.is_some())
+        .map(|c| c.id.as_str())
+        .collect();
+    let mine_links = keyed.iter().any(|k| matches!(k, Keyed::Link { .. }));
+    let mut out = std::collections::BTreeSet::new();
+    for (f, k) in keyed.iter().enumerate() {
+        let Keyed::Move {
+            clip,
+            to,
+            overwrite: true,
+            ..
+        } = k
+        else {
+            continue;
+        };
+        if !(mine_links || matches!(clip, Key::Id(id) if linked.contains(id.as_str()))) {
+            continue;
+        }
+        for (i, later) in keyed.iter().enumerate().skip(f + 1) {
+            if let Keyed::Insert { track: t, .. } | Keyed::Move { to: t, .. } = later
+                && t != to
+            {
+                out.insert(i);
+            }
+        }
+    }
+    out
+}
+
 /// Known semantics (not a 4C review finding): a committed relocation without a shift (an
 /// overwrite move lifts its item, a slide moves it) leaves the positions past it where they
 /// were, gap included, so a stale positional op of ours on a track it touched can land past a
@@ -1284,7 +1327,7 @@ pub fn check(
             );
         }
         (true, Err(e)) => {
-            let why = refusal_allowed(&e, &since);
+            let why = refusal_allowed(&e, &since, &partner_drift(&keyed, p));
             prop_assert!(
                 why.is_ok(),
                 "stale refused ({:?}) where fresh applies\nours {:?}\nfresh {:?}",
