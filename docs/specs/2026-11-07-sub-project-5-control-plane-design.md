@@ -1,8 +1,8 @@
 # Sub-project 5: Control plane breadth — Design
 
-- **Status:** draft for review (2026-11-07). Nothing here is built yet.
-- **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 rule 6, §5 (`AuthProvider`, `ConnectRelay`), §6.4 ("conflicts become review items"), §6.7 (media libraries and indexing jobs), §8.4 (token delivery), §9.9 (jobs), §11.3 (per-transaction accept/reject), §16 (pairing, auth, security), §20 (library root mapping), §21.1 (sources and human-only operations) and §27.12.5 (the local transport and its WebSocket token). Where the two disagree, this document wins for sub-project 5, and arch §27 gets a pointer when each batch merges.
-- **Builds on:** sub-projects 2 and 4 (4A, 4B, 4C, all on stacked branches; 4C is `sp4c-edit-breadth`) and the diagnostics hooks D1–D7 on the 4C branch. Sub-project 5 starts once D1–D7 are done, because it changes how D4 decides an event's source (§3.4).
+- **Status:** revision 2 (2026-11-07), after an independent review of revision 1 (`45039ab`). §15 maps every review finding (B1–B5, H1–H6, M1–M5, the v1 cuts) to where it is resolved. Nothing here is built yet.
+- **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 rule 6, §5 (`AuthProvider`, `ConnectRelay`), §6.4 ("conflicts become review items"), §6.7 (media libraries and indexing jobs), §8.3 (allow/ask/deny), §8.4 (token delivery, the env allow-list), §9.9 (jobs), §11.3 (per-transaction accept/reject), §16 (pairing, auth, security), §20 (library root mapping), §21.1 (sources and human-only operations) and §27.12.5 (the local transport and its WebSocket token). Where the two disagree, this document wins for sub-project 5, and arch §27 gets a pointer when each batch merges.
+- **Builds on:** sub-projects 2 and 4 (4A, 4B, 4C, on stacked branches; 4C is `sp4c-edit-breadth`) and the diagnostics hooks D1–D7 on the 4C branch. **D1 and D2 are done; D3–D7 are not.** 5A's Tasks 1, 2 and 10 can start now; the rest of 5A needs D4 (sources per transport) and D6 (actor headers), which it changes (§3.4).
 - **House style:** as `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`. Each batch gets its own plan; each batch section is rewritten "as built" when it lands.
 
 ---
@@ -12,64 +12,77 @@
 ### 1.1 Goal
 
 Sub-project 5 turns `finisherd` from a single-user local server into the control plane that the agent runtime (7), plugins (8), the frontend (9) and the reviewer (10) consume:
-- **every caller is a principal** with a credential and scopes, on every transport, and every RPC declares the scope it needs;
+- **every caller is a principal** with a credential and scopes, on every transport; every RPC declares the scopes it needs, and one middleware chain checks them;
 - **human-only operations** are enforced by the server, not by convention;
-- devices **pair** with a server and reach it **remotely** over pinned TLS; a server is an **environment** with a stable id and ordered routes;
-- long work runs as **jobs**: persisted, scheduled by resource, cancellable with a hard kill, resumable, observable;
-- registered **media libraries** are catalogued, fingerprinted, probed and kept current on local disks, NAS shares and sync folders, through jobs;
-- agent branches go through a **review workflow**: a change list per transaction with accept/reject, merge conflicts as review items, protected branches.
+- devices **pair** with a server and reach it **remotely** over pinned TLS; a server is an **environment** with a stable id, bound to its identity key, and ordered routes;
+- long work runs as **jobs**: persisted, scheduled by resource, cancellable with a hard kill of the whole process tree, resumable, observable;
+- registered **media libraries** are catalogued, fingerprinted, probed and kept current on local disks, NAS shares and sync folders, through jobs, without downloading cloud placeholders or keeping NAS disks awake;
+- agent branches go through a **review workflow**: a change list per transaction, merges limited to what was reviewed, rejections recorded durably in the op log, merge conflicts as review items, protected branches.
 
-### 1.2 Non-goals
+### 1.2 Non-goals and v1 cuts
 
-- **Frontend** (sub-project 9). §9 defines the server and RPC surfaces it needs; nothing here renders UI. The desktop shell's keychain storage of its device key, SSH/WSL launch and forwarding are also sub-project 9 (arch §16).
-- **Agent sessions, modes, roles, the OS sandbox and command-pattern rules** (sub-project 7). Sub-project 5 defines the `agent` credential, its file format and its verifier (§4.2), so sub-project 7 only mints credentials and maps modes to scope sets.
+**Not in sub-project 5:**
+- **The frontend** (sub-project 9). §9 defines the server and RPC surfaces it needs. The desktop shell's keychain storage of its device key, SSH/WSL launch and forwarding are also sub-project 9 (arch §16).
+- **Agent sessions, modes, roles, the OS sandbox and command-pattern rules** (sub-project 7). Sub-project 5 defines the `agent` and `mcp` credentials, their file format, their verifier and the middleware stage that sub-project 7's rules and hooks plug into (§4.6). It also states what each sandbox must allow so that `fin` can reach the server (§4.11).
 - **Plugin credentials and permissions** (sub-project 8). The `plugin` principal kind is reserved.
 - **Analysis stages** beyond probing: proxies (6), transcription, alignment, scenes, embeddings and semantic search (8). §7 builds the stage framework they plug into.
 - **QA gate, critic, review markers, share page** (sub-project 10). §8 builds the review items they will produce and consume.
-- **Hosted cloud:** accounts, OAuth/SSO, orgs, the Connect relay, hosted share links (`finisher-cloud`). Only the open extension points are defined.
-- **LAN discovery (mDNS/Bonjour)**: pairing uses a link, QR code or typed code with an address.
-- **Remote `fin`.** `fin` talks to a local socket only. Agents run next to the server (arch §6.7, "agents and jobs run next to the media").
+- **Hosted cloud:** accounts, OAuth/SSO, orgs, the Connect relay, hosted share links. Only the open extension points are defined.
+- **LAN discovery (mDNS/Bonjour)** and **remote `fin`** (`fin` talks to a local socket only; agents run next to the server, arch §6.7).
+
+**Cut from v1 (accepted after review):**
+- **Device roles and per-device project lists.** The local server has a single owner (arch §5), and every paired device *is* the owner. `editor`/`viewer` roles and project lists come with accounts in `finisher-cloud`.
+- **Typed pairing codes.** Pairing is by link or QR code only.
+- **Capability URLs** move to sub-project 6, which serves the bytes (and must give them project reach, §15 H4).
+- **Signed TLS rotation statements.** Rotating the identity key means re-pairing (§5.5).
+- **Live re-planning of reviews.** Change lists are planned when an item is opened, refreshed on demand and re-checked at decide and merge time (§8.2).
+- **Pausing jobs by library or project.** A job or everything can be paused (§6.3).
+- **`externalRef`** on jobs (a provider's job id for paid calls) comes with generation providers in sub-project 8.
 
 ### 1.3 Success, for every batch
 
-- Every capability is driven and tested through `fin` → `finisherd`, or through the new `finisherd` console commands (§4.6) for human-only ones.
-- `cargo test --workspace`, `pnpm test`, `pnpm gates` and `pnpm e2e` pass on macOS, Windows 11 and the Linux VM.
+- Every capability is driven and tested through `fin` → `finisherd`, or through the `finisherd` console (§4.7) for human-only ones.
+- `cargo test --workspace`, `pnpm test`, `pnpm gates` and `pnpm e2e` pass on macOS, Windows 11 and the Linux VM, **at every commit**.
 - No UI work. No host names, IPs, user names or key names in tracked files, fixtures included.
 
 ### 1.4 Batches and order
 
 | Batch | Delivers | Depends on | Unblocks |
 |---|---|---|---|
-| **5A** Principals, local credentials, scopes | `control.db` and the audit log; principals; local and console credentials with a server proof (fixes pipe squatting and the readable WebSocket token); one-time WebSocket tickets; a scope on every RPC; human-only enforcement; `finisherd` console commands; event sources from credentials; protocol 2; the sub-project-5 follow-ups in `TASKS.md` | D1–D7 | everything below; sub-project 7 |
-| **5C** Jobs | `fin-jobs` protocol types, the `fin-workers` binary, a persisted scheduler with resource pools, hard kill of process trees, retries with bisection, progress streams, `fin job …`, `fin wait`, `job.done` events | 5A | 5D; sub-project 6 (proxies), 8 (analysis, generation) |
-| **5D** Library indexer | libraries per server, catalog databases, scans for local/network/sync roots, placeholder safety, fingerprint and probe stages through jobs, the stage framework, offline libraries, metadata search, `fin library …`, `library.scan` events | 5C | sub-projects 6, 8, 11 (clip finder) |
-| **5E** Review workflow | review items, change lists from merge dry runs, live refresh, per-transaction decisions, `history.merge` exclusions, conflicts as review items, protected branches, `fin review …`, `review.verdict` events | 5A | sub-projects 7 (draft mode), 10 |
-| **5B** Pairing, devices, remote access, environments | device keys, pairing offers with owner approval, DPoP-bound tokens with server nonces, WebSocket tickets for devices, TLS listeners with SPKI pinning, key rotation, environment descriptors and routes, revocation, capability URLs, server filesystem reach | 5A | sub-project 9 |
+| **5A** Principals, local credentials, scopes | `control.db` and the audit log; the environment id; principals; key files with a mutual handshake bound to the environment and the endpoint; the socket in `<server-data>/run/` and a native Windows pipe listener with its own security descriptor; one-time WebSocket tickets; the authorisation middleware chain with store-resolved references, reach and an `ask` outcome; human-only enforcement; the TTY-gated `finisherd` console; `agent` and `mcp` credentials; event sources from credentials; protocol 2; the sub-project-5 follow-ups in `TASKS.md` | D1–D2 (Tasks 1, 2, 10); D4, D6 (the rest) | everything below; sub-project 7 |
+| **5C** Jobs | `fin-jobs` protocol types, the `fin-workers` binary, a persisted scheduler with resource pools, a host-owned kill tree on every OS, retries with targeted bisection, stall detection, progress streams, `fin job …`, `fin wait`, `job.done` events | 5A | 5D; sub-projects 6, 8 |
+| **5D** Library indexer | libraries per server, catalog databases, scans for local/network/sync roots that never open placeholders, mount and volume identity, demand-driven NAS polling, fingerprint and probe stages through jobs, the stage framework, offline libraries, metadata search, `fin library …`, `library.scan` events | 5C | sub-projects 6, 8, 11 |
+| **5E** Review workflow | review items, change lists from merge dry runs, merges limited by `include`/`sourceUpTo`, durable `drop` records in the op log, conflicts as review items, protected branches checked inside the store's write transaction, `fin review …`, `review.verdict` events | 5A | sub-projects 7, 10 |
+| **5B** Pairing, devices, remote access, environments | device keys, pairing links with owner approval, DPoP-bound tokens with server nonces, WebSocket tickets for devices, TLS listeners with SPKI pinning, environment descriptors and routes, revocation, server filesystem reach for remote principals, the secret store | 5A | sub-project 9 |
 
-**Order:** 5A → 5C → 5D → 5E → 5B. Sub-project 6, the next in arch §24, needs jobs most. 5B is needed only by the frontend, so it comes last, but it touches only transport and auth files: it may run in parallel with 5C–5E on its own stacked branch. (5B keeps its letter because it completes 5A's auth work, although it is built last.)
+**Order:** 5A → 5C → 5D → 5E → 5B. Sub-project 6, the next in arch §24, needs jobs most. 5B is needed only by the frontend, so it comes last, but it touches only transport and auth files: it may run in parallel with 5C–5E on its own stacked branch. (5B keeps its letter because it completes 5A's auth work.)
 
 ### 1.5 What exists today (the baseline)
 
-- **Transports** (`apps/finisherd/src/transport.ts`): Effect RPC over NDJSON on the Unix socket `<server-data>/fin.sock` (0600) or the named pipe `\\.\pipe\finisher-<username>[-<hash>]`, and a WebSocket on `127.0.0.1:<random>` that requires `Authorization: Bearer <token>`. The token is random per start and written to `<server-data>/finisherd.json` (0600) with the pid, port, socket and protocol version.
-- **Trust:** anything that can open the socket is fully trusted. Anything that can read `finisherd.json` can use the WebSocket. D4 maps the transport to an event source (local socket → `fin`, WebSocket → `ui`), and only `ui` may opt in to training content. The D4 plan lists the readable token as a Review Focus item.
+- **Transports** (`apps/finisherd/src/transport.ts`): Effect RPC over NDJSON on the Unix socket `<server-data>/fin.sock` (0600) or the named pipe `\\.\pipe\finisher-<username>[-<hash>]` created by libuv with the default DACL, and a WebSocket on `127.0.0.1:<random>` that requires `Authorization: Bearer <token>`. The token is random per start and written to `<server-data>/finisherd.json` (0600).
+- **Trust:** anything that can open the socket is fully trusted. Anything that can read `finisherd.json` can use the WebSocket. D4 (not yet built) maps the transport to an event source (local socket → `fin`, WebSocket → `ui`), and only `ui` may opt in to training content.
 - **Server data** (`config.ts` `ensureServerData`): created 0700, refused if a symlink or owned by another uid; nothing is checked on Windows.
-- **Identity:** `<server-data>/server-id`, a lowercase ULID with clone detection (`fin-store::server_id`).
-- **Settings:** `<server-data>/settings.json`, re-read while running; the D3/D4 merging writer changes only the keys it owns.
-- **`fin`** (`crates/fin`): finds the socket through `FIN_SERVER` or `finisherd.json`, sends `headers: []` today (D6 adds actor headers), never calls `server.hello`, and exits 0/2/3/4/5/6.
-- **`TASKS.md` "Follow-ups for sub-project 5":** Windows named-pipe DACL and pipe squatting, server-data ACL check, graceful stop without SIGTERM; decode failures and unknown tags as `FinError`; relative paths refused server-side; a client deadline and frame-size cap; test hooks out of release builds; `childEnv` provider variables (moved to sub-project 7).
+- **Identity:** `<server-data>/server-id`, a lowercase ULID with clone detection (`fin-store::server_id`); it is reminted when server data turns up somewhere else.
+- **`fin`** finds the socket through `FIN_SERVER` or `finisherd.json`, sends `headers: []` today, never calls `server.hello`, and exits 0/2/3/4/5/6.
+- **Electron's Node is not the repository's Node.** Electron 44.9.3 and 45.0.0 embed Node 24.22.0, while the repository pins Node 26.12.1. A `finisherd` embedded in the desktop shell as an `ELECTRON_RUN_AS_NODE` child runs on Node 24 unless sub-project 9 ships its own Node. `node:sqlite` works there (checked 2026-11-07 on Linux x64: SQLite 3.53.4, FTS5, WAL, no experimental warning); sub-project 5 uses only APIs present in both.
+- **`TASKS.md` "Follow-ups for sub-project 5":** Windows named-pipe DACL and pipe squatting, server-data ACL check, graceful stop without SIGTERM; decode failures and unknown tags as `FinError`; relative paths refused server-side; a client deadline and frame-size cap; test hooks out of release builds; `childEnv` provider variables (sub-project 7).
 
 ---
 
 ## 2. Principles
 
-1. **Trust comes from a credential, never from a transport.** Loopback is not local (an SSH tunnel ends on loopback; so does a browser tab after DNS rebinding). A Unix socket is not the user (an agent in a sandbox can still `connect()` to it: Landlock at the ABI spike S8 used (4) does not mediate `connect` on pathname sockets, and Windows' default named-pipe DACL lets every user open the pipe for reading). Every connection proves a credential; with none, it may only say hello.
-2. **The client authenticates the server too.** A squatted pipe or a stale `finisherd.json` must not receive a request. Every handshake carries a server proof bound to the client's nonce.
-3. **Human-only is a property of the principal, enforced in one place.** The server checks it before any handler runs. A request from `fin` (which is agent-only, D16) can never be human, whatever its headers claim.
-4. **Least privilege by default, the status quo by explicit grant.** The `local` principal (anything that can read `<server-data>/auth/local.key`) keeps what `fin` can do today, minus the human-only operations. Sub-project 7's sandbox removes agents' read access to server data and gives them narrower `agent` credentials.
-5. **No secret on disk where an agent or a sync service can read it.** Keys live in server data (0700, local disk) or the OS keychain; never in a project folder, never in the environment (arch §8.4), never in the journal.
-6. **Control-plane state is local, versioned and rebuildable where it can be.** It lives in SQLite on the server's local disk (arch §6.7 rule), carries `formatVersion`/`minReaderVersion` like every persisted format (sub-project 4 §2.6), and anything that can be re-derived (library catalogs, job queues, change lists) is re-derived rather than migrated with heroics.
-7. **The diagnostics journal stays metadata-first.** New kinds carry only `meta` fields from closed tables. The security audit log is a separate store with its own rules (§3.3).
-8. **Every error is `{code, message, details, fix?}`** with a stable exit code in `fin`.
+1. **Trust comes from a credential, never from a transport.** Loopback is not local (an SSH tunnel ends on loopback; so does a browser tab after DNS rebinding). A Unix socket is not the user (a sandboxed agent can still `connect()` to it). Every connection proves a credential; with none, it may only say hello.
+2. **The client authenticates the server too,** and both sides bind the proof to the environment and the endpoint. A squatted pipe, a stale `finisherd.json` or a relay to another server never receives a request.
+3. **Human-only is a property of the principal, enforced in one place,** before any handler runs. A request from `fin` (agent-only, D16) can never be human, whatever its headers claim. **Until sub-project 7's sandbox, this is advisory against code running in a raw shell as the user** (it can read key files); Owner question 6.
+4. **No opt-in to training content from any command line.** The only routes stay D14b's: the onboarding question (sub-project 9), a hand edit of `privacy.training` in `settings.json`, and `FIN_TRAINING` in `finisherd`'s own environment.
+5. **Error fixes address the user and never hand an agent a ready-to-run command** for a human-only operation.
+6. **Least privilege by default, the status quo by explicit grant.** The `local` principal keeps what `fin` can do today, minus the human-only operations (Owner question 5).
+7. **Checks happen against resolved, current state.** Branch names, directories and paths are resolved by the store before authorisation, and state-dependent rules (protected branches, an agent's branches) are checked again inside the store's write transaction.
+8. **No secret where an agent or a sync service can read it.** Keys live in `<server-data>/auth/` (0700, local disk) or the OS keychain; the socket lives apart from them in `<server-data>/run/`, the only server-data path a sandbox may reach. Never in a project folder, never in the environment (arch §8.4), never in the journal.
+9. **Decisions that change what a merge does are op-log facts.** A rejection is a record in the log (`drop`, §8.3), so it syncs, survives moves and rebuilds, and binds every later merge.
+10. **Control-plane state is local, versioned and rebuildable where it can be** (arch §6.7, sub-project 4 §2.6).
+11. **The diagnostics journal stays metadata-first.** New kinds carry only `meta` fields from closed tables. The security audit log is a separate store (§3.3).
+12. **Every error is `{code, message, details, fix?}`** with a stable exit code in `fin`.
 
 ---
 
@@ -77,250 +90,294 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 
 ### 3.1 The control store (`control.db`)
 
-- `<server-data>/control.db`, SQLite through Node's built-in **`node:sqlite`** (`DatabaseSync`), WAL mode, `synchronous = NORMAL`, `foreign_keys = ON`, mode 0600. No new dependency and no native prebuild matrix (Node 26.12 ships it unflagged with FTS5; 5A Task 1 confirms both in the Electron runtime of sub-project 9's pinned version as soon as it exists).
-- **One writer:** `finisherd`'s main thread. Library catalogs are separate databases with their own writer (§7.3).
-- **Event loop:** `node:sqlite` is synchronous. Every statement is prepared once, indexed and small; the control-store cost test bounds p99 at **1 ms per statement** on the Linux VM with 10k jobs and 100k audit rows. Bulk work (catalog diffs, imports) never runs on the main thread.
-- **Versioning:** a `meta` table holds `formatVersion`, `minReaderVersion`, `serverId` and `createdAt`. Migrations are frozen modules `m0001…` applied in one transaction at start, after a `VACUUM INTO control.db.pre-m<n>.bak` (the newest two are kept). A database whose `minReaderVersion` is above this code fails the start with `CONTROL_DB_TOO_NEW` (exit 1, stderr): there is no read-only control plane.
-- **Damage:** `PRAGMA quick_check` at open. A failed check moves the file aside to `control.db.corrupt-<ulid>`, starts empty and writes an audit entry. Devices then re-pair (fail closed), library catalogs rescan, jobs are lost, review items are re-derived where possible (§8.1).
-- **`serverId` mismatch** (server data copied to another machine and the id reminted by `fin-store::server_id`): §5.9.
+- `<server-data>/control.db`, SQLite through Node's built-in **`node:sqlite`** (`DatabaseSync`), mode 0600. `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 250`, and **`wal_autocheckpoint = 0` on the main connection**: no checkpoint ever runs on the event loop.
+- **Checkpoints** run on a `worker_thread` with its own connection: `PASSIVE` every 30 s or when the WAL passes 4 MiB, `TRUNCATE` after 60 s idle.
+- **One writer:** `finisherd`'s main thread. Library catalogs are separate databases with their own writer (§7.1).
+- **Event loop:** every statement is prepared once, indexed and small, with a budget of **p99 ≤ 1 ms** per statement (10k jobs, 100k audit rows, Linux VM). Bulk deletes (retention, purges) run in batches of ≤ 500 rows per statement, one batch per tick. Bulk inserts (catalog diffs) never run on the main thread.
+- **Node versions:** only APIs present in both Node 24.22 (Electron 44/45) and Node 26.12 (§1.5).
+- **Versioning:** `meta` holds `formatVersion`, `minReaderVersion`, `envId` (§3.7), `createdAt`. Migrations are frozen modules `m0001…`, applied in one transaction at start after a `VACUUM INTO control.db.pre-m<n>.bak` (the newest two kept). A `minReaderVersion` above this code fails the start with `CONTROL_DB_TOO_NEW`.
+- **Damage:** `PRAGMA quick_check` at open. A failure moves the files aside to `control.db.corrupt-<ulid>` and starts empty with an audit entry: the environment id and devices are lost (devices re-pair: fail closed), catalogs rescan, jobs are lost, open reviews are re-derived (§8.1). Rejections are not lost: they are in the op log (§8.3).
 
-Tables per batch: 5A `meta`, `audit`, `agent_sessions`; 5B `devices`, `pair_offers`, `pair_pending`, `rotations`; 5C `jobs`; 5D `libraries`; 5E `reviews`, `review_events`, `review_comments`, `branch_policy`.
+Tables per batch: 5A `meta`, `server_ids`, `audit`, `credentials` (agent and MCP sessions); 5B `devices`, `pair_offers`, `pair_pending`; 5C `jobs`; 5D `libraries`; 5E `reviews`, `review_events`, `review_comments`, `branch_policy`.
 
 ### 3.2 Principals
 
 ```text
 Principal {
-  kind:     anonymous | local | console | device | agent | plugin
-  id:       "local" | "console" | <deviceId ULID> | <agentSessionId ULID> | <pluginId>
-  role:     owner | editor | viewer            (device only; console counts as owner)
-  scopes:   Scope[]                            (§4.4: the kind's defaults, narrowed by role or grant)
-  projects: "*" | ProjectId[]                  (device and agent; "*" otherwise)
-  human:    console, or device                 (derived)
-  owner:    console, or device with role owner (derived)
-  source:   Source                             (§3.4: derived, never sent)
-  author:   string                             (the default Tx.author for its writes)
+  kind:     anonymous | local | console | device | agent | mcp | plugin
+  id:       "local" | "console" | <deviceId> | <credential id> | <pluginId>   (ULIDs)
+  scopes:   Scope[]                        (§4.5: the kind's defaults, or the credential's)
+  projects: "*" | ProjectId[]              (agent, mcp; "*" otherwise)
+  branches: "*" | BranchRule[]             (agent, mcp: branch ids or "own" = branches it created)
+  human:    console | device               (derived; every device is the owner in v1)
+  source:   Source                         (§3.4: derived, never sent)
+  author:   string                         (the default Tx.author for its writes)
 }
 ```
 
 | Kind | Who | Proof | Batch |
 |---|---|---|---|
 | `anonymous` | any connection before a proof | none | 5A |
-| `local` | `fin` and scripts run by the user; until sub-project 7, also agent harnesses the user starts outside Finisher | HMAC with `<server-data>/auth/local.key` (§4.2) | 5A |
-| `console` | a person at the server: `finisherd <command>` (§4.6), and the desktop shell's main process | HMAC with `<server-data>/auth/console.key` | 5A |
-| `device` | a paired client: the desktop renderer, a browser, later a phone | DPoP-bound token → WebSocket ticket (§5) | 5B |
-| `agent` | one agent session (sub-project 7) | HMAC with the session key in the session's credential file (§4.2) | 5A defines, 7 mints |
+| `local` | `fin` and scripts run by the user; until sub-project 7, also agent harnesses the user starts in a raw shell | HMAC with `<server-data>/auth/local.key` (§4.2) | 5A |
+| `console` | a person at the server: `finisherd <command>` (§4.7), and the desktop shell's main process | HMAC with `<server-data>/auth/console.key` | 5A |
+| `device` | a paired client: the desktop renderer, a browser, later a phone; always the owner in v1 | DPoP-bound token → WebSocket ticket (§5) | 5B |
+| `agent` | one agent session (sub-project 7, or minted from the console for a hand-run harness) | HMAC with the session key from its credential file | 5A |
+| `mcp` | the MCP adapter (D16: a thin adapter over the command registry), one credential per adapter install | HMAC with the key from its credential file | 5A |
 | `plugin` | one plugin process (sub-project 8) | reserved | 8 |
 
-- **Single owner** (arch §5 `AuthProvider` local default): the server has one owner, the person at the console. Paired devices carry a role. `editor` and `viewer` devices exist so that the owner's own phone can be a viewer and so that an informal collaborator can be paired without owner powers; accounts, orgs and real multi-user roles are `finisher-cloud`.
-- The principal is attached to the **connection**, not to each request (§4.3), and is re-checked on every request (revocation is immediate).
+- The principal is attached to the **connection** and re-checked on every request, so revocation is immediate.
+- `agent` and `mcp` are the non-human, credentialed kinds: they never hold a human-only scope, and the server, not a header, decides their actor (§3.4).
 
 ### 3.3 The audit log
 
-- **What:** a security record for the owner (arch §16 "audit log"). Rows in `control.db` `audit {id ULID, at, kind, principalKind, principalId, outcome, code?, remote?, details JSON}`.
-- **Kinds:** `auth.fail` (bad proof, bad ticket, bad DPoP proof, rate-limited), `auth.denied` (a human-only or scope denial: RPC, scope, principal), `auth.ticket` (WebSocket tickets: issued and used, not every request), `pair.offer|redeem|approve|reject|expire`, `device.revoke|rename|role`, `agent.mint|revoke` (7), `consent.change`, `diagnostics.purge`, `settings.write`, `project.takeoverConfirmed`, `project.relocated`, `listener.start|stop` (with the SPKI pin), `tls.rotate`, `env.moved|adopted|reset`, `library.add|remove|set`, `review.merge` (on protected branches); reserved for 7/8: `grant`, `hook.block`, `hook.modify`, `sandbox.violation`, `plugin.install`.
-- **Always on.** It is not diagnostics: consent does not gate it, `DO_NOT_TRACK` does not stop it, it is never uploaded, never part of `fin diagnostics export` and never read by the dataset builder.
-- **What it may hold** that the journal may not: device names and the remote address of failed and pairing requests (Owner question 4). Never secrets, tokens, MACs, pairing codes, paths or request payloads.
-- **Retention:** 180 days or 100k rows, oldest first, swept hourly. Readable and purgeable only by the owner (`auth.audit.list`, `auth.audit.purge`; `finisherd audit`).
-- **Never blocks:** an audit write failure is logged to stderr and counted in `finisherd status`; the request it describes still gets its answer (denials still deny).
+- A security record for the owner (arch §16): rows in `control.db` `audit {id, at, kind, principalKind, principalId, credentialKind, outcome, code?, remote?, count, details JSON}`.
+- **Kinds:** `auth.fail` (bad proof, bad ticket, bad DPoP proof, rate-limited), `auth.denied` (a human-only, scope, reach or policy denial: RPC, scope, principal kind), `auth.ticket`, `credential.mint|revoke|expire`, `pair.offer|redeem|approve|reject|expire`, `device.revoke|rename`, `consent.change`, `diagnostics.purge`, `settings.write`, `project.takeoverConfirmed`, `project.relocated`, `listener.start|stop` (with the SPKI pin), `env.moved|adopted|reset`, `library.add|remove|set`, `history.drop`, `review.merge` (protected targets), `console.refused` (a console command refused for lack of a TTY or a confirmation); reserved for 7/8: `grant`, `approval`, `hook.block`, `hook.modify`, `sandbox.violation`, `plugin.install`.
+- **Aggregation:** `auth.fail` rows are aggregated **per credential kind (and remote address, in 5B) per minute**, with `count`, so a flood of connections cannot flood the log.
+- **Always on.** Consent does not gate it, `DO_NOT_TRACK` does not stop it; it is never uploaded, never part of `fin diagnostics export`, never read by the dataset builder.
+- **What it may hold** that the journal may not: device names and, for pairing and failed authentication, remote addresses (Owner question 4). Never secrets, tokens, MACs, nonces, links, paths or request payloads.
+- **Retention:** 180 days or 100k rows, swept hourly in batches. Readable and purgeable only by the owner (`auth.audit.list`, `auth.audit.purge`).
+- **Never blocks:** a failed audit write is logged to stderr and counted in `server.status`; the request still gets its answer (denials still deny).
 
 ### 3.4 Diagnostics journal integration
 
-- **Source from the principal** (replaces D4's per-transport `RpcSource`): `local` → `fin`, `agent` → `fin` (the emitting program is still `fin`), `device` → `ui`, `console` → **`console`** (a new `fin_core::events::Source` variant, 5A), `anonymous` → nothing is accepted. A WebSocket opened with a `local` ticket (the e2e subscriber) is `fin`, not `ui`.
-- **Actor from the principal, narrowed by headers.** D6's `fin-actor-*` headers are kept, but the principal bounds them: `agent` principals always get `{kind: agent, session: <their session id>}`, whatever the headers say, and only `call` comes from the header; `device` principals get `{kind: user, session: <deviceId>}`; `console` gets `{kind: user}`; `local` keeps D6's unverified header actor (as today).
-- **Consent and the other human-only diagnostics operations** move from "source is `ui`" to "principal is owner" (§4.5). This lands the "human-only once permissions exist" TASKS follow-up of the D-plan in 5A instead of sub-project 7.
-- **The D4 rate limit** becomes per principal (`local`, each device, each agent session) instead of per source.
+- **Source from the principal** (replaces D4's per-transport `RpcSource`): `local` and `agent` → `fin`; `mcp` → **`mcp`**; `device` → `ui`; `console` → **`console`**; `anonymous` → nothing is accepted. `mcp` and `console` are new `fin_core::events::Source` variants (5A). A WebSocket opened with a `local` ticket (the e2e subscriber) is `fin`, never `ui`.
+- **Actor from the principal, narrowed by headers.** D6's `fin-actor-*` headers are kept, but bounded: `agent` and `mcp` principals always get `{kind: agent, session: <their credential id>}`, and only `call` comes from the header; `device` gets `{kind: user, session: <deviceId>}`; `console` gets `{kind: user}`; `local` keeps D6's unverified header actor.
+- **Consent.** Every consent change (`diagnostics.consent`, any purpose, any value) needs a human principal, and **turning training on is refused for every principal but a `device`** (the onboarding question, sub-project 9): the console answers `CONSENT_UI_ONLY` (exit 2) like `fin` does, with D14b's fix (the app, a hand edit of `settings.json`, or `FIN_TRAINING`, described in words). The other human-only diagnostics operations move from "source is `ui`" to "principal is human" (§4.6).
+- **The D4 rate limit** becomes per principal (`local`, `console`, each device, each credential).
 - **New kinds** (all `meta` only, all `source: finisherd`, names from new closed tables in `fin_core::events::names`):
 
 | Kind | Batch | Payload |
 |---|---|---|
-| `auth.pair` | 5B | `outcome: offered\|redeemed\|approved\|rejected\|expired\|revoked`, `role`, `platform: Name(PLATFORMS)`, `route: loopback\|lan\|tailscale\|public\|connect\|other`, `micros?` (redeem → approve) |
-| `job.done` | 5C | `kind: Name(JOB_KINDS)`, `outcome: succeeded\|failed\|cancelled\|interrupted`, `code?`, `attempts`, `priority`, `queuedMs`, `runMicros`, `items?`, `itemsFailed?`, `bisected` |
-| `library.scan` | 5D | `storage: local\|network\|sync`, `full`, `outcome`, `code?`, `files` and `dirs` (log₂ buckets), `added`, `changed`, `missing`, `moved`, `placeholders`, `micros` |
+| `auth.pair` | 5B | `outcome: offered\|redeemed\|approved\|rejected\|expired\|revoked`, `platform: Name(PLATFORMS)`, `route: loopback\|lan\|tailscale\|public\|connect\|other`, `micros?` (redeem → approve) |
+| `job.done` | 5C | `kind: Name(JOB_KINDS)`, `outcome: succeeded\|failed\|cancelled\|interrupted`, `code?`, `attempts`, `priority`, `queuedMs`, `runMicros`, `items?`, `itemsFailed?`, `isolated` |
+| `library.scan` | 5D | `storage: local\|network\|sync`, `full`, `trigger: add\|schedule\|demand\|watch\|mount`, `outcome`, `code?`, `files` and `dirs` (log₂ buckets), `added`, `changed`, `missing`, `moved`, `placeholders`, `micros` |
 | `review.verdict` | 5E | fills the reserved v0 kind as v1: `itemKind`, `verdict: accepted\|rejected\|merged\|dismissed\|changesRequested`, `txIds: IdRef[]` (≤ 64), `accepted`, `rejected`, `by: user\|agent\|critic`, `openS`; training only: `reason: Content<userText>` |
 
-- **Denials** are not a kind: `rpc.stats` already counts error codes per method, so `SCOPE_DENIED`/`HUMAN_ONLY` show up there.
-- **Never in the journal:** device names, environment names, routes, addresses, library names and paths, file names (they are `fileName` content and nothing in sub-project 5 records them), review titles and comments outside `Content`.
+- Denials are not a kind: `rpc.stats` already counts error codes per method.
+- **Never in the journal:** device and environment names, routes, addresses, library names and paths, file names, review titles and comments outside `Content`.
 
-### 3.5 Exit code 7: denied
+### 3.5 Exit code 7: denied; fix texts
 
-`fin` gains one exit class (`crates/fin/src/output.rs`): **7 = denied**, "this needs a different principal, usually a person". It covers `UNAUTHENTICATED`, `SERVER_UNTRUSTED`, `SCOPE_DENIED`, `HUMAN_ONLY`, `BRANCH_PROTECTED`, `PATH_NOT_ALLOWED`, `CREDENTIAL_REVOKED`. An agent must not retry these; the `fix` names who can act and how (for example `ask the user to run: finisherd diagnostics purge --all`).
+- `fin` gains one exit class (`crates/fin/src/output.rs`): **7 = denied**, "this needs a different principal, usually a person". It covers `UNAUTHENTICATED`, `SERVER_UNTRUSTED`, `SCOPE_DENIED`, `HUMAN_ONLY`, `BRANCH_PROTECTED`, `BRANCH_NOT_ALLOWED`, `PATH_NOT_ALLOWED`, `CREDENTIAL_REVOKED`, `APPROVAL_REQUIRED`. An agent must not retry these.
+- **Fix texts address the user, and a human-only fix never contains a runnable command line.** For example `HUMAN_ONLY` on a purge: "Only you, the owner of this Finisher server, can delete recorded diagnostics: use the Finisher app or the server's console." `details.where` is `app | console | settingsFile | env`. A test checks every human-only code's `fix` against the pattern of a command line (`finisherd <word>`, `fin <word>`, backticks).
 
 ### 3.6 Protocol 2
 
-5A bumps `PROTOCOL_VERSION` to **2**: the local handshake (§4.2) and WebSocket tickets (§4.3) are not compatible with protocol-1 clients, and every client lives in this repository and ships version-locked (arch §21 "Updates"). Protocol 2 also takes the two changes sub-project 4 left for it: `tx.commit.generation` and `ops.subscribe.generation` become required, and the `project.recover` result change of 4B is recorded. The WebSocket upgrade refuses another version with **HTTP 426** and a JSON body `{protocol: {min, max}}` (arch §16 "Handshake").
+5A bumps `PROTOCOL_VERSION` to **2**: the handshake (§4.2), tickets (§4.3) and the new `asset.probe {projectId}` (§4.5) are not compatible with protocol-1 clients, and every client lives in this repository and ships version-locked (arch §21). Protocol 2 also takes sub-project 4's pending changes: `tx.commit.generation` and `ops.subscribe.generation` become required, and the `project.recover` result change of 4B is recorded. The WebSocket upgrade refuses another version with **HTTP 426** and `{protocol: {min, max}}` (arch §16).
+
+### 3.7 The environment id
+
+- **A separate `envId`** (a ULID) is minted at the first start and stored in `control.db` `meta`. It is **not** the server id: the server id is reminted by `fin-store::server_id` when server data moves, and moving server data must not change the environment.
+- **Bound to the identity key** (5B): the pairing link pins `(envId, spki)`, and `env.describe` returns both. Before 5B there is no identity key, and the id is bound to `control.db` alone.
+- **`server_ids {serverId, envId, since}`** maps every server id this server data has had to the environment, so a lease holder named by server id (`project.status` `holder.serverId`) maps to an environment: `project.status` gains `holder.envId` when the holder is this environment, and `env.describe` lists `serverIds` so a client can map another environment's lease.
+- **Copies and moves** (§5.8): a moved server data keeps its `envId`; a copy that runs beside its original must get a new one (`env reset`), because two servers holding one identity key could impersonate each other.
 
 ---
 
 ## 4. 5A — Principals, local credentials and scopes
 
-### 4.1 Data model
+### 4.1 Data model and files
 
-- `Principal` (§3.2), `Scope` (§4.4), `Connection {clientId, transport: socket|ws, principal, serverNonce, openedAt}`.
-- Key files in `<server-data>/auth/` (0700): `local.key`, `console.key` (32 random bytes, base64url, 0600), **rewritten at every start** before the socket listens. A process that read a key keeps nothing after a restart.
-- `agent_sessions {id ULID, label, scopes JSON, projects JSON, branches JSON?, createdBy, createdAt, expiresAt?, revokedAt?}` (5A creates the table and the verifier; sub-project 7 the minting). An agent's key is never stored: it is `HMAC(agentMaster, "fin/agent-key/v1" ‖ id)` with `agentMaster` in `<server-data>/auth/agent.master` (0600, kept across restarts, so sessions survive one). Revocation is the row's `revokedAt`.
-- **The agent credential file** (written by sub-project 7 inside the session sandbox, 0600): `{"v":1,"kind":"agent","id":"<ulid>","key":"<base64url>","env":"<envId>"}`. `fin` finds it through **`FIN_CREDENTIAL`**, a path. The variable names a file, not a secret, so it may be in the agent environment (arch §8.4 forbids only the token itself).
+- **Server data layout:**
+  - `<server-data>/auth/` (0700; owner-only DACL on Windows): `local.key`, `console.key` (32 random bytes, base64url, 0600), **rewritten at every start** before any listener opens; `credential.master` (created once, kept).
+  - `<server-data>/run/` (0700): **only** the Unix socket `fin.sock`. A sandbox may be allowed to reach this directory and nothing else of server data (§4.11). Windows uses the named pipe and needs no `run/` entry.
+  - `finisherd.json` (0600) in server data, as today, without a token (§4.3).
+- **`credentials`** (agent and MCP sessions): `{id ULID, kind: agent|mcp, label, scopes JSON, projects JSON, branches JSON, createdBy, createdAt, lastUsedAt, idleExpiry, absoluteExpiry, revokedAt?}`. A credential's key is never stored: it is `HMAC(credential.master, "fin/credential-key/v1" ‖ kind ‖ id)`, recomputed to verify. Revocation is `revokedAt`.
+- **Expiry defaults: 24 hours idle, 7 days absolute.** *Why:* an agent cooking a library overnight is idle between turns for minutes, not a day, so 24 h idle never cuts a working session, and it ends credentials a harness forgot; 7 days caps how long a copied credential file works. Sub-project 7 mints a fresh credential per session, so neither limit is felt there. `mcp` credentials (one per adapter install, long-lived by nature) default to 30 days idle and no absolute limit; the owner revokes them. `lastUsedAt` is written at most once a minute.
+- **The credential file** (written by sub-project 7 inside the session sandbox, or by `finisherd agent mint` for a hand-run harness, 0600): `{"v":1,"kind":"agent"|"mcp","id":"<ulid>","key":"<base64url>","env":"<envId>"}`. `fin` and the MCP adapter find it through **`FIN_CREDENTIAL`**, a path. The variable names a file, not a secret, so arch §8.4's env allow-list gains it (amended with this revision).
 
-### 4.2 The local handshake
+### 4.2 The handshake
 
 ```text
 fin                                                    finisherd
- │ server.hello {clientNonce, credential: {kind: local|console} | {kind: agent, id}}
+ │ server.hello {clientNonce, env?, endpoint,
+ │               credential: {kind: local|console} | {kind: agent|mcp, id}}
  │ ─────────────────────────────────────────────────────▶
- │   {protocolVersion, serverVersion, capabilities, envId, serverNonce,
- │    proof = HMAC(K, "finisherd/hello/v1" ‖ clientNonce ‖ serverNonce)}
+ │   {protocolVersion, serverVersion, capabilities, envId, endpoint (canonical), serverNonce,
+ │    proof = HMAC(K, "finisherd/hello/v2" ‖ envId ‖ endpoint ‖ clientNonce ‖ serverNonce)}
  │ ◀─────────────────────────────────────────────────────
- │ verify proof (constant time) — else SERVER_UNTRUSTED, send nothing more
- │ auth.prove {mac = HMAC(K, "fin/prove/v1" ‖ serverNonce ‖ clientNonce)}
+ │ check envId and endpoint against what it connected to; verify proof (constant time)
+ │ auth.prove {mac = HMAC(K, "fin/prove/v2" ‖ envId ‖ endpoint ‖ serverNonce ‖ clientNonce)}
  │ ─────────────────────────────────────────────────────▶
- │   {principal: {kind, id, scopes, human, owner}}      (connection now carries the principal)
+ │   {principal}                                         (the connection now carries it)
  │ ◀─────────────────────────────────────────────────────
 ```
 
-- `K` is the key of the credential named in the hello. Nonces are 32 random bytes; HMAC-SHA-256 (`node:crypto` on the server, the `hmac`/`sha2` crates in `fin`); every label is domain-separated.
-- **Why a server proof:** on Windows a pipe name can be squatted by another user before `finisherd` starts, and a stale `finisherd.json` can name it. Only a process that can read the key file can produce the proof, and only the user can read server data (0700 on unix; an owner-only DACL on Windows, checked at start, §4.11). The proof closes squatting without native pipe-security code in Node (Node exposes neither the pipe handle nor `GetNamedPipeClientProcessId`, nor `SO_PEERCRED` on sockets).
-- **Unknown or revoked agent id, wrong MAC, no hello:** `UNAUTHENTICATED` (exit 7), audited as `auth.fail`. The connection may retry the hello; after 5 failures it is closed.
+- `K` is the key of the credential named in the hello. Nonces are 32 random bytes; HMAC-SHA-256; every label is domain-separated and length-prefixed fields (`u16` big-endian length before each variable-length field) keep concatenations unambiguous.
+- **Binding:** `envId` (from `finisherd.json`, or the credential file's `env`) and the canonical `endpoint` (the socket's real path, or the pipe name lower-cased) go into both MACs, so a proof made for one server or one socket is useless on another, and a relay between two servers fails.
+- **Why a server proof:** a pipe name can be squatted, and a stale `finisherd.json` can name a dead socket that someone else re-created. Only a process that can read the key can produce the proof.
+- **A restart is not an attack.** On a wrong proof (`badProof`) or an environment mismatch, `fin` re-reads `finisherd.json` and the key file **once**, reconnects and retries; a restart between reading the key and connecting is then invisible. Only a second failure is **`SERVER_UNTRUSTED`** (exit 7) with `details.reason` `noProof | badProof | envMismatch | endpointMismatch`; the first failure is recorded as `keyStale` in the retry's details if the retry succeeds through a changed key.
+- **Unknown, expired or revoked credential, wrong MAC:** `UNAUTHENTICATED` (exit 7), audited. The hello answers with a `serverNonce` and no proof for an unknown credential, so ids cannot be probed. Five failures on one connection close it.
 - **Before the proof** a connection may call only `server.hello` and `auth.prove`.
-- **Cost:** one round trip and four HMACs per `fin` run; the budget is ≤ 1 ms added to `fin`'s p50 on the Linux VM.
-- **`fin` without a readable key** (a sandboxed agent before it has a credential file, a test with only `FIN_SERVER`) still connects and gets `UNAUTHENTICATED` for anything but the hello.
+- **Cost:** one round trip and four HMACs per `fin` run; budget ≤ 1 ms added to `fin`'s p50 on the Linux VM.
 
-### 4.3 Connections, the WebSocket and tickets
+### 4.3 Transports, connections and tickets
 
-- **Connection-aware RPC protocol.** `finisherd` replaces `RpcServer.layerProtocolSocketServer` with its own `RpcServer.Protocol` (`protocol.ts`), modelled on Effect's socket protocol: it owns framing for both transports, gives each connection a `clientId`, keeps its `Connection`, and enforces the frame-size cap (§4.10). Handlers find the principal by `clientId`. Client-sent headers can never set the principal: the protocol strips any header with the reserved `x-fin-` prefix.
-- **Authorisation wraps every handler** in one place (`authorize.ts`, where `guard` wraps them today): it looks up the RPC's scope (§4.4), evaluates payload escalations, checks the principal, audits a denial and only then runs the handler.
-- **WebSocket tickets** replace the bearer token. `auth.ticket {ttlS ≤ 60}` (any authenticated principal) returns a 256-bit one-time ticket bound to the caller's principal. `ws://127.0.0.1:<port>/rpc?v=2&ticket=<t>` upgrades once; the WebSocket connection then carries that principal. Devices get tickets through DPoP in 5B; 5A's minters are `local` and `console` (the e2e subscriber, a future bare web client started from a script).
-- **`finisherd.json` no longer holds a token.** It keeps `pid`, `wsPort`, `socket`, `protocolVersion` and adds `envId` and `diagnostics.enabled` (D4).
-- **Origin and Host on the loopback WebSocket:** a request without `Origin` (not a browser) is accepted. A browser `Origin` must be one of the server's own origins (`http://127.0.0.1:<port>`, `http://localhost:<port>`, `http://[::1]:<port>`), the desktop shell's origin (sub-project 9) or a configured one; `Host` must be one of the server's own names. Otherwise HTTP 403 before the upgrade (DNS-rebinding protection).
+- **Connection identity comes from Effect RPC.** The server's RPC protocol reports a `clientId` per connection and passes it to every handler in its options; `connections.ts` maps it to a `Connection {clientId, transport, principal, hello?, failures, peer?}`. Payload decoding stays at the protocol level, where Effect already does it; `finisherd` maps decode failures and unknown tags to `INVALID_REQUEST` there, so no handler sees an undecoded payload and no defect frame is sent.
+- **Unix socket:** `<server-data>/run/fin.sock`, created under umask 0177 and chmod 0600 as today.
+- **Windows: a native named-pipe listener in `fin-node`** (decided now). `finisherd` no longer lets libuv create the pipe. `fin-node`'s `PipeServer` creates every instance with its own security descriptor (`D:P(A;;GA;;;<user SID>)(A;;GA;;;SY)`; sub-project 7 adds per-project AppContainer SIDs with read/write), `FILE_FLAG_FIRST_PIPE_INSTANCE` on the first instance (so a squatter makes the start fail, `SERVER_RUNNING`/`PIPE_SQUATTED`), and `PIPE_REJECT_REMOTE_CLIENTS`. It accepts on its own thread and feeds each connection to `protocol.ts` as a duplex stream, with the client's process id and token user SID (`GetNamedPipeClientProcessId`, `OpenProcessToken`) recorded as `peer` for the audit log. A client whose user SID is neither ours nor an allowed AppContainer SID is closed before its first frame. The handshake still runs: the DACL and the proof are two layers.
+- **WebSocket:** a `ws` `WebSocketServer` in `noServer` mode behind a `node:http` server on `127.0.0.1:0`, so the upgrade request is ours.
+  - **Tickets** replace the bearer token. `auth.ticket {ttlS ≤ 60}` (any authenticated principal) returns a 256-bit one-time ticket bound to the caller's principal. The client sends it in **`Sec-WebSocket-Protocol: finisher.v2, finisher.ticket.<ticket>`**, not in the URL (query strings end up in proxy and server logs); the server echoes `finisher.v2`. The WebSocket then carries the ticket's principal. Devices get tickets through DPoP in 5B; in 5A any authenticated local principal may mint them (the e2e subscriber).
+  - **Host allow-list:** `Host` must be one of `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>` (5B adds the route names and the `publicUrl` host); otherwise 403. **Origin:** absent (not a browser), or one of the server's own origins, the desktop shell's origin (sub-project 9) or a configured one; otherwise 403. Both checks run before the ticket is consumed.
+- **`finisherd.json`** keeps `pid`, `wsPort`, `socket`, `protocolVersion` and adds `envId` and `diagnostics.enabled` (D4). The `token` key is gone.
+- **Frames** over 16 MiB on either transport end the connection after an `Exit` with `FRAME_TOO_LARGE`. Any client request header with the reserved `x-fin-` prefix is dropped.
 
-### 4.4 Scopes
+### 4.4 The middleware chain
 
-A closed vocabulary in `@finisher/contracts` (`scopes.ts`). **Every RPC declares exactly one scope**, plus optional payload escalations; a test fails when an RPC has none.
+Every request passes the same stages, in order, in one place (`chain.ts`), for unary and stream RPCs alike:
+
+1. **Decode** (protocol): `INVALID_REQUEST` on failure.
+2. **Authenticate:** the connection's principal; anything but `public` RPCs from `anonymous` is `UNAUTHENTICATED`.
+3. **Resolve:** each RPC declares a resolver that turns references into current facts *before* any check:
+   - **branch references** (`branch`, `from`, `into`, a name, an id or `name#id`) become branch ids **through the store** (`engine.resolveBranch`), so a name, an alias or a rename can never slip past a rule written for an id;
+   - **directories** (`project.create.dir`, `project.open.dir`) become `{projectId?, canonical dir, parent}` by reading `finisher.project.json` (open) or canonicalising the parent (create);
+   - **paths** (`asset.probe.path`, `project.recover.importDir`) become canonical absolute paths (symlinks resolved; `INVALID_PATH` for relative or non-normalised input);
+   - the RPC's **project** (from its payload or from the resolved directory).
+4. **Authorise:** every scope the RPC requires (**all of them**, §4.5), the human-only rules (§4.6), and **reach**: the project must be in `principal.projects`, and every resolved path must be inside an allowed root for principals that have roots (`agent`, `mcp`, `device`: the project folders they may use, registered library roots, the session workspace). Failures: `SCOPE_DENIED`, `HUMAN_ONLY`, `PROJECT_NOT_FOUND` (not `SCOPE_DENIED`, so ids don't leak), `PATH_NOT_ALLOWED`.
+5. **Policy:** rules that see the resolved request and answer `allow | deny | ask`. 5A ships the stage with one rule, **agent branch limits** (a credential's `branches`: a write to a branch outside them is `BRANCH_NOT_ALLOWED`); 5E adds protected branches; sub-project 7 adds command-pattern rules (arch §8.3) and `PreCommand` hooks here. **`ask`** answers `APPROVAL_REQUIRED {approvalId}` (exit 7); sub-project 7 owns approvals and the approval cards, and 5A tests the outcome with a test rule.
+6. **Handler,** with the resolved values, never the raw ones. **State-dependent rules are checked again inside the store's write transaction:** every write call into `fin-node` carries a `guard {denyBranches: [branchId], allowBranches?: [branchId]}`, and `fin-store` refuses (`BRANCH_PROTECTED` / `BRANCH_NOT_ALLOWED`) if the resolved target is denied at the moment of writing. A rename, a branch made in between or a racing policy change cannot open a window.
+7. **After** (sub-project 7): `PostCommand` hooks.
+
+A denial at stages 2–6 is audited as `auth.denied` with the RPC tag, the scope or rule and the principal kind, never the payload.
+
+### 4.5 Scopes
+
+A closed vocabulary in `@finisher/contracts` (`scopes.ts`). **Every RPC declares the scopes it needs (one or more, all required)** and its resolver; a test fails when an RPC has none.
 
 | Scope | Covers | Human-only |
 |---|---|---|
 | `public` | `server.hello`, `auth.prove` | — |
-| `server.read` | `auth.ticket`, `env.describe`, `fonts.catalog`, `fonts.status`, `server.status` | — |
-| `project.read` | `snapshot.get`, `ops.subscribe`, `project.events`, `project.status`, `project.verify`, `tx.get`, `branch.list`, `eval.*`, `fonts.plan`; later `review.list/get/watch` (5E) and `capability.url` (5B) | — |
-| `project.write` | `project.create`, `project.open`, `asset.probe`, `tx.commit`, `branch.create`, `branch.set`, `history.*`, `fonts.fetch`, `project.acknowledge*` | — |
+| `server.read` | `auth.ticket`, `auth.whoami`, `auth.revokeSelf`, `env.describe`, `fonts.catalog`, `fonts.status`, `server.status` | — |
+| `project.read` | `snapshot.get`, `ops.subscribe`, `project.events`, `project.status`, `project.verify`, `tx.get`, `branch.list`, `eval.*`, `fonts.plan`, **`project.open` of a project already open here** (attaching); 5E `review.list/get` | — |
+| `project.create` | `project.create` | — |
+| `project.write` | **`project.open` that loads a project** (it may take the lease), `asset.probe {projectId, path}` (a protocol-2 field: the probe is for that project), `tx.commit`, `branch.create`, `branch.set`, `history.*`, `project.acknowledge*` | — |
 | `project.admin` | `project.rebuild`, `project.compact`, `project.recover`, `project.takeover` | — |
 | `project.confirm` | escalation: `project.takeover {confirm: true}`, `project.open {relocate: true}` | **human** |
-| `branch.protected` | escalation: any write whose target branch is protected (§8.5) | — |
-| `review.write` | `review.request`, `review.comment`, `review.refresh` | — |
-| `review.decide` | `review.decide`, `review.merge`, `review.close` | — |
-| `jobs.read`, `jobs.submit`, `jobs.control` | §6.6 | — |
-| `library.read`, `library.scan` | §7.6 | — |
-| `library.admin` | `library.add`, `library.remove`, `library.set` | **owner** |
-| `diagnostics.read` | `diagnostics.status`, `diagnostics.export` (content redacted, below), `diagnostics.project {collect: never}`, `diagnostics.record` | — |
-| `diagnostics.admin` | `diagnostics.consent`, `diagnostics.purge`, `diagnostics.project {collect: default}`, escalation: `diagnostics.export` of content | **owner** |
-| `settings.admin` | `settings.write` (5B: remote listeners, origins, project roots) | **owner** |
-| `auth.admin` | pairing, devices, agent sessions, `auth.audit.*`, `server.stop`, `tls.*`, `env.adopt/reset` | **owner** |
-| `plugin.install` | reserved (sub-project 8, arch §8.3) | **owner** by default |
+| `fonts.fetch` | `fonts.fetch` (network downloads from the pinned catalog) | — |
+| `branch.protected` | escalation (5E): a write whose resolved target is protected | — |
+| `review.write`, `review.decide` | 5E (§8.6) | — |
+| `jobs.read`, `jobs.submit`, `jobs.control` | 5C (§6.6) | — |
+| `library.read`, `library.scan` | 5D (§7.6) | — |
+| `library.admin` | `library.add`, `library.remove`, `library.set` of hydration or bandwidth | **human** |
+| `diagnostics.read` | `diagnostics.status`, `diagnostics.export` (content redacted, below), `diagnostics.project {collect: never}` | — |
+| `diagnostics.record` | `diagnostics.record` (it writes the journal) | — |
+| `diagnostics.admin` | `diagnostics.consent`, `diagnostics.purge`, `diagnostics.project {collect: default}`, escalation: `diagnostics.export {content: true}` | **human** (training on: `device` only, §3.4) |
+| `settings.admin` | `settings.write` (5B) | **human** |
+| `auth.admin` | credentials (mint, list, revoke), pairing and devices (5B), `auth.audit.*`, `server.stop`, `env.*` writes | **human** |
+| `plugin.install` | reserved (sub-project 8, arch §8.3) | **human** by default |
 
 **Default scopes per principal:**
 
 | Principal | Scopes |
 |---|---|
 | `anonymous` | `public` |
-| `console` | all |
-| `device` owner | all |
-| `device` editor | all but the human-only rows and `auth.admin`; `project.confirm` yes (a person) |
-| `device` viewer | `public`, `server.read`, `project.read`, `review.write`, `jobs.read`, `library.read`, `diagnostics.read` |
-| `local` | all but the human-only rows. It keeps `branch.protected` and `review.decide`, so `fin merge` into `main` keeps working (Owner question 5) |
-| `agent` | as minted by sub-project 7, never a human-only scope; by default no `branch.protected`, no `review.decide`, no `jobs.control`, no `project.admin` |
+| `console`, `device` | all (training on still `device` only) |
+| `local` | all but the human-only rows; it keeps `branch.protected` and `review.decide` (Owner question 5) |
+| `agent`, `mcp` | exactly the credential's scopes, never a human-only one (a mint that asks for one is refused). The console's mint defaults to `server.read`, `project.read`, `project.write`, `review.write`, `jobs.read`, `jobs.submit`, `library.read`, `library.scan`, `diagnostics.read`, `diagnostics.record`; never `branch.protected`, `review.decide`, `jobs.control`, `project.admin`, `project.create` or `fonts.fetch` unless asked for |
 
-- **Payload escalations** are declared beside the scope (`escalate(payload) → Scope | null`) and checked by the same wrapper, so a handler never re-implements a check.
-- **`diagnostics.export` for non-owners is redacted, not refused:** content fields and blob references are removed, as the upload view does for diagnostics-only, and the result says `redacted: true`. An agent can still read what the server records about it, without the user's content.
-- **Project reach:** a principal with `projects: [ids]` gets `PROJECT_NOT_FOUND` (not `SCOPE_DENIED`, so ids don't leak) for any other project, on every project-scoped RPC and stream.
+- **Two scopes where an RPC does two things:** `jobs.submit` of a `library.scan` job needs `jobs.submit` **and** `library.scan` (the kind's scope, found by the resolver); `review.merge` into a protected branch needs `review.decide` only (reviewing is the sanctioned way in, §8.5); `history.drop` into a protected branch needs `review.decide`.
+- **Non-human `diagnostics.export` is redacted, not refused:** content fields and blob references are removed, as the upload view does for diagnostics-only, and the result says `redacted: true`.
+- **`auth.revokeSelf {}`** revokes the caller's own credential (an agent, MCP or device credential) and closes its connections; it takes no id, so it can never name another principal.
 
-### 4.5 Human-only operations
+### 4.6 Human-only operations
 
-These are refused with **`HUMAN_ONLY`** (exit 7) for every principal that is not human (owner where the table says owner), before the handler runs. The `fix` names the console command.
+These are refused with **`HUMAN_ONLY`** (exit 7) for every non-human principal, at stage 4, with a fix that addresses the user (§3.5).
 
-| Operation | Why | Who | Console |
-|---|---|---|---|
-| any consent change (`diagnostics.consent`, both purposes, any value) | arch §21.1: a person's choice | owner | `finisherd diagnostics consent …` |
-| export of recorded content | it is the user's content | owner | `finisherd diagnostics export --content` |
-| `diagnostics.purge` (every selector) | destroys data | owner | `finisherd diagnostics purge …` |
-| `diagnostics.project {collect: default}` (setting `never` stays open) | clearing a never-collect flag binds collaborators | owner | `finisherd diagnostics project default <id>` |
-| `project.takeover {confirm: true}` | arch §6.7: "the user confirms" | human | `finisherd project takeover <dir> --confirm` |
-| `project.open {relocate: true}` | "a person's decision; never set it automatically" (4A) | human | `finisherd project open <dir> --relocate` |
-| `library.add`, `library.remove`, `library.set` of hydration, bandwidth or cloud embeddings | grants read access to a directory tree; downloads; money and uploads (D29) | owner | `finisherd library …` (5D) |
-| pairing offers and approvals, device revoke/rename/role, agent session mint/revoke outside sub-project 7's runtime, audit read and purge, `server.stop`, TLS and environment commands | account takeover vectors | owner | `finisherd pair`, `devices`, `revoke`, `audit`, `stop`, `tls`, `env` |
-| settings writes through RPC (remote listeners, origins, project roots) | opens the server to the network | owner | `finisherd remote …` (5B) |
-| plugin install (sub-project 8 default) | arch §8.3 | owner | (8) |
+| Operation | Why |
+|---|---|
+| any consent change; **training on only from a `device`** (onboarding) | arch §21.1, D14b |
+| export of recorded content | it is the user's content |
+| `diagnostics.purge` (every selector) | destroys data |
+| `diagnostics.project {collect: default}` (setting `never` stays open) | clearing a never-collect flag binds collaborators |
+| `project.takeover {confirm: true}` | arch §6.7: "the user confirms" |
+| `project.open {relocate: true}` | "a person's decision; never set it automatically" (4A) |
+| `library.add`, `library.remove`, `library.set` of hydration or bandwidth | grants read access to a tree; downloads |
+| credential mint and revoke (beyond `revokeSelf`), pairing, devices, audit read and purge, `server.stop`, environment commands | account takeover vectors |
+| settings writes through RPC (5B) | opens the server to the network |
+| plugin install (sub-project 8 default) | arch §8.3 |
 
-- **Before sub-project 7's sandbox this protects against agents that use `fin`, not against arbitrary code running as the user:** an unsandboxed process can read `console.key` exactly as it can hand-edit `settings.json`. The mechanism is complete in 5A; sub-project 7 makes it hold by denying agents read access to server data (a TASKS follow-up that already exists).
-- **`fin`'s own D-plan commands** follow: `fin diagnostics consent`, `purge` and `project default` reach the server and come back `HUMAN_ONLY`; `fin diagnostics consent training on` stays a local usage error (exit 2, D14b).
+**Before sub-project 7's sandbox, this binds agents that use `fin` or MCP, not code in a raw shell** that can read `console.key` exactly as it can hand-edit `settings.json` (Owner question 6). The mechanism is complete in 5A; sub-project 7 makes it hold by denying agents read access to `<server-data>/auth/`.
 
-### 4.6 The console (`finisherd <command>`)
+### 4.7 The console (`finisherd <command>`)
 
-- `finisherd` alone (or `finisherd serve`) serves, as today. Any other first word is a console command that connects to the running server over the local socket with `console.key` and prints text for a person (`--json` for scripts). English, like `fin` (arch §17.1 makes CLIs English; codes are stable).
-- 5A commands: `status` (version, listeners, connected principals by kind, journal state, audit failures), `stop` (`server.stop`: the graceful stop Windows lacks without SIGTERM), `diagnostics consent|purge|project|export`, `project takeover <dir|id> --confirm`, `project open <dir> --relocate`, `audit [--since] [--kind] [--limit]`, `agent mint|ls|revoke` (for tests and hand-run agents until sub-project 7).
-- 5B adds `pair`, `devices`, `revoke`, `remote enable|disable|status`, `tls show|rotate`, `env show|name|adopt|reset`; 5D adds `library add|rm|set`.
-- **Errors** print `finisherd: <CODE>: <message>` plus the `fix`, and exit with `fin`'s exit codes.
+- `finisherd` alone (or `finisherd serve`) serves, as today. Any other first word is a console command that connects to the running server with `console.key`, runs the handshake as `console` and prints text for a person (`--json` for read-only commands).
+- **Read-only and service commands run anywhere:** `status`, `audit` (listing), `stop` (`server.stop`, the graceful stop Windows lacks; service managers need it non-interactively, and a same-user process can kill the server anyway).
+- **Every mutating human-only command needs an interactive terminal and a typed confirmation.** stdin and stdout must be TTYs (`CONSOLE_NEEDS_TTY`, exit 7, otherwise); the command shows what it will do, asks for `console.challenge` (a fresh 6-character code the server issues to this connection, valid 60 s), and the person types the code back. The server refuses the mutating RPC from a `console` principal without a valid challenge answer (`CONFIRMATION_REQUIRED`). This keeps `yes |` pipes and pasted scripts out; it is not a boundary against same-user code driving a pseudo-terminal before sub-project 7 (Owner question 6).
+- **Training cannot be turned on from the console** (§3.4): `finisherd diagnostics consent training on` answers `CONSENT_UI_ONLY` (exit 2).
+- **5A commands:** `status`, `stop`, `audit [--since] [--kind] [--limit]`, `audit purge`, `diagnostics consent <diagnostics|training> <off|unset>` and `diagnostics on|off|unset`, `diagnostics purge`, `diagnostics project default <id>`, `diagnostics export --content`, `project takeover <dir|id> --confirm`, `project open <dir> --relocate`, `agent mint|ls|revoke`, `mcp setup` (mints an `mcp` credential and writes it to the path the person names). 5B adds `pair`, `devices`, `revoke`, `remote …`, `tls show|rotate`, `env show|name|adopt|reset`; 5D adds `library add|rm|set`.
+- **Output** is English, like `fin` (arch §17.1); errors print `finisherd: <CODE>: <message>` and the fix, with `fin`'s exit codes.
 
-### 4.7 RPCs and `fin` (5A)
+### 4.8 RPCs and `fin` (5A)
 
-| RPC | Scope | Payload → result |
+| RPC | Scopes | Payload → result |
 |---|---|---|
-| `server.hello` (changed) | `public` | `{clientNonce?, credential?}` → adds `envId`, `serverNonce`, `proof?` |
+| `server.hello` (changed) | `public` | `{clientNonce?, env?, endpoint?, credential?}` → adds `envId`, `endpoint`, `serverNonce`, `proof?` |
 | `auth.prove` | `public` | `{mac}` → `{principal}` |
-| `auth.ticket` | `server.read` | `{ttlS?}` → `{ticket, url, expiresAt}` |
-| `auth.whoami` | `server.read` | `{}` → `{principal}` |
-| `auth.agent.mint` | `auth.admin` | `{label, scopes, projects?, branches?, expiresAt?}` → `{session, credential}` (the file contents; shown once) |
-| `auth.agent.list` / `auth.agent.revoke` | `auth.admin` | — |
-| `auth.audit.list` / `auth.audit.purge` | `auth.admin` | `{since?, kind?, cursor?, limit ≤ 1000}` → `{entries, next?}` |
-| `server.status` | `server.read` | `{}` → `{version, protocol, envId, listeners, connections: {kind: count}, journal, auditFailures}` |
-| `server.stop` | `auth.admin` | `{}` → `{}` then a graceful shutdown |
+| `auth.ticket` | `server.read` | `{ttlS?}` → `{ticket, expiresAt}` |
+| `auth.whoami`, `auth.revokeSelf` | `server.read` | → `{principal}` / `{}` |
+| `auth.credential.mint` | `auth.admin` | `{kind: agent\|mcp, label, scopes?, projects?, branches?, idleS?, absoluteS?}` → `{credential, file}` (the file contents; shown once) |
+| `auth.credential.list`, `auth.credential.revoke` | `auth.admin` | — |
+| `auth.audit.list`, `auth.audit.purge` | `auth.admin` | `{since?, kind?, cursor?, limit ≤ 1000}` → `{entries, next?}` |
+| `console.challenge` | `auth.admin` | `{}` → `{code, expiresAt}` (console principals only) |
+| `server.status` | `server.read` | → `{version, protocol, envId, listeners, connections: {kind: count}, journal, auditFailures}` |
+| `server.stop` | `auth.admin` | → `{}`, then a graceful shutdown |
 
-`fin` changes: the handshake in a new `crates/fin/src/auth.rs` (key discovery: `FIN_CREDENTIAL`, else `<server-data>/auth/local.key`); exit class 7; `fin whoami` → `{principal}`.
+`fin` changes: the handshake in a new `crates/fin/src/auth.rs` (key discovery: `FIN_CREDENTIAL`, else `<server-data>/auth/local.key`; the retry of §4.2); exit class 7; `fin whoami`; `fin asset add` and `fin asset probe` send `projectId`.
 
-### 4.8 Storage
+### 4.9 Storage
 
-`<server-data>/auth/{local.key, console.key, agent.master}`; `control.db` tables `meta`, `audit`, `agent_sessions`. Nothing in project folders.
+`<server-data>/auth/{local.key, console.key, credential.master}`, `<server-data>/run/fin.sock`; `control.db` tables `meta`, `server_ids`, `audit`, `credentials`. Nothing in project folders.
 
-### 4.9 Security and threat model (5A)
+### 4.10 Security and threat model (5A)
 
 Arch §16 priority: injected agent > malicious plugin > stolen device > network attacker.
 
 | Threat | Mitigation | Residual |
 |---|---|---|
-| Injected agent runs `fin diagnostics consent training on`, `purge --all`, `takeover --confirm` | `HUMAN_ONLY` for every non-human principal, checked before the handler | before sub-project 7, the agent can read `console.key` with a shell (documented, §4.5) |
-| Injected agent reads `finisherd.json` and connects to the WebSocket as `ui` | no token in the file; WebSocket needs a ticket; a `local` ticket gives `local`, never `ui` | — |
-| Another OS user squats the pipe name, or opens the pipe for reading | server proof (client refuses with `SERVER_UNTRUSTED`); the squatter cannot authenticate to the real server either; Windows server data has an owner-only DACL | a squatter can deny service (fin reports it) |
-| A sandboxed agent `connect()`s to the socket directly | no proof without a readable key → `UNAUTHENTICATED`; its own credential gives only its scopes | — |
-| Replay of a captured handshake | fresh nonces on both sides; one-time tickets | — |
-| DNS rebinding of a browser tab to the loopback WebSocket | Host and Origin checks; a ticket is required anyway | — |
-| A client claims another actor in headers | the principal bounds the actor (§3.4); `x-fin-` headers stripped | `local` can still claim `agent` or `user` (unverifiable, as in D6) |
-| Audit flood from a misbehaving client | 5 failed proofs close a connection; `auth.fail` aggregated per minute per remote/connection | — |
-
-### 4.10 Error codes (5A)
-
-| Exit | Codes |
-|---|---|
-| 2 | `FRAME_TOO_LARGE` (a frame over 16 MiB on either transport; `details.max`) |
-| 3 | `INVALID_REQUEST` (an RPC frame that does not decode, an unknown tag, a payload that fails its schema: replaces today's `Die` defect), `INVALID_PATH` (a relative or non-normalised path, server-side) |
-| 5 | `CONTROL_DB_BUSY` (a statement waited past the busy timeout) |
-| 7 | `UNAUTHENTICATED`, `SERVER_UNTRUSTED`, `SCOPE_DENIED {rpc, scope, principal: {kind}}`, `HUMAN_ONLY {rpc, scope, console}`, `CREDENTIAL_REVOKED` |
-| start (stderr, exit 1) | `CONTROL_DB_TOO_NEW`, `SERVER_DATA_UNSAFE` (now also on Windows) |
+| Injected agent runs `fin diagnostics consent training on`, `purge --all`, `takeover --confirm` | `HUMAN_ONLY` for every non-human principal at stage 4; training on is device-only | a raw-shell agent before sub-project 7 can read `console.key` (Owner question 6) |
+| Injected agent is handed a fix text and runs it | fixes never contain a runnable command (§3.5); console mutations need a TTY and a typed challenge | a PTY-driving agent before sub-project 7 |
+| Injected agent opts the user in to training through the console | refused: `CONSENT_UI_ONLY` from every principal but a device | — |
+| Injected agent reads `finisherd.json` to become `ui` | no token in the file; a `local` ticket gives `local` | — |
+| Another OS user squats the pipe, or opens it | native listener: first-instance flag, explicit DACL, remote clients rejected, peer SID checked; the server proof | denial of service only |
+| Proof relayed to another server or socket | envId and canonical endpoint inside both MACs | — |
+| Sandboxed agent `connect()`s to the socket | no proof without a key → `UNAUTHENTICATED`; its credential gives only its scopes | — |
+| A rule written for a branch id bypassed by a name, alias or rename | references resolved by the store before checks; guards re-checked in the write transaction | — |
+| A client claims another actor | the principal bounds the actor (§3.4); `x-fin-` headers stripped | `local` can still claim `agent` or `user` (as in D6) |
+| Audit flood | aggregation per credential kind per minute; 5 failed proofs close a connection | — |
 
 ### 4.11 Cross-platform (5A)
 
-- **Windows server data:** `ensureServerData` calls a new `fin-node` `checkPrivateDir(path)` (Rust, `windows-sys` `GetNamedSecurityInfoW`): the owner is the current user's SID, the DACL grants nothing to `Everyone`, `Users`, `Authenticated Users` or another user, inherited or not (SYSTEM and Administrators may stay). A directory created by `finisherd` gets a protected owner-only DACL; an existing one that fails is `SERVER_DATA_UNSAFE` with a `fix` (a later sub-project-7 step adds per-project AppContainer SIDs for the pipe, not for server data).
-- **Key files** are written temp-then-rename; on Windows the temp file is created inside the already private directory, so it inherits the DACL; rename-over retries sharing violations (`fsio::is_transient`-style).
-- **Graceful stop:** `finisherd stop` replaces SIGTERM on Windows; it also works elsewhere.
-- **Unix:** server data 0700 and key files 0600, as today; the socket stays 0600.
-- **Clocks:** nothing in 5A compares clocks; ticket TTLs are measured on the server's monotonic clock.
+- **Windows server data:** `ensureServerData` calls `fin-node` `checkPrivateDir(path)`: the owner is the current user, and the DACL allows nothing to `Everyone`, `Users`, `Authenticated Users` or another user (SYSTEM and Administrators may stay). A directory `finisherd` creates gets a protected owner-only DACL; an existing one that fails is `SERVER_DATA_UNSAFE`.
+- **Windows pipe:** the native listener above; graceful stop through `finisherd stop`.
+- **Key files** are written temp-then-rename inside the private directory (the temp file inherits its DACL); rename-over retries sharing violations.
+- **Sandbox reachability** (sub-project 7 applies these; 5A fixes the layout they depend on):
+  - **macOS Seatbelt:** `(allow network-outbound (remote unix-socket (path-literal "<server-data>/run/fin.sock")))` plus `file-read-metadata` on the path's ancestors; everything else under server data denied;
+  - **Linux:** Landlock at the ABI spike S8 used (4) does not mediate `connect()` on pathname sockets, so the socket is reachable as long as the path resolves; under the bwrap fallback, `--bind <server-data>/run <server-data>/run` and nothing else of server data;
+  - **Windows AppContainer:** the pipe's DACL grants the project's AppContainer SID (`finisher-<project-uuid>`) read/write through `PipeServer.allow(sid)`; `auth/` stays owner-only, which an AppContainer cannot read;
+  - in every sandbox, `fin` proves with `FIN_CREDENTIAL` (a file inside the sandbox), never with `local.key`.
+- **Clocks:** nothing in 5A compares clocks; TTLs use the server's monotonic clock.
 
 ### 4.12 Journal (5A)
 
-`console` source; principal-derived source and actor; owner-only diagnostics operations; per-principal rate limit; new `RPC_METHODS` entries for every new RPC (the D4 drift test).
+`console` and `mcp` sources; principal-derived source and actor; human-only diagnostics operations; device-only training opt-in; per-principal rate limit; new `RPC_METHODS` entries for every new RPC.
 
-### 4.13 Testing (5A)
+### 4.13 Error codes (5A)
 
-- **Unit (vitest):** handshake vectors (fixed keys and nonces → exact MACs, shared with a Rust test so both sides agree); scope table covers every RPC (`rpc_scopes_cover_every_rpc`); every human-only scope is refused for `local` and `agent` and allowed for `console` (`human_only_matrix`); escalations; `x-fin-` header stripping; ticket one-time use and TTL; Origin/Host matrix; control-store migrations, `CONTROL_DB_TOO_NEW`, corruption move-aside; audit retention; the 1 ms statement budget.
-- **Rust (`fin`):** `fin` refuses a server without a proof (`SERVER_UNTRUSTED`, a fake server in the test that holds no key); `FIN_CREDENTIAL` discovery; exit 7 mapping; `fin whoami`.
-- **e2e `auth` scenario:** an unauthenticated connection can only say hello; `fin` works as `local`; `fin diagnostics purge --all` → exit 7 naming the console; `finisherd diagnostics purge --all` works; a ticketed WebSocket subscriber streams ops; a reused ticket is refused; a restart invalidates the old keys; a minted agent credential with `project.read` only cannot commit (`SCOPE_DENIED`) and its journal entries carry its session as actor.
-- **Windows:** a second user (or a test that creates the pipe first from an unprivileged token) cannot make `fin` send a request; `SERVER_DATA_UNSAFE` on a directory with an `Everyone` ACE; `finisherd stop`.
+| Exit | Codes |
+|---|---|
+| 2 | `FRAME_TOO_LARGE`, `CONSENT_UI_ONLY` (now also from the console) |
+| 3 | `INVALID_REQUEST`, `INVALID_PATH` |
+| 5 | `CONTROL_DB_BUSY` |
+| 7 | `UNAUTHENTICATED`, `SERVER_UNTRUSTED`, `SCOPE_DENIED`, `HUMAN_ONLY`, `PATH_NOT_ALLOWED`, `BRANCH_NOT_ALLOWED`, `CREDENTIAL_REVOKED`, `APPROVAL_REQUIRED`, `CONSOLE_NEEDS_TTY`, `CONFIRMATION_REQUIRED` |
+| start (stderr, exit 1) | `CONTROL_DB_TOO_NEW`, `SERVER_DATA_UNSAFE` (now also on Windows), `PIPE_SQUATTED` |
+
+### 4.14 Testing (5A)
+
+- **Shared vectors:** `tests/fixtures/auth/handshake.json` (fake keys, nonces, envId, endpoint → proofs and MACs), read by a vitest and a Rust test.
+- **Unit (vitest):** every RPC has scopes and a resolver; the human-only matrix over every principal kind and escalation; training on refused for `console`, `local`, `agent`, `mcp`; the chain's order; resolvers (branch names, renames between resolve and write, directories, symlinked paths); `ask`; ticket one-time use, TTL, `Sec-WebSocket-Protocol`; Host and Origin; fix texts carry no command; control store (migrations, `CONTROL_DB_TOO_NEW`, corruption, no autocheckpoint on the main connection, batched deletes, the 1 ms budget); audit aggregation.
+- **Rust (`fin`, `fin-node`, `fin-store`):** `SERVER_UNTRUSTED` against a fake server; the restart retry (`keyStale`); `FIN_CREDENTIAL`; exit 7; the write guard refuses inside the transaction; the Windows pipe listener (first instance, remote rejection, peer SID, DACL).
+- **e2e `auth` scenario** (Task 12 of the plan).
+- **Windows:** a second user cannot reach the pipe or squat it unnoticed; `SERVER_DATA_UNSAFE`; `finisherd stop`; all as a non-elevated user.
 
 ---
 
@@ -328,117 +385,87 @@ Arch §16 priority: injected agent > malicious plugin > stolen device > network 
 
 ### 5.1 Data model
 
-- `devices {id ULID, name (user text), platform (Name: macos|windows|linux|ios|android|browser|other), role, jwk (public, P-256), jkt (RFC 7638 thumbprint), projects JSON, createdAt, approvedBy, lastSeenAt, lastRoute, revokedAt?, revokedBy?}`.
-- `pair_offers {id ULID, secretHash (SHA-256), codeHash?, role, label?, createdBy, createdAt, expiresAt (≤ 10 min), attempts, state: open|redeemed|expired|burned}`.
-- `pair_pending {id ULID, offerId, deviceName, platform, jwk, jkt, safetyCode, redeemedAt, remote, expiresAt, state: pending|approved|rejected|expired}`.
-- **Environment descriptor** `{envId (= server-id), name (owner-set text), spki (base64url SHA-256 of the identity key's SubjectPublicKeyInfo), protocol {min, max}, routes: [{kind: loopback|lan|tailscale|public|connect, url}], capabilities}`.
-- **Identity key:** one P-256 key per environment. It is the TLS key, so clients pin the key (SPKI), not a certificate.
-- Tokens and tickets are **opaque random strings held in memory only**, mapped to `{deviceId, jkt, expiresAt}`. A restart forgets them; devices mint new ones with their key. No JWT is issued, so there is nothing to verify offline and nothing to forge.
+- `devices {id ULID, name (user text), platform (Name), jwk (public, P-256), jkt (RFC 7638 thumbprint), createdAt, approvedBy, lastSeenAt, lastRoute, revokedAt?}`. Every device is the owner (§1.2).
+- `pair_offers {id ULID, secretHash (SHA-256), label?, createdBy, createdAt, expiresAt (≤ 10 min), state: open|redeemed|expired}`; `pair_pending {id, offerId, deviceName, platform, jwk, jkt, safetyCode, redeemedAt, remote, expiresAt, state}`.
+- **Environment descriptor** `{envId, name, spki, serverIds, protocol {min, max}, routes: [{kind, url}], capabilities}`.
+- **Identity key:** one P-256 key per environment, stored with the `envId` it is bound to. It is the TLS key, so clients pin the key (SPKI).
+- Tokens and tickets are **opaque random strings held in memory**, mapped to `{deviceId, jkt, expiresAt}`. No JWT is issued.
 
 ### 5.2 Pairing
 
-1. **Offer.** An owner (console, or an owner device) calls `auth.pair.offer {role, label?, ttlS ≤ 600}` → `{offerId, link, qr, code, expiresAt}`.
-   - **Link:** `finisher://pair?v=1&env=<envId>&spki=<pin>&r=<base64url(routes)>#<offerId>.<secret>`; the secret (256 bits) is in the fragment (arch §16). For browsers, `https://<route>/pair#<offerId>.<secret>` on a route with a trusted certificate (§5.5).
-   - **Code** for typing: 12 Crockford base32 characters, `XXXX-XXXX-XXXX` (an offer index and a 40-bit secret), typed together with an address. An offer whose code fails 5 times is burned; redeem attempts are limited to 10 per minute per remote address and 30 per minute per server.
-   - The console's `finisherd pair` prints the link, a QR code (in the terminal) and the code, then waits for a redeem (below).
-   - The UI warns that the link is a bearer credential (arch §16); `fin` can never create one (`auth.admin` is owner-only).
-2. **Redeem.** The new device makes a P-256 key pair (non-extractable where the platform allows: WebCrypto in a browser, the keychain on the desktop, sub-project 9), then `POST /pair/redeem {offerId, secret | code, device: {name, platform, jwk}}` over the pinned route. The offer is consumed at the first valid redeem, even if the owner later rejects it. The answer is `{pendingId, safetyCode}`; the safety code is 6 digits, `HMAC(secret, jkt) mod 10⁶`.
-3. **Approve.** Owner principals receive `auth.pair.pending` items (a stream); the console's `finisherd pair` shows them in place. The owner compares the device name and the safety code with the device's screen and approves (`auth.pair.approve {pendingId, role ≤ offer role, name?}`) or rejects. A pending request expires 10 minutes after the redeem.
-   - **One exception:** the desktop shell pairs its own renderer with a console-made offer flagged `self`, redeemed over loopback only, approved at redeem. The shell is the console (arch §16 lets the owner approve at the server console).
-4. **Finish.** The device polls `POST /pair/status` with a DPoP proof (below) made with the key it redeemed with, and gets `{deviceId, role, env}` once approved.
+1. **Offer** (owner): `auth.pair.offer {label?, ttlS ≤ 600}` → `{offerId, link, qr, expiresAt}`. Link: `finisher://pair?v=1&env=<envId>&spki=<pin>&r=<base64url(routes)>#<offerId>.<secret>` (256-bit secret in the fragment, arch §16); for browsers, `https://<route>/pair#…` on a route with a trusted certificate (§5.5). The console's `finisherd pair` prints the link and a terminal QR code and waits.
+2. **Redeem:** the device makes a P-256 key pair (non-extractable where the platform allows), then `POST /pair/redeem {offerId, secret, device: {name, platform, jwk}}` over the pinned route. The offer is consumed at the first valid redeem. Answer: `{pendingId, safetyCode}` (6 digits, `HMAC(secret, jkt) mod 10⁶`). Redeems are limited to 10 per minute per remote address and 30 per minute per server.
+3. **Approve:** the owner compares the device name and safety code and approves (`auth.pair.approve`) or rejects, on the console or an existing device; a pending request expires 10 minutes after the redeem. The one exception: the desktop shell pairs its own renderer with a console offer flagged `self`, redeemed over loopback only, approved at redeem.
+4. **Finish:** the device polls `POST /pair/status` with a DPoP proof made with its key.
 
-### 5.3 Tokens, DPoP and WebSocket tickets
+### 5.3 Tokens, DPoP and tickets
 
-- `POST /auth/token` with a DPoP proof (RFC 9449 JWS: `typ dpop+jwt`, `alg ES256`, `jwk`; claims `jti`, `htm`, `htu`, `iat`, `nonce`) signed by a known, non-revoked device key → `{accessToken, tokenType: "DPoP", expiresIn: 900}`.
-- `POST /auth/ws-ticket` with `Authorization: DPoP <token>` and a proof carrying `ath` → `{ticket, expiresIn: 30}`; then the WebSocket upgrade of §4.3 (`/rpc?v=2&ticket=`), now over TLS for remote routes. The WebSocket keeps its principal until it closes or the device is revoked.
-- **Freshness comes from server nonces, not client clocks.** Every proof must carry a current `DPoP-Nonce` (rotated every 5 minutes; the previous one stays valid). `iat` is only sanity-checked (±7 days), because the 4A spike shows client clocks off by many seconds for days. `jti` is remembered for the nonce lifetime. A missing or old nonce answers `use_dpop_nonce` with a new one (RFC 9449 §8).
-- **Capability URLs** for binary channels that a browser loads without headers (`<video src>`, sub-projects 3 and 6): `capability.url {hash, ttlS ≤ 3600}` → `/b/<hash>?c=<cap>`, where `cap = exp ‖ HMAC(capKey, deviceId ‖ hash ‖ exp)`; checked against the device's revocation on every request. 5B ships the mint and the check; 6 the routes that serve bytes.
-- **JOSE:** verification uses `jose` 6 (MIT, no dependencies) for JWS and JWK thumbprints rather than hand-written ECDSA parsing.
+- `POST /auth/token` with a DPoP proof (RFC 9449: `typ dpop+jwt`, `alg ES256`, `jwk`; claims `jti`, `htm`, `htu`, `iat`, `nonce`) signed by a known device key → `{accessToken, tokenType: "DPoP", expiresIn: 900}`. `POST /auth/ws-ticket` with `Authorization: DPoP <token>` and a proof carrying `ath` → `{ticket, expiresIn: 30}`; then the upgrade of §4.3 over TLS.
+- **`htu`** is compared with the URL the client used, which behind a reverse proxy is not the URL the server sees: the server accepts `htu` values whose origin is one of its route URLs or `server.remote.publicUrl`, with the request's path.
+- **Freshness from server nonces** (`DPoP-Nonce`, rotated every 5 minutes, the previous one still valid); `iat` is only sanity-checked (±7 days), because client clocks are off by seconds for days (arch §27.9); `jti` remembered for the nonce lifetime.
+- **JOSE:** `jose` 6 (MIT, no dependencies) for JWS and thumbprints.
 
 ### 5.4 Devices
 
-- `auth.device.list`, `auth.device.rename`, `auth.device.role`, `auth.device.revoke` (owner). Revocation sets `revokedAt`, forgets the device's tokens and tickets, **closes its live connections at once** (subscriptions included) and invalidates its capability URLs. A device can revoke itself.
-- `auth.devices.watch` streams changes to owner devices.
-- A device with role `viewer` or `editor` and `projects: [ids]` sees only those projects (§4.4 "Project reach").
+`auth.device.list|rename|revoke`, `auth.devices.watch` (stream), and `auth.revokeSelf` (§4.5). Revocation forgets the device's tokens and tickets and closes its live connections at once.
 
 ### 5.5 Listeners and TLS
 
-- **Local by default (D6).** The loopback WebSocket of §4.3 is always on. Remote listening is off until the owner enables it: `finisherd remote enable [--listen <host:port>]` writes `settings.json` `server.remote {enabled, listen: [..], tls: {mode: selfSigned|files, certFile?, keyFile?}, publicUrl?, origins?: [..]}`; `FIN_LISTEN=<host:port>` does the same for Docker (env wins, `basis` reported in status).
-- **A non-loopback listener is TLS only.** Plain HTTP on a non-loopback address is refused at start (`LISTEN_NEEDS_TLS`).
-- **Self-signed mode:** the certificate is made by `rcgen` (in `fin-node`, `ring` provider) from the identity key, with the current LAN and Tailscale addresses and any configured names as SANs. It is remade with the same key when the address set changes, so the pin never changes.
-- **Pinning:** the desktop shell and native clients pin the SPKI from the pairing link. **Browsers cannot pin.** A browser reaches a remote server only over a route with a certificate it trusts: certificate files the owner supplies (for example from `tailscale cert`, or a reverse proxy in front), or loopback through an SSH tunnel. In self-signed mode, the web client is offered over loopback only (Owner question 3).
-- **Key storage** (`SecretStore`, in `fin-node`): the macOS Keychain, the Windows Credential Manager (DPAPI) or the Linux Secret Service through `keyring` 3 (MIT OR Apache-2.0; `apple-native`, `windows-native`, the pure-Rust `zbus` Secret Service backend). On a headless server or NAS without a secret service: `<server-data>/secrets/identity.pem` (0600), optionally wrapped with AES-256-GCM under a key read from `FIN_SECRETS_KEY_FILE` (a Docker secret). The arch §16 "encrypted file" is that wrapping; without the key file it is a plain 0600 file, and `finisherd status` says so.
-- **Rotation** (arch §16): `finisherd tls rotate` makes a new identity key and a statement `{env, oldSpki, newSpki, at}` signed by the old key, served at `/.well-known/finisher/rotation`. A paired client that meets an unknown SPKI fetches the statement over that connection and re-pins if the signature verifies against its old pin. The old key is kept 90 days to sign statements, then deleted. A lost key means re-pairing.
-- **Handshake** (arch §16): `GET /.well-known/finisher` (anonymous) → `{envId, protocol {min, max}, spki}` only; names and routes need a principal.
+- **Local by default (D6).** Remote listening is off until the owner enables it on the console (`finisherd remote enable [--listen <host:port>]`, TTY-gated), which writes `settings.json` `server.remote {enabled, listen, tls: {mode: selfSigned|files, certFile?, keyFile?}, publicUrl?, origins?, hosts?}`; `FIN_LISTEN` does the same for Docker.
+- **A non-loopback listener is TLS only** (`LISTEN_NEEDS_TLS` at start otherwise), with a **Host allow-list** of its route names, `publicUrl`'s host and `server.remote.hosts`.
+- **Self-signed mode:** the certificate is made by `rcgen` (in `fin-node`, `ring` provider) from the identity key, with the current addresses and names as SANs, and remade with the same key when they change, so the pin never changes.
+- **Pinning** is for the desktop shell and native clients. **Browsers cannot pin:** they reach a remote server only over a route whose certificate they trust (owner-supplied files, a reverse proxy) or over loopback through an SSH tunnel (Owner question 3).
+- **Rotation is re-pairing** (signed rotation statements are cut, §1.2): `finisherd tls rotate` makes a new identity key (TTY-gated), keeps the `envId`, and every device pairs again.
+- **Secret store** (`fin-node`): `keyring` 3 pinned exactly in `Cargo.toml` (`=3.x.y`, recorded in the 5B plan) with `default-features = false` and `apple-native`, `windows-native`, `async-secret-service`, `async-io`, `crypto-rust` (the pure-Rust `zbus` Secret Service, also pinned; never the `dbus`/libdbus backend). **When the Secret Service is absent, or present but locked** (no unlock prompt is possible for a server), the key goes to the file store and `server.status` says so; the server never prompts and never blocks its start. File store: `<server-data>/secrets/identity.pem` (0600), optionally wrapped with AES-256-GCM under a key from `FIN_SECRETS_KEY_FILE` (a Docker secret).
+- **Handshake** (arch §16): `GET /.well-known/finisher` (anonymous) → `{envId, protocol, spki}` only.
 
 ### 5.6 Environments and routes
 
-- **The environment id is the server id** (`<server-data>/server-id`), so the lease holder named in `project.status` (`holder.serverId`) *is* an environment id: a client connected to its local server that finds a project leased by the NAS server can offer "open on <environment name>" when it has paired with that environment. `project.status` gains `holder.envId` (same value, explicit name).
-- **Routes** are discovered at start and on address change: `loopback`; `lan` from non-internal interface addresses; `tailscale` from addresses in 100.64.0.0/10 and `fd7a:115c:a1e0::/48`; `public` from `server.remote.publicUrl`; `connect` from the cloud's `ConnectRelay` (open extension point, no local implementation). SSH routes are the desktop shell's (sub-project 9): through a tunnel, a server looks like loopback, which is why loopback grants nothing (principle 1).
+- **Routes** are discovered at start and on address change: `loopback`; `lan` (non-internal interfaces, IPv6 link-local excluded); `tailscale` (addresses in the Tailscale ranges); `public` (`publicUrl`); `connect` (the cloud's `ConnectRelay`, an open extension point). SSH routes are the desktop shell's: through a tunnel the server looks like loopback, which is why loopback grants nothing.
 - `env.describe` (`server.read`) → the descriptor; `env.name` (owner) sets the name.
-- **"Sync" of environments** in arch §16 is read here as: the client keeps its list of environments (sub-project 9); a project moves between environments by folder sync and the lease (4A). Nothing syncs control-plane state between servers in v1 (Owner question 1 decides whether review state should).
+- **"Sync" of environments** (arch §16) is read as: the client keeps its list of environments (sub-project 9); projects move between environments by folder sync and the lease (4A); nothing syncs control-plane state between servers in v1.
 
-### 5.7 Server filesystem reach
+### 5.7 Server filesystem reach for remote principals
 
-- A `device` (and later `agent`) principal may name server paths only inside **allowed roots**: registered library roots (5D), the project roots in `settings.json` `server.projectRoots` (default: `<home>/Finisher`), and the folders of projects already open. `project.create {dir}`, `project.open {dir}`, `asset.probe {path}` and `library.add {root}` outside them → **`PATH_NOT_ALLOWED`** (exit 7). `local` and `console` keep full reach (they run as the user anyway).
-- Paths are normalised and canonicalised on the server (symlinks resolved) before the check; `..` and relative paths are `INVALID_PATH` (5A).
+A `device` (like `agent` and `mcp`, §4.4) may name server paths only inside **allowed roots**: registered library roots, `settings.json` `server.projectRoots` (default `<home>/Finisher`) and the folders of projects open here. `project.create`, `project.open`, `asset.probe` and `library.add` outside them → `PATH_NOT_ALLOWED`. `local` and `console` keep full reach.
 
-### 5.8 RPCs, HTTP and console (5B)
+### 5.8 Copied or moved server data
 
-| Surface | Scope | Notes |
-|---|---|---|
-| `GET /.well-known/finisher`, `…/rotation` | anonymous | §5.5 |
-| `POST /pair/redeem`, `POST /pair/status` | anonymous, rate-limited / DPoP | §5.2 |
-| `POST /auth/token`, `POST /auth/ws-ticket` | DPoP | §5.3 |
-| `GET /rpc?v=&ticket=` | ticket | WebSocket upgrade; 426 on a protocol mismatch |
-| `auth.pair.offer`, `auth.pair.pending` (stream), `auth.pair.approve`, `auth.pair.reject` | `auth.admin` | |
-| `auth.device.list/rename/role/revoke`, `auth.devices.watch` (stream) | `auth.admin` (a device may revoke itself) | |
-| `capability.url` | `project.read` | §5.3 |
-| `env.describe`, `env.name` | `server.read` / `auth.admin` | |
-| `settings.write {path, value}` | `settings.admin` | `server.remote`, `server.projectRoots`, `server.origins` only, through the merging writer |
-| console | — | `pair [--role] [--label]`, `devices`, `revoke <id>`, `remote enable|disable|status`, `tls show|rotate`, `env show|name|adopt|reset` |
+When `fin-store::server_id` remints the server id because server data turned up elsewhere, the new server id is added to `server_ids` under the **same `envId`**, remote listeners stay off and every device is refused (`ENV_MOVED`) until the owner runs, on the console, `finisherd env adopt` (it was a move: keep the envId, key and devices) or `finisherd env reset` (it is a copy: new envId and identity key, devices dropped).
 
-### 5.9 Copied or moved server data
+### 5.9 RPCs, HTTP and console (5B)
 
-When `fin-store::server_id` detects that server data was cloned or moved (the `server-id.origin` check):
-- **Reminted id** (a clone): the environment is new. Remote listeners stay off, every device credential is refused (`ENV_MOVED`), and the console offers `finisherd env reset` (new identity key, devices dropped) as the only way on. Two servers holding one identity key would let one impersonate the other.
-- **Same id, new place** (a move): remote listeners stay off and devices are refused until the owner runs `finisherd env adopt` (keep the key and devices) or `env reset`.
+| Surface | Scope / proof |
+|---|---|
+| `GET /.well-known/finisher` | anonymous |
+| `POST /pair/redeem`, `POST /pair/status` | anonymous, rate-limited / DPoP |
+| `POST /auth/token`, `POST /auth/ws-ticket` | DPoP |
+| WebSocket upgrade (`Sec-WebSocket-Protocol` ticket) | ticket; 426 on a protocol mismatch |
+| `auth.pair.offer|approve|reject`, `auth.pair.pending` (stream), `auth.device.list|rename|revoke`, `auth.devices.watch` (stream) | `auth.admin` |
+| `env.describe`, `env.name` | `server.read` / `auth.admin` |
+| `settings.write {path, value}` (`server.remote`, `server.projectRoots`) | `settings.admin` |
+| console | `pair`, `devices`, `revoke <id>`, `remote enable|disable|status`, `tls show|rotate`, `env show|name|adopt|reset` |
 
 ### 5.10 Security and threat model (5B)
 
 | Threat | Mitigation |
 |---|---|
-| Leaked pairing link | one-time, ≤ 10 min, consumed at redeem; owner approval with name and safety code; the legitimate device's redeem fails visibly (`PAIRING_USED`) |
-| Brute-forced typed code | 40 bits, burn after 5 failures, per-address and per-server rate limits, 10-minute life |
-| Stolen device (threat 3) | revoke from any owner device or the console; live connections closed; keys non-extractable where possible; tokens 15 min |
-| Stolen access token | DPoP-bound: useless without the device key; tickets one-time and 30 s |
-| Network attacker on LAN | TLS only off loopback; SPKI pin from the link; no trust-on-first-use without a link |
-| Clock skew | server nonces for freshness; TTLs on the server clock only |
-| CSRF / DNS rebinding against the HTTP endpoints | Origin and Host checks; no cookies anywhere; every state change needs a DPoP proof or a principal |
-| Remote device reads arbitrary server files | allowed roots (§5.7) |
-| Impersonation after a server-data copy | §5.9 |
-| Injected agent pairs an attacker's device | offers and approvals are owner-only; `fin` has no pairing command |
+| Leaked pairing link | one-time, ≤ 10 min, consumed at redeem; owner approval with name and safety code; the legitimate redeem fails visibly (`PAIRING_USED`) |
+| Stolen device | revoke from another device or the console; live connections closed; non-extractable keys; 15-minute tokens |
+| Stolen access token | DPoP-bound; tickets one-time and 30 s |
+| Network attacker | TLS only off loopback; SPKI pin from the link; no trust on first use |
+| Clock skew | server nonces; server-side TTLs |
+| CSRF / DNS rebinding | Host allow-list and Origin checks; no cookies; every change needs a proof |
+| Remote device reads server files | allowed roots |
+| Impersonation after a server-data copy | §5.8 |
+| Injected agent pairs an attacker's device | offers and approvals are human-only and TTY-gated; `fin` has no pairing command |
 
-### 5.11 Error codes (5B)
+### 5.11 Error codes, cross-platform, journal, tests (5B)
 
-| Exit / status | Codes |
-|---|---|
-| HTTP 400/401/403/409/410/429 (pairing, tokens; mirrored as `FinError` bodies) | `PAIRING_EXPIRED`, `PAIRING_USED`, `PAIRING_REJECTED`, `PAIRING_RATE_LIMITED`, `PAIRING_CODE_BURNED`, `DPOP_INVALID`, `DPOP_NONCE` (with `DPoP-Nonce`), `TOKEN_EXPIRED`, `TICKET_INVALID`, `ORIGIN_REFUSED` |
-| 7 | `DEVICE_REVOKED` (`CREDENTIAL_REVOKED` for devices), `PATH_NOT_ALLOWED`, `ENV_MOVED` |
-| start | `LISTEN_NEEDS_TLS`, `TLS_FILES_INVALID`, `SECRET_STORE_UNAVAILABLE` (only when no file fallback is possible) |
-| client side (sub-project 9) | `TLS_PIN_MISMATCH`, `ROTATION_INVALID` |
-
-### 5.12 Cross-platform (5B)
-
-- **Firewalls:** binding a non-loopback address triggers the macOS application firewall prompt and the Windows Defender Firewall prompt on first use; that is the moment the owner enabled remote access, so it is expected. The Windows installer (sub-project 9) may add a scoped rule.
-- **Keychain:** macOS prompts unsigned development builds on every access; development uses the file store with a warning (`FIN_SECRETS=file`). Windows Credential Manager blobs are ≤ 2,560 bytes (a P-256 PEM fits). Linux desktops without a running Secret Service and every headless install use the file store.
-- **Docker:** `FIN_LISTEN=0.0.0.0:7420`, the identity key in the volume, optionally `FIN_SECRETS_KEY_FILE`; the container's addresses are not the host's, so `publicUrl` (or Tailscale inside the container) supplies routes.
-- **Addresses:** IPv6 link-local addresses are excluded from routes; LAN address changes (DHCP) regenerate the certificate without changing the pin.
-
-### 5.13 Journal and testing (5B)
-
-- `auth.pair` events (§3.4). Pairing and device rows hold names; the journal never does.
-- **Tests:** pairing state machine (offer → redeem → approve/reject/expire; reuse; burn); DPoP verifier against RFC 9449 vectors, nonce rotation, `jti` replay, `ath`; revocation closes a live subscription within 100 ms; capability URL expiry and revocation; TLS listener with a self-signed certificate, a client pinning the SPKI, a mismatched pin refused, rotation accepted with a valid statement and refused with a forged one; `LISTEN_NEEDS_TLS`; allowed roots; `ENV_MOVED` after a server-data copy; an e2e `remote` scenario on the Linux VM with a client on another host (no host names in the repo: addresses come from the environment of the test run).
+- **Codes:** HTTP-mirrored `FinError` bodies `PAIRING_EXPIRED`, `PAIRING_USED`, `PAIRING_REJECTED`, `PAIRING_RATE_LIMITED`, `DPOP_INVALID`, `DPOP_NONCE`, `TOKEN_EXPIRED`, `TICKET_INVALID`, `ORIGIN_REFUSED`, `HOST_REFUSED`; exit 7 `DEVICE_REVOKED`, `PATH_NOT_ALLOWED`, `ENV_MOVED`; start `LISTEN_NEEDS_TLS`, `TLS_FILES_INVALID`; client side (9) `TLS_PIN_MISMATCH`.
+- **Cross-platform:** first non-loopback listen triggers the macOS and Windows firewall prompts (expected: that is when the owner enabled remote access); macOS prompts unsigned development builds on keychain access, so development uses `FIN_SECRETS=file`; Windows Credential Manager blobs are ≤ 2,560 bytes (a P-256 PEM fits); Linux without a running or unlocked Secret Service and every headless install use the file store; Docker containers need `publicUrl` or Tailscale inside the container for routes.
+- **Journal:** `auth.pair` events (§3.4).
+- **Tests:** the pairing state machine; the DPoP verifier against RFC 9449 vectors, nonces, `jti` replay, `ath`, `htu` behind a proxy; revocation closes a live subscription within 100 ms; TLS with a pinned SPKI and a mismatched pin; `LISTEN_NEEDS_TLS`; allowed roots; `ENV_MOVED` and `adopt` keeping the envId; a locked keyring falls back to the file store; an e2e `remote` scenario with a client on another host (addresses from the test run's environment, never in the repo).
 
 ---
 
@@ -453,63 +480,70 @@ Job {
   priority: interactive | normal | background,
   state: queued | running | paused | succeeded | failed | cancelled | interrupted,
   attempts, maxAttempts, idemKey? (per owner), dedupeKey? (per kind),
-  progress: {done, total?, unit: bytes|items|frames|seconds, phase?: Name},
-  checkpoint?: JSON (resumable kinds), result?: JSON, error?: FinError,
-  externalRef?: JSON (a provider's job id, persisted before waiting; sub-project 8),
+  progress: {done, total?, unit: bytes|items|frames|seconds, phase?: Name, at},
+  checkpoint?: JSON (resumable kinds), result?: JSON, error?: FinError, itemErrors?: [...],
   parent?: JobId, createdAt, startedAt?, finishedAt?, nextRunAt?
 }
 ```
 
-- **Kinds** are declared in `finisherd` (`jobs/kinds/*.ts`): `{kind, version, scope, params (Rust-generated schema for worker kinds), resources, runner: worker:<name> | inline, timeoutS, maxAttempts, resumable, dedupe(params), defaultPriority}`. Sub-project 5 ships `library.scan`, `library.probe`, `library.hash` and, behind `test-hooks`, `test.sleep|echo|crash|hang|spawn`. Sub-projects 6 and 8 add `proxy`, `render`, `transcribe`, `align`, `scenes`, `embed`, `gen`.
-- **Worker protocol types** (`fin-jobs` crate, Rust → JSON Schema → generated TS, like `EngineEvent`): host → worker `start {job: {id, kind, params, checkpoint?}, limits}`, `cancel`; worker → host `progress`, `checkpoint {data}`, `item {value}` (streamed partial results, e.g. scan batches), `alive`, `result {value}`, `error {error, itemErrors?}`.
+- **Kinds** are declared in `finisherd` (`jobs/kinds/*.ts`): `{kind, version, scopes, params (Rust-generated schema for worker kinds), resources, runner: worker:<family> | inline, timeoutS, stallS, maxAttempts, resumable, batch?, dedupe(params), defaultPriority, qos}`. Sub-project 5 ships `library.scan`, `library.probe`, `library.hash` and, behind `test-hooks`, `test.sleep|echo|crash|hang|stall|spawn`.
+- **Worker protocol types** (`fin-jobs` crate, Rust → JSON Schema → generated TS): host → worker `start {job, limits}`, `cancel`; worker → host `begin {item}` (the item it starts now), `item {item, value}` (a finished item's result), `progress`, `checkpoint {data}`, `alive`, `result {value}`, `error {error, itemErrors?}`.
+- **Ownership:** a job belongs to its owner principal (`local` runs share the owner `local`; each credential and device is its own owner). Owners see and control their own jobs; `jobs.control` sees and controls all. Jobs on projects or libraries outside a principal's reach are invisible to it.
 
-### 6.2 Execution
+### 6.2 Execution and the kill tree
 
-- **`fin-workers`** (the crate arch §7 names) is one binary with a subcommand per worker family (`fin-workers library`, later `media`, `analysis`). It speaks JSONL over stdio, runs one job at a time, and exits when the job ends. `finisherd` spawns it with `childEnv` (arch §27.7) and finds it beside the `fin-node` binary (as `FIN_NODE_BINARY_DIR` does for tests).
-- **A job is coarse:** one worker process per job, never per file. Small work is batched (a `library.probe` job takes up to 256 files), so 60k files need ~240 processes, not 60k.
-- **Hard kill of the whole tree** (arch §4 rule 3): Unix workers start in their own process group (`detached`), and the host kills `-pgid` with SIGKILL; on Windows the worker puts itself in a Job Object with kill-on-close at start, so killing the worker kills its children. `cancel` first sends `{"t":"cancel"}` and waits 2 s.
-- **Liveness:** a worker that sends nothing for 30 s (progress or `alive` every 5 s) is killed: `WORKER_HUNG`. A worker stuck in uninterruptible I/O (an NFS hard mount) may not die; the host abandons it, counts it, and runs at most 2 abandoned workers per resource before it stops dispatching there (`RESOURCE_STUCK` in status).
-- **Background priority:** background jobs run at `nice 10` (Linux, macOS) or `BELOW_NORMAL_PRIORITY_CLASS` (Windows), and on macOS with the background QoS clamp.
-- **Bandwidth:** a per-root byte budget (`library.bandwidthMiBs`) is enforced in the worker by a token bucket on reads.
+- **`fin-workers`** (the crate arch §7 names) is one binary with a subcommand per worker family; it speaks JSONL over stdio, runs one job, and exits. It is spawned with `childEnv` and found beside the `fin-node` binary.
+- **A job is coarse:** one worker process per job, never per file; small work is batched (a `library.probe` job takes up to 256 files).
+- **The host owns the kill tree, on every OS:**
+  - **Windows:** `fin-node` creates one **host-owned Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`** at start and a nested Job per worker; it **assigns each worker by pid** right after spawn (`OpenProcess` + `AssignProcessToJobObject`). Workers wait for `start` before doing anything, so nothing is spawned before the assignment. Cancel is `TerminateJobObject` on the worker's job; if `finisherd` dies, the host job's handle closes and every worker and descendant dies.
+  - **Linux:** workers start in their own process group; each sets **`PR_SET_PDEATHSIG` = SIGKILL** at start (and exits if `getppid()` already changed). **Where cgroup v2 is delegated** to `finisherd` (a systemd user service, a container), each job gets a child cgroup, killed with `cgroup.kill`, which also catches double-forked descendants; otherwise the host kills `-pgid`.
+  - **macOS:** process groups; the host kills `-pgid` with SIGKILL.
+  - **Everywhere:** a worker **exits when stdin reaches EOF** (its parent is gone), checked by its reader thread.
+- **Cancel** sends `{"t":"cancel"}`, waits 2 s, then kills the tree.
+- **Liveness and progress are separate:** a worker that sends nothing for 30 s (`alive` every 5 s) is killed as **`WORKER_HUNG`**; a worker that stays alive but reports no `progress` or `item` for the kind's `stallS` (default 10 minutes) is killed as **`JOB_STALLED`**. A worker stuck in uninterruptible I/O (an NFS hard mount) may not die; the host abandons it, and after 2 abandoned workers on a resource it stops dispatching there (`RESOURCE_STUCK`).
+- **Priority and QoS:** library scans and probes run at **utility** QoS on macOS (background QoS throttles I/O far below what a scan needs) and `nice 5` on Linux; CPU-heavy background kinds (embeddings, 8) at background QoS, `nice 10`, `BELOW_NORMAL_PRIORITY_CLASS` on Windows.
+- **Bandwidth:** a per-root byte budget is enforced in the worker by a token bucket on reads.
 
 ### 6.3 Scheduling
 
-- **Resource pools:** `cpu` (cores − 1 slots, at least 1), `gpu` (1; sub-project 6), `io:<rootKey>` per library root (network and sync roots: 1 scan + 2 probe jobs; local: 4), `net` (4; sub-project 8). A kind declares what it needs; a job runs when every pool has a slot.
-- **Order:** priority (`interactive` > `normal` > `background`), then FIFO, with aging (a job waiting 10 minutes is treated one level higher). The scheduler is a pure function `schedule(queue, pools, now) → dispatches`, property-tested.
-- **Pause:** a job, a library, a project or everything (`jobs.pause {scope}`). Pausing stops dispatch; running resumable jobs checkpoint and stop; non-resumable ones finish.
-- **Limits:** at most 50,000 queued jobs (`JOB_QUEUE_FULL`); finished jobs are kept 7 days or 10,000 rows.
-- **Idempotent submit:** the same `idemKey` from the same owner returns the existing job; the same `dedupeKey` while a job is queued or running returns that job (identical work coalesces).
+- **Pools:** `cpu` (cores − 1, at least 1), `gpu` (1; sub-project 6), `io:<rootKey>` per library root (network and sync: 1 scan + 2 probe jobs; local: 4), `net` (4; sub-project 8). A job runs when every pool it needs has a slot.
+- **Order:** priority, then FIFO, with aging (10 minutes waiting counts one level higher). The scheduler is a pure function `schedule(queue, pools, now) → dispatches`, property-tested.
+- **Pause:** a job, or everything (`jobs.pause {job} | {all}`). Pausing stops dispatch; running resumable jobs checkpoint and stop; others finish.
+- **Limits:** 50,000 queued jobs (`JOB_QUEUE_FULL`); finished jobs kept 7 days or 10,000 rows.
+- **Idempotent submit:** the same `idemKey` from the same owner returns the existing job; the same `dedupeKey` while queued or running returns that job.
 
-### 6.4 Persistence, retries, restart
+### 6.4 Persistence, retries and isolation
 
-- Jobs live in `control.db` `jobs`; state transitions are written at once, progress only in memory (with the checkpoint written at most every 10 s).
-- **Restart:** `running` jobs become `interrupted`; resumable ones with attempts left are re-queued from their checkpoint; others fail `JOB_INTERRUPTED`. A job with an `externalRef` is never re-submitted (arch §14.3): its runner resumes polling.
-- **Retries:** transient failures (`WORKER_CRASHED`, `WORKER_HUNG`, transient I/O) are retried with backoff 5 s × 2ⁿ (≤ 5 min), up to `maxAttempts` (default 3).
-- **Bisection:** a batch job whose worker crashes is split in half and both halves re-run; a single item that crashes twice fails alone (`itemErrors`, `POISON_ITEM`) and the rest succeeds. One corrupt file never stops a library.
+- Jobs live in `control.db`; state transitions are written at once, progress only in memory, checkpoints at most every 10 s.
+- **Restart:** `running` jobs become `interrupted`; resumable ones with attempts left are re-queued from their checkpoint; others fail `JOB_INTERRUPTED`.
+- **Retries** with backoff 5 s × 2ⁿ (≤ 5 min), up to `maxAttempts` (default 3).
+- **Isolation of a crashing batch,** not blind bisection:
+  1. items the worker already reported (`item`) are never re-run;
+  2. the item that was **in flight** (`begin` without `item`) is retried **alone** first; if it crashes again it fails as **`POISON_ITEM`** and the rest re-run without it;
+  3. only when no item was in flight (a crash between items) is the remainder split in halves;
+  4. **never bisected:** `WORKER_HUNG`, `JOB_STALLED`, I/O errors and an offline root. Those are resource problems, not poison files: the job is retried with backoff, or the library goes offline (§7.2).
 
 ### 6.5 Events and hooks
 
-An in-process `JobDone` bus (sub-project 7 hooks attach to it; arch §10 `JobDone`); `jobs.watch` streams; `job.done` journal events (§3.4).
+An in-process `JobDone` bus (sub-project 7's hooks attach to it; arch §10), `jobs.watch` streams, and `job.done` journal events (§3.4).
 
 ### 6.6 RPCs and `fin` (5C)
 
-| RPC | Scope | Notes |
-|---|---|---|
-| `jobs.submit {kind, params, priority?, idemKey?, project?}` | the kind's scope (`jobs.submit` and e.g. `library.scan`) | → `Job` |
-| `jobs.get {id}`, `jobs.list {filter, cursor?, limit ≤ 500}` | `jobs.read` | owners see their own jobs; `jobs.control` sees all |
-| `jobs.cancel {id}` | `jobs.submit` for own jobs, `jobs.control` for others' | |
-| `jobs.pause {scope}`, `jobs.resume {scope}` | `jobs.control` (own job: `jobs.submit`) | scope: `{job}` \| `{library}` \| `{project}` \| `{all}` |
-| `jobs.wait {ids, any?, timeoutMs ≤ 600000}` | `jobs.read` | → `{jobs, timedOut}` |
-| `jobs.watch {filter}` (stream) | `jobs.read` | snapshot, then changes, ≤ 4 Hz per job |
+| RPC | Scopes |
+|---|---|
+| `jobs.submit {kind, params, priority?, idemKey?, project?}` | `jobs.submit` **and** the kind's scopes (e.g. `library.scan`), plus reach over its project or library |
+| `jobs.get`, `jobs.list {filter, cursor?, limit ≤ 500}`, `jobs.wait {ids, any?, timeoutMs ≤ 600000}`, `jobs.watch` (stream) | `jobs.read`; own jobs, or all with `jobs.control` |
+| `jobs.cancel`, `jobs.pause {job}`, `jobs.resume {job}` | `jobs.submit` for own jobs, `jobs.control` for others' |
+| `jobs.pause {all}`, `jobs.resume {all}` | `jobs.control` |
 
-`fin job ls [--state] [--kind]`, `fin job show <id>`, `fin job cancel <id>`, `fin job pause|resume <id|--library <l>|--all>`, `fin wait <id>… [--any] [--timeout <s>]` (loops `jobs.wait`; exit 0 when all succeeded, 4 with `JOB_FAILED` details otherwise, 5 `WAIT_TIMEOUT`). Commands that start jobs (`fin library scan`, later `render`, `transcribe`) print `{job}` and return at once (arch §9.9).
+`fin job ls|show|cancel|pause|resume`, `fin wait <id>… [--any] [--timeout <s>]` (exit 0 when all succeeded, 4 `JOB_FAILED`, 5 `WAIT_TIMEOUT`). Commands that start jobs print `{job}` and return at once (arch §9.9).
 
 ### 6.7 Security, codes, cross-platform, tests (5C)
 
-- **Security:** workers get the cleared environment and no credential; they cannot call `finisherd` (they speak only to their parent's stdio). Parameters are validated before spawn; a worker never receives a path outside the job's library root or project. Sub-project 7 adds the OS sandbox to workers too (they parse untrusted media).
-- **Codes:** 3 `JOB_KIND_UNKNOWN`, `JOB_PARAMS_INVALID`; 4 `JOB_FAILED {job, error}`, `JOB_CANCELLED`, `JOB_INTERRUPTED`; 5 `JOB_QUEUE_FULL`, `WORKER_UNAVAILABLE` (binary missing), `WAIT_TIMEOUT`, `RESOURCE_STUCK`; `JOB_NOT_FOUND` (3); in results and item errors: `WORKER_CRASHED`, `WORKER_HUNG`, `JOB_TIMEOUT`, `POISON_ITEM`.
-- **Cross-platform:** process groups vs Job Objects; Windows `TerminateProcess` on a worker that holds an open file on SMB (sharing violations for the next attempt are transient); signals do not exist on Windows (cancel is the stdio message, then the kill).
-- **Tests:** scheduler properties (no pool over-commit, priority order with aging, pause/resume, dedupe); a `test.spawn` worker whose grandchild must be gone after cancel on all three OSes; `test.crash` bisection finds the one poison item in 256; restart turns `running` into `interrupted` and resumes from the checkpoint; `fin wait` exit codes; `job.done` entries.
+- **Security:** workers get the cleared environment and no credential, speak only to their parent's stdio, and never receive a path outside the job's project or library root. Sub-project 7 adds the OS sandbox to workers (they parse untrusted media).
+- **Codes:** 3 `JOB_KIND_UNKNOWN`, `JOB_PARAMS_INVALID`, `JOB_NOT_FOUND`; 4 `JOB_FAILED`, `JOB_CANCELLED`, `JOB_INTERRUPTED`; 5 `JOB_QUEUE_FULL`, `WORKER_UNAVAILABLE`, `WAIT_TIMEOUT`, `RESOURCE_STUCK`; in results: `WORKER_CRASHED`, `WORKER_HUNG`, `JOB_STALLED`, `JOB_TIMEOUT`, `POISON_ITEM`.
+- **Cross-platform:** the kill tree above; signals do not exist on Windows (cancel is the stdio message, then the job kill); a killed worker's open file on SMB causes transient sharing violations for the next attempt.
+- **Tests:** scheduler properties; a `test.spawn` worker whose double-forked grandchild must be gone after cancel and after `finisherd` is killed with SIGKILL / `TerminateProcess`, on all three OSes; `test.crash` with a known poison item is isolated in two runs, not log₂(256); `test.hang` is never bisected; `test.stall` hits `JOB_STALLED`; restart resumes from the checkpoint; `fin wait` exit codes.
 
 ---
 
@@ -517,70 +551,67 @@ An in-process `JobDone` bus (sub-project 7 hooks attach to it; arch §10 `JobDon
 
 ### 7.1 Data model
 
-- `libraries` (in `control.db`): `{id ULID, name (user text), root (absolute server path), rootKey (canonical, case-folded where the volume is case-insensitive), storage: local|network|sync (detected by `fin-store::storage_kind`, with override), state: online|offline|scanning|paused, include?, exclude (defaults below), kinds (media, image, audio), scan {pollS, full: daily|weekly|manual}, hydrate: false, bandwidthMiBs?, stages {probe: true; later proxy, transcribe, scenes, embed}, embeddings: local|<cloud provider> (8), createdBy, createdAt}`.
-- **Libraries are per server** (arch §20: "library roots are mapped per machine, stored per server, not in the project"). Libraries are read-only to Finisher (arch §6.7): nothing is ever written under a root.
-- **Catalog** `<server-data>/libraries/<id>/catalog.db` (`node:sqlite`, WAL), one per library, so a removed library is one deleted directory and a 60k-file catalog never bloats `control.db`:
-  - `dirs {id, rel, mtimeNs, lastScan}`;
-  - `files {id, dirId, name (raw bytes as a BLOB) and nameNfc (display), relKey, size, mtimeNs, fileId (dev:ino, or the NTFS/SMB file id), placeholder, fp (fp1, the asset fingerprint of `fin-probe`), fullHash?, kind, probe (JSON), state: present|missing|cloudOnly|unreadable|probeFailed|skipped, code?, firstSeen, lastSeen, lastChange}`;
-  - `stages {fp, stage, version, state: pending|running|done|failed|skipped, code?, at}`: keyed by fingerprint, so the same file in two libraries is analysed once;
-  - `names` (FTS5 over `nameNfc` and directory names), `scans {id, full, startedAt, finishedAt, counts}`.
-- **Default excludes:** dot-files and dot-directories, OS junk (`Thumbs.db`, `.DS_Store`, `@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System Volume Information`), sync conflict copies by the patterns `fin-store` already knows, and inside any Finisher project found under a root, everything but `sources/`.
+- `libraries` (in `control.db`): `{id ULID, name (user text), root (absolute server path), rootKey (canonical; case-folded on case-insensitive volumes), volume {devId, fsId?, mounted: bool}, storage: local|network|sync (from `fin-store::storage_kind`, with override), state: online|offline|scanning|paused, include?, exclude, kinds, scan {poll: demand|<seconds>, full: daily|weekly|manual}, hydrate: false, bandwidthMiBs?, stages, createdBy, createdAt}`.
+- **Volume identity:** at add, the library stores the root's device id and filesystem id (`st_dev` and, where available, the filesystem UUID: `statfs` `f_fsid` on macOS and Linux, the volume serial number on Windows) and whether the root is a **mount point** (its `st_dev` differs from its parent's). A root that was a mount point and whose `st_dev` now **equals its parent's** is an **unmounted share**: the empty mount-point directory on the local disk, not the library. It goes offline (§7.2) and is never scanned.
+- **Libraries are per server** (arch §20) and read-only to Finisher: nothing is ever written under a root.
+- **Catalog** `<server-data>/libraries/<id>/catalog.db` (`node:sqlite`, WAL, owned by one indexer `worker_thread`): `dirs {id, rel, mtimeNs, placeholder, lastScan}`; `files {id, dirId, name (raw bytes) and nameNfc, relKey, size, mtimeNs, fileId (dev:ino, or the 128-bit NTFS/ReFS/SMB file id), placeholder, fp (fp1), fullHash?, kind, probe JSON, state: present|missing|cloudOnly|unreadable|probeFailed|skipped, code?, firstSeen, lastSeen, lastChange}`; `stages {fp, stage, version, state, code?, at}`; `names` (FTS5); `scans`.
+- **Default excludes:** dot-files and directories, OS junk (`Thumbs.db`, `.DS_Store`, `@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System Volume Information`), sync conflict copies by the patterns `fin-store` knows, and inside any Finisher project under a root everything but `sources/`.
 - **Overlap rules:** a root must be an existing absolute directory, not inside server data, not equal to, inside or containing another library's root (`LIBRARY_OVERLAP`).
 
 ### 7.2 Scanning
 
-- **Full scan** (`library.scan {full: true}` job; on add, on mount coming back, on the schedule, on demand): the worker walks the root with parallel `stat`s (32 on network roots, as measured in spike S10; 64 locally), never follows symlinks or Windows reparse points (recorded as `skipped`), and streams batches of `{rel, size, mtimeNs, fileId, placeholder}`.
-- **The indexer thread** (a `worker_thread` in `finisherd` that owns every catalog connection) diffs each batch against the catalog: new and changed files (size, mtime or file id differ) are queued for `library.probe`; a missing file id that reappears elsewhere with the same size and mtime is a **rename** (its fingerprint and analysis carry over); a new file whose fingerprint matches a missing one is a **move**; files not seen by a completed full scan become `missing`.
+- **Full scan** (on add, when a mount comes back, on the schedule, on demand): the worker walks the root with parallel metadata reads (32 on network roots, as measured in spike S10; 64 locally) and **never opens a file to enumerate it**:
+  - **Windows:** directories are read with `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` (`FILE_ID_EXTD_DIR_INFO`), which returns size, times, attributes and the 128-bit file id for every entry from the directory handle alone; reparse points and junctions are skipped;
+  - **macOS:** `getattrlistbulk` with the common flags, so dataless files and directories are seen without touching them; the worker sets `setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)`, so any accidental access to a dataless item fails (`EDEADLK`) instead of downloading it;
+  - **Linux:** `readdir` + `statx`; symlinks are never followed.
+- **The indexer thread** diffs each batch against the catalog: new and changed files (size, mtime or file id) are queued for `library.probe`; a vanished file id that reappears elsewhere is a **rename**; a new file whose fingerprint matches a missing one is a **move**; files not seen by a completed full scan become `missing`.
 - **Incremental scans:**
-  - *network roots:* every `pollS` (default 60 s, spike S10) the worker re-stats known directories and rescans those whose mtime changed. A directory's mtime does not change when a file inside is rewritten in place, so in-place rewrites wait for the next full scan (daily by default). On macOS network shares, it refreshes listings first as `fin-store` does (the 4A smbfs 60 s directory cache);
-  - *local roots:* `fs.watch` (recursive) is a **hint** that queues a targeted rescan of the touched directory after 2 s of quiet. Watch errors (Linux inotify limits, Windows buffer overflow) fall back to polling every 5 minutes and say so in status. Correctness comes from scans, never from events alone;
-  - *sync roots:* polled every 300 s, plus the daily full scan.
-- **An offline root never marks files missing.** If the root cannot be stat'ed (or a stat takes more than 10 s), or a full scan finds the root empty while the catalog holds files, the library goes `offline` (`LIBRARY_OFFLINE` / `ROOT_EMPTY_SUSPECT` in status), keeps its catalog and analysis (arch §6.7 "offline libraries"), and is re-checked every 60 s. An unmounted NAS must not turn 60k files into `missing`.
+  - **network roots: demand-driven polling by default** (`poll: demand`). The worker re-stats known directories and rescans those whose mtime changed **every 60 s while the library is in use** (a project that references it is open, a `library.watch` stream is open, or it was searched, listed or scanned in the last 10 minutes), and **every 6 hours otherwise**. Before answering a search or listing of a library whose last poll is older than 5 minutes, the indexer polls the touched directories first (bounded to 5 s; the answer says `stale: true` if it ran out). *Why:* NAS hibernation (Synology, QNAP, TrueNAS) is defeated by any request that misses the NAS's caches, so a fixed 60-second poll keeps the disks spinning all day for libraries nobody is using, while an agent or person using the library still sees changes within a minute. The owner can set a fixed interval per library. In-place rewrites (a directory's mtime does not change) wait for the next full scan (daily). On macOS shares, listings are refreshed first as `fin-store` does (the smbfs 60 s directory cache);
+  - **local roots:** `fs.watch` (recursive) is a **hint** that queues a targeted rescan after 2 s of quiet; watch errors (inotify limits, Windows buffer overflow) fall back to polling every 5 minutes and say so (`WATCH_DEGRADED`); correctness comes from scans;
+  - **sync roots:** polled every 10 minutes and fully scanned daily.
+- **An unavailable root never marks files missing.** A root that cannot be reached, an unmounted share (§7.1), or a full scan that finds the root empty while the catalog holds files puts the library `offline` (`LIBRARY_OFFLINE` / `ROOT_EMPTY_SUSPECT`) with its catalog and analysis intact (arch §6.7), re-checked every 60 s.
+- **Spin-up-tolerant timeouts:** a sleeping NAS disk takes 10–30 s (sometimes more) to answer its first request. The first `stat` of a root waits up to **60 s** before the library counts as offline, and per-entry metadata reads up to 30 s; a scan that is slow but still progressing is never offline. The job's `stallS` for scans is 10 minutes.
 
-### 7.3 Fingerprint, probe and stages
+### 7.3 Fingerprint, probe, placeholders and stages
 
-- `library.probe` jobs compute `fp1` and run `fin-probe` on each file in one pass (both read the head; the probe parses untrusted bytes, so it runs in the worker with `fin-probe`'s `catch_unwind`, and bisection isolates poison files).
-- **The fingerprint stays `fp1`** (size, mtime and sampled head/middle/tail BLAKE3, as `fin-probe` computes it for assets). A library file and the asset made from it share the fingerprint, so `fin asset add <path in a library>` reuses the catalog's probe. A copy with another mtime gets another fingerprint; relinking across machines then falls back to the full hash (arch §20), computed by `library.hash` on demand, never in a sweep.
-- **Placeholders** (cloud-only files in sync folders) are catalogued from metadata only and **never read**: reading one makes the provider download it (iCloud, OneDrive, Dropbox and Google Drive File Provider). macOS: `SF_DATALESS` in `st_flags`; Windows: `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`, `RECALL_ON_OPEN` or `OFFLINE`; the legacy `.<name>.icloud` stubs. Such files are `cloudOnly`. Setting `hydrate: true` (owner-only: it downloads) lets probe jobs read them, within the bandwidth budget.
-- **Stages** are a framework: a stage `{name, version, appliesTo(file), dependsOn, jobKind, batch}` registered by a later sub-project; when a file's fingerprint has no `done` row for a stage at its current version, the indexer queues the stage's job. Sub-project 5 registers only `probe`. A new stage version re-queues only that stage.
-- **Analysis artifacts** are keyed by fingerprint in `<server-data>/cache/` (arch §6.1); nothing in sub-project 5 writes there.
+- `library.probe` jobs compute `fp1` and run `fin-probe` in one pass, in the worker (untrusted bytes), with the isolation rules of §6.4.
+- **The fingerprint stays `fp1`** (size, mtime and sampled BLAKE3, as `fin-probe` computes it for assets), so a library file and its asset share it; relinking across machines falls back to the full hash (arch §20), computed by `library.hash` on demand, never in a sweep.
+- **Placeholders are catalogued from metadata and never opened or read** (opening or reading makes the provider download them):
+  - macOS: `SF_DATALESS` on files **and directories** (a dataless directory is not descended into: its listing would be fetched; it is recorded `cloudOnly` as a whole); legacy `.<name>.icloud` stubs;
+  - Windows: `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`, `FILE_ATTRIBUTE_RECALL_ON_OPEN`, `FILE_ATTRIBUTE_OFFLINE` and `FILE_ATTRIBUTE_PINNED`/`UNPINNED` as reported by `FILE_ID_EXTD_DIR_INFO`;
+  - **Nextcloud and ownCloud virtual files** (suffix mode, on every OS): `<name>.nextcloud` and `<name>.owncloud` are placeholders for `<name>`; the stub itself is never probed;
+  - Linux FUSE clients without markers: treated by the storage kind (`sync`), probed only within the bandwidth budget.
+
+  Such files are `cloudOnly`; `hydrate: true` (human-only) lets probe jobs read them within the bandwidth budget.
+- **Stages** are a framework (`{name, version, appliesTo, dependsOn, jobKind, batch}`); sub-project 5 registers only `probe`. A new stage version re-queues only that stage. Analysis artifacts are keyed by fingerprint in `<server-data>/cache/`.
 
 ### 7.4 Search and lookup
 
-- `library.search {query?, libraries?, kind?, duration?, width?, height?, since?, cursor?, limit ≤ 200}`: FTS5 over names (prefix and phrase), plus metadata filters from the probe. Sub-project 8 adds `mode: semantic` and transcript matches to the same RPC.
-- `library.lookup {fingerprints | hashes}` → matching files across this server's libraries (relinking, arch §20).
+- `library.search {query?, libraries?, kind?, duration?, width?, height?, since?, cursor?, limit ≤ 200}`: FTS5 over names plus probe metadata filters (sub-project 8 adds semantic and transcript matches).
+- `library.lookup {fingerprints | hashes}` → matches across this server's libraries (relinking).
 
 ### 7.5 Security and privacy
 
-- **Registering a root grants read access to a tree** through search and listings, so `library.add` is owner-only (§4.5). Agents can list, search and rescan registered libraries.
-- Library and file names are user content. They stay in the catalog on local disk; they are never journaled (`library.scan` carries counts only), never logged at info level.
-- `library.files`/`library.file` take relative paths inside the root; `..`, absolute paths and paths that canonicalise outside the root are `INVALID_PATH`.
-- Untrusted media is parsed only in workers.
+- `library.add` is human-only: a root grants read access to a tree through search and listings. Agents list, search and rescan registered libraries.
+- Library and file names are user content, kept in the catalog on local disk; never journaled or logged at info level.
+- `library.files`/`library.file` take relative paths inside the root; `..`, absolute paths and paths that canonicalise outside it are `INVALID_PATH`.
 
 ### 7.6 RPCs and `fin` (5D)
 
-| RPC | Scope | Notes |
-|---|---|---|
-| `library.add {name, root, options?}`, `library.remove {id}`, `library.set {id, options}` | `library.admin` (owner) | `set` of name, excludes and poll intervals only needs `library.scan` |
-| `library.list`, `library.status {id}` | `library.read` | status: state, counts by state, stage progress, last scan, warnings |
-| `library.scan {id, full?}` | `library.scan` | → `{job}` |
-| `library.pause`, `library.resume` | `library.scan` | pauses its jobs (§6.3) |
-| `library.files {id, dir?, state?, cursor?, limit}`, `library.file {id, rel \| fileId}` | `library.read` | file: probe, stage states, fingerprint |
-| `library.search`, `library.lookup` | `library.read` | §7.4 |
-| `library.watch {id?}` (stream) | `library.read` | status and scan progress |
+| RPC | Scopes |
+|---|---|
+| `library.add`, `library.remove`, `library.set` (hydration, bandwidth) | `library.admin` (human) |
+| `library.set` (name, excludes, poll, schedule) | `library.scan` |
+| `library.list`, `library.status`, `library.files`, `library.file`, `library.search`, `library.lookup`, `library.watch` (stream) | `library.read` |
+| `library.scan {id, full?}` | `library.scan` (→ `{job}`, which also needs `jobs.submit`) |
 
-`fin library ls|status|scan|files|show|search` and `fin search <query>` (the same search; arch §9.11). The console adds `finisherd library add <name> <root>|rm <id>|set <id> …`.
+`fin library ls|status|scan|files|show|search`, `fin search <query>`; the console adds `library add|rm|set`.
 
 ### 7.7 Codes, cross-platform, tests (5D)
 
-- **Codes:** 3 `LIBRARY_ROOT_INVALID`, `LIBRARY_OVERLAP`, `INVALID_PATH`; 3 `LIBRARY_NOT_FOUND`, `FILE_NOT_FOUND`; 4 `FILE_CLOUD_ONLY` (asked to probe a placeholder without `hydrate`); 5 `LIBRARY_OFFLINE`, `LIBRARY_ROOT_UNREADABLE`; status warnings `ROOT_EMPTY_SUSPECT`, `WATCH_DEGRADED`, `RESOURCE_STUCK`.
-- **Cross-platform:**
-  - names: macOS stores NFD; matching uses NFC and, on case-insensitive volumes (APFS and NTFS by default, most SMB shares), a case-folded `relKey`; the raw bytes are kept for opening (Linux names need not be UTF-8);
-  - case sensitivity is detected per root without writing (stat the root path with its case flipped);
-  - Windows long paths (`\\?\`), reparse points and junctions skipped, file ids from `FileIdInfo` (the 4A machine-id work);
-  - SMB/NFS semantics of §7.2; inotify limits; FSEvents coalescing;
-  - placeholders per OS (§7.3).
-- **Tests:** a generated tree of 10k files (local) with renames, moves, in-place rewrites, deletions and placeholder flags (faked through a test hook); an offline root marks nothing missing; a poison file is isolated; overlap rules; NFD/NFC and case-folding fixtures; `fin asset add` reuses the catalog probe; FTS queries; on the Linux VM and macOS, a network-root scan against the SMB share used by 4A Task 19 (paths from the environment, never in the repo), with poll latency measured.
+- **Codes:** 3 `LIBRARY_ROOT_INVALID`, `LIBRARY_OVERLAP`, `LIBRARY_NOT_FOUND`, `FILE_NOT_FOUND`, `INVALID_PATH`; 4 `FILE_CLOUD_ONLY`; 5 `LIBRARY_OFFLINE`, `LIBRARY_ROOT_UNREADABLE`; status warnings `ROOT_EMPTY_SUSPECT`, `ROOT_UNMOUNTED`, `WATCH_DEGRADED`, `RESOURCE_STUCK`.
+- **Cross-platform:** names (NFD on macOS → NFC keys; case-folded keys on case-insensitive volumes, detected per root without writing; raw bytes kept for opening); Windows long paths (`\\?\`); the enumeration APIs and placeholder rules above; SMB/NFS directory-mtime semantics; inotify limits; FSEvents coalescing.
+- **Tests:** a generated 10k-file tree with renames, moves, in-place rewrites, deletions and placeholder markers (faked through a test hook on each OS, plus Nextcloud suffix files); an unmounted mount point (bind mount on Linux, a disk image on macOS) goes offline and marks nothing missing; a scan never opens a placeholder (an `open` counter in the test hook); a poison file isolated; demand polling cadence with an injected clock; a 45 s first-stat delay (injected) does not mark the library offline; on the Linux VM and macOS, a network-root scan against the 4A test share (paths from the environment).
 
 ---
 
@@ -588,66 +619,85 @@ An in-process `JobDone` bus (sub-project 7 hooks attach to it; arch §10 `JobDon
 
 ### 8.1 Data model
 
-- `reviews {id ULID, projectId, kind: branchReview | mergeConflict (later: qaFinding, criticSummary, pluginSuggestion), state, source (branch id), target (branch id), sourceHead, targetHead (seqs at the last refresh), title (user or agent text), summary?, requestedBy {principal, actor}, createdAt, updatedAt, closedAt?, closedBy?, mergeId?}`.
-- **States:** `open` → `changesRequested` ↔ `open` → `merged` | `rejected` | `dismissed` | `superseded` (the source was merged or archived some other way).
-- **Change list** (derived, cached in the row): one entry per merge candidate of the source path, as `history.merge {dryRun: true}` plans it: `{txId (origin root), record kind, author, actor?, ops: {kind: count}, at, decision: pending|accept|reject, decidedBy?, reason?, status: willMerge|alreadyPresent|excluded|dependsOnSkipped|conflict}` plus `conflicts: Conflict[]` (fin-core's `Conflict`, already generated).
-- `review_events {itemId, at, kind: opened|refreshed|decided|commented|merged|closed, principal, details}` and `review_comments {id, itemId, principal, actor, body (user or agent text), at?: rational timeline time, txId?, createdAt}`.
-- **Where review state lives:** in `control.db` of the server that holds the project (Owner question 1). What the op log already holds (branches, merges, archives) is the durable truth; a `branchReview` for an active, unmerged branch can be re-derived after a move, while decisions not yet merged and comments stay on the server that recorded them.
-- `branch_policy {projectId, protected: [branchId], requireReview: bool}`, default `protected: [main]`, `requireReview: false`.
+- `reviews {id ULID, projectId, kind: branchReview | mergeConflict (later qaFinding, criticSummary, pluginSuggestion), state, source, target (branch ids), snapshot {sourceSeq, targetSeq, plannedAt}, title, summary?, requestedBy {principal, actor}, createdAt, updatedAt, closedAt?, closedBy?, mergeId?}`.
+- **States:** `open` ↔ `changesRequested` → `merged` | `rejected` | `dismissed` | `superseded`.
+- **Change list** (derived at the snapshot, cached): one entry per merge candidate, as `history.merge {dryRun: true}` plans it at `snapshot`: `{txId (origin root), sourceSeq, record kind, author, actor?, ops, at, decision: pending|accept|reject, decidedBy?, status: willMerge|alreadyPresent|dropped|excluded|dependsOnSkipped|conflict}`, plus `conflicts`.
+- `review_events`, `review_comments {id, itemId, principal, actor, body, at?: rational time, txId?, createdAt}`.
+- **Where review items live:** `control.db` of the server that holds the project (Owner question 1). **Rejections are not review state:** they are `drop` records in the op log (§8.3), so they are never lost. What a move loses (in the recommended answer) is open items' comments and their not-yet-merged accept marks; open `branchReview` items for active branches are re-derived.
+- `branch_policy {projectId, protected: [branchId], requireReview}`, default `protected: [main]`, `requireReview: false`.
 
 ### 8.2 Workflow
 
-1. **Request.** `review.request {projectId, source, into?: main, title, summary?}` (an agent at the end of a draft, a person, or sub-project 7's `BranchReady` hook) opens a `branchReview`. Opening runs a merge dry run, which works on followers too (4B Decision 26).
-2. **Live refresh.** When the source or target head moves (the `finisherd` hubs already see every commit), the item is re-planned after 1 s of quiet. Decisions are keyed by origin txId, so they survive refreshes; a decided entry that vanished (undone and dropped) is reported, not silently lost.
-3. **Decide.** `review.decide {itemId, decisions: [{txId, decision, reason?}], expect: {sourceHead, targetHead}}` marks entries. `expect` is optimistic concurrency: if either head moved since the reviewer's view, the call is `REVIEW_STALE` with the fresh change list, so nobody accepts work they did not see.
-4. **Merge.** `review.merge {itemId, expect, idemKey}` merges with `history.merge {from, into, exclude: [rejected txIds], skipConflicting: false}` as the reviewer's principal. It is refused with `REVIEW_HAS_CONFLICTS` while the plan has conflicts (resolve by rejecting the conflicting entries, or by fixing the source branch: updating it from the target and editing), and with `REVIEW_UNDECIDED` when `requireReview` is on and entries are pending (otherwise pending means accept). The merge is audited when the target is protected. After it: state `merged`, `mergeId` stored, the source archived when it was an agent branch (`archiveSource`, default on for agent-created branches).
-5. **Reject, request changes, dismiss:** `review.close {itemId, state: rejected|dismissed}`; `review.decide` with `changesRequested` (and a comment) hands the branch back to its agent (sub-project 7 delivers it as a turn).
+1. **Request.** `review.request {projectId, source, into?: main, title, summary?}` opens a `branchReview` and plans its change list at the current heads (the snapshot). Dry runs work on followers (4B Decision 26).
+2. **Refresh on demand** (live re-planning is cut, §1.2): `review.refresh` re-plans at the current heads and moves the snapshot; `review.get` reports `stale: true` when either head moved since. Decisions are keyed by origin txId and survive refreshes.
+3. **Decide.** `review.decide {itemId, decisions: [{txId, decision, reason?}], expect: snapshot}`. `expect` must equal the item's snapshot (`REVIEW_STALE` otherwise, with the fresh change list). **A rejection writes a `drop` record at once** (§8.3), so it is durable whatever happens to the item.
+4. **Merge.** `review.merge {itemId, expect: snapshot, acceptPending?: bool, idemKey}`:
+   - the merge is limited to what was reviewed: `history.merge {from, into, include: [accepted origins], sourceUpTo: snapshot.sourceSeq}` (§8.4); with `acceptPending: true`, pending entries **of the snapshot** are added to `include`. Nothing outside the snapshot is ever included, so a commit that lands on the source after the review is never merged by it;
+   - with `requireReview`, pending entries refuse the merge (`REVIEW_UNDECIDED`), whatever `acceptPending` says;
+   - conflicts (`REVIEW_HAS_CONFLICTS`) are resolved by rejecting the conflicting entries or by fixing the source branch and refreshing;
+   - afterwards: state `merged`, `mergeId` stored, and the source archived when it was an agent branch and nothing of it is left to merge.
+5. **Reject all, request changes, dismiss:** `review.close {itemId, state: rejected|dismissed}` (rejecting all writes one `drop` for every pending entry); `review.decide` with `changesRequested` hands the branch back to its agent (sub-project 7 delivers it as a turn).
 
-### 8.3 Merge exclusions (a `fin-store` change, not a primitive op)
+### 8.3 Durable rejections: the `drop` record
 
-- `MergeRequest` gains **`exclude: Vec<TxId>`** (origin txIds). An excluded candidate is not copied and is reported in `skipped` with reason **`EXCLUDED`**. Everything that depends on it is handled by the existing rules: a conflict blamed on it and an undo, redo or revert whose unit holds it are `DEPENDS_ON_SKIPPED` (sub-project 4 §4.4).
-- An exclusion is a planning input only: the merge records written are ordinary copies, so followers, rebuilds and `derived::compute` need nothing new. The source stays `active` (`left_to_merge` still sees the excluded records), which is right: they were not merged. `fin merge` gains `--exclude <txId>…`.
+A **history record**, not a primitive op (it has no ops; it is planned and written by `fin-store`'s history layer like `checkpoint`).
 
-### 8.4 Conflicts become review items
+- **Kind `drop`** on the **target** branch's log, with fields **`from`** (the source branch id) and **`drops`** and/or **`undrops`** (origin root txIds; at least one non-empty). The field-order list of sub-project 4 §4.2 is extended at its end: `…, recovers, drops, undrops`. `intent.ops == []`.
+- **Meaning:** an origin root is **dropped for T** when the newest `drop` record on T's lineage naming it lists it in `drops` (not `undrops`). Branches forked from T after the record inherit it, as they inherit every record before their fork point.
+- **Honoured by:**
+  - **merge candidate selection** into T: a dropped origin is not a candidate; it is reported in `skipped` with reason **`DROPPED`**; anything that depends on it is `DEPENDS_ON_SKIPPED` under the existing rules (sub-project 4 §4.4). A later plain `fin merge` therefore never brings it back, on this server or any other;
+  - **`derived::compute`** (the `merged` state): a dropped origin does not count as left to merge into T, so a branch whose remaining records are all merged or dropped becomes `merged`;
+  - **not cherry-pick:** an explicit pick of a dropped origin is a deliberate act and is allowed (it does not undrop);
+  - **not undo stacks:** like `checkpoint`, a `drop` is no unit on any stack; reversing it is an `undrops` record.
+- **Format impact:**
+  - `drop` records are written at **`RECORD_FORMAT = 3`, `MIN_READER = 3`**; every other kind keeps format 2 and stays byte-identical, and `RecordKind` (already `#[non_exhaustive]`) gains `Drop`;
+  - segments are versioned by content (`fin_store::segment::version_for`): a segment holding a `drop` is format 3 / min reader 3; segments without one keep their versions. A 4C reader meeting a `drop` (an unknown kind) opens the project read-only with `NEWER_FORMAT`, which is the existing rule, so mixed-version collaborators degrade safely;
+  - **no upcaster:** no stored record changes shape, and the op schema (`schemaVersion`) does not change (no op is added);
+  - **DB migration** `m000N` adds a derived `drops` index `(branch, origin) → (seq, dropped)`, rebuilt from the log by rebuild and import like the other derived tables;
+  - goldens: the encoding of a `drop` record; a 4C fixture project opens with identical state; a segment with a `drop` read by the 4C reader version is `NEWER_FORMAT`.
+- **RPC:** `history.drop {projectId, txId, author, into, from, drops?, undrops?, dryRun?, argsHash?}` → `CommittedTx`; `fin drop <txId>… --from <b> [--into <b>]` and `fin drop --undo <txId>… …`. On a protected target it needs `review.decide`; elsewhere `project.write`. Audited as `history.drop`.
 
-Whenever any `history.merge` (from `fin`, a review or the UI) answers `CONFLICT`, `finisherd` opens or updates a **`mergeConflict`** item for `(source, target)` with the conflict list and who tried. It becomes `superseded` when a later merge of the pair succeeds or the source is archived, and can be dismissed. Rebase conflicts on `tx.commit` are answered to the writer (an agent re-plans) and are not review items: they never left the writer's hands.
+### 8.4 Merges limited to what was reviewed
 
-### 8.5 Protected branches
+- `MergeRequest` gains **`include?: [TxId]`** (origin roots) and **`sourceUpTo?: Seq`** (a seq on the source branch). Both are applied **inside the merge's write transaction**, to the candidates planned at the heads of that moment: a candidate is copied only if its origin root is in `include` (when given) and its source seq is ≤ `sourceUpTo` (when given). The rest stay on the source and are reported as **`notIncluded`**.
+- A candidate that is included but depends on one that is not (or on a dropped one) is `DEPENDS_ON_SKIPPED`; for a review merge this is a conflict, and the merge writes nothing.
+- `fin merge` gains `--include <txId>…` and `--up-to <seq>`.
 
-- A write whose target is protected (`tx.commit`, `history.undo|redo|checkpoint|cherryPick|revert` on it, `history.merge` into it, `branch.set` of it) needs `branch.protected` (§4.4): `BRANCH_PROTECTED` (exit 7) otherwise, with the fix `fin review request --branch <b>`.
-- `review.merge` into a protected branch needs `review.decide`, not `branch.protected`: reviewing is the sanctioned way in.
-- Policy writes (`review.policy {projectId, protected, requireReview}`) are owner-only.
+### 8.5 Conflicts as review items; protected branches
+
+- Whenever any `history.merge` answers `CONFLICT`, `finisherd` opens or updates a **`mergeConflict`** item for `(source, target)` with the conflict list; it becomes `superseded` when a later merge of the pair succeeds or the source is archived. Rebase conflicts on `tx.commit` stay with their writer.
+- **Protected branches:** a write whose resolved target is protected (`tx.commit`, `history.undo|redo|checkpoint|cherryPick|revert|merge`, `branch.set` of it) needs `branch.protected` (stage 4) and is re-checked in the store's write transaction through the guard (§4.4 stage 6): `BRANCH_PROTECTED` (exit 7). `review.merge` and `history.drop` into a protected branch need `review.decide` instead. `review.policy` writes are human-only.
 
 ### 8.6 RPCs and `fin` (5E)
 
-| RPC | Scope |
+| RPC | Scopes |
 |---|---|
-| `review.request`, `review.comment {itemId, body, at?, txId?}`, `review.refresh {itemId}` | `review.write` |
-| `review.list {projectId, state?, kind?}`, `review.get {itemId}`, `review.watch {projectId}` (stream) | `project.read` |
+| `review.request`, `review.comment`, `review.refresh` | `review.write` |
+| `review.list`, `review.get`, `review.watch` (stream: item changes, not re-plans) | `project.read` |
 | `review.decide`, `review.merge`, `review.close` | `review.decide` |
-| `review.policy`, `review.policy.get` | `auth.admin` / `project.read` |
+| `history.drop` | `project.write`, or `review.decide` on a protected target |
+| `review.policy`, `review.policy.get` | `auth.admin` (human) / `project.read` |
 
-`fin review request [--into <b>] --title <t> [--summary <s>]`, `fin review ls`, `fin review show <id>`, `fin review comment <id> <text>`, `fin review decide <id> --accept <tx>… --reject <tx>…`, `fin review merge <id>` (the last two need `review.decide`, which `local` has and `agent` principals lack by default).
+`fin review request|ls|show|refresh|comment|decide|merge`, `fin drop`, `fin merge --include/--up-to`.
 
-### 8.7 Security, codes, cross-platform, tests (5E)
+### 8.7 Security, codes, tests (5E)
 
-- **Security:** an agent can open a review and comment, but not decide or merge into protected branches (sub-project 7 defaults); review text is content and shown as-is (arch §17.1); the change list is computed by the server, never taken from the requester.
-- **Codes:** 3 `REVIEW_NOT_FOUND`; 4 `REVIEW_STALE {fresh}`, `REVIEW_HAS_CONFLICTS {conflicts}`, `REVIEW_CLOSED`; 3 `REVIEW_UNDECIDED {pending}`; 7 `BRANCH_PROTECTED`; merge reason `EXCLUDED`.
-- **Cross-platform:** nothing beyond the store.
-- **Tests:** `exclude` property tests in `fin-store` (excluding any subset never copies an excluded record or anything depending on it, and equals cherry-picking the complement in order when there are no undos); refresh after source and target commits; `REVIEW_STALE`; conflicts open and supersede items; protected `main` refuses an `agent` commit and accepts `review.merge`; `review.verdict` entries; an e2e `review` scenario driven by `fin` with two credentials (an agent and the local principal as reviewer).
+- **Security:** an agent can open a review and comment, but not decide, drop into or merge into protected branches by default; review text is content; the change list is computed by the server.
+- **Codes:** 3 `REVIEW_NOT_FOUND`, `REVIEW_UNDECIDED`; 4 `REVIEW_STALE`, `REVIEW_HAS_CONFLICTS`, `REVIEW_CLOSED`; 7 `BRANCH_PROTECTED`; merge reasons `DROPPED`, `notIncluded`.
+- **Tests:** `fin-store` properties: a dropped origin is never copied by any merge into the target or its later descendants, whatever the order of drops, undrops, merges and imports; `include`/`sourceUpTo` never copy a record outside them, and a commit that lands between planning and the write transaction is not included; `derived::compute` agrees between a writer and a follower that imported the records in another order; the format goldens of §8.3. Server: `REVIEW_STALE`; pending never means accept outside the snapshot; conflicts open and supersede items; protected `main` refuses an `agent` commit (stage 4 and the in-transaction guard) and accepts `review.merge`; `review.verdict` entries; an e2e `review` scenario with an agent credential and the local principal as reviewer, including a project move that keeps the rejection.
 
 ---
 
 ## 9. Server and RPC surfaces for the frontend (sub-project 9)
 
-The frontend needs nothing it cannot get from these, all over the ticketed WebSocket as a `device` principal:
+All over the ticketed WebSocket as a `device` principal:
 - **Connect:** `/.well-known/finisher`, pairing (§5.2), `/auth/token`, `/auth/ws-ticket`, `server.hello`, `auth.whoami`, `env.describe`; HTTP 426 on a protocol mismatch.
-- **Live state streams:** `ops.subscribe`, `project.events` (existing), `jobs.watch`, `library.watch`, `review.watch`, `auth.pair.pending`, `auth.devices.watch`; each starts with a snapshot item and is closed on revocation.
-- **Settings and consent screens:** `diagnostics.status/consent` (owner device), `settings.write` (owner), `server.status`.
-- **Libraries UI** (arch §17): `library.list/status/files/search`, progress through `library.watch`, offline state; `library.add` from an owner device.
-- **Review mode** (arch §17): `review.*`, change lists with per-transaction decisions, A/B compare through `eval.frame` on both branches.
-- **Media:** `capability.url` for `<video src>` and thumbnails (routes in sub-project 6).
-- **Errors** are codes with parameters (arch §17.1); every code above is in `@finisher/contracts` for the catalogue.
+- **Live streams:** `ops.subscribe`, `project.events` (existing), `jobs.watch`, `library.watch`, `review.watch`, `auth.pair.pending`, `auth.devices.watch`; each starts with a snapshot item and is closed on revocation.
+- **Settings and consent:** `diagnostics.status/consent` (the onboarding question is the only way training turns on through an RPC), `settings.write`, `server.status`.
+- **Libraries UI:** `library.list/status/files/search`, `library.watch`, offline and stale states; `library.add` from the device.
+- **Review mode:** `review.*`, `history.drop`, A/B compare through `eval.frame` on both branches.
+- **Approvals:** `APPROVAL_REQUIRED` outcomes (the approval cards are sub-project 7's).
+- **Errors** are codes with parameters (arch §17.1); every code above is in `@finisher/contracts`.
 
 ---
 
@@ -655,17 +705,18 @@ The frontend needs nothing it cannot get from these, all over the ticketed WebSo
 
 | Need | Choice | Licence | Batch |
 |---|---|---|---|
-| Control store, catalogs, FTS | `node:sqlite` (Node built-in) | MIT (Node), public domain (SQLite) | 5A, 5D |
+| Control store, catalogs, FTS | `node:sqlite` (Node built-in; checked under Electron 44/45's Node 24.22) | MIT (Node), public domain (SQLite) | 5A, 5D |
 | HMAC, ECDSA P-256, AES-GCM, random | `node:crypto`; Rust `hmac` 0.12 + `sha2` 0.10 in `fin` | MIT OR Apache-2.0 | 5A |
 | WebSocket server under our protocol | `ws` 8 (already under `@effect/platform-node`; pinned directly) | MIT | 5A |
+| Windows pipes, ACLs, Job Objects, enumeration | `windows-sys` 0.61 (already in the tree) | MIT OR Apache-2.0 | 5A, 5C, 5D |
+| Linux `prctl`, `statx`, cgroups | `libc` (already in the tree) | MIT OR Apache-2.0 | 5C, 5D |
 | DPoP / JWS / JWK thumbprints | `jose` 6 | MIT | 5B |
-| Self-signed certificates | `rcgen` 0.14 with the `ring` provider, in `fin-node` | MIT OR Apache-2.0 (`ring`: Apache-2.0 AND ISC, already allowed) | 5B |
-| Keychain | `keyring` 3 (`apple-native`, `windows-native`, Secret Service over `zbus`) | MIT OR Apache-2.0 (`zbus` MIT) | 5B |
-| Windows ACLs, Job Objects, attributes | `windows-sys` 0.61 (already in the tree) | MIT OR Apache-2.0 | 5A, 5C, 5D |
+| Self-signed certificates | `rcgen` 0.14, `ring` provider, in `fin-node` | MIT OR Apache-2.0 (`ring`: Apache-2.0 AND ISC, allowed) | 5B |
+| Keychain | `keyring` 3, exact pin, `async-secret-service` over `zbus` (pinned), no `dbus` | MIT OR Apache-2.0 (`zbus` MIT) | 5B |
 | NFC keys | `unicode-normalization` 0.1 | MIT OR Apache-2.0 | 5D |
-| Fingerprint, probe | `fin-probe` (ours), `blake3` | Apache-2.0 / CC0 (already allowed) | 5D |
+| Fingerprint, probe | `fin-probe` (ours), `blake3` | already allowed | 5D |
 
-**Rejected:** `better-sqlite3` (MIT, but a native module with its own Electron ABI prebuild matrix, which arch §7 already counts as a risk); `node-forge` (BSD-3-Clause OR GPL-2.0: usable, but the licence gate should not have to reason about dual copyleft); `keytar` (archived); `dbus`-crate backends of `keyring` (link `libdbus`, AFL-2.1 OR GPL-2.0+); mDNS libraries (not needed in v1); any JWT library (no JWTs are issued). Each batch's plan runs `cargo deny` and the JS licence gate over what it adds.
+**Rejected:** `better-sqlite3` (a native module with its own Electron ABI matrix); `node-forge` (dual BSD-3-Clause OR GPL-2.0); `keytar` (archived); `keyring`'s `dbus` backends (libdbus, AFL-2.1 OR GPL-2.0+); mDNS libraries; JWT libraries (no JWTs are issued). Each batch's plan runs `cargo deny` and the JS licence gate over what it adds.
 
 ---
 
@@ -673,41 +724,48 @@ The frontend needs nothing it cannot get from these, all over the ticketed WebSo
 
 | # | Decision | Section |
 |---|---|---|
-| 1 | Trust comes from credentials, never from transports; loopback grants nothing | §2, §4.2 |
-| 2 | Local credentials are key files in server data with a mutual HMAC handshake; this replaces peer-credential checks (arch §8.4), which Node cannot do | §4.2 |
-| 3 | Keys rotate at every start; agent keys derive from a master, so they survive restarts and need no storage | §4.1 |
-| 4 | One custom RPC protocol owns framing and connection state; one wrapper authorises every handler | §4.3 |
-| 5 | WebSocket bearer token removed; one-time tickets bound to the minting principal | §4.3 |
-| 6 | A closed scope vocabulary, one scope per RPC plus payload escalations, gate-tested | §4.4 |
-| 7 | Human-only operations land in 5A (not 7), with `finisherd` console commands as the human interface until sub-project 9 | §4.5, §4.6 |
-| 8 | `console` becomes an event `Source`; sources and actors derive from principals | §3.4 |
-| 9 | `fin` exit code 7 = denied | §3.5 |
-| 10 | Protocol 2 at 5A, carrying sub-project 4's pending protocol-2 changes | §3.6 |
-| 11 | Control-plane state in `node:sqlite`, versioned like every format, with a per-statement budget | §3.1 |
-| 12 | The audit log is a separate, always-on, local store; never uploaded | §3.3 |
-| 13 | Pin the identity key (SPKI), not certificates; the TLS key is the identity key | §5.5 |
-| 14 | Opaque in-memory tokens; DPoP freshness from server nonces, not client clocks | §5.3 |
-| 15 | Environment id = server id, so lease holders map to environments | §5.6 |
-| 16 | Non-loopback listeners are TLS only; remote is off by default | §5.5 |
-| 17 | Remote principals reach server paths only inside allowed roots | §5.7 |
-| 18 | One worker process per coarse job, batches with crash bisection, process-tree kill | §6.2, §6.4 |
-| 19 | One catalog database per library, written by one indexer thread | §7.1 |
-| 20 | The library fingerprint stays `fp1`; full hashes only on demand | §7.3 |
-| 21 | Placeholders are never read unless the owner turns on hydration | §7.3 |
-| 22 | An offline or suspiciously empty root marks nothing missing | §7.2 |
-| 23 | Review change lists are merge dry runs; rejections are `history.merge` exclusions in `fin-store` | §8.2, §8.3 |
-| 24 | `review.verdict` is filled in 5E (not 10); sub-project 10 adds marker verdicts | §3.4 |
-| 25 | Protected branches per server, default `main`; `local` keeps the scope, agents do not | §8.5 |
+| 1 | Trust comes from credentials, never from transports | §2, §4.2 |
+| 2 | Key files with a mutual HMAC handshake bound to `envId` and the canonical endpoint; one retry after a restart | §4.2 |
+| 3 | Keys rotate at every start; credential keys derive from a master | §4.1 |
+| 4 | The socket lives in `<server-data>/run/`, apart from `auth/` | §4.1, §4.11 |
+| 5 | A native Windows pipe listener in `fin-node` with its own security descriptor, first-instance and remote-rejection flags, and peer SIDs | §4.3 |
+| 6 | Effect RPC's client id identifies connections; decoding stays at the protocol level | §4.3 |
+| 7 | One-time tickets in `Sec-WebSocket-Protocol`; Host allow-list and Origin checks | §4.3 |
+| 8 | One middleware chain: decode → authenticate → resolve (store-resolved branches, directories, paths) → authorise (all scopes, human-only, reach) → policy (`allow|deny|ask`) → handler (guards re-checked in the write transaction) → after | §4.4 |
+| 9 | Every RPC declares its scopes (all required) and its resolver | §4.5 |
+| 10 | Human-only lands in 5A; fixes address the user and contain no command | §3.5, §4.6 |
+| 11 | No command line can opt in to training; the console refuses it | §3.4, §4.7 |
+| 12 | Console mutations need a TTY and a server-issued typed challenge | §4.7 |
+| 13 | `agent` and `mcp` credentials; expiry 24 h idle / 7 d absolute (MCP: 30 d idle) | §3.2, §4.1 |
+| 14 | `console` and `mcp` event sources; sources and actors from principals | §3.4 |
+| 15 | `fin` exit code 7 = denied | §3.5 |
+| 16 | Protocol 2 (handshake, tickets, `asset.probe {projectId}`, required generations) | §3.6 |
+| 17 | `control.db` in `node:sqlite`; no autocheckpoint on the event loop; batched deletes | §3.1 |
+| 18 | The audit log is separate, always on, aggregated per credential kind per minute | §3.3 |
+| 19 | A separate `envId` in `control.db`, bound to the identity key, mapped from every server id | §3.7, §5.8 |
+| 20 | Every device is the owner in v1; no roles, no project lists, no typed codes, no capability URLs, no signed rotations | §1.2 |
+| 21 | DPoP freshness from server nonces; `htu` checked against public URLs | §5.3 |
+| 22 | A locked or missing keyring falls back to the file store without prompting | §5.5 |
+| 23 | Job kill trees owned by the host on every OS; stdin-EOF exit everywhere | §6.2 |
+| 24 | Crash isolation targets the in-flight item; resource failures are never bisected; stall detection is separate from liveness | §6.2, §6.4 |
+| 25 | Enumeration never opens a file; placeholders (files and directories, Nextcloud suffixes) are never read | §7.2, §7.3 |
+| 26 | Volume identity per library; an unmounted share is offline; spin-up-tolerant timeouts | §7.1, §7.2 |
+| 27 | Demand-driven NAS polling: 60 s while in use, 6 h otherwise, freshness pass before answering | §7.2 |
+| 28 | Review merges take `include`/`sourceUpTo` checked in the write transaction; pending is never accept outside the snapshot | §8.2, §8.4 |
+| 29 | Rejections are `drop` records in the op log (format 3 for those records only; no upcaster) | §8.3 |
+| 30 | `review.verdict` is filled in 5E (not 10) | §3.4 |
+| 31 | Protected branches per server, default `main`; `local` keeps the scope, agents do not | §8.5 |
 
 ---
 
 ## 12. Owner questions
 
-1. **Where does review state live?** *Recommended:* in `control.db` of the server that holds the project (§8.1); branches, merges and archives (the durable facts) are already in the synced op log, and open branch reviews are re-derived after a move. *Trade-off:* pending per-transaction decisions and review comments do not follow a project to another server. The alternative, write-once review event files in `.finisher/review/` (sync-safe, any server can append, comments from read-only followers possible), costs a second synced format with its own conflict, compaction and `collect: never` rules.
-2. **Make the human-only operations human-only now (5A), with `finisherd` console commands, rather than in sub-project 7?** *Recommended:* yes. *Trade-off:* until sub-project 9's UI, consent changes, purges, `project default`, confirmed takeovers and relocations need a terminal on the server (`docker exec` on a NAS). Agents (and the e2e and Rust tests) lose `fin diagnostics consent|purge|project default`, `fin project takeover --confirm` and `--relocate`. Waiting for sub-project 7 leaves these open to every agent for two more sub-projects.
-3. **How do browsers reach a remote server?** *Recommended:* only over a route whose certificate the browser trusts (owner-supplied files such as `tailscale cert`, or a reverse proxy), or over loopback through an SSH tunnel; self-signed SPKI pinning is for the desktop shell and native clients. *Trade-off:* the v1 web client (§1 item 7) on a LAN needs one setup step. Alternatives: ship an ACME client (needs public DNS and port 80/443, wrong for a NAS behind NAT), or let users click through a certificate warning and compare fingerprints (trains users to accept warnings).
-4. **May the local audit log keep device names and remote addresses?** *Recommended:* yes, for pairing, revocation and failed authentication only; local, owner-only, never uploaded, 180-day retention. *Trade-off:* it is the one store holding IP addresses (D34 forbids them in the journal); without them, a stolen-link or brute-force incident cannot be traced.
-5. **Should the `local` principal (anything that can read `<server-data>/auth/local.key`: `fin` run by the user and, before sub-project 7, any agent harness the user starts) keep `branch.protected` and `review.decide`, so that `fin` can still commit and merge into `main`?** *Recommended:* yes, keep today's behaviour for `local`; protect `main` for `agent` principals (sub-project 7) and remote non-owner devices. *Trade-off:* an agent run outside Finisher's runtime can still write `main` without review until it runs under sub-project 7. Revoking it now forces every `fin` flow (and the existing tests) onto branches and reviews before the runtime that creates those branches exists.
+1. **Where do review items live (now that rejections are durable `drop` records in the op log)?** *Recommended:* in `control.db` of the server that holds the project; open `branchReview` items are re-derived after a move. *Trade-off:* comments and not-yet-merged accept marks of open items stay on the server that recorded them. The alternative, write-once review event files in `.finisher/review/` (sync-safe, any server can append, comments from read-only followers), costs a second synced format with its own conflict, compaction and `collect: never` rules.
+2. **Make the human-only operations human-only now (5A), with the TTY-gated `finisherd` console as the human interface until the UI, rather than in sub-project 7?** *Recommended:* yes. *Trade-off:* until sub-project 9, consent changes (except training on, which waits for onboarding or a hand edit), purges, `project default`, confirmed takeovers and relocations need an interactive terminal on the server (`docker exec -it` on a NAS). Agents and tests lose `fin diagnostics consent|purge|project default`, `fin project takeover --confirm` and `--relocate`. Waiting leaves them open to every agent for two more sub-projects.
+3. **How do browsers reach a remote server?** *Recommended:* only over a route whose certificate the browser trusts (owner-supplied files such as `tailscale cert`, or a reverse proxy), or over loopback through an SSH tunnel; SPKI pinning is for the desktop shell and native clients. *Trade-off:* the v1 web client on a LAN needs one setup step. Alternatives: an ACME client (needs public DNS and ports 80/443, wrong for a NAS behind NAT), or clicking through certificate warnings (trains users to accept them).
+4. **May the local audit log keep device names and remote addresses?** *Recommended:* yes, for pairing, revocation and failed authentication only; local, owner-only, never uploaded, 180 days. *Trade-off:* it is the one store holding IP addresses (D34 forbids them in the journal); without them a stolen-link or brute-force incident cannot be traced.
+5. **Should the `local` principal keep `branch.protected` and `review.decide`, so that `fin` run by the user (and, before sub-project 7, any agent harness the user starts in a shell) can still commit and merge into `main`?** *Recommended:* yes for `local`; `agent` and `mcp` credentials never get them by default. *Trade-off:* a hand-run agent using the local key can still write `main` without review until it runs under sub-project 7 or uses an agent credential. Revoking it now forces every `fin` flow and test onto branches and reviews before the runtime that makes those branches exists.
+6. **Until the sub-project 7 sandbox exists, human-only is advisory against agents running in a raw shell (they can read the key files, and can drive a pseudo-terminal through the console's confirmation). Accept that, or require hand-run harnesses to use agent credentials?** *Recommended:* accept it for now, document it in the README's security model, and offer agent and MCP credentials (`finisherd agent mint`, `finisherd mcp setup`) as the recommended way to run a harness by hand, without forcing them. *Trade-off:* forcing credentials (refusing writes from `local`) would not stop a raw-shell agent either (it can read `local.key` or `console.key` as easily as its own credential), so it buys attribution, not security, at the cost of breaking every script and test that drives `fin` directly; the real fix is sub-project 7 denying agents read access to `<server-data>/auth/`.
 
 ---
 
@@ -715,14 +773,15 @@ The frontend needs nothing it cannot get from these, all over the ticketed WebSo
 
 | Risk | Mitigation |
 |---|---|
-| Effect 4.0.6's RPC server hides the connection from handlers | 5A Task 3 starts with a spike; the custom protocol owns framing either way, and can inject a server-only connection header after stripping client ones |
-| `node:sqlite` blocks the event loop under load | per-statement budget test; bulk work on threads; fallback: the same schema through `rusqlite` in `fin-node` (async napi) |
-| Windows pipe squatting and ACLs differ on non-elevated or domain users | server proof works without pipe ACLs; validation on a non-elevated account (already outstanding for S8) |
-| Keychain prompts and missing Secret Service | file store with optional wrapping; `FIN_SECRETS=file` |
+| Effect 4.0.6's RPC client ids or protocol hooks differ from what §4.3 assumes | 5A Task 3 starts by reading the source and recording the answer; the chain needs only a connection id per request |
+| The native pipe listener (napi threads, overlapped I/O) is new native code | its own task with Windows-only tests; the handshake still protects a libuv pipe if the listener must be disabled |
+| `node:sqlite` blocks the event loop | per-statement budget; no autocheckpoint on the main connection; batched deletes; fallback: the same schema through `rusqlite` in `fin-node` |
+| Electron's Node (24) differs from the repository's (26) | only APIs present in both; sub-project 9 decides whether the desktop ships its own Node for `finisherd` |
+| Keychain prompts, missing or locked Secret Service | file store with optional wrapping; never prompt |
 | Browsers and self-signed TLS | Owner question 3 |
-| NAS scans hang in uninterruptible I/O | worker processes, abandonment limits, offline state |
-| Sync providers hydrate on read | placeholder detection on every OS; never read by default; tests with faked flags plus a real iCloud/OneDrive check in validation |
-| Review refresh cost on busy branches | debounce; dry runs off the commit lock where possible (they plan in a rolled-back IMMEDIATE transaction today, 4B Decision 26) — measured in 5E |
+| NAS scans hang, disks sleep | worker processes, abandonment limits, spin-up-tolerant timeouts, demand polling |
+| Sync providers hydrate on access | enumeration without opening; process-wide materialisation off on macOS; placeholder markers on every OS; an `open` counter in tests |
+| A `drop` record makes a project unreadable to 4C-era servers | by design read-only (`NEWER_FORMAT`), never wrong; written only when someone rejects |
 
 ---
 
@@ -730,18 +789,46 @@ The frontend needs nothing it cannot get from these, all over the ticketed WebSo
 
 Contradictions and gaps found while designing this; each batch's "as built" pass records the resolution in arch §27.
 
-1. **§21.1 decides trust by transport** (local socket → `fin`, WebSocket → `ui`, and only `ui` may opt in), but the WebSocket token sits in a file any same-user process can read, and loopback is reachable through SSH tunnels. Resolved by §3.4 and §4.3.
-2. **§8.4 "peer-credential checks on the local socket"** is not possible from Node (no `SO_PEERCRED`, no pipe client process id), Landlock (ABI 4, as used in spike S8) does not mediate `connect()` on pathname sockets, and Windows' default pipe DACL lets every user open the pipe for reading. Resolved by key-file proofs (§4.2).
-3. **§16 pins a self-signed certificate "at pairing"** for every client, but browsers cannot pin, and the web client is a v1 deliverable (§1 item 7). Owner question 3.
-4. **§16 DPoP-bound tokens** assume usable client clocks (`iat`), while §27.9 records clients off by ~10 s for a day. Resolved by server nonces (§5.3).
-5. **§21.1 phasing puts human-only operations in sub-project 7**, although principals and scopes are sub-project 5, and arch §24 puts `review.*` verdicts in sub-project 10 while §11.3's per-transaction accept/reject is the review workflow of sub-project 5. Owner question 2; Decision 24.
-6. **§11.3 review markers `open/review/resolved`** do not exist in the 4C model (`Marker {id, at, duration, label, color}` has no status). Sub-project 10 needs a model change (an op), not only a control-plane feature.
-7. **§6.4 "conflicts become review items"** presumes something can be done per transaction, but 4B's merge is all-or-nothing with no exclusion input. Resolved by §8.3 (a store change, not a primitive op).
-8. **§5 says the local `AuthProvider` has a "single owner"**, while §16 has the owner approve "device name and role": roles imply more than one person. Resolved as one owner plus device roles (§3.2).
-9. **§16 "environments … sync"** is one line; nothing defines what syncs between environments. Read as §5.6; Owner question 1 decides the one candidate (review state).
-10. **§6.7 fingerprints include mtime**, so a copy on another machine never matches by fingerprint and relinking (§20) always falls back to a full hash, which reads whole files over the network. Accepted and made on-demand (§7.3), but the cost is not in the spec.
-11. **§6.7 library change detection** relies on "native file-system events on local disks" without the inotify watch limits, and says nothing about cloud placeholders, where any read (including a fingerprint's samples) downloads the file. Resolved by §7.2 and §7.3.
-12. **§7 gives TS "its own SQLite"** but also a lint against synchronous calls on the event loop; every Node SQLite binding without a native module is synchronous. Resolved by the budget in §3.1.
-13. **§16 audit log vs D34 "never stored raw: host names, IPs"**: the spec does not say whether the rule covers the audit log. Owner question 4.
-14. **4A/4B expose "a person's decision"** (`project.takeover {confirm}`, `project.open {relocate}`) to `fin`, which D16 makes agent-only; the D-plan likewise uses `fin` for consent. Resolved by §4.5.
-15. **Tracked files hold personal data, against the public-repo rule:** arch §27.8 names the Apple Developer team's owner and team id, and D3 holds an absolute local path. Worth scrubbing before the repository is public (the team id is visible in any signed build anyway; the personal name and path are not needed).
+1. **§21.1 decides trust by transport** (local socket → `fin`, WebSocket → `ui`), but the WebSocket token sits in a file any same-user process can read, and loopback is reachable through SSH tunnels. Resolved by §3.4 and §4.3.
+2. **§8.4 "peer-credential checks on the local socket"** are impossible from Node, Landlock (ABI 4) does not mediate `connect()` on pathname sockets, and libuv's Windows pipes take the default DACL. Resolved by key-file proofs and the native pipe listener (§4.2, §4.3).
+3. **§8.4's env allow-list** lacked a way to hand `fin` its credential without a secret in the environment. Amended: `FIN_CREDENTIAL` (a path).
+4. **§16 pins a self-signed certificate "at pairing"** for every client; browsers cannot pin, and the web client is v1. Owner question 3.
+5. **§16 DPoP-bound tokens** assume usable client clocks, while §27.9 records clients off by ~10 s for a day. Resolved by server nonces (§5.3).
+6. **§21.1 phasing puts human-only operations in sub-project 7** although permissions are sub-project 5, and §24 puts `review.*` verdicts in sub-project 10 while §11.3's per-transaction accept/reject is sub-project 5's. Owner question 2; Decision 30.
+7. **§11.3 review markers `open/review/resolved`** do not exist in the 4C model (`Marker` has no status); sub-project 10 needs an op.
+8. **§6.4 "conflicts become review items"** presumes per-transaction action, but 4B's merge has no inputs for it, and nothing records a rejection. Resolved by `include`/`sourceUpTo` and `drop` records (§8.3, §8.4).
+9. **§5 "single owner"** vs §16's device "role". Resolved: every device is the owner in v1.
+10. **§16 "environments … sync"** is undefined. Read as §5.6.
+11. **§6.7 fingerprints include mtime,** so copies never match across machines and relinking (§20) falls back to full hashes over the network. Accepted, on demand only (§7.3).
+12. **§6.7 change detection** ignores inotify limits, cloud placeholders (any open or read downloads them, and on macOS whole directories can be dataless), unmounted mount points that look like empty libraries, and NAS hibernation. Resolved by §7.1–7.3.
+13. **§7 gives TS "its own SQLite"** but forbids synchronous calls on the event loop. Resolved by the budget and rules in §3.1.
+14. **§16 audit log vs D34 "never stored raw: host names, IPs"**. Owner question 4.
+15. **4A/4B expose "a person's decision"** (`takeover {confirm}`, `open {relocate}`) to `fin`, which D16 makes agent-only. Resolved by §4.6.
+16. **The repository pins Node 26.12, but Electron 44/45 embed Node 24.22**, so an embedded `finisherd` (arch §4, desktop) runs on a different Node than the one it is tested on. Sub-project 9 must decide; sub-project 5 stays within both (§1.5).
+17. **The server id is reminted on a move** (4A), so it cannot be an environment id (§3.7).
+18. **Tracked files hold personal data,** against the public-repo rule: arch §27.8 names the Apple Developer team's owner and team id, and D3 holds an absolute local path.
+
+---
+
+## 15. Review findings (revision 2) and where they are resolved
+
+| Finding | Resolution |
+|---|---|
+| **B1** console could opt in to training; console commands scriptable; fixes printed commands | §3.4, §4.6, §4.7 (training on device-only; `CONSENT_UI_ONLY` from the console; TTY + server-issued typed challenge), §3.5 (fix texts) |
+| **B2** plan commits not green; D4/D6 missing | plan reordered: the `fin` handshake is Task 4, enforcement switches on in that commit; Tasks 1, 2 and 10 can start now; Tasks 3+ wait for D4 and D6 |
+| **B3** `exclude` merged unseen commits; pending meant accept | §8.2, §8.4 (`include`/`sourceUpTo` in the write transaction; pending only within the snapshot, and only on request) |
+| **B4** rejections not durable | §8.3 (`drop` records: format 3, no upcaster, derived index); split out of Owner question 1 |
+| **B5** envId = server id | §3.7, §5.8 (separate `envId` in `control.db`, bound to the identity key, `server_ids` map) |
+| **H1** restarts looked like attacks; no MCP principal | §4.2 (one re-read and retry, `keyStale`), §3.2 (`mcp`) |
+| **H2** socket beside secrets; pipe security; sandbox reach; `FIN_CREDENTIAL` | §4.1, §4.3 (native pipe listener decided), §4.11, arch §8.4 amended |
+| **H3** no middleware chain, branch refs unresolved, no `ask`; `branches` dropped from mint | §4.4, §4.1, §4.8 |
+| **H4** RPC scope errors | §4.5: `project.open` by state; resolvers for `dir`; `asset.probe {projectId}` with reach; protected-branch guards in the write transaction (§4.4); job ownership (§6.1); `jobs.submit` all-of scopes; `auth.revokeSelf` without an id; capability URLs cut to 6 (with reach); `diagnostics.record` scope; `fonts.fetch` scope |
+| **H5** jobs kill tree and bisection | §6.2, §6.4 |
+| **H6** library enumeration and mounts | §7.1–7.3 |
+| **M1** `node:sqlite` under Electron | checked (§1.5); repeated on macOS and Windows in 5A Task 14 |
+| **M2** WAL checkpoint on the event loop; unbatched deletes | §3.1 |
+| **M3** connection ids; decoding | §4.3 |
+| **M4** keyring pins and locked keyrings; DPoP `htu`; ticket in URL; Host allow-list | §5.3, §5.5, §4.3 |
+| **M5** audit aggregation; MAC binding | §3.3, §4.2 |
+| v1 cuts | §1.2 |
+| Defaults: credential expiry, NAS poll | §4.1 (24 h / 7 d, justified), §7.2 (demand polling, justified; no owner question needed) |

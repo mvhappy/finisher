@@ -1,156 +1,183 @@
 # Sub-project 5A: Principals, local credentials and scopes — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task names a **model tier** for its implementer: `opus` for semantics (the handshake and its crypto, private directories, the connection-aware protocol, scopes and the authorisation wrapper, sources and actors, agent credentials, validation), `sonnet` for plumbing (the control store, tickets and the WebSocket, console commands, `fin`, hardening, e2e, docs).
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task names a **model tier** for its implementer: `opus` for semantics (the handshake and its crypto, private directories, the connection-aware protocol, the middleware chain, scopes and the write guard, sources and actors, credentials, the native pipe listener, validation), `sonnet` for plumbing (the control store, `fin`, tickets and the WebSocket, the console, hardening, e2e, docs).
 
-**Goal:** every caller of `finisherd` is a principal with a credential, every RPC declares the scope it needs, and the human-only operations are enforced by the server. After this plan:
-- `<server-data>/control.db` (`node:sqlite`) holds the control plane's state, starting with the always-on, local **audit log** and **agent sessions**;
-- a connection proves a credential with a **mutual HMAC handshake** (`server.hello` + `auth.prove`) against a key file in server data, so `fin` refuses a squatted pipe or a stale `finisherd.json` (`SERVER_UNTRUSTED`), and a connection without a credential can only say hello;
-- principals `local` (`fin`), `console` (`finisherd <command>`), `agent` (credential files; minted from the console until sub-project 7) and `anonymous`; `device` and `plugin` are reserved for 5B and 8;
-- the WebSocket's bearer token is gone: one-time **tickets** bound to the principal that minted them, Origin and Host checks;
-- a closed **scope** vocabulary, one scope per RPC plus payload escalations, checked by one wrapper before any handler runs; **human-only** operations (consent changes, content export, purges, clearing a never-collect flag, confirmed takeovers, relocations, audit, agent minting, `server.stop`) answer `HUMAN_ONLY` (exit 7) to `fin` and work from the console;
-- the diagnostics journal takes its **source and actor from the principal** (a new `console` source);
+**Revision 2** (2026-11-07), after the review of `45039ab`: reordered so that every commit is green, with the `fin` handshake right after the server's; the middleware chain with resolvers, reach, `ask` and an in-transaction write guard; no training opt-in from any command line; a TTY-gated console with server-issued challenges; fix texts with no commands; the socket in `run/`; a native Windows pipe listener; `envId` and endpoint inside the MACs; one retry after a restart; `mcp` credentials; credential expiry. Spec §15 maps every finding.
+
+**Goal:** every caller of `finisherd` is a principal with a credential, every RPC declares the scopes it needs, one middleware chain checks them against resolved state, and the human-only operations are enforced by the server. After this plan:
+- `<server-data>/control.db` (`node:sqlite`) holds the environment id, the server-id map, the always-on local **audit log** and **credentials**;
+- a connection proves a credential with a **mutual HMAC handshake** bound to the environment and the endpoint (`server.hello` + `auth.prove`); `fin` retries once after a restart and otherwise refuses a squatted or foreign server (`SERVER_UNTRUSTED`); a connection without a credential can only say hello;
+- principals `local` (`fin`), `console` (`finisherd <command>`), `agent` and `mcp` (credential files, minted from the console until sub-project 7) and `anonymous`; `device` and `plugin` are reserved for 5B and 8;
+- the socket lives in `<server-data>/run/`, apart from the keys in `<server-data>/auth/`; on Windows a **native pipe listener** in `fin-node` owns the pipe and its security descriptor;
+- the WebSocket's bearer token is gone: one-time **tickets** in `Sec-WebSocket-Protocol`, a Host allow-list, Origin checks;
+- a **middleware chain** (decode → authenticate → resolve → authorise → policy → handler with an in-transaction guard → after), a closed **scope** vocabulary with every RPC's scopes and resolver, reach, an `ask` outcome and **human-only** operations that answer `HUMAN_ONLY` (exit 7) with fixes that address the user and contain no command;
+- **no command line can opt in to training**; mutating console commands need a TTY and a typed, server-issued challenge;
+- the diagnostics journal takes its **source and actor from the principal** (new `console` and `mcp` sources);
 - **protocol 2**; `fin` exit code **7 = denied**; `fin whoami`;
-- the "Follow-ups for sub-project 5" in `TASKS.md`: private server data on Windows, pipe squatting, a graceful stop without SIGTERM, decode failures as `FinError`, server-side `INVALID_PATH`, a frame-size cap and a client deadline, `fin`'s test hooks out of release builds.
+- the "Follow-ups for sub-project 5" in `TASKS.md`.
 
 **Architecture:**
-- **`@finisher/contracts`** gains `auth.ts` (the `Principal`, `Scope` and handshake schemas, the new RPCs) and `scopes.ts` (the scope table for every RPC, escalations, human-only and per-kind defaults).
-- **`finisherd`** gains:
-  - `control/` (store, migrations, audit), `auth/` (keys, handshake, tickets, agent sessions), `protocol.ts` (one connection-aware `RpcServer.Protocol` for both transports), `connections.ts`, `authorize.ts` (the wrapper);
-  - `console/` (the `finisherd <command>` CLI over the local socket with the console key);
-  - changes to `main.ts` (keys before listen; console dispatch), `transport.ts` (no bearer token; tickets), `handlers.ts` (one `authorizeAll` call; new handlers), `config.ts` (`finisherd.json` without a token, private directories), `diagnostics.ts` (D4's file: sources and actors from principals).
-- **`fin-node`** gains `checkPrivateDir`/`makePrivateDir` (Windows DACLs through `windows-sys`; a no-op on unix, where `config.ts` keeps its mode checks).
-- **`fin-core::events`** gains `Source::Console` and the new RPC names in `RPC_METHODS`.
-- **`fin`** gains `auth.rs` (credential discovery and the handshake), exit class 7, `fin whoami`, a frame-size cap and an overall deadline, and its test hooks behind a `test-hooks` feature.
+- **`@finisher/contracts`** gains `auth.ts` (`Principal`, credentials, handshake and admin RPC schemas) and `scopes.ts` (every RPC's scopes, escalations, human-only rules, per-kind defaults).
+- **`finisherd`** gains `control/` (store, migrations, audit), `auth/` (keys, crypto, handshake, tickets, credentials, challenges), `connections.ts`, `chain/` (the middleware stages: `resolve.ts`, `authorize.ts`, `policy.ts`, `chain.ts`), `console/` (the console CLI), `server-admin.ts`; it changes `main.ts`, `transport.ts`, `handlers.ts` (one `withChain` call), `config.ts`, `diagnostics.ts` (D4's file) and `env.ts` (`FIN_CREDENTIAL`).
+- **`fin-node`** gains `private_dir.rs` (Windows DACLs), `pipe_server.rs` (the Windows pipe listener) and the write guard argument on every write call.
+- **`fin-store`** gains `WriteGuard` checked inside `Store::write`'s transaction.
+- **`fin-core::events`** gains `Source::Console`, `Source::Mcp` and the new RPC names.
+- **`fin`** gains `auth.rs` (credential discovery, the handshake, the retry), exit class 7, `fin whoami`, `projectId` on probes, a frame cap and an overall deadline, and its test hooks behind a `test-hooks` feature.
 
 **Tech Stack:**
-- Node 26.12 (`node:sqlite`, `node:crypto`), Effect 4.0.6 (`effect/rpc`), `ws` 8 (MIT; already installed under `@effect/platform-node`, now a direct, pinned dependency of `finisherd`), vitest.
-- Rust 2024: `hmac` 0.12 and `sha2` 0.10 (MIT OR Apache-2.0) in `fin`, `base64` 0.22 (MIT OR Apache-2.0; check whether it is already in the lock file), `windows-sys` 0.61 (already in the tree) in `fin-node`.
-- **No other new dependency.** No JOSE, TLS, keychain or certificate crates in 5A (they are 5B's).
+- Node 26.12 (`node:sqlite`, `node:crypto`), using only APIs that Node 24.22 (Electron 44/45) also has; Effect 4.0.6 (`effect/rpc`); `ws` 8 (MIT; already installed under `@effect/platform-node`, now a direct, pinned dependency); vitest.
+- Rust 2024: `hmac` 0.12 and `sha2` 0.10 (MIT OR Apache-2.0) in `fin`; `base64` 0.22 (MIT OR Apache-2.0) if not already in the lock file; `windows-sys` 0.61 (already in the tree) with `Win32_Security`, `Win32_Security_Authorization`, `Win32_System_Pipes`, `Win32_System_Threading`, `Win32_System_IO`, `Win32_Storage_FileSystem` in `fin-node`.
+- **No other new dependency.** No JOSE, TLS, keychain or certificate crates (5B).
 
-**Spec:** `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §1–4 (5A), §3 (shared foundations), §10–12. Parent: arch §4 rule 6, §8.4, §16, §21.1, §27.12.5. Related: the diagnostics plan (`docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`) Decisions 14a, 14b, 23a, 24, 30, 32.
+**Spec:** `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` revision 2, §1–4, §10–12, §15. Parent: arch §4 rule 6, §8.3, §8.4 (amended: `FIN_CREDENTIAL`), §16, §21.1, §27.12.5. Related: the diagnostics plan (`docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`) Decisions 14a, 14b, 23a, 24, 30, 32.
 
-**Branch:** `sp5a-principals`, stacked on `sp4c-edit-breadth` **after diagnostics Tasks D1–D7 and 4C Task 29**. This plan changes D4's per-transport `RpcSource` and D6's actor headers, so it must not start before they exist. If 4C's merge order changes, rebase onto whatever holds D7.
+**Branch:** `sp5a-principals`, stacked on `sp4c-edit-breadth`.
+- **Can start now** (they need only what exists: D1, D2 and 4C as it stands): **Tasks 1, 2 and 10.**
+- **Wait for diagnostics D4 and D6:** Tasks 3–9 and 11–14. They change D4's per-transport `RpcSource`, D4's `diagnostics.*` handlers and D6's actor headers, which do not exist yet. When D4 and D6 land, rebase the branch onto them and continue at Task 3.
 
-**Out of scope:** pairing, devices, DPoP, TLS, remote listeners, environment routes, capability URLs, allowed roots for remote principals (5B); jobs (5C); libraries (5D); reviews and protected branches (5E, though `branch.protected` and `review.decide` exist as scope names here); agent sessions created by an agent runtime and the OS sandbox (sub-project 7); plugin credentials (8); the frontend (9).
+**Out of scope:** pairing, devices, DPoP, TLS, remote listeners, routes, allowed roots for devices (5B); jobs (5C); libraries (5D); reviews, protected-branch policy and `drop` records (5E; the guard and the `branch.protected` scope exist here); agent sessions created by an agent runtime, approvals, hooks and the OS sandbox (sub-project 7); plugin credentials (8); the frontend (9).
 
 ## Global Constraints
 
 **Code**
 - MIT. No GPL/LGPL/AGPL/SSPL/EUPL in shipped code. `pnpm gates` runs cargo-deny and the JS licence gate over what each task adds.
-- **Primitive ops live only in `fin-core`.** This plan adds none. `fin-core` stays pure (`Source::Console` is data).
-- **TypeScript model types are generated, never hand-written.** Types that cross Rust ↔ TS (the event `Source`) are regenerated with `pnpm --filter @finisher/core-types generate`; the drift gate is `scripts/check-generated-types.mjs`. Control-plane records owned by TS (`Principal`, audit entries, agent sessions) are Effect Schemas in `@finisher/contracts`, and their TS types are `Schema.Type` of those schemas, never separate interfaces (as the RPC envelopes are today).
-- **Dependency rules:** `fin` links no TLS or HTTP stack; `fin-node` gains only `windows-sys` features; `finisherd` adds only `ws` directly.
-- **File sizes:** non-test source ≤ 600 lines, tests ≤ 1,500. Near the limit: `apps/finisherd/src/projects.ts` 520 (call-site lines only), `crates/fin/src/client.rs` 525 (call-site lines only: the handshake goes into `auth.rs`), `crates/fin/src/main.rs` 489, `crates/fin/src/backend.rs` 493. New logic goes into new files.
-- Errors are `{ code, message, details, fix? }`. New codes go into `crates/fin/src/output.rs` with the exit codes of spec §4.10 and Decision 13, and into `@finisher/contracts`' error-code list.
-- **No secret in a tracked file, a log line, a journal entry or an audit row.** Keys, MACs, tickets and nonces are never printed, not even at debug level. Test vectors use fixed, obviously fake keys.
+- **Primitive ops live only in `fin-core`.** This plan adds none. `fin-core` stays pure.
+- **TypeScript model types are generated, never hand-written.** Rust ↔ TS types (`Source`, the write guard, `WriteRefused`) are regenerated with `pnpm --filter @finisher/core-types generate` (drift gate `scripts/check-generated-types.mjs`). TS-owned control-plane records are Effect Schemas in `@finisher/contracts` and their TS types are `Schema.Type` of them.
+- **Dependency rules:** `fin` links no TLS or HTTP stack; `finisherd` adds only `ws` directly.
+- **File sizes:** non-test source ≤ 600 lines, tests ≤ 1,500. Near the limit: `apps/finisherd/src/projects.ts` 520, `crates/fin/src/client.rs` 525, `crates/fin/src/main.rs` 489, `crates/fin/src/backend.rs` 493, `crates/fin-store/src/tick.rs` 590: call-site lines only; new logic in new files.
+- Errors are `{ code, message, details, fix? }`. New codes go into `crates/fin/src/output.rs` (spec §4.13) and the contracts' code list.
+- **Fix texts** (spec §3.5): a human-only code's `fix` addresses the user ("Only you, the owner of this Finisher server, can …: use the Finisher app or the server's console.") and never contains a command line; `details.where` names `app | console | settingsFile | env`. A test enforces it (Task 5).
+- **No secret in a tracked file, a log line, a journal entry, an audit row or an error.** Keys, MACs, tickets, challenges and nonces are never printed. Test vectors use fixed, obviously fake keys.
+
+**Every commit is green.** No task leaves the server requiring something its clients do not yet send. Where a task changes both sides (the handshake, tickets, protocol 2, human-only refusals), the server change, the client change and every test-support change land in **one commit**.
 
 **Testing and process**
 - Tests never use the network. Every handshake test uses a temp server data.
-- Crypto agreement between TS and Rust is pinned by one shared vector file, `tests/fixtures/auth/handshake.json` (fixed keys and nonces → expected proofs and MACs), read by a vitest test and a Rust test.
+- TS ↔ Rust crypto agreement is pinned by `tests/fixtures/auth/handshake.json` (fixed keys, nonces, `envId` and endpoint → proofs and MACs), read by a vitest test and a Rust test.
 - **Before each commit, every task runs** `rtk cargo test --workspace`, `rtk pnpm test` and `rtk pnpm gates`. Tasks that touch TS or `fin` also run `rtk pnpm e2e` once at the end.
 - Commits use Conventional Commits, author `mvhappy <333925574+mvhappy@users.noreply.github.com>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Prefix shell commands with `rtk`, after `source .superpowers/env.sh`.
-- **The repo is public:** no host names, IPs, user names or key names in tracked files, fixtures included.
-- **Tracker:** each task ticks its line in `TASKS.md` under a new heading "Sub-project 5A: principals, local credentials and scopes", in the same commit. Task 12 moves the "Follow-ups for sub-project 5" lines it closes.
-- **Batches.** Each batch must be green before the next starts:
-  - A, store and crypto: Tasks 1–2;
-  - B, connections and scopes: Tasks 3–5;
-  - C, consumers: Tasks 6–10 (Tasks 8 and 10 may run beside 6, 7 and 9);
-  - D, e2e, docs and validation: Tasks 11–13.
+- **The repo is public:** no host names, IPs, user names or key names in tracked files.
+- **Tracker:** each task ticks its line in `TASKS.md` under "Sub-project 5A: principals, local credentials and scopes", in the same commit.
+- **Batches:**
+  - A, now: Tasks 1, 2, 10 (in any order; each green alone);
+  - B, after D4 and D6: Tasks 3 → 4 → 5 → 6 (strictly in order);
+  - C: Tasks 7, 8, 9, 11 (7 before 8; 9 and 11 may run beside them);
+  - D: Tasks 12–14.
 
 ## Decisions taken here (the spec fixes the shape; these fix the details)
 
 ### Store
 
-1. **`control.db` is opened with `node:sqlite` `DatabaseSync`**, `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 250`. A statement that waits past it is `CONTROL_DB_BUSY` (exit 5). The file is created 0600 (umask 0177 around the open, as `makeLocalSocketServer` does for the socket).
-2. **Versioning:** `meta(key TEXT PRIMARY KEY, value TEXT)` with `formatVersion` 1, `minReaderVersion` 1, `serverId`, `createdAt`. Migrations are frozen modules `control/migrations/m0001.ts` (exporting `n` and `up(db)` with literal SQL). Before the first pending migration, `VACUUM INTO control.db.pre-m<n>.bak` (the newest two kept). A `minReaderVersion` above ours fails the start with `CONTROL_DB_TOO_NEW`.
-3. **`PRAGMA quick_check` at open**; a failure moves the file (and `-wal`, `-shm`) to `control.db.corrupt-<ulid>`, starts empty, and writes `audit {kind: "control.reset", details: {moved}}` as the first row.
-4. **Audit rows:** `audit(id TEXT PRIMARY KEY, at INTEGER, kind TEXT, principalKind TEXT, principalId TEXT, outcome TEXT, code TEXT, remote TEXT, count INTEGER, details TEXT)`, index on `at` and `kind`. `auth.fail` rows aggregate: at most one row per `(kind, connection)` per minute, with `count`. Retention: 180 days or 100,000 rows, swept at start and hourly. `remote` stays `NULL` in 5A (only local transports exist).
+1. **`control.db`:** `node:sqlite` `DatabaseSync`, `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 250` (`CONTROL_DB_BUSY`, exit 5, past it), **`wal_autocheckpoint = 0`** on the main connection. A `worker_thread` with its own connection runs `PRAGMA wal_checkpoint(PASSIVE)` every 30 s or when `control.db-wal` passes 4 MiB, and `TRUNCATE` after 60 s without writes. The file is created 0600.
+2. **Versioning:** `meta(key, value)` with `formatVersion` 1, `minReaderVersion` 1, `envId` (a ULID minted on first open, never changed by this plan), `createdAt`. `server_ids(serverId PRIMARY KEY, envId, since)` gets the current `server-id` at every start. Frozen migrations `control/migrations/m000N.ts`; `VACUUM INTO control.db.pre-m<n>.bak` before the first pending one (the newest two kept); `minReaderVersion` above ours → `CONTROL_DB_TOO_NEW`.
+3. **`PRAGMA quick_check` at open;** a failure moves the files to `control.db.corrupt-<ulid>`, starts empty (a new `envId`) and writes `audit {kind: "control.reset"}` first.
+4. **Audit:** `audit(id, at, kind, principalKind, principalId, credentialKind, outcome, code, remote, count, details)`, indexed on `at` and `kind`. `auth.fail` aggregates **per `(credentialKind, remote)` per minute** into one row with `count`. Retention 180 days or 100,000 rows, swept at start and hourly, **≤ 500 rows per `DELETE`**, one batch per event-loop turn. `remote` stays `NULL` in 5A.
 
-### Keys and the handshake
+### Keys, crypto and the handshake
 
-5. **Key files:** `<server-data>/auth/` is a private directory (0700; owner-only DACL on Windows). `local.key` and `console.key` hold base64url (no padding) of 32 random bytes plus `\n`, 0600, written temp-then-rename **before** either transport listens, at every start. `agent.master` is created once and kept. Readers trim whitespace and refuse anything that does not decode to 32 bytes.
-6. **Labels and MACs** (HMAC-SHA-256, raw bytes concatenated, nonces as their 32 decoded bytes):
-   - `proof = HMAC(K, "finisherd/hello/v1" ‖ clientNonce ‖ serverNonce)`;
-   - `mac = HMAC(K, "fin/prove/v1" ‖ serverNonce ‖ clientNonce)`;
-   - `agentKey(id) = HMAC(agentMaster, "fin/agent-key/v1" ‖ id)` (the ULID's 26 ASCII bytes).
-   - Comparison is constant time (`timingSafeEqual`; `subtle`-style equality in Rust through `hmac`'s `verify_slice`).
-7. **`server.hello {clientNonce?, credential?}`.** `credential` defaults to `{kind: "local"}`; `{kind: "console"}` and `{kind: "agent", id}` name the others. With a `clientNonce`, the answer carries `serverNonce` and `proof` for the named credential; an unknown or revoked agent id gets a `serverNonce` and no `proof`, so a client cannot tell a revoked id from a missing one. Without a `clientNonce` (a protocol-1 style `{}`), the answer has no proof and the connection stays anonymous.
-8. **`auth.prove {mac}`** binds the principal to the connection and answers `{principal}`. A second `auth.prove` on a proved connection is `INVALID_REQUEST`. Five failures close the connection; each is audited (aggregated, Decision 4).
-9. **`fin` sends `server.hello` and `auth.prove` on every connection** before its first request. It verifies `proof` first and sends nothing else on a missing or wrong proof (`SERVER_UNTRUSTED`, exit 7, `details {endpoint, reason: noProof|badProof}`, fix: "another process is serving this socket; stop it and start finisherd").
-10. **Credential discovery in `fin`:** `FIN_CREDENTIAL` (a path to an agent credential file, spec §4.1), else `<server-data>/auth/local.key` (the server data `fin` already resolves). Unreadable or malformed → no credential: `fin` still connects, and any RPC but the hello answers `UNAUTHENTICATED` with `details.reason: noCredential` and a fix naming both sources. `FIN_SERVER` alone (no server data) means "no credential" unless `FIN_CREDENTIAL` is set.
+5. **Layout:** `<server-data>/auth/` (0700; owner-only DACL on Windows) holds `local.key`, `console.key` (base64url of 32 random bytes plus `\n`, 0600, rewritten temp-then-rename at every start **before** any listener opens) and `credential.master` (created once). `<server-data>/run/` (0700) holds only `fin.sock`.
+6. **MACs** (HMAC-SHA-256; each variable field preceded by its length as `u16` big-endian; nonces as their 32 raw bytes; `envId` and `endpoint` as UTF-8):
+   - `proof = HMAC(K, "finisherd/hello/v2" ‖ envId ‖ endpoint ‖ clientNonce ‖ serverNonce)`;
+   - `mac = HMAC(K, "fin/prove/v2" ‖ envId ‖ endpoint ‖ serverNonce ‖ clientNonce)`;
+   - `credentialKey(kind, id) = HMAC(credential.master, "fin/credential-key/v1" ‖ kind ‖ id)`.
+   Comparison is constant time (`timingSafeEqual` after a length check; `Mac::verify_slice` in Rust).
+7. **The canonical endpoint** is the socket's `realpath`, or the pipe name lower-cased (`\\.\pipe\finisher-<user>[-<hash>]`). The server returns it in the hello; the client checks it equals the canonical form of what it connected to (`endpointMismatch` otherwise).
+8. **`server.hello {clientNonce?, env?, endpoint?, credential?}`.** `credential` defaults to `{kind: "local"}`; `{kind: "console"}`, `{kind: "agent"|"mcp", id}` name the others. With a `clientNonce` the answer carries `envId`, `endpoint`, `serverNonce` and the `proof` for the named credential; an unknown, expired or revoked credential gets a `serverNonce` and no `proof`. A client-sent `env` that is not ours gets no proof either.
+9. **`auth.prove {mac}`** binds the principal and answers `{principal}`; a second `auth.prove` on a proved connection is `INVALID_REQUEST`; five failures close the connection; each failure is audited (Decision 4).
+10. **`fin`'s handshake and retry** (spec §4.2): on `noProof`, `badProof`, `envMismatch` or `endpointMismatch`, `fin` re-reads `finisherd.json` and its key file **once**, reconnects and retries the handshake. A second failure is `SERVER_UNTRUSTED` (exit 7, `details {endpoint, reason}`); a successful retry after a changed key is silent (`keyStale` is logged at debug level only).
+11. **Credential discovery in `fin`:** `FIN_CREDENTIAL` (a credential file, spec §4.1), else `<server-data>/auth/local.key`. Unreadable or malformed → no credential: `fin` connects, and anything but the hello answers `UNAUTHENTICATED` (`details.reason: noCredential`).
 
-### Connections, principals and scopes
+### Connections and the chain
 
-11. **One protocol for both transports.** `protocol.ts` implements `RpcServer.Protocol` over (a) the existing `SocketServer` for the local socket and (b) a `ws` `WebSocketServer` in `noServer` mode behind a `node:http` server on `127.0.0.1:0` (so the upgrade request is ours). Each connection gets a `clientId` and a `Connection` in `Connections`. Incoming frames are decoded by the protocol; a frame that does not decode, an unknown tag or a payload that fails its schema is answered `INVALID_REQUEST` (exit 3), never a defect. Frames over **16 MiB** (`MAX_FRAME`) close the connection after an `Exit` with `FRAME_TOO_LARGE`. Any request header whose name starts with `x-fin-` is dropped.
-12. **The order of checks** for every request (`authorize.ts`): decode → `UNAUTHENTICATED` (the connection has no principal and the RPC is not `public`) → `SCOPE_DENIED` (the RPC's scope is not in the principal's set) → `HUMAN_ONLY` (an escalation or the RPC's scope is human- or owner-only and the principal is not) → `PROJECT_NOT_FOUND` for a project outside `principal.projects` → the handler. A denial is audited as `auth.denied` with the RPC tag, scope and principal kind.
-13. **Exit class 7** (`DENIED`): `UNAUTHENTICATED`, `SERVER_UNTRUSTED`, `SCOPE_DENIED`, `HUMAN_ONLY`, `CREDENTIAL_REVOKED`. Exit 3: `INVALID_REQUEST`, `INVALID_PATH`. Exit 2: `FRAME_TOO_LARGE`. Exit 5: `CONTROL_DB_BUSY`.
-14. **The scope table** lives in `packages/contracts/src/scopes.ts` as `RPC_SCOPES: { [Tag in FinRpcTag]: Scope }`; the mapped type makes a missing RPC a type error, and `scopes.test.ts` checks the runtime keys equal `FinRpcs.requests.keys()` too. Escalations are `ESCALATIONS: Partial<{ [Tag in FinRpcTag]: (payload) => Scope | null }>`; 5A defines them for `project.takeover {confirm: true}`, `project.open {relocate: true}`, `diagnostics.project {collect: "default"}` and `diagnostics.export` with content.
-15. **Default scope sets** (spec §4.4): `console` all; `local` all but `project.confirm`, `diagnostics.admin`, `settings.admin`, `auth.admin`, `library.admin` and `plugin.install` (it keeps `branch.protected` and `review.decide`: Owner question 5's recommendation); `agent` exactly the scopes in its session row, minus every human-only scope (a mint that asks for one is refused `SCOPE_DENIED`); `anonymous` only `public`.
-16. **Non-owner `diagnostics.export` is redacted, not refused:** `Journal::export` is called with the diagnostics-only redaction (the upload view's content removal) and the result carries `redacted: true`. The escalation of Decision 14 applies only when the caller asks for content explicitly (`content: true`), which `fin` never does.
+12. **Connection ids come from Effect RPC:** the server protocol's per-connection client id, passed to handlers in their options. `Connections` maps it to `{transport, principal, hello?, failures, peer?}` and drops the entry on disconnect. Task 3 starts by reading Effect 4.0.6's `RpcServer` sources to confirm the field names and the disconnect hook, and records them at the top of `connections.ts`.
+13. **Decoding stays at the protocol level.** A frame that does not decode, an unknown tag or a payload that fails its schema answers `INVALID_REQUEST` (exit 3) from the protocol layer, never a defect. Frames over 16 MiB answer `FRAME_TOO_LARGE` (exit 2) and close the connection. Client headers with the `x-fin-` prefix are dropped.
+14. **The chain** (`chain/chain.ts`, spec §4.4) wraps every handler once (`withChain(handlers)` in `handlers.ts`), unary and stream alike: authenticate → resolve → authorise → policy → handler → after. Resolvers and policies are pure functions of `(principal, payload, deps)` returning `Effect`s; the handler receives the **resolved** payload.
+15. **Resolvers** (`chain/resolve.ts`): branch references through `engine.resolveBranch` (the existing 4B call) to ids; `project.open.dir` → `{projectId, dir}` from `finisher.project.json` (a missing or unreadable file: the handler's existing error); `project.create.dir` → `{dir, parent}` canonicalised; paths → `realpath`ed absolute paths (`INVALID_PATH` for relative or non-normalised input, Task 10's helper); each RPC's project. A resolver that needs an engine on a project not open answers `PROJECT_NOT_FOUND` before authorisation, except `project.open` itself.
+16. **Policy** (`chain/policy.ts`) returns `allow | deny(code) | ask(reason)`. 5A ships **agent branch limits**: for `agent`/`mcp` principals with `branches` other than `"*"`, a write whose resolved target is outside them is `BRANCH_NOT_ALLOWED` (`"own"` = branches whose `branch` record's author is this credential's author). `ask` answers `APPROVAL_REQUIRED {approvalId}` (exit 7) with an approval id minted in memory; no 5A rule asks, and a test rule covers it.
+17. **The write guard** (spec §4.4 stage 6): every write call from `finisherd` to `fin-node` (`commit`, every 4B history and branch call, `recover` when it writes) passes `guard {denyBranches: [ids], allowBranches?: [ids]}` computed by the policy stage. `fin-store` checks the record's target branch id against it **inside `Store::write`'s IMMEDIATE transaction**, before planning; a refusal is `BRANCH_NOT_ALLOWED` or `BRANCH_PROTECTED` (5E) and writes nothing. In 5A `denyBranches` is always empty (5E fills it) and `allowBranches` comes from Decision 16.
+
+### Scopes
+
+18. **`RPC_SCOPES: { [T in FinRpcTag]: { scopes: Scope[]; resolve?: ResolverName; escalate?: (resolved) => Scope[] } }`** in `packages/contracts/src/scopes.ts`; the mapped type makes a missing RPC a type error, and a test compares the runtime keys with `FinRpcs.requests.keys()`. All listed scopes are required.
+19. **The table** is spec §4.5. In particular: `project.open` needs `project.read` when the resolved project is already open here and `project.write` otherwise; `asset.probe` needs `project.write` and a `projectId` (protocol 2), and its resolved path must be inside the project folder, its `workspace/`, or (5D) a library root for principals with roots; `fonts.fetch` needs `fonts.fetch`; `diagnostics.record` needs `diagnostics.record`; `auth.revokeSelf` needs `server.read` and takes no id.
+20. **Defaults** (spec §4.5): `console` all; `local` all but the human-only scopes (it keeps `branch.protected` and `review.decide`); `agent`/`mcp` exactly their credential's scopes, never a human-only one; `anonymous` only `public`.
+21. **Escalations in 5A:** `project.takeover {confirm: true}` and `project.open {relocate: true}` → `project.confirm`; `diagnostics.project {collect: "default"}`, `diagnostics.export {content: true}`, every `diagnostics.consent` → `diagnostics.admin`. **Training on** is refused for every principal kind but `device` (none exist in 5A) with `CONSENT_UI_ONLY`, before the human check.
+22. **Non-human `diagnostics.export`** without `content: true` is served redacted (content and blob references removed) with `redacted: true`.
 
 ### Tickets and the WebSocket
 
-17. **`auth.ticket {ttlS?}`** (default 30, max 60) answers `{ticket, url, expiresAt}`; the ticket is 32 random bytes base64url, kept in memory as `SHA-256(ticket) → {principal snapshot, expiresAt}`, swept every 10 s, used once. `url` is `ws://127.0.0.1:<port>/rpc?v=2&ticket=<t>`.
-18. **The upgrade** checks, in order: path `/rpc`; `v` equals `PROTOCOL_VERSION` (else HTTP 426 with `{"protocol":{"min":2,"max":2}}`); `Host` is `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` (else 403); `Origin` absent or one of those origins or `server.origins` in `settings.json` (5A reads the key; 5B writes it; else 403); the ticket is live (else 401). The connection then carries the ticket's principal.
-19. **`finisherd.json`** becomes `{pid, wsPort, socket, protocolVersion: 2, envId, diagnostics: {enabled}}`. The `token` key is gone. `fin` still reads `socket` and `protocolVersion` only.
+23. **`auth.ticket {ttlS?}`** (default 30, max 60) → `{ticket, expiresAt}`; 32 random bytes base64url; kept as `SHA-256(ticket) → {principal, expiresAt}`; swept every 10 s; one use.
+24. **The upgrade** (`upgrade.ts`), in order: path `/rpc`; `Sec-WebSocket-Protocol` must offer `finisher.v2` (another `finisher.v<n>` → HTTP 426 with `{"protocol":{"min":2,"max":2}}`) and one `finisher.ticket.<t>`; `Host` in the allow-list `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>` (403); `Origin` absent, one of those origins, or in `settings.json` `server.origins` (403); then the ticket is taken (401 if not live). The server answers with `Sec-WebSocket-Protocol: finisher.v2`.
+25. **`finisherd.json`** becomes `{pid, wsPort, socket, protocolVersion: 2, envId, diagnostics: {enabled}}`; no `token`.
 
 ### Protocol 2
 
-20. **`PROTOCOL_VERSION = 2`** in contracts and `fin` (`endpoint.rs`). `tx.commit.generation` and `ops.subscribe.generation` become required in their schemas; `fin` already sends both; the e2e WebSocket subscriber is updated in Task 5.
+26. `PROTOCOL_VERSION = 2` in contracts and `fin`; `tx.commit.generation` and `ops.subscribe.generation` required; `asset.probe {projectId, path}`; the new hello.
 
 ### Diagnostics
 
-21. **Sources and actors** (spec §3.4): D4's `RpcSource` service is replaced by `principal.source`; D6's `callMeta(headers)` becomes `actorFor(principal, headers)`. `fin_core::events::Source` gains `Console` (`"console"`), allowed to emit no kinds through `diagnostics.record` (console commands record nothing). The D4 rate limit becomes per principal key (`local`, `console`, `agent:<id>`).
-22. **Consent** (`diagnostics.consent`) requires an owner principal for **every** purpose and value (spec §4.5). The D4 rule "training on only from `ui`" is subsumed: `console` is an owner, and there is no `ui` principal until 5B. `fin diagnostics consent training on` stays a local usage error (D14b); the other `fin diagnostics consent …` calls reach the server and answer `HUMAN_ONLY` with the fix `ask the user to run: finisherd diagnostics consent <purpose> <value>`.
-
-### Agent credentials
-
-23. **Agent sessions** (spec §4.1): `agent_sessions(id TEXT PRIMARY KEY, label TEXT, scopes TEXT, projects TEXT, createdBy TEXT, createdAt INTEGER, expiresAt INTEGER, revokedAt INTEGER)`. `auth.agent.mint` (owner) answers `{session, credential}` where `credential` is the file's JSON; the key is derived (Decision 6), so it can be shown once and recomputed for verification without being stored. An expired or revoked session is refused at the hello (no proof) and its live connections are closed at revocation.
+27. **Sources and actors** (spec §3.4): `sourceOf(principal)` replaces D4's per-transport `RpcSource`; `actorFor(principal, headers)` replaces D6's `callMeta(headers)`. `Source` gains `console` and `mcp`; `diagnostics.record` allows `mcp` the kinds `fin` has (`cli.command`, `error.panic`) and `console` none. The D4 rate limit keys by principal (`local`, `console`, `agent:<id>`, `mcp:<id>`).
+28. `fin diagnostics consent training on` stays a local usage error (D14b, exit 2). `fin diagnostics consent diagnostics …`, `purge`, `project default` and `export --content` reach the server and answer `HUMAN_ONLY`.
 
 ### Console
 
-24. **`finisherd <command>`:** `main.ts` dispatches on the first argument: none or `serve` (or a flag such as `--server-data`) serves; `status`, `stop`, `diagnostics`, `project`, `audit`, `agent` run a console command. The console reads `console.key` from the server data named by `--server-data` or `FIN_SERVER_DATA` or the default, connects through `finisherd.json`'s `socket`, runs the handshake as `console`, and prints text (`--json` prints the result document). Exit codes are `fin`'s.
+29. **Dispatch:** `finisherd` with no argument, `serve` or only flags serves; `status`, `stop`, `audit`, `diagnostics`, `project`, `agent`, `mcp` run console commands against `finisherd.json`'s socket with `console.key`.
+30. **Read-only and service commands** (`status`, `audit` listing, `stop`) run without a TTY. **Mutating human-only commands** require `process.stdin.isTTY && process.stdout.isTTY` (`CONSOLE_NEEDS_TTY`, exit 7) and a typed challenge: the console calls `console.challenge` (→ a 6-character Crockford code valid 60 s, bound to this connection), shows what will happen and the code, and sends the RPC with `challenge: <typed code>` only after the person types it. The server refuses a mutating human-only RPC from a `console` principal without a valid, unused challenge of the same connection (`CONFIRMATION_REQUIRED`, exit 7). Prompts and reads go through an injected `Prompt` interface so unit tests drive them without a terminal.
+31. **`finisherd diagnostics consent training on`** answers `CONSENT_UI_ONLY` (exit 2) with D14b's fix in words; the console never offers it.
 
-### Hardening
+### Credentials
 
-25. **`INVALID_PATH`:** `project.create.dir`, `project.open.dir`, `asset.probe.path` and `project.recover.importDir` must be absolute and normalised (no `.`/`..` segments, no trailing separator except a root); otherwise `INVALID_PATH {field, path}`. The server never resolves a relative path against its own working directory.
-26. **`fin` deadline and frame cap:** every `fin` invocation has an overall deadline (`FIN_DEADLINE_S`, default 300 s; streams excluded) on top of the per-operation 30 s; exceeding it is `SERVER_TIMEOUT` with `details.deadline`. A server line over 16 MiB is `PROTOCOL_ERROR` with `details.max`.
-27. **`fin`'s test hooks** (`FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`) are read only when `fin` is built with its new `test-hooks` feature; `fin`'s dev-dependencies enable it for its own tests (as `fin-store` does), and `scripts/check-test-hooks.mjs` already fails a default-members build that enables any `test-hooks`. `FIN_NODE_BINARY_DIR` (the JS loader) stays until sub-project 9's packaging, recorded in TASKS.
+32. **`credentials(id, kind, label, scopes, projects, branches, createdBy, createdAt, lastUsedAt, idleExpiryS, absoluteExpiryAt, revokedAt)`.** Defaults: `agent` 24 h idle and 7 days absolute; `mcp` 30 days idle and no absolute limit (spec §4.1 gives the reasons). `lastUsedAt` is written at most once a minute. Expired or revoked credentials get no proof; revocation and expiry close live connections (a sweep every 60 s for expiry).
+33. **Mint defaults** (spec §4.5) when no scopes are given: `server.read`, `project.read`, `project.write`, `review.write`, `jobs.read`, `jobs.submit`, `library.read`, `library.scan`, `diagnostics.read`, `diagnostics.record`; `branches` defaults to `"*"` for hand-run harnesses (`--branch own` or ids narrow it); human-only scopes are refused (`SCOPE_DENIED` naming them).
+34. **`FIN_CREDENTIAL`** joins `childEnv`'s `ChildEnvExtra` (arch §8.4 amended); its value is a path.
+
+### Hardening and the pipe
+
+35. **`INVALID_PATH`** (Task 10): `project.create.dir`, `project.open.dir`, `asset.probe.path` and `project.recover.importDir` must be absolute and normalised; Windows drive-relative (`C:foo`) and rooted-without-drive (`\foo`) forms are refused too.
+36. **`fin` deadline and frame cap** (Task 10): `FIN_DEADLINE_S` (default 300 s, streams excluded) → `SERVER_TIMEOUT {deadline}`; a server line over 16 MiB → `PROTOCOL_ERROR {max}`.
+37. **`fin`'s test hooks** (`FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`) are read only with `fin`'s `test-hooks` feature, enabled for its own tests through a self dev-dependency; `scripts/check-test-hooks.mjs` covers `fin`. `FIN_NODE_BINARY_DIR` (the JS loader) stays a TASKS item for sub-project 9.
+38. **The Windows pipe listener** (Task 11, spec §4.3): `fin-node` `PipeServer(name, {allow: [sid]})` creates instances with `PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED`, `FILE_FLAG_FIRST_PIPE_INSTANCE` on the first, `PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS`, and the SDDL `D:P(A;;GA;;;<user SID>)(A;;GA;;;SY)` plus `(A;;GRGW;;;<sid>)` per allowed SID; it accepts on a dedicated thread, reads each client's pid and token user SID, closes clients that are neither the user nor an allowed SID, and hands the rest to JS as duplex streams that `transport.ts` wraps as an Effect `Socket`. A first-instance failure at start is `PIPE_SQUATTED` (exit 1).
 
 ## Questions for the owner
 
-This plan implements the recommended answers to spec §12 **Questions 2 and 5** (human-only now, with console commands; `local` keeps `branch.protected` and `review.decide`). If the owner answers otherwise:
-- **Q2 "wait for sub-project 7":** drop Decision 22's owner rule for diagnostics and the escalations of Decision 14 (keep the scopes, mark them non-human); Tasks 6 and 7 shrink, the console keeps `status`, `stop`, `audit`, `agent`.
-- **Q5 "protect `main` from `local` now":** remove `branch.protected` and `review.decide` from `local` in Decision 15; that only takes effect when 5E adds protected branches, so nothing in 5A changes beyond the default table and its tests.
+This plan implements the recommended answers to spec §12 **Questions 2, 5 and 6**: human-only now with the TTY-gated console; `local` keeps `branch.protected` and `review.decide`; human-only is documented as advisory against raw-shell agents until sub-project 7, and agent/MCP credentials are offered, not forced. If the owner answers otherwise:
+- **Q2 "wait for sub-project 7":** drop Decision 21's escalations and the human-only flags (keep the scopes); Tasks 7 and 8 shrink to `status`, `stop`, `audit`, `agent`, `mcp`.
+- **Q5 "protect `main` from `local` now":** remove `branch.protected` and `review.decide` from `local` in Decision 20; nothing else changes until 5E.
+- **Q6 "require agent credentials for hand-run harnesses":** remove `project.write` and the other write scopes from `local`'s defaults in Decision 20 and move the write tests to minted credentials (Task 4 and Task 12); `fin` run by a person then needs `finisherd agent mint` first.
 
-Questions 1, 3 and 4 do not affect 5A (Q4 only decides whether 5B fills `audit.remote`).
+Questions 1, 3 and 4 do not affect 5A.
 
 ## Review Focus
 
-1. **The handshake is mutual and replay-proof:** fresh nonces on both sides, domain-separated labels, constant-time comparison, no request before the proof is verified, keys rotated at every start before listening.
-   → Task 2 `handshake_vectors_match_rust`, `keys_rotate_before_listen`; Task 5 `fin_refuses_server_without_proof`, `replayed_prove_is_refused`; Task 8 `squatter_never_receives_a_request`.
-2. **Nothing trusts a transport:** a socket connection without a proof can only say hello; a WebSocket needs a ticket; a `local` ticket yields `local`, never `ui`; `x-fin-` headers cannot set the principal.
-   → Task 3 `unproved_connection_only_hello`, `x_fin_headers_are_stripped`; Task 5 `ws_without_ticket_is_401`, `ticket_is_one_time`, `local_ticket_is_local_principal`.
-3. **Every RPC has a scope, and human-only holds for every non-human principal:** the mapped type and the runtime key check; the human-only matrix over every principal kind and escalation.
-   → Task 4 `rpc_scopes_cover_every_rpc`, `human_only_matrix`, `escalations_apply_before_handlers`, `denials_are_audited`.
-4. **Sources and actors from principals:** `agent` principals cannot claim another session; `console` is an owner; consent from `fin` is `HUMAN_ONLY`; redacted export for non-owners.
-   → Task 6 `agent_actor_is_its_session`, `consent_needs_owner`, `non_owner_export_is_redacted`, `rate_limit_is_per_principal`.
-5. **Windows:** private server data (owner-only DACL), the pipe squatter, a graceful stop.
-   → Task 2 `private_dir_refuses_everyone_ace` (Windows), Task 8, Task 13.
-6. **No secrets leak:** keys, MACs, tickets and nonces never in logs, audit rows, journal entries, `finisherd.json` or error details.
-   → Task 11 leak grep.
-7. **The control store never stalls the event loop:** the 1 ms per-statement budget with 100k audit rows.
-   → Task 1 `control_store_budget`.
+1. **The handshake is mutual, bound and replay-proof:** fresh nonces, `envId` and endpoint in both MACs, constant-time comparison, no request before the proof, keys rotated before listening, one retry after a restart and no more.
+   → Task 2 `handshake_vectors_match`, `keys_rotate_before_listen`; Task 3 `relayed_proof_fails_on_other_endpoint`; Task 4 `restart_between_read_and_connect_is_retried`, `squatter_never_receives_a_request`.
+2. **Nothing trusts a transport:** unproved connections only say hello (from Task 4 on); a WebSocket needs a ticket in `Sec-WebSocket-Protocol`; a `local` ticket yields `local`; `x-fin-` headers cannot set anything.
+   → Task 4 `unproved_connection_only_hello`; Task 6 `ticket_not_accepted_in_query`, `local_ticket_is_local_principal`.
+3. **The chain checks resolved state:** a branch name, alias or rename cannot slip past a rule; the guard re-checks inside the write transaction; reach covers `project.open`/`create` by directory and `asset.probe` by project.
+   → Task 5 `rename_between_resolve_and_write_is_caught`, `name_and_id_resolve_the_same`, `probe_outside_project_is_path_not_allowed`, `open_needs_write_unless_attached`.
+4. **Every RPC has scopes and a resolver; human-only holds for every non-human principal; fix texts carry no command.**
+   → Task 5 `rpc_scopes_cover_every_rpc`, `human_only_matrix`, `fix_texts_contain_no_command`.
+5. **No training opt-in from any command line:** `fin`, the console and every RPC source but a device.
+   → Task 7 `training_on_refused_for_every_non_device`; Task 8 `console_training_on_is_consent_ui_only`.
+6. **Console confirmations:** no TTY → refused; the server requires the connection's own fresh challenge.
+   → Task 8 `mutation_without_challenge_is_refused`, `challenge_is_single_use_and_per_connection`, `non_tty_is_console_needs_tty`.
+7. **Sources and actors from principals;** `agent`/`mcp` cannot claim another session.
+   → Task 7.
+8. **Windows:** private server data, the native pipe (first instance, remote rejection, DACL, peer SID), graceful stop, all non-elevated.
+   → Tasks 2, 11, 14.
+9. **No secrets leak** anywhere. → Task 12 leak grep.
+10. **The event loop:** no checkpoint on the main connection; statement p99 ≤ 1 ms; batched deletes. → Task 1.
+11. **Every commit green.** → each task's Step "Run"; the reviewer checks out each commit of batch B and runs the gates.
 
 ---
 
-### Task 1: The control store and the audit log — tier: sonnet
+### Task 1: The control store, the environment id and the audit log — tier: sonnet — can start now
 
 **Files:**
-- Create: `apps/finisherd/src/control/{db.ts, migrations.ts, migrations/m0001.ts, audit.ts}`.
-- Test: `apps/finisherd/test/control.test.ts`, `apps/finisherd/test/audit.test.ts`, `apps/finisherd/scripts/control-budget.ts` (the budget measurement, run by the test with a reduced row count and by hand with the full one).
-- Modify: `apps/finisherd/src/main.ts` (open the store in `serve`, before the transports; a layer), `TASKS.md`.
+- Create: `apps/finisherd/src/control/{db.ts, checkpoint-worker.ts, migrations.ts, migrations/m0001.ts, audit.ts}`.
+- Modify: `apps/finisherd/src/main.ts` (open the store in `serve` after the server lock and before the transports; a layer; record `server_ids`), `TASKS.md`.
+- Test: `apps/finisherd/test/control.test.ts`, `apps/finisherd/test/audit.test.ts`, `apps/finisherd/scripts/control-budget.ts`.
 
 **Interfaces:**
 ```ts
@@ -159,393 +186,416 @@ export const CONTROL_FORMAT_VERSION = 1;
 export const CONTROL_MIN_READER_VERSION = 1;
 export interface ControlStore {
   readonly db: DatabaseSync;
-  /** Runs `f` in BEGIN IMMEDIATE … COMMIT; rolls back on throw. */
-  tx<A>(f: () => A): A;
-  close(): void;
+  readonly envId: string;
+  tx<A>(f: () => A): A;                                   // BEGIN IMMEDIATE … COMMIT; rollback on throw
+  deleteInBatches(sql: string, params: unknown[], batch?: number): Effect.Effect<number>; // ≤ 500 rows per turn
+  close(): Promise<void>;                                 // stops the checkpoint worker, final TRUNCATE
 }
-export function openControlStore(serverData: string, opts?: { serverId?: string }): ControlStore; // ServerStartError CONTROL_DB_TOO_NEW
+export function openControlStore(serverData: string, opts: { serverId: string }): ControlStore; // CONTROL_DB_TOO_NEW
 export class ControlStoreTag extends Context.Tag("ControlStore")<ControlStoreTag, ControlStore>() {}
-export const layerControlStore: (serverData: string) => Layer.Layer<ControlStoreTag, ServerStartError>;
+export const layerControlStore: (serverData: string, serverId: string) => Layer.Layer<ControlStoreTag, ServerStartError>;
 
 // control/audit.ts
-export const AuditKind: Schema.Literals<[...]>;   // spec §3.3 kinds, 5A subset plus reserved names
-export interface AuditInput { kind: AuditKind; principal: { kind: string; id: string }; outcome: "ok" | "denied" | "failed"; code?: string; connection?: number; details?: Record<string, unknown> }
+export interface AuditInput { kind: AuditKind; principal: { kind: string; id: string }; credentialKind?: string;
+  outcome: "ok" | "denied" | "failed"; code?: string; details?: Record<string, unknown> }
 export class Audit {
   constructor(store: ControlStore, clock?: () => number);
-  append(e: AuditInput): void;            // never throws: a failure is logged and counted
+  append(e: AuditInput): void;                            // never throws; failures counted
   list(q: { since?: number; kind?: AuditKind; cursor?: string; limit?: number }): { entries: AuditEntry[]; next?: string };
-  purge(q: { before?: number; all?: boolean }): number;
-  sweep(): void;                          // retention: 180 days, 100k rows
+  purge(q: { before?: number; all?: boolean }): Effect.Effect<number>;
+  sweep(): Effect.Effect<void>;
   failures(): number;
 }
 ```
 Decisions 1–4.
 
 - [ ] **Step 1: Write failing tests:**
-  - `opens_wal_0600_with_meta` (unix mode; `journal_mode` is `wal`; `meta` has both versions and the server id);
-  - `migrations_run_once_in_order_with_backup` (a fake `m0002` in a test-only list; `.pre-m2.bak` exists; the newest two are kept);
-  - `newer_min_reader_refuses_start` (`CONTROL_DB_TOO_NEW`);
-  - `corrupt_db_is_moved_aside_and_audited` (bytes overwritten in the middle of the file);
-  - `busy_maps_to_control_db_busy` (a second connection holding `BEGIN IMMEDIATE`);
-  - `audit_append_list_cursor_purge`, `auth_fail_aggregates_per_minute`, `retention_by_age_and_rows`, `audit_failure_never_throws` (read-only file);
-  - `audit_rows_hold_no_secret_fields` (the schema has no column for keys, MACs or tickets; `details` of every 5A writer is checked against an allow-list in Tasks 4–7);
-  - `control_store_budget` (10k jobs-sized rows and 100k audit rows; p99 per prepared statement ≤ 1 ms on Linux; the test asserts ≤ 5 ms to stay stable on CI and prints the measured p99).
-- [ ] **Step 2: Implement.** Confirm `node:sqlite` loads without an experimental warning on Node 26.12 and that FTS5 is compiled in (`CREATE VIRTUAL TABLE … USING fts5`, needed by 5D); record both in the commit body.
-- [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): control store with frozen migrations and a local audit log`.
+  - `opens_wal_0600_with_meta_and_env_id` (unix mode; `wal`; `envId` is a ULID and survives a reopen);
+  - `main_connection_never_autocheckpoints` (`PRAGMA wal_autocheckpoint` reads 0; 10k inserts leave the WAL growing until the worker runs; the worker's checkpoint shrinks it);
+  - `server_ids_map_every_server_id` (two different server ids over two starts → two rows, one `envId`);
+  - `migrations_run_once_in_order_with_backup`, `newer_min_reader_refuses_start`, `corrupt_db_is_moved_aside_and_audited` (and gets a new `envId`), `busy_maps_to_control_db_busy`;
+  - `audit_append_list_cursor_purge`, `auth_fail_aggregates_per_credential_kind_per_minute` (100 failures on 100 connections in one minute → one row, `count` 100), `retention_by_age_and_rows`, `deletes_are_batched` (a purge of 10k rows runs ≥ 20 statements and yields between them), `audit_failure_never_throws`;
+  - `control_store_budget` (100k audit rows; prepared-statement p99 ≤ 1 ms on Linux; the test asserts ≤ 5 ms for CI stability and prints the measure).
+- [ ] **Step 2: Implement** with APIs present in Node 24.22 too (check each against Node 24's `node:sqlite` docs; note them in `db.ts`).
+- [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): control store with an environment id, frozen migrations and a local audit log`.
 
-### Task 2: Key files, private directories and the handshake crypto — tier: opus
+### Task 2: Key files, private directories, `run/` and the handshake crypto — tier: opus — can start now
 
 **Files:**
-- Create: `apps/finisherd/src/auth/{keys.ts, crypto.ts}`, `crates/fin-node/src/private_dir.rs`, `tests/fixtures/auth/handshake.json` (fixed fake keys, nonces and the expected proof, MAC and agent key).
-- Modify: `crates/fin-node/src/lib.rs` (export `checkPrivateDir`, `makePrivateDir`), `crates/fin-node/Cargo.toml` (`windows-sys` features `Win32_Security`, `Win32_Security_Authorization`, `Win32_System_Threading`), `packages/fin-node` (typings), `apps/finisherd/src/config.ts` (`ensureServerData` uses them on Windows), `apps/finisherd/src/main.ts` (rotate keys after the server lock, before `claimSocketPath`).
-- Test: `apps/finisherd/test/keys.test.ts`, `apps/finisherd/test/handshake-vectors.test.ts`, `crates/fin-node/tests/private_dir.rs` (Windows-only cases behind `#[cfg(windows)]`).
+- Create: `apps/finisherd/src/auth/{keys.ts, crypto.ts}`, `crates/fin-node/src/private_dir.rs`, `tests/fixtures/auth/handshake.json`.
+- Modify: `crates/fin-node/src/lib.rs`, `crates/fin-node/Cargo.toml` (`windows-sys` features), `packages/fin-node` (typings), `apps/finisherd/src/config.ts` (`socketPath` → `<server-data>/run/fin.sock` on unix; `ensureServerData` uses the private-dir checks on Windows; `finisherd.json` gains `envId`), `apps/finisherd/src/main.ts` (create `auth/` and `run/`; rotate keys after the server lock, before `claimSocketPath`), every test and script that builds the socket path by hand (grep `fin.sock`).
+- Test: `apps/finisherd/test/keys.test.ts`, `apps/finisherd/test/handshake-vectors.test.ts`, `crates/fin-node/tests/private_dir.rs`.
 
 **Interfaces:**
 ```ts
 // auth/keys.ts
-export interface Keys { readonly local: Buffer; readonly console: Buffer; readonly agentMaster: Buffer }
-export function authDir(serverData: string): string;               // <server-data>/auth
-export function rotateKeys(serverData: string): Keys;               // local+console new, agentMaster kept; 0600; private dir
-export function readKeyFile(path: string): Buffer;                  // 32 bytes or throws
+export interface Keys { readonly local: Buffer; readonly console: Buffer; readonly credentialMaster: Buffer }
+export function authDir(serverData: string): string;      // <server-data>/auth
+export function runDir(serverData: string): string;       // <server-data>/run
+export function rotateKeys(serverData: string): Keys;     // local+console new; master kept; private dir; 0600
+export function readKeyFile(path: string): Buffer;        // 32 bytes or throws
 
 // auth/crypto.ts
-export const LABEL = { hello: "finisherd/hello/v1", prove: "fin/prove/v1", agentKey: "fin/agent-key/v1" } as const;
-export function nonce(): Buffer;                                    // 32 random bytes
-export function helloProof(key: Buffer, clientNonce: Buffer, serverNonce: Buffer): Buffer;
-export function proveMac(key: Buffer, serverNonce: Buffer, clientNonce: Buffer): Buffer;
-export function agentKey(master: Buffer, sessionId: string): Buffer;
-export function sameMac(a: Buffer, b: Buffer): boolean;             // constant time, false on length mismatch
+export const LABEL = { hello: "finisherd/hello/v2", prove: "fin/prove/v2", credentialKey: "fin/credential-key/v1" } as const;
+export function nonce(): Buffer;
+export function helloProof(key: Buffer, envId: string, endpoint: string, clientNonce: Buffer, serverNonce: Buffer): Buffer;
+export function proveMac(key: Buffer, envId: string, endpoint: string, serverNonce: Buffer, clientNonce: Buffer): Buffer;
+export function credentialKey(master: Buffer, kind: "agent" | "mcp", id: string): Buffer;
+export function sameMac(a: Buffer, b: Buffer): boolean;
+export function canonicalEndpoint(endpoint: string, platform?: NodeJS.Platform): string;
 export const b64u: { encode(b: Buffer): string; decode(s: string): Buffer | null };
 ```
 ```rust
-// fin-node: private_dir.rs (napi)
-#[napi] pub fn check_private_dir(path: String) -> PrivateDirReport; // {ok, owner: "self"|"other", broadAces: [..]} on Windows; {ok: true} elsewhere
-#[napi] pub fn make_private_dir(path: String) -> napi::Result<()>;  // Windows: protected DACL (user, SYSTEM, Administrators); elsewhere mkdir 0700
+#[napi] pub fn check_private_dir(path: String) -> PrivateDirReport;   // Windows: owner and broad ACEs; elsewhere ok
+#[napi] pub fn make_private_dir(path: String) -> napi::Result<()>;    // Windows: protected owner-only DACL; elsewhere 0700
 ```
-Decisions 5–6; spec §4.11.
+Decisions 5–7.
 
 - [ ] **Step 1: Write failing tests:**
-  - `handshake_vectors_match` (TS over `handshake.json`; Task 8 adds the Rust twin `handshake_vectors_match_rust`);
-  - `keys_rotate_on_every_start`, `agent_master_survives_restart`, `key_files_are_0600_dir_0700` (unix), `malformed_key_file_is_refused`;
-  - `keys_rotate_before_listen` (a test `serve` with a hook that records the order: lock → keys → socket);
-  - `same_mac_is_constant_time_shaped` (equal length check first; no early exit on content: asserted by code review and a unit test of mismatching lengths);
-  - Windows: `private_dir_refuses_everyone_ace`, `private_dir_refuses_other_owner`, `made_private_dir_passes_check`, `server_data_unsafe_on_windows` (through `ensureServerData`).
-- [ ] **Step 2: Implement.** On Windows `make_private_dir` sets `D:P(A;OICI;FA;;;<current user SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` with `SetNamedSecurityInfoW` and `PROTECTED_DACL_SECURITY_INFORMATION`; `check_private_dir` reads the owner and DACL with `GetNamedSecurityInfoW` and reports any allow ACE for `Everyone` (S-1-1-0), `Users` (S-1-5-32-545), `Authenticated Users` (S-1-5-11) or another user's SID. Key files inherit the directory's DACL.
-- [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): rotating local and console keys, private server data on Windows`.
+  - `handshake_vectors_match` (TS over the vector file; Task 4 adds the Rust twin);
+  - `length_prefixes_make_fields_unambiguous` (moving a byte between `envId` and `endpoint` changes the MAC);
+  - `keys_rotate_on_every_start`, `credential_master_survives_restart`, `key_files_are_0600_dirs_0700` (unix), `malformed_key_file_is_refused`;
+  - `keys_rotate_before_listen` (the start order: lock → store → keys → socket);
+  - `socket_lives_in_run_dir`, `run_dir_holds_only_the_socket`;
+  - `canonical_endpoint_resolves_symlinks_and_lowercases_pipes`;
+  - Windows: `private_dir_refuses_everyone_ace`, `private_dir_refuses_other_owner`, `made_private_dir_passes_check`, `server_data_unsafe_on_windows`.
+- [ ] **Step 2: Implement.** Windows DACL: `D:P(A;OICI;FA;;;<user SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` with `SetNamedSecurityInfoW` and `PROTECTED_DACL_SECURITY_INFORMATION`; `check_private_dir` reports allow ACEs for S-1-1-0, S-1-5-32-545, S-1-5-11 or another user. Nothing verifies a proof yet; the server only rotates and holds the keys.
+- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` (the socket moved) → PASS. **Commit** `feat(finisherd): rotating keys in auth/, the socket in run/, private server data on Windows`.
 
-### Task 3: The connection-aware RPC protocol and principals — tier: opus
+### Task 3: The connection-aware protocol, principals and the handshake RPCs (not yet enforced) — tier: opus — after D4 and D6
 
 **Files:**
-- Create: `apps/finisherd/src/{protocol.ts, connections.ts, principal.ts}`, `packages/contracts/src/auth.ts` (`PrincipalSchema`, `CredentialRefSchema`, `ServerHelloPayload`/`Success` v2, `AuthProvePayload`/`Success`).
-- Modify: `apps/finisherd/src/transport.ts` (`serveRpc` takes the protocol instead of `layerProtocolSocketServer`), `apps/finisherd/src/main.ts`, `packages/contracts/src/{rpc.ts, index.ts}` (re-export; `server.hello` uses the new schemas; `auth.prove` added).
-- Test: `apps/finisherd/test/protocol.test.ts`, `apps/finisherd/test/support/ndjson-client.ts` (gains `hello` and `prove` helpers).
+- Create: `apps/finisherd/src/{connections.ts, principal.ts}`, `apps/finisherd/src/auth/handshake.ts`, `packages/contracts/src/auth.ts`.
+- Modify: `apps/finisherd/src/{transport.ts, main.ts, handlers.ts}`, `packages/contracts/src/{rpc.ts, index.ts}` (the new hello fields, optional so protocol-1 `fin` keeps working; `auth.prove`).
+- Test: `apps/finisherd/test/protocol.test.ts`, `apps/finisherd/test/support/ndjson-client.ts` (`hello`, `prove` helpers).
 
 **Interfaces:**
 ```ts
 // contracts/auth.ts
-export const PrincipalKind = Schema.Literals(["anonymous", "local", "console", "device", "agent", "plugin"]);
-export const PrincipalSchema = Schema.Struct({
-  kind: PrincipalKind, id: Schema.String, role: Schema.optional(Schema.Literals(["owner", "editor", "viewer"])),
-  scopes: Schema.Array(ScopeSchema), projects: Schema.Union([Schema.Literal("*"), Schema.Array(Schema.String)]),
-  human: Schema.Boolean, owner: Schema.Boolean,
-});
+export const PrincipalKind = Schema.Literals(["anonymous", "local", "console", "device", "agent", "mcp", "plugin"]);
+export const PrincipalSchema = Schema.Struct({ kind: PrincipalKind, id: Schema.String, scopes: Schema.Array(ScopeSchema),
+  projects: Schema.Union([Schema.Literal("*"), Schema.Array(Schema.String)]),
+  branches: Schema.Union([Schema.Literal("*"), Schema.Array(Schema.String)]), human: Schema.Boolean });
 export type Principal = typeof PrincipalSchema.Type;
 
 // connections.ts
-export interface Connection {
-  readonly clientId: number; readonly transport: "socket" | "ws"; readonly openedAt: number;
-  principal: Principal;                      // anonymous until proved, or the ticket's
-  hello?: { clientNonce: Buffer; serverNonce: Buffer; credential: CredentialRef };
-  failures: number;
-}
+export interface Connection { readonly clientId: number; readonly transport: "socket" | "pipe" | "ws"; readonly openedAt: number;
+  principal: Principal; hello?: { clientNonce: Buffer; serverNonce: Buffer; credential: CredentialRef }; failures: number;
+  peer?: { pid?: number; sid?: string } }
 export class Connections {
-  open(transport: Connection["transport"], principal?: Principal): Connection;
-  get(clientId: number): Connection | undefined;
+  get(clientId: number): Connection;                     // created on first sight
   close(clientId: number): void;
-  closeWhere(pred: (c: Connection) => boolean): number;   // revocation; ends streams
-  count(): Record<string, number>;                         // by principal kind
+  closeWhere(pred: (c: Connection) => boolean): number;  // ends streams with CREDENTIAL_REVOKED
+  count(): Record<string, number>;
 }
-
-// protocol.ts
-export const MAX_FRAME = 16 * 1024 * 1024;
-export const makeSocketProtocol: (server: SocketServer["Service"], conns: Connections) => Effect.Effect<RpcServer.Protocol["Service"]>;
-export const makeWsProtocol: (opts: { conns: Connections; upgrade: UpgradeCheck }) => Effect.Effect<{ protocol: RpcServer.Protocol["Service"]; port: number }>;
-
-// principal.ts
-export class CurrentConnections extends Context.Tag("Connections")<CurrentConnections, Connections>() {}
-export function principalOf(conns: Connections, clientId: number): Principal;      // anonymous if unknown
-export function principalFor(kind: "local" | "console", keys: Keys): Principal;    // the default scopes of Task 4
+export const ENFORCE: { proof: boolean };                // false in this task; Task 4 sets it true
 ```
-Decisions 7–8, 11.
+Decisions 8–9, 12–13. **Not enforced yet:** a connection that never proves is treated as `local` (the status quo) and audited once per connection as `auth.legacy`, so today's `fin`, tests and e2e keep working in this commit.
 
-- [ ] **Step 1: Spike, then write it down.** Read Effect 4.0.6's `RpcServer` sources (`node_modules/effect/dist/…/rpc/RpcServer.js`: `Protocol`, `makeProtocolSocketServer`, the handler options). Confirm (a) that handlers receive `{ clientId, headers }` and (b) how a custom `Protocol` reports connects and disconnects. Record the answer at the top of `protocol.ts`. **If handlers cannot see `clientId`,** the protocol injects a server-only header `x-fin-conn: <clientId>` into each decoded request after stripping client `x-fin-*` headers, and `principalOf` reads it; the rest of the plan is unchanged.
+- [ ] **Step 1: Read Effect 4.0.6's `RpcServer`** (`node_modules/effect/dist/esm/unstable/rpc/RpcServer.js` or wherever the package puts it): the handler options (`clientId`, `headers`), the protocol's client-connect/disconnect hooks, and where payload decoding fails. Record the answer at the top of `connections.ts`.
 - [ ] **Step 2: Write failing tests:**
-  - `each_connection_gets_its_own_principal` (two sockets, one proved as `local`, one anonymous);
-  - `unproved_connection_only_hello` (any other RPC → `UNAUTHENTICATED`; the RPC handler never runs, checked with a counting handler);
-  - `prove_binds_local_and_console` (`auth.prove` → `{principal: {kind: "local"}}`; with the console key, `console`);
-  - `wrong_mac_fails_and_five_failures_close`;
-  - `second_prove_is_invalid_request`;
-  - `hello_without_nonce_is_anonymous_and_proofless`;
-  - `x_fin_headers_are_stripped` (a client sending `x-fin-conn` cannot become another connection);
+  - `each_connection_gets_its_own_principal`;
+  - `prove_binds_local_and_console`, `wrong_mac_fails_and_five_failures_close`, `second_prove_is_invalid_request`;
+  - `hello_without_nonce_has_no_proof`, `unknown_credential_gets_no_proof`, `foreign_env_gets_no_proof`;
+  - `relayed_proof_fails_on_other_endpoint` (a MAC computed for one canonical endpoint is refused on another);
+  - `x_fin_headers_are_dropped`;
   - `bad_frame_is_invalid_request_not_defect` (invalid JSON, unknown tag, a payload missing a field);
   - `oversized_frame_is_frame_too_large_then_closed`;
-  - `disconnect_removes_connection`.
-- [ ] **Step 3: Implement.** Keep framing identical on the wire (NDJSON `Request`/`Exit`/`Chunk`/`Ack`/`Ping`/`Pong`), so the captured fixtures in `crates/fin/tests/fixtures/rpc/` still describe it; only `server.hello`'s payload and result grow.
-- [ ] **Step 4: Run** the gates (the existing `server.test.ts` and `fin`'s `rpc_contract.rs` must pass unchanged except for the hello) → PASS. **Commit** `feat(finisherd): connection-aware RPC protocol with proved principals`.
+  - `disconnect_removes_connection`;
+  - `unproved_connection_is_legacy_local_and_audited` (this task only; Task 4 replaces it).
+- [ ] **Step 3: Implement.** The wire format stays NDJSON `Request`/`Exit`/`Chunk`/`Ack`/`Ping`/`Pong`.
+- [ ] **Step 4: Run** the gates and `rtk pnpm e2e` (unchanged clients still pass) → PASS. **Commit** `feat(finisherd): connection-aware RPC with proved principals and the handshake RPCs`.
 
-### Task 4: Scopes, escalations and the authorisation wrapper — tier: opus
+### Task 4: `fin` proves; the server requires proofs — tier: sonnet — after Task 3
 
 **Files:**
-- Create: `packages/contracts/src/scopes.ts`, `apps/finisherd/src/authorize.ts`.
-- Modify: `apps/finisherd/src/handlers.ts` (`FinRpcs.toLayer(Effect.map(handlers, authorizeAll))`: one call-site change), `packages/contracts/src/{errors.ts (code list), index.ts}`.
-- Test: `packages/contracts/src/scopes.test.ts`, `apps/finisherd/test/authorize.test.ts`.
+- Create: `crates/fin/src/auth.rs`, `crates/fin/src/commands/whoami.rs`, `crates/fin/tests/cli_auth.rs`.
+- Modify: `crates/fin/src/client.rs` (`auth::handshake` after connect: call-site lines), `crates/fin/src/output.rs` (`DENIED = 7`, `DENIED_CODES`), `crates/fin/src/{registry.rs, map.rs, main.rs}` (`whoami`), `crates/fin/Cargo.toml` (`hmac`, `sha2`, `base64`), `apps/finisherd/src/connections.ts` (`ENFORCE.proof = true`; remove the legacy principal), `apps/finisherd/test/support/ndjson-client.ts` and every TS test that opens a raw socket (prove first), `scripts/e2e/lib.mjs` (its socket helper proves), `crates/fin/tests/support/mod.rs` (a fake server without a key; a helper that reads the test server's keys).
+- Test: `crates/fin/tests/cli_auth.rs`, `apps/finisherd/test/protocol.test.ts` (enforced cases).
+
+**Interfaces:**
+```rust
+pub enum CredentialKind { Local, Console, Agent, Mcp }
+pub struct Credential { pub kind: CredentialKind, pub id: Option<String>, pub env: Option<String>, key: [u8; 32] }
+pub fn discover(server_data: Option<&Path>) -> Option<Credential>;     // FIN_CREDENTIAL, else <server-data>/auth/local.key
+pub fn handshake(conn: &mut Client, cred: Option<&Credential>, expect: &Expect) -> Result<Principal, CoreError>;
+pub struct Expect { pub env_id: Option<String>, pub endpoint: String }
+pub fn hello_proof(key: &[u8; 32], env: &str, endpoint: &str, cn: &[u8; 32], sn: &[u8; 32]) -> [u8; 32];
+pub fn prove_mac(key: &[u8; 32], env: &str, endpoint: &str, sn: &[u8; 32], cn: &[u8; 32]) -> [u8; 32];
+```
+`fin whoami` → `{principal}` (exit 0, `anonymous` included). Decisions 10–11; spec §3.5.
+
+- [ ] **Step 1: Write failing tests:**
+  - `handshake_vectors_match_rust`;
+  - `fin_works_as_local` (every existing online suite passes with proofs required);
+  - `unproved_connection_only_hello` (TS: any other RPC → `UNAUTHENTICATED`, the handler never runs);
+  - `fin_refuses_server_without_proof` (a fake server: no `proof`, a wrong one, a foreign `envId`, another endpoint → exit 7 `SERVER_UNTRUSTED` with the reason, after exactly one retry; the fake records nothing after the second hello);
+  - `restart_between_read_and_connect_is_retried` (rotate the keys between `fin` reading `local.key` and connecting: the retry succeeds, exit 0);
+  - `squatter_never_receives_a_request` (a fake listening on the socket a stale `finisherd.json` names);
+  - `no_credential_is_unauthenticated` (`FIN_SERVER` only: exit 7, the fix names `FIN_CREDENTIAL` and server data in words);
+  - `denied_codes_exit_7`, `map_still_under_budget`.
+- [ ] **Step 2: Implement**, and flip `ENFORCE.proof` in the same commit.
+- [ ] **Step 3: Run** `rtk cargo test -p fin` (`FIN_REQUIRE_SERVER=1`), the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(fin,finisherd): fin proves its credential; the server requires proofs; exit code 7`.
+
+### Task 5: The middleware chain, scopes, reach, policy and the write guard — tier: opus — after Task 4
+
+**Files:**
+- Create: `packages/contracts/src/scopes.ts`, `apps/finisherd/src/chain/{chain.ts, resolve.ts, authorize.ts, policy.ts, fixes.ts}`, `crates/fin-store/src/guard.rs`, `crates/fin/tests/support/console.rs` (a console-proved RPC helper for Rust tests).
+- Modify: `apps/finisherd/src/handlers.ts` (`withChain`), `crates/fin-store/src/write.rs` (check the guard inside the transaction: a few lines), `crates/fin-node/src/{tasks.rs, history.rs}` (accept `guard` beside the request; generated type), `apps/finisherd/src/{projects.ts, history.ts}` (pass the guard: call-site lines), `packages/contracts/src/errors.ts`; tests that used `fin project takeover --confirm` or `fin project open --relocate` (`crates/fin/tests/cli_online.rs`, the `project-open-relocate` RPC fixture in `crates/fin/tests/rpc_contract.rs`, `scripts/e2e/*.mjs`) move to the console helper **in this commit**.
+- Test: `packages/contracts/src/scopes.test.ts`, `apps/finisherd/test/chain.test.ts`, `crates/fin-store/tests/guard.rs`.
 
 **Interfaces:**
 ```ts
 // contracts/scopes.ts
-export const SCOPES = ["public", "server.read", "project.read", "project.write", "project.admin", "project.confirm",
-  "branch.protected", "review.write", "review.decide", "jobs.read", "jobs.submit", "jobs.control",
-  "library.read", "library.scan", "library.admin", "diagnostics.read", "diagnostics.admin",
-  "settings.admin", "auth.admin", "plugin.install"] as const;
+export const SCOPES = ["public", "server.read", "project.read", "project.create", "project.write", "project.admin",
+  "project.confirm", "fonts.fetch", "branch.protected", "review.write", "review.decide", "jobs.read", "jobs.submit",
+  "jobs.control", "library.read", "library.scan", "library.admin", "diagnostics.read", "diagnostics.record",
+  "diagnostics.admin", "settings.admin", "auth.admin", "plugin.install"] as const;
 export type Scope = (typeof SCOPES)[number];
-export const ScopeSchema: Schema.Literals<typeof SCOPES>;
-export const HUMAN_ONLY: Readonly<Partial<Record<Scope, "human" | "owner">>>;
-// project.confirm: human; library.admin, diagnostics.admin, settings.admin, auth.admin, plugin.install: owner
+export const HUMAN_ONLY: ReadonlySet<Scope>;   // project.confirm, library.admin, diagnostics.admin, settings.admin, auth.admin, plugin.install
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
-export const RPC_SCOPES: { readonly [T in FinRpcTag]: Scope };
-export const ESCALATIONS: { readonly [T in FinRpcTag]?: (payload: unknown) => Scope | null };
-export function defaultScopes(kind: PrincipalKind, role?: "owner" | "editor" | "viewer"): ReadonlyArray<Scope>;
-export function humanOnlyFor(scope: Scope): "human" | "owner" | undefined;
+export interface RpcRule { scopes: Scope[]; resolve?: ResolverName; escalate?: (resolved: unknown) => Scope[] }
+export const RPC_SCOPES: { readonly [T in FinRpcTag]: RpcRule };
+export function defaultScopes(kind: PrincipalKind): ReadonlyArray<Scope>;
 
-// finisherd/authorize.ts
-export type Denial = FinError; // UNAUTHENTICATED | SCOPE_DENIED | HUMAN_ONLY | PROJECT_NOT_FOUND
-export function check(principal: Principal, tag: FinRpcTag, payload: unknown): Denial | undefined;
-export function authorizeAll<H extends Record<FinRpcTag, (p: any, o: any) => any>>(handlers: H, deps: { conns: Connections; audit: Audit }): H;
+// chain/chain.ts
+export type Outcome = { allow: true; guard: WriteGuard } | { deny: FinError } | { ask: { reason: string } };
+export function withChain<H extends Record<FinRpcTag, (p: any, o: any) => any>>(handlers: H, deps: ChainDeps): H;
 ```
-Decisions 12, 14–16; spec §4.4 tables (the RPCs that exist after D1–D7, the 4C RPCs and this plan's).
+```rust
+// fin-store/src/guard.rs
+#[derive(Deserialize, JsonSchema, Default)] pub struct WriteGuard { pub deny_branches: Vec<String>, pub allow_branches: Option<Vec<String>> }
+pub(crate) fn check(guard: &WriteGuard, target: &BranchId) -> Result<(), StoreError>; // BRANCH_NOT_ALLOWED / BRANCH_PROTECTED
+```
+Decisions 14–22.
 
 - [ ] **Step 1: Write failing tests:**
-  - `rpc_scopes_cover_every_rpc` (runtime keys = `FinRpcs.requests.keys()`; the mapped type is the compile-time half);
-  - `streams_are_scoped_too` (`ops.subscribe`, `project.events` refuse an anonymous connection before the stream starts);
-  - `human_only_matrix` (every scope with `HUMAN_ONLY`, every escalation, × principals `anonymous`, `local`, `agent` (any scopes), `console` → only `console` passes; an `agent` session minted with a human-only scope is impossible, Task 9);
-  - `escalations_apply_before_handlers` (`project.takeover {confirm: true}` from `local` → `HUMAN_ONLY`, `{confirm: false}` → the handler; `project.open {relocate: true}`; `diagnostics.project {collect: "default"}` vs `"never"`; `diagnostics.export {content: true}`);
-  - `check_order_is_fixed` (a request that is both unauthorised and malformed answers in Decision 12's order);
-  - `project_reach_hides_other_projects` (an agent principal with `projects: [A]` gets `PROJECT_NOT_FOUND` for B on a unary RPC and on `ops.subscribe`);
-  - `denials_are_audited` (`auth.denied` row with tag, scope and principal kind; no payload);
-  - `fix_names_the_console_command` (each human-only RPC's `HUMAN_ONLY.fix` contains a `finisherd …` command; the table lives beside the scopes).
-- [ ] **Step 2: Implement.** `authorizeAll` wraps each handler (unary and stream) so the existing `guard` stays inside it. Denials never reach `rpc.stats` as `INTERNAL`: they carry their own codes.
-- [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(contracts,finisherd): a scope for every RPC, escalations and human-only checks`.
+  - `rpc_scopes_cover_every_rpc` (runtime keys = `FinRpcs.requests.keys()`; every rule names its resolver where the payload has a branch, directory, path or project);
+  - `streams_pass_the_chain` (`ops.subscribe` refused before it starts);
+  - `human_only_matrix` (every human-only scope and escalation × `anonymous`, `local`, `agent`, `mcp`, `console`: only `console` passes);
+  - `all_listed_scopes_are_required` (a rule with two scopes refuses a principal holding one);
+  - `open_needs_write_unless_attached` (an `agent` with `project.read` only: attaching to an open project works, opening a closed one is `SCOPE_DENIED`);
+  - `create_and_open_reach_by_directory` (an `agent` with `projects: [A]`: opening B's folder is `PROJECT_NOT_FOUND`; creating outside its roots is `PATH_NOT_ALLOWED`);
+  - `probe_outside_project_is_path_not_allowed` (and inside the project folder or `workspace/` works; `local` unrestricted);
+  - `name_and_id_resolve_the_same` (a rule on `br3` applies to `feature`, `feature#br3`, `br3`);
+  - `rename_between_resolve_and_write_is_caught` (an injected rename between the policy stage and the store call: the in-transaction guard refuses, nothing written; `crates/fin-store/tests/guard.rs` covers every write path: commit, undo, redo, checkpoint, merge, pick, revert, branch create/set, recover);
+  - `agent_branch_limits` (`branches: ["own"]`: a commit to `main` is `BRANCH_NOT_ALLOWED`, to a branch it created works);
+  - `ask_answers_approval_required` (a test policy);
+  - `check_order_is_fixed` (a request both unauthorised and malformed answers in the chain's order);
+  - `denials_are_audited` (tag, scope or rule, principal kind; no payload);
+  - `fix_texts_contain_no_command` (every human-only code's fix: no `finisherd <word>`, `fin <word>` or backticks; addresses the user; `details.where` set).
+- [ ] **Step 2: Implement.** Add `WriteGuard` to `crates/fin-store/examples/export_schema.rs` and regenerate. Move the confirm/relocate tests to the console helper in the same commit.
+- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd,store): one middleware chain with scopes, resolvers, reach and an in-transaction write guard`.
 
-### Task 5: Handshake RPCs, tickets, the WebSocket without a token, protocol 2 — tier: sonnet
+### Task 6: Tickets, the WebSocket without a token, protocol 2 — tier: sonnet — after Task 5
 
 **Files:**
-- Create: `apps/finisherd/src/auth/{handshake.ts (server.hello, auth.prove handlers), tickets.ts}`, `apps/finisherd/src/upgrade.ts` (the HTTP upgrade checks).
-- Modify: `apps/finisherd/src/{transport.ts (remove `hasBearer`, `makeWebSocketServer`), config.ts (`ServerInfo` without `token`, with `envId`), main.ts, handlers.ts}`, `packages/contracts/src/{index.ts (PROTOCOL_VERSION = 2), rpc.ts (`generation` required; `auth.ticket`, `auth.whoami`)}`, `crates/fin/src/endpoint.rs` (`PROTOCOL_VERSION = 2`), `scripts/e2e/lib.mjs` (`connectWs` mints a ticket over the socket as `local`), `apps/finisherd/scripts/capture-rpc-fixtures.ts` and the fixtures it writes.
-- Test: `apps/finisherd/test/tickets.test.ts`, `apps/finisherd/test/server.test.ts` (updated), `scripts/e2e.test.mjs`.
+- Create: `apps/finisherd/src/auth/tickets.ts`, `apps/finisherd/src/upgrade.ts`.
+- Modify: `apps/finisherd/src/{transport.ts (remove `hasBearer`, `makeWebSocketServer`; `ws` in `noServer` mode behind `node:http`), config.ts (`ServerInfo` without `token`), main.ts, handlers.ts}`, `apps/finisherd/package.json` (`ws` pinned), `packages/contracts/src/{index.ts (`PROTOCOL_VERSION = 2`), rpc.ts (required generations; `asset.probe {projectId}`; `auth.ticket`, `auth.whoami`, `auth.revokeSelf`)}`, `crates/fin/src/endpoint.rs` (`PROTOCOL_VERSION = 2`), `crates/fin/src/commands/{asset.rs, media.rs}` (send `projectId`), `scripts/e2e/lib.mjs` (`connectWs` mints a ticket over the socket and sends it in `Sec-WebSocket-Protocol`), `apps/finisherd/scripts/capture-rpc-fixtures.ts`, the RPC fixtures, `crates/fin/tests/rpc_contract.rs`.
+- Test: `apps/finisherd/test/tickets.test.ts`, `apps/finisherd/test/server.test.ts`, `scripts/e2e.test.mjs`.
 
 **Interfaces:**
 ```ts
-// auth/tickets.ts
-export class Tickets {
-  constructor(clock?: () => number);
-  mint(principal: Principal, ttlS?: number): { ticket: string; expiresAt: number };   // ≤ 60 s
-  take(ticket: string): Principal | undefined;                                       // one-time
-  sweep(): void;
-}
-// upgrade.ts
-export interface UpgradeCheck { (req: IncomingMessage): { ok: true; principal: Principal } | { ok: false; status: 401 | 403 | 404 | 426; body?: unknown } }
-export function makeUpgradeCheck(opts: { port: () => number; tickets: Tickets; origins: () => ReadonlyArray<string> }): UpgradeCheck;
+export class Tickets { mint(p: Principal, ttlS?: number): { ticket: string; expiresAt: number }; take(t: string): Principal | undefined; sweep(): void }
+export type UpgradeResult = { ok: true; principal: Principal; protocol: "finisher.v2" } | { ok: false; status: 401 | 403 | 404 | 426; body?: unknown };
+export function makeUpgradeCheck(opts: { port: () => number; tickets: Tickets; origins: () => ReadonlyArray<string> }): (req: IncomingMessage) => UpgradeResult;
 ```
-Decisions 7–8, 17–20.
+Decisions 23–26.
 
 - [ ] **Step 1: Write failing tests:**
-  - `hello_returns_proof_for_named_credential` (local, console; an unknown agent id gets no proof);
-  - `replayed_prove_is_refused` (a MAC captured on one connection fails on another: new nonces);
   - `ticket_is_one_time`, `ticket_expires`, `ticket_ttl_capped_at_60`;
-  - `ws_without_ticket_is_401`, `ws_wrong_version_is_426_with_range`, `ws_bad_host_is_403`, `ws_browser_origin_matrix` (absent ok; own origins ok; another origin 403; a `server.origins` entry ok);
-  - `local_ticket_is_local_principal` (`auth.whoami` over the WebSocket answers `local`);
-  - `finisherd_json_has_no_token` (and holds `envId`, `protocolVersion: 2`);
-  - `generation_is_required` (`tx.commit` without it → `INVALID_REQUEST`).
-- [ ] **Step 2: Implement.** Re-capture the RPC fixtures (`pnpm --filter finisherd capture-rpc-fixtures`) and update `crates/fin/tests/rpc_contract.rs` for the new hello.
-- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): mutual handshake, one-time WebSocket tickets, protocol 2`.
+  - `ticket_in_subprotocol_header`, `ticket_not_accepted_in_query` (`?ticket=` is ignored: 401);
+  - `ws_without_ticket_is_401`, `ws_wrong_version_is_426_with_range`, `ws_bad_host_is_403`, `ws_origin_matrix`, `host_and_origin_checked_before_ticket_is_consumed`;
+  - `local_ticket_is_local_principal` (`auth.whoami` over the WebSocket);
+  - `revoke_self_needs_no_id` (an agent credential revokes itself; it cannot name another);
+  - `finisherd_json_has_no_token`;
+  - `generation_is_required`, `probe_requires_project_id`.
+- [ ] **Step 2: Implement** both sides and re-capture the fixtures in this commit.
+- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd,fin): one-time WebSocket tickets, Host and Origin checks, protocol 2`.
 
-### Task 6: Diagnostics: sources and actors from principals, owner-only operations — tier: opus
+### Task 7: Diagnostics from principals; human-only diagnostics; training on only from a device — tier: opus — after Task 6
 
 **Files:**
-- Modify: `crates/fin-core/src/events/mod.rs` (`Source::Console`), `crates/fin-core/src/events/names.rs` (`RPC_METHODS` += `auth.prove`, `auth.ticket`, `auth.whoami`, `auth.agent.mint`, `auth.agent.list`, `auth.agent.revoke`, `auth.audit.list`, `auth.audit.purge`, `server.status`, `server.stop`), `crates/fin-core/src/events/kinds.rs` (`console` emits nothing through `diagnostics.record`), the regenerated schema and `generated.ts`, `apps/finisherd/src/diagnostics.ts` (D4's file: `RpcSource` → `principal.source`; `callMeta` → `actorFor`; rate limit keyed by principal; consent rule; redacted export), `apps/finisherd/src/main.ts` and `transport.ts` (drop the per-transport `RpcSource` layers D4 added).
-- Test: `crates/fin-core/tests/events.rs` (golden for `console`), `apps/finisherd/test/diagnostics-principals.test.ts`.
+- Modify: `crates/fin-core/src/events/{mod.rs (`Source::Console`, `Source::Mcp`), names.rs (`RPC_METHODS` += every new RPC), kinds.rs (`mcp` emits `cli.command` and `error.panic`; `console` none)}`, the regenerated schema and `generated.ts`, `apps/finisherd/src/diagnostics.ts` (`sourceOf`, `actorFor`, per-principal rate limit, consent rules, redacted export), `apps/finisherd/src/{main.ts, transport.ts}` (drop D4's per-transport `RpcSource` layers), `crates/fin/tests/cli_diagnostics.rs` and `scripts/e2e/diagnostics.mjs` (D6/D7: the refused calls now expect exit 7 or 2; the state-changing steps move to the console helper), and the console helpers of Task 5 (`crates/fin/tests/support/console.rs`, the TS test client, `scripts/e2e/lib.mjs`) fetch a `console.challenge` and send it, **in this commit**.
+- Test: `crates/fin-core/tests/events.rs` (goldens), `apps/finisherd/test/diagnostics-principals.test.ts`.
 
 **Interfaces:**
 ```ts
-export function sourceOf(p: Principal): Source | undefined;     // local|agent → fin, console → console, device → ui, anonymous → undefined
-export function actorFor(p: Principal, headers: Headers): Actor;  // spec §3.4
+export function sourceOf(p: Principal): Source | undefined;     // local|agent → fin, mcp → mcp, console → console, device → ui
+export function actorFor(p: Principal, headers: Headers): Actor;
 ```
-Decisions 16, 21–22.
+Decisions 21–22, 27–28.
 
 - [ ] **Step 1: Write failing tests:**
-  - `source_follows_principal` (a `local` socket connection and a `local`-ticket WebSocket both record `source: fin`; `console` records `console`);
-  - `agent_actor_is_its_session` (an agent principal sending `fin-actor-kind: user` and another session id is recorded as `{kind: agent, session: <its id>}`, with the header's `call` kept);
-  - `local_actor_keeps_headers` (D6 behaviour unchanged for `local`);
-  - `consent_needs_owner` (`diagnostics.consent` from `local` for both purposes and every value → `HUMAN_ONLY`; from `console` → applied; training `on` from `console` writes `basis: user`);
-  - `purge_and_project_default_need_owner`, `project_never_open_to_writers`;
-  - `non_owner_export_is_redacted` (training on, a `log.commit` with `intent`; `local` export has no `intent` and `redacted: true`; `console` export has it);
-  - `rate_limit_is_per_principal` (two agent sessions each get their own bucket; a thousand `local` runs share one);
-  - `rpc_methods_table_matches_contracts` (the D4 drift test, now with the new RPCs).
-- [ ] **Step 2: Implement.** Update the D-plan's `fin diagnostics consent|purge|project` tests in `crates/fin/tests/cli_diagnostics.rs`: they now expect exit 7 `HUMAN_ONLY` (except `consent training on`, still exit 2), and the cases that changed state move to console tests in Task 7.
-- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` (the D7 diagnostics scenario uses the console for consent and purge now; update its steps 1, 4 and 5) → PASS. **Commit** `feat(diagnostics): sources and actors from principals; consent, purge and content export need an owner`.
+  - `source_follows_principal` (socket `local` and `local`-ticket WebSocket → `fin`; console → `console`; an `mcp` credential → `mcp`);
+  - `agent_actor_is_its_session` (headers claiming `user` or another session are overridden; `call` kept);
+  - `local_actor_keeps_headers`;
+  - `training_on_refused_for_every_non_device` (`CONSENT_UI_ONLY` for `local`, `agent`, `mcp`, `console`);
+  - `consent_off_and_unset_need_a_human` (`HUMAN_ONLY` for `local`; works for `console` with a challenge, Task 8; until Task 8 the console helper passes a test challenge through the same server check);
+  - `purge_project_default_and_content_export_need_a_human`, `project_never_open_to_writers`;
+  - `non_human_export_is_redacted`;
+  - `rate_limit_is_per_principal`;
+  - `rpc_methods_table_matches_contracts`.
+- [ ] **Step 2: Implement.** `console.challenge` and the server's challenge check land here (Decision 30's server half), so the consent tests are real; Task 8 adds the console CLI around them.
+- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(diagnostics): sources and actors from principals; human-only diagnostics; no training opt-in outside the app`.
 
-### Task 7: Console commands, `server.stop`, human-only storage operations — tier: sonnet
+### Task 8: The console — tier: sonnet — after Task 7
 
 **Files:**
-- Create: `apps/finisherd/src/console/{main.ts (dispatch, flags, exit codes), client.ts (an NDJSON RPC client over the local socket with the console handshake; reuse `test/support/ndjson-client.ts`'s framing by moving the shared part to `src/console/ndjson.ts`), format.ts (text and `--json`), commands/{status.ts, stop.ts, diagnostics.ts, project.ts, audit.ts, agent.ts}}`, `apps/finisherd/src/server-admin.ts` (`server.status`, `server.stop`, `auth.audit.*` handlers).
-- Modify: `apps/finisherd/src/main.ts` (Decision 24 dispatch; `server.stop` interrupts the main fiber), `apps/finisherd/src/handlers.ts` (new handlers), `packages/contracts/src/{auth.ts, rpc.ts}` (`server.status`, `server.stop`, `auth.audit.list`, `auth.audit.purge`), `apps/finisherd/package.json` (`bin` unchanged: `finisherd`).
+- Create: `apps/finisherd/src/console/{main.ts, ndjson.ts (shared with the test client), client.ts, prompt.ts (the `Prompt` interface, a TTY implementation), format.ts, commands/{status.ts, stop.ts, audit.ts, diagnostics.ts, project.ts, agent.ts, mcp.ts}}`, `apps/finisherd/src/server-admin.ts` (`server.status`, `server.stop`, `auth.audit.*`).
+- Modify: `apps/finisherd/src/main.ts` (Decision 29 dispatch; `server.stop` interrupts the main fiber), `apps/finisherd/src/handlers.ts`, `packages/contracts/src/{auth.ts, rpc.ts}`.
 - Test: `apps/finisherd/test/console.test.ts`.
 
 **Interfaces:**
 ```text
 finisherd [serve] [--server-data <dir>]
-finisherd status [--json]
-finisherd stop
-finisherd diagnostics consent <diagnostics|training> <on|off|unset>
+finisherd status [--json]              finisherd stop              finisherd audit [--since] [--kind] [--limit] [--json]
+finisherd audit purge (--all | --before <date>)
+finisherd diagnostics consent diagnostics <on|off|unset>     finisherd diagnostics consent training <off|unset>
 finisherd diagnostics purge (--all | --project <id> | --before <date>)
-finisherd diagnostics project default <projectId>
-finisherd diagnostics export [--content] [--since] [--project] [--kind]… [--limit]   (JSONL on stdout)
-finisherd project takeover <dir|projectId> --confirm
-finisherd project open <dir> --relocate
-finisherd audit [--since <date>] [--kind <k>] [--limit <n>] [--json]
-finisherd agent mint --label <s> --scope <scope>… [--project <id>]… [--expires <date>] [--out <file>]
-finisherd agent ls | revoke <id>
+finisherd diagnostics project default <projectId>            finisherd diagnostics export --content [filters]
+finisherd project takeover <dir|projectId> --confirm         finisherd project open <dir> --relocate
+finisherd agent mint --label <s> [--scope <s>]… [--project <id>]… [--branch own|<id>]… [--out <file>]
+finisherd agent ls | revoke <id>       finisherd mcp setup --out <file> [--label <s>]
 ```
-Decision 24; spec §4.5–4.7.
+```ts
+export interface Prompt { isInteractive(): boolean; show(text: string): void; ask(question: string): Promise<string> }
+```
+Decisions 29–31. The help text of each mutating command says it needs an interactive terminal and a typed code.
 
-- [ ] **Step 1: Write failing tests:**
-  - `serve_is_default_and_flags_still_serve` (`finisherd --server-data X` serves as before);
-  - `console_proves_as_console` (`finisherd status --json` shows `connections.console: 1` while it runs);
-  - `console_without_server_is_server_unavailable` (exit 5, the fix says to start `finisherd`);
-  - `stop_shuts_down_gracefully` (exit 0, `finisherd.json` removed, engines closed: the same finalizers as SIGINT; runs on Windows too);
-  - `takeover_confirm_and_relocate_via_console` (and `fin project takeover --confirm` / `fin project open --relocate` → exit 7 `HUMAN_ONLY` naming these commands);
-  - `diagnostics_commands_via_console` (consent, purge, project default, export with content);
-  - `audit_lists_denials_and_purges`;
-  - `console_never_prints_secrets` (keys and MACs absent from stdout and stderr in every test above).
-- [ ] **Step 2: Implement.** Move the existing tests that used `fin project takeover --confirm` or `fin project open --relocate` (`crates/fin/tests/cli_online.rs`, `cli_history.rs`, `scripts/e2e/storage.mjs`, `scripts/e2e/history*.mjs`; grep for `--confirm` and `--relocate`) to the console, or to a test-support helper that proves as `console` with the key from the test's server data.
-- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): console commands for human-only operations; graceful stop`.
+- [ ] **Step 1: Write failing tests** (through an injected `Prompt`, and by spawning the console for the non-TTY cases):
+  - `serve_is_default_and_flags_still_serve`;
+  - `console_proves_as_console`, `console_without_server_is_server_unavailable`;
+  - `non_tty_is_console_needs_tty` (spawned with piped stdio, every mutating command exits 7 and changes nothing);
+  - `typed_code_must_match` (a wrong code changes nothing; `yes |` is impossible because stdin is not a TTY);
+  - `mutation_without_challenge_is_refused` (a raw console-proved RPC without `challenge` → `CONFIRMATION_REQUIRED`), `challenge_is_single_use_and_per_connection`, `challenge_expires_after_60s`;
+  - `console_training_on_is_consent_ui_only` (exit 2; nothing written to `settings.json`);
+  - `read_only_commands_run_without_tty` (`status`, `audit`), `stop_shuts_down_gracefully` (runs on Windows too);
+  - `takeover_confirm_and_relocate_via_console`;
+  - `console_never_prints_secrets`.
+- [ ] **Step 2: Implement.**
+- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): TTY-gated console with typed confirmations; graceful stop`.
 
-### Task 8: `fin`: credentials, the handshake, exit 7, `whoami` — tier: sonnet
+### Task 9: Agent and MCP credentials — tier: opus — after Task 5
 
 **Files:**
-- Create: `crates/fin/src/auth.rs` (credential discovery, `Credential {kind, id?, key}`, `handshake(&mut Client)`, MAC helpers), `crates/fin/src/commands/whoami.rs`, `crates/fin/tests/cli_auth.rs`.
-- Modify: `crates/fin/src/client.rs` (call `auth::handshake` after connect: call-site lines only), `crates/fin/src/output.rs` (`DENIED = 7`, `DENIED_CODES`; exit-code tests), `crates/fin/src/{registry.rs, map.rs, main.rs}` (`whoami`), `crates/fin/Cargo.toml` (`hmac`, `sha2`, `base64` if not present).
-- Test: `crates/fin/tests/cli_auth.rs`, `crates/fin/tests/support/mod.rs` (a fake server that holds no key; a helper to read the test server's keys).
-
-**Interfaces:**
-```rust
-pub enum CredentialKind { Local, Console, Agent }
-pub struct Credential { pub kind: CredentialKind, pub id: Option<String>, key: [u8; 32] }
-pub fn discover(server_data: Option<&Path>) -> Option<Credential>;   // FIN_CREDENTIAL, else <server-data>/auth/local.key
-pub fn handshake(client: &mut Client, cred: Option<&Credential>) -> Result<Principal, CoreError>; // SERVER_UNTRUSTED, UNAUTHENTICATED
-pub fn hello_proof(key: &[u8; 32], client_nonce: &[u8; 32], server_nonce: &[u8; 32]) -> [u8; 32];
-pub fn prove_mac(key: &[u8; 32], server_nonce: &[u8; 32], client_nonce: &[u8; 32]) -> [u8; 32];
-```
-`fin whoami` → `{principal}` (an anonymous connection answers `{principal: {kind: "anonymous"}}`, exit 0). Decisions 9–10, 13; spec §3.5.
-
-- [ ] **Step 1: Write failing tests:**
-  - `handshake_vectors_match_rust` (the shared vector file);
-  - `fin_works_as_local` (the existing online suites pass unchanged: the harness's server data holds the key);
-  - `fin_refuses_server_without_proof` (a fake NDJSON server that answers `server.hello` without `proof`, or with a wrong one: exit 7 `SERVER_UNTRUSTED`, and the fake records no request after the hello);
-  - `squatter_never_receives_a_request` (the fake server listens on the socket named by a stale `finisherd.json`);
-  - `no_credential_is_unauthenticated` (`FIN_SERVER` only: exit 7, fix names `FIN_CREDENTIAL` and server data);
-  - `agent_credential_file_is_used` (`FIN_CREDENTIAL` from `finisherd agent mint --out`; `fin whoami` answers `agent`);
-  - `denied_codes_exit_7` (`exit_codes_follow_the_contract` gains the five codes);
-  - `map_still_under_budget`.
-- [ ] **Step 2: Implement.** `handshake` uses the connection's normal per-operation timeout; its round trip is excluded from nothing (it is part of every run) and measured in Task 13.
-- [ ] **Step 3: Run** `rtk cargo test -p fin` (`FIN_REQUIRE_SERVER=1`), the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(fin): mutual handshake with key files, exit code 7, fin whoami`.
-
-### Task 9: Agent credentials — tier: opus
-
-**Files:**
-- Create: `apps/finisherd/src/auth/agents.ts`, `apps/finisherd/src/control/migrations/m0002.ts` (`agent_sessions`).
-- Modify: `apps/finisherd/src/auth/handshake.ts` (agent hello), `apps/finisherd/src/handlers.ts`, `packages/contracts/src/{auth.ts, rpc.ts}` (`auth.agent.mint|list|revoke`), `apps/finisherd/src/console/commands/agent.ts`.
-- Test: `apps/finisherd/test/agents.test.ts`.
+- Create: `apps/finisherd/src/auth/credentials.ts`, `apps/finisherd/src/control/migrations/m0002.ts` (`credentials`).
+- Modify: `apps/finisherd/src/auth/handshake.ts` (credential hellos), `apps/finisherd/src/handlers.ts`, `apps/finisherd/src/env.ts` (`FIN_CREDENTIAL` in `ChildEnvExtra`), `packages/contracts/src/{auth.ts, rpc.ts}` (`auth.credential.mint|list|revoke`), `apps/finisherd/src/console/commands/{agent.ts, mcp.ts}` if Task 8 is in (otherwise Task 8 wires them).
+- Test: `apps/finisherd/test/credentials.test.ts`, `apps/finisherd/test/env.test.ts`.
 
 **Interfaces:**
 ```ts
-export const AgentCredentialSchema = Schema.Struct({ v: Schema.Literal(1), kind: Schema.Literal("agent"), id: Schema.String, key: Schema.String, env: Schema.String });
-export class AgentSessions {
+export const CredentialFileSchema = Schema.Struct({ v: Schema.Literal(1), kind: Schema.Literals(["agent", "mcp"]),
+  id: Schema.String, key: Schema.String, env: Schema.String });
+export class Credentials {
   constructor(store: ControlStore, master: Buffer, audit: Audit, clock?: () => number);
-  mint(by: Principal, req: { label: string; scopes: Scope[]; projects?: string[]; expiresAt?: number }): { session: AgentSession; credential: AgentCredential };
-  keyFor(id: string): Buffer | undefined;        // undefined when unknown, expired or revoked
-  principal(id: string): Principal | undefined;
-  list(): AgentSession[];
-  revoke(by: Principal, id: string, conns: Connections): boolean;   // closes live connections
+  mint(by: Principal, req: { kind: "agent" | "mcp"; label: string; scopes?: Scope[]; projects?: string[];
+    branches?: Array<"own" | string>; idleS?: number; absoluteS?: number | null }): { credential: CredentialRow; file: CredentialFile };
+  keyFor(kind: "agent" | "mcp", id: string): Buffer | undefined;   // undefined when unknown, expired or revoked
+  principal(kind: "agent" | "mcp", id: string): Principal | undefined;
+  touch(id: string): void;                                         // lastUsedAt, at most once a minute
+  revoke(by: Principal, id: string, conns: Connections): boolean;  // closes live connections
+  sweepExpired(conns: Connections): number;
 }
 ```
-Decision 23; spec §4.1.
+Decisions 32–34.
 
 - [ ] **Step 1: Write failing tests:**
-  - `mint_then_prove_as_agent` (scopes exactly as minted, `human: false`);
-  - `mint_refuses_human_only_scopes` (`SCOPE_DENIED` naming them);
-  - `mint_needs_owner` (`local` → `HUMAN_ONLY`);
-  - `key_is_never_stored` (no column holds it; the credential is recomputed from the master);
+  - `mint_then_prove_as_agent_and_mcp` (scopes exactly as minted; `human: false`; source `fin` / `mcp`);
+  - `mint_defaults_and_branches_kept` (no scopes → the default set; `branches: ["own"]` stored and enforced by the policy stage);
+  - `mint_refuses_human_only_scopes`, `mint_needs_a_human`;
+  - `key_is_never_stored`;
+  - `idle_and_absolute_expiry` (injected clock: 24 h idle and 7 d absolute for `agent`; 30 d idle for `mcp`; expiry closes live connections within the 60 s sweep);
   - `revoke_closes_live_connections` (an open `ops.subscribe` ends with `CREDENTIAL_REVOKED` within 100 ms);
-  - `expired_session_gets_no_proof`;
-  - `agent_survives_server_restart` (the master is kept; the same credential file proves after a restart);
-  - `agent_scopes_limit_rpcs` (`project.read` only: `tx.commit` → `SCOPE_DENIED`);
-  - `mint_and_revoke_are_audited`.
+  - `credential_survives_server_restart`;
+  - `agent_scopes_limit_rpcs`;
+  - `mint_revoke_expire_are_audited`;
+  - `child_env_passes_fin_credential_path`.
 - [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): agent credentials derived from a master key, with scopes and revocation`.
+- [ ] **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): agent and MCP credentials with scopes, branch limits and expiry`.
 
-### Task 10: RPC hardening from the sub-project 5 follow-ups — tier: sonnet
+### Task 10: RPC hardening from the sub-project 5 follow-ups — tier: sonnet — can start now
 
 **Files:**
-- Create: `apps/finisherd/src/paths.ts` (`requireAbsolute(field, path)`).
-- Modify: `apps/finisherd/src/handlers.ts` (call sites), `crates/fin/src/{client.rs (frame cap; call-site lines), conn.rs (a line-length bound in `read_line`), main.rs (the overall deadline)}`, `crates/fin/src/backend.rs` and `crates/fin/Cargo.toml` (the `test-hooks` feature; dev-dependency on itself with the feature), `TASKS.md`.
-- Test: `apps/finisherd/test/paths.test.ts`, `crates/fin/tests/cli_hardening.rs`, `scripts/check-test-hooks.test.mjs` (a case for `fin`).
+- Create: `apps/finisherd/src/paths.ts` (`requireAbsolute`).
+- Modify: `apps/finisherd/src/handlers.ts` (call sites; Task 5's resolvers later call the same helper), `crates/fin/src/{client.rs (frame cap; call-site lines), conn.rs (a bounded `read_line`), main.rs (the overall deadline)}`, `crates/fin/src/backend.rs` and `crates/fin/Cargo.toml` (`test-hooks` feature; self dev-dependency), `scripts/check-test-hooks.mjs` (cover `fin`), `TASKS.md`.
+- Test: `apps/finisherd/test/paths.test.ts`, `crates/fin/tests/cli_hardening.rs`, `scripts/check-test-hooks.test.mjs`.
 
-**Interfaces:** `requireAbsolute(field: string, path: string): Effect.Effect<string, FinError>` (`INVALID_PATH {field, path}`); `FIN_DEADLINE_S`. Decisions 25–27.
+**Interfaces:** `requireAbsolute(field: string, path: string, platform?): Effect.Effect<string, FinError>` (`INVALID_PATH {field, path}`); `FIN_DEADLINE_S`. Decisions 35–37. Decode failures as `FinError` are Task 3's (they need the protocol layer).
 
 - [ ] **Step 1: Write failing tests:**
-  - `relative_paths_are_invalid_path` (`project.create {dir: "x"}`, `project.open {dir: "./x"}`, `asset.probe {path: "a/../b"}`, `project.recover {importDir: "rel"}`; Windows: `C:foo`, `\foo` without a drive);
+  - `relative_paths_are_invalid_path` (`project.create {dir: "x"}`, `project.open {dir: "./x"}`, `asset.probe {path: "a/../b"}`, `project.recover {importDir: "rel"}`; Windows `C:foo` and `\foo`);
   - `fin_frame_cap` (a fake server sending a 17 MiB line → `PROTOCOL_ERROR {max}`);
-  - `fin_overall_deadline` (a fake server that answers every 25 s: the third call hits `FIN_DEADLINE_S=60` → `SERVER_TIMEOUT {deadline}`);
-  - `test_hooks_ignored_without_feature` (a `fin` built without the feature ignores `FIN_OFFLINE_SNAPSHOT`; run through `cargo run -p fin --no-default-features` in the test, or a unit test on the cfg'd function);
-  - `check_test_hooks_flags_fin` (the gate fails if `fin`'s normal build enables `test-hooks`).
+  - `fin_overall_deadline` (a fake server answering every 25 s; `FIN_DEADLINE_S=60`: the third call → `SERVER_TIMEOUT {deadline}`);
+  - `test_hooks_ignored_without_feature` (a unit test on the cfg'd reader);
+  - `check_test_hooks_flags_fin`.
 - [ ] **Step 2: Implement.**
 - [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `fix(finisherd,fin): invalid paths, frame caps and deadlines; fin test hooks behind a feature`.
 
-### Task 11: e2e `auth` scenario — tier: sonnet
+### Task 11: The native Windows pipe listener — tier: opus — after Task 3
+
+**Files:**
+- Create: `crates/fin-node/src/pipe_server.rs` (Windows only; a stub that errors elsewhere), `apps/finisherd/src/pipe.ts` (wraps it as an Effect `Socket` for the protocol).
+- Modify: `crates/fin-node/src/lib.rs`, `crates/fin-node/Cargo.toml`, `packages/fin-node` (typings), `apps/finisherd/src/transport.ts` (Windows uses `PipeServer`; unix keeps `NodeSocketServer`), `apps/finisherd/src/connections.ts` (`peer`).
+- Test: `crates/fin-node/tests/pipe_server.rs` (`#[cfg(windows)]`), `apps/finisherd/test/pipe.test.ts` (skipped off Windows).
+
+**Interfaces:**
+```rust
+#[napi] pub struct PipeServer { /* accept thread, instances */ }
+#[napi] impl PipeServer {
+  #[napi(constructor)] pub fn new(name: String, opts: PipeOptions) -> napi::Result<Self>;    // PIPE_SQUATTED if not first
+  #[napi] pub fn on_connection(&self, cb: ThreadsafeFunction<PipeConnectionInfo>) -> napi::Result<()>; // {id, pid, sid}
+  #[napi] pub fn write(&self, id: u32, data: Buffer) -> AsyncTask<…>;
+  #[napi] pub fn on_data(&self, id: u32, cb: ThreadsafeFunction<Option<Buffer>>) -> napi::Result<()>; // None = closed
+  #[napi] pub fn close(&self, id: u32);
+  #[napi] pub fn allow(&self, sid: String) -> napi::Result<()>;                               // sub-project 7: AppContainer SIDs
+  #[napi] pub fn shutdown(&self);
+}
+```
+Decision 38; spec §4.3, §4.11.
+
+- [ ] **Step 1: Write failing tests (Windows):**
+  - `first_instance_or_pipe_squatted` (a pipe of the same name created first → `PIPE_SQUATTED`);
+  - `remote_clients_rejected` (the flag is set: checked through `GetNamedPipeInfo`/handle state);
+  - `dacl_is_user_and_system_only` (read back with `GetSecurityInfo`);
+  - `other_user_cannot_open` (a process under a restricted token or another account is closed before its first frame; skipped with a notice when the host has no second account);
+  - `peer_pid_and_sid_reported`;
+  - `allow_adds_an_appcontainer_sid` (a test AppContainer SID can connect after `allow`);
+  - `round_trip_through_protocol` (the existing `server.test.ts` suite passes over the native pipe);
+  - `shutdown_closes_all_connections`.
+- [ ] **Step 2: Implement** with overlapped I/O on one accept thread and one I/O completion port; JS sees ordered `Buffer` chunks per connection.
+- [ ] **Step 3: Run** the gates on Windows and Linux (stub) and `rtk pnpm e2e` on Windows → PASS. **Commit** `feat(fin-node,finisherd): native Windows pipe listener with its own security descriptor`.
+
+### Task 12: e2e `auth` scenario — tier: sonnet — after Tasks 8, 9 and 11
 
 **Files:**
 - Create: `scripts/e2e/auth.mjs`.
-- Modify: `scripts/e2e.mjs` (`SCENARIOS.auth`), `scripts/e2e.test.mjs`, `scripts/e2e/lib.mjs` (helpers: `console(args)`, `rawConnect()` for an unproved socket).
+- Modify: `scripts/e2e.mjs` (`SCENARIOS.auth`), `scripts/e2e.test.mjs`, `scripts/e2e/lib.mjs` (`consoleRpc(tag, payload)` proving as console and fetching a fresh `console.challenge` for each mutation; `rawConnect()`).
 
-- [ ] **Step 1: Write the scenario,** driven by `fin`, the console and raw sockets:
-  1. Start `finisherd`. A raw socket connection that sends only `snapshot.get` gets `UNAUTHENTICATED`; `server.hello` answers.
-  2. `fin project create`, three edits and an undo work (`local`). `fin whoami` says `local`.
-  3. `fin diagnostics purge --all`, `fin diagnostics consent diagnostics off` and `fin project takeover --confirm` exit 7 with `HUMAN_ONLY`, each `fix` naming a `finisherd …` command; `finisherd diagnostics consent diagnostics off` then `on` works; `finisherd audit --json` lists the three denials.
-  4. A ticketed WebSocket subscriber (`lib.mjs` `connectWs`) streams the ops of step 2 from rev 0; reusing its ticket is refused (401).
-  5. `finisherd agent mint --scope project.read --out <tmp>/cred.json`; with `FIN_CREDENTIAL`, `fin whoami` says `agent`, `fin view` works and an edit exits 7 `SCOPE_DENIED`; `finisherd agent revoke` makes the next `fin` run exit 7.
-  6. Restart `finisherd`: a copy of the old `local.key` no longer proves (a raw handshake with it fails); `fin` works (it reads the new key).
-  7. **Leak grep** over `finisherd.json`, the audit export, the journal (`events/`), stdout and stderr of every step: none of the key files' contents, no ticket, no MAC.
-- [ ] **Step 2: Run** `rtk pnpm e2e` (all scenarios) → PASS. **Commit** `test(e2e): auth scenario for principals, tickets, human-only and agent credentials`.
+- [ ] **Step 1: Write the scenario:**
+  1. Start `finisherd`. A raw connection that sends `snapshot.get` gets `UNAUTHENTICATED`; `server.hello` answers; `run/` holds only the socket.
+  2. `fin project create`, three edits and an undo (`local`); `fin whoami` says `local`.
+  3. `fin diagnostics purge --all`, `fin diagnostics consent diagnostics off` and `fin project takeover --confirm` exit 7 `HUMAN_ONLY`; no `fix` contains a command line; `finisherd diagnostics consent training on` exits 2; the console (spawned without a TTY) exits 7 `CONSOLE_NEEDS_TTY` for a purge; `consoleRpc` with a challenge purges; `finisherd audit --json` lists the denials.
+  4. A ticketed WebSocket subscriber streams step 2's ops; reusing the ticket → 401; a ticket in the query string → 401.
+  5. `finisherd agent mint` (through `consoleRpc`) with `--scope project.read` and `--branch own`: with `FIN_CREDENTIAL`, `fin whoami` says `agent`, `fin view` works, an edit → `SCOPE_DENIED`; a second credential with write scopes and `branch own` → an edit on `main` is `BRANCH_NOT_ALLOWED`, on its own branch works; its journal entries carry its credential id as `actor.session`; revoking it makes the next run exit 7.
+  6. Restart: a copy of the old `local.key` no longer proves; `fin` works; a `fin` started just before the restart succeeds through the retry.
+  7. **Leak grep** over `finisherd.json`, the audit export, `events/`, and every step's stdout and stderr: no key contents, ticket, MAC or challenge.
+- [ ] **Step 2: Run** `rtk pnpm e2e` (all scenarios) → PASS. **Commit** `test(e2e): auth scenario for principals, the chain, tickets, the console and credentials`.
 
-### Task 12: Spec, architecture pointer, README and tracker — tier: sonnet
+### Task 13: Spec, architecture pointer, README and tracker — tier: sonnet
 
-**Files:**
-- Modify: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§3 and §4 "as built": the Task 3 spike answer, the measured handshake cost and statement budget, any deviation), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 item 15 "Sub-project 5A as built", pointing at the spec, and §27.12.5's WebSocket token sentence marked superseded), `README.md` (a "Security model" section: principals, key files, the console, human-only operations, exit 7), `TASKS.md`.
+**Files:** `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§3–4 as built: the Task 3 reading of Effect's RPC server, measured costs, deviations), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 item 15 "Sub-project 5A as built"; §27.12.5's WebSocket-token sentence superseded), `README.md` ("Security model": principals, key files, `run/`, the console and its confirmations, human-only operations, why they are advisory before sub-project 7, agent and MCP credentials, exit 7), `TASKS.md`.
 
-- [ ] **Step 1:** Write the as-built notes from the code, not from this plan; list every deviation.
-- [ ] **Step 2: TASKS:** tick the closed "Follow-ups for sub-project 5" lines (pipe squatting by proof, server-data ACL, graceful stop, decode failures, `INVALID_PATH`, deadline and frame cap, `fin` test hooks); keep open: `childEnv` provider variables (7), `FIN_NODE_BINARY_DIR` in the JS loader (9), the pipe DACL itself (the proof makes it non-critical; per-project AppContainer SIDs are sub-project 7); add 5B–5E as headings with one line each.
+- [ ] **Step 1:** Write the as-built notes from the code; list every deviation.
+- [ ] **Step 2: TASKS:** tick the closed "Follow-ups for sub-project 5" (pipe squatting and DACL, server-data ACL, graceful stop, decode failures, `INVALID_PATH`, deadline and frame cap, `fin` test hooks); keep open: `childEnv` provider variables (7), `FIN_NODE_BINARY_DIR` (9), the sandbox rules of spec §4.11 (7), approvals behind `APPROVAL_REQUIRED` (7); add 5B–5E headings.
 - [ ] **Step 3: Run** the gates → PASS. **Commit** `docs: record sub-project 5A as built`.
 
-### Task 13: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
+### Task 14: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
 
-Runs on macOS, Windows 11 and the Linux VM. Host details stay in `archive/hosts.md`.
+On macOS, Windows 11 and the Linux VM; host details in `archive/hosts.md`.
 
 - [ ] **Step 1:** `cargo test --workspace`, `pnpm test`, `pnpm gates`, `pnpm e2e` on each OS.
-- [ ] **Step 2: Windows-specific:**
-  - as a **non-elevated** user: `finisherd` creates private server data that passes `checkPrivateDir`; a pre-existing directory with an `Everyone` ACE is refused;
-  - **pipe squatting:** a second local user (or a process under a different token) creates `\\.\pipe\finisher-<user>` first; `finisherd` reports `SERVER_RUNNING`; a `fin` that reads a stale `finisherd.json` naming that pipe exits 7 `SERVER_UNTRUSTED` and the squatter logs no request beyond the hello;
-  - another user opening the real pipe cannot get past `UNAUTHENTICATED`;
-  - `finisherd stop` from a second console.
-- [ ] **Step 3: Measure** and record in TASKS and the spec: the handshake's added p50/p99 to a `fin view` run on each OS; the control-store statement p99 on each OS (budget 1 ms); `node:sqlite` with FTS5 on each OS.
-- [ ] **Step 4:** Fix what fails (each fix its own commit with a test); re-run Step 1.
+- [ ] **Step 2: `node:sqlite` under Electron's Node** on macOS and Windows (Linux x64 was checked on 2026-11-07 with Electron 44.9.3 and 45.0.0: Node 24.22.0, SQLite 3.53.4, FTS5, WAL, no warning): run `apps/finisherd/test/control.test.ts`'s store through `ELECTRON_RUN_AS_NODE=1 <electron> …` with the Electron version the spike used, and record the result.
+- [ ] **Step 3: Windows, as a non-elevated user:** private server data; `PIPE_SQUATTED` when a second account creates the pipe first; that account cannot open the real pipe; a `fin` reading a stale `finisherd.json` that names a squatted pipe exits 7 after one retry, and the squatter sees nothing beyond the hellos; `finisherd stop`.
+- [ ] **Step 4: Measure** and record (TASKS and spec): the handshake's added p50/p99 to `fin view` per OS (budget 1 ms); control-store statement p99 per OS (budget 1 ms); checkpoint-worker WAL size under the e2e load.
+- [ ] **Step 5:** Fix what fails (one commit each, with a test); re-run Step 1.
