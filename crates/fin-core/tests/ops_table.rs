@@ -173,6 +173,7 @@ fn every_variant() -> Vec<Op> {
         .into(),
         ItemUnlink {
             group: "lk1".into(),
+            items: Some(vec!["c4".into()]),
         }
         .into(),
         TransitionSet {

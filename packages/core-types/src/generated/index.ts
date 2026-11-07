@@ -790,8 +790,9 @@ export interface SlideSides {
 }
 /**
  * `item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group
- * named `id` (a `$name` placeholder; a literal id in an internal apply, the inverse of
- * `item.unlink`).
+ * named `id` (a `$name` placeholder). Internal applies (inverses) may name a literal id: a new
+ * group (the inverse of `item.unlink`, one member included), or an existing one the items
+ * join (the undo of a removal that left a member alone, 4C Tasks 9–10 review).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ItemLink".
@@ -801,13 +802,15 @@ export interface ItemLink {
   items: string[];
 }
 /**
- * `item.unlink`: dissolves link group `group`.
+ * `item.unlink`: dissolves link group `group` (internal, with `items`: only those members
+ * leave it).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ItemUnlink".
  */
 export interface ItemUnlink {
   group: string;
+  items?: string[];
 }
 /**
  * `transition.set`: the transition at the cut between `between[0]` (outgoing) and

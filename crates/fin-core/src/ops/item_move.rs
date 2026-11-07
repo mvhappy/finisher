@@ -10,6 +10,9 @@
 //! - `overwrite`: every member is lifted first, then each target range is carved
 //!   ([`crate::ops::util::carve`]) and the member placed there. No shifts.
 //!
+//! Two members' legs that meet on one track are `LINK_LEGS_OVERLAP` (structural): any two in
+//! `ripple` mode, overlapping targets in `overwrite` mode.
+//!
 //! The diff records each member as `updated` with `path: "start"`, on the track it left and
 //! then on the one it is on when they differ (after any items its carve changed). Inverse
 //! (Decision 23, the shifts mirrored in reverse): per member, last member first, `item.remove`
@@ -44,6 +47,44 @@ struct Leg {
     id: String,
     to: TrackAt,
     at: Rational,
+    duration: Rational,
+}
+
+/// `LINK_LEGS_OVERLAP` (structural) when two members' moves meet on one track: in `ripple`
+/// mode any two legs to one track (each opens room there, so the other's target would move
+/// by an amount that depends on their order), in `overwrite` mode two target ranges that
+/// overlap (the second carve would cut the member the first placed).
+fn check_legs(project: &Project, legs: &[Leg], mode: InsertMode) -> Result<(), CoreError> {
+    for (i, a) in legs.iter().enumerate() {
+        for b in &legs[i + 1..] {
+            if a.to != b.to {
+                continue;
+            }
+            let meet = match mode {
+                InsertMode::Ripple => true,
+                InsertMode::Overwrite => {
+                    a.at < b.at.checked_add(b.duration)? && b.at < a.at.checked_add(a.duration)?
+                }
+            };
+            if !meet {
+                continue;
+            }
+            let track = &a.to.get(project).id;
+            return Err(CoreError::new(
+                "LINK_LEGS_OVERLAP",
+                format!(
+                    "linked items {} and {} would both move onto track {track}",
+                    a.id, b.id
+                ),
+            )
+            .with_details(json!({ "items": [a.id, b.id], "track": track }))
+            .with_fix(
+                "move the item to a track where its link group's other members do not land, \
+                 or unlink the group (item.unlink) and move the items one by one",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The members' legs, checked: the named item fits the target track on its timeline; policy:
@@ -73,9 +114,11 @@ fn plan(project: &Project, m: &ItemMove, bindings: &Bindings) -> Result<Vec<Leg>
     let mut legs = Vec::new();
     for member in members(project, &id)? {
         let (t, i) = item_index(project, &member)?;
+        let item = &t.get(project).items[i];
         let leg = Leg {
             to: if member == id { to } else { t },
-            at: t.get(project).items[i].start.checked_add(delta)?,
+            at: item.start.checked_add(delta)?,
+            duration: item.duration,
             id: member,
         };
         if bindings.policy() {
@@ -91,6 +134,7 @@ fn plan(project: &Project, m: &ItemMove, bindings: &Bindings) -> Result<Vec<Leg>
         }
         legs.push(leg);
     }
+    check_legs(project, &legs, m.mode)?;
     Ok(legs)
 }
 

@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::Project;
-use crate::ops::util::{OpDiff, TrackAt, check_unlocked, item_index, wrong_op};
+use crate::ops::util::{OpDiff, TrackAt, check_unlocked, group_items, item_index, wrong_op};
 use crate::ops::{Bindings, ItemLink, ItemUnlink, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
@@ -39,7 +39,9 @@ fn validate(
     items: &[String],
     bindings: &Bindings,
 ) -> Result<Vec<(TrackAt, usize)>, CoreError> {
-    if items.len() < 2 {
+    // A one-member group comes back only as an inverse (an undo of `item.unlink` of a group
+    // a removal left alone, or of the link pass dissolving one).
+    if items.is_empty() || (items.len() < 2 && !bindings.internal()) {
         return Err(invalid(
             "a link group needs at least two items",
             items,
@@ -96,17 +98,37 @@ pub(crate) fn apply(
         .map(|i| bindings.resolve(i))
         .collect::<Result<Vec<_>, _>>()?;
     let places = validate(project, &items, bindings)?;
-    let id = bindings.create(project, &l.id, IdKind::Link, ids)?;
-    diff.record(EntityKind::Link, &id, ChangeKind::Added);
+    // Internal: a literal id of an existing group is joined (an undo putting back a member a
+    // removal took out of it, after the removal's own inverse restored the others).
+    let joins =
+        !l.id.starts_with('$') && bindings.internal() && !group_items(project, &l.id).is_empty();
+    let id = if joins {
+        l.id.clone()
+    } else {
+        bindings.create(project, &l.id, IdKind::Link, ids)?
+    };
+    let change = if joins {
+        ChangeKind::Updated
+    } else {
+        ChangeKind::Added
+    };
+    diff.record(EntityKind::Link, &id, change);
     for (item, (t, i)) in items.iter().zip(places) {
         let track = t.get_mut(project);
         track.items[i].common.link = Some(id.clone());
         diff.record_path(&track.id, item, LINK);
     }
-    Ok(vec![ItemUnlink { group: id }.into()])
+    Ok(vec![
+        ItemUnlink {
+            group: id,
+            items: joins.then_some(items),
+        }
+        .into(),
+    ])
 }
 
-/// Sets each item's `link` and creates the group (Decision 20).
+/// Sets each item's `link` and creates the group (Decision 20), or needs it when the items
+/// joined it.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::ItemLink(l) = op {
@@ -115,7 +137,15 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
                 .iter()
                 .map(|i| (i.clone(), Touch::Param(LINK.to_string()))),
         );
-        f.creates.push(l.id.clone());
+        let joined = op_diff
+            .changes
+            .iter()
+            .any(|c| c.kind == EntityKind::Link && c.change == ChangeKind::Updated);
+        if joined {
+            f.touches.push((l.id.clone(), Touch::Exists));
+        } else {
+            f.creates.push(l.id.clone());
+        }
     }
     f
 }

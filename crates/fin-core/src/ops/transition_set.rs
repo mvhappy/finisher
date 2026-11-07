@@ -11,9 +11,9 @@
 //! positive. Policy: the lock; the kind fits the track (`dissolve` on video, `crossfade` on
 //! audio; `TRACK_KIND_MISMATCH`); the duration is at least one frame and at most the shorter
 //! item; and each clip has the handles a centred transition reads (`TRANSITION_NO_HANDLES`:
-//! a clip's source past the cut, `duration / 2 × speed` on each side). A restore checks only
-//! the lock and one per cut: it puts back what an earlier edit took, whatever happened to its
-//! items since.
+//! a clip's source past the cut, `duration / 2 × speed` on each side). A restore, and an
+//! internal update (an undo's), checks only the lock and one per cut: it puts back what an
+//! earlier edit took or set, whatever happened to its items since.
 //!
 //! The diff records the transition (`added` or `updated`, on its track). The footprint touches
 //! `transition.out` on the outgoing item and `transition.in` on the incoming one. The inverse is
@@ -105,6 +105,10 @@ fn validate(project: &Project, s: &TransitionSet, bindings: &Bindings) -> Result
         restores = true;
         None
     };
+    // An internal update is the inverse of one: it puts back values that fit when they were
+    // committed, though a later edit (a carve trimming an item under it) may have shortened the
+    // items since, so like a restore it is not judged on fit (4C Tasks 9–10 review).
+    let fits = !restores && !(update.is_some() && bindings.internal());
     if bindings.policy() {
         policy(
             project,
@@ -113,7 +117,7 @@ fn validate(project: &Project, s: &TransitionSet, bindings: &Bindings) -> Result
             &between,
             (a, b),
             update.is_none(),
-            !restores,
+            fits,
             bindings,
         )?;
     }

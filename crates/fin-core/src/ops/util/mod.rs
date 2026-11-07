@@ -5,6 +5,7 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ops::Op;
 
+mod alone;
 mod carve;
 mod check;
 mod content;
@@ -20,6 +21,7 @@ pub(crate) mod settings;
 mod touched;
 mod values;
 
+pub(crate) use alone::{dissolve_alone, split_dissolved};
 pub(crate) use carve::{carve, check_carve};
 pub(crate) use check::{
     check_frame, check_kind, check_source, check_speed, check_track, check_tracks, invalid_range,

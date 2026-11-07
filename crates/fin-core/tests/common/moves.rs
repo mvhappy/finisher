@@ -37,6 +37,7 @@ pub fn link(items: &[&str], id: &str) -> Op {
 pub fn unlink(group: &str) -> Op {
     ItemUnlink {
         group: group.into(),
+        items: None,
     }
     .into()
 }

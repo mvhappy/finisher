@@ -161,3 +161,71 @@ fn linked_move_undo_redo_round_trips() {
     log.redo("main", "alice", "r1").unwrap();
     assert_eq!(log.state("main"), moved);
 }
+
+/// 4C Tasks 9–10 review B1: a later op of ours at the start of an item our own tx moved stays
+/// before it, whatever the head did to the moved item's length or its link group.
+#[test]
+fn own_move_then_insert_at_its_start_after_concurrent_trim() {
+    let p = with_clips(&[4, 4]);
+    let ours = vec![
+        move_to("c1", "t1", secs(8), InsertMode::Ripple),
+        insert("$n", "t1", secs(4), "a1", secs(0), secs(1)),
+    ];
+    for (theirs, len) in [(1, 5), (-1, 3)] {
+        let r = rebase(&p, vec![trim("c1", Edge::End, secs(theirs))], ours.clone()).unwrap();
+        let n = r.applied.bindings["$n"].clone();
+        assert_eq!(
+            spans_on(&r.applied.project, 0),
+            [sp("c2", 0, 4), sp(&n, 4, 1), sp("c1", 5, len)],
+            "their trim by {theirs}"
+        );
+    }
+}
+
+#[test]
+fn own_move_to_another_track_then_insert_at_its_start() {
+    let p = with_v2(with_clips(&[4, 4]));
+    let ours = vec![
+        move_to("c1", "t3", secs(0), InsertMode::Ripple),
+        insert("$n", "t3", secs(0), "a1", secs(0), secs(1)),
+    ];
+    for (theirs, len) in [(1, 5), (-1, 3)] {
+        let r = rebase(&p, vec![trim("c1", Edge::End, secs(theirs))], ours.clone()).unwrap();
+        let n = r.applied.bindings["$n"].clone();
+        assert_eq!(
+            spans_on(&r.applied.project, 2),
+            [sp(&n, 0, 1), sp("c1", 1, len)],
+            "their trim by {theirs}"
+        );
+    }
+}
+
+#[test]
+fn own_group_move_then_insert_after_concurrent_unlink() {
+    // c1 [0,4) on t1 linked with c2 [0,4) on t2; c3 [4,8) on t1, c4 [4,8) on t2.
+    let p = linked(10);
+    for mode in [InsertMode::Ripple, InsertMode::Overwrite] {
+        let ours = vec![
+            move_to("c1", "t1", secs(8), mode),
+            insert(
+                "$n",
+                "t1",
+                secs(if mode == InsertMode::Ripple { 4 } else { 8 }),
+                "a1",
+                secs(0),
+                secs(1),
+            ),
+        ];
+        let r = rebase(&p, vec![unlink("lk1")], ours).unwrap();
+        let n = r.applied.bindings["$n"].clone();
+        let t1 = spans_on(&r.applied.project, 0);
+        let at = |id: &str| t1.iter().position(|(i, ..)| i == id).unwrap();
+        assert_eq!(at(&n) + 1, at("c1"), "{mode:?}: {t1:?}");
+        // The unlinked partner stays where it was.
+        assert_eq!(
+            spans_on(&r.applied.project, 1)[0],
+            sp("c2", 0, 4),
+            "{mode:?}"
+        );
+    }
+}

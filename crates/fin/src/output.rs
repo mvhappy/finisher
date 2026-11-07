@@ -72,6 +72,8 @@ const VALIDATION_CODES: &[&str] = &[
     "ALREADY_LINKED",
     "SLIDE_BLOCKED",
     "MOVE_INTO_ITSELF",
+    // A link group's moves meeting on one track (4C Tasks 9–10 review).
+    "LINK_LEGS_OVERLAP",
     "TRANSITION_NO_HANDLES",
     "TRANSITION_EXISTS",
     "TRANSITION_INVALID",
@@ -259,6 +261,7 @@ mod tests {
             "ALREADY_LINKED",
             "SLIDE_BLOCKED",
             "MOVE_INTO_ITSELF",
+            "LINK_LEGS_OVERLAP",
             "TRANSITION_NO_HANDLES",
             "TRANSITION_EXISTS",
             "TRANSITION_INVALID",

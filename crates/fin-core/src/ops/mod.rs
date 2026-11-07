@@ -337,22 +337,40 @@ pub(crate) fn apply(
     ids: &mut dyn IdAlloc,
     diff: &mut util::OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
-    let inverse = module_apply(project, op, bindings, ids, diff)?;
+    let mut inverse = module_apply(project, op, bindings, ids, diff)?;
+    if dissolves(op) {
+        inverse = util::dissolve_alone(project, diff, inverse)?;
+    }
     if !prunes(op) {
         return Ok(inverse);
     }
     util::prune(project, diff, inverse)
 }
 
+/// Whether the post-op link pass runs after `op` ([`util::dissolve_alone`]): after every op
+/// but `item.link`/`item.unlink` (which edit groups themselves), and an alias's runs as the op
+/// it stands for.
+fn dissolves(op: &Op) -> bool {
+    !op.is_alias() && !matches!(op, Op::ItemLink(_) | Op::ItemUnlink(_))
+}
+
 /// How many ops the inverse of `op` holds, read off its own diff (`own`: what it recorded):
 /// its module's count, plus what the prune pass added (an op that is not `transition.*`
 /// records only that pass's `transition` changes): one restore per `removed` transition, a
-/// remove and a restore per carried (`updated`) one. The rebase engine cuts an undo of
+/// remove and a restore per carried (`updated`) one; plus one `item.link` per group the link
+/// pass dissolved. The rebase engine cuts an undo of
 /// several steps at these boundaries ([`crate::rebase::steps_from`]);
 /// [`crate::apply::Applier`] checks it against every inverse it builds in debug builds.
 pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+    // The link pass's changes come first (after the module's): one `item.link` per dissolved
+    // group.
+    let (dissolved, own) = if dissolves(op) {
+        util::split_dissolved(own)
+    } else {
+        (0, own.clone())
+    };
     if !prunes(op) {
-        return module_inverse_len(op, own);
+        return module_inverse_len(op, &own) + dissolved;
     }
     let (transitions, changes): (Vec<_>, Vec<_>) = own
         .changes
@@ -367,7 +385,7 @@ pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
         changes,
         shifts: own.shifts.clone(),
     };
-    module_inverse_len(op, &rest) + transitions.len() + carried
+    module_inverse_len(op, &rest) + transitions.len() + carried + dissolved
 }
 
 ops_table! {

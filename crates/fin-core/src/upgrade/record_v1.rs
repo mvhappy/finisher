@@ -5,7 +5,10 @@
 //! In `intent.ops`, `resolved` and `inverse` (the only places a record holds ops):
 //! - `clip.insert {id, track, at, asset, sourceIn, duration}` → `item.insert {id, track, at,
 //!   duration, mode: "ripple", kind: "clip", asset, sourceIn}`;
-//! - `clip.trim {clip, edge, delta}` → `item.trim {item, edge, delta, mode: "ripple"}`;
+//! - `clip.trim {clip, edge, delta}` → `item.trim {item, edge, delta, mode: "ripple"}`, and in
+//!   `inverse` also `alone: true`: 4B's trims acted on one clip, so an undo of one made after
+//!   the clip joined a link group (4C) trims that item alone, as every 4C trim inverse does;
+//!   `intent.ops` and `resolved` replay where no group existed, so they stay as they were;
 //! - `clip.delete {clip}` → `item.delete {item, mode: "ripple"}`;
 //! - `clip.remove {id, ripple}` → `item.remove {id, mode}` (`ripple` → `"ripple"`, else
 //!   `"lift"`);
@@ -45,6 +48,9 @@ fn each(ops: &mut Value, at: &str) -> Result<(), CoreError> {
             ));
         };
         step(map).map_err(|why| invalid_format("record", format!("{at}[{i}]: {why}")))?;
+        if at == "inverse" && map.get("op").and_then(Value::as_str) == Some("item.trim") {
+            map.insert("alone".into(), json!(true));
+        }
     }
     Ok(())
 }

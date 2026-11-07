@@ -225,6 +225,8 @@ pub enum Unmapped {
 pub struct Mapping {
     maps: Vec<StepMap>,
     mirror: Vec<Option<usize>>,
+    /// Per map: its mirror is one of our own ops re-run at the head ([`Mapping::set_own_mirror`]).
+    own: Vec<bool>,
 }
 
 impl Mapping {
@@ -236,6 +238,7 @@ impl Mapping {
     pub fn push(&mut self, map: StepMap) -> usize {
         self.maps.push(map);
         self.mirror.push(None);
+        self.own.push(false);
         self.maps.len() - 1
     }
 
@@ -253,6 +256,21 @@ impl Mapping {
         );
         self.mirror[a] = Some(b);
         self.mirror[b] = Some(a);
+    }
+
+    /// [`Mapping::set_mirror`] for the inverse of one of our own ops (`a`) and that op re-run at
+    /// the head (`b`). The re-run may record shifts of other sizes, and another number of them,
+    /// than the op did where it was written (a move opens its item's length at the head, and
+    /// moves the link group the head has), so a position the inverse deleted is recovered
+    /// leniently (4C Tasks 9–10 review, B1): through the re-run's shift on the same track at the
+    /// mirrored rank among that track's shifts, at the same offset when the two shifts have one
+    /// size, else at its start (a position at the start of an item we moved stays before it).
+    /// A position at the surviving edge (the end, with `After`) maps as any other, so it stays
+    /// past what the head inserted there.
+    pub fn set_own_mirror(&mut self, a: usize, b: usize) {
+        self.set_mirror(a, b);
+        self.own[a] = true;
+        self.own[b] = true;
     }
 
     pub fn len(&self) -> usize {
@@ -321,6 +339,9 @@ impl Mapping {
         assoc: Assoc,
     ) -> Result<Option<MapResult>, CoreError> {
         let (a, b) = (&self.maps[i], &self.maps[j]);
+        if self.own[i] {
+            return own_recover(a, b, track, rec, assoc);
+        }
         let k = b.shifts.len().wrapping_sub(1 + rec.shift);
         if a.shifts.len() != b.shifts.len() || b.shifts[k].track != track {
             return Ok(None);
@@ -335,6 +356,42 @@ impl Mapping {
         };
         b.map_from(k + 1, track, pos, assoc).map(Some)
     }
+}
+
+/// [`Mapping::set_own_mirror`]'s recovery: a position deleted by shift `rec.shift` of `a` (the
+/// inverse of our op), in `b` (the op re-run) at the shift on `track` whose rank from the end
+/// among `b`'s shifts there is `rec.shift`'s rank from the start among `a`'s, at `rec.offset`
+/// when both have one size and at its start otherwise, then mapped through `b`'s later shifts.
+/// `None` when `b` has no such shift, or it does not insert.
+fn own_recover(
+    a: &StepMap,
+    b: &StepMap,
+    track: &str,
+    rec: Recover,
+    assoc: Assoc,
+) -> Result<Option<MapResult>, CoreError> {
+    let rank = a.shifts[..rec.shift]
+        .iter()
+        .filter(|s| s.track == track)
+        .count();
+    let on: Vec<usize> = (0..b.shifts.len())
+        .filter(|&k| b.shifts[k].track == track)
+        .collect();
+    let Some(&k) = on.len().checked_sub(1 + rank).and_then(|r| on.get(r)) else {
+        return Ok(None);
+    };
+    let s = &b.shifts[k];
+    if !s.by.is_positive() {
+        return Ok(None);
+    }
+    let size = a.shifts[rec.shift].by.checked_neg()?;
+    let offset = if s.by == size {
+        rec.offset
+    } else {
+        Rational::zero()
+    };
+    let pos = s.from.checked_add(offset)?;
+    b.map_from(k + 1, track, pos, assoc).map(Some)
 }
 
 fn overflow(_: CoreError) -> Unmapped {

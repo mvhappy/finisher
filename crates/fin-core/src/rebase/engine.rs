@@ -157,7 +157,7 @@ pub fn rebase_prepared(
             }
         };
         let at = mapping.push(rebased_map(rerun, run.bound()));
-        mapping.set_mirror(n - 1 - k, at);
+        mapping.set_own_mirror(n - 1 - k, at);
         earlier.push(fp);
         ops.push(op);
     }

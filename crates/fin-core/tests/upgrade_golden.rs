@@ -435,13 +435,23 @@ fn upcast_v1_record_golden_per_op() {
             json!({}),
         );
         let up = fin_core::upcast_record(record).unwrap();
-        for ops in [&up.intent.ops, &up.resolved, &up.inverse] {
+        for ops in [&up.intent.ops, &up.resolved] {
             assert_eq!(
                 serde_json::to_value(ops).unwrap(),
                 json!([v2.clone()]),
                 "{v1}"
             );
         }
+        // An inverse trim acts on its item alone (a 4B clip had no link group).
+        let mut inverse = v2.clone();
+        if inverse["op"] == "item.trim" {
+            inverse["alone"] = json!(true);
+        }
+        assert_eq!(
+            serde_json::to_value(&up.inverse).unwrap(),
+            json!([inverse]),
+            "{v1}"
+        );
         assert_eq!((up.schema_version, up.intent.schema_version), (2, 2));
     }
 }
@@ -567,4 +577,35 @@ fn new_project_equals_upcast_genesis() {
         assert_eq!((tl.resolution.width, tl.resolution.height), (1080, 1920));
         assert_eq!(tl.rate, rate);
     }
+}
+
+/// 4C Tasks 9–10 review: the stored inverse of a 4B trim, undone after its clip joined a link
+/// group, trims that clip alone (not its whole group).
+#[test]
+fn undo_of_a_4b_trim_after_a_link_trims_the_item_alone() {
+    // c1 [0,5) on t1 and c2 [0,5) on t2, both from a1; c1 was trimmed by 4B from 6 s to 5 s.
+    let p = apply(
+        &project(),
+        vec![
+            av_asset("$a", secs(100)),
+            insert("$c1", "t1", secs(0), "$a", secs(0), secs(5)),
+            insert("$c2", "t2", secs(0), "$a", secs(0), secs(5)),
+            common::moves::link(&["$c1", "$c2"], "$lk"),
+        ],
+    )
+    .project;
+    let record = v1_record(
+        vec![json!({ "op": "clip.trim", "clip": "c1", "edge": "end", "delta": "-1" })],
+        vec![json!({ "op": "clip.trim", "clip": "c1", "edge": "end", "delta": "-1" })],
+        vec![json!({ "op": "clip.trim", "clip": "c1", "edge": "end", "delta": "1" })],
+        json!({}),
+    );
+    let up = fin_core::upcast_record(record).unwrap();
+    let undone = apply_internal(&p, &tx(up.inverse.clone()), &mut MemIds::after(&p)).unwrap();
+    let durations: Vec<Rational> = undone.project.timelines[0]
+        .tracks
+        .iter()
+        .map(|t| t.items[0].duration)
+        .collect();
+    assert_eq!(durations, [secs(6), secs(5)], "only c1 grows back");
 }

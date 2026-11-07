@@ -97,6 +97,52 @@ fn clip_with_audio_needs_an_audio_track() {
     assert_eq!(e.code, "TRACK_KIND_MISMATCH");
 }
 
+/// 4C Tasks 9–10 review: the audio landing inside an item says how to avoid it, and a named
+/// audio track must be on the clip's timeline.
+#[test]
+fn clip_with_audio_explains_audio_inside_an_item() {
+    // t1 is empty where the clip goes; t2 has an audio clip [0,4).
+    let p = apply(
+        &project(),
+        vec![
+            av_asset("$a", secs(100)),
+            insert("$s", "t2", secs(0), "$a", secs(0), secs(4)),
+        ],
+    )
+    .project;
+    let audio = |p: &Project, track: Option<&str>| {
+        compose::clip_with_audio(
+            p,
+            "t1",
+            secs(2),
+            secs(5),
+            "a1",
+            secs(0),
+            secs(1),
+            InsertMode::Ripple,
+            track,
+        )
+    };
+    let e = audio(&p, None).unwrap_err();
+    assert_eq!(e.code, "INSERT_INSIDE_CLIP");
+    assert_eq!(e.details["track"], "t2");
+    assert_eq!(e.details["item"], "c1");
+    let fix = e.fix.unwrap();
+    assert!(
+        fix.contains("--no-audio") && fix.contains("--audio-track"),
+        "{fix}"
+    );
+    // Another timeline's audio track is refused.
+    let mut q = p.clone();
+    let mut tl2 = q.timelines[0].clone();
+    tl2.id = "tl2".into();
+    tl2.tracks = vec![fin_core::Track::new("t9", TrackKind::Audio, "A1")];
+    q.timelines.push(tl2);
+    let e = audio(&q, Some("t9")).unwrap_err();
+    assert_eq!(e.code, "USAGE");
+    assert!(e.fix.unwrap().contains("own timeline"));
+}
+
 #[test]
 fn clip_with_audio_overwrites_inside_items_on_both_tracks() {
     let p = linked(10);

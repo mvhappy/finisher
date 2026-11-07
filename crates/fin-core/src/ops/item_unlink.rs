@@ -1,6 +1,8 @@
 //! `item.unlink`: dissolves a link group, clearing `link` on every member. The diff records the
 //! group (`removed`, kind `link`), then each member's `link` parameter. The inverse is an
-//! internal `item.link` of the members with the group's literal id.
+//! internal `item.link` of the members with the group's literal id. Internal, with `items`:
+//! only those members leave (the group `updated` while others stay); the inverse joins them
+//! back.
 
 use serde_json::json;
 
@@ -9,7 +11,7 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::item_link::LINK;
 use crate::ops::util::{OpDiff, check_unlocked, group_items, item_index, wrong_op};
-use crate::ops::{Bindings, ItemLink, Op};
+use crate::ops::{Bindings, ItemLink, ItemUnlink, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff, EntityKind};
@@ -25,36 +27,75 @@ pub(crate) fn apply(
         return Err(wrong_op(op));
     };
     let group = bindings.resolve(&u.group)?;
-    let items = group_items(project, &group);
-    if items.is_empty() {
+    let all = group_items(project, &group);
+    if all.is_empty() {
         return Err(
             CoreError::new("NOT_FOUND", format!("link group {group} does not exist"))
                 .with_details(json!({ "id": group, "kind": "link" }))
                 .with_fix("use the id of an existing link group"),
         );
     }
-    let places = items
+    let leaving = match &u.items {
+        None => all.clone(),
+        Some(list) => {
+            if !bindings.internal() {
+                return Err(CoreError::new(
+                    "INVALID_OP",
+                    "members leaving a link group alone is internal",
+                )
+                .with_details(json!({ "group": group, "items": list }))
+                .with_fix("dissolve the whole group (item.unlink without items)"));
+            }
+            let list = list
+                .iter()
+                .map(|i| bindings.resolve(i))
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(stranger) = list.iter().find(|i| !all.contains(i)) {
+                return Err(CoreError::new(
+                    "INVALID_OP",
+                    format!("item {stranger} is not in link group {group}"),
+                )
+                .with_details(json!({ "group": group, "item": stranger })));
+            }
+            list
+        }
+    };
+    let places = leaving
         .iter()
         .map(|id| item_index(project, id))
         .collect::<Result<Vec<_>, _>>()?;
-    for (id, (t, _)) in items.iter().zip(&places) {
+    for (id, (t, _)) in leaving.iter().zip(&places) {
         check_unlocked(t.get(project), Some(id), bindings)?;
     }
-    diff.record(EntityKind::Link, &group, ChangeKind::Removed);
-    for (item, (t, i)) in items.iter().zip(places) {
+    let change = if leaving.len() < all.len() {
+        ChangeKind::Updated
+    } else {
+        ChangeKind::Removed
+    };
+    diff.record(EntityKind::Link, &group, change);
+    for (item, (t, i)) in leaving.iter().zip(places) {
         let track = t.get_mut(project);
         track.items[i].common.link = None;
         diff.record_path(&track.id, item, LINK);
     }
-    Ok(vec![ItemLink { items, id: group }.into()])
+    Ok(vec![
+        ItemLink {
+            items: leaving,
+            id: group,
+        }
+        .into(),
+    ])
 }
 
-/// Needs the group and removes it; its members' `link` comes from the diff (Decision 20).
+/// Needs the group and removes it (unless only some members leave it); its members' `link`
+/// comes from the diff (Decision 20).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::ItemUnlink(u) = op {
         f.touches.push((u.group.clone(), Touch::Exists));
-        f.removes.push(u.group.clone());
+        if u.items.is_none() {
+            f.removes.push(u.group.clone());
+        }
     }
     f
 }
@@ -82,7 +123,12 @@ pub(crate) const INTERNAL: bool = false;
 /// Every id reference the op carries, mutably.
 pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
     match op {
-        Op::ItemUnlink(u) => vec![&mut u.group],
+        Op::ItemUnlink(u) => {
+            let ItemUnlink { group, items } = u;
+            let mut out = vec![group];
+            out.extend(items.iter_mut().flatten());
+            out
+        }
         _ => Vec::new(),
     }
 }
@@ -90,7 +136,11 @@ pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
 /// Every id the op names (the fields [`refs_mut`] lists).
 pub(crate) fn ids(op: &Op) -> Vec<&str> {
     match op {
-        Op::ItemUnlink(u) => vec![&u.group],
+        Op::ItemUnlink(u) => {
+            let mut out = vec![u.group.as_str()];
+            out.extend(u.items.iter().flatten().map(String::as_str));
+            out
+        }
         _ => Vec::new(),
     }
 }

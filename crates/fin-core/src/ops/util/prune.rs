@@ -17,9 +17,9 @@ use serde_json::json;
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
 use crate::ids::MemIds;
-use crate::model::{Project, Track, Transition};
+use crate::model::{Project, Timeline, Track, Transition};
 use crate::ops::transition_set::restore;
-use crate::ops::util::{OpDiff, end, find_transition, touched_tracks};
+use crate::ops::util::{OpDiff, TrackAt, end, find_transition, touched_tracks};
 use crate::ops::{Bindings, Op, TransitionRemove};
 use crate::tx::{ChangeKind, Diff, EntityKind};
 
@@ -96,7 +96,7 @@ fn carried(project: &Project, own: &Diff, inverse: &[Op]) -> Vec<(String, Transi
     {
         return Vec::new();
     }
-    let mut copy = project.clone();
+    let mut copy = touched_only(project, &touched);
     let mut bindings = Bindings::new(ApplyMode::Replay);
     let mut ids = MemIds::after(project);
     let mut diff = Diff::default();
@@ -117,6 +117,40 @@ fn carried(project: &Project, own: &Diff, inverse: &[Op]) -> Vec<(String, Transi
             Some((track.id.clone(), t.clone()))
         })
         .collect()
+}
+
+/// A copy of `project` holding, of its timelines' contents, only the `touched` tracks (an
+/// inverse touches only the tracks its op touched; assets and styles stay, for the structural
+/// checks), so the dry run does not clone every track of a large project.
+fn touched_only(project: &Project, touched: &[TrackAt]) -> Project {
+    let timelines = project
+        .timelines
+        .iter()
+        .enumerate()
+        .map(|(i, tl)| Timeline {
+            id: tl.id.clone(),
+            name: tl.name.clone(),
+            rate: tl.rate,
+            resolution: tl.resolution,
+            markers: Vec::new(),
+            tracks: touched
+                .iter()
+                .filter(|t| t.timeline == i)
+                .map(|t| t.get(project).clone())
+                .collect(),
+        })
+        .collect();
+    Project {
+        id: project.id.clone(),
+        name: project.name.clone(),
+        schema_version: project.schema_version,
+        rate: project.rate,
+        timelines,
+        bins: project.bins.clone(),
+        assets: project.assets.clone(),
+        styles: project.styles.clone(),
+        fonts: project.fonts.clone(),
+    }
 }
 
 /// The indexes of items `between` on `track` when the first ends where the second starts and

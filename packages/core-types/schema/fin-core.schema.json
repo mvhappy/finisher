@@ -1472,7 +1472,7 @@
       "type": "object"
     },
     "ItemLink": {
-      "description": "`item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group\nnamed `id` (a `$name` placeholder; a literal id in an internal apply, the inverse of\n`item.unlink`).",
+      "description": "`item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group\nnamed `id` (a `$name` placeholder). Internal applies (inverses) may name a literal id: a new\ngroup (the inverse of `item.unlink`, one member included), or an existing one the items\njoin (the undo of a removal that left a member alone, 4C Tasks 9–10 review).",
       "properties": {
         "id": {
           "type": "string"
@@ -1634,10 +1634,16 @@
       "type": "object"
     },
     "ItemUnlink": {
-      "description": "`item.unlink`: dissolves link group `group`.",
+      "description": "`item.unlink`: dissolves link group `group` (internal, with `items`: only those members\nleave it).",
       "properties": {
         "group": {
           "type": "string"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [

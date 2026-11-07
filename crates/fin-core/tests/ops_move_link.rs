@@ -403,3 +403,151 @@ fn moves_and_links_list_their_ids() {
     assert_eq!(link(&["c1", "c2"], "$g").ids(), ["c1", "c2", "$g"]);
     let _ = Rational::zero();
 }
+
+// ---- 4C Tasks 9–10 review ----
+
+/// B3: a group's legs that meet on one track are refused, in both modes and on replay.
+#[test]
+fn group_legs_meeting_on_one_track_are_refused() {
+    let p = linked(10);
+    for mode in [InsertMode::Overwrite, InsertMode::Ripple] {
+        let op = move_to("c1", "t2", secs(8), mode);
+        let e = try_apply(&p, vec![op.clone()]).unwrap_err();
+        assert_eq!(e.code, "LINK_LEGS_OVERLAP", "{mode:?}");
+        assert_eq!(e.details["items"], serde_json::json!(["c1", "c2"]));
+        assert_eq!(e.details["track"], "t2");
+        let r = fin_core::apply_tx_mode(
+            &p,
+            &tx(vec![op]),
+            &mut fin_core::MemIds::after(&p),
+            fin_core::ApplyMode::Replay,
+        );
+        assert_eq!(r.unwrap_err().code, "LINK_LEGS_OVERLAP");
+    }
+    // Legs on their own tracks still move together.
+    let a = golden_apply(
+        &p,
+        vec![move_to("c1", "t3", secs(8), InsertMode::Overwrite)],
+    );
+    assert_eq!(spans_on(&a.project, 2), [sp("c1", 8, 4)]);
+    assert_eq!(spans_on(&a.project, 1)[1], sp("c2", 8, 4));
+}
+
+/// B2: undoing an unlink of a one-member group (an internal one-member `item.link`) works.
+#[test]
+fn undo_of_unlink_of_a_one_member_group() {
+    let mut p = linked(10);
+    p.timelines[0].tracks[1].items[0].common.link = None;
+    let a = golden_apply(&p, vec![unlink("lk1")]);
+    assert_eq!(a.inverse, [link(&["c1"], "lk1")]);
+    // Members leaving a group alone is internal; its inverse joins them back.
+    let leave: Op = fin_core::ItemUnlink {
+        group: "lk1".into(),
+        items: Some(vec!["c2".into()]),
+    }
+    .into();
+    let q = linked(10);
+    assert_eq!(
+        try_apply(&q, vec![leave.clone()]).unwrap_err().code,
+        "INVALID_OP"
+    );
+    let left =
+        fin_core::apply_internal(&q, &tx(vec![leave]), &mut fin_core::MemIds::after(&q)).unwrap();
+    assert_eq!(
+        left.project.timelines[0].tracks[1].items[0].common.link,
+        None
+    );
+    assert_eq!(left.diff.changes[0].change, ChangeKind::Updated);
+    assert_eq!(left.inverse, [link(&["c2"], "lk1")]);
+    assert_eq!(undo(&left), q);
+    // Clients still link two or more.
+    assert_eq!(
+        try_apply(&a.project, vec![link(&["c1"], "$g")])
+            .unwrap_err()
+            .code,
+        "INVALID_OP"
+    );
+}
+
+/// B2: an op that leaves a link group with one member dissolves it; the undo puts it back.
+#[test]
+fn removal_dissolves_the_group_it_leaves_alone() {
+    let p = linked(10);
+    let over: Op = fin_core::ItemInsert {
+        id: "$o".into(),
+        track: "t2".into(),
+        at: secs(0),
+        duration: secs(4),
+        mode: InsertMode::Overwrite,
+        body: fin_core::ItemBody::Clip {
+            asset: "a1".into(),
+            source_in: secs(0),
+            speed: secs(1),
+        },
+    }
+    .into();
+    let removals = [
+        over,
+        fin_core::TrackRemove {
+            track: "t2".into(),
+            with_items: true,
+        }
+        .into(),
+    ];
+    for op in removals {
+        let a = golden_apply(&p, vec![op.clone()]);
+        let c1 = &a.project.timelines[0].tracks[0].items[0];
+        assert_eq!(
+            (c1.id.as_str(), c1.common.link.as_deref()),
+            ("c1", None),
+            "{}",
+            op.name()
+        );
+        let dissolved: Vec<(EntityKind, &str)> = a
+            .diff
+            .changes
+            .iter()
+            .filter(|c| c.kind == EntityKind::Link || c.path.as_deref() == Some("link"))
+            .map(|c| (c.kind, c.id.as_str()))
+            .collect();
+        assert_eq!(
+            dissolved,
+            [(EntityKind::Link, "lk1"), (EntityKind::Item, "c1")]
+        );
+        assert_eq!(
+            a.inverse.last(),
+            Some(&link(&["c1"], "lk1")),
+            "{}",
+            op.name()
+        );
+        // Undo, redo and undo again through history: the redo's removal dissolves nothing
+        // twice (the partner leaves the group first).
+        let mut log = common::memlog::MemLog::new(p.clone());
+        log.commit("main", "tx-1", "ann", vec![op.clone()]);
+        let done = log.state("main");
+        log.undo("main", "ann", "u-1").unwrap();
+        assert_eq!(log.state("main"), p, "{}", op.name());
+        log.redo("main", "ann", "r-1").unwrap();
+        assert_eq!(log.state("main"), done, "{}", op.name());
+        log.undo("main", "ann", "u-2").unwrap();
+        assert_eq!(log.state("main"), p, "{}", op.name());
+        // c1 can be linked again.
+        apply(&a.project, vec![link(&["c1", "c3"], "$g")]);
+        // The group is gone for later ops of the same tx.
+        let e = try_apply(&p, vec![op.clone(), unlink("lk1")]).unwrap_err();
+        assert_eq!(e.code, "NOT_FOUND", "{}", op.name());
+    }
+    // An internal removal of one member (an undo of its insert) too.
+    let remove: Op = ItemRemove {
+        id: "c2".into(),
+        mode: DeleteMode::Lift,
+    }
+    .into();
+    let a =
+        fin_core::apply_internal(&p, &tx(vec![remove]), &mut fin_core::MemIds::after(&p)).unwrap();
+    assert_eq!(a.project.timelines[0].tracks[0].items[0].common.link, None);
+    assert_eq!(undo(&a), p);
+    // A move keeps its group whole.
+    let a = apply(&p, vec![move_to("c1", "t1", secs(8), InsertMode::Ripple)]);
+    assert!(!a.diff.changes.iter().any(|c| c.kind == EntityKind::Link));
+}

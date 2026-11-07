@@ -351,8 +351,9 @@ pub struct SlideSides {
 }
 
 /// `item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group
-/// named `id` (a `$name` placeholder; a literal id in an internal apply, the inverse of
-/// `item.unlink`).
+/// named `id` (a `$name` placeholder). Internal applies (inverses) may name a literal id: a new
+/// group (the inverse of `item.unlink`, one member included), or an existing one the items
+/// join (the undo of a removal that left a member alone, 4C Tasks 9–10 review).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemLink {
@@ -388,11 +389,17 @@ pub struct TransitionRemove {
     pub transition: String,
 }
 
-/// `item.unlink`: dissolves link group `group`.
+/// `item.unlink`: dissolves link group `group` (internal, with `items`: only those members
+/// leave it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemUnlink {
     pub group: String,
+    // Internal (the inverse of an `item.link` that joined items to an existing group): these
+    // members only leave it. Not a doc comment: a `$ref`-free sibling keeps the TS plain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    pub items: Option<Vec<String>>,
 }
 
 /// `item.slip`: moves the source of `item` (a clip or nested item) under it by `delta`

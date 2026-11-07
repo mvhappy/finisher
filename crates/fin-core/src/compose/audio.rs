@@ -7,7 +7,7 @@ use crate::compose::Composed;
 use crate::compose::overwrite::overwrite_named;
 use crate::error::CoreError;
 use crate::model::{ItemBody, Project, TrackKind};
-use crate::ops::util::{asset, kind_name, track_index};
+use crate::ops::util::{asset, clip_containing, insert_inside, kind_name, track_index};
 use crate::ops::{InsertMode, ItemInsert, ItemLink, Op};
 use crate::time::Rational;
 
@@ -23,7 +23,9 @@ const LINK: &str = "$link";
 /// audio track of the same timeline), then `item.link` of the two. `echo` is
 /// `{ mode, audio: { track, id } | null, link: "$link" | null, splits: [...] }`.
 ///
-/// `USAGE` (with a fix) when the audio needs a track and the timeline has none;
+/// `USAGE` (with a fix) when the audio needs a track and the timeline has none, or the named
+/// one is on another timeline; `INSERT_INSIDE_CLIP` (with a fix naming `--audio-track` and
+/// `--no-audio`) when a ripple insert of the audio would land inside an item;
 /// `TRACK_KIND_MISMATCH` when `audio_track` is not an audio track; `NOT_FOUND` for an unknown
 /// track or asset. Everything else is the ops' own validation.
 #[allow(clippy::too_many_arguments)]
@@ -61,6 +63,9 @@ pub fn clip_with_audio(
     };
     place(track, CLIP, "$split")?;
     if let Some(audio) = &audio {
+        if mode == InsertMode::Ripple {
+            check_room(project, audio, at)?;
+        }
         place(audio, AUDIO, "$split2")?;
     }
     if audio.is_some() {
@@ -115,6 +120,26 @@ fn clip(
     Ok((vec![insert.into()], None))
 }
 
+/// `INSERT_INSIDE_CLIP` when a ripple insert of the clip's audio at `at` would land inside an
+/// item of `audio` (the item op says so too; this names the way out: no audio, or another
+/// audio track).
+fn check_room(project: &Project, audio: &str, at: Rational) -> Result<(), CoreError> {
+    let track = track_index(project, audio)?.get(project);
+    let Some(other) = clip_containing(track, at)? else {
+        return Ok(());
+    };
+    let mut e = insert_inside(other, at)?;
+    if let Value::Object(d) = &mut e.details {
+        d.insert("track".into(), json!(audio));
+    }
+    e.message = format!("the clip's audio: {} on audio track {audio}", e.message);
+    Err(e.with_fix(format!(
+        "insert at a boundary of item {} on {audio}, choose another audio track \
+         (--audio-track), or insert the video alone (--no-audio)",
+        other.id
+    )))
+}
+
 /// The audio track for the linked audio: `named` (an audio track) or the timeline's first.
 fn audio_track_for(
     project: &Project,
@@ -122,7 +147,16 @@ fn audio_track_for(
     named: Option<&str>,
 ) -> Result<String, CoreError> {
     if let Some(named) = named {
-        let t = track_index(project, named)?.get(project);
+        let at = track_index(project, named)?;
+        if at.timeline != timeline {
+            return Err(CoreError::new(
+                "USAGE",
+                format!("audio track {named} is on another timeline than the clip"),
+            )
+            .with_details(json!({ "track": named, "timeline": project.timelines[timeline].id }))
+            .with_fix("name an audio track of the clip's own timeline"));
+        }
+        let t = at.get(project);
         if t.kind != TrackKind::Audio {
             return Err(CoreError::new(
                 "TRACK_KIND_MISMATCH",

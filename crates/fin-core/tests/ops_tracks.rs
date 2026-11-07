@@ -287,14 +287,9 @@ fn track_remove_with_items_inverse_restores_items_transitions_links() {
     let p = busy();
     let a = golden_apply(&p, vec![remove_track("t1", true)]);
     assert_eq!(tracks(&a.project, 0), [pair("t2", "A1")]);
-    // The audio partner keeps its link.
-    assert_eq!(
-        a.project.timelines[0].tracks[0].items[0]
-            .common
-            .link
-            .as_deref(),
-        Some("lk1")
-    );
+    // The audio partner, left alone in its group, is unlinked (4C Tasks 9–10 review B2; with
+    // two or more left, they keep their `link`).
+    assert_eq!(a.project.timelines[0].tracks[0].items[0].common.link, None);
     let item = |id| change(EntityKind::Item, id, ChangeKind::Removed, Some("t1"));
     assert_eq!(
         a.diff.changes,
@@ -309,11 +304,18 @@ fn track_remove_with_items_inverse_restores_items_transitions_links() {
                 Some("t1")
             ),
             change(EntityKind::Track, "t1", ChangeKind::Removed, None),
+            change(EntityKind::Link, "lk1", ChangeKind::Removed, None),
+            Change {
+                path: Some("link".into()),
+                ..change(EntityKind::Item, "c4", ChangeKind::Updated, Some("t2"))
+            },
         ]
     );
     assert!(a.diff.shifts.is_empty());
     let f = fp(&remove_track("t1", true), &a);
-    assert_eq!(f.removes, ["t1", "c1", "c2", "c3", "tr1"]);
+    assert_eq!(f.removes, ["t1", "c1", "c2", "c3", "tr1", "lk1"]);
+    // The undo restores the track into the group, then the partner joins it again.
+    assert_eq!(a.inverse[1], link(&["c4"], "lk1"));
     // Decision 24: the restore lists every nested id, transitions and their items included.
     let restore = &a.inverse[0];
     ids_cover_every_id_in_json(restore);
@@ -331,11 +333,15 @@ fn track_remove_with_items_inverse_restores_items_transitions_links() {
     assert_eq!(log.state("main"), p);
     log.redo("main", "ann", "r-1").unwrap();
     assert_eq!(log.state("main"), removed);
+    log.undo("main", "ann", "u-2").unwrap();
+    assert_eq!(log.state("main"), p);
 }
 
 #[test]
 fn track_restore_checks_what_it_brings_back() {
-    let p = busy();
+    // c1's partner is unlinked, so the removal dissolves nothing and inverts to one restore.
+    let mut p = busy();
+    p.timelines[0].tracks[1].items[0].common.link = None;
     let a = apply(&p, vec![remove_track("t1", true)]);
     let restore = a.inverse[0].clone();
     // Its inverse removes the track with its items.
