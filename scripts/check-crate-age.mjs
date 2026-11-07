@@ -72,7 +72,7 @@ export async function resolveDates(crates, cache, fetchCreated, { delayMs = DEFA
   return dates;
 }
 
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** `created_at` of one crates.io version, retrying a rate-limited (429) answer. */
 export async function fetchCreatedAt(name, version, { fetchFn = fetch, sleep = defaultSleep, retries = 5 } = {}) {
@@ -91,7 +91,7 @@ export async function fetchCreatedAt(name, version, { fetchFn = fetch, sleep = d
   }
 }
 
-function readCache(path) {
+export function readCache(path) {
   try {
     const cache = JSON.parse(readFileSync(path, "utf8"));
     return cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {};
@@ -100,12 +100,12 @@ function readCache(path) {
   }
 }
 
-function writeCache(path, cache) {
+export function writeCache(path, cache) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(cache, null, 1) + "\n");
 }
 
-function option(argv, flag, fallback) {
+export function option(argv, flag, fallback) {
   const i = argv.indexOf(flag);
   if (i === -1) return fallback;
   const n = Number(argv[i + 1]);
