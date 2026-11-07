@@ -321,6 +321,24 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2,
 - [ ] 7A-2 runtime core and the built-in agent, after 5A (plan Tasks 2, 3b, 6b, 7, 8b, 10–15)
 - [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox (`fin-sandbox`: agent, hook, worker and plugin profiles; ACL broker) · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
 
+## Sub-project 7A: runtime core
+
+Plan: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (revision 3). Decisions after the spec (branch `sp-decisions-2`): the built-in agent's model client is one OpenAI-compatible client with two presets, OpenRouter (API key) and local (Ollama, LM Studio or a user-supplied base URL, no key; loopback allowed), recorded as provider `openrouter` or `local`; no `agents.unsandboxed` override (Landlock-disabled hosts run with persistent warnings); no direct Anthropic or OpenAI adapters in v1.
+
+### 7A-1 (branch `sp7a1-runtime`, before 5A)
+
+- [x] Task 1: agent kinds v1 in `fin-core`. As built: `agent.session|turn|toolCall|toolResult` at version 1 (the last three training-only), new `agent.approval` (`subject` is `userText` content); `agent.editVerdict` removed; enums `Harness`, `AgentMode` (`plan|draft|auto`), `SessionPhase`, `SessionTrigger`, `Weights`, `SignIn`, `CostBasis`, `Capture`, `Attribution`, `ApprovalKind`, `ApprovalDecision`, `DecidedBy`; provenance (`harness`, `provider`, `model`, `weights`) required meta on session and turn, `upstream?` on turns; `modelHash?` on turns as well as sessions (for `other` models); `agent.turn` content is `messagesDelta`, `output`, `system`, `tools`; `toolResult.txIds` capped at 64 (`MAX_TOOL_TX_IDS`, `EVENT_INVALID`); tables `AGENT_ROLES`, `AGENT_TOOLS`, `AGENT_PROVIDERS` gains `openrouter` (keeps `local`)
+- [ ] Task 3a: pure session state machine
+- [ ] Task 4: model catalogue and budget ledger
+- [ ] Task 5: `SecretStore`, `SecretBox` seam, `ModelGateway`
+- [ ] Task 6a: adapter contract, `ProviderEvent` schema, fake provider
+- [ ] Task 8a: `FIN_CALL` as the default idempotency key in `fin`
+- [ ] Task 9: OpenAI-compatible model client (OpenRouter and local presets) and the fake model server
+
+### 7A-2 (after 5A)
+
+- [ ] Tasks 2, 3b, 6b, 7, 8b, 10–15
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency

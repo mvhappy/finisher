@@ -56,6 +56,11 @@ fn tx() -> fin_core::Tx {
     .unwrap()
 }
 
+/// A payload from its JSON (the agent samples, which have many fields).
+fn typed<T: serde::de::DeserializeOwned>(v: Value) -> T {
+    serde_json::from_value(v).unwrap()
+}
+
 fn counts<K: Ord>(pairs: impl IntoIterator<Item = (K, u64)>) -> Counts<K> {
     Counts(pairs.into_iter().collect())
 }
@@ -178,52 +183,46 @@ fn samples() -> Vec<AnyPayload> {
             ))),
         }
         .into(),
-        AgentSession {
-            provider: names::AGENT_PROVIDERS.get("anthropic").unwrap(),
-            model: names::AGENT_MODELS.get("claude-opus-5-5").unwrap(),
-            role: AgentRole::Main,
-            mode: AgentMode::Headless,
-        }
+        typed::<AgentSession>(json!({
+            "sessionId": SESSION, "phase": "ended", "harness": "builtin", "provider": "openrouter",
+            "model": "other", "modelHash": h('1'), "weights": "unknown", "role": "editor",
+            "mode": "draft", "trigger": "user", "reason": "BUDGET_EXCEEDED", "totals": {
+                "turns": 4, "toolCalls": 9, "txs": 2, "inputTokens": 48_000,
+                "outputTokens": 3_100, "costMicros": 91_000, "wallS": 340 },
+        }))
         .into(),
         AgentTurn {
-            turn_id: id("01JC0000000000000000000005"),
-            provider: names::AGENT_PROVIDERS.get("anthropic").unwrap(),
-            model: Name::OTHER,
-            input_tokens: 1200,
-            output_tokens: 300,
-            cache_read_tokens: 1000,
-            cache_write_tokens: 0,
-            latency_ms: 2100,
-            stop_reason: StopReason::ToolUse,
-            cost_micros: Some(4200),
-            system_hash: h('e'),
-            tools_hash: h('f'),
-            messages: Some(Content(Body::Blob(blob()))),
+            system: Some(Content(Body::Blob(blob()))),
+            tools: Some(Content(Body::Blob(blob()))),
+            messages_delta: Some(Content(Body::Blob(blob()))),
             output: inline(json!([{ "type": "text", "text": "trim the first clip" }])),
+            ..typed(json!({
+                "turnId": "01JC0000000000000000000005", "runId": "01JC0000000000000000000007",
+                "seq": 2, "harness": "claudeCode", "provider": "anthropic",
+                "model": "claude-opus-5-5", "weights": "closed", "inputTokens": 1200,
+                "outputTokens": 300, "cacheReadTokens": 1000, "cacheWriteTokens": 0,
+                "reasoningTokens": 80, "latencyMs": 2100, "ttftMs": 400, "stopReason": "toolUse",
+                "costMicros": 4200, "costBasis": "subscription", "capture": "stream",
+                "systemHash": h('e'), "toolsHash": h('f'),
+            }))
         }
         .into(),
-        AgentToolCall {
-            call_id: id("01JC0000000000000000000006"),
-            turn_id: id("01JC0000000000000000000005"),
-            command: CLI_COMMANDS.get("item.trim").unwrap(),
-            args_hash: h('a'),
-            args: inline(json!({ "item": "c1", "delta": "1" })),
-        }
+        typed::<AgentToolCall>(json!({
+            "callId": "01JC0000000000000000000006", "turnId": "01JC0000000000000000000005",
+            "tool": "fin", "command": "item.trim", "argsHash": h('a'),
+            "args": { "inline": { "item": "c1", "delta": "1" } },
+        }))
         .into(),
-        AgentToolResult {
-            call_id: id("01JC0000000000000000000006"),
-            ok: true,
-            code: None,
-            micros: 40_000,
-            tx_ids: vec![id(TX)],
-            output: inline(json!({ "txId": TX })),
-        }
+        typed::<AgentToolResult>(json!({
+            "callId": "01JC0000000000000000000006", "ok": true, "exit": 0, "micros": 40_000,
+            "txIds": [TX], "attribution": "exact", "output": { "inline": { "txId": TX } },
+        }))
         .into(),
-        AgentEditVerdict {
-            tx_ids: vec![id(TX)],
-            verdict: Verdict::Undone,
-            by: VerdictBy::User,
-        }
+        typed::<AgentApproval>(json!({
+            "approvalId": "01JC0000000000000000000008", "sessionId": SESSION, "kind": "budget",
+            "decision": "allow", "by": "user", "latencyMs": 12_000,
+            "subject": { "inline": { "kind": "money", "add": 1_000_000 } },
+        }))
         .into(),
         UiAction {}.into(),
         ReviewVerdict {}.into(),
@@ -359,21 +358,19 @@ fn any_payload_covers_every_kind() {
         assert!(std::ptr::eq(kind(k.name, k.version).unwrap(), k));
     }
     for name in ["agent.turn", "agent.toolCall", "agent.toolResult"] {
-        assert!(kind(name, 0).unwrap().training_only, "{name}");
+        assert!(kind(name, 1).unwrap().training_only, "{name}");
     }
-    for name in [
-        "agent.session",
-        "agent.editVerdict",
-        "ui.action",
-        "review.verdict",
-    ] {
+    for name in ["ui.action", "review.verdict"] {
         assert!(kind(name, 0).unwrap().reserved, "{name}");
     }
-    assert!(
-        kinds()
-            .iter()
-            .filter(|k| !k.reserved)
-            .all(|k| !k.training_only)
+    let training_only: Vec<&str> = kinds()
+        .iter()
+        .filter(|k| k.training_only)
+        .map(|k| k.name)
+        .collect();
+    assert_eq!(
+        training_only,
+        ["agent.turn", "agent.toolCall", "agent.toolResult"]
     );
 }
 
@@ -607,10 +604,13 @@ fn content_fields_name_their_kind() {
         }
     }
     let want = BTreeMap::from([
-        ("agent.toolCall.args".to_string(), ContentKind::ToolArgs),
+        ("agent.approval.subject".to_string(), ContentKind::UserText),
+        ("agent.toolCall.args".into(), ContentKind::ToolArgs),
         ("agent.toolResult.output".into(), ContentKind::ToolResult),
-        ("agent.turn.messages".into(), ContentKind::ModelInput),
+        ("agent.turn.messagesDelta".into(), ContentKind::ModelInput),
         ("agent.turn.output".into(), ContentKind::ModelOutput),
+        ("agent.turn.system".into(), ContentKind::ModelInput),
+        ("agent.turn.tools".into(), ContentKind::ModelInput),
         ("error.panic.message".into(), ContentKind::ErrorMessage),
         ("log.commit.intent".into(), ContentKind::TxIntent),
     ]);
@@ -644,8 +644,13 @@ fn blob_ref_only_inside_content() {
         );
     }
     assert_eq!(
-        check("agent.turn", 0).blobs_inside,
-        ["messages.blob", "output.blob"]
+        check("agent.turn", 1).blobs_inside,
+        [
+            "messagesDelta.blob",
+            "output.blob",
+            "system.blob",
+            "tools.blob"
+        ]
     );
     #[derive(JsonSchema)]
     #[allow(dead_code)]
@@ -662,10 +667,13 @@ fn blob_refs_follow_content() {
         .into_iter()
         .find(|p| p.kind().name == "agent.turn")
         .unwrap();
-    assert_eq!(turn.blobs().cloned().collect::<Vec<_>>(), [blob()]);
+    assert_eq!(
+        turn.blobs().cloned().collect::<Vec<_>>(),
+        [blob(), blob(), blob()]
+    );
     let spec = turn.kind();
     let mut v = serde_json::to_value(&turn).unwrap();
-    assert_eq!(blob_refs(spec, &v), [blob()]);
+    assert_eq!(blob_refs(spec, &v), [blob(), blob(), blob()]);
     redact(spec, &mut v, Purposes::DIAGNOSTICS);
     assert!(blob_refs(spec, &v).is_empty());
     assert_eq!(decode_payload(spec, &v).unwrap().blobs().count(), 0);
@@ -874,8 +882,11 @@ fn id_ref_keeps_only_ulids_raw() {
     );
     assert!(!id(TX).is_hashed());
     // A payload that carries a raw id does not decode.
-    let spec = kind("agent.editVerdict", 0).unwrap();
-    let raw = json!({ "txIds": ["idem-key-7f3a"], "verdict": "undone", "by": "user" });
+    let spec = kind("agent.toolResult", 1).unwrap();
+    let raw = json!({
+        "callId": "01JC0000000000000000000006", "ok": true, "micros": 1,
+        "txIds": ["idem-key-7f3a"], "attribution": "exact",
+    });
     assert_eq!(
         decode_payload(spec, &raw).unwrap_err().code,
         "EVENT_INVALID"
@@ -1005,7 +1016,7 @@ fn redact_removes_every_content_path() {
     }
     assert_eq!(
         removed,
-        2 * 6,
+        2 * 9,
         "every sample content field was filled and removed"
     );
 }
@@ -1049,7 +1060,7 @@ fn training_only_kinds_keep_metadata_under_diagnostics() {
     redact(turn.kind(), &mut v, Purposes::DIAGNOSTICS);
     assert_eq!(v["inputTokens"], json!(1200));
     assert_eq!(v["latencyMs"], json!(2100));
-    assert!(v.get("messages").is_none() && v.get("output").is_none());
+    assert!(v.get("messagesDelta").is_none() && v.get("output").is_none());
 }
 
 #[test]
@@ -1062,7 +1073,7 @@ fn unknown_kind_and_version_refused() {
         "EVENT_KIND_UNKNOWN"
     );
     assert_eq!(
-        require_kind("agent.turn", 1).unwrap_err().code,
+        require_kind("agent.turn", 2).unwrap_err().code,
         "EVENT_KIND_UNKNOWN"
     );
     let fake = KindSpec {

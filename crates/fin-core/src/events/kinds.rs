@@ -201,11 +201,11 @@ registry! {
     StorageState(p::StorageState) = "storage.state" v 1 [FinNode];
     ErrorInternal(p::ErrorInternal) = "error.internal" v 1 [FinNode, Finisherd];
     ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Finisherd, FinNode];
-    AgentSession(p::AgentSession) = "agent.session" v 0 [Agent];
-    AgentTurn(p::AgentTurn) = "agent.turn" v 0 training_only true [Agent];
-    AgentToolCall(p::AgentToolCall) = "agent.toolCall" v 0 training_only true [Agent];
-    AgentToolResult(p::AgentToolResult) = "agent.toolResult" v 0 training_only true [Agent];
-    AgentEditVerdict(p::AgentEditVerdict) = "agent.editVerdict" v 0 [Agent];
+    AgentSession(p::AgentSession) = "agent.session" v 1 [Agent];
+    AgentTurn(p::AgentTurn) = "agent.turn" v 1 training_only true [Agent];
+    AgentToolCall(p::AgentToolCall) = "agent.toolCall" v 1 training_only true [Agent];
+    AgentToolResult(p::AgentToolResult) = "agent.toolResult" v 1 training_only true [Agent];
+    AgentApproval(p::AgentApproval) = "agent.approval" v 1 [Agent];
     UiAction(p::UiAction) = "ui.action" v 0 [Ui];
     ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 0 [Ui];
 }
@@ -238,18 +238,34 @@ impl Payload for p::ErrorPanic {
     }
 }
 impl Payload for p::AgentSession {}
-impl Payload for p::AgentEditVerdict {}
 impl Payload for p::UiAction {}
 impl Payload for p::ReviewVerdict {}
 
 impl Payload for p::AgentTurn {
     fn blobs(&self) -> Vec<&BlobRef> {
-        body_blobs(&[self.messages.as_ref(), self.output.as_ref()])
+        body_blobs(&[
+            self.messages_delta.as_ref(),
+            self.output.as_ref(),
+            self.system.as_ref(),
+            self.tools.as_ref(),
+        ])
     }
 
     fn strip_content(&mut self) {
-        self.messages = None;
+        self.messages_delta = None;
         self.output = None;
+        self.system = None;
+        self.tools = None;
+    }
+}
+
+impl Payload for p::AgentApproval {
+    fn blobs(&self) -> Vec<&BlobRef> {
+        body_blobs(&[self.subject.as_ref()])
+    }
+
+    fn strip_content(&mut self) {
+        self.subject = None;
     }
 }
 

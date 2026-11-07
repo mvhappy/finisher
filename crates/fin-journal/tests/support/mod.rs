@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use fin_core::events::names::OP_KINDS;
 use fin_core::events::payloads::{
-    AgentToolResult, Body, CommitOutcome, CommitRecord, Counts, LogCommit, SessionEnd, TxIntent,
+    AgentToolResult, Attribution, Body, CommitOutcome, CommitRecord, Counts, LogCommit, SessionEnd,
+    TxIntent,
 };
 use fin_core::events::{
     Actor, ActorKind, AnyPayload, Basis, BlobRef, Content, Ctx, Envelope, IdRef, ProjectId,
@@ -176,8 +177,11 @@ pub fn tool_result(blob: Option<BlobRef>) -> AnyPayload {
         call_id: IdRef::classify("01JC0000000000000000000009").unwrap(),
         ok: true,
         code: None,
+        exit: None,
         micros: 7,
         tx_ids: vec![],
+        attribution: Attribution::None,
+        truncated: false,
         output: Some(Content(match blob {
             Some(b) => Body::Blob(b),
             None => Body::Inline(json!({ "text": "inline output" })),

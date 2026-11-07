@@ -426,13 +426,26 @@ pub static DETAIL_KEYS: NameTable = NameTable::new(
     ],
 );
 
-/// Agent providers (`agent.*`, reserved; sub-project 7 fills these tables).
+/// Agent providers (`agent.*`): the built-in agent's (`openrouter`, or `local` for a
+/// user-run OpenAI-compatible server), the CLI harnesses' (`anthropic`, `openai`), and the
+/// upstreams OpenRouter routes a call to.
 pub static AGENT_PROVIDERS: NameTable = NameTable::new(
     "AGENT_PROVIDERS",
-    &["anthropic", "openai", "google", "mistral", "local", "other"],
+    &[
+        "openrouter",
+        "anthropic",
+        "openai",
+        "google",
+        "mistral",
+        "local",
+        "other",
+    ],
 );
 
-/// Agent model ids (`agent.*`, reserved).
+/// Agent model ids (`agent.*`): the ids the CLI harnesses report and the bundled catalogue's
+/// OpenRouter slugs (`apps/finisherd/src/agent/catalogue/models.json`; the drift test
+/// `catalogue_ids_in_agent_models` keeps them in step). A slug the owner adds in settings
+/// reads as `other`, with a keyed `modelHash`.
 pub static AGENT_MODELS: NameTable = NameTable::new(
     "AGENT_MODELS",
     &[
@@ -440,6 +453,39 @@ pub static AGENT_MODELS: NameTable = NameTable::new(
         "claude-opus-5-5",
         "claude-sonnet-5-5",
         "claude-haiku-5-5",
+        "other",
+    ],
+);
+
+/// Agent roles (sub-project 7 §6.2): the bundled roles, `other` for a plugin's.
+pub static AGENT_ROLES: NameTable = NameTable::new(
+    "AGENT_ROLES",
+    &[
+        "editor",
+        "critic",
+        "fixer",
+        "clip-finder",
+        "caption-stylist",
+        "colourist",
+        "mixer",
+        "other",
+    ],
+);
+
+/// Agent tool kinds (`agent.toolCall.tool`, §12.2).
+pub static AGENT_TOOLS: NameTable = NameTable::new(
+    "AGENT_TOOLS",
+    &[
+        "fin",
+        "shell",
+        "read",
+        "write",
+        "edit",
+        "search",
+        "webFetch",
+        "webSearch",
+        "mcp",
+        "workspace",
         "other",
     ],
 );
@@ -456,6 +502,8 @@ pub static TABLES: &[&NameTable] = &[
     &DETAIL_KEYS,
     &AGENT_PROVIDERS,
     &AGENT_MODELS,
+    &AGENT_ROLES,
+    &AGENT_TOOLS,
 ];
 
 // `deserialize_with` helpers: a `Name` field reads through its table.
@@ -493,9 +541,20 @@ table_fns!(one -> Name:
     media_type => MEDIA_TYPES,
     agent_provider => AGENT_PROVIDERS,
     agent_model => AGENT_MODELS,
+    agent_role => AGENT_ROLES,
+    agent_tool => AGENT_TOOLS,
 );
 table_fns!(many -> Vec<Name>: cli_flags => CLI_FLAGS, detail_keys => DETAIL_KEYS);
 table_fns!(counts -> Counts<Name>: op_counts => OP_KINDS);
+
+fn one_opt<'de, D: Deserializer<'de>>(d: D, t: &NameTable) -> Result<Option<Name>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(|s| t.get_or_other(&s)))
+}
+
+table_fns!(one_opt -> Option<Name>:
+    cli_command_opt => CLI_COMMANDS,
+    agent_provider_opt => AGENT_PROVIDERS,
+);
 
 /// A media extension: kept only when `MEDIA_EXTS` holds it (lower-cased), else absent.
 pub fn media_ext_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Name>, D::Error> {
