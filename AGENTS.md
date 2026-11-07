@@ -11,3 +11,4 @@
 - The spec is `docs/specs/2026-11-01-finisher-architecture-design.md`.
 - Spikes, evaluations, benchmarks and scratchpads live in `archive/` (git-ignored). Only durable conclusions go into the spec.
 - Evaluation data must be permissively licensed too: no NC or share-alike corpora.
+- Every crate (new or updated) must be published ≥7 days before it's locked; run `pnpm check:crate-age` before merging dependency changes.
