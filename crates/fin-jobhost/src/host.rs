@@ -156,12 +156,20 @@ impl Host {
     /// Enqueues `msg` (never blocks). A full queue kills the process as hung.
     pub fn send(&self, proc: ProcId, msg: &HostMsg) -> Result<(), SendError> {
         let p = self.inner.proc(proc).ok_or(SendError::Gone)?;
+        // A `start` names the running job before it is queued (the worker may answer before
+        // `send` returns); one that was not queued puts the previous job back.
+        let prev = match msg {
+            HostMsg::Start(s) => Some(p.state().job.replace(s.job.id.clone())),
+            _ => None,
+        };
         let r = p.writer.send(msg);
-        match (&r, msg) {
-            // Only a `start` that was queued names the running job.
-            (Ok(()), HostMsg::Start(s)) => p.state().job = Some(s.job.id.clone()),
-            (Err(SendError::QueueFull), _) => self.inner.kill_for(proc, ExitReason::Hung),
-            _ => {}
+        if r.is_err()
+            && let Some(prev) = prev
+        {
+            p.state().job = prev;
+        }
+        if let Err(SendError::QueueFull) = r {
+            self.inner.kill_for(proc, ExitReason::Hung);
         }
         r
     }
