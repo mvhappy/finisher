@@ -281,6 +281,23 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
 - [ ] 6F: preview engine
 - [ ] 6G: hardening (zero-copy, NVIDIA on Linux, sandbox, fuzzing, validation matrix)
 
+## Sub-project 8: plugins and registry (designed 2026-11-07, revision 2)
+
+Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `docs/superpowers/plans/2026-11-07-sub-project-8a-packages-and-registries.md` (branch `sp8a-packages`; Tasks 1–3 can start now, 4–7 after Task 1, 8 and 11 without sub-project 5; 9a onward on `sp5a-principals`). Sub-batches 8A–8H (spec §1.5).
+
+- [ ] Owner questions (spec §20): 1 does 8B wait for 7C; 2 brokered secrets vs raw grants; 3 mattes as project assets (schema version 3); 4 model provenance policy (no acceptable-use restriction); 5 first-party generation providers; 6 evaluation data (generated TTS clips, the owner's footage, MUSAN per-file filtering); 7 who holds first-party registry signing keys, and when. 8A proceeds on the recommendation of 1
+- [ ] Cross-design requirement X1 (spec §16.1): sub-project 7 adds a `plugin` profile to `fin-sandbox` (no network, read and write roots, per-job ACL grants, GPU rules, TCC and Apple Events denial, a plugin escape suite) and binds `ModelGateway` grants to (plugin, name, origins)
+- [ ] Ownership (spec §1.6): sub-project 6 provides `fin-shm` (in/out rules, host-created rings) in 6A; one `fin-workers <family>` binary owned by sub-project 5C (sp5 rev 3); spec text still says `fin-worker`: rename
+- [ ] Spec follow-ups from the design (spec §22): arch §13/§18 drop whisper.cpp and sherpa-onnx; arch §13 and §22 point to the §27.4 alignment gate; arch §15 git registries are local folders; D29 cloud embeddings after v1; re-select the end-boundary rule on permissive labels in 8C
+- [ ] 8A: packages, registries and lifecycle
+- [ ] 8B: plugin host and SDKs (Rust, TS)
+- [ ] 8C: analysis foundation and speech (transcription, alignment, boundary-correction retrain)
+- [ ] 8D: scenes and audio analysis
+- [ ] 8E: semantic search (exact scan, then `usearch`)
+- [ ] 8F: reframe
+- [ ] 8G: generation providers
+- [ ] 8H: media interfaces (codec backends, mattes, effects with pins, schema version 3)
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
