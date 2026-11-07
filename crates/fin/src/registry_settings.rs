@@ -216,7 +216,7 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
     cmd(
         "diagnostics.show",
         "diagnostics",
-        "[--limit <n>]",
+        "",
         "the consent and its basis, files, sizes, counts per kind, project flags, drops",
         false,
         || schema_of::<diagnostics::ShowArgs>("diagnostics.show"),
@@ -225,7 +225,7 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         "diagnostics.export",
         "diagnostics",
         "[--since <date>] [--project <id>] [--kind <k>]... [--limit <n>] [--as-upload diagnostics|training]",
-        "JSONL of the recorded entries, newest last (--as-upload: what an uploader would get)",
+        "JSONL of the recorded entries, newest last (--as-upload: what an uploader would get); an error after some lines is the last line",
         false,
         || schema_of::<diagnostics::ExportArgs>("diagnostics.export"),
     ),

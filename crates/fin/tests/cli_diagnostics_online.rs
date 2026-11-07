@@ -102,6 +102,18 @@ fn contains(hay: &[u8], needle: &str) -> bool {
     !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle.as_bytes())
 }
 
+/// `uname -n`, else `hostname` (macOS has no /etc/hostname).
+fn host_name() -> String {
+    for (program, args) in [("uname", &["-n"][..]), ("hostname", &[][..])] {
+        if let Ok(out) = std::process::Command::new(program).args(args).output()
+            && out.status.success()
+        {
+            return String::from_utf8_lossy(&out.stdout).trim().to_string();
+        }
+    }
+    String::new()
+}
+
 fn marker_edit(dir: &Path, sd: &Path, label: &str) -> Value {
     ok(fin(
         sd,
@@ -132,20 +144,10 @@ fn diagnostics_show() {
         r["files"].as_u64().unwrap() >= 1 && r["bytes"].as_u64().unwrap() > 0,
         "{r}"
     );
+    // `export --limit n` lists the newest entries; `show` takes no `--limit`.
     assert!(r.get("recent").is_none());
-    let two = ok(fin(sd, root, &["diagnostics", "show", "--limit", "2"]));
-    let recent = two["recent"].as_array().unwrap();
-    assert_eq!(recent.len(), 2, "{two}");
-    for e in recent {
-        let keys: Vec<_> = e.as_object().unwrap().keys().cloned().collect();
-        assert_eq!(
-            keys,
-            ["id", "kind", "source", "ts"],
-            "no payload in a summary"
-        );
-    }
     assert_error(
-        &fin(sd, root, &["diagnostics", "show", "--limit", "0"]),
+        &fin(sd, root, &["diagnostics", "show", "--limit", "2"]),
         2,
         "USAGE",
     );
@@ -200,13 +202,14 @@ fn cli_command_has_no_values() {
         "names only: {add}"
     );
     // Everything on disk: no marker, no temp path, no home, no user, and no unkeyed hash.
-    let host = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
+    let host = host_name();
+    assert!(!host.is_empty(), "the host name is part of the leak check");
     let secrets = [
         marker.to_string(),
         root.display().to_string(),
         std::env::var("HOME").unwrap_or_default(),
         std::env::var("USER").unwrap_or_default(),
-        host.trim().to_string(),
+        host,
         "blake3:".to_string(),
     ];
     let files = files_under(&sd.join("events"));
@@ -741,6 +744,105 @@ fn journal_unavailable_exit_5() {
         std::fs::read(sd.join("settings.json")).unwrap(),
         b"{ not json"
     );
+}
+
+#[test]
+fn dry_run_is_refused_by_the_mutating_diagnostics_commands() {
+    let Some((server, dir, id)) = project("diagnostics_dry_run", vec![]) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    marker_edit(&dir, sd, "a");
+    wait(sd, root, &["--project", &id], |e| {
+        !commands(e, "marker.add").is_empty()
+    });
+    let before = lines(sd, root, &[]).len();
+    for args in [
+        &["diagnostics", "purge", "--all", "--dry-run"][..],
+        &[
+            "diagnostics",
+            "purge",
+            "--before",
+            "2999-01-01",
+            "--dry-run",
+        ],
+        &["diagnostics", "project", "never", "--dry-run"],
+        &["diagnostics", "consent", "diagnostics", "off", "--dry-run"],
+        &["diagnostics", "consent", "training", "off", "--dry-run"],
+    ] {
+        let r = fin(sd, &dir, args);
+        assert_error(&r, 2, "USAGE");
+        assert_eq!(r.json["error"]["details"]["flag"], "dry-run", "{args:?}");
+    }
+    // Nothing happened: the journal is whole, the project is not `never`, consent is as it was.
+    assert!(lines(sd, root, &[]).len() >= before);
+    assert!(!sd.join("settings.json").exists());
+    let file = std::fs::read_to_string(dir.join("finisher.project.json")).unwrap();
+    assert!(!file.contains("collect"), "{file}");
+    let r = show(sd, root);
+    assert_eq!(
+        (&r["state"], &r["projects"][&id]),
+        (&json!("on"), &json!("default"))
+    );
+    // Read-only ones still take it.
+    assert_eq!(fin(sd, root, &["diagnostics", "show", "--dry-run"]).code, 0);
+}
+
+#[test]
+fn fire_and_forget_runs_leave_no_unhandled_error_in_the_server_log() {
+    let Some(server) = Server::start("no_unhandled_errors") else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    for _ in 0..30 {
+        assert_eq!(fin(sd, root, &["diagnostics", "show"]).code, 0);
+    }
+    // Runs that connect only to say what they were (help, a usage error).
+    for args in [
+        &["help", "clip"][..],
+        &["clip", "insert"],
+        &["schema", "param"],
+    ] {
+        let _ = fin(sd, root, args);
+    }
+    wait(sd, root, &["--kind", "cli.command"], |e| {
+        commands(e, "diagnostics.show").len() >= 30
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let log = server.log();
+    assert!(
+        !log.contains("Unhandled error"),
+        "{}",
+        &log[..log.len().min(2000)]
+    );
+    assert!(
+        !log.contains("level=ERROR"),
+        "{}",
+        &log[..log.len().min(2000)]
+    );
+}
+
+#[test]
+fn help_schema_and_refusals_are_recorded_with_online_false() {
+    let Some(server) = Server::start("help_recorded") else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    assert_eq!(fin(sd, root, &["help", "clip"]).code, 0);
+    assert_error(&fin(sd, root, &["clip", "insert"]), 2, "USAGE");
+    // A refusal the client makes itself (the server was never asked), with a server running.
+    let r = fin(sd, root, &["diagnostics", "consent", "training", "on"]);
+    assert_error(&r, 2, "USAGE");
+    let found = wait(sd, root, &["--kind", "cli.command"], |e| {
+        !commands(e, "help").is_empty()
+            && !commands(e, "other").is_empty()
+            && !commands(e, "diagnostics.consent").is_empty()
+    });
+    for name in ["help", "other", "diagnostics.consent"] {
+        let p = &commands(&found, name)[0]["payload"];
+        assert_eq!(p["online"], false, "{p}");
+    }
+    assert_eq!(commands(&found, "other")[0]["payload"]["code"], "USAGE");
 }
 
 #[test]

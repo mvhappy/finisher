@@ -16,8 +16,8 @@
 //! `FIN_DIAGNOSTICS=off`, nor when the `finisherd.json` it found says recording is off. With
 //! `FIN_SERVER` set that file is never read, so `fin` sends and the server's gate decides.
 
-use std::collections::BTreeSet;
-use std::panic::{AssertUnwindSafe, PanicHookInfo};
+use std::collections::{BTreeMap, BTreeSet};
+use std::panic::PanicHookInfo;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -50,8 +50,10 @@ struct State {
     name: Option<String>,
     flags: BTreeSet<String>,
     dry_run: bool,
-    args_hash: Option<String>,
-    argv_hash: Option<String>,
+    /// The command input of each write step planned (`commands::input`), in order.
+    inputs: Vec<Value>,
+    /// The canonical hash of the parse (command, flags with their values, positionals).
+    parse_hash: Option<String>,
     project: Option<String>,
     tx_ids: Vec<String>,
     /// The connection of the run, parked by the online backend when it is dropped.
@@ -62,8 +64,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     name: None,
     flags: BTreeSet::new(),
     dry_run: false,
-    args_hash: None,
-    argv_hash: None,
+    inputs: Vec::new(),
+    parse_hash: None,
     project: None,
     tx_ids: Vec::new(),
     conn: None,
@@ -88,16 +90,17 @@ fn id_ok(v: &str) -> bool {
     !v.is_empty() && v.len() <= MAX_RAW_ID
 }
 
-/// `fin-actor-*` headers: `{kind: agent, session, call}` when `FIN_SESSION` is set, else
-/// `{kind: user}`. An empty or over-long id is left out (the server drops it too).
+/// `fin-actor-*` headers: `{kind: agent, session, call}` whenever `FIN_SESSION` is set (even
+/// empty or too long: the run is still an agent's), else `{kind: user}`. Only a bad id (empty or
+/// over-long) is left out; the server drops those too.
 pub fn actor_headers_from(session: Option<&str>, call: Option<&str>) -> Vec<[String; 2]> {
-    let Some(session) = session.filter(|s| id_ok(s)) else {
+    let Some(session) = session else {
         return vec![header("fin-actor-kind", "user")];
     };
-    let mut out = vec![
-        header("fin-actor-kind", "agent"),
-        header("fin-actor-session", session),
-    ];
+    let mut out = vec![header("fin-actor-kind", "agent")];
+    if id_ok(session) {
+        out.push(header("fin-actor-session", session));
+    }
     if let Some(call) = call.filter(|c| id_ok(c)) {
         out.push(header("fin-actor-call", call));
     }
@@ -141,17 +144,37 @@ pub fn note_discovery(info: &Value) {
 
 // ---- what the run did -----------------------------------------------------------------------
 
-fn flags_of<'a>(cmd: &'a Command, matches: &'a ArgMatches) -> (Vec<&'a str>, BTreeSet<String>) {
+/// What a parse holds, by name: the subcommand chain, each long flag given with its values, and
+/// the positionals in declaration order.
+#[derive(Default)]
+struct Parsed {
+    names: Vec<String>,
+    flags: BTreeMap<String, Vec<String>>,
+    positionals: Vec<String>,
+}
+
+fn parsed_of(cmd: &Command, matches: &ArgMatches) -> Parsed {
     let (mut c, mut m) = (cmd, matches);
-    let (mut names, mut flags) = (Vec::new(), BTreeSet::new());
+    let mut out = Parsed::default();
     loop {
         for arg in c.get_arguments() {
-            let Some(long) = arg.get_long() else { continue };
             let id = arg.get_id().as_str();
-            if m.try_contains_id(id).unwrap_or(false)
-                && m.value_source(id) == Some(ValueSource::CommandLine)
+            if !m.try_contains_id(id).unwrap_or(false)
+                || m.value_source(id) != Some(ValueSource::CommandLine)
             {
-                flags.insert(long.to_string());
+                continue;
+            }
+            let values: Vec<String> = m
+                .try_get_raw(id)
+                .ok()
+                .flatten()
+                .map(|v| v.map(|s| s.to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            match arg.get_long() {
+                Some(long) => {
+                    out.flags.insert(long.to_string(), values);
+                }
+                None => out.positionals.extend(values),
             }
         }
         let Some((name, sub)) = m.subcommand() else {
@@ -160,53 +183,45 @@ fn flags_of<'a>(cmd: &'a Command, matches: &'a ArgMatches) -> (Vec<&'a str>, BTr
         let Some(sub_cmd) = c.find_subcommand(name) else {
             break;
         };
-        names.push(sub_cmd.get_name());
+        out.names.push(sub_cmd.get_name().to_string());
         (c, m) = (sub_cmd, sub);
     }
-    (names, flags)
+    out
 }
 
-/// The dotted command name and the long flags given (by name only). `cmd` is the built command
-/// `matches` came from.
-fn describe(cmd: &Command, matches: &ArgMatches) -> (String, BTreeSet<String>) {
-    let (names, flags) = flags_of(cmd, matches);
-    let name = match names.as_slice() {
+/// The dotted command name, the long flags given and the canonical hash of the parse: the
+/// command name, the flags sorted by name with their values, then the positionals. Values are
+/// hashed, never sent (the server keys the hash). `cmd` is the built command `matches` came from.
+fn describe(cmd: &Command, matches: &ArgMatches) -> (String, BTreeSet<String>, String) {
+    let p = parsed_of(cmd, matches);
+    let name = match p.names.as_slice() {
         [] => "help".to_string(),
-        ["schema"]
-            if matches
-                .subcommand_matches("schema")
-                .and_then(|m| m.get_many::<String>("command"))
-                .is_some_and(|mut c| c.next().is_some_and(|w| w == "param")) =>
-        {
+        [n] if n == "schema" && p.positionals.first().is_some_and(|w| w == "param") => {
             "schema.param".to_string()
         }
         parts => parts.join("."),
     };
-    (name, flags)
+    let doc = json!({ "cmd": name, "flags": p.flags, "args": p.positionals });
+    let bytes = serde_json::to_vec(&doc).unwrap_or_default();
+    let hash = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+    (name, p.flags.keys().cloned().collect(), hash)
 }
 
-/// Records which command ran and which flags it was given (by name only).
+/// Records which command ran, which flags it was given (by name only) and the hash of its parse.
 pub fn note_matches(cmd: &Command, matches: &ArgMatches) {
-    let (name, flags) = describe(cmd, matches);
+    let (name, flags, hash) = describe(cmd, matches);
     let mut s = state();
     s.dry_run = flags.contains("dry-run");
     s.name = Some(name);
     s.flags = flags;
+    s.parse_hash = Some(hash);
 }
 
-/// The hash of the arguments as typed, for a run that plans no transaction.
-pub fn note_argv(args: &[std::ffi::OsString]) {
-    let mut h = blake3::Hasher::new();
-    for a in args.iter().skip(1) {
-        h.update(a.as_encoded_bytes());
-        h.update(&[0]);
-    }
-    state().argv_hash = Some(format!("blake3:{}", h.finalize().to_hex()));
-}
-
-/// The command input a write planned (`commands::args_hash`): the same bytes an intent keys.
-pub fn note_inputs(inputs: &[Value]) {
-    state().args_hash = Some(crate::commands::args_hash(inputs));
+/// One write step's command input (`commands::input`, with `--timeline`). A run that plans a
+/// write hashes these as `Tx.argsHash` does ([`crate::commands::args_hash`]), so its
+/// `cli.command` and the commit's intent carry the same hash.
+pub fn note_input(input: &Value) {
+    state().inputs.push(input.clone());
 }
 
 pub fn note_project(id: &str) {
@@ -241,12 +256,24 @@ fn answer_tx_ids(result: &Result<Value, CoreError>) -> Vec<String> {
         .collect()
 }
 
+/// `argsHash`: the write's input hash when the run planned a write (what its commit's intent
+/// keys), else the canonical hash of the parse. The two never mix for one command: a command
+/// either writes or it does not, and only a write has an intent to join.
+fn args_hash(s: &State) -> String {
+    if s.inputs.is_empty() {
+        s.parse_hash.clone().unwrap_or_default()
+    } else {
+        crate::commands::args_hash(&s.inputs)
+    }
+}
+
 /// The wire form of this run's `cli.command`.
 fn command_event(
     s: &State,
     result: &Result<Value, CoreError>,
     exit: i32,
     micros: u64,
+    online: bool,
 ) -> CliCommandIn {
     let mut tx_ids = s.tx_ids.clone();
     for id in answer_tx_ids(result) {
@@ -257,15 +284,11 @@ fn command_event(
     CliCommandIn {
         name: CLI_COMMANDS.get_or_other(s.name.as_deref().unwrap_or("other")),
         flags: s.flags.iter().map(|f| CLI_FLAGS.get_or_other(f)).collect(),
-        args_hash: s
-            .args_hash
-            .as_ref()
-            .or(s.argv_hash.as_ref())
-            .and_then(|h| Blake3Hex::parse(h)),
+        args_hash: Blake3Hex::parse(&args_hash(s)),
         micros,
         exit: u8::try_from(exit).unwrap_or(u8::MAX),
         code: result.as_ref().err().and_then(|e| Code::parse(&e.code)),
-        online: true,
+        online,
         dry_run: s.dry_run,
         tx_ids: tx_ids.iter().filter_map(|id| RawId::new(id)).collect(),
     }
@@ -280,9 +303,35 @@ fn record(kind: &str, project: Option<&str>, payload: &impl serde::Serialize) ->
     Some(req)
 }
 
-/// Sends this run's `cli.command` on the run's connection, once, at the end (after the answer
-/// is printed). Never fails, never waits for a reply, never takes longer than [`BUDGET`].
+/// A connection to the discoverable server, when recording is allowed, within `deadline`.
+fn connect_by(deadline: Instant) -> Option<Client> {
+    let endpoint = crate::endpoint::resolve().ok()?;
+    if !allowed() {
+        return None;
+    }
+    let left = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())?;
+    Client::connect(&endpoint, left).ok()
+}
+
+/// Writes `req` as a `diagnostics.record` within what is left of `deadline`.
+fn send_by(client: &mut Client, req: &Value, deadline: Instant) {
+    if let Some(left) = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+    {
+        let _ = client.send_only("diagnostics.record", req, left);
+    }
+}
+
+/// Sends this run's `cli.command` once, at the end (after the answer is printed): on the run's
+/// own connection when it had one (`online`: this command itself talked to the server), else
+/// on a new one to the server `finisherd.json` names. Connect and write share [`BUDGET`]; a
+/// server that cannot be reached in time means nothing is recorded. Never fails, never waits
+/// for a reply.
 pub fn finish(result: &Result<Value, CoreError>, exit: i32) {
+    let deadline = Instant::now() + BUDGET;
     if !allowed() {
         return;
     }
@@ -294,14 +343,15 @@ pub fn finish(result: &Result<Value, CoreError>, exit: i32) {
     let micros = STARTED.get().map_or(0, |t| {
         u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX)
     });
-    let event = command_event(&s, result, exit, micros);
-    let Some(mut conn) = s.conn.take() else {
-        return;
-    };
+    let parked = s.conn.take();
+    let event = command_event(&s, result, exit, micros, parked.is_some());
     let project = s.project.clone();
     drop(s);
+    let Some(mut conn) = parked.or_else(|| connect_by(deadline)) else {
+        return;
+    };
     if let Some(req) = record("cli.command", project.as_deref(), &event) {
-        let _ = conn.send_only("diagnostics.record", &req, BUDGET);
+        send_by(&mut conn, &req, deadline);
     }
 }
 
@@ -348,26 +398,22 @@ fn panic_event(info: &PanicHookInfo<'_>) -> ErrorPanicIn {
     }
 }
 
-/// Reports a panic of `fin` as `error.panic` (best effort, within [`BUDGET`]: a connect, then a
-/// write; no reply is read). Called by the panic hook before it prints the `INTERNAL` document.
+/// Reports a panic of `fin` as `error.panic` (best effort: one connect and one write sharing
+/// [`BUDGET`]; no reply is read). Called by the panic hook before it prints the `INTERNAL`
+/// document. A panic inside a panic hook aborts the process and nothing can catch it, so this
+/// is written not to panic: no unwrap, no indexing, and the one thread it needs (the
+/// connection's) is spawned with `std::thread::Builder`, whose failure is an error.
 pub fn report_panic(info: &PanicHookInfo<'_>) {
-    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        if env_opt_out(|k| std::env::var(k).ok()) {
-            return;
-        }
-        let Ok(endpoint) = crate::endpoint::resolve() else {
-            return;
-        };
-        if !allowed() {
-            return;
-        }
-        let Ok(mut client) = Client::connect(&endpoint, BUDGET) else {
-            return;
-        };
-        if let Some(req) = record("error.panic", None, &panic_event(info)) {
-            let _ = client.send_only("diagnostics.record", &req, BUDGET);
-        }
-    }));
+    let deadline = Instant::now() + BUDGET;
+    if env_opt_out(|k| std::env::var(k).ok()) {
+        return;
+    }
+    let Some(mut client) = connect_by(deadline) else {
+        return;
+    };
+    if let Some(req) = record("error.panic", None, &panic_event(info)) {
+        send_by(&mut client, &req, deadline);
+    }
 }
 
 /// Test hook: `FIN_TEST_PANIC` set makes `fin` panic right after it starts, so a test can see
@@ -381,151 +427,4 @@ pub fn test_panic() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        move |k| {
-            pairs
-                .iter()
-                .find(|(n, _)| *n == k)
-                .map(|(_, v)| (*v).to_string())
-        }
-    }
-
-    #[test]
-    fn the_env_opt_out_follows_the_server_s_rules() {
-        assert!(!env_opt_out(env(&[])));
-        assert!(env_opt_out(env(&[("DO_NOT_TRACK", "1")])));
-        assert!(env_opt_out(env(&[("DO_NOT_TRACK", "yes")])));
-        for off in ["", "0", "false", " FALSE "] {
-            assert!(!env_opt_out(env(&[("DO_NOT_TRACK", off)])), "{off:?}");
-        }
-        assert!(env_opt_out(env(&[("FIN_DIAGNOSTICS", "off")])));
-        assert!(env_opt_out(env(&[("FIN_DIAGNOSTICS", " OFF")])));
-        assert!(!env_opt_out(env(&[("FIN_DIAGNOSTICS", "on")])));
-    }
-
-    #[test]
-    fn the_actor_is_an_agent_only_with_a_session() {
-        let get = |h: &[[String; 2]], k: &str| h.iter().find(|p| p[0] == k).map(|p| p[1].clone());
-        let user = actor_headers_from(None, Some("call-1"));
-        assert_eq!(get(&user, "fin-actor-kind").as_deref(), Some("user"));
-        assert_eq!(user.len(), 1);
-        let agent = actor_headers_from(Some("s1"), Some("c1"));
-        assert_eq!(get(&agent, "fin-actor-kind").as_deref(), Some("agent"));
-        assert_eq!(get(&agent, "fin-actor-session").as_deref(), Some("s1"));
-        assert_eq!(get(&agent, "fin-actor-call").as_deref(), Some("c1"));
-        let no_call = actor_headers_from(Some("s1"), None);
-        assert_eq!(no_call.len(), 2);
-        // Over-long and empty ids are dropped; a session that is dropped is no agent.
-        let long = "x".repeat(MAX_RAW_ID + 1);
-        assert_eq!(actor_headers_from(Some("s1"), Some(&long)).len(), 2);
-        assert_eq!(actor_headers_from(Some(&long), Some("c")).len(), 1);
-        assert_eq!(actor_headers_from(Some(""), None).len(), 1);
-    }
-
-    #[test]
-    fn the_discovery_file_gates_only_when_it_says_so() {
-        note_discovery(&json!({ "diagnostics": { "enabled": false } }));
-        assert_eq!(DISCOVERY.load(Ordering::Relaxed), DISABLED);
-        note_discovery(&json!({ "diagnostics": { "enabled": true } }));
-        assert_eq!(DISCOVERY.load(Ordering::Relaxed), ENABLED);
-        // An older server wrote no `diagnostics`: send, and let the server's gate decide.
-        note_discovery(&json!({ "socket": "s" }));
-        assert_eq!(DISCOVERY.load(Ordering::Relaxed), UNKNOWN);
-    }
-
-    #[test]
-    fn a_command_event_holds_names_and_hashes_only() {
-        let s = State {
-            name: Some("item.trim".into()),
-            flags: ["project".to_string(), "typed-by-a-user".to_string()].into(),
-            args_hash: Some(format!("blake3:{}", "ab".repeat(32))),
-            tx_ids: vec!["tx-1".into()],
-            ..State::default()
-        };
-        let err = CoreError::new("CONFLICT", "no").with_details(json!({ "txId": "tx-2" }));
-        let e = command_event(&s, &Err(err), 4, 1234);
-        let v = serde_json::to_value(&e).unwrap();
-        assert_eq!(v["name"], "item.trim");
-        assert_eq!(v["flags"], json!(["project", "other"]));
-        assert_eq!(v["exit"], 4);
-        assert_eq!(v["code"], "CONFLICT");
-        assert_eq!(v["txIds"], json!(["tx-1", "tx-2"]));
-        let unknown = State {
-            name: Some("not.a.command".into()),
-            ..State::default()
-        };
-        let e = command_event(&unknown, &Ok(json!({})), 0, 1);
-        assert_eq!(e.name.as_str(), "other");
-        assert!(e.args_hash.is_none());
-    }
-
-    fn parsed(line: &str) -> (String, Vec<String>) {
-        let mut cmd = crate::configure(<crate::Cli as clap::CommandFactory>::command());
-        let args = std::iter::once("fin").chain(line.split_whitespace());
-        let m = cmd.try_get_matches_from_mut(args).unwrap();
-        let (name, flags) = describe(&cmd, &m);
-        (name, flags.into_iter().collect())
-    }
-
-    #[test]
-    fn registry_names_are_in_core_tables() {
-        for c in crate::registry::commands() {
-            assert!(
-                CLI_COMMANDS.get(c.name).is_some(),
-                "{} is not in CLI_COMMANDS",
-                c.name
-            );
-        }
-        fn walk(c: &Command, out: &mut BTreeSet<String>) {
-            out.extend(
-                c.get_arguments()
-                    .filter_map(|a| a.get_long())
-                    .map(str::to_string),
-            );
-            c.get_subcommands().for_each(|s| walk(s, out));
-        }
-        let mut cmd = crate::configure(<crate::Cli as clap::CommandFactory>::command());
-        cmd.build();
-        let mut longs = BTreeSet::new();
-        walk(&cmd, &mut longs);
-        for long in longs {
-            assert!(
-                CLI_FLAGS.get(&long).is_some(),
-                "--{long} is not in CLI_FLAGS"
-            );
-        }
-        // Every name the parse yields for a sample of the tree is in the table.
-        for line in [
-            "status",
-            "try keep",
-            "cherry-pick tx1 --into b",
-            "caption set-text c1 Hello",
-        ] {
-            let (name, _) = parsed(line);
-            assert!(CLI_COMMANDS.get(&name).is_some(), "{line}: {name}");
-        }
-    }
-
-    #[test]
-    fn a_parse_yields_a_name_and_flag_names_never_values() {
-        let (name, flags) = parsed("clip insert --track t1 --at end --asset a1 --dur 2s --dry-run");
-        assert_eq!(name, "clip.insert");
-        assert_eq!(flags, ["asset", "at", "dry-run", "dur", "track"]);
-        assert_eq!(
-            parsed("--project d --idem-key k status"),
-            ("status".into(), vec!["idem-key".into(), "project".into()])
-        );
-        assert_eq!(parsed("try keep").0, "try.keep");
-        assert_eq!(parsed("schema param --scope style").0, "schema.param");
-        assert_eq!(parsed("schema clip.insert").0, "schema");
-        assert_eq!(parsed("").0, "help");
-        assert_eq!(parsed("help clip").0, "help");
-        let (name, flags) =
-            parsed("diagnostics export --since 2026-11-01 --kind cli.command --as-upload training");
-        assert_eq!(name, "diagnostics.export");
-        assert_eq!(flags, ["as-upload", "kind", "since"]);
-    }
-}
+mod tests;

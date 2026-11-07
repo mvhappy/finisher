@@ -130,6 +130,10 @@ const VALIDATION_CODES: &[&str] = &[
     // A caption laid out from its pinned fonts overflows its style's lines or safe zone
     // (sub-project 4C Tasks 19–20: checked once at the end of a transaction).
     "CAPTION_OVERFLOW",
+    // `diagnostics.record` refused an event (plan D, Decision 33): seen only by direct callers.
+    "EVENT_KIND_UNKNOWN",
+    "EVENT_INVALID",
+    "EVENT_TOO_LARGE",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).

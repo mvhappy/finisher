@@ -261,6 +261,7 @@ pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value
     if let Some(tl) = &b.timeline {
         hashed["timeline"] = json!(tl);
     }
+    crate::diag::note_input(&hashed);
     b.inputs.push(hashed);
     let suffix = n.map(|n| n.to_string()).unwrap_or_default();
     let resolved = match step {

@@ -235,10 +235,11 @@ impl Client {
                 }
             })?;
         // Read/write timeouts come from `TimedConn`: Windows named pipes have no OS-level ones.
+        let conn = TimedConn::new(stream, timeout).map_err(|e| down(e.to_string()))?;
         Ok(Client {
             endpoint: endpoint.clone(),
             timeout,
-            conn: TimedConn::new(stream, timeout),
+            conn,
             next_id: 1,
             headers: crate::diag::actor_headers(),
         })
@@ -543,5 +544,38 @@ mod tests {
                 .code,
             "SERVER_UNAVAILABLE"
         );
+    }
+
+    /// The write of a fire-and-forget event is capped: against a server that never reads, a
+    /// frame the socket buffer cannot take gives up after the budget (`fin` then exits).
+    #[cfg(unix)]
+    #[test]
+    fn a_full_socket_buffer_costs_at_most_the_budget() {
+        use interprocess::local_socket::ListenerOptions;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("never-reads.sock");
+        let name = path.as_path().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+        let held = std::thread::spawn(move || {
+            let conn = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            drop(conn);
+        });
+        let mut client = Client::connect(&Endpoint::Socket(path), Duration::from_secs(5)).unwrap();
+        // Far past any socket buffer (a few hundred KiB).
+        let big = json!({ "filler": "a".repeat(4 << 20) });
+        let started = std::time::Instant::now();
+        let err = client
+            .send_only("diagnostics.record", &big, Duration::from_millis(50))
+            .unwrap_err();
+        assert_eq!(err.code, "SERVER_TIMEOUT");
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(client);
+        held.join().unwrap();
     }
 }

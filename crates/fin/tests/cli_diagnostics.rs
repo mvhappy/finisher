@@ -4,6 +4,7 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -30,7 +31,11 @@ struct Fake {
     root: PathBuf,
     socket: PathBuf,
     requests: Arc<Mutex<Vec<Value>>>,
+    /// `exit` values to answer a tag with, in order (else `Success {}`).
+    replies: Replies,
 }
+
+type Replies = Arc<Mutex<HashMap<String, Vec<Value>>>>;
 
 impl Fake {
     fn start(after: After) -> Fake {
@@ -41,10 +46,12 @@ impl Fake {
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
         let requests: Arc<Mutex<Vec<Value>>> = Arc::default();
         let seen = requests.clone();
+        let replies: Replies = Arc::default();
+        let scripted = replies.clone();
         std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
-                let seen = seen.clone();
-                std::thread::spawn(move || serve(conn, after, &seen));
+                let (seen, scripted) = (seen.clone(), scripted.clone());
+                std::thread::spawn(move || serve(conn, after, &seen, &scripted));
             }
         });
         Fake {
@@ -52,7 +59,12 @@ impl Fake {
             root,
             socket,
             requests,
+            replies,
         }
+    }
+
+    fn reply_with(&self, tag: &str, exits: Vec<Value>) {
+        self.replies.lock().unwrap().insert(tag.to_string(), exits);
     }
 
     /// A server-data directory whose `finisherd.json` points at the fake.
@@ -89,7 +101,12 @@ impl Fake {
     }
 }
 
-fn serve(conn: interprocess::local_socket::Stream, after: After, seen: &Mutex<Vec<Value>>) {
+fn serve(
+    conn: interprocess::local_socket::Stream,
+    after: After,
+    seen: &Mutex<Vec<Value>>,
+    scripted: &Replies,
+) {
     let mut reader = BufReader::new(conn);
     let mut first = true;
     loop {
@@ -107,7 +124,13 @@ fn serve(conn: interprocess::local_socket::Stream, after: After, seen: &Mutex<Ve
         if frame["tag"] == "diagnostics.record" {
             continue;
         }
-        let exit = json!({ "_tag": "Success", "value": {} });
+        let next = scripted
+            .lock()
+            .unwrap()
+            .get_mut(frame["tag"].as_str().unwrap_or_default())
+            .filter(|v| !v.is_empty())
+            .map(|v| v.remove(0));
+        let exit = next.unwrap_or_else(|| json!({ "_tag": "Success", "value": {} }));
         let reply = json!({ "_tag": "Exit", "requestId": frame["id"], "exit": exit });
         let out = reader.get_mut();
         let _ = writeln!(out, "{reply}");
@@ -323,4 +346,136 @@ fn map_still_under_budget() {
         .find(|c| c.as_str().unwrap().starts_with("diagnostics:"))
         .unwrap();
     assert_eq!(line, "diagnostics: show export purge project consent");
+}
+/// `fin <args>` against the fake through discovery; `online`-less runs have no connection of
+/// their own.
+fn run_args(fake: &Fake, sd: &Path, args: &[&str]) -> support::Run {
+    let out = fin_cmd(sd, &fake.root, args).output().unwrap();
+    finish(args, out)
+}
+
+#[test]
+fn runs_that_never_called_the_server_are_recorded_too() {
+    let fake = Fake::start(After::Serve);
+    let sd = fake.discovery(Some(true));
+    assert_eq!(run_args(&fake, &sd, &["help", "clip"]).code, 0);
+    assert_eq!(run_args(&fake, &sd, &["schema", "param"]).code, 0);
+    assert_eq!(
+        run_args(&fake, &sd, &["clip", "insert"]).code,
+        2,
+        "a usage error"
+    );
+    let records = fake.wait_records(3);
+    assert_eq!(records.len(), 3, "{records:?}");
+    let seen: Vec<(&str, u64, bool)> = records
+        .iter()
+        .map(|r| {
+            let p = &r["payload"]["payload"];
+            (
+                p["name"].as_str().unwrap(),
+                p["exit"].as_u64().unwrap(),
+                p["online"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    // `online`: this command itself talked to the server. None of these did.
+    assert_eq!(
+        seen,
+        [
+            ("help", 0, false),
+            ("schema.param", 0, false),
+            ("other", 2, false)
+        ]
+    );
+    assert_eq!(records[2]["payload"]["payload"]["code"], "USAGE");
+    assert!(
+        records
+            .iter()
+            .all(|r| r["headers"] == json!([["fin-actor-kind", "user"]]))
+    );
+    // Off means off here too.
+    let off = Fake::start(After::Serve);
+    let sd = off.discovery(Some(false));
+    run_args(&off, &sd, &["help"]);
+    none_after_a_moment(&off);
+    // No server to be found, or one that is gone: nothing is recorded, and nothing is slower.
+    let gone = Fake::start(After::Serve);
+    let sd = gone.discovery(Some(true));
+    std::fs::remove_file(&gone.socket).unwrap();
+    let started = Instant::now();
+    assert_eq!(run_args(&gone, &sd, &["help"]).code, 0);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        run_args(&gone, &gone.root.join("nowhere"), &["help"]).code,
+        0
+    );
+    none_after_a_moment(&gone);
+}
+
+#[test]
+fn an_agent_without_a_usable_session_is_still_an_agent() {
+    let long = "x".repeat(300);
+    for (session, expect) in [
+        ("", json!([["fin-actor-kind", "agent"]])),
+        (long.as_str(), json!([["fin-actor-kind", "agent"]])),
+    ] {
+        let fake = Fake::start(After::Serve);
+        let sd = fake.discovery(Some(true));
+        run(&fake, Some(&sd), &[("FIN_SESSION", session)]);
+        fake.wait_records(1);
+        for r in fake.requests() {
+            assert_eq!(r["headers"], expect, "{r}");
+        }
+    }
+}
+
+#[test]
+fn an_export_that_fails_midway_ends_with_its_error_document() {
+    let fake = Fake::start(After::Serve);
+    let sd = fake.discovery(Some(true));
+    let entry = |n: u32| json!({ "v": 1, "id": format!("E{n}"), "ts": n, "kind": "cli.command" });
+    let failure = failure_of("JOURNAL_UNAVAILABLE");
+    fake.reply_with(
+        "diagnostics.export",
+        vec![
+            json!({ "_tag": "Success", "value": { "lines": [entry(1), entry(2)], "next": "E2" } }),
+            failure,
+        ],
+    );
+    let out = fin_cmd(&sd, &fake.root, &["diagnostics", "export"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(5));
+    let text = String::from_utf8(out.stdout).unwrap();
+    let docs: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(docs.len(), 3, "{text}");
+    assert_eq!(
+        (&docs[0]["id"], &docs[1]["id"]),
+        (&json!("E1"), &json!("E2"))
+    );
+    assert_eq!(docs[2]["error"]["code"], "JOURNAL_UNAVAILABLE");
+    // The second request paged on from the first answer's `next`.
+    let exports: Vec<_> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r["tag"] == "diagnostics.export")
+        .collect();
+    assert_eq!(exports[1]["payload"]["cursor"], "E2");
+    // An export that fails at once prints the error alone.
+    fake.reply_with(
+        "diagnostics.export",
+        vec![failure_of("JOURNAL_UNAVAILABLE")],
+    );
+    let out = fin_cmd(&sd, &fake.root, &["diagnostics", "export"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(5));
+    assert_eq!(String::from_utf8(out.stdout).unwrap().lines().count(), 1);
+}
+
+fn failure_of(code: &str) -> Value {
+    json!({ "_tag": "Failure", "cause": [{ "_tag": "Fail", "error": { "code": code, "message": "m", "details": {} } }] })
 }

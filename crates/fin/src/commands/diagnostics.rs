@@ -1,7 +1,10 @@
 //! `fin diagnostics show|export|purge|project|consent` (plan D, Decisions 14a, 14b, 30 and 33;
 //! spec §21.1). The journal is the server's: every command is one `diagnostics.*` RPC, so
 //! offline it is `SERVER_UNAVAILABLE`. `export` prints JSONL, newest last, paged by the
-//! server's `next` (at most 1000 lines a page); the rest print one JSON document.
+//! server's `next` (at most 1000 lines a page); the rest print one JSON document. When an
+//! export fails after it printed lines (a later page), its error document is the last line of
+//! stdout and the exit code is the error's: entries are objects with `v` and `id`, the error is
+//! `{"error": …}`. An export that fails on its first page prints only the error.
 //!
 //! `--project` is the global flag: a project folder (as everywhere) or, here, a project id.
 //! Opting in to content is a person's choice: `consent training on` is a usage error that names
@@ -57,15 +60,11 @@ pub enum Collect {
     Default,
 }
 
-/// The consent, the journal's state and counts per kind and project.
+/// The consent, the journal's state and counts per kind and project (`export --limit n` lists
+/// the newest entries).
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ShowArgs {
-    /// Also list the newest n entries as `recent`: id, time, kind and source, no payload.
-    #[arg(long, value_name = "n")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-}
+pub struct ShowArgs {}
 
 /// JSONL of what is stored, oldest first (content included: it is your own data), or with
 /// `--as-upload` exactly what an uploader would get now.
@@ -125,6 +124,17 @@ pub struct ConsentArgs {
 }
 
 pub fn run(backend: &dyn Backend, g: &Globals, cmd: &DiagnosticsCmd) -> Result<Value, CoreError> {
+    // `--dry-run` is a global flag, and these change the journal or settings for real: it is
+    // refused, never silently ignored (as `fin project open` refuses it).
+    if g.dry_run
+        && let Some(name) = mutating(cmd)
+    {
+        return Err(usage(
+            format!("diagnostics {name} is not a project write and takes no --dry-run"),
+            json!({ "command": format!("diagnostics.{name}"), "flag": "dry-run" }),
+            format!("run fin diagnostics {name} without --dry-run (it acts at once)"),
+        ));
+    }
     match cmd {
         DiagnosticsCmd::Show(a) => show(backend, a),
         DiagnosticsCmd::Export(a) => export(backend, g, a),
@@ -134,40 +144,25 @@ pub fn run(backend: &dyn Backend, g: &Globals, cmd: &DiagnosticsCmd) -> Result<V
     }
 }
 
+/// The subcommands that delete or change something.
+fn mutating(cmd: &DiagnosticsCmd) -> Option<&'static str> {
+    match cmd {
+        DiagnosticsCmd::Purge(_) => Some("purge"),
+        DiagnosticsCmd::Project(_) => Some("project"),
+        DiagnosticsCmd::Consent(_) => Some("consent"),
+        DiagnosticsCmd::Show(_) | DiagnosticsCmd::Export(_) => None,
+    }
+}
+
 // ---- show -------------------------------------------------------------------------------
 
-fn show(backend: &dyn Backend, a: &ShowArgs) -> Result<Value, CoreError> {
-    let recent = match a.limit {
-        Some(0) => {
-            return Err(usage(
-                "--limit must be at least 1",
-                json!({ "flag": "limit" }),
-                "pass --limit <n> with n ≥ 1, or leave it out",
-            ));
-        }
-        Some(n) => Some(export_page(
-            backend,
-            &json!({ "limit": n }),
-            None,
-            None,
-            n.min(1000),
-        )?),
-        None => None,
-    };
+fn show(backend: &dyn Backend, _: &ShowArgs) -> Result<Value, CoreError> {
     let mut report = backend.server_call("diagnostics.status", json!({}))?;
     if report["state"] == "suspended" {
         return Err(suspended(&report));
     }
     if let Some(env) = report.pointer("/consent/env").cloned() {
         report["env"] = env;
-    }
-    if let Some(page) = recent {
-        let line = |e: &Value| json!({ "id": e["id"], "ts": e["ts"], "kind": e["kind"], "source": e["source"] });
-        let lines = page["lines"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        report["recent"] = Value::Array(lines.iter().map(line).collect());
     }
     Ok(report)
 }
@@ -318,11 +313,17 @@ fn consent(backend: &dyn Backend, a: &ConsentArgs) -> Result<Value, CoreError> {
 
 // ---- arguments --------------------------------------------------------------------------------
 
+/// A Crockford-base32 ULID: 26 characters of `0-9A-Z` without `I L O U`, the first at most `7`
+/// (the 48-bit time must not overflow). Ids from the server are lower case.
 fn looks_like_id(s: &str) -> bool {
-    s.len() == 26 && s.bytes().all(|c| c.is_ascii_alphanumeric())
+    let s = s.as_bytes();
+    s.len() == 26
+        && s[0] <= b'7'
+        && s.iter()
+            .all(|c| c.is_ascii_digit() || (c.is_ascii_alphabetic() && !b"ILOUilou".contains(c)))
 }
 
-/// The project `--project` names: an id (26 letters and digits that is no folder here), else the
+/// The project `--project` names: an id (a valid ULID that is no folder here), else the
 /// folder's project as the server knows it; without the flag, the nearest project when
 /// `required`.
 fn project_arg(
@@ -455,6 +456,30 @@ mod tests {
                 "USAGE",
                 "{bad:?}"
             );
+        }
+    }
+
+    #[test]
+    fn only_a_valid_ulid_is_a_project_id() {
+        for ok in [
+            "01hzzzzzzzzzzzzzzzzzzzzzzz",
+            "01HZXG3Q4TWV5N6M7K8J9A0B1C",
+            "7zzzzzzzzzzzzzzzzzzzzzzzzz",
+        ] {
+            assert!(looks_like_id(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "01hzzzzzzzzzzzzzzzzzzzzzz",
+            "01hzzzzzzzzzzzzzzzzzzzzzzzz",
+            "81hzzzzzzzzzzzzzzzzzzzzzzz",
+            "01hzzzzzzzzzzzzzzzzzzzzzzi",
+            "01hzzzzzzzzzzzzzzzzzzzzzzl",
+            "01hzzzzzzzzzzzzzzzzzzzzzzo",
+            "01hzzzzzzzzzzzzzzzzzzzzzzu",
+            "film/folderfolderfolder12",
+        ] {
+            assert!(!looks_like_id(bad), "{bad}");
         }
     }
 }

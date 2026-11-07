@@ -200,7 +200,6 @@ fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
         .try_get_matches_from_mut(&args)
         .map_err(|e| clap_usage(&e))?;
     diag::note_matches(&cmd, &matches);
-    diag::note_argv(&args);
     Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))
 }
 
@@ -405,7 +404,7 @@ mod tests {
             "fonts pin Inter --weight 700 --italic --fallback 0",
             "fonts repin Inter|700|normal --catalog-version 2026.11.1",
             "fonts unpin Inter|700|normal",
-            "diagnostics show --limit 5",
+            "diagnostics show",
             "diagnostics export --since 2026-11-01 --project p1 --kind cli.command --limit 9 --as-upload training",
             "diagnostics purge --before 2026-11-01",
             "diagnostics project never",
