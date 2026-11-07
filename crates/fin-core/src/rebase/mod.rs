@@ -13,6 +13,7 @@ pub mod conflict;
 mod engine;
 pub mod footprint;
 pub mod map;
+pub mod places;
 mod steps;
 
 pub use conflict::{Conflict, Conflicts, reasons};

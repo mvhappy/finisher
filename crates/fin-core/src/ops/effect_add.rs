@@ -184,8 +184,6 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         f.touches.push((a.item.clone(), Touch::Exists));
         f.uses.push(crate::ops::util::lists::effects(&a.item));
         if a.at.is_some() {
-            // An explicit index holds only in the order it was chosen in.
-            f.puts_back(&crate::ops::util::lists::effects(&a.item));
             f.touches
                 .push((a.item.clone(), Touch::Param(EFFECTS.to_string())));
         }

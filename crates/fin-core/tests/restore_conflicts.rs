@@ -417,17 +417,6 @@ fn cases() -> Vec<Case> {
             reason: "SAME_PARAM",
         },
         Case {
-            what: "effect order (effect.restore at its old index)",
-            setup: vec![
-                add_fx("c1", "$fa"),
-                add_fx("c1", "$fb"),
-                add_fx("c1", "$fc"),
-            ],
-            remove: |b| remove_fx("c1", &b["$fb"]),
-            edit: |b| remove_fx("c1", &b["$fa"]),
-            reason: "SAME_PARAM",
-        },
-        Case {
             what: "timeline order (timeline.restore at its old index)",
             setup: vec![timeline()],
             remove: remove_timeline,
@@ -871,4 +860,101 @@ fn track_orders_of_different_timelines_merge() {
         .collect();
     assert_eq!(ids, ["t1", "t2"]);
     assert_eq!(p.timelines[1].tracks.len(), 3);
+}
+
+/// `c1`'s effect ids, in order.
+fn fx_ids(log: &MemLog) -> Vec<String> {
+    let p = log.state("main");
+    let c1 = p.timelines[0].tracks[0].items.iter().find(|i| i.id == "c1");
+    c1.unwrap()
+        .common
+        .effects
+        .iter()
+        .map(|e| e.id.clone())
+        .collect()
+}
+
+/// A log whose `c1` has effects `fa`, `fb`, `fc` (bound by the returned ids).
+fn three_fx() -> (MemLog, Ids) {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let ops = vec![
+        add_fx("c1", "$fa"),
+        add_fx("c1", "$fb"),
+        add_fx("c1", "$fc"),
+    ];
+    let b = log.commit("main", "s0", "setup", ops).record.bindings;
+    (log, b)
+}
+
+/// Indexes are carried by their neighbours (`rebase::places`), so appends and removals by
+/// others elsewhere in the list never stop an index op, and the member goes back between the
+/// neighbours it had (spec §4.3). Each case was refused at d50a083; the old absolute index got
+/// the last two wrong.
+#[test]
+fn index_ops_merge_with_appends_and_removals_elsewhere() {
+    let ids =
+        |b: &Ids, names: &[&str]| -> Vec<String> { names.iter().map(|n| b[*n].clone()).collect() };
+    // Your removal of fb, bob removes the later fc, you undo: [fa, fb].
+    let (mut log, b) = three_fx();
+    log.commit("main", "x1", "alice", vec![remove_fx("c1", &b["$fb"])]);
+    log.commit("main", "b1", "bob", vec![remove_fx("c1", &b["$fc"])]);
+    log.undo("main", "alice", "u1").unwrap();
+    assert_eq!(fx_ids(&log), ids(&b, &["$fa", "$fb"]));
+    // Your removal of fb, bob appends fd, you undo: [fa, fb, fc, fd].
+    let (mut log, b) = three_fx();
+    log.commit("main", "x1", "alice", vec![remove_fx("c1", &b["$fb"])]);
+    let fd = log.commit("main", "b1", "bob", vec![add_fx("c1", "$fd")]);
+    let fd = fd.record.bindings["$fd"].clone();
+    log.undo("main", "alice", "u1").unwrap();
+    let mut want = ids(&b, &["$fa", "$fb", "$fc"]);
+    want.push(fd);
+    assert_eq!(fx_ids(&log), want);
+    // Bob appends, then your stale effect.add at index 0: first.
+    let (mut log, b) = three_fx();
+    let base = log.head_seq("main");
+    log.commit("main", "b1", "bob", vec![add_fx("c1", "$fd")]);
+    let first = EffectAdd {
+        item: "c1".into(),
+        id: "$fe".into(),
+        kind: "blur".into(),
+        at: Some(0),
+        params: BTreeMap::new(),
+    };
+    let r = log
+        .commit_at("main", "x1", "alice", base, vec![first.into()])
+        .unwrap();
+    assert_eq!(fx_ids(&log)[0], r.record.bindings["$fe"]);
+    assert_eq!(fx_ids(&log)[1..4], ids(&b, &["$fa", "$fb", "$fc"]));
+    // Your track move, bob appends a track on the same timeline, you undo.
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    log.commit("main", "x1", "alice", vec![move_track("t1", 1)]);
+    log.commit(
+        "main",
+        "b1",
+        "bob",
+        vec![add_track("$t3", TrackKind::Video, None)],
+    );
+    log.undo("main", "alice", "u1").unwrap();
+    let p = log.state("main");
+    let order: Vec<&str> = p.timelines[0]
+        .tracks
+        .iter()
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(order, ["t1", "t2", "t3"]);
+    // Bob removes the earlier fa, you undo your removal of fb: [fb, fc] (the old index put
+    // fb after fc).
+    let (mut log, b) = three_fx();
+    log.commit("main", "x1", "alice", vec![remove_fx("c1", &b["$fb"])]);
+    log.commit("main", "b1", "bob", vec![remove_fx("c1", &b["$fa"])]);
+    log.undo("main", "alice", "u1").unwrap();
+    assert_eq!(fx_ids(&log), ids(&b, &["$fb", "$fc"]));
+    // The same through a merge: alice removes fa on main, bob removes fb on br1 and undoes.
+    let (mut log, b) = three_fx();
+    log.fork("br1", "main", log.head_seq("main"));
+    log.commit("main", "a1", "alice", vec![remove_fx("c1", &b["$fa"])]);
+    log.commit("br1", "r1", "bob", vec![remove_fx("c1", &b["$fb"])]);
+    log.undo("br1", "bob", "u1").unwrap();
+    log.merge("br1", "main", "carol", "g1", false).unwrap();
+    assert_eq!(fx_ids(&log), ids(&b, &["$fb", "$fc"]));
 }

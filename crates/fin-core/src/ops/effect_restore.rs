@@ -141,10 +141,8 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         // Its params and keyframes as they were: a later edit of the effect is a conflict.
         f.puts_back(&fx);
         f.creates.push(fx);
-        // Back at its old index: a later placement in the item's effect order is a conflict.
-        let order = crate::ops::util::lists::effects(&r.item);
-        f.puts_back(&order);
-        f.uses.push(order);
+        // Its index is carried to the head by its neighbours (`rebase::places`).
+        f.uses.push(crate::ops::util::lists::effects(&r.item));
         f.uses.push(r.item.clone());
         f.touches
             .push((r.item.clone(), Touch::Param(EFFECTS.to_string())));

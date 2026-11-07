@@ -127,6 +127,21 @@ pub trait LogView {
 }
 
 /// The env a planner re-runs with at the head: the log's measurer.
+/// The places of a copy's index ops (`rebase::places`), read in the source's frame right
+/// before `rec`; none (and no frame read) when no op names an index.
+pub(crate) fn source_places(
+    log: &dyn LogView,
+    rec: &LogRec,
+    tx: &crate::tx::Tx,
+    mode: crate::apply::ApplyMode,
+) -> Result<Vec<Option<crate::rebase::places::Place>>, CoreError> {
+    if !crate::rebase::places::any(&tx.ops) {
+        return Ok(Vec::new());
+    }
+    let frame = log.state_at(&rec.branch, rec.seq.saturating_sub(1))?;
+    crate::rebase::places::places(&frame, tx, mode)
+}
+
 pub(crate) fn env_of(log: &dyn LogView) -> ApplyEnv<'_> {
     ApplyEnv::measuring(log.measurer())
 }

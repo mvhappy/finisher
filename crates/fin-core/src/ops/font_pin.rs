@@ -177,17 +177,16 @@ fn insert_fallback(
     Ok(())
 }
 
-/// Creates `font/<key>`, using the font asset it pins; when it places the key at an index, it
-/// uses and puts back the fallback order (`ops::util::lists`).
+/// Creates `font/<key>`, using the font asset it pins, and the fallback order when it places
+/// the key at an index (`ops::util::lists`).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::FontPin(p) = op {
         f.creates.push(entity(&p.key));
-        // Placing the key at an index (a no-op pin records nothing and places nothing): an
-        // undo of an unpin puts it back where it was, which a later placement does not map.
+        // Placing the key at an index (a no-op pin records nothing and places nothing): the
+        // index is carried to the head by its neighbours (`rebase::places`).
         if p.fallback.is_some() && !op_diff.changes.is_empty() {
             f.uses.push(crate::ops::util::lists::FALLBACK_ORDER.into());
-            f.puts_back(crate::ops::util::lists::FALLBACK_ORDER);
         }
         if let FontSource::Asset { asset } = &p.pin.source {
             f.uses.push(asset.clone());

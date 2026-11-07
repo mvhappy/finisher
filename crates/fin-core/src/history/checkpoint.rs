@@ -171,11 +171,13 @@ fn rebase_steps(
     // The inverses' own maps, in their frame (they name literal ids: nothing is allocated).
     let own = apply_tx_mode(&frame, tx, &mut MemIds::after(&frame), ApplyMode::Internal)?;
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
+    let places = crate::rebase::places::places(&frame, tx, ApplyMode::Internal)?;
     Ok(rebase_apply(
         head,
         &Rebase::new(tx, &own.diff, &steps)
             .with_env(super::env_of(log))
-            .with_absorbs(absorbs),
+            .with_absorbs(absorbs)
+            .with_places(&places),
         ids,
         ApplyMode::Internal,
     ))

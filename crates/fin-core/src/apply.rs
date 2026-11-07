@@ -216,6 +216,11 @@ impl<'e> Applier<'e> {
         }
     }
 
+    /// The project as the ops applied so far left it.
+    pub(crate) fn project(&self) -> &Project {
+        &self.project
+    }
+
     /// The placeholders bound so far, to the ids they name.
     pub(crate) fn bound(&self) -> &std::collections::BTreeMap<String, String> {
         &self.bindings.map

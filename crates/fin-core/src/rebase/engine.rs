@@ -16,6 +16,7 @@ use super::footprint::{
     Footprint, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
 };
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
+use super::places::{Place, Resolved, set_index};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
@@ -43,6 +44,9 @@ pub struct Rebase<'a> {
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
     pub absorbs: &'a BTreeSet<usize>,
+    /// Per op, the place an index op names in its own frame (`places::places`; empty when no
+    /// op names one): the engine carries the index to the head by its neighbours.
+    pub places: &'a [Option<Place>],
 }
 
 impl<'a> Rebase<'a> {
@@ -55,7 +59,13 @@ impl<'a> Rebase<'a> {
             same_origin: &NO_IDS,
             env: ApplyEnv::default(),
             absorbs: &NO_OPS,
+            places: &[],
         }
+    }
+
+    /// The rebase with the index places `places` (see [`Rebase`]).
+    pub fn with_places(self, places: &'a [Option<Place>]) -> Rebase<'a> {
+        Rebase { places, ..self }
     }
 
     /// The rebase with the split-undo removals `absorbs` (see [`Rebase`]).
@@ -79,6 +89,7 @@ pub struct PreparedRebase<'a> {
     pub same_origin: &'a BTreeSet<String>,
     pub env: ApplyEnv<'a>,
     pub absorbs: &'a BTreeSet<usize>,
+    pub places: &'a [Option<Place>],
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -114,6 +125,7 @@ pub fn rebase_apply(
         same_origin: r.same_origin,
         env: r.env,
         absorbs: r.absorbs,
+        places: r.places,
     };
     rebase_prepared(head, &p, ids, mode)
 }
@@ -168,6 +180,22 @@ pub fn rebase_prepared(
             *v = mapping
                 .map_content(n - k, &item, *v)
                 .map_err(|_| Conflict::from_rerun(&overflow(), tx_id, k, None))?;
+        }
+        // An index carried to the head by its neighbours (`places`): another author's
+        // placement where ours goes is `SAME_PARAM`, blamed on the first record that changed
+        // the list.
+        if let Some(Some(place)) = r.places.get(k) {
+            match place.resolve(run.project(), &op) {
+                Resolved::At(index) => set_index(&mut op, index),
+                Resolved::Keep => {}
+                Resolved::Taken => {
+                    let against = theirs
+                        .iter()
+                        .find(|(_, f)| f.uses.contains(&place.list))
+                        .map(|(t, _)| t.to_string());
+                    return Err(Conflict::new(tx_id, k, reasons::SAME_PARAM, against));
+                }
+            }
         }
         let mut fp = footprint(&op, &own[k]);
         // A removal whose content the next op takes back into another item (an undo of a
@@ -276,7 +304,10 @@ pub fn rebase_tx_env(
         Ok(own) => own,
         Err(e) => return Err(failed_at_base(base, head, tx, &steps, ids, e)),
     };
-    let r = Rebase::new(tx, &own.diff, &steps).with_env(env);
+    let places = super::places::places(base, tx, ApplyMode::Client)?;
+    let r = Rebase::new(tx, &own.diff, &steps)
+        .with_env(env)
+        .with_places(&places);
     let mut out = rebase_apply(head, &r, ids, ApplyMode::Client)
         .map_err(|c| CoreError::from(Conflicts::one(c)))?;
     if let Some(last) = newer.last() {

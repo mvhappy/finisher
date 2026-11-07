@@ -68,12 +68,10 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&m.track), op_diff);
     f.touches
         .push((m.track.clone(), Touch::Param(INDEX.into())));
-    let order = crate::ops::util::lists::tracks_of(op_diff, &m.track);
-    f.uses.extend(order.clone());
-    // An explicit index (its inverse's too) holds only in the order it was chosen in.
-    if let Some(order) = &order {
-        f.puts_back(order);
-    }
+    // The order is a list entity (`ops::util::lists`); the index is carried to the head by its
+    // neighbours (`rebase::places`).
+    f.uses
+        .extend(crate::ops::util::lists::tracks_of(op_diff, &m.track));
     f
 }
 

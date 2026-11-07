@@ -92,8 +92,6 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
             .push((m.item.clone(), Touch::Param(EFFECTS.to_string())));
         f.uses.push(format!("{}/{}", m.item, m.effect));
         f.uses.push(crate::ops::util::lists::effects(&m.item));
-        // An explicit index (its inverse's too) holds only in the order it was chosen in.
-        f.puts_back(&crate::ops::util::lists::effects(&m.item));
     }
     f
 }

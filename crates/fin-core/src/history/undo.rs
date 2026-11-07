@@ -330,11 +330,13 @@ pub(super) fn try_rebase_over(
         .map(LogRec::committed)
         .collect::<Result<_, _>>()?;
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
+    let places = crate::rebase::places::places(&frame, &tx, ApplyMode::Internal)?;
     Ok(rebase_apply(
         head,
         &Rebase::new(&tx, &own.diff, &steps)
             .with_env(super::env_of(log))
-            .with_absorbs(absorbs),
+            .with_absorbs(absorbs)
+            .with_places(&places),
         ids,
         ApplyMode::Internal,
     )

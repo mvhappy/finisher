@@ -117,6 +117,7 @@ pub fn plan_cherry_pick(
     };
     let mode = rerun_mode(r);
     let absorbs = super::absorbs::of_ops(log, &rec)?;
+    let places = super::source_places(log, &rec, &tx, mode)?;
     let rebase = Rebase {
         tx: &tx,
         own: &rec.diff,
@@ -124,6 +125,7 @@ pub fn plan_cherry_pick(
         same_origin: &same_origin,
         env: super::env_of(log),
         absorbs: &absorbs,
+        places: &places,
     };
     // Earlier source records stand in the steps as unmirrored inverses unless the target
     // holds a copy: what depends on them depends on a record not picked.

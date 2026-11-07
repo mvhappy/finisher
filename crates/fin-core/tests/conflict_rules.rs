@@ -679,8 +679,9 @@ fn every_op_has_a_footprint() {
                 f.removes == [r.transition.clone()]
                     && f.touches == [(r.transition.clone(), Touch::Exists)]
             }
-            // Ordered lists are entities (`ops::util::lists`): every placement uses the list,
-            // and a put-back at an old index puts the list back.
+            // Ordered lists are entities (`ops::util::lists`): every placement uses the list;
+            // an index is carried to the head by its neighbours (`rebase::places`), never by
+            // putting the list back.
             Op::TrackAdd(a) => {
                 f.creates == [a.id.clone()] && f.uses == [a.timeline.as_str(), "tl1#tracks"]
             }
@@ -692,7 +693,7 @@ fn every_op_has_a_footprint() {
             Op::TrackRestore(r) => {
                 f.creates == [r.track.id.clone(), "c3".into()]
                     && f.uses == ["tl1", "tl1#tracks", "a1"]
-                    && f.overwrites.contains(&"tl1#tracks".to_string())
+                    && !f.overwrites.contains(&"tl1#tracks".to_string())
             }
             Op::TrackMove(m) => {
                 f.touches == [(m.track.clone(), Touch::Param("index".into()))]
@@ -710,7 +711,7 @@ fn every_op_has_a_footprint() {
             }
             Op::TimelineRestore(r) => {
                 f.creates == [r.timeline.id.clone()]
-                    && f.overwrites.contains(&"#timelines".to_string())
+                    && !f.overwrites.contains(&"#timelines".to_string())
             }
             Op::MarkerAdd(a) => f.creates == [a.id.clone()] && f.uses == [a.timeline.clone()],
             Op::MarkerSet(s) => f.touches == [(s.marker.clone(), Touch::Param(s.path.clone()))],
@@ -760,7 +761,7 @@ fn every_op_has_a_footprint() {
             Op::EffectRestore(r) => {
                 f.creates == [format!("c2/{}", r.effect.id)]
                     && f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
-                    && f.overwrites.contains(&"c2#effects".to_string())
+                    && !f.overwrites.contains(&"c2#effects".to_string())
             }
             Op::StyleAdd(a) => f.creates == [a.id.clone()] && f.uses.is_empty(),
             Op::StyleSet(s) => f.touches == [(s.style.clone(), Touch::Param(s.path.clone()))],
