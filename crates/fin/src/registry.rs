@@ -31,7 +31,7 @@ impl Command {
     }
 }
 
-fn schema_of<T: JsonSchema>(name: &str) -> Value {
+pub(crate) fn schema_of<T: JsonSchema>(name: &str) -> Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| json!({}));
     if let Some(map) = schema.as_object_mut() {
         map.insert("title".to_string(), json!(name));
@@ -40,7 +40,7 @@ fn schema_of<T: JsonSchema>(name: &str) -> Value {
 }
 
 /// Adds "exactly one of `a` and `b`" to an object schema.
-fn one_of(mut schema: Value, a: &str, b: &str) -> Value {
+pub(crate) fn one_of(mut schema: Value, a: &str, b: &str) -> Value {
     schema["oneOf"] = json!([{ "required": [a] }, { "required": [b] }]);
     schema
 }
@@ -288,24 +288,24 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "clip.insert",
         group: "clip",
-        args: "--track <t> --at <time|after:cN|end> --asset <aN> [--in <time>] (--dur <time>|--out <time>)",
-        summary: "insert a clip, ripple later clips; binds $clip",
+        args: "--track <t> --at <time|after:cN|end> --asset <aN> [--in <time>] (--dur <time>|--out <time>) [--mode ripple|overwrite] [--no-audio] [--audio-track <t>]",
+        summary: "insert a clip (ripple by default) with its linked audio; binds $clip ($audio, $link)",
         write: true,
         schema: || one_of(schema_of::<clip::InsertArgs>("clip.insert"), "dur", "out"),
     },
     Command {
         name: "clip.trim",
         group: "clip",
-        args: "<cN> (--start <±time>|--end <±time>)",
-        summary: "move one edge by a signed delta, ripple",
+        args: "<cN> (--start <±time>|--end <±time>) [--mode ripple|roll|overwrite]",
+        summary: "move one edge by a signed delta (ripple by default); echoes edgeAt",
         write: true,
         schema: || one_of(schema_of::<clip::TrimArgs>("clip.trim"), "start", "end"),
     },
     Command {
         name: "clip.delete",
         group: "clip",
-        args: "<cN>",
-        summary: "delete a clip and close the gap",
+        args: "<cN> [--mode ripple|lift]",
+        summary: "delete a clip (ripple closes the gap, lift leaves it)",
         write: true,
         schema: || schema_of::<clip::DeleteArgs>("clip.delete"),
     },
@@ -335,10 +335,20 @@ pub const COMMANDS: &[Command] = &[
     },
 ];
 
+/// Groups listed after the edit commands.
+const LAST: &[&str] = &["batch", "meta"];
+
+/// Every command: the 4B ones, then the 4C edits, then `batch`, `help` and `schema`.
+pub fn commands() -> impl Iterator<Item = &'static Command> {
+    let head = COMMANDS.iter().filter(|c| !LAST.contains(&c.group));
+    let tail = COMMANDS.iter().filter(|c| LAST.contains(&c.group));
+    head.chain(crate::registry_edit::EDIT_COMMANDS).chain(tail)
+}
+
 /// Group names in registry order, without duplicates.
 pub fn groups() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
-    for c in COMMANDS {
+    for c in commands() {
         if !out.contains(&c.group) {
             out.push(c.group);
         }
@@ -348,9 +358,9 @@ pub fn groups() -> Vec<&'static str> {
 
 /// Finds a command by dotted name.
 pub fn find(name: &str) -> Option<&'static Command> {
-    COMMANDS.iter().find(|c| c.name == name)
+    commands().find(|c| c.name == name)
 }
 
 pub fn names() -> Vec<&'static str> {
-    COMMANDS.iter().map(|c| c.name).collect()
+    commands().map(|c| c.name).collect()
 }

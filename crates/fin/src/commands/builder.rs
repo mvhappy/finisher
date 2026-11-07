@@ -1,8 +1,9 @@
 //! `Builder`: accumulates ops for one transaction while tracking the state they produce.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
-use fin_core::{CoreError, MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
+use fin_core::{CoreError, ItemBody, MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
 use serde_json::{Value, json};
 
 use super::{
@@ -29,8 +30,59 @@ pub struct Builder<'a> {
     lenient: bool,
     /// The first local validation error a lenient build let through.
     deferred: Option<CoreError>,
+    /// The first step a lenient build could not plan at all (it pushed no ops): answered from
+    /// the log when the key already committed, else returned, never sent as a partial tx.
+    unplanned: Option<CoreError>,
     /// Each planned step's command input, `{cmd, args}` ([`args_hash`]).
     pub(super) inputs: Vec<Value>,
+    /// Each planned step's ops, as a range of `ops` (a composed step sends several).
+    pub(super) steps: Vec<Range<usize>>,
+    /// `--timeline`: the timeline commands that name none act on (default: the first).
+    pub timeline: Option<String>,
+}
+
+/// `$name` with a batch line's number: `$clip` → `$clip3`, `$split2` → `$split2_3`.
+fn suffixed(placeholder: &str, suffix: &str) -> String {
+    if placeholder.ends_with(|c: char| c.is_ascii_digit()) {
+        format!("{placeholder}_{suffix}")
+    } else {
+        format!("{placeholder}{suffix}")
+    }
+}
+
+/// Replaces every string of `value` that `names` maps (echo data of a composed step).
+pub fn rename_json(value: &mut Value, names: &BTreeMap<String, String>) {
+    match value {
+        Value::String(s) => {
+            if let Some(n) = names.get(s.as_str()) {
+                *s = n.clone();
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| rename_json(v, names)),
+        Value::Object(map) => map.values_mut().for_each(|v| rename_json(v, names)),
+        _ => {}
+    }
+}
+
+/// Whether `ops` may need font pins (plan 4C Decision 35): caption text or styles. Other ops
+/// add no face and no script, so they are not sent to `fonts.plan`.
+fn needs_fonts(ops: &[Op]) -> bool {
+    ops.iter().any(|op| {
+        let name = op.name();
+        name.starts_with("caption.")
+            || name.starts_with("style.")
+            || match op {
+                Op::ItemInsert(i) => matches!(i.body, ItemBody::Caption { .. }),
+                Op::ItemRestore(r) => matches!(r.item.body, ItemBody::Caption { .. }),
+                _ => false,
+            }
+    })
+}
+
+/// What `resolved.fonts` says about one planned pin: its op, key and source.
+fn pin_echo(op: &Op) -> Value {
+    let v = serde_json::to_value(op).unwrap_or(Value::Null);
+    json!({ "op": op.name(), "key": v.get("key"), "source": v.pointer("/pin/source") })
 }
 
 pub(super) fn with_detail(mut e: CoreError, key: &str, value: Value) -> CoreError {
@@ -57,8 +109,82 @@ impl<'a> Builder<'a> {
             ops: Vec::new(),
             lenient,
             deferred: None,
+            unplanned: None,
             inputs: Vec::new(),
+            steps: Vec::new(),
+            timeline: globals.timeline.clone(),
         })
+    }
+
+    /// Keeps a step's planning error for [`Builder::finish`] when the build is lenient (a
+    /// retry may find its tx committed: a composed command plans against a state its first
+    /// attempt changed, e.g. `item unlink lk1` once lk1 is gone). Returns the error otherwise.
+    pub(super) fn defer_step(&mut self, e: CoreError) -> Result<(), CoreError> {
+        if self.lenient && exit_code(&e.code) == VALIDATION {
+            self.unplanned.get_or_insert(e);
+            return Ok(());
+        }
+        Err(e)
+    }
+
+    /// How many ops are planned so far.
+    pub fn len(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// Pushes the ops of a `fin_core::compose` builder, planned against [`Builder::work`] (so
+    /// naming working ids): ids this tx bound go back to the placeholders that bound them, and
+    /// the builder's own placeholders (`$clip`, `$split`, …) gain `suffix` (a batch line's
+    /// number; empty for one command). Returns the renaming, for the step's echo
+    /// ([`rename_json`]).
+    pub fn push_composed(
+        &mut self,
+        ops: Vec<Op>,
+        suffix: &str,
+    ) -> Result<BTreeMap<String, String>, CoreError> {
+        let mut names: BTreeMap<String, String> = self
+            .bound
+            .iter()
+            .map(|(placeholder, id)| (id.clone(), placeholder.clone()))
+            .collect();
+        if !suffix.is_empty() {
+            for op in &ops {
+                if let Some(p) = op.allocates() {
+                    names.insert(p.to_string(), suffixed(p, suffix));
+                }
+            }
+        }
+        for mut op in ops {
+            op.for_each_ref(|r| {
+                if let Some(n) = names.get(r.as_str()) {
+                    *r = n.clone();
+                }
+            });
+            self.push(op)?;
+        }
+        Ok(names)
+    }
+
+    /// The `font.pin` ops the server plans for this tx (Decision 35), and what
+    /// `resolved.fonts` says. Nothing for a tx without caption text or styles, or for a
+    /// lenient build that already failed locally (a retry: its commit holds its pins);
+    /// offline, nothing is planned and `measured` is false.
+    fn plan_fonts(&self) -> Result<(Vec<Op>, Option<Value>), CoreError> {
+        if !needs_fonts(&self.ops) || self.deferred.is_some() || self.unplanned.is_some() {
+            return Ok((Vec::new(), None));
+        }
+        if self.backend.dry_run_only() {
+            return Ok((
+                Vec::new(),
+                Some(json!({ "planned": [], "measured": false })),
+            ));
+        }
+        let plan = self.backend.fonts_plan(&self.branch, &self.ops)?;
+        let planned: Vec<Value> = plan.ops.iter().map(pin_echo).collect();
+        Ok((
+            plan.ops,
+            Some(json!({ "planned": planned, "notes": plan.notes })),
+        ))
     }
 
     /// The id a reference names in the working copy: placeholders bound by earlier steps map to
@@ -129,27 +255,40 @@ impl<'a> Builder<'a> {
         if globals.idem_key.is_some() {
             tx.args_hash = Some(args_hash(&self.inputs));
         }
-        if globals.dry_run || self.backend.dry_run_only() {
+        let dry = globals.dry_run || self.backend.dry_run_only();
+        // A retry (`--idem-key`): ask what became of the key first. Already committed: that
+        // commit is the answer (with the pins it was planned with). Set aside (lost to another
+        // server's history, salvaged): it is reported, never sent again blindly.
+        let earlier = match &globals.idem_key {
+            Some(_) if !dry => lookup(self.backend, &tx.tx_id)?,
+            _ => None,
+        };
+        if let (None, Some(e)) = (&earlier, &self.unplanned) {
+            return Err(e.clone());
+        }
+        let mut fonts = None;
+        if earlier.is_none() {
+            let (pins, echo) = self.plan_fonts()?;
+            fonts = echo;
+            tx.ops.splice(0..0, pins);
+        }
+        let resolved = with_fonts(resolved, &fonts);
+        if dry {
             let applied = apply_tx(
                 &self.base.project,
                 &tx,
                 &mut MemIds::after(&self.base.project),
             )?;
-            return Ok(json!({
+            let mut doc = json!({
                 "dryRun": true,
                 "txId": tx.tx_id,
                 "bindings": applied.bindings,
                 "diff": applied.diff,
                 "resolved": resolved,
-            }));
+            });
+            batch_fonts(&mut doc, fonts);
+            return Ok(doc);
         }
-        // A retry (`--idem-key`): ask what became of the key first. Already committed: that
-        // commit is the answer. Set aside (lost to another server's history, salvaged): it is
-        // reported, never sent again blindly.
-        let earlier = match &globals.idem_key {
-            Some(_) => lookup(self.backend, &tx.tx_id)?,
-            None => None,
-        };
         let generation = self.base.generation.as_ref();
         let sent = match earlier {
             Some(c) => Ok(c),
@@ -181,13 +320,34 @@ impl<'a> Builder<'a> {
             return Err(idem_key_reused(&committed));
         }
         let mut resolved = resolved;
-        echo_committed(&mut resolved, &committed.tx.ops);
-        Ok(json!({
+        // Planned pins come first; the steps' ops follow in order.
+        let offset = committed.tx.ops.len().saturating_sub(self.ops.len());
+        echo_committed(&mut resolved, &committed.tx.ops[offset..], &self.steps);
+        let mut doc = json!({
             "rev": committed.rev,
             "txId": committed.tx.tx_id,
             "bindings": committed.bindings,
             "diff": committed.diff,
             "resolved": resolved,
-        }))
+        });
+        batch_fonts(&mut doc, fonts);
+        Ok(doc)
+    }
+}
+
+/// `resolved.fonts` on a single command's echo (an object).
+fn with_fonts(mut resolved: Value, fonts: &Option<Value>) -> Value {
+    if let (Some(f), Some(map)) = (fonts, resolved.as_object_mut()) {
+        map.insert("fonts".into(), f.clone());
+    }
+    resolved
+}
+
+/// A batch's echo is a list of steps: its fonts go on the document.
+fn batch_fonts(doc: &mut Value, fonts: Option<Value>) {
+    if let Some(f) = fonts
+        && doc["resolved"].is_array()
+    {
+        doc["fonts"] = f;
     }
 }

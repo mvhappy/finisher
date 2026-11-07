@@ -163,19 +163,43 @@ fn map_is_small_and_lists_every_group() {
         .iter()
         .map(|g| g.as_str().unwrap())
         .collect();
-    for group in ["project", "read", "asset", "clip", "batch", "meta"] {
+    let lines: Vec<&str> = run.json["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert_eq!(lines.len(), groups.len(), "one line per group");
+    for group in [
+        "project",
+        "read",
+        "asset",
+        "clip",
+        "image",
+        "graphic",
+        "item",
+        "transition",
+        "track",
+        "timeline",
+        "marker",
+        "bin",
+        "batch",
+        "meta",
+    ] {
         assert!(groups.contains(&group), "{group} missing");
         let help = env.run(&["help", group]);
         assert_eq!(help.code, 0, "{}", help.stdout);
         assert_eq!(help.json["group"], group);
+        let line = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("{group}: ")))
+            .unwrap_or_else(|| panic!("map lacks group {group}"));
+        let listed: Vec<&str> = line.split_once(": ").unwrap().1.split(' ').collect();
         for c in help.json["commands"].as_array().unwrap() {
-            let usage = c["usage"].as_str().unwrap();
-            let listed = run.json["commands"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|l| l.as_str().unwrap().starts_with(usage));
-            assert!(listed, "map lacks {usage}");
+            let name = c["name"].as_str().unwrap();
+            let short = name.strip_prefix(&format!("{group}.")).unwrap_or(name);
+            assert!(listed.contains(&short), "map lacks {name} in {line}");
+            assert!(c["usage"].as_str().unwrap().starts_with("fin "));
         }
     }
     assert_eq!(env.run(&["help"]).json, run.json);
@@ -278,7 +302,10 @@ fn idem_key_becomes_tx_id() {
     let run = env.run(&["clip", "delete", "c1", "--idem-key", "k-1"]);
     assert_eq!(run.code, 0, "{}", run.stdout);
     assert_eq!(run.json["txId"], "k-1");
-    assert_eq!(run.json["resolved"], json!({ "clip": "c1" }));
+    assert_eq!(
+        run.json["resolved"],
+        json!({ "clip": "c1", "mode": "ripple" })
+    );
     assert_eq!(
         run.json["diff"]["shifts"],
         json!([{ "track": "t1", "from": "5", "by": "-5", "op": 0 }])
@@ -292,7 +319,7 @@ fn trim_takes_signed_deltas() {
     assert_eq!(run.code, 0, "{}", run.stdout);
     assert_eq!(
         run.json["resolved"],
-        json!({ "clip": "c1", "edge": "start", "delta": "1/2" })
+        json!({ "clip": "c1", "edge": "start", "delta": "1/2", "mode": "ripple", "edgeAt": "0" })
     );
     let run = env.run(&["clip", "trim", "c2", "--end", "-1s"]);
     assert_eq!(run.json["resolved"]["delta"], "-1", "{}", run.stdout);

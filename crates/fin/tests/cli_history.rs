@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use support::{Run, Server, assert_error, fin, fin_env, media, ok};
+use support::{Run, Server, assert_error, fin, fin_env, media_av, ok};
 
 /// A server and a project `film` holding asset a1 (rev 1).
 fn project(test: &str) -> Option<(Server, PathBuf)> {
@@ -18,7 +18,8 @@ fn project(test: &str) -> Option<(Server, PathBuf)> {
         &server.root,
         &["project", "create", "film", "--name", "Film"],
     ));
-    media(&dir.join("clip.mp4"), 10);
+    // Video and audio (clips go on both tracks); inserts pass --no-audio to stay one item each.
+    media_av(&dir.join("clip.mp4"), 10);
     // Added by another author, so `fin`'s undo stack starts empty.
     ok(fin_env(
         &server.sd,
@@ -49,7 +50,17 @@ impl T<'_> {
     /// Inserts a 1 s clip at the end of `track`; returns the write document.
     fn insert(&self, extra: &[&str], track: &str) -> Value {
         let mut args = vec![
-            "clip", "insert", "--track", track, "--at", "end", "--asset", "a1", "--dur", "1s",
+            "clip",
+            "insert",
+            "--track",
+            track,
+            "--at",
+            "end",
+            "--asset",
+            "a1",
+            "--no-audio",
+            "--dur",
+            "1s",
         ];
         args.extend_from_slice(extra);
         self.run(&args)
@@ -193,8 +204,19 @@ fn archive_restore_as() {
     t.run(&["branch", "archive", "x"]);
     // An archived branch refuses writes.
     let refused = t.raw(&[
-        "--branch", "br1", "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1",
-        "--dur", "1s",
+        "--branch",
+        "br1",
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "1s",
     ]);
     assert_error(&refused, 3, "BRANCH_ARCHIVED");
     t.run(&["branch", "new", "x"]);
@@ -223,8 +245,19 @@ fn global_branch_flag_targets_writes_and_views() {
     let t = T(&server, &dir);
     t.run(&["branch", "new", "side"]);
     let wrote = t.run(&[
-        "--branch", "side", "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1",
-        "--dur", "2s",
+        "--branch",
+        "side",
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "2s",
     ]);
     assert_eq!(wrote["bindings"], json!({ "$clip": "c1" }));
     assert_eq!(t.clips(&["--branch", "side"]), ["c1"]);
@@ -288,8 +321,19 @@ fn conflicting(t: &T) -> String {
     t.run(&["branch", "new", "side"]);
     let trim = t.run(&["--branch", "side", "clip", "trim", "c1", "--end", "-0.5s"]);
     t.run(&[
-        "--branch", "side", "clip", "insert", "--track", "t2", "--at", "0", "--asset", "a1",
-        "--dur", "1s",
+        "--branch",
+        "side",
+        "clip",
+        "insert",
+        "--track",
+        "t2",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "1s",
     ]);
     t.run(&["clip", "delete", "c1"]);
     trim["txId"].as_str().unwrap().to_string()
@@ -331,12 +375,34 @@ fn cherry_pick_and_revert() {
     let t = T(&server, &dir);
     t.run(&["branch", "new", "side"]);
     let a = t.run(&[
-        "--branch", "side", "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1",
-        "--dur", "1s",
+        "--branch",
+        "side",
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "1s",
     ]);
     let b = t.run(&[
-        "--branch", "side", "clip", "insert", "--track", "t2", "--at", "0", "--asset", "a1",
-        "--dur", "1s",
+        "--branch",
+        "side",
+        "clip",
+        "insert",
+        "--track",
+        "t2",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "1s",
     ]);
     let tx = a["txId"].as_str().unwrap();
     let picked = t.run(&["cherry-pick", tx]);
@@ -430,7 +496,17 @@ fn fin_author_env_scopes_undo() {
     let by_alice = ok(t.as_author(
         "alice",
         &[
-            "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s",
+            "clip",
+            "insert",
+            "--track",
+            "t1",
+            "--at",
+            "0",
+            "--asset",
+            "a1",
+            "--no-audio",
+            "--dur",
+            "1s",
         ],
     ));
     assert_eq!(by_alice["bindings"]["$clip"], "c1");
@@ -474,8 +550,19 @@ fn idem_key_retry_merge_returns_first() {
     t.run(&["branch", "new", "side"]);
     t.run(&["branch", "new", "other"]);
     t.run(&[
-        "--branch", "side", "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1",
-        "--dur", "1s",
+        "--branch",
+        "side",
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "1s",
     ]);
     let first = t.run(&["--idem-key", "mk", "merge", "side"]);
     let rev = t.run(&["status"])["rev"].clone();
@@ -511,8 +598,19 @@ fn dry_run_each_history_command_writes_nothing() {
     t.insert(&[], "t1");
     t.run(&["branch", "new", "side"]);
     let picked = t.run(&[
-        "--branch", "side", "clip", "insert", "--track", "t2", "--at", "0", "--asset", "a1",
-        "--dur", "1s",
+        "--branch",
+        "side",
+        "clip",
+        "insert",
+        "--track",
+        "t2",
+        "--at",
+        "0",
+        "--asset",
+        "a1",
+        "--no-audio",
+        "--dur",
+        "1s",
     ]);
     t.run(&["--idem-key", "m0", "merge", "side"]);
     t.run(&["undo"]);
@@ -580,7 +678,7 @@ fn tries_are_per_project() {
         &server.root,
         &["project", "create", "film2", "--name", "Two"],
     ));
-    media(&other.join("clip.mp4"), 10);
+    media_av(&other.join("clip.mp4"), 10);
     ok(fin(&server.sd, &other, &["asset", "add", "clip.mp4"]));
     let (a, b) = (T(&server, &dir), T(&server, &other));
     a.run(&["try", "a-try"]);

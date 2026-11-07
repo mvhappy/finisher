@@ -119,7 +119,10 @@ impl Backend for LostAnswer {
 fn a_commit_whose_answer_was_lost_is_found_with_tx_get() {
     // Not known before: the commit is sent, its answer lost; tx.get then finds it.
     let lost = LostAnswer(rejecting(CoreError::new("SERVER_TIMEOUT", "slow")));
-    let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let step = Write::ClipDelete(clip::DeleteArgs {
+        clip: "c9".into(),
+        mode: None,
+    });
     let globals = Globals {
         idem_key: Some("k2".into()),
         ..Globals::default()
@@ -131,7 +134,12 @@ fn a_commit_whose_answer_was_lost_is_found_with_tx_get() {
 
 #[test]
 fn a_retry_with_an_idem_key_is_answered_by_tx_get() {
-    let step = || Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let step = || {
+        Write::ClipDelete(clip::DeleteArgs {
+            clip: "c9".into(),
+            mode: None,
+        })
+    };
     let globals = Globals {
         idem_key: Some("k".into()),
         ..Globals::default()
@@ -168,7 +176,10 @@ fn an_idem_key_whose_tx_was_set_aside_is_reported_not_resent() {
         idem_key: Some("k".into()),
         ..Globals::default()
     };
-    let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let step = Write::ClipDelete(clip::DeleteArgs {
+        clip: "c9".into(),
+        mode: None,
+    });
     let e = write(&backend, &globals, step).unwrap_err();
     assert_eq!(e.code, "TX_SET_ASIDE");
     assert_eq!(exit_code(&e.code), 4);
@@ -182,7 +193,10 @@ fn delete_missing_with_key(answer: CoreError) -> CoreError {
         idem_key: Some("k".into()),
         ..Globals::default()
     };
-    let step = Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() });
+    let step = Write::ClipDelete(clip::DeleteArgs {
+        clip: "c9".into(),
+        mode: None,
+    });
     write(&rejecting(answer), &globals, step).unwrap_err()
 }
 
@@ -207,7 +221,10 @@ fn a_deferred_local_error_only_replaces_server_validation_errors() {
     let no_key = write(
         &rejecting(CoreError::new("CONFLICT", "server")),
         &Globals::default(),
-        Write::ClipDelete(clip::DeleteArgs { clip: "c9".into() }),
+        Write::ClipDelete(clip::DeleteArgs {
+            clip: "c9".into(),
+            mode: None,
+        }),
     );
     assert_eq!(no_key.unwrap_err().code, "NOT_FOUND");
 }
@@ -260,7 +277,12 @@ fn idem_key_same_key_different_args_rejected() {
         idem_key: Some("k".into()),
         ..Globals::default()
     };
-    let delete = |clip: &str| Write::ClipDelete(clip::DeleteArgs { clip: clip.into() });
+    let delete = |clip: &str| {
+        Write::ClipDelete(clip::DeleteArgs {
+            clip: clip.into(),
+            mode: None,
+        })
+    };
     let ours = args_hash(&[input(&delete("c9"))]);
     // Committed by this same command: answered.
     let mut backend = rejecting(CoreError::new("CONFLICT", "unused"));

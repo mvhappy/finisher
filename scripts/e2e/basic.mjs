@@ -57,8 +57,10 @@ export async function run() {
     assertEqual(
       view.tracks,
       [
-        { id: "t1", kind: "video", clips: [{ id: "c2", start: "0", end: "3", asset: "a1", sourceIn: "4" }] },
-        { id: "t2", kind: "audio", clips: [] },
+        // Each insert also placed its linked audio clip (plan 4C Decision 21); the trim and the
+        // delete of c1 acted on its link group (c1 + c2).
+        { id: "t1", kind: "video", clips: [{ id: "c3", start: "0", end: "3", asset: "a1", sourceIn: "4" }] },
+        { id: "t2", kind: "audio", clips: [{ id: "c4", start: "0", end: "3", asset: "a1", sourceIn: "4" }] },
       ],
       "fin view tracks",
     );
