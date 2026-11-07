@@ -139,3 +139,31 @@ test("more build tools, build scripts that run a compiler, and listed versions a
   assert.deepEqual(run("1.0"), []);
   assert.match(run("2").join("\n"), /NATIVE_VERSION: LibFoo \(foo-sys\): native\.json says 2, the graph has 1\.0\.0/);
 });
+
+test("an optional dependency only a weak feature names is not shipped (cargo#10801)", () => {
+  const id = (n) => `path+file:///w/${n}#${n}@1.0.0`;
+  const doc = (features) => ({
+    workspace_members: [id("app")],
+    packages: [
+      {
+        id: id("app"),
+        name: "app",
+        version: "1.0.0",
+        license: "MIT",
+        links: null,
+        dependencies: [{ name: "weak-sys", optional: true, rename: null }],
+        features: { alloc: ["weak-sys?/alloc"], fmt: ["dep:weak-sys"] },
+      },
+      { id: id("weak-sys"), name: "weak-sys", version: "1.0.0", license: "MIT", links: "weak", dependencies: [] },
+    ],
+    resolve: {
+      nodes: [
+        { id: id("app"), features, deps: [{ name: "weak_sys", pkg: id("weak-sys"), dep_kinds: [{ kind: null, target: null }] }] },
+        { id: id("weak-sys"), features: [], deps: [] },
+      ],
+    },
+  });
+  const names = (d) => [...shipped([d]).values()].map((p) => p.name).sort();
+  assert.deepEqual(names(doc(["alloc"])), ["app"]);
+  assert.deepEqual(names(doc(["alloc", "fmt"])), ["app", "weak-sys"]);
+});
