@@ -46,6 +46,8 @@ mod options;
 mod projects;
 mod purge;
 mod read;
+mod report;
+mod session;
 mod state;
 mod stats;
 mod status;
@@ -65,6 +67,7 @@ pub use options::{JournalOptions, KeyFn, server_scrub};
 pub use projects::{ProjectPolicy, ProjectScope};
 pub use purge::{PurgeReport, PurgeSelector};
 pub use read::{Entries, Filter};
+pub use report::{DiagnosticsReport, ExportPage, MAX_PAGE};
 pub use stats::MAX_KEYS;
 pub use status::{Consent, JournalError, JournalState, JournalStatus, Metric};
 
@@ -73,7 +76,7 @@ use faults::Faults;
 use handle::{Handle, Shared};
 use status::Snapshot;
 
-use control::{Control, Data, SAMPLE_BYTES, Sample, Stamp, SyncSlot, gate_of, pack};
+use control::{Control, Data, SAMPLE_BYTES, Sample, Stamp, gate_of, pack};
 
 /// A serialised entry larger than this is refused (`EVENT_TOO_LARGE`) and counted as dropped.
 pub const MAX_ENTRY_BYTES: usize = 64 * 1024;
@@ -220,10 +223,53 @@ impl Journal {
         ctx: Option<Ctx>,
         payload: Value,
     ) -> Result<(), CoreError> {
-        let Some(h) = &self.h else { return Ok(()) };
+        let Some((h, pending)) = self.prepare_value(source, session, kind, kv, ctx, payload)?
+        else {
+            return Ok(());
+        };
+        let bytes = pending.bytes;
+        h.send(Data::Entry(Box::new(pending)), bytes);
+        Ok(())
+    }
+
+    /// [`Journal::record_value`], written and flushed before it returns, waiting at most
+    /// `timeout` ([`Journal::record_sync`]'s rules): a received or server-built
+    /// `error.panic`. `Ok(false)` when it is not known to be on disk (off included).
+    #[allow(clippy::too_many_arguments)] // `record_value`'s, plus the timeout
+    pub fn record_value_sync(
+        &self,
+        source: Source,
+        session: &str,
+        kind: &str,
+        kv: u16,
+        ctx: Option<Ctx>,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<bool, CoreError> {
+        if Journal::on_writer_thread() {
+            return Ok(false);
+        }
+        let Some((h, pending)) = self.prepare_value(source, session, kind, kv, ctx, payload)?
+        else {
+            return Ok(false);
+        };
+        Ok(h.sync(Box::new(pending), timeout))
+    }
+
+    /// The decoded, stamped entry of a received payload (`None` while off).
+    fn prepare_value(
+        &self,
+        source: Source,
+        session: &str,
+        kind: &str,
+        kv: u16,
+        ctx: Option<Ctx>,
+        payload: Value,
+    ) -> Result<Option<(&Arc<Handle>, control::Pending)>, CoreError> {
+        let Some(h) = &self.h else { return Ok(None) };
         let word = h.sh.word.load(Acquire);
         if gate_of(word).is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let spec = require_kind(kind, kv)?;
         let invalid = |m: String| {
@@ -258,9 +304,7 @@ impl Journal {
             .with_details(json!({ "kind": kind, "bytes": pending.bytes })));
         }
         pending.session = Some(session);
-        let bytes = pending.bytes;
-        h.send(Data::Entry(Box::new(pending)), bytes);
-        Ok(())
+        Ok(Some((h, pending)))
     }
 
     /// Adds one timing to the current window of `(metric, key)` (Decision 19).
@@ -295,28 +339,7 @@ impl Journal {
         if gate_of(word).is_empty() || Journal::on_writer_thread() {
             return false;
         }
-        let entry = Box::new(h.pending(source, ctx, p, word));
-        let bytes = entry.bytes;
-        let slot = Arc::new(SyncSlot::default());
-        let (ack, rx) = mpsc::sync_channel(1);
-        let msg = Control::Sync {
-            entry,
-            slot: slot.clone(),
-            ack,
-        };
-        if !h.control(msg) {
-            h.sh.dropped(bytes);
-            return false;
-        }
-        match rx.recv_timeout(timeout) {
-            Ok(on_disk) => on_disk,
-            Err(_) => {
-                if slot.cancel() {
-                    h.sh.dropped(bytes);
-                }
-                false
-            }
-        }
+        h.sync(Box::new(h.pending(source, ctx, p, word)), timeout)
     }
 
     /// True on the journal's writer thread: a panic hook there must not call

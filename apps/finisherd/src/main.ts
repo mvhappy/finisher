@@ -16,7 +16,7 @@ import {
   writeServerInfo,
 } from "./config.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
-import { HandlersLive } from "./handlers.ts";
+import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, serveRpc } from "./transport.ts";
@@ -25,12 +25,13 @@ export interface ServeOptions {
   readonly serverData: string;
   readonly registry?: RegistryOptions;
   readonly fonts?: FontsOptions;
+  readonly diagnostics?: DiagnosticsOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
 
 /** Runs the server until interrupted; finalizers stop the transports, close engines and remove `finisherd.json`. */
-export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
+export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -39,23 +40,37 @@ export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const token = newToken();
+      // The journal opens under the settings already read, before any transport listens.
+      const diagnostics = yield* makeDiagnostics(serverData, diagnosticsOptions);
 
       const local = yield* makeLocalSocketServer(socket);
       const ws = yield* Effect.mapError(makeWebSocketServer(token), (e) => startFailure(e.reason.cause ?? e));
       yield* Layer.build(
-        Layer.mergeAll(serveRpc(local), serveRpc(ws)).pipe(
-          Layer.provide(HandlersLive),
-          Layer.provide(Layer.mergeAll(layerProjectRegistry(serverData, registry), layerFonts(serverData, fonts))),
+        Layer.mergeAll(serveRpc(local, "fin"), serveRpc(ws, "ui")).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              layerProjectRegistry(serverData, registry),
+              layerFonts(serverData, fonts),
+              Layer.succeed(Diagnostics, diagnostics),
+            ),
+          ),
         ),
       );
 
+      const publish = (enabled: boolean) =>
+        writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, diagnostics: { enabled } });
       const info = yield* Effect.acquireRelease(
-        Effect.try({
-          try: () => writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token }),
-          catch: startFailure,
-        }),
+        Effect.try({ try: () => publish(diagnostics.enabled()), catch: startFailure }),
         () => Effect.sync(() => removeServerInfo(serverData)),
       );
+      // `fin` reads `diagnostics.enabled` to decide whether to send anything (Decision 23).
+      diagnostics.onEnabledChange((enabled) => {
+        try {
+          publish(enabled);
+        } catch (e) {
+          process.stderr.write(`finisherd: warning: cannot update finisherd.json: ${String(e)}\n`);
+        }
+      });
       yield* Effect.logInfo(`finisherd ready: socket=${socket} wsPort=${info.wsPort} serverData=${serverData}`);
       onReady?.(info);
       yield* Effect.addFinalizer(() => Effect.logInfo("finisherd shutting down"));

@@ -1,5 +1,6 @@
-//! napi-rs binding exposing `fin-store`, `fin-probe` and the server's fonts (`fin-fonts`,
-//! `fin-text`: the [`fonts`] manager, `FontManager`) to Node as `@finisher/fin-node`.
+//! napi-rs binding exposing `fin-store`, `fin-probe`, the server's fonts (`fin-fonts`,
+//! `fin-text`: the [`fonts`] manager, `FontManager`) and its diagnostics journal
+//! (`fin-journal`: [`journal`], `Journal`) to Node as `@finisher/fin-node`.
 //!
 //! # Threads
 //!
@@ -45,6 +46,7 @@ mod engine;
 mod eval;
 mod fonts;
 mod history;
+mod journal;
 mod maintenance;
 mod server_lock;
 mod tasks;
@@ -54,6 +56,7 @@ mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
+pub use journal::{JournalHandle, rpc_methods};
 pub use server_lock::{ServerLock, lock_exclusive};
 pub use tasks::StoreTask;
 

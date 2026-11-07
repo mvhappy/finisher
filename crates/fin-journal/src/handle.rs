@@ -14,7 +14,7 @@ use fin_core::events::Ulid as EventUlid;
 use fin_core::events::{AnyPayload, Ctx, Source};
 
 use crate::consent::{ConsentState, EnvOverrides, PrivacySettings};
-use crate::control::{Control, Data, Pending, unpack};
+use crate::control::{Control, Data, Pending, SyncSlot, unpack};
 use crate::faults::Faults;
 use crate::key::{self, Key};
 use crate::options::KeyFn;
@@ -156,6 +156,32 @@ impl Handle {
         let sent = self.ctl.send((seen, c)).is_ok();
         self.send_raw(Data::Wake);
         sent
+    }
+
+    /// Writes and flushes `entry` on the writer, waiting at most `timeout`; a timeout counts
+    /// a drop unless the writer took it meanwhile (`Journal::record_sync`).
+    pub(crate) fn sync(&self, entry: Box<Pending>, timeout: Duration) -> bool {
+        let bytes = entry.bytes;
+        let slot = Arc::new(SyncSlot::default());
+        let (ack, rx) = mpsc::sync_channel(1);
+        let msg = Control::Sync {
+            entry,
+            slot: slot.clone(),
+            ack,
+        };
+        if !self.control(msg) {
+            self.sh.dropped(bytes);
+            return false;
+        }
+        match rx.recv_timeout(timeout) {
+            Ok(on_disk) => on_disk,
+            Err(_) => {
+                if slot.cancel() {
+                    self.sh.dropped(bytes);
+                }
+                false
+            }
+        }
     }
 
     pub(crate) fn pending(

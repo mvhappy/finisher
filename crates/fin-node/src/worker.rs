@@ -108,13 +108,17 @@ pub(crate) fn open<'e>(
                 // Read here, off the JS thread: what every branch pins, its files hashed and
                 // what of it is missing queued (Decision 34's open trigger).
                 let fonts = crate::fonts::Opened::read(manager, &store);
-                Ok((store, status, fonts))
+                // The project's flag, before anything is recorded for it (unknown drops).
+                let journal = crate::journal::for_server(&server_data)
+                    .open_project(store.project_id(), store.collect_policy());
+                Ok((store, status, fonts, journal))
             },
             || {},
         );
         match opened {
-            Ok((store, status, fonts)) => deferred
-                .resolve(move |_env| guarded(|| Engine::start(store, status, keep, fonts), || {})),
+            Ok((store, status, fonts, journal)) => deferred.resolve(move |_env| {
+                guarded(|| Engine::start(store, status, keep, fonts, journal), || {})
+            }),
             Err(e) => deferred.reject(e),
         }
     }))?;
@@ -262,6 +266,7 @@ pub(crate) fn close_now(inner: &Shared) -> Result<()> {
     };
     inner.events.clear();
     inner.fonts.detach();
+    drop(lock(&inner.journal).take());
     match store {
         // Folder failures stay unexported (the next open exports); only a database
         // failure is an error here.

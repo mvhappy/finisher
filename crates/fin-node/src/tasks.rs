@@ -86,6 +86,10 @@ pub(crate) enum Call {
         branch: String,
         ops_json: String,
     },
+    /// `setCollect`: the project's collection flag (`default` or `never`).
+    SetCollect {
+        collect: String,
+    },
     /// Test hook: panics while holding the store.
     #[cfg(feature = "test-hooks")]
     Panic,
@@ -213,6 +217,30 @@ fn status(store: &Shared) -> Result<Reply> {
     Ok(Reply::Json(encode(&value)?))
 }
 
+/// `setCollect`: the flag in the project file (the lease's), then in the journal at once
+/// (the `collect` event the store queued follows with the next tick).
+fn set_collect(store: &Shared, collect: &str) -> Result<Reply> {
+    let policy: fin_store::CollectPolicy =
+        serde_json::from_value(json!(collect)).map_err(|_| {
+            reject(
+                CoreError::new(
+                    "INVALID_ARGS",
+                    format!("collect is default or never, not {collect:?}"),
+                )
+                .with_details(json!({ "collect": collect })),
+            )
+        })?;
+    with_store(store, |s| {
+        s.set_collect(policy).map_err(reject)?;
+        if let Some(g) = lock(&store.journal).as_ref() {
+            g.update(policy);
+        }
+        Ok(Reply::Json(encode(
+            &json!({ "project": s.project_id(), "collect": policy }),
+        )?))
+    })
+}
+
 fn run(store: &Shared, call: Call) -> Result<Reply> {
     match call {
         Call::Head { branch } => with_store(store, |s| Ok(Reply::Number(s.head(&branch)))),
@@ -286,6 +314,7 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         call @ (Call::EvalFrame { .. } | Call::EvalAudio { .. } | Call::FontsPlan { .. }) => {
             crate::eval::run(store, call)
         }
+        Call::SetCollect { collect } => set_collect(store, &collect),
         #[cfg(feature = "test-hooks")]
         Call::Panic => with_store(store, |_| panic!("fin-node test panic")),
     }

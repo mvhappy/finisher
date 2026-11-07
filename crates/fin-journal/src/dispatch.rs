@@ -96,6 +96,7 @@ impl Writer {
                     }
                 }
                 Control::Project { id, policy } => self.on_project(id, policy),
+                Control::Session(m) => self.on_session(m),
                 Control::Purge { sel, ack } => {
                     let r = self.purge(&sel).map_err(|e| {
                         let code = crate::disk::code_of(&e);
