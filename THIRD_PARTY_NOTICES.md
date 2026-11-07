@@ -97,3 +97,19 @@ them from there. Licence texts (checked by hand, 2026-11-06):
 - Noto Sans CJK (notofonts/noto-cjk `Sans/LICENSE`), SIL Open Font License 1.1;
 - Noto Color Emoji (googlefonts/noto-emoji `2D/fonts/LICENSE`), SIL Open Font License 1.1 (the
   repository's tools and images are Apache-2.0 and are not used).
+
+## openai (Apache-2.0) — the built-in agent's Chat Completions transport
+status: used (sub-project 7A), as an npm dependency of `finisherd` (`openai` 7.53.0, exact
+pin, no runtime dependencies; its optional peers are not installed); no code is copied. It
+carries request bodies Finisher builds and parses the SSE stream (`apps/finisherd/src/agent/
+builtin/compat.ts`), with OpenRouter's or a local server's base URL.
+
+## BLAKE3 (CC0-1.0 OR Apache-2.0) — reference implementation and test vectors
+status: used (sub-project 7A): `apps/finisherd/src/agent/blake3.ts` follows the structure of
+BLAKE3-team/BLAKE3 `reference_impl/reference_impl.rs` (hash mode only), and
+`apps/finisherd/test/agent-blake3.test.ts` embeds hashes from `test_vectors/test_vectors.json`.
+Used under CC0-1.0.
+
+## fast-check (MIT) — property tests
+status: used (sub-project 7A) as a development dependency of `finisherd` (4.10.2, with
+`pure-rand`, MIT); not shipped.
