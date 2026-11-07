@@ -12,7 +12,13 @@ test-hooks = []
 
 # Local I/O only: no network stack (`tests/journal.rs` `no_network_crates_in_tree`).
 [dependencies]
+# The per-install keyed hash (Decision 6) and blob addresses (Decision 20).
+blake3 = "1"
 fin-core = { path = "../fin-core" }
+# The install key's 32 random bytes.
+getrandom = "0.3"
+# Finding blob references in the files at open (already in the workspace's tree).
+memchr = "2"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

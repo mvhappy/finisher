@@ -83,6 +83,8 @@ pub enum StoreEvent {
     /// `incarnation`, and every rev read before may now hold something else. Reported before
     /// the records imported after it.
     Rebuilt { incarnation: String },
+    /// The project file's `collect` flag changed (another server set it, or this one did).
+    Collect(crate::collect::CollectPolicy),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

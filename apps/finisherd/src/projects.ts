@@ -232,6 +232,7 @@ export function makeProjectRegistry(
           hubs.publishEvent(id, { type: "error", error: e.error, fatal: e.fatal });
           if (e.fatal) evict(p);
           break;
+        case "collect": break;
       }
     };
 

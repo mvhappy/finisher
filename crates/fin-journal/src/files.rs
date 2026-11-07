@@ -163,6 +163,11 @@ pub(crate) fn create(path: &Path) -> io::Result<File> {
     o.open(path)
 }
 
+/// Opens an existing file for appending (an empty newest file, reused).
+pub(crate) fn open_append(path: &Path) -> io::Result<File> {
+    OpenOptions::new().append(true).open(path)
+}
+
 /// Fsyncs a file; a filesystem that cannot (`EINVAL`, `ENOTSUP`) has nothing to sync.
 pub(crate) fn sync_file(f: &File) -> io::Result<()> {
     lenient(f.sync_all())
@@ -186,27 +191,60 @@ fn lenient(r: io::Result<()>) -> io::Result<()> {
     }
 }
 
-/// The caps (Decision 16) over `files` (oldest first; the last may be the active file, which
-/// is never removed when `active`). Returns the files to delete: every closed file whose last
-/// entry is older than `max_age_ms`, then the oldest closed files until the total is at most
-/// `max_total`.
-pub(crate) fn over_caps(
-    files: &[FileMeta],
-    active: bool,
-    now: u64,
-    max_age_ms: u64,
-    max_total: u64,
-) -> usize {
-    let closed = files.len() - usize::from(active && !files.is_empty());
-    let cutoff = now.saturating_sub(max_age_ms);
-    let mut n = files[..closed]
-        .iter()
-        .take_while(|f| f.end_ts < cutoff)
-        .count();
-    let mut total: u64 = files[n..].iter().map(|f| f.bytes).sum();
-    while n < closed && total > max_total {
-        total -= files[n].bytes;
-        n += 1;
+/// Removes the temp files a crash during a rewrite left (`.<name>.tmp`); best effort.
+pub(crate) fn remove_temps(dir: &Path) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(n) = name.to_str() else { continue };
+        if n.starts_with('.') && n.ends_with(".tmp") {
+            let _ = fs::remove_file(e.path());
+        }
     }
-    n
+}
+
+/// Attempts of a call that failed transiently ([`is_transient`]), this far apart: a rename or
+/// delete on Windows races a reader, an antivirus scan or a pending delete (as fin-store's
+/// `fsio::retry`; 20 × 25 ms here, on the writer thread).
+const RETRIES: u32 = 20;
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// An error worth retrying shortly: an interrupted call, and on Windows access denied (5),
+/// a sharing (32) or lock (33) violation; on unix `EBUSY`.
+pub(crate) fn is_transient(e: &io::Error) -> bool {
+    #[cfg(windows)]
+    const CODES: &[i32] = &[5, 32, 33];
+    #[cfg(unix)]
+    const CODES: &[i32] = &[16];
+    #[cfg(not(any(unix, windows)))]
+    const CODES: &[i32] = &[];
+    matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock)
+        || e.raw_os_error().is_some_and(|c| CODES.contains(&c))
+}
+
+/// `f`, retried while it fails transiently.
+pub(crate) fn retry<T>(mut f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match f() {
+            Err(e) if attempt < RETRIES && is_transient(&e) => {
+                attempt += 1;
+                std::thread::sleep(RETRY_DELAY);
+            }
+            r => return r,
+        }
+    }
+}
+
+/// `fs::rename` with [`retry`].
+pub(crate) fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    retry(|| fs::rename(from, to))
+}
+
+/// `fs::remove_file` with [`retry`]; a missing file is fine.
+pub(crate) fn remove(path: &Path) -> io::Result<()> {
+    match retry(|| fs::remove_file(path)) {
+        Err(e) if e.kind() != ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }

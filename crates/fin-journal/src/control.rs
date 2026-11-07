@@ -7,8 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::SyncSender;
 
-use fin_core::events::{AnyPayload, Basis, Code, Ctx, Name, Purposes, Source, Ulid};
+use fin_core::events::{AnyPayload, Basis, Code, CollectPolicy, Ctx, Name, Purposes, Source, Ulid};
 
+use crate::blobs::BlobData;
+use crate::consent::ConsentState;
+use crate::purge::{PurgeReport, PurgeSelector};
 use crate::{JournalError, Metric};
 
 /// The consent an entry is stamped with when it is recorded.
@@ -22,6 +25,11 @@ pub(crate) struct Stamp {
 /// The gate word: purposes in bits 0–1, basis in bits 2–3, `rev` above. One `Relaxed` load
 /// gives the gate ([`gate_of`]) and a consistent stamp ([`unpack`]).
 pub(crate) fn pack(s: Stamp) -> u64 {
+    debug_assert!(
+        s.rev < 1 << 60,
+        "consent rev {} does not fit the gate word",
+        s.rev
+    );
     let basis = match s.basis {
         Basis::Default => 0,
         Basis::Env => 1,
@@ -79,6 +87,8 @@ pub(crate) const SAMPLE_BYTES: usize = 48;
 pub(crate) enum Data {
     Entry(Box<Pending>),
     Sample(Box<Sample>),
+    /// A blob's bytes, held by the writer until an entry references it.
+    Blob(Box<BlobData>),
     /// Wakes the writer to drain the control channel; carries nothing.
     Wake,
 }
@@ -116,6 +126,25 @@ pub(crate) enum Control {
         ack: SyncSender<bool>,
     },
     Flush(SyncSender<Result<(), JournalError>>),
+    /// Flush, then answer the files that are closed (every one but the active file).
+    Closed(SyncSender<Vec<String>>),
+    /// The effective consent changed (the gate word already holds `to`): journal
+    /// `consent.changed` under `from`, persist `to`, re-check the buffered lines.
+    Consent {
+        from: ConsentState,
+        to: ConsentState,
+    },
+    /// The caps changed (settings): apply them now.
+    Caps,
+    /// A project's policy (`None`: unknown).
+    Project {
+        id: String,
+        policy: Option<CollectPolicy>,
+    },
+    Purge {
+        sel: PurgeSelector,
+        ack: SyncSender<Result<PurgeReport, JournalError>>,
+    },
     /// Drain, flush, fsync, stop.
     Close(SyncSender<()>),
 }

@@ -60,6 +60,14 @@ fn commit(intent: Option<fin_core::Tx>) -> AnyPayload {
     .into()
 }
 
+/// The sample project is open with `collect` default (an unknown project records nothing).
+fn allow(j: &Journal) {
+    j.set_project_policy(
+        "01jb0000000000000000000000",
+        Some(fin_core::events::CollectPolicy::Default),
+    );
+}
+
 fn ctx() -> Ctx {
     Ctx {
         project: ProjectId::parse("01jb0000000000000000000000"),
@@ -211,6 +219,7 @@ fn main() {
         consent(Purposes::DIAGNOSTICS),
         JournalOptions::default(),
     );
+    allow(&j);
     let (p50, p99) = record_latency(&j, || commit(None));
     r.row(
         "record p50, diagnostics log.commit",
@@ -232,6 +241,7 @@ fn main() {
 
     let train = tmp.path().join("train");
     let j = Journal::open(&train, consent(Purposes::ALL), JournalOptions::default());
+    allow(&j);
     let two = tx(2);
     let (p50, p99) = record_latency(&j, || commit(Some(two.clone())));
     r.row(
@@ -282,6 +292,7 @@ fn main() {
         consent(Purposes::DIAGNOSTICS),
         big(),
     );
+    allow(&j);
     let secs = drain_secs(&j, (0..M).map(|_| commit(None)).collect());
     let rate = M as f64 / secs;
     let shown = format!("{:.0}k/s", rate / 1e3);
@@ -298,6 +309,7 @@ fn main() {
         consent(Purposes::ALL),
         JournalOptions::default(),
     );
+    allow(&probe);
     let content = tx(150);
     probe.record(Source::FinNode, Some(ctx()), commit(Some(content.clone())));
     probe.close();
@@ -308,6 +320,7 @@ fn main() {
         consent(Purposes::ALL),
         big(),
     );
+    allow(&j);
     let secs = drain_secs(&j, (0..K).map(|_| commit(Some(content.clone()))).collect());
     let mib = line * K as f64 / secs / f64::from(1 << 20);
     let what = format!("writer, content entries ({:.1} KiB each)", line / 1024.0);
@@ -325,6 +338,7 @@ fn main() {
         consent(Purposes::DIAGNOSTICS),
         opts,
     );
+    allow(&j);
     let end = || -> AnyPayload { SessionEnd { uptime_s: 1 }.into() };
     let mut t = Vec::new();
     for _ in 0..200 {

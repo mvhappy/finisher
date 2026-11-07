@@ -4,7 +4,9 @@
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
 //! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout` and `ParamSpec` come from fin-core, and
 //! so do the diagnostics event types (`events::Envelope`, `AnyPayload`, the kind-keyed
-//! `EventPayload` and every payload type, by `events::kinds::register_schemas`).
+//! `EventPayload` and every payload type, by `events::kinds::register_schemas`), and the
+//! journal's (`fin-journal`: `PrivacySettings`, `ConsentState`, `JournalStatus`, `Filter`,
+//! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`; `CollectPolicy` is fin-core's).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -41,6 +43,14 @@ fn main() {
         g.subschema_for::<fin_core::events::AnyPayload>();
         g.subschema_for::<fin_core::events::EventPayload>();
         fin_core::events::kinds::register_schemas(g);
+        g.subschema_for::<fin_core::events::CollectPolicy>();
+        g.subschema_for::<fin_journal::PrivacySettings>();
+        g.subschema_for::<fin_journal::ConsentState>();
+        g.subschema_for::<fin_journal::JournalStatus>();
+        g.subschema_for::<fin_journal::Filter>();
+        g.subschema_for::<fin_journal::PurgeSelector>();
+        g.subschema_for::<fin_journal::PurgeReport>();
+        g.subschema_for::<fin_journal::ProjectPolicy>();
     });
     println!(
         "{}",

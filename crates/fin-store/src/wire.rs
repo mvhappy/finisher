@@ -52,6 +52,8 @@ pub enum EngineEvent {
     /// The first event after registration when the buffer overflowed: `dropped` events
     /// were lost.
     Lagged { dropped: u64 },
+    /// The project file's `collect` flag changed (`default` or `never`).
+    Collect { collect: crate::CollectPolicy },
 }
 
 impl EngineEvent {
@@ -79,6 +81,7 @@ impl EngineEvent {
             StoreEvent::Rebuilt { incarnation } => EngineEvent::Rebuilt {
                 incarnation: incarnation.clone(),
             },
+            StoreEvent::Collect(collect) => EngineEvent::Collect { collect: *collect },
         }
     }
 }
