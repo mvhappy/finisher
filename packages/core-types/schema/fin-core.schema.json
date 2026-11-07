@@ -286,6 +286,40 @@
       ],
       "type": "object"
     },
+    "CaptionPlan": {
+      "description": "A caption's words at the plan's time, and its layout when it was measured. `layout` is\n`null` when it was not, and `unmeasured` says why (plan 4C Decision 36).",
+      "properties": {
+        "layout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextLayout"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "style": {
+          "type": "string"
+        },
+        "unmeasured": {
+          "$ref": "#/$defs/Unmeasured"
+        },
+        "words": {
+          "description": "Every word, in order (indices match the layout's word boxes).",
+          "items": {
+            "$ref": "#/$defs/WordPlan"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "words",
+        "style",
+        "layout"
+      ],
+      "type": "object"
+    },
     "CaptionSource": {
       "description": "The transcript artifact a caption came from, and its word range (`[first, end)`).",
       "properties": {
@@ -540,6 +574,28 @@
         "params": {
           "additionalProperties": {
             "$ref": "#/$defs/ParamValue"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EffectPlan": {
+      "description": "One enabled effect with its parameters resolved at the plan's time. `params` holds the\neffect's stored and keyframed parameters (the registry's defaults fill the rest).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PlanValue"
           },
           "type": "object"
         }
@@ -898,6 +954,38 @@
       },
       "type": "object"
     },
+    "FramePlan": {
+      "description": "The layers of one timeline at `t`, bottom first.",
+      "properties": {
+        "layers": {
+          "description": "Bottom first: tracks in compositing order, items in time order within a track (a\ntransition's outgoing item before its incoming one).",
+          "items": {
+            "$ref": "#/$defs/Layer"
+          },
+          "type": "array"
+        },
+        "resolution": {
+          "$ref": "#/$defs/Resolution"
+        },
+        "t": {
+          "$ref": "#/$defs/Rational"
+        },
+        "textEngine": {
+          "description": "The text engine (`TextMeasurer::fingerprint`) that produced the plan's caption layouts;\nabsent when no caption was measured.",
+          "type": "string"
+        },
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeline",
+        "t",
+        "resolution",
+        "layers"
+      ],
+      "type": "object"
+    },
     "Generation": {
       "description": "A branch generation as a caller holds it: the database's incarnation and the branch's\nrewind count in it (module docs).",
       "properties": {
@@ -913,6 +1001,28 @@
       "required": [
         "incarnation",
         "n"
+      ],
+      "type": "object"
+    },
+    "GraphicPlan": {
+      "description": "A graphic's template, its time (from the item's start) and its slot values.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "slots": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PlanValue"
+          },
+          "type": "object"
+        },
+        "time": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "asset",
+        "time"
       ],
       "type": "object"
     },
@@ -1407,6 +1517,18 @@
       ],
       "type": "object"
     },
+    "ItemKind": {
+      "description": "The item kinds, as they appear in plans.",
+      "enum": [
+        "clip",
+        "caption",
+        "graphic",
+        "image",
+        "adjustment",
+        "nested"
+      ],
+      "type": "string"
+    },
     "ItemRemove": {
       "description": "`item.remove` (internal): takes item `id` off its track.",
       "properties": {
@@ -1520,6 +1642,130 @@
         "at",
         "value",
         "interp"
+      ],
+      "type": "object"
+    },
+    "Layer": {
+      "description": "One item drawn at the plan's time. `local` is the time from the item's start: negative for\na transition's incoming item before its cut, past `duration` for the outgoing one after it.\nAn adjustment layer carries effects only (its transform and crop are the defaults); a\nnested item is a group layer whose `children` are its timeline's layers.",
+      "properties": {
+        "blend": {
+          "$ref": "#/$defs/BlendMode"
+        },
+        "caption": {
+          "$ref": "#/$defs/CaptionPlan"
+        },
+        "children": {
+          "description": "A nested item's layers, bottom first.",
+          "items": {
+            "$ref": "#/$defs/Layer"
+          },
+          "type": "array"
+        },
+        "crop": {
+          "$ref": "#/$defs/Crop"
+        },
+        "effects": {
+          "description": "Enabled effects, in order.",
+          "items": {
+            "$ref": "#/$defs/EffectPlan"
+          },
+          "type": "array"
+        },
+        "graphic": {
+          "$ref": "#/$defs/GraphicPlan"
+        },
+        "item": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ItemKind"
+        },
+        "local": {
+          "$ref": "#/$defs/Rational"
+        },
+        "mask": {
+          "$ref": "#/$defs/MaskPlan"
+        },
+        "nested": {
+          "$ref": "#/$defs/NestedPlan",
+          "description": "A nested item's timeline, time and frame size."
+        },
+        "opacity": {
+          "format": "double",
+          "type": "number"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef",
+          "description": "The asset and its time: a clip's source time (through speed), an image's 0, a\ngraphic's template time."
+        },
+        "track": {
+          "type": "string"
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform"
+        },
+        "transition": {
+          "$ref": "#/$defs/TransitionState"
+        }
+      },
+      "required": [
+        "item",
+        "kind",
+        "track",
+        "local",
+        "transform",
+        "crop",
+        "opacity",
+        "blend"
+      ],
+      "type": "object"
+    },
+    "LineBox": {
+      "description": "One line. `x` is the left edge of its ink box after alignment, `top` its top; `baseline` is\nmeasured from the layout's top. `words` is the half-open range of word indices on it.",
+      "properties": {
+        "baseline": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "endWord": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "firstWord": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "height": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "rtl": {
+          "type": "boolean"
+        },
+        "top": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "width": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "x": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "top",
+        "width",
+        "height",
+        "baseline",
+        "rtl",
+        "firstWord",
+        "endWord"
       ],
       "type": "object"
     },
@@ -1857,6 +2103,32 @@
       ],
       "type": "object"
     },
+    "MaskPlan": {
+      "description": "The mask with its values resolved.",
+      "properties": {
+        "choke": {
+          "format": "double",
+          "type": "number"
+        },
+        "feather": {
+          "format": "double",
+          "type": "number"
+        },
+        "invert": {
+          "type": "boolean"
+        },
+        "matte": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "matte",
+        "feather",
+        "choke",
+        "invert"
+      ],
+      "type": "object"
+    },
     "MergeReport": {
       "additionalProperties": false,
       "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after\nthe merge. A retry of a committed merge answers from the log: its records and their\norigins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an\nempty answer, not an error.",
@@ -1903,6 +2175,26 @@
         "excluded",
         "sourceState",
         "dryRun"
+      ],
+      "type": "object"
+    },
+    "NestedPlan": {
+      "description": "The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and\nits frame size.",
+      "properties": {
+        "resolution": {
+          "$ref": "#/$defs/Resolution"
+        },
+        "time": {
+          "$ref": "#/$defs/Rational"
+        },
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeline",
+        "time",
+        "resolution"
       ],
       "type": "object"
     },
@@ -2191,6 +2483,39 @@
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`)."
     },
+    "PlanValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1."
+    },
     "Probe": {
       "description": "What the server needs to register a media asset. Its serde form is what `asset.probe`\nanswers (`@finisher/core-types` exports it as `Probe`).",
       "properties": {
@@ -2468,6 +2793,21 @@
       ],
       "type": "object"
     },
+    "Role": {
+      "description": "Which side of a transition a layer is.",
+      "oneOf": [
+        {
+          "const": "out",
+          "description": "The outgoing item (A).",
+          "type": "string"
+        },
+        {
+          "const": "in",
+          "description": "The incoming item (B).",
+          "type": "string"
+        }
+      ]
+    },
     "SetAside": {
       "additionalProperties": false,
       "description": "A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:\n`SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,\n`MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,\n`foreign`, `salvage`.",
@@ -2552,6 +2892,22 @@
       ],
       "type": "object"
     },
+    "SourceRef": {
+      "description": "An asset and the time to read from it, in seconds.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "asset",
+        "time"
+      ],
+      "type": "object"
+    },
     "Stacks": {
       "description": "An author's undo and redo stacks on a branch, bottom first (the top is the last entry).",
       "properties": {
@@ -2571,6 +2927,58 @@
       "required": [
         "undo",
         "redo"
+      ],
+      "type": "object"
+    },
+    "TextLayout": {
+      "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the\nlines' total advance. `overflow` is set when a line is wider than `max_width` or there are\nmore lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
+      "properties": {
+        "faces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "height": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/LineBox"
+          },
+          "type": "array"
+        },
+        "missing": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "overflow": {
+          "type": "boolean"
+        },
+        "width": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "words": {
+          "items": {
+            "$ref": "#/$defs/WordBox"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "lines",
+        "words",
+        "width",
+        "height",
+        "overflow",
+        "missing",
+        "faces"
       ],
       "type": "object"
     },
@@ -2746,6 +3154,35 @@
       ],
       "type": "string"
     },
+    "TransitionState": {
+      "description": "A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.",
+      "properties": {
+        "curve": {
+          "$ref": "#/$defs/Curve"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TransitionKind"
+        },
+        "progress": {
+          "format": "double",
+          "type": "number"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "curve",
+        "progress",
+        "role"
+      ],
+      "type": "object"
+    },
     "TrimMode": {
       "description": "How a trim treats the rest of the track: `ripple` moves every later item by the change;\n`roll` moves the cut between the item and the neighbour touching that edge (both change,\nnothing else moves; `NOT_ADJACENT` without one); `overwrite` moves the edge itself, carving\nwhatever it extends over and leaving a gap when it shrinks; `strict` (internal: the inverse\nof carving edits) moves the edge only, and an overlap it would make is `CLIP_OVERLAP` in\nevery apply mode.",
       "enum": [
@@ -2879,6 +3316,34 @@
         }
       ]
     },
+    "Unmeasured": {
+      "description": "Why a caption has no layout, and the font keys concerned.",
+      "properties": {
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "$ref": "#/$defs/UnmeasuredReason"
+        }
+      },
+      "required": [
+        "reason",
+        "keys"
+      ],
+      "type": "object"
+    },
+    "UnmeasuredReason": {
+      "enum": [
+        "fontMissing",
+        "fontFetchFailed",
+        "fontUnpinned",
+        "noMeasurer"
+      ],
+      "type": "string"
+    },
     "VideoInfo": {
       "properties": {
         "height": {
@@ -2919,6 +3384,54 @@
         "text",
         "start",
         "end"
+      ],
+      "type": "object"
+    },
+    "WordBox": {
+      "description": "One word's horizontal extent on its line (visual order is given by `x`).",
+      "properties": {
+        "line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "x": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "x",
+        "width"
+      ],
+      "type": "object"
+    },
+    "WordPlan": {
+      "description": "One word: item-relative times clamped to the item, and whether it is spoken at the plan's\ntime (`start ≤ local < end`).",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "end": {
+          "$ref": "#/$defs/Rational"
+        },
+        "start": {
+          "$ref": "#/$defs/Rational"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "start",
+        "end",
+        "active"
       ],
       "type": "object"
     }

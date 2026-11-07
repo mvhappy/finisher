@@ -1,0 +1,105 @@
+//! Evaluation (sub-project 4 spec §5.4): what the compositor draws at a time and what the mixer
+//! plays over a range, as plans. Pure and deterministic: rational times, and `f64` limited to
+//! `+ − × ÷ sqrt`, comparisons, `abs`, `min`/`max`/`clamp`, `floor` and conversions from
+//! integers (plan 4C Global Constraints, gated by Task 17), so plans hash the same on every
+//! platform and on wasm32. A plan never holds NaN or ∞ (`INTERNAL` if it would).
+
+mod caption;
+mod frame;
+mod interp;
+mod plan;
+mod resolve;
+mod source;
+mod transition;
+
+pub use frame::{MAX_NESTING, eval_frame};
+pub use interp::{PRESETS, ValueType, bezier_y, colour_hex, interpolate, parse_colour};
+pub use plan::{
+    CaptionPlan, EffectPlan, FramePlan, GraphicPlan, ItemKind, Layer, MaskPlan, NestedPlan,
+    PlanValue, Role, SourceRef, TransitionState, Unmeasured, UnmeasuredReason, WordPlan,
+};
+
+use serde_json::json;
+
+use crate::error::CoreError;
+use crate::model::{Project, Timeline};
+
+pub(crate) fn timeline_of<'a>(project: &'a Project, id: &str) -> Result<&'a Timeline, CoreError> {
+    project
+        .timelines
+        .iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| {
+            CoreError::new("NOT_FOUND", format!("timeline {id} does not exist"))
+                .with_details(json!({ "id": id, "kind": "timeline" }))
+                .with_fix("use the id of an existing timeline")
+        })
+}
+
+/// `INTERNAL` naming the first non-finite value (`path` is a JSON-pointer-like location).
+fn non_finite(path: &str) -> CoreError {
+    CoreError::new(
+        "INTERNAL",
+        format!("evaluation produced a non-finite value at {path}"),
+    )
+    .with_details(json!({ "path": path }))
+    .with_fix("report this project: its stored values overflow evaluation")
+}
+
+fn finite(path: &str, xs: &[f64]) -> Result<(), CoreError> {
+    match xs.iter().all(|x| x.is_finite()) {
+        true => Ok(()),
+        false => Err(non_finite(path)),
+    }
+}
+
+fn check_value(path: &str, v: &PlanValue) -> Result<(), CoreError> {
+    match v {
+        PlanValue::Number(n) => finite(path, &[*n]),
+        PlanValue::Vec2(v) => finite(path, v),
+        PlanValue::Color(c) => finite(path, c),
+        PlanValue::Bool(_) | PlanValue::Text(_) => Ok(()),
+    }
+}
+
+fn check_layers(at: &str, layers: &[Layer]) -> Result<(), CoreError> {
+    for (i, l) in layers.iter().enumerate() {
+        let p = format!("{at}/{i}");
+        let t = &l.transform;
+        finite(
+            &format!("{p}/transform"),
+            &[t.position[0], t.position[1], t.scale[0]],
+        )?;
+        finite(
+            &format!("{p}/transform"),
+            &[t.scale[1], t.rotation, t.anchor[0], t.anchor[1]],
+        )?;
+        let c = &l.crop;
+        finite(&format!("{p}/crop"), &[c.left, c.right, c.top, c.bottom])?;
+        finite(&format!("{p}/opacity"), &[l.opacity])?;
+        for (j, e) in l.effects.iter().enumerate() {
+            for (k, v) in &e.params {
+                check_value(&format!("{p}/effects/{j}/params/{k}"), v)?;
+            }
+        }
+        if let Some(m) = &l.mask {
+            finite(&format!("{p}/mask"), &[m.feather, m.choke])?;
+        }
+        if let Some(tr) = &l.transition {
+            finite(&format!("{p}/transition/progress"), &[tr.progress])?;
+        }
+        if let Some(g) = &l.graphic {
+            for (k, v) in &g.slots {
+                check_value(&format!("{p}/graphic/slots/{k}"), v)?;
+            }
+        }
+        if let Some(children) = &l.children {
+            check_layers(&format!("{p}/children"), children)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn check_frame(plan: &FramePlan) -> Result<(), CoreError> {
+    check_layers("/layers", &plan.layers)
+}

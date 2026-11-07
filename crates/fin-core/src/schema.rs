@@ -4,6 +4,7 @@ use schemars::{SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
 use crate::error::CoreError;
+use crate::eval::FramePlan;
 use crate::model::Project;
 use crate::tx::{Applied, CommittedTx, Diff, Op, Tx};
 
@@ -25,6 +26,7 @@ pub fn json_schema_with(extra: impl FnOnce(&mut SchemaGenerator)) -> Value {
     generator.subschema_for::<CoreError>();
     generator.subschema_for::<CommittedTx>();
     generator.subschema_for::<Applied>();
+    generator.subschema_for::<FramePlan>();
     extra(&mut generator);
     let mut defs: Map<String, Value> = generator.take_definitions(true);
     for v in defs.values_mut() {
