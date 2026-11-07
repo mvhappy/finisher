@@ -36,6 +36,9 @@ pub const PROTOCOL: u32 = 1;
 pub const MINOR: u32 = 0;
 /// A runtime's exit code when its host is gone (stdin EOF).
 pub const EXIT_HOST_GONE: i32 = 70;
+/// A runtime's exit code when its host sends a line it cannot decode (bad JSON, an unknown
+/// type, a `seq` gap, an oversized line).
+pub const EXIT_HOST_PROTOCOL: i32 = 65;
 /// A runtime's exit code when a requested self-sandbox cannot be applied (Decision 9a).
 pub const EXIT_SELF_SANDBOX: i32 = 78;
 /// The default `alive` interval before the first `start`.

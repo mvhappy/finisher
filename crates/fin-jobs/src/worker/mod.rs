@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::error::JobError;
 use crate::msg_host::Start;
 use crate::msg_worker::{Hello, KindVersion, Role, WorkerMsg};
-use crate::{EXIT_HOST_GONE, EXIT_SELF_SANDBOX, MINOR, PROTOCOL, StartJob};
+use crate::{EXIT_HOST_GONE, EXIT_HOST_PROTOCOL, EXIT_SELF_SANDBOX, MINOR, PROTOCOL, StartJob};
 
 mod calls;
 mod ctx;
@@ -27,7 +27,7 @@ mod io;
 
 pub use ctx::{CancelToken, JobCtx, Reporter};
 pub use io::Channel;
-pub(crate) use io::{EXIT_HOST_PROTOCOL, Inbound, Shared, spawn_alive, spawn_reader};
+pub(crate) use io::{Inbound, Shared, spawn_alive, spawn_reader};
 
 /// The exit code after a caught panic.
 pub const EXIT_PANIC: i32 = 101;

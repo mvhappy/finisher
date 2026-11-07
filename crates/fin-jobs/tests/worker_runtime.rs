@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use fin_jobs::sandbox::{self, SelfSandbox};
-use fin_jobs::worker::JobCtx;
+use fin_jobs::worker::{self, JobCtx};
 use fin_jobs::*;
 use serde_json::{Value, json};
 use support::*;
@@ -114,6 +114,91 @@ fn cancel_sets_the_token() {
     };
     assert_eq!((job.as_str(), error.code.as_str()), ("j1", "JOB_CANCELLED"));
     assert_eq!(rig.join_open(), 0);
+}
+
+#[test]
+fn start_and_cancel_in_one_write() {
+    // The `cancel` right behind the `start` reaches the job even though both lines arrive in
+    // one read, before the run loop has picked the job up.
+    let mut rig = Rig::worker(toy(|_, ctx| {
+        let token = ctx.cancel_token();
+        for _ in 0..1000 {
+            if token.is_cancelled() {
+                return Err(JobError::cancelled());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(json!("never cancelled"))
+    }));
+    rig.recv();
+    rig.send_together(&[
+        start("j1", "toy.run", json!({})),
+        HostMsg::Cancel {
+            job: "j1".into(),
+            reason: CancelReason::Cancel,
+        },
+    ]);
+    let WorkerMsg::Error { error, .. } = rig.recv() else {
+        panic!("an error")
+    };
+    assert_eq!(error.code, "JOB_CANCELLED");
+    rig.join();
+}
+
+#[test]
+fn cancel_upgrades_pause() {
+    let t = worker::CancelToken::new();
+    assert_eq!(t.reason(), None);
+    t.cancel(CancelReason::Pause);
+    assert_eq!(t.reason(), Some(CancelReason::Pause));
+    t.cancel(CancelReason::Cancel);
+    assert_eq!(
+        t.reason(),
+        Some(CancelReason::Cancel),
+        "a cancel upgrades a pause"
+    );
+    t.cancel(CancelReason::Pause);
+    assert_eq!(
+        t.reason(),
+        Some(CancelReason::Cancel),
+        "a pause never downgrades a cancel"
+    );
+    // Through the runtime: a pause, then a cancel, ends as a cancel.
+    let mut rig = Rig::worker(toy(|_, ctx| {
+        while ctx.cancelled() != Some(CancelReason::Cancel) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Err(JobError::cancelled())
+    }));
+    rig.recv();
+    rig.send(&start("j1", "toy.run", json!({})));
+    for reason in [CancelReason::Pause, CancelReason::Cancel] {
+        rig.send(&HostMsg::Cancel {
+            job: "j1".into(),
+            reason,
+        });
+    }
+    assert!(matches!(rig.recv(), WorkerMsg::Error { error, .. } if error.code == "JOB_CANCELLED"));
+    rig.join();
+}
+
+#[test]
+fn bad_host_line_exits_65() {
+    for bad in [
+        &b"{nope\n"[..],
+        b"{\"v\":1,\"t\":\"shutdown\",\"seq\":2}\n",
+        b"{\"v\":1,\"t\":\"bogus\",\"seq\":1}\n",
+    ] {
+        let mut rig = Rig::worker(echo());
+        rig.recv();
+        rig.send_raw(bad);
+        assert_eq!(
+            rig.join_open(),
+            EXIT_HOST_PROTOCOL,
+            "{}",
+            String::from_utf8_lossy(bad)
+        );
+    }
 }
 
 #[test]

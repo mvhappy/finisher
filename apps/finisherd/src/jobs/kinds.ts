@@ -66,6 +66,7 @@ export interface SucceededCtx<P, R> extends PrepareCtx<P> {
   readonly rerun: boolean;
 }
 
+/** An item's outcome for a kind's hooks; `error` is a `FinError` (a view's `itemErrors` hold its data, `FinErrorData`). */
 export type ItemOutcome = { readonly value?: unknown } | { readonly error: FinError };
 
 export type ProgramSpec =
@@ -87,6 +88,10 @@ export type OnCall = (ctx: CallCtx, method: string, params: unknown) => Effect.E
 export interface FamilySpec {
   readonly family: string;
   readonly profile: "worker" | "plugin";
+  /**
+   * The family's program for a cold spawn. Never ends in `--warm`: the engine decides whether
+   * a process is warm and appends it (`KindRegistry.program`), so a family declares one argv.
+   */
   readonly program: ProgramSpec | ((job: JobView) => ProgramSpec);
   readonly memory?: { readonly interactive?: MemoryRule; readonly batch?: MemoryRule };
   readonly warm?: { readonly slots?: number; readonly idleS?: number; readonly maxJobs?: number; readonly maxAgeS?: number };
@@ -117,6 +122,25 @@ export interface KindRegistry {
   helper(kind: string, id: string): HelperProgram | undefined;
   /** Every registered kind. */
   kinds(): ReadonlyArray<KindSpec>;
+  /**
+   * The program to spawn for `job` of `family` (Decision 35, coordinator decision of the
+   * batch A review): the family's program, with `--warm` appended for a warm spawn. This holds
+   * for `Program::Path` plugin processes too. Throws for an unknown family.
+   */
+  program(family: string, job: JobView, mode: SpawnMode): ProgramSpec;
+}
+
+/** How a process is spawned: cold (one job, then exit) or warm (`ready`, then the next job). */
+export type SpawnMode = "cold" | "warm";
+
+/** The argument the engine appends to a warm spawn's argv. */
+export const WARM_ARG = "--warm";
+
+/** `program` with `--warm` appended when `mode` is warm. */
+export function programFor(program: ProgramSpec, mode: SpawnMode): ProgramSpec {
+  if (program.args.includes(WARM_ARG)) refuse(`a family program already holds ${WARM_ARG}; the engine appends it`);
+  if (mode === "cold") return program;
+  return "path" in program ? { path: program.path, args: [...program.args, WARM_ARG] } : { binary: program.binary, args: [...program.args, WARM_ARG] };
 }
 
 /** A value or a function of the params. */
@@ -131,7 +155,14 @@ export const MAX_FILE_BYTES = 1 << 30;
 export const MAX_JOB_FILE_BYTES = 4 * (1 << 30);
 const MAX_DEPTH = 4;
 
-/** What is wrong with one mapped-file name (Decision 38), or `undefined`. */
+/** Names Windows reserves for devices, with or without an extension (`CON`, `nul.txt`). */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(\..*)?$/i;
+
+/**
+ * What is wrong with one mapped-file name (Decision 38), or `undefined`. Names must mean the
+ * same file on every OS: no Windows device name, and no segment ending in a dot or a space
+ * (Windows drops them).
+ */
 export function mappedFileNameError(name: string): string | undefined {
   const path = name.endsWith("/") ? name.slice(0, -1) : name;
   if (path === "") return "an empty name";
@@ -141,19 +172,42 @@ export function mappedFileNameError(name: string): string | undefined {
   for (const s of segments) {
     if (s === "." || s === "..") return `a "${s}" segment`;
     if (!SEGMENT.test(s)) return `a segment outside [A-Za-z0-9._-]: ${JSON.stringify(s)}`;
+    if (s.endsWith(".") || s.endsWith(" ")) return `a segment ending in a dot or a space: ${JSON.stringify(s)}`;
+    if (WINDOWS_RESERVED.test(s)) return `a Windows device name: ${JSON.stringify(s)}`;
   }
   return undefined;
 }
 
-/** Every problem of a kind's file list (Decision 38): names, sizes, duplicates and the per-job cap. */
+/**
+ * Every problem of a kind's file list (Decision 38): names, sizes, duplicates, names (or
+ * directories on their paths) that differ only in case, a file that is also a directory on
+ * another's path, and the per-job cap.
+ */
 export function validateMappedFiles(files: ReadonlyArray<MappedFile>): string[] {
   const errors: string[] = [];
   const seen = new Set<string>();
+  /** Lower-cased path (file or directory) → how it was spelled, and whether it is a file. */
+  const paths = new Map<string, { spelled: string; file: boolean }>();
+  const note = (spelled: string, file: boolean, owner: string): void => {
+    const key = spelled.toLowerCase();
+    const known = paths.get(key);
+    if (known === undefined) {
+      paths.set(key, { spelled, file });
+      return;
+    }
+    if (known.spelled !== spelled) errors.push(`${JSON.stringify(owner)}: ${JSON.stringify(spelled)} differs from ${JSON.stringify(known.spelled)} only in case`);
+    else if (known.file !== file) errors.push(`${JSON.stringify(owner)}: ${JSON.stringify(spelled)} is both a file and a directory`);
+  };
   let total = 0;
   for (const f of files) {
     const bad = mappedFileNameError(f.name);
     if (bad !== undefined) errors.push(`${JSON.stringify(f.name)}: ${bad}`);
     if (seen.has(f.name)) errors.push(`${JSON.stringify(f.name)}: listed twice`);
+    else if (bad === undefined) {
+      const isDir = f.name.endsWith("/");
+      const segments = (isDir ? f.name.slice(0, -1) : f.name).split("/");
+      segments.forEach((_, i) => note(segments.slice(0, i + 1).join("/"), !isDir && i === segments.length - 1, f.name));
+    }
     seen.add(f.name);
     if (f.bytes !== undefined) {
       if (f.name.endsWith("/")) errors.push(`${JSON.stringify(f.name)}: a directory has no size`);
@@ -181,6 +235,7 @@ export function makeKindRegistry(): KindRegistry {
       if (families.has(f.family)) refuse(`family ${f.family} is already registered`);
       const slots = f.warm?.slots;
       if (slots !== undefined && (!Number.isInteger(slots) || slots < 1 || slots > 2)) refuse(`family ${f.family}: warm slots must be 1 or 2`);
+      if (typeof f.program !== "function" && f.program.args.includes(WARM_ARG)) refuse(`family ${f.family}: the engine appends ${WARM_ARG}`);
       families.set(f.family, f);
     },
     registerKind(k) {
@@ -204,5 +259,9 @@ export function makeKindRegistry(): KindRegistry {
     family: (name) => families.get(name),
     helper: (kind, id) => helpers.get(`${kind}:${id}`),
     kinds: () => [...kinds.values()],
+    program(name, job, mode) {
+      const f = families.get(name) ?? refuse(`unknown family ${name}`);
+      return programFor(typeof f.program === "function" ? f.program(job) : f.program, mode);
+    },
   };
 }

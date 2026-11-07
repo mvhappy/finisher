@@ -14,10 +14,9 @@ use crate::error::JobError;
 use crate::msg_host::{Attach, HelperKind};
 use crate::msg_worker::{Hello, Role, WorkerMsg};
 use crate::worker::{
-    CancelToken, Channel, EXIT_HOST_PROTOCOL, EXIT_PANIC, Inbound, Shared, enter, panic_text,
-    spawn_alive, spawn_reader,
+    CancelToken, Channel, EXIT_PANIC, Inbound, Shared, enter, panic_text, spawn_alive, spawn_reader,
 };
-use crate::{EXIT_HOST_GONE, MINOR, PROTOCOL};
+use crate::{EXIT_HOST_GONE, EXIT_HOST_PROTOCOL, MINOR, PROTOCOL};
 
 /// A helper program: a codec backend or a plugin process beside a job's worker.
 pub trait Helper: Send {

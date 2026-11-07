@@ -35,6 +35,11 @@ describe("job kinds", () => {
     expect(() => r.registerKind(spec({ kind: "fam.never", timeoutS: 0 }))).toThrow(/timeoutS/);
     expect(() => r.registerFamily({ ...fam, family: "Fam" })).toThrow(/must match/);
     expect(() => r.registerFamily({ ...fam, family: "warm3", warm: { slots: 3 } })).toThrow(/slots/);
+    expect(() => r.registerFamily({ ...fam, family: "warmarg", program: { binary: "fin-workers", args: ["x", "--warm"] } })).toThrow(/engine appends --warm/);
+    r.registerFamily({ ...fam, family: "dyn", program: (job) => ({ binary: "fin-workers", args: ["dyn", String(job.id)] }) });
+    expect(r.program("dyn", { id: "j9" } as never, "warm")).toEqual({ binary: "fin-workers", args: ["dyn", "j9", "--warm"] });
+    r.registerFamily({ ...fam, family: "dynbad", program: () => ({ binary: "fin-workers", args: ["--warm"] }) });
+    expect(() => r.program("dynbad", { id: "j" } as never, "cold")).toThrow(/engine appends/);
     const h = { kind: "codec", id: "x", profile: "worker", resolve: () => ({ binary: "fin-workers" as const, args: [] }) } as const;
     r.registerHelper(h);
     expect(() => r.registerHelper(h)).toThrow(/already registered/);
@@ -45,7 +50,9 @@ describe("job kinds", () => {
   });
 
   test("mapped_file_names_validated", () => {
-    for (const ok of ["a", "out/", "in/snapshot.json", "a/b/c/d.bin", "x_y-z.1"]) expect(mappedFileNameError(ok)).toBeUndefined();
+    for (const ok of ["a", "out/", "in/snapshot.json", "a/b/c/d.bin", "x_y-z.1", "console", "com0", "con_x", ".hidden"]) {
+      expect(mappedFileNameError(ok), ok).toBeUndefined();
+    }
     const bad: Array<[string, RegExp]> = [
       ["", /empty/],
       ["/abs", /relative/],
@@ -58,6 +65,12 @@ describe("job kinds", () => {
       ["sp ace", /segment/],
       ["a//b", /segment/],
       ["ünï", /segment/],
+      ["out.", /dot or a space/],
+      ["a./b", /dot or a space/],
+      ["CON", /device name/],
+      ["in/nul.txt", /device name/],
+      ["Com1", /device name/],
+      ["lpt9.bin/x", /device name/],
     ];
     for (const [name, why] of bad) expect(mappedFileNameError(name), name).toMatch(why);
     const gib = 1 << 30;
@@ -66,6 +79,13 @@ describe("job kinds", () => {
     expect(validateMappedFiles([{ name: "d/", bytes: 1, mode: "write" }])[0]).toMatch(/directory has no size/);
     expect(validateMappedFiles([{ name: "big", bytes: gib + 1, mode: "write" }])[0]).toMatch(/1 GiB/);
     expect(validateMappedFiles([{ name: "neg", bytes: -1, mode: "write" }])[0]).toMatch(/bad size/);
+    // Names, or directories on their paths, that differ only in case are one file on Windows
+    // and macOS.
+    expect(validateMappedFiles([{ name: "Out.bin", mode: "write" }, { name: "out.bin", mode: "write" }])[0]).toMatch(/only in case/);
+    expect(validateMappedFiles([{ name: "In/a", mode: "read" }, { name: "in/b", mode: "read" }])[0]).toMatch(/"in" differs from "In" only in case/);
+    expect(validateMappedFiles([{ name: "out/", mode: "write" }, { name: "OUT/x", mode: "write" }])[0]).toMatch(/only in case/);
+    expect(validateMappedFiles([{ name: "in", mode: "read" }, { name: "in/a", mode: "read" }])[0]).toMatch(/both a file and a directory/);
+    expect(validateMappedFiles([{ name: "in/a", mode: "read" }, { name: "in/b", mode: "read" }, { name: "out/", mode: "write" }, { name: "out/x", mode: "write" }])).toEqual([]);
     const five = [1, 2, 3, 4, 5].map((i) => ({ name: `f${i}`, bytes: gib, mode: "write" }) as const);
     expect(validateMappedFiles(five)).toEqual(["the files pass 4 GiB per job"]);
     const r = makeKindRegistry();
@@ -95,6 +115,13 @@ describe("job kinds", () => {
     expect(r.family("testplugin")?.warmKey?.(job)).toBe("A");
     expect(r.helper("codec", "test")?.resolve({ params: { helper: "spawn" } } as never)).toEqual({ binary: "fin-workers", args: ["--helper", "test:spawn"] });
     expect(r.family("test")?.diagKinds).toEqual(["test.diag"]);
+    // The engine decides warmness: argv per spawn mode, `--warm` appended (paths included).
+    const any = { params: { key: "A" } } as never;
+    expect(r.program("test", any, "cold")).toEqual({ binary: "fin-workers", args: ["test"] });
+    expect(r.program("test", any, "warm")).toEqual({ binary: "fin-workers", args: ["test", "--warm"] });
+    expect(r.program("testplugin", any, "warm")).toMatchObject({ args: ["testplugin", "--warm"] });
+    expect((r.program("testplugin", any, "warm") as { path: string }).path).toMatch(/fin-workers(\.exe)?$/);
+    expect(() => r.program("nope", any, "cold")).toThrow(/unknown family/);
     const ctx = { job: { id: "j1" }, role: "worker", owner: { kind: "system", id: "x" } } as never;
     expect(await Effect.runPromise(testOnCall(ctx, "test.echo", { a: 1 }))).toMatchObject({ echo: { a: 1 }, job: "j1", role: "worker" });
     const fail = await Effect.runPromise(Effect.flip(testOnCall(ctx, "test.fail", { b: 2 })));

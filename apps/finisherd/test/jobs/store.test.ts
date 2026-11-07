@@ -233,7 +233,10 @@ describe("job store", () => {
     expect(s.list({ state: ["running"] }).jobs.map((j) => j.id)).toEqual([ids[0]]);
     expect(s.list({ state: ["running", "queued"], project: "p0", kind: "test.echo" }).jobs.length).toBe(3);
     expect(s.list({ owner: { kind: "device", id: "d" } }).jobs).toEqual([]);
-    expect(s.list({ cursor: "garbage" })).toEqual({ jobs: [] });
+    for (const cursor of ["garbage", "12.", ".abc", "1.a-b"]) {
+      expect(() => s.list({ cursor }), cursor).toThrow(expect.objectContaining({ code: "INVALID_REQUEST", details: { field: "cursor" } }));
+    }
+    expect(s.list({ cursor: `0.${ids[0]}` })).toEqual({ jobs: [] });
     expect(s.list({ limit: 10_000 }).jobs.length).toBe(7);
     expect(s.unfinishedCount()).toBe(7);
     expect(s.running().map((j) => j.id)).toEqual([ids[0]]);

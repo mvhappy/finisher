@@ -55,7 +55,11 @@ function kind<P>(k: Partial<KindSpec<P>> & { readonly kind: string }): KindSpec<
   return { ...base, ...k } as KindSpec<P>;
 }
 
-/** Registers `test`, `testbad` and `testplugin`, their kinds and the `codec:test` helper. */
+/**
+ * Registers `test`, `testbad` and `testplugin`, their kinds and the `codec:test` helper. The
+ * programs here are the cold argv; a warm spawn takes `registry.program(family, job, "warm")`,
+ * which appends `--warm` (`fin-workers test --warm`, `<path> testplugin --warm`).
+ */
 export function registerTestKinds(registry: KindRegistry, opts: { readonly binaryDir: string }): void {
   const exe = process.platform === "win32" ? "fin-workers.exe" : "fin-workers";
   registry.registerFamily({

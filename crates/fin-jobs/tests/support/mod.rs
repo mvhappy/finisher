@@ -91,6 +91,29 @@ impl Rig {
             .unwrap();
     }
 
+    /// Sends several messages in one `write` (they arrive in one read).
+    pub fn send_together(&mut self, msgs: &[HostMsg]) {
+        let mut bytes = Vec::new();
+        for m in msgs {
+            self.seq += 1;
+            bytes.extend(codec::encode(self.seq, m).unwrap());
+        }
+        self.to
+            .as_mut()
+            .expect("stdin open")
+            .write_all(&bytes)
+            .unwrap();
+    }
+
+    /// Writes raw bytes to the runtime's stdin.
+    pub fn send_raw(&mut self, bytes: &[u8]) {
+        self.to
+            .as_mut()
+            .expect("stdin open")
+            .write_all(bytes)
+            .unwrap();
+    }
+
     /// The next message, `alive` included.
     pub fn recv_any(&mut self) -> WorkerMsg {
         self.from.recv_timeout(WAIT).expect("a message within 10 s")
