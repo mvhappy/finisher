@@ -254,3 +254,54 @@ fn plan_skips_a_placed_fallback_that_does_not_cover() {
         ("FONT_NOT_IN_CATALOG", &"Arab".into())
     );
 }
+
+/// Plan 4C Task 26 (e): a caption import whose pins `fonts.plan` planned, for a style added in
+/// an earlier transaction (so the style uses the face before the pin exists), commits and
+/// undoes exactly through its stored inverse — the inverse `font.unpin`s skip the use check —
+/// and the redo (the inverse's inverse) and a replay of the record give the import again.
+#[test]
+fn undo_of_an_import_with_planned_pins_is_exact() {
+    let c = FontCatalog::builtin();
+    let before = commit(&project(), vec![style("Noto Sans", 700.0)]);
+    assert!(plan_pins(&before, &[], c).unwrap().ops.is_empty());
+    let import = vec![caption("$c", "Hello שלום", "st1")];
+    let plan = plan_pins(&before, &import, c).unwrap();
+    assert_eq!(
+        pins(&plan.ops),
+        [
+            ("Noto Sans|700|normal".to_string(), None),
+            ("Noto Sans Hebrew|400|normal".to_string(), Some(0)),
+        ]
+    );
+    let mut ops = plan.ops.clone();
+    ops.extend(import);
+    let tx = fin_core::Tx {
+        tx_id: "import".into(),
+        author: "a".into(),
+        branch: "main".into(),
+        base_rev: 1,
+        schema_version: fin_core::SCHEMA_VERSION,
+        args_hash: None,
+        ops,
+    };
+    let a = apply_tx(&before, &tx, &mut MemIds::after(&before)).unwrap();
+    let internal = |ops: Vec<Op>| fin_core::Tx { ops, ..tx.clone() };
+    let after = &a.project;
+    let back = fin_core::apply_internal(
+        after,
+        &internal(a.inverse.clone()),
+        &mut MemIds::after(after),
+    )
+    .unwrap();
+    assert_eq!(back.project, before);
+    let again = fin_core::apply_internal(
+        &before,
+        &internal(back.inverse),
+        &mut MemIds::after(&before),
+    )
+    .unwrap();
+    assert_eq!(&again.project, after);
+    let rp = fin_core::apply_committed(&before, &tx, &a.bindings).unwrap();
+    assert_eq!(&rp.project, after);
+    assert_eq!(rp.inverse, a.inverse);
+}

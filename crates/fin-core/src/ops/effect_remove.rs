@@ -62,7 +62,8 @@ pub(crate) fn apply(
     };
     let item = bindings.resolve(&r.item)?;
     let (ti, ci) = item_index(project, &item)?;
-    let index = effect_index(&ti.get(project).items[ci], &r.effect)?;
+    let fx = bindings.resolve(&r.effect)?;
+    let index = effect_index(&ti.get(project).items[ci], &fx)?;
     check_unlocked(ti.get(project), Some(&item), bindings)?;
     let track = ti.get_mut(project);
     let track_id = track.id.clone();

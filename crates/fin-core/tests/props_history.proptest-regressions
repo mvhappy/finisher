@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# Both were reference-model bugs (the independent oracle judged trims of a clip the record
+# itself, or a merged delete and restore, re-created), found at 60k cases.
+cc 82110a583b7896a75b0f056beebae34afe7a72773fa674d7e2958f2d85c35cc3
+cc 679bc4985cbced9643342cf20dbc5bdadc75d4a1e9a92dbb0512b2456aa7e7a5 # shrinks to script = [(0, Insert { side: false, track: 0, at: 2, len: 5 }), (0, Delete { side: false, track: 0, k: 4 }), (0, Delete { side: false, track: 0, k: 0 }), (0, Undo { side: false }), (0, Trim { side: false, track: 0, k: 1, frames: -2 }), (1, Trim { side: true, track: 0, k: 4, frames: -1 }), (0, Merge { skip: false, down: true }), (1, Insert { side: false, track: 0, at: 0, len: 5 }), (1, Undo { side: false }), (1, Undo { side: true })]
