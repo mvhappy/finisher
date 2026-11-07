@@ -478,7 +478,7 @@ fn styles_and_fonts() -> Vec<Op> {
             fallback: Some(0),
         }
         .into(),
-        FontUnpin { key: key.clone() }.into(),
+        FontUnpin::new(key.clone()).into(),
         FontRepin { key, pin }.into(),
         fin_core::CaptionSetText {
             item: "cap1".into(),
@@ -492,6 +492,7 @@ fn styles_and_fonts() -> Vec<Op> {
                 start: Rational::from_int(0),
                 end: Rational::from_int(1),
             }],
+            source: None,
         }
         .into(),
         fin_core::CaptionSplit {

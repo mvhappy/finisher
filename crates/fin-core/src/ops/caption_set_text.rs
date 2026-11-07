@@ -1,9 +1,11 @@
 //! `caption.setText`: new text for a caption (plan 4C Task 19, spec §5.5). The words are the
 //! text split on whitespace, timed against the old ones by [`crate::captions::align_text`]:
-//! matching words keep their times, the rest share the time around them by characters. No
+//! matching words keep their times, the rest share the time around them by characters, on a
+//! millisecond grid. No
 //! words, or a control character, is `INVALID_OP`; a locked track `TRACK_LOCKED` (policy).
-//! The diff records the item's `caption.words`; the inverse is the internal
-//! `caption.setWords` with the old words.
+//! The transcript source is kept: the caption still covers the same transcript words. The diff
+//! records the item's `caption.words`; the inverse is the internal `caption.setWords` with the
+//! old words.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -53,7 +55,7 @@ pub(crate) fn apply(
     check_unlocked(ti.get(project), Some(&id), bindings)?;
     let track = ti.get(project).id.clone();
     let block = block_mut(project, ti, i)?;
-    let words = align_text(&block.words, &s.text);
+    let words = align_text(&block.words, &s.text)?;
     check_caption_words(&words, None)?;
     let old = std::mem::replace(&mut block.words, words);
     diff.record_path(&track, &id, WORDS);
@@ -61,6 +63,7 @@ pub(crate) fn apply(
         CaptionSetWords {
             item: id,
             words: old,
+            source: block.source.clone(),
         }
         .into(),
     ])

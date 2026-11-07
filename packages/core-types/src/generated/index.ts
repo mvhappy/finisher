@@ -1611,6 +1611,10 @@ export interface FontPin {
  * via the `definition` "FontUnpin".
  */
 export interface FontUnpin {
+  /**
+   * Internal: drop only the key's fallback place.
+   */
+  fallbackOnly?: boolean;
   key: string;
 }
 /**
@@ -1641,7 +1645,19 @@ export interface CaptionSetText {
  */
 export interface CaptionSetWords {
   item: string;
+  source?: CaptionSource1;
   words: Word[];
+}
+/**
+ * The transcript artifact a caption came from, and its word range (`[first, end)`).
+ */
+export interface CaptionSource1 {
+  artifact: string;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  wordRange: [number, number];
 }
 /**
  * `caption.split`: cuts `item` before word `word`; the right part is `id`.

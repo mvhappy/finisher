@@ -604,6 +604,10 @@
         "item": {
           "type": "string"
         },
+        "source": {
+          "$ref": "#/$defs/CaptionSource",
+          "description": "The caption's source (none: no source)."
+        },
         "words": {
           "items": {
             "$ref": "#/$defs/Word"
@@ -1848,6 +1852,10 @@
     "FontUnpin": {
       "description": "`font.unpin`: drops pin `key`.",
       "properties": {
+        "fallbackOnly": {
+          "description": "Internal: drop only the key's fallback place.",
+          "type": "boolean"
+        },
         "key": {
           "type": "string"
         }

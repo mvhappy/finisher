@@ -27,7 +27,7 @@ mod values;
 pub(crate) use alone::{dissolve_alone, split_dissolved};
 pub(crate) use caption::{
     base_style, block_mut, caption_at, check_caption, check_caption_words, check_name,
-    check_overrides, check_style_value, project_style,
+    check_overrides, check_style_value, merge_source, project_style, split_source,
 };
 pub(crate) use carve::{carve, check_carve};
 pub(crate) use check::{

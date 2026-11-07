@@ -20,7 +20,7 @@ use crate::time::Rational;
 use crate::tx::Diff;
 
 /// The param key a caption's style is changed under (Decision 20).
-const STYLE: &str = "caption.style";
+pub(crate) const STYLE: &str = "caption.style";
 
 /// `caption.setStyle`: `item` takes `style`; `overrides`, when given, replace its overrides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

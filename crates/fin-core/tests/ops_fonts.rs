@@ -54,7 +54,7 @@ fn pin(key: &str, p: FontPin, fallback: Option<u32>) -> Op {
 }
 
 fn unpin(key: &str) -> Op {
-    FontUnpin { key: key.into() }.into()
+    FontUnpin::new(key).into()
 }
 
 fn repin(key: &str, p: FontPin) -> Op {
@@ -263,9 +263,14 @@ fn asset_pin_golden_and_ids() {
 #[test]
 fn same_hash_pin_is_a_noop_and_merges() {
     let p = apply(&project(), vec![pin(INTER, inter(&sha('a')), None)]).project;
-    let a = apply(&p, vec![pin(INTER, inter(&sha('a')), Some(0))]);
+    // No fallback index, or the key already in the order: a pure no-op.
+    let a = apply(&p, vec![pin(INTER, inter(&sha('a')), None)]);
     assert_eq!(a.project, p);
     assert!(a.diff.changes.is_empty() && a.diff.shifts.is_empty() && a.inverse.is_empty());
+    let placed = apply(&project(), vec![pin(INTER, inter(&sha('a')), Some(0))]).project;
+    let a = apply(&placed, vec![pin(INTER, inter(&sha('a')), Some(0))]);
+    assert_eq!(a.project, placed);
+    assert!(a.diff.changes.is_empty() && a.inverse.is_empty());
     // Two edits that pin the same face merge cleanly.
     let base = project();
     let r = rebase_over(
@@ -276,6 +281,48 @@ fn same_hash_pin_is_a_noop_and_merges() {
     .unwrap();
     assert_eq!(r.applied.project.fonts.pins.len(), 1);
     assert!(r.applied.diff.changes.is_empty());
+}
+
+#[test]
+fn same_hash_pin_places_a_missing_fallback() {
+    let p = apply(&project(), vec![pin(INTER, inter(&sha('a')), None)]).project;
+    // A fallback index the held pin lacks is inserted, exactly undone.
+    let op = pin(INTER, inter(&sha('a')), Some(0));
+    let a = apply(&p, vec![op.clone()]);
+    assert_eq!(a.project.fonts.fallback, [INTER]);
+    assert_eq!(a.project.fonts.pins, p.fonts.pins);
+    let c = &a.diff.changes[0];
+    assert_eq!(
+        (c.id.as_str(), c.path.as_deref(), c.change),
+        (
+            "font/Inter|700|normal",
+            Some("fallback"),
+            fin_core::ChangeKind::Updated
+        )
+    );
+    assert_eq!(
+        fp(&op, &a).touches,
+        [(
+            "font/Inter|700|normal".to_string(),
+            Touch::Param("fallback".into())
+        )]
+    );
+    assert_eq!(undo(&a), p);
+    // The fallback-only unpin is internal.
+    let op: Op = FontUnpin {
+        key: INTER.into(),
+        fallback_only: true,
+    }
+    .into();
+    assert_eq!(code(try_apply(&a.project, vec![op])), "INVALID_OP");
+    // Two edits pinning one face, one with a fallback place, converge in either order.
+    let base = project();
+    let with = pin(INTER, inter(&sha('a')), Some(0));
+    let without = pin(INTER, inter(&sha('a')), None);
+    let ab = rebase_over(&base, vec![without.clone()], vec![with.clone()]).unwrap();
+    let ba = rebase_over(&base, vec![with], vec![without]).unwrap();
+    assert_eq!(ab.applied.project.fonts, ba.applied.project.fonts);
+    assert_eq!(ab.applied.project.fonts.fallback, [INTER]);
 }
 
 #[test]

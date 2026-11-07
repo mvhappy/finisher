@@ -20,10 +20,10 @@ mod blocks;
 mod presets;
 mod srt;
 
-pub use align::align_text;
+pub use align::{GRID, align_text};
 pub use blocks::{BlockDraft, blocks};
 pub use presets::{SafeZone, preset, presets, safe_box, safe_zone, safe_zones};
-pub use srt::parse_srt;
+pub use srt::{Srt, SrtWarning, parse_srt};
 
 /// The prefix of the built-in styles' ids.
 pub const PRESET_PREFIX: &str = "preset:";

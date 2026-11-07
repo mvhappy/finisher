@@ -767,6 +767,8 @@ fn every_op_has_a_footprint() {
                     == [
                         (s.item.clone(), Touch::Exists),
                         (s.item.clone(), Touch::Edge(Edge::End)),
+                        (s.item.clone(), Touch::Param("caption.words".into())),
+                        (s.item.clone(), Touch::Param("caption.style".into())),
                     ]
                     && f.creates == [s.id.clone()]
             }
@@ -776,6 +778,7 @@ fn every_op_has_a_footprint() {
                         (m.item.clone(), Touch::Exists),
                         (m.with.clone(), Touch::Exists),
                         (m.item.clone(), Touch::Edge(Edge::End)),
+                        (m.item.clone(), Touch::Param("caption.words".into())),
                     ]
                     && f.removes == [m.with.clone()]
             }
@@ -850,11 +853,7 @@ fn styles_and_fonts(p: &Project) -> Vec<(Project, Op, Vec<&'static str>)> {
             vec![],
         ),
         (p.clone(), pin, vec![]),
-        (
-            pinned.clone(),
-            FontUnpin { key: key.clone() }.into(),
-            vec![],
-        ),
+        (pinned.clone(), FontUnpin::new(key.clone()).into(), vec![]),
         (
             pinned,
             FontRepin {
@@ -1205,6 +1204,7 @@ fn caption_edits(p: &Project) -> Vec<(Project, Op, Vec<&'static str>)> {
             CaptionSetWords {
                 item: "cap1".into(),
                 words: vec![word("z", 0, 2)],
+                source: None,
             }
             .into(),
             vec!["t9"],

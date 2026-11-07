@@ -1,9 +1,11 @@
 //! New caption text over old timed words (`caption.setText`, spec §5.5): words that still match
-//! keep their times, the rest share the time around them by characters. Exact rationals.
+//! keep their times, the rest share the time around them by characters. Exact rationals: the
+//! shared-out boundaries are rounded to a fixed millisecond grid ([`GRID`]), so repeated edits
+//! never grow the denominators.
 
 use crate::error::CoreError;
 use crate::model::Word;
-use crate::time::Rational;
+use crate::time::{Rational, overflow};
 
 /// Characters of a word for sharing time (at least 1, so an empty word still gets a share).
 fn weight(text: &str) -> i64 {
@@ -12,8 +14,22 @@ fn weight(text: &str) -> i64 {
         .max(1)
 }
 
+/// The grid shared-out word boundaries are rounded to: 1/1000 s.
+pub const GRID: i64 = 1000;
+
+/// `x` rounded to the nearest multiple of 1/[`GRID`] (halves up).
+fn snap(x: Rational) -> Result<Rational, CoreError> {
+    let (n, d) = (i128::from(x.num()), i128::from(x.den()));
+    let k = (2 * n * i128::from(GRID) + d).div_euclid(2 * d);
+    let k = i64::try_from(k).map_err(|_| overflow())?;
+    Rational::new(k, GRID)
+}
+
 /// `texts` spread over `[start, end]` in order, each word's share proportional to its
-/// characters; the last word ends exactly at `end`.
+/// characters. Each boundary between two words is rounded to the [`GRID`] (kept inside the
+/// span and in order, so a span under a millisecond a word can give empty words); the first
+/// word starts at `start` and the last ends exactly at `end`. `TIME_OVERFLOW` when the
+/// arithmetic overflows.
 pub(crate) fn distribute(
     texts: &[String],
     start: Rational,
@@ -29,7 +45,8 @@ pub(crate) fn distribute(
         let next = if i + 1 == texts.len() {
             end
         } else {
-            start.checked_add(span.checked_mul(Rational::new(done, total)?)?)?
+            let exact = start.checked_add(span.checked_mul(Rational::new(done, total)?)?)?;
+            snap(exact)?.clamp(at, end)
         };
         out.push(Word {
             text: t.clone(),
@@ -91,13 +108,10 @@ fn lcs(a: &[String], b: &[String]) -> Vec<(usize, usize)> {
 ///   it (the next one's, at the start), so no word is empty and none overlap;
 /// - with no match at all, every word shares the old words' whole span.
 ///
-/// Empty when `text` holds no word, or `old` is empty. Errors only on arithmetic overflow,
-/// which yields the words with the old span's start (never in practice).
-pub fn align_text(old: &[Word], text: &str) -> Vec<Word> {
-    align(old, text).unwrap_or_default()
-}
-
-fn align(old: &[Word], text: &str) -> Result<Vec<Word>, CoreError> {
+/// Shared-out times are rounded to the millisecond [`GRID`] ([`distribute`]); kept times are
+/// the old words' own. Empty when `text` holds no word, or `old` is empty. `TIME_OVERFLOW`
+/// when the arithmetic overflows.
+pub fn align_text(old: &[Word], text: &str) -> Result<Vec<Word>, CoreError> {
     let new: Vec<String> = text.split_whitespace().map(str::to_string).collect();
     let (Some(first), Some(last)) = (old.first(), old.last()) else {
         return Ok(Vec::new());

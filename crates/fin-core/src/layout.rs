@@ -185,9 +185,10 @@ pub fn check_words(words: &[String]) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// What a project needs from fonts (Decision 35): the faces its styles name
-/// (`(family, weight, italic)`: every project style and every caption's effective style, its
-/// overrides applied) and the scripts its captions' text is in ([`scripts_of_text`]).
+/// What a project needs from fonts (Decision 35): the faces of the styles in use
+/// (`(family, weight, italic)` of every caption's effective style, its overrides applied; a
+/// style no caption uses needs nothing) and the scripts its captions' text is in
+/// ([`scripts_of_text`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FontNeeds {
     pub faces: BTreeSet<(String, u16, bool)>,
@@ -215,20 +216,14 @@ pub fn style_key(style: &CaptionStyle) -> String {
 /// [`FontNeeds`] of `project`. A caption whose style does not resolve adds only its scripts.
 pub fn font_needs(project: &Project) -> FontNeeds {
     let mut needs = FontNeeds::default();
-    let mut face = |s: &CaptionStyle| {
-        needs
-            .faces
-            .insert((s.text.family.clone(), s.text.weight, s.text.italic));
-    };
-    project.styles.values().for_each(&mut face);
-    let mut scripts = BTreeSet::new();
     for (_, block) in captions(project) {
-        if let Ok(style) = resolve_style(project, block) {
-            face(&style);
+        if let Ok(s) = resolve_style(project, block) {
+            needs
+                .faces
+                .insert((s.text.family.clone(), s.text.weight, s.text.italic));
         }
-        scripts.extend(scripts_of(&block.words));
+        needs.scripts.extend(scripts_of(&block.words));
     }
-    needs.scripts = scripts;
     needs
 }
 

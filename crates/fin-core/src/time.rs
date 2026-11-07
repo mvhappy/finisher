@@ -36,7 +36,7 @@ fn invalid_time(input: &str, why: &str) -> CoreError {
     .with_fix("use 12.4s, 00:12.4, 01:00:12.4, f300 or a rational like 62/5")
 }
 
-fn overflow() -> CoreError {
+pub(crate) fn overflow() -> CoreError {
     CoreError::new("TIME_OVERFLOW", "rational time overflowed 64 bits")
         .with_fix("use smaller times, or a frame rate with a smaller denominator")
 }

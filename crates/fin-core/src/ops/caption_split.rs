@@ -2,13 +2,18 @@
 //! word starts. The left part keeps the id, the words before it, and ends there; the right
 //! part (named by `id`, a `$name` placeholder bound to a new `cap<n>`) is a copy of the item
 //! from there with the rest of the words, item-relative times moved by the cut (Decision 13),
-//! and no link group (Decision 17).
+//! and no link group (Decision 17). A transcript source's word range is cut too
+//! ([`split_source`]).
 //!
 //! `word` lies strictly inside the word list and the cut strictly inside the item (structural,
-//! `INVALID_RANGE`); each part is at least a frame long and the track unlocked (policy). The
-//! word index is not a time: a stale split re-runs on the words it finds. The inverse is
-//! internal: `item.remove` of the right part (lift), a `strict` trim of the left part's end
-//! back, and `caption.setWords` with the old words.
+//! `INVALID_RANGE`); each part is at least a frame long and the track unlocked (policy).
+//!
+//! The diff records the item's end, its `caption.words` and its `caption.style` (the right part
+//! copies the style), so a split meets a concurrent `caption.setText` or `caption.setStyle` of
+//! the item as `SAME_PARAM` either way: re-running the word index on other words, or styling
+//! one part only, would not be what either author saw. The inverse is internal: `item.remove`
+//! of the right part (lift), a `strict` trim of the left part's end back, and
+//! `caption.setWords` with the old words and source.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,9 +22,12 @@ use serde_json::json;
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{ItemBody, Project};
+use crate::ops::caption_set_style::STYLE;
+use crate::ops::caption_set_text::WORDS;
 use crate::ops::caption_set_words::CaptionSetWords;
 use crate::ops::util::{
-    OpDiff, caption_at, check_unlocked, frame_of, invalid_range, place, shift_content, wrong_op,
+    OpDiff, caption_at, check_unlocked, frame_of, invalid_range, place, shift_content,
+    split_source, wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, Edge, ItemRemove, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
@@ -99,12 +107,14 @@ pub(crate) fn apply(
     let track = ti.get_mut(project);
     let left = &mut track.items[ci];
     let mut right = left.clone();
-    let mut old = Vec::new();
+    let (mut old, mut old_source) = (Vec::new(), None);
     if let (ItemBody::Caption { block: l }, ItemBody::Caption { block: r }) =
         (&mut left.body, &mut right.body)
     {
         old.clone_from(&l.words);
+        old_source.clone_from(&l.source);
         r.words = l.words.split_off(k);
+        (l.source, r.source) = split_source(old_source.as_ref(), k, n);
     }
     right.id.clone_from(&right_id);
     right.start = left.start.checked_add(offset)?;
@@ -116,6 +126,8 @@ pub(crate) fn apply(
     place(track, right);
     diff.record_edge(&track.id, &id, Edge::End, None);
     diff.record_item(&track.id, &right_id, ChangeKind::Added);
+    diff.record_path(&track.id, &id, WORDS);
+    diff.record_path(&track.id, &id, STYLE);
     Ok(vec![
         ItemRemove {
             id: right_id,
@@ -133,12 +145,14 @@ pub(crate) fn apply(
         CaptionSetWords {
             item: id,
             words: old,
+            source: old_source,
         }
         .into(),
     ])
 }
 
-/// Needs the item and moves its end (its diff's edge change); creates the right part.
+/// Needs the item, moves its end and sets its words and style (its diff's changes); creates
+/// the right part.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::CaptionSplit(s) = op {

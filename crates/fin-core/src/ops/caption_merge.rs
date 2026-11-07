@@ -2,9 +2,16 @@
 //! result keeps `item`'s id, style and fields, spans to `with`'s end, and holds both captions'
 //! words (`with`'s moved to count from `item`'s start); `with` goes. Any other `with` (an
 //! earlier item, a later one with an item between, another track, itself) is `NOT_ADJACENT`;
-//! a locked track `TRACK_LOCKED` (policy). The inverse is internal: `caption.setWords` with the
-//! old words, a `strict` trim of the end back, and `item.restore` of `with` (lift), so an
-//! undo meets later edits of that range as a conflict (B4).
+//! a locked track `TRACK_LOCKED` (policy).
+//!
+//! Only the words each caption shows are joined, so the result stays in order: `item`'s words
+//! that start at or past its end and `with`'s that end before its start (a trim keeps them,
+//! Decision 13) are dropped, and a word across that edge is cut at it. Both sources of one
+//! transcript join into one word range ([`merge_source`]). The diff records `item`'s end and
+//! `caption.words`, so a concurrent `caption.setText` of it is `SAME_PARAM`. The inverse is
+//! internal: `caption.setWords` with the old words and source, a `strict` trim of the end
+//! back, and `item.restore` of `with` (lift), so an undo meets later edits of that range as a
+//! conflict (B4).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,9 +19,10 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
-use crate::model::{ItemBody, Project};
+use crate::model::{ItemBody, Project, Word};
+use crate::ops::caption_set_text::WORDS;
 use crate::ops::caption_set_words::CaptionSetWords;
-use crate::ops::util::{OpDiff, caption_at, check_unlocked, end, wrong_op};
+use crate::ops::util::{OpDiff, caption_at, check_unlocked, end, merge_source, wrong_op};
 use crate::ops::{Bindings, DeleteMode, Edge, ItemRestore, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
@@ -62,26 +70,54 @@ pub(crate) fn apply(
     let (first, stop) = (&mut track.items[i], end(&next)?);
     let by = next.start.checked_sub(first.start)?;
     let delta = stop.checked_sub(end(first)?)?;
-    let mut old = Vec::new();
+    let (zero, length) = (Rational::zero(), first.duration);
+    let (mut old, mut old_source) = (Vec::new(), None);
     if let (ItemBody::Caption { block }, ItemBody::Caption { block: theirs }) =
         (&mut first.body, &next.body)
     {
         old.clone_from(&block.words);
-        for w in &theirs.words {
-            let mut w = w.clone();
-            w.start = w.start.checked_add(by)?;
-            w.end = w.end.checked_add(by)?;
-            block.words.push(w);
+        old_source.clone_from(&block.source);
+        let mut words: Vec<_> = block
+            .words
+            .iter()
+            .filter(|w| w.start < length)
+            .map(|w| Word {
+                end: w.end.min(length),
+                ..w.clone()
+            })
+            .collect();
+        for w in theirs
+            .words
+            .iter()
+            .filter(|w| w.end > zero || w.start >= zero)
+        {
+            words.push(Word {
+                text: w.text.clone(),
+                start: w.start.max(zero).checked_add(by)?,
+                end: w.end.checked_add(by)?,
+            });
         }
+        if words.is_empty() {
+            return Err(CoreError::new(
+                "INVALID_OP",
+                format!("merging {id} with {with} leaves no word inside the caption"),
+            )
+            .with_details(json!({ "item": id, "with": with, "path": "words" }))
+            .with_fix("edit the captions' text first, or delete one of them"));
+        }
+        block.words = words;
+        block.source = merge_source(old_source.as_ref(), theirs.source.as_ref());
     }
     first.duration = stop.checked_sub(first.start)?;
     let track_id = track.id.clone();
     diff.record_edge(&track_id, &id, Edge::End, None);
     diff.record_item(&track_id, &with, ChangeKind::Removed);
+    diff.record_path(&track_id, &id, WORDS);
     Ok(vec![
         CaptionSetWords {
             item: id.clone(),
             words: old,
+            source: old_source,
         }
         .into(),
         ItemTrim {
@@ -101,7 +137,7 @@ pub(crate) fn apply(
     ])
 }
 
-/// Needs both captions, moves `item`'s end and removes `with`.
+/// Needs both captions, moves `item`'s end, sets its words and removes `with`.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::CaptionMerge(m) = op {

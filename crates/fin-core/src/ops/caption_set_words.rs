@@ -1,5 +1,5 @@
 //! `caption.setWords` (internal: the inverse of `caption.setText`, `caption.split` and
-//! `caption.merge`): a caption's words, exactly. They must be at least one, ordered and not
+//! `caption.merge`): a caption's words and transcript source, exactly. The words must be at least one, ordered and not
 //! overlapping (structural); times outside the item are kept (an undo restores what a start
 //! trim moved out, Decision 13). The word times are item-relative, so a rebase maps them
 //! through the content offsets of the steps between (Decision 16). The diff records the
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
-use crate::model::{Project, Word};
+use crate::model::{CaptionSource, Project, Word};
 use crate::ops::caption_set_text::WORDS;
 use crate::ops::util::{OpDiff, block_mut, caption_at, check_caption_words, wrong_op};
 use crate::ops::{Bindings, Op};
@@ -24,6 +24,10 @@ use crate::tx::Diff;
 pub struct CaptionSetWords {
     pub item: String,
     pub words: Vec<Word>,
+    /// The caption's source (none: no source).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "CaptionSource")]
+    pub source: Option<CaptionSource>,
 }
 
 impl From<CaptionSetWords> for Op {
@@ -48,11 +52,13 @@ pub(crate) fn apply(
     let track = ti.get(project).id.clone();
     let block = block_mut(project, ti, i)?;
     let old = std::mem::replace(&mut block.words, s.words.clone());
+    let source = std::mem::replace(&mut block.source, s.source.clone());
     diff.record_path(&track, &id, WORDS);
     Ok(vec![
         CaptionSetWords {
             item: id,
             words: old,
+            source,
         }
         .into(),
     ])

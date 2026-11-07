@@ -5,8 +5,11 @@
 //! - The key is the pin's face (`font_key(family, weight, italic)`), the SHA-256 64 lowercase
 //!   hex digits and the size at least a byte (structural, `INVALID_OP`). An asset pin names a
 //!   font asset (`NOT_FOUND`) holding that file and face (`INVALID_OP`).
-//! - A key already pinned **to the same SHA-256** is a no-op: empty diff, empty inverse, so two
-//!   edits pinning one face merge. Another SHA-256 is `FONT_PINNED` (policy on edits; replay
+//! - A key already pinned **to the same SHA-256** is a no-op (empty diff, empty inverse), so two
+//!   edits pinning one face merge, unless the op places the key in the fallback order and the
+//!   order lacks it: then it inserts it there, the diff records `font/<key>`'s `fallback` and
+//!   the inverse is the internal `font.unpin {fallbackOnly}`, so a merge keeps the fallback
+//!   place either edit asked for. Another SHA-256 is `FONT_PINNED` (policy on edits; replay
 //!   refuses it too, as valid history cannot produce it): `font.repin` changes a pin's file.
 //! - `fallback` past the end of the order is `INVALID_RANGE` for clients; internal and replay
 //!   applies (an undo of `font.unpin` meeting a shorter order) put it at the end.
@@ -43,6 +46,9 @@ impl From<FontPinOp> for Op {
         Op::FontPin(op)
     }
 }
+
+/// The param key a pin's place in the fallback order is changed under.
+pub(crate) const FALLBACK: &str = "fallback";
 
 /// The footprint entity of pin `key` (Decision 20).
 pub(crate) fn entity(key: &str) -> String {
@@ -119,7 +125,19 @@ pub(crate) fn apply(
     check_pin(project, &p.key, &mut pin, bindings)?;
     if let Some(held) = project.fonts.pins.get(&p.key) {
         if held.sha256 == pin.sha256 {
-            return Ok(Vec::new());
+            let placed = project.fonts.fallback.contains(&p.key);
+            let Some(at) = p.fallback.filter(|_| !placed) else {
+                return Ok(Vec::new());
+            };
+            insert_fallback(project, &p.key, at, bindings)?;
+            diff.record_path_of(EntityKind::Font, &entity(&p.key), None, FALLBACK);
+            return Ok(vec![
+                FontUnpin {
+                    key: p.key.clone(),
+                    fallback_only: true,
+                }
+                .into(),
+            ]);
         }
         return Err(CoreError::new(
             "FONT_PINNED",
@@ -131,21 +149,32 @@ pub(crate) fn apply(
             p.key
         )));
     }
-    let order = &mut project.fonts.fallback;
     if let Some(at) = p.fallback {
-        let at = usize::try_from(at).unwrap_or(usize::MAX);
-        if at > order.len() && bindings.policy() && !bindings.internal() {
-            return Err(invalid_range(
-                format!("fallback index {at} is past the end of the order"),
-                json!({ "path": "fallback", "min": 0, "max": order.len() }),
-                format!("use an index from 0 to {}", order.len()),
-            ));
-        }
-        order.insert(at.min(order.len()), p.key.clone());
+        insert_fallback(project, &p.key, at, bindings)?;
     }
     project.fonts.pins.insert(p.key.clone(), pin);
     diff.record(EntityKind::Font, &entity(&p.key), ChangeKind::Added);
-    Ok(vec![FontUnpin { key: p.key.clone() }.into()])
+    Ok(vec![FontUnpin::new(p.key.clone()).into()])
+}
+
+/// Puts `key` at `at` in the fallback order (see the module docs for an index past the end).
+fn insert_fallback(
+    project: &mut Project,
+    key: &str,
+    at: u32,
+    bindings: &Bindings,
+) -> Result<(), CoreError> {
+    let order = &mut project.fonts.fallback;
+    let at = usize::try_from(at).unwrap_or(usize::MAX);
+    if at > order.len() && bindings.policy() && !bindings.internal() {
+        return Err(invalid_range(
+            format!("fallback index {at} is past the end of the order"),
+            json!({ "path": "fallback", "min": 0, "max": order.len() }),
+            format!("use an index from 0 to {}", order.len()),
+        ));
+    }
+    order.insert(at.min(order.len()), key.to_string());
+    Ok(())
 }
 
 /// Creates `font/<key>`, using the font asset it pins.
@@ -170,7 +199,8 @@ pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 
-/// One `font.unpin`, or nothing for a no-op pin (it records no change).
+/// One `font.unpin` (`fallbackOnly` for a held pin), or nothing for a no-op pin (it records
+/// no change).
 pub(crate) fn inverse_len(_op: &Op, own: &Diff) -> usize {
     usize::from(!own.changes.is_empty())
 }

@@ -8,7 +8,9 @@ use serde_json::json;
 use crate::captions::{PRESET_PREFIX, find_style};
 use crate::error::CoreError;
 use crate::layout::check_words;
-use crate::model::{CaptionBlock, CaptionStyle, ItemBody, ParamValue, Project, Word};
+use crate::model::{
+    CaptionBlock, CaptionSource, CaptionStyle, ItemBody, ParamValue, Project, Word,
+};
 use crate::ops::Bindings;
 use crate::ops::util::param_check::check_value;
 use crate::ops::util::{TrackAt, invalid_range, item_index, not_found};
@@ -176,5 +178,46 @@ pub(crate) fn block_mut(
     match &mut it.body {
         ItemBody::Caption { block } => Ok(block),
         _ => Err(not_found("caption", &id)),
+    }
+}
+
+/// A caption's transcript source split before word `k` of its `n` words: the left part keeps
+/// the range up to the cut, the right part the rest. The cut is `first + k` while the range
+/// still counts the words one to one, else the same share of the range (an edited text).
+pub(crate) fn split_source(
+    source: Option<&CaptionSource>,
+    k: usize,
+    n: usize,
+) -> (Option<CaptionSource>, Option<CaptionSource>) {
+    let Some(s) = source else {
+        return (None, None);
+    };
+    let [first, end] = s.word_range;
+    let len = u64::from(end.saturating_sub(first));
+    let (k, n) = (k as u64, (n as u64).max(1));
+    let at = if len == n { k } else { len * k / n };
+    let cut = first.saturating_add(u32::try_from(at.min(len)).unwrap_or(u32::MAX));
+    let part = |range: [u32; 2]| CaptionSource {
+        artifact: s.artifact.clone(),
+        word_range: range,
+    };
+    (Some(part([first, cut])), Some(part([cut, end])))
+}
+
+/// The source of `item` merged with `with`'s: one range over both when both come from one
+/// transcript, else `item`'s own.
+pub(crate) fn merge_source(
+    item: Option<&CaptionSource>,
+    with: Option<&CaptionSource>,
+) -> Option<CaptionSource> {
+    match (item, with) {
+        (Some(a), Some(b)) if a.artifact == b.artifact => Some(CaptionSource {
+            artifact: a.artifact.clone(),
+            word_range: [
+                a.word_range[0].min(b.word_range[0]),
+                a.word_range[1].max(b.word_range[1]),
+            ],
+        }),
+        (a, _) => a.cloned(),
     }
 }

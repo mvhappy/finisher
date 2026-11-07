@@ -87,26 +87,69 @@ fn blocks_split_on_gap_chars_lines_duration() {
 
 #[test]
 fn srt_parses_and_distributes() {
+    let frame = r("1/30");
     let srt = "\u{feff}1\r\n00:00:01,000 --> 00:00:03,000\r\nHello <i>big</i>\r\nworld\r\n\r\n\
                2\n00:00:04.500 --> 00:00:05,500\n{\\an8}Bye\n\n";
-    let words = parse_srt(srt).unwrap();
-    // "Hello big world" over 2 s by characters (5 + 3 + 5 = 13).
+    let got = parse_srt(srt, frame).unwrap();
+    // "Hello big world" over 2 s by characters (5 + 3 + 5 = 13), on the millisecond grid.
     assert_eq!(
-        words,
+        got.words,
         [
-            w("Hello", "1", "23/13"),
-            w("big", "23/13", "29/13"),
-            w("world", "29/13", "3"),
+            w("Hello", "1", "1769/1000"),
+            w("big", "1769/1000", "2231/1000"),
+            w("world", "2231/1000", "3"),
             w("Bye", "9/2", "11/2"),
         ]
     );
-    // A cue whose text is only tags gives no words; hours count.
-    let words = parse_srt(
+    assert!(got.warnings.is_empty());
+    // A cue whose text is only tags is dropped with a warning; hours count.
+    let got = parse_srt(
         "1\n01:00:00,000 --> 01:00:01,000\n<b></b>\n\n2\n01:00:02,000 --> 01:00:03,000\nx\n",
+        frame,
     )
     .unwrap();
-    assert_eq!(words, [w("x", "3602", "3603")]);
-    assert!(parse_srt("").unwrap().is_empty());
+    assert_eq!(got.words, [w("x", "3602", "3603")]);
+    assert_eq!(codes(&got), [("SRT_EMPTY_CUE", 2)]);
+    assert!(parse_srt("", frame).unwrap().words.is_empty());
+}
+
+fn codes(srt: &fin_core::captions::Srt) -> Vec<(&'static str, usize)> {
+    srt.warnings.iter().map(|w| (w.code, w.line)).collect()
+}
+
+#[test]
+fn srt_is_lenient_where_files_are_sloppy() {
+    let frame = r("1/30");
+    // Cues out of order are sorted; an overlapping cue ends where the next starts.
+    let got = parse_srt(
+        "2\n00:00:02,000 --> 00:00:04,000\nb\n\n1\n00:00:01,000 --> 00:00:03,000\na\n",
+        frame,
+    )
+    .unwrap();
+    assert_eq!(got.words, [w("a", "1", "2"), w("b", "2", "4")]);
+    assert_eq!(codes(&got), [("SRT_OVERLAP_TRIMMED", 6)]);
+    // 1 to 3 fraction digits, read as a decimal fraction.
+    let got = parse_srt("00:00:01,5 --> 00:00:02,25\nhi\n", frame).unwrap();
+    assert_eq!(got.words, [w("hi", "3/2", "9/4")]);
+    // Only real tags are dropped: other angle brackets and braces are text.
+    let got = parse_srt(
+        "1\n00:00:00,000 --> 00:00:02,000\n<FONT color=\"red\">a</font> <u>b</u> 1<2 {note}\n",
+        frame,
+    )
+    .unwrap();
+    let texts: Vec<&str> = got.words.iter().map(|w| w.text.as_str()).collect();
+    assert_eq!(texts, ["a", "b", "1<2", "{note}"]);
+    // A cue under a frame (here after its overlap trim) is dropped.
+    let got = parse_srt(
+        "1\n00:00:01,000 --> 00:00:02,000\na\n\n2\n00:00:01,010 --> 00:00:03,000\nb\n",
+        frame,
+    )
+    .unwrap();
+    assert_eq!(got.words, [w("b", "101/100", "3")]);
+    assert_eq!(
+        codes(&got),
+        [("SRT_OVERLAP_TRIMMED", 2), ("SRT_SHORT_CUE", 2)]
+    );
 }
 
 #[test]
@@ -118,14 +161,12 @@ fn srt_errors_name_the_line() {
             5,
         ),
         ("1\n00:00:03,000 --> 00:00:02,000\nhi\n", 2),
-        (
-            "1\n00:00:01,000 --> 00:00:03,000\nhi\n\n2\n00:00:02,000 --> 00:00:04,000\nyo\n",
-            6,
-        ),
         ("1\n00:00:01,000 --> 00:00:02,000\n", 2),
         ("1\n00:61:01,000 --> 00:62:02,000\nhi\n", 2),
+        ("1\n00:00:01,0000 --> 00:00:02,000\nhi\n", 2),
+        ("1\n00:00:01, --> 00:00:02,000\nhi\n", 2),
     ] {
-        let e = parse_srt(srt).unwrap_err();
+        let e = parse_srt(srt, r("1/30")).unwrap_err();
         assert_eq!(e.code, "SRT_INVALID", "{srt:?}");
         assert_eq!(e.details["line"], line, "{srt:?}: {e:?}");
         assert!(e.fix.is_some());
@@ -140,7 +181,7 @@ fn align_keeps_matching_times() {
         w("world", "2", "3"),
     ];
     // Same words (case and punctuation aside) keep their times; the text is the new one.
-    let got = align_text(&old, "hello, there World!");
+    let got = align_text(&old, "hello, there World!").unwrap();
     assert_eq!(
         got,
         [
@@ -150,11 +191,11 @@ fn align_keeps_matching_times() {
         ]
     );
     // A replaced word takes the old word's span.
-    let got = align_text(&old, "Hello friend world");
+    let got = align_text(&old, "Hello friend world").unwrap();
     assert_eq!(got[1], w("friend", "1", "2"));
     assert_eq!((got[0].start, got[2].end), (r("0"), r("3")));
     // A removed word leaves its span.
-    let got = align_text(&old, "Hello world");
+    let got = align_text(&old, "Hello world").unwrap();
     assert_eq!(got, [w("Hello", "0", "1"), w("world", "2", "3")]);
 }
 
@@ -162,44 +203,54 @@ fn align_keeps_matching_times() {
 fn align_distributes_by_chars() {
     let old = [w("a", "0", "1"), w("b", "3", "4")];
     // Two new words between the anchors share the gap [1, 3] by characters (1 : 3).
-    let got = align_text(&old, "a x yyy b");
+    let got = align_text(&old, "a x yyy b").unwrap();
     assert_eq!(got[1], w("x", "1", "3/2"));
     assert_eq!(got[2], w("yyy", "3/2", "3"));
     // No gap: the inserted word shares the previous anchor's span (1 : 2).
     let old = [w("ab", "0", "3"), w("c", "3", "4")];
-    let got = align_text(&old, "ab d c");
+    let got = align_text(&old, "ab d c").unwrap();
     assert_eq!(got, [w("ab", "0", "2"), w("d", "2", "3"), w("c", "3", "4")]);
     // At the start with no gap: the next anchor's span.
     let old = [w("ab", "0", "3")];
-    let got = align_text(&old, "d ab");
+    let got = align_text(&old, "d ab").unwrap();
     assert_eq!(got, [w("d", "0", "1"), w("ab", "1", "3")]);
     // Nothing matches: the whole old span by characters.
     let old = [w("x", "1", "2"), w("y", "2", "4")];
-    let got = align_text(&old, "aaa b");
+    let got = align_text(&old, "aaa b").unwrap();
     assert_eq!(got, [w("aaa", "1", "13/4"), w("b", "13/4", "4")]);
-    assert!(align_text(&old, "  ").is_empty());
+    assert!(align_text(&old, "  ").unwrap().is_empty());
 }
 
 #[test]
-fn align_is_exact_rational() {
+fn align_rounds_shared_times_to_the_millisecond_grid() {
     let old = [w("a", "0", "1/3"), w("z", "1", "10/7")];
-    let got = align_text(&old, "a bb ccc dddd z");
-    // The four new words split [1/3, 1] in 2 : 3 : 4 (bb, ccc, dddd) — exactly.
-    let span = r("1").checked_sub(r("1/3")).unwrap();
-    let ninth = span.checked_mul(r("1/9")).unwrap();
+    let got = align_text(&old, "a bb ccc dddd z").unwrap();
+    // The four new words split [1/3, 1] in 2 : 3 : 4 (bb, ccc, dddd), each boundary rounded to
+    // the millisecond: 1/3 + 4/27 = 0.4814…, 1/3 + 10/27 = 0.7037…; the run keeps its ends.
     assert_eq!(got[1].start, r("1/3"));
-    let two_ninths = ninth.checked_mul(r("2")).unwrap();
-    assert_eq!(got[1].end, r("1/3").checked_add(two_ninths).unwrap());
+    assert_eq!(got[1].end, r("481/1000"));
+    assert_eq!(got[2].end, r("88/125"));
     assert_eq!(got[3].end, r("1"));
+    assert_eq!(got[4], w("z", "1", "10/7"));
+    for p in got.windows(2) {
+        assert!(p[0].start <= p[0].end && p[0].end <= p[1].start, "{got:?}");
+    }
+    // A span under a millisecond a word stays ordered (empty words, the last at the end).
+    let old = [w("a", "0", "1/2000")];
+    let got = align_text(&old, "x y z").unwrap();
+    assert_eq!(got.last().unwrap().end, r("1/2000"));
     for p in got.windows(2) {
         assert!(p[0].start <= p[0].end && p[0].end <= p[1].start, "{got:?}");
     }
     // Words are text split on whitespace: line breaks and tabs never reach a word.
-    let got = align_text(&old, "a\nbb\tz");
+    let got = align_text(&old, "a\nbb\tz").unwrap();
     assert_eq!(
         got.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(),
         ["a", "bb", "z"]
     );
+    // Overflow is an error, not an empty list.
+    let huge = [w("a", "0", &format!("{}", i64::MAX))];
+    assert_eq!(align_text(&huge, "b cc").unwrap_err().code, "TIME_OVERFLOW");
 }
 
 #[test]
@@ -259,8 +310,10 @@ fn caption_import_inserts_one_item_per_block() {
         .push(Track::new("t3", TrackKind::Caption, "C1"));
     let words = parse_srt(
         "1\n00:00:00,000 --> 00:00:01,000\nHi there\n\n2\n00:00:02,000 --> 00:00:03,000\nBye\n",
+        r("1/30"),
     )
-    .unwrap();
+    .unwrap()
+    .words;
     let c = caption_import(&p, "t3", secs(10), &words, "preset:bold").unwrap();
     assert_eq!(c.ops.len(), 2);
     assert_eq!(c.echo["blocks"], 2);
@@ -272,7 +325,8 @@ fn caption_import_inserts_one_item_per_block() {
         panic!();
     };
     assert_eq!(block.style, "preset:bold");
-    assert_eq!(block.words[1].start, r("2/7"));
+    // 2/7 s on the millisecond grid.
+    assert_eq!(block.words[1].start, r("143/500"));
     let a = apply(&p, c.ops);
     assert_eq!(
         starts(&a.project, 2),

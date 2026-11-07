@@ -163,6 +163,7 @@ fn set_text_golden() {
             CaptionSetWords {
                 item: "cap1".into(),
                 words: block(&p, "cap1").words.clone(),
+                source: None,
             }
             .into()
         ]
@@ -197,6 +198,7 @@ fn set_words_is_internal_and_checked() {
     let op: Op = CaptionSetWords {
         item: "cap1".into(),
         words: words.clone(),
+        source: None,
     }
     .into();
     assert_eq!(code(try_apply(&p, vec![op.clone()])), "INVALID_OP");
@@ -211,6 +213,7 @@ fn set_words_is_internal_and_checked() {
         let op: Op = CaptionSetWords {
             item: "cap1".into(),
             words: bad,
+            source: None,
         }
         .into();
         assert_eq!(code(replay(&p, vec![op])), "INVALID_OP");
@@ -219,6 +222,7 @@ fn set_words_is_internal_and_checked() {
     let op: Op = CaptionSetWords {
         item: "cap1".into(),
         words: vec![w("a", "-1", "1")],
+        source: None,
     }
     .into();
     assert!(fin_core::apply_internal(&p, &tx(vec![op]), &mut MemIds::after(&p)).is_ok());
@@ -413,25 +417,21 @@ fn set_text_vs_set_text_conflicts_same_param() {
     assert!(ok.is_ok(), "{ok:?}");
 }
 
+/// Reverses the plan's `split_after_set_text_reruns` (review decision B1): a split records
+/// the item's `caption.words`, so a stale split over a `caption.setText` (whose word index
+/// would land on other words) is `SAME_PARAM`, whatever the index.
 #[test]
-fn split_after_set_text_reruns() {
+fn split_after_set_text_conflicts() {
     let p = captioned();
-    // Theirs leaves two words; our split at word 3 re-runs and fails its policy check.
-    let e = rebase_over(
-        &p,
-        vec![set_text("cap1", "only two")],
-        vec![split("cap1", 3)],
-    )
-    .unwrap_err();
-    assert_eq!(conflict_reason(&e), "INVALID_RANGE");
-    // At word 1 it still applies, on their words.
-    let r = rebase_over(
-        &p,
-        vec![set_text("cap1", "only two")],
-        vec![split("cap1", 1)],
-    )
-    .unwrap();
-    assert_eq!(block(&r.applied.project, "cap1").words.len(), 1);
+    for k in [1, 3] {
+        let e = rebase_over(
+            &p,
+            vec![set_text("cap1", "only two")],
+            vec![split("cap1", k)],
+        )
+        .unwrap_err();
+        assert_eq!(conflict_reason(&e), "SAME_PARAM", "word {k}");
+    }
 }
 
 #[test]

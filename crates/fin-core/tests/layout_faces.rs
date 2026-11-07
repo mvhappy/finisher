@@ -138,8 +138,8 @@ fn font_needs_lists_styles_and_scripts() {
     let needs = font_needs(&p);
     let bold = &preset("preset:bold").unwrap().text;
     let faces: Vec<(String, u16, bool)> = needs.faces.into_iter().collect();
+    // The "Light" style no caption uses needs nothing.
     let mut want = vec![
-        ("Inter".to_string(), 300, false),
         (bold.family.clone(), bold.weight, false),
         (bold.family.clone(), bold.weight, true),
     ];
