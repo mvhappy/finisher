@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# Exposes `fixtures::write_fixture_mp4` so other crates' tests can generate media.
+# Exposes the `fixtures` writers so other crates' tests can generate media.
 fixtures = ["dep:bytes"]
 
 [dependencies]
@@ -14,11 +14,22 @@ blake3 = "1"
 bytes = { version = "1", optional = true }
 dunce = "1"
 fin-core = { path = "../fin-core" }
+# Font faces, family names and script coverage: the one source (4C Decision 38).
+fin-text = { path = "../fin-text" }
+# PNG, JPEG and WebP sizes from the header only.
+imagesize = { version = "0.15", default-features = false, features = ["png", "jpeg", "webp"] }
 mp4 = "0.14"
+# SVG root sizes.
+roxmltree = "0.21"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# A font asset's whole-file hash (4C Decision 37).
+sha2 = "0.11"
+# dotLottie archives (stored and deflated members).
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 fin-probe = { path = ".", features = ["fixtures"] }
+fin-testfonts = { path = "../fin-testfonts" }
 tempfile = "3"

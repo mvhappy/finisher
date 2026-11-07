@@ -418,6 +418,7 @@ dependencies = [
  "fin-core",
  "fin-probe",
  "fin-store",
+ "fin-testfonts",
  "interprocess",
  "schemars",
  "serde",
@@ -483,11 +484,17 @@ dependencies = [
  "dunce",
  "fin-core",
  "fin-probe",
+ "fin-testfonts",
+ "fin-text",
+ "imagesize",
  "mp4",
+ "roxmltree",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "zip",
 ]
 
 [[package]]
@@ -804,6 +811,12 @@ checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "typenum",
 ]
+
+[[package]]
+name = "imagesize"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 
 [[package]]
 name = "indexmap"
@@ -1345,6 +1358,15 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "roxmltree"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

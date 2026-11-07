@@ -114,8 +114,8 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// Probes an MP4/MOV file; resolves to `Probe` JSON (`{duration, video, audio, fingerprint,
-/// size}`).
+/// Probes a file of any asset kind; resolves to `Probe` JSON (`{kind, duration?, video?,
+/// audio?, image?, lottie?, font?, lut?, fingerprint, size}`).
 #[napi(catch_unwind)]
 pub fn probe(path: String) -> AsyncTask<ProbeTask> {
     AsyncTask::new(ProbeTask { path: path.into() })

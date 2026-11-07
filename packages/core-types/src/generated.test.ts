@@ -45,8 +45,10 @@ test("CoreError.details is required", () => {
 });
 
 test("the envelope types above fin-core are generated too", () => {
-  // fin-probe's Probe (asset.probe), with Rational times.
-  expect(block("Probe")).toMatch(/duration: Rational;/);
+  // fin-probe's Probe (asset.probe), with its kind and Rational times.
+  expect(block("Probe")).toMatch(/kind: AssetKind;/);
+  expect(block("Probe")).toMatch(/duration\?: Rational \| null;/);
+  expect(block("Probe")).toMatch(/font\?: FontFile \| null;/);
   expect(block("Probe")).toMatch(/size: number;/);
   expect(block("Probe")).toMatch(/video\?: VideoInfo \| null;|video: VideoInfo \| null;/);
   // fin-store's Generation, tx.get's set-aside answer, and the engine events.

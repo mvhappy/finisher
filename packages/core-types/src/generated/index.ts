@@ -2316,16 +2316,31 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
- * What the server needs to register a media asset. Its serde form is what `asset.probe`
- * answers (`@finisher/core-types` exports it as `Probe`).
+ * What the server needs to register an asset: its kind and that kind's fields (the
+ * `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
+ * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Probe".
  */
 export interface Probe {
   audio?: AudioInfo | null;
-  duration: Rational;
+  /**
+   * Seconds: `media` and `lottieTemplate` only.
+   */
+  duration?: Rational | null;
   fingerprint: string;
+  /**
+   * A font's whole-file SHA-256, format and faces (Decision 37).
+   */
+  font?: FontFile | null;
+  /**
+   * `image` and `svg`: the pixel size.
+   */
+  image?: ImageInfo | null;
+  kind: AssetKind;
+  lottie?: LottieInfo | null;
+  lut?: LutInfo | null;
   size: number;
   video?: VideoInfo | null;
 }

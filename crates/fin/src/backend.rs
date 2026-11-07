@@ -6,7 +6,10 @@
 use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 
-use fin_core::{AudioInfo, CommittedTx, CoreError, Project, Rational, Tx, VideoInfo};
+use fin_core::{
+    AssetKind, AudioInfo, CommittedTx, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo,
+    Project, Rational, Tx, VideoInfo,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -38,16 +41,50 @@ pub enum TxLookup {
     Unknown,
 }
 
-/// What the server's probe reports about a media file (the `asset.add` fields).
+/// What the server's probe reports about a file: its kind and that kind's `asset.add`
+/// fields (`fin-probe`'s `Probe`, less its size).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Probed {
     /// Absolute path as the server resolved it.
+    #[serde(default)]
     pub path: String,
-    pub duration: Rational,
+    pub kind: AssetKind,
+    #[serde(default)]
+    pub duration: Option<Rational>,
+    #[serde(default)]
     pub video: Option<VideoInfo>,
+    #[serde(default)]
     pub audio: Option<AudioInfo>,
+    #[serde(default)]
+    pub image: Option<ImageInfo>,
+    #[serde(default)]
+    pub lottie: Option<LottieInfo>,
+    #[serde(default)]
+    pub font: Option<FontFile>,
+    #[serde(default)]
+    pub lut: Option<LutInfo>,
     pub fingerprint: String,
+}
+
+impl Probed {
+    /// The `asset.add` that registers the probed file as `id`.
+    pub fn into_asset_add(self, id: String) -> fin_core::AssetAdd {
+        fin_core::AssetAdd {
+            id,
+            kind: self.kind,
+            path: self.path,
+            fingerprint: self.fingerprint,
+            duration: self.duration,
+            video: self.video,
+            audio: self.audio,
+            image: self.image,
+            lottie: self.lottie,
+            font: self.font,
+            lut: self.lut,
+            bin: None,
+        }
+    }
 }
 
 pub trait Backend {
@@ -267,15 +304,6 @@ struct ProjectRef {
     project_id: String,
 }
 
-/// `asset.probe`'s answer; the path is the one fin sent.
-#[derive(Deserialize)]
-struct ProbeResult {
-    duration: Rational,
-    video: Option<VideoInfo>,
-    audio: Option<AudioInfo>,
-    fingerprint: String,
-}
-
 impl Backend for Online {
     fn snapshot(&self, branch: &str) -> Result<Snapshot, CoreError> {
         let project_id = self.project_id()?;
@@ -348,13 +376,11 @@ impl Backend for Online {
                     .with_fix("rename the file to a UTF-8 name"),
             );
         };
-        let p: ProbeResult = self.call_as("asset.probe", json!({ "path": text }))?;
+        // `asset.probe` answers without a path: the path is the one fin sent.
+        let p: Probed = self.call_as("asset.probe", json!({ "path": text }))?;
         Ok(Probed {
             path: text.to_string(),
-            duration: p.duration,
-            video: p.video,
-            audio: p.audio,
-            fingerprint: p.fingerprint,
+            ..p
         })
     }
 
