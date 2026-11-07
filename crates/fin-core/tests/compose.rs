@@ -97,6 +97,33 @@ fn clip_with_audio_needs_an_audio_track() {
     assert_eq!(e.code, "TRACK_KIND_MISMATCH");
 }
 
+/// A named audio track that would place no audio is a usage error, not silently ignored: the
+/// clip goes on an audio track, or the asset has no audio.
+#[test]
+fn clip_with_audio_refuses_an_audio_track_it_would_not_use() {
+    let p = apply(&project(), vec![av_asset("$a", secs(100))]).project;
+    let mut video_only = p.clone();
+    video_only.assets.get_mut("a1").unwrap().audio = None;
+    for (p, track, why) in [(&p, "t2", "audio track"), (&video_only, "t1", "no audio")] {
+        let e = compose::clip_with_audio(
+            p,
+            track,
+            secs(0),
+            secs(5),
+            "a1",
+            secs(0),
+            secs(1),
+            InsertMode::Ripple,
+            Some("t2"),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "USAGE", "{track}");
+        assert!(e.message.contains(why), "{}", e.message);
+        assert_eq!(e.details["audioTrack"], "t2");
+        assert_eq!(e.fix.as_deref(), Some("drop --audio-track"));
+    }
+}
+
 /// 4C Tasks 9–10 review: the audio landing inside an item says how to avoid it, and a named
 /// audio track must be on the clip's timeline.
 #[test]

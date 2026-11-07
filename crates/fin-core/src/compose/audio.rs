@@ -24,7 +24,8 @@ const LINK: &str = "$link";
 /// `{ mode, audio: { track, id } | null, link: "$link" | null, splits: [...] }`.
 ///
 /// `USAGE` (with a fix) when the audio needs a track and the timeline has none, or the named
-/// one is on another timeline; `INSERT_INSIDE_CLIP` (with a fix naming `--audio-track` and
+/// one is on another timeline, or `audio_track` is named but no audio is placed (the asset has
+/// none, or `track` is not a video track); `INSERT_INSIDE_CLIP` (with a fix naming `--audio-track` and
 /// `--no-audio`) when a ripple insert of the audio would land inside an item;
 /// `TRACK_KIND_MISMATCH` when `audio_track` is not an audio track; `NOT_FOUND` for an unknown
 /// track or asset. Everything else is the ops' own validation.
@@ -42,7 +43,26 @@ pub fn clip_with_audio(
 ) -> Result<Composed, CoreError> {
     let ti = track_index(project, track)?;
     let a = asset(project, asset_id)?;
-    let with_audio = ti.get(project).kind == TrackKind::Video && a.audio.is_some();
+    let kind = ti.get(project).kind;
+    let with_audio = kind == TrackKind::Video && a.audio.is_some();
+    if let Some(named) = audio_track
+        && !with_audio
+    {
+        let why = if kind == TrackKind::Video {
+            format!("asset {asset_id} has no audio")
+        } else {
+            format!(
+                "track {track} is a {} track (only a clip on a video track brings its audio)",
+                kind_name(kind)
+            )
+        };
+        return Err(CoreError::new(
+            "USAGE",
+            format!("--audio-track {named} places no audio: {why}"),
+        )
+        .with_details(json!({ "audioTrack": named, "track": track, "asset": asset_id }))
+        .with_fix("drop --audio-track"));
+    }
     let audio = if with_audio {
         Some(audio_track_for(project, ti.timeline, audio_track)?)
     } else {

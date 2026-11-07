@@ -125,8 +125,8 @@ fn tree(raw: Option<&RawValue>, key: &str) -> Result<Option<Value>, String> {
     serde_json::from_str(raw.get()).map_err(|e| format!("malformed {key}: {e}"))
 }
 
-/// An exact rate for `fr`: whole numbers as they are, NTSC rates as `n×1000/1001`, others to
-/// a thousandth.
+/// An exact rate for `fr`: whole numbers as they are, NTSC rates as `n×1000/1001`
+/// ([`fin_core::ntsc_rate`]), others to a thousandth.
 pub(crate) fn rate(fr: f64) -> Option<Rational> {
     if !(fr > 0.0 && fr <= 1000.0) {
         return None;
@@ -134,9 +134,8 @@ pub(crate) fn rate(fr: f64) -> Option<Rational> {
     if (fr - fr.round()).abs() < 1e-6 {
         return Rational::new(fr.round() as i64, 1).ok();
     }
-    let k = (fr * 1.001).round();
-    if (k * 1000.0 / 1001.0 - fr).abs() < 1e-3 {
-        return Rational::new(k as i64 * 1000, 1001).ok();
+    if let Some(ntsc) = fin_core::ntsc_rate(fr) {
+        return Some(ntsc);
     }
     Rational::new((fr * 1000.0).round() as i64, 1000).ok()
 }

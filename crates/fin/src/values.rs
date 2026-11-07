@@ -92,8 +92,9 @@ fn boolean(path: &str, input: &str) -> Result<bool, CoreError> {
     }
 }
 
-/// `n`, `n/d` or a decimal, exactly.
-fn rational(path: &str, input: &str) -> Result<Rational, CoreError> {
+/// `n`, `n/d` or a decimal, exactly; a frame rate (`fps`) given as an NTSC decimal is that
+/// NTSC rate (`29.97` → `30000/1001`, [`fin_core::ntsc_rate`], as the Lottie probe reads one).
+fn rational(path: &str, input: &str, fps: bool) -> Result<Rational, CoreError> {
     let bad = || wrong(path, input, "a number n, n/d or a decimal", "30000/1001");
     let text = input.trim();
     if let Ok(r) = text.parse::<Rational>() {
@@ -101,6 +102,9 @@ fn rational(path: &str, input: &str) -> Result<Rational, CoreError> {
     }
     // A decimal ("29.97", "12.5"): read as seconds at rate 1, which is exact.
     let r = parse_time(&format!("{text}s"), Rational::from_int(1)).map_err(|_| bad())?;
+    if fps && let Some(ntsc) = fin_core::ntsc_rate(r.to_f64()) {
+        return Ok(ntsc);
+    }
     Ok(r)
 }
 
@@ -143,7 +147,10 @@ pub fn parse(
             })?;
             ParamValue::Text(t.to_string())
         }
-        ParamType::Rational { .. } => ParamValue::Text(rational(path, input)?.to_string()),
+        ParamType::Rational { .. } => {
+            let fps = spec.unit == Some("fps");
+            ParamValue::Text(rational(path, input, fps)?.to_string())
+        }
         ParamType::Text { .. } => ParamValue::Text(input.to_string()),
         ParamType::AssetRef { .. } => ParamValue::Asset {
             asset: input.trim().to_string(),
@@ -183,9 +190,25 @@ mod tests {
             p(ScopeOf::Timeline, "resolution", "1920x1080").unwrap(),
             ParamValue::Vec2([1920.0, 1080.0])
         );
+        // NTSC decimals are the NTSC rates (as the Lottie probe reads them); others are exact.
+        for (input, rate) in [
+            ("29.97", "30000/1001"),
+            ("23.976", "24000/1001"),
+            ("59.94", "60000/1001"),
+            ("12.5", "25/2"),
+            ("29.9", "299/10"),
+            ("2997/100", "2997/100"),
+        ] {
+            assert_eq!(
+                p(ScopeOf::Timeline, "rate", input).unwrap(),
+                ParamValue::Text(rate.into()),
+                "{input}"
+            );
+        }
+        // Not a frame rate (a clip's speed): exact.
         assert_eq!(
-            p(ScopeOf::Timeline, "rate", "29.97").unwrap(),
-            ParamValue::Text("2997/100".into())
+            rational("speed", "29.97", false).unwrap(),
+            "2997/100".parse().unwrap()
         );
         assert_eq!(
             p(ScopeOf::Timeline, "rate", "30000/1001").unwrap(),

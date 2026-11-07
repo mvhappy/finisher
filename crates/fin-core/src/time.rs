@@ -352,6 +352,19 @@ pub fn frame_duration(rate: Rational) -> Result<Rational, CoreError> {
     Rational::from_i128(rate.den as i128, rate.num as i128)
 }
 
+/// The NTSC rate `n×1000/1001` fps that a decimal `fps` stands for (`29.97` → `30000/1001`,
+/// `23.976` → `24000/1001`, `59.94` → `60000/1001`): `fps` is not whole and within a
+/// thousandth of one. `None` otherwise. The Lottie probe and `fin`'s rate values share it.
+pub fn ntsc_rate(fps: f64) -> Option<Rational> {
+    if !(fps.is_finite() && fps > 0.0 && fps <= 1000.0) || (fps - fps.round()).abs() < 1e-6 {
+        return None;
+    }
+    let k = (fps * 1.001).round();
+    ((k * 1000.0 / 1001.0 - fps).abs() < 1e-3)
+        .then(|| Rational::new(k as i64 * 1000, 1001).ok())
+        .flatten()
+}
+
 /// Parses `12.4s`, `12s`, `-0.5s`, `00:12.4`, `01:00:12.4`, `f300` (frames at `rate`),
 /// or a bare rational/integer (`62/5`, `12`; read as seconds). Decimals are exact.
 pub fn parse_time(input: &str, rate: Rational) -> Result<Rational, CoreError> {

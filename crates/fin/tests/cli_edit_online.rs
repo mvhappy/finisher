@@ -1,8 +1,7 @@
 //! `fin` edit commands (plan 4C Task 23) committed through a real `finisherd`: linked audio,
 //! composed splits and transitions, every structural group, refusals with their exit codes,
-//! undo of a composed tx, and `--idem-key` retries of composed commands. Image and graphic
-//! inserts need probed image and template assets (Task 21), so only their dry runs are tested
-//! (`cli_edit.rs`).
+//! undo of a composed tx, `--idem-key` retries of composed commands, and image and graphic
+//! inserts of probed PNG and dotLottie assets.
 
 mod support;
 
@@ -325,6 +324,102 @@ fn composed_retry_with_idem_key_is_answered_once() {
         3,
         "NOT_FOUND",
     );
+}
+
+/// Image and graphic inserts of probed assets, a slide between them, an NTSC timeline (its
+/// decimal rate read as `30000/1001`) and a marker on it, all committed.
+#[test]
+fn media_slide_timeline_and_marker_commit() {
+    let Some((server, dir)) = project("media_slide_timeline_and_marker_commit") else {
+        return;
+    };
+    let run = |args: &[&str]| ok(fin(&server.sd, &dir, args));
+    fin_probe::fixtures::write_png(&dir.join("logo.png"), 64, 36);
+    let lottie = fin_probe::fixtures::sample_lottie();
+    fin_probe::fixtures::write_dotlottie(&dir.join("title.lottie"), &lottie, true);
+    assert_eq!(
+        run(&["asset", "add", "logo.png"])["bindings"],
+        json!({ "$asset": "a3" })
+    );
+    assert_eq!(
+        run(&["asset", "add", "title.lottie"])["bindings"],
+        json!({ "$asset": "a4" })
+    );
+    run(&["track", "add", "--kind", "video"]);
+
+    let img = run(&[
+        "image", "insert", "--track", "t3", "--at", "0", "--asset", "a3", "--dur", "2s",
+    ]);
+    assert_eq!(img["bindings"], json!({ "$image": "img1" }));
+    assert_eq!(
+        (
+            img["resolved"]["at"].clone(),
+            img["resolved"]["duration"].clone()
+        ),
+        (json!("0"), json!("2"))
+    );
+    let g = run(&[
+        "graphic",
+        "insert",
+        "--track",
+        "t3",
+        "--at",
+        "end",
+        "--template",
+        "a4",
+        "--slot",
+        "title=Hi",
+        "--slot",
+        "accent=#F80",
+    ]);
+    assert_eq!(g["bindings"], json!({ "$graphic": "g1" }));
+    assert_eq!(g["resolved"]["at"], "2");
+    assert_eq!(g["resolved"]["duration"], "3", "the template's length");
+    assert_eq!(
+        g["resolved"]["slots"],
+        json!({ "title": "Hi", "accent": "#ff8800" })
+    );
+
+    // A slide moves img1 later, taking the time from g1's head.
+    let slid = run(&["item", "slide", "img1", "+1s"]);
+    assert_eq!(slid["resolved"]["start"], "1");
+    let view = run(&["view", "--track", "t3"]);
+    let starts: Vec<(&str, &str)> = view["tracks"][0]["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["id"].as_str().unwrap(), c["start"].as_str().unwrap()))
+        .collect();
+    assert_eq!(starts, [("img1", "1"), ("g1", "3")], "{view}");
+    assert_error(
+        &fin(&server.sd, &dir, &["item", "slide", "img1", "-2s"]),
+        3,
+        "INVALID_RANGE",
+    );
+
+    // An NTSC timeline, by decimal, and a marker on it at frame 30.
+    let tl = run(&["timeline", "add", "--name", "Ntsc", "--rate", "29.97"]);
+    assert_eq!(
+        (tl["bindings"].clone(), tl["resolved"]["rate"].clone()),
+        (json!({ "$timeline": "tl2" }), json!("30000/1001"))
+    );
+    let set = run(&["timeline", "set", "tl2", "rate", "23.976"]);
+    assert_eq!(set["resolved"]["value"], "24000/1001");
+    let m = run(&[
+        "--timeline",
+        "tl2",
+        "marker",
+        "add",
+        "--at",
+        "f24",
+        "--label",
+        "one",
+    ]);
+    assert_eq!(
+        (m["bindings"].clone(), m["resolved"]["at"].clone()),
+        (json!({ "$marker": "m1" }), json!("1001/1000"))
+    );
+    assert_eq!(m["resolved"]["timeline"], "tl2");
 }
 
 #[test]

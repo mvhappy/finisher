@@ -212,6 +212,30 @@ fn clip_insert_without_audio_track_is_usage() {
         "INSERT_INSIDE_CLIP",
         "--no-audio",
     );
+    // `--audio-track` that would place no audio is refused, not ignored: a video-only asset,
+    // or a clip on an audio track.
+    for (track, asset) in [("t1", "a2"), ("t4", "a1")] {
+        let e = refused(
+            &[
+                "clip",
+                "insert",
+                "--track",
+                track,
+                "--at",
+                "end",
+                "--asset",
+                asset,
+                "--dur",
+                "1s",
+                "--audio-track",
+                "t4",
+            ],
+            2,
+            "USAGE",
+            "drop --audio-track",
+        );
+        assert_eq!(e["details"]["audioTrack"], "t4", "{track} {asset}");
+    }
 }
 
 #[test]

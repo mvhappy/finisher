@@ -1,7 +1,6 @@
 //! `Builder`: accumulates ops for one transaction while tracking the state they produce.
 
 use std::collections::BTreeMap;
-use std::ops::Range;
 
 use fin_core::{CoreError, ItemBody, MemIds, Op, Project, SCHEMA_VERSION, Tx, apply_tx};
 use serde_json::{Value, json};
@@ -35,8 +34,6 @@ pub struct Builder<'a> {
     unplanned: Option<CoreError>,
     /// Each planned step's command input, `{cmd, args}` ([`args_hash`]).
     pub(super) inputs: Vec<Value>,
-    /// Each planned step's ops, as a range of `ops` (a composed step sends several).
-    pub(super) steps: Vec<Range<usize>>,
     /// `--timeline`: the timeline commands that name none act on (default: the first).
     pub timeline: Option<String>,
 }
@@ -111,7 +108,6 @@ impl<'a> Builder<'a> {
             deferred: None,
             unplanned: None,
             inputs: Vec::new(),
-            steps: Vec::new(),
             timeline: globals.timeline.clone(),
         })
     }
@@ -125,11 +121,6 @@ impl<'a> Builder<'a> {
             return Ok(());
         }
         Err(e)
-    }
-
-    /// How many ops are planned so far.
-    pub fn len(&self) -> usize {
-        self.ops.len()
     }
 
     /// Pushes the ops of a `fin_core::compose` builder, planned against [`Builder::work`] (so
@@ -320,9 +311,7 @@ impl<'a> Builder<'a> {
             return Err(idem_key_reused(&committed));
         }
         let mut resolved = resolved;
-        // Planned pins come first; the steps' ops follow in order.
-        let offset = committed.tx.ops.len().saturating_sub(self.ops.len());
-        echo_committed(&mut resolved, &committed.tx.ops[offset..], &self.steps);
+        echo_committed(&mut resolved, &committed.tx.ops);
         let mut doc = json!({
             "rev": committed.rev,
             "txId": committed.tx.tx_id,

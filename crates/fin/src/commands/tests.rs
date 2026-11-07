@@ -379,3 +379,59 @@ fn args_hash_of_4b_inputs_is_unchanged() {
         assert_eq!(json!(args_hash(&[input(&step)])), case["hash"], "{case}");
     }
 }
+
+/// A retry's echo comes from the committed ops themselves, found by placeholder: the commit may
+/// hold pins and other clip inserts this attempt's plan does not (so no offset or op range of
+/// the plan locates the clip).
+#[test]
+fn committed_echo_finds_the_clip_by_placeholder() {
+    let r = |s: &str| s.parse::<Rational>().unwrap();
+    let insert = |id: &str, at: &str, source_in: &str| -> Op {
+        fin_core::ItemInsert {
+            id: id.into(),
+            track: "t1".into(),
+            at: r(at),
+            duration: r("2"),
+            mode: fin_core::InsertMode::Ripple,
+            body: fin_core::ItemBody::Clip {
+                asset: "a1".into(),
+                source_in: r(source_in),
+                speed: r("1"),
+            },
+        }
+        .into()
+    };
+    let pin = Op::BinAdd(fin_core::BinAdd {
+        id: "$pin".into(),
+        name: "pins".into(),
+        parent: None,
+    });
+    // One command: pins, then the audio leg ahead of the clip.
+    let ops = [
+        pin.clone(),
+        pin.clone(),
+        insert("$audio", "9", "1"),
+        insert("$clip", "7", "1"),
+    ];
+    let mut single = json!({ "at": "0", "in": "1", "duration": "2", "out": "3" });
+    echo_committed(&mut single, &ops);
+    assert_eq!(
+        single,
+        json!({ "at": "7", "in": "1", "duration": "2", "out": "3" })
+    );
+    // A batch: line 2's clip is `$clip2`; line 3's is not in the commit and keeps its plan.
+    let ops = [pin, insert("$clip3x", "5", "0"), insert("$clip2", "4", "2")];
+    let line = |n: u64, cmd: &str| json!({ "line": n, "cmd": cmd, "resolved": { "at": "0" } });
+    let mut batch = json!([
+        line(1, "asset.add"),
+        line(2, "clip.insert"),
+        line(3, "clip.insert")
+    ]);
+    echo_committed(&mut batch, &ops);
+    assert_eq!(batch[0]["resolved"], json!({ "at": "0" }));
+    assert_eq!(
+        batch[1]["resolved"],
+        json!({ "at": "4", "in": "2", "duration": "2", "out": "4" })
+    );
+    assert_eq!(batch[2]["resolved"], json!({ "at": "0" }));
+}
