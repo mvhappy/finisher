@@ -16,7 +16,8 @@
 //! ```
 //! A node's `type` defaults to `dir` when it has `children`, else `file`; ids and reparse
 //! tags are hex; `dev` defaults to its directory's. `windowsAttributes`, `reparseTag`,
-//! `mountRoot`, `automount`, `content` (a file's bytes; `size` defaults to its length),
+//! `mountRoot`, `volumeKey` (a nested mount's key, [`Source::volume`]; the root's volume by
+//! default), `automount`, `content` (a file's bytes; `size` defaults to its length),
 //! `openError` (for `open_dir`), `error` and `readDelayMs` (for `read_dir`) are optional.
 //! Errors: `notFound`, `permissionDenied`, `timedOut`, `io`, `unsupported`,
 //! `invalidParameter`.
@@ -323,6 +324,13 @@ impl Source for FakeSource {
         if let Some(n) = walk(&t.children, dir.rel())?.last() {
             id.dev_id = n.entry.dev.clone().unwrap_or_default();
             id.mount_root = n.entry.mount_root;
+            // A nested mount's own volume: its key, its file id, its files and directories.
+            if let Some(k) = &n.volume_key {
+                id.key = k.clone();
+                id.root_file_id = n.entry.file_id.clone();
+                let entries: Vec<RawEntry> = n.children.iter().map(|c| c.entry.clone()).collect();
+                id.sample = crate::volume::sample(&entries);
+            }
         }
         Ok(id)
     }

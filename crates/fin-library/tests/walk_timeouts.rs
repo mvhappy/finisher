@@ -145,3 +145,36 @@ fn cancel_during_first_stat() {
         t.elapsed()
     );
 }
+
+#[test]
+fn slow_sink_never_times_out_finished_dirs() {
+    // Eight quick directories on four threads; one sink call takes twice the per-entry
+    // deadline while the others finish. Finished reads are not stuck reads.
+    let dirs: Vec<serde_json::Value> = (0..8)
+        .map(|i| dir(&format!("d{i}"), i, vec![file("f", 1)]))
+        .collect();
+    let mut o = opts(4);
+    o.timing = timing(5_000, 300);
+    o.batch_entries = 1;
+    let mut slept = false;
+    let mut batches = Vec::new();
+    let r = fin_library::walk(
+        fake(&root(dirs)),
+        full(1, None),
+        &o,
+        &mut |b| {
+            let below = b.entries.iter().any(|e| !e.dir.is_root());
+            if below && !slept {
+                slept = true;
+                std::thread::sleep(Duration::from_millis(600));
+            }
+            batches.push(b);
+            Ok(())
+        },
+        &fin_library::CancelToken::new(),
+    );
+    let s = r.unwrap();
+    assert!(slept);
+    assert_eq!((s.timeouts, s.incomplete, s.listed), (0, 0, 9), "{s:?}");
+    assert!(done_paths(&batches).iter().all(|p| !p.contains('!')));
+}

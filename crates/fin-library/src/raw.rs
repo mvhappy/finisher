@@ -114,6 +114,7 @@ impl fmt::Display for RawRel {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRelRepr {
     components: Vec<String>,
 }

@@ -6,30 +6,45 @@
 //! abandons a task whose clock has not moved for `Timing::entry`.
 
 use std::io;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::poll::Work;
+use super::code;
+use super::poll::{MountCheck, Work};
 use crate::exclude::Excludes;
 use crate::listing;
 use crate::raw::RawRel;
 use crate::source::{DirHandle, RawEntry, RootStat, Source};
-use crate::types::{EntryType, ScanEntry};
-use crate::volume::unreachable_code;
+use crate::types::{EntryType, ScanEntry, VolumeIdentity};
+use crate::volume::{same_volume, unreachable_code};
 
 /// An open directory kept for its children's opens. At most [`HELD_MAX`] are kept at once,
-/// counting those of finished listings that wait in the walker's window, so a wide frontier
-/// never runs the process out of descriptors (macOS starts a process with 256); past the cap
-/// the children are opened by their chain from the root. Besides these, each running task
-/// holds one.
+/// counting those of finished listings that wait in the walker's window; past the cap the
+/// children are opened by their chain from the root.
+///
+/// **The descriptor budget** (macOS starts a process with 256): kept directories, plus
+/// [`TASK_FDS`] for every task whose read has not returned, **abandoned ones included** (a
+/// stuck read still holds its descriptors), at most [`TASKS_MAX`] of them, plus the source's
+/// root (one, two while a first stat replaces it, and one transient for its listing):
+/// `64 + 64 × 2 + 3 = 195`, below 256 with room for the host's own descriptors.
 pub(crate) struct Held {
     pub(crate) dir: DirHandle,
     count: Arc<AtomicUsize>,
 }
 
 pub(crate) const HELD_MAX: usize = 64;
+/// Descriptors one task may hold at once: its directory and a fresh one for the listing's
+/// own offset (`reopen_dir`); a chain open from the root holds the previous component and
+/// the next one.
+pub(crate) const TASK_FDS: usize = 2;
+/// Tasks whose reads have not returned, running or abandoned; the walker's thread count is
+/// capped to it.
+pub(crate) const TASKS_MAX: usize = 64;
+/// The root's descriptors: the source's own, a first stat's replacing it, and one listing.
+const ROOT_FDS: usize = 3;
+const _: () = assert!(HELD_MAX + TASK_FDS * TASKS_MAX + ROOT_FDS < 256);
 
 impl Held {
     /// Keeps `dir` when fewer than [`HELD_MAX`] are kept.
@@ -52,23 +67,51 @@ impl Drop for Held {
     }
 }
 
+/// A task's progress clock (nanoseconds since the pool started, [`Pool::now`]) and whether
+/// its worker has finished it. A finished task is never overdue: its answer may sit in the
+/// channel while the coordinator is busy in the sink.
+#[derive(Default)]
+pub(crate) struct Progress {
+    stamp: AtomicU64,
+    finished: AtomicBool,
+}
+
+impl Progress {
+    fn tick(&self, now: u64) {
+        self.stamp.store(now, Ordering::Relaxed);
+    }
+
+    pub(crate) fn stamp(&self) -> u64 {
+        self.stamp.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+}
+
 /// One directory's I/O.
 pub(crate) struct Task {
     pub(crate) id: u64,
     pub(crate) rel: RawRel,
     pub(crate) parent: Option<Arc<Held>>,
     pub(crate) work: Work,
-    pub(crate) progress: Arc<AtomicU64>,
+    pub(crate) mount: Option<MountCheck>,
+    pub(crate) progress: Arc<Progress>,
 }
 
 /// What a task found.
 pub(crate) enum Outcome {
     /// A listing: its entries (sorted, classified, [`listing::entries`]) and the directory's
-    /// mtime read before it.
+    /// mtime read before it; `partial` when some entry could not be read
+    /// ([`crate::source::Listing`]).
     Listed {
         mtime: Option<i64>,
         entries: Vec<ScanEntry>,
         handle: Option<Arc<Held>>,
+        partial: bool,
+        /// A nested mount root's volume ([`MountCheck`]).
+        volume: Option<Box<VolumeIdentity>>,
     },
     /// Poll, unchanged: each known subdirectory's stat.
     Unchanged {
@@ -90,6 +133,9 @@ struct Shared {
     done: Sender<(u64, Outcome)>,
     start: Instant,
     held: Arc<AtomicUsize>,
+    /// Tasks handed out whose `run` has not returned (stuck ones included); the worker
+    /// releases its task's slot when the read returns, whether or not it was abandoned.
+    inflight: AtomicUsize,
 }
 
 /// The worker threads and their channels.
@@ -116,10 +162,11 @@ impl Pool {
                 done,
                 start: Instant::now(),
                 held: Arc::new(AtomicUsize::new(0)),
+                inflight: AtomicUsize::new(0),
             }),
             tasks,
             done: done_rx,
-            max: threads.max(1),
+            max: threads.clamp(1, TASKS_MAX),
             live: 0,
             busy: 0,
         }
@@ -134,8 +181,9 @@ impl Pool {
         Duration::from_nanos(self.now().saturating_sub(stamp))
     }
 
+    /// A worker is free and the descriptor budget has a task's room ([`TASKS_MAX`]).
     pub(crate) fn has_room(&self) -> bool {
-        self.busy < self.max
+        self.busy < self.max && self.shared.inflight.load(Ordering::Acquire) < TASKS_MAX
     }
 
     /// Hands a task to an idle worker, starting one when none is idle.
@@ -148,8 +196,9 @@ impl Pool {
                 .spawn(move || worker(&shared))?;
             self.live += 1;
         }
-        t.progress.store(self.now(), Ordering::Relaxed);
+        t.progress.tick(self.now());
         self.busy += 1;
+        self.shared.inflight.fetch_add(1, Ordering::AcqRel);
         self.tasks
             .send(t)
             .map_err(|_| io::Error::other("walk workers are gone"))
@@ -157,6 +206,11 @@ impl Pool {
 
     pub(crate) fn recv(&self, wait: Duration) -> Option<(u64, Outcome)> {
         self.done.recv_timeout(wait).ok()
+    }
+
+    /// An answer already waiting, without blocking.
+    pub(crate) fn try_recv(&self) -> Option<(u64, Outcome)> {
+        self.done.try_recv().ok()
     }
 
     /// An answer to a live task arrived.
@@ -190,6 +244,9 @@ fn worker(shared: &Shared) {
             }
         };
         let out = run(shared, &task);
+        // The read returned and its descriptors are closed or kept (`Held`).
+        shared.inflight.fetch_sub(1, Ordering::AcqRel);
+        task.progress.finished.store(true, Ordering::Release);
         if shared.done.send((task.id, out)).is_err() {
             return;
         }
@@ -203,7 +260,7 @@ fn failed(e: &io::Error) -> Outcome {
 }
 
 fn run(sh: &Shared, t: &Task) -> Outcome {
-    let tick = || t.progress.store(stamp(sh.start), Ordering::Relaxed);
+    let tick = || t.progress.tick(stamp(sh.start));
     let src = &*sh.src;
     let opened = match (&t.parent, t.rel.name()) {
         (Some(p), Some(name)) => src.open_child(&p.dir, name),
@@ -214,8 +271,23 @@ fn run(sh: &Shared, t: &Task) -> Outcome {
         Err(e) => return failed(&e),
     };
     tick();
+    let volume = match &t.mount {
+        None => None,
+        Some(m) => match src.volume(&dir) {
+            Err(e) => return failed(&e),
+            Ok(now) if m.was_mount && !now.mount_root => return code_of(code::ROOT_UNMOUNTED),
+            Ok(now) if m.stored.as_ref().is_some_and(|s| !same_volume(s, &now)) => {
+                return code_of(code::ROOT_VOLUME_CHANGED);
+            }
+            Ok(now) => {
+                tick();
+                Some(Box::new(now))
+            }
+        },
+    };
+    let list = |dir, mtime| list(sh, t, dir, mtime, volume.clone(), &tick);
     let (mtime, children) = match &t.work {
-        Work::List { mtime } => return list(sh, t, dir, *mtime, &tick),
+        Work::List { mtime } => return list(dir, *mtime),
         Work::Check { mtime, children } => (*mtime, children),
         Work::Probe {
             known_mtime,
@@ -227,7 +299,7 @@ fn run(sh: &Shared, t: &Task) -> Outcome {
             };
             tick();
             if now.is_none() || now != *known_mtime {
-                return list(sh, t, dir, now, &tick);
+                return list(dir, now);
             }
             (now, children)
         }
@@ -238,7 +310,7 @@ fn run(sh: &Shared, t: &Task) -> Outcome {
         match src.stat_child(&dir, name) {
             Ok(Some(e)) if e.entry_type == EntryType::Dir => stats.push(e),
             // Gone, no longer a directory, or unreadable: the listing tells.
-            _ => return list(sh, t, dir, mtime, &tick),
+            _ => return list(dir, mtime),
         }
         tick();
     }
@@ -252,7 +324,20 @@ fn run(sh: &Shared, t: &Task) -> Outcome {
     }
 }
 
-fn list(sh: &Shared, t: &Task, dir: DirHandle, mtime: Option<i64>, tick: &dyn Fn()) -> Outcome {
+fn code_of(code: &str) -> Outcome {
+    Outcome::Failed {
+        code: code.to_owned(),
+    }
+}
+
+fn list(
+    sh: &Shared,
+    t: &Task,
+    dir: DirHandle,
+    mtime: Option<i64>,
+    volume: Option<Box<VolumeIdentity>>,
+    tick: &dyn Fn(),
+) -> Outcome {
     let mtime = match mtime {
         Some(m) => Some(m),
         None => match sh.src.dir_mtime(&dir) {
@@ -263,7 +348,8 @@ fn list(sh: &Shared, t: &Task, dir: DirHandle, mtime: Option<i64>, tick: &dyn Fn
     tick();
     match sh.src.read_dir_with(&dir, tick) {
         Ok(raw) => {
-            let entries = listing::entries(&t.rel, raw, &sh.excludes);
+            let partial = raw.unreadable.is_some();
+            let entries = listing::entries(&t.rel, raw.entries, &sh.excludes);
             let subdirs = entries
                 .iter()
                 .any(|e| e.entry_type == EntryType::Dir && e.excluded.is_none());
@@ -275,6 +361,8 @@ fn list(sh: &Shared, t: &Task, dir: DirHandle, mtime: Option<i64>, tick: &dyn Fn
                 } else {
                     None
                 },
+                partial,
+                volume,
             }
         }
         Err(e) => failed(&e),

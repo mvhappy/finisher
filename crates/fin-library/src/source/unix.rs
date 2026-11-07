@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use libc::c_int;
 
-use super::{DirHandle, RawEntry, RootStat, Source};
+use super::{DirHandle, Listing, RawEntry, RootStat, Source};
 use crate::open::hooks;
 use crate::raw::RawRel;
 use crate::types::VolumeIdentity;
@@ -225,11 +225,14 @@ impl Source for NativeSource {
     }
 
     fn read_dir(&self, dir: &DirHandle) -> io::Result<Vec<RawEntry>> {
-        os::list(Self::fd(dir)?, &|| {})
+        self.read_dir_with(dir, &|| {})?.strict()
     }
 
-    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
-        os::list(Self::fd(dir)?, progress)
+    // Linux lists partially (a `Listing` already); macOS's listing is all or nothing (a
+    // `Vec`) until it does.
+    #[cfg_attr(target_os = "linux", allow(clippy::useless_conversion))]
+    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Listing> {
+        os::list(Self::fd(dir)?, progress).map(Listing::from)
     }
 
     fn stat_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<Option<RawEntry>> {

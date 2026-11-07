@@ -14,8 +14,9 @@
 //!   handle.
 //!
 //! Every mode applies, with `known`: a directory that was a nested mount root and no longer is
-//! gets `ROOT_UNMOUNTED` and is not descended; a listing that drops from N > 0 entries to 0
-//! is `DIR_EMPTY_SUSPECT` (incomplete, so it marks nothing).
+//! gets `ROOT_UNMOUNTED` and is not descended, one whose volume is another than the catalog
+//! knows gets `ROOT_VOLUME_CHANGED` ([`MountCheck`]); a listing that drops from N > 0
+//! entries to 0 is `DIR_EMPTY_SUSPECT` (incomplete, so it marks nothing).
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead};
@@ -23,7 +24,7 @@ use std::io::{self, BufRead};
 use crate::exclude::Excludes;
 use crate::names;
 use crate::raw::RawRel;
-use crate::types::KnownDir;
+use crate::types::{KnownDir, VolumeIdentity};
 
 /// The catalog's directories, by raw chain, with each one's known subdirectories.
 #[derive(Debug, Clone, Default)]
@@ -108,6 +109,16 @@ pub(crate) enum Work {
     },
 }
 
+/// A nested mount's check (Decision 17, per directory), for a directory below the root that
+/// is a mount root now or was one: its volume is measured right after its open; one that is
+/// no longer a mount root (`ROOT_UNMOUNTED`) or holds another volume than `stored`
+/// (`ROOT_VOLUME_CHANGED`) is closed incomplete, never listed and never missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountCheck {
+    pub(crate) was_mount: bool,
+    pub(crate) stored: Option<VolumeIdentity>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Kind {
     Full { generation: u64 },
@@ -176,6 +187,17 @@ impl Plan {
     /// Whether `dir` was a nested mount root at its last listing.
     pub(crate) fn was_mount(&self, dir: &RawRel) -> bool {
         self.known.get(dir).is_some_and(|k| k.mount_root)
+    }
+
+    /// The mount check of `dir` (`mount_root_now`: its parent's listing or stat says it is a
+    /// mount root); `None` for the root and for a directory that is not and was not one.
+    pub(crate) fn mount_check(&self, dir: &RawRel, mount_root_now: bool) -> Option<MountCheck> {
+        let k = self.known.get(dir);
+        let was_mount = k.is_some_and(|k| k.mount_root);
+        (!dir.is_root() && (mount_root_now || was_mount)).then(|| MountCheck {
+            was_mount,
+            stored: k.and_then(|k| k.volume.clone()),
+        })
     }
 
     /// The entry count of `dir`'s last listing (0 when unknown).

@@ -340,6 +340,7 @@ fn resume_skips_listed_dirs_but_descends() {
         mtime_ns: d.mtime_ns,
         entries: d.entries,
         mount_root: false,
+        volume: None,
     }));
     let before = f.stats().reads_by_dir;
     let (r, batches) = run(src(&f), full(7, Some(known)), &opts(3));
@@ -405,6 +406,96 @@ fn nested_mount_unmounted_is_offline_subtree() {
         opens,
         "disk opened"
     );
+}
+
+/// `disk` as a nested mount of volume `key` (its root id `rid`, its files' mtime `m`).
+fn mount_tree(key: &str, rid: &str, m: i64) -> Value {
+    let disk = json!({ "name": "disk", "type": "dir", "mtimeNs": 3, "mountRoot": true,
+        "dev": "9", "volumeKey": key, "fileId": rid,
+        "children": [ file("d1.mov", m), dir("sub", 4, vec![file("d2.mov", m)]) ] });
+    root(vec![disk, dir("other", 5, vec![file("o", 1)])])
+}
+
+fn modes(known: &KnownDirs) -> [WalkMode; 3] {
+    [
+        full(2, Some(known.clone())),
+        WalkMode::Poll {
+            known: known.clone(),
+        },
+        WalkMode::Dirs {
+            dirs: vec![rel(""), rel("disk")],
+            known: Some(known.clone()),
+        },
+    ]
+}
+
+#[test]
+fn nested_mount_volume_is_catalogued_and_checked() {
+    let f = fake(&mount_tree("v1", "0d", 1));
+    let (_, batches) = run(src(&f), full(1, None), &opts(2));
+    assert_eq!(done_paths(&batches), ["", "disk", "other", "disk/sub"]);
+    let volume = |b: &[fin_library::ScanBatch], d: &str| {
+        dones(b)
+            .into_iter()
+            .find(|x| x.dir == rel(d))
+            .unwrap()
+            .volume
+    };
+    assert_eq!(volume(&batches, "disk").unwrap().key, "v1");
+    assert!(volume(&batches, "other").is_none() && volume(&batches, "disk/sub").is_none());
+    let known = known_from(&batches, 1);
+    assert_eq!(
+        known
+            .get(&rel("disk"))
+            .unwrap()
+            .volume
+            .as_ref()
+            .unwrap()
+            .key,
+        "v1"
+    );
+
+    // Another volume mounted there (another key, root id and content): offline, not missing.
+    f.reload(&mount_tree("v2", "0e", 2).to_string()).unwrap();
+    for mode in modes(&known) {
+        let (r, batches) = run(src(&f), mode, &opts(2));
+        r.unwrap();
+        let paths = done_paths(&batches);
+        assert!(
+            paths.contains(&"disk!ROOT_VOLUME_CHANGED".to_owned()),
+            "{paths:?}"
+        );
+        assert!(!paths.iter().any(|p| p.starts_with("disk/")), "{paths:?}");
+        assert!(
+            entries(&batches)
+                .iter()
+                .all(|e| !e.dir.starts_with(&rel("disk")))
+        );
+    }
+
+    // The same volume under another key (its root id and sample confirm it): walked.
+    f.reload(&mount_tree("v3", "0d", 1).to_string()).unwrap();
+    let (r, batches) = run(src(&f), full(2, Some(known.clone())), &opts(2));
+    r.unwrap();
+    assert_eq!(done_paths(&batches), ["", "disk", "other", "disk/sub"]);
+    assert_eq!(volume(&batches, "disk").unwrap().key, "v3");
+}
+
+#[test]
+fn nested_mount_target_unmounted_is_not_listed() {
+    let f = fake(&disk_tree(true));
+    let (_, batches) = run(src(&f), full(1, None), &opts(2));
+    let known = known_from(&batches, 1);
+    f.reload(&disk_tree(false).to_string()).unwrap();
+    // Targeted directly (no parent listing to see it): its own check closes it.
+    let mode = WalkMode::Dirs {
+        dirs: vec![rel("disk")],
+        known: Some(known),
+    };
+    let (r, batches) = run(src(&f), mode, &opts(2));
+    r.unwrap();
+    assert_eq!(done_paths(&batches), ["disk!ROOT_UNMOUNTED"]);
+    assert!(entries(&batches).is_empty());
 }
 
 #[test]
@@ -621,4 +712,95 @@ fn known_dirs_read_from_ndjson() {
     );
     assert!(KnownDirs::from_ndjson(&b"{\"dir\": 1}"[..]).is_err());
     assert!(KnownDirs::from_ndjson(&b"{\"dir\": {\"components\": [\"Lg==\"]}}"[..]).is_err());
+}
+
+/// Fails one entry's stat in `a`'s listing (an unreadable entry, `EIO`).
+struct OneBad(Arc<FakeSource>);
+
+impl Source for OneBad {
+    fn stat_root(&self) -> std::io::Result<RootStat> {
+        self.0.stat_root()
+    }
+    fn open_dir(&self, rel: &fin_library::RawRel) -> std::io::Result<DirHandle> {
+        self.0.open_dir(rel)
+    }
+    fn read_dir(&self, dir: &DirHandle) -> std::io::Result<Vec<RawEntry>> {
+        self.0.read_dir(dir)
+    }
+    fn read_dir_with(
+        &self,
+        dir: &DirHandle,
+        progress: &dyn Fn(),
+    ) -> std::io::Result<fin_library::Listing> {
+        let names = self.0.read_dir(dir)?;
+        let bad = *dir.rel() == rel("a");
+        fin_library::Listing::collect(
+            names,
+            |e| {
+                if bad && e.name == b"1.mov" {
+                    Err(std::io::Error::from_raw_os_error(EIO))
+                } else {
+                    Ok(Some(e))
+                }
+            },
+            progress,
+        )
+    }
+    fn volume(&self, dir: &DirHandle) -> std::io::Result<VolumeIdentity> {
+        self.0.volume(dir)
+    }
+}
+
+/// `EIO` (5 on Linux and macOS).
+const EIO: i32 = 5;
+
+#[test]
+fn one_unreadable_entry_keeps_the_rest_and_marks_nothing_missing() {
+    let f = fake(&tree());
+    let (r, batches) = run(Arc::new(OneBad(f)), full(1, None), &opts(4));
+    let s = r.unwrap();
+    assert_eq!(
+        done_paths(&batches),
+        ["", "a!ENTRY_UNREADABLE", "b", "c", "a/x", "a/y", "b/z"]
+    );
+    assert_eq!((s.listed, s.incomplete), (6, 1));
+    let a = dones(&batches)
+        .into_iter()
+        .find(|d| d.dir == rel("a"))
+        .unwrap();
+    assert!(!a.complete);
+    assert_eq!((a.entries, a.mtime_ns), (3, None));
+    let names: Vec<Vec<u8>> = entries(&batches)
+        .into_iter()
+        .filter(|e| e.dir == rel("a"))
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, [b"2.mov".to_vec(), b"x".to_vec(), b"y".to_vec()]);
+}
+
+#[test]
+fn listing_collect_is_partial_unless_every_entry_fails() {
+    use fin_library::{EntryType, Listing};
+    let eio = || std::io::Error::from_raw_os_error(EIO);
+    let names = vec!["a", "b", "c"];
+    let l = Listing::collect(
+        names.clone(),
+        |n| match n {
+            "b" => Err(eio()),
+            "c" => Ok(None),
+            n => Ok(Some(RawEntry::new(n, EntryType::File, 1, 1))),
+        },
+        &|| {},
+    )
+    .unwrap();
+    assert_eq!(l.entries.len(), 1);
+    assert_eq!(
+        l.unreadable.as_ref().and_then(|e| e.raw_os_error()),
+        Some(5)
+    );
+    assert!(l.strict().is_err());
+    let all = Listing::collect(names, |_| Err(eio()), &|| {});
+    assert_eq!(all.unwrap_err().raw_os_error(), Some(5));
+    let empty = Listing::collect(Vec::<&str>::new(), |_| Err(eio()), &|| {}).unwrap();
+    assert!(empty.entries.is_empty() && empty.unreadable.is_none());
 }
