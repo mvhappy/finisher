@@ -70,6 +70,24 @@ export type Op =
   | (ParamSet & {
       op: "param.set";
     })
+  | (EffectAdd & {
+      op: "effect.add";
+    })
+  | (EffectRemove & {
+      op: "effect.remove";
+    })
+  | (EffectMove & {
+      op: "effect.move";
+    })
+  | (KeyframeSet & {
+      op: "keyframe.set";
+    })
+  | (KeyframeRemove & {
+      op: "keyframe.remove";
+    })
+  | (EffectRestore & {
+      op: "effect.restore";
+    })
   | {
       asset: string;
       at: Rational;
@@ -907,6 +925,80 @@ export interface ParamSet {
   item: string;
   path: string;
   value?: ParamValue;
+}
+/**
+ * `effect.add`: an effect of `kind` on `item` at index `at` (appended when absent).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EffectAdd".
+ */
+export interface EffectAdd {
+  at?: number;
+  id: string;
+  item: string;
+  kind: string;
+  params?: {
+    [k: string]: ParamValue;
+  };
+}
+/**
+ * `effect.remove`: takes `effect` off `item`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EffectRemove".
+ */
+export interface EffectRemove {
+  effect: string;
+  item: string;
+}
+/**
+ * `effect.move`: `effect` of `item` to index `to`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EffectMove".
+ */
+export interface EffectMove {
+  effect: string;
+  item: string;
+  to: number;
+}
+/**
+ * `keyframe.set`: the keyframe of `path` of `item` at `at`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KeyframeSet".
+ */
+export interface KeyframeSet {
+  at: Rational;
+  interp: Interp;
+  item: string;
+  path: string;
+  value: ParamValue;
+}
+/**
+ * `keyframe.remove`: the keyframe of `path` of `item` at `at`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KeyframeRemove".
+ */
+export interface KeyframeRemove {
+  at: Rational;
+  item: string;
+  path: string;
+}
+/**
+ * `effect.restore` (internal): `effect` back on `item` at `index`, with its `keyframes`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EffectRestore".
+ */
+export interface EffectRestore {
+  effect: Effect;
+  index: number;
+  item: string;
+  keyframes?: {
+    [k: string]: Keyframe[];
+  };
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

@@ -577,6 +577,106 @@
       ],
       "type": "object"
     },
+    "EffectAdd": {
+      "description": "`effect.add`: an effect of `kind` on `item` at index `at` (appended when absent).",
+      "properties": {
+        "at": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamValue"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "item",
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EffectMove": {
+      "description": "`effect.move`: `effect` of `item` to index `to`.",
+      "properties": {
+        "effect": {
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        },
+        "to": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "effect",
+        "to"
+      ],
+      "type": "object"
+    },
+    "EffectRemove": {
+      "description": "`effect.remove`: takes `effect` off `item`.",
+      "properties": {
+        "effect": {
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "EffectRestore": {
+      "description": "`effect.restore` (internal): `effect` back on `item` at `index`, with its `keyframes`.",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/Effect"
+        },
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "type": "string"
+        },
+        "keyframes": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/Keyframe"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "item",
+        "effect",
+        "index"
+      ],
+      "type": "object"
+    },
     "EngineEvent": {
       "description": "One engine event (`Engine.onEvent`), tagged by `type`.",
       "oneOf": [
@@ -1551,6 +1651,54 @@
       ],
       "type": "object"
     },
+    "KeyframeRemove": {
+      "description": "`keyframe.remove`: the keyframe of `path` of `item` at `at`.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "item": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "path",
+        "at"
+      ],
+      "type": "object"
+    },
+    "KeyframeSet": {
+      "description": "`keyframe.set`: the keyframe of `path` of `item` at `at`.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "item": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "item",
+        "path",
+        "at",
+        "value",
+        "interp"
+      ],
+      "type": "object"
+    },
     "Link": {
       "description": "A record's kind and what it points at (spec §4.2). Serialised (in `CommittedTx.link`) as\n`{\"kind\": \"<kind>\", …fields}`, camelCase, absent optional fields omitted.",
       "oneOf": [
@@ -2133,6 +2281,126 @@
             }
           ],
           "description": "Sets (or, with no `value`, resets) one registry parameter of an item."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/EffectAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "effect.add",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds an effect to an item; `id` is a `$name` placeholder bound to a new `fx<n>` id."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/EffectRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "effect.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes an effect (and the keyframes of its params) off an item."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/EffectMove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "effect.move",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Moves an effect to another index of its item's effect list."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/KeyframeSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "keyframe.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Sets the keyframe of an item's parameter at an item-relative time."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/KeyframeRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "keyframe.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Removes the keyframe of an item's parameter at an item-relative time."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/EffectRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "effect.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `effect.remove`): puts an effect and its keyframes back."
         },
         {
           "description": "Client alias of `item.insert` of a clip in ripple mode.",

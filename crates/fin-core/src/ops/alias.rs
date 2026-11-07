@@ -8,7 +8,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::model::{AssetKind, ItemBody, SCHEMA_VERSION};
-use crate::ops::util::{normalize_body, normalize_value};
+use crate::ops::util::{normalize_body, normalize_interp, normalize_value};
 use crate::ops::{DeleteMode, InsertMode, ItemDelete, ItemInsert, ItemTrim, Op, TrimMode};
 use crate::time::Rational;
 use crate::tx::Tx;
@@ -106,6 +106,12 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
                     Some(v) => normalize_value(&s.path, v),
                     None => Ok(()),
                 },
+                Op::EffectAdd(a) => a
+                    .params
+                    .iter_mut()
+                    .try_for_each(|(k, v)| normalize_value(&format!("effects.{}.{k}", a.id), v)),
+                Op::KeyframeSet(k) => normalize_value(&k.path, &mut k.value)
+                    .and_then(|()| normalize_interp(&k.path, &mut k.interp)),
                 _ => Ok(()),
             };
             canonical.map_err(|mut e| {

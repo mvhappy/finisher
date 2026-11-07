@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 use crate::model::{
     AssetKind, AudioInfo, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo, VideoInfo,
 };
+use crate::ops::effect_add::EffectAdd;
+use crate::ops::effect_move::EffectMove;
+use crate::ops::effect_remove::EffectRemove;
+use crate::ops::effect_restore::EffectRestore;
+use crate::ops::keyframe_remove::KeyframeRemove;
+use crate::ops::keyframe_set::KeyframeSet;
 use crate::ops::param_set::ParamSet;
 use crate::time::Rational;
 
@@ -47,6 +53,24 @@ pub enum Op {
     /// Sets (or, with no `value`, resets) one registry parameter of an item.
     #[serde(rename = "param.set")]
     ParamSet(ParamSet),
+    /// Adds an effect to an item; `id` is a `$name` placeholder bound to a new `fx<n>` id.
+    #[serde(rename = "effect.add")]
+    EffectAdd(EffectAdd),
+    /// Takes an effect (and the keyframes of its params) off an item.
+    #[serde(rename = "effect.remove")]
+    EffectRemove(EffectRemove),
+    /// Moves an effect to another index of its item's effect list.
+    #[serde(rename = "effect.move")]
+    EffectMove(EffectMove),
+    /// Sets the keyframe of an item's parameter at an item-relative time.
+    #[serde(rename = "keyframe.set")]
+    KeyframeSet(Box<KeyframeSet>),
+    /// Removes the keyframe of an item's parameter at an item-relative time.
+    #[serde(rename = "keyframe.remove")]
+    KeyframeRemove(KeyframeRemove),
+    /// Internal (inverse of `effect.remove`): puts an effect and its keyframes back.
+    #[serde(rename = "effect.restore")]
+    EffectRestore(Box<EffectRestore>),
     /// Client alias of `item.insert` of a clip in ripple mode.
     #[serde(rename = "clip.insert")]
     ClipInsert {

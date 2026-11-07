@@ -99,6 +99,18 @@ impl<'a> OpDiff<'a> {
         self.push(Some(track), EntityKind::Item, id, change);
     }
 
+    /// Entity `id` of `kind` (an item's effect, `<item>/<fx>`, on its item's `track`) was
+    /// added, removed or changed as a whole.
+    pub(crate) fn record_on(
+        &mut self,
+        kind: EntityKind,
+        id: &str,
+        track: Option<&str>,
+        change: ChangeKind,
+    ) {
+        self.push(track, kind, id, change);
+    }
+
     /// One edge of item `id` on `track` moved; `by` is the content offset of a start-edge move
     /// (Decision 13).
     pub(crate) fn record_edge(&mut self, track: &str, id: &str, edge: Edge, by: Option<Rational>) {

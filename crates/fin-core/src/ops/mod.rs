@@ -26,6 +26,10 @@ mod alias;
 mod asset_add;
 mod asset_remove;
 mod defs;
+mod effect_add;
+mod effect_move;
+mod effect_remove;
+mod effect_restore;
 mod item_delete;
 mod item_insert;
 mod item_remove;
@@ -33,6 +37,8 @@ mod item_restore;
 mod item_slip;
 mod item_split;
 mod item_trim;
+mod keyframe_remove;
+mod keyframe_set;
 mod param_set;
 pub(crate) mod util;
 
@@ -42,6 +48,12 @@ pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
     ItemSlip, ItemSplit, ItemTrim, Op, TrimMode,
 };
+pub use effect_add::EffectAdd;
+pub use effect_move::EffectMove;
+pub use effect_remove::EffectRemove;
+pub use effect_restore::EffectRestore;
+pub use keyframe_remove::KeyframeRemove;
+pub use keyframe_set::KeyframeSet;
 pub use param_set::ParamSet;
 
 /// `$name` placeholders bound during one transaction, in op order.
@@ -261,6 +273,12 @@ ops_table! {
     ItemRemove => item_remove,
     ItemRestore => item_restore,
     ParamSet => param_set,
+    EffectAdd => effect_add,
+    EffectRemove => effect_remove,
+    EffectMove => effect_move,
+    KeyframeSet => keyframe_set,
+    KeyframeRemove => keyframe_remove,
+    EffectRestore => effect_restore,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,

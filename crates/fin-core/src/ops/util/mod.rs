@@ -30,7 +30,9 @@ pub(crate) use lookup::{
 };
 pub(crate) use ripple::{OpDiff, clip_containing, insert_inside, place, ripple};
 pub(crate) use touched::touched_tracks;
-pub(crate) use values::{body as normalize_body, normalize_item, param as normalize_value};
+pub(crate) use values::{
+    body as normalize_body, interp as normalize_interp, normalize_item, param as normalize_value,
+};
 
 pub(crate) fn not_found(kind: &str, id: &str) -> CoreError {
     CoreError::new("NOT_FOUND", format!("{kind} {id} does not exist"))
