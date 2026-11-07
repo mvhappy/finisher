@@ -6,6 +6,7 @@
 
 mod common;
 
+use common::gen4c::{G, World, base4c, g_edit, shape};
 use common::memlog::MemLog;
 use common::*;
 use fin_core::history::LogView;
@@ -338,5 +339,102 @@ proptest! {
         undo_to_vs_undos(
             genesis_with_transitions, &acts, cpi, redo, tail_bob, base_pick, skind, sk,
         )?;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Plan 4C Task 26: the same over every 4C edit.
+
+#[derive(Debug, Clone)]
+enum Act4 {
+    /// An edit by alice (`false`) or bob: abstract 4C ops realised at the head.
+    Edit(bool, Vec<G>),
+    Undo,
+    Redo,
+    Checkpoint,
+}
+
+fn act4() -> impl Strategy<Value = Act4> {
+    prop_oneof![
+        4 => (any::<bool>(), prop::collection::vec(g_edit(), 1..4))
+            .prop_map(|(bob, gs)| Act4::Edit(bob, gs)),
+        2 => Just(Act4::Undo),
+        1 => Just(Act4::Redo),
+        1 => Just(Act4::Checkpoint),
+    ]
+}
+
+/// The ops `gs` realise at `p` (client ops only), `None` when none applies.
+fn realise4(p: &Project, gs: &[G]) -> Option<Vec<Op>> {
+    let mut w = World::new(p, MemIds::after(p), false);
+    w.run(gs);
+    (!w.ops.is_empty()).then_some(w.ops)
+}
+
+fn build4(log: &mut MemLog, acts: &[Act4]) -> Vec<u64> {
+    let mut cps = vec![0];
+    for (n, a) in acts.iter().enumerate() {
+        let id = format!("p{n}");
+        match a {
+            Act4::Edit(bob, gs) => {
+                if let Some(ops) = realise4(&log.state("main"), gs) {
+                    let author = if *bob { "bob" } else { "alice" };
+                    log.commit("main", &id, author, ops);
+                }
+            }
+            Act4::Undo => drop(log.undo("main", "alice", &id)),
+            Act4::Redo => drop(log.redo("main", "alice", &id)),
+            Act4::Checkpoint => cps.push(log.checkpoint("main", &id, "alice", &format!("v{n}"))),
+        }
+    }
+    cps
+}
+
+proptest! {
+    #![proptest_config(config(256))]
+
+    /// Every 4C edit (transactions of one to three, so inverses of several ops and of composed
+    /// edits): one `undo --to` equals the undos in a row, one redo equals as many redos, and a
+    /// stale 4C edit at any base lands as it does over the plain undos.
+    #[test]
+    fn undo_to_matches_undos_in_a_row_for_every_4c_edit(
+        shape in shape(),
+        acts in prop::collection::vec(act4(), 1..10),
+        cpi in 0usize..4,
+        redo in any::<bool>(),
+        base_pick in 0u64..64,
+        stale in prop::collection::vec(g_edit(), 1..3),
+    ) {
+        let genesis = base4c(&shape);
+        let (mut one, mut many) = (MemLog::new(genesis.clone()), MemLog::new(genesis));
+        let cps = build4(&mut one, &acts);
+        build4(&mut many, &acts);
+        let cp = cps[cpi % cps.len()];
+        let pre = one.head_seq("main");
+        let Ok(u) = one.undo_to("main", "alice", cp, "ut") else {
+            return Ok(());
+        };
+        let names = u.record.undoes.clone().unwrap();
+        for (i, n) in names.iter().enumerate() {
+            let r = many.undo("main", "alice", &format!("ua{i}"));
+            prop_assert!(r.is_ok(), "undo {i} in a row failed: {:?}", r.err());
+            prop_assert_eq!(r.unwrap().record.undoes.unwrap(), vec![n.clone()]);
+        }
+        prop_assert_eq!(one.state("main"), many.state("main"), "after undo");
+        if redo {
+            one.redo("main", "alice", "rr").unwrap();
+            for i in 0..names.len() {
+                many.redo("main", "alice", &format!("ra{i}")).unwrap();
+            }
+            prop_assert_eq!(one.state("main"), many.state("main"), "after redo");
+        }
+        let base = base_pick % (pre + 1);
+        let at_base = LogView::state_at(&one, "main", base).unwrap();
+        if let Some(ops) = realise4(&at_base, &stale) {
+            let a = outcome(one.commit_at("main", "s", "carol", base, ops.clone()));
+            let b = outcome(many.commit_at("main", "s", "carol", base, ops));
+            prop_assert_eq!(&a, &b, "stale outcome at base {}", base);
+            prop_assert_eq!(one.state("main"), many.state("main"), "stale at base {}", base);
+        }
     }
 }
