@@ -12,6 +12,7 @@ default-members = [
     "crates/fin-node",
     "crates/fin-plugin-api",
     "crates/fin-probe",
+    "crates/fin-registry",
     "crates/fin-store",
     "crates/fin-testfonts",
     "crates/fin-text",

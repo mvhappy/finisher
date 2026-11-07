@@ -1,0 +1,22 @@
+[package]
+name = "fin-registry"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Plugin packages (strict reader, reproducible packer, tree hashes) and, from 8A Task 4a, TUF registries."
+
+[dependencies]
+blake3 = "1"
+fin-plugin-api = { path = "../fin-plugin-api" }
+serde_json = "1"
+sha2 = "0.11"
+unicode-normalization = "0.1"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+# The hostile-archive corpus writes zip bytes by hand (tests/support/hostile.rs).
+crc32fast = "1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+tempfile = "3"
