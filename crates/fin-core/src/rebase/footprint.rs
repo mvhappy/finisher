@@ -12,14 +12,17 @@
 //! - ours touches or uses X, and the last intervening record that removed or created X removed
 //!   it → [`reasons::REMOVED`] (a stale insert of a removed asset included);
 //! - the same [`Edge`] of X → [`reasons::SAME_EDGE`]; the same parameter → [`reasons::SAME_PARAM`];
-//! - ours puts X back whole ([`Footprint::overwrites`]: a restore, whose snapshot holds every
-//!   edge and parameter of X as they were) and an intervening record moved an edge of X →
-//!   `SAME_EDGE`, or set a parameter of it → `SAME_PARAM` ([`overwrite_conflict`]): putting
-//!   the snapshot back would take that edit away without a word (an undo of a move after
-//!   another author's trim or split of the item, a merged delete and restore over a trim).
-//!   The engine judges it after the op re-ran, so a restore that cannot run at all keeps the
-//!   re-run's reason (`ALREADY_PRESENT`, `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that
-//!   would succeed is refused; a removal or creation of X is left to the rules above;
+//! - ours puts X back whole ([`Footprint::overwrites`]: an inverse that re-creates X from a
+//!   snapshot, such as `item.restore`, `effect.restore`, `track.restore`, `timeline.restore`, or the
+//!   `marker.add`, `asset.add`, `bin.add` and `style.add` of a removal's inverse) and an
+//!   intervening record changed X or an entity nested in it (`X/…`: an item's effects) in any
+//!   way, touching, creating or removing it → `SAME_EDGE` when it moved an edge of X, else
+//!   `SAME_PARAM` ([`overwrite_conflict`]). Putting the snapshot back would take that edit
+//!   away without a word: an undo of a move after another author's trim, split or effect edit
+//!   of the item; a merged delete and undo over the target's edit. The engine judges it after
+//!   the op re-ran, so an op that cannot run at all keeps the re-run's reason
+//!   (`ALREADY_PRESENT`, `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that would succeed is
+//!   refused. A `$placeholder` re-creation makes a new entity and puts nothing back;
 //! - an entity an earlier op of our own transaction created is ours: it is never judged. At a
 //!   stale base our placeholders bind the ids the intervening records allocated, and those name
 //!   other entities; the re-run at the head decides whether the creation itself still fits.
@@ -55,8 +58,8 @@ pub enum Touch {
 /// groups span, and both tracks of a move between tracks); `touches`: entities it changes;
 /// `removes`/`creates`: entities it takes out or brings in; `uses`: entities it refers to
 /// without changing them (an insert's asset and track); `overwrites`: entities it puts back
-/// whole, every edge and parameter as its snapshot holds them (an `item.restore`), judged
-/// against any intervening edge or parameter change of them (module docs).
+/// whole, as its snapshot holds them (with what is nested in them), judged against any
+/// intervening change of them ([`Footprint::puts_back`], module docs).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Footprint {
     pub tracks: BTreeSet<String>,
@@ -78,6 +81,14 @@ impl Footprint {
         Footprint {
             tracks,
             ..Footprint::default()
+        }
+    }
+
+    /// Declares that the op puts entity `id` back whole from a snapshot ([`Self::overwrites`]).
+    /// A `$placeholder` id is a new entity, never one put back, so it is left out.
+    pub(crate) fn puts_back(&mut self, id: &str) {
+        if !id.starts_with('$') && !self.overwrites.iter().any(|x| x == id) {
+            self.overwrites.push(id.to_string());
         }
     }
 
@@ -295,28 +306,44 @@ fn change_reason(t: &Touch) -> Option<&'static str> {
     }
 }
 
-/// The first intervening record (of `theirs`, in order) that moved an edge (`SAME_EDGE`) or
-/// set a parameter (`SAME_PARAM`) of an entity `ours` puts back whole
-/// ([`Footprint::overwrites`]), with the txId to blame; entities in `own` are never judged
-/// (module docs).
+/// The first intervening record (of `theirs`, in order) that changed an entity `ours` puts
+/// back whole ([`Footprint::overwrites`]) or one nested in it, with the txId to blame:
+/// `SAME_EDGE` when it moved an edge of the entity itself, else `SAME_PARAM`. Entities in
+/// `own` are never judged (module docs).
 pub(crate) fn overwrite_conflict(
     ours: &Footprint,
     own: &BTreeSet<String>,
     theirs: &[(&str, &Footprint)],
 ) -> Option<(&'static str, String)> {
+    let put_back: Vec<&str> = ours
+        .overwrites
+        .iter()
+        .filter(|x| !own.contains(*x))
+        .map(String::as_str)
+        .collect();
+    if put_back.is_empty() {
+        return None;
+    }
     theirs.iter().find_map(|(tx, f)| {
-        let reason = ours
-            .overwrites
-            .iter()
-            .filter(|x| !own.contains(*x))
-            .find_map(|x| {
-                f.touches
-                    .iter()
-                    .filter(|(y, _)| y == x)
-                    .find_map(|(_, t)| change_reason(t))
-            })?;
+        let reason = put_back.iter().find_map(|x| changed(x, f))?;
         Some((reason, tx.to_string()))
     })
+}
+
+/// How `f` changed entity `x` or one nested in it (`x/…`): `SAME_EDGE` when it moved an edge
+/// of `x`, `SAME_PARAM` for any other touch, creation or removal; `None` when it did not.
+fn changed(x: &str, f: &Footprint) -> Option<&'static str> {
+    let within = |y: &str| y == x || y.strip_prefix(x).is_some_and(|r| r.starts_with('/'));
+    let edge = f
+        .touches
+        .iter()
+        .any(|(y, t)| y == x && matches!(t, Touch::Edge(_)));
+    if edge {
+        return Some(reasons::SAME_EDGE);
+    }
+    let other = f.touches.iter().any(|(y, _)| within(y))
+        || f.creates.iter().chain(&f.removes).any(|y| within(y));
+    other.then_some(reasons::SAME_PARAM)
 }
 
 #[cfg(test)]

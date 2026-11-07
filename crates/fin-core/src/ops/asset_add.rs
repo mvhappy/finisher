@@ -175,6 +175,8 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::AssetAdd(a) = op {
         f.creates.push(a.id.clone());
+        // A removal's inverse (a literal id) puts the entity back with every field.
+        f.puts_back(&a.id);
         f.uses.extend(a.bin.clone());
     }
     f

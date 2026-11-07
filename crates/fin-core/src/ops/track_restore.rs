@@ -15,7 +15,9 @@ use crate::ids::IdAlloc;
 use crate::model::{Project, Track};
 use crate::ops::track_add::{check_index, timeline_index};
 use crate::ops::track_remove::TrackRemove;
-use crate::ops::util::contents::{record_track, returning_track, track_ids, track_refs_mut};
+use crate::ops::util::contents::{
+    put_back_track, record_track, returning_track, track_ids, track_refs_mut,
+};
 use crate::ops::util::{OpDiff, wrong_op};
 use crate::ops::{Bindings, Op};
 use crate::rebase::Footprint;
@@ -68,6 +70,8 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     };
     let mut f = Footprint::on(Some(&r.track.id), op_diff);
     f.creates.push(r.track.id.clone());
+    // The track, its items (with their effects) and transitions, as they were.
+    put_back_track(&mut f, &r.track);
     f.uses.push(r.timeline.clone());
     for a in r.track.items.iter().filter_map(|i| i.asset()) {
         if !f.uses.iter().any(|u| u == a) {

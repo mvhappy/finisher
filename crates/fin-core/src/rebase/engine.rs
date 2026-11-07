@@ -169,7 +169,8 @@ pub fn rebase_prepared(
                 return Err(rerun_conflict(&e, r, k, &ours, &theirs, head));
             }
         };
-        // A restore that re-ran would put its snapshot over a later edit of the item.
+        // An op that re-ran and puts an entity back whole would write its snapshot over a
+        // later change of it (`overwrite_conflict`).
         if let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }

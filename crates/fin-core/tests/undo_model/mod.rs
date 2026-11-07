@@ -24,7 +24,7 @@
 //!   operations (a removal records the successor it had, and its inverse reinserts before it).
 //!   A move inverts to a removal and a reinsertion before the successor it had, with the
 //!   length it had then (`item_move`'s inverse: `item.remove`, then `item.restore` of the
-//!   item as it was, refused when the item's edge or `start` changed since). A split inverts
+//!   item as it was, refused when the item was changed since). A split inverts
 //!   to a *lift* removal of the right part (a gap unless it is last) and a *strict* trim of the
 //!   left part by the right part's length, which fills the gap and overlaps (`CLIP_OVERLAP`)
 //!   whatever else is there (`item_split`'s inverse, B4); a redo of that shrinks the left part
@@ -70,9 +70,11 @@
 //!   `DEPENDS_ON_SKIPPED`, found by this property: a skipped delete's undo re-created a clip
 //!   the target had deleted). A re-run failure blames the one unmirrored record that touched,
 //!   created or removed a clip the op touches or its error names (`rerun_conflict`); a
-//!   restore that re-ran is then refused by the first unmirrored record that touched its
-//!   clip's edge or `start` (`overwrite_conflict`). The heads, which the transcribed part
-//!   never computes, are checked by the list model alone.
+//!   restore that re-ran is then refused by the first unmirrored record that changed its clip
+//!   at all, by a touch, a creation or a removal (`overwrite_conflict`: `SAME_EDGE` for its
+//!   end edge, else `SAME_PARAM`; the model has no nested entities, which the fixed cases of
+//!   `restore_conflicts` cover). The heads, which the transcribed part never computes, are
+//!   checked by the list model alone.
 //!
 //! **Exclusions** (4C; none of them arises from 4B ops):
 //! - *Gaps.* The run stops at the first state with a gap: a lift removal the strict trim does

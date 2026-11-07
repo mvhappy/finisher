@@ -87,6 +87,14 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::TimelineRestore(r) = op {
         f.creates.push(r.timeline.id.clone());
+        // The timeline, its markers and tracks (with everything on them), as they were.
+        f.puts_back(&r.timeline.id);
+        for m in &r.timeline.markers {
+            f.puts_back(&m.id);
+        }
+        for t in &r.timeline.tracks {
+            crate::ops::util::contents::put_back_track(&mut f, t);
+        }
         let items = r.timeline.tracks.iter().flat_map(|t| t.items.iter());
         for a in items.filter_map(|i| i.asset()) {
             if !f.uses.iter().any(|u| u == a) {

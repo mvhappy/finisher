@@ -131,3 +131,15 @@ pub(crate) fn returning_track(
     check_transitions(&track)?;
     Ok(track)
 }
+
+/// Declares `track`, its items (with what is nested in them) and its transitions put back
+/// whole (`Footprint::puts_back`): a `track.restore`, or a track of a `timeline.restore`.
+pub(crate) fn put_back_track(f: &mut crate::rebase::Footprint, track: &Track) {
+    f.puts_back(&track.id);
+    for i in &track.items {
+        f.puts_back(&i.id);
+    }
+    for t in &track.transitions {
+        f.puts_back(&t.id);
+    }
+}

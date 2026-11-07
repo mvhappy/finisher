@@ -148,25 +148,30 @@ fn reason_of(t: T) -> &'static str {
     }
 }
 
-/// As `overwrite_conflict`, after a successful re-run: the first unmirrored record to touch
-/// the end edge or `start` of a clip ours puts back whole (a restore).
+/// As `overwrite_conflict`, after a successful re-run: the first unmirrored record that changed
+/// a clip ours puts back whole (a restore): `SAME_EDGE` when it touched the clip's end edge,
+/// `SAME_PARAM` for any other touch (`start`, or the clip as a whole), creation or removal.
 fn overwrite_conflict(
     ours: &Fp,
     own: &HashSet<String>,
     theirs: &[(String, Fp)],
 ) -> Option<(&'static str, String)> {
+    let put_back: Vec<&String> = ours
+        .overwrites
+        .iter()
+        .filter(|x| !own.contains(*x))
+        .collect();
     theirs.iter().find_map(|(tx, f)| {
-        let t = ours
-            .overwrites
-            .iter()
-            .filter(|x| !own.contains(*x))
-            .find_map(|x| {
-                f.touches
-                    .iter()
-                    .find(|(y, u)| y == x && *u != T::Exists)
-                    .map(|(_, u)| *u)
-            })?;
-        Some((reason_of(t), tx.clone()))
+        let reason = put_back.iter().find_map(|x| {
+            if f.touches.contains(&((*x).clone(), T::Edge)) {
+                return Some(reasons::SAME_EDGE);
+            }
+            let other = f.touches.iter().any(|(y, _)| y == *x)
+                || f.creates.contains(x)
+                || f.removes.contains(x);
+            other.then_some(reasons::SAME_PARAM)
+        })?;
+        Some((reason, tx.clone()))
     })
 }
 

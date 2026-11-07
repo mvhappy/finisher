@@ -137,7 +137,10 @@ pub(crate) fn apply(
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::EffectRestore(r) = op {
-        f.creates.push(format!("{}/{}", r.item, r.effect.id));
+        let fx = format!("{}/{}", r.item, r.effect.id);
+        // Its params and keyframes as they were: a later edit of the effect is a conflict.
+        f.puts_back(&fx);
+        f.creates.push(fx);
         f.uses.push(r.item.clone());
         f.touches
             .push((r.item.clone(), Touch::Param(EFFECTS.to_string())));
