@@ -353,9 +353,12 @@ impl KillDomain for JobObjects {
         drop(leaf);
     }
 
-    /// The group is closed and empty: its handle closes once the last holder drops it
-    /// (kill-on-close ends any process a member left behind).
+    /// The group is closed and empty: any process a member left behind ends now (other
+    /// holders of the handle may keep the Job open a little longer; its kill-on-close covers
+    /// the host's death).
     fn close_group(&self, group: &GroupHandle) {
-        self.port.unregister(group_job(group).key);
+        let g = group_job(group);
+        self.port.unregister(g.key);
+        let _ = terminate(&g.job);
     }
 }

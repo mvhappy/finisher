@@ -221,6 +221,12 @@ pub(crate) fn reap(pid: u32) {
     let _ = retry(|| unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) });
 }
 
+/// `SIGKILL`s one process of ours, not yet reaped.
+pub(crate) fn kill_one(_os: &OsProc, pid: u32) {
+    // SAFETY: our own child, not yet reaped, so `pid` is still it.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+}
+
 /// `kill(-pgid, SIGKILL)`; a group with no process left is not an error.
 pub(crate) fn kill_pgid(pgid: i32) -> io::Result<()> {
     if pgid <= 1 {

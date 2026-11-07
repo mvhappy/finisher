@@ -13,7 +13,9 @@ use std::io::{self, PipeReader, PipeWriter};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, INFINITE, TerminateProcess, WaitForSingleObject,
+};
 
 use crate::domain::{GroupHandle, KillDomain, LeafHandle};
 use crate::exit::RawExit;
@@ -87,6 +89,12 @@ pub(crate) fn wait(os: &OsProc, _pid: u32, _reap: bool) -> io::Result<RawExit> {
         code: Some(i64::from(code)),
         signal: None,
     })
+}
+
+/// Ends one process through its handle.
+pub(crate) fn kill_one(os: &OsProc, _pid: u32) {
+    // SAFETY: a process handle we own, with PROCESS_TERMINATE access.
+    unsafe { TerminateProcess(raw(&os.process), KILLED_EXIT_CODE) };
 }
 
 /// Nothing to reap on Windows.

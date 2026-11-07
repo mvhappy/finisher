@@ -212,9 +212,16 @@ fn spawn_in(
         os: os_proc,
         ..
     } = spawned;
+    // Kept here should the waiter not start (`no_waiter` then needs the process handle).
+    let slot = Arc::new(std::sync::Mutex::new(Some(os_proc)));
     let waiter = thread("jobhost-wait", {
-        let (p, w) = (p.clone(), w.clone());
-        move || proc::wait_exit(p, w, os_proc, drain, reap)
+        let (p, w, slot) = (p.clone(), w.clone(), slot.clone());
+        move || {
+            let os = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(os) = os {
+                proc::wait_exit(p, w, os, drain, reap);
+            }
+        }
     });
     let started = [
         thread("jobhost-out", {
@@ -231,7 +238,8 @@ fn spawn_in(
         }),
     ];
     if !waiter {
-        no_waiter(inner, &p);
+        let os = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        no_waiter(inner, &p, os);
     } else if started.iter().any(|ok| !ok) {
         inner.log(&format!("{}: a thread did not start; killing it", p.id));
         kill_for(inner, p.id, ExitReason::SpawnFailed("thread".into()));
@@ -241,16 +249,20 @@ fn spawn_in(
 }
 
 /// The waiter did not start: kill the process and do the waiter's work here, so its `Exit`
-/// still goes out. A leader stays a zombie until its group is released.
-#[cfg(unix)]
-fn no_waiter(inner: &Arc<Inner>, p: &Arc<Proc>) {
+/// still goes out. A Unix leader stays a zombie until its group is released.
+fn no_waiter(inner: &Arc<Inner>, p: &Arc<Proc>, os: Option<os::OsProc>) {
     inner.log(&format!("{}: no waiter thread; killing it", p.id));
     p.mark_kill(ExitReason::SpawnFailed("thread".into()));
-    // SAFETY: our own child, not yet reaped.
-    unsafe { libc::kill(p.pid as i32, libc::SIGKILL) };
-    let raw = os::wait(&(), p.pid, !p.leader).unwrap_or_default();
+    let raw = match os {
+        Some(os) => {
+            os::kill_one(&os, p.pid);
+            os::wait(&os, p.pid, !p.leader).unwrap_or_default()
+        }
+        None => RawExit::default(),
+    };
     p.state().exited = true;
     p.writer.kill();
+    #[cfg(unix)]
     if p.leader
         && let Some(g) = inner.tables().groups.get_mut(&p.group)
     {
@@ -260,11 +272,6 @@ fn no_waiter(inner: &Arc<Inner>, p: &Arc<Proc>) {
     let info = inner.exit_info(p, raw);
     p.emit_exit(info);
     inner.exited(p);
-}
-
-#[cfg(not(unix))]
-fn no_waiter(inner: &Arc<Inner>, p: &Arc<Proc>) {
-    kill_for(inner, p.id, ExitReason::SpawnFailed("thread".into()));
 }
 
 fn thread(name: &str, f: impl FnOnce() + Send + 'static) -> bool {
