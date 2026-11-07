@@ -80,7 +80,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 | D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs are not supported |
 | D32 | Distribution | Direct download + auto-update: notarised DMG, signed Windows installer, AppImage/deb/rpm, Docker image for the server. No app stores in v1 |
 | D33 | Internationalisation | i18n-ready from the first commit, English-only at launch: every user-facing string is an ICU message in a catalogue, never a literal; translations are added later without code changes (§17.1). UI language and content language (transcripts, captions, generated text) are separate settings |
-| D34 | Diagnostics and training data | One versioned event envelope (types in `fin-core`, TS generated) written to a local, append-only, size- and age-capped journal in `<server-data>/events/` by `finisherd` only. Two purposes with separate consent: **diagnostics** (metadata only, on by default everywhere with an opt-out) and **training** (adds user and model content, LLM traffic included; only after an explicit opt-in); a per-project `collect: never` flag in `finisher.project.json` binds every collaborator; env overrides; off means nothing is recorded. Every payload field is classed `meta`, `scrubbed` or `content`; paths and host details are never stored raw. Events link to the op log by `txId`. No upload until a later sub-project, behind one `Uploader` boundary (§21.1) |
+| D34 | Diagnostics and training data | One versioned event envelope (types in `fin-core`, one closed payload enum, TS generated) written to a local, append-only, size- and age-capped journal in `<server-data>/events/` by `finisherd` only, with content-addressed blobs whose lifecycle follows the entries that reference them. Two purposes with separate consent: **diagnostics** (metadata only, edit outcomes included; on by default everywhere with an opt-out) and **training** (adds user and model content, edit intents and LLM traffic; only after an explicit opt-in by a person, never from `fin`); a per-project `collect: never` flag in `finisher.project.json` binds every collaborator; env overrides; off means nothing is recorded. Every payload field is classed `meta`, `scrubbed` or `content`; paths, host details and free-form names are never stored raw. Events link to the op log by `txId` and actor. No upload until a later sub-project; the upload view (`export --as-upload`) fixes what it may ship, and the dataset builder runs locally (§21.1) |
 
 ---
 
@@ -700,8 +700,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 | Concern | v1 decision |
 |---|---|
-| Telemetry | D34 (§21.1): a local event journal with consent per purpose (diagnostics, training), a per-project never-collect flag and documented, versioned kinds. Basic diagnostics is on by default with an opt-out; training content needs an explicit opt-in (§21.1). No upload in v1 until the uploader sub-project ships |
-| Crash reporting | Panics and uncaught errors are `error.panic` journal events under the diagnostics purpose (§21.1), scrubbed of paths, host and user names. Minidumps from Electron, server and workers come with the uploader, under the same consent |
+| Telemetry | D34 (§21.1): a local event journal with consent per purpose (diagnostics, training), a per-project never-collect flag and documented, versioned kinds. Basic diagnostics is on by default with an opt-out; training content needs an explicit opt-in by a person, which an agent's `fin` cannot give (§21.1). No network upload in v1 until the uploader sub-project ships |
+| Crash reporting | Panics and uncaught errors are `error.panic` journal events (§21.1). Under diagnostics they hold metadata only: the repo-relative `file:line` (or none, for a third-party location), a keyed hash of the scrubbed message, the process and the thread; no backtrace frames. The scrubbed message itself is training content. Minidumps from Electron, server and workers come with the uploader, under the same consent |
 | Model downloads | Guided first-run: shows size and purpose, resumable, verified, pausable; app usable before models finish; offline after download |
 | Offline clients | Read cached projections; edits queue only while the local embedded server is reachable (no client-only offline editing in v1) |
 | Localisation | All UI strings externalised from day one (ICU messages); English at launch |
@@ -720,79 +720,82 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 | Phase | Delivers |
 |---|---|
-| Now (sub-project 4C branch) | Envelope and kinds, the journal, consent and the project flag, the first sources (edits, history, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, the `Uploader` trait with no network implementation |
-| Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts) and the large-content blob store |
-| Sub-project 9 | `ui.*` events, the onboarding consent question (content, no pre-selected answer) and the diagnostics notice, a "what we collect" page |
+| Now (sub-project 4C branch) | Envelope, kinds and the payload enum, the journal and its blob lifecycle, consent and the project flag, the first sources (edits and history with their outcomes, intents and actors, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, and the upload view (`export --as-upload`). No uploader, no network |
+| Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts), sets `FIN_CALL`, and makes export of content, purge, `project default` and consent changes human-only |
+| Sub-project 9 | `ui.*` events, the UI's actor on commits, the onboarding consent question (content, no pre-selected answer) and the diagnostics notice, a "what we collect" page |
 | Sub-project 10 | `review.*` verdicts (marker resolve, accept/reject per transaction) |
-| Sub-project 11 or the cloud phase | The uploader (HTTPS, batching, backoff), the receiving service, the first-upload notice |
-| After v1, cloud | The dataset builder (below) |
+| Sub-project 11 or the cloud phase | The **local** dataset builder (below); the uploader (its trait, batching, backoff, cursor), which ships the builder's examples and the upload view's metadata entries; the receiving service; the first-upload notice |
 
-**Events are data.** One envelope, versioned, with its types in `fin-core::events` (pure: no clock, no randomness; the emitter supplies `id` and `ts`) and the TypeScript types generated like every model type:
+**Events are data.** One envelope, versioned, with its types in `fin-core::events` (pure: no clock, no randomness; the emitter supplies `id` and `ts`) and the TypeScript types generated like every model type. In memory a payload is one variant of a closed enum, serialised on the journal's writer thread:
 
 ```json
 {"v":1,"id":"01JC…","ts":1794571200123,"session":"01JC…","source":"finNode",
  "kind":"log.commit","kv":1,
  "consent":{"rev":3,"purposes":["diagnostics"],"basis":"default"},
- "ctx":{"project":"…","branch":"br1","txId":"01JC…","author":"k1:3f…","actor":{"kind":"agent","session":"…"}},
- "payload":{…}}
+ "ctx":{"project":"01JB…","branch":"br1","txId":"01JC…","author":"k1:3f…",
+        "actor":{"kind":"agent","session":"01JC…","call":"k1:9a…"}},
+ "payload":{"record":"edit","outcome":"rebased","baseRev":41,"rebasedOver":2,"ops":{"item.trim":1},"micros":812}}
 ```
 
 - `v` is the envelope version; `kv` the version of the kind's payload. Kinds are `domain.verb` (lower camel case within a segment) from one closed registry in `fin-core`; version 0 marks a **reserved** kind whose payload may still change.
-- `session` is the emitting process run (ULID), bracketed by `session.start` and `session.end`. `source` ∈ `fin`, `finisherd`, `finNode`, `ui`, `agent` (additive later). The server sets `source` from the caller's credential, never from the payload.
-- `ctx` links an event to the op log: project id, branch id, `txId` and the author as a keyed hash.
+- `session` is the emitting process run (ULID), bracketed by `session.start` and `session.end`. `source` ∈ `fin`, `finisherd`, `finNode`, `ui`, `agent` (additive later). The server sets `source` from the transport the request came on (local socket → `fin`, WebSocket → `ui`), never from the payload.
+- `ctx` links an event to the op log: project id, branch id, `txId`, the author as a keyed hash, and the **actor** (`user|agent|plugin|system|unknown`, with the agent or UI session and the tool call). `fin` sends its actor in the headers of every RPC request (`FIN_SESSION`, and `FIN_CALL`, the tool-call id an agent harness sets), so commits carry it too; a commit without one has actor `unknown`.
+- Ids are stored raw only when they are ULIDs; any other id (an idempotency key, a session name) is keyed-hashed.
 
 **Field classes.** Every payload field has exactly one class, in its type and in the JSON Schema (`x-fin-class`):
-- **`meta`:** numbers, booleans, closed enums, error codes, entity and tx ids, keyed hashes, coarse platform facts (OS family and major version, arch, core count, memory bucket). Payloads cannot hold a free-form string as `meta`; a schema test enforces it.
-- **`scrubbed`:** free text authored by Finisher code (error and panic messages, backtrace symbols) with absolute paths, the home and server-data directories, the user name and the host name replaced by placeholders *before* it is written.
-- **`content`:** user text, captions, transcripts, file and library names, prompts, model outputs, tool arguments and results, media hashes. Each content field names its kind (`userText`, `caption`, `fileName`, `prompt`, `modelInput`, `modelOutput`, `toolArgs`, `toolResult`, `mediaHash`).
+- **`meta`:** numbers, booleans, closed enums, error codes, ids, keyed hashes, repo-relative source locations (`crates/…`, `apps/…`), coarse platform facts (OS family and major version, arch, core count, memory bucket), and **names** (commands, flags, RPC methods, media extensions), which come only from code or static tables, never from user input. Payloads cannot hold a free-form string as `meta`; a schema test enforces it.
+- **`scrubbed`:** free text authored by Finisher code (error and panic messages) with absolute paths, the home and server-data directories, the user name and the host name replaced by placeholders *before* it is written.
+- **`content`:** user text, captions, transcripts, file and library names, prompts, model outputs, tool arguments and results, media hashes, edit intents (the ops of a transaction), error messages, and frames and audio. Each content field names its kind (`userText`, `caption`, `fileName`, `prompt`, `modelInput`, `modelOutput`, `toolArgs`, `toolResult`, `mediaHash`, `txIntent`, `errorMessage`, `frame`, `audio`). Content is scrubbed too where it is Finisher's text.
+- **Large content is a blob:** `BlobRef {hash, bytes, mediaType}`, only inside a content field, with the bytes in `<server-data>/events/blobs/<hash>` (keyed, content-addressed). A blob lives exactly as long as an entry references it: purge, retention, the size cap and `never` remove it with its last entry, by reference counting at rotation and purge. Frames and audio are always blobs; nothing writes one in the first phase, and a later sub-project adds their sources.
 - **Never stored, in any class:** raw paths (a path becomes `{root: project|library|workspace|serverData|other, ext, hash}`), host names, IPs, MAC addresses, user names, serial numbers, credentials, raw `fin` arguments.
 - Keyed hashes are BLAKE3 keyed with a per-install key (`events/key`, 0600), so they join records on this machine without being reversible by dictionary elsewhere. `purge --all` deletes the key.
 
 **Consent** (owner decisions of 2026-11-07)
 - **Two tiers.**
-  - **Basic diagnostics** is metadata only. It includes edit outcomes: which ops an edit used, and whether it was kept, undone, reverted, rebased or conflicted. It serves both purposes: improving the app, and training on metadata alone. It is on by default everywhere (desktop, headless, Docker) with an opt-out, and is disclosed in the terms, the privacy notice and a first-run notice. It holds no content, so it can rest on legitimate interest (GDPR Art. 6(1)(f)).
-  - **Training content** adds captions, transcripts, prompts, LLM conversations, file names, media hashes and, later, sampled frames. It needs an explicit opt-in: the onboarding question (sub-project 9, no pre-selected answer), `fin diagnostics consent training on`, or `FIN_TRAINING=on`. Until then training is `undecided` and records no content. The build default can never turn it on; a test enforces it.
+  - **Basic diagnostics** is metadata only. It includes edit outcomes: which ops an edit used, and whether it was kept, undone, reverted, rebased, deduped or conflicted. It serves both purposes: improving the app, and training on metadata alone. It is on by default everywhere (desktop, headless, Docker) with an opt-out, and is disclosed in the terms, the privacy notice and a first-run notice. It holds no content, so it can rest on legitimate interest (GDPR Art. 6(1)(f)).
+  - **Training content** adds captions, transcripts, prompts, LLM conversations, edit intents, error messages, file names, media hashes and, later, sampled frames and audio. It needs an explicit opt-in **by a person**: the onboarding question (sub-project 9, no pre-selected answer), a hand edit of `privacy.training` in `settings.json`, or `FIN_TRAINING=on` in `finisherd`'s own environment. Until then training is `undecided` and records no content. The build default can never turn it on; a test enforces it.
+  - **Agents cannot opt in.** `fin` runs in the agent sandbox, so `fin diagnostics consent training` accepts only `off` and `unset`, and `on` is a usage error that names the ways in. The `diagnostics.consent` RPC refuses `training: on` from any source but `ui`. The sandbox's env allow-list does not pass `FIN_TRAINING`.
   - **Prior art.** Cursor's and Copilot's individual plans train on code by default and are criticised for it; their business plans default off. Zed keeps telemetry on and takes training data only by opt-in, and VS Code sends telemetry by default with a notice. Finisher follows Zed for content and VS Code for metadata, because footage, faces and voices are riskier than code (Art. 9).
-- `<server-data>/settings.json` `privacy: {diagnostics: on|off, training: on|off, retentionDays, maxMiB}`, written by `diagnostics.consent` and `fin diagnostics consent`. An absent key takes the build default and records `basis: default`; a present one `basis: user`. Agents may read consent but never set it, once permissions exist (sub-project 7).
-- Env overrides: `FIN_DIAGNOSTICS`, `FIN_TRAINING` (`on|off`, `basis: env`); `DO_NOT_TRACK=1` forces both off. Off always wins over on.
-- An unreadable settings file means both off until it is fixed (fail closed, as with fonts).
-- **Training implies content; diagnostics never does.** With only diagnostics on, content fields are removed at write time and training-only kinds are written as their metadata part. Content entries always carry `basis: user` or `env`, never `default`.
-- **Per project:** `finisher.project.json` `collect: "never"` (absent means "follow each user's settings"). It travels with the folder, so every collaborator's server honours it. Setting it needs the writer lease; clearing it is human-only once permissions exist (sub-project 7). While a project's flag is unknown, it counts as `never`. Setting it purges that project's entries from this server's journal; each collaborator's server does the same when it sees the flag.
+- `<server-data>/settings.json` `privacy: {diagnostics: on|off, training: on|off, retentionDays, maxMiB}`, written by `diagnostics.consent` and `fin diagnostics consent` through a settings writer that changes only those keys and keeps everything else in a hand-edited file. An absent key takes the build default and records `basis: default`; a present one `basis: user`.
+- Env overrides (`finisherd`'s): `FIN_DIAGNOSTICS`, `FIN_TRAINING` (`on|off`, `basis: env`); `DO_NOT_TRACK=1` forces both off. Off always wins over on. `fin` also honours its own `DO_NOT_TRACK` and `FIN_DIAGNOSTICS=off` and then sends nothing.
+- The journal opens with the consent already resolved from the settings and the env, so nothing is written before they apply. An unreadable `privacy` section keeps the last good settings; only before the first good read does it mean both off (fail closed, as with fonts).
+- **Training implies content; diagnostics never does.** With only diagnostics on, content fields are removed at write time and training-only kinds are written as their metadata part. The writer applies the consent in force when the entry was recorded **and** when it is written, so content queued before a withdrawal never reaches disk. Content entries always carry `basis: user` or `env`, never `default`.
+- **Per project:** `finisher.project.json` `collect: "never"` (absent means "follow each user's settings"). It travels with the folder, so every collaborator's server honours it when it re-reads the file. Setting it needs the writer lease; clearing it is human-only once permissions exist (sub-project 7). While a project's flag is unknown (the project is not open on this server), new entries for it are dropped, but nothing is purged. An explicit `never` purges that project's entries and blobs from this server's journal; each collaborator's server does the same when it sees the flag.
 - **Off means off.** When no purpose is on, nothing is recorded anywhere: no file, no directory, no in-memory ring. The gate is one atomic load before a payload is even built. Normal stderr logs are unaffected.
-- Each entry carries the consent at write time (`rev`, `purposes`, `basis`). Changes are journaled as `consent.changed` while any purpose is still on. **An uploader re-checks current consent per entry**: withdrawing a purpose stops the upload of everything already recorded for it.
+- Each entry carries the consent it was written under (`rev`, `purposes`, `basis`). Changes are journaled as `consent.changed` on a path that never drops, under the old consent, just before they take effect. **The upload view re-checks current consent per entry**: withdrawing a purpose stops the upload of everything already recorded for it.
 
 **The journal** (`fin-journal`, linked by `fin-node`)
-- **One writer per server data:** `finisherd` (the `fin-node` journal). Other processes send events to it: `fin` over the local socket, the UI over RPC later. Offline `fin` records nothing.
-- `<server-data>/events/j-<yyyymmdd>-<ulid>.jsonl`: one JSON object per `\n`-terminated line, append-only. Files rotate at 8 MiB or a day. Retention defaults are 30 days and 128 MiB in total, oldest first.
-- **Crash-safe:** a torn last line is truncated on open and skipped by readers; closed files are fsynced; a panic flushes synchronously.
-- **Never blocks editing:** emitters enqueue onto a bounded channel. A full channel drops the event and counts it (`journal.dropped`). A failing disk suspends the journal and editing goes on. A writer thread serialises, batches and flushes every second or 64 KiB, and owns every file operation, purge and export included.
-- **High-rate signals are aggregated:** RPC and eval timings become per-minute histograms (`rpc.stats`, `eval.stats`), not one event per call.
-- **Cost is measured** (`journal_cost`): disabled emit, enqueue latency, writer throughput, and the commit-path overhead in `fin-node`. The budgets live in the plan.
+- **One writer per server data:** `finisherd` (the `fin-node` journal). Other processes send events to it: `fin` over the local socket, the UI over the WebSocket later. Offline `fin` records nothing.
+- `<server-data>/events/j-<yyyymmdd>-<ulid>.jsonl`: one JSON object per `\n`-terminated line, append-only. Files rotate at 8 MiB or a day. Retention defaults are 30 days and 128 MiB in total, blobs included, oldest first.
+- **Crash-safe:** a torn last line is truncated on open and skipped by readers; closed files are fsynced; a blob is on disk before the line that references it; a panic or shutdown flushes synchronously, with a timeout.
+- **Never blocks editing:** emitters enqueue onto a data channel bounded by entries and by bytes. A full channel drops the event and counts it (`journal.dropped`). Consent, project policy, purge and export use a separate control path that never drops. A failing disk suspends the journal and editing goes on. A writer thread serialises, batches and flushes every second or 64 KiB, and owns every file operation, purge and export included.
+- **High-rate signals are aggregated:** RPC and eval timings become per-minute histograms (`rpc.stats`, `eval.stats`), not one event per call. Streaming RPCs (`ops.subscribe`, `project.events`) are not timed.
+- **Cost is measured** (`journal_cost`): disabled emit, enqueue latency, writer throughput, and the commit-path overhead in `fin-node` with diagnostics and with training on. The budgets live in the plan.
 
 **Kinds now:**
 - `session.start|end|unclean`, `consent.changed`;
-- `log.commit`, one per attempt to append to the op log: `record` = `edit|undo|redo|merge|pick|revert|checkpoint|branch|branchSet` with the txIds it links to, outcome `accepted|rebased|deduped|conflict|refused|dryRun`, error code, op-kind counts, base lag, conflict codes and duration;
+- `log.commit`, one per attempt to append to the op log (edits, undo, redo, merge, pick, revert, checkpoint, branch create and set, recovery), classified in `fin-node` from typed results and the store's dedupe signal: `record` with the txIds it links to, outcome `accepted|rebased|deduped|noOp|conflict|refused|dryRun`, error code, op-kind counts, `baseRev` and the number of revs it was rebased over, conflict codes and duration; with training, also the intent as committed (or as requested, on failure). The state at `baseRev` is rebuilt from the op log, so no snapshot is stored;
 - `cli.command` (registry name, flag names, keyed `argsHash`, duration, exit code, error code, online, dry run, txIds);
-- `rpc.stats`, `eval.stats`, `fonts.fetch`, `storage.state`, `error.internal`, `error.panic`, `journal.dropped`.
+- `rpc.stats`, `eval.stats`, `fonts.fetch`, `storage.state`, `error.internal`, `error.panic` (location and message hash; the message as content), `journal.dropped`.
 
 **Reserved (v0) for sub-project 7:**
 - `agent.session` (provider, model, role, mode);
 - `agent.turn` (provider and model ids, input/output/cache tokens, latency, stop reason, cost; content: the new messages of the turn, system prompt and tool definitions by hash);
-- `agent.toolCall`, `agent.toolResult` (command, argsHash, ok/code, duration, txIds; content: arguments and output);
+- `agent.toolCall`, `agent.toolResult` (call id, command, argsHash, ok/code, duration, txIds; content: arguments and output, as blobs when large);
 - `agent.editVerdict` (txIds; `accepted|rejected|undone|merged|abandoned`; by user, critic or agent).
 
 Also reserved: `ui.action` (9) and `review.verdict` (10).
 
 **"Show me what's collected."**
-- `fin diagnostics show` gives the consent and its basis, the project flags, the files, sizes, counts per kind, the oldest and newest entries and the drops; `--recent <n>` prints entries.
-- `fin diagnostics export [--since] [--project] [--kind] [--as-upload <purpose>]` writes JSONL to stdout. `--as-upload` shows exactly what an uploader would send now.
+- `fin diagnostics show` gives the consent and its basis, the project flags, the files, blobs and sizes, counts per kind, the oldest and newest entries and the drops.
+- `fin diagnostics export [--since] [--project] [--kind] [--limit] [--as-upload <purpose>]` writes JSONL to stdout. `--as-upload` shows exactly what an uploader would send now.
 - `fin diagnostics purge (--all | --project <id> | --before <date>)`; `fin diagnostics project never|default`.
-- The same calls are RPCs for the UI.
+- The same calls are RPCs for the UI. Until sub-project 7, exporting content, purging and `project default` are open to `fin` too, so an agent can read the user's recorded content; content is served only to the `fin` and `ui` sources.
 
-**Upload boundary (no network now).** The journal exposes `upload_batches(uploader, purposes)`: closed files only, filtered by current consent and the project flags, with content removed unless training is on, and a persisted cursor per uploader (`events/cursor-<name>.json`), acknowledged per batch, at least once, deduplicated by event `id`. An `Uploader` ships those bytes and nothing else. The uploader pseudonymises project, branch and tx ids with its own key before sending.
+**The upload view (no network now).** `export --as-upload <purposes>` (`Journal::export` with an upload filter) is the contract a future uploader ships: closed files only, entries whose stamped purposes and the **current** consent share a purpose, projects not `never` or unknown now, content and blob references removed unless training is both current and stamped. The uploader sub-project adds the `Uploader` trait, batching, a cursor per uploader (at least once, deduplicated by event `id`) and pseudonymisation of project, branch and tx ids with its own key before sending. It reads through this view, so nothing in the journal changes.
 
-**Dataset builder (planned, out of scope now).** It runs locally over the journal plus the op log, so it sees exactly what consent allowed:
-- **Example:** the state before a transaction (snapshot at `baseRev`, rendered like `fin view`), the instruction (the agent turn linked by `txId`, or the `fin` command), and the ops.
+**Dataset builder (planned, out of scope now).** It runs **locally**, on the user's machine, over the journal plus the op log, so it sees exactly what consent allowed. The uploader ships the examples it built, plus the upload view's metadata entries; raw journals and op logs never leave the machine.
+- **Example:** the state before a transaction (rebuilt from the op log at `log.commit.baseRev`, rendered like `fin view`), the instruction (the agent turn joined by `actor.call` and `txId`, or the `fin` command), and the intent.
 - **Label:** kept, undone or reverted (a `log.commit` with `record: undo|revert` naming that txId, and how soon), merged into `main`, branch abandoned, or a conflict and its resolution (the next commit by the same actor on that branch), plus agent edit verdicts.
 - Pairs of kept and undone edits from the same context give preference data. Exports are versioned and licence-tagged, and only made from entries recorded under the training purpose.
 
