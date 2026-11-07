@@ -16,6 +16,7 @@ mod registry;
 mod registry_edit;
 mod registry_settings;
 mod values;
+mod view;
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -323,7 +324,7 @@ mod tests {
             "project recover --create all --import d --dismiss abc123abc123",
             "project acknowledge --rewind 2 --branch main",
             "status",
-            "view",
+            "view --track t1 --range 1s.. --budget 200",
             "branch new b --from main@3",
             "branch ls --all",
             "branch rename a b",

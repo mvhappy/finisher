@@ -357,17 +357,16 @@ fn reads_come_from_the_snapshot() {
     assert_eq!(status.code, 0);
     assert_eq!(status.json["rev"], 7);
     assert_eq!(
-        status.json["tracks"][0],
-        json!({ "id": "t1", "kind": "video", "clips": 2, "end": "10" })
+        status.json["timelines"][0]["tracks"][0],
+        json!({ "id": "t1", "name": "V1", "kind": "video", "items": 2, "end": "10" })
     );
+    assert_eq!(status.json["server"], false);
     assert_eq!(status.json["assets"], json!(["a1"]));
     let view = env.run(&["view", "--track", "t1", "--range", "6s.."]);
     assert_eq!(view.code, 0, "{}", view.stdout);
     assert_eq!(
-        view.json["tracks"],
-        json!([{ "id": "t1", "kind": "video", "clips": [
-            { "id": "c2", "start": "5", "end": "10", "asset": "a1", "sourceIn": "0" }
-        ] }])
+        view.json["lines"].as_array().unwrap()[1..],
+        [json!("00:05.0–00:10.0  V1  c2 clip a1 [0.0s+5.0s]")]
     );
     assert_eq!(
         view.json["resolved"]["range"],

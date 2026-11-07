@@ -1,0 +1,18 @@
+== tl1 "Main" 1080x1920 30fps 00:10.0  V1=t1 V2=t2 A1=t3(mute) C1=t4
+00:00.0–00:02.0  ──  marker m2 "intro"
+00:00.0–00:04.0  V1  c1 clip a1
+00:00.0–00:04.0  A1  c4 clip a1
+00:00.0–00:02.0  C1  cap1 "Hello world" (st1)
+00:01.0–00:03.0  V2  img1 image a3
+00:04.0–00:07.5  V1  c2 clip a1
+00:04.0–00:07.5  A1  c5 clip a1
+00:05.0–00:08.0  V2  g1 graphic a2
+00:05.0–00:06.2  C1  cap2 "Let's go" (preset:bold) (unmeasured: font unpinned)
+00:06.0  ──  marker m1 "drop"
+00:07.0–00:10.0  C1  cap3 "This caption has many words" (st1)
+00:07.0–00:08.0  V1  tr1 dissolve c2→c3 1.0s
+00:07.5–00:10.0  V1  c3 clip a1
+00:08.0–00:10.0  V2  nst1 nested tl2
+== tl2 "Alt" 1920x1080 29.97fps 00:02.001  V1=t5
+00:00.0–00:01.001  V1  c6 clip a1
+00:01.001–00:02.001  V1  adj1 adjustment

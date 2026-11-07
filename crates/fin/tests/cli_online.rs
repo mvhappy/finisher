@@ -84,12 +84,13 @@ fn full_editing_flow() {
         view,
         json!({
             "rev": 5,
-            "rate": "30",
-            "tracks": [
-                { "id": "t1", "kind": "video", "clips": [{ "id": "c2", "start": "0", "end": "3", "asset": "a1", "sourceIn": "4" }] },
-                { "id": "t2", "kind": "audio", "clips": [] },
+            "timeline": null,
+            "lines": [
+                "== tl1 \"Timeline 1\" 1080x1920 30fps 00:03.0  V1=t1 A1=t2",
+                "00:00.0–00:03.0  V1  c2 clip a1 [4.0s+3.0s]",
             ],
-            "resolved": {},
+            "elided": [],
+            "tokens": 26,
         })
     );
     // From outside the project folder, --project finds it; status agrees with view.
@@ -362,7 +363,7 @@ fn same_idem_key_twice_gives_identical_output_and_one_rev() {
     assert_eq!(first.json["txId"], "insert-1");
     let view = ok(fin(&server.sd, &dir, &["view"]));
     assert_eq!(view["rev"], 2);
-    assert_eq!(view["tracks"][0]["clips"].as_array().unwrap().len(), 1);
+    assert_eq!(support::view_items(&view).len(), 1, "{view}");
 }
 
 #[test]
@@ -586,20 +587,21 @@ fn concurrent_inserts_on_one_snapshot_both_commit_rebased() {
     );
     assert_eq!(docs[0]["resolved"]["at"], "0");
     let view = ok(fin(&server.sd, &dir, &["view", "--track", "t1"]));
-    let clips = view["tracks"][0]["clips"].as_array().unwrap().clone();
+    let clips = support::view_items(&view);
     assert_eq!(clips.len(), 2, "{view}");
     assert_eq!(
-        (clips[0]["start"].clone(), clips[0]["end"].clone()),
-        (json!("0"), json!("1"))
+        (clips[0].1.as_str(), clips[0].2.as_str()),
+        ("00:00.0", "00:01.0")
     );
     assert_eq!(
-        (clips[1]["start"].clone(), clips[1]["end"].clone()),
-        (json!("1"), json!("2"))
+        (clips[1].1.as_str(), clips[1].2.as_str()),
+        ("00:01.0", "00:02.0")
     );
     // The later writer echoes where its clip actually landed after the rebase.
     let later = docs[1]["bindings"]["$clip"].as_str().unwrap();
-    let landed = clips.iter().find(|c| c["id"] == later).unwrap();
-    assert_eq!(docs[1]["resolved"]["at"], landed["start"]);
+    let landed = clips.iter().find(|c| c.0 == later).unwrap();
+    let at: u32 = docs[1]["resolved"]["at"].as_str().unwrap().parse().unwrap();
+    assert_eq!(format!("00:{at:02}.0"), landed.1);
 }
 
 #[test]

@@ -110,12 +110,8 @@ fn linked_audio_split_and_transition_commit() {
     // Undo takes the whole composed tx back.
     let undone = ok(fin(&server.sd, &dir, &["undo"]));
     let view = ok(fin(&server.sd, &dir, &["view", "--track", "t1"]));
-    let ids: Vec<&str> = view["tracks"][0]["clips"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| c["id"].as_str().unwrap())
-        .collect();
+    let items = support::view_items(&view);
+    let ids: Vec<&str> = items.iter().map(|(id, _, _)| id.as_str()).collect();
     assert!(
         !ids.contains(&"c7") && !ids.contains(&"c8"),
         "{ids:?} after {undone}"
@@ -384,13 +380,12 @@ fn media_slide_timeline_and_marker_commit() {
     let slid = run(&["item", "slide", "img1", "+1s"]);
     assert_eq!(slid["resolved"]["start"], "1");
     let view = run(&["view", "--track", "t3"]);
-    let starts: Vec<(&str, &str)> = view["tracks"][0]["clips"]
-        .as_array()
-        .unwrap()
+    let items = support::view_items(&view);
+    let starts: Vec<(&str, &str)> = items
         .iter()
-        .map(|c| (c["id"].as_str().unwrap(), c["start"].as_str().unwrap()))
+        .map(|(id, start, _)| (id.as_str(), start.as_str()))
         .collect();
-    assert_eq!(starts, [("img1", "1"), ("g1", "3")], "{view}");
+    assert_eq!(starts, [("img1", "00:01.0"), ("g1", "00:03.0")], "{view}");
     assert_error(
         &fin(&server.sd, &dir, &["item", "slide", "img1", "-2s"]),
         3,
@@ -468,13 +463,12 @@ fn image_and_graphic_inserts_commit() {
         json!({ "title": "Hi", "accent": "#ff8800" })
     );
     let view = run(&["view", "--track", "t1"]);
-    let items: Vec<(&str, &str)> = view["tracks"][0]["clips"]
-        .as_array()
-        .unwrap()
+    let listed = support::view_items(&view);
+    let items: Vec<(&str, &str)> = listed
         .iter()
-        .map(|c| (c["id"].as_str().unwrap(), c["start"].as_str().unwrap()))
+        .map(|(id, start, _)| (id.as_str(), start.as_str()))
         .collect();
-    assert_eq!(items, [("img1", "0"), ("g1", "2")], "{view}");
+    assert_eq!(items, [("img1", "00:00.0"), ("g1", "00:02.0")], "{view}");
     // Refusals from the live head: a slot the template lacks, a media asset as a template.
     assert_error(
         &fin(
@@ -517,7 +511,7 @@ fn image_and_graphic_inserts_commit() {
     // Undo takes the graphic back.
     run(&["undo"]);
     let view = run(&["view", "--track", "t1"]);
-    assert_eq!(view["tracks"][0]["clips"].as_array().unwrap().len(), 1);
+    assert_eq!(support::view_items(&view).len(), 1, "{view}");
 }
 
 #[test]

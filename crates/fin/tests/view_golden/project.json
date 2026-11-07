@@ -1,0 +1,419 @@
+{
+  "project": {
+    "assets": {
+      "a1": {
+        "duration": "60",
+        "fingerprint": "a1",
+        "id": "a1",
+        "kind": "media",
+        "path": "/m/a1.mp4",
+        "video": {
+          "height": 1080,
+          "rate": "30",
+          "width": 1920
+        }
+      },
+      "a2": {
+        "duration": "3",
+        "fingerprint": "a2",
+        "id": "a2",
+        "kind": "lottieTemplate",
+        "lottie": {
+          "duration": "3",
+          "height": 1920,
+          "rate": "30",
+          "slots": [
+            {
+              "id": "title",
+              "kind": "text"
+            }
+          ],
+          "width": 1080
+        },
+        "path": "/m/a2.json"
+      },
+      "a3": {
+        "fingerprint": "a3",
+        "id": "a3",
+        "image": {
+          "height": 36,
+          "width": 64
+        },
+        "kind": "image",
+        "path": "/m/a3.png"
+      },
+      "a4": {
+        "fingerprint": "a4",
+        "font": {
+          "faces": [
+            {
+              "family": "TestSans",
+              "index": 0,
+              "italic": false,
+              "scripts": [
+                "Cyrl",
+                "Latn"
+              ],
+              "weight": 400
+            }
+          ],
+          "format": "ttf",
+          "sha256": "abababababababababababababababababababababababababababababababab",
+          "size": 2000
+        },
+        "id": "a4",
+        "kind": "font",
+        "path": "/m/a4.ttf"
+      }
+    },
+    "fonts": {
+      "fallback": [
+        "TestSans|400|normal"
+      ],
+      "pins": {
+        "TestSans|400|normal": {
+          "face": 0,
+          "family": "TestSans",
+          "format": "ttf",
+          "italic": false,
+          "scripts": [
+            "Cyrl",
+            "Latn"
+          ],
+          "sha256": "abababababababababababababababababababababababababababababababab",
+          "size": 2000,
+          "source": {
+            "asset": "a4",
+            "type": "asset"
+          },
+          "weight": 400
+        }
+      }
+    },
+    "id": "p1",
+    "name": "Reel",
+    "rate": "30",
+    "schemaVersion": 2,
+    "styles": {
+      "st1": {
+        "background": {
+          "color": "#000000b3",
+          "padding": 16.0,
+          "radius": 12.0
+        },
+        "color": "#ffffff",
+        "gap": "1/2",
+        "id": "st1",
+        "maxChars": 32,
+        "maxLines": 2,
+        "name": "Mine",
+        "position": {
+          "anchor": "bottom",
+          "offset": 0.0
+        },
+        "safeZone": "reels",
+        "text": {
+          "align": "center",
+          "family": "TestSans",
+          "italic": false,
+          "letterSpacing": 0.0,
+          "lineHeight": 1.2,
+          "size": 56.0,
+          "weight": 400
+        }
+      }
+    },
+    "timelines": [
+      {
+        "id": "tl1",
+        "markers": [
+          {
+            "at": "6",
+            "id": "m1",
+            "label": "drop"
+          },
+          {
+            "at": "0",
+            "color": "#ff0000",
+            "duration": "2",
+            "id": "m2",
+            "label": "intro"
+          }
+        ],
+        "name": "Main",
+        "rate": "30",
+        "resolution": {
+          "height": 1920,
+          "width": 1080
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "4",
+                "id": "c1",
+                "kind": "clip",
+                "link": "lk2",
+                "sourceIn": "0",
+                "start": "0"
+              },
+              {
+                "asset": "a1",
+                "duration": "7/2",
+                "effects": [
+                  {
+                    "id": "fx1",
+                    "kind": "blur",
+                    "params": {
+                      "radius": 4.0
+                    }
+                  }
+                ],
+                "id": "c2",
+                "kind": "clip",
+                "link": "lk1",
+                "opacity": 0.8,
+                "sourceIn": "2",
+                "speed": "3/2",
+                "start": "4"
+              },
+              {
+                "asset": "a1",
+                "duration": "5/2",
+                "id": "c3",
+                "keyframes": {
+                  "opacity": [
+                    {
+                      "at": "0",
+                      "interp": {
+                        "type": "linear"
+                      },
+                      "value": 0.0
+                    },
+                    {
+                      "at": "1",
+                      "interp": {
+                        "type": "linear"
+                      },
+                      "value": 1.0
+                    }
+                  ]
+                },
+                "kind": "clip",
+                "sourceIn": "10",
+                "start": "15/2",
+                "transform": {
+                  "rotation": 90.0
+                }
+              }
+            ],
+            "kind": "video",
+            "name": "V1",
+            "transitions": [
+              {
+                "between": [
+                  "c2",
+                  "c3"
+                ],
+                "duration": "1",
+                "id": "tr1",
+                "kind": "dissolve"
+              }
+            ]
+          },
+          {
+            "id": "t2",
+            "items": [
+              {
+                "asset": "a3",
+                "duration": "2",
+                "id": "img1",
+                "kind": "image",
+                "start": "1",
+                "transform": {
+                  "scale": [
+                    0.5,
+                    0.5
+                  ]
+                }
+              },
+              {
+                "asset": "a2",
+                "duration": "3",
+                "id": "g1",
+                "kind": "graphic",
+                "slots": {
+                  "title": "Hi"
+                },
+                "start": "5"
+              },
+              {
+                "duration": "2",
+                "id": "nst1",
+                "kind": "nested",
+                "sourceIn": "0",
+                "start": "8",
+                "timeline": "tl2"
+              }
+            ],
+            "kind": "video",
+            "name": "V2"
+          },
+          {
+            "id": "t3",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "4",
+                "id": "c4",
+                "kind": "clip",
+                "link": "lk2",
+                "sourceIn": "0",
+                "start": "0"
+              },
+              {
+                "asset": "a1",
+                "audio": {
+                  "fadeIn": "1/2",
+                  "gain": -6.0
+                },
+                "duration": "7/2",
+                "id": "c5",
+                "kind": "clip",
+                "link": "lk1",
+                "sourceIn": "2",
+                "speed": "3/2",
+                "start": "4"
+              }
+            ],
+            "kind": "audio",
+            "mute": true,
+            "name": "A1"
+          },
+          {
+            "id": "t4",
+            "items": [
+              {
+                "duration": "2",
+                "id": "cap1",
+                "kind": "caption",
+                "start": "0",
+                "style": "st1",
+                "words": [
+                  {
+                    "end": "1",
+                    "start": "0",
+                    "text": "Hello"
+                  },
+                  {
+                    "end": "2",
+                    "start": "1",
+                    "text": "world"
+                  }
+                ]
+              },
+              {
+                "duration": "6/5",
+                "id": "cap2",
+                "kind": "caption",
+                "start": "5",
+                "style": "preset:bold",
+                "words": [
+                  {
+                    "end": "1/2",
+                    "start": "0",
+                    "text": "Let's"
+                  },
+                  {
+                    "end": "6/5",
+                    "start": "1/2",
+                    "text": "go"
+                  }
+                ]
+              },
+              {
+                "duration": "3",
+                "id": "cap3",
+                "kind": "caption",
+                "start": "7",
+                "style": "st1",
+                "words": [
+                  {
+                    "end": "1/2",
+                    "start": "0",
+                    "text": "This"
+                  },
+                  {
+                    "end": "1",
+                    "start": "1/2",
+                    "text": "caption"
+                  },
+                  {
+                    "end": "3/2",
+                    "start": "1",
+                    "text": "has"
+                  },
+                  {
+                    "end": "2",
+                    "start": "3/2",
+                    "text": "many"
+                  },
+                  {
+                    "end": "3",
+                    "start": "2",
+                    "text": "words"
+                  }
+                ]
+              }
+            ],
+            "kind": "caption",
+            "name": "C1"
+          }
+        ]
+      },
+      {
+        "id": "tl2",
+        "name": "Alt",
+        "rate": "30000/1001",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t5",
+            "items": [
+              {
+                "asset": "a1",
+                "duration": "1001/1000",
+                "id": "c6",
+                "kind": "clip",
+                "sourceIn": "20",
+                "start": "0"
+              },
+              {
+                "blend": "screen",
+                "duration": "1",
+                "effects": [
+                  {
+                    "enabled": false,
+                    "id": "fx2",
+                    "kind": "colorAdjust"
+                  }
+                ],
+                "id": "adj1",
+                "kind": "adjustment",
+                "start": "1001/1000"
+              }
+            ],
+            "kind": "video",
+            "name": "V1"
+          }
+        ]
+      }
+    ]
+  },
+  "rev": 12
+}

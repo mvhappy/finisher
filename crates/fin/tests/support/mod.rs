@@ -319,3 +319,26 @@ pub fn offline(snapshot: &Value, args: &[&str]) -> Run {
     cmd.env("FIN_OFFLINE_SNAPSHOT", &file);
     finish(args, cmd.output().unwrap())
 }
+
+/// The item lines of a `fin view` answer as `(id, start, end)`, the times as the lines print
+/// them (`00:01.0`); headers, markers and transitions are skipped.
+#[allow(dead_code)]
+pub fn view_items(view: &Value) -> Vec<(String, String, String)> {
+    view["lines"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no lines: {view}"))
+        .iter()
+        .filter_map(|l| {
+            let l = l.as_str()?;
+            let mut cols = l.splitn(3, "  ");
+            let (span, label, body) = (cols.next()?, cols.next()?, cols.next()?);
+            let id = body.split(' ').next()?;
+            let transition = body.contains('→');
+            if l.starts_with("== ") || label == "──" || transition {
+                return None;
+            }
+            let (start, end) = span.split_once('–').unwrap_or((span, span));
+            Some((id.to_string(), start.to_string(), end.to_string()))
+        })
+        .collect()
+}

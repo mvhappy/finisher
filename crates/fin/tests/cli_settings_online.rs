@@ -129,7 +129,7 @@ fn settings_commit_and_eval_reads_them() {
     let pins = run(&["fonts", "ls", "--pinned"]);
     assert_eq!(pins["pins"], json!([]), "{pins}");
     let view = run(&["view", "--track", "t3"]);
-    assert_eq!(view["tracks"][0]["clips"], json!([]), "{view}");
+    assert_eq!(support::view_items(&view), [], "{view}");
 }
 
 #[test]

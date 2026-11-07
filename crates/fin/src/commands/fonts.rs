@@ -5,6 +5,8 @@
 //! are writes: a catalog pin is read off the server's catalog exactly as `fonts.plan` makes
 //! one (`fin_fonts::plan`); `--asset` pins a face of an imported font file and works offline.
 
+use std::collections::BTreeMap;
+
 use clap::{ArgGroup, Args, Subcommand};
 use fin_core::layout::key_users;
 use fin_core::{CoreError, FontPin, FontPinOp, FontRepin, FontSource, FontUnpin, Op, font_key};
@@ -403,17 +405,31 @@ fn ls(backend: &dyn Backend, globals: &Globals, a: &LsArgs) -> Result<Value, Cor
     Ok(doc)
 }
 
+/// The server's font files (`fonts.status`) by SHA-256, `None` offline: what `ls --pinned`
+/// shows as each pin's state, and what `fin view` and `fin status` mark captions by.
+pub(crate) fn file_states(
+    backend: &dyn Backend,
+) -> Result<Option<BTreeMap<String, Value>>, CoreError> {
+    if backend.dry_run_only() {
+        return Ok(None);
+    }
+    let status = backend.server_call("fonts.status", json!({}))?;
+    let files = status["files"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    Ok(Some(
+        files
+            .iter()
+            .filter_map(|f| Some((f["sha256"].as_str()?.to_string(), f.clone())))
+            .collect(),
+    ))
+}
+
 /// `fin fonts ls --project`: this branch's pins in fallback order first, with the cache state
 /// when a server answers, and who uses each.
 fn ls_project(backend: &dyn Backend, globals: &Globals, detail: bool) -> Result<Value, CoreError> {
     let branch = target_branch(backend, globals)?;
     let snap = backend.snapshot(&branch)?;
     let fonts = &snap.project.fonts;
-    let status = if backend.dry_run_only() {
-        None
-    } else {
-        Some(backend.server_call("fonts.status", json!({}))?)
-    };
+    let files = file_states(backend)?;
     let pins: Vec<Value> = fonts
         .pins
         .iter()
@@ -424,8 +440,8 @@ fn ls_project(backend: &dyn Backend, globals: &Globals, detail: bool) -> Result<
                 "fallback": fonts.fallback.iter().position(|k| k == key),
                 "styles": styles, "captions": captions,
             });
-            if let Some(s) = &status {
-                v["state"] = state_of(file_of(s, &json!(pin.sha256)));
+            if let Some(files) = &files {
+                v["state"] = state_of(files.get(&pin.sha256));
             }
             if detail {
                 v["sha256"] = json!(pin.sha256);

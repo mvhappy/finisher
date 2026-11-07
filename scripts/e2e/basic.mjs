@@ -55,14 +55,15 @@ export async function run() {
     const committed = writes.map((args) => fin(serverData, project, args));
     const view = fin(serverData, project, ["view"]);
     assertEqual(
-      view.tracks,
+      view.lines,
       [
+        '== tl1 "Timeline 1" 1080x1920 30fps 00:03.0  V1=t1 A1=t2',
         // Each insert also placed its linked audio clip (plan 4C Decision 21); the trim and the
         // delete of c1 acted on its link group (c1 + c2).
-        { id: "t1", kind: "video", clips: [{ id: "c3", start: "0", end: "3", asset: "a1", sourceIn: "4" }] },
-        { id: "t2", kind: "audio", clips: [{ id: "c4", start: "0", end: "3", asset: "a1", sourceIn: "4" }] },
+        "00:00.0–00:03.0  V1  c3 clip a1 [4.0s+3.0s]  ⟷ lk2",
+        "00:00.0–00:03.0  A1  c4 clip a1 [4.0s+3.0s]  ⟷ lk2",
       ],
-      "fin view tracks",
+      "fin view lines",
     );
 
     const revs = committed.map((w) => w.rev);

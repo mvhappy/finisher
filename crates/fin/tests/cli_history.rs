@@ -69,12 +69,9 @@ impl T<'_> {
         let mut args = extra.to_vec();
         args.push("view");
         let v = self.run(&args);
-        v["tracks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|t| t["clips"].as_array().unwrap())
-            .map(|c| c["id"].as_str().unwrap().to_string())
+        support::view_items(&v)
+            .into_iter()
+            .map(|(id, _, _)| id)
             .collect()
     }
     fn branches(&self, all: bool) -> Vec<Value> {
@@ -119,6 +116,18 @@ macro_rules! setup {
         };
         (server, dir)
     }};
+}
+
+/// What `fin status` says of the project's content (not of exports or the lease, which a
+/// background export may change between two reads).
+fn state(status: &Value) -> Value {
+    json!([
+        status["head"],
+        status["rev"],
+        status["timelines"],
+        status["assets"],
+        status["unmergedBranches"]
+    ])
 }
 
 #[test]
@@ -263,10 +272,10 @@ fn global_branch_flag_targets_writes_and_views() {
     assert_eq!(t.clips(&["--branch", "side"]), ["c1"]);
     assert_eq!(t.clips(&[]), Vec::<String>::new());
     assert_eq!(
-        t.run(&["--branch", "br1", "status"])["tracks"][0]["clips"],
+        t.run(&["--branch", "br1", "status"])["timelines"][0]["tracks"][0]["items"],
         1
     );
-    assert_eq!(t.run(&["status"])["tracks"][0]["clips"], 0);
+    assert_eq!(t.run(&["status"])["timelines"][0]["tracks"][0]["items"], 0);
     assert_error(&t.raw(&["--branch", "nope", "view"]), 3, "BRANCH_NOT_FOUND");
     // `project acknowledge` takes the global flag now.
     let ack = t.raw(&[
@@ -344,7 +353,7 @@ fn merge_with_conflict_exit_4_lists_conflicts() {
     let (server, dir) = setup!("merge_with_conflict_exit_4_lists_conflicts");
     let t = T(&server, &dir);
     conflicting(&t);
-    let before = t.run(&["status"]);
+    let before = state(&t.run(&["status"]));
     let run = t.raw(&["merge", "side"]);
     assert_error(&run, 4, "CONFLICT");
     let conflicts = run.json["error"]["details"]["conflicts"]
@@ -352,7 +361,11 @@ fn merge_with_conflict_exit_4_lists_conflicts() {
         .unwrap();
     assert_eq!(conflicts.len(), 1, "{}", run.stdout);
     assert!(conflicts[0]["reason"].is_string() && conflicts[0]["fix"].is_string());
-    assert_eq!(t.run(&["status"]), before, "a refused merge writes nothing");
+    assert_eq!(
+        state(&t.run(&["status"])),
+        before,
+        "a refused merge writes nothing"
+    );
 }
 
 #[test]
@@ -450,7 +463,7 @@ fn try_without_name_then_keep() {
     );
     assert_eq!(kept["switchedTo"], "main");
     assert_eq!(t.clips(&["--branch", "main"]), ["c1"]);
-    assert_eq!(t.run(&["status"])["tracks"][0]["clips"], 1);
+    assert_eq!(t.run(&["status"])["timelines"][0]["tracks"][0]["items"], 1);
     let cfg = t.config();
     assert_eq!(t.tries(), json!({}), "{cfg}");
     assert_eq!(cfg["defaultBranch"], json!({}), "{cfg}");
@@ -616,7 +629,7 @@ fn dry_run_each_history_command_writes_nothing() {
     t.run(&["undo"]);
     t.run(&["branch", "new", "arch"]);
     t.run(&["branch", "archive", "arch"]);
-    let snapshot = |t: &T| (t.branches(true), t.config(), t.run(&["status"]));
+    let snapshot = |t: &T| (t.branches(true), t.config(), state(&t.run(&["status"])));
     let before = snapshot(&t);
     let pick = picked["txId"].as_str().unwrap();
     let cases: Vec<Vec<&str>> = vec![
