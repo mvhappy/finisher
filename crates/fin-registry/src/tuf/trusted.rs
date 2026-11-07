@@ -186,6 +186,21 @@ impl TrustedRepo {
         Ok(self.store.state()?.last_refresh_at)
     }
 
+    /// The trusted files under non-versioned names: `root.json` (the newest root, as
+    /// fetched), `timestamp.json`, `snapshot.json`, `targets.json` and `<role>.json`.
+    pub fn trusted_files(&self) -> Result<BTreeMap<String, Vec<u8>>, TufError> {
+        let mut out: BTreeMap<String, Vec<u8>> = self
+            .store
+            .current()?
+            .into_iter()
+            .map(|(k, v)| (k.strip_prefix("roles/").unwrap_or(&k).to_string(), v))
+            .collect();
+        if let Some((_, root)) = self.store.latest_root()? {
+            out.insert("root.json".into(), root);
+        }
+        Ok(out)
+    }
+
     /// Trusted versions: `(root, timestamp, snapshot, targets)`.
     pub fn versions(&self) -> (u64, Option<u64>, Option<u64>, Option<u64>) {
         let t = &self.trusted;
@@ -270,7 +285,7 @@ impl TrustedRepo {
             }
         };
         checks::root(repo.root())?;
-        checks::delegations(repo.targets(), repo.snapshot())?;
+        checks::delegations(repo.targets(), repo.snapshot(), policy.layout)?;
         let files = promoted_files(&repo, &st.served)?;
         let fresh = Trusted::from_files(repo.root().clone(), &files)?;
         let mut report = RefreshReport {

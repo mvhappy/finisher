@@ -5,9 +5,9 @@
 use fin_plugin_api::PluginId;
 use tough::schema::{PathSet, Root, Signed, Snapshot, Targets};
 
-use super::TufError;
 use super::adapter::MAX_DELEGATIONS;
 use super::custom::TOP_LEVEL_ROLES;
+use super::{Layout, TufError};
 
 pub(crate) fn root(root: &Signed<Root>) -> Result<(), TufError> {
     if !root.signed.consistent_snapshot {
@@ -33,6 +33,7 @@ pub(crate) fn publisher_name_ok(name: &str) -> bool {
 pub(crate) fn delegations(
     targets: &Signed<Targets>,
     snapshot: &Signed<Snapshot>,
+    layout: Layout,
 ) -> Result<(), TufError> {
     let Some(d) = &targets.signed.delegations else {
         return Ok(());
@@ -46,6 +47,16 @@ pub(crate) fn delegations(
     }
     for role in &d.roles {
         let name = role.name.as_str();
+        if layout == Layout::Generic {
+            let listed = snapshot.signed.meta.contains_key(&format!("{name}.json"));
+            if listed && role.targets.is_none() {
+                return Err(TufError::delegation(
+                    name,
+                    format!("{name} is in the snapshot but was not loaded"),
+                ));
+            }
+            continue;
+        }
         if !publisher_name_ok(name) {
             return Err(TufError::delegation(
                 name,

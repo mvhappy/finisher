@@ -28,7 +28,15 @@ fn at(
     clock: &FixedClock,
     policy: Freshness,
 ) -> Result<RefreshReport, TufError> {
-    r.refresh_with(c, r.transport(), Policy { freshness: policy }, clock)
+    r.refresh_with(
+        c,
+        r.transport(),
+        Policy {
+            freshness: policy,
+            ..Policy::default()
+        },
+        clock,
+    )
 }
 
 #[test]

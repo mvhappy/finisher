@@ -4,10 +4,14 @@
 //! user pulls). An HTTP transport exists only in test builds (feature `test-http`).
 
 pub mod fs;
+#[cfg(feature = "test-http")]
+pub mod http;
 
 use std::fmt;
 
 pub use fs::FsTransport;
+#[cfg(feature = "test-http")]
+pub use http::HttpTransport;
 
 /// Why a fetch failed. Only [`TransportError::NotFound`] means "no such file": the TUF client
 /// ends the root walk on it and on nothing else (8A Task 1, gap 3).

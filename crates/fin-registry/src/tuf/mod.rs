@@ -36,9 +36,21 @@ pub enum Freshness {
     Relaxed,
 }
 
+/// Which repository layout a refresh requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// Finisher registries: one terminating `<publisher>/*` delegation per publisher.
+    #[default]
+    Finisher,
+    /// Any TUF 1.0 repository with consistent snapshots (the `tuf-conformance` client):
+    /// delegations are only checked by `tough` and the "listed but not loaded" rule.
+    Generic,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Policy {
     pub freshness: Freshness,
+    pub layout: Layout,
 }
 
 /// A warning `{code, details}`, e.g. `REGISTRY_STALE {days, maxStaleDays, role}`.
