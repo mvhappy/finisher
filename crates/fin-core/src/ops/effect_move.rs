@@ -53,7 +53,8 @@ pub(crate) fn apply(
     let item = bindings.resolve(&m.item)?;
     let (ti, ci) = item_index(project, &item)?;
     let it = &ti.get(project).items[ci];
-    let from = effect_index(it, &m.effect)?;
+    let fx = bindings.resolve(&m.effect)?;
+    let from = effect_index(it, &fx)?;
     let len = it.common.effects.len();
     // An internal apply (an undo's inverse re-run after other effects were removed, and the
     // replay of what it committed) moves to the end instead; a client's index is exact.
@@ -76,7 +77,7 @@ pub(crate) fn apply(
     Ok(vec![
         EffectMove {
             item,
-            effect: m.effect.clone(),
+            effect: fx,
             to: u32::try_from(from).unwrap_or(u32::MAX),
         }
         .into(),

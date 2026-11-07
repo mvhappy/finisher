@@ -741,6 +741,27 @@ fn effect_placeholder_resolves_inside_paths() {
     assert_eq!(e.code, "UNBOUND_PLACEHOLDER");
 }
 
+/// Task 26 (found by `generators_reach_every_op_kind`): `effect.move` and `effect.remove` name
+/// an effect added earlier in the transaction by its placeholder; it resolves at apply, and the
+/// inverses name the bound id.
+#[test]
+fn effect_placeholder_resolves_in_move_and_remove() {
+    let p = busy();
+    let ops = vec![
+        add("c2", "$b", "blur", None),
+        add("c2", "$c", "blur", None),
+        mv("c2", "$c", 0),
+        remove("c2", "$b"),
+    ];
+    let a = golden_apply(&p, ops);
+    assert_eq!(effect_ids(&a.project, "c2"), [a.bindings["$c"].clone()]);
+    assert!(
+        a.inverse.iter().all(|op| !format!("{op:?}").contains('$')),
+        "{:?}",
+        a.inverse
+    );
+}
+
 /// B1: `for_each_ref` reaches the effect segment of a path and of a keyframe map's keys, and
 /// renames keys together (a swap keeps both lists).
 #[test]
