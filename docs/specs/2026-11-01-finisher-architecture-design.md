@@ -1101,7 +1101,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Text slots (S11b): thorvg text is not used for slots.**
       - Slot text is laid out and rasterised by the shared Rust text engine (`fin-text`: cosmic-text + swash, the same path as captions). It is oversampled for animated scale and injected as an image slot.
       - The spike's `fin-text` rendered native and wasm32 bit-identically in 10/10 cases, with Arabic shaping, bidi, kerning and font fallback.
-      - Its output is also byte-identical across x86-64 Linux and arm64 macOS (20/20), on condition that fonts are always bundled, never taken from the system.
+      - Its output is also byte-identical across x86-64 Linux and arm64 macOS (20/20), on condition that fonts are always bundled, never taken from the system. *Since 4C (item 15): always pinned bytes, fetched on demand, never taken from the system.*
       - Why not thorvg: it lacks shaping, bidi, kerning, colour emoji, per-glyph font fallback and OTF/CFF fonts. Its text layout also differs across versions, and a wrapped 7-line box took 12 ms per frame.
       - Per-character animators work only on baked-glyph templates.
       - **Colour emoji is open:** swash has no COLRv1, so this needs a bitmap or COLRv0 font, or a COLRv1 painter.
@@ -1142,3 +1142,9 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **§6.8 branch archiving:** archived branches are kept and hidden; squashing them is deferred beyond sub-project 4.
     - **Rewinds cascade** to descendant branches whose `branch` record was lost; quarantined records come back as `recovered-*` branches (`fin project recover`).
     - **Still outstanding:** cross-host validation (sub-project 4 spec §4.8).
+
+15. **Sub-project 4C, edit breadth (as built, 2026-11-07):** the model, edits, evaluation, captions and text measurement of §6.2–6.4, §7, §9 and §12.3–12.7 as implemented are recorded in `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §5 (with the §3 and §4 places it changed), which wins over this document where they differ.
+    - **Model and edits:** several timelines, bins and markers; video, audio and caption tracks; items of kind clip, caption, graphic, image, adjustment and nested with common fields, effects, keyframes and link groups; transitions at cuts; a settings registry behind generic `param.set`, `keyframe.*` and `effect.*`; structural edits with explicit modes, each with an exact inverse, a footprint, a shift map and a content map. Schema version 2, with frozen upcasters, so every earlier project opens with the same state.
+    - **Evaluation:** `fin-core::eval` produces deterministic frame and audio plans (`f64` with `+ − × ÷ sqrt` only, a float gate, a plan-hash corpus byte-identical on Linux, macOS, Windows and wasm32). The compositor and mixer of sub-project 6 consume only these plans.
+    - **§27.10 amended: fonts are fetched and pinned, not bundled.** `fin-text` (cosmic-text, no swash) measures from fonts named by SHA-256: projects pin exact files, the server fetches them on demand from a pinned, licence-gated catalog into a content-addressed cache, and a missing font leaves a caption unmeasured without blocking an edit. Item 10's condition for identical output, "fonts always bundled, never taken from the system", now reads **"always pinned bytes, never taken from the system"**.
+    - **Still outstanding:** cross-platform validation (sub-project 4 spec §5.10).
