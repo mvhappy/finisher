@@ -1,0 +1,1 @@
+{"_tag":"Request","id":"1","tag":"diagnostics.record","payload":{"kind":"cli.command","kv":1,"payload":{"name":"item.trim","flags":["project"],"argsHash":"blake3:abababababababababababababababababababababababababababababababab","micros":1000,"exit":0,"online":true,"dryRun":false,"txIds":["fx-m0"]}},"headers":[]}

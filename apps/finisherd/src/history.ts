@@ -29,8 +29,13 @@ export function requestJson(payload: object): string {
   return JSON.stringify(request);
 }
 
-export function callEngine(engine: Engine, op: HistoryOp, payload: object): Promise<string> {
-  return engine[op](requestJson(payload));
+/** A call's actor (`callMeta(headers, source)`) as the engine's `metaJson`: its `log.commit` actor. */
+export function metaJson(meta: { readonly actor: object } | undefined): string | undefined {
+  return meta === undefined ? undefined : JSON.stringify(meta);
+}
+
+export function callEngine(engine: Engine, op: HistoryOp, payload: object, meta?: string): Promise<string> {
+  return engine[op](requestJson(payload), meta);
 }
 
 const isRecord = (v: unknown): v is CommittedTx =>

@@ -108,6 +108,9 @@ impl Writer {
             };
             self.write_with(p, stamp, true);
         }
+        if old.is_empty() && !new.is_empty() {
+            self.session_turned_on();
+        }
         self.enforce_gate();
         let _ = self.flush();
         if from.purposes().has_training() && !new.has_training() {

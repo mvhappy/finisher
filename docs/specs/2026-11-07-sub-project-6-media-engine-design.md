@@ -1,10 +1,10 @@
 # Sub-project 6: Media engine — Design
 
-- **Status:** revision 2 (2026-11-07), after an independent review of revision 1 (`e6f7e64`); §24 maps each finding to its resolution. Nothing is implemented yet. The plan for the first sub-batch (6A) is `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`.
+- **Status:** revision 3 (2026-11-07): the owner's decisions of 2026-11-07 are recorded in §21 and applied to the body; three follow-up decisions of the same day (the proxy encoder scope, Electron's ffmpeg made provisional, Landlock-disabled hosts) are in §21 and applied in §3.5.1, §6.1, §6.2, §7.1, §16.1 and §16.3. Revision 2 followed an independent review of revision 1 (`e6f7e64`); §24 maps each finding to its resolution. Nothing is implemented yet. The plan for the first sub-batch (6A) is `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 (rule 3), §7, §12, §17 (performance budgets), §18, §21.1, §22 and §27.2–27.3 and §27.10 for sub-project 6. Where the two disagree, this document wins for sub-project 6, and arch §27 gets a pointer when a sub-batch merges.
 - **Builds on:** sub-project 4 (`docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`, cited as *core §n*): `fin-core::eval` (core §5.4), captions and `fin-text` (core §5.5–5.6), the asset kinds (core §5.7), and the diagnostics journal (arch §21.1).
 - **Siblings** (all in revision; cited by branch): sub-project 5 (*cp §n*, `sp5-design`, `docs/specs/2026-11-07-sub-project-5-control-plane-design.md`): jobs, the worker binary, the library stage framework; sub-project 7 (*ar §n*, `sp7-design`): `fin-sandbox`; sub-project 8 (*pl §n*, `sp8-design`): plugins, analyzers, codec and matte interfaces. **Ownership splits fixed by the coordinator** are stated where they apply and summarised in §3.6.
-- **Licence facts** in §16 were checked against primary sources on 2026-11-07 (each project's LICENSE/COPYING/PATENTS file, crates.io metadata). Facts still to verify are marked *(verify)*. They are not legal advice; arch §26 open question 1 (counsel on codec patents) still stands.
+- **Licence facts** in §16 were checked against primary sources on 2026-11-07 (each project's LICENSE/COPYING/PATENTS file, crates.io metadata). Facts still to verify are marked *(verify)*. They are not legal advice; arch §26 open question 1 (counsel on codec patents) still stands, and decisions 1, 2 and 9 (§21) are on TASKS.md's "Counsel before release/upload" item.
 
 ## 1. Goal, scope and success
 
@@ -24,7 +24,7 @@ Sub-project 6 turns plans into pixels and sound. It delivers:
 
 **Success, for every sub-batch:**
 - every capability is driven and tested through `fin` → `finisherd` (`fin look`, `fin render`, `fin listen`, `fin media`, `fin cache`), and the preview through a headless Playwright harness;
-- `cargo test --workspace`, `pnpm test`, `pnpm gates` and `pnpm e2e` pass on macOS arm64, Windows 11 x64 and Linux x64;
+- `cargo test --workspace`, `pnpm test`, `pnpm gates` and `pnpm e2e` pass on macOS arm64, Windows 11 x64 and Linux x64 (kernel ≥ 6.2, D31);
 - the golden-frame and audio suites (§13) pass at their tolerances on every OS and on wasm32;
 - the licence gates cover native libraries, run-time-loaded libraries and the Docker image (§16.3).
 
@@ -42,6 +42,8 @@ Sub-project 6 turns plans into pixels and sound. It delivers:
 - Background removal (after v1); sub-project 6 renders mattes that plugins produce.
 
 **Cut from v1 (accepted after review):** the WebM muxer and libvpx encoding (VP9 decode stays); Dolby Vision profile 5; the playback half of server-rendered preview (scrub frames stay, §12); hardware AV1 encoding (SVT-AV1 is the only AV1 encoder in v1, §6.2); the per-fingerprint media index files (`MediaInfo` is computed where it is needed, §6.3).
+
+**Cut from v1 by owner decision (§21):** built-in HEVC encoding and any built-in HEVC export template (HEVC export only through the codec plugin, decision 9); H.264 export through GPU vendors' encoders (export uses OS vendors' encoders only, decision 9); built-in H.264 export on Linux (the codec plugin, or AV1); hardware codec drivers in the Docker image (decision 3); Windows 10 (D31 is Windows 11 only, decision 9).
 
 ## 2. Principles
 
@@ -133,7 +135,7 @@ Frames and PCM never go over the stdio envelope. `fin-shm` is a small crate (sub
 
 ### 3.5 Requirements on sub-project 7's `worker` sandbox profile
 
-Sub-project 7 (`fin-sandbox`, ar §7C) owns the sandbox and applies a `worker` profile to media workers and their helpers (6G turns it on; owner question 6). The profile must allow, and only allow:
+Sub-project 7 (`fin-sandbox`, ar §7C) owns the sandbox and applies a `worker` profile to media workers and their helpers. **Owner decision 6:** a Linux **Landlock-only** profile ships in 6B (§3.5.1); the full `worker` profile below is turned on in 6G once 7C lands. The full profile must allow, and only allow:
 - **GPU and media engines:**
   - macOS: Metal and the IOKit user clients it opens (`IOSurfaceRootUserClient`, the GPU's accelerator client), IOSurface, and the CoreMedia/VideoToolbox services hardware decode and encode use;
   - Linux: `/dev/dri/renderD*` (read/write), `/dev/dri/card*` read-only for enumeration where Mesa needs it, the Vulkan ICD and driver files, `/sys/class/drm` and `/sys/dev/char` reads; `/dev/nvidia*` in 6G;
@@ -142,12 +144,19 @@ Sub-project 7 (`fin-sandbox`, ar §7C) owns the sandbox and applies a `worker` p
 - **Writes:** the job's `out/` only; a private temp directory.
 - **Denied:** network (all), process creation (`process-exec`/`process-fork` on macOS, a seccomp filter on `execve`/`clone` without `CLONE_THREAD` on Linux, the job object's active-process limit of 1 on Windows), the rest of server data, credentials, the agent listener.
 
+#### 3.5.1 Before 7C: the baseline and the Linux Landlock profile (6B)
+
+- **Every OS, from 6A:** media workers and their helpers run with 5C's cleared environment, no credentials, and the job-directory write rule (`out/` only, §3.4). macOS and Windows workers have no OS sandbox until 6G.
+- **Linux, from 6B-1:** the worker applies a Landlock ruleset to itself before it opens any input, through `fin-sandbox`'s Landlock policy code if 7C's crate is far enough along, else a small module in `fin-workers` that 7C later replaces. A one-job worker restricts itself to that job: writes to its `out/` and a private temp directory; reads to the manifest's sources, the font and media caches and its `in/`. A warm worker (§3.2 item 1), which serves several jobs and whose rules can only narrow, restricts itself once at start to the library roots, the caches and `<server-data>/jobs/`. Both add the GPU and driver files of §3.5 (reads, plus read/write on `/dev/dri/renderD*`). No seccomp: network and process creation stay open until 7C.
+- **Landlock ABI:** D31's Linux floor is kernel ≥ 6.2 (owner decision 2026-11-07), so every supported kernel offers ABI ≥ 3 (`REFER`, `TRUNCATE`); the profile uses ABI 3 and has no code path for older ABIs.
+- **Hosts where Landlock is disabled** (kernel ≥ 6.2 with Landlock turned off: a kernel built without it, `landlock` missing from the `lsm=` list, or a container runtime whose seccomp profile blocks the Landlock syscalls) are still supported, and on them **everything runs, with warnings** (follow-up decision F2 of 2026-11-07, ar §8.9): the worker runs with the baseline above; the host shows a **persistent status warning** (`SANDBOX_DISABLED {profile: worker}` in `server.status` and `fin status`) and records a **diagnostics event** (`sandbox.unconfined`); `media.capabilities` records `sandbox: none` (§15), and the capability report says how to enable Landlock. Media jobs are never refused for this, and no setting overrides or silences the warning; the sandbox is defence in depth for media parsing, as it is for the other profiles on such a host.
+
 ### 3.6 Ownership splits (coordinator decisions)
 
 | Topic | Owner | Sub-project 6's part |
 |---|---|---|
 | Jobs, scheduler, worker binary, envelope, kill tree, warm workers, helpers, mapped-file lifecycle, retries, poison, `jobs.*`, `fin wait` | 5C | the `media` family and kinds; uses and asks in §3.2 |
-| Sandbox | 7 (`fin-sandbox`, `worker` profile) | requirements §3.5 |
+| Sandbox | 7 (`fin-sandbox`, `worker` profile) | requirements §3.5; the Linux Landlock-only profile of 6B (§3.5.1) |
 | Shared-memory channel | 6 (`fin-shm`) | used by sub-project 8 plugins too |
 | Built-in audio effects (EQ, compressor, gate, de-esser) | 6 (6C) | `AudioPlan` gains `effects` (§8.4) |
 | 16 kHz mono PCM feed, `media.frames` | 6 (cache recipes) | consumed by sub-project 8's analyzers |
@@ -196,7 +205,7 @@ Each is closed in `fin-core` (the plan grows), never by the engine reading the m
 | Caption style | `CaptionPlan.style` is the style id only | `CaptionPlan.paint`: the resolved colour, stroke, background box, highlight colour, and the layout's origin in frame pixels (from `position` and the safe zone) | 6D |
 | Caption animation | the model has no animation fields; arch §1 promises animated captions | `CaptionStyle.animation` (a closed set of presets: `none`, `pop`, `karaoke`, `fade`, `slideUp`); eval resolves each word's transform, opacity and colour into `WordPlan` | 6D |
 | Matte | `MaskPlan.matte` is a free string with no time | `matte` names an asset of kind `matte` (pl §10.3); rule documented in `fin-core`: a matte is read at the masked layer's source time (mattes are produced one frame per source frame) | 6D |
-| Base box | how a source maps into the frame at scale 1 is undefined | rule in `fin-core` docs (contain) and a `fit` parameter (owner question 4) | 6A (rule), 6D (param) |
+| Base box | how a source maps into the frame at scale 1 is undefined | rule in `fin-core` docs (contain, the default by owner decision 4) and a `fit` parameter (contain/cover/none) | 6A (rule), 6D (param) |
 | Transition looks | `crossfade` and `dissolve` have no defined difference | `crossfade`: both layers mixed in encoded (display) space; `dissolve`: mixed in linear light. Both use `progress` through `curve` | 6A |
 | Audio effects | `AudioItem` has gain, pan and shapes only | `AudioItem.effects`: the item's enabled audio effects with parameters resolved over the item's span (piecewise like gain), in order | 6C |
 
@@ -237,7 +246,7 @@ For each frame plan, bottom layer first:
 
 - **Precision:** sources are 8-bit (or 10-bit where the codec allows, arch §12.8); intermediate targets are `rgba16float` with premultiplied alpha; the output is 8-bit. *Amendment to arch §12.8 "8-bit internally":* 8-bit intermediates band under stacked opacity and gradients, `rgba16float` render targets with blending are core WebGPU, and the 10-bit/HDR path needs float anyway.
 - **Premultiplied alpha and division:** wherever a stage needs straight colour (effects, LUTs, blend formulas), it un-premultiplies as `a > 0 ? c / a : 0` with an explicit branch, in both compositors, so no NaN is ever produced (NaN payload bits differ between wasm32 and native, and a NaN would propagate differently on GPUs).
-- **Base box:** a source's base box is its display size (after rotation and pixel aspect) fitted inside the timeline frame ("contain"), centred. `transform` then applies: `anchor` is item-normalised in the base box, `position` is pixels from the frame centre, `scale` multiplies the base box, `rotation` is degrees clockwise. The matrix is built in Rust (`f64`, `libm` for `sin`/`cos`, deterministic) and passed to shaders as `f32`. Owner question 4 asks whether "contain" is the right default.
+- **Base box:** a source's base box is its display size (after rotation and pixel aspect) fitted inside the timeline frame ("contain"), centred. `transform` then applies: `anchor` is item-normalised in the base box, `position` is pixels from the frame centre, `scale` multiplies the base box, `rotation` is degrees clockwise. The matrix is built in Rust (`f64`, `libm` for `sin`/`cos`, deterministic) and passed to shaders as `f32`. "Contain" is the default by owner decision 4; 6D adds the `fit` parameter (contain/cover/none) for items that want another rule.
 - **Sampling and downscaling** (defined identically in both compositors, §13.4):
   - magnification and scale ≥ ½: bilinear sampling of the source at the output pixel centre;
   - minification: each source gets a **mip chain by exact 2×2 box averaging** (our own pass; WebGPU generates no mipmaps), and the layer samples with an **explicit level** `L = log2(1 / s)` where `s` is the layer's smaller axis scale in output pixels per source pixel (constant per layer, since transforms are affine; computed in Rust with `libm`), bilinear in levels `⌊L⌋` and `⌈L⌉` blended by the fraction. No derivative-based LOD, which differs between GPUs.
@@ -274,7 +283,9 @@ The copy path stays as the fallback and is chosen automatically when an import f
 
 - **Containers are ours, in Rust** (`fin-container`), on every OS: one reading of edit lists, sample tables, rotation and colour boxes everywhere. Media Foundation ignores MP4 edit lists (arch §27.3), and AVFoundation hides sample tables, so relying on OS demuxers would give three behaviours.
   - **The box layer is `mp4-atom`** (0.17.1, 2026-11-04, MIT OR Apache-2.0; it encodes and decodes the boxes we need, `stts`, `ctts`, `stsc`, `stsz`, `stco`, `co64`, `stss`, `elst` and the fragment boxes `moof`, `traf`, `tfhd`, `tfdt`, `trun`, `mvex`, `trex`, but validates and interprets nothing): it parses and serialises the ISOBMFF boxes. **Sample tables, edit lists, fragments-to-samples, limits and the codec-configuration readers are ours.** Why: box encoding is large, boring and well covered by a maintained crate that both reads and writes, which roughly halves the container work; the parts that decide which frame is shown and what a hostile file can make us allocate stay in code we test and fuzz. `fin-container` checks every box's size against the bytes available and caps declared counts **before** handing a box to `mp4-atom`, and the fuzz target covers the combination. If fuzzing finds an unbounded allocation inside `mp4-atom` that the pre-checks cannot prevent, the fallback is our own box layer for the affected boxes.
-- **Codecs are the OS's or hardware's for patent-encumbered formats** (H.264, HEVC, AAC) and **royalty-free software** for AV1, VP9 and Opus (D13, arch §18). Finisher ships no H.264 or HEVC implementation of its own.
+- **Codecs are the OS's or hardware's for patent-encumbered formats** (H.264, HEVC, AAC) and **royalty-free software** for AV1, VP9 and Opus (D13, arch §18). Finisher ships no H.264 or HEVC implementation of its own. Two owner decisions refine this:
+  - **Linux AAC-LC** (decision 1): Linux has no OS AAC codec, so AAC-LC is decoded with symphonia and encoded with a vendored vo-aacenc (§6.4); HE-AAC sources need the codec plugin. Counsel checks the exposure before release.
+  - **Export encoders** (decision 9, scope stated by follow-up decision F3 of 2026-11-07): the rule "**OS vendors' encoders only**" for H.264 and HEVC **applies to exports only**. H.264 export (and QA renders and mattes, which follow it, §6.2) uses VideoToolbox on macOS or Microsoft's own H.264 encoder MFT on Windows, never a GPU vendor's encoder (NVENC, AMD's or Intel's MFTs, VA-API drivers). **Internal preview proxies are exempt: they are never distributed, stay inside the user's installation, and may use any hardware encoder, GPU-vendor ones included.** Elsewhere export is AV1 (SVT-AV1), or H.264 through the codec plugin. There is no built-in HEVC encoding; HEVC export comes only from the codec plugin.
 - **OS codecs are driven at the codec level:**
   - macOS: `VTDecompressionSession` / `VTCompressionSession` (stateful: the OS parses the bitstream);
   - Windows: Media Foundation transforms (`IMFTransform`; the hardware MFT bound explicitly by adapter, arch §27.3), stateful; and **D3D11VA directly** for HEVC without the HEVC Video Extensions (arch §27.3), which is **stateless**;
@@ -282,8 +293,9 @@ The copy path stays as the fallback and is chosen automatically when an import f
 - **Stateless decoding uses `cros-codecs`** (ChromeOS; 0.0.6 of 2025-06-18, BSD-3-Clause in both crates.io metadata and the repo LICENSE; the repo is active) for bitstream parsing, DPB and reference management and the decoder state machines. Its VA-API backend decodes H.264, HEVC, VP8, VP9 and AV1 and encodes H.264, VP9 and AV1 (no HEVC encode); it is Linux-only by design ("support for systems other than Linux" is a stated non-goal) and reaches libva through `cros-libva` (0.0.13, BSD-3-Clause), whose `build.rs` **links** `libva` and `libva-drm` through `pkg-config`.
   - **libva is loaded at run time, never linked**, so the binary starts on machines without libva and the capability report says what is missing. That needs either a `cros-libva` fork whose FFI table is resolved with `libloading`, or Finisher's own VA-API backend over `cros-codecs`' parsers and state machines; the 6B-2 spike decides which.
   - **D3D11VA** gets Finisher's own backend; it reuses `cros-codecs`' parsers and state machines if the crate builds on Windows without its `vaapi` feature *(verify in the spike)*, else Finisher writes the DXVA parameter filling on its own parsers for H.264 and HEVC only (AV1 and VP9 go through MF there).
-  - **HEVC encoding on VA-API** is not in `cros-codecs`; it is out of v1 unless owner question 9 wants Linux HEVC export (it recommends none).
+  - **HEVC encoding on VA-API** is not in `cros-codecs`, and none is needed: there is no built-in HEVC encoding (decision 9).
 - **Process-based backends** (the FFmpeg plugin, others) implement the same `Decoder`/`Encoder` traits through a helper process that 5C starts as the job's sibling, with packets and frames in `fin-shm` rings (§3.4, §6.5).
+- **Every backend has a vendor class** in `fin-media`'s static tables: `os` (VideoToolbox, AudioToolbox, Microsoft's MFTs), `gpu` (a GPU vendor's MFT, VA-API, NVDEC/NVENC), `software` (rav1d, SVT-AV1, libvpx, libopus, symphonia, vo-aacenc) or `plugin`. The export encoder policy (§9.2) and the capability report are keyed on it.
 
 ### 6.2 Formats per OS
 
@@ -299,7 +311,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
 
 **Video decode**
 
-| Codec | macOS 14+ (Apple Silicon) | Windows 10 22H2 / 11 | Linux | Software |
+| Codec | macOS 14+ (Apple Silicon) | Windows 11 | Linux (kernel ≥ 6.2) | Software |
 |---|---|---|---|---|
 | H.264 (8-bit, High) | VideoToolbox (HW) | MF + hardware MFT | VA-API (Intel, AMD) through `cros-codecs`; NVDEC (6G) | **none** (patents) |
 | HEVC Main / Main10 | VideoToolbox (HW) | MF with the HEVC Video Extensions, else D3D11VA through `cros-codecs` | VA-API through `cros-codecs`; NVDEC (6G) | **none** |
@@ -309,25 +321,26 @@ The copy path stays as the fallback and is chosen automatically when an import f
 
 **Video encode**
 
-| Codec | macOS | Windows | Linux | Software |
+| Codec | macOS | Windows 11 | Linux | Software |
 |---|---|---|---|---|
-| H.264 | VideoToolbox | hardware MFT by adapter (AMD, NVIDIA, Intel) | VA-API (Intel low-power VDEnc, AMD) | **none** |
-| HEVC | VideoToolbox | hardware MFT | VA-API | **none** |
-| AV1 | — | — (the hardware MFT path is cut from v1) | — | **SVT-AV1** |
+| H.264, export | VideoToolbox (`os`) | Microsoft's H.264 encoder MFT (`os`, a software encoder; absent on N editions without the Media Feature Pack) | — (the codec plugin) | **none** |
+| H.264, proxies | VideoToolbox | a hardware MFT by adapter (AMD, NVIDIA, Intel; `gpu`), else Microsoft's MFT | VA-API (Intel low-power VDEnc, AMD; `gpu`); NVENC (6G) | **none** (SVT-AV1 proxies instead) |
+| HEVC | — (only for test fixtures: VideoToolbox, §13.3) | — | — | **none**; HEVC export only through the codec plugin |
+| AV1 | — | — (the hardware MFT path is cut from v1) | — | **SVT-AV1** (export everywhere; proxies without a hardware encoder) |
 | VP9 | — | — | — | — (libvpx encoding cut from v1) |
 
-Owner question 9 asks which of these H.264/HEVC encoders Finisher may use for export, given that GPU vendors' encoders and Linux drivers generally come without a patent licence for the application.
+**Encoder policy (owner decision 9; scope stated by follow-up decision F3 of 2026-11-07):** the "OS vendors' encoders only" rule applies to **exports and what follows the export path**. Export and QA renders (`media.render`, §9) and mattes (`media.matteEncode`, §11.3) use only `os` and `software` encoders and the codec plugin; QA renders follow export so the QA gate checks the encoder that ships, and a matte is a synced asset that can leave the machine. **Internal preview proxies (`media.proxy`) are exempt:** they are never distributed and never leave the cache of the user's installation, so they may use any hardware encoder, `os` or `gpu`; a `gpu` encoder is never chosen for a file that leaves the cache.
 
 **Audio**
 
 | Codec | macOS | Windows | Linux |
 |---|---|---|---|
-| AAC-LC / HE-AAC decode | AudioToolbox | MF AAC decoder (absent on N editions without the Media Feature Pack) | **open** (owner question 1; symphonia: AAC-LC only) |
-| AAC-LC encode | AudioToolbox | MF AAC encoder (absent on N editions) | **open** (owner question 1) |
+| AAC-LC / HE-AAC decode | AudioToolbox | MF AAC decoder (absent on N editions without the Media Feature Pack) | AAC-LC: symphonia (decision 1); HE-AAC: the codec plugin (symphonia refuses it) |
+| AAC-LC encode | AudioToolbox | MF AAC encoder (absent on N editions) | vendored vo-aacenc (decision 1) |
 | Opus | libopus (decode and encode, all OSes) | | |
 | MP3, FLAC, ALAC, Vorbis, PCM | symphonia (decode, all OSes) | | |
 
-- **Gaps get guidance, not failure** (arch §12.1): the capability report lists each missing decoder with its fix (the HEVC Video Extensions, the Media Feature Pack on Windows N, a GPU driver, the codec plugin). An asset that cannot be decoded is still registered; its items render as "unavailable" in preview and `fin look`, and export refuses with `CODEC_UNAVAILABLE`.
+- **Gaps get guidance, not failure** (arch §12.1): the capability report lists each missing decoder or export encoder with its fix (the HEVC Video Extensions, the Media Feature Pack on Windows N, the Store codec extensions that LTSC editions lack *(verify)*, a GPU driver, the codec plugin). An asset that cannot be decoded is still registered; its items render as "unavailable" in preview and `fin look`, and export refuses with `CODEC_UNAVAILABLE`.
 - **Proxies remove most gaps for editing:** a machine that can decode an original once writes AV1 or H.264 proxies that every client can play.
 
 ### 6.3 Probing
@@ -351,7 +364,8 @@ Owner question 9 asks which of these H.264/HEVC encoders Finisher may use for ex
 | SVT-AV1 | AV1 encode: proxies without a hardware encoder, every AV1 export, test fixtures | own minimal FFI, built from source at a pinned tag (arch §27.3), never a prebuilt download |
 | libvpx | VP9 decode where the OS has none | own minimal FFI, built from source at a pinned tag (decoder only) |
 | libopus | Opus decode/encode | own minimal FFI, built from source at a pinned tag |
-| symphonia | MP3, FLAC, ALAC, Vorbis, PCM, WAV/AIFF/Ogg/CAF readers | crate, unmodified (MPL-2.0, §16.1) |
+| symphonia | MP3, FLAC, ALAC, Vorbis, PCM, WAV/AIFF/Ogg/CAF readers; AAC-LC decode on Linux (decision 1) | crate, unmodified (MPL-2.0, §16.1) |
+| vo-aacenc | AAC-LC encode on Linux (decision 1; 6C) | vendored at a pinned commit under `third_party/vo-aacenc` (git submodule of Finisher's own maintained fork), own minimal FFI, built from source; dormant upstream since 2017, so Finisher owns its fixes; fed only PCM the mixer produced |
 | `mp4-atom` | ISOBMFF box encode/decode | crate, under `fin-container`'s limits (§6.1) |
 | `cros-codecs` | stateless decoding state machines and parsers (6B) | crate, with Finisher's VA-API and D3D11VA backends |
 | `fin-container` | sample tables, edit lists, fragments, limits, MP4 mux, WebM demux | ours; fuzzed (§13.5) |
@@ -360,9 +374,11 @@ Owner question 9 asks which of these H.264/HEVC encoders Finisher may use for ex
 
 The protocol a codec plugin implements (packaged by sub-project 8, pl §10.1): `codec.open {kind, stream, config}` → `{session, caps}`; packets in and frames out through `fin-shm` rings; `codec.flush`, `codec.close`; `demux.open`/`demux.read` on a read-only grant of one source file. The media worker is the client; the plugin is the job's sibling helper (§3.2 item 4). Conformance: §13.5.
 
+**Availability (sub-project 8's owner decision 1, pl §3.1, §16.1):** third-party code plugins, the codec plugin among them, may be installed before 7C: installing one shows a high-risk warning, its permissions need a person's explicit approval, and nothing auto-updates. Until 7C lands and its profile is enforced automatically, its helper runs with the env allow-list, no credentials, brokered egress and the `in/`/`out/` rules. So the plugin paths this spec names as fixes (HE-AAC, HEVC export, Linux H.264 export, other containers) exist from 8B, not only after 7C.
+
 ### 6.6 Estimate for 6B
 
-Revision 1 treated VA-API and D3D11VA like VideoToolbox. They are stateless, so 6B carries a decoder backend per API on top of `cros-codecs`, D3D11VA-specific DXVA parameter structures (`DXVA_PicParams_H264`, `_HEVC`, …) and reference-surface management, besides the stateful VideoToolbox and MF paths. **6B is re-estimated at about 1.6× revision 1's size** (more if the D3D11VA backend cannot reuse `cros-codecs`), and is split into **6B-1** (VideoToolbox, MF stateful decode and encode, the capability report, HDR tone mapping, proxies, the cache and HTTP serving) and **6B-2** (VA-API and D3D11VA through `cros-codecs`, VA-API encode). 6B-2's first task is a spike that proves a `cros-codecs` backend over run-time-loaded libva, and the D3D11VA backend's feasibility, before the rest is planned.
+Revision 1 treated VA-API and D3D11VA like VideoToolbox. They are stateless, so 6B carries a decoder backend per API on top of `cros-codecs`, D3D11VA-specific DXVA parameter structures (`DXVA_PicParams_H264`, `_HEVC`, …) and reference-surface management, besides the stateful VideoToolbox and MF paths. **6B is re-estimated at about 1.6× revision 1's size** (more if the D3D11VA backend cannot reuse `cros-codecs`), and is split into **6B-1** (VideoToolbox, MF stateful decode and encode, the capability report, HDR tone mapping, proxies, the cache and HTTP serving, the Linux Landlock worker profile) and **6B-2** (VA-API and D3D11VA through `cros-codecs`, VA-API encode for proxies). Both cover all three OSes (owner decision 8); NVIDIA on Linux is 6G. 6B-2's first task is a spike that proves a `cros-codecs` backend over run-time-loaded libva, and the D3D11VA backend's feasibility, before the rest is planned.
 
 ## 7. Proxies and caching
 
@@ -372,7 +388,7 @@ Revision 1 treated VA-API and D3D11VA like VideoToolbox. They are stateless, so 
   - `540`: scrub and remote clients. All-intra where the hardware encoder supports intra-only at ≥ 8× real time; otherwise a keyframe every 0.25 s.
   - `1080`: default preview. Closed GOP with a keyframe at least every 0.5 s.
   - Originals for export.
-- **Codec:** OS/hardware H.264 → SVT-AV1 (preset 10, CRF, closed GOP every 15 frames; arch §27.3). A remote client whose WebCodecs cannot decode the chosen codec gets the other one, generated on demand. If owner question 2's answer removes software H.264 from the desktop app, preview proxies default to AV1 (§12).
+- **Codec:** OS/hardware H.264 (any vendor class, GPU vendors' included: preview proxies are never distributed and stay inside the user's installation, §6.2) → SVT-AV1 (preset 10, CRF, closed GOP every 15 frames; arch §27.3). A remote client whose WebCodecs cannot decode the chosen codec gets the other one, generated on demand. If the desktop app ships Electron's open-codecs-only ffmpeg (owner decision 2, provisional until sub-project 9 decides the desktop shell), it has no software H.264 decoder, so its preview uses H.264 proxies only where WebCodecs reports hardware H.264 decode, else AV1 (§12).
 - **Audio:** Opus 128 kb/s stereo at 48 kHz inside the proxy (for remote clients and preview), plus the PCM cache (§7.2) for native mixing.
 - **Frames:** a proxy holds **exactly one frame per original frame**, in order, stamped at a constant rate (the original's nominal rate), and its cache entry keeps the original's sample table. Preview finds the original frame for a source time with the same nearest-frame rule as export (§10.2) and fetches that frame from the proxy by index, so preview and export show the same frame, also for VFR sources and for times that fall between frames. This is how "conformed to CFR with a PTS map" (arch §12.2) is realised.
 - **HDR sources** are tone-mapped to SDR when the proxy is made (§10.1), with the same algorithm export uses on that OS, so preview never relies on Chromium's own tone mapping.
@@ -463,8 +479,9 @@ A text summary of a range for agents (arch §9.6): per track and for the mix, in
 ### 9.2 Format templates
 
 - Templates are data (a content pack, arch §14.1): container, video codec, profile, resolution, rate (always the timeline's), rate control and bitrate, GOP, audio codec and bitrate, loudness target and true-peak ceiling, safe-zone preset.
-- **First-party templates:** `social-9x16-1080p` (H.264 High, ~12 Mb/s VBR, AAC-LC 192 kb/s, −14 LUFS / −1 dBTP), `master-16x9-1080p`, `master-16x9-2160p`, `av1-web` (AV1 + Opus, the royalty-free reserve). Whether an HEVC template ships at all is owner question 9.
+- **First-party templates:** `social-9x16-1080p` (H.264 High, ~12 Mb/s VBR, AAC-LC 192 kb/s, −14 LUFS / −1 dBTP), `master-16x9-1080p`, `master-16x9-2160p`, `av1-web` (AV1 + Opus, the royalty-free reserve). **No built-in HEVC template** (owner decision 9): a template that names HEVC is supported only where the codec plugin is installed.
 - A template asks for capabilities, never for a specific backend; the export report names the backend that was used.
+- **Backend choice** follows the encoder policy of §6.2: for H.264, an `os` encoder, else the codec plugin; never a `gpu` encoder. Where neither exists (Linux without the plugin, Windows N without the Media Feature Pack), preflight fails with `EXPORT_TEMPLATE_UNSUPPORTED`, whose `fix` names the codec plugin and offers `av1-web`. AAC-LC comes from the OS encoder, or from vo-aacenc on Linux (decision 1).
 
 ### 9.3 Export report
 
@@ -521,8 +538,8 @@ Chunked parallel export (GOP-aligned segments encoded on several workers and con
 
 ### 11.3 Masks and mattes
 
-- **A matte is an asset of kind `matte`** (pl §10.3, owner question 4 of sub-project 8): a luma-encoded greyscale video in `assets/`, write-once and synced, so export on another machine never depends on a cache. `Mask.matte` names that asset (§4.4).
-- **Producing one:** a matte producer (a plugin, sub-project 8) returns alpha frames, exactly one per source frame, in order, through a `fin-shm` ring; a `media.matteEncode` job encodes them losslessly-enough (H.264 4:0:0 where the OS encoder offers it, else SVT-AV1 at high quality, 8-bit luma) at the source's rate and sample table, and registers the asset.
+- **A matte is an asset of kind `matte`** (pl §10.3, sub-project 8's owner decision 3): a luma-encoded greyscale video in `assets/`, write-once and synced, so export on another machine never depends on a cache. `Mask.matte` names that asset (§4.4).
+- **Producing one:** a matte producer (a plugin, sub-project 8) returns alpha frames, exactly one per source frame, in order, through a `fin-shm` ring; a `media.matteEncode` job encodes them losslessly-enough (H.264 4:0:0 where an `os` encoder offers it, else SVT-AV1 at high quality, 8-bit luma; a matte is a synced asset, so the export encoder policy of §6.2 applies and no `gpu` encoder is used) at the source's rate and sample table, and registers the asset.
 - **Rendering:** the engine decodes the matte like any source, at the masked layer's source time by the nearest-frame rule (§10.2), and takes alpha from range-expanded luma.
 - **Order:** `choke` (erosion by `choke` pixels at the timeline resolution, a separable min filter), then `feather` (Gaussian blur with radius `feather` pixels), then `invert`, then multiply into the layer's alpha after crop and edge coverage.
 - **Mask edits** (`mask.set`, `mask.remove`, keyframes on `mask.*`) are added to `fin-core` in 6D (4C Decision 48), one module per op, with inverses and footprints like every op.
@@ -546,7 +563,7 @@ Chunked parallel export (GOP-aligned segments encoded on several workers and con
   - the scheduler (§8.3) and the AudioWorklet mixer;
   - dotlottie-web for graphics;
   - a capability probe (`VideoDecoder.isConfigSupported` per proxy codec, including `prefer-hardware`) sent to the server in the handshake, so it serves the right proxy codec.
-- **Proxy codec in the desktop app** depends on owner question 2: if Electron ships with the open-codecs-only ffmpeg, H.264 proxies are used only where WebCodecs reports hardware H.264 decode *(verify that hardware H.264 decoding still works in WebCodecs with that ffmpeg build, per pinned Electron version)*; otherwise preview proxies default to AV1 (decoded in hardware where available and by Chromium's dav1d elsewhere).
+- **Proxy codec in the desktop app** (owner decision 2, provisional until sub-project 9 decides the desktop shell): if the app ships Electron's open-codecs-only ffmpeg build, H.264 proxies are used only where WebCodecs reports hardware H.264 decode *(verify that hardware H.264 decoding still works in WebCodecs with that ffmpeg build, per pinned Electron version)*; everywhere else preview proxies default to AV1 (decoded in hardware where available and by Chromium's dav1d elsewhere). If the verification fails, the desktop app uses AV1 proxies only.
 - **Scrub:** seeks decode from the nearest keyframe of the `1080` proxy, or of the `540` proxy while dragging fast; the last good frame stays up until the new one arrives.
 - **Server-rendered fallback** (arch §12.3, D31: no WebGPU): an interactive `media.previewFrames` job renders frames on demand (WebP over the binary channel) for scrubbing. **Playback through the server is cut from v1:** without WebGPU the client plays the `540` proxy in a `<video>` element with no compositing (captions and graphics are absent, and the player says so).
 - **Test harness:** a page under `packages/preview/harness/` loaded by Playwright in Chromium and in Electron on the three OSes, for parity goldens, the A/V latency measurement of arch §27.2, and the budgets of §14. It also serves as the walking skeleton's "bare web client" (arch §24 row 3), which has not been built yet.
@@ -587,7 +604,7 @@ Chunked parallel export (GOP-aligned segments encoded on several workers and con
 ### 13.3 Fixtures
 
 - **Generated sources:** `fin-media::testing` draws frames with a **frame-id pattern**: a block code carrying the frame index and a checksum, robust to lossy coding, in a corner of an otherwise varied picture (gradients, colour bars, moving edges, text). Decoders, the sampling rule, edit lists and VFR are checked by reading ids back from decoded frames.
-- **Encoded at test time:** SVT-AV1 (every OS) and the OS encoders (platform tests) encode the patterns into MP4 with `fin-container`'s muxer. VFR, edit-list, rotation, HDR-tagged and 10-bit variants are written by tweaking the muxed boxes.
+- **Encoded at test time:** SVT-AV1 (every OS) and the OS encoders (platform tests) encode the patterns into MP4 with `fin-container`'s muxer. HEVC fixtures are encoded by VideoToolbox on macOS only (there is no built-in HEVC encoder elsewhere, §6.2); HEVC decode rows on Windows and Linux use clips from the local fixture cache. VFR, edit-list, rotation, HDR-tagged and 10-bit variants are written by tweaking the muxed boxes.
 - **Audio:** tones, sweeps, silences and beeps in sync with flash frames, generated in code.
 - **Real footage:** a local fixture cache (`FIN_MEDIA_FIXTURES`), filled from rights-cleared or owner-made clips (arch §26 question 10), required on validation hosts (`FIN_REQUIRE_MEDIA=1`) and skipped elsewhere with a notice. Never committed; permissive licences only (AGENTS.md).
 
@@ -605,7 +622,7 @@ A backend (built-in or a plugin, pl §10.1) passes when it: decodes the generate
 
 ## 14. Performance budgets
 
-Budgets are CI gates where CI hardware can measure them, and validation-task gates on the reference machines otherwise (an Apple M-series Mac, a Windows desktop with an AMD RX-class GPU, a Linux Intel Gen12 machine) and on a **D31-minimum machine**: Windows 10 22H2 or 11 x64, 4 cores, 8 GB RAM, an integrated GPU of the oldest class that offers WebGPU in Chromium (an Intel UHD 620-class iGPU), or an 8 GB M1 Mac.
+Budgets are CI gates where CI hardware can measure them, and validation-task gates on the reference machines otherwise (an Apple M-series Mac, a Windows desktop with an AMD RX-class GPU, a Linux Intel Gen12 machine) and on a **D31-minimum machine**: Windows 11 x64 (D31 is Windows 11 only, owner decision 9), 4 cores, 8 GB RAM, an integrated GPU of the oldest class that offers WebGPU in Chromium (an Intel UHD 620-class iGPU), or an 8 GB M1 Mac.
 
 | Area | Reference machines | D31-minimum machine |
 |---|---|---|
@@ -618,8 +635,10 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 | Worker spawn to `hello` | ≤ 150 ms | ≤ 300 ms |
 | Proxy `540`, hardware H.264 | ≥ 10× real time (measured 18–27×) | ≥ 4× |
 | Proxy `540`, SVT-AV1, 4 threads | ≥ 5× real time (measured 9–22×) | ≥ 2× |
-| Export 1080p30, hardware H.264, 60 s reel with captions and one Lottie | ≥ 4× real time | ≥ 1.5× |
-| Export 2160p30, hardware H.264 | ≥ 1× real time | not required |
+| Export 1080p30, H.264 through VideoToolbox, 60 s reel with captions and one Lottie | ≥ 4× real time | ≥ 1.5× (8 GB M1) |
+| Export 1080p30, H.264 through Microsoft's (software) MFT, same reel | ≥ 2× real time *(provisional; measured in 6B-1)* | ≥ 1× *(provisional)* |
+| Export 1080p30, SVT-AV1 (Linux and the royalty-free reserve), same reel | ≥ 1.5× real time *(provisional; measured in 6E)* | ≥ 0.5× *(provisional)* |
+| Export 2160p30, H.264 through VideoToolbox | ≥ 1× real time | not required |
 | Mixer, native, 16 stereo items, each with EQ + compressor | ≥ 100× real time | ≥ 30× |
 | AudioWorklet render quantum (128 frames, 8 items with effects) | ≤ 0.5 ms | ≤ 1.5 ms |
 | Lottie frame, 1080p | ≤ 5 ms (measured ≤ 2.9 ms) | ≤ 12 ms |
@@ -636,21 +655,22 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 
   | Kind | v | Payload (all `meta`) |
   |---|---|---|
-  | `media.capabilities` | 1 | once per server run: per codec and profile, decode/encode `hw|sw|none`; backend names; GPU backend, adapter type, and vendor/device ids if owner question 7 allows; copy or zero-copy path |
+  | `media.capabilities` | 1 | once per server run: per codec and profile, decode/encode `hw|sw|none` and the backend's vendor class (§6.1); backend names; GPU backend, adapter type, and (owner decision 7) the PCI vendor id, device id and driver major version as numbers; copy or zero-copy path; the worker sandbox in force (`none`, `landlock`, later `worker`, §3.5.1) |
   | `render.stats` | 1 | per-minute histograms (like `eval.stats`): decode, composite, readback, encode micros per backend |
   | `preview.stats` | 0 | reserved for sub-project 9: drops, A/V offset histogram, scrub latency |
   | `render.sample` | 0 | reserved, training only: a sampled output frame as a `frame` blob (arch §21.1: frames are always blobs; a later sub-project adds the source) |
 
-- **Never recorded:** file names or paths (a source is `{root, ext, hash}`), adapter name strings from drivers, decoder error strings that may hold paths (they are `scrubbed` and `content` like every error message), frames or audio outside `render.sample`.
+- **Never recorded:** file names or paths (a source is `{root, ext, hash}`), adapter and driver name strings (only the numeric ids above), decoder error strings that may hold paths (they are `scrubbed` and `content` like every error message), frames or audio outside `render.sample`.
 - Worker panics become `error.panic` through 5C's forwarding, as arch §21 "Crash reporting" says.
 
 ## 16. Licensing
 
 ### 16.1 Rules applied
 
-- No GPL/LGPL/AGPL/SSPL/EUPL in shipped code (AGENTS.md, arch §18). FFmpeg/libav*, x264, x265, libde265 (LGPL), GStreamer (LGPL), Rubber Band (GPL) and SoundTouch (LGPL) are excluded from Finisher's code. FFmpeg is reachable only as a user-installed process plugin from `finisher-plugins-copyleft`. Electron's own ffmpeg library is owner question 2.
+- No GPL/LGPL/AGPL/SSPL/EUPL in Finisher's code (AGENTS.md; arch §18, reworded by owner decision 2 from "no LGPL in the app" to **"no LGPL in Finisher's code"**). FFmpeg/libav*, x264, x265, libde265 (LGPL), GStreamer (LGPL), Rubber Band (GPL) and SoundTouch (LGPL) are excluded from Finisher's code. FFmpeg is reachable only as a user-installed process plugin from `finisher-plugins-copyleft`.
+- **Electron's ffmpeg: a provisional exception** (owner decision 2, made provisional by follow-up decision F4 of 2026-11-07: the desktop shell options (Electron with a documented exception plus the open-codecs build, Tauri or the OS webviews, or a custom build) are decided in sub-project 9). **Only the desktop app is affected: the server, `fin` and the media engine contain no ffmpeg.** If the shell stays Electron: Electron loads Chromium's FFmpeg as a shared library at start and does not run without it, and Finisher would ship it as a dynamically linked browser-runtime component that the user can replace and that Finisher's code never calls, with its notice in `THIRD_PARTY_NOTICES.md`, and would ship **Electron's open-codecs-only build** (`proprietary_codecs = false`) in place of the default one, so the app would carry no software H.264 or AAC decoder. The release pipeline would check the swap (file names, licence file, codec list) against the pinned Electron version *(verify those against the first pinned version)*. Counsel reviews the exception before release if it is kept (TASKS.md; sub-project 9 decides).
 - **MPL-2.0** is already on the `deny.toml` allow list. It is file-level copyleft: Finisher uses MPL crates unmodified, and any patch to an MPL file is published as that file. **MPL-2.0 §3.2** applies to symphonia (and any MPL crate we ship): distributing the executable obliges Finisher to tell recipients how to get the MPL files' source and that they are under the MPL. `THIRD_PARTY_NOTICES.md` carries that statement with the crate versions and links to their source, and the notices gate (§16.3) checks it is present for every MPL package in the shipped graph.
-- H.264, HEVC and AAC only through OS or hardware codecs (arch §18), subject to owner questions 1, 3 and 9.
+- H.264, HEVC and AAC through OS or hardware codecs (arch §18), with the owner's decisions: AAC-LC on Linux through symphonia and vo-aacenc (decision 1); no hardware codec drivers in the Docker image (decision 3); H.264 export through OS vendors' encoders only, and no built-in HEVC encoding (decision 9). Each is on TASKS.md's "Counsel before release/upload" item.
 
 ### 16.2 Components
 
@@ -662,12 +682,12 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 | SVT-AV1 | BSD-3-Clause-Clear (since v0.9) | AOMedia Patent License 1.0 (the BSD-3-Clause-Clear text itself grants no patent rights; the grant is in `PATENTS.md`) | AV1 encode |
 | libvpx | BSD-3-Clause | Google's WebM patent grant (`PATENTS`) | VP9 decode |
 | libopus | BSD-3-Clause | royalty-free grants listed in its `COPYING` | Opus |
-| symphonia 0.6 | MPL-2.0 | MP3 patents expired (widely reported, not re-verified); FLAC, Vorbis, ALAC royalty-free | audio decode |
+| symphonia 0.6 | MPL-2.0 | MP3 patents expired (widely reported, not re-verified); FLAC, Vorbis, ALAC royalty-free; AAC pool (Via LA) for its AAC-LC decoder, counsel checks | audio decode; AAC-LC on Linux (decision 1) |
 | `mp4-atom` | MIT OR Apache-2.0 | — | ISOBMFF boxes |
 | `cros-codecs` 0.0.6, `cros-libva` 0.0.13 | BSD-3-Clause | — | stateless decoding (6B-2); `cros-libva` only as a run-time-loading fork, if at all |
-| libva (system library, loaded at run time) | MIT | drivers are the system's (owner questions 3, 9) | VA-API |
+| libva (system library, loaded at run time) | MIT | drivers are the system's, never shipped in the app or the Docker image (decision 3); their encoders serve proxies only (decision 9) | VA-API |
 | `libloading` | ISC | — | run-time loading of libva |
-| vo-aacenc (candidate, owner question 1) | Apache-2.0 (patent grant covers VisualOn's contributions only) | AAC pool (Via LA) | Linux AAC-LC encode; dormant since 2017, would be vendored and maintained by Finisher |
+| vo-aacenc (decision 1) | Apache-2.0 (patent grant covers VisualOn's contributions only) | AAC pool (Via LA); counsel checks | Linux AAC-LC encode; dormant since 2017, vendored and maintained by Finisher |
 | `ebur128` | MIT | — | loudness |
 | thorvg (C++) | MIT | — | Lottie (native); its optional bundled loaders' licences are checked in 6D |
 | dotlottie-web | MIT | — | Lottie (preview) |
@@ -676,8 +696,9 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 | `swash` | Apache-2.0 OR MIT | — | glyph raster |
 | `cosmic-text` | MIT OR Apache-2.0 | — | shaping (4C) |
 | `objc2`; `objc2-av-foundation`, `objc2-video-toolbox` | MIT; Zlib OR Apache-2.0 OR MIT | OS codec, licensed by Apple (to confirm with counsel) | macOS codecs |
-| `windows`, `windows-sys` | MIT OR Apache-2.0 | OS codec (to confirm with counsel) | Media Foundation, D3D11VA |
-| Mesa lavapipe (Docker image only) | MIT (Mesa) | — | software Vulkan without a GPU |
+| `windows`, `windows-sys` | MIT OR Apache-2.0 | OS codec (to confirm with counsel) | Media Foundation (Microsoft's H.264 encoder MFT for export), D3D11VA |
+| Electron's ffmpeg, open-codecs build (desktop app only) | LGPL-2.1-or-later *(verify)* | open codecs only | Chromium's media stack; the provisional exception of §16.1 (kept only if sub-project 9 keeps Electron), never called by Finisher's code |
+| Mesa lavapipe (Docker image only) | MIT (Mesa) | — | software Vulkan without a GPU; installed without Mesa's VA-API or Vulkan Video codec drivers (decision 3) |
 | `memmap2` | MIT OR Apache-2.0 | — | `fin-shm` |
 | `wasm-bindgen` | MIT OR Apache-2.0 | — | `fin-wasm` |
 
@@ -697,16 +718,17 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 
 `cargo deny` sees a crate's licence, not the C library it builds or the DLL it loads. Sub-project 6 adds three gates: the first two in `pnpm gates` from 6A's Task 1, the third in the release pipeline once the server image exists (6G at the latest):
 1. **Native build gate** (`scripts/check-native-deps.mjs`). It is **keyed on `cargo metadata`**: every package in the shipped graph that has a `links` field, or a build-dependency on `cc`, `cmake`, `nasm-rs`, `bindgen` or `pkg-config`, must have an entry in `third_party/native.json` (name, version or pinned tag and commit, SPDX licence, patent-licence file, notice path, and the **BLAKE3 of each licence file**). A changed licence file hash fails the gate until a person re-reviews and updates the entry. A listed licence must be on the gate's allow list (the `deny.toml` list plus `BSD-3-Clause-Clear` and the AOMedia Patent License 1.0); `THIRD_PARTY_NOTICES.md` must name the library and version.
-2. **Run-time library gate** (`third_party/runtime.json`): every library Finisher loads by name at run time is listed with who provides it (`os`, `driver`, `bundled`) and its licence: libva and its drivers (`driver`, never bundled in the desktop app; the Docker image per owner question 3), `d3dcompiler_47.dll` (`os`), DXC's DLLs if ever used (`bundled`, licences to verify), Electron's `ffmpeg` library (`bundled`, owner question 2), CoreMedia/VideoToolbox and Media Foundation (`os`). A grep over the source for `libloading::Library::new`, `dlopen` and `LoadLibrary` must find only listed names.
-3. **Docker image SBOM gate:** the release pipeline generates an SPDX SBOM of the server image (a build-time tool, not shipped) and fails on any package whose licence is outside the allow list, except entries in a reviewed exceptions file that names the package, version and reason (e.g. the base image's GPL system packages, which are separate programs in the image, not linked into Finisher, if counsel agrees; arch §26 question 1).
+2. **Run-time library gate** (`third_party/runtime.json`): every library Finisher loads by name at run time is listed with who provides it (`os`, `driver`, `bundled`) and its licence: libva and its drivers (`driver`, never bundled in the desktop app or the Docker image, decision 3), `d3dcompiler_47.dll` (`os`), DXC's DLLs if ever used (`bundled`, licences to verify), Electron's `ffmpeg` library (`bundled`, the open-codecs build, the provisional exception of §16.1; listed only while the desktop shell is Electron), CoreMedia/VideoToolbox and Media Foundation (`os`). A grep over the source for `libloading::Library::new`, `dlopen` and `LoadLibrary` must find only listed names.
+3. **Docker image SBOM gate:** the release pipeline generates an SPDX SBOM of the server image (a build-time tool, not shipped) and fails on any package whose licence is outside the allow list, except entries in a reviewed exceptions file that names the package, version and reason (e.g. the base image's GPL system packages, which are separate programs in the image, not linked into Finisher, if counsel agrees; arch §26 question 1). It also fails on any hardware codec driver in the image (decision 3): VA-API drivers (Intel's media driver, Mesa's VA drivers), VDPAU drivers, and any Mesa build with H.264/HEVC video codecs enabled *(verify which Mesa packages of the base image carry Vulkan Video codecs)*. NAS users with GPUs mount the host's drivers or build the documented derived image.
 
 Vendored native sources are git submodules at pinned commits under `third_party/`.
 
 ### 16.4 Patents (for counsel; arch §26 question 1)
 
 - AV1 (AOMedia Patent License 1.0), VP9 (Google's grant) and Opus (its contributors' grants) are royalty-free with defensive termination clauses.
-- H.264 is not patent-free in 2026: community tracking lists patents in force in the US and Brazil until about 2030. HEVC has two pools (Access Advance, Via LA) and active litigation. AAC is licensed through Via LA; no primary source on its expiry was found. All three reach users only through codecs their OS or GPU driver provides.
-- **OS codecs vs GPU vendors' encoders:** Apple and Microsoft license the codecs they ship with their OS; whether that covers an application that drives them is for counsel. GPU vendors' encoders (NVENC, AMD's and Intel's MFTs, Linux VA-API drivers) generally come with no patent licence for the application at all, which is owner question 9.
+- H.264 is not patent-free in 2026: community tracking lists patents in force in the US and Brazil until about 2030. HEVC has two pools (Access Advance, Via LA) and active litigation. AAC is licensed through Via LA; no primary source on its expiry was found. H.264 and HEVC reach users only through codecs their OS or GPU driver provides; AAC-LC does too, except on Linux, where Finisher ships symphonia's decoder and vo-aacenc (decision 1).
+- **OS codecs vs GPU vendors' encoders:** Apple and Microsoft license the codecs they ship with their OS; whether that covers an application that drives them is for counsel. GPU vendors' encoders (NVENC, AMD's and Intel's MFTs, Linux VA-API drivers) generally come with no patent licence for the application at all. Decision 9 therefore uses only OS vendors' encoders for export (QA renders and mattes included) and lets internal preview proxies, which are never distributed, use any hardware encoder, GPU vendors' included; counsel checks both halves.
+- **For counsel before release** (TASKS.md, one item across sub-projects): 6.1 (Linux AAC-LC decode and encode), 6.2 (the Electron ffmpeg exception, provisional: reviewed once sub-project 9 decides the desktop shell), 6.9 (the export and proxy encoder policy).
 
 ## 17. Error codes
 
@@ -771,21 +793,21 @@ All errors use the one shape `{code, message, details, fix?}` (arch §19). Job-l
 
 ## 19. Sub-batches and order
 
-Each sub-batch gets its own plan, is green on all three OSes before the next starts, and ends with a validation task on real hardware.
+Each sub-batch gets its own plan, is green on all three OSes before the next starts (owner decision 8, also for 6B), and ends with a validation task on real hardware.
 
 | Batch | Delivers | Depends on |
 |---|---|---|
 | **6A-1 Foundations** | `fin-media` (types, nearest-frame `frame_at`), frame-id patterns, the MP4 muxer, `fin-container` over `mp4-atom`, software AV1 (`rav1d`, SVT-AV1), the CPU reference compositor, probing through `fin-container`, the native-library gates | 4C |
 | **6A-2 First pixels** | the wgpu compositor core, `fin-shm`, the `media` worker family with `media.look`, job inputs in `fin-node`, `fin look`, media fields in `job.done`, `media.capabilities`, e2e and CI, validation | 6A-1, **5C-1** (the engine, warm workers, mapped files; 5C-2 only for `fin look --no-wait`) |
-| **6B-1 Stateful platform codecs and proxies** | VideoToolbox, Media Foundation (stateful) decode and encode; the capability report; HDR → SDR tone mapping; `VideoInfo` display/rotation (§4.4); proxies, thumbnails, filmstrips; the cache, its index and eviction; HTTP serving and capability URLs; WebM demux; deep probe | 6A-2 |
-| **6B-2 Stateless platform codecs** | `cros-codecs` backends for VA-API (run-time libva) and D3D11VA; VA-API encode; `media.frames` | 6B-1 |
-| **6C Audio** | audio demux and decode (symphonia, OS AAC, Opus), the scalar resampler, `pcm48` and `pcm16m`, waveforms, the native mixer with pan, curves and WSOLA, the built-in audio effects and `AudioPlan.effects`, loudness and the limiter, `fin listen` | 6A-2 (6B-1 for OS AAC) |
+| **6B-1 Stateful platform codecs and proxies** | VideoToolbox, Media Foundation (stateful) decode and encode, including Microsoft's H.264 encoder MFT; backend vendor classes and the encoder policy (§6.2); the capability report (with N/LTSC guidance); the Linux Landlock worker profile (§3.5.1); HDR → SDR tone mapping; `VideoInfo` display/rotation (§4.4); proxies, thumbnails, filmstrips; the cache, its index and eviction; HTTP serving and capability URLs; WebM demux; deep probe | 6A-2 |
+| **6B-2 Stateless platform codecs** | `cros-codecs` backends for VA-API (run-time libva) and D3D11VA; VA-API encode (proxies only); `media.frames` | 6B-1 |
+| **6C Audio** | audio demux and decode (symphonia, including AAC-LC on Linux; OS AAC; Opus), AAC-LC encode on Linux through vendored vo-aacenc, the scalar resampler, `pcm48` and `pcm16m`, waveforms, the native mixer with pan, curves and WSOLA, the built-in audio effects and `AudioPlan.effects`, loudness and the limiter, `fin listen` | 6A-2 (6B-1 for OS AAC) |
 | **6D Layers** | effects (`colorAdjust`, `lut`, `blur`), adjustment layers, nested items (with their edits), masks and `matte` assets (with their edits and `media.matteEncode`), images, SVG, Lottie and `media.templateCheck`, captions raster with the plan growth of §4.3 and caption animation, `fit` | 6A-2 |
-| **6E Export** | format templates, MP4 mux of encoded streams with priming edit lists, two-pass loudness, the export report and verification, `fin render`, encoder fallbacks | 6B-1, 6C, 6D |
+| **6E Export** | format templates (no HEVC template), the export encoder policy in preflight, MP4 mux of encoded streams with priming edit lists, two-pass loudness, the export report and verification, `fin render`, encoder fallbacks | 6B-1, 6C, 6D |
 | **6F Preview** | `fin-wasm`, `@finisher/preview` (decoder pool, scheduler, worklet mixer, dotlottie-web), server-rendered scrub frames, the harness, parity goldens and latency in Chromium and Electron | 6B-1, 6C, 6D |
-| **6G Hardening** | zero-copy interop, NVDEC/NVENC on Linux, fuzzing at full scale, performance gates on reference and D31-minimum hardware, the worker sandbox profile turned on (sub-project 7C), the cross-platform validation matrix | all |
+| **6G Hardening** | zero-copy interop, NVDEC/NVENC on Linux (NVENC for proxies only), fuzzing at full scale, performance gates on reference and D31-minimum hardware, the full `worker` sandbox profile turned on on every OS (sub-project 7C), the Docker image SBOM gate with its codec-driver check, the cross-platform validation matrix | all, 7C |
 
-**Order:** 6A-1 runs now. **5C-1 runs alongside 6A-1** (cp §6.8: it needs only 5A Tasks 1–2); 6A-2 starts when both are in. 6C and 6D can run in parallel after 6A-2 (they touch different crates); 6B-2 can run beside 6C/6D; 6E and 6F can run in parallel after their inputs.
+**Order:** 6A-1 runs now. **5C-1 runs alongside 6A-1** (owner decision 5; cp §6.8: it needs only 5A Tasks 1–2); 6A-2 starts when both are in. 6C and 6D can run in parallel after 6A-2 (they touch different crates); 6B-2 can run beside 6C/6D; 6E and 6F can run in parallel after their inputs.
 
 ## 20. Decisions taken here
 
@@ -807,24 +829,39 @@ Each sub-batch gets its own plan, is green on all three OSes before the next sta
 | 14 | The CPU reference compositor is the golden oracle; no golden images are committed; `libm` pinned exactly | §13.2, §13.4 |
 | 15 | Colour emoji from a bitmap (CBDT) build until a COLRv1 painter exists | §11.4 |
 | 16 | Mattes are `matte` assets encoded by `media.matteEncode` | §11.3 |
+| 17 | Every codec backend carries a vendor class (`os`, `gpu`, `software`, `plugin`); export, QA renders and mattes never use a `gpu` encoder | §6.1, §6.2, §9.2 |
+| 18 | Linux media workers confine themselves with Landlock (ABI 3) from 6B-1; hosts with Landlock disabled run unconfined with a persistent status warning and a diagnostics event (ar §8.9) | §3.5.1 |
 
-## 21. Owner questions
+The owner's decisions are in §21; rows 17 and 18 follow from decisions 9 and 6.
 
-1. **Linux AAC.** Linux has no OS AAC decoder or encoder, and AAC is the audio of nearly all phone footage and what TikTok and Instagram ask for. Facts (checked 2026-11-07): symphonia decodes **AAC-LC only** and **refuses** an HE-AAC stream ("aac too complex") rather than decoding its core (HE-AAC support is an open, unmerged pull request); **vo-aacenc** (VisualOn's AAC-LC encoder from Android) is Apache-2.0, whose patent grant covers only VisualOn's own contributions, and it has had no commit since 2017; **Opus in MP4** is listed by YouTube's upload settings (AAC-LC or Opus, MP4), Instagram's Reels spec lists AAC only, and TikTok's spec could not be read *(verify)*. Options: (a) decode AAC-LC with symphonia (MPL-2.0, unmodified); export AAC-LC on Linux with a vendored vo-aacenc; HE-AAC sources need the codec plugin; (b) as (a) but export Opus-in-MP4 instead of AAC on Linux, with AAC from the codec plugin when installed; (c) ship no AAC at all on Linux (AAC footage needs the plugin even to be edited); (d) license AAC from Via LA. **Recommendation: (a)**, with counsel checking the patent exposure of a shipped AAC-LC decoder and encoder. (b) is not recommended: Instagram does not list Opus. Trade-off: (a) makes Linux and the NAS Docker image usable for phone footage at some patent risk, with a dormant encoder Finisher must maintain itself and quality a little below the OS encoders'; (b) avoids an AAC encoder but risks refused or re-encoded uploads; (c) is the cleanest posture but makes the headless/NAS server nearly useless for the main use case; (d) costs money.
-2. **Electron's bundled ffmpeg.** Electron builds Chromium's FFmpeg as a **shared library** (`is_component_ffmpeg = true` in its `release.gn`, "for the LGPL requirement") that the app **loads at start**, so removing it is likely impossible. The **default build includes the H.264 and AAC decoders** (`proprietary_codecs = true`, `ffmpeg_branding = "Chrome"` in `all.gn`), and every release also publishes `ffmpeg-v<version>-<platform>-<arch>.zip` built with `proprietary_codecs = false` (open codecs only). *(Verify against the pinned Electron version: the library's file names and licence file (LGPL-2.1+ expected), the codec list of the open-codecs zip, and that WebCodecs **hardware** H.264 decode still works after the swap; `proprietary_codecs` is compiled into the Electron binary itself, so it may.)* Options: (a) a documented exception for this one dynamically linked browser-runtime component: replaceable, never called by Finisher's code, notice shipped, **plus** shipping Electron's open-codecs-only build so the app carries no software H.264/AAC decoder; (b) the exception with the default build (software H.264/AAC decoders included); (c) no exception (likely impossible, since Electron does not start without it). **Recommendation: (a).** If WebCodecs hardware H.264 decoding does not survive the swap, preview proxies default to AV1 (§12). Trade-off: (a) changes arch §18's rule from "no LGPL in the app" to "no LGPL in Finisher's code", and costs H.264 preview on machines without hardware decode (they get AV1 proxies); (b) keeps software H.264 everywhere but ships patent-encumbered decoders Finisher did not license.
-3. **Patent posture of hardware codec drivers in the Docker image.** On Linux, VA-API drivers (Intel's media driver, Mesa) implement H.264/HEVC, and some distributions build Mesa without them for patent reasons. If the server Docker image includes these drivers, Finisher distributes codec implementations. Options: (a) the image includes no hardware codec drivers; users mount the host's or build a documented derived image; (b) the image includes them. **Recommendation: (a) until counsel answers arch §26 question 1.** Trade-off: (a) adds a setup step for NAS users with GPUs; (b) is one-click but takes on the distribution question.
-4. **Default base box: contain, cover or pixel size.** A clip whose aspect differs from the timeline (16:9 footage on a 9:16 timeline) can be (a) fitted inside with bars, (b) scaled to fill and cropped, or (c) drawn at its pixel size. **Recommendation: (a) contain**, as CapCut and Premiere do by default, with a `fit` parameter (contain/cover/none) added in 6D. Trade-off: reframe (sub-project 8) then keyframes a larger scale to fill 9:16; (b) would suit 9:16 shorts better out of the box but crops silently. The choice is hard to change later: it fixes how every existing project looks.
-5. **5C runs alongside 6A batches A–C.** 6A-1 (batches A–C of the 6A plan: crates, types, containers, AV1, the CPU reference, probing) needs nothing from 5C; 6A-2 (the `media` family, `fin look`) needs 5C-1 (the engine, warm workers, mapped files and helpers), which needs only 5A Tasks 1–2 (cp §6.8). Confirm that 5C-1 is scheduled in parallel with 6A-1, so 6A-2 starts when both finish. **Recommendation: yes.** Trade-off: two batches in flight that meet at the envelope and mapped-file boundary (§3.2), checked against 5C's `test` family as soon as it exists; the alternative (5C first, then all of 6A) delays first pixels by 5C-1's length.
-6. **When workers get an OS sandbox.** Workers parse untrusted media (agents download files). The sandbox is sub-project 7's (`fin-sandbox`, a `worker` profile, §3.5). Options: (a) media workers run with 5C's cleared environment, no credentials and the job-directory write rule until 7C ships, and 6G turns on the `worker` profile; (b) (a), but on Linux apply a **Landlock-only** profile in 6B already (cheap: no broker, no ACLs, the S8 code path; it confines file writes to `out/` and reads to the manifest's roots, while GPU and driver files stay readable), since headless Linux servers and NAS boxes are the most exposed; (c) block media workers on 7C. **Recommendation: (b).** Trade-off: (b) costs a few days in 6B and covers only Linux file access (no network or exec filtering until 7C's seccomp); macOS and Windows workers stay unsandboxed until 6G; (c) delays every media feature behind sub-project 7.
-7. **GPU identifiers in diagnostics.** The diagnostics plan deferred this to sub-project 6. Options: (a) record GPU vendor id, device id (PCI numbers), backend, adapter type and driver major version as `meta`, never the driver's name string; (b) record nothing about the GPU. **Recommendation: (a)**: GPU bugs dominate media-engine failures, and the ids are numbers from a fixed space. Trade-off: device ids narrow down a machine more than OS and core count do.
-8. **Platform scope of 6B, and NVIDIA on Linux.** Options: (a) 6B-1 ships VideoToolbox and Media Foundation, 6B-2 VA-API (Intel, AMD) and D3D11VA, all three OSes required for each merge; NVDEC/NVENC on Linux (arch §12.1) moves to 6G; (b) macOS first, merging 6B on macOS alone and following with Windows and Linux; (c) NVDEC/NVENC in 6B too. **Recommendation: (a)**, which keeps sub-project 4's "green on all three OSes" rule; the spike validated exactly these paths (arch §27.3), and NVIDIA on Linux was not measured. Trade-off: (b) gets the owner's own machine to pixels sooner but lets the other paths drift; (c) serves NAS boxes with NVIDIA cards (common on Unraid) earlier at the cost of an untested path in 6B.
-9. **H.264/HEVC export: which encoders, which templates, which Windows.** Apple's VideoToolbox and Microsoft's own Media Foundation codecs come with the OS vendor's codec licence; GPU vendors' encoders (NVENC, AMD's and Intel's MFTs on Windows, VA-API drivers on Linux) generally carry **no patent licence** for the application that drives them. Windows N editions ship without Microsoft's "media-related technologies" until the Media Feature Pack is installed, and LTSC editions lack the Store codec extensions (HEVC, AV1) *(verify the LTSC part)*. And Windows 10 22H2 has been **out of support since 14 October 2025** (paid Extended Security Updates run to October 2027 for consumers and October 2028 for organisations), yet D31 lists it as a minimum. Options for export: (a) H.264 export on macOS through VideoToolbox and on Windows through Microsoft's MF encoder where the OS provides one, GPU-vendor encoders only for proxies (which never leave the machine) until counsel answers; AV1 (SVT-AV1) export everywhere; Linux H.264 export only through the codec plugin; **no HEVC export template in v1**; (b) H.264 and HEVC export through any hardware encoder found, as revision 1 assumed; (c) (a) plus HEVC export on macOS only. **Recommendation: (a)**, and revisit D31: drop Windows 10 22H2 as a supported minimum (keep it best-effort) and state the N/LTSC requirement (the Media Feature Pack) in the capability report. Trade-off: (a) makes Linux and some Windows machines export H.264 only through the plugin or fall back to AV1, which some platforms re-encode with quality loss; (b) is the best user experience and the largest unexamined exposure; (c) serves iPhone-centric creators at little extra exposure.
+## 21. Owner decisions (2026-11-07)
 
-Question numbers are kept stable across revisions (sibling specs cite them); question 9 is new in revision 2.
+The owner answered the nine questions of revision 2 on 2026-11-07; every answer follows the recommendation, with question 9's Windows part decided as "drop Windows 10". Numbers are kept stable across revisions (sibling specs and TASKS.md cite them). Each entry states the decision, the facts it rests on, and where the body applies it.
+
+1. **Linux AAC: (a).** Linux has no OS AAC codec, and AAC is the audio of nearly all phone footage and what TikTok and Instagram ask for. Finisher decodes **AAC-LC with symphonia** (MPL-2.0, unmodified) and exports **AAC-LC with a vendored vo-aacenc** that Finisher maintains (Apache-2.0, whose patent grant covers only VisualOn's own contributions; no upstream commit since 2017). symphonia refuses HE-AAC ("aac too complex") rather than decoding its core, so **HE-AAC sources need the codec plugin**. Opus-in-MP4 export was not chosen: Instagram's Reels spec lists AAC only (YouTube accepts Opus; TikTok's spec could not be read *(verify)*). **Counsel checks the patent exposure of the shipped AAC-LC decoder and encoder before release** (TASKS.md "Counsel before release/upload", 6.1). Applied in §6.1, §6.2, §6.4, §9.2, §16.
+2. **Electron's bundled ffmpeg: provisional (made so by follow-up decision F4 below).** The first answer was (a), a documented exception plus the open-codecs-only build; what follows holds only if the desktop shell stays Electron, which sub-project 9 decides. Electron loads Chromium's FFmpeg as a shared library at start (`is_component_ffmpeg = true`, "for the LGPL requirement"); the default build includes H.264 and AAC decoders, and every release publishes an open-codecs-only build (`proprietary_codecs = false`). Finisher ships the open-codecs build as a replaceable browser-runtime component that its code never calls, with its notice. **Arch §18 is reworded from "no LGPL in the app" to "no LGPL in Finisher's code".** Consequence (if Electron stays): the desktop app has no software H.264 decoder, so preview uses H.264 proxies only where WebCodecs reports hardware decode, else AV1 *(verify, per pinned Electron version, the library's file names and licence file, the open build's codec list, and that WebCodecs hardware H.264 decode survives the swap)*. Counsel reviews the exception (6.2). Applied in §7.1, §12, §16.1–16.3.
+3. **Hardware codec drivers in the Docker image: (a), none.** The server image ships no VA-API, VDPAU or Mesa video-codec drivers; NAS users with GPUs mount the host's drivers or build a documented derived image. The image's SBOM gate enforces it. Applied in §16.2, §16.3.
+4. **Default base box: (a) contain**, as CapCut and Premiere do, with a `fit` parameter (contain/cover/none) in 6D. Reframe (sub-project 8) keyframes a larger scale to fill 9:16. The choice fixes how every existing project looks, so it is not reopened lightly. Applied in §4.3, §4.4, §5.1.
+5. **5C-1 runs alongside 6A-1: yes.** 6A-1 (batches A–C of the 6A plan) needs nothing from 5C; 6A-2 needs 5C-1, which needs only 5A Tasks 1–2 (cp §6.8). The two meet at the envelope and mapped-file boundary (§3.2), checked against 5C's `test` family as soon as it exists. Applied in §19.
+6. **When workers get an OS sandbox: (b).** Media workers run with 5C's cleared environment, no credentials and the job-directory write rule from 6A; on Linux a **Landlock-only** profile ships in 6B (file writes confined to `out/`, reads to the manifest's roots, GPU and driver files readable); the full `worker` profile (§3.5) is turned on in 6G when 7C lands. D31's Linux floor (kernel ≥ 6.2) makes Landlock ABI 3 available on every supported kernel, so there is no older-ABI path; hosts where Landlock is disabled run with the baseline and report `sandbox: none` (and, since follow-up decision F2 below, show a persistent status warning and record a diagnostics event). Until 7C, Linux workers have no network or exec filtering and macOS and Windows workers are unsandboxed. Applied in §3.5, §3.5.1, §15, §19.
+7. **GPU identifiers in diagnostics: (a).** `media.capabilities` records the PCI vendor id, device id, GPU backend, adapter type and driver major version as numeric `meta`, never a driver's name string. Device ids narrow down a machine more than OS and core count do; GPU bugs dominate media-engine failures. Applied in §15.
+8. **Platform scope of 6B: (a).** 6B-1 ships VideoToolbox and Media Foundation, 6B-2 VA-API (Intel, AMD) and D3D11VA, each merge green on all three OSes; NVDEC/NVENC on Linux (arch §12.1, unmeasured) moves to 6G. Applied in §6.6, §19.
+9. **H.264/HEVC export: (a), and drop Windows 10.**
+   - **(a) Encoders:** H.264 export uses **OS vendors' encoders only**: VideoToolbox on macOS, Microsoft's own H.264 encoder MFT on Windows. **Never a GPU vendor's encoder** (NVENC, AMD's or Intel's MFTs, VA-API drivers), which generally carry no patent licence for the application that drives them; those serve internal preview proxies, which are never distributed and stay inside the user's installation (scope stated by follow-up decision F3 below). Elsewhere export is **AV1** (SVT-AV1), or **H.264 through the codec plugin**. Linux therefore has no built-in H.264 export.
+   - **(b) Templates:** **no built-in HEVC export template**; HEVC export only through the codec plugin.
+   - **(c) Windows:** **Windows 10 is dropped; D31 becomes Windows 11 only.** Windows 10 22H2 has been out of support since 14 October 2025. The capability report states the N-edition requirement (the Media Feature Pack) and what LTSC editions lack (the Store codec extensions, HEVC and AV1) *(verify the LTSC part)*.
+   - Trade-off accepted: Linux machines and Windows N machines without the Media Feature Pack export H.264 only through the plugin or fall back to AV1, which some platforms re-encode with quality loss. Counsel checks the encoder policy (6.9). Applied in §1, §6.1, §6.2, §9.2, §11.3, §13.3, §14, §16, §19.
+
+**Follow-up owner decisions (2026-11-07, later the same day; numbered F1–F4 across the specs, F1 being sub-project 7's, agent §20):**
+F3. **Proxy encoders (states the scope of decision 9).** The "OS vendors' encoders only" rule for H.264 and HEVC applies to **exports only**. Internal preview proxies (`media.proxy`), which are never distributed and never leave the cache of the user's installation, may use any hardware encoder, GPU-vendor ones included (NVENC, AMD's and Intel's MFTs, VA-API). QA renders (`media.render`) and mattes (`media.matteEncode`) follow the export rule. Counsel item 6.9 covers both halves, now worded this way. Applied in §6.1, §6.2, §7.1, §16.3.
+F4. **Electron's bundled ffmpeg: provisional (amends decision 2).** Deferred to sub-project 9: the desktop shell options (Electron with a documented exception plus the open-codecs build, Tauri or the OS webviews, or a custom build) are decided there. Only the desktop app is affected: the server, `fin` and the media engine contain no ffmpeg. `AGENTS.md` stays unchanged; arch §18 and D13 say "provisional"; TASKS.md gains "decide the desktop shell / Electron ffmpeg" under sub-project 9, and counsel item 6.2 waits for it. Applied in §7.1, §12, §16.1–16.3.
+F2. **Hosts where Landlock is disabled (amends decision 6).** On a Linux host with kernel ≥ 6.2 and Landlock turned off, everything runs, with warnings: agents, hooks, media workers and plugins, each with a persistent status warning (`server.status`, `fin status`) and a diagnostics event; nothing is refused (ar §8.9). Applied in §3.5.1, §15.
+
+**Cross-cutting decisions of the same day that touch this spec:** D31's Linux floor is kernel ≥ 6.2 (§3.5.1); the repository targets Node 24, matching Electron's embedded Node; third-party code plugins, the codec plugin among them, may be installed before 7C with a high-risk warning and explicit approval (pl owner decision 1; §6.5 here).
 
 ## 22. Contradictions and gaps found in earlier documents
 
-1. **Arch §18 vs Electron:** Electron's bundled `libffmpeg` is LGPL-2.1 (owner question 2).
+1. **Arch §18 vs Electron:** Electron's bundled `libffmpeg` is LGPL-2.1. Resolved by decision 2: arch §18 reads "no LGPL in Finisher's code", with Electron's ffmpeg as a provisional exception (§16.1) that sub-project 9 settles.
 2. **Arch §12.7 vs the plan contract:** ducking in the mixer would need analysis data that `AudioPlan` does not carry (resolved by §8.5).
 3. **Arch §12.3 "consumes eval output only" vs `FramePlan`/`AudioPlan`:** caption paint and placement, caption animation, matte identity and time, transition looks and audio effects are missing or undefined (resolved by §4.3); the engine also needs asset facts, which the render manifest (§4.2) provides without timeline semantics.
 4. **Arch §12.8 "8-bit internally"** vs float intermediates (amended by §5.1).
@@ -832,16 +869,18 @@ Question numbers are kept stable across revisions (sibling specs cite them); que
 6. **Arch §1 "animated captions"** vs a model with no caption animation fields (§4.3).
 7. **Core §5.6 and arch §27.10 say fonts are "always bundled"**; the 4C plan (Decisions 29–39) and the code fetch them on demand into a pinned, content-addressed cache and bundle none. The condition that matters (pinned bytes, never system fonts) holds either way; core §5.6 and arch §27.10 should be reworded when 4C's Task 28 records its decisions.
 8. **`fin-probe` vs arch §27.3:** rotation, VFR and edit lists are not handled (§6.3).
-9. **Arch §24 order:** sub-project 3 (walking skeleton with proxy preview) and sub-project 5 (jobs) are not built, yet sub-project 6 needs jobs (now from 5C, owner question 5) and absorbs the skeleton's preview client (§12).
-10. **Arch §12.1 lists NVDEC/NVENC for Linux** without spike evidence (owner question 8).
+9. **Arch §24 order:** sub-project 3 (walking skeleton with proxy preview) and sub-project 5 (jobs) are not built, yet sub-project 6 needs jobs (now from 5C, decision 5) and absorbs the skeleton's preview client (§12).
+10. **Arch §12.1 lists NVDEC/NVENC for Linux** without spike evidence. Resolved by decision 8: 6G; NVENC for proxies only (decision 9).
 11. **Core §5.1 transitions** name `crossfade` and `dissolve` without a visual difference (§4.3).
 12. **Arch §6.2 lists mattes among regenerable analysis artifacts**; they are now `matte` assets (§11.3, pl §10.3).
 13. **Arch §12.7 lists EQ and compressor as plugins;** the coordinator moved the built-in four into the mixer (§8.4).
-14. **D31 lists Windows 10 22H2,** which has been out of support since 14 October 2025 (owner question 9).
+14. **D31 lists Windows 10 22H2,** which has been out of support since 14 October 2025. Resolved by decision 9: D31 is Windows 11 only (arch D31 updated).
 15. **cp §6.4** deletes a job's directory when the job ends, with no step in which the family moves its outputs; sub-project 6 asks for an `onSucceeded` hook (§3.2 item 3).
 16. **cp §6.3** has no pool for hardware encoder sessions and no RAM-scaled memory limits; sub-project 6 asks for `hwenc` and the limits (§3.2 items 2 and 5).
 17. **Cross-design naming:** pl revision 2 (§2, §3.5) calls the one worker binary `fin-worker` with roles `library` and `media`; cp revision 3 and the coordinator's decision call it **`fin-workers <family>`**, which this spec uses. Sub-project 8 should rename.
 18. **Cross-design references:** pl cites media §8.4 for loudness; in this revision loudness is §8.6 (§8.4 is the built-in audio effects).
+19. **AGENTS.md vs decision 2:** AGENTS.md says "No GPL/LGPL/AGPL/SSPL/EUPL dependencies in shipped code"; with the Electron ffmpeg exception, its wording should match arch §18's ("in Finisher's code") or name the exception. Deferred by follow-up decision F4: AGENTS.md stays unchanged until sub-project 9 decides the desktop shell.
+20. **Arch §12.1 and §27.3 assume hardware H.264/HEVC encoders for export;** decision 9 limits export to OS vendors' encoders and drops built-in HEVC encoding (§6.2).
 
 ## 23. Risks
 
@@ -857,7 +896,10 @@ Question numbers are kept stable across revisions (sibling specs cite them); que
 | Linux desktop WebGPU and real vsync are unverified (arch §27.11) | server-rendered scrub fallback; 6F validation on a real Linux desktop |
 | Zero-copy interop needs wgpu hal APIs that change between versions | copy path first and always available; interop behind a feature, pinned wgpu |
 | thorvg crashes on malformed templates | `media.templateCheck` in a throwaway worker; export in the render worker; 5C's retries and poison handling |
-| Patent exposure (H.264/HEVC/AAC) | OS codecs first; owner questions 1, 3 and 9; counsel before launch |
+| Patent exposure (H.264/HEVC/AAC) | OS vendors' encoders only for export, GPU vendors' for proxies only, no hardware codec drivers in the Docker image (decisions 3, 9); AAC-LC on Linux (decision 1) and the Electron exception (decision 2, provisional until sub-project 9) reviewed by counsel before release (TASKS.md) |
+| vo-aacenc is dormant and Finisher must maintain it | vendored fork at a pinned commit; fed only mixer PCM; a round-trip and loudness test in 6C; the codec plugin as the fallback encoder |
+| Microsoft's H.264 MFT is a software encoder: slower than hardware and of unmeasured quality at the template bitrate | 6B-1 measures speed and T5 quality on the D31-minimum machine; `av1-web` and the codec plugin as alternatives |
+| Landlock disabled on some Linux hosts (NAS kernels, strict container seccomp) | the baseline of §3.5.1; `sandbox: none` in the capability report with the fix, a persistent `SANDBOX_DISABLED` status warning and a diagnostics event |
 | The engine grows into many crates and long files | crate map fixed here; 600-line limit; one module per stage |
 
 ## 24. Review findings (revision 2) and where they are resolved
@@ -868,8 +910,8 @@ Question numbers are kept stable across revisions (sibling specs cite them); que
 | **B2** sample-and-hold sampling | §10.2: nearest frame, ties to the earlier frame, exact rationals; §7.1 proxies and §13.2 goldens follow it |
 | **H1** ownership | §3.6 table; audio effects §8.4 and `AudioItem.effects` §4.3; `pcm16m` and `media.frames` §3.3, §7.2; codec plugins as 5C sibling helpers §3.2, §6.5; `matte` assets §11.3, §4.4; `job.done`/`worker.exit` to 5C, media fields §15; `Source` to the diagnostics spec §15; sandbox requirements §3.5; `fin-shm` rules §3.4 |
 | **H2** VA-API/D3D11VA are stateless | §6.1, §6.6: `cros-codecs`, libva via `libloading`; 6B re-estimated (≈1.6×) and split into 6B-1/6B-2 with a spike first |
-| **H3** owner question 2 | rewritten (Electron loads ffmpeg at start; default build has H.264/AAC; recommend the exception plus the open-codecs zip; WebCodecs hardware H.264 to verify; AV1 proxies otherwise; facts marked to verify) |
-| **H4** H.264/HEVC export | owner question 9 (OS vendor vs GPU vendor encoders, Windows N/LTSC, HEVC template, D31 and Windows 10's end of support); §6.2, §9.2, §16.4 |
+| **H3** owner question 2 | rewritten (Electron loads ffmpeg at start; default build has H.264/AAC; recommend the exception plus the open-codecs zip; WebCodecs hardware H.264 to verify; AV1 proxies otherwise; facts marked to verify); decided as recommended in revision 3 (§21) |
+| **H4** H.264/HEVC export | owner question 9 (OS vendor vs GPU vendor encoders, Windows N/LTSC, HEVC template, D31 and Windows 10's end of support); §6.2, §9.2, §16.4; decided in revision 3 (§21) |
 | **H5** licence gate | §16.3: keyed on `cargo metadata` (`links`, native build-deps), licence-file hashes, a run-time library gate, the Docker SBOM gate |
 | Licences: rav1d, MPL §3.2, `mp4-atom` | §16.2 (rav1d risk), §16.1 (MPL §3.2 in `THIRD_PARTY_NOTICES.md`, gated), §6.1 (`mp4-atom` for boxes; tables, edit lists and limits ours; justified) |
 | **M1** determinism | §13.4 (`libm` pinned exactly), §5.1 (guarded division), §8.1 (own scalar resampler), §5.1 (box mip chain, explicit level, in both compositors) |
@@ -878,5 +920,5 @@ Question numbers are kept stable across revisions (sibling specs cite them); que
 | **M4** schema | §4.4: every model change and its versioning; plan additions re-bless the 4C corpus and reel goldens; `Probe.media` never in `asset.add` records |
 | **M5** 6A plan | the plan: muxer before demuxer, CRF-40 check after AV1, split into 6A-1 and 6A-2, no JSON media index |
 | **M6** v1 cuts | §1 "Cut from v1"; §6.2, §10.1, §12 |
-| **M7** owner questions 1 and 6 | question 1 (vo-aacenc, AAC-LC only, Opus-in-MP4 acceptance); question 6 option (b) Landlock-only in 6B |
+| **M7** owner questions 1 and 6 | question 1 (vo-aacenc, AAC-LC only, Opus-in-MP4 acceptance); question 6 option (b) Landlock-only in 6B; both decided as recommended in revision 3 (§21, §3.5.1) |
 | Small: 29.97 fps offset; VP9 on macOS | §9.1 (≤ ½ sample, no drift), §6.2 (`VTRegisterSupplementalVideoDecoderIfAvailable`) |

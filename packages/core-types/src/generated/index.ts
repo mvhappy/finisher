@@ -809,6 +809,18 @@ export type ProjectId = string;
  */
 export type DefaultValue = null | boolean | number | [number, number] | string;
 /**
+ * A project's policy as `fin diagnostics show` reports it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectPolicy".
+ */
+export type ProjectPolicy = "default" | "never" | "unknown";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JournalState".
+ */
+export type JournalState = "off" | "on" | "suspended";
+/**
  * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1039,11 +1051,6 @@ export type FsAccess = "read" | "readWrite";
 export type FsScope = "pluginData";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "JournalState".
- */
-export type JournalState = "off" | "on" | "suspended";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "LicenceClass".
  */
 export type LicenceClass = "permissive" | "weakCopyleft" | "copyleft" | "nonCommercial" | "unknown";
@@ -1236,13 +1243,6 @@ export type ParamType =
       kinds: string[];
       type: "assetRef";
     };
-/**
- * A project's policy as `fin diagnostics show` reports it.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProjectPolicy".
- */
-export type ProjectPolicy = "default" | "never" | "unknown";
 /**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
@@ -3242,6 +3242,53 @@ export interface Ctx {
   txId?: IdRef;
 }
 /**
+ * `diagnostics.status` (`fin diagnostics show`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DiagnosticsReport".
+ */
+export interface DiagnosticsReport {
+  blobBytes: number;
+  /**
+   * Blobs on disk and their bytes (they count against `maxMiB` too).
+   */
+  blobs: number;
+  /**
+   * The `j-*` files' bytes (blobs not included).
+   */
+  bytes: number;
+  code?: string;
+  consent: ConsentState;
+  /**
+   * Entries dropped since the journal opened.
+   */
+  dropped: number;
+  files: number;
+  /**
+   * Entries stored per kind.
+   */
+  kinds: {
+    [k: string]: number;
+  };
+  newest?: number;
+  /**
+   * The oldest entry's `ts` and the newest's (ms since the epoch).
+   */
+  oldest?: number;
+  /**
+   * Every project this server was told about, with its flag now.
+   */
+  projects: {
+    [k: string]: ProjectPolicy;
+  };
+  /**
+   * Entries not written since the journal opened because their project's flag was not
+   * known (not open here): not drops, but a sign a caller forgot to open a project.
+   */
+  skippedUnknownProject?: number;
+  state: JournalState;
+}
+/**
  * One enabled effect with its parameters resolved at the plan's time. `params` holds the
  * effect's stored and keyframed parameters (the registry's defaults fill the rest).
  *
@@ -3283,6 +3330,17 @@ export interface Envelope {
    * [`ENVELOPE_VERSION`].
    */
   v: number;
+}
+/**
+ * One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as
+ * the next request's `cursor`; absent on the last page.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ExportPage".
+ */
+export interface ExportPage {
+  lines: Envelope[];
+  next?: string;
 }
 /**
  * Which entries to read. Empty fields match everything.

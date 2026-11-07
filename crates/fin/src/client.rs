@@ -147,8 +147,9 @@ pub fn parse_frame(line: &str) -> Result<Frame, CoreError> {
     }
 }
 
-pub fn request_frame(id: &str, tag: &str, payload: &Value) -> Value {
-    json!({ "_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": [] })
+/// `headers`: `[name, value]` pairs (the actor of Decision 23a); empty when there is none.
+pub fn request_frame(id: &str, tag: &str, payload: &Value, headers: &[[String; 2]]) -> Value {
+    json!({ "_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": headers })
 }
 
 fn timed_out(e: &io::Error) -> bool {
@@ -203,6 +204,8 @@ pub struct Client {
     timeout: Duration,
     conn: TimedConn,
     next_id: u64,
+    /// The `fin-actor-*` headers of every request (computed once per run).
+    headers: Vec<[String; 2]>,
 }
 
 impl Client {
@@ -232,11 +235,13 @@ impl Client {
                 }
             })?;
         // Read/write timeouts come from `TimedConn`: Windows named pipes have no OS-level ones.
+        let conn = TimedConn::new(stream, timeout).map_err(|e| down(e.to_string()))?;
         Ok(Client {
             endpoint: endpoint.clone(),
             timeout,
-            conn: TimedConn::new(stream, timeout),
+            conn,
             next_id: 1,
+            headers: crate::diag::actor_headers(),
         })
     }
 
@@ -294,10 +299,28 @@ impl Client {
             .map_err(|e| in_flight(e, tx_id))
     }
 
+    /// Fire and forget (`cli.command`, `error.panic`): writes the request frame within `budget`
+    /// and never reads its reply. The server enqueues the event before it yields, so closing
+    /// the connection right after loses nothing.
+    pub fn send_only(
+        &mut self,
+        tag: &str,
+        payload: &Value,
+        budget: Duration,
+    ) -> Result<(), CoreError> {
+        let id = self.next_id.to_string();
+        self.next_id += 1;
+        let mut line = request_frame(&id, tag, payload, &self.headers).to_string();
+        line.push('\n');
+        self.conn
+            .write_all_within(line.as_bytes(), budget)
+            .map_err(|e| self.io_error("send", &e))
+    }
+
     fn request(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
         let id = self.next_id.to_string();
         self.next_id += 1;
-        self.send(&request_frame(&id, tag, &payload))?;
+        self.send(&request_frame(&id, tag, &payload, &self.headers))?;
         loop {
             match self.read_frame()? {
                 Frame::Exit { request_id, result } if request_id == id => return result,
@@ -521,5 +544,38 @@ mod tests {
                 .code,
             "SERVER_UNAVAILABLE"
         );
+    }
+
+    /// The write of a fire-and-forget event is capped: against a server that never reads, a
+    /// frame the socket buffer cannot take gives up after the budget (`fin` then exits).
+    #[cfg(unix)]
+    #[test]
+    fn a_full_socket_buffer_costs_at_most_the_budget() {
+        use interprocess::local_socket::ListenerOptions;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("never-reads.sock");
+        let name = path.as_path().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+        let held = std::thread::spawn(move || {
+            let conn = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            drop(conn);
+        });
+        let mut client = Client::connect(&Endpoint::Socket(path), Duration::from_secs(5)).unwrap();
+        // Far past any socket buffer (a few hundred KiB).
+        let big = json!({ "filler": "a".repeat(4 << 20) });
+        let started = std::time::Instant::now();
+        let err = client
+            .send_only("diagnostics.record", &big, Duration::from_millis(50))
+            .unwrap_err();
+        assert_eq!(err.code, "SERVER_TIMEOUT");
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(client);
+        held.join().unwrap();
     }
 }
