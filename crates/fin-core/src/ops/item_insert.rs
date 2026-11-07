@@ -21,7 +21,7 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, AssetKind, Item, ItemBody, Project, Track, TrackKind};
 use crate::ops::util::{
-    OpDiff, TrackAt, asset, carve, check_frame, check_kind, check_source, check_speed,
+    OpDiff, TrackAt, asset, carve, check_carve, check_frame, check_kind, check_source, check_speed,
     check_unlocked, clip_containing, frame_of, insert_inside, invalid_range, kind_name,
     normalize_body, place, ripple, track_index, wrong_op,
 };
@@ -161,6 +161,10 @@ pub(crate) fn validate(
             return Err(insert_inside(other, i.at)?);
         }
     }
+    // Structural, and before the id is allocated (an op that fails takes no id).
+    if i.mode == InsertMode::Overwrite {
+        check_carve(track, i.at, i.at.checked_add(i.duration)?)?;
+    }
     bindings.check_new(project, &i.id, IdKind::of_item(&i.body))?;
     Ok(ti)
 }
@@ -224,6 +228,15 @@ pub(crate) fn positions_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
 /// No item-relative values.
 pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
+}
+
+/// A ripple insert inverts to one `item.remove`; an overwrite to that plus one op per item it
+/// carved (each records one change, after which the insert records its `added` one).
+pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+    match op {
+        Op::ItemInsert(i) if i.mode == InsertMode::Overwrite => own.changes.len(),
+        _ => 1,
+    }
 }
 
 /// The wire name.

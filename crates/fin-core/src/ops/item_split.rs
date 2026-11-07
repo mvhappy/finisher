@@ -111,7 +111,8 @@ pub(crate) fn apply(
     left.duration = s.offset;
     let length = right.duration;
     place(track, right);
-    diff.record_item(&track.id, &id, ChangeKind::Updated);
+    // The left part's end moved (Decision 20: a stale trim of that end is SAME_EDGE).
+    diff.record_edge(&track.id, &id, Edge::End, None);
     diff.record_item(&track.id, &right_id, ChangeKind::Added);
     Ok(vec![
         ItemRemove {
@@ -129,7 +130,8 @@ pub(crate) fn apply(
     ])
 }
 
-/// Needs the item and changes it as a whole; creates the right part (Decision 20).
+/// Needs the item and moves its end (its diff's edge change); creates the right part
+/// (Decision 20).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::ItemSplit(s) = op {
@@ -150,6 +152,11 @@ pub(crate) fn offsets_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
         Op::ItemSplit(s) => vec![(s.item.clone(), &mut s.offset)],
         _ => Vec::new(),
     }
+}
+
+/// The inverse is `item.remove` of the right part, then a `strict` trim of the left part.
+pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
+    2
 }
 
 /// The wire name.

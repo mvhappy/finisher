@@ -378,7 +378,12 @@ fn every_op_has_a_footprint() {
             }
             Op::ItemSlip(s) => f.touches == [(s.item.clone(), Touch::Param("sourceIn".into()))],
             Op::ItemSplit(s) => {
-                f.touches == [(s.item.clone(), Touch::Exists)] && f.creates == [s.id.clone()]
+                f.touches
+                    == [
+                        (s.item.clone(), Touch::Exists),
+                        (s.item.clone(), Touch::Edge(Edge::End)),
+                    ]
+                    && f.creates == [s.id.clone()]
             }
         };
         assert!(want, "{}: {f:?}", op.name());

@@ -72,6 +72,11 @@ pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 
+/// The op's inverse is one op.
+pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
+    1
+}
+
 /// The wire name.
 pub(crate) const NAME: &str = "item.remove";
 /// Whether the op is produced only as an inverse and never accepted from clients.

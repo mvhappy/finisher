@@ -27,11 +27,7 @@ pub(crate) fn carve(
     if s >= e {
         return Ok(Vec::new());
     }
-    for it in &track.items {
-        if it.start < s && end(it)? > e {
-            return Err(splits(&it.id, it.start, end(it)?, s, e));
-        }
-    }
+    check_carve(track, s, e)?;
     let mut trims = Vec::new();
     let mut restores = Vec::new();
     let mut i = 0;
@@ -80,6 +76,17 @@ pub(crate) fn carve(
     }
     trims.extend(restores);
     Ok(trims)
+}
+
+/// `OVERWRITE_SPLITS_ITEM` when an item on `track` strictly contains `[s, e)`: what [`carve`]
+/// refuses, checked before an op allocates anything.
+pub(crate) fn check_carve(track: &Track, s: Rational, e: Rational) -> Result<(), CoreError> {
+    for it in &track.items {
+        if it.start < s && end(it)? > e {
+            return Err(splits(&it.id, it.start, end(it)?, s, e));
+        }
+    }
+    Ok(())
 }
 
 fn splits(id: &str, start: Rational, stop: Rational, s: Rational, e: Rational) -> CoreError {

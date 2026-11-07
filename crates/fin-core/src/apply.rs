@@ -129,8 +129,14 @@ impl Applier {
                 &mut ops::util::OpDiff::new(&mut self.diff, op_index(index)),
             )
             .and_then(|inverse| {
+                let own = self.own_diff(changes_before, before);
+                debug_assert_eq!(
+                    inverse.len(),
+                    ops::inverse_len(op, &own),
+                    "{}: inverse_len disagrees with the inverse built",
+                    op.name()
+                );
                 if self.mode == ApplyMode::Replay {
-                    let own = self.own_diff(changes_before, before);
                     let touched = ops::util::touched_tracks(&self.project, &own);
                     ops::util::check_tracks(&self.project, &touched)?;
                 }

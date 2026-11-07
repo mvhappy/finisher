@@ -584,7 +584,7 @@ fn split_copies_effects_keyframes_rebased() {
     assert_eq!(
         a.diff.changes,
         [
-            change("c1", ChangeKind::Updated, None, None),
+            change("c1", ChangeKind::Updated, Some(Edge::End), None),
             change("c3", ChangeKind::Added, None, None),
         ]
     );
@@ -711,7 +711,13 @@ fn footprints_come_from_each_ops_diff() {
         [("c2".to_string(), Touch::Param("sourceIn".into()))]
     );
     let f = own_footprint(&p, split("c2", secs(5), "$r"));
-    assert_eq!(f.touches, [("c2".to_string(), Touch::Exists)]);
+    assert_eq!(
+        f.touches,
+        [
+            ("c2".to_string(), Touch::Exists),
+            ("c2".to_string(), Touch::Edge(Edge::End))
+        ]
+    );
     assert!(f.creates.contains(&"$r".to_string()));
 }
 

@@ -302,3 +302,106 @@ fn undo_of_an_overwrite_mirrors_its_record() {
     assert_eq!(r.record.intent.ops.len(), 1);
     assert_eq!(spans(&log.state("main"))[0], s("c1", 0, 9));
 }
+
+fn slip(item: &str, delta: Rational) -> Op {
+    fin_core::ItemSlip {
+        item: item.into(),
+        delta,
+    }
+    .into()
+}
+
+/// Task 8 review B1: a partial `undo --to` (a stale base between two of its units) is cut by
+/// each unit's inverse op count, not its forward one: rA's overwrite inverts to two ops, so a
+/// part sized by rA's two forward ops would take rB's restore of c4 and pair the wrong ripple
+/// restore with rA.
+#[test]
+fn partial_undo_to_cuts_at_inverse_op_boundaries() {
+    let genesis = with_clips(&[4, 4, 4, 4, 4]);
+    let mut log = MemLog::new(genesis.clone());
+    let cp = log.checkpoint("main", "cp", "alice", "v0");
+    log.commit("main", "rC", "alice", vec![slip("c1", secs(1))]);
+    let base = log.head_seq("main");
+    let at_base = log.state("main");
+    log.commit(
+        "main",
+        "rB",
+        "alice",
+        vec![delete("c2"), slip("c5", secs(1))],
+    );
+    log.commit(
+        "main",
+        "rA",
+        "alice",
+        vec![delete("c4"), overwrite("$x", secs(8), secs(4))],
+    );
+    log.undo_to("main", "alice", cp, "ut").unwrap();
+    assert_eq!(spans(&log.state("main")), spans(&genesis));
+    // Bob's overwrite, written after rC, lands where it would have at its base.
+    log.commit_at(
+        "main",
+        "b1",
+        "bob",
+        base,
+        vec![overwrite("$y", secs(6), secs(4))],
+    )
+    .unwrap();
+    let mut fresh = MemLog::new(at_base);
+    fresh.commit("main", "b1", "bob", vec![overwrite("$y", secs(6), secs(4))]);
+    let want: Vec<_> = spans(&fresh.state("main"))
+        .into_iter()
+        .map(|(_, start, d)| (start, d))
+        .collect();
+    let got: Vec<_> = spans(&log.state("main"))
+        .into_iter()
+        .map(|(_, start, d)| (start, d))
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(
+        spans(&log.state("main"))[1..4],
+        [s("c2", 4, 2), s("c7", 6, 4), s("c3", 10, 2)]
+    );
+}
+
+/// Task 8 review: `compose::overwrite`'s split follows a concurrent start trim of the item
+/// (its offset is content-anchored) while the insert's `at` does not, so the insert lands
+/// inside the right part: `OVERWRITE_SPLITS_ITEM`, blamed on the trim through the item our
+/// split cut.
+#[test]
+fn composed_overwrite_after_start_trim_blames_the_trim() {
+    let p = with_clips(&[10]);
+    let (pa, a) = commit(&p, vec![trim("c1", Edge::Start, secs(2))], 1, "tx-a");
+    let body = ItemBody::Clip {
+        asset: "a1".into(),
+        source_in: Rational::zero(),
+        speed: secs(1),
+    };
+    let ops = fin_core::compose::overwrite(&p, "t1", secs(4), secs(2), body, "$x")
+        .unwrap()
+        .ops;
+    let e = rebase(&p, &pa, &stale(ops), &[a]).unwrap_err();
+    assert_eq!(
+        conflict(&e),
+        ("OVERWRITE_SPLITS_ITEM".into(), Some("tx-a".into()))
+    );
+}
+
+/// Task 8 review: an overwrite refused `OVERWRITE_SPLITS_ITEM` takes no id.
+#[test]
+fn refused_overwrite_allocates_nothing() {
+    let p = with_clips(&[10]);
+    let mut ids = MemIds::after(&p);
+    let e = apply_tx(&p, &tx(vec![overwrite("$x", secs(2), secs(2))]), &mut ids).unwrap_err();
+    assert_eq!(e.code, "OVERWRITE_SPLITS_ITEM");
+    assert_eq!(ids, MemIds::after(&p));
+}
+
+/// Task 8 review: a split moves the left part's end, so a stale trim of that end is
+/// `SAME_EDGE`.
+#[test]
+fn stale_end_trim_after_split_is_same_edge() {
+    let p = with_clips(&[10]);
+    let (pa, a) = commit(&p, vec![split("c1", secs(4), "$r")], 1, "tx-a");
+    let e = rebase(&p, &pa, &stale(vec![trim("c1", Edge::End, secs(-1))]), &[a]).unwrap_err();
+    assert_eq!(conflict(&e), ("SAME_EDGE".into(), Some("tx-a".into())));
+}

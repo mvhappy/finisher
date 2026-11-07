@@ -181,6 +181,15 @@ pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 
+/// Every mode inverts to one trim back; an overwrite trim also to one op per item it carved
+/// (each records one change, as does the trim's own edge).
+pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+    match op {
+        Op::ItemTrim(t) if t.mode == TrimMode::Overwrite => own.changes.len(),
+        _ => 1,
+    }
+}
+
 /// The wire name.
 pub(crate) const NAME: &str = "item.trim";
 /// Whether the op is produced only as an inverse and never accepted from clients (`strict`

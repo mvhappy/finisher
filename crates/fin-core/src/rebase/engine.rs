@@ -120,6 +120,9 @@ pub fn rebase_prepared(
     let mut run = Applier::new(head, r.tx.schema_version, mode).map_err(bad)?;
     let mut ops = Vec::with_capacity(n);
     let mut created = BTreeSet::new();
+    // Our earlier ops' footprints: an entity one of them created is blamed through what that
+    // op touched (the item our split cut, for the right part it made).
+    let mut earlier: Vec<Footprint> = Vec::with_capacity(n);
     for (k, op) in r.tx.ops.iter().enumerate() {
         let mut op = op.clone();
         for (track, pos) in op.positions_mut() {
@@ -142,11 +145,20 @@ pub fn rebase_prepared(
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
         created.extend(fp.creates.iter().cloned());
-        let rerun = run
-            .op(k, &op, ids)
-            .map_err(|e| rerun_conflict(&e, r, k, &fp, &theirs, head))?;
+        let rerun = match run.op(k, &op, ids) {
+            Ok(d) => d,
+            Err(e) => {
+                let ours = Ours {
+                    fp: &fp,
+                    earlier: &earlier,
+                    bound: run.bound(),
+                };
+                return Err(rerun_conflict(&e, r, k, &ours, &theirs, head));
+            }
+        };
         let at = mapping.push(rebased_map(rerun, run.bound()));
         mapping.set_mirror(n - 1 - k, at);
+        earlier.push(fp);
         ops.push(op);
     }
     let tx = Tx {
@@ -314,24 +326,53 @@ fn mirrored(steps: &[Prepared]) -> Result<Vec<bool>, CoreError> {
     Ok(out)
 }
 
-/// A re-run failure of op `k` (footprint `ours`). `DUPLICATE_ID` is a copy meeting an id that
-/// is already taken (Decision 18). The step to blame is the one unmirrored step (if exactly
-/// one) that touched, created or removed an entity `ours` touches or the error names; tracks
-/// and the assets ours only uses are left out, since nearly every step shares them.
+/// The op that failed to re-run, as [`rerun_conflict`] reads it: its footprint, the
+/// footprints of our earlier ops, and the placeholders bound so far.
+struct Ours<'a> {
+    fp: &'a Footprint,
+    earlier: &'a [Footprint],
+    bound: &'a std::collections::BTreeMap<String, String>,
+}
+
+/// A re-run failure of op `k`. `DUPLICATE_ID` is a copy meeting an id that is already taken
+/// (Decision 18). The step to blame is the one unmirrored step (if exactly one) that touched,
+/// created or removed an entity ours touches or the error names, or one an earlier op of ours
+/// touched to create such an entity (the item our split cut, for an overwrite meeting the
+/// right part); tracks and the assets ours only uses are left out, since nearly every step
+/// shares them.
 fn rerun_conflict(
     e: &CoreError,
     r: &PreparedRebase<'_>,
     k: usize,
-    ours: &Footprint,
+    ours: &Ours<'_>,
     theirs: &[(&str, &Footprint)],
     head: &Project,
 ) -> Conflict {
-    let mut named: BTreeSet<&str> = ours.touches.iter().map(|(x, _)| x.as_str()).collect();
+    let mut named: BTreeSet<&str> = ours.fp.touches.iter().map(|(x, _)| x.as_str()).collect();
     for key in ["clip", "item", "id", "asset"] {
         named.extend(e.details[key].as_str());
     }
     if let Some(clips) = e.details["clips"].as_array() {
         named.extend(clips.iter().filter_map(Value::as_str));
+    }
+    // An entity we created (by placeholder, or the id it bound) is named through what the op
+    // that created it touched.
+    let creators: Vec<&str> = named
+        .iter()
+        .flat_map(|x| {
+            let placeholder = ours
+                .bound
+                .iter()
+                .find(|(_, id)| id.as_str() == *x)
+                .map(|(p, _)| p.as_str());
+            [Some(*x), placeholder]
+        })
+        .flatten()
+        .collect();
+    for f in ours.earlier {
+        if f.creates.iter().any(|c| creators.contains(&c.as_str())) {
+            named.extend(f.touches.iter().map(|(x, _)| x.as_str()));
+        }
     }
     for t in crate::ops::util::tracks(head) {
         named.remove(t.id.as_str());

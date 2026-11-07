@@ -162,6 +162,10 @@ macro_rules! alias_module {
                 Vec::new()
             }
 
+            pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
+                1
+            }
+
             #[allow(unused_variables)]
             pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
                 match op {

@@ -16,7 +16,7 @@ pub(crate) mod roll;
 mod touched;
 mod values;
 
-pub(crate) use carve::carve;
+pub(crate) use carve::{carve, check_carve};
 pub(crate) use check::{
     check_frame, check_kind, check_source, check_speed, check_track, check_tracks, invalid_range,
     kind_name, media_duration,

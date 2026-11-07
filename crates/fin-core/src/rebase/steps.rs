@@ -64,6 +64,20 @@ impl Step {
         Ok(out)
     }
 
+    /// How many ops the step's inverse holds (each op's [`crate::ops::inverse_len`] from its
+    /// own diff), so an undo addressing several steps is cut at its true op boundaries (an
+    /// overwrite or a split inverts to several ops). `None` when the diff does not split.
+    fn inverse_len(&self) -> Option<usize> {
+        let diffs = split_diff(&self.ops, &self.diff).ok()?;
+        Some(
+            self.ops
+                .iter()
+                .zip(&diffs)
+                .map(|(op, d)| crate::ops::inverse_len(op, d))
+                .sum(),
+        )
+    }
+
     /// The step cut into consecutive parts of `sizes` ops each; each part takes its ops' own
     /// diffs, renumbered from 0. `sizes` must add up to the op count.
     fn split(&self, sizes: &[usize]) -> Result<Vec<Step>, CoreError> {
@@ -146,8 +160,9 @@ pub struct StepUnit {
 ///
 /// - an `undo`, `redo` or `revert` addresses earlier steps: an undo its units (a unit is a
 ///   record's steps, or a merge group's records' steps, by `mergeId`), a redo its undo, a
-///   revert its group. When they are all here and the op counts add up (each op inverts to
-///   one op), it is cut into one part per addressed step, in the order its ops invert them
+///   revert its group. When they are all here and the op counts add up (each addressed step
+///   takes as many of its ops as the step's inverse holds, [`crate::ops::inverse_len`]: an
+///   overwrite or a split inverts to several), it is cut into one part per addressed step, in the order its ops invert them
 ///   (newest first), and each part mirrors its step when that step is not mirrored yet. One
 ///   addressed step needs no cut: the whole record mirrors it, whatever its op count (an
 ///   overwrite or a split inverts to several ops).
@@ -211,23 +226,28 @@ pub fn steps_with_units(
         // One whole addressed step needs no cut: the record inverts it whatever each op
         // inverts to (an overwrite or a split inverts to several ops, plan 4C Task 8).
         let whole = |t: &[usize], partial: bool| t.len() == 1 && !partial && !step.ops.is_empty();
-        let addressed = addressed.filter(|(t, partial)| {
+        // Each addressed step's part holds that step's inverse: its size is the step's
+        // inverse op count, not its op count (Task 8 review B1).
+        let addressed = addressed.and_then(|(t, partial)| {
             let distinct = t.iter().collect::<BTreeSet<_>>().len() == t.len();
-            let ops: usize = t.iter().map(|&j| steps[j].ops.len()).sum();
-            let fits = if *partial {
-                ops < step.ops.len()
-            } else {
-                ops == step.ops.len()
-            };
-            distinct && !t.is_empty() && (fits || whole(t, *partial))
+            let sizes: Option<Vec<usize>> = t.iter().map(|&j| steps[j].inverse_len()).collect();
+            let fits = sizes.as_ref().is_some_and(|sizes| {
+                let ops: usize = sizes.iter().sum();
+                if partial {
+                    ops < step.ops.len()
+                } else {
+                    ops == step.ops.len()
+                }
+            });
+            (distinct && !t.is_empty() && (fits || whole(&t, partial)))
+                .then(|| (t, partial, sizes.filter(|_| fits)))
         });
         let start = steps.len();
         match addressed {
-            Some((t, partial)) => {
-                let mut sizes: Vec<usize> = if whole(&t, partial) {
-                    vec![step.ops.len()]
-                } else {
-                    t.iter().map(|&j| steps[j].ops.len()).collect()
+            Some((t, partial, sizes)) => {
+                let mut sizes: Vec<usize> = match sizes {
+                    Some(sizes) if !whole(&t, partial) => sizes,
+                    _ => vec![step.ops.len()],
                 };
                 let tail = step.ops.len() - sizes.iter().sum::<usize>();
                 if partial {

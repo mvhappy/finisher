@@ -174,7 +174,7 @@ pub(crate) fn check_literal(id: &str, kind: IdKind) -> Result<(), CoreError> {
 
 /// Lists every op variant with its module once, and generates the dispatch from it. Each
 /// module provides `NAME`, `INTERNAL`, `refs_mut`, `ids`, `allocates`,
-/// `positions_mut`, `offsets_mut`, `apply` and `footprint`.
+/// `positions_mut`, `offsets_mut`, `inverse_len`, `apply` and `footprint`.
 macro_rules! ops_table {
     ($($variant:ident => $module:ident),* $(,)?) => {
         impl Op {
@@ -236,6 +236,14 @@ macro_rules! ops_table {
             diff: &mut util::OpDiff<'_>,
         ) -> Result<Vec<Op>, CoreError> {
             match op { $(Op::$variant { .. } => $module::apply(project, op, bindings, ids, diff),)* }
+        }
+
+        /// How many ops the inverse of `op` holds, read off its own diff (`own`: what it
+        /// recorded). The rebase engine cuts an undo of several steps at these boundaries
+        /// ([`crate::rebase::steps_from`]); [`crate::apply::Applier`] checks it against every
+        /// inverse it builds in debug builds.
+        pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+            match op { $(Op::$variant { .. } => $module::inverse_len(op, own),)* }
         }
 
         /// The conflict footprint of `op` by its own rules, from its own diff (`op_diff`:
