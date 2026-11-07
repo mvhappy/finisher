@@ -4,6 +4,7 @@
 pub mod ids_json;
 pub mod memlog;
 pub mod moves;
+pub mod stale;
 
 use fin_core::{
     Applied, AssetAdd, AudioInfo, CoreError, DeleteMode, Edge, InsertMode, ItemBody, ItemDelete,

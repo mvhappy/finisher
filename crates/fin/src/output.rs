@@ -75,6 +75,14 @@ const VALIDATION_CODES: &[&str] = &[
     "TRANSITION_NO_HANDLES",
     "TRANSITION_EXISTS",
     "TRANSITION_INVALID",
+    // Structure (sub-project 4C Task 12): a track removal of a track holding items without
+    // `withItems`; a rate change of a timeline holding items; a removal of a timeline a nested
+    // item shows. Settings: an unknown path; a value of the wrong shape.
+    "TRACK_NOT_EMPTY",
+    "TIMELINE_NOT_EMPTY",
+    "TIMELINE_NESTED",
+    "PARAM_UNKNOWN",
+    "PARAM_TYPE",
     "INVALID_ID",
     "BINDINGS_MISMATCH",
     // A stored (migrated) record too large for a segment: export stops at it.
@@ -250,6 +258,11 @@ mod tests {
             "TRANSITION_NO_HANDLES",
             "TRANSITION_EXISTS",
             "TRANSITION_INVALID",
+            "TRACK_NOT_EMPTY",
+            "TIMELINE_NOT_EMPTY",
+            "TIMELINE_NESTED",
+            "PARAM_UNKNOWN",
+            "PARAM_TYPE",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

@@ -27,7 +27,7 @@ export type Edge = "start" | "end";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EntityKind".
  */
-export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "link";
+export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker";
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -74,6 +74,33 @@ export type Op =
     })
   | (TransitionRemove & {
       op: "transition.remove";
+    })
+  | (TrackAdd & {
+      op: "track.add";
+    })
+  | (TrackRemove & {
+      op: "track.remove";
+    })
+  | (TrackMove & {
+      op: "track.move";
+    })
+  | (TrackSet & {
+      op: "track.set";
+    })
+  | (TimelineAdd & {
+      op: "timeline.add";
+    })
+  | (TimelineSet & {
+      op: "timeline.set";
+    })
+  | (TimelineRemove & {
+      op: "timeline.remove";
+    })
+  | (TrackRestore & {
+      op: "track.restore";
+    })
+  | (TimelineRestore & {
+      op: "timeline.restore";
     })
   | {
       id: string;
@@ -209,6 +236,11 @@ export type Curve = "linear" | "equalPower";
  */
 export type TransitionKind = "crossfade" | "dissolve";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrackKind".
+ */
+export type TrackKind = "video" | "audio" | "caption";
+/**
  * One item on a track. On the wire the body's `kind` and fields and the common fields sit
  * next to `id`, `start` and `duration` (both are flattened).
  *
@@ -324,11 +356,6 @@ export type FontSource =
       asset: string;
       type: "asset";
     };
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "TrackKind".
- */
-export type TrackKind = "video" | "audio" | "caption";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "BranchState".
@@ -792,26 +819,122 @@ export interface TransitionRemove {
   transition: string;
 }
 /**
- * `item.remove` (internal): takes item `id` off its track.
+ * `track.add`: a new empty track of `kind` on `timeline`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ItemRemove".
+ * via the `definition` "TrackAdd".
  */
-export interface ItemRemove {
+export interface TrackAdd {
   id: string;
-  mode: DeleteMode;
+  index?: number;
+  kind: TrackKind;
+  name?: string;
+  timeline: string;
 }
 /**
- * `item.restore` (internal): puts `item` back on `track` at its `start`. Its id may be a
- * `$placeholder` (spec §4.3): the item then gets a newly allocated id.
+ * `track.remove`: takes `track` off its timeline, with its items when `withItems`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ItemRestore".
+ * via the `definition` "TrackRemove".
  */
-export interface ItemRestore {
-  item: Item;
-  mode: DeleteMode;
+export interface TrackRemove {
   track: string;
+  withItems?: boolean;
+}
+/**
+ * `track.move`: puts `track` at `index` of its timeline's tracks.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrackMove".
+ */
+export interface TrackMove {
+  index: number;
+  track: string;
+}
+/**
+ * `track.set`: sets `path` of `track` to `value`; no `value` resets it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrackSet".
+ */
+export interface TrackSet {
+  path: string;
+  track: string;
+  value?: ParamValue;
+}
+/**
+ * `timeline.add`: a new empty timeline.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TimelineAdd".
+ */
+export interface TimelineAdd {
+  id: string;
+  name: string;
+  rate: Rational;
+  resolution: Resolution;
+}
+/**
+ * Frame size in pixels.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Resolution".
+ */
+export interface Resolution {
+  height: number;
+  width: number;
+}
+/**
+ * `timeline.set`: sets `path` of `timeline` to `value`; no `value` resets it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TimelineSet".
+ */
+export interface TimelineSet {
+  path: string;
+  timeline: string;
+  value?: ParamValue;
+}
+/**
+ * `timeline.remove`: takes `timeline` off the project with its tracks, items and markers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TimelineRemove".
+ */
+export interface TimelineRemove {
+  timeline: string;
+}
+/**
+ * `track.restore` (internal): puts `track` back on `timeline` at `index`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrackRestore".
+ */
+export interface TrackRestore {
+  index: number;
+  timeline: string;
+  track: Track;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Track".
+ */
+export interface Track {
+  /**
+   * Decibels.
+   */
+  gain?: number;
+  id: string;
+  /**
+   * Sorted by `start`, non-overlapping.
+   */
+  items: Item[];
+  kind: TrackKind;
+  lock?: boolean;
+  mute?: boolean;
+  name: string;
+  solo?: boolean;
+  transitions?: Transition[];
 }
 /**
  * The item's own audio: gain in dB, pan in −1…1, fades in seconds.
@@ -902,6 +1025,86 @@ export interface Transform {
    * @maxItems 2
    */
   scale?: [number, number];
+}
+/**
+ * A transition at the cut between two touching items of one track, centred on the cut.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Transition".
+ */
+export interface Transition {
+  /**
+   * The outgoing item, then the incoming one.
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  between: [string, string];
+  curve?: Curve;
+  duration: Rational;
+  id: string;
+  kind: TransitionKind;
+}
+/**
+ * `timeline.restore` (internal): puts `timeline` back at `index` of the project's timelines.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TimelineRestore".
+ */
+export interface TimelineRestore {
+  index: number;
+  timeline: Timeline;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Timeline".
+ */
+export interface Timeline {
+  id: string;
+  /**
+   * Sorted by `at`. Markers never ripple.
+   */
+  markers?: Marker[];
+  name: string;
+  rate: Rational;
+  resolution: Resolution;
+  /**
+   * Compositing order, bottom first.
+   */
+  tracks: Track[];
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Marker".
+ */
+export interface Marker {
+  at: Rational;
+  color?: string;
+  duration?: Rational;
+  id: string;
+  label: string;
+}
+/**
+ * `item.remove` (internal): takes item `id` off its track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemRemove".
+ */
+export interface ItemRemove {
+  id: string;
+  mode: DeleteMode;
+}
+/**
+ * `item.restore` (internal): puts `item` back on `track` at its `start`. Its id may be a
+ * `$placeholder` (spec §4.3): the item then gets a newly allocated id.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemRestore".
+ */
+export interface ItemRestore {
+  item: Item;
+  mode: DeleteMode;
+  track: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1003,85 +1206,6 @@ export interface FontPin {
  * via the `definition` "CaptionStyle".
  */
 export interface CaptionStyle {}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Timeline".
- */
-export interface Timeline {
-  id: string;
-  /**
-   * Sorted by `at`. Markers never ripple.
-   */
-  markers?: Marker[];
-  name: string;
-  rate: Rational;
-  resolution: Resolution;
-  /**
-   * Compositing order, bottom first.
-   */
-  tracks: Track[];
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Marker".
- */
-export interface Marker {
-  at: Rational;
-  color?: string;
-  duration?: Rational;
-  id: string;
-  label: string;
-}
-/**
- * Frame size in pixels.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Resolution".
- */
-export interface Resolution {
-  height: number;
-  width: number;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Track".
- */
-export interface Track {
-  /**
-   * Decibels.
-   */
-  gain?: number;
-  id: string;
-  /**
-   * Sorted by `start`, non-overlapping.
-   */
-  items: Item[];
-  kind: TrackKind;
-  lock?: boolean;
-  mute?: boolean;
-  name: string;
-  solo?: boolean;
-  transitions?: Transition[];
-}
-/**
- * A transition at the cut between two touching items of one track, centred on the cut.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Transition".
- */
-export interface Transition {
-  /**
-   * The outgoing item, then the incoming one.
-   *
-   * @minItems 2
-   * @maxItems 2
-   */
-  between: [string, string];
-  curve?: Curve;
-  duration: Rational;
-  id: string;
-  kind: TransitionKind;
-}
 /**
  * The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and
  * its `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a

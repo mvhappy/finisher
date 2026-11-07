@@ -41,6 +41,7 @@ pub enum EntityKind {
     Item,
     Transition,
     Link,
+    Marker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

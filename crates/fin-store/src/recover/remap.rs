@@ -259,6 +259,49 @@ mod tests {
         assert_eq!(got.item.ids(), ["c42", "a1", "fx5", "lk2"]);
     }
 
+    /// B6 (plan 4C Task 12): a track restore's nested ids are remapped too: its items',
+    /// and the items its transitions sit between.
+    #[test]
+    fn recovery_remaps_ids_inside_track_restore() {
+        let r = Rational::from_int;
+        let mut m = Remap::default();
+        m.learn(
+            &record(vec![], &[("$c", "c10"), ("$t", "t7")]),
+            &BTreeMap::from([("$c".into(), "c42".into()), ("$t".into(), "t9".into())]),
+        );
+        let mut track = fin_core::Track::new("t7", fin_core::TrackKind::Video, "V2");
+        track.items = vec![
+            fin_core::Item::clip("c10", "a1", r(0), r(0), r(1)),
+            fin_core::Item::clip("c3", "a1", r(1), r(0), r(1)),
+        ];
+        track.transitions.push(fin_core::Transition {
+            id: "tr2".into(),
+            between: ["c10".into(), "c3".into()],
+            kind: fin_core::TransitionKind::Dissolve,
+            duration: r(1),
+            curve: fin_core::Curve::Linear,
+        });
+        let restore: Op = fin_core::TrackRestore {
+            track,
+            timeline: "tl1".into(),
+            index: 2,
+        }
+        .into();
+        let fork = BTreeSet::from(["a1", "c3", "tr2", "tl1"].map(String::from));
+        let rec = record(vec![restore], &[]);
+        let tx = m.prepare(&rec, &fork, &mut never_asked).unwrap().unwrap();
+        let Op::TrackRestore(got) = &tx.ops[0] else {
+            panic!("{:?}", tx.ops)
+        };
+        assert_eq!(got.track.id, "t9");
+        assert_eq!(got.track.items[0].id, "c42");
+        assert_eq!(got.track.transitions[0].between, ["c42", "c3"]);
+        assert_eq!(
+            tx.ops[0].ids(),
+            ["t9", "c42", "a1", "c3", "a1", "tr2", "c42", "c3", "tl1"]
+        );
+    }
+
     fn never_asked(_: &str) -> Result<bool, StoreError> {
         panic!("not asked")
     }

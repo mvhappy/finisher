@@ -8,6 +8,7 @@ use crate::ops::Op;
 mod carve;
 mod check;
 mod content;
+pub(crate) mod contents;
 mod group;
 mod limits;
 mod lock;
@@ -15,6 +16,7 @@ mod lookup;
 mod prune;
 mod ripple;
 pub(crate) mod roll;
+pub(crate) mod settings;
 mod touched;
 mod values;
 

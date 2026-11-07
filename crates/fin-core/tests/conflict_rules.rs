@@ -11,7 +11,8 @@ use fin_core::rebase::{
     Conflict, Conflicts, Footprint, Touch, committed_footprints, entity_conflict, reasons,
 };
 use fin_core::{
-    CommittedTx, CoreError, Edge, InsertMode, MemIds, Op, Project, apply_internal, apply_tx,
+    CommittedTx, CoreError, Edge, InsertMode, MemIds, Op, Project, TimelineAdd, TimelineRemove,
+    TimelineSet, TrackAdd, TrackKind, TrackMove, TrackRemove, TrackSet, apply_internal, apply_tx,
     resolve_ops,
 };
 use serde_json::json;
@@ -383,8 +384,79 @@ fn every_op_has_a_footprint() {
             vec!["t1"],
         ),
     ];
+    let tl2 = apply(&p, vec![timeline_add()]).project;
+    let no_t2 = apply(&p, vec![track_remove()]);
+    let no_tl2 = apply(
+        &tl2,
+        vec![
+            TimelineRemove {
+                timeline: "tl2".into(),
+            }
+            .into(),
+        ],
+    );
+    let structure = [
+        (
+            p.clone(),
+            TrackAdd {
+                id: "$t".into(),
+                timeline: "tl1".into(),
+                kind: TrackKind::Video,
+                index: None,
+                name: None,
+            }
+            .into(),
+            vec!["t3"],
+        ),
+        (p.clone(), track_remove(), vec!["t2"]),
+        (no_t2.project, no_t2.inverse[0].clone(), vec!["t2"]),
+        (
+            p.clone(),
+            TrackMove {
+                track: "t1".into(),
+                index: 1,
+            }
+            .into(),
+            vec!["t1"],
+        ),
+        (
+            p.clone(),
+            TrackSet {
+                track: "t1".into(),
+                path: "mute".into(),
+                value: Some(fin_core::ParamValue::Bool(true)),
+            }
+            .into(),
+            vec!["t1"],
+        ),
+        (p.clone(), timeline_add(), vec![]),
+        (
+            tl2.clone(),
+            TimelineSet {
+                timeline: "tl2".into(),
+                path: "name".into(),
+                value: Some(fin_core::ParamValue::Text("Teaser".into())),
+            }
+            .into(),
+            vec![],
+        ),
+        (
+            tl2,
+            TimelineRemove {
+                timeline: "tl2".into(),
+            }
+            .into(),
+            vec![],
+        ),
+        (no_tl2.project, no_tl2.inverse[0].clone(), vec![]),
+    ];
     let mut seen = BTreeSet::new();
-    for (at, op, tracks) in cases.into_iter().chain(more).chain(transitions) {
+    for (at, op, tracks) in cases
+        .into_iter()
+        .chain(more)
+        .chain(transitions)
+        .chain(structure)
+    {
         let (op, f, _) = fp(&at, op);
         seen.insert(op.name());
         assert_eq!(
@@ -469,6 +541,23 @@ fn every_op_has_a_footprint() {
                 f.removes == [r.transition.clone()]
                     && f.touches == [(r.transition.clone(), Touch::Exists)]
             }
+            Op::TrackAdd(a) => f.creates == [a.id.clone()] && f.uses == [a.timeline.clone()],
+            Op::TrackRemove(r) => {
+                f.removes == [r.track.clone(), "c3".into()]
+                    && f.touches == [(r.track.clone(), Touch::Exists)]
+            }
+            Op::TrackRestore(r) => {
+                f.creates == [r.track.id.clone(), "c3".into()] && f.uses == ["tl1", "a1"]
+            }
+            Op::TrackMove(m) => f.touches == [(m.track.clone(), Touch::Param("index".into()))],
+            Op::TrackSet(s) => f.touches == [(s.track.clone(), Touch::Param(s.path.clone()))],
+            Op::TimelineAdd(a) => f.creates == [a.id.clone()] && f.touches.is_empty(),
+            Op::TimelineSet(s) => f.touches == [(s.timeline.clone(), Touch::Param(s.path.clone()))],
+            Op::TimelineRemove(r) => {
+                f.removes == [r.timeline.clone()]
+                    && f.touches == [(r.timeline.clone(), Touch::Exists)]
+            }
+            Op::TimelineRestore(r) => f.creates == [r.timeline.id.clone()],
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -476,7 +565,28 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 15);
+    assert_eq!(seen.len(), 24);
+}
+
+fn timeline_add() -> Op {
+    TimelineAdd {
+        id: "$tl".into(),
+        name: "B-roll".into(),
+        rate: secs(30),
+        resolution: fin_core::Resolution {
+            width: 1080,
+            height: 1920,
+        },
+    }
+    .into()
+}
+
+fn track_remove() -> Op {
+    TrackRemove {
+        track: "t2".into(),
+        with_items: true,
+    }
+    .into()
 }
 
 #[test]

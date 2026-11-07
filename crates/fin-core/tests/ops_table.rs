@@ -2,9 +2,11 @@ mod common;
 
 use common::ids_json::{ids_cover_every_id_in_json, ids_cover_json};
 use fin_core::{
-    AssetAdd, BlendMode, CaptionBlock, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
+    AssetAdd, BlendMode, CaptionBlock, Curve, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
     ItemBody, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide,
-    ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe, Op, ParamValue, Rational, SlideSides,
+    ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe, Marker, Op, ParamValue, Rational,
+    Resolution, SlideSides, Timeline, TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet,
+    Track, TrackAdd, TrackKind, TrackMove, TrackRemove, TrackRestore, TrackSet, Transition,
     TransitionKind, TransitionRemove, TransitionSet, TrimMode, Word,
 };
 use serde_json::json;
@@ -63,6 +65,49 @@ pub fn caption() -> Item {
         params: Default::default(),
     });
     item
+}
+
+/// A track holding [`busy_clip`], a caption and a transition between two other clips.
+pub fn busy_track() -> Track {
+    let r = Rational::from_int;
+    let mut t = Track::new("t1", TrackKind::Video, "V1");
+    t.items = vec![
+        busy_clip(),
+        Item::clip("c2", "a1", r(1), r(0), r(1)),
+        Item::clip("c3", "a2", r(2), r(0), r(1)),
+    ];
+    t.transitions.push(Transition {
+        id: "tr1".into(),
+        between: ["c2".into(), "c3".into()],
+        kind: TransitionKind::Dissolve,
+        duration: r(1),
+        curve: Curve::Linear,
+    });
+    t
+}
+
+/// A timeline with a marker, [`busy_track`] and a caption track.
+pub fn busy_timeline() -> Timeline {
+    let r = Rational::from_int;
+    let mut captions = Track::new("t4", TrackKind::Caption, "C1");
+    captions.items.push(caption());
+    Timeline {
+        id: "tl2".into(),
+        name: "B-roll".into(),
+        rate: r(30),
+        resolution: Resolution {
+            width: 1080,
+            height: 1920,
+        },
+        markers: vec![Marker {
+            id: "m3".into(),
+            at: r(1),
+            duration: None,
+            label: "Cue".into(),
+            color: None,
+        }],
+        tracks: vec![busy_track(), captions],
+    }
 }
 
 fn every_variant() -> Vec<Op> {
@@ -142,6 +187,61 @@ fn every_variant() -> Vec<Op> {
             transition: "tr1".into(),
         }
         .into(),
+        TrackAdd {
+            id: "$t".into(),
+            timeline: "tl1".into(),
+            kind: TrackKind::Audio,
+            index: Some(0),
+            name: Some("Music".into()),
+        }
+        .into(),
+        TrackRemove {
+            track: "t1".into(),
+            with_items: true,
+        }
+        .into(),
+        TrackMove {
+            track: "t1".into(),
+            index: 1,
+        }
+        .into(),
+        TrackSet {
+            track: "t1".into(),
+            path: "gain".into(),
+            value: Some(ParamValue::Number(-3.0)),
+        }
+        .into(),
+        TimelineAdd {
+            id: "$tl".into(),
+            name: "B-roll".into(),
+            rate: r(25),
+            resolution: Resolution {
+                width: 1920,
+                height: 1080,
+            },
+        }
+        .into(),
+        TimelineSet {
+            timeline: "tl1".into(),
+            path: "name".into(),
+            value: None,
+        }
+        .into(),
+        TimelineRemove {
+            timeline: "tl2".into(),
+        }
+        .into(),
+        TrackRestore {
+            track: busy_track(),
+            timeline: "tl1".into(),
+            index: 0,
+        }
+        .into(),
+        TimelineRestore {
+            timeline: busy_timeline(),
+            index: 1,
+        }
+        .into(),
         Op::AssetRemove { id: "a1".into() },
         ItemRemove {
             id: "c1".into(),
@@ -184,6 +284,15 @@ fn every_variant() -> Vec<Op> {
             | Op::ItemUnlink(_)
             | Op::TransitionSet(_)
             | Op::TransitionRemove(_)
+            | Op::TrackAdd(_)
+            | Op::TrackRemove(_)
+            | Op::TrackMove(_)
+            | Op::TrackSet(_)
+            | Op::TimelineAdd(_)
+            | Op::TimelineSet(_)
+            | Op::TimelineRemove(_)
+            | Op::TrackRestore(_)
+            | Op::TimelineRestore(_)
             | Op::AssetRemove { .. }
             | Op::ItemRemove(_)
             | Op::ItemRestore(_)
@@ -243,6 +352,45 @@ fn restore_lists_nested_ids() {
     assert_eq!(ops[1].ids(), ["cap1", "st2", "fx3", "t3"]);
     for op in &ops {
         ids_cover_every_id_in_json(op);
+    }
+}
+
+/// Decision 24: the track and timeline restores list every id nested in them, transitions and
+/// the items they sit between included (B6).
+#[test]
+fn track_and_timeline_restores_list_nested_ids() {
+    let track: Op = TrackRestore {
+        track: busy_track(),
+        timeline: "tl1".into(),
+        index: 0,
+    }
+    .into();
+    assert_eq!(
+        track.ids(),
+        [
+            "t1", "c1", "a1", "fx1", "fx2", "lk1", "c2", "a1", "c3", "a2", "tr1", "c2", "c3", "tl1"
+        ]
+    );
+    let timeline: Op = TimelineRestore {
+        timeline: busy_timeline(),
+        index: 1,
+    }
+    .into();
+    let ids = timeline.ids();
+    assert_eq!(ids[..3], ["tl2", "m3", "t1"]);
+    assert_eq!(ids[ids.len() - 4..], ["t4", "cap1", "st2", "fx3"]);
+    for op in [&track, &timeline] {
+        ids_cover_every_id_in_json(op);
+        // Renaming through refs_mut reaches every one of them.
+        let mut renamed = op.clone();
+        for r in renamed.refs_mut() {
+            r.push('9');
+        }
+        assert!(renamed.ids().iter().all(|id| id.ends_with('9')));
+        let json = serde_json::to_string(&renamed).unwrap();
+        for id in op.ids() {
+            assert!(!json.contains(&format!("\"{id}\"")), "{id} left in {json}");
+        }
     }
 }
 

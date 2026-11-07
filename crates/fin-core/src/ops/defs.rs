@@ -7,6 +7,15 @@ use crate::model::{
     AssetKind, AudioInfo, Curve, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo,
     TransitionKind, VideoInfo,
 };
+use crate::ops::timeline_add::TimelineAdd;
+use crate::ops::timeline_remove::TimelineRemove;
+use crate::ops::timeline_restore::TimelineRestore;
+use crate::ops::timeline_set::TimelineSet;
+use crate::ops::track_add::TrackAdd;
+use crate::ops::track_move::TrackMove;
+use crate::ops::track_remove::TrackRemove;
+use crate::ops::track_restore::TrackRestore;
+use crate::ops::track_set::TrackSet;
 use crate::time::Rational;
 
 /// A primitive edit operation, tagged by `op`.
@@ -53,6 +62,33 @@ pub enum Op {
     /// Takes a transition off its track.
     #[serde(rename = "transition.remove")]
     TransitionRemove(TransitionRemove),
+    /// Adds an empty track to a timeline.
+    #[serde(rename = "track.add")]
+    TrackAdd(TrackAdd),
+    /// Takes a track off its timeline (with its items when `withItems`).
+    #[serde(rename = "track.remove")]
+    TrackRemove(TrackRemove),
+    /// Moves a track to another place in its timeline's compositing order.
+    #[serde(rename = "track.move")]
+    TrackMove(TrackMove),
+    /// Sets (or, with no `value`, resets) one setting of a track.
+    #[serde(rename = "track.set")]
+    TrackSet(TrackSet),
+    /// Adds an empty timeline.
+    #[serde(rename = "timeline.add")]
+    TimelineAdd(TimelineAdd),
+    /// Sets (or, with no `value`, resets) one setting of a timeline.
+    #[serde(rename = "timeline.set")]
+    TimelineSet(TimelineSet),
+    /// Takes a timeline off the project with everything on it.
+    #[serde(rename = "timeline.remove")]
+    TimelineRemove(TimelineRemove),
+    /// Internal (inverse of `track.remove`): puts a whole track back.
+    #[serde(rename = "track.restore")]
+    TrackRestore(Box<TrackRestore>),
+    /// Internal (inverse of `timeline.remove`): puts a whole timeline back.
+    #[serde(rename = "timeline.restore")]
+    TimelineRestore(Box<TimelineRestore>),
     /// Internal (inverse of `asset.add`): removes an unused asset.
     #[serde(rename = "asset.remove")]
     AssetRemove { id: String },

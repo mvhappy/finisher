@@ -700,7 +700,8 @@
         "timeline",
         "item",
         "transition",
-        "link"
+        "link",
+        "marker"
       ],
       "type": "string"
     },
@@ -2229,6 +2230,186 @@
           "description": "Takes a transition off its track."
         },
         {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TrackAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "track.add",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds an empty track to a timeline."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TrackRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "track.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes a track off its timeline (with its items when `withItems`)."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TrackMove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "track.move",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Moves a track to another place in its timeline's compositing order."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TrackSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "track.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Sets (or, with no `value`, resets) one setting of a track."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TimelineAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "timeline.add",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds an empty timeline."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TimelineSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "timeline.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Sets (or, with no `value`, resets) one setting of a timeline."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TimelineRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "timeline.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes a timeline off the project with everything on it."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TrackRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "track.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `track.remove`): puts a whole track back."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/TimelineRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "timeline.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `timeline.remove`): puts a whole timeline back."
+        },
+        {
           "description": "Internal (inverse of `asset.add`): removes an unused asset.",
           "properties": {
             "id": {
@@ -2823,6 +3004,79 @@
       ],
       "type": "object"
     },
+    "TimelineAdd": {
+      "description": "`timeline.add`: a new empty timeline.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rate": {
+          "$ref": "#/$defs/Rational"
+        },
+        "resolution": {
+          "$ref": "#/$defs/Resolution"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "rate",
+        "resolution"
+      ],
+      "type": "object"
+    },
+    "TimelineRemove": {
+      "description": "`timeline.remove`: takes `timeline` off the project with its tracks, items and markers.",
+      "properties": {
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeline"
+      ],
+      "type": "object"
+    },
+    "TimelineRestore": {
+      "description": "`timeline.restore` (internal): puts `timeline` back at `index` of the project's timelines.",
+      "properties": {
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeline": {
+          "$ref": "#/$defs/Timeline"
+        }
+      },
+      "required": [
+        "timeline",
+        "index"
+      ],
+      "type": "object"
+    },
+    "TimelineSet": {
+      "description": "`timeline.set`: sets `path` of `timeline` to `value`; no `value` resets it.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "timeline",
+        "path"
+      ],
+      "type": "object"
+    },
     "Track": {
       "properties": {
         "gain": {
@@ -2870,6 +3124,34 @@
       ],
       "type": "object"
     },
+    "TrackAdd": {
+      "description": "`track.add`: a new empty track of `kind` on `timeline`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/TrackKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "timeline",
+        "kind"
+      ],
+      "type": "object"
+    },
     "TrackKind": {
       "enum": [
         "video",
@@ -2877,6 +3159,80 @@
         "caption"
       ],
       "type": "string"
+    },
+    "TrackMove": {
+      "description": "`track.move`: puts `track` at `index` of its timeline's tracks.",
+      "properties": {
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "TrackRemove": {
+      "description": "`track.remove`: takes `track` off its timeline, with its items when `withItems`.",
+      "properties": {
+        "track": {
+          "type": "string"
+        },
+        "withItems": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "TrackRestore": {
+      "description": "`track.restore` (internal): puts `track` back on `timeline` at `index`.",
+      "properties": {
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "track": {
+          "$ref": "#/$defs/Track"
+        }
+      },
+      "required": [
+        "track",
+        "timeline",
+        "index"
+      ],
+      "type": "object"
+    },
+    "TrackSet": {
+      "description": "`track.set`: sets `path` of `track` to `value`; no `value` resets it.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "track": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "track",
+        "path"
+      ],
+      "type": "object"
     },
     "Transform": {
       "properties": {

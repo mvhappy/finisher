@@ -2,11 +2,12 @@
 //! footprint, positions).
 //!
 //! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete`, `item.slip`,
-//! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink` (and the `clip.*`
-//! aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops exist
-//! only as inverses (`asset.remove`, `item.remove`, `item.restore`, and `item.trim` in `strict`
-//! mode or `alone`, `item.slide` with `sides`, `item.link` with a literal id); clients sending
-//! them get `INVALID_OP`.
+//! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink`, `transition.set`,
+//! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove` (and the
+//! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
+//! exist only as inverses (`asset.remove`, `item.remove`, `item.restore`, `track.restore`,
+//! `timeline.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
+//! `item.link` with a literal id); clients sending them get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
 //! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
@@ -39,6 +40,15 @@ mod item_slip;
 mod item_split;
 mod item_trim;
 mod item_unlink;
+mod timeline_add;
+mod timeline_remove;
+mod timeline_restore;
+mod timeline_set;
+mod track_add;
+mod track_move;
+mod track_remove;
+mod track_restore;
+mod track_set;
 mod transition_remove;
 mod transition_set;
 pub(crate) mod util;
@@ -50,6 +60,15 @@ pub use defs::{
     ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
     TransitionRemove, TransitionSet, TrimMode,
 };
+pub use timeline_add::TimelineAdd;
+pub use timeline_remove::TimelineRemove;
+pub use timeline_restore::TimelineRestore;
+pub use timeline_set::TimelineSet;
+pub use track_add::TrackAdd;
+pub use track_move::TrackMove;
+pub use track_remove::TrackRemove;
+pub use track_restore::TrackRestore;
+pub use track_set::TrackSet;
 
 /// `$name` placeholders bound during one transaction, in op order.
 pub(crate) struct Bindings {
@@ -262,9 +281,25 @@ macro_rules! ops_table {
 }
 
 /// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op
-/// but `transition.*`, and an alias's runs as the op it stands for.
+/// but `transition.*`, and an alias's runs as the op it stands for. Track and timeline ops
+/// never part touching items, so it does not run after them either: a removal records its own
+/// transitions as removed, and a restore brings them back whole.
 fn prunes(op: &Op) -> bool {
-    !op.is_alias() && !matches!(op, Op::TransitionSet(_) | Op::TransitionRemove(_))
+    !op.is_alias()
+        && !matches!(
+            op,
+            Op::TransitionSet(_)
+                | Op::TransitionRemove(_)
+                | Op::TrackAdd(_)
+                | Op::TrackRemove(_)
+                | Op::TrackRestore(_)
+                | Op::TrackMove(_)
+                | Op::TrackSet(_)
+                | Op::TimelineAdd(_)
+                | Op::TimelineSet(_)
+                | Op::TimelineRemove(_)
+                | Op::TimelineRestore(_)
+        )
 }
 
 /// Applies one op to `project`, recording into `diff` under the op's index; returns the op's
@@ -325,6 +360,15 @@ ops_table! {
     ItemUnlink => item_unlink,
     TransitionSet => transition_set,
     TransitionRemove => transition_remove,
+    TrackAdd => track_add,
+    TrackRemove => track_remove,
+    TrackMove => track_move,
+    TrackSet => track_set,
+    TimelineAdd => timeline_add,
+    TimelineSet => timeline_set,
+    TimelineRemove => timeline_remove,
+    TrackRestore => track_restore,
+    TimelineRestore => timeline_restore,
     AssetRemove => asset_remove,
     ItemRemove => item_remove,
     ItemRestore => item_restore,
