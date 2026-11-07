@@ -223,6 +223,7 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
         .env_remove("FIN_SERVER")
         .env_remove("FIN_OFFLINE_SNAPSHOT")
         .env_remove("FIN_TEST_COMMIT_GATE")
+        .env_remove("FIN_CALL")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
