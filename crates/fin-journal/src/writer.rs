@@ -1,24 +1,25 @@
 //! The writer thread (plan D, Decisions 16–19): the only owner of `events/`. It drains the
 //! control channel before each data batch, serialises entries, rotates files, applies the
 //! caps, reports drops, closes stats windows, and suspends on an I/O error or a panic of its
-//! own instead of failing anyone.
+//! own instead of failing anyone. The file side (scan, rotation, caps, suspension) is in
+//! `disk.rs`.
 
 use std::cell::Cell;
-use std::fs::{self, File};
-use std::io::{self, ErrorKind, Write as _};
+use std::fs::File;
+use std::io::{self, Write as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use fin_core::events::payloads::JournalDropped;
-use fin_core::events::{AnyPayload, Source};
+use fin_core::events::{AnyPayload, Purposes, Source};
 use ulid::Ulid;
 
 use crate::control::{Control, Data, Pending, SAMPLE_BYTES, gate_of, unpack};
-use crate::files::{self, DAY_MS, FileMeta};
+use crate::files::FileMeta;
 use crate::stats::Windows;
 use crate::{JournalError, MAX_ENTRY_BYTES, Shared, encode};
 
@@ -28,45 +29,46 @@ thread_local! {
 
 /// How long a suspended journal waits before it tries the disk again.
 pub(crate) const RETRY_MS: u64 = 60_000;
-const CAPS_EVERY_MS: u64 = 3_600_000;
+pub(crate) const CAPS_EVERY_MS: u64 = 3_600_000;
 /// Data messages handled per batch; control is drained between batches.
 const BATCH: usize = 256;
 
-struct Suspension {
-    code: &'static str,
-    retry_at: u64,
+pub(crate) struct Suspension {
+    pub code: &'static str,
+    pub retry_at: u64,
+}
+
+/// One buffered line: where it starts in the buffer and the purposes it was encoded under.
+/// An `exempt` line keeps its stamp whatever the gate is now (`consent.changed`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Line {
+    pub start: usize,
+    pub purposes: Purposes,
+    pub exempt: bool,
 }
 
 pub(crate) struct Writer {
-    sh: Arc<Shared>,
-    dir: PathBuf,
+    pub sh: Arc<Shared>,
+    pub dir: PathBuf,
     data: Receiver<Data>,
     ctl: Receiver<Control>,
     /// Oldest first; with `active`, the last one is being appended to.
-    files: Vec<FileMeta>,
-    active: Option<File>,
-    buf: Vec<u8>,
-    buf_entries: u64,
+    pub files: Vec<FileMeta>,
+    pub active: Option<File>,
+    pub buf: Vec<u8>,
+    pub lines: Vec<Line>,
     scratch: Vec<u8>,
-    last_flush: Instant,
+    pub last_flush: Instant,
     /// The directory was listed, the newest file's tail repaired and the caps applied.
-    scanned: bool,
-    suspended: Option<Suspension>,
-    windows: Windows,
-    next_caps: u64,
-    last_id: Ulid,
+    pub scanned: bool,
+    /// The directory was listed without a repair (opened off): the caps may delete.
+    pub listed: bool,
+    pub suspended: Option<Suspension>,
+    pub windows: Windows,
+    pub next_caps: u64,
+    pub last_id: Ulid,
     drops_since: u64,
-}
-
-fn code_of(e: &io::Error) -> &'static str {
-    match e.kind() {
-        ErrorKind::StorageFull | ErrorKind::QuotaExceeded => "JOURNAL_DISK_FULL",
-        ErrorKind::PermissionDenied
-        | ErrorKind::ReadOnlyFilesystem
-        | ErrorKind::NotADirectory
-        | ErrorKind::AlreadyExists => "JOURNAL_UNWRITABLE",
-        _ => "JOURNAL_IO",
-    }
+    last_drops: Option<Instant>,
 }
 
 impl Writer {
@@ -85,26 +87,33 @@ impl Writer {
             files: Vec::new(),
             active: None,
             buf: Vec::new(),
-            buf_entries: 0,
+            lines: Vec::new(),
             scratch: Vec::new(),
             last_flush: Instant::now(),
             scanned: false,
+            listed: false,
             suspended: None,
             windows: Windows::default(),
             next_caps: now,
             last_id: Ulid::nil(),
             drops_since: now,
+            last_drops: None,
         }
     }
 
-    fn now(&self) -> u64 {
+    pub fn now(&self) -> u64 {
         self.sh.opts.clock.now_ms()
+    }
+
+    /// The purposes in force now.
+    pub fn gate(&self) -> Purposes {
+        gate_of(self.sh.word.load(Acquire))
     }
 
     pub fn run(mut self) {
         ON_WRITER.with(|w| w.set(true));
         encode::warm();
-        if gate_of(self.sh.word.load(Relaxed)).is_empty() {
+        if self.gate().is_empty() {
             self.list_only();
         } else if let Err(e) = self.scan() {
             self.suspend(&e);
@@ -159,6 +168,13 @@ impl Writer {
             .clamp(Duration::from_millis(1), idle)
     }
 
+    /// Handles every data message queued (close).
+    pub fn drain_data(&mut self) {
+        while let Ok(d) = self.data.try_recv() {
+            self.on_data(d);
+        }
+    }
+
     /// Handles the data queued so far (at most a channel's worth), so a control message
     /// sees every entry recorded before it.
     fn catch_up(&mut self) {
@@ -203,16 +219,20 @@ impl Writer {
     }
 
     fn handle_data(&mut self, d: Data) {
+        // The bytes leave the bound before anything can panic, so a panic does not leak them.
+        match &d {
+            Data::Entry(p) => self.sh.inflight.fetch_sub(p.bytes, Relaxed),
+            Data::Sample(_) => self.sh.inflight.fetch_sub(SAMPLE_BYTES, Relaxed),
+            Data::Wake => 0,
+        };
         self.sh.faults.check_panic();
         match d {
             Data::Entry(p) => {
-                self.sh.inflight.fetch_sub(p.bytes, Relaxed);
                 self.write(*p);
             }
             Data::Sample(s) => {
-                self.sh.inflight.fetch_sub(SAMPLE_BYTES, Relaxed);
                 self.roll_stats(s.ts);
-                if !gate_of(self.sh.word.load(Relaxed)).is_empty() {
+                if !self.gate().is_empty() {
                     self.windows.add(&s, self.stats_ms());
                 }
             }
@@ -227,12 +247,14 @@ impl Writer {
         }
     }
 
-    /// What is due by the clock: the stats window, the drop report, the hourly caps.
-    fn maintain(&mut self) {
+    /// What is due by the clock: a suspension's retry, the stats window, the drop report,
+    /// the hourly caps (which delete old files even while off).
+    pub fn maintain(&mut self) {
         let now = self.now();
+        self.retry_due(now);
         self.roll_stats(now);
-        self.report_drops();
-        if self.scanned
+        self.report_drops(false);
+        if (self.scanned || self.listed)
             && self.suspended.is_none()
             && now >= self.next_caps
             && let Err(e) = self.apply_caps(now)
@@ -241,7 +263,7 @@ impl Writer {
         }
     }
 
-    fn stats_ms(&self) -> u64 {
+    pub fn stats_ms(&self) -> u64 {
         (self.sh.opts.stats_every.as_millis() as u64).max(1)
     }
 
@@ -258,8 +280,8 @@ impl Writer {
     }
 
     /// An entry of the journal's own (stats, drops), under the consent in force now.
-    fn write_own(&mut self, source: Source, payload: AnyPayload, ts: u64) -> bool {
-        let stamp = unpack(self.sh.word.load(Relaxed));
+    pub fn write_own(&mut self, source: Source, payload: AnyPayload, ts: u64) -> bool {
+        let stamp = unpack(self.sh.word.load(Acquire));
         let bytes = encode::entry_bytes(None, &payload);
         self.write(Pending {
             ts,
@@ -272,13 +294,19 @@ impl Writer {
         })
     }
 
-    fn report_drops(&mut self) {
+    /// `journal.dropped`, at most once per flush interval unless `force` (close).
+    pub fn report_drops(&mut self, force: bool) {
         if self.suspended.is_some()
-            || gate_of(self.sh.word.load(Relaxed)).is_empty()
+            || self.gate().is_empty()
             || self.sh.drop_count.load(Relaxed) == 0
+            || (!force
+                && self
+                    .last_drops
+                    .is_some_and(|t| t.elapsed() < self.sh.opts.flush_every))
         {
             return;
         }
+        self.last_drops = Some(Instant::now());
         let count = self.sh.drop_count.swap(0, Relaxed);
         let bytes = self.sh.drop_bytes.swap(0, Relaxed);
         let now = self.now();
@@ -292,12 +320,9 @@ impl Writer {
     }
 
     /// Serialises and buffers one entry. False (and counted as dropped) when it was not.
-    fn write(&mut self, p: Pending) -> bool {
+    pub fn write(&mut self, p: Pending) -> bool {
         let bytes = p.bytes;
-        let purposes = p
-            .stamp
-            .purposes
-            .intersect(gate_of(self.sh.word.load(Relaxed)));
+        let purposes = p.stamp.purposes.intersect(self.gate());
         let now = self.now();
         if purposes.is_empty() || !self.writable(now) {
             self.sh.dropped(bytes);
@@ -309,7 +334,7 @@ impl Writer {
         line.clear();
         let ok = encode::encode(&mut line, id, &self.sh.session, p, purposes).is_ok()
             && line.len() <= MAX_ENTRY_BYTES;
-        let written = ok && self.append(ts, &line);
+        let written = ok && self.append(ts, &line, purposes, false);
         self.scratch = line;
         if !written {
             self.sh.dropped(bytes);
@@ -317,13 +342,17 @@ impl Writer {
         written
     }
 
-    fn append(&mut self, ts: u64, line: &[u8]) -> bool {
+    pub fn append(&mut self, ts: u64, line: &[u8], purposes: Purposes, exempt: bool) -> bool {
         if let Err(e) = self.prepare(ts, line.len() as u64) {
             self.suspend(&e);
             return false;
         }
+        self.lines.push(Line {
+            start: self.buf.len(),
+            purposes,
+            exempt,
+        });
         self.buf.extend_from_slice(line);
-        self.buf_entries += 1;
         if let Some(m) = self.files.last_mut() {
             m.bytes += line.len() as u64;
             m.end_ts = m.end_ts.max(ts);
@@ -348,7 +377,21 @@ impl Writer {
         }
     }
 
-    fn next_id(&mut self, ts: u64) -> Ulid {
+    /// A due retry from `maintain`: with a purpose on, the directory is scanned again (which
+    /// creates nothing), so the status recovers without waiting for an entry.
+    fn retry_due(&mut self, now: u64) {
+        if self.suspended.as_ref().is_none_or(|s| now < s.retry_at) || self.gate().is_empty() {
+            return;
+        }
+        self.suspended = None;
+        self.scanned = false;
+        if let Err(e) = self.scan() {
+            self.suspend(&e);
+        }
+        self.publish();
+    }
+
+    pub fn next_id(&mut self, ts: u64) -> Ulid {
         let fresh = Ulid::from_parts(ts, Ulid::new().random());
         let id = if fresh <= self.last_id {
             self.last_id.increment().unwrap_or(fresh)
@@ -359,130 +402,50 @@ impl Writer {
         id
     }
 
-    /// Makes the active file ready for a `len`-byte line at `ts`: the first write scans the
-    /// directory and creates it; a full file or a new UTC day rotates.
-    fn prepare(&mut self, ts: u64, len: u64) -> io::Result<()> {
-        if !self.scanned {
-            self.scan()?;
+    /// Rewrites the buffered lines the gate no longer allows as they stand: content goes
+    /// with training, and a line left with no purpose is dropped (and counted). So what
+    /// reaches the disk never holds more than the consent in force when it is written.
+    pub fn enforce_gate(&mut self) {
+        let gate = self.gate();
+        let allowed = |l: &Line| l.exempt || l.purposes.intersect(gate) == l.purposes;
+        if self.lines.iter().all(allowed) {
+            return;
         }
-        if self.active.is_some()
-            && let Some(m) = self.files.last()
-            && ((m.bytes > 0 && m.bytes + len > self.sh.opts.max_file_bytes) || ts / DAY_MS > m.day)
-        {
-            self.rotate()?;
-        }
-        if self.active.is_none() {
-            files::ensure_dir(&self.dir)?;
-            let id = self.next_id(ts);
-            let day = ts / DAY_MS;
-            let name = files::file_name(day, id);
-            let f = files::create(&self.dir.join(&name))?;
-            files::sync_dir(&self.dir)?;
-            self.files.push(FileMeta {
-                name,
-                id,
-                day,
-                start_ts: ts,
-                end_ts: ts,
-                bytes: 0,
-            });
-            self.active = Some(f);
-            self.publish();
-        }
-        Ok(())
-    }
-
-    fn rotate(&mut self) -> io::Result<()> {
-        self.flush_buf()?;
-        if let Some(f) = self.active.take() {
-            files::sync_file(&f)?;
-        }
-        let now = self.now();
-        self.apply_caps(now)
-    }
-
-    /// Lists the existing files, repairs the newest one's tail and applies the caps. Creates
-    /// nothing: a missing directory is an empty journal.
-    fn scan(&mut self) -> io::Result<()> {
-        self.active = None;
-        self.files.clear();
-        let list = files::list(&self.dir)?;
-        let newest = list.len().checked_sub(1);
-        for (i, (name, id, len)) in list.into_iter().enumerate() {
-            let path = self.dir.join(&name);
-            let len = if Some(i) == newest {
-                files::repair_tail(&path, len)?
-            } else {
-                len
-            };
-            let start_ts = id.timestamp_ms();
-            let end_ts = files::last_ts(&path, len).unwrap_or(start_ts);
-            self.last_id = self.last_id.max(id);
-            self.files.push(FileMeta {
-                name,
-                id,
-                day: start_ts / DAY_MS,
-                start_ts,
-                end_ts,
-                bytes: len,
-            });
-        }
-        self.scanned = true;
-        let now = self.now();
-        self.apply_caps(now)
-    }
-
-    /// The status of a journal opened off: what is on disk, touching nothing.
-    fn list_only(&mut self) {
-        if let Ok(list) = files::list(&self.dir) {
-            self.files = list
-                .into_iter()
-                .map(|(name, id, len)| FileMeta {
-                    name,
-                    id,
-                    day: id.timestamp_ms() / DAY_MS,
-                    start_ts: id.timestamp_ms(),
-                    end_ts: id.timestamp_ms(),
-                    bytes: len,
-                })
-                .collect();
-        }
-        self.publish();
-    }
-
-    fn apply_caps(&mut self, now: u64) -> io::Result<()> {
-        let o = &self.sh.opts;
-        let max_age = o.max_age.as_millis() as u64;
-        let n = files::over_caps(
-            &self.files,
-            self.active.is_some(),
-            now,
-            max_age,
-            o.max_total_bytes,
-        );
-        let mut result = Ok(());
-        let mut removed = 0;
-        for f in &self.files[..n] {
-            match fs::remove_file(self.dir.join(&f.name)) {
-                Ok(()) => removed += 1,
-                Err(e) if e.kind() == ErrorKind::NotFound => removed += 1,
-                Err(e) => {
-                    result = Err(e);
-                    break;
+        let old = std::mem::take(&mut self.buf);
+        let lines = std::mem::take(&mut self.lines);
+        for (i, l) in lines.iter().enumerate() {
+            let end = lines.get(i + 1).map_or(old.len(), |n| n.start);
+            let text = &old[l.start..end];
+            if allowed(l) {
+                self.lines.push(Line {
+                    start: self.buf.len(),
+                    ..*l
+                });
+                self.buf.extend_from_slice(text);
+                continue;
+            }
+            let (kept, _gone) = encode::restamp(text, gate);
+            match kept {
+                Some(t) => {
+                    self.lines.push(Line {
+                        start: self.buf.len(),
+                        purposes: l.purposes.intersect(gate),
+                        exempt: false,
+                    });
+                    self.buf.extend_from_slice(&t);
                 }
+                None => self.sh.dropped(text.len()),
             }
         }
-        self.files.drain(..removed);
-        if removed > 0 {
-            result = result.and(files::sync_dir(&self.dir));
+        if let Some(m) = self.files.last_mut() {
+            m.bytes = (m.bytes + self.buf.len() as u64).saturating_sub(old.len() as u64);
         }
-        self.next_caps = now + CAPS_EVERY_MS;
-        self.publish();
-        result
     }
 
-    fn flush_buf(&mut self) -> io::Result<()> {
+    pub fn flush_buf(&mut self) -> io::Result<()> {
+        self.enforce_gate();
         if self.buf.is_empty() {
+            self.lines.clear();
             return Ok(());
         }
         self.sh.faults.before_write()?;
@@ -490,16 +453,20 @@ impl Writer {
             .active
             .as_mut()
             .ok_or_else(|| io::Error::other("no active journal file"))?;
+        if let Some(n) = self.sh.faults.tear_at(&self.buf) {
+            f.write_all(&self.buf[..n])?;
+            self.sh.faults.park_torn();
+        }
         f.write_all(&self.buf)?;
         self.buf.clear();
-        self.buf_entries = 0;
+        self.lines.clear();
         self.last_flush = Instant::now();
         self.publish();
         Ok(())
     }
 
     /// Writes the buffer out (no fsync: a power loss may lose the last flush interval).
-    fn flush(&mut self) -> Result<(), JournalError> {
+    pub fn flush(&mut self) -> Result<(), JournalError> {
         if let Err(e) = self.flush_buf() {
             self.suspend(&e);
         }
@@ -510,64 +477,5 @@ impl Writer {
             )),
             None => Ok(()),
         }
-    }
-
-    fn suspend_with(&mut self, code: &'static str) {
-        self.active = None;
-        if self.buf_entries > 0 {
-            self.sh.drop_count.fetch_add(self.buf_entries, Relaxed);
-            self.sh.drop_bytes.fetch_add(self.buf.len() as u64, Relaxed);
-            self.sh.dropped_total.fetch_add(self.buf_entries, Relaxed);
-        }
-        self.buf.clear();
-        self.buf_entries = 0;
-        self.scanned = false;
-        let retry_at = self.now() + RETRY_MS;
-        self.suspended = Some(Suspension { code, retry_at });
-        self.publish();
-    }
-
-    fn suspend(&mut self, e: &io::Error) {
-        self.suspend_with(code_of(e));
-    }
-
-    fn on_panic(&mut self) {
-        self.suspend_with("JOURNAL_PANIC");
-    }
-
-    /// Close: the queued data, a last (short) stats window, the drop report, then flush and
-    /// fsync.
-    fn shutdown(&mut self) {
-        while let Ok(d) = self.data.try_recv() {
-            self.on_data(d);
-        }
-        let now = self.now();
-        let end = self
-            .windows
-            .due_at(self.stats_ms())
-            .filter(|due| now < *due)
-            .map(|_| now);
-        if !self.windows.is_empty() {
-            for (source, p) in self.windows.take(end, self.stats_ms()) {
-                self.write_own(source, p, now);
-            }
-        }
-        self.report_drops();
-        if self.flush().is_ok()
-            && let Some(f) = self.active.take()
-        {
-            let _ = files::sync_file(&f).and(files::sync_dir(&self.dir));
-        }
-        self.publish();
-    }
-
-    /// Publishes what `status()` reports.
-    fn publish(&self) {
-        let mut s = self.sh.lock_status();
-        s.suspended = self.suspended.as_ref().map(|s| s.code);
-        s.files = self.files.len() as u64;
-        s.bytes = self.files.iter().map(|f| f.bytes).sum();
-        s.oldest = self.files.first().map(|f| f.start_ts);
-        s.newest = self.files.iter().map(|f| f.end_ts).max();
     }
 }

@@ -148,15 +148,44 @@ fn caps_hold_across_reopen() {
     assert_eq!(*micros(&j).last().unwrap(), 99);
     j.close();
 
-    // Opened off, the journal deletes nothing.
+    // Opened off a year later, retention still holds: the age cap deletes every file, and
+    // nothing is created.
     c.advance(DAY * 400);
     let off = Journal::open(&events(&dir), Consent::OFF, o.clone());
     off.flush().unwrap();
-    assert!(!files(&events(&dir)).is_empty());
-    off.close();
-    // Opened on, a year later, the age cap empties it.
-    let j = Journal::open(&events(&dir), diagnostics(), o);
-    j.flush().unwrap();
     assert!(files(&events(&dir)).is_empty());
-    assert_eq!(j.status().files, 0);
+    assert_eq!(off.status_now().files, 0);
+    off.close();
+    assert!(
+        events(&dir).exists(),
+        "the directory stays; nothing new in it"
+    );
+    assert_eq!(std::fs::read_dir(events(&dir)).unwrap().count(), 0);
+}
+
+#[test]
+fn size_cap_applies_while_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let o = JournalOptions {
+        max_file_bytes: 2048,
+        ..opts(&c)
+    };
+    let j = Journal::open(&events(&dir), diagnostics(), o.clone());
+    for i in 0..100 {
+        j.record(Source::FinNode, None, commit(i));
+    }
+    j.close();
+    let small = JournalOptions {
+        max_total_bytes: 4096,
+        ..o
+    };
+    let off = Journal::open(&events(&dir), Consent::OFF, small);
+    off.flush().unwrap();
+    let total: u64 = files(&events(&dir))
+        .iter()
+        .map(|p| std::fs::metadata(p).unwrap().len())
+        .sum();
+    assert!(total <= 4096, "{total}");
+    assert!(!files(&events(&dir)).is_empty(), "the newest files stay");
 }

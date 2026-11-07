@@ -1,13 +1,14 @@
 //! Fault injection for the journal's tests and cost example (feature `test-hooks`): pause the
-//! writer, stall or fail its file writes (a slow or full disk), or panic it. Without the
-//! feature every hook is a no-op the optimiser removes.
+//! writer, stall, fail or tear its file writes (a slow or full disk, a crash mid-write), or
+//! panic it. Without the feature every hook is a no-op the optimiser removes, and the type is
+//! not exported.
 
 #[cfg(feature = "test-hooks")]
 pub use hooks::Faults;
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Debug, Default)]
-pub struct Faults;
+pub(crate) struct Faults;
 
 #[cfg(not(feature = "test-hooks"))]
 impl Faults {
@@ -15,6 +16,17 @@ impl Faults {
     pub(crate) fn before_write(&self) -> std::io::Result<()> {
         Ok(())
     }
+
+    #[inline]
+    pub(crate) fn tear_at(&self, _buf: &[u8]) -> Option<usize> {
+        None
+    }
+
+    #[inline]
+    pub(crate) fn park_torn(&self) {}
+
+    #[inline]
+    pub(crate) fn note_repair(&self) {}
 
     #[inline]
     pub(crate) fn check_panic(&self) {}
@@ -40,6 +52,9 @@ mod hooks {
     pub struct Faults {
         stall_ms: AtomicU64,
         fail: AtomicBool,
+        tear: AtomicBool,
+        torn: AtomicBool,
+        repairs: AtomicU64,
         panic_next: AtomicBool,
         pause: Mutex<Pause>,
         cv: Condvar,
@@ -54,6 +69,22 @@ mod hooks {
         /// Every file write fails with `StorageFull` (a full disk) while set.
         pub fn fail_writes(&self, on: bool) {
             self.fail.store(on, Ordering::SeqCst);
+        }
+
+        /// The next buffer write stops inside a line, halfway, and the writer parks for good:
+        /// a process killed now leaves a torn tail ([`Faults::torn`] once it has).
+        pub fn tear_writes(&self) {
+            self.tear.store(true, Ordering::SeqCst);
+        }
+
+        /// True once a torn write happened and the writer is parked.
+        pub fn torn(&self) -> bool {
+            self.torn.load(Ordering::SeqCst)
+        }
+
+        /// Torn tails this journal truncated when it scanned its files.
+        pub fn repairs(&self) -> u64 {
+            self.repairs.load(Ordering::SeqCst)
         }
 
         /// The writer panics on its next message.
@@ -96,6 +127,31 @@ mod hooks {
                 ));
             }
             Ok(())
+        }
+
+        /// Where to cut `buf` for a torn write: halfway, moved off a line end so the file
+        /// cannot end on a whole line. `None` unless [`Faults::tear_writes`] is set.
+        pub(crate) fn tear_at(&self, buf: &[u8]) -> Option<usize> {
+            if buf.len() < 2 || !self.tear.swap(false, Ordering::SeqCst) {
+                return None;
+            }
+            let mut n = buf.len() / 2;
+            while n > 1 && buf[n - 1] == b'\n' {
+                n -= 1;
+            }
+            Some(n)
+        }
+
+        /// Marks the torn write and parks the writer until the process is killed.
+        pub(crate) fn park_torn(&self) -> ! {
+            self.torn.store(true, Ordering::SeqCst);
+            loop {
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        }
+
+        pub(crate) fn note_repair(&self) {
+            self.repairs.fetch_add(1, Ordering::SeqCst);
         }
 
         pub(crate) fn check_panic(&self) {

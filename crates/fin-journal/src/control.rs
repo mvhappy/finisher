@@ -22,6 +22,11 @@ pub(crate) struct Stamp {
 /// The gate word: purposes in bits 0–1, basis in bits 2–3, `rev` above. One `Relaxed` load
 /// gives the gate ([`gate_of`]) and a consistent stamp ([`unpack`]).
 pub(crate) fn pack(s: Stamp) -> u64 {
+    debug_assert!(
+        s.rev < 1 << 60,
+        "consent rev {} does not fit the gate word",
+        s.rev
+    );
     let basis = match s.basis {
         Basis::Default => 0,
         Basis::Env => 1,

@@ -15,7 +15,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -25,29 +25,35 @@ use std::time::Duration;
 use fin_core::CoreError;
 use fin_core::events::Ulid as EventUlid;
 use fin_core::events::{
-    AnyPayload, Basis, Code, Ctx, Name, Purposes, Source, WIRE_KINDS, decode_payload, require_kind,
+    AnyPayload, Code, Ctx, Name, Purposes, Source, WIRE_KINDS, decode_payload, require_kind,
     validate_payload,
 };
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ulid::Ulid;
 
 mod clock;
 mod control;
+mod disk;
 mod encode;
 mod faults;
 mod files;
 mod options;
 mod read;
 mod stats;
+mod status;
 mod writer;
 
 pub use clock::{Clock, ManualClock, SystemClock};
+#[cfg(feature = "test-hooks")]
 pub use faults::Faults;
 pub use options::{JournalOptions, KeyFn};
 pub use read::{Entries, Filter};
 pub use stats::MAX_KEYS;
+pub use status::{Consent, JournalError, JournalState, JournalStatus, Metric};
+
+#[cfg(not(feature = "test-hooks"))]
+use faults::Faults;
+use status::Snapshot;
 
 use control::{
     Control, Data, Pending, SAMPLE_BYTES, Sample, Stamp, SyncSlot, gate_of, pack, unpack,
@@ -55,103 +61,6 @@ use control::{
 
 /// A serialised entry larger than this is refused (`EVENT_TOO_LARGE`) and counted as dropped.
 pub const MAX_ENTRY_BYTES: usize = 64 * 1024;
-
-/// The effective consent (D3's `resolve` makes it): the purposes in force, the consent
-/// revision and the weaker basis of the two purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Consent {
-    pub purposes: Purposes,
-    pub rev: u64,
-    pub basis: Basis,
-}
-
-impl Consent {
-    /// Nothing recorded.
-    pub const OFF: Consent = Consent {
-        purposes: Purposes::NONE,
-        rev: 0,
-        basis: Basis::Default,
-    };
-}
-
-/// A high-rate timing aggregated into per-window histograms (Decision 19).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Metric {
-    /// `rpc.stats`, keyed by `RPC_METHODS`.
-    Rpc,
-    /// `eval.stats`, keyed by `EVAL_KEYS`.
-    Eval,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum JournalState {
-    Off,
-    On,
-    Suspended,
-}
-
-/// What the journal holds and whether it is writing (`fin diagnostics show`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct JournalStatus {
-    pub state: JournalState,
-    // Why it is suspended: `JOURNAL_UNWRITABLE`, `JOURNAL_DISK_FULL`, `JOURNAL_IO` or
-    // `JOURNAL_PANIC`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
-    pub code: Option<String>,
-    pub files: u64,
-    pub bytes: u64,
-    /// Entries dropped since the journal opened.
-    pub dropped: u64,
-    /// The oldest entry's `ts` and the newest's (ms since the epoch).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "u64")]
-    pub oldest: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "u64")]
-    pub newest: Option<u64>,
-}
-
-/// A journal call that could not complete.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JournalError {
-    pub code: &'static str,
-    pub message: String,
-}
-
-impl JournalError {
-    fn new(code: &'static str, message: impl Into<String>) -> JournalError {
-        JournalError {
-            code,
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for JournalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for JournalError {}
-
-impl From<JournalError> for CoreError {
-    fn from(e: JournalError) -> CoreError {
-        CoreError::new(e.code, e.message)
-    }
-}
-
-#[derive(Debug, Default)]
-struct Snapshot {
-    suspended: Option<&'static str>,
-    files: u64,
-    bytes: u64,
-    oldest: Option<u64>,
-    newest: Option<u64>,
-}
 
 /// What the callers and the writer share.
 pub(crate) struct Shared {
@@ -325,7 +234,7 @@ impl Journal {
     /// Queues an entry. Never blocks: a full channel drops it (and counts the drop).
     pub fn record(&self, source: Source, ctx: Option<Ctx>, p: AnyPayload) {
         let Some(h) = &self.h else { return };
-        let word = h.sh.word.load(Relaxed);
+        let word = h.sh.word.load(Acquire);
         if gate_of(word).is_empty() {
             return;
         }
@@ -348,7 +257,7 @@ impl Journal {
         payload: Value,
     ) -> Result<(), CoreError> {
         let Some(h) = &self.h else { return Ok(()) };
-        let word = h.sh.word.load(Relaxed);
+        let word = h.sh.word.load(Acquire);
         if gate_of(word).is_empty() {
             return Ok(());
         }
@@ -420,7 +329,7 @@ impl Journal {
         timeout: Duration,
     ) -> bool {
         let Some(h) = &self.h else { return false };
-        let word = h.sh.word.load(Relaxed);
+        let word = h.sh.word.load(Acquire);
         if gate_of(word).is_empty() || Journal::on_writer_thread() {
             return false;
         }
@@ -455,7 +364,8 @@ impl Journal {
     }
 
     /// Writes everything queued so far to the files (no fsync). `JOURNAL_UNAVAILABLE` while
-    /// suspended or closed, `JOURNAL_TIMEOUT` when the writer does not answer in 10 s.
+    /// suspended or closed, `JOURNAL_TIMEOUT` when the writer does not answer in 10 s. Blocks
+    /// until then: call it off the JS thread.
     pub fn flush(&self) -> Result<(), JournalError> {
         match &self.h {
             Some(h) => h.flush(Duration::from_secs(10)),
@@ -463,8 +373,19 @@ impl Journal {
         }
     }
 
-    /// The journal's state, after a short flush so the counts include what was queued.
+    /// The journal's state, after a flush so the counts include what was queued. Blocks for
+    /// up to a second on a stalled writer: call it off the JS thread, or use
+    /// [`Journal::status_now`].
     pub fn status(&self) -> JournalStatus {
+        if let Some(h) = &self.h {
+            let _ = h.flush(Duration::from_secs(1));
+        }
+        self.status_now()
+    }
+
+    /// The journal's state as the writer last published it, without waiting: entries still
+    /// queued are not counted yet.
+    pub fn status_now(&self) -> JournalStatus {
         let Some(h) = &self.h else {
             return JournalStatus {
                 state: JournalState::Off,
@@ -476,7 +397,6 @@ impl Journal {
                 newest: None,
             };
         };
-        let _ = h.flush(Duration::from_secs(1));
         let s = h.sh.lock_status();
         let state = match (self.gate(), s.suspended) {
             (None, _) => JournalState::Off,
@@ -495,7 +415,8 @@ impl Journal {
     }
 
     /// The entries matching `filter`, oldest first, after a flush. Lines that do not parse
-    /// are skipped and counted ([`Entries::skipped`]).
+    /// are skipped and counted ([`Entries::skipped`]). Blocks on the flush (up to 10 s with a
+    /// stalled writer) and reads the files: call it off the JS thread.
     pub fn read(&self, filter: &Filter) -> Entries {
         let Some(h) = &self.h else {
             return Entries::empty();
@@ -505,7 +426,7 @@ impl Journal {
     }
 
     /// Drains the queue, flushes, fsyncs and stops the writer (waiting at most 5 s for it).
-    /// Other clones record nothing afterwards.
+    /// Other clones record nothing afterwards. Blocks until then: call it off the JS thread.
     pub fn close(self) {
         let Some(h) = self.h else { return };
         let (ack, rx) = mpsc::sync_channel(1);
@@ -530,6 +451,21 @@ impl Journal {
         h.sh.faults.request_pause();
         let _ = h.data.try_send(Data::Wake);
         h.sh.faults.wait_parked(Duration::from_secs(5))
+    }
+
+    /// Stores a new consent in the gate word only, as a consent change does first (feature
+    /// `test-hooks`): the writer learns of it at its next write or flush.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_gate_for_test(&self, c: Consent) {
+        if let Some(h) = &self.h {
+            let stamp = control::Stamp {
+                purposes: c.purposes,
+                rev: c.rev,
+                basis: c.basis,
+            };
+            h.sh.word
+                .store(pack(stamp), std::sync::atomic::Ordering::Release);
+        }
     }
 
     #[cfg(feature = "test-hooks")]

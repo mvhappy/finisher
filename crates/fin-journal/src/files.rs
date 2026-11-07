@@ -163,6 +163,11 @@ pub(crate) fn create(path: &Path) -> io::Result<File> {
     o.open(path)
 }
 
+/// Opens an existing file for appending (an empty newest file, reused).
+pub(crate) fn open_append(path: &Path) -> io::Result<File> {
+    OpenOptions::new().append(true).open(path)
+}
+
 /// Fsyncs a file; a filesystem that cannot (`EINVAL`, `ENOTSUP`) has nothing to sync.
 pub(crate) fn sync_file(f: &File) -> io::Result<()> {
     lenient(f.sync_all())
