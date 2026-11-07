@@ -28,10 +28,10 @@ use napi_derive::napi;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-mod ctx;
+pub(crate) mod ctx;
 mod hook;
 
-use ctx::{RawCtx, ctx_of, event_invalid};
+use ctx::{RawCtx, ctx_of};
 pub(crate) use hook::install_panic_hook;
 
 use crate::engine::lock;
@@ -58,6 +58,10 @@ pub(crate) fn for_server(server_data: &Path) -> fin_journal::Journal {
 /// its flag while the engine is open, unknown again when the last scope drops. Unknown
 /// projects record nothing, so every engine takes one at open.
 pub(crate) type ProjectGuard = fin_journal::ProjectScope;
+
+fn event_invalid(m: impl Into<String>) -> Error {
+    reject(ctx::event_invalid(m))
+}
 
 fn invalid(what: &str, e: impl std::fmt::Display) -> Error {
     reject(
@@ -427,7 +431,7 @@ impl JournalHandle {
             Some(c) => {
                 let raw: RawCtx =
                     serde_json::from_str(&c).map_err(|e| event_invalid(format!("ctx: {e}")))?;
-                Some(ctx_of(&self.journal, raw)?)
+                Some(ctx_of(&self.journal, raw).map_err(reject)?)
             }
         };
         let payload: Value = serde_json::from_str(payload_json)
@@ -463,6 +467,18 @@ impl JournalHandle {
         if let Some(f) = self.journal.faults() {
             f.panic_next();
         }
+    }
+
+    /// Test hook: stalls the writer before its next message (a slow disk); true once it is.
+    #[napi(catch_unwind)]
+    pub fn pause_writer_for_test(&self) -> bool {
+        self.journal.pause_writer()
+    }
+
+    /// Test hook: lets a stalled writer go on.
+    #[napi(catch_unwind)]
+    pub fn resume_writer_for_test(&self) {
+        self.journal.resume_writer();
     }
 
     /// Test hook: how often the previous panic hook ran (it is chained after ours).

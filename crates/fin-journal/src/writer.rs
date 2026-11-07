@@ -11,7 +11,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use std::collections::BTreeMap;
@@ -167,39 +167,51 @@ impl Writer {
         }
     }
 
-    /// One wait for data and its batch. False once the journal is closed.
+    /// One batch of data, or (none queued) one wait. False once the journal is closed.
+    ///
+    /// The writer parks rather than blocking on the data channel, so a sender never wakes
+    /// it for one entry ([`crate::handle::Handle::send`]): data waits for the flush timer
+    /// ([`Writer::wait`]) unless enough of it is in flight, and every control message wakes
+    /// the writer at once.
     fn step(&mut self) -> bool {
         self.sh.faults.park_if_paused();
         if !self.drain_control() {
             return false;
         }
-        match self.data.recv_timeout(self.wait()) {
-            Ok(d) => {
-                if !self.take_data(d) {
-                    return false;
-                }
-                for _ in 1..BATCH {
-                    let Ok(d) = self.data.try_recv() else { break };
+        let mut taken = 0;
+        while taken < BATCH {
+            match self.data.try_recv() {
+                Ok(d) => {
                     if !self.take_data(d) {
                         return false;
                     }
+                    taken += 1;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.drain_control();
+                    self.shutdown();
+                    return false;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                self.drain_control();
-                self.shutdown();
-                return false;
-            }
+        }
+        if taken == 0 {
+            std::thread::park_timeout(self.wait());
         }
         self.tick();
         true
     }
 
+    /// How long to park with nothing queued: until the buffer's flush is due, else one flush
+    /// interval (at most 1 s), when queued data is taken.
     fn wait(&self) -> Duration {
         let idle = Duration::from_secs(1);
         if self.buf.is_empty() {
-            return idle;
+            return self
+                .sh
+                .opts
+                .flush_every
+                .clamp(Duration::from_millis(1), idle);
         }
         let every = self.sh.opts.flush_every;
         every

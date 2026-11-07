@@ -109,9 +109,9 @@ pub(crate) fn open<'e>(
                 // what of it is missing queued (Decision 34's open trigger).
                 let fonts = crate::fonts::Opened::read(manager, &store);
                 // The project's flag, before anything is recorded for it (unknown drops).
-                let journal = crate::journal::for_server(&server_data)
-                    .open_project(store.project_id(), store.collect_policy());
-                Ok((store, status, fonts, journal))
+                let diag = crate::journal::for_server(&server_data);
+                let journal = diag.open_project(store.project_id(), store.collect_policy());
+                Ok((store, status, fonts, (diag, journal)))
             },
             || {},
         );
@@ -119,7 +119,16 @@ pub(crate) fn open<'e>(
             Ok((store, status, fonts, journal)) => deferred.resolve(move |_env| {
                 guarded(|| Engine::start(store, status, keep, fonts, journal), || {})
             }),
-            Err(e) => deferred.reject(e),
+            Err(e) => {
+                let call = if create.is_some() {
+                    "project.create"
+                } else {
+                    "project.open"
+                };
+                let j = crate::journal::for_server(&server_data);
+                crate::commit_log::internal(&j, None, call, &crate::error_value(&e));
+                deferred.reject(e)
+            }
         }
     }))?;
     Ok(promise)
@@ -137,7 +146,12 @@ pub(crate) fn long<'e>(
     let inner = inner.clone();
     worker.submit(Box::new(move || match run_long(&inner, operation, f) {
         Ok(s) => deferred.resolve(move |_env| Ok(s)),
-        Err(e) => deferred.reject(e),
+        Err(e) => {
+            let call = format!("project.{operation}");
+            let value = crate::error_value(&e);
+            crate::commit_log::internal(&inner.diag, Some(&inner.project), &call, &value);
+            deferred.reject(e)
+        }
     }))?;
     Ok(promise)
 }
@@ -216,6 +230,8 @@ fn run_long<T>(
         if let Ok(status) = serde_json::to_value(store.status()) {
             *lock(&inner.status) = Some(status);
         }
+        // A takeover or a recovery may lift (or cause) the read-only state.
+        crate::engine::observe_read_only(inner, store.read_only().map(|r| r.code()));
         r
     }));
     let (back, out) = match result {

@@ -87,8 +87,8 @@ export class Engine {
     return call(this.#native.head(branch));
   }
 
-  commit(txJson, generationJson) {
-    return call(generationJson === undefined ? this.#native.commit(txJson) : this.#native.commit(txJson, generationJson));
+  commit(txJson, generationJson, metaJson) {
+    return call(this.#native.commit(txJson, generationJson ?? null, metaJson ?? null));
   }
 
   snapshot(branch) {
@@ -119,48 +119,48 @@ export class Engine {
     return call(this.#native.acknowledgeSalvage(copy));
   }
 
-  branchCreate(reqJson) {
-    return call(this.#native.branchCreate(reqJson));
+  branchCreate(reqJson, metaJson) {
+    return call(this.#native.branchCreate(reqJson, metaJson ?? null));
   }
 
   branches(all) {
     return call(this.#native.branches(all === true));
   }
 
-  branchSet(reqJson) {
-    return call(this.#native.branchSet(reqJson));
+  branchSet(reqJson, metaJson) {
+    return call(this.#native.branchSet(reqJson, metaJson ?? null));
   }
 
   resolveBranch(name) {
     return call(this.#native.resolveBranch(name));
   }
 
-  undo(reqJson) {
-    return call(this.#native.undo(reqJson));
+  undo(reqJson, metaJson) {
+    return call(this.#native.undo(reqJson, metaJson ?? null));
   }
 
-  redo(reqJson) {
-    return call(this.#native.redo(reqJson));
+  redo(reqJson, metaJson) {
+    return call(this.#native.redo(reqJson, metaJson ?? null));
   }
 
-  checkpoint(reqJson) {
-    return call(this.#native.checkpoint(reqJson));
+  checkpoint(reqJson, metaJson) {
+    return call(this.#native.checkpoint(reqJson, metaJson ?? null));
   }
 
-  merge(reqJson) {
-    return call(this.#native.merge(reqJson));
+  merge(reqJson, metaJson) {
+    return call(this.#native.merge(reqJson, metaJson ?? null));
   }
 
-  cherryPick(reqJson) {
-    return call(this.#native.cherryPick(reqJson));
+  cherryPick(reqJson, metaJson) {
+    return call(this.#native.cherryPick(reqJson, metaJson ?? null));
   }
 
-  revert(reqJson) {
-    return call(this.#native.revert(reqJson));
+  revert(reqJson, metaJson) {
+    return call(this.#native.revert(reqJson, metaJson ?? null));
   }
 
-  recover(reqJson) {
-    return call(this.#native.recover(reqJson));
+  recover(reqJson, metaJson) {
+    return call(this.#native.recover(reqJson, metaJson ?? null));
   }
 
   takeover(confirm) {
@@ -361,6 +361,16 @@ export class Journal {
   /** @internal Test builds only. */
   panicWriterForTest() {
     this.#hook("panicWriterForTest")();
+  }
+
+  /** @internal Test builds only. */
+  pauseWriterForTest() {
+    return this.#hook("pauseWriterForTest")();
+  }
+
+  /** @internal Test builds only. */
+  resumeWriterForTest() {
+    this.#hook("resumeWriterForTest")();
   }
 
   /** @internal Test builds only. */

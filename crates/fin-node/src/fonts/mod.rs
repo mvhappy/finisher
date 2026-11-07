@@ -23,6 +23,7 @@
 //!
 //! Nothing here is written to a record, a diff or a snapshot, and nothing here blocks an edit.
 
+mod fetch_log;
 mod files;
 pub(crate) mod napi;
 mod provider;
@@ -67,6 +68,8 @@ pub(crate) struct Manager {
     publish: Mutex<()>,
     /// The jobs thread's queue ([`Job`]).
     jobs: mpsc::Sender<Job>,
+    /// `fonts.fetch` entries from the fetcher's state changes.
+    fetches: fetch_log::FetchLog,
 }
 
 /// Work done on the `fin-node-fonts-jobs` thread, off the caller's locks.
@@ -196,6 +199,7 @@ impl Manager {
             next: AtomicU64::new(1),
             publish: Mutex::new(()),
             jobs,
+            fetches: fetch_log::FetchLog::new(server_data),
         });
         let weak = Arc::downgrade(&m);
         // Without the thread, `post` runs jobs inline (the queue's receiver is gone).
@@ -214,8 +218,9 @@ impl Manager {
                 .name("fin-node-fonts".to_string())
                 .spawn(move || {
                     // Ends when the fetcher (owned by the manager) is gone.
-                    while let Ok((sha, _)) = rx.recv() {
+                    while let Ok((sha, state)) = rx.recv() {
                         let Some(m) = weak.upgrade() else { return };
+                        m.fetches.changed(&m.catalog, &sha, &state);
                         m.file_changed(&sha);
                     }
                 });

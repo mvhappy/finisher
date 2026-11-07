@@ -15,6 +15,7 @@ pub(crate) enum Call {
     Commit {
         tx_json: String,
         generation_json: Option<String>,
+        meta_json: Option<String>,
     },
     Snapshot {
         branch: String,
@@ -39,36 +40,44 @@ pub(crate) enum Call {
         copy: String,
     },
     // The branch and history calls (`crate::history`); each `req_json` is the camelCase JSON
-    // of the fin-store request.
+    // of the fin-store request, each `meta_json` the caller's actor (`log.commit`).
     BranchCreate {
         req_json: String,
+        meta_json: Option<String>,
     },
     Branches {
         all: bool,
     },
     BranchSet {
         req_json: String,
+        meta_json: Option<String>,
     },
     ResolveBranch {
         name: String,
     },
     Undo {
         req_json: String,
+        meta_json: Option<String>,
     },
     Redo {
         req_json: String,
+        meta_json: Option<String>,
     },
     Checkpoint {
         req_json: String,
+        meta_json: Option<String>,
     },
     Merge {
         req_json: String,
+        meta_json: Option<String>,
     },
     CherryPick {
         req_json: String,
+        meta_json: Option<String>,
     },
     Revert {
         req_json: String,
+        meta_json: Option<String>,
     },
     // Evaluation and pin planning (`crate::eval`).
     EvalFrame {
@@ -247,6 +256,7 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         Call::Commit {
             tx_json,
             generation_json,
+            meta_json,
         } => {
             let tx = parse_tx(&tx_json)?;
             let generation = generation_json
@@ -254,12 +264,18 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
                 .map(parse_generation)
                 .transpose()?;
             with_store(store, |s| {
-                let c = s
-                    .commit_at_generation(tx, generation.as_ref())
-                    .map_err(reject)?;
-                // Decision 34: a commit that changed the pins fetches what they lack.
-                store.fonts.committed(s, &c);
-                Ok(Reply::Json(encode(&c)?))
+                // Logged as `log.commit` from the typed result (`commit_log`).
+                let json = crate::commit_log::commit(
+                    s,
+                    &store.diag,
+                    tx,
+                    generation.as_ref(),
+                    meta_json.as_deref(),
+                    // Decision 34: a commit that changed the pins fetches what they lack.
+                    |s, c| store.fonts.committed(s, c),
+                )
+                .map_err(reject)?;
+                Ok(Reply::Json(json))
             })
         }
         Call::Snapshot { branch } => with_store(store, |s| {
@@ -320,6 +336,35 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
     }
 }
 
+impl Call {
+    /// The RPC method this call serves (`error.internal.call`; `other` for none).
+    fn rpc(&self) -> &'static str {
+        match self {
+            Call::Commit { .. } => "tx.commit",
+            Call::Snapshot { .. } => "snapshot.get",
+            Call::OpsSince { .. } | Call::OpsSinceAt { .. } => "ops.subscribe",
+            Call::Status => "project.status",
+            Call::TxGet { .. } => "tx.get",
+            Call::AcknowledgeRewind { .. } => "project.acknowledgeRewind",
+            Call::AcknowledgeSalvage { .. } => "project.acknowledgeSalvage",
+            Call::BranchCreate { .. } => "branch.create",
+            Call::Branches { .. } | Call::ResolveBranch { .. } => "branch.list",
+            Call::BranchSet { .. } => "branch.set",
+            Call::Undo { .. } => "history.undo",
+            Call::Redo { .. } => "history.redo",
+            Call::Checkpoint { .. } => "history.checkpoint",
+            Call::Merge { .. } => "history.merge",
+            Call::CherryPick { .. } => "history.cherryPick",
+            Call::Revert { .. } => "history.revert",
+            Call::EvalFrame { .. } => "eval.frame",
+            Call::EvalAudio { .. } => "eval.audio",
+            Call::FontsPlan { .. } => "fonts.plan",
+            Call::SetCollect { .. } => "diagnostics.project",
+            _ => "other",
+        }
+    }
+}
+
 impl Task for StoreTask {
     type Output = Reply;
     type JsValue = Either4<f64, String, bool, Null>;
@@ -329,7 +374,8 @@ impl Task for StoreTask {
             return Err(reject(CoreError::new("INTERNAL", "task ran twice")));
         };
         let store = &self.store;
-        guarded(
+        let rpc = call.rpc();
+        let out = guarded(
             || run(store, call),
             || {
                 // Only an open store is given up: the panic happened while using it.
@@ -338,7 +384,14 @@ impl Task for StoreTask {
                     *g = State::Panicked;
                 }
             },
-        )
+        );
+        if let Err(e) = &out
+            && store.diag.gate().is_some()
+        {
+            let e = crate::error_value(e);
+            crate::commit_log::internal(&store.diag, Some(&store.project), rpc, &e);
+        }
+        out
     }
 
     fn resolve(&mut self, _env: Env, reply: Reply) -> Result<Self::JsValue> {

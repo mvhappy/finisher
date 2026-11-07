@@ -42,6 +42,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod commit_log;
 mod engine;
 mod eval;
 mod fonts;
