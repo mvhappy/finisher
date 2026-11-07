@@ -49,7 +49,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 |---|---|---|
 | D1 | Audience | Product for creators from day one; paid hosted features later |
 | D2 | Content focus | Short-form social first |
-| D3 | Codebase | New repo `/Volumes/Storage/Projects/finisher`; legacy `video-creater` stays in place as read-only salvage reference |
+| D3 | Codebase | New repo (this one); legacy `video-creater` stays in place as read-only salvage reference |
 | D4 | Server platforms | macOS, Windows, Linux (including NAS/Docker) |
 | D5 | Collaboration | Async sharing first; foundation for multi-user editing |
 | D6 | Deployment | Local by default (embedded in desktop); remote/headless optional |
@@ -1035,7 +1035,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
    - The signed bundle needs only `com.apple.security.cs.allow-jit`.
    - Release builds prune per-platform binaries (ONNX Runtime ships all platforms) and download optional components on demand; the spike bundle was 645 MB.
    - The shell build lists `node_modules` in `extraResources` explicitly, because electron-builder drops them silently.
-   - **macOS: notarised.** Publisher is Maryna Vdovenko's team `9XN7WN8JN2`.
+   - **macOS: notarised.** Publisher is the owner's Apple Developer team.
      - The app is signed with that team's Developer ID Application certificate and notarised with an App Store Connect API key (`notarytool --key/--key-id/--issuer`, the same path CI will use).
      - Stapled; Gatekeeper reports "Notarized Developer ID"; all native parts launch.
      - Apple's queue took about 30 minutes, so release CI must not use a short notarisation timeout.
