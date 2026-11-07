@@ -198,6 +198,27 @@ try {
   await unary("project-recover-dismiss-unknown", "project.recover", { txId: "fx-rc2", ...who, dismiss: "000000000000" }, "NOT_FOUND");
   await unary("project-recover-groups", "project.recover", { txId: "fx-rc1", ...who, create: "all", dryRun: true });
 
+  // Diagnostics (plan D, Task D4): the local socket is the `fin` source. Mirrored in
+  // `rpc_contract.rs` `replay_diagnostics`.
+  const cliCommand = {
+    name: "item.trim",
+    flags: ["project"],
+    argsHash: `blake3:${"ab".repeat(32)}`,
+    micros: 1000,
+    exit: 0,
+    online: true,
+    dryRun: false,
+    txIds: ["fx-m0"],
+  };
+  await server_("diagnostics-record", "diagnostics.record", { kind: "cli.command", kv: 1, payload: cliCommand });
+  await server_("diagnostics-record-unlisted", "diagnostics.record", { kind: "log.commit", kv: 1, payload: {} }, "EVENT_INVALID");
+  await server_("diagnostics-consent-training-on", "diagnostics.consent", { purpose: "training", value: "on" }, "CONSENT_UI_ONLY");
+  await server_("diagnostics-consent", "diagnostics.consent", { purpose: "diagnostics", value: "on" });
+  await server_("diagnostics-status", "diagnostics.status", {});
+  await server_("diagnostics-export", "diagnostics.export", { filter: { kinds: ["cli.command"] }, limit: 10 });
+  await unary("diagnostics-project", "diagnostics.project", { collect: "default" });
+  await server_("diagnostics-purge", "diagnostics.purge", { selector: { before: 0 } });
+
   // Last: it changes the database's incarnation.
   await unary("project-rebuild", "project.rebuild", {});
 } finally {

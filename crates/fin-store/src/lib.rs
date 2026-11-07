@@ -102,6 +102,7 @@ pub use wire::{
     BranchCreated, BranchView, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
     RecoverReport, SetAside, SkippedFile, TxSetAside,
 };
+pub use write::WriteOutcome;
 
 /// The root branch, which every project has.
 pub const MAIN: &str = fin_core::branch::MAIN;
@@ -244,6 +245,8 @@ pub struct Store {
     quarantine_seen: RefCell<Option<((i64, u64), QuarantineSummary)>>,
     /// What writes check caption overflow with ([`OpenOptions::measurer`]).
     measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
+    /// What the last write did ([`Store::take_write_outcome`]).
+    write_outcome: Option<WriteOutcome>,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
@@ -409,6 +412,14 @@ impl Store {
             .expect("query")
             .collect::<Result<_, _>>()
             .expect("rows")
+    }
+
+    /// What the last write did (plan D, Decision 22), cleared by the call: `Written`,
+    /// `Deduped` (a retry of a committed txId) or `Planned` (a dry run); `None` when no write
+    /// was reached since the last call, or the last one failed. Take it before a call (to
+    /// clear it) and after, with no other call on this store in between.
+    pub fn take_write_outcome(&mut self) -> Option<WriteOutcome> {
+        self.write_outcome.take()
     }
 
     /// Test hook: the next `commit` fails after applying and writing its rows but before the

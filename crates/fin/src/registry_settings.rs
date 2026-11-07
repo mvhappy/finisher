@@ -1,7 +1,7 @@
 //! The 4C settings, caption, style, eval and fonts commands' registry entries (plan 4C Task
 //! 24), listed after the structural edits in [`crate::registry::commands`].
 
-use crate::commands::{caption, effect, eval, fonts, keyframe, project, style, track};
+use crate::commands::{caption, diagnostics, effect, eval, fonts, keyframe, project, style, track};
 use crate::registry::{Command, one_of, schema_of};
 
 const fn cmd(
@@ -212,5 +212,45 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         "remove an unused pin (FONT_IN_USE lists users)",
         true,
         || schema_of::<fonts::UnpinArgs>("fonts.unpin"),
+    ),
+    cmd(
+        "diagnostics.show",
+        "diagnostics",
+        "",
+        "the consent and its basis, files, sizes, counts per kind, project flags, drops",
+        false,
+        || schema_of::<diagnostics::ShowArgs>("diagnostics.show"),
+    ),
+    cmd(
+        "diagnostics.export",
+        "diagnostics",
+        "[--since <date>] [--project <id>] [--kind <k>]... [--limit <n>] [--as-upload diagnostics|training]",
+        "JSONL of the recorded entries, newest last (--as-upload: what an uploader would get); an error after some lines is the last line",
+        false,
+        || schema_of::<diagnostics::ExportArgs>("diagnostics.export"),
+    ),
+    cmd(
+        "diagnostics.purge",
+        "diagnostics",
+        "(--all|--project <id>|--before <date>)",
+        "delete recorded entries (and their blobs); --all also deletes the key",
+        false,
+        || schema_of::<diagnostics::PurgeArgs>("diagnostics.purge"),
+    ),
+    cmd(
+        "diagnostics.project",
+        "diagnostics",
+        "never|default [--project <dir|id>]",
+        "never: record nothing about the project (its entries are purged); default: follow settings",
+        false,
+        || schema_of::<diagnostics::ProjectArgs>("diagnostics.project"),
+    ),
+    cmd(
+        "diagnostics.consent",
+        "diagnostics",
+        "<diagnostics|training> <on|off|unset> (training: off|unset only)",
+        "set what is recorded; opting in to training is a person's choice, not a command's",
+        false,
+        || schema_of::<diagnostics::ConsentArgs>("diagnostics.consent"),
     ),
 ];

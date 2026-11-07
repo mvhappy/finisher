@@ -8,7 +8,8 @@ import type { EngineEvent, FinError, Generation, ProjectEvent, TxGetResult } fro
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
-import { callEngine, type HistoryOp, type HistoryPayload, publishResult } from "./history.ts";
+import type { CallMeta } from "./diagnostics.ts";
+import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResult } from "./history.ts";
 import { follower, Hubs, type Stamped } from "./hubs.ts";
 
 export interface ProjectRef {
@@ -29,7 +30,7 @@ export interface ProjectRegistryShape {
   readonly create: (dir: string, name: string, rate: string, idemKey?: string) => Effect.Effect<ProjectRef, FinError>;
   readonly open: (dir: string, relocate?: boolean) => Effect.Effect<ProjectRef, FinError>;
   /** With `generation`, refused with `HISTORY_REWOUND` when the branch moved under the caller. */
-  readonly commit: (projectId: string, tx: unknown, generation?: Generation) => Effect.Effect<CommittedTx, FinError>;
+  readonly commit: (projectId: string, tx: unknown, generation?: Generation, meta?: CallMeta) => Effect.Effect<CommittedTx, FinError>;
   /** `branch`: an id, a name or `<name>#<id>`; resolved to the id first. */
   readonly snapshot: (
     projectId: string,
@@ -42,7 +43,7 @@ export interface ProjectRegistryShape {
    * less `projectId`). Runs under the commit lock; afterwards every record of the result is
    * published to its own branch's hub, in rev order (nothing for a dry run).
    */
-  readonly history: (projectId: string, op: HistoryOp, payload: HistoryPayload) => Effect.Effect<unknown, FinError>;
+  readonly history: (projectId: string, op: HistoryOp, payload: HistoryPayload, meta?: CallMeta) => Effect.Effect<unknown, FinError>;
   /**
    * `branch` is resolved to its id first (hubs are keyed by id). Replays `rev > fromRev`, then follows live commits and imports: every rev exactly once, in
    * order. Ends with `HISTORY_REWOUND` once history it reported (or started from) is rewound,
@@ -365,13 +366,13 @@ export function makeProjectRegistry(
 
       open: (dir, relocate = false) => Effect.flatMap(attempt(() => openDir(resolve(dir), relocate)), ref),
 
-      commit: (projectId, tx, generation) =>
+      commit: (projectId, tx, generation, meta) =>
         Effect.flatMap(get(projectId), (p) =>
           p.commitLock.withPermits(1)(
             Effect.uninterruptible(
               Effect.tap(
                 call<CommittedTx>(p, (e) =>
-                  e.commit(JSON.stringify(tx), generation === undefined ? undefined : JSON.stringify(generation)),
+                  e.commit(JSON.stringify(tx), generation === undefined ? undefined : JSON.stringify(generation), metaJson(meta)),
                 ),
                 (committed) => Effect.sync(() => hubs.publishTx(projectId, committed)),
               ),
@@ -385,12 +386,12 @@ export function makeProjectRegistry(
       branches: (projectId, all) =>
         Effect.map(on<BranchView[]>(projectId, (e) => e.branches(all)), (branches) => ({ branches })),
 
-      history: (projectId, op, payload) =>
+      history: (projectId, op, payload, meta) =>
         Effect.flatMap(get(projectId), (p) =>
           p.commitLock.withPermits(1)(
             Effect.uninterruptible(
               Effect.tap(
-                call<unknown>(p, (e) => callEngine(e, op, payload)),
+                call<unknown>(p, (e) => callEngine(e, op, payload, metaJson(meta))),
                 (result) => Effect.sync(() => publishResult(hubs, projectId, result, payload.dryRun === true)),
               ),
             ),

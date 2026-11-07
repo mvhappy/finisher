@@ -9,7 +9,12 @@
 //!   applied to a copy of the head without a measurer, so a tx that cannot apply fails here
 //!   as it would at commit.
 
+use std::time::Instant;
+
+use fin_core::events::Code;
+use fin_core::events::names::EVAL_KEYS;
 use fin_core::{CoreError, Op, Project, Rational};
+use fin_journal::Metric;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{Value, json};
@@ -43,7 +48,31 @@ fn timeline_id(project: &Project, timeline: Option<String>) -> Result<String> {
         .ok_or_else(|| reject(CoreError::new("NOT_FOUND", "the project has no timeline")))
 }
 
+/// Each call's duration goes to `eval.stats` (key `eval.frame`, `eval.audio` or `fonts.plan`,
+/// with the error code of a failure); nothing is measured while the journal is off.
 pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
+    let key = match &call {
+        Call::EvalFrame { .. } => "eval.frame",
+        Call::EvalAudio { .. } => "eval.audio",
+        _ => "fonts.plan",
+    };
+    let started = store.diag.gate().map(|_| Instant::now());
+    let out = eval(store, call);
+    if let Some(t) = started {
+        let micros = u64::try_from(t.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let code = out.as_ref().err().map(|e| {
+            let c = crate::error_value(e);
+            Code::parse(c["code"].as_str().unwrap_or_default())
+                .unwrap_or_else(|| Code::parse("OTHER").expect("a valid code"))
+        });
+        store
+            .diag
+            .observe(Metric::Eval, EVAL_KEYS.get_or_other(key), micros, code);
+    }
+    out
+}
+
+fn eval(store: &Shared, call: Call) -> Result<Reply> {
     match call {
         Call::EvalFrame {
             branch,

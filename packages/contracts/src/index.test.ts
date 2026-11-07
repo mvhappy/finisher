@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { RpcSchema } from "effect/rpc";
 import { expect, test } from "vitest";
-import { FinError, FinRpcs, PROTOCOL_VERSION } from "./index.ts";
+import { FinError, FinRpcs, PROTOCOL_VERSION, STREAM_RPCS } from "./index.ts";
 
 test("protocol version starts at 1", () => {
   expect(PROTOCOL_VERSION).toBe(1);
@@ -14,6 +14,12 @@ test("the group exposes exactly the v1 RPC tags", () => {
       "branch.create",
       "branch.list",
       "branch.set",
+      "diagnostics.consent",
+      "diagnostics.export",
+      "diagnostics.project",
+      "diagnostics.purge",
+      "diagnostics.record",
+      "diagnostics.status",
       "eval.audio",
       "eval.frame",
       "fonts.catalog",
@@ -50,6 +56,11 @@ test("ops.subscribe and project.events are streaming rpcs and the others are not
   for (const [tag, rpc] of FinRpcs.requests) {
     expect(RpcSchema.isStreamSchema(rpc.successSchema)).toBe(tag === "ops.subscribe" || tag === "project.events");
   }
+});
+
+test("rpc_stats_excludes_streams: STREAM_RPCS is exactly the streaming rpcs", () => {
+  const streams = [...FinRpcs.requests].filter(([, rpc]) => RpcSchema.isStreamSchema(rpc.successSchema)).map(([tag]) => tag);
+  expect([...STREAM_RPCS].sort()).toEqual(streams.sort());
 });
 
 /** The RPC schemas here use no services; `Schema.Top` leaves the requirements open. */

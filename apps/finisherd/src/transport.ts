@@ -10,6 +10,8 @@ import { Effect, Layer } from "effect";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { SocketServer } from "effect/socket/SocketServer";
 import { ServerStartError, startFailure } from "./config.ts";
+import { RpcSource, type Source } from "./diagnostics.ts";
+import { HandlersLive } from "./handlers.ts";
 
 /** One server per server-data: a live finisherd already owns the socket. */
 function serverRunning(socket: string): ServerStartError {
@@ -112,12 +114,52 @@ export function portOf(server: SocketServer["Service"]): number {
   throw new Error("websocket server is not bound to an inet address");
 }
 
-/** `FinRpcs` served over one `SocketServer` with NDJSON framing. */
-export function serveRpc(server: SocketServer["Service"]) {
+/** Error codes of a peer that went away while the server was reading or writing (Unix, Windows pipes). */
+const PEER_GONE = new Set(["ECONNRESET", "EPIPE", "ERR_STREAM_PREMATURE_CLOSE", "ERROR_NO_DATA", "ERROR_BROKEN_PIPE"]);
+
+/**
+ * True when every reason of `cause` is an interrupt or a read/write error of a peer that closed its end:
+ * `fin` writes its `cli.command` and leaves without reading the reply, so the reply meets a closed socket.
+ * That is a normal close, not an error worth a stack trace in the log.
+ */
+export function isPeerClose(cause: { readonly reasons: ReadonlyArray<unknown> }): boolean {
+  const codeOf = (e: unknown): unknown => {
+    const err = e as { code?: unknown; cause?: { code?: unknown }; reason?: { cause?: { code?: unknown } } } | null;
+    return err?.reason?.cause?.code ?? err?.cause?.code ?? err?.code;
+  };
+  return (
+    cause.reasons.length > 0 &&
+    cause.reasons.every((r) => {
+      // The protocol's read loop dies with the `SocketError` (a defect), a write fails with it.
+      const reason = r as { _tag?: string; error?: unknown; defect?: unknown };
+      if (reason._tag === "Interrupt") return true;
+      const code = codeOf(reason._tag === "Die" ? reason.defect : reason.error);
+      return (reason._tag === "Fail" || reason._tag === "Die") && typeof code === "string" && PEER_GONE.has(code);
+    })
+  );
+}
+
+/** `server` whose connections end quietly when the peer simply goes away ([`isPeerClose`]). */
+export function quietPeerClose(server: SocketServer["Service"]): SocketServer["Service"] {
+  return SocketServer.of({
+    address: server.address,
+    run: (handler) =>
+      server.run((socket) => Effect.catchCause(handler(socket), (cause) => (isPeerClose(cause) ? Effect.void : Effect.failCause(cause)))),
+  });
+}
+
+/**
+ * `FinRpcs` served over one `SocketServer` with NDJSON framing, by handlers of its own that know
+ * the transport's `source` (plan D, Decision 24: the local socket is `fin`, the WebSocket `ui`).
+ * `fresh`: layers are memoized by reference, so a shared `HandlersLive` would serve both
+ * transports with the first one's source.
+ */
+export function serveRpc(server: SocketServer["Service"], source: Source) {
   return RpcServer.layer(FinRpcs).pipe(
+    Layer.provide(Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.succeed(RpcSource, source)))),
     // `fresh`: layers are memoized by reference, and each transport needs its own protocol.
     Layer.provide(Layer.fresh(RpcServer.layerProtocolSocketServer)),
-    Layer.provide(Layer.succeed(SocketServer, server)),
+    Layer.provide(Layer.succeed(SocketServer, source === "fin" ? quietPeerClose(server) : server)),
     Layer.provide(RpcSerialization.layerNdjson),
   );
 }

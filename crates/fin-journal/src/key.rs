@@ -158,6 +158,14 @@ impl crate::Journal {
         Some(hashed(&h.sh.hasher()?, raw))
     }
 
+    /// The keyed hash in force (16 bytes), or `None` while off: for content an emitter keys
+    /// itself (an edit intent, `TxIntent::from_txs`). Take it once per entry.
+    pub fn keyer(&self) -> Option<crate::KeyFn> {
+        let h = self.h.as_ref()?;
+        self.gate()?;
+        h.sh.hasher()
+    }
+
     /// `raw` as an [`IdRef`] (Decision 7): a canonical ULID kept, anything else keyed-hashed;
     /// `None` while off.
     pub fn id_ref(&self, raw: &str) -> Option<IdRef> {

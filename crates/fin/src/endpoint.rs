@@ -84,6 +84,7 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
     let bad =
         |why: &str| unavailable(json!({ "infoFile": file.display().to_string(), "reason": why }));
     let info: Value = serde_json::from_str(text).map_err(|e| bad(&format!("not JSON: {e}")))?;
+    crate::diag::note_discovery(&info);
     let socket = info
         .get("socket")
         .and_then(Value::as_str)
