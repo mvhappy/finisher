@@ -15,34 +15,24 @@ export type IdRef = string;
  */
 export type ActorKind = "user" | "agent" | "plugin" | "system" | "unknown";
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VerdictBy".
- */
-export type VerdictBy = "user" | "critic" | "agent";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Verdict".
- */
-export type Verdict = "accepted" | "rejected" | "undone" | "merged" | "abandoned";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AgentMode".
- */
-export type AgentMode = "interactive" | "headless" | "other";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AgentRole".
- */
-export type AgentRole = "main" | "subagent" | "critic" | "other";
-/**
- * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+ * Who decided an approval.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Name".
+ * via the `definition` "DecidedBy".
  */
-export type Name = string;
+export type DecidedBy = "user" | "policy";
 /**
- * Large or structured content (the reserved agent kinds): inline JSON, or a [`BlobRef`] when
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ApprovalDecision".
+ */
+export type ApprovalDecision = "allow" | "deny" | "expired";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ApprovalKind".
+ */
+export type ApprovalKind = "rule" | "budget" | "provider" | "plugin";
+/**
+ * Large or structured content (the agent kinds): inline JSON, or a [`BlobRef`] when
  * it would not fit an entry (Decision 20).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -61,15 +51,83 @@ export type Body =
  */
 export type BlobHash = string;
 /**
+ * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Name".
+ */
+export type Name = string;
+/**
+ * The session's mode (§6.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentMode".
+ */
+export type AgentMode = "plan" | "draft" | "auto";
+/**
+ * What runs the agent.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Harness".
+ */
+export type Harness = "builtin" | "claudeCode" | "codex" | "fake" | "plugin";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Hashed".
  */
 export type Hashed = string;
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SessionPhase".
+ */
+export type SessionPhase = "started" | "resumed" | "interrupted" | "ended";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Code".
  */
 export type Code = string;
+/**
+ * The kind of sign-in a CLI harness reports (CLI harnesses only).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SignIn".
+ */
+export type SignIn = "plan" | "key" | "unknown";
+/**
+ * What started the session.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SessionTrigger".
+ */
+export type SessionTrigger = "user" | "savedPrompt" | "subagent" | "hook" | "eval";
+/**
+ * The model's weights class, from the catalogue at the time (§12.7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Weights".
+ */
+export type Weights = "open" | "closed" | "unknown";
+/**
+ * How a tool result's txIds were joined to its call (§12.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Attribution".
+ */
+export type Attribution = "exact" | "inferred" | "ambiguous" | "none";
+/**
+ * How faithful a turn's content is (§12.6).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Capture".
+ */
+export type Capture = "exact" | "stream";
+/**
+ * Where a turn's cost comes from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CostBasis".
+ */
+export type CostBasis = "unknown" | "reported" | "priced" | "subscription";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "StopReason".
@@ -113,7 +171,7 @@ export type AnyPayload =
   | AgentTurn
   | AgentToolCall
   | AgentToolResult
-  | AgentEditVerdict
+  | AgentApproval
   | UiAction
   | ReviewVerdict;
 /**
@@ -1054,28 +1112,28 @@ export type EventPayload =
     }
   | {
       kind: "agent.session";
-      kv: 0;
+      kv: 1;
       payload: AgentSession;
     }
   | {
       kind: "agent.turn";
-      kv: 0;
+      kv: 1;
       payload: AgentTurn;
     }
   | {
       kind: "agent.toolCall";
-      kv: 0;
+      kv: 1;
       payload: AgentToolCall;
     }
   | {
       kind: "agent.toolResult";
-      kv: 0;
+      kv: 1;
       payload: AgentToolResult;
     }
   | {
-      kind: "agent.editVerdict";
-      kv: 0;
-      payload: AgentEditVerdict;
+      kind: "agent.approval";
+      kv: 1;
+      payload: AgentApproval;
     }
   | {
       kind: "ui.action";
@@ -1422,41 +1480,19 @@ export interface Actor {
   session?: IdRef;
 }
 /**
- * `agent.editVerdict`: what became of an agent's edits.
+ * `agent.approval`: an approval was answered or expired.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AgentEditVerdict".
+ * via the `definition` "AgentApproval".
  */
-export interface AgentEditVerdict {
-  by: VerdictBy;
-  txIds: IdRef[];
-  verdict: Verdict;
-}
-/**
- * `agent.session`.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AgentSession".
- */
-export interface AgentSession {
-  mode: AgentMode;
-  model: Name;
-  provider: Name;
-  role: AgentRole;
-}
-/**
- * `agent.toolCall`: the agent ran a command (`callId` is the `FIN_CALL` its `fin` run
- * carries).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AgentToolCall".
- */
-export interface AgentToolCall {
-  args?: Body;
-  argsHash: Hashed;
-  callId: IdRef;
-  command: Name;
-  turnId: IdRef;
+export interface AgentApproval {
+  approvalId: IdRef;
+  by: DecidedBy;
+  decision: ApprovalDecision;
+  kind: ApprovalKind;
+  latencyMs: number;
+  sessionId: IdRef;
+  subject?: Body;
 }
 /**
  * Large content, stored as a blob (Decision 20): its content address, its length and its
@@ -1472,41 +1508,115 @@ export interface BlobRef {
   mediaType: Name;
 }
 /**
+ * `agent.session`: a session started, resumed, was interrupted or ended.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentSession".
+ */
+export interface AgentSession {
+  harness: Harness;
+  mode: AgentMode;
+  model: Name;
+  modelHash?: Hashed;
+  parent?: IdRef;
+  phase: SessionPhase;
+  provider: Name;
+  reason?: Code;
+  role: Name;
+  sessionId: IdRef;
+  signIn?: SignIn;
+  totals?: SessionTotals;
+  trigger: SessionTrigger;
+  weights: Weights;
+}
+/**
+ * A session's totals at `ended`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SessionTotals".
+ */
+export interface SessionTotals {
+  costMicros?: number;
+  inputTokens: number;
+  outputTokens: number;
+  toolCalls: number;
+  turns: number;
+  txs: number;
+  wallS: number;
+}
+/**
+ * `agent.toolCall`: the agent called a tool. `callId` is the `FIN_CALL` its `fin` run
+ * carries; `command` names the `fin` command when the tool ran `fin`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentToolCall".
+ */
+export interface AgentToolCall {
+  args?: Body;
+  argsHash: Hashed;
+  callId: IdRef;
+  command?: Name;
+  tool: Name;
+  turnId: IdRef;
+}
+/**
  * `agent.toolResult`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AgentToolResult".
  */
 export interface AgentToolResult {
+  attribution: Attribution;
   callId: IdRef;
   code?: Code;
+  exit?: number;
   micros: number;
   ok: boolean;
   output?: Body;
+  truncated?: boolean;
+  /**
+   * @maxItems 64
+   */
   txIds?: IdRef[];
 }
 /**
- * `agent.turn`: one model call. Content: the turn's new messages and the output; the system
- * prompt and the tool definitions by hash.
+ * `agent.turn`: one model call. Content (training only, in the agent-trace store): the
+ * turn's new input messages, the output, and the system prompt and tool definitions, which
+ * are always blobs so identical prompts are stored once.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AgentTurn".
  */
 export interface AgentTurn {
+  bodyHash?: Hashed;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  capture: Capture;
+  costBasis: CostBasis;
   costMicros?: number;
+  harness: Harness;
   inputTokens: number;
   latencyMs: number;
-  messages?: Body;
+  messagesDelta?: Body;
   model: Name;
+  modelHash?: Hashed;
   output?: Body;
   outputTokens: number;
+  parentTurnId?: IdRef;
   provider: Name;
+  reasoningTokens: number;
+  runId: IdRef;
+  seq: number;
   stopReason: StopReason;
+  system?: Body;
   systemHash: Hashed;
+  tools?: Body;
   toolsHash: Hashed;
+  ttftMs?: number;
   turnId: IdRef;
+  upstream?: Name;
+  upstreamHash?: Hashed;
+  weights: Weights;
 }
 /**
  * The process run began (the journal opened with a purpose on, or one turned on). Platform

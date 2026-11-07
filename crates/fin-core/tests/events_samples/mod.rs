@@ -53,6 +53,11 @@ pub fn tx() -> fin_core::Tx {
     .unwrap()
 }
 
+/// A payload from its JSON (the agent samples, which have many fields).
+pub fn typed<T: serde::de::DeserializeOwned>(v: Value) -> T {
+    serde_json::from_value(v).unwrap()
+}
+
 pub fn counts<K: Ord>(pairs: impl IntoIterator<Item = (K, u64)>) -> Counts<K> {
     Counts(pairs.into_iter().collect())
 }
@@ -204,52 +209,46 @@ pub fn samples() -> Vec<AnyPayload> {
             sandboxed: false,
         }
         .into(),
-        AgentSession {
-            provider: names::AGENT_PROVIDERS.get("anthropic").unwrap(),
-            model: names::AGENT_MODELS.get("claude-opus-5-5").unwrap(),
-            role: AgentRole::Main,
-            mode: AgentMode::Headless,
-        }
+        typed::<AgentSession>(json!({
+            "sessionId": SESSION, "phase": "ended", "harness": "builtin", "provider": "openrouter",
+            "model": "other", "modelHash": h('1'), "weights": "unknown", "role": "editor",
+            "mode": "draft", "trigger": "user", "reason": "BUDGET_EXCEEDED", "totals": {
+                "turns": 4, "toolCalls": 9, "txs": 2, "inputTokens": 48_000,
+                "outputTokens": 3_100, "costMicros": 91_000, "wallS": 340 },
+        }))
         .into(),
         AgentTurn {
-            turn_id: id("01JC0000000000000000000005"),
-            provider: names::AGENT_PROVIDERS.get("anthropic").unwrap(),
-            model: Name::OTHER,
-            input_tokens: 1200,
-            output_tokens: 300,
-            cache_read_tokens: 1000,
-            cache_write_tokens: 0,
-            latency_ms: 2100,
-            stop_reason: StopReason::ToolUse,
-            cost_micros: Some(4200),
-            system_hash: h('e'),
-            tools_hash: h('f'),
-            messages: Some(Content(Body::Blob(blob()))),
+            system: Some(Content(Body::Blob(blob()))),
+            tools: Some(Content(Body::Blob(blob()))),
+            messages_delta: Some(Content(Body::Blob(blob()))),
             output: inline(json!([{ "type": "text", "text": "trim the first clip" }])),
+            ..typed(json!({
+                "turnId": "01JC0000000000000000000005", "runId": "01JC0000000000000000000007",
+                "seq": 2, "harness": "claudeCode", "provider": "anthropic",
+                "model": "claude-opus-5-5", "weights": "closed", "inputTokens": 1200,
+                "outputTokens": 300, "cacheReadTokens": 1000, "cacheWriteTokens": 0,
+                "reasoningTokens": 80, "latencyMs": 2100, "ttftMs": 400, "stopReason": "toolUse",
+                "costMicros": 4200, "costBasis": "subscription", "capture": "stream",
+                "systemHash": h('e'), "toolsHash": h('f'),
+            }))
         }
         .into(),
-        AgentToolCall {
-            call_id: id("01JC0000000000000000000006"),
-            turn_id: id("01JC0000000000000000000005"),
-            command: CLI_COMMANDS.get("item.trim").unwrap(),
-            args_hash: h('a'),
-            args: inline(json!({ "item": "c1", "delta": "1" })),
-        }
+        typed::<AgentToolCall>(json!({
+            "callId": "01JC0000000000000000000006", "turnId": "01JC0000000000000000000005",
+            "tool": "fin", "command": "item.trim", "argsHash": h('a'),
+            "args": { "inline": { "item": "c1", "delta": "1" } },
+        }))
         .into(),
-        AgentToolResult {
-            call_id: id("01JC0000000000000000000006"),
-            ok: true,
-            code: None,
-            micros: 40_000,
-            tx_ids: vec![id(TX)],
-            output: inline(json!({ "txId": TX })),
-        }
+        typed::<AgentToolResult>(json!({
+            "callId": "01JC0000000000000000000006", "ok": true, "exit": 0, "micros": 40_000,
+            "txIds": [TX], "attribution": "exact", "output": { "inline": { "txId": TX } },
+        }))
         .into(),
-        AgentEditVerdict {
-            tx_ids: vec![id(TX)],
-            verdict: Verdict::Undone,
-            by: VerdictBy::User,
-        }
+        typed::<AgentApproval>(json!({
+            "approvalId": "01JC0000000000000000000008", "sessionId": SESSION, "kind": "budget",
+            "decision": "allow", "by": "user", "latencyMs": 12_000,
+            "subject": { "inline": { "kind": "money", "add": 1_000_000 } },
+        }))
         .into(),
         UiAction {}.into(),
         ReviewVerdict {}.into(),

@@ -145,21 +145,19 @@ fn any_payload_covers_every_kind() {
         assert!(std::ptr::eq(kind(k.name, k.version).unwrap(), k));
     }
     for name in ["agent.turn", "agent.toolCall", "agent.toolResult"] {
-        assert!(kind(name, 0).unwrap().training_only, "{name}");
+        assert!(kind(name, 1).unwrap().training_only, "{name}");
     }
-    for name in [
-        "agent.session",
-        "agent.editVerdict",
-        "ui.action",
-        "review.verdict",
-    ] {
+    for name in ["ui.action", "review.verdict"] {
         assert!(kind(name, 0).unwrap().reserved, "{name}");
     }
-    assert!(
-        kinds()
-            .iter()
-            .filter(|k| !k.reserved)
-            .all(|k| !k.training_only)
+    let training_only: Vec<&str> = kinds()
+        .iter()
+        .filter(|k| k.training_only)
+        .map(|k| k.name)
+        .collect();
+    assert_eq!(
+        training_only,
+        ["agent.turn", "agent.toolCall", "agent.toolResult"]
     );
 }
 
@@ -393,10 +391,13 @@ fn content_fields_name_their_kind() {
         }
     }
     let want = BTreeMap::from([
-        ("agent.toolCall.args".to_string(), ContentKind::ToolArgs),
+        ("agent.approval.subject".to_string(), ContentKind::UserText),
+        ("agent.toolCall.args".into(), ContentKind::ToolArgs),
         ("agent.toolResult.output".into(), ContentKind::ToolResult),
-        ("agent.turn.messages".into(), ContentKind::ModelInput),
+        ("agent.turn.messagesDelta".into(), ContentKind::ModelInput),
         ("agent.turn.output".into(), ContentKind::ModelOutput),
+        ("agent.turn.system".into(), ContentKind::ModelInput),
+        ("agent.turn.tools".into(), ContentKind::ModelInput),
         ("error.panic.message".into(), ContentKind::ErrorMessage),
         ("log.commit.intent".into(), ContentKind::TxIntent),
     ]);
@@ -430,8 +431,13 @@ fn blob_ref_only_inside_content() {
         );
     }
     assert_eq!(
-        check("agent.turn", 0).blobs_inside,
-        ["messages.blob", "output.blob"]
+        check("agent.turn", 1).blobs_inside,
+        [
+            "messagesDelta.blob",
+            "output.blob",
+            "system.blob",
+            "tools.blob"
+        ]
     );
     #[derive(JsonSchema)]
     #[allow(dead_code)]
@@ -448,10 +454,13 @@ fn blob_refs_follow_content() {
         .into_iter()
         .find(|p| p.kind().name == "agent.turn")
         .unwrap();
-    assert_eq!(turn.blobs().cloned().collect::<Vec<_>>(), [blob()]);
+    assert_eq!(
+        turn.blobs().cloned().collect::<Vec<_>>(),
+        [blob(), blob(), blob()]
+    );
     let spec = turn.kind();
     let mut v = serde_json::to_value(&turn).unwrap();
-    assert_eq!(blob_refs(spec, &v), [blob()]);
+    assert_eq!(blob_refs(spec, &v), [blob(), blob(), blob()]);
     redact(spec, &mut v, Purposes::DIAGNOSTICS);
     assert!(blob_refs(spec, &v).is_empty());
     assert_eq!(decode_payload(spec, &v).unwrap().blobs().count(), 0);
@@ -660,8 +669,11 @@ fn id_ref_keeps_only_ulids_raw() {
     );
     assert!(!id(TX).is_hashed());
     // A payload that carries a raw id does not decode.
-    let spec = kind("agent.editVerdict", 0).unwrap();
-    let raw = json!({ "txIds": ["idem-key-7f3a"], "verdict": "undone", "by": "user" });
+    let spec = kind("agent.toolResult", 1).unwrap();
+    let raw = json!({
+        "callId": "01JC0000000000000000000006", "ok": true, "micros": 1,
+        "txIds": ["idem-key-7f3a"], "attribution": "exact",
+    });
     assert_eq!(
         decode_payload(spec, &raw).unwrap_err().code,
         "EVENT_INVALID"
@@ -791,7 +803,7 @@ fn redact_removes_every_content_path() {
     }
     assert_eq!(
         removed,
-        2 * 6,
+        2 * 9,
         "every sample content field was filled and removed"
     );
 }
@@ -835,7 +847,7 @@ fn training_only_kinds_keep_metadata_under_diagnostics() {
     redact(turn.kind(), &mut v, Purposes::DIAGNOSTICS);
     assert_eq!(v["inputTokens"], json!(1200));
     assert_eq!(v["latencyMs"], json!(2100));
-    assert!(v.get("messages").is_none() && v.get("output").is_none());
+    assert!(v.get("messagesDelta").is_none() && v.get("output").is_none());
 }
 
 #[test]
@@ -848,7 +860,7 @@ fn unknown_kind_and_version_refused() {
         "EVENT_KIND_UNKNOWN"
     );
     assert_eq!(
-        require_kind("agent.turn", 1).unwrap_err().code,
+        require_kind("agent.turn", 2).unwrap_err().code,
         "EVENT_KIND_UNKNOWN"
     );
     let fake = KindSpec {

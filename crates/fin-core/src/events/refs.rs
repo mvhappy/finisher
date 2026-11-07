@@ -351,6 +351,11 @@ impl RawId {
         (s.len() <= MAX_RAW_ID).then(|| RawId(s.to_string()))
     }
 
+    /// The raw text (wire forms key or look it up; it is never stored).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     /// The [`IdRef`] of the id: kept when it is a canonical ULID, else keyed with `key`.
     pub fn into_id_ref(self, key: &dyn Fn(&[u8]) -> [u8; 16]) -> IdRef {
         IdRef::keyed(&self.0, key)

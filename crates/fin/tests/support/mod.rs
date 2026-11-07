@@ -229,6 +229,7 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
         .env_remove("FIN_DIAGNOSTICS")
         .env_remove("FIN_SESSION")
         .env_remove("FIN_CALL")
+        .env_remove("FIN_CALL_IDEM")
         .env_remove("FIN_TEST_PANIC")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

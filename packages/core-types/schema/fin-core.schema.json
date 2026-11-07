@@ -28,72 +28,121 @@
       ],
       "type": "string"
     },
-    "AgentEditVerdict": {
-      "description": "`agent.editVerdict`: what became of an agent's edits.",
+    "AgentApproval": {
+      "description": "`agent.approval`: an approval was answered or expired.",
       "properties": {
+        "approvalId": {
+          "$ref": "#/$defs/IdRef"
+        },
         "by": {
-          "$ref": "#/$defs/VerdictBy"
+          "$ref": "#/$defs/DecidedBy"
         },
-        "txIds": {
-          "items": {
-            "$ref": "#/$defs/IdRef"
-          },
-          "type": "array"
+        "decision": {
+          "$ref": "#/$defs/ApprovalDecision"
         },
-        "verdict": {
-          "$ref": "#/$defs/Verdict"
+        "kind": {
+          "$ref": "#/$defs/ApprovalKind"
+        },
+        "latencyMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "subject": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "userText"
+            }
+          ]
         }
       },
       "required": [
-        "txIds",
-        "verdict",
-        "by"
+        "approvalId",
+        "sessionId",
+        "kind",
+        "decision",
+        "by",
+        "latencyMs"
       ],
       "type": "object"
     },
     "AgentMode": {
+      "description": "The session's mode (§6.1).",
       "enum": [
-        "interactive",
-        "headless",
-        "other"
-      ],
-      "type": "string"
-    },
-    "AgentRole": {
-      "enum": [
-        "main",
-        "subagent",
-        "critic",
-        "other"
+        "plan",
+        "draft",
+        "auto"
       ],
       "type": "string"
     },
     "AgentSession": {
-      "description": "`agent.session`.",
+      "description": "`agent.session`: a session started, resumed, was interrupted or ended.",
       "properties": {
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
         "mode": {
           "$ref": "#/$defs/AgentMode"
         },
         "model": {
           "$ref": "#/$defs/Name"
         },
+        "modelHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "parent": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "phase": {
+          "$ref": "#/$defs/SessionPhase"
+        },
         "provider": {
           "$ref": "#/$defs/Name"
         },
+        "reason": {
+          "$ref": "#/$defs/Code"
+        },
         "role": {
-          "$ref": "#/$defs/AgentRole"
+          "$ref": "#/$defs/Name"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "signIn": {
+          "$ref": "#/$defs/SignIn"
+        },
+        "totals": {
+          "$ref": "#/$defs/SessionTotals"
+        },
+        "trigger": {
+          "$ref": "#/$defs/SessionTrigger"
+        },
+        "weights": {
+          "$ref": "#/$defs/Weights"
         }
       },
       "required": [
+        "sessionId",
+        "phase",
+        "harness",
         "provider",
         "model",
+        "weights",
         "role",
-        "mode"
+        "mode",
+        "trigger"
       ],
       "type": "object"
     },
     "AgentToolCall": {
-      "description": "`agent.toolCall`: the agent ran a command (`callId` is the `FIN_CALL` its `fin` run\ncarries).",
+      "description": "`agent.toolCall`: the agent called a tool. `callId` is the `FIN_CALL` its `fin` run\ncarries; `command` names the `fin` command when the tool ran `fin`.",
       "properties": {
         "args": {
           "allOf": [
@@ -115,6 +164,9 @@
         "command": {
           "$ref": "#/$defs/Name"
         },
+        "tool": {
+          "$ref": "#/$defs/Name"
+        },
         "turnId": {
           "$ref": "#/$defs/IdRef"
         }
@@ -122,7 +174,7 @@
       "required": [
         "callId",
         "turnId",
-        "command",
+        "tool",
         "argsHash"
       ],
       "type": "object"
@@ -130,11 +182,18 @@
     "AgentToolResult": {
       "description": "`agent.toolResult`.",
       "properties": {
+        "attribution": {
+          "$ref": "#/$defs/Attribution"
+        },
         "callId": {
           "$ref": "#/$defs/IdRef"
         },
         "code": {
           "$ref": "#/$defs/Code"
+        },
+        "exit": {
+          "format": "int32",
+          "type": "integer"
         },
         "micros": {
           "format": "uint64",
@@ -155,23 +214,31 @@
             }
           ]
         },
+        "truncated": {
+          "type": "boolean"
+        },
         "txIds": {
           "items": {
             "$ref": "#/$defs/IdRef"
           },
+          "maxItems": 64,
           "type": "array"
         }
       },
       "required": [
         "callId",
         "ok",
-        "micros"
+        "micros",
+        "attribution"
       ],
       "type": "object"
     },
     "AgentTurn": {
-      "description": "`agent.turn`: one model call. Content: the turn's new messages and the output; the system\nprompt and the tool definitions by hash.",
+      "description": "`agent.turn`: one model call. Content (training only, in the agent-trace store): the\nturn's new input messages, the output, and the system prompt and tool definitions, which\nare always blobs so identical prompts are stored once.",
       "properties": {
+        "bodyHash": {
+          "$ref": "#/$defs/Hashed"
+        },
         "cacheReadTokens": {
           "format": "uint64",
           "minimum": 0,
@@ -182,10 +249,19 @@
           "minimum": 0,
           "type": "integer"
         },
+        "capture": {
+          "$ref": "#/$defs/Capture"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/CostBasis"
+        },
         "costMicros": {
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
         },
         "inputTokens": {
           "format": "uint64",
@@ -197,7 +273,7 @@
           "minimum": 0,
           "type": "integer"
         },
-        "messages": {
+        "messagesDelta": {
           "allOf": [
             {
               "$ref": "#/$defs/Body"
@@ -210,6 +286,9 @@
         },
         "model": {
           "$ref": "#/$defs/Name"
+        },
+        "modelHash": {
+          "$ref": "#/$defs/Hashed"
         },
         "output": {
           "allOf": [
@@ -227,32 +306,91 @@
           "minimum": 0,
           "type": "integer"
         },
+        "parentTurnId": {
+          "$ref": "#/$defs/IdRef"
+        },
         "provider": {
           "$ref": "#/$defs/Name"
+        },
+        "reasoningTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "seq": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "stopReason": {
           "$ref": "#/$defs/StopReason"
         },
+        "system": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelInput"
+            }
+          ]
+        },
         "systemHash": {
           "$ref": "#/$defs/Hashed"
+        },
+        "tools": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelInput"
+            }
+          ]
         },
         "toolsHash": {
           "$ref": "#/$defs/Hashed"
         },
+        "ttftMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "turnId": {
           "$ref": "#/$defs/IdRef"
+        },
+        "upstream": {
+          "$ref": "#/$defs/Name"
+        },
+        "upstreamHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "weights": {
+          "$ref": "#/$defs/Weights"
         }
       },
       "required": [
         "turnId",
+        "runId",
+        "seq",
+        "harness",
         "provider",
         "model",
+        "weights",
         "inputTokens",
         "outputTokens",
         "cacheReadTokens",
         "cacheWriteTokens",
+        "reasoningTokens",
         "latencyMs",
         "stopReason",
+        "costBasis",
+        "capture",
         "systemHash",
         "toolsHash"
       ],
@@ -336,7 +474,7 @@
           "$ref": "#/$defs/AgentToolResult"
         },
         {
-          "$ref": "#/$defs/AgentEditVerdict"
+          "$ref": "#/$defs/AgentApproval"
         },
         {
           "$ref": "#/$defs/UiAction"
@@ -376,6 +514,23 @@
         "bindings"
       ],
       "type": "object"
+    },
+    "ApprovalDecision": {
+      "enum": [
+        "allow",
+        "deny",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "ApprovalKind": {
+      "enum": [
+        "rule",
+        "budget",
+        "provider",
+        "plugin"
+      ],
+      "type": "string"
     },
     "Arch": {
       "enum": [
@@ -553,6 +708,16 @@
         "dirs"
       ],
       "type": "object"
+    },
+    "Attribution": {
+      "description": "How a tool result's txIds were joined to its call (§12.3).",
+      "enum": [
+        "exact",
+        "inferred",
+        "ambiguous",
+        "none"
+      ],
+      "type": "string"
     },
     "AudioCodec": {
       "oneOf": [
@@ -857,7 +1022,7 @@
       "x-fin-blob": true
     },
     "Body": {
-      "description": "Large or structured content (the reserved agent kinds): inline JSON, or a [`BlobRef`] when\nit would not fit an entry (Decision 20).",
+      "description": "Large or structured content (the agent kinds): inline JSON, or a [`BlobRef`] when\nit would not fit an entry (Decision 20).",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -1233,6 +1398,21 @@
         "gap"
       ],
       "type": "object"
+    },
+    "Capture": {
+      "description": "How faithful a turn's content is (§12.6).",
+      "oneOf": [
+        {
+          "const": "exact",
+          "description": "The request and response bodies as sent and received (the built-in agent).",
+          "type": "string"
+        },
+        {
+          "const": "stream",
+          "description": "What a CLI's stream reports.",
+          "type": "string"
+        }
+      ]
     },
     "CatalogEntry": {
       "additionalProperties": false,
@@ -1864,6 +2044,32 @@
       ],
       "type": "object"
     },
+    "CostBasis": {
+      "description": "Where a turn's cost comes from.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "reported",
+          "description": "The provider reported what it charged (OpenRouter's usage accounting).",
+          "type": "string"
+        },
+        {
+          "const": "priced",
+          "description": "Priced from the catalogue.",
+          "type": "string"
+        },
+        {
+          "const": "subscription",
+          "description": "A plan sign-in: notional, not charged.",
+          "type": "string"
+        }
+      ]
+    },
     "Crop": {
       "description": "Fractions of the item's size cut from each side.",
       "properties": {
@@ -1911,6 +2117,14 @@
       "enum": [
         "linear",
         "equalPower"
+      ],
+      "type": "string"
+    },
+    "DecidedBy": {
+      "description": "Who decided an approval.",
+      "enum": [
+        "user",
+        "policy"
       ],
       "type": "string"
     },
@@ -2924,7 +3138,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2946,7 +3160,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2968,7 +3182,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2990,7 +3204,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -3008,15 +3222,15 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "agent.editVerdict",
+              "const": "agent.approval",
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
-              "$ref": "#/$defs/AgentEditVerdict"
+              "$ref": "#/$defs/AgentApproval"
             }
           },
           "required": [
@@ -3821,6 +4035,17 @@
         "time"
       ],
       "type": "object"
+    },
+    "Harness": {
+      "description": "What runs the agent.",
+      "enum": [
+        "builtin",
+        "claudeCode",
+        "codex",
+        "fake",
+        "plugin"
+      ],
+      "type": "string"
     },
     "Hashed": {
       "pattern": "^k1:[0-9a-f]{32}$",
@@ -8323,6 +8548,15 @@
       ],
       "type": "object"
     },
+    "SessionPhase": {
+      "enum": [
+        "started",
+        "resumed",
+        "interrupted",
+        "ended"
+      ],
+      "type": "string"
+    },
     "SessionStart": {
       "description": "The process run began (the journal opened with a purpose on, or one turned on). Platform\nfacts only (Decision 5): no host, user, IP, serial or hardware model.",
       "properties": {
@@ -8373,6 +8607,66 @@
         "profile"
       ],
       "type": "object"
+    },
+    "SessionTotals": {
+      "description": "A session's totals at `ended`.",
+      "properties": {
+        "costMicros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "toolCalls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turns": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "txs": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wallS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "turns",
+        "toolCalls",
+        "txs",
+        "inputTokens",
+        "outputTokens",
+        "wallS"
+      ],
+      "type": "object"
+    },
+    "SessionTrigger": {
+      "description": "What started the session.",
+      "enum": [
+        "user",
+        "savedPrompt",
+        "subagent",
+        "hook",
+        "eval"
+      ],
+      "type": "string"
     },
     "SessionUnclean": {
       "description": "A start found the previous run still open in `state.json`.",
@@ -8471,6 +8765,15 @@
         "op"
       ],
       "type": "object"
+    },
+    "SignIn": {
+      "description": "The kind of sign-in a CLI harness reports (CLI harnesses only).",
+      "enum": [
+        "plan",
+        "key",
+        "unknown"
+      ],
+      "type": "string"
     },
     "Size": {
       "properties": {
@@ -10132,24 +10435,6 @@
       ],
       "type": "object"
     },
-    "Verdict": {
-      "enum": [
-        "accepted",
-        "rejected",
-        "undone",
-        "merged",
-        "abandoned"
-      ],
-      "type": "string"
-    },
-    "VerdictBy": {
-      "enum": [
-        "user",
-        "critic",
-        "agent"
-      ],
-      "type": "string"
-    },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",
       "type": "string",
@@ -10284,6 +10569,15 @@
         "frames"
       ],
       "type": "object"
+    },
+    "Weights": {
+      "description": "The model's weights class, from the catalogue at the time (§12.7).",
+      "enum": [
+        "open",
+        "closed",
+        "unknown"
+      ],
+      "type": "string"
     },
     "Word": {
       "description": "One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).",
