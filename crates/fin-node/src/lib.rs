@@ -54,7 +54,7 @@ mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
-pub use server_lock::{ServerLock, lock_exclusive};
+pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;
 
 /// Marks a napi error message as a serialized `CoreError`. Must match `index.js`.

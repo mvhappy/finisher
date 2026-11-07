@@ -179,6 +179,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "SERVER_SHUTTING_DOWN",
     "CANCELLED",
     "DB_IN_USE",
+    // The server's control database (`control.db`) was locked past its busy timeout.
+    "CONTROL_DB_BUSY",
     // `fin fonts fetch` could not download a font (`details.reason`, `details.retryAt`); in
     // other replies it is a warning, not an error.
     "FONT_FETCH_FAILED",
@@ -276,6 +278,7 @@ mod tests {
         assert_eq!(exit_code("UNSUPPORTED_HASH"), 3);
         assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
+        assert_eq!(exit_code("CONTROL_DB_BUSY"), 5);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
         assert_eq!(exit_code("FONTS_DAMAGED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);

@@ -200,6 +200,12 @@ export declare class ServerLock {
 export declare function lockExclusive(path: string): ServerLock;
 
 /**
+ * This server data's current `server-id`, a lowercase ULID: created on first use, renewed when
+ * the server data turns out to be a copy (`fin-store` `server_identity`). Throws `IO_ERROR`.
+ */
+export declare function serverId(serverData: string): string;
+
+/**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
  * image?, lottie?, font?, lut?, fingerprint, size }`).

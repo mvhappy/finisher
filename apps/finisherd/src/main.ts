@@ -15,6 +15,9 @@ import {
   socketPath,
   writeServerInfo,
 } from "./config.ts";
+import { serverId } from "@finisher/fin-node";
+import { layerAudit } from "./control/audit.ts";
+import { layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { HandlersLive } from "./handlers.ts";
 import { withServerLock } from "./lock.ts";
@@ -36,6 +39,9 @@ export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
       // Held until shutdown, before touching the socket: claim + listen is then race-free.
       yield* withServerLock(serverData);
+      // The control store (5A Task 1) before any listener: the environment id, the audit log.
+      const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
+      const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const token = newToken();
@@ -46,6 +52,7 @@ export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
         Layer.mergeAll(serveRpc(local), serveRpc(ws)).pipe(
           Layer.provide(HandlersLive),
           Layer.provide(Layer.mergeAll(layerProjectRegistry(serverData, registry), layerFonts(serverData, fonts))),
+          Layer.provide(Layer.succeedContext(control)),
         ),
       );
 

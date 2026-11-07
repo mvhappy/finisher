@@ -312,6 +312,15 @@ export function lockExclusive(path) {
   }
 }
 
+/** This server data's `server-id` (created on first use; renewed for a copied server data). */
+export function serverId(serverData) {
+  try {
+    return native.serverId(serverData);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
 export function probe(path) {
   return call(native.probe(path));
 }

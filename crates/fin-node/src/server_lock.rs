@@ -101,3 +101,18 @@ pub fn lock_exclusive(path: String) -> Result<ServerLock> {
         || {},
     )
 }
+
+/// This server data's current `server-id` (`fin_store::server_identity`: created on first use,
+/// renewed when the server data turns out to be a copy). `finisherd` records it in
+/// `control.db` `server_ids` at every start (sub-project 5A).
+#[napi(catch_unwind)]
+pub fn server_id(server_data: String) -> Result<String> {
+    guarded(
+        || {
+            fin_store::server_id::server_identity(std::path::Path::new(&server_data))
+                .map(|identity| identity.id)
+                .map_err(reject)
+        },
+        || {},
+    )
+}
