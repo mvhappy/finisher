@@ -19,6 +19,19 @@ use crate::output::{internal, unavailable};
 use crate::{endpoint, paths};
 
 pub const SNAPSHOT_ENV: &str = "FIN_OFFLINE_SNAPSHOT";
+
+/// A test hook's value (`FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`): read only in builds
+/// with the `test-hooks` feature (fin's own tests), never in a release build (5A Decision 37).
+pub fn test_hook(name: &str) -> Option<std::ffi::OsString> {
+    read_hook(cfg!(feature = "test-hooks"), name)
+}
+
+fn read_hook(enabled: bool, name: &str) -> Option<std::ffi::OsString> {
+    if !enabled {
+        return None;
+    }
+    std::env::var_os(name).filter(|v| !v.is_empty())
+}
 const PROJECT_FILE: &str = "finisher.project.json";
 
 /// A project at a revision. `generation` (`{incarnation, n}`, read together with `rev`) is
@@ -358,7 +371,7 @@ impl Backend for Online {
 
     fn commit(&self, tx: &Tx, generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
         let project_id = self.project_ref()?;
-        if let Some(gate) = std::env::var_os(COMMIT_GATE_ENV).filter(|g| !g.is_empty()) {
+        if let Some(gate) = test_hook(COMMIT_GATE_ENV) {
             commit_gate(Path::new(&gate))?;
         }
         crate::diag::note_tx(&tx.tx_id);
@@ -485,21 +498,40 @@ fn rebuild_here(sd: &Path, dir: &Path) -> Result<fin_store::RebuildReport, CoreE
 
 /// `--project <dir>` (with `~` expanded), else the nearest ancestor of the working directory
 /// that holds `finisher.project.json`.
-pub fn project_dir(explicit: Option<&Path>) -> Option<PathBuf> {
+pub fn project_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, CoreError> {
     if let Some(dir) = explicit {
-        return Some(paths::resolve(dir));
+        return paths::resolve_checked(dir).map(Some);
     }
-    let cwd = std::env::current_dir().ok()?;
-    cwd.ancestors()
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(None);
+    };
+    Ok(cwd
+        .ancestors()
         .find(|d| d.join(PROJECT_FILE).is_file())
-        .map(Path::to_path_buf)
+        .map(Path::to_path_buf))
 }
 
-/// The snapshot hook when set, otherwise the server.
+/// The snapshot hook when set (test builds only), otherwise the server.
 pub fn select(project: Option<&Path>) -> Result<Box<dyn Backend>, CoreError> {
-    match std::env::var_os(SNAPSHOT_ENV) {
-        Some(file) if !file.is_empty() => Ok(Box::new(Offline::load(Path::new(&file))?)),
-        _ => Ok(Box::new(Online::new(project_dir(project)))),
+    match test_hook(SNAPSHOT_ENV) {
+        Some(file) => Ok(Box::new(Offline::load(Path::new(&file))?)),
+        None => Ok(Box::new(Online::new(project_dir(project)?))),
+    }
+}
+
+#[cfg(test)]
+mod hook_tests {
+    #[test]
+    fn test_hooks_ignored_without_feature() {
+        // SAFETY: a variable only this test reads.
+        unsafe { std::env::set_var("FIN_TEST_HOOK_PROBE", "x") };
+        assert_eq!(super::read_hook(false, "FIN_TEST_HOOK_PROBE"), None);
+        assert_eq!(
+            super::read_hook(true, "FIN_TEST_HOOK_PROBE"),
+            Some("x".into())
+        );
+        // fin's own tests build with the feature (the self dev-dependency).
+        const { assert!(cfg!(feature = "test-hooks")) };
     }
 }
 

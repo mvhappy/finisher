@@ -33,7 +33,7 @@
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
 // and E2E_START_TIMEOUT_MS bounds the wait for its `finisherd.json` (default 30 s).
 import { pathToFileURL } from "node:url";
-import { build, live, removeTmp } from "./e2e/lib.mjs";
+import { assertNoTestHooks, build, live, removeTmp } from "./e2e/lib.mjs";
 import { checkRevs, run as runBasic } from "./e2e/basic.mjs";
 import { run as runStorage } from "./e2e/storage.mjs";
 import { run as runHistory } from "./e2e/history.mjs";
@@ -52,6 +52,7 @@ async function main(argv) {
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
   }
+  assertNoTestHooks();
   // The builds run synchronously (a cold release build can take minutes in CI), so the
   // deadline covers the run itself.
   const names = argv.filter((a) => !a.startsWith("--"));

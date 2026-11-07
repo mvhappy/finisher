@@ -275,6 +275,29 @@ Plan: `docs/superpowers/plans/2026-11-06-sub-project-4c-edit-breadth.md`. Spec: 
 - [ ] The Task 26 Step 1 seeded-bug runs (a)–(g) are unrecorded: re-run them and note the results here
 - [ ] Arch spec §18's "bundled caption fonts" licence line predates fetched fonts (catalog fonts are never redistributed by Finisher)
 
+## Sub-project 5A: principals, local credentials and scopes (in progress)
+
+Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3). Plan: `docs/superpowers/plans/2026-11-07-sub-project-5a-principals-and-scopes.md`. Branch `sp5a-principals`, stacked on `sp4c-edit-breadth`. Tasks 1, 2 and 10 needed only D1, D2 and 4C; diagnostics D1–D7 are merged into this branch (2026-11-07), so Tasks 3–9 and 11–14 can proceed. 5C-1 builds on Tasks 1 and 2.
+
+- [x] Task 1: control store (`control.db`, per-area migration chains), environment id, `server_ids`, audit log
+- [x] Task 2: key files in `auth/`, the socket in `run/`, private server data on Windows, handshake crypto
+- [ ] Task 3: connection-aware protocol, principals, the handshake RPCs (not yet enforced)
+- [ ] Task 4: `fin` proves; the server requires proofs; exit code 7
+- [ ] Task 5: middleware chain, scopes, reach, policy and the write guard
+- [ ] Task 6: WebSocket tickets, Host and Origin checks, protocol 2
+- [ ] Task 7: diagnostics sources and actors from principals; human-only diagnostics
+- [ ] Task 8: the TTY-gated console; graceful stop
+- [ ] Task 9: agent and MCP credentials
+- [x] Task 10: RPC hardening (`INVALID_PATH`, `fin` frame cap and deadline, `fin` test hooks behind a feature)
+- [ ] Task 11: native Windows pipe listener
+- [ ] Task 12: e2e `auth` scenario
+- [ ] Task 13: spec, architecture pointer, README, tracker
+- [ ] Task 14: cross-platform validation
+
+Notes for later tasks (review of Tasks 1, 2, 10):
+- Task 3: finisherd caps its own inbound lines at 16 MiB (socket and WebSocket, `FRAME_TOO_LARGE`); today only `fin` caps what it reads.
+- Sub-project 9 (packaging): the control store's checkpoint worker is started with `new Worker(new URL("./checkpoint-worker.ts", import.meta.url))` and relies on Node's type stripping; a bundled or packaged finisherd must ship that file (or a compiled `.js`, with the URL changed) next to `control/db.ts`.
+
 ## Diagnostics hooks (D1–D7): done (2026-11-07)
 
 Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md` (batch F′, after 4C Task 26). Spec §21.1, D34. Branch `sp4c-edit-breadth`.

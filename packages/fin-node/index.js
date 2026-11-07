@@ -459,6 +459,34 @@ export function lockExclusive(path) {
   }
 }
 
+/** This server data's `server-id` (created on first use; renewed for a copied server data). */
+export function serverId(serverData) {
+  try {
+    return native.serverId(serverData);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** Windows: owner and DACL private to this user; elsewhere `{ ok: true }`. */
+export function checkPrivateDir(path) {
+  try {
+    const r = native.checkPrivateDir(path);
+    return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
+/** Creates `path` private to this user (protected owner-only DACL on Windows, 0700 elsewhere). */
+export function makePrivateDir(path) {
+  try {
+    native.makePrivateDir(path);
+  } catch (e) {
+    throw toFinError(e);
+  }
+}
+
 export function probe(path) {
   return call(native.probe(path));
 }

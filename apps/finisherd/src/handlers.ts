@@ -6,6 +6,7 @@ import { SERVER_VERSION } from "./config.ts";
 import { callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
+import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { ProjectRegistry } from "./projects.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
@@ -37,9 +38,13 @@ export const HandlersLive = FinRpcs.toLayer(
             capabilities: CAPABILITIES,
           }),
         ),
-      "project.create": ({ dir, name, rate, idemKey }) => guard("project.create", registry.create(dir, name, rate, idemKey)),
-      "project.open": ({ dir, relocate }) => guard("project.open", registry.open(dir, relocate)),
-      "asset.probe": ({ path }) => guard("asset.probe", attemptJson<Probe>(() => probe(path))),
+      // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
+      "project.create": ({ dir, name, rate, idemKey }) =>
+        guard("project.create", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.create(d, name, rate, idemKey))),
+      "project.open": ({ dir, relocate }) =>
+        guard("project.open", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.open(d, relocate))),
+      "asset.probe": ({ path }) =>
+        guard("asset.probe", Effect.flatMap(requireAbsolute("path", path), (p) => attemptJson<Probe>(() => probe(p)))),
       "tx.commit": ({ projectId, tx, generation }, { headers }) =>
         guard("tx.commit", registry.commit(projectId, tx, generation, callMeta(headers, source))),
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),
@@ -56,7 +61,13 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.rebuild": ({ projectId }) => guard("project.rebuild", registry.rebuild(projectId)),
       "project.compact": ({ projectId }) => guard("project.compact", registry.compact(projectId)),
       "project.recover": (payload, { headers }) =>
-        guard("project.recover", registry.history(payload.projectId, "recover", payload, callMeta(headers, source))),
+        guard(
+          "project.recover",
+          Effect.andThen(
+            requireAbsoluteOpt("importDir", payload.importDir),
+            registry.history(payload.projectId, "recover", payload, callMeta(headers, source)),
+          ),
+        ),
       "branch.create": (payload, { headers }) =>
         guard("branch.create", registry.history(payload.projectId, "branchCreate", payload, callMeta(headers, source))),
       "branch.list": ({ projectId, all }) => guard("branch.list", registry.branches(projectId, all === true)),

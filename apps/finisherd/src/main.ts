@@ -4,7 +4,7 @@
 // Logs go to stderr only; stdout stays empty.
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Cause, Effect, Exit, Layer, Logger } from "effect";
+import { Cause, Context, Effect, Exit, Layer, Logger } from "effect";
 import {
   ensureServerData,
   newToken,
@@ -15,6 +15,10 @@ import {
   socketPath,
   writeServerInfo,
 } from "./config.ts";
+import { serverId } from "@finisher/fin-node";
+import { KeysTag, rotateKeys } from "./auth/keys.ts";
+import { layerAudit } from "./control/audit.ts";
+import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
@@ -37,6 +41,13 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
       // Held until shutdown, before touching the socket: claim + listen is then race-free.
       yield* withServerLock(serverData);
+      // The control store (5A Task 1) before any listener: the environment id, the audit log.
+      const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
+      const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
+      const envId = Context.get(control, ControlStoreTag).envId;
+      // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
+      // while this server listens is always this server's. `auth/` and `run/` are private.
+      const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const token = newToken();
@@ -52,13 +63,15 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               layerProjectRegistry(serverData, registry),
               layerFonts(serverData, fonts),
               Layer.succeed(Diagnostics, diagnostics),
+              Layer.succeedContext(control),
+              Layer.succeed(KeysTag, keys),
             ),
           ),
         ),
       );
 
       const publish = (enabled: boolean) =>
-        writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, diagnostics: { enabled } });
+        writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, envId, diagnostics: { enabled } });
       // Set when `finisherd.json` is removed: a late gate change must not bring it back.
       let stopped = false;
       const info = yield* Effect.acquireRelease(
@@ -104,6 +117,7 @@ function main(argv: ReadonlyArray<string>): void {
         const error = startFailure(Cause.squash(cause));
         const details = Object.keys(error.details).length > 0 ? ` ${JSON.stringify(error.details)}` : "";
         process.stderr.write(`finisherd: ${error.code}: ${error.message}${details}\n`);
+        if (error.fix !== undefined) process.stderr.write(`finisherd: fix: ${error.fix}\n`);
         process.exitCode = 1;
       }),
     ),

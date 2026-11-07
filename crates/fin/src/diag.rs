@@ -318,7 +318,8 @@ fn connect_by(deadline: Instant) -> Option<Client> {
     let left = deadline
         .checked_duration_since(Instant::now())
         .filter(|d| !d.is_zero())?;
-    Client::connect(&endpoint, left).ok()
+    // Outside fin's overall deadline: a timed-out command is still recorded, within BUDGET.
+    Client::connect_unbounded(&endpoint, left).ok()
 }
 
 /// Writes `req` as a `diagnostics.record` within what is left of `deadline`.
@@ -427,7 +428,7 @@ pub fn report_panic(info: &PanicHookInfo<'_>) {
 pub const TEST_PANIC_ENV: &str = "FIN_TEST_PANIC";
 
 pub fn test_panic() {
-    if std::env::var_os(TEST_PANIC_ENV).is_some_and(|v| !v.is_empty()) {
+    if crate::backend::test_hook(TEST_PANIC_ENV).is_some() {
         panic!("{TEST_PANIC_ENV} asked for a panic");
     }
 }
