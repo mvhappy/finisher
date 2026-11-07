@@ -39,13 +39,17 @@ const REDACTED = "[redacted]";
 
 export class ModelGateway {
   private readonly granted = new Set<string>();
+  private readonly store: SecretStore;
+  private readonly sessions: RunningSessions;
+  private readonly audit: AuditSink;
+  private readonly clock: Clock;
 
-  constructor(
-    private readonly store: SecretStore,
-    private readonly sessions: RunningSessions,
-    private readonly audit: AuditSink,
-    private readonly clock: Clock,
-  ) {}
+  constructor(store: SecretStore, sessions: RunningSessions, audit: AuditSink, clock: Clock) {
+    this.store = store;
+    this.sessions = sessions;
+    this.audit = audit;
+    this.clock = clock;
+  }
 
   /** Whether a key would be found for `projectId` (for `agent.providers` and start checks). */
   hasKey(projectId: string): boolean {

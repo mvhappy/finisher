@@ -70,12 +70,13 @@ export function parseModels(body: unknown): ListedModel[] {
 export class OpenRouterPrices {
   private byId = new Map<string, ListedModel>();
   private at: number | null = null;
+  /** `<server-data>/agents/openrouter-models.json` */
+  readonly file: string;
+  private readonly clock: Clock;
 
-  constructor(
-    /** `<server-data>/agents/openrouter-models.json` */
-    readonly file: string,
-    private readonly clock: Clock,
-  ) {
+  constructor(file: string, clock: Clock) {
+    this.file = file;
+    this.clock = clock;
     try {
       const doc = JSON.parse(readFileSync(file, "utf8")) as CacheFile;
       if (doc?.v === 1 && Array.isArray(doc.models) && typeof doc.fetchedAt === "number") {

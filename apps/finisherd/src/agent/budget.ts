@@ -85,14 +85,24 @@ export class Budget {
   private runTools = 0;
   /** When the active run's wall time was last committed to the ledger; null between runs. */
   private since: number | null = null;
+  private readonly ledger: LedgerStore;
+  private readonly sessionId: string;
+  private readonly limits: BudgetLimits;
+  private readonly clock: Clock;
+  private readonly opts: BudgetOptions;
 
   constructor(
-    private readonly ledger: LedgerStore,
-    private readonly sessionId: string,
-    private readonly limits: BudgetLimits,
-    private readonly clock: Clock,
-    private readonly opts: BudgetOptions = {},
+    ledger: LedgerStore,
+    sessionId: string,
+    limits: BudgetLimits,
+    clock: Clock,
+    opts: BudgetOptions = {},
   ) {
+    this.ledger = ledger;
+    this.sessionId = sessionId;
+    this.limits = limits;
+    this.clock = clock;
+    this.opts = opts;
     for (const kind of BUDGET_KINDS) {
       if (ledger.read(sessionId, kind).limit === null) ledger.setLimit(sessionId, kind, limits[LIMIT_OF[kind]]);
     }

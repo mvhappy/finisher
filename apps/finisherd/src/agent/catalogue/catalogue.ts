@@ -139,18 +139,32 @@ export interface CatalogueOptions {
 
 export class Catalogue {
   private readonly extra: ReadonlyMap<string, ExtraModel>;
+  readonly asOf: string;
+  readonly openrouterBaseUrl: string;
+  readonly localPresets: Readonly<Record<string, string>>;
+  private readonly defaults: { window: number; maxOutput: number };
+  private readonly families: readonly Family[];
+  /** Model ids the bundled file names (diagnostics names them; ⊆ `AGENT_MODELS`). */
+  readonly bundledIds: readonly string[];
+  private readonly prices: OpenRouterPrices | undefined;
 
   private constructor(
-    readonly asOf: string,
-    readonly openrouterBaseUrl: string,
-    readonly localPresets: Readonly<Record<string, string>>,
-    private readonly defaults: { window: number; maxOutput: number },
-    private readonly families: readonly Family[],
-    /** Model ids the bundled file names (diagnostics names them; ⊆ `AGENT_MODELS`). */
-    readonly bundledIds: readonly string[],
+    asOf: string,
+    openrouterBaseUrl: string,
+    localPresets: Readonly<Record<string, string>>,
+    defaults: { window: number; maxOutput: number },
+    families: readonly Family[],
+    bundledIds: readonly string[],
     extra: readonly ExtraModel[],
-    private readonly prices: OpenRouterPrices | undefined,
+    prices: OpenRouterPrices | undefined,
   ) {
+    this.asOf = asOf;
+    this.openrouterBaseUrl = openrouterBaseUrl;
+    this.localPresets = localPresets;
+    this.defaults = defaults;
+    this.families = families;
+    this.bundledIds = bundledIds;
+    this.prices = prices;
     this.extra = new Map(extra.map((x) => [`${x.provider ?? "openrouter"}/${x.id}`, x]));
   }
 

@@ -90,12 +90,11 @@ export class FileSecretStore implements SecretStore {
   private readonly box: SecretBox;
   private readonly clock: Clock;
   private readonly ids: Ids;
+  private readonly dir: string;
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(
-    private readonly dir: string,
-    opts: StoreOptions = {},
-  ) {
+  constructor(dir: string, opts: StoreOptions = {}) {
+    this.dir = dir;
     if ((opts.platform ?? process.platform) === "win32") {
       throw finError(
         "SECRET_STORE_UNAVAILABLE",
