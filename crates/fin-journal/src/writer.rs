@@ -14,14 +14,27 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
 use fin_core::events::payloads::JournalDropped;
-use fin_core::events::{AnyPayload, Purposes, Source};
+use fin_core::events::{AnyPayload, CollectPolicy, Purpose, Purposes, Source};
+use serde_json::{Map, Value};
 use ulid::Ulid;
 
+use crate::blobs::Blobs;
+use crate::consent::ConsentState;
 use crate::control::{Control, Data, Pending, SAMPLE_BYTES, gate_of, unpack};
 use crate::files::FileMeta;
 use crate::stats::Windows;
 use crate::{JournalError, MAX_ENTRY_BYTES, Shared, encode};
+
+/// What the writer starts from: the consent in force and whether `state.json` needs it, and
+/// the stored state's other keys.
+pub(crate) struct Init {
+    pub state: ConsentState,
+    pub dirty: bool,
+    pub other: Map<String, Value>,
+}
 
 thread_local! {
     pub(crate) static ON_WRITER: Cell<bool> = const { Cell::new(false) };
@@ -51,7 +64,11 @@ pub(crate) struct Writer {
     pub sh: Arc<Shared>,
     pub dir: PathBuf,
     data: Receiver<Data>,
-    ctl: Receiver<Control>,
+    ctl: Receiver<(u64, Control)>,
+    /// A control message read ahead (`control_due`), handled before the data after it.
+    next_ctl: Option<(u64, Control)>,
+    /// Data messages handled (compared with a control message's count).
+    done: u64,
     /// Oldest first; with `active`, the last one is being appended to.
     pub files: Vec<FileMeta>,
     pub active: Option<File>,
@@ -69,6 +86,15 @@ pub(crate) struct Writer {
     pub last_id: Ulid,
     drops_since: u64,
     last_drops: Option<Instant>,
+    pub blobs: Blobs,
+    /// The bytes of the blobs the active file references (per reference).
+    pub active_blob_bytes: u64,
+    /// What this server knows of each project's flag (`None`: unknown).
+    pub policies: BTreeMap<String, Option<CollectPolicy>>,
+    /// The consent `state.json` must hold, and whether it does not yet.
+    pub state: ConsentState,
+    pub state_dirty: bool,
+    pub state_other: Map<String, Value>,
 }
 
 impl Writer {
@@ -76,7 +102,8 @@ impl Writer {
         sh: Arc<Shared>,
         dir: PathBuf,
         data: Receiver<Data>,
-        ctl: Receiver<Control>,
+        ctl: Receiver<(u64, Control)>,
+        init: Init,
     ) -> Writer {
         let now = sh.opts.clock.now_ms();
         Writer {
@@ -84,6 +111,8 @@ impl Writer {
             dir,
             data,
             ctl,
+            next_ctl: None,
+            done: 0,
             files: Vec::new(),
             active: None,
             buf: Vec::new(),
@@ -98,6 +127,12 @@ impl Writer {
             last_id: Ulid::nil(),
             drops_since: now,
             last_drops: None,
+            blobs: Blobs::default(),
+            active_blob_bytes: 0,
+            policies: BTreeMap::new(),
+            state: init.state,
+            state_dirty: init.dirty,
+            state_other: init.other,
         }
     }
 
@@ -135,14 +170,13 @@ impl Writer {
         }
         match self.data.recv_timeout(self.wait()) {
             Ok(d) => {
-                self.on_data(d);
-                for i in 1..BATCH {
-                    if i % 64 == 0 && !self.drain_control() {
+                if !self.take_data(d) {
+                    return false;
+                }
+                for _ in 1..BATCH {
+                    let Ok(d) = self.data.try_recv() else { break };
+                    if !self.take_data(d) {
                         return false;
-                    }
-                    match self.data.try_recv() {
-                        Ok(d) => self.on_data(d),
-                        Err(_) => break,
                     }
                 }
             }
@@ -175,10 +209,10 @@ impl Writer {
         }
     }
 
-    /// Handles the data queued so far (at most a channel's worth), so a control message
-    /// sees every entry recorded before it.
-    fn catch_up(&mut self) {
-        for _ in 0..self.sh.opts.channel.max(1) {
+    /// Handles the data queued before a control message (`seen` messages in all), so it
+    /// sees every entry recorded before it and none recorded after.
+    fn catch_up(&mut self, seen: u64) {
+        while self.done < seen {
             match self.data.try_recv() {
                 Ok(d) => self.on_data(d),
                 Err(_) => break,
@@ -186,9 +220,47 @@ impl Writer {
         }
     }
 
+    /// Whether the next control message came before the data not handled yet (it saw at
+    /// most `done` data messages): it is handled first.
+    fn control_due(&mut self) -> bool {
+        if self.next_ctl.is_none() {
+            self.next_ctl = self.ctl.try_recv().ok();
+        }
+        self.next_ctl
+            .as_ref()
+            .is_some_and(|(seen, _)| *seen <= self.done)
+    }
+
+    /// One data message in channel order with the control messages: those sent before it
+    /// are handled first (a close after it). False once the journal is closed.
+    fn take_data(&mut self, d: Data) -> bool {
+        while self.control_due() {
+            if matches!(self.next_ctl, Some((_, Control::Close(_)))) {
+                self.on_data(d);
+                return self.drain_control();
+            }
+            let (seen, c) = self.next_ctl.take().expect("control_due holds one");
+            if !self.handle_control(seen, c) {
+                return false;
+            }
+        }
+        self.on_data(d);
+        true
+    }
+
     fn drain_control(&mut self) -> bool {
-        while let Ok(c) = self.ctl.try_recv() {
-            self.catch_up();
+        while let Some((seen, c)) = self.next_ctl.take().or_else(|| self.ctl.try_recv().ok()) {
+            if !self.handle_control(seen, c) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// A control message, after the data queued before it. False on close.
+    fn handle_control(&mut self, seen: u64, c: Control) -> bool {
+        {
+            self.catch_up(seen);
             match c {
                 Control::Sync { entry, slot, ack } => {
                     if slot.take() {
@@ -199,6 +271,25 @@ impl Writer {
                 Control::Flush(ack) => {
                     self.maintain();
                     let _ = ack.try_send(self.flush());
+                }
+                Control::Consent { from, to } => self.on_consent(from, to),
+                Control::Caps => {
+                    let now = self.now();
+                    if (self.scanned || self.listed)
+                        && self.suspended.is_none()
+                        && let Err(e) = self.apply_caps(now)
+                    {
+                        self.suspend(&e);
+                    }
+                }
+                Control::Project { id, policy } => self.on_project(id, policy),
+                Control::Purge { sel, ack } => {
+                    let r = self.purge(&sel).map_err(|e| {
+                        let code = crate::disk::code_of(&e);
+                        self.suspend(&e);
+                        JournalError::new("JOURNAL_UNAVAILABLE", format!("{code}: {e}"))
+                    });
+                    let _ = ack.try_send(r);
                 }
                 Control::Close(ack) => {
                     self.shutdown();
@@ -213,6 +304,7 @@ impl Writer {
     /// One data message; a panic while handling it suspends the journal here, so a control
     /// message being handled still answers (with the suspension).
     fn on_data(&mut self, d: Data) {
+        self.done += 1;
         if catch_unwind(AssertUnwindSafe(|| self.handle_data(d))).is_err() {
             self.on_panic();
         }
@@ -223,6 +315,7 @@ impl Writer {
         match &d {
             Data::Entry(p) => self.sh.inflight.fetch_sub(p.bytes, Relaxed),
             Data::Sample(_) => self.sh.inflight.fetch_sub(SAMPLE_BYTES, Relaxed),
+            Data::Blob(b) => self.sh.inflight.fetch_sub(b.bytes.len(), Relaxed),
             Data::Wake => 0,
         };
         self.sh.faults.check_panic();
@@ -234,6 +327,11 @@ impl Writer {
                 self.roll_stats(s.ts);
                 if !self.gate().is_empty() {
                     self.windows.add(&s, self.stats_ms());
+                }
+            }
+            Data::Blob(b) => {
+                if self.gate().has_training() {
+                    self.blobs.offer(*b);
                 }
             }
             Data::Wake => {}
@@ -252,6 +350,7 @@ impl Writer {
     pub fn maintain(&mut self) {
         let now = self.now();
         self.retry_due(now);
+        self.blobs.evict(Instant::now());
         self.roll_stats(now);
         self.report_drops(false);
         if (self.scanned || self.listed)
@@ -319,14 +418,47 @@ impl Writer {
         self.write_own(Source::FinNode, p.into(), now);
     }
 
-    /// Serialises and buffers one entry. False (and counted as dropped) when it was not.
+    /// Serialises and buffers one entry under the stamp ∩ the gate, unless its project may
+    /// not be recorded (`never` or unknown: not a drop). False when it was not written.
     pub fn write(&mut self, p: Pending) -> bool {
-        let bytes = p.bytes;
+        if let Some(project) = p.ctx.as_ref().and_then(|c| c.project.as_ref())
+            && !self.project_allowed(project.as_str())
+        {
+            return false;
+        }
         let purposes = p.stamp.purposes.intersect(self.gate());
+        self.write_with(p, purposes, false)
+    }
+
+    /// [`Writer::write`] with the purposes given (an `exempt` line keeps them whatever the
+    /// gate becomes). Blobs the entry references are written first; one whose bytes never
+    /// arrived takes the entry's content with it. False (and counted) when not written.
+    pub fn write_with(&mut self, mut p: Pending, purposes: Purposes, exempt: bool) -> bool {
+        let bytes = p.bytes;
         let now = self.now();
         if purposes.is_empty() || !self.writable(now) {
             self.sh.dropped(bytes);
             return false;
+        }
+        if purposes != p.stamp.purposes && !exempt {
+            // A purpose went since it was recorded: the basis is the one in force now.
+            p.stamp.basis = unpack(self.sh.word.load(Acquire)).basis;
+        }
+        let mut blobs: Vec<String> = Vec::new();
+        if purposes.contains(Purpose::Training) {
+            blobs = p.payload.blobs().map(|b| b.hash.hex().to_owned()).collect();
+            match self.blobs.ensure(&self.dir, &blobs) {
+                Ok(true) => {}
+                Ok(false) => {
+                    p.payload.strip_content();
+                    blobs.clear();
+                }
+                Err(e) => {
+                    self.suspend(&e);
+                    self.sh.dropped(bytes);
+                    return false;
+                }
+            }
         }
         let ts = p.ts;
         let id = self.next_id(ts);
@@ -334,10 +466,18 @@ impl Writer {
         line.clear();
         let ok = encode::encode(&mut line, id, &self.sh.session, p, purposes).is_ok()
             && line.len() <= MAX_ENTRY_BYTES;
-        let written = ok && self.append(ts, &line, purposes, false);
+        self.blobs.pin(&blobs);
+        let written = ok && self.append(ts, &line, purposes, exempt);
+        self.blobs.unpin();
         self.scratch = line;
         if !written {
             self.sh.dropped(bytes);
+        } else if !blobs.is_empty()
+            && let Some(m) = self.files.last()
+        {
+            let name = m.name.clone();
+            self.active_blob_bytes += blobs.iter().map(|h| self.blobs.size_of(h)).sum::<u64>();
+            self.blobs.add(&name, &blobs);
         }
         written
     }
@@ -402,52 +542,13 @@ impl Writer {
         id
     }
 
-    /// Rewrites the buffered lines the gate no longer allows as they stand: content goes
-    /// with training, and a line left with no purpose is dropped (and counted). So what
-    /// reaches the disk never holds more than the consent in force when it is written.
-    pub fn enforce_gate(&mut self) {
-        let gate = self.gate();
-        let allowed = |l: &Line| l.exempt || l.purposes.intersect(gate) == l.purposes;
-        if self.lines.iter().all(allowed) {
-            return;
-        }
-        let old = std::mem::take(&mut self.buf);
-        let lines = std::mem::take(&mut self.lines);
-        for (i, l) in lines.iter().enumerate() {
-            let end = lines.get(i + 1).map_or(old.len(), |n| n.start);
-            let text = &old[l.start..end];
-            if allowed(l) {
-                self.lines.push(Line {
-                    start: self.buf.len(),
-                    ..*l
-                });
-                self.buf.extend_from_slice(text);
-                continue;
-            }
-            let (kept, _gone) = encode::restamp(text, gate);
-            match kept {
-                Some(t) => {
-                    self.lines.push(Line {
-                        start: self.buf.len(),
-                        purposes: l.purposes.intersect(gate),
-                        exempt: false,
-                    });
-                    self.buf.extend_from_slice(&t);
-                }
-                None => self.sh.dropped(text.len()),
-            }
-        }
-        if let Some(m) = self.files.last_mut() {
-            m.bytes = (m.bytes + self.buf.len() as u64).saturating_sub(old.len() as u64);
-        }
-    }
-
     pub fn flush_buf(&mut self) -> io::Result<()> {
         self.enforce_gate();
         if self.buf.is_empty() {
             self.lines.clear();
             return Ok(());
         }
+        self.persist_meta()?;
         self.sh.faults.before_write()?;
         let f = self
             .active

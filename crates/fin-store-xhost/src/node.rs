@@ -221,7 +221,7 @@ impl Node<'_> {
                     self.em
                         .emit("rebuilt", None, json!({ "incarnation": incarnation }));
                 }
-                StoreEvent::Status(_) => {}
+                StoreEvent::Status(_) | StoreEvent::Collect(_) => {}
             }
         }
     }

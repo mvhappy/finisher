@@ -2,8 +2,10 @@
 
 use std::fmt;
 
+use std::collections::BTreeMap;
+
 use fin_core::CoreError;
-use fin_core::events::{Basis, Purposes};
+use fin_core::events::{Basis, CollectPolicy, Purposes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +55,11 @@ pub struct JournalStatus {
     #[schemars(with = "String")]
     pub code: Option<String>,
     pub files: u64,
+    /// The `j-*` files' bytes (blobs not included).
     pub bytes: u64,
+    /// Blobs on disk and their bytes (they count against `maxMiB` too).
+    pub blobs: u64,
+    pub blob_bytes: u64,
     /// Entries dropped since the journal opened.
     pub dropped: u64,
     /// The oldest entry's `ts` and the newest's (ms since the epoch).
@@ -100,6 +106,11 @@ pub(crate) struct Snapshot {
     pub(crate) suspended: Option<&'static str>,
     pub(crate) files: u64,
     pub(crate) bytes: u64,
+    pub(crate) blobs: u64,
+    pub(crate) blob_bytes: u64,
     pub(crate) oldest: Option<u64>,
     pub(crate) newest: Option<u64>,
+    /// The file being appended to (the upload view skips it).
+    pub(crate) active: Option<String>,
+    pub(crate) policies: BTreeMap<String, Option<CollectPolicy>>,
 }

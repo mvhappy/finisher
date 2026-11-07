@@ -129,6 +129,10 @@ pub struct ProjectFile {
     pub storage_override: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genesis: Option<Genesis>,
+    /// The collection flag (`crate::collect`): `"never"`, or absent. Raw, so a value from a
+    /// newer Finisher round-trips (and reads as `never`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collect: Option<serde_json::Value>,
     /// Fields of a newer revision, kept on rewrite.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
@@ -146,6 +150,7 @@ impl ProjectFile {
             storage: Some(storage),
             storage_override: None,
             genesis: Some(genesis),
+            collect: None,
             other: serde_json::Map::new(),
         }
     }

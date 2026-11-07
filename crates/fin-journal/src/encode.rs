@@ -4,7 +4,7 @@
 //! envelope serialised straight to the line (no `Value`).
 
 use fin_core::events::{
-    AnyPayload, BlobRef, ConsentStamp, Ctx, Envelope, EnvelopeRef, Purpose, Purposes,
+    AnyPayload, Basis, BlobRef, ConsentStamp, Ctx, Envelope, EnvelopeRef, Purpose, Purposes,
     Ulid as EventUlid, blob_refs, kind, kinds, redact,
 };
 use ulid::Ulid;
@@ -77,10 +77,14 @@ pub(crate) fn encode(
 }
 
 /// A line already encoded, written again under `gate`: its purposes become the stamp ∩
-/// `gate`, and its content goes unless training is left. The line is `None` when nothing is
+/// `gate` (with the basis in force now), and its content goes unless training is left. The line is `None` when nothing is
 /// left (or it does not parse, which the writer never produces): the entry is dropped. The
 /// second value lists the blob references the rewrite removed.
-pub(crate) fn restamp(line: &[u8], gate: Purposes) -> (Option<Vec<u8>>, Vec<BlobRef>) {
+pub(crate) fn restamp(
+    line: &[u8],
+    gate: Purposes,
+    basis: Basis,
+) -> (Option<Vec<u8>>, Vec<BlobRef>) {
     let Ok(mut e) = serde_json::from_slice::<Envelope>(line) else {
         return (None, Vec::new());
     };
@@ -95,6 +99,7 @@ pub(crate) fn restamp(line: &[u8], gate: Purposes) -> (Option<Vec<u8>>, Vec<Blob
     redact(spec, &mut e.payload, purposes);
     let after = blob_refs(spec, &e.payload);
     e.consent.purposes = purposes;
+    e.consent.basis = basis;
     let gone = before.into_iter().filter(|b| !after.contains(b)).collect();
     match serde_json::to_vec(&e) {
         Ok(mut out) => {
@@ -103,4 +108,12 @@ pub(crate) fn restamp(line: &[u8], gate: Purposes) -> (Option<Vec<u8>>, Vec<Blob
         }
         Err(_) => (None, after.into_iter().chain(gone).collect()),
     }
+}
+
+/// The blob references of an encoded line (none when it does not parse).
+pub(crate) fn line_blobs(line: &[u8]) -> Vec<BlobRef> {
+    let Ok(e) = serde_json::from_slice::<Envelope>(line) else {
+        return Vec::new();
+    };
+    kind(e.kind.as_str(), e.kv).map_or_else(Vec::new, |spec| blob_refs(spec, &e.payload))
 }

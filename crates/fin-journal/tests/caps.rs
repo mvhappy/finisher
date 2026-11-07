@@ -156,11 +156,12 @@ fn caps_hold_across_reopen() {
     assert!(files(&events(&dir)).is_empty());
     assert_eq!(off.status_now().files, 0);
     off.close();
-    assert!(
-        events(&dir).exists(),
-        "the directory stays; nothing new in it"
-    );
-    assert_eq!(std::fs::read_dir(events(&dir)).unwrap().count(), 0);
+    let mut left: Vec<String> = std::fs::read_dir(events(&dir))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["key", "state.json"], "nothing new while off");
 }
 
 #[test]

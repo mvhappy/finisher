@@ -84,8 +84,10 @@ test("ProbeSchema is fin-probe's Probe, with each kind's info", () => {
 test("ProjectEventSchema is fin-store's EngineEvent less what finisherd keeps to itself", () => {
   const engine = byType((defs.EngineEvent!.oneOf as unknown[]).map(shape));
   const ours = byType((Schema.toJsonSchemaDocument(ProjectEventSchema).schema as { anyOf: unknown[] }).anyOf.map(shape));
-  // `applied` feeds ops.subscribe; `lagged` ends subscribers. Neither reaches project.events.
-  expect(Object.keys(ours).sort()).toEqual(Object.keys(engine).filter((t) => t !== "applied" && t !== "lagged").sort());
+  // `applied` feeds ops.subscribe; `lagged` ends subscribers; `collect` is the journal's. None
+  // reaches project.events.
+  const kept = (t: string) => t !== "applied" && t !== "lagged" && t !== "collect";
+  expect(Object.keys(ours).sort()).toEqual(Object.keys(engine).filter(kept).sort());
   for (const [type, member] of Object.entries(ours)) expect(member, type).toEqual(engine[type]);
 });
 

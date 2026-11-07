@@ -215,8 +215,11 @@ export const ProjectEventSchema = Schema.Union([
   /** A background tick, backup or compaction failed (`fatal`: the engine is gone). */
   Schema.Struct({ type: Schema.Literal("error"), error: Schema.Unknown, fatal: Schema.Boolean }),
 ]);
-/** fin-store's `EngineEvent` less `applied` (fed to `ops.subscribe`) and `lagged` (ends subscribers). */
-export type ProjectEvent = Exclude<EngineEvent, { type: "applied" } | { type: "lagged" }>;
+/**
+ * fin-store's `EngineEvent` less `applied` (fed to `ops.subscribe`), `lagged` (ends subscribers)
+ * and `collect` (the project's collection flag, for the journal only).
+ */
+export type ProjectEvent = Exclude<EngineEvent, { type: "applied" } | { type: "lagged" } | { type: "collect" }>;
 
 export const TxGetPayload = Schema.Struct({ projectId: Schema.String, txId: Schema.String });
 /**

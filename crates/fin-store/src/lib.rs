@@ -11,6 +11,7 @@
 mod backup;
 mod branch;
 pub mod chain;
+mod collect;
 mod commit;
 mod compact;
 pub mod conflict_names;
@@ -57,6 +58,7 @@ use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
 pub use branch::create::{At, BranchCreate, BranchSet};
+pub use collect::{CollectPolicy, policy_of};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use compact::CompactFail;
 pub use compact::{
@@ -218,6 +220,8 @@ pub struct Store {
     follow: status::Follow,
     /// `finisher.project.json` needs a newer Finisher (`NEWER_FORMAT`).
     file_newer: bool,
+    /// Its `collect` flag as last read (`collect.rs`).
+    collect: collect::CollectPolicy,
     /// Branch heads, cached. Another `Store` (or process) on the same database may commit, so
     /// every read and commit first checks the newest rev in the database and catches up.
     heads: RefCell<HashMap<String, Head>>,

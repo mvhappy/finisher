@@ -736,6 +736,32 @@ export type Link =
  */
 export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
 /**
+ * A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by
+ * `fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of
+ * the project is recorded, and setting it purges the project's entries. A project whose
+ * policy is not known (not open here) is neither: the journal drops its new entries and
+ * purges nothing.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CollectPolicy".
+ */
+export type CollectPolicy = "never" | "default";
+/**
+ * One purpose's switch.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Switch".
+ */
+export type Switch = "on" | "off";
+/**
+ * Training's state: `undecided` until a person answers (the onboarding question). It
+ * records no content, exactly like `off`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrainingState".
+ */
+export type TrainingState = "on" | "off" | "undecided";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectId".
  */
@@ -799,6 +825,10 @@ export type EngineEvent =
   | {
       dropped: number;
       type: "lagged";
+    }
+  | {
+      collect: CollectPolicy;
+      type: "collect";
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -964,6 +994,11 @@ export type ItemKind = "clip" | "caption" | "graphic" | "image" | "adjustment" |
  */
 export type Role = "out" | "in";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JournalState".
+ */
+export type JournalState = "off" | "on" | "suspended";
+/**
  * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
  * addressed as `effects.<fx>.<param>`.
  *
@@ -1049,6 +1084,27 @@ export type ParamType =
   | {
       kinds: string[];
       type: "assetRef";
+    };
+/**
+ * A project's policy as `fin diagnostics show` reports it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectPolicy".
+ */
+export type ProjectPolicy = "default" | "never" | "unknown";
+/**
+ * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PurgeSelector".
+ */
+export type PurgeSelector =
+  | "all"
+  | {
+      project: string;
+    }
+  | {
+      before: number;
     };
 /**
  * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
@@ -2947,6 +3003,23 @@ export interface ConsentStamp {
   rev: number;
 }
 /**
+ * The effective consent as `fin diagnostics show` and `diagnostics.consent` report it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ConsentState".
+ */
+export interface ConsentState {
+  basis: Basis;
+  diagnostics: Switch;
+  doNotTrack: boolean;
+  env: Purposes;
+  /**
+   * The consent revision: monotonic, persisted in `events/state.json`.
+   */
+  rev: number;
+  training: TrainingState;
+}
+/**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3014,6 +3087,34 @@ export interface Envelope {
    * [`ENVELOPE_VERSION`].
    */
   v: number;
+}
+/**
+ * Which entries to read. Empty fields match everything.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Filter".
+ */
+export interface Filter {
+  /**
+   * Entries of these kinds.
+   */
+  kinds?: string[];
+  /**
+   * Only the newest `limit` matches (still oldest first).
+   */
+  limit?: number;
+  /**
+   * Entries whose `ctx.project` is this id (in any case).
+   */
+  project?: string;
+  /**
+   * Entries with `ts` ≥ this (ms since the epoch).
+   */
+  since?: number;
+  /**
+   * Entries with `ts` < this.
+   */
+  until?: number;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3267,6 +3368,35 @@ export interface HistoryResult {
   undone: string[];
 }
 /**
+ * What the journal holds and whether it is writing (`fin diagnostics show`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JournalStatus".
+ */
+export interface JournalStatus {
+  blobBytes: number;
+  /**
+   * Blobs on disk and their bytes (they count against `maxMiB` too).
+   */
+  blobs: number;
+  /**
+   * The `j-*` files' bytes (blobs not included).
+   */
+  bytes: number;
+  code?: string;
+  /**
+   * Entries dropped since the journal opened.
+   */
+  dropped: number;
+  files: number;
+  newest?: number;
+  /**
+   * The oldest entry's `ts` and the newest's (ms since the epoch).
+   */
+  oldest?: number;
+  state: JournalState;
+}
+/**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
  * the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
@@ -3317,6 +3447,25 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
+ * `settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown
+ * keys are ignored.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PrivacySettings".
+ */
+export interface PrivacySettings {
+  diagnostics?: Switch | null;
+  /**
+   * The size cap in MiB over the files and blobs, 16–4096 (default 128).
+   */
+  maxMiB?: number | null;
+  /**
+   * The age cap in days, 1–365 (default 30).
+   */
+  retentionDays?: number | null;
+  training?: Switch | null;
+}
+/**
  * What the server needs to register an asset: its kind and that kind's fields (the
  * `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
  * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted.
@@ -3344,6 +3493,23 @@ export interface Probe {
   lut?: LutInfo | null;
   size: number;
   video?: VideoInfo | null;
+}
+/**
+ * What a purge removed.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PurgeReport".
+ */
+export interface PurgeReport {
+  blobs: number;
+  /**
+   * Files deleted or rewritten.
+   */
+  files: number;
+  /**
+   * Entries.
+   */
+  removed: number;
 }
 /**
  * One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).

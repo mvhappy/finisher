@@ -510,7 +510,7 @@ impl Store {
     /// [`ProjectFile::is_newer`]: crate::ProjectFile::is_newer
     fn reread_project_file(&mut self) {
         if let Ok(f) = crate::project_file::read_project_file_once(&self.project_dir) {
-            self.file_newer = f.is_newer();
+            self.observe_project_file(&f);
         }
     }
 

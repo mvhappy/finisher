@@ -168,6 +168,7 @@ impl Store {
             &opts,
         );
         store.file_newer = file.is_newer();
+        store.collect = crate::collect::policy_of(&file);
         store.rebuilt = rebuilt;
         store.db_lock = Some(db_lock);
         store.start(Some(file))?;
@@ -208,6 +209,7 @@ impl Store {
             ctl,
             follow: status::Follow::default(),
             file_newer: false,
+            collect: crate::collect::CollectPolicy::Default,
             heads: RefCell::new(heads),
             rebuilt: None,
             daily: tick::DailyState::default(),

@@ -308,3 +308,17 @@ impl Basis {
         self.min(other)
     }
 }
+
+/// A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by
+/// `fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of
+/// the project is recorded, and setting it purges the project's entries. A project whose
+/// policy is not known (not open here) is neither: the journal drops its new entries and
+/// purges nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CollectPolicy {
+    /// Follow each user's privacy settings (the file holds no `collect` key).
+    #[default]
+    Default,
+    Never,
+}

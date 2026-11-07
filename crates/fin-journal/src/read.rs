@@ -23,7 +23,7 @@ pub struct Filter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u64")]
     pub until: Option<u64>,
-    /// Entries whose `ctx.project` is this id.
+    /// Entries whose `ctx.project` is this id (in any case).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub project: Option<String>,
@@ -44,7 +44,7 @@ impl Filter {
                 e.ctx
                     .as_ref()
                     .and_then(|c| c.project.as_ref())
-                    .is_some_and(|x| x.as_str() == p)
+                    .is_some_and(|x| x.as_str().eq_ignore_ascii_case(p))
             })
             && (self.kinds.is_empty() || self.kinds.iter().any(|k| k == e.kind.as_str()))
     }

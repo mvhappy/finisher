@@ -27,15 +27,42 @@ pub struct JournalOptions {
     /// The stats window (1 minute).
     pub stats_every: Duration,
     pub clock: Arc<dyn Clock>,
-    /// The install's keyed hash for ids and argument hashes in a received wire payload
-    /// (`record_value`). `None` (the default) refuses every wire kind (`EVENT_INVALID`): no
-    /// key, no keyed value reaches the disk.
-    // D3: replace with the install key. D3 owns the per-install key; until it exists the
-    // default is `None` and only a caller (a test) that supplies one writes wire kinds.
+    /// An override of the 16-byte keyed hash (tests only). `None`, the default, is the
+    /// per-install key in `events/key` (Decision 6), which [`crate::Journal::hash`],
+    /// [`crate::Journal::id_ref`] and `record_value`'s wire kinds use; blobs always use the
+    /// install key.
     pub key: Option<KeyFn>,
     /// What a received payload's free text is scrubbed with again (the server's home, data,
-    /// temp, user and host; `fin-core` reads none). The default scrubs absolute paths only.
+    /// temp, user and host; `fin-core` reads none): [`server_scrub`] in the server. The
+    /// default scrubs absolute paths only.
     pub scrub: ScrubCtx,
+}
+
+/// The server's [`ScrubCtx`]: its home, `server_data`, temp dir, user and host names, from
+/// the environment (`HOME`/`USERPROFILE`, `USER`/`USERNAME`, `HOSTNAME`/`COMPUTERNAME`, then
+/// `/etc/hostname` on unix). `host` overrides the host name (Node's `os.hostname()`).
+pub fn server_scrub(server_data: &std::path::Path, host: Option<String>) -> ScrubCtx {
+    let var = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
+    };
+    let host = host.filter(|h| !h.trim().is_empty()).or_else(|| {
+        var(&["HOSTNAME", "COMPUTERNAME"]).or_else(|| {
+            ["/etc/hostname", "/proc/sys/kernel/hostname"]
+                .iter()
+                .find_map(|p| std::fs::read_to_string(p).ok())
+                .map(|h| h.trim().to_owned())
+                .filter(|h| !h.is_empty())
+        })
+    });
+    ScrubCtx {
+        home: var(&["HOME", "USERPROFILE"]),
+        server_data: Some(server_data.to_string_lossy().into_owned()),
+        tmp: Some(std::env::temp_dir().to_string_lossy().into_owned()),
+        user: var(&["USER", "USERNAME", "LOGNAME"]),
+        host,
+    }
 }
 
 /// A keyed hash of a byte string, 16 bytes ([`JournalOptions::key`]).

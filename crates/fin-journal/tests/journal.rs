@@ -14,7 +14,7 @@ use fin_core::events::{
     Actor, ActorKind, AnyPayload, BranchId, ConsentStamp, Ctx, IdRef, ProjectId, Purposes, Source,
     decode_payload, kind,
 };
-use fin_journal::{Consent, Filter, Journal, JournalOptions, JournalState, Metric};
+use fin_journal::{CollectPolicy, Consent, Filter, Journal, JournalOptions, JournalState, Metric};
 use support::*;
 
 const PROJECT: &str = "01jb0000000000000000000000";
@@ -82,6 +82,7 @@ fn record_then_read_round_trips() {
     let dir = tempfile::tempdir().unwrap();
     let c = clock();
     let j = Journal::open(&events(&dir), diagnostics(), opts(&c));
+    j.set_project_policy(PROJECT, Some(CollectPolicy::Default));
     assert_eq!(j.gate(), Some(Purposes::DIAGNOSTICS));
     let p = commit(812);
     j.record(Source::FinNode, Some(ctx()), p.clone());
@@ -188,23 +189,22 @@ fn record_value_validates_and_keeps_the_senders_session() {
 }
 
 #[test]
-fn record_value_without_a_key_refuses_wire_kinds_only() {
+fn record_value_keys_wire_kinds_with_the_install_key() {
     let dir = tempfile::tempdir().unwrap();
     let c = clock();
-    let no_key = JournalOptions {
+    // No override: the per-install key, made for the journal (D3).
+    let install = JournalOptions {
         key: None,
         ..opts(&c)
     };
-    let j = Journal::open(&events(&dir), diagnostics(), no_key);
+    let j = Journal::open(&events(&dir), diagnostics(), install);
     let session = "01JC00000000000000000000FF";
     let cli = serde_json::json!({
         "name": "item.trim", "micros": 5, "exit": 0, "online": true, "dryRun": false,
         "txIds": ["idem-1"],
     });
-    let e = j
-        .record_value(Source::Fin, session, "cli.command", 1, None, cli)
-        .unwrap_err();
-    assert_eq!(e.code, "EVENT_INVALID");
+    j.record_value(Source::Fin, session, "cli.command", 1, None, cli)
+        .unwrap();
     // A kind that is not a wire form needs no key.
     j.record_value(
         Source::FinNode,
@@ -216,8 +216,9 @@ fn record_value_without_a_key_refuses_wire_kinds_only() {
     )
     .unwrap();
     let all = read_all(&j);
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].kind.as_str(), "session.end");
+    assert_eq!(all.len(), 2);
+    let want = j.id_ref("idem-1").unwrap();
+    assert_eq!(all[0].payload["txIds"][0], want.as_str());
     // The raw id never reached the disk unkeyed.
     let text = files(&events(&dir))
         .iter()
@@ -286,6 +287,7 @@ fn reader_skips_bad_lines_and_counts() {
     let dir = tempfile::tempdir().unwrap();
     let c = clock();
     let j = Journal::open(&events(&dir), diagnostics(), opts(&c));
+    j.set_project_policy(PROJECT, Some(CollectPolicy::Default));
     j.record(Source::FinNode, Some(ctx()), commit(1));
     j.record(Source::FinNode, None, commit(2));
     j.close();

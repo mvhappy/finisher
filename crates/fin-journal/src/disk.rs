@@ -7,7 +7,7 @@ use std::io::{self, ErrorKind};
 use std::sync::atomic::Ordering::Relaxed;
 
 use crate::files::{self, DAY_MS, FileMeta};
-use crate::writer::{CAPS_EVERY_MS, RETRY_MS, Suspension, Writer};
+use crate::writer::{RETRY_MS, Suspension, Writer};
 
 pub(crate) fn code_of(e: &io::Error) -> &'static str {
     match e.kind() {
@@ -28,9 +28,13 @@ impl Writer {
         if !self.scanned {
             self.scan()?;
         }
+        // The blobs the file references count towards its size, so `maxMiB` can remove them
+        // with it: an open file is never removed.
         if self.active.is_some()
             && let Some(m) = self.files.last()
-            && ((m.bytes > 0 && m.bytes + len > self.sh.opts.max_file_bytes) || ts / DAY_MS > m.day)
+            && ((m.bytes > 0
+                && m.bytes + self.active_blob_bytes + len > self.sh.opts.max_file_bytes)
+                || ts / DAY_MS > m.day)
         {
             self.rotate()?;
         }
@@ -42,6 +46,7 @@ impl Writer {
 
     fn open_active(&mut self, ts: u64) -> io::Result<()> {
         files::ensure_dir(&self.dir)?;
+        self.active_blob_bytes = 0;
         let day = ts / DAY_MS;
         if let Some(m) = self.files.last()
             && m.bytes == 0
@@ -115,6 +120,8 @@ impl Writer {
                 bytes: len,
             });
         }
+        files::remove_temps(&self.dir);
+        self.blobs.load(&self.dir, &self.files)?;
         self.scanned = true;
         self.listed = true;
         let now = self.now();
@@ -140,42 +147,14 @@ impl Writer {
                     }
                 })
                 .collect();
-            self.listed = true;
-            let now = self.now();
-            let _ = self.apply_caps(now);
-        }
-        self.publish();
-    }
-
-    pub fn apply_caps(&mut self, now: u64) -> io::Result<()> {
-        let o = &self.sh.opts;
-        let max_age = o.max_age.as_millis() as u64;
-        let n = files::over_caps(
-            &self.files,
-            self.active.is_some(),
-            now,
-            max_age,
-            o.max_total_bytes,
-        );
-        let mut result = Ok(());
-        let mut removed = 0;
-        for f in &self.files[..n] {
-            match fs::remove_file(self.dir.join(&f.name)) {
-                Ok(()) => removed += 1,
-                Err(e) if e.kind() == ErrorKind::NotFound => removed += 1,
-                Err(e) => {
-                    result = Err(e);
-                    break;
-                }
+            files::remove_temps(&self.dir);
+            if self.blobs.load(&self.dir, &self.files).is_ok() {
+                self.listed = true;
+                let now = self.now();
+                let _ = self.apply_caps(now);
             }
         }
-        self.files.drain(..removed);
-        if removed > 0 {
-            result = result.and(files::sync_dir(&self.dir));
-        }
-        self.next_caps = now + CAPS_EVERY_MS;
         self.publish();
-        result
     }
 
     pub fn suspend_with(&mut self, code: &'static str) {
@@ -240,5 +219,12 @@ impl Writer {
         s.bytes = self.files.iter().map(|f| f.bytes).sum();
         s.oldest = self.files.first().map(|f| f.start_ts);
         s.newest = self.files.iter().map(|f| f.end_ts).max();
+        s.blobs = self.blobs.count();
+        s.blob_bytes = self.blobs.total_bytes();
+        s.active = self
+            .active
+            .as_ref()
+            .and_then(|_| self.files.last())
+            .map(|f| f.name.clone());
     }
 }

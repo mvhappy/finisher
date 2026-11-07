@@ -1433,6 +1433,22 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "CollectPolicy": {
+      "description": "A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by\n`fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of\nthe project is recorded, and setting it purges the project's entries. A project whose\npolicy is not known (not open here) is neither: the journal drops its new entries and\npurges nothing.",
+      "oneOf": [
+        {
+          "enum": [
+            "never"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "default",
+          "description": "Follow each user's privacy settings (the file holds no `collect` key).",
+          "type": "string"
+        }
+      ]
+    },
     "CommitOutcome": {
       "enum": [
         "accepted",
@@ -1580,6 +1596,41 @@
         "rev",
         "purposes",
         "basis"
+      ],
+      "type": "object"
+    },
+    "ConsentState": {
+      "description": "The effective consent as `fin diagnostics show` and `diagnostics.consent` report it.",
+      "properties": {
+        "basis": {
+          "$ref": "#/$defs/Basis"
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/Switch"
+        },
+        "doNotTrack": {
+          "type": "boolean"
+        },
+        "env": {
+          "$ref": "#/$defs/Purposes"
+        },
+        "rev": {
+          "description": "The consent revision: monotonic, persisted in `events/state.json`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "training": {
+          "$ref": "#/$defs/TrainingState"
+        }
+      },
+      "required": [
+        "diagnostics",
+        "training",
+        "basis",
+        "rev",
+        "env",
+        "doNotTrack"
       ],
       "type": "object"
     },
@@ -2007,6 +2058,24 @@
           "required": [
             "type",
             "dropped"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The project file's `collect` flag changed (`default` or `never`).",
+          "properties": {
+            "collect": {
+              "$ref": "#/$defs/CollectPolicy"
+            },
+            "type": {
+              "const": "collect",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "collect"
           ],
           "type": "object"
         }
@@ -2701,6 +2770,41 @@
           "type": "object"
         }
       ]
+    },
+    "Filter": {
+      "description": "Which entries to read. Empty fields match everything.",
+      "properties": {
+        "kinds": {
+          "description": "Entries of these kinds.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "Only the newest `limit` matches (still oldest first).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "project": {
+          "description": "Entries whose `ctx.project` is this id (in any case).",
+          "type": "string"
+        },
+        "since": {
+          "description": "Entries with `ts` ≥ this (ms since the epoch).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "until": {
+          "description": "Entries with `ts` < this.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
     },
     "FontCatalog": {
       "additionalProperties": false,
@@ -4070,6 +4174,73 @@
         "count",
         "bytes",
         "since"
+      ],
+      "type": "object"
+    },
+    "JournalState": {
+      "enum": [
+        "off",
+        "on",
+        "suspended"
+      ],
+      "type": "string"
+    },
+    "JournalStatus": {
+      "description": "What the journal holds and whether it is writing (`fin diagnostics show`).",
+      "properties": {
+        "blobBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "blobs": {
+          "description": "Blobs on disk and their bytes (they count against `maxMiB` too).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes": {
+          "description": "The `j-*` files' bytes (blobs not included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "type": "string"
+        },
+        "dropped": {
+          "description": "Entries dropped since the journal opened.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "newest": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "oldest": {
+          "description": "The oldest entry's `ts` and the newest's (ms since the epoch).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/JournalState"
+        }
+      },
+      "required": [
+        "state",
+        "files",
+        "bytes",
+        "blobs",
+        "blobBytes",
+        "dropped"
       ],
       "type": "object"
     },
@@ -6408,6 +6579,52 @@
       ],
       "description": "A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1."
     },
+    "PrivacySettings": {
+      "description": "`settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown\nkeys are ignored.",
+      "properties": {
+        "diagnostics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Switch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxMiB": {
+          "description": "The size cap in MiB over the files and blobs, 16–4096 (default 128).",
+          "format": "uint32",
+          "maximum": 4096,
+          "minimum": 16,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "retentionDays": {
+          "description": "The age cap in days, 1–365 (default 30).",
+          "format": "uint32",
+          "maximum": 365,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "training": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Switch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Probe": {
       "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted.",
       "properties": {
@@ -6562,6 +6779,81 @@
       "pattern": "^[0-7][0-9a-hjkmnp-tv-z]{25}$",
       "type": "string",
       "x-fin-class": "meta"
+    },
+    "ProjectPolicy": {
+      "description": "A project's policy as `fin diagnostics show` reports it.",
+      "enum": [
+        "default",
+        "never",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "PurgeReport": {
+      "description": "What a purge removed.",
+      "properties": {
+        "blobs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "Files deleted or rewritten.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "removed": {
+          "description": "Entries.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "removed",
+        "files",
+        "blobs"
+      ],
+      "type": "object"
+    },
+    "PurgeSelector": {
+      "description": "What to purge (`fin diagnostics purge`, `diagnostics.purge`).",
+      "oneOf": [
+        {
+          "const": "all",
+          "description": "Everything: every file, every blob, the key and `state.json`.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The entries of one project (`ctx.project`; a project id, lower-cased).",
+          "properties": {
+            "project": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The entries with `ts` before this (ms since the epoch).",
+          "properties": {
+            "before": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "before"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Purpose": {
       "description": "A purpose events are recorded for.",
@@ -7253,6 +7545,14 @@
       ],
       "type": "object"
     },
+    "Switch": {
+      "description": "One purpose's switch.",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "type": "string"
+    },
     "TextLayout": {
       "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the\nlines' total advance. `overflow` is set when a line is wider than `max_width` or there are\nmore lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
       "properties": {
@@ -7617,6 +7917,15 @@
         "path"
       ],
       "type": "object"
+    },
+    "TrainingState": {
+      "description": "Training's state: `undecided` until a person answers (the onboarding question). It\nrecords no content, exactly like `off`.",
+      "enum": [
+        "on",
+        "off",
+        "undecided"
+      ],
+      "type": "string"
     },
     "Transform": {
       "properties": {

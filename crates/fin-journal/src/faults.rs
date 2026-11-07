@@ -32,6 +32,9 @@ impl Faults {
     pub(crate) fn check_panic(&self) {}
 
     #[inline]
+    pub(crate) fn in_purge(&self) {}
+
+    #[inline]
     pub(crate) fn park_if_paused(&self) {}
 }
 
@@ -46,6 +49,9 @@ mod hooks {
     struct Pause {
         requested: bool,
         parked: bool,
+        /// Buffer writes wait while set; `holding` once one does.
+        hold: bool,
+        holding: bool,
     }
 
     #[derive(Debug, Default)]
@@ -56,6 +62,8 @@ mod hooks {
         torn: AtomicBool,
         repairs: AtomicU64,
         panic_next: AtomicBool,
+        /// Purge rewrites left before the writer parks for good (0: never).
+        purge_park_after: AtomicU64,
         pause: Mutex<Pause>,
         cv: Condvar,
     }
@@ -92,6 +100,12 @@ mod hooks {
             self.panic_next.store(true, Ordering::SeqCst);
         }
 
+        /// A purge parks the writer for good after `n` file rewrites (a kill mid-purge);
+        /// [`Faults::torn`] says once it has.
+        pub fn park_purge_after(&self, n: u64) {
+            self.purge_park_after.store(n, Ordering::SeqCst);
+        }
+
         pub(crate) fn request_pause(&self) {
             self.lock().requested = true;
         }
@@ -115,7 +129,36 @@ mod hooks {
             self.pause.lock().unwrap_or_else(|e| e.into_inner())
         }
 
+        /// Buffer writes wait while `on` ([`Faults::wait_held`] for the first to): what the
+        /// writer did before its next flush is on disk, the flush itself is not.
+        pub fn hold_writes(&self, on: bool) {
+            let mut g = self.lock();
+            g.hold = on;
+            if !on {
+                g.holding = false;
+            }
+            self.cv.notify_all();
+        }
+
+        /// Waits until a write is held (at most `timeout`).
+        pub fn wait_held(&self, timeout: Duration) -> bool {
+            let guard = self.lock();
+            let (guard, _) = self
+                .cv
+                .wait_timeout_while(guard, timeout, |p| !p.holding)
+                .unwrap_or_else(|e| e.into_inner());
+            guard.holding
+        }
+
         pub(crate) fn before_write(&self) -> io::Result<()> {
+            {
+                let mut g = self.lock();
+                while g.hold {
+                    g.holding = true;
+                    self.cv.notify_all();
+                    g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                }
+            }
             let ms = self.stall_ms.load(Ordering::SeqCst);
             if ms > 0 {
                 std::thread::sleep(Duration::from_millis(ms));
@@ -152,6 +195,15 @@ mod hooks {
 
         pub(crate) fn note_repair(&self) {
             self.repairs.fetch_add(1, Ordering::SeqCst);
+        }
+
+        /// Called after each purge rewrite: parks for good once the count runs out.
+        pub(crate) fn in_purge(&self) {
+            match self.purge_park_after.load(Ordering::SeqCst) {
+                0 => {}
+                1 => self.park_torn(),
+                n => self.purge_park_after.store(n - 1, Ordering::SeqCst),
+            }
         }
 
         pub(crate) fn check_panic(&self) {

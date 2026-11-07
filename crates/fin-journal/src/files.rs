@@ -191,27 +191,14 @@ fn lenient(r: io::Result<()>) -> io::Result<()> {
     }
 }
 
-/// The caps (Decision 16) over `files` (oldest first; the last may be the active file, which
-/// is never removed when `active`). Returns the files to delete: every closed file whose last
-/// entry is older than `max_age_ms`, then the oldest closed files until the total is at most
-/// `max_total`.
-pub(crate) fn over_caps(
-    files: &[FileMeta],
-    active: bool,
-    now: u64,
-    max_age_ms: u64,
-    max_total: u64,
-) -> usize {
-    let closed = files.len() - usize::from(active && !files.is_empty());
-    let cutoff = now.saturating_sub(max_age_ms);
-    let mut n = files[..closed]
-        .iter()
-        .take_while(|f| f.end_ts < cutoff)
-        .count();
-    let mut total: u64 = files[n..].iter().map(|f| f.bytes).sum();
-    while n < closed && total > max_total {
-        total -= files[n].bytes;
-        n += 1;
+/// Removes the temp files a crash during a rewrite left (`.<name>.tmp`); best effort.
+pub(crate) fn remove_temps(dir: &Path) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(n) = name.to_str() else { continue };
+        if n.starts_with('.') && n.ends_with(".tmp") {
+            let _ = fs::remove_file(e.path());
+        }
     }
-    n
 }

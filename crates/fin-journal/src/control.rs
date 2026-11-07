@@ -7,8 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::SyncSender;
 
-use fin_core::events::{AnyPayload, Basis, Code, Ctx, Name, Purposes, Source, Ulid};
+use fin_core::events::{AnyPayload, Basis, Code, CollectPolicy, Ctx, Name, Purposes, Source, Ulid};
 
+use crate::blobs::BlobData;
+use crate::consent::ConsentState;
+use crate::purge::{PurgeReport, PurgeSelector};
 use crate::{JournalError, Metric};
 
 /// The consent an entry is stamped with when it is recorded.
@@ -84,6 +87,8 @@ pub(crate) const SAMPLE_BYTES: usize = 48;
 pub(crate) enum Data {
     Entry(Box<Pending>),
     Sample(Box<Sample>),
+    /// A blob's bytes, held by the writer until an entry references it.
+    Blob(Box<BlobData>),
     /// Wakes the writer to drain the control channel; carries nothing.
     Wake,
 }
@@ -121,6 +126,23 @@ pub(crate) enum Control {
         ack: SyncSender<bool>,
     },
     Flush(SyncSender<Result<(), JournalError>>),
+    /// The effective consent changed (the gate word already holds `to`): journal
+    /// `consent.changed` under `from`, persist `to`, re-check the buffered lines.
+    Consent {
+        from: ConsentState,
+        to: ConsentState,
+    },
+    /// The caps changed (settings): apply them now.
+    Caps,
+    /// A project's policy (`None`: unknown).
+    Project {
+        id: String,
+        policy: Option<CollectPolicy>,
+    },
+    Purge {
+        sel: PurgeSelector,
+        ack: SyncSender<Result<PurgeReport, JournalError>>,
+    },
     /// Drain, flush, fsync, stop.
     Close(SyncSender<()>),
 }

@@ -30,7 +30,10 @@
 //!   every rev read before may hold something else now (before the `applied` events after it);
 //! - `{"type":"error","error":CoreError,"fatal":bool}`: a tick or an automatic backup or
 //!   compaction failed; `fatal` when it panicked and the engine is dead;
-//! - `{"type":"lagged","dropped":n}`: first after registration, when the buffer overflowed.
+//! - `{"type":"lagged","dropped":n}`: first after registration, when the buffer overflowed;
+//! - `{"type":"collect","collect":"default"|"never"}`: the project file's collection flag
+//!   changed (this server set it, or another did and a re-read found it). D5 passes it to
+//!   the journal (`set_project_policy`) before forwarding it.
 //!
 //! `applied` covers every import pass: the ticks' and those run at open, by a takeover or a
 //! rebuild (delivered by the next tick).
