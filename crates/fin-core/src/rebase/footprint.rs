@@ -15,9 +15,11 @@
 //! - ours puts X back whole ([`Footprint::overwrites`]: an inverse that re-creates X from a
 //!   snapshot, such as `item.restore`, `effect.restore`, `track.restore`, `timeline.restore`, or the
 //!   `marker.add`, `asset.add`, `bin.add` and `style.add` of a removal's inverse) and an
-//!   intervening record changed X or an entity nested in it (`X/…`: an item's effects) in any
-//!   way, touching, creating or removing it → `SAME_EDGE` when it moved an edge of X, else
-//!   `SAME_PARAM` ([`overwrite_conflict`]). Putting the snapshot back would take that edit
+//!   intervening record changed X, an entity nested in it (`X/…`: an item's effects) or what
+//!   lies on it (X among its `tracks` or `uses`: an insert or move onto a put-back track, a
+//!   `marker.add` or `track.add` on a put-back timeline) in any way, touching, creating or
+//!   removing it → `SAME_EDGE` when it moved an edge of a put-back entity, else `SAME_PARAM`
+//!   ([`overwrite_conflict`]). Putting the snapshot back would take that edit
 //!   away without a word: an undo of a move after another author's trim, split or effect edit
 //!   of the item; a merged delete and undo over the target's edit. The engine judges it after
 //!   the op re-ran, so an op that cannot run at all keeps the re-run's reason
@@ -307,8 +309,9 @@ fn change_reason(t: &Touch) -> Option<&'static str> {
 }
 
 /// The first intervening record (of `theirs`, in order) that changed an entity `ours` puts
-/// back whole ([`Footprint::overwrites`]) or one nested in it, with the txId to blame:
-/// `SAME_EDGE` when it moved an edge of the entity itself, else `SAME_PARAM`. Entities in
+/// back whole ([`Footprint::overwrites`]), one nested in it or what lies on it ([`changed`]),
+/// with the txId to blame: `SAME_EDGE` when it moved an edge of any put-back entity, else
+/// `SAME_PARAM`. Entities in
 /// `own` are never judged (module docs).
 pub(crate) fn overwrite_conflict(
     ours: &Footprint,
@@ -325,25 +328,36 @@ pub(crate) fn overwrite_conflict(
         return None;
     }
     theirs.iter().find_map(|(tx, f)| {
-        let reason = put_back.iter().find_map(|x| changed(x, f))?;
+        // An edge it moved names the change best, whichever put-back entity it was on (a trim
+        // of an item on a put-back track also lists that track).
+        let edge = put_back.iter().any(|x| moved_edge(x, f));
+        let reason = if edge {
+            reasons::SAME_EDGE
+        } else if put_back.iter().any(|x| changed(x, f)) {
+            reasons::SAME_PARAM
+        } else {
+            return None;
+        };
         Some((reason, tx.to_string()))
     })
 }
 
-/// How `f` changed entity `x` or one nested in it (`x/…`): `SAME_EDGE` when it moved an edge
-/// of `x`, `SAME_PARAM` for any other touch, creation or removal; `None` when it did not.
-fn changed(x: &str, f: &Footprint) -> Option<&'static str> {
-    let within = |y: &str| y == x || y.strip_prefix(x).is_some_and(|r| r.starts_with('/'));
-    let edge = f
-        .touches
+/// Whether `f` moved an edge of entity `x`.
+fn moved_edge(x: &str, f: &Footprint) -> bool {
+    f.touches
         .iter()
-        .any(|(y, t)| y == x && matches!(t, Touch::Edge(_)));
-    if edge {
-        return Some(reasons::SAME_EDGE);
-    }
-    let other = f.touches.iter().any(|(y, _)| within(y))
-        || f.creates.iter().chain(&f.removes).any(|y| within(y));
-    other.then_some(reasons::SAME_PARAM)
+        .any(|(y, t)| y == x && matches!(t, Touch::Edge(_)))
+}
+
+/// Whether `f` changed entity `x`, one nested in it (`x/…`) or what lies on it (`x` among its
+/// `tracks` or `uses`: an item put on a put-back track, a marker or track on a put-back
+/// timeline, which the snapshot does not hold): a touch of any kind, a creation or a removal.
+fn changed(x: &str, f: &Footprint) -> bool {
+    let within = |y: &str| y == x || y.strip_prefix(x).is_some_and(|r| r.starts_with('/'));
+    f.touches.iter().any(|(y, _)| within(y))
+        || f.creates.iter().chain(&f.removes).any(|y| within(y))
+        || f.tracks.contains(x)
+        || f.uses.iter().any(|y| y == x)
 }
 
 #[cfg(test)]

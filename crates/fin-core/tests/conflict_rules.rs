@@ -752,8 +752,15 @@ fn every_op_has_a_footprint() {
             }
             Op::FontPin(p) => f.creates == [format!("font/{}", p.key)] && f.uses.is_empty(),
             Op::FontUnpin(u) => {
+                // Its inverse pins the old file back: it meets a repin or a reorder (spec §4.3).
                 let e = format!("font/{}", u.key);
-                f.removes == [e.clone()] && f.touches == [(e, Touch::Exists)]
+                f.removes == [e.clone()]
+                    && f.touches
+                        == [
+                            (e.clone(), Touch::Exists),
+                            (e.clone(), Touch::Param("sha256".into())),
+                            (e, Touch::Param("fallback".into())),
+                        ]
             }
             Op::FontRepin(r) => {
                 f.touches == [(format!("font/{}", r.key), Touch::Param("sha256".into()))]

@@ -12,9 +12,10 @@ use common::memlog::MemLog;
 use common::moves::move_to;
 use common::*;
 use fin_core::{
-    AssetMove, BinAdd, BinMove, BinRemove, CoreError, Edge, EffectAdd, EffectRemove, InsertMode,
-    MarkerAdd, MarkerRemove, MarkerSet, Op, ParamSet, ParamValue, Rational, Resolution, StyleAdd,
-    StyleRemove, StyleSet, TimelineAdd, TimelineRemove, TimelineSet, TrackRemove,
+    AssetMove, BinAdd, BinMove, BinRemove, CoreError, Edge, EffectAdd, EffectRemove, FontFormat,
+    FontPin, FontPinOp, FontRepin, FontSource, FontUnpin, InsertMode, MarkerAdd, MarkerRemove,
+    MarkerSet, Op, ParamSet, ParamValue, Rational, Resolution, StyleAdd, StyleRemove, StyleSet,
+    TimelineAdd, TimelineRemove, TimelineSet, TrackAdd, TrackKind, TrackRemove,
 };
 
 type Ids = BTreeMap<String, String>;
@@ -53,6 +54,56 @@ fn remove_fx(item: &str, fx: &str) -> Op {
     EffectRemove {
         item: item.into(),
         effect: fx.into(),
+    }
+    .into()
+}
+
+const INTER: &str = "Inter|700|normal";
+
+/// Inter 700 pinned to a file whose SHA-256 is `c` repeated.
+fn inter(c: char) -> FontPin {
+    FontPin {
+        family: "Inter".into(),
+        weight: 700,
+        italic: false,
+        face: 0,
+        sha256: std::iter::repeat_n(c, 64).collect(),
+        size: 1000,
+        format: FontFormat::Ttf,
+        scripts: vec!["Latn".into()],
+        source: FontSource::Catalog {
+            entry: "inter".into(),
+            style: "bold".into(),
+            catalog: "2026.11.1".into(),
+        },
+    }
+}
+
+fn remove_t2() -> Op {
+    TrackRemove {
+        track: "t2".into(),
+        with_items: true,
+    }
+    .into()
+}
+
+/// A timeline `$tl` (bound to `tl2`) to remove.
+fn timeline() -> Op {
+    TimelineAdd {
+        id: "$tl".into(),
+        name: "B-roll".into(),
+        rate: secs(30),
+        resolution: Resolution {
+            width: 1920,
+            height: 1080,
+        },
+    }
+    .into()
+}
+
+fn remove_timeline(b: &Ids) -> Op {
+    TimelineRemove {
+        timeline: b["$tl"].clone(),
     }
     .into()
 }
@@ -128,15 +179,6 @@ struct Case {
 }
 
 fn cases() -> Vec<Case> {
-    let timeline = TimelineAdd {
-        id: "$tl".into(),
-        name: "B-roll".into(),
-        rate: secs(30),
-        resolution: Resolution {
-            width: 1920,
-            height: 1080,
-        },
-    };
     let bin = |id: &str| -> Op {
         BinAdd {
             id: id.into(),
@@ -185,25 +227,14 @@ fn cases() -> Vec<Case> {
         Case {
             what: "track with items (track.restore)",
             setup: vec![insert("$y", "t2", secs(0), "a1", secs(0), secs(2))],
-            remove: |_| {
-                TrackRemove {
-                    track: "t2".into(),
-                    with_items: true,
-                }
-                .into()
-            },
+            remove: |_| remove_t2(),
             edit: |b| trim(&b["$y"], Edge::End, frames(-9)),
             reason: "SAME_EDGE",
         },
         Case {
             what: "timeline (timeline.restore)",
-            setup: vec![timeline.into()],
-            remove: |b| {
-                TimelineRemove {
-                    timeline: b["$tl"].clone(),
-                }
-                .into()
-            },
+            setup: vec![timeline()],
+            remove: remove_timeline,
             edit: |b| {
                 TimelineSet {
                     timeline: b["$tl"].clone(),
@@ -274,6 +305,73 @@ fn cases() -> Vec<Case> {
             },
             reason: "SAME_PARAM",
         },
+        Case {
+            what: "insert onto the track (track.restore)",
+            setup: vec![insert("$y", "t2", secs(0), "a1", secs(0), secs(2))],
+            remove: |_| remove_t2(),
+            edit: |_| insert("$w", "t2", secs(2), "a1", secs(0), secs(1)),
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "move onto the track (track.restore)",
+            setup: vec![insert("$y", "t2", secs(0), "a1", secs(0), secs(2))],
+            remove: |_| remove_t2(),
+            edit: |_| move_to("c1", "t2", secs(2), InsertMode::Ripple),
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "marker on the timeline (timeline.restore)",
+            setup: vec![timeline()],
+            remove: remove_timeline,
+            edit: |b| {
+                MarkerAdd {
+                    id: "$m".into(),
+                    timeline: b["$tl"].clone(),
+                    at: secs(1),
+                    duration: None,
+                    label: "Intro".into(),
+                    color: None,
+                }
+                .into()
+            },
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "track.add on the timeline (timeline.restore)",
+            setup: vec![timeline()],
+            remove: remove_timeline,
+            edit: |b| {
+                TrackAdd {
+                    id: "$t".into(),
+                    timeline: b["$tl"].clone(),
+                    kind: TrackKind::Video,
+                    index: None,
+                    name: None,
+                }
+                .into()
+            },
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "font pin (font.unpin, then font.pin)",
+            setup: vec![
+                FontPinOp {
+                    key: INTER.into(),
+                    pin: inter('a'),
+                    fallback: None,
+                }
+                .into(),
+            ],
+            remove: |_| FontUnpin::new(INTER).into(),
+            edit: |_| {
+                FontRepin {
+                    key: INTER.into(),
+                    pin: inter('b'),
+                }
+                .into()
+            },
+            reason: "SAME_PARAM",
+        },
     ]
 }
 
@@ -305,4 +403,45 @@ fn merged_removal_and_undo_meets_the_targets_edit() {
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+/// The same through a cherry-pick and a revert. Pick: bob's track removal comes over first
+/// (taking alice's new item with the track: a removal of an edited entity is no conflict);
+/// the pick of his undo would bring back the track without it, so it is `SAME_PARAM`. Revert:
+/// carol merges bob's removal and undo (no edit yet), alice then inserts on t2; reverting the
+/// group would remove t2 and put back the snapshot without her item.
+#[test]
+fn track_put_back_by_pick_or_revert_meets_an_insert_onto_it() {
+    let setup = || {
+        let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+        let y = insert("$y", "t2", secs(0), "a1", secs(0), secs(2));
+        log.commit("main", "s1", "alice", vec![y]);
+        log.fork("br1", "main", log.head_seq("main"));
+        log.commit("br1", "r1", "bob", vec![remove_t2()]);
+        log.undo("br1", "bob", "u1").unwrap();
+        log
+    };
+    let onto_t2 = || insert("$w", "t2", secs(2), "a1", secs(0), secs(1));
+
+    let mut log = setup();
+    log.commit("main", "a1", "alice", vec![onto_t2()]);
+    log.pick("r1", "main", "carol", "p1")
+        .unwrap()
+        .expect("a copy");
+    let before = log.state("main");
+    let e = log
+        .pick("u1", "main", "carol", "p2")
+        .expect_err("a conflict");
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "a1".into()));
+    assert_eq!(log.state("main"), before);
+
+    let mut log = setup();
+    log.merge("br1", "main", "carol", "g1", false).unwrap();
+    log.commit("main", "a1", "alice", vec![onto_t2()]);
+    let before = log.state("main");
+    let e = log
+        .revert("g1", "main", "carol", "v1")
+        .expect_err("a conflict");
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "a1".into()));
+    assert_eq!(log.state("main"), before);
 }
