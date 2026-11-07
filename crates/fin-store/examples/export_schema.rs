@@ -7,7 +7,8 @@
 //! `EventPayload` and every payload type, by `events::kinds::register_schemas`), and the
 //! journal's (`fin-journal`: `PrivacySettings`, `ConsentState`, `JournalStatus`, `Filter`,
 //! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`, `DiagnosticsReport`, `ExportPage`;
-//! `CollectPolicy` is fin-core's).
+//! `CollectPolicy` is fin-core's), and the media types of `fin-media` (`MediaInfo` and its
+//! parts, sub-project 6).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -54,6 +55,7 @@ fn main() {
         g.subschema_for::<fin_journal::ProjectPolicy>();
         g.subschema_for::<fin_journal::DiagnosticsReport>();
         g.subschema_for::<fin_journal::ExportPage>();
+        g.subschema_for::<fin_media::MediaInfo>();
     });
     println!(
         "{}",

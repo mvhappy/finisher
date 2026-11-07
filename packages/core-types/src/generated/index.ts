@@ -461,6 +461,9 @@ export type DeleteMode = "ripple" | "lift";
  */
 export type Curve = "linear" | "equalPower";
 /**
+ * How a transition mixes its two items (sub-project 6 spec §4.3): both mix by
+ * `curve(progress)`; they differ in the space they mix in.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TransitionKind".
  */
@@ -665,6 +668,11 @@ export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | 
 export type ArchiveFormat = "zip";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioCodec".
+ */
+export type AudioCodec = ("aac" | "opus" | "mp3" | "flac" | "alac" | "pcm" | "ac3" | "eac3") | "other";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ShapeKind".
  */
 export type ShapeKind = "fadeIn" | "fadeOut" | "crossIn" | "crossOut";
@@ -736,6 +744,20 @@ export type Link =
  */
 export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
 /**
+ * Chroma subsampling.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Chroma".
+ */
+export type Chroma = "mono" | "yuv420" | "yuv422" | "yuv444";
+/**
+ * Where 4:2:0 chroma samples sit relative to luma.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ChromaSiting".
+ */
+export type ChromaSiting = "unknown" | "left" | "center" | "topLeft";
+/**
  * A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by
  * `fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of
  * the project is recorded, and setting it purges the project's entries. A project whose
@@ -746,6 +768,26 @@ export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned
  * via the `definition` "CollectPolicy".
  */
 export type CollectPolicy = "never" | "default";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Matrix".
+ */
+export type Matrix = ("bt709" | "bt601" | "unknown") | "bt2020Ncl" | "identity";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Primaries".
+ */
+export type Primaries = ("bt709" | "bt2020" | "unknown") | "bt601_625" | "bt601_525" | "displayP3";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Range".
+ */
+export type Range = "full" | "limited";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Transfer".
+ */
+export type Transfer = ("srgb" | "linear" | "unknown") | "bt709" | "pq" | "hlg";
 /**
  * One purpose's switch.
  *
@@ -761,6 +803,13 @@ export type Switch = "on" | "off";
  * via the `definition` "TrainingState".
  */
 export type TrainingState = "on" | "off" | "undecided";
+/**
+ * The container family, from `ftyp`'s brands.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ContainerKind".
+ */
+export type ContainerKind = "mp4" | "mov";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectId".
@@ -1005,6 +1054,18 @@ export type ItemKind = "clip" | "caption" | "graphic" | "image" | "adjustment" |
  * via the `definition` "Role".
  */
 export type Role = "out" | "in";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoCodec".
+ */
+export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
+/**
+ * Clockwise display rotation in degrees, from the track matrix.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Rotation".
+ */
+export type Rotation = 0 | 90 | 180 | 270;
 /**
  * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
  * addressed as `effects.<fx>.<param>`.
@@ -2696,6 +2757,27 @@ export interface AudioPlan {
   to: Rational;
 }
 /**
+ * The first audio track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioTrackInfo".
+ */
+export interface AudioTrackInfo {
+  channels: number;
+  codec: AudioCodec;
+  fourcc: string;
+  /**
+   * Samples to drop at the end.
+   */
+  padding: number;
+  /**
+   * Samples to drop at the start (encoder delay: edit-list media time, `roll`, Opus
+   * pre-skip).
+   */
+  priming: number;
+  sampleRate: number;
+}
+/**
  * The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and
  * its `branch` record on the parent. `dry_run`: planned and rolled back, nothing kept (a
  * retry of a committed create answers with that create, `dry_run` false).
@@ -2971,6 +3053,17 @@ export interface CatalogSource {
   url: string;
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ColourTags".
+ */
+export interface ColourTags {
+  matrix: Matrix;
+  primaries: Primaries;
+  range: Range;
+  siting: ChromaSiting;
+  transfer: Transfer;
+}
+/**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
  * record to blame when there is one (else null), and what to do. A re-run failure keeps its
  * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
@@ -3019,6 +3112,16 @@ export interface ConsentState {
    */
   rev: number;
   training: TrainingState;
+}
+/**
+ * CTA-861.3 content light level (`clli`), in cd/m².
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ContentLight".
+ */
+export interface ContentLight {
+  maxCll: number;
+  maxFall: number;
 }
 /**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
@@ -3092,6 +3195,23 @@ export interface DiagnosticsReport {
    */
   skippedUnknownProject?: number;
   state: JournalState;
+}
+/**
+ * A Dolby Vision configuration record (`dvcC`/`dvvC`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DolbyVision".
+ */
+export interface DolbyVision {
+  baseLayer: boolean;
+  /**
+   * The base layer's signal compatibility id (8.1 HDR10, 8.4 HLG, …).
+   */
+  compatibility: number;
+  enhancementLayer: boolean;
+  level: number;
+  profile: number;
+  rpu: boolean;
 }
 /**
  * One enabled effect with its parameters resolved at the plan's time. `params` holds the
@@ -3356,6 +3476,13 @@ export interface SourceRef {
  * A layer's transform, resolved at the plan's time: every field is present (the model's
  * `Transform` leaves defaults out).
  *
+ * **The base box** (sub-project 6 spec §5.1, owner question 4: "contain"): a source's display
+ * size (after its rotation and pixel aspect) fitted inside the timeline frame and centred.
+ * The item is that box with item-normalised coordinates 0…1; its `anchor` point is placed at
+ * the frame centre plus `position`, and the item is scaled by `scale` and rotated `rotation`
+ * degrees clockwise about it. The defaults leave the base box where it is. `crop` cuts
+ * fractions of the base box from each side without moving the rest.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "PlanTransform".
  */
@@ -3387,6 +3514,11 @@ export interface PlanTransform {
 /**
  * A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.
  *
+ * **Looks** (sub-project 6 spec §4.3, §5.1): the outgoing layer is drawn as it is; the incoming
+ * one is drawn over it and mixed with what is below by `curve(progress)` (`linear`: the
+ * progress; `equalPower`: its square root). `crossfade` mixes display-encoded values,
+ * `dissolve` linear light.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TransitionState".
  */
@@ -3409,6 +3541,40 @@ export interface Generation {
   n: number;
 }
 /**
+ * HDR metadata a source carries (kept for HDR export later, spec §10.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HdrInfo".
+ */
+export interface HdrInfo {
+  contentLight?: ContentLight;
+  dolbyVision?: DolbyVision;
+  mastering?: MasteringDisplay;
+}
+/**
+ * SMPTE ST 2086 mastering display colour volume (`mdcv`), in the box's own units:
+ * chromaticities in 0.00002, luminance in 0.0001 cd/m².
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MasteringDisplay".
+ */
+export interface MasteringDisplay {
+  maxLuminance: number;
+  minLuminance: number;
+  /**
+   * `[x, y]` for green, blue, red (the box's order).
+   *
+   * @minItems 3
+   * @maxItems 3
+   */
+  primaries: [[number, number], [number, number], [number, number]];
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  whitePoint: [number, number];
+}
+/**
  * The answer of a history operation ([`Store::undo`](crate::Store::undo),
  * [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
  * rolled back, `dry_run`; a retry of a committed operation answers with its records,
@@ -3425,6 +3591,19 @@ export interface HistoryResult {
   dryRun: boolean;
   noOp?: string | null;
   undone: string[];
+}
+/**
+ * A track `fin-container` does not interpret (a second video or audio track, timecode, …).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "IgnoredTrack".
+ */
+export interface IgnoredTrack {
+  /**
+   * The `hdlr` handler type (`vide`, `soun`, `tmcd`, …).
+   */
+  handler: string;
+  id: number;
 }
 /**
  * What the journal holds and whether it is writing (`fin diagnostics show`).
@@ -3459,6 +3638,79 @@ export interface JournalStatus {
    */
   skippedUnknownProject?: number;
   state: JournalState;
+}
+/**
+ * What a media file is (spec §6.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaInfo".
+ */
+export interface MediaInfo {
+  audio?: AudioTrackInfo;
+  container: ContainerKind;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  duration: string;
+  fragmented?: boolean;
+  ignored?: IgnoredTrack[];
+  video?: VideoTrackInfo;
+}
+/**
+ * The first video track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoTrackInfo".
+ */
+export interface VideoTrackInfo {
+  bitDepth: number;
+  chroma: Chroma;
+  codec: VideoCodec;
+  coded: Size;
+  colour: ColourTags;
+  display: Size1;
+  /**
+   * The sample entry type (`av01`, `hvc1`, …).
+   */
+  fourcc: string;
+  /**
+   * Frames presented, after edit lists.
+   */
+  frames: number;
+  hdr?: HdrInfo;
+  /**
+   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
+   */
+  icc?: boolean;
+  level?: number;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  nominalRate: string;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  pixelAspect: string;
+  profile?: number;
+  rotation: Rotation;
+  /**
+   * Frame durations differ by more than 0.1 % (the last frame ignored).
+   */
+  vfr: boolean;
+}
+/**
+ * The sample entry's coded size.
+ */
+export interface Size {
+  height: number;
+  width: number;
+}
+/**
+ * `coded` after the pixel aspect and the rotation ([`display_size`]).
+ */
+export interface Size1 {
+  height: number;
+  width: number;
 }
 /**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
@@ -3555,8 +3807,25 @@ export interface Probe {
   kind: AssetKind;
   lottie?: LottieInfo | null;
   lut?: LutInfo | null;
+  media?: MediaInfo1;
   size: number;
   video?: VideoInfo | null;
+}
+/**
+ * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
+ * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
+ * (spec §4.4).
+ */
+export interface MediaInfo1 {
+  audio?: AudioTrackInfo;
+  container: ContainerKind;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  duration: string;
+  fragmented?: boolean;
+  ignored?: IgnoredTrack[];
+  video?: VideoTrackInfo;
 }
 /**
  * What a purge removed.
@@ -3664,6 +3933,14 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Size".
+ */
+export interface Size2 {
+  height: number;
+  width: number;
 }
 /**
  * An asset and the time to read from it, in seconds.

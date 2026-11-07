@@ -544,6 +544,17 @@ fn truncated_inputs_are_unsupported_container() {
         for cut in cuts {
             let path = file(&dir, "cut", &bytes[..cut]);
             let err = probe(&path).unwrap_err();
+            // MP4/M4A go through fin-container (6A Task 8): a cut file is a typed container
+            // error with the same `details.path`.
+            if kind == "m4a" {
+                assert!(
+                    ["MEDIA_CORRUPT", "MEDIA_LIMIT", "UNSUPPORTED_CONTAINER"]
+                        .contains(&err.code.as_str()),
+                    "{kind} cut at {cut}: {err:?}"
+                );
+                assert!(std::path::Path::new(err.details["path"].as_str().unwrap()).is_absolute());
+                continue;
+            }
             assert_eq!(
                 err.code, "UNSUPPORTED_CONTAINER",
                 "{kind} cut at {cut}: {err:?}"

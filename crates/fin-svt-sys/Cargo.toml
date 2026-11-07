@@ -1,0 +1,15 @@
+[package]
+name = "fin-svt-sys"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "SVT-AV1's encoder built from the pinned submodule, and the C shim fin-codecs calls (no features: built once)."
+links = "SvtAv1Enc"
+
+[build-dependencies]
+# SVT-AV1 (encoder only, static) from the pinned submodule `third_party/svt-av1`.
+cmake = "0.1"
+# The shim over SVT-AV1's API (`csrc/svt_shim.c`).
+cc = "1"

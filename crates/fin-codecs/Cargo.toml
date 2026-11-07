@@ -1,0 +1,39 @@
+[package]
+name = "fin-codecs"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Video and audio codec traits and backends (software AV1 in 6A) and the capability probe."
+
+[dependencies]
+fin-container = { path = "../fin-container" }
+fin-core = { path = "../fin-core" }
+fin-media = { path = "../fin-media" }
+# SVT-AV1 (encoder) and the shim, built once (no features).
+fin-svt-sys = { path = "../fin-svt-sys" }
+# AV1 decode (spec §6.4): the Rust port of dav1d. Only its dav1d C ABI is public, so the calls
+# live in `av1/rav1d_ffi.rs`. Its assembly is on for x86_64 only: the 1.1.0 package leaves out
+# every `*.h`, including `src/arm/asm-offsets.h`, so the aarch64 assembly does not build
+# (aarch64 uses rav1d's Rust paths; TASKS.md records the follow-up).
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16", "asm"] }
+
+[dev-dependencies]
+blake3 = "1"
+fin-codecs = { path = ".", features = ["testing"] }
+fin-container = { path = "../fin-container", features = ["testing"] }
+fin-media = { path = "../fin-media", features = ["testing"] }
+
+[features]
+# `make_fixture`-style helpers for other crates' tests (pattern clips as AV1 in MP4).
+testing = ["fin-media/testing"]
+
+[[example]]
+name = "make_fixture"
+required-features = ["testing"]

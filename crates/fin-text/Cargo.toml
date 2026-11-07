@@ -11,7 +11,7 @@ description = "Pure text shaping and measurement over font bytes looked up by SH
 # `no_std` (libm everywhere, no system fonts, no locale lookup); no swash in 4C.
 cosmic-text = { version = "0.19", default-features = false, features = ["no_std"] }
 fin-core = { path = "../fin-core" }
-libm = "0.2"
+libm = { workspace = true }
 serde_json = "1"
 unicode-bidi = { version = "0.3", default-features = false, features = ["hardcoded-data"] }
 unicode-script = "0.5"
