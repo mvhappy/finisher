@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use fin_core::layout::faces_for;
 use fin_core::{
-    AssetKind, FaceRef, FontFormat, Measured, Rational, SlotSpec, TextMeasurer, TextRequest,
-    TextStyle,
+    AssetKind, CaptionStyle, FaceRef, FontFormat, FontPin, FontSource, Measured, Rational,
+    SlotSpec, TextMeasurer, TextRequest, TextStyle, Word, font_key, new_project,
 };
 use fin_probe::fixtures::{
     FixtureOpts, sample_lottie, write_cube, write_dotlottie, write_jpeg, write_m4a, write_png,
@@ -335,6 +336,35 @@ fn font_family_matches_the_measurer() {
     let bytes = font_bytes();
     let f = probe(&file(&dir, "a.ttf", &bytes)).unwrap().font.unwrap();
     let face = &f.faces[0];
+    // The probed face, pinned as an asset font (Decision 37), is what `faces_for` resolves a
+    // style of that family to.
+    let mut project = new_project("p1".into(), "P".into(), r(30, 1)).unwrap();
+    let key = font_key(&face.family, face.weight, face.italic);
+    project.fonts.pins.insert(
+        key.clone(),
+        FontPin {
+            family: face.family.clone(),
+            weight: face.weight,
+            italic: face.italic,
+            face: face.index,
+            sha256: f.sha256.clone(),
+            size: f.size,
+            format: f.format,
+            scripts: face.scripts.clone(),
+            source: FontSource::Asset { asset: "a1".into() },
+        },
+    );
+    project.fonts.fallback.push(key);
+    let mut style = CaptionStyle::default();
+    style.text.family = face.family.clone();
+    style.text.weight = face.weight;
+    style.text.italic = face.italic;
+    let words = ["Hello", "world"].map(|t| Word {
+        text: t.into(),
+        start: r(0, 1),
+        end: r(1, 1),
+    });
+    let faces = faces_for(&project, &style, &words).unwrap();
     let face_ref = FaceRef {
         sha256: f.sha256.clone(),
         face: face.index,
@@ -342,6 +372,7 @@ fn font_family_matches_the_measurer() {
         weight: face.weight,
         italic: face.italic,
     };
+    assert_eq!(faces, vec![face_ref]);
     let m = fin_text::Measurer::new(Arc::new(OneFile(f.sha256.clone(), bytes.into())));
     let req = TextRequest {
         words: vec!["Hello".into(), "world".into()],
@@ -354,7 +385,7 @@ fn font_family_matches_the_measurer() {
             letter_spacing: 0.0,
             align: fin_core::layout::Align::Left,
         },
-        faces: vec![face_ref],
+        faces,
         max_width: None,
         max_lines: None,
     };

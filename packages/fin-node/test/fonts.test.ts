@@ -56,6 +56,14 @@ async function open(): Promise<{ engine: Engine; events: Status[] }> {
   return { engine, events };
 }
 
+let txs = 0;
+/** Commits `font.pin` of each pin in `fonts` (a `Fonts` JSON: `{pins, fallback}`) on main. */
+async function pinFonts(e: Engine, fonts: string): Promise<void> {
+  const { pins } = JSON.parse(fonts) as { pins: Record<string, unknown> };
+  const ops = Object.entries(pins).map(([key, pin]) => ({ op: "font.pin", key, pin }));
+  await e.commit(JSON.stringify({ txId: `pin${++txs}`, author: "a", branch: "main", baseRev: await e.head("main"), schemaVersion: 2, ops }));
+}
+
 const status = async (e: Engine): Promise<Status> => JSON.parse(await e.status()) as Status;
 const codes = (s: Status) => s.warnings.map((w) => w.code);
 
@@ -79,12 +87,12 @@ function request(sha: string): string {
 }
 
 describe("font manager", () => {
-  test("a new pin is fetched in the background; status events go missing → cached", async () => {
+  test("a commit with a new pin fetches it in the background; status events go missing → cached", async () => {
     const f = file("sans", hooks.testFont("sans"));
     useCatalog([f]);
     const { engine, events } = await open();
     const pin = catalogPin(f);
-    engine.injectFontPinsForTest(pin.fonts);
+    await pinFonts(engine, pin.fonts);
     const fonts = FontManager.open(serverData);
     await waitFor(async () => (JSON.parse(await fonts.status()) as { files: Array<{ state: { state: string } }> }).files[0]?.state.state === "cached" || undefined, 10_000, "cached");
     expect(existsSync(join(serverData, "fonts", sha256(f.bytes)))).toBe(true);
@@ -101,11 +109,31 @@ describe("font manager", () => {
     expect(files.files[0]).toMatchObject({ entry: "sans", keys: [pin.key] });
   });
 
+  test("an open fetches the missing pins its branches hold", async () => {
+    const f = file("sans", hooks.testFont("sans"));
+    useCatalog([f]);
+    const fonts = FontManager.open(serverData);
+    fonts.setAutoFetch(false);
+    const { engine: first } = await open();
+    const pin = catalogPin(f);
+    await pinFonts(first, pin.fonts);
+    expect((await status(first)).fonts.missing).toEqual([{ key: pin.key, sha256: sha256(f.bytes), reason: "offline" }]);
+    await first.close();
+    engine = undefined;
+    expect(server.hitsOf("sans.ttf")).toBe(0);
+    fonts.setAutoFetch(true);
+    engine = await Engine.open(serverData, join(tmp, "p"));
+    await waitFor(async () => (JSON.parse(await fonts.status()) as { files: Array<{ state: { state: string } }> }).files[0]?.state.state === "cached" || undefined, 10_000, "the open's fetch");
+    expect(server.hitsOf("sans.ttf")).toBe(1);
+    expect(existsSync(join(serverData, "fonts", sha256(f.bytes)))).toBe(true);
+    expect((await status(engine)).fonts).toEqual({ missing: [], fetching: [], failed: [] });
+  });
+
   test("fetch progress reaches status events", async () => {
     const f = file("big", hooks.testFont("big:400000"), { chunkDelayMs: 20 });
     useCatalog([f]);
     const { engine, events } = await open();
-    engine.injectFontPinsForTest(catalogPin(f).fonts);
+    await pinFonts(engine, catalogPin(f).fonts);
     const partial = await waitFor(
       () => events.flatMap((s) => s.fonts.fetching).find((x) => x.bytes > 0 && x.bytes < x.total),
       20_000,
@@ -122,7 +150,7 @@ describe("font manager", () => {
     server.routes.set(`/${"0123456789abcdef0123456789abcdef01234567"}/sans.ttf`, { status: 500 });
     useCatalog([f]);
     const { engine } = await open();
-    engine.injectFontPinsForTest(catalogPin(f).fonts);
+    await pinFonts(engine, catalogPin(f).fonts);
     const failed = await waitFor(async () => (await status(engine)).warnings.find((w) => w.code === "FONT_FETCH_FAILED"), 10_000, "a failure");
     expect(failed.details).toMatchObject({ key: "Test sans|400|normal", entry: "sans", style: "regular", sha256: sha256(bytes) });
     expect(typeof failed.details?.retryAt).toBe("number");
@@ -144,7 +172,7 @@ describe("font manager", () => {
     fonts.setAutoFetch(false);
     expect(fonts.autoFetch).toBe(false);
     const { engine } = await open();
-    engine.injectFontPinsForTest(catalogPin(a).fonts);
+    await pinFonts(engine, catalogPin(a).fonts);
     await new Promise((r) => setTimeout(r, 300));
     expect(server.hitsOf("sans.ttf")).toBe(0);
     const s = await status(engine);
@@ -160,7 +188,7 @@ describe("font manager", () => {
     expect(after.files.find((x) => x.entry === "sans")?.state.state).toBe("cached");
     expect((await status(engine)).fonts.missing).toEqual([]);
     // On again: what is pinned and missing is fetched at once.
-    engine.injectFontPinsForTest(catalogPin(b).fonts);
+    await pinFonts(engine, catalogPin(b).fonts);
     expect(server.hitsOf("rtl.ttf")).toBe(0);
     fonts.setAutoFetch(true);
     await waitFor(() => (server.hitsOf("rtl.ttf") > 0 ? true : undefined), 5_000, "fetch after switching on");
@@ -191,7 +219,7 @@ describe("font manager", () => {
     fonts.setAutoFetch(true);
     expect(fonts.autoFetch).toBe(false);
     const { engine } = await open();
-    engine.injectFontPinsForTest(catalogPin(f).fonts);
+    await pinFonts(engine, catalogPin(f).fonts);
     await new Promise((r) => setTimeout(r, 300));
     expect(server.hitsOf("sans.ttf")).toBe(0);
     expect((await status(engine)).fonts.missing[0]?.reason).toBe("offline");
@@ -225,7 +253,7 @@ describe("font manager", () => {
     const c = JSON.parse(await engine.commit(JSON.stringify({ txId: "t1", author: "a", branch: "main", baseRev: 0, schemaVersion: 2, ops: [asset] }))) as { bindings: Record<string, string> };
     const key = "Test Sans|400|normal";
     const pin = { family: "Test Sans", weight: 400, italic: false, face: 0, sha256: sha, size: bytes.length, format: "ttf", scripts: ["Latn", "Cyrl"], source: { type: "asset", asset: c.bindings.$f } };
-    engine.injectFontPinsForTest(JSON.stringify({ pins: { [key]: pin }, fallback: [key] }));
+    await pinFonts(engine, JSON.stringify({ pins: { [key]: pin }, fallback: [key] }));
     expect((await status(engine)).fonts.missing).toEqual([]);
     const measured = JSON.parse(hooks.measure(serverData, request(sha)));
     expect(measured.kind).toBe("layout");

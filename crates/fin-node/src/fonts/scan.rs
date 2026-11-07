@@ -86,10 +86,14 @@ pub(crate) fn branch(store: &Store, branch: &str) -> Option<BranchFonts> {
     Some(of_project(&project, store.project_dir()))
 }
 
-/// Whether a record may change what its branch pins: a font op or an asset change.
+/// Whether a record may change what its branch pins: a font op (`font.pin|unpin|repin`), an
+/// asset op, or a diff that changes a pin (`font/<key>`) or an asset.
 pub(crate) fn touches(c: &CommittedTx) -> bool {
     c.tx.ops
         .iter()
         .any(|op| op.name().starts_with("font.") || op.name().starts_with("asset."))
-        || c.diff.changes.iter().any(|ch| ch.kind == EntityKind::Asset)
+        || c.diff
+            .changes
+            .iter()
+            .any(|ch| matches!(ch.kind, EntityKind::Asset | EntityKind::Font))
 }
