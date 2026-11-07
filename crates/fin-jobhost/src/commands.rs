@@ -11,7 +11,7 @@ use std::time::Instant;
 use fin_jobs::sandbox;
 
 use crate::domain::GroupHandle;
-use crate::exit::ExitReason;
+use crate::exit::{ExitReason, RawExit};
 use crate::framing::Expect;
 use crate::host::{Inner, ms_};
 use crate::os::{self, SpawnCtx};
@@ -243,12 +243,25 @@ fn thread(name: &str, f: impl FnOnce() + Send + 'static) -> bool {
         .is_ok()
 }
 
-fn kill_domain(inner: &Inner, handle: Option<Arc<GroupHandle>>) {
-    if let Some(h) = handle
-        && let Err(e) = inner.domain.kill(&h)
-    {
+/// Kills the group's domain and starts its kill wait: once it passes, a process still alive
+/// is abandoned (Decision 18).
+fn kill_domain(inner: &Arc<Inner>, gid: GroupId, handle: Option<Arc<GroupHandle>>) {
+    let Some(h) = handle else { return };
+    if let Err(e) = inner.domain.kill(&h) {
         inner.log(&format!("kill of {} failed: {e}", h.id));
     }
+    let at = Instant::now();
+    if let Some(g) = inner.tables().groups.get_mut(&gid) {
+        g.killed_at = Some(at);
+    }
+    let w: Weak<Inner> = Arc::downgrade(inner);
+    inner
+        .timers
+        .at(at + ms_(inner.opts.timing.kill_wait_ms), move || {
+            if let Some(i) = w.upgrade() {
+                i.post(Cmd::KillWaitOver(gid));
+            }
+        });
 }
 
 fn kill(inner: &Arc<Inner>, gid: GroupId, reason: KillReason, done: Option<Done>) {
@@ -274,22 +287,16 @@ fn kill(inner: &Arc<Inner>, gid: GroupId, reason: KillReason, done: Option<Done>
         }
         let g = t.groups.get_mut(&gid).expect("checked above");
         if let Some(d) = done {
-            let wait = ms_(inner.opts.timing.kill_wait_ms);
-            g.kill_done.push((Instant::now() + wait, d));
-            let w: Weak<Inner> = Arc::downgrade(inner);
-            inner.timers.at(Instant::now() + wait, move || {
-                if let Some(i) = w.upgrade() {
-                    i.post(Cmd::KillWaitOver(gid));
-                }
-            });
+            g.kill_done
+                .push((Instant::now() + ms_(inner.opts.timing.kill_wait_ms), d));
         }
         g.handle.clone()
     };
-    kill_domain(inner, handle);
+    kill_domain(inner, gid, handle);
 }
 
-fn kill_for(inner: &Inner, pid: ProcId, reason: ExitReason) {
-    let handle = {
+fn kill_for(inner: &Arc<Inner>, pid: ProcId, reason: ExitReason) {
+    let (gid, handle) = {
         let t = inner.tables();
         let Some(p) = t.procs.get(&pid) else { return };
         if !p.mark_kill(reason.clone()) {
@@ -303,15 +310,18 @@ fn kill_for(inner: &Inner, pid: ProcId, reason: ExitReason) {
                 o.mark_kill(reason.for_others());
             }
         }
-        g.handle.clone()
+        (p.group, g.handle.clone())
     };
-    kill_domain(inner, handle);
+    kill_domain(inner, gid, handle);
 }
 
-/// The kill wait passed: run the due callbacks. A process still alive is abandoned (Task 4
-/// reports it).
+/// The kill wait passed. Each process the kill should have ended and that is still alive
+/// (uninterruptible I/O) is **abandoned**: reported once as `Abandoned`, released from the
+/// tables (so `GroupEmpty` and the kill callbacks follow), and only logged when it finally
+/// exits (Decision 18). Then the due callbacks run.
 fn kill_wait_over(inner: &Inner, gid: GroupId) {
-    let (due, left) = {
+    let wait = ms_(inner.opts.timing.kill_wait_ms);
+    let (due, stuck) = {
         let mut t = inner.tables();
         let Some(g) = t.groups.get_mut(&gid) else {
             return;
@@ -319,12 +329,25 @@ fn kill_wait_over(inner: &Inner, gid: GroupId) {
         let now = Instant::now();
         let (due, keep): (Vec<_>, Vec<_>) = g.kill_done.drain(..).partition(|(at, _)| *at <= now);
         g.kill_done = keep;
-        (due, g.live.len())
+        let killed = g.killed_at.filter(|&k| k + wait <= now);
+        let live: Vec<ProcId> = g.live.iter().copied().collect();
+        let stuck: Vec<Arc<Proc>> = live
+            .iter()
+            .filter_map(|id| t.procs.get(id))
+            .filter(|p| killed.is_some_and(|k| p.started <= k) && p.state().kill.is_some())
+            .cloned()
+            .collect();
+        (due, stuck)
     };
-    if !due.is_empty() && left > 0 {
+    for p in stuck.into_iter().filter(|p| p.abandon()) {
         inner.log(&format!(
-            "{gid}: {left} process(es) still alive after the kill wait"
+            "{} (pid {}) is still alive {wait:?} after its kill: abandoned",
+            p.id, p.pid
         ));
+        let mut info = inner.exit_info(&p, RawExit::default());
+        info.reason = ExitReason::Abandoned;
+        p.emit_exit(info);
+        inner.exited(&p);
     }
     for (_, d) in due {
         d();
@@ -391,18 +414,18 @@ fn shutdown(inner: &Arc<Inner>, grace_ms: u32, done: Done) {
     });
 }
 
-fn live_handles(inner: &Inner) -> Vec<Arc<GroupHandle>> {
+fn live_handles(inner: &Inner) -> Vec<(GroupId, Arc<GroupHandle>)> {
     let t = inner.tables();
     t.groups
-        .values()
-        .filter(|g| !g.live.is_empty())
-        .filter_map(|g| g.handle.clone())
+        .iter()
+        .filter(|(_, g)| !g.live.is_empty())
+        .filter_map(|(id, g)| Some((*id, g.handle.clone()?)))
         .collect()
 }
 
 fn shutdown_kill(inner: &Arc<Inner>) {
-    for h in live_handles(inner) {
-        kill_domain(inner, Some(h));
+    for (gid, h) in live_handles(inner) {
+        kill_domain(inner, gid, Some(h));
     }
     let w = Arc::downgrade(inner);
     let wait = ms_(inner.opts.timing.kill_wait_ms);
@@ -443,7 +466,7 @@ fn shutdown_finish(inner: &Inner) {
 }
 
 /// The host is dropped: kill everything, release what is empty, refuse the rest.
-fn stop(inner: &Inner) {
+fn stop(inner: &Arc<Inner>) {
     let procs: Vec<Arc<Proc>> = {
         let mut t = inner.tables();
         t.shutting = true;
@@ -452,8 +475,8 @@ fn stop(inner: &Inner) {
     for p in &procs {
         p.mark_kill(ExitReason::Killed(KillReason::Shutdown));
     }
-    for h in live_handles(inner) {
-        kill_domain(inner, Some(h));
+    for (gid, h) in live_handles(inner) {
+        kill_domain(inner, gid, Some(h));
     }
     for d in close_all(inner) {
         d();

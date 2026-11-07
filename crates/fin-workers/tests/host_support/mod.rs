@@ -11,6 +11,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use fin_jobhost::*;
+use fin_jobs::test_kinds::SpawnPids;
 use fin_jobs::{Dirs, Hello, HostMsg, Limits, Start, StartJob, WorkerMsg};
 use serde_json::Value;
 
@@ -184,6 +185,19 @@ impl TestHost {
         }
     }
 
+    /// The backlog and every event that arrives within `d`.
+    pub fn events_within(&mut self, d: Duration) -> Vec<HostEvent> {
+        let until = Instant::now() + d;
+        let mut out = std::mem::take(&mut self.backlog);
+        while let Ok(e) = self
+            .rx
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            out.push(e);
+        }
+        out
+    }
+
     pub fn group_empty(&mut self, group: GroupId) {
         self.next(|e| matches!(e, HostEvent::GroupEmpty { group: g } if *g == group));
     }
@@ -244,6 +258,25 @@ impl TestHost {
     }
 }
 
+/// A log that keeps its lines.
+pub fn captured_log() -> (LogFn, Arc<std::sync::Mutex<Vec<String>>>) {
+    let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let l = lines.clone();
+    (
+        Arc::new(move |line: &str| l.lock().unwrap().push(line.to_owned())),
+        lines,
+    )
+}
+
+/// A group with a memory limit.
+pub fn limited_group(h: &TestHost, bytes: u64) -> GroupId {
+    h.host.open_group(GroupSpec {
+        label: "limited".into(),
+        memory_bytes: Some(bytes),
+        qos: Qos::Normal,
+    })
+}
+
 /// A spawner that rewrites the command with `f`.
 pub struct Rewrite<F>(pub F);
 
@@ -294,4 +327,21 @@ pub fn wait_gone(pid: u32) -> bool {
         std::thread::sleep(Duration::from_millis(20));
     }
     gone(pid)
+}
+
+/// Reads the pids `test.spawn` wrote into `name`.
+pub fn spawn_pids(h: &TestHost, name: &str) -> SpawnPids {
+    let path = h.dir.path().join(name);
+    let until = Instant::now() + WAIT;
+    loop {
+        if let Ok(bytes) = std::fs::read(&path) {
+            let text = String::from_utf8_lossy(&bytes);
+            let text = text.trim_end_matches('\0');
+            if let Ok(p) = serde_json::from_str(text) {
+                return p;
+            }
+        }
+        assert!(Instant::now() < until, "test.spawn wrote no pids");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

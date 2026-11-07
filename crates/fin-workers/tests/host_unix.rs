@@ -12,7 +12,6 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use fin_jobhost::*;
-use fin_jobs::test_kinds::SpawnPids;
 use host_support::*;
 use serde_json::json;
 
@@ -75,23 +74,6 @@ fn processes_share_the_group_pgid() {
     assert_eq!(h.exit(a).reason, ExitReason::Killed(KillReason::Test));
     assert_eq!(h.exit(b).reason, ExitReason::Killed(KillReason::Test));
     h.group_empty(g);
-}
-
-/// Reads the pids `test.spawn` wrote into `name`.
-fn spawn_pids(h: &TestHost, name: &str) -> SpawnPids {
-    let path = h.dir.path().join(name);
-    let until = Instant::now() + WAIT;
-    loop {
-        if let Ok(bytes) = std::fs::read(&path) {
-            let text = String::from_utf8_lossy(&bytes);
-            let text = text.trim_end_matches('\0');
-            if let Ok(p) = serde_json::from_str(text) {
-                return p;
-            }
-        }
-        assert!(Instant::now() < until, "test.spawn wrote no pids");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 #[test]

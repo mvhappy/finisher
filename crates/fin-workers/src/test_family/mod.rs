@@ -235,6 +235,18 @@ pub(crate) fn spawn_grandchild(detach: Detach, sleep_ms: u64) -> std::io::Result
     Ok((mid_pid, grandchild))
 }
 
+/// `/proc/self/cgroup` as read by the first statement of `main` (`test.echo`'s `cgroup`
+/// report: the process was in its leaf before it ran any of its own code).
+static START_CGROUP: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+pub fn capture_start() {
+    START_CGROUP.get_or_init(|| std::fs::read_to_string("/proc/self/cgroup").ok());
+}
+
+pub(crate) fn start_cgroup() -> Option<String> {
+    START_CGROUP.get().cloned().flatten()
+}
+
 /// The hidden entries of the test binary: `--test-spawn-mid <none|setsid> <ms>` and
 /// `--test-sleep <ms>`. `None` for anything else.
 pub fn hidden_main(args: &[String]) -> Option<i32> {

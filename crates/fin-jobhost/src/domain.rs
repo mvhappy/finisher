@@ -15,7 +15,8 @@
 use std::any::Any;
 use std::io;
 #[cfg(unix)]
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::spawner::JobLimits;
 use crate::{GroupId, GroupSpec};
@@ -29,6 +30,8 @@ pub(crate) struct GroupHandle {
     /// process creates it; later ones join it). Set by the host.
     #[cfg(unix)]
     pub pgid: AtomicI32,
+    /// The highest figure the host's sampler saw (Decision 20), 0 before the first sample.
+    pub sampled_peak: AtomicU64,
     pub os: Box<dyn Any + Send + Sync>,
 }
 
@@ -39,6 +42,7 @@ impl GroupHandle {
             spec: spec.clone(),
             #[cfg(unix)]
             pgid: AtomicI32::new(0),
+            sampled_peak: AtomicU64::new(0),
             os,
         }
     }
@@ -46,6 +50,14 @@ impl GroupHandle {
     #[cfg(unix)]
     pub fn pgid(&self) -> i32 {
         self.pgid.load(Ordering::Acquire)
+    }
+
+    pub fn note_sample(&self, bytes: u64) {
+        self.sampled_peak.fetch_max(bytes, Ordering::AcqRel);
+    }
+
+    pub fn sampled_peak(&self) -> Option<u64> {
+        Some(self.sampled_peak.load(Ordering::Acquire)).filter(|&b| b > 0)
     }
 }
 
@@ -114,13 +126,18 @@ pub(crate) trait KillDomain: Send + Sync {
     fn leaf_limits(&self) -> bool;
     /// Whether a group's memory limit is enforced by the kernel.
     fn kernel_memory(&self) -> bool;
+    /// The host watchdog this domain registers its groups with (Decision 15).
+    #[cfg(unix)]
+    fn watchdog(&self) -> Option<&crate::unix::watchdog::Watchdog> {
+        None
+    }
 
     fn open_group(&self, id: GroupId, spec: &GroupSpec) -> io::Result<GroupHandle>;
     fn open_leaf(&self, group: &GroupHandle, limits: &JobLimits) -> io::Result<LeafHandle>;
     /// Before the process runs (see [`Placement`]).
     fn place(&self, group: &GroupHandle, leaf: &LeafHandle, p: &mut Placement) -> io::Result<()>;
     /// The process exists with `pid` (Unix: in the group's pgid, already set on `group`;
-    /// macOS: still suspended). The watchdog registration point (Task 4). An error kills it.
+    /// macOS: still suspended). The watchdog registration point. An error kills it.
     fn placed(&self, _group: &GroupHandle, _leaf: &LeafHandle, _pid: u32) -> io::Result<()> {
         Ok(())
     }
@@ -161,6 +178,10 @@ pub(crate) mod double {
         }
         fn kernel_memory(&self) -> bool {
             self.inner.kernel_memory()
+        }
+        #[cfg(unix)]
+        fn watchdog(&self) -> Option<&crate::unix::watchdog::Watchdog> {
+            self.inner.watchdog()
         }
         fn open_group(&self, id: GroupId, spec: &GroupSpec) -> io::Result<GroupHandle> {
             self.note(format!("open_group {id}"));

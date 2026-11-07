@@ -9,9 +9,9 @@
 //! to an [`EventSink`], which may block: the readers then block, the pipes fill and the
 //! worker blocks on its own writes, while the liveness timers do not count that time.
 //!
-//! Kill domains are per OS ([`domain`]): process groups on Unix (this task), delegated
-//! cgroups on Linux (Task 4), Job Objects on Windows (Task 5; until then
-//! [`HostError::Unsupported`]).
+//! Kill domains are per OS ([`domain`]): delegated cgroups on Linux where they are ours,
+//! process groups elsewhere on Unix (with the `fin-workers watchdog` for host death), Job
+//! Objects on Windows (Task 5; until then [`HostError::Unsupported`]).
 
 // Until Task 5, Windows builds only the stub domain: the spawn machinery is unused there.
 #![cfg_attr(windows, allow(dead_code))]
@@ -31,6 +31,8 @@ mod host;
 mod memory;
 mod proc;
 pub mod spawner;
+#[cfg(all(unix, feature = "test-hooks"))]
+mod test_hooks;
 #[cfg(all(test, unix))]
 mod tests;
 mod timers;
@@ -48,6 +50,7 @@ use windows as os;
 pub use commands::{Done, SpawnDone};
 pub use exit::{ExitInfo, ExitReason, KillReason};
 pub use host::Host;
+pub use memory::MemoryRule;
 pub use spawner::{
     JobLimits, PathGrant, PlatformCommand, Profile, Program, Qos, Role, SpawnError, SpawnRequest,
     Spawner, UiLimits, Unsandboxed,
@@ -62,7 +65,7 @@ pub struct Timing {
     pub hung_ms: u32,
     /// After a kill, how long the host waits for the group's processes to exit.
     pub kill_wait_ms: u32,
-    /// The memory sampling interval (Task 4).
+    /// The memory sampling interval (process groups: the host checks group limits).
     pub rss_sample_ms: u32,
     /// After an exit, how long stdout may stay silent before `Exit` is sent anyway.
     pub exit_drain_ms: u32,
@@ -80,8 +83,8 @@ impl Default for Timing {
     }
 }
 
-/// Whether delegated cgroups are used where Decision 16's conditions hold (Task 4; until then
-/// both mean process groups).
+/// Whether delegated cgroups are used where Decision 16's conditions hold (Linux). `Off`, or
+/// `FIN_CGROUPS=off` in the environment, means process groups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CgroupMode {
     #[default]
@@ -100,7 +103,7 @@ pub struct HostOptions {
     pub timing: Timing,
     pub spawner: Arc<dyn Spawner>,
     pub cgroups: CgroupMode,
-    /// Start the Unix host watchdog (Task 4; ignored until then).
+    /// Start the Unix host watchdog (`fin-workers watchdog`, Decision 15); ignored on Windows.
     pub watchdog: bool,
     /// The envelope minor this host speaks ([`fin_jobs::MINOR`]); a plugin process above it
     /// is decoded leniently (Decision 3).
@@ -109,6 +112,10 @@ pub struct HostOptions {
     /// macOS: how long a spawned process stays suspended after its registration (tests).
     #[cfg(feature = "test-hooks")]
     pub resume_delay_for_test: Option<std::time::Duration>,
+    /// How long each waiter sleeps before it waits for its process (tests: a process that
+    /// looks alive after its kill, so it is abandoned).
+    #[cfg(feature = "test-hooks")]
+    pub waiter_delay_for_test: Option<std::time::Duration>,
 }
 
 impl HostOptions {
@@ -124,6 +131,8 @@ impl HostOptions {
             log: Arc::new(|line| eprintln!("fin-jobhost: {line}")),
             #[cfg(feature = "test-hooks")]
             resume_delay_for_test: None,
+            #[cfg(feature = "test-hooks")]
+            waiter_delay_for_test: None,
         }
     }
 }

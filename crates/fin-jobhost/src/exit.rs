@@ -28,7 +28,7 @@ pub enum ExitReason {
     Stalled,
     /// The watch's `timeout_ms` passed.
     TimedOut,
-    /// Over its group's memory limit (Task 4, Task 5).
+    /// Over its group's memory limit: the kernel's (cgroup, Job) or the host's sampler.
     Oom,
     /// The kernel reported a resource fault (Task 4, Task 5).
     ResourceFault,
@@ -41,7 +41,7 @@ pub enum ExitReason {
     NoHello,
     /// The process could not start as asked (`selfSandbox`: exit 78 before `hello`).
     SpawnFailed(String),
-    /// Still alive after the kill wait (Task 4).
+    /// Still alive after the kill wait: reported once, reaped in the background (Decision 18).
     Abandoned,
 }
 
@@ -52,6 +52,8 @@ impl ExitReason {
         match self {
             ExitReason::Killed(r) => ExitReason::Killed(*r),
             ExitReason::Hung => ExitReason::Killed(KillReason::Hung),
+            // Every member of a group over its limit answers `WORKER_OOM` (Decision 20).
+            ExitReason::Oom => ExitReason::Oom,
             _ => ExitReason::Killed(KillReason::JobEnded),
         }
     }
@@ -75,7 +77,7 @@ pub struct ExitInfo {
 }
 
 /// What the OS said about an exit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct RawExit {
     pub code: Option<i64>,
     pub signal: Option<i32>,

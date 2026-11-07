@@ -11,10 +11,16 @@ use crate::spawner::{PlatformCommand, Qos};
 use crate::{HostError, HostOptions, KillTree};
 
 #[cfg(target_os = "linux")]
+#[path = "../linux/cgroup.rs"]
+pub(crate) mod cgroup;
+pub(crate) mod foreign;
+#[cfg(target_os = "linux")]
 mod linux_spawn;
 #[cfg(target_os = "macos")]
 mod macos_spawn;
+pub(crate) mod memory;
 pub(crate) mod pgroup;
+pub(crate) mod watchdog;
 
 /// The OS's part of a process (nothing on Unix: the pid is enough).
 pub(crate) type OsProc = ();
@@ -42,9 +48,41 @@ pub(crate) struct SpawnCtx<'a> {
     pub resume_delay: Option<std::time::Duration>,
 }
 
-/// The kill domain for these options: process groups (Task 4 adds delegated cgroups).
-pub(crate) fn default_domain(_opts: &HostOptions) -> Result<Box<dyn KillDomain>, HostError> {
-    Ok(Box::new(pgroup::ProcessGroups))
+/// The kill domain for these options: delegated cgroups where Decision 16's conditions hold
+/// (Linux, unless `cgroups` is `Off` or `FIN_CGROUPS=off`), else process groups; with the
+/// watchdog when `opts.watchdog` (started after the host moved into its cgroup leaf).
+pub(crate) fn default_domain(opts: &HostOptions) -> Result<Box<dyn KillDomain>, HostError> {
+    #[cfg(target_os = "linux")]
+    if let Some(root) = cgroup_root(opts) {
+        match cgroup::Cgroups::new(root, opts.log.clone()) {
+            Ok(cg) => return Ok(Box::new(cg.with_watchdog(start_watchdog(opts)?))),
+            Err(e) => (opts.log)(&format!("cgroup setup failed ({e}); using process groups")),
+        }
+    }
+    Ok(Box::new(pgroup::ProcessGroups {
+        watchdog: start_watchdog(opts)?,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_root(opts: &HostOptions) -> Option<cgroup::CgroupRoot> {
+    let off = opts.cgroups == crate::CgroupMode::Off
+        || std::env::var_os("FIN_CGROUPS").is_some_and(|v| v == "off");
+    if off {
+        return None;
+    }
+    cgroup::detect_cgroup(&opts.log)
+}
+
+fn start_watchdog(
+    opts: &HostOptions,
+) -> Result<Option<std::sync::Arc<watchdog::Watchdog>>, HostError> {
+    if !opts.watchdog {
+        return Ok(None);
+    }
+    watchdog::Watchdog::start(&opts.binary_dir, opts.log.clone())
+        .map(|w| Some(std::sync::Arc::new(w)))
+        .map_err(HostError::Spawn)
 }
 
 #[allow(dead_code)]

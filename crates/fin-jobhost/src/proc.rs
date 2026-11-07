@@ -89,6 +89,8 @@ pub(crate) struct ProcState {
     /// The reason it will be reported with, once the host decided to kill it.
     pub kill: Option<ExitReason>,
     pub exited: bool,
+    /// Reported `Abandoned` after the kill wait; its real exit is only logged.
+    pub abandoned: bool,
 }
 
 pub(crate) struct Proc {
@@ -145,6 +147,7 @@ impl Proc {
                 last_progress: started,
                 kill: None,
                 exited: false,
+                abandoned: false,
             }),
             emit: Mutex::new(false),
             sink,
@@ -175,7 +178,17 @@ impl Proc {
         }
     }
 
-    fn emit_exit(&self, info: ExitInfo) {
+    /// Marks it abandoned unless it already exited. `true` if it was.
+    pub fn abandon(&self) -> bool {
+        let mut st = self.state();
+        if st.exited || st.abandoned {
+            return false;
+        }
+        st.abandoned = true;
+        true
+    }
+
+    pub fn emit_exit(&self, info: ExitInfo) {
         let mut closed = lock(&self.emit);
         *closed = true;
         self.sink.send(HostEvent::Exit {
@@ -221,6 +234,12 @@ pub(crate) fn read_stdout(p: Arc<Proc>, inner: Weak<Inner>, pipe: PipeReader, ex
                 }
                 let memory = match msg {
                     WorkerMsg::Ready {} => inner.upgrade().and_then(|i| i.group_memory(p.group)),
+                    WorkerMsg::Result { .. } => {
+                        if let Some(i) = inner.upgrade() {
+                            i.scan_foreign(p.group);
+                        }
+                        None
+                    }
                     _ => None,
                 };
                 p.emit(HostEvent::Message {
@@ -303,12 +322,29 @@ pub(crate) fn wait_exit(
     drain: Duration,
     reap: Option<mpsc::Receiver<()>>,
 ) {
+    #[cfg(feature = "test-hooks")]
+    if let Some(d) = inner.upgrade().and_then(|i| i.opts.waiter_delay_for_test) {
+        std::thread::sleep(d);
+    }
     let raw = crate::os::wait(&os, p.pid, !p.leader).unwrap_or(RawExit {
         code: None,
         signal: None,
     });
-    p.state().exited = true;
+    let abandoned = {
+        let mut st = p.state();
+        st.exited = true;
+        st.abandoned
+    };
     p.writer.kill();
+    if abandoned {
+        if let Some(i) = inner.upgrade() {
+            i.log(&format!(
+                "{} (pid {}), abandoned earlier, exited now ({raw:?})",
+                p.id, p.pid
+            ));
+        }
+        return reap_leader(&p, reap);
+    }
     let exit = Instant::now();
     loop {
         let now = Instant::now();
@@ -325,6 +361,10 @@ pub(crate) fn wait_exit(
     if let Some(i) = inner.upgrade() {
         i.exited(&p);
     }
+    reap_leader(&p, reap);
+}
+
+fn reap_leader(p: &Proc, reap: Option<mpsc::Receiver<()>>) {
     if let Some(rx) = reap {
         // Returns when the group is closed (its sender dropped).
         let _ = rx.recv();

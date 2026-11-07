@@ -38,6 +38,8 @@ pub(crate) struct Group {
     pub kill_done: Vec<(Instant, Done)>,
     /// Dropping it lets the leader's waiter reap the leader.
     pub reap: Option<mpsc::Sender<()>>,
+    /// The last kill sent to its domain (the kill wait's start, Decision 18).
+    pub killed_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -62,7 +64,7 @@ pub(crate) struct Inner {
 
 /// The job host. Dropping it kills every group it still has.
 pub struct Host {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -93,6 +95,7 @@ impl Host {
             .name("jobhost-spawn".into())
             .spawn(move || crate::commands::run(&i, rx))
             .map_err(HostError::Spawn)?;
+        crate::memory::start_sampler(&inner);
         Ok(Host {
             inner,
             thread: Some(thread),
@@ -103,6 +106,9 @@ impl Host {
         let i = &self.inner;
         HostCaps {
             kill_tree: i.domain.kill_tree(),
+            #[cfg(unix)]
+            watchdog: i.domain.watchdog().is_some(),
+            #[cfg(not(unix))]
             watchdog: false,
             cgroup_memory: i.domain.kernel_memory(),
             leaf_limits: i.domain.leaf_limits(),
@@ -127,6 +133,7 @@ impl Host {
                 closing: false,
                 kill_done: Vec::new(),
                 reap: None,
+                killed_at: None,
             },
         );
         id
@@ -351,17 +358,36 @@ impl Inner {
                 None => (None, 0),
             }
         };
-        let (facts, foreign) = match &handle {
-            Some(h) => (self.domain.exit_facts(h), self.domain.foreign(h, spawned)),
-            None => (Default::default(), None),
+        let (facts, foreign, sampled) = match &handle {
+            Some(h) => (
+                self.domain.exit_facts(h),
+                self.domain.foreign(h, spawned),
+                h.sampled_peak(),
+            ),
+            None => (Default::default(), None, None),
         };
         let mut info = bare_exit_info(p, raw);
         if facts.oom && matches!(info.reason, ExitReason::Exited) {
             info.reason = ExitReason::Oom;
         }
         info.foreign = foreign;
-        info.memory_peak = facts.memory_peak;
+        info.memory_peak = facts.memory_peak.or(sampled);
         info
+    }
+
+    /// Counts the group's foreign processes now (at each `result`, Decision 22), so one that
+    /// is gone by the exit is still counted.
+    pub fn scan_foreign(&self, group: GroupId) {
+        let (handle, spawned) = {
+            let t = self.tables();
+            let Some(g) = t.groups.get(&group) else {
+                return;
+            };
+            (g.handle.clone(), g.spawned)
+        };
+        if let Some(h) = handle {
+            self.domain.foreign(&h, spawned);
+        }
     }
 
     /// After `Exit`: the tables, `GroupEmpty`, the kill callbacks, a closing group's release

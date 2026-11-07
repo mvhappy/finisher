@@ -37,7 +37,7 @@ fn domain_is_driven_in_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let opts = HostOptions::new(std::env::temp_dir());
     let domain = Box::new(Recording {
-        inner: ProcessGroups,
+        inner: ProcessGroups::default(),
         calls: calls.clone(),
     });
     let (sink, rx) = EventSink::channel(64);

@@ -24,6 +24,10 @@ unsafe extern "C" {
         attr: *mut libc::posix_spawnattr_t,
         qos_class: libc::c_uint,
     ) -> libc::c_int;
+    fn posix_spawn_file_actions_addinherit_np(
+        actions: *mut libc::posix_spawn_file_actions_t,
+        fd: libc::c_int,
+    ) -> libc::c_int;
 }
 
 fn cstr(s: &OsStr) -> io::Result<CString> {
@@ -182,4 +186,71 @@ pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
         stderr: stderr_r,
         os: (),
     })
+}
+
+/// Starts `<program> watchdog <our pid>` (Decision 15): its own process group, default signal
+/// dispositions, an empty environment, cwd `/`, stdin from `stdin`, stdout to `stdout` and
+/// our stderr; nothing else is inherited. It runs at once (it is not a worker).
+pub(super) fn spawn_watchdog(
+    program: &std::path::Path,
+    stdin: &io::PipeReader,
+    stdout: &io::PipeWriter,
+) -> io::Result<u32> {
+    let path = cstr(program.as_os_str())?;
+    let args = [
+        path.clone(),
+        CString::new("watchdog").expect("no NUL"),
+        CString::new(std::process::id().to_string()).expect("no NUL"),
+    ];
+    let mut argv: Vec<*mut libc::c_char> = args.iter().map(|c| c.as_ptr() as _).collect();
+    argv.push(ptr::null_mut());
+    let envp: [*mut libc::c_char; 1] = [ptr::null_mut()];
+    let root = CString::new("/").expect("no NUL");
+    let mut a = Attrs::new()?;
+    let mut pid: libc::pid_t = 0;
+    // SAFETY: plain libc calls on locally owned objects; every pointer outlives the call.
+    unsafe {
+        let flags = libc::POSIX_SPAWN_SETPGROUP
+            | libc::POSIX_SPAWN_CLOEXEC_DEFAULT
+            | libc::POSIX_SPAWN_SETSIGDEF
+            | libc::POSIX_SPAWN_SETSIGMASK;
+        check(libc::posix_spawnattr_setflags(&mut a.attr, flags as _))?;
+        check(libc::posix_spawnattr_setpgroup(&mut a.attr, 0))?;
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&mut all);
+        check(libc::posix_spawnattr_setsigdefault(&mut a.attr, &all))?;
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        check(libc::posix_spawnattr_setsigmask(&mut a.attr, &none))?;
+        check(libc::posix_spawn_file_actions_adddup2(
+            &mut a.actions,
+            stdin.as_raw_fd(),
+            0,
+        ))?;
+        check(libc::posix_spawn_file_actions_adddup2(
+            &mut a.actions,
+            stdout.as_raw_fd(),
+            1,
+        ))?;
+        check(posix_spawn_file_actions_addinherit_np(&mut a.actions, 2))?;
+        check(libc::posix_spawn_file_actions_addchdir_np(
+            &mut a.actions,
+            root.as_ptr(),
+        ))?;
+        loop {
+            let r = libc::posix_spawn(
+                &mut pid,
+                path.as_ptr(),
+                &a.actions,
+                &a.attr,
+                argv.as_ptr(),
+                envp.as_ptr(),
+            );
+            if r != libc::EINTR {
+                check(r)?;
+                break;
+            }
+        }
+    }
+    Ok(pid as u32)
 }

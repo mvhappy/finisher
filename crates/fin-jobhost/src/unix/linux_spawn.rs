@@ -66,18 +66,8 @@ impl ChildSteps {
                 // Best effort: a host already niced further may not lower it.
                 libc::setpriority(libc::PRIO_PROCESS, 0, n);
             }
-            let r = libc::syscall(
-                libc::SYS_close_range,
-                3 as libc::c_uint,
-                libc::c_uint::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            );
-            if r != 0 {
-                for fd in 3..self.nofile {
-                    libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-                }
-            }
         }
+        cloexec_from_3(self.nofile);
         for step in &self.extra {
             step()?;
         }
@@ -85,8 +75,27 @@ impl ChildSteps {
     }
 }
 
+/// Marks every descriptor from 3 close-on-exec: `close_range(3, ~0, CLOEXEC)`, or
+/// `FD_CLOEXEC` up to `nofile` where it is missing. Async-signal-safe; allocates nothing.
+pub(super) fn cloexec_from_3(nofile: libc::c_int) {
+    // SAFETY: plain syscalls on this process's descriptor table.
+    unsafe {
+        let r = libc::syscall(
+            libc::SYS_close_range,
+            3 as libc::c_uint,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        );
+        if r != 0 {
+            for fd in 3..nofile {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+        }
+    }
+}
+
 /// The soft `RLIMIT_NOFILE`, capped, for the `close_range` fallback.
-fn nofile() -> libc::c_int {
+pub(super) fn nofile() -> libc::c_int {
     // SAFETY: a zeroed rlimit is a valid out-buffer.
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
     // SAFETY: getrlimit writes one rlimit.
