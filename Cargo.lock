@@ -594,6 +594,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-workers"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-jobs",
+ "fin-workers",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

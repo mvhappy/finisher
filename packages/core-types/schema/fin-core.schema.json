@@ -8535,7 +8535,14 @@
     },
     "TestFilesParams": {
       "additionalProperties": false,
-      "description": "`test.files`: writes a pattern into every `write` file, reads every `read` file.",
+      "description": "`test.files`: writes a pattern into every `write` file, reads every `read` file, and\nleaves a file in each `write` directory; fails (`retry: backoff`) on attempt\n`failOnAttempt`.",
+      "properties": {
+        "failOnAttempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "TestFilesResult": {
@@ -8747,6 +8754,12 @@
       "properties": {
         "detach": {
           "$ref": "#/$defs/TestDetach"
+        },
+        "grandchildMs": {
+          "description": "How long the grandchild sleeps (default 600 s).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "out": {
           "type": "string"

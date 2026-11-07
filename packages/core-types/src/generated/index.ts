@@ -4272,12 +4272,16 @@ export interface TestFileReport {
   name: string;
 }
 /**
- * `test.files`: writes a pattern into every `write` file, reads every `read` file.
+ * `test.files`: writes a pattern into every `write` file, reads every `read` file, and
+ * leaves a file in each `write` directory; fails (`retry: backoff`) on attempt
+ * `failOnAttempt`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestFilesParams".
  */
-export interface TestFilesParams {}
+export interface TestFilesParams {
+  failOnAttempt?: number;
+}
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestFilesResult".
@@ -4397,6 +4401,10 @@ export interface TestSleepResult {
  */
 export interface TestSpawnParams {
   detach: TestDetach;
+  /**
+   * How long the grandchild sleeps (default 600 s).
+   */
+  grandchildMs?: number;
   out: string;
 }
 /**

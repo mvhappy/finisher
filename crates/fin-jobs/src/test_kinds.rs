@@ -108,9 +108,19 @@ params! {
     SpawnParams as "TestSpawnParams" {
         pub detach: Detach,
         pub out: String,
+        /// How long the grandchild sleeps (default 600 s).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "u64")]
+        pub grandchild_ms: Option<u64>,
     }
-    /// `test.files`: writes a pattern into every `write` file, reads every `read` file.
-    FilesParams as "TestFilesParams" {}
+    /// `test.files`: writes a pattern into every `write` file, reads every `read` file, and
+    /// leaves a file in each `write` directory; fails (`retry: backoff`) on attempt
+    /// `failOnAttempt`.
+    FilesParams as "TestFilesParams" {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "u32")]
+        pub fail_on_attempt: Option<u32>,
+    }
     /// `test.checkpoint` (resumable): a checkpoint per step; crashes on attempt 1 at
     /// `crashAt`.
     CheckpointParams as "TestCheckpointParams" {
