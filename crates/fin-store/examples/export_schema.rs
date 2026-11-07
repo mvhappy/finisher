@@ -1,10 +1,12 @@
 //! Prints the JSON Schema of the TypeScript contract to stdout: `fin-core`'s types plus the
 //! envelope types the engine sends that live above it (fin-store's [`Generation`],
 //! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`];
-//! fin-probe's [`Probe`]).
+//! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
+//! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout` and `ParamSpec` come from fin-core.
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
+use fin_fonts::{FileState, FontCatalog, FontsPlan, FontsStatus};
 use fin_probe::Probe;
 use fin_store::{
     BranchCreated, BranchView, EngineEvent, Generation, HistoryResult, MergeReport, RecoverGroup,
@@ -28,6 +30,11 @@ fn main() {
         g.subschema_for::<EngineEvent>();
         g.subschema_for::<TxSetAside>();
         g.subschema_for::<Probe>();
+        g.subschema_for::<fin_core::TextLayout>();
+        g.subschema_for::<FontCatalog>();
+        g.subschema_for::<FileState>();
+        g.subschema_for::<FontsStatus>();
+        g.subschema_for::<FontsPlan>();
     });
     println!(
         "{}",

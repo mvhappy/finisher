@@ -1,4 +1,16 @@
-import type { CommittedTx, EngineEvent, Probe, Project, Tx, TxSetAside } from "@finisher/core-types";
+import type {
+  AudioPlan,
+  CommittedTx,
+  EngineEvent,
+  FontCatalog,
+  FontsPlan,
+  FontsStatus,
+  FramePlan,
+  Probe,
+  Project,
+  Tx,
+  TxSetAside,
+} from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { FinError } from "./errors.ts";
@@ -26,7 +38,19 @@ import {
  * schemas below that validate them at runtime are checked against the same generated schema
  * (`envelopes.test.ts`).
  */
-export type { EngineEvent, Generation, Probe, TxSetAside } from "@finisher/core-types";
+export type {
+  AudioPlan,
+  EngineEvent,
+  FileState,
+  FontCatalog,
+  FontFileStatus,
+  FontsPlan,
+  FontsStatus,
+  FramePlan,
+  Generation,
+  Probe,
+  TxSetAside,
+} from "@finisher/core-types";
 
 /** Narrowed views of the `Schema.Unknown` payloads; runtime validation is Rust's job. */
 export type TxPayload = Tx;
@@ -190,6 +214,70 @@ export const OpsSubscribePayload = Schema.Struct({
   generation: Schema.optional(GenerationSchema),
 });
 
+/**
+ * Plan 4C Decisions 40–43: evaluation runs on the server. `branch` defaults to `main` (an id,
+ * a name or `<name>#<id>`), `timeline` to the main (first) timeline; times are rational
+ * strings (`"12"`, `"1001/30000"`). Captions are measured with the server's shared measurer
+ * from the project's pinned font bytes; a caption whose bytes are missing is unmeasured
+ * (`layout: null`, `unmeasured`), never an error.
+ */
+export const EvalFramePayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.optional(Schema.String),
+  timeline: Schema.optional(Schema.String),
+  at: Schema.String,
+});
+export const EvalAudioPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.optional(Schema.String),
+  timeline: Schema.optional(Schema.String),
+  from: Schema.String,
+  to: Schema.String,
+});
+/** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
+export const FramePlanSchema = Schema.Unknown;
+export const AudioPlanSchema = Schema.Unknown;
+export type FramePlanPayload = FramePlan;
+export type AudioPlanPayload = AudioPlan;
+
+/** fin-fonts' `FontCatalog`: the catalog this server fetches from. */
+export const FontCatalogSchema = Schema.Unknown;
+export type FontCatalogPayload = FontCatalog;
+/**
+ * fin-fonts' `FontsStatus`: every font file's state in this server (`cached | missing |
+ * queued | fetching {bytes, total} | failed {reason, retryAtMs}`), `autoFetch` and
+ * `damaged`. A project's own font summary is in `project.status` (`fonts {missing, fetching,
+ * failed}`, warnings `FONT_MISSING`, `FONT_FETCH_FAILED`, `FONTS_DAMAGED`).
+ */
+export const FontStatusSchema = Schema.Unknown;
+export type FontStatusPayload = FontsStatus;
+/**
+ * `fonts.fetch`: fetch now and wait (background fetching being off does not stop it).
+ * `sha256`: catalog files; `entries`: catalog entry ids (each of their styles); `keys`: font
+ * keys `<family>|<weight>|<normal|italic>` (the catalog's face); `pinned`: a project id
+ * (what its branches pin). Fails with `FONT_FETCH_FAILED` (`details {key, entry, style,
+ * sha256, reason, retryAt}`), `FONT_NOT_IN_CATALOG`, `PROJECT_NOT_FOUND`, `FONTS_DAMAGED`.
+ */
+export const FontsFetchPayload = Schema.Struct({
+  sha256: Schema.optional(Schema.Array(Schema.String)),
+  entries: Schema.optional(Schema.Array(Schema.String)),
+  keys: Schema.optional(Schema.Array(Schema.String)),
+  pinned: Schema.optional(Schema.String),
+});
+/**
+ * `fonts.plan` (Decision 35): the `font.pin` ops a client prepends to its own tx of `ops`
+ * before committing it; `notes` list faces or scripts the catalog cannot pin. The server
+ * applies `ops` to a copy of the head (a tx that cannot apply fails here as at commit) and
+ * never alters a client's tx. Planned files are fetched.
+ */
+export const FontsPlanPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.String,
+  ops: Schema.Array(Schema.Unknown),
+});
+export const FontsPlanSchema = Schema.Unknown;
+export type FontsPlanResult = FontsPlan;
+
 export const FinRpcs = RpcGroup.make(
   Rpc.make("server.hello", {
     payload: ServerHelloPayload,
@@ -260,4 +348,11 @@ export const FinRpcs = RpcGroup.make(
   /** Plan 4A Decision 4: status and history events on their own stream, not `ops.subscribe`. */
   Rpc.make("project.events", { payload: ProjectIdPayload, success: ProjectEventSchema, error: FinError, stream: true }),
   Rpc.make("tx.get", { payload: TxGetPayload, success: TxGetSuccess, error: FinError }),
+  /** Plan 4C Task 22: evaluation and fonts. Edits keep going through `tx.commit`. */
+  Rpc.make("eval.frame", { payload: EvalFramePayload, success: FramePlanSchema, error: FinError }),
+  Rpc.make("eval.audio", { payload: EvalAudioPayload, success: AudioPlanSchema, error: FinError }),
+  Rpc.make("fonts.catalog", { payload: Schema.Struct({}), success: FontCatalogSchema, error: FinError }),
+  Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema, error: FinError }),
+  Rpc.make("fonts.fetch", { payload: FontsFetchPayload, success: FontStatusSchema, error: FinError }),
+  Rpc.make("fonts.plan", { payload: FontsPlanPayload, success: FontsPlanSchema, error: FinError }),
 );

@@ -31,6 +31,29 @@
       ],
       "type": "object"
     },
+    "ArchiveFormat": {
+      "enum": [
+        "zip"
+      ],
+      "type": "string"
+    },
+    "ArchiveMember": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ArchiveFormat"
+        },
+        "member": {
+          "description": "The member's path inside the archive.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "member"
+      ],
+      "type": "object"
+    },
     "Asset": {
       "properties": {
         "audio": {
@@ -489,6 +512,205 @@
     },
     "CaptionStyle": {
       "description": "A project caption style (`st<n>`). Its fields arrive with captions (plan 4C Task 18); until\nthen the project holds none.",
+      "type": "object"
+    },
+    "CatalogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "id": {
+          "description": "`[a-z0-9-]`, unique in the catalog.",
+          "type": "string"
+        },
+        "licence": {
+          "$ref": "#/$defs/Licence"
+        },
+        "scripts": {
+          "description": "The ISO 15924 scripts the entry is offered for (a fallback is chosen by these); each\nstyle's default face covers them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "styles": {
+          "items": {
+            "$ref": "#/$defs/CatalogStyle"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "family",
+        "licence",
+        "homepage",
+        "scripts",
+        "styles"
+      ],
+      "type": "object"
+    },
+    "CatalogFace": {
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "index": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "scripts": {
+          "description": "ISO 15924 coverage by `fin_text::font_info`'s rule, sorted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "weight": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index",
+        "family",
+        "weight",
+        "italic",
+        "scripts"
+      ],
+      "type": "object"
+    },
+    "CatalogFile": {
+      "additionalProperties": false,
+      "properties": {
+        "faces": {
+          "description": "Every face, as `fin_text::font_info` reads it (`warm_cache` checks).",
+          "items": {
+            "$ref": "#/$defs/CatalogFace"
+          },
+          "type": "array"
+        },
+        "format": {
+          "$ref": "#/$defs/FontFormat"
+        },
+        "sha256": {
+          "description": "Lowercase hex SHA-256 of the whole file: its cache name and its pin.",
+          "type": "string"
+        },
+        "size": {
+          "description": "Bytes; a download must match it exactly.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "variable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Variable"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A variable font's `wght` axis. Only a variable file may serve several styles (one per\nweight in the range; the request's weight drives the axis)."
+        }
+      },
+      "required": [
+        "sha256",
+        "size",
+        "format",
+        "faces"
+      ],
+      "type": "object"
+    },
+    "CatalogSource": {
+      "additionalProperties": false,
+      "description": "Where a file can be fetched. A plain source serves the file itself; an archive source\nserves an archive (its own `sha256` and `size`) holding the file as `archive.member`.",
+      "properties": {
+        "archive": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArchiveMember"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "CatalogStyle": {
+      "additionalProperties": false,
+      "properties": {
+        "defaultFace": {
+          "description": "The face a fallback or an entry-level pin uses (a collection holds several).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/CatalogFile"
+        },
+        "id": {
+          "description": "`[a-z0-9-]`, unique in its entry (`regular`, `bold`).",
+          "type": "string"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "sources": {
+          "description": "Tried in order: the upstream first, then mirrors serving the same bytes.",
+          "items": {
+            "$ref": "#/$defs/CatalogSource"
+          },
+          "type": "array"
+        },
+        "weight": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "weight",
+        "italic",
+        "file",
+        "sources"
+      ],
       "type": "object"
     },
     "Change": {
@@ -1034,6 +1256,121 @@
       ],
       "type": "string"
     },
+    "FileState": {
+      "description": "A catalog file's state in this server (Decision 34).",
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "cached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Not cached and not queued: never requested, or background fetching is off.",
+          "properties": {
+            "state": {
+              "const": "missing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "const": "fetching",
+              "type": "string"
+            },
+            "total": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "state",
+            "bytes",
+            "total"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "retryAtMs": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "state": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason",
+            "retryAtMs"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "FontCatalog": {
+      "additionalProperties": false,
+      "properties": {
+        "catalogVersion": {
+          "description": "`YYYY.MM.N`, e.g. `2026.11.1`.",
+          "type": "string"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/CatalogEntry"
+          },
+          "type": "array"
+        },
+        "fallback": {
+          "description": "Entry ids, in the order a text's uncovered scripts look for a fallback.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalogVersion",
+        "fallback",
+        "entries"
+      ],
+      "type": "object"
+    },
     "FontFace": {
       "description": "One face of a font file, as `fin_text::font_info` reads it.",
       "properties": {
@@ -1097,6 +1434,56 @@
         "size",
         "format",
         "faces"
+      ],
+      "type": "object"
+    },
+    "FontFileStatus": {
+      "description": "One font file. `entry` and `style` name its catalog style, when the catalog lists it;\n`keys` are the font keys (`<family>|<weight>|<normal|italic>`) open projects pin it as.",
+      "properties": {
+        "entry": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/FileState"
+        },
+        "style": {
+          "type": "string"
+        },
+        "weight": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "size",
+        "family",
+        "weight",
+        "italic",
+        "keys",
+        "state"
       ],
       "type": "object"
     },
@@ -1227,6 +1614,77 @@
           "type": "object"
         }
       },
+      "type": "object"
+    },
+    "FontsPlan": {
+      "description": "`fonts.plan`: the `font.pin` ops a client prepends to its tx, and notes about faces or\nscripts the catalog cannot pin (`FONT_NOT_IN_CATALOG`), which never fail the plan.",
+      "properties": {
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/CoreError"
+          },
+          "type": "array"
+        },
+        "ops": {
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ops",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "FontsStatus": {
+      "description": "`fonts.status`: every catalog file's state in this server, then the files pinned by open\nprojects that the catalog does not list (font assets, files of another catalog).",
+      "properties": {
+        "autoFetch": {
+          "description": "Background fetching is on (`fonts.autoFetch`, and `FIN_FONTS_OFFLINE` unset).",
+          "type": "boolean"
+        },
+        "catalogVersion": {
+          "type": "string"
+        },
+        "damaged": {
+          "description": "The font cache or the catalog could not be used (`FONTS_DAMAGED`): nothing is\nfetched, and only font assets measure.",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "details": true,
+            "fix": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "details"
+          ],
+          "type": "object"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FontFileStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalogVersion",
+        "autoFetch",
+        "damaged",
+        "files"
+      ],
       "type": "object"
     },
     "FramePlan": {
@@ -2170,6 +2628,24 @@
         "crop",
         "opacity",
         "blend"
+      ],
+      "type": "object"
+    },
+    "Licence": {
+      "additionalProperties": false,
+      "properties": {
+        "spdx": {
+          "description": "An SPDX id from the permissive allow list (`catalog/rules.json`).",
+          "type": "string"
+        },
+        "url": {
+          "description": "The licence text at a pinned commit or tag.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "spdx",
+        "url"
       ],
       "type": "object"
     },
@@ -5190,6 +5666,27 @@
         "noMeasurer"
       ],
       "type": "string"
+    },
+    "Variable": {
+      "additionalProperties": false,
+      "properties": {
+        "wght": {
+          "description": "The `fvar` `wght` axis' `[min, max]` (`warm_cache` checks).",
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "wght"
+      ],
+      "type": "object"
     },
     "VideoInfo": {
       "properties": {

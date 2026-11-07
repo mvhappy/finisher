@@ -229,11 +229,26 @@ fn tick(inner: &Shared) -> bool {
             // Queued before the store is released: a commit that runs right after this tick
             // answers after these events reach JS (a rewind is seen before the new history's
             // first commit).
+            let mut rescan_all = false;
+            for e in &events {
+                match e {
+                    StoreEvent::Applied(c) => inner.fonts.committed(store, c),
+                    StoreEvent::Rewound { .. } | StoreEvent::Rebuilt { .. } => rescan_all = true,
+                    _ => {}
+                }
+            }
+            if rescan_all {
+                inner.fonts.rescan_all(store);
+            }
             for e in &events {
                 if let StoreEvent::Status(st) = e
                     && let Ok(v) = serde_json::to_value(st)
                 {
-                    *lock(&inner.status) = Some(v);
+                    *lock(&inner.status) = Some(v.clone());
+                    // The store's status with the font summary merged (Decision 34).
+                    let status = inner.fonts.merged(v);
+                    inner.events.emit(to_json(&EngineEvent::Status { status }));
+                    continue;
                 }
                 inner.events.emit(event_json(e, incarnation.as_deref()));
             }

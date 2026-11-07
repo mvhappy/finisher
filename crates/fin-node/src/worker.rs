@@ -83,6 +83,9 @@ pub(crate) fn open<'e>(
     worker.submit(Box::new(move || {
         let opened = guarded(
             || {
+                // The server's font manager: its shared measurer is what Task 20 passes as
+                // `OpenOptions.measurer` (the edit path's overflow check).
+                let manager = crate::fonts::for_server(&server_data);
                 let store = match &create {
                     Some((name, rate, idem)) => {
                         let rate: Rational = rate.parse().map_err(reject)?;
@@ -99,14 +102,19 @@ pub(crate) fn open<'e>(
                 };
                 let store = store.map_err(reject)?;
                 let status = serde_json::to_value(store.status()).ok();
-                Ok((store, status))
+                // Read here, off the JS thread: what every branch pins (Decision 34's open
+                // trigger fetches what of it is missing once the engine attaches).
+                let fonts = crate::fonts::Opened {
+                    manager,
+                    branches: crate::fonts::scan::store(&store),
+                };
+                Ok((store, status, fonts))
             },
             || {},
         );
         match opened {
-            Ok((store, status)) => {
-                deferred.resolve(move |_env| guarded(|| Engine::start(store, status, keep), || {}))
-            }
+            Ok((store, status, fonts)) => deferred
+                .resolve(move |_env| guarded(|| Engine::start(store, status, keep, fonts), || {})),
             Err(e) => deferred.reject(e),
         }
     }))?;
@@ -197,6 +205,10 @@ fn run_long<T>(
         #[cfg(feature = "test-hooks")]
         inner.hooks.long_call_delay();
         let r = f(&mut store);
+        // A takeover (its import), rebuild or recovery may have changed any branch's pins.
+        if matches!(operation, "takeover" | "rebuild" | "recover") {
+            inner.fonts.rescan_all(&store);
+        }
         if let Ok(status) = serde_json::to_value(store.status()) {
             *lock(&inner.status) = Some(status);
         }
@@ -249,6 +261,7 @@ pub(crate) fn close_now(inner: &Shared) -> Result<()> {
         }
     };
     inner.events.clear();
+    inner.fonts.detach();
     match store {
         // Folder failures stay unexported (the next open exports); only a database
         // failure is an error here.

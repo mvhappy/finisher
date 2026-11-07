@@ -59,6 +59,8 @@ pub(crate) struct Inner {
     pub(crate) events: EventSink,
     /// The maintenance thread, until `close` (or the engine's drop) stops it.
     pub(crate) maintenance: Mutex<Option<Maintenance>>,
+    /// This engine's place in its server's font manager (pins, status, the shared measurer).
+    pub(crate) fonts: crate::fonts::Handle,
     #[cfg(feature = "test-hooks")]
     pub(crate) hooks: crate::test_hooks::Hooks,
 }
@@ -133,9 +135,13 @@ impl Engine {
         store: Store,
         status: Option<serde_json::Value>,
         worker: Worker,
+        fonts: crate::fonts::Opened,
     ) -> Result<Engine> {
         let project_id = store.project_id().to_string();
-        let inner = Arc::new(Inner {
+        let inner = Arc::new_cyclic(|weak| Inner {
+            fonts: fonts
+                .manager
+                .attach(project_id.clone(), weak.clone(), fonts.branches),
             state: Mutex::new(State::Open(Box::new(store))),
             returned: Condvar::new(),
             status: Mutex::new(status),
@@ -294,11 +300,15 @@ impl Engine {
         self.task(Call::AcknowledgeSalvage { copy })
     }
 
-    /// Takes the lease over; resolves to the `ProjectStatus` JSON (long call).
+    /// Takes the lease over; resolves to the `ProjectStatus` JSON (long call), with the font
+    /// summary merged as `status()` has it.
     #[napi(catch_unwind, ts_return_type = "Promise<string>")]
     pub fn takeover<'e>(&self, env: &'e Env, confirm: bool) -> Result<Object<'e>> {
+        let inner = self.inner.clone();
         self.long(env, "takeover", move |s| {
-            encode(&s.takeover(confirm).map_err(reject)?)
+            let status = s.takeover(confirm).map_err(reject)?;
+            let raw = serde_json::to_value(&status).unwrap_or(serde_json::Value::Null);
+            encode(&inner.fonts.merged(raw))
         })
     }
 

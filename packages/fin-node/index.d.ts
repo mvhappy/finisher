@@ -118,6 +118,21 @@ export declare class Engine {
    */
   onEvent(cb: (json: string) => void): void;
   /**
+   * Resolves to the `FramePlan` JSON of `timeline` (`null`: the main timeline) on `branch` at
+   * `at` (a rational time string). Captions are measured with the server's shared measurer;
+   * a caption whose font bytes are missing is unmeasured (`layout: null`, `unmeasured`),
+   * never an error, and the missing files are queued for fetching.
+   */
+  evalFrame(branch: string, timeline: string | null | undefined, at: string): Promise<string>;
+  /** Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. */
+  evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string): Promise<string>;
+  /**
+   * Resolves to the `FontsPlan` JSON (`{ ops, notes }`): the `font.pin` ops to prepend to a tx
+   * of `opsJson` (a JSON `Op[]`) on `branch`. The ops are applied to a copy of the head first,
+   * so a tx that cannot apply rejects here as at commit. The tx itself is never changed.
+   */
+  fontsPlan(branch: string, opsJson: string): Promise<string>;
+  /**
    * Stops maintenance, flushes the export and closes the database (after long calls queued
    * before it); later calls reject with `ENGINE_CLOSED`. Idempotent.
    */
@@ -132,6 +147,36 @@ export declare class Engine {
   emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */
   maintenanceRunningForTest(): boolean;
+  /** @internal Test builds only: pins the model's `Fonts` JSON as if main's head held them. */
+  injectFontPinsForTest(fontsJson: string): void;
+}
+
+/**
+ * The font manager of a server data folder: the content-addressed cache
+ * `<serverData>/fonts/`, its fetcher and the shared measurer. Engines opened on the same
+ * folder share it. Their `status()` gains `fonts { missing, fetching, failed }` and the
+ * warnings `FONT_MISSING`, `FONT_FETCH_FAILED` and `FONTS_DAMAGED`; a change is a `status`
+ * event. Projects' missing pins are fetched in the background on open, after a commit or
+ * import, when a measurement finds bytes missing and when `fontsPlan` pins them, unless
+ * `setAutoFetch(false)` or `FIN_FONTS_OFFLINE=1`.
+ */
+export declare class FontManager {
+  private constructor();
+  static open(serverData: string): FontManager;
+  /** Whether background fetching is on now. */
+  readonly autoFetch: boolean;
+  /** `fonts.autoFetch`, at run time (`FIN_FONTS_OFFLINE=1` keeps it off). */
+  setAutoFetch(on: boolean): void;
+  /** The `FontCatalog` JSON. */
+  catalog(): string;
+  /** Resolves to the `FontsStatus` JSON: every file's state. */
+  status(): Promise<string>;
+  /**
+   * Fetches now (`{ sha256?, entries?, keys?, pinned? }` JSON; `pinned`: an open project's
+   * id), even with background fetching off; resolves to the `FontsStatus` JSON or rejects
+   * with `FONT_FETCH_FAILED`, `FONT_NOT_IN_CATALOG`, `PROJECT_NOT_FOUND` or `FONTS_DAMAGED`.
+   */
+  fetch(reqJson: string): Promise<string>;
 }
 
 /** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */
@@ -156,6 +201,10 @@ export declare function probe(path: string): Promise<string>;
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:
   | {
+      /** A generated font: `sans`, `rtl`, `han`, `latinBold`, `big:<bytes>[:<seed>]`. */
+      testFont(name: string): Buffer;
+      /** Measures a `TextRequest` JSON with the shared measurer; returns the `Measured` JSON. */
+      measure(serverData: string, requestJson: string): string;
       writeFixtureMp4(
         path: string,
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },

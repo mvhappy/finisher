@@ -409,6 +409,11 @@ export type FontSource =
     };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ArchiveFormat".
+ */
+export type ArchiveFormat = "zip";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ShapeKind".
  */
 export type ShapeKind = "fadeIn" | "fadeOut" | "crossIn" | "crossOut";
@@ -538,6 +543,32 @@ export type EngineEvent =
   | {
       dropped: number;
       type: "lagged";
+    };
+/**
+ * A catalog file's state in this server (Decision 34).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FileState".
+ */
+export type FileState =
+  | {
+      state: "cached";
+    }
+  | {
+      state: "missing";
+    }
+  | {
+      state: "queued";
+    }
+  | {
+      bytes: number;
+      state: "fetching";
+      total: number;
+    }
+  | {
+      reason: string;
+      retryAtMs: number;
+      state: "failed";
     };
 /**
  * The item kinds, as they appear in plans.
@@ -1554,6 +1585,17 @@ export interface FontPin {
  */
 export interface CaptionStyle {}
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ArchiveMember".
+ */
+export interface ArchiveMember {
+  format: ArchiveFormat;
+  /**
+   * The member's path inside the archive.
+   */
+  member: string;
+}
+/**
  * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
  * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
  * item of a nested timeline lists the nested items it sounds through in `via`, outermost
@@ -1808,6 +1850,124 @@ export interface WordPlan {
   text: string;
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CatalogEntry".
+ */
+export interface CatalogEntry {
+  family: string;
+  homepage: string;
+  /**
+   * `[a-z0-9-]`, unique in the catalog.
+   */
+  id: string;
+  licence: Licence;
+  /**
+   * The ISO 15924 scripts the entry is offered for (a fallback is chosen by these); each
+   * style's default face covers them.
+   */
+  scripts: string[];
+  styles: CatalogStyle[];
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Licence".
+ */
+export interface Licence {
+  /**
+   * An SPDX id from the permissive allow list (`catalog/rules.json`).
+   */
+  spdx: string;
+  /**
+   * The licence text at a pinned commit or tag.
+   */
+  url: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CatalogStyle".
+ */
+export interface CatalogStyle {
+  /**
+   * The face a fallback or an entry-level pin uses (a collection holds several).
+   */
+  defaultFace?: number;
+  file: CatalogFile;
+  /**
+   * `[a-z0-9-]`, unique in its entry (`regular`, `bold`).
+   */
+  id: string;
+  italic: boolean;
+  /**
+   * Tried in order: the upstream first, then mirrors serving the same bytes.
+   */
+  sources: CatalogSource[];
+  weight: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CatalogFile".
+ */
+export interface CatalogFile {
+  /**
+   * Every face, as `fin_text::font_info` reads it (`warm_cache` checks).
+   */
+  faces: CatalogFace[];
+  format: FontFormat;
+  /**
+   * Lowercase hex SHA-256 of the whole file: its cache name and its pin.
+   */
+  sha256: string;
+  /**
+   * Bytes; a download must match it exactly.
+   */
+  size: number;
+  /**
+   * A variable font's `wght` axis. Only a variable file may serve several styles (one per
+   * weight in the range; the request's weight drives the axis).
+   */
+  variable?: Variable | null;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CatalogFace".
+ */
+export interface CatalogFace {
+  family: string;
+  index: number;
+  italic: boolean;
+  /**
+   * ISO 15924 coverage by `fin_text::font_info`'s rule, sorted.
+   */
+  scripts: string[];
+  weight: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Variable".
+ */
+export interface Variable {
+  /**
+   * The `fvar` `wght` axis' `[min, max]` (`warm_cache` checks).
+   *
+   * @minItems 2
+   * @maxItems 2
+   */
+  wght: [number, number];
+}
+/**
+ * Where a file can be fetched. A plain source serves the file itself; an archive source
+ * serves an archive (its own `sha256` and `size`) holding the file as `archive.member`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CatalogSource".
+ */
+export interface CatalogSource {
+  archive?: ArchiveMember | null;
+  sha256?: string | null;
+  size?: number | null;
+  url: string;
+}
+/**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
  * record to blame when there is one (else null), and what to do. A re-run failure keeps its
  * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
@@ -1853,6 +2013,75 @@ export interface EffectPlan {
   params?: {
     [k: string]: PlanValue;
   };
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontCatalog".
+ */
+export interface FontCatalog {
+  /**
+   * `YYYY.MM.N`, e.g. `2026.11.1`.
+   */
+  catalogVersion: string;
+  entries: CatalogEntry[];
+  /**
+   * Entry ids, in the order a text's uncovered scripts look for a fallback.
+   */
+  fallback: string[];
+}
+/**
+ * One font file. `entry` and `style` name its catalog style, when the catalog lists it;
+ * `keys` are the font keys (`<family>|<weight>|<normal|italic>`) open projects pin it as.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFileStatus".
+ */
+export interface FontFileStatus {
+  entry?: string;
+  family: string;
+  italic: boolean;
+  keys: string[];
+  sha256: string;
+  size: number;
+  state: FileState;
+  style?: string;
+  weight: number;
+}
+/**
+ * `fonts.plan`: the `font.pin` ops a client prepends to its tx, and notes about faces or
+ * scripts the catalog cannot pin (`FONT_NOT_IN_CATALOG`), which never fail the plan.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontsPlan".
+ */
+export interface FontsPlan {
+  notes: CoreError[];
+  ops: Op[];
+}
+/**
+ * `fonts.status`: every catalog file's state in this server, then the files pinned by open
+ * projects that the catalog does not list (font assets, files of another catalog).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontsStatus".
+ */
+export interface FontsStatus {
+  /**
+   * Background fetching is on (`fonts.autoFetch`, and `FIN_FONTS_OFFLINE` unset).
+   */
+  autoFetch: boolean;
+  catalogVersion: string;
+  /**
+   * The font cache or the catalog could not be used (`FONTS_DAMAGED`): nothing is
+   * fetched, and only font assets measure.
+   */
+  damaged: {
+    code: string;
+    details: unknown;
+    fix?: string | null;
+    message: string;
+  };
+  files: FontFileStatus[];
 }
 /**
  * The layers of one timeline at `t`, bottom first.

@@ -24,6 +24,7 @@ mod http;
 mod lock;
 mod slot;
 mod validate;
+mod wire;
 
 use fin_core::CoreError;
 use serde_json::json;
@@ -41,6 +42,7 @@ pub use slot::MAX_DOWNLOADS;
 pub use validate::{
     MAX_FILE_SIZE, RULES_JSON, is_allowed_source_host, is_immutable_url, is_sha256,
 };
+pub use wire::{FontFileStatus, FontsPlan, FontsStatus};
 
 /// Lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {

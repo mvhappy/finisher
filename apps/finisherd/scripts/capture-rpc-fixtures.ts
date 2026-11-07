@@ -123,6 +123,20 @@ try {
   await unary("project-acknowledge-salvage", "project.acknowledgeSalvage", { copy: "project.fdb.corrupt-0" });
   await unary("tx-get", "tx.get", { txId: "tx-1" });
   await unary("tx-get-unknown", "tx.get", { txId: "tx-never" });
+  // Evaluation and fonts (plan 4C Task 22). The built-in catalog; nothing is pinned, so
+  // nothing is fetched (no network).
+  await unary("eval-frame", "eval.frame", { at: "1" });
+  await unary("eval-audio", "eval.audio", { from: "0", to: "5" });
+  await unary("fonts-plan", "fonts.plan", { branch: "main", ops: [addAsset("$p")] });
+  const server_ = async (name: string, tag: string, payload: Record<string, unknown>, code?: string) =>
+    scenario(name, async (c) => {
+      const exit = await c.call(tag, payload);
+      if (code === undefined) ok(exit);
+      else if (exit.ok || exit.error.code !== code) throw new Error(`${name}: expected ${code}, got ${JSON.stringify(exit)}`);
+    });
+  await server_("fonts-catalog", "fonts.catalog", {});
+  await server_("fonts-status", "fonts.status", {});
+  await server_("fonts-fetch-unknown", "fonts.fetch", { entries: ["no-such-entry"] }, "FONT_NOT_IN_CATALOG");
   await unary(
     "tx-commit-stale",
     "tx.commit",

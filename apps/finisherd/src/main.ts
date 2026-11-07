@@ -15,6 +15,7 @@ import {
   socketPath,
   writeServerInfo,
 } from "./config.ts";
+import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { HandlersLive } from "./handlers.ts";
 import { withServerLock } from "./lock.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
@@ -23,12 +24,13 @@ import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, se
 export interface ServeOptions {
   readonly serverData: string;
   readonly registry?: RegistryOptions;
+  readonly fonts?: FontsOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
 
 /** Runs the server until interrupted; finalizers stop the transports, close engines and remove `finisherd.json`. */
-export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
+export const serve = ({ serverData, onReady, registry, fonts }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -43,7 +45,7 @@ export const serve = ({ serverData, onReady, registry }: ServeOptions) =>
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local), serveRpc(ws)).pipe(
           Layer.provide(HandlersLive),
-          Layer.provide(layerProjectRegistry(serverData, registry)),
+          Layer.provide(Layer.mergeAll(layerProjectRegistry(serverData, registry), layerFonts(serverData, fonts))),
         ),
       );
 

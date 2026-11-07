@@ -1,6 +1,6 @@
 // Server-data location, local socket path and the `finisherd.json` discovery file.
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
@@ -130,6 +130,43 @@ export function writeServerInfo(serverData: string, info: Omit<ServerInfo, "prot
   writeFileSync(tmp, `${JSON.stringify(full, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   renameSync(tmp, file);
   return full;
+}
+
+/**
+ * finisherd's settings, `<server-data>/settings.json`, re-read while the server runs:
+ * - `fonts.autoFetch` (default `true`): fetch the fonts projects pin without being asked
+ *   (plan 4C Decision 34). `false` leaves fetching to `fin fonts fetch`; so does
+ *   `FIN_FONTS_OFFLINE=1`, whatever this says.
+ */
+export interface Settings {
+  readonly fonts: { readonly autoFetch: boolean };
+}
+
+export const DEFAULT_SETTINGS: Settings = { fonts: { autoFetch: true } };
+
+export function settingsPath(serverData: string): string {
+  return join(serverData, "settings.json");
+}
+
+/** The settings (defaults for a missing file); `error` says why a present file was not used. */
+export function readSettings(serverData: string): { settings: Settings; error?: string } {
+  let text: string;
+  try {
+    text = readFileSync(settingsPath(serverData), "utf8");
+  } catch (e) {
+    const code = (e as { code?: unknown }).code;
+    return code === "ENOENT" ? { settings: DEFAULT_SETTINGS } : { settings: DEFAULT_SETTINGS, error: String(e) };
+  }
+  try {
+    const raw = JSON.parse(text) as { fonts?: { autoFetch?: unknown } } | null;
+    const autoFetch = raw?.fonts?.autoFetch;
+    if (autoFetch !== undefined && typeof autoFetch !== "boolean") {
+      return { settings: DEFAULT_SETTINGS, error: "fonts.autoFetch must be true or false" };
+    }
+    return { settings: { fonts: { autoFetch: autoFetch ?? true } } };
+  } catch (e) {
+    return { settings: DEFAULT_SETTINGS, error: (e as Error).message };
+  }
 }
 
 export function removeServerInfo(serverData: string): void {

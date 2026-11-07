@@ -196,6 +196,18 @@ export class Engine {
     });
   }
 
+  evalFrame(branch, timeline, at) {
+    return call(this.#native.evalFrame(branch, timeline ?? null, at));
+  }
+
+  evalAudio(branch, timeline, from, to) {
+    return call(this.#native.evalAudio(branch, timeline ?? null, from, to));
+  }
+
+  fontsPlan(branch, opsJson) {
+    return call(this.#native.fontsPlan(branch, opsJson));
+  }
+
   async close() {
     await call(this.#native.close());
   }
@@ -229,6 +241,63 @@ export class Engine {
   maintenanceRunningForTest() {
     return this.#hook("maintenanceRunningForTest")();
   }
+
+  /** @internal Test builds only: pins `Fonts` JSON as if main's head held them. */
+  injectFontPinsForTest(fontsJson) {
+    try {
+      this.#hook("injectFontPinsForTest")(fontsJson);
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+}
+
+/** The font manager of a server data folder (shared with the engines opened on it). */
+export class FontManager {
+  #native;
+
+  constructor(nativeManager) {
+    if (!(nativeManager instanceof native.FontManager)) throw new TypeError("use FontManager.open");
+    this.#native = nativeManager;
+  }
+
+  static open(serverData) {
+    try {
+      return new FontManager(native.FontManager.open(serverData));
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
+  get autoFetch() {
+    return this.#native.autoFetch;
+  }
+
+  setAutoFetch(on) {
+    this.#native.setAutoFetch(on === true);
+  }
+
+  catalog() {
+    try {
+      return this.#native.catalog();
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
+  status() {
+    return call(this.#native.status());
+  }
+
+  fetch(reqJson) {
+    let promise;
+    try {
+      promise = this.#native.fetch(reqJson);
+    } catch (e) {
+      return Promise.reject(toFinError(e));
+    }
+    return call(promise);
+  }
 }
 
 /**
@@ -250,6 +319,20 @@ export function probe(path) {
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export const testHooks = native.writeFixtureMp4ForTest
   ? {
+      testFont(name) {
+        try {
+          return native.testFontForTest(name);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
+      measure(serverData, requestJson) {
+        try {
+          return native.measureForTest(serverData, requestJson);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
       writeFixtureMp4(path, { seconds = 2, fps = 25, audio = true, sampleRate = 48000 } = {}) {
         try {
           native.writeFixtureMp4ForTest(path, seconds, fps, audio, sampleRate);

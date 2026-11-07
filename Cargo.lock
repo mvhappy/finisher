@@ -462,8 +462,11 @@ name = "fin-node"
 version = "0.0.0"
 dependencies = [
  "fin-core",
+ "fin-fonts",
  "fin-probe",
  "fin-store",
+ "fin-testfonts",
+ "fin-text",
  "napi",
  "napi-build",
  "napi-derive",
@@ -494,6 +497,7 @@ dependencies = [
  "blake3",
  "crc32c",
  "fin-core",
+ "fin-fonts",
  "fin-probe",
  "fin-store",
  "libc",

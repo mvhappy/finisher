@@ -28,7 +28,9 @@ libc = "0.2.191"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_CloudFilters", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Time", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
-# Only for `examples/export_schema.rs`, which puts `fin_probe::Probe` in the TS contract.
+# Only for `examples/export_schema.rs`, which puts `fin_probe::Probe` and the font wire types
+# (`fin_fonts::{FontCatalog, FileState, FontsStatus, FontsPlan}`) in the TS contract.
+fin-fonts = { path = "../fin-fonts" }
 fin-probe = { path = "../fin-probe" }
 fin-store = { path = ".", features = ["test-hooks"] }
 proptest = "1"

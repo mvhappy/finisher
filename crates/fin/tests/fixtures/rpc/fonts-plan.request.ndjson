@@ -1,0 +1,1 @@
+{"_tag":"Request","id":"1","tag":"fonts.plan","payload":{"projectId":"01fixtureproject0000000000","branch":"main","ops":[{"op":"asset.add","id":"$p","path":"/media/a.mov","duration":"600","video":{"width":1920,"height":1080,"rate":"30"},"audio":null,"fingerprint":"fp"}]},"headers":[]}

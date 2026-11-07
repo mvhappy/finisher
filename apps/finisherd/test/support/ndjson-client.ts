@@ -135,9 +135,13 @@ export interface RunningServer {
 
 const MAIN = fileURLToPath(new URL("../../src/main.ts", import.meta.url));
 
-/** Spawns `node src/main.ts --server-data <dir>` and waits for its `finisherd.json`. */
-export async function startServer(serverData: string, timeoutMs = 15_000): Promise<RunningServer> {
-  const child = spawn(process.execPath, [MAIN, "--server-data", serverData], { stdio: ["ignore", "pipe", "pipe"] });
+/** Spawns `node src/main.ts --server-data <dir>` (with `env`) and waits for its `finisherd.json`. */
+export async function startServer(
+  serverData: string,
+  timeoutMs = 15_000,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<RunningServer> {
+  const child = spawn(process.execPath, [MAIN, "--server-data", serverData], { stdio: ["ignore", "pipe", "pipe"], env });
   let stderr = "";
   let stdout = "";
   child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));

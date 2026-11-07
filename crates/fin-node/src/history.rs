@@ -35,6 +35,7 @@ fn parse<T: DeserializeOwned>(what: &str, json: &str) -> Result<T> {
 
 /// The short history calls (called from [`crate::tasks`]).
 pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
+    let writes = !matches!(call, Call::Branches { .. } | Call::ResolveBranch { .. });
     with_store(store, |s| {
         let json = match call {
             Call::BranchCreate { req_json } => encode(
@@ -73,6 +74,10 @@ pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
             )?,
             _ => unreachable!("not a history call"),
         };
+        // A branch or history write may change any branch's pins (Decision 34).
+        if writes {
+            store.fonts.rescan_all(s);
+        }
         Ok(Reply::Json(json))
     })
 }

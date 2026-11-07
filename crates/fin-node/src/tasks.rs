@@ -70,6 +70,22 @@ pub(crate) enum Call {
     Revert {
         req_json: String,
     },
+    // Evaluation and pin planning (`crate::eval`).
+    EvalFrame {
+        branch: String,
+        timeline: Option<String>,
+        at: String,
+    },
+    EvalAudio {
+        branch: String,
+        timeline: Option<String>,
+        from: String,
+        to: String,
+    },
+    FontsPlan {
+        branch: String,
+        ops_json: String,
+    },
     /// Test hook: panics while holding the store.
     #[cfg(feature = "test-hooks")]
     Panic,
@@ -166,7 +182,7 @@ fn tx_json(tx_id: &str, status: TxStatus) -> Result<Reply> {
 /// cached after the last tick or long call with `busy: {operation, sinceMs}`.
 fn status(store: &Shared) -> Result<Reply> {
     let mut guard = lock(&store.state);
-    let (mut value, busy) = match &mut *guard {
+    let (value, busy) = match &mut *guard {
         State::Open(s) => {
             let v = serde_json::to_value(s.status()).map_err(|e| {
                 reject(CoreError::new(
@@ -188,6 +204,9 @@ fn status(store: &Shared) -> Result<Reply> {
         }
         other => return Err(reject(other.unavailable())),
     };
+    drop(guard);
+    // The font summary (plan 4C Decision 34): `fonts`, and its warnings after the store's.
+    let mut value = store.fonts.merged(value);
     if let Some(obj) = value.as_object_mut() {
         obj.insert("busy".to_string(), busy);
     }
@@ -210,6 +229,8 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
                 let c = s
                     .commit_at_generation(tx, generation.as_ref())
                     .map_err(reject)?;
+                // Decision 34: a commit that changed the pins fetches what they lack.
+                store.fonts.committed(s, &c);
                 Ok(Reply::Json(encode(&c)?))
             })
         }
@@ -262,6 +283,9 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         | Call::Merge { .. }
         | Call::CherryPick { .. }
         | Call::Revert { .. }) => crate::history::run(store, call),
+        call @ (Call::EvalFrame { .. } | Call::EvalAudio { .. } | Call::FontsPlan { .. }) => {
+            crate::eval::run(store, call)
+        }
         #[cfg(feature = "test-hooks")]
         Call::Panic => with_store(store, |_| panic!("fin-node test panic")),
     }

@@ -4,6 +4,7 @@ import { probe } from "@finisher/fin-node";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { attemptJson, toFinError } from "./errors.ts";
+import { Fonts } from "./fonts.ts";
 import { ProjectRegistry } from "./projects.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
@@ -16,6 +17,7 @@ const guard = <A, E, R>(self: Effect.Effect<A, E, R>) =>
 export const HandlersLive = FinRpcs.toLayer(
   Effect.gen(function* () {
     const registry = yield* ProjectRegistry;
+    const fonts = yield* Fonts;
     return {
       "server.hello": () =>
         Effect.succeed({
@@ -55,6 +57,15 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.acknowledgeSalvage": ({ projectId, copy }) =>
         guard(Effect.map(registry.acknowledgeSalvage(projectId, copy), (acknowledged) => ({ acknowledged }))),
       "tx.get": ({ projectId, txId }) => guard(registry.txGet(projectId, txId)),
+      "eval.frame": ({ projectId, branch, timeline, at }) => guard(registry.evalFrame(projectId, branch ?? "main", timeline, at)),
+      "eval.audio": ({ projectId, branch, timeline, from, to }) =>
+        guard(registry.evalAudio(projectId, branch ?? "main", timeline, from, to)),
+      "fonts.catalog": () => guard(fonts.catalog()),
+      "fonts.status": () => guard(fonts.status()),
+      // `pinned` needs the project open (its pins are the engine's): opened on demand.
+      "fonts.fetch": (req) =>
+        guard(Effect.andThen(req.pinned === undefined ? Effect.void : registry.ensure(req.pinned), fonts.fetch(req))),
+      "fonts.plan": ({ projectId, branch, ops }) => guard(registry.fontsPlan(projectId, branch, ops)),
     };
   }),
 );

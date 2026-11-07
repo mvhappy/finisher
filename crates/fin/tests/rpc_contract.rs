@@ -233,6 +233,7 @@ fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str)
     assert_eq!(got["exit"]["value"]["tx"]["txId"], "tx-1", "{got}");
     let unknown = Conn::open(server, subst).replay("tx-get-unknown");
     assert_eq!(unknown["exit"]["value"], Value::Null);
+    replay_fonts(server, subst);
     let stale = Conn::open(server, subst).replay("tx-commit-stale");
     assert_eq!(
         stale["exit"]["cause"][0]["error"]["code"],
@@ -249,6 +250,32 @@ fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str)
     replay_history(server, subst, project_id);
     let rebuilt = Conn::open(server, subst).replay_to("project-rebuild", REPORT_KEYS);
     assert_eq!(rebuilt["exit"]["value"]["reason"], "manual", "{rebuilt}");
+}
+
+/// The eval and fonts RPCs (plan 4C Task 22), in the capture script's order. Plans and
+/// catalogs are compared down to their top-level keys (their contents are fin-core's and
+/// fin-fonts' own tests'); the built-in catalog, nothing pinned, nothing fetched.
+fn replay_fonts(server: &Server, subst: &[(String, String)]) {
+    let frame = Conn::open(server, subst).replay_to("eval-frame", REPORT_KEYS);
+    assert_eq!(frame["exit"]["value"]["timeline"], "tl1", "{frame}");
+    let audio = Conn::open(server, subst).replay_to("eval-audio", REPORT_KEYS);
+    assert_eq!(audio["exit"]["value"]["timeline"], "tl1", "{audio}");
+    let plan = Conn::open(server, subst).replay("fonts-plan");
+    assert_eq!(plan["exit"]["value"], json!({ "ops": [], "notes": [] }));
+    let catalog = Conn::open(server, subst).replay_to("fonts-catalog", REPORT_KEYS);
+    assert!(
+        catalog["exit"]["value"]["entries"]
+            .as_array()
+            .is_some_and(|e| !e.is_empty()),
+        "{catalog}"
+    );
+    let status = Conn::open(server, subst).replay_to("fonts-status", REPORT_KEYS);
+    assert_eq!(status["exit"]["value"]["damaged"], Value::Null, "{status}");
+    let unknown = Conn::open(server, subst).replay("fonts-fetch-unknown");
+    assert_eq!(
+        unknown["exit"]["cause"][0]["error"]["code"],
+        "FONT_NOT_IN_CATALOG"
+    );
 }
 
 /// The branch and history RPCs (plan 4B Task 18), in the capture script's order, with its

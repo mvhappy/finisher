@@ -3,7 +3,7 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { BranchView, CommittedTx } from "@finisher/core-types";
+import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
 import type { EngineEvent, FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "effect";
@@ -65,6 +65,17 @@ export interface ProjectRegistryShape {
   readonly txGet: (projectId: string, txId: string) => Effect.Effect<TxGetResult, FinError>;
   readonly acknowledgeRewind: (projectId: string, branch: string, generation: number) => Effect.Effect<boolean, FinError>;
   readonly acknowledgeSalvage: (projectId: string, copy: string) => Effect.Effect<boolean, FinError>;
+  /** `eval.frame`: `branch` resolved first; `timeline` absent: the main timeline. */
+  readonly evalFrame: (projectId: string, branch: string, timeline: string | undefined, at: string) => Effect.Effect<FramePlan, FinError>;
+  readonly evalAudio: (
+    projectId: string,
+    branch: string,
+    timeline: string | undefined,
+    from: string,
+    to: string,
+  ) => Effect.Effect<AudioPlan, FinError>;
+  /** `fonts.plan`: the pins to prepend to a tx of `ops` on `branch` (nothing is committed). */
+  readonly fontsPlan: (projectId: string, branch: string, ops: ReadonlyArray<unknown>) => Effect.Effect<FontsPlan, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
   /** @internal Tests only: how many live fan-out channels exist. */
@@ -485,6 +496,18 @@ export function makeProjectRegistry(
         ),
       acknowledgeSalvage: (projectId, copy) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy))),
       ensure: (projectId) => Effect.asVoid(get(projectId)),
+      evalFrame: (projectId, requested, timeline, at) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
+          on<FramePlan>(projectId, (e) => e.evalFrame(branch, timeline, at)),
+        ),
+      evalAudio: (projectId, requested, timeline, from, to) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
+          on<AudioPlan>(projectId, (e) => e.evalAudio(branch, timeline, from, to)),
+        ),
+      fontsPlan: (projectId, requested, ops) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
+          on<FontsPlan>(projectId, (e) => e.fontsPlan(branch, JSON.stringify(ops))),
+        ),
 
       hubCount: () => hubs.size,
       engineOf: (projectId) => byId.get(projectId)?.engine,
