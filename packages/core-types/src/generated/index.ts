@@ -892,6 +892,16 @@ export type EngineEvent =
       type: "collect";
     };
 /**
+ * The type of a directory entry as listed (never by following a link). Windows reparse
+ * points with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a
+ * [`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a
+ * directory nor a link (sockets, devices, FIFOs) is `other`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryType".
+ */
+export type EntryType = "file" | "dir" | "symlink" | "other";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Ulid".
  */
@@ -1154,6 +1164,15 @@ export type ParamType =
       type: "assetRef";
     };
 /**
+ * A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the
+ * library has `hydrate`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Placeholder".
+ */
+export type Placeholder =
+  "dataless" | "icloudStub" | "nextcloud" | "owncloud" | "recallOnOpen" | "recallOnData" | "offline" | "unpinned";
+/**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1166,6 +1185,44 @@ export type PurgeSelector =
     }
   | {
       before: number;
+    };
+/**
+ * A root's state (Decision 17): `online` carries the identity measured now (its key may
+ * differ from the stored one when the change was confirmed harmless); every other state
+ * puts the library offline with its catalog intact (Decision 18).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RootState".
+ */
+export type RootState =
+  | {
+      caseSensitive: boolean;
+      devId: string;
+      enumeration: string;
+      key: string;
+      kind: string;
+      mountRoot: boolean;
+      remote: boolean;
+      rootFileId?: string | null;
+      sample: SampleEntry[];
+      state: "online";
+    }
+  | {
+      code: string;
+      state: "unreachable";
+    }
+  | {
+      state: "unmounted";
+    }
+  | {
+      key: string;
+      state: "volumeChanged";
+    }
+  | {
+      state: "empty";
+    }
+  | {
+      state: "timeout";
     };
 /**
  * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
@@ -3197,6 +3254,30 @@ export interface DiagnosticsReport {
   state: JournalState;
 }
 /**
+ * Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the
+ * job's batches. `complete: false` (an error, a timeout, a placeholder or automount
+ * directory) marks nothing missing; `code` says why. `entries` counts the listing's entries.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DirDone".
+ */
+export interface DirDone {
+  code?: string | null;
+  complete: boolean;
+  dir: RawRel;
+  entries: number;
+  mtimeNs?: string | null;
+}
+/**
+ * Raw components below a library root, outermost first (empty for the root): base64 of each name's bytes (Unix bytes; Windows UTF-16 as WTF-8).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RawRel".
+ */
+export interface RawRel {
+  components: string[];
+}
+/**
  * A Dolby Vision configuration record (`dvcC`/`dvvC`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3255,6 +3336,18 @@ export interface Envelope {
    * [`ENVELOPE_VERSION`].
    */
   v: number;
+}
+/**
+ * What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the
+ * catalog has one, file id. TS `ExpectWire`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Expect".
+ */
+export interface Expect {
+  fileId?: string | null;
+  mtimeNs: string;
+  size: number;
 }
 /**
  * One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as
@@ -3920,6 +4013,65 @@ export interface SkippedFile {
   reason: string;
 }
 /**
+ * One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:
+ * entries are matched by file id, size and mtime.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SampleEntry".
+ */
+export interface SampleEntry {
+  fileId?: string | null;
+  mtimeNs: string;
+  size: number;
+}
+/**
+ * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ScanBatch".
+ */
+export interface ScanBatch {
+  dirsDone: DirDone[];
+  entries: ScanEntry[];
+  seq: number;
+}
+/**
+ * One entry of a directory listing, as a scan reports it (Decision 25 keys rows by
+ * `(dir, name)` on raw bytes).
+ *
+ * - `name`: the raw component the entry is opened by; for a Nextcloud, ownCloud or iCloud
+ *   stub it is the name the stub **stands for** (`placeholder` says which stub), so the row
+ *   survives hydration; a stub whose real file is also listed is `excluded` with
+ *   `STUB_SHADOWED` under its own name.
+ * - `name_nfc`, `name_lossy`: the NFC display name ([`crate::names`]); `rel_key`: the
+ *   lookup key, `/`-joined and case-folded on case-insensitive roots. Neither is unique.
+ * - `dev`, `file_id`: rename hints only (`dev:fileId`, Decision 22); `None` where the OS or
+ *   server gives none.
+ * - `mount_root`: the entry is the root of a nested mount; `automount`: an automount point,
+ *   never descended (`excluded: AUTOMOUNT`).
+ * - `excluded`: the exclusion code ([`crate::exclude::code`]) or `None`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ScanEntry".
+ */
+export interface ScanEntry {
+  automount: boolean;
+  dev?: string | null;
+  dir: RawRel;
+  entryType: EntryType;
+  excluded?: string | null;
+  fileId?: string | null;
+  mountRoot: boolean;
+  mtimeNs: string;
+  name: string;
+  nameLossy: boolean;
+  nameNfc: string;
+  placeholder?: Placeholder | null;
+  relKey: string;
+  reparseTag?: number | null;
+  size: number;
+}
+/**
  * A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:
  * `SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,
  * `MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,
@@ -3999,4 +4151,31 @@ export interface UnitEntry {
  */
 export interface TxSetAside {
   setAside: SetAside;
+}
+/**
+ * A root's volume (Decision 15), measured at add and refreshed at each full scan.
+ *
+ * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
+ *   fields are never stored;
+ * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
+ * - `dev_id`: the device id, informational only (never compared alone);
+ * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
+ * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
+ *   information class, `fake`);
+ * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
+ *   key change.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VolumeIdentity".
+ */
+export interface VolumeIdentity {
+  caseSensitive: boolean;
+  devId: string;
+  enumeration: string;
+  key: string;
+  kind: string;
+  mountRoot: boolean;
+  remote: boolean;
+  rootFileId?: string | null;
+  sample: SampleEntry[];
 }

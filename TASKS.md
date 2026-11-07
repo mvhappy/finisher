@@ -333,6 +333,29 @@ Recorded in each sub-project spec's "Owner decisions (2026-11-07)" section and i
 - [ ] **Switch the repository from Node 26 to Node 24** (D35, to match Electron's embedded Node 24.x): `package.json` `engines`, `.node-version` (and any `.nvmrc`), `.superpowers/env.sh`, CI (`actions/setup-node` reads `.node-version`), the README's toolchain notes, and the plans that still name Node 26 (4A, diagnostics hooks). **Verify** on Node 24: `node:sqlite` (`DatabaseSync`, WAL, FTS5, no experimental warning) and every other Node API in use (`node:crypto`, `worker_threads`, `net` pipes and sockets, the `--permission` flags sub-project 8 relies on), then `pnpm test`, `pnpm gates` and `pnpm e2e`; record the Node 24 patch version and the result here
 - [ ] **Counsel before release/upload** (one review; blocks the first public release, and the first training run or upload): the data-collection consent model (D34, arch §21.1: diagnostics on by default, training by a person's opt-in); 6.1 AAC on Linux (symphonia decode, vendored vo-aacenc export: patents); 6.2 Electron's bundled ffmpeg as a provisional exception to "no LGPL in Finisher's code" (desktop app only; whether it is needed is decided in sub-project 9); 6.9 the encoder policy, both halves (OS-vendor H.264 encoders for export, QA renders and mattes; internal preview proxies, never distributed, may use any hardware encoder, GPU-vendor ones included; no built-in HEVC); 7.1 closed-model outputs as training targets (provider terms forbid it; a person records counsel's result in the mandatory gate `training.closedModelTargets`, default `pendingCounsel`, before the first training run or upload); 7.6 Claude Code and Codex subscription use through the user's own sign-in, including whether Finisher driving the CLI in sessions that share its sign-in file is ordinary use (Anthropic's and OpenAI's terms); 8.4 model provenance (weight licences govern model choice), plus the output terms of the v1 generation providers (OpenRouter, fal.ai) and their curated models. Also the codec patent posture (arch §26 question 1)
 
+## Sub-project 5D: library indexer (planned 2026-11-07, revision 2 after review)
+
+Plan: `docs/superpowers/plans/2026-11-07-sub-project-5d-library-indexer.md` (spec `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §7). One line per task; each task ticks its line with as-built notes.
+
+- [x] Task 1: `fin-library` types, raw paths, names, placeholders, excludes, volume rules and the fake source. As built: the frozen wire types (`RawRel` as `{components: base64[]}`, `Expect`, `ScanEntry`, `DirDone`, `ScanBatch`, `SampleEntry`, `VolumeIdentity`, `RootState` tagged by `state`, `Placeholder`, `EntryType`, `OpenError`) generated into `@finisher/core-types`; nanosecond times as decimal strings, raw bytes and file ids as base64; WTF-8 for Windows names; NFC names and `relKey`s (folded with `to_lowercase` on case-insensitive roots); collision bits `nfc=1 | case=2 | lossy=4` (by the first key step at which two names meet); placeholder and reparse-tag rules over tagged `Attrs`; `listing::entries` applies every listing rule in one place (name-surrogate reparse points become `symlink`; a stub is reported as the name it stands for; a shadowed or second stub is `STUB_SHADOWED`); default excludes, an own glob matcher (unanchored patterns match names at any depth; `include` filters files only); `classify_root` and `volume::{key, strip_userinfo, sample}`; `Source`/`RawEntry`/`RootStat`/`DirHandle`; `FakeSource::from_json` with counters of placeholder touches and automount triggers. New dependency `unicode-normalization` 0.1.26; `base64` is 0.23 (the tree's), not 0.22. Conflict copies are matched by unambiguous markers only (Dropbox/Nextcloud `(conflicted copy …)`, Syncthing, ownCloud `_conflict-<digits>`, Google `[Conflict]`): `fin_store::conflict_names::classify` accepts only Finisher's own names, and iCloud's ` <n>`, OneDrive's `-<host>` and Google's `(<n>)` would drop real media
+- [ ] Task 2: Linux and macOS sources, volume identity and the opener
+- [ ] Task 3: Windows source, volume identity and the opener
+- [ ] Task 4: the walker (parallel reads, timeouts, batches, polls, the test overlay)
+- [ ] Task 5: `fin-probe` entry points, `PROBE_VERSION`, library probe and hash (after 6A-1 merges)
+- [ ] Task 6: the `library` worker family and the clippy gate
+- [ ] Task 7a: catalogs: extensions, schema, indexer and reader threads
+- [ ] Task 7b: the diff and its property test
+- [ ] Task 8: the `libraries` chain, the registry and root probes
+- [ ] Task 9: library kinds and family wiring on the engine
+- [ ] Task 10: the library service (states, triggers, demand polling, watches, journal)
+- [ ] Task 11: the stage framework, `prioritize`, `locate` and file events
+- [ ] Task 12: search and lookup
+- [ ] Task 13: contracts, RPCs, scopes, reach and `library.watch`
+- [ ] Task 14: `fin library`, `fin search` and the console
+- [ ] Task 15: e2e `library` scenario and budgets
+- [ ] Task 16: spec as built, architecture pointer, tracker
+- [ ] Task 17: cross-platform validation (controller-run)
+
 ## Sub-project 6: media engine (designed 2026-11-07, revision 2 after review)
 
 Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps the review findings). Plan for 6A: `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`: 6A-1 (Tasks 1–8, branch `sp6a1-media-foundations` from `sp4c-edit-breadth`, ready now, beside 5C-1) and 6A-2 (Tasks 9–16, after 5C-1). Sub-batches 6A-1/6A-2, 6B-1/6B-2, 6C–6G (spec §19); 6A's plan adds its task list here in its Task 1.

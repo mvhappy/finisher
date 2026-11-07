@@ -2022,6 +2022,41 @@
       ],
       "type": "object"
     },
+    "DirDone": {
+      "additionalProperties": false,
+      "description": "Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the\njob's batches. `complete: false` (an error, a timeout, a placeholder or automount\ndirectory) marks nothing missing; `code` says why. `entries` counts the listing's entries.",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "dir": {
+          "$ref": "#/$defs/RawRel"
+        },
+        "entries": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mtimeNs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "dir",
+        "complete",
+        "entries"
+      ],
+      "type": "object"
+    },
     "DolbyVision": {
       "description": "A Dolby Vision configuration record (`dvcC`/`dvvC`).",
       "properties": {
@@ -2393,6 +2428,16 @@
         "effect",
         "style",
         "font"
+      ],
+      "type": "string"
+    },
+    "EntryType": {
+      "description": "The type of a directory entry as listed (never by following a link). Windows reparse\npoints with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a\n[`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a\ndirectory nor a link (sockets, devices, FIFOs) is `other`.",
+      "enum": [
+        "file",
+        "dir",
+        "symlink",
+        "other"
       ],
       "type": "string"
     },
@@ -2974,6 +3019,31 @@
           "type": "object"
         }
       ]
+    },
+    "Expect": {
+      "additionalProperties": false,
+      "description": "What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the\ncatalog has one, file id. TS `ExpectWire`.",
+      "properties": {
+        "fileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "mtimeNs"
+      ],
+      "type": "object"
     },
     "ExportPage": {
       "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page.",
@@ -6922,6 +6992,51 @@
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
     },
+    "Placeholder": {
+      "description": "A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the\nlibrary has `hydrate`.",
+      "oneOf": [
+        {
+          "const": "dataless",
+          "description": "macOS `SF_DATALESS`, on a file or a directory.",
+          "type": "string"
+        },
+        {
+          "const": "icloudStub",
+          "description": "A legacy iCloud `.<name>.icloud` stub, standing for `<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "nextcloud",
+          "description": "A Nextcloud `<name>.nextcloud` virtual file, standing for `<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "owncloud",
+          "description": "An ownCloud `<name>.owncloud` virtual file, standing for `<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "recallOnOpen",
+          "description": "Windows `FILE_ATTRIBUTE_RECALL_ON_OPEN`.",
+          "type": "string"
+        },
+        {
+          "const": "recallOnData",
+          "description": "Windows `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`.",
+          "type": "string"
+        },
+        {
+          "const": "offline",
+          "description": "Windows `FILE_ATTRIBUTE_OFFLINE`.",
+          "type": "string"
+        },
+        {
+          "const": "unpinned",
+          "description": "Windows `FILE_ATTRIBUTE_UNPINNED`: online-only even with the other bits clear.",
+          "type": "string"
+        }
+      ]
+    },
     "PlanCrop": {
       "description": "A layer's crop, resolved at the plan's time: fractions of the item's size cut from each\nside, each in `[0, 1]`, every field present.",
       "properties": {
@@ -7383,6 +7498,23 @@
       "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
       "type": "string"
     },
+    "RawRel": {
+      "additionalProperties": false,
+      "description": "Raw components below a library root, outermost first (empty for the root): base64 of each name's bytes (Unix bytes; Windows UTF-16 as WTF-8).",
+      "properties": {
+        "components": {
+          "items": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "components"
+      ],
+      "type": "object"
+    },
     "RecoverGroup": {
       "additionalProperties": false,
       "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `records_branch`: the branch the records were on;\n- `branch`, `fork_seq`, `fork_hash`: the fork `create` uses: an existing branch, the seq\n  and its record; or, with `fork_group`, the branch that group makes (`branch` its name,\n  `fork_hash` absent: its record is written then); none for a group that cannot be made\n  for want of a fork (`NO_COMMON_HISTORY`);\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has neither records with ops nor checkpoints, and its child groups\n  fork where it does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it whole (fix each, or dismiss it);\n- `notes`: rows `create` leaves in quarantine while making the rest (`NAME_TAKEN`,\n  `BRANCH_NOT_FOUND`, …; they come back as a group of their own), and copies whose source\n  is not here (`SOURCE_NOT_FOUND`).",
@@ -7576,6 +7708,134 @@
         }
       ]
     },
+    "RootState": {
+      "description": "A root's state (Decision 17): `online` carries the identity measured now (its key may\ndiffer from the stored one when the change was confirmed harmless); every other state\nputs the library offline with its catalog intact (Decision 18).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A root's volume (Decision 15), measured at add and refreshed at each full scan.\n\n- `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw\n  fields are never stored;\n- `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);\n- `dev_id`: the device id, informational only (never compared alone);\n- `mount_root`: the root is a mount root (Decision 17's unmount rule);\n- `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows\n  information class, `fake`);\n- `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a\n  key change.",
+          "properties": {
+            "caseSensitive": {
+              "type": "boolean"
+            },
+            "devId": {
+              "type": "string"
+            },
+            "enumeration": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "mountRoot": {
+              "type": "boolean"
+            },
+            "remote": {
+              "type": "boolean"
+            },
+            "rootFileId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sample": {
+              "items": {
+                "$ref": "#/$defs/SampleEntry"
+              },
+              "type": "array"
+            },
+            "state": {
+              "const": "online",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "key",
+            "kind",
+            "devId",
+            "mountRoot",
+            "caseSensitive",
+            "enumeration",
+            "remote",
+            "sample"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unreachable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "unmounted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "state": {
+              "const": "volumeChanged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "empty",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "timeout",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Rotation": {
       "description": "Clockwise display rotation in degrees, from the track matrix.",
       "enum": [
@@ -7599,6 +7859,147 @@
       "required": [
         "key",
         "histogram"
+      ],
+      "type": "object"
+    },
+    "SampleEntry": {
+      "additionalProperties": false,
+      "description": "One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:\nentries are matched by file id, size and mtime.",
+      "properties": {
+        "fileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "mtimeNs"
+      ],
+      "type": "object"
+    },
+    "ScanBatch": {
+      "additionalProperties": false,
+      "description": "One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.",
+      "properties": {
+        "dirsDone": {
+          "items": {
+            "$ref": "#/$defs/DirDone"
+          },
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ScanEntry"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "entries",
+        "dirsDone"
+      ],
+      "type": "object"
+    },
+    "ScanEntry": {
+      "additionalProperties": false,
+      "description": "One entry of a directory listing, as a scan reports it (Decision 25 keys rows by\n`(dir, name)` on raw bytes).\n\n- `name`: the raw component the entry is opened by; for a Nextcloud, ownCloud or iCloud\n  stub it is the name the stub **stands for** (`placeholder` says which stub), so the row\n  survives hydration; a stub whose real file is also listed is `excluded` with\n  `STUB_SHADOWED` under its own name.\n- `name_nfc`, `name_lossy`: the NFC display name ([`crate::names`]); `rel_key`: the\n  lookup key, `/`-joined and case-folded on case-insensitive roots. Neither is unique.\n- `dev`, `file_id`: rename hints only (`dev:fileId`, Decision 22); `None` where the OS or\n  server gives none.\n- `mount_root`: the entry is the root of a nested mount; `automount`: an automount point,\n  never descended (`excluded: AUTOMOUNT`).\n- `excluded`: the exclusion code ([`crate::exclude::code`]) or `None`.",
+      "properties": {
+        "automount": {
+          "type": "boolean"
+        },
+        "dev": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dir": {
+          "$ref": "#/$defs/RawRel"
+        },
+        "entryType": {
+          "$ref": "#/$defs/EntryType"
+        },
+        "excluded": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mountRoot": {
+          "type": "boolean"
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nameLossy": {
+          "type": "boolean"
+        },
+        "nameNfc": {
+          "type": "string"
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Placeholder"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relKey": {
+          "type": "string"
+        },
+        "reparseTag": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dir",
+        "name",
+        "nameNfc",
+        "nameLossy",
+        "relKey",
+        "entryType",
+        "size",
+        "mtimeNs",
+        "mountRoot",
+        "automount"
       ],
       "type": "object"
     },
@@ -9002,6 +9403,56 @@
         "nominalRate",
         "vfr",
         "frames"
+      ],
+      "type": "object"
+    },
+    "VolumeIdentity": {
+      "additionalProperties": false,
+      "description": "A root's volume (Decision 15), measured at add and refreshed at each full scan.\n\n- `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw\n  fields are never stored;\n- `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);\n- `dev_id`: the device id, informational only (never compared alone);\n- `mount_root`: the root is a mount root (Decision 17's unmount rule);\n- `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows\n  information class, `fake`);\n- `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a\n  key change.",
+      "properties": {
+        "caseSensitive": {
+          "type": "boolean"
+        },
+        "devId": {
+          "type": "string"
+        },
+        "enumeration": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "mountRoot": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": "boolean"
+        },
+        "rootFileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sample": {
+          "items": {
+            "$ref": "#/$defs/SampleEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "devId",
+        "mountRoot",
+        "caseSensitive",
+        "enumeration",
+        "remote",
+        "sample"
       ],
       "type": "object"
     },

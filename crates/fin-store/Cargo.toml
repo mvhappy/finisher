@@ -35,6 +35,8 @@ fin-fonts = { path = "../fin-fonts" }
 # Only for `examples/export_schema.rs`: the journal's settings, consent, status, filter and
 # purge types in the TS contract. fin-store itself never depends on fin-journal.
 fin-journal = { path = "../fin-journal" }
+# Only for `examples/export_schema.rs`: the library indexer's wire types (sub-project 5D).
+fin-library = { path = "../fin-library" }
 # Only for `examples/export_schema.rs`: the media wire types (`MediaInfo`, sub-project 6).
 fin-media = { path = "../fin-media" }
 fin-probe = { path = "../fin-probe" }
