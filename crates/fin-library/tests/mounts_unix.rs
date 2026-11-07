@@ -246,87 +246,7 @@ mod linux {
 #[cfg(target_os = "macos")]
 mod mac {
     use super::*;
-    use std::path::PathBuf;
-    use support::run;
-
-    /// A disk image attached at a private mount point; detached on drop.
-    struct Image {
-        dmg: PathBuf,
-        mnt: PathBuf,
-        attached: bool,
-    }
-
-    impl Image {
-        fn create(dir: &Path, fs_name: &str) -> Option<Image> {
-            let dmg = dir.join("t.dmg");
-            run(
-                "hdiutil",
-                &[
-                    "create",
-                    "-quiet",
-                    "-ov",
-                    "-size",
-                    "16m",
-                    "-fs",
-                    fs_name,
-                    "-volname",
-                    "FinTest",
-                    dmg.to_str()?,
-                ],
-            )?;
-            let mnt = dir.join("m");
-            fs::create_dir_all(&mnt).ok()?;
-            let mut img = Image {
-                dmg,
-                mnt,
-                attached: false,
-            };
-            img.attach().then_some(img)
-        }
-
-        fn attach(&mut self) -> bool {
-            self.attached = run(
-                "hdiutil",
-                &[
-                    "attach",
-                    "-quiet",
-                    "-nobrowse",
-                    "-mountpoint",
-                    self.mnt.to_str().unwrap(),
-                    self.dmg.to_str().unwrap(),
-                ],
-            )
-            .is_some();
-            self.attached
-        }
-
-        fn detach(&mut self) {
-            let m = self.mnt.to_str().unwrap();
-            if run("hdiutil", &["detach", "-quiet", m]).is_none() {
-                run("hdiutil", &["detach", "-quiet", "-force", m]);
-            }
-            self.attached = false;
-        }
-    }
-
-    impl Drop for Image {
-        fn drop(&mut self) {
-            if self.attached {
-                self.detach();
-            }
-        }
-    }
-
-    fn image(test: &str, dir: &Path, fs_name: &str) -> Option<Image> {
-        let img = Image::create(dir, fs_name);
-        if img.is_none() {
-            skip(
-                test,
-                "hdiutil could not create and attach a disk image here",
-            );
-        }
-        img
-    }
+    use support::image::image;
 
     #[test]
     fn disk_image_detached_is_offline() {
@@ -405,10 +325,11 @@ mod mac {
     }
 }
 
-/// A real dataless file and folder (iCloud Drive, a File Provider domain): seen through
-/// `SF_DATALESS` without being materialised, refused by the opener, and with the policy off a
-/// raw read fails `EDEADLK` instead of downloading. Opt-in: it writes and evicts a test folder
-/// in the signed-in user's iCloud Drive.
+/// Real dataless files, and a dataless folder when the OS makes one (iCloud Drive, a File
+/// Provider domain): seen through `SF_DATALESS` without being materialised, refused by the
+/// opener, never listed by the walker, and with the policy off a raw read (or a listing of
+/// the folder) fails `EDEADLK` instead of downloading. Opt-in: it writes and evicts a test
+/// folder in the signed-in user's iCloud Drive, removed when the test ends.
 #[cfg(target_os = "macos")]
 #[test]
 fn dataless_dir_not_descended() {
@@ -439,8 +360,20 @@ fn dataless_dir_not_descended() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    /// Removes the test folder however the test ends: materialisation back on first (a
+    /// dataless folder cannot be listed, so not removed, with the policy off).
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = process::allow_dataless_materialisation();
+            if let Err(e) = fs::remove_dir_all(&self.0) {
+                eprintln!("could not remove {:?}: {e}", self.0);
+            }
+        }
+    }
     let dir = drive.join(format!("finisher-test-{nanos}"));
     fs::create_dir_all(dir.join("sub")).unwrap();
+    let _cleanup = Cleanup(dir.clone());
     let data: Vec<u8> = (0..256 * 1024u32)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
         .collect();
@@ -448,41 +381,64 @@ fn dataless_dir_not_descended() {
     fs::write(dir.join("sub/g.bin"), &data).unwrap();
     let flags = |p: &Path| fs::symlink_metadata(p).unwrap().st_flags();
     let dataless = |p: &Path| flags(p) & SF_DATALESS != 0;
-    // Eviction fails until the item is uploaded: retry for up to 5 minutes.
-    let deadline = std::time::Instant::now() + Duration::from_secs(300);
-    for p in [dir.join("f.bin"), dir.join("sub")] {
-        while !dataless(&p) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "iCloud did not evict {p:?} in time"
-            );
+    let evict = |p: &Path, wait: Duration| {
+        let deadline = std::time::Instant::now() + wait;
+        while !dataless(p) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
             let _ = support::run("brctl", &["evict", p.to_str().unwrap()]);
             std::thread::sleep(Duration::from_secs(2));
         }
+        true
+    };
+    // Eviction fails until the item is uploaded: up to 5 minutes for the files. `brctl evict`
+    // of a folder evicts its files but leaves the folder itself materialised (macOS 27); only
+    // the OS's own storage optimisation makes a folder dataless, so that half is checked when
+    // it happens.
+    for p in [dir.join("f.bin"), dir.join("sub/g.bin")] {
+        assert!(
+            evict(&p, Duration::from_secs(300)),
+            "iCloud did not evict {p:?} in time"
+        );
     }
+    let sub_dataless = evict(&dir.join("sub"), Duration::from_secs(20));
+    if !sub_dataless {
+        skip(
+            test,
+            "the folder stayed materialised (brctl evicts only its files): the dataless-folder half is not run",
+        );
+    }
+    let evicted = |dir: &Path| {
+        dataless(&dir.join("f.bin"))
+            && (sub_dataless && dataless(&dir.join("sub")) || dataless(&dir.join("sub/g.bin")))
+    };
     process::deny_dataless_materialisation().unwrap();
 
     let src = NativeSource::new(&dir);
     let d = src.open_dir(&RawRel::root()).unwrap();
     let raw = src.read_dir(&d).unwrap();
-    for name in [&b"f.bin"[..], b"sub"] {
-        let e = raw.iter().find(|e| e.name == name).unwrap();
-        assert!(matches!(e.attrs, Attrs::Macos { flags } if flags & SF_DATALESS != 0));
-    }
     let f = raw.iter().find(|e| e.name == b"f.bin").unwrap().clone();
+    assert!(matches!(f.attrs, Attrs::Macos { flags } if flags & SF_DATALESS != 0));
     assert_eq!(
         f.size,
         data.len() as u64,
         "a dataless file keeps its logical size"
     );
     let entries = listing::entries(&RawRel::root(), raw, &Excludes::defaults(false));
-    for e in &entries {
-        assert_eq!(e.placeholder, Some(Placeholder::Dataless), "{}", e.name_nfc);
-    }
-    assert!(
-        dataless(&dir.join("f.bin")) && dataless(&dir.join("sub")),
-        "listing materialised"
+    let placeholder = |n: &str| {
+        entries
+            .iter()
+            .find(|e| e.name_nfc == n)
+            .unwrap()
+            .placeholder
+    };
+    assert_eq!(placeholder("f.bin"), Some(Placeholder::Dataless));
+    assert_eq!(
+        placeholder("sub"),
+        sub_dataless.then_some(Placeholder::Dataless)
     );
+    assert!(evicted(&dir), "listing materialised");
 
     let expect = Expect {
         size: f.size,
@@ -497,6 +453,48 @@ fn dataless_dir_not_descended() {
         Some(libc::EDEADLK),
         "with the policy off a read fails instead of downloading"
     );
-    assert!(dataless(&dir.join("f.bin")) && dataless(&dir.join("sub")));
-    fs::remove_dir_all(&dir).unwrap();
+    if sub_dataless {
+        // Listing a dataless folder is refused, and the code says why (M4).
+        let sub = src.open_dir(&RawRel(vec![b"sub".to_vec()])).unwrap();
+        let e = src
+            .read_dir(&sub)
+            .expect_err("a dataless folder is not listed");
+        assert_eq!(e.raw_os_error(), Some(libc::EDEADLK), "{e}");
+        assert_eq!(volume::unreachable_code(&e), "CLOUD_ONLY");
+    }
+
+    // The walker reports every dataless item as a placeholder, never lists a dataless folder
+    // (closed incomplete, `CLOUD_ONLY`) and materialises nothing.
+    let mut dones = Vec::new();
+    let mut found = Vec::new();
+    let s = fin_library::walk(
+        std::sync::Arc::new(NativeSource::new(&dir)),
+        fin_library::WalkMode::Full {
+            generation: 1,
+            known: None,
+        },
+        &fin_library::WalkOpts::new(Excludes::defaults(false)),
+        &mut |b| {
+            dones.extend(b.dirs_done);
+            found.extend(b.entries);
+            Ok(())
+        },
+        &fin_library::CancelToken::new(),
+    )
+    .unwrap();
+    let sub_done = dones
+        .iter()
+        .find(|d| d.dir.components() == [b"sub".to_vec()])
+        .unwrap();
+    if sub_dataless {
+        assert_eq!(s.listed, 1, "only the root is listed");
+        assert!(!sub_done.complete && sub_done.code.as_deref() == Some("CLOUD_ONLY"));
+    } else {
+        assert_eq!(s.listed, 2);
+        assert!(sub_done.complete, "{sub_done:?}");
+        let g = found.iter().find(|e| e.name == b"g.bin").unwrap();
+        assert_eq!(g.placeholder, Some(Placeholder::Dataless));
+        assert_eq!(g.size, data.len() as u64);
+    }
+    assert!(evicted(&dir), "the walk materialised");
 }

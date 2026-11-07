@@ -220,3 +220,38 @@ fn keys_and_sources() {
         assert_eq!(linux_case_sensitive(t, o), cs, "{t} {o}");
     }
 }
+
+/// A partial listing's code is its first entry's error's (plan 5D M3); with the dataless
+/// policy off, macOS answers `EDEADLK` for a dataless directory: `CLOUD_ONLY` (M4).
+#[test]
+fn codes_of_partial_listings_and_dataless_refusals() {
+    use fin_library::{PartialListing, RawEntry, volume::unreachable_code};
+    use std::io;
+
+    let partial = |error: io::Error| {
+        io::Error::other(PartialListing {
+            entries: vec![RawEntry::new("a.mov", fin_library::EntryType::File, 1, 1)],
+            error,
+        })
+    };
+    let e = partial(io::Error::from(io::ErrorKind::PermissionDenied));
+    assert_eq!(unreachable_code(&e), "PERMISSION_DENIED");
+    assert_eq!(PartialListing::of(&e).unwrap().entries.len(), 1);
+    let p = PartialListing::take(e).unwrap();
+    assert_eq!(p.entries[0].name, b"a.mov");
+    assert!(PartialListing::take(io::Error::other("plain")).is_err());
+    #[cfg(unix)]
+    assert_eq!(
+        unreachable_code(&partial(io::Error::from_raw_os_error(libc::EIO))),
+        "IO"
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let deadlk = io::Error::from_raw_os_error(libc::EDEADLK);
+        assert_eq!(
+            unreachable_code(&deadlk),
+            fin_library::walk::code::CLOUD_ONLY
+        );
+        assert_eq!(unreachable_code(&partial(deadlk)), "CLOUD_ONLY");
+    }
+}

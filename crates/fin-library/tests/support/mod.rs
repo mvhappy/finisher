@@ -8,6 +8,9 @@ use std::process::Command;
 
 use fin_library::{Expect, RawRel};
 
+#[cfg(target_os = "macos")]
+pub mod image;
+
 /// What the catalog would expect for the file at `path` (size, mtime, inode big-endian).
 pub fn expect_of(path: &Path) -> Expect {
     let m = fs::symlink_metadata(path).unwrap();

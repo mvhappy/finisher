@@ -23,8 +23,8 @@ fn write(p: &Path, bytes: &[u8]) {
     fs::write(p, bytes).unwrap();
 }
 
-/// `root/{a/{x/1.mov, y/2.mov}, b/3.mov, cloud/{c.mov, deep/d.mov}, net/, top.mov}` plus a
-/// non-UTF-8 name and a symlink.
+/// `root/{a/{x/1.mov, y/2.mov}, b/3.mov, cloud/{c.mov, deep/d.mov}, net/, top.mov}` plus
+/// [`ODD_NAME`] in `b` and a symlink.
 fn real_tree(root: &Path) {
     for f in [
         "a/x/1.mov",
@@ -39,11 +39,18 @@ fn real_tree(root: &Path) {
     fs::create_dir_all(root.join("net")).unwrap();
     use std::os::unix::ffi::OsStrExt;
     write(
-        &root.join(std::ffi::OsStr::from_bytes(b"b/caf\xe9.mov")),
+        &root.join("b").join(std::ffi::OsStr::from_bytes(ODD_NAME)),
         b"x",
     );
     std::os::unix::fs::symlink(root.join("a"), root.join("link")).unwrap();
 }
+
+/// A name a byte-preserving walk must keep as listed: non-UTF-8 on Linux; on macOS (APFS and
+/// HFS+ refuse invalid UTF-8 with `EILSEQ`) an NFD name, which APFS stores and lists as given.
+#[cfg(target_os = "linux")]
+const ODD_NAME: &[u8] = b"caf\xe9.mov";
+#[cfg(not(target_os = "linux"))]
+const ODD_NAME: &[u8] = b"cafe\xcc\x81.mov";
 
 fn source(root: &Path) -> Arc<dyn Source> {
     overlay::wrap(root, Arc::new(NativeSource::new(root))).unwrap()
@@ -83,12 +90,44 @@ fn real_walk_lists_raw_names_and_skips_links() {
         }
     );
     let es = entries(&batches);
-    let lossy = es.iter().find(|e| e.name == b"caf\xe9.mov").unwrap();
-    assert!(lossy.name_lossy);
+    let odd = es.iter().find(|e| e.name == ODD_NAME).unwrap();
+    assert_eq!(odd.name_lossy, cfg!(target_os = "linux"));
+    if !odd.name_lossy {
+        assert_eq!(odd.name_nfc, "caf\u{e9}.mov");
+    }
     let link = es.iter().find(|e| e.name == b"link").unwrap();
     assert_eq!(link.entry_type, fin_library::EntryType::Symlink);
     // Every DirDone carries the directory's mtime.
     assert!(dones(&batches).iter().all(|d| d.mtime_ns.is_some()));
+}
+
+/// The real source walks to the same batches at every thread count, on a tree wider than the
+/// walker's held-descriptor cap (64) and deeper than a few levels.
+#[test]
+fn real_walk_is_deterministic_across_thread_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("lib");
+    for t in 0..90 {
+        let mut d = root.join(format!("t{t:02}"));
+        for k in 0..(t % 7) {
+            d = d.join(format!("d{k}"));
+        }
+        fs::create_dir_all(&d).unwrap();
+        for f in 0..3 {
+            write(&d.join(format!("f{f}.mov")), b"x");
+        }
+    }
+    let mut seen = Vec::new();
+    for threads in [1, 3, 8, 64] {
+        let (r, batches) = run(source(&root), full(1, None), &opts(threads));
+        let s = r.unwrap();
+        assert_eq!((s.incomplete, s.timeouts), (0, 0), "threads {threads}");
+        seen.push(serde_json::to_string(&batches).unwrap());
+    }
+    assert!(
+        seen.windows(2).all(|w| w[0] == w[1]),
+        "batches differ by thread count"
+    );
 }
 
 #[test]

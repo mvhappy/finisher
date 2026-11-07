@@ -205,9 +205,16 @@ pub fn identity(root: &Path) -> io::Result<VolumeIdentity> {
 
 /// The short code of an unreachable root (never a path).
 pub fn unreachable_code(e: &io::Error) -> &'static str {
+    if let Some(p) = crate::source::PartialListing::of(e) {
+        return unreachable_code(&p.error);
+    }
     #[cfg(unix)]
     if let Some(code) = e.raw_os_error() {
         match code {
+            // A dataless directory listed (or file read) with the process's materialisation
+            // policy off (Decision 6, `crate::process`): the data is in the cloud.
+            #[cfg(target_os = "macos")]
+            libc::EDEADLK => return crate::walk::code::CLOUD_ONLY,
             libc::ESTALE => return "STALE",
             libc::ENOTCONN | libc::EHOSTDOWN | libc::EHOSTUNREACH | libc::ENETUNREACH => {
                 return "DISCONNECTED";

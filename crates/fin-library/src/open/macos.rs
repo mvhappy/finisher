@@ -26,7 +26,12 @@ fn same_dev(fd: RawFd, root_dev: libc::dev_t) -> Result<(), OpenError> {
     }
 }
 
-/// The per-component walk, for a system without `O_NOFOLLOW_ANY` (`EINVAL`).
+/// The per-component walk, should `O_NOFOLLOW_ANY` ever be refused (`EINVAL`). Not reached on
+/// a supported Mac: the flag exists since macOS 11, below `aarch64-apple-darwin`'s 11.0
+/// floor and the spec's (D31: macOS 14+, Apple Silicon). Nor would an older kernel refuse it:
+/// XNU does not validate unknown open bits (`0x20000000` was the obsolete `O_ALERT`), so
+/// before macOS 11 the open would follow links silently (by reading XNU; no such system was
+/// tested). That floor, not this walk, is what makes the flag safe.
 fn walk_components(
     root: &OwnedFd,
     root_dev: libc::dev_t,

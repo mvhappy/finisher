@@ -85,6 +85,54 @@ impl RawEntry {
     }
 }
 
+/// A listing that read some entries but not all (macOS: an entry's `ATTR_CMN_ERROR` other than
+/// `ENOENT`). A source returns it as the payload of the listing's error
+/// (`io::Error::other(PartialListing { .. })`, found again with [`PartialListing::of`]) so the
+/// walker can report `entries` and close the directory `complete: false` with the code of
+/// `error` ([`crate::volume::unreachable_code`] reads through the payload).
+#[derive(Debug)]
+pub struct PartialListing {
+    /// The entries that were read, in the OS's order.
+    pub entries: Vec<RawEntry>,
+    /// The first entry's error.
+    pub error: io::Error,
+}
+
+impl PartialListing {
+    /// The partial listing an error carries, if any.
+    pub fn of(e: &io::Error) -> Option<&PartialListing> {
+        e.get_ref()?.downcast_ref()
+    }
+
+    /// The partial listing an error carries, taken out of it (`Err`: the error as it was).
+    pub fn take(e: io::Error) -> Result<PartialListing, io::Error> {
+        if Self::of(&e).is_none() {
+            return Err(e);
+        }
+        e.into_inner()
+            .and_then(|b| b.downcast::<PartialListing>().ok())
+            .map(|b| *b)
+            .ok_or_else(|| io::Error::other("partial listing lost"))
+    }
+}
+
+impl fmt::Display for PartialListing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "listing incomplete after {} entries: {}",
+            self.entries.len(),
+            self.error
+        )
+    }
+}
+
+impl std::error::Error for PartialListing {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// A root's facts, read without opening a file (Decision 17): the OS layer's measurement of
 /// the volume plus what [`crate::volume::classify_root`] needs to judge it.
 #[derive(Debug, Clone, PartialEq, Eq)]
