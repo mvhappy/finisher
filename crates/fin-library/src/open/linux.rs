@@ -10,14 +10,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use libc::c_int;
 
 use super::{hooks, map_errno, stub_names};
-use crate::source::linux::{ENTRY_FLAGS, file_type, mtime_ns, same_mount, statx, statx_fd};
+use crate::source::linux::{ENTRY_FLAGS, dev_id, file_type, mtime_ns, same_mount, statx, statx_fd};
 use crate::source::unix::{O_NOATIME, cname, errno_is, ino_id, open_root, openat};
 use crate::types::{EntryType, Expect, OpenError};
 
-const RESOLVE: u64 = libc::RESOLVE_BENEATH
-    | libc::RESOLVE_NO_SYMLINKS
-    | libc::RESOLVE_NO_MAGICLINKS
-    | libc::RESOLVE_NO_XDEV;
+/// No `RESOLVE_NO_XDEV`: nested mounts below the root are catalogued, so an open crosses them;
+/// the opened handle is checked against the row's device instead ([`Expect::check_volume`]).
+const RESOLVE: u64 =
+    libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
 
 /// `openat2` answered `ENOSYS` or `EPERM` once: this process uses the fallback from then on.
 static OPENAT2_REFUSED: AtomicBool = AtomicBool::new(false);
@@ -97,12 +97,8 @@ fn component_error(dir: RawFd, name: &CStr, e: io::Error) -> OpenError {
 }
 
 /// The fallback walk: each directory component by `openat(O_PATH | O_DIRECTORY |
-/// O_NOFOLLOW)`, checked to be a directory on the root's mount.
-fn walk_components(
-    root: &OwnedFd,
-    root_st: &libc::statx,
-    dir: &[Vec<u8>],
-) -> Result<OwnedFd, OpenError> {
+/// O_NOFOLLOW)`, checked to be a directory (a nested mount is crossed, as by `openat2`).
+fn walk_components(root: &OwnedFd, dir: &[Vec<u8>]) -> Result<OwnedFd, OpenError> {
     hooks::count(|c| c.fallbacks += 1);
     let mut cur: Option<OwnedFd> = None;
     for c in dir {
@@ -114,20 +110,13 @@ fn walk_components(
         if file_type(&st) != EntryType::Dir {
             return Err(OpenError::NotFound);
         }
-        if !same_mount(&st, root_st) {
-            return Err(OpenError::Escapes);
-        }
         cur = Some(fd);
     }
     cur.ok_or(OpenError::NotFound)
 }
 
 /// The parent directory of the file (`None`: the root itself).
-fn open_parent(
-    root: &OwnedFd,
-    root_st: &libc::statx,
-    dir: &[Vec<u8>],
-) -> Result<Option<OwnedFd>, OpenError> {
+fn open_parent(root: &OwnedFd, dir: &[Vec<u8>]) -> Result<Option<OwnedFd>, OpenError> {
     if dir.is_empty() {
         return Ok(None);
     }
@@ -138,49 +127,34 @@ fn open_parent(
             Ok(fd) => return Ok(Some(fd)),
             // `O_PATH` never asks for `O_NOATIME`: an `EPERM` here is the sandbox.
             Err(e) if is_refusal(&e) => note_refusal(),
-            // `ELOOP`: a link on the way; `EXDEV`: a mount or an escape.
+            // `ELOOP`: a link on the way; `EXDEV`: an escape.
             Err(e) => return Err(map_errno(e)),
         }
     }
-    walk_components(root, root_st, dir).map(Some)
+    walk_components(root, dir).map(Some)
 }
 
-/// The fallback open of the file: `openat(O_NOFOLLOW)` from its parent, then a check that it
-/// is on the root's mount (a bind-mounted file is a mount of its own).
-fn fallback_open(
-    parent: RawFd,
-    name: &CStr,
-    flags: c_int,
-    root_st: &libc::statx,
-) -> io::Result<OwnedFd> {
+/// The fallback open of the file: `openat(O_NOFOLLOW)` from its parent (its volume is checked
+/// by [`open`] for both paths).
+fn fallback_open(parent: RawFd, name: &CStr, flags: c_int) -> io::Result<OwnedFd> {
     hooks::count(|c| c.fallbacks += 1);
-    let fd = openat(parent, name, flags)?;
-    let st = statx_fd(fd.as_raw_fd())?;
-    if !same_mount(&st, root_st) {
-        return Err(io::Error::from_raw_os_error(libc::EXDEV));
-    }
-    Ok(fd)
+    openat(parent, name, flags)
 }
 
 /// One attempt to open the file with `flags`. An `openat2` `EPERM` is either the sandbox or
 /// `O_NOATIME` on a file we do not own: the fallback `openat` tells them apart (it succeeds
 /// under a sandbox that refuses only `openat2`, and fails `EPERM` again for `O_NOATIME`).
-fn open_last_once(
-    parent: RawFd,
-    name: &CStr,
-    flags: c_int,
-    root_st: &libc::statx,
-) -> io::Result<OwnedFd> {
+fn open_last_once(parent: RawFd, name: &CStr, flags: c_int) -> io::Result<OwnedFd> {
     if openat2_refused() {
-        return fallback_open(parent, name, flags, root_st);
+        return fallback_open(parent, name, flags);
     }
     match openat2(parent, name, flags) {
         Err(e) if errno_is(&e, libc::ENOSYS) => {
             note_refusal();
-            fallback_open(parent, name, flags, root_st)
+            fallback_open(parent, name, flags)
         }
         Err(e) if errno_is(&e, libc::EPERM) => {
-            let r = fallback_open(parent, name, flags, root_st);
+            let r = fallback_open(parent, name, flags);
             if r.is_ok() {
                 note_refusal();
             }
@@ -191,12 +165,7 @@ fn open_last_once(
 }
 
 /// Opens the file, with `O_NOATIME` when we own it (dropped for good after one `EPERM`).
-fn open_last(
-    parent: RawFd,
-    name: &CStr,
-    own: bool,
-    root_st: &libc::statx,
-) -> Result<OwnedFd, OpenError> {
+fn open_last(parent: RawFd, name: &CStr, own: bool) -> Result<OwnedFd, OpenError> {
     let base =
         libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC;
     let mut flags = if own && noatime_allowed() {
@@ -205,7 +174,7 @@ fn open_last(
         base
     };
     loop {
-        match open_last_once(parent, name, flags, root_st) {
+        match open_last_once(parent, name, flags) {
             Err(e) if errno_is(&e, libc::EPERM) && flags & O_NOATIME != 0 => {
                 drop_noatime();
                 flags = base;
@@ -236,7 +205,7 @@ pub(super) fn open(
 ) -> Result<File, OpenError> {
     let root_fd = open_root(root).map_err(map_errno)?;
     let root_st = statx_fd(root_fd.as_raw_fd())?;
-    let parent = open_parent(&root_fd, &root_st, dir)?;
+    let parent = open_parent(&root_fd, dir)?;
     let pfd = parent.as_ref().unwrap_or(&root_fd).as_raw_fd();
     let cn = cname(name)?;
 
@@ -255,13 +224,11 @@ pub(super) fn open(
     // 2. Open without following links.
     // SAFETY: geteuid has no preconditions.
     let own = st.stx_uid == unsafe { libc::geteuid() };
-    let fd = open_last(pfd, &cn, own, &root_st)?;
+    let fd = open_last(pfd, &cn, own)?;
 
-    // 3. Identity.
+    // 3. Identity: on the row's volume (a nested mount is crossed), then the file itself.
     let now = statx_fd(fd.as_raw_fd())?;
-    if !same_mount(&now, &root_st) {
-        return Err(OpenError::Escapes);
-    }
+    expect.check_volume(&dev_id(&now), || same_mount(&now, &root_st))?;
     if file_type(&now) != EntryType::File
         || !expect.matches(now.stx_size, mtime_ns(&now), Some(&ino_id(now.stx_ino)))
     {

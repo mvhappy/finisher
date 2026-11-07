@@ -8,11 +8,13 @@
 //!    ownCloud or iCloud stub for it is listed is `CloudOnly` (a stub has no data to hydrate).
 //! 2. **Open without following links**, by the raw component chain (`rel`), never a key or a
 //!    display string: Linux `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
-//!    RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)` from the root's descriptor (with `O_NOATIME`
-//!    when we own the file, dropped after one `EPERM`), falling back on `ENOSYS` or `EPERM`
-//!    (seccomp in containers) to per-component `openat(O_NOFOLLOW | O_DIRECTORY)`, each
-//!    component checked to be a directory on the root's mount; macOS `O_NOFOLLOW_ANY` and the
-//!    root's device. **A nested mount below the root is not crossed** ([`OpenError::Escapes`]).
+//!    RESOLVE_NO_MAGICLINKS)` from the root's descriptor (with `O_NOATIME` when we own the
+//!    file, dropped after one `EPERM`), falling back on `ENOSYS` or `EPERM` (seccomp in
+//!    containers) to per-component `openat(O_NOFOLLOW | O_DIRECTORY)`, each component checked
+//!    to be a directory; macOS `O_NOFOLLOW_ANY`. **Nested mounts below the root are crossed**:
+//!    the walker catalogues them (Decision 17, per directory), so the opened handle must be on
+//!    the row's device ([`Expect::check_volume`]: another device is [`OpenError::Changed`]);
+//!    a row without a device must be on the root's mount ([`OpenError::Escapes`]).
 //! 3. **Identity:** the handle's size, mtime and file id must equal `expect`
 //!    ([`Expect::matches`]); a mismatch is [`OpenError::Changed`] (its directory is rescanned),
 //!    never a read.

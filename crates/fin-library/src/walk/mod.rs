@@ -7,6 +7,10 @@
 //! anything but online, or an empty root where the catalog knows entries
 //! (`ROOT_EMPTY_SUSPECT`), ends the walk with [`WalkError::Offline`] before any batch.
 //!
+//! **Nested mounts** are walked and catalogued: a directory that is a mount root has its
+//! volume measured after its open ([`Source::volume`]) and reported in its `DirDone`; one the
+//! catalog knows as a mount root is checked against the stored volume first.
+//!
 //! **Each directory** is opened from its parent's handle when one is kept (by its raw chain
 //! from the root otherwise) and listed by [`Source::read_dir_with`]; [`crate::listing`]
 //! classifies its entries. A read with no progress for `Timing::entry` (30 s) leaves the
@@ -20,7 +24,9 @@
 //! | `CLOUD_ONLY` | a placeholder directory (Decision 13), never opened |
 //! | `AUTOMOUNT` | an automount point (Decision 5), never opened |
 //! | `ROOT_UNMOUNTED` | a known nested mount root that is no longer one (Decision 17) |
+//! | `ROOT_VOLUME_CHANGED` | a known nested mount root that holds another volume now (Decision 17) |
 //! | `DIR_EMPTY_SUSPECT` | a listing that dropped from N > 0 entries to 0 (Decision 25) |
+//! | `ENTRY_UNREADABLE` | a partial listing ([`crate::source::Listing`]): its readable entries are reported, the rest are not marked missing |
 //!
 //! Excluded directories and links are reported as entries only. A failure of the root's own
 //! listing is [`WalkError::Offline`]. What each mode lists: the `poll` module.
@@ -55,7 +61,9 @@ pub mod code {
     pub const CLOUD_ONLY: &str = "CLOUD_ONLY";
     pub const AUTOMOUNT: &str = crate::exclude::code::AUTOMOUNT;
     pub const ROOT_UNMOUNTED: &str = "ROOT_UNMOUNTED";
+    pub const ROOT_VOLUME_CHANGED: &str = "ROOT_VOLUME_CHANGED";
     pub const DIR_EMPTY_SUSPECT: &str = "DIR_EMPTY_SUSPECT";
+    pub const ENTRY_UNREADABLE: &str = "ENTRY_UNREADABLE";
 }
 
 /// Read threads for local roots (Decision 9).

@@ -21,9 +21,28 @@ pub struct Expect {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "b64_opt")]
     #[schemars(with = "Option<String>")]
     pub file_id: Option<Vec<u8>>,
+    /// The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the
+    /// opener crosses them and checks the opened handle against this device; without one,
+    /// the handle must be on the root's mount.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<String>,
 }
 
 impl Expect {
+    /// Whether an opened handle on device `dev` is on the catalogued file's volume (shared by
+    /// every OS's opener): with the row's [`Expect::dev`], that device, else
+    /// [`OpenError::Changed`] (another volume is mounted there now; its directory is
+    /// rescanned); without one, `on_root` (the handle is on the root's mount), else
+    /// [`OpenError::Escapes`].
+    pub fn check_volume(&self, dev: &str, on_root: impl FnOnce() -> bool) -> Result<(), OpenError> {
+        match &self.dev {
+            Some(want) if want == dev => Ok(()),
+            Some(_) => Err(OpenError::Changed),
+            None if on_root() => Ok(()),
+            None => Err(OpenError::Escapes),
+        }
+    }
+
     /// Whether an opened handle with these facts is the catalogued file: size and mtime equal,
     /// and the file id equal when both sides have one (a handle without an id, as some SMB
     /// servers give, is matched by size and mtime alone, Decision 22).
@@ -135,7 +154,10 @@ pub struct ScanEntry {
 
 /// Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the
 /// job's batches. `complete: false` (an error, a timeout, a placeholder or automount
-/// directory) marks nothing missing; `code` says why. `entries` counts the listing's entries.
+/// directory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.
+/// `entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a
+/// nested mount root (Decision 17, per directory), which the indexer keeps as
+/// [`KnownDir::volume`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirDone {
@@ -147,6 +169,8 @@ pub struct DirDone {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub entries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<VolumeIdentity>,
 }
 
 /// One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
@@ -168,7 +192,11 @@ pub struct ScanBatch {
 /// - `listed_gen`: the full-scan generation in which it was last listed completely; a
 ///   resumed full scan of that generation skips its listing and still descends;
 /// - `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is
-///   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.
+///   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing;
+/// - `volume`: that nested mount's volume as last listed (`DirDone.volume`); a different
+///   volume there now (a different key its file ids and sample do not confirm,
+///   [`crate::volume::same_volume`]) is `ROOT_VOLUME_CHANGED`, also never listed and never
+///   missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnownDir {
@@ -182,6 +210,8 @@ pub struct KnownDir {
     pub listed_gen: Option<u64>,
     #[serde(default)]
     pub mount_root: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<VolumeIdentity>,
 }
 
 /// One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:
@@ -228,8 +258,8 @@ pub struct VolumeIdentity {
 /// A root's state (Decision 17): `online` carries the identity measured now (its key may
 /// differ from the stored one when the change was confirmed harmless); every other state
 /// puts the library offline with its catalog intact (Decision 18).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "state", rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
 pub enum RootState {
     Online(VolumeIdentity),
     Unreachable { code: String },
@@ -237,6 +267,32 @@ pub enum RootState {
     VolumeChanged { key: String },
     Empty,
     Timeout,
+}
+
+/// [`RootState`] as read: serde lets an internally tagged *unit* variant carry unknown
+/// fields even under `deny_unknown_fields`, so the unit states are read as empty structs.
+#[derive(Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
+enum RootStateRepr {
+    Online(VolumeIdentity),
+    Unreachable { code: String },
+    Unmounted {},
+    VolumeChanged { key: String },
+    Empty {},
+    Timeout {},
+}
+
+impl<'de> Deserialize<'de> for RootState {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match RootStateRepr::deserialize(d)? {
+            RootStateRepr::Online(id) => Self::Online(id),
+            RootStateRepr::Unreachable { code } => Self::Unreachable { code },
+            RootStateRepr::Unmounted {} => Self::Unmounted,
+            RootStateRepr::VolumeChanged { key } => Self::VolumeChanged { key },
+            RootStateRepr::Empty {} => Self::Empty,
+            RootStateRepr::Timeout {} => Self::Timeout,
+        })
+    }
 }
 
 /// Why `open_for_read` (Tasks 2–3) refused or failed (Decision 19). Messages name no path.
@@ -250,7 +306,8 @@ pub enum OpenError {
     Changed,
     #[error("the file no longer exists")]
     NotFound,
-    /// The path resolves outside the root (or across a mount, where that is refused).
+    /// The path resolves outside the root, or the file is on another mount than the root's
+    /// and the catalogue row names no device ([`Expect::check_volume`]).
     #[error("the path leaves the library root")]
     Escapes,
     /// A component or the file is a symlink, junction or mount point.

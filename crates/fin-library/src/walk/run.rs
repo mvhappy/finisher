@@ -4,12 +4,11 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::batch::Batcher;
-use super::poll::{Plan, Work};
-use super::pool::{Held, Outcome, Pool, Task};
+use super::poll::{MountCheck, Plan, Work};
+use super::pool::{Held, Outcome, Pool, Progress, Task};
 use super::{CancelToken, WalkError, WalkOpts, WalkStop, WalkSummary, code};
 use crate::placeholder;
 use crate::raw::RawRel;
@@ -25,6 +24,7 @@ enum State {
 struct Slot {
     rel: RawRel,
     work: Work,
+    mount: Option<MountCheck>,
     parent: Option<Arc<Held>>,
     state: State,
 }
@@ -44,7 +44,7 @@ pub(super) struct Walker<'a> {
     slots: VecDeque<Slot>,
     base: u64,
     cursor: usize,
-    running: HashMap<u64, Arc<AtomicU64>>,
+    running: HashMap<u64, Arc<Progress>>,
     abandoned: HashSet<u64>,
     sum: WalkSummary,
 }
@@ -58,7 +58,7 @@ impl<'a> Walker<'a> {
         cancel: &'a CancelToken,
         identity: VolumeIdentity,
     ) -> Self {
-        let threads = opts.threads.max(1);
+        let threads = opts.threads.clamp(1, super::pool::TASKS_MAX);
         Walker {
             plan,
             pool: Pool::new(src, opts.excludes.clone(), threads),
@@ -94,7 +94,8 @@ impl<'a> Walker<'a> {
 
     pub(super) fn run(mut self, seeds: Vec<(RawRel, Work)>) -> Result<WalkSummary, WalkError> {
         for (rel, work) in seeds {
-            self.push(rel, work, None);
+            let mount = self.plan.mount_check(&rel, false);
+            self.push(rel, work, mount, None);
         }
         loop {
             if self.cancel.is_cancelled() {
@@ -113,6 +114,10 @@ impl<'a> Walker<'a> {
             if let Some((id, out)) = self.pool.recv(wait) {
                 self.take(id, out);
             }
+            // Answers that queued while the coordinator was in the sink are not timeouts.
+            while let Some((id, out)) = self.pool.try_recv() {
+                self.take(id, out);
+            }
             self.expire()?;
             self.batch.tick(Instant::now())?;
         }
@@ -122,10 +127,17 @@ impl<'a> Walker<'a> {
         Ok(self.sum)
     }
 
-    fn push(&mut self, rel: RawRel, work: Work, parent: Option<Arc<Held>>) {
+    fn push(
+        &mut self,
+        rel: RawRel,
+        work: Work,
+        mount: Option<MountCheck>,
+        parent: Option<Arc<Held>>,
+    ) {
         self.slots.push_back(Slot {
             rel,
             work,
+            mount,
             parent,
             state: State::Pending,
         });
@@ -137,7 +149,9 @@ impl<'a> Walker<'a> {
             let slot = &mut self.slots[self.cursor];
             match &slot.work {
                 Work::Skip => slot.state = State::Ready(Outcome::Skipped),
-                Work::Check { children, .. } if children.is_empty() => {
+                // A leaf whose mtime is unchanged is not opened, unless it is a mount root to
+                // check.
+                Work::Check { children, .. } if children.is_empty() && slot.mount.is_none() => {
                     slot.state = State::Ready(Outcome::Unchanged {
                         stats: Vec::new(),
                         handle: None,
@@ -147,12 +161,13 @@ impl<'a> Walker<'a> {
                     if !self.pool.has_room() {
                         break;
                     }
-                    let progress = Arc::new(AtomicU64::new(0));
+                    let progress = Arc::new(Progress::default());
                     let task = Task {
                         id,
                         rel: slot.rel.clone(),
                         parent: slot.parent.take(),
                         work: slot.work.clone(),
+                        mount: slot.mount.take(),
                         progress: Arc::clone(&progress),
                     };
                     slot.state = State::Running;
@@ -189,10 +204,8 @@ impl<'a> Walker<'a> {
 
     fn wait(&self) -> Duration {
         let mut wait = Duration::from_millis(100);
-        for p in self.running.values() {
-            let left = self
-                .entry
-                .saturating_sub(self.pool.since(p.load(Ordering::Relaxed)));
+        for p in self.running.values().filter(|p| !p.finished()) {
+            let left = self.entry.saturating_sub(self.pool.since(p.stamp()));
             wait = wait.min(left);
         }
         if let Some(due) = self.batch.due() {
@@ -211,13 +224,14 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Abandons the reads whose progress clock stopped for `Timing::entry`. As many stuck
-    /// threads as the walk has read threads means the volume no longer answers: offline.
+    /// Abandons the reads whose progress clock stopped for `Timing::entry` (a finished read
+    /// whose answer is still queued is not one). As many stuck threads as the walk has read
+    /// threads means the volume no longer answers: offline.
     fn expire(&mut self) -> Result<(), WalkError> {
         let overdue: Vec<u64> = self
             .running
             .iter()
-            .filter(|(_, p)| self.pool.since(p.load(Ordering::Relaxed)) >= self.entry)
+            .filter(|(_, p)| !p.finished() && self.pool.since(p.stamp()) >= self.entry)
             .map(|(id, _)| *id)
             .collect();
         for id in overdue {
@@ -242,6 +256,7 @@ impl<'a> Walker<'a> {
             complete: false,
             code: Some(code.to_owned()),
             entries: 0,
+            volume: None,
         })
     }
 
@@ -251,7 +266,7 @@ impl<'a> Walker<'a> {
         &mut self,
         child: RawRel,
         e: (bool, bool, bool, i64),
-        kids: &mut Vec<(RawRel, Work)>,
+        kids: &mut Vec<(RawRel, Work, Option<MountCheck>)>,
         dones: &mut Vec<(RawRel, i64, &'static str)>,
     ) {
         let (cloud, automount, mount_root, mtime) = e;
@@ -266,7 +281,12 @@ impl<'a> Walker<'a> {
         };
         match code {
             Some(c) => dones.push((child, mtime, c)),
-            None => kids.extend(self.plan.child(child, mtime)),
+            None => {
+                let mount = self.plan.mount_check(&child, mount_root);
+                if let Some((c, w)) = self.plan.child(child, mtime) {
+                    kids.push((c, w, mount));
+                }
+            }
         }
     }
 
@@ -277,7 +297,15 @@ impl<'a> Walker<'a> {
         let handle = match out {
             Outcome::Skipped => {
                 self.sum.skipped += 1;
-                kids = self.plan.after_skip(&rel);
+                kids = self
+                    .plan
+                    .after_skip(&rel)
+                    .into_iter()
+                    .map(|(c, w)| {
+                        let mount = self.plan.mount_check(&c, false);
+                        (c, w, mount)
+                    })
+                    .collect();
                 None
             }
             Outcome::TimedOut if root => return Err(WalkError::off(RootState::Timeout)),
@@ -290,6 +318,8 @@ impl<'a> Walker<'a> {
                 mtime,
                 entries,
                 handle,
+                partial,
+                volume,
             } => {
                 let n = entries.len();
                 if n == 0 && self.plan.known_entries(&rel) > 0 {
@@ -310,15 +340,23 @@ impl<'a> Walker<'a> {
                         self.gate(rel.join(&e.name), flags, &mut kids, &mut dones);
                     }
                 }
-                self.sum.listed += 1;
                 self.sum.entries += n as u64;
                 self.batch.entries(entries)?;
+                // A partial listing's entries are reported, but its directory stays
+                // incomplete (no mtime, so the next poll re-lists it): nothing it could not
+                // read is marked missing.
+                if partial {
+                    self.sum.incomplete += 1;
+                } else {
+                    self.sum.listed += 1;
+                }
                 self.batch.done(DirDone {
                     dir: rel.clone(),
-                    mtime_ns: mtime,
-                    complete: true,
-                    code: None,
+                    mtime_ns: if partial { None } else { mtime },
+                    complete: !partial,
+                    code: partial.then(|| code::ENTRY_UNREADABLE.to_owned()),
                     entries: u32::try_from(n).unwrap_or(u32::MAX),
+                    volume: volume.map(|v| *v),
                 })?;
                 handle
             }
@@ -338,8 +376,8 @@ impl<'a> Walker<'a> {
         if kids.is_empty() {
             return Ok(());
         }
-        for (c, w) in kids {
-            self.push(c, w, handle.clone());
+        for (c, w, m) in kids {
+            self.push(c, w, m, handle.clone());
         }
         Ok(())
     }

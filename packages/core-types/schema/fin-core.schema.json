@@ -2275,7 +2275,7 @@
     },
     "DirDone": {
       "additionalProperties": false,
-      "description": "Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the\njob's batches. `complete: false` (an error, a timeout, a placeholder or automount\ndirectory) marks nothing missing; `code` says why. `entries` counts the listing's entries.",
+      "description": "Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the\njob's batches. `complete: false` (an error, a timeout, a placeholder or automount\ndirectory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.\n`entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a\nnested mount root (Decision 17, per directory), which the indexer keeps as\n[`KnownDir::volume`].",
       "properties": {
         "code": {
           "type": [
@@ -2298,6 +2298,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -3353,6 +3363,13 @@
       "additionalProperties": false,
       "description": "What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the\ncatalog has one, file id. TS `ExpectWire`.",
       "properties": {
+        "dev": {
+          "description": "The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the\nopener crosses them and checks the opened handle against this device; without one,\nthe handle must be on the root's mount.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "fileId": {
           "type": [
             "string",
@@ -5470,7 +5487,7 @@
     },
     "KnownDir": {
       "additionalProperties": false,
-      "description": "One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`\n(written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):\n\n- `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the\n  directory when it differs;\n- `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is\n  `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);\n- `listed_gen`: the full-scan generation in which it was last listed completely; a\n  resumed full scan of that generation skips its listing and still descends;\n- `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is\n  `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.",
+      "description": "One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`\n(written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):\n\n- `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the\n  directory when it differs;\n- `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is\n  `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);\n- `listed_gen`: the full-scan generation in which it was last listed completely; a\n  resumed full scan of that generation skips its listing and still descends;\n- `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is\n  `ROOT_UNMOUNTED` (Decision 17), never listed and never missing;\n- `volume`: that nested mount's volume as last listed (`DirDone.volume`); a different\n  volume there now (a different key its file ids and sample do not confirm,\n  [`crate::volume::same_volume`]) is `ROOT_VOLUME_CHANGED`, also never listed and never\n  missing.",
       "properties": {
         "dir": {
           "$ref": "#/$defs/RawRel"
@@ -5497,6 +5514,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -8628,6 +8655,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "code": {
               "type": "string"
@@ -8644,6 +8672,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "state": {
               "const": "unmounted",
@@ -8656,6 +8685,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "key": {
               "type": "string"
@@ -8672,6 +8702,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "state": {
               "const": "empty",
@@ -8684,6 +8715,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "properties": {
             "state": {
               "const": "timeout",

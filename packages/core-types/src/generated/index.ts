@@ -3682,7 +3682,10 @@ export interface DiagnosticsReport {
 /**
  * Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the
  * job's batches. `complete: false` (an error, a timeout, a placeholder or automount
- * directory) marks nothing missing; `code` says why. `entries` counts the listing's entries.
+ * directory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.
+ * `entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a
+ * nested mount root (Decision 17, per directory), which the indexer keeps as
+ * [`KnownDir::volume`].
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "DirDone".
@@ -3693,6 +3696,7 @@ export interface DirDone {
   dir: RawRel;
   entries: number;
   mtimeNs?: string | null;
+  volume?: VolumeIdentity | null;
 }
 /**
  * Raw components below a library root, outermost first (empty for the root): base64 of each name's bytes (Unix bytes; Windows UTF-16 as WTF-8).
@@ -3702,6 +3706,45 @@ export interface DirDone {
  */
 export interface RawRel {
   components: string[];
+}
+/**
+ * A root's volume (Decision 15), measured at add and refreshed at each full scan.
+ *
+ * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
+ *   fields are never stored;
+ * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
+ * - `dev_id`: the device id, informational only (never compared alone);
+ * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
+ * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
+ *   information class, `fake`);
+ * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
+ *   key change.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VolumeIdentity".
+ */
+export interface VolumeIdentity {
+  caseSensitive: boolean;
+  devId: string;
+  enumeration: string;
+  key: string;
+  kind: string;
+  mountRoot: boolean;
+  remote: boolean;
+  rootFileId?: string | null;
+  sample: SampleEntry[];
+}
+/**
+ * One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:
+ * entries are matched by file id, size and mtime.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SampleEntry".
+ */
+export interface SampleEntry {
+  fileId?: string | null;
+  mtimeNs: string;
+  size: number;
 }
 /**
  * A Dolby Vision configuration record (`dvcC`/`dvvC`).
@@ -3771,6 +3814,12 @@ export interface Envelope {
  * via the `definition` "Expect".
  */
 export interface Expect {
+  /**
+   * The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the
+   * opener crosses them and checks the opened handle against this device; without one,
+   * the handle must be on the root's mount.
+   */
+  dev?: string | null;
   fileId?: string | null;
   mtimeNs: string;
   size: number;
@@ -4310,7 +4359,11 @@ export interface JournalStatus {
  * - `listed_gen`: the full-scan generation in which it was last listed completely; a
  *   resumed full scan of that generation skips its listing and still descends;
  * - `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is
- *   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.
+ *   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing;
+ * - `volume`: that nested mount's volume as last listed (`DirDone.volume`); a different
+ *   volume there now (a different key its file ids and sample do not confirm,
+ *   [`crate::volume::same_volume`]) is `ROOT_VOLUME_CHANGED`, also never listed and never
+ *   missing.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "KnownDir".
@@ -4321,6 +4374,7 @@ export interface KnownDir {
   listedGen?: number | null;
   mountRoot?: boolean;
   mtimeNs?: string | null;
+  volume?: VolumeIdentity | null;
 }
 /**
  * What a media file is (spec §6.3).
@@ -4614,18 +4668,6 @@ export interface RecoverReport {
 export interface SkippedFile {
   path: string;
   reason: string;
-}
-/**
- * One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:
- * entries are matched by file id, size and mtime.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "SampleEntry".
- */
-export interface SampleEntry {
-  fileId?: string | null;
-  mtimeNs: string;
-  size: number;
 }
 /**
  * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
@@ -5076,31 +5118,4 @@ export interface TestWarmResult {
  */
 export interface TxSetAside {
   setAside: SetAside;
-}
-/**
- * A root's volume (Decision 15), measured at add and refreshed at each full scan.
- *
- * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
- *   fields are never stored;
- * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
- * - `dev_id`: the device id, informational only (never compared alone);
- * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
- * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
- *   information class, `fake`);
- * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
- *   key change.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VolumeIdentity".
- */
-export interface VolumeIdentity {
-  caseSensitive: boolean;
-  devId: string;
-  enumeration: string;
-  key: string;
-  kind: string;
-  mountRoot: boolean;
-  remote: boolean;
-  rootFileId?: string | null;
-  sample: SampleEntry[];
 }

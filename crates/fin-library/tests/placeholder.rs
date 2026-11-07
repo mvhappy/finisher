@@ -395,3 +395,17 @@ impl TapName for RawEntry {
         self
     }
 }
+
+#[test]
+fn listing_is_sorted_by_reported_name() {
+    // On disk `.x.icloud` sorts first; it is reported as `x`, between `a` and `y`.
+    let raw = vec![
+        entry("y", EntryType::File, Attrs::None, None),
+        entry(".x.icloud", EntryType::File, Attrs::None, None),
+        entry("a", EntryType::File, Attrs::None, None),
+    ];
+    let out = listing::entries(&RawRel::root(), raw, &Excludes::defaults(true));
+    let names: Vec<&[u8]> = out.iter().map(|e| e.name.as_slice()).collect();
+    assert_eq!(names, [&b"a"[..], b"x", b"y"]);
+    assert!(out[1].placeholder.is_some());
+}

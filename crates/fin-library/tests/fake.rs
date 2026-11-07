@@ -133,6 +133,7 @@ fn fake_open_file_follows_the_opener_rules() {
         size,
         mtime_ns,
         file_id,
+        dev: None,
     };
     let rel = RawRel::root().join(b"\xff.mov");
     let mut f = src.open_file(&rel, &x(5, 6, None), false).unwrap();

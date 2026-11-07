@@ -51,7 +51,7 @@ pub use hash::{HashOutcome, hash_file};
 pub use open::open_for_read;
 pub use probe::{FileRef, ProbeOutcome, probe_file};
 pub use raw::RawRel;
-pub use source::{Attrs, DirHandle, RawEntry, RootStat, Source};
+pub use source::{Attrs, DirHandle, Listing, RawEntry, RootStat, Source};
 pub use timing::Timing;
 pub use types::{
     DirDone, EntryType, Expect, KnownDir, OpenError, Placeholder, RootState, SampleEntry,

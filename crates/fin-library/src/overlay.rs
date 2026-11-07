@@ -41,7 +41,7 @@ use serde::Deserialize;
 use crate::placeholder::{SF_DATALESS, win};
 use crate::raw::RawRel;
 use crate::source::fake::spec::{check_error, error};
-use crate::source::{Attrs, DirHandle, RawEntry, RootStat, Source};
+use crate::source::{Attrs, DirHandle, Listing, RawEntry, RootStat, Source};
 use crate::types::{OpenError, Placeholder, VolumeIdentity};
 
 /// The overlay's file name at a root (a dot-file: every scan excludes it).
@@ -268,10 +268,10 @@ impl Source for OverlaySource {
     }
 
     fn read_dir(&self, dir: &DirHandle) -> io::Result<Vec<RawEntry>> {
-        self.read_dir_with(dir, &|| {})
+        self.read_dir_with(dir, &|| {})?.strict()
     }
 
-    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
+    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Listing> {
         let rel = dir.rel();
         if self.ov.flagged(rel) {
             self.ov.log("readDir", rel, None, None);
@@ -282,17 +282,18 @@ impl Source for OverlaySource {
             return Err(error(e));
         }
         if p.unmounted {
-            return Ok(Vec::new());
+            return Ok(Listing::default());
         }
-        let raw = self.inner.read_dir_with(dir, progress)?;
-        Ok(raw
+        let mut raw = self.inner.read_dir_with(dir, progress)?;
+        raw.entries = std::mem::take(&mut raw.entries)
             .into_iter()
             .map(|e| {
                 sleep_ms(p.entry_delay_ms);
                 progress();
                 self.ov.apply(&rel.join(&e.name), e)
             })
-            .collect())
+            .collect();
+        Ok(raw)
     }
 
     fn stat_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<Option<RawEntry>> {
