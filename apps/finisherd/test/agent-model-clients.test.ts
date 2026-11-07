@@ -261,7 +261,7 @@ describe("base URLs and retry-after", () => {
     expect(code(() => checkBaseUrl("openrouter", "http://models.example/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
     expect(code(() => checkBaseUrl("openrouter", "https://user:pw@openrouter.ai/api/v1"))).toBe("PROVIDER_UNAVAILABLE");
     expect(code(() => checkBaseUrl("local", "http://localhost:11434/v1"))).toBe("ok");
-    expect(code(() => checkBaseUrl("local", "http://192.0.2.10:1234/v1"))).toBe("ok");
+    expect(code(() => checkBaseUrl("local", "http://lan-models.example:1234/v1"))).toBe("ok");
     expect(code(() => checkBaseUrl("local", "file:///etc/passwd"))).toBe("PROVIDER_UNAVAILABLE");
     expect(code(() => checkBaseUrl("local", "not a url"))).toBe("PROVIDER_UNAVAILABLE");
   });
