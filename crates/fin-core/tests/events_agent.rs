@@ -3,7 +3,8 @@
 
 use fin_core::events::class::{CONTENT, is_valid_name};
 use fin_core::events::names::{
-    AGENT_MODELS, AGENT_PROVIDERS, AGENT_ROLES, AGENT_TOOLS, CLI_COMMANDS, MEDIA_TYPES,
+    AGENT_MODELS, AGENT_PROVIDERS, AGENT_ROLES, AGENT_TOOLS, AGENT_UPSTREAMS, CLI_COMMANDS,
+    MEDIA_TYPES,
 };
 use fin_core::events::payloads::*;
 use fin_core::events::*;
@@ -71,7 +72,8 @@ fn turn() -> AgentTurn {
         model: Name::OTHER,
         model_hash: Some(h('3')),
         weights: Weights::Open,
-        upstream: Some(AGENT_PROVIDERS.get("mistral").unwrap()),
+        upstream: Some(AGENT_UPSTREAMS.get("mistral").unwrap()),
+        upstream_hash: None,
         input_tokens: 9000,
         output_tokens: 120,
         cache_read_tokens: 8000,
@@ -171,8 +173,11 @@ fn agent_kinds_round_trip() {
         let back = decode_payload(spec, &v).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
         assert_eq!(back, p, "{}", spec.name);
         assert_eq!(serde_json::to_value(&back).unwrap(), v, "{}", spec.name);
-        let received = validate_payload(spec, &v, &key, &ScrubCtx::default()).unwrap();
-        assert_eq!(received, p, "{}", spec.name);
+        // Received payloads of the four wire kinds are checked in `events_agent_wire.rs`.
+        if !WIRE_KINDS.contains(&spec.name) {
+            let received = validate_payload(spec, &v, &key, &ScrubCtx::default()).unwrap();
+            assert_eq!(received, p, "{}", spec.name);
+        }
     }
     // Inline and blob bodies, both ways round.
     let mut t = turn();
@@ -405,18 +410,18 @@ fn tx_ids_capped_at_64() {
     assert_eq!(schema["properties"]["txIds"]["maxItems"], json!(64));
 }
 
-/// `AGENT_MODELS` is the bundled catalogue's ids plus `other` (sub-project 7 §4.7).
+/// Every model id the bundled catalogue names is in `AGENT_MODELS` (review H2: a subset, not
+/// equality; the table is append-only, `agent_tables_are_append_only`).
 #[test]
 fn catalogue_ids_in_agent_models() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../apps/finisherd/src/agent/catalogue/models.json");
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let mut ids: Vec<&str> = doc["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["id"].as_str().unwrap())
-        .collect();
-    ids.push("other");
-    assert_eq!(AGENT_MODELS.entries(), ids.as_slice());
+    for m in doc["models"].as_array().unwrap() {
+        let id = m["id"].as_str().unwrap();
+        assert!(
+            AGENT_MODELS.get(id).is_some(),
+            "{id} is not in AGENT_MODELS"
+        );
+    }
 }

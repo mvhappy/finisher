@@ -1331,6 +1331,7 @@ export interface AgentTurn {
   ttftMs?: number;
   turnId: IdRef;
   upstream?: Name;
+  upstreamHash?: Hashed;
   weights: Weights;
 }
 /**

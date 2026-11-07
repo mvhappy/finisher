@@ -46,6 +46,7 @@ mod commit_log;
 mod engine;
 mod eval;
 mod fonts;
+mod hash;
 mod history;
 mod journal;
 mod maintenance;

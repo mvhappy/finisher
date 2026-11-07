@@ -426,82 +426,9 @@ pub static DETAIL_KEYS: NameTable = NameTable::new(
     ],
 );
 
-/// Agent providers (`agent.*`): the built-in agent's (`openrouter`, or `local` for a
-/// user-run OpenAI-compatible server), the CLI harnesses' (`anthropic`, `openai`), and the
-/// upstreams OpenRouter routes a call to.
-pub static AGENT_PROVIDERS: NameTable = NameTable::new(
-    "AGENT_PROVIDERS",
-    &[
-        "openrouter",
-        "anthropic",
-        "openai",
-        "google",
-        "mistral",
-        "local",
-        "other",
-    ],
-);
-
-/// Agent model ids (`agent.*`): the ids the CLI harnesses report and the bundled catalogue's
-/// OpenRouter slugs (`apps/finisherd/src/agent/catalogue/models.json`; the drift test
-/// `catalogue_ids_in_agent_models` keeps them in step). A slug the owner adds in settings
-/// reads as `other`, with a keyed `modelHash`.
-pub static AGENT_MODELS: NameTable = NameTable::new(
-    "AGENT_MODELS",
-    &[
-        "anthropic/claude-sonnet-5.5",
-        "anthropic/claude-opus-5.5",
-        "anthropic/claude-haiku-5.5",
-        "openai/gpt-6.1-sol",
-        "deepseek/deepseek-v4-pro",
-        "moonshotai/kimi-k3",
-        "z-ai/glm-5.3",
-        "openai/gpt-oss-120b",
-        "claude-fable-5-1",
-        "claude-opus-5-5",
-        "claude-sonnet-5-5",
-        "claude-haiku-5-5",
-        "gpt-6.1-sol",
-        "gpt-6.1-terra",
-        "gpt-6-sol",
-        "gpt-6-luna",
-        "gpt-6-astra",
-        "other",
-    ],
-);
-
-/// Agent roles (sub-project 7 §6.2): the bundled roles, `other` for a plugin's.
-pub static AGENT_ROLES: NameTable = NameTable::new(
-    "AGENT_ROLES",
-    &[
-        "editor",
-        "critic",
-        "fixer",
-        "clip-finder",
-        "caption-stylist",
-        "colourist",
-        "mixer",
-        "other",
-    ],
-);
-
-/// Agent tool kinds (`agent.toolCall.tool`, §12.2).
-pub static AGENT_TOOLS: NameTable = NameTable::new(
-    "AGENT_TOOLS",
-    &[
-        "fin",
-        "shell",
-        "read",
-        "write",
-        "edit",
-        "search",
-        "webFetch",
-        "webSearch",
-        "mcp",
-        "workspace",
-        "other",
-    ],
-);
+pub use super::agent_names::{
+    AGENT_MODELS, AGENT_PROVIDERS, AGENT_ROLES, AGENT_TOOLS, AGENT_UPSTREAMS, agent_upstream,
+};
 
 /// Every table, for the pattern test.
 pub static TABLES: &[&NameTable] = &[
@@ -517,6 +444,7 @@ pub static TABLES: &[&NameTable] = &[
     &AGENT_MODELS,
     &AGENT_ROLES,
     &AGENT_TOOLS,
+    &AGENT_UPSTREAMS,
 ];
 
 // `deserialize_with` helpers: a `Name` field reads through its table.
@@ -567,6 +495,7 @@ fn one_opt<'de, D: Deserializer<'de>>(d: D, t: &NameTable) -> Result<Option<Name
 table_fns!(one_opt -> Option<Name>:
     cli_command_opt => CLI_COMMANDS,
     agent_provider_opt => AGENT_PROVIDERS,
+    agent_upstream_opt => AGENT_UPSTREAMS,
 );
 
 /// A media extension: kept only when `MEDIA_EXTS` holds it (lower-cased), else absent.

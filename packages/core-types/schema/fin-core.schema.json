@@ -367,6 +367,9 @@
         "upstream": {
           "$ref": "#/$defs/Name"
         },
+        "upstreamHash": {
+          "$ref": "#/$defs/Hashed"
+        },
         "weights": {
           "$ref": "#/$defs/Weights"
         }

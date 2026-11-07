@@ -24,6 +24,7 @@ test-hooks = [
 ]
 
 [dependencies]
+blake3 = "1"
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
 fin-journal = { path = "../fin-journal" }

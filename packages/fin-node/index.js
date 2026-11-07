@@ -389,6 +389,16 @@ export function rpcMethods() {
   return native.rpcMethods();
 }
 
+/** The BLAKE3 of `data`, 64 lower-case hex digits (the `blake3` crate). */
+export function blake3Hex(data) {
+  return native.blake3Hex(data);
+}
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export function blake3KeyedHex(key, data) {
+  return sync(() => native.blake3KeyedHex(key, data));
+}
+
 /** Every kind name of fin-core's event registry. */
 export function kindNames() {
   return native.kindNames();

@@ -291,6 +291,18 @@ fn every_kind_fin_sends_has_a_wire_form() {
         .filter(|k| k.sources.contains(&Source::Fin))
         .map(|k| k.name)
         .collect();
-    assert_eq!(fin, WIRE_KINDS);
-    assert_eq!(WIRE_KINDS, ["cli.command", "error.panic"]);
+    assert!(fin.iter().all(|k| WIRE_KINDS.contains(k)), "{fin:?}");
+    // `finisherd` sends the agent kinds through wire forms too (raw model ids and upstreams,
+    // unkeyed hashes; sub-project 7A review H1, H2, M3).
+    assert_eq!(
+        WIRE_KINDS,
+        [
+            "cli.command",
+            "error.panic",
+            "agent.session",
+            "agent.turn",
+            "agent.toolCall",
+            "agent.toolResult"
+        ]
+    );
 }

@@ -7,6 +7,10 @@
 //! they keep their metadata and drop their content. Every session and turn carries its
 //! **provenance** (`harness`, `provider`, `model`, `weights`; `upstream` on turns) as required
 //! meta fields, so a later filter on it needs no join and no training content (§12.7).
+//!
+//! These are the stored forms. `finisherd` sends the wire forms of `wire_agent.rs`: raw model
+//! ids and upstream names, which become a table name or a keyed hash, and unkeyed BLAKE3
+//! hashes, which are keyed.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -209,14 +213,18 @@ pub struct AgentTurn {
     #[schemars(with = "Hashed")]
     pub model_hash: Option<Hashed>,
     pub weights: Weights,
-    // The provider OpenRouter routed the call to (`AGENT_PROVIDERS`).
+    // The provider OpenRouter routed the call to (`AGENT_UPSTREAMS`); one the table lacks is
+    // `upstreamHash` instead.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "names::agent_provider_opt"
+        deserialize_with = "names::agent_upstream_opt"
     )]
     #[schemars(with = "Name")]
     pub upstream: Option<Name>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Hashed")]
+    pub upstream_hash: Option<Hashed>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -234,7 +242,8 @@ pub struct AgentTurn {
     pub capture: Capture,
     pub system_hash: Hashed,
     pub tools_hash: Hashed,
-    // The keyed BLAKE3 of the full request body as sent (exact capture only).
+    // The keyed hash of the BLAKE3 of the full request body as sent (exact capture only): the
+    // emitter sends the unkeyed `blake3:<hex>` and the wire form keys it, like `systemHash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Hashed")]
     pub body_hash: Option<Hashed>,
@@ -262,6 +271,7 @@ approx_struct!(AgentTurn {
     model_hash,
     weights,
     upstream,
+    upstream_hash,
     input_tokens,
     output_tokens,
     cache_read_tokens,
