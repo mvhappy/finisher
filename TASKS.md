@@ -24,7 +24,7 @@ S1–S11 executed on macOS. Conclusions are in spec §27.
 - [x] Linux iGPU (Unraid Docker): S4 WebGPU Vulkan + VA-API WebCodecs, S3 1080p60, S5 VA-API 26.7× proxies
 - [x] S10 SMB single client: round-1 lease split-brains (111/200); hardened lease 200/200
 - [x] S10 cross-machine race: fenced lease required (0 early takeovers, 0 stale writes); SMB defaults in §27.9
-- [x] S9 notarisation — notarised and stapled under Maryna's team 9XN7WN8JN2 (API key)
+- [x] S9 notarisation — notarised and stapled under the owner's Apple Developer team (API key)
 - [x] Remove leftover empty NAS dirs (removed server-side 2026-11-03)
 
 ## Spike round 4: Windows (E4)
