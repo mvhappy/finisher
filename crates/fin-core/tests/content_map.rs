@@ -138,6 +138,7 @@ fn mirrored_trim_and_undo_cancel() {
         edge: Edge::End,
         delta: secs(2),
         mode: TrimMode::Roll,
+        alone: false,
     }
     .into();
     let a = apply(&p, vec![roll]);

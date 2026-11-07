@@ -27,6 +27,21 @@ pub fn overwrite(
     body: ItemBody,
     id: &str,
 ) -> Result<Composed, CoreError> {
+    let right = if id == SPLIT { "$split_" } else { SPLIT };
+    overwrite_named(project, track, at, duration, body, id, right)
+}
+
+/// [`overwrite`] with the split's right part named `right` (builders that overwrite on
+/// several tracks name each split apart).
+pub(crate) fn overwrite_named(
+    project: &Project,
+    track: &str,
+    at: Rational,
+    duration: Rational,
+    body: ItemBody,
+    id: &str,
+    right: &str,
+) -> Result<Composed, CoreError> {
     let t = track_index(project, track)?.get(project);
     let stop = at.checked_add(duration)?;
     let mut containing = None;
@@ -38,7 +53,6 @@ pub fn overwrite(
     let mut ops = Vec::new();
     let mut split = Value::Null;
     if let Some(it) = containing {
-        let right = if id == SPLIT { "$split_" } else { SPLIT };
         let offset = at.checked_sub(it.start)?;
         split = json!({ "item": it.id, "offset": offset, "id": right });
         ops.push(

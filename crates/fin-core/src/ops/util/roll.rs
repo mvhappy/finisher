@@ -74,13 +74,15 @@ pub(crate) fn roll(
     Ok(vec![back(named, t, TrimMode::Roll)?])
 }
 
-/// The trim that moves the edge back, in `mode`.
+/// The trim that moves the edge back, in `mode`, of item `id` alone (a `strict` trim is
+/// always alone): an inverse never acts on a link group (plan 4C Decision 19).
 pub(crate) fn back(id: &str, t: &ItemTrim, mode: TrimMode) -> Result<Op, CoreError> {
     Ok(ItemTrim {
         item: id.to_string(),
         edge: t.edge,
         delta: t.delta.checked_neg()?,
         mode,
+        alone: mode != TrimMode::Strict,
     }
     .into())
 }

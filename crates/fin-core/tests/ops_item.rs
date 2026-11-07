@@ -76,6 +76,7 @@ fn strict(item: &str, edge: Edge, delta: Rational) -> Op {
         edge,
         delta,
         mode: TrimMode::Strict,
+        alone: false,
     }
     .into()
 }
@@ -580,7 +581,7 @@ fn trim_ripple_start_golden() {
         (c.change, c.edge, c.by),
         (ChangeKind::Updated, Some(Edge::Start), Some(secs(-1)))
     );
-    assert_eq!(a.inverse, [trim("c1", Edge::Start, secs(-1))]);
+    assert_eq!(a.inverse, [trim_back("c1", Edge::Start, secs(-1))]);
     assert_eq!(
         serde_json::to_value(trim("c1", Edge::Start, secs(1))).unwrap(),
         json!({"op": "item.trim", "item": "c1", "edge": "start", "delta": "1", "mode": "ripple"})

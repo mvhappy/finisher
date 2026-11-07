@@ -40,6 +40,7 @@ pub enum EntityKind {
     // variant splits the generated TypeScript union.
     Item,
     Transition,
+    Link,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

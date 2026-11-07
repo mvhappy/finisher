@@ -111,7 +111,7 @@ impl Applier {
             .with_details(json!({ "op": op.name() }))
             .with_fix(
                 "use asset.add, item.insert, item.trim (ripple, roll or overwrite), item.delete, \
-                 item.slip or item.split",
+                 item.slip, item.split, item.move, item.slide, item.link or item.unlink",
             ))
         } else if self.mode != ApplyMode::Client && op.is_alias() {
             Err(CoreError::new(

@@ -167,6 +167,7 @@ pub fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> 
             edge,
             delta,
             mode: TrimMode::Ripple,
+            alone: false,
         }
         .into(),
     )?;

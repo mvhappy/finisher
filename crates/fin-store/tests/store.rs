@@ -414,6 +414,7 @@ fn conflict_details_list_conflicts() {
                 edge: fin_core::Edge::End,
                 delta: secs(1),
                 mode: fin_core::TrimMode::Ripple,
+                alone: false,
             }
             .into(),
         ],
@@ -429,6 +430,7 @@ fn conflict_details_list_conflicts() {
                     edge: fin_core::Edge::End,
                     delta: secs(2),
                     mode: fin_core::TrimMode::Ripple,
+                    alone: false,
                 }
                 .into(),
             ],
@@ -655,6 +657,7 @@ fn ops_since_zero_replays_to_the_snapshot() {
                 edge: fin_core::Edge::End,
                 delta: secs(-1),
                 mode: fin_core::TrimMode::Ripple,
+                alone: false,
             }
             .into(),
         ],

@@ -49,6 +49,7 @@ fn trim(clip: &str, delta: i64) -> Op {
         edge: Edge::End,
         delta: secs(delta),
         mode: fin_core::TrimMode::Ripple,
+        alone: false,
     }
     .into()
 }

@@ -5,12 +5,14 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use common::moves::{link, move_to, slide, unlink};
 use common::*;
 use fin_core::rebase::{
     Conflict, Conflicts, Footprint, Touch, committed_footprints, entity_conflict, reasons,
 };
 use fin_core::{
-    CommittedTx, CoreError, Edge, MemIds, Op, Project, apply_internal, apply_tx, resolve_ops,
+    CommittedTx, CoreError, Edge, InsertMode, MemIds, Op, Project, apply_internal, apply_tx,
+    resolve_ops,
 };
 use serde_json::json;
 
@@ -319,6 +321,7 @@ fn every_op_has_a_footprint() {
                 edge: Edge::End,
                 delta: secs(-1),
                 mode: fin_core::TrimMode::Overwrite,
+                alone: false,
             }
             .into(),
             vec!["t1"],
@@ -343,8 +346,19 @@ fn every_op_has_a_footprint() {
             vec!["t2"],
         ),
     ];
+    let linked = apply(&p, vec![link(&["c1", "c3"], "$g")]).project;
+    let more = [
+        (
+            p.clone(),
+            move_to("c1", "t2", secs(5), InsertMode::Ripple),
+            vec!["t1", "t2"],
+        ),
+        (p.clone(), slide("c2", secs(-1)), vec!["t1"]),
+        (p.clone(), link(&["c1", "c3"], "$g"), vec!["t1", "t2"]),
+        (linked, unlink("lk1"), vec!["t1", "t2"]),
+    ];
     let mut seen = BTreeSet::new();
-    for (at, op, tracks) in cases {
+    for (at, op, tracks) in cases.into_iter().chain(more) {
         let (op, f, _) = fp(&at, op);
         seen.insert(op.name());
         assert_eq!(
@@ -377,6 +391,34 @@ fn every_op_has_a_footprint() {
                     && f.uses == [r.item.asset().unwrap().to_string(), r.track.clone()]
             }
             Op::ItemSlip(s) => f.touches == [(s.item.clone(), Touch::Param("sourceIn".into()))],
+            Op::ItemMove(m) => {
+                f.touches == [(m.item.clone(), Touch::Param("start".into()))]
+                    && f.uses == [m.track.clone()]
+            }
+            Op::ItemSlide(s) => {
+                f.touches
+                    == [
+                        (s.item.clone(), Touch::Param("start".into())),
+                        ("c1".to_string(), Touch::Edge(Edge::End)),
+                    ]
+            }
+            Op::ItemLink(l) => {
+                f.creates == [l.id.clone()]
+                    && f.touches
+                        == l.items
+                            .iter()
+                            .map(|i| (i.clone(), Touch::Param("link".into())))
+                            .collect::<Vec<_>>()
+            }
+            Op::ItemUnlink(u) => {
+                f.removes == [u.group.clone()]
+                    && f.touches
+                        == [
+                            (u.group.clone(), Touch::Exists),
+                            ("c1".to_string(), Touch::Param("link".into())),
+                            ("c3".to_string(), Touch::Param("link".into())),
+                        ]
+            }
             Op::ItemSplit(s) => {
                 f.touches
                     == [
@@ -392,7 +434,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 9);
+    assert_eq!(seen.len(), 13);
 }
 
 #[test]

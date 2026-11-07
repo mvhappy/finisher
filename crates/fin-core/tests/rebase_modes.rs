@@ -83,6 +83,7 @@ fn trim_in(item: &str, edge: Edge, delta: Rational, mode: TrimMode) -> Op {
         edge,
         delta,
         mode,
+        alone: false,
     }
     .into()
 }

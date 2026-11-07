@@ -34,6 +34,18 @@ pub enum Op {
     /// Cuts an item in two at `offset`; the right part gets a new id.
     #[serde(rename = "item.split")]
     ItemSplit(ItemSplit),
+    /// Moves an item (and its link group) to a track and position.
+    #[serde(rename = "item.move")]
+    ItemMove(ItemMove),
+    /// Moves an item between its neighbours, trimming them.
+    #[serde(rename = "item.slide")]
+    ItemSlide(ItemSlide),
+    /// Makes items one link group.
+    #[serde(rename = "item.link")]
+    ItemLink(ItemLink),
+    /// Dissolves a link group.
+    #[serde(rename = "item.unlink")]
+    ItemUnlink(ItemUnlink),
     /// Internal (inverse of `asset.add`): removes an unused asset.
     #[serde(rename = "asset.remove")]
     AssetRemove { id: String },
@@ -215,6 +227,73 @@ pub struct ItemTrim {
     pub edge: Edge,
     pub delta: Rational,
     pub mode: TrimMode,
+    /// Internal (every trim's inverse): this item alone, not its link group (plan 4C
+    /// Decision 19). A `strict` trim is always alone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub alone: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// `item.move`: moves `item` to `track` at `at` (a position in the frame before the op, plan
+/// 4C Decision 15), and every member of its link group by the same time on its own track
+/// (only the named item changes track). `ripple` closes the gap it leaves and opens room at
+/// the target on each track; `overwrite` lifts it and carves the target range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemMove {
+    pub item: String,
+    pub track: String,
+    pub at: Rational,
+    pub mode: InsertMode,
+}
+
+/// `item.slide`: moves `item` (alone) by `delta` seconds on its track, trimming the
+/// neighbour touching each side so nothing else moves: the one before it at its end, the one
+/// after it at its start. A side with no touching neighbour needs room in the gap
+/// (`SLIDE_BLOCKED`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemSlide {
+    pub item: String,
+    pub delta: Rational,
+    // Internal (a slide's inverse): the neighbours to trim, named instead of found by touch,
+    // so an undo trims exactly what the slide trimmed. Not a doc comment: a `$ref` with a
+    // sibling description would be inlined in the generated TypeScript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "SlideSides")]
+    pub sides: Option<SlideSides>,
+}
+
+/// The neighbours an internal `item.slide` trims; a side without one trims nothing there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SlideSides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub after: Option<String>,
+}
+
+/// `item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group
+/// named `id` (a `$name` placeholder; a literal id in an internal apply, the inverse of
+/// `item.unlink`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemLink {
+    pub items: Vec<String>,
+    pub id: String,
+}
+
+/// `item.unlink`: dissolves link group `group`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemUnlink {
+    pub group: String,
 }
 
 /// `item.slip`: moves the source of `item` (a clip or nested item) under it by `delta`
@@ -301,5 +380,29 @@ impl From<ItemRemove> for Op {
 impl From<ItemRestore> for Op {
     fn from(op: ItemRestore) -> Op {
         Op::ItemRestore(Box::new(op))
+    }
+}
+
+impl From<ItemMove> for Op {
+    fn from(op: ItemMove) -> Op {
+        Op::ItemMove(op)
+    }
+}
+
+impl From<ItemSlide> for Op {
+    fn from(op: ItemSlide) -> Op {
+        Op::ItemSlide(op)
+    }
+}
+
+impl From<ItemLink> for Op {
+    fn from(op: ItemLink) -> Op {
+        Op::ItemLink(op)
+    }
+}
+
+impl From<ItemUnlink> for Op {
+    fn from(op: ItemUnlink) -> Op {
+        Op::ItemUnlink(op)
     }
 }

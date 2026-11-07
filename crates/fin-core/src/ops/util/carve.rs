@@ -69,6 +69,7 @@ pub(crate) fn carve(
                 edge,
                 delta: delta.checked_neg()?,
                 mode: TrimMode::Strict,
+                alone: false,
             }
             .into(),
         );

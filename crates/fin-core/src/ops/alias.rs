@@ -51,6 +51,7 @@ pub(crate) fn to_item(op: &Op) -> Op {
             edge: *edge,
             delta: *delta,
             mode: TrimMode::Ripple,
+            alone: false,
         }
         .into(),
         Op::ClipDelete { clip } => ItemDelete {
@@ -162,8 +163,9 @@ macro_rules! alias_module {
                 Vec::new()
             }
 
-            pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
-                1
+            /// As the `item.*` op the alias stands for.
+            pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+                crate::ops::inverse_len(&super::to_item(op), own)
             }
 
             #[allow(unused_variables)]

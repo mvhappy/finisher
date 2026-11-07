@@ -462,7 +462,7 @@ fn restore_with_placeholder_id_binds() {
     assert_eq!(
         live.inverse,
         vec![
-            trim("c2", Edge::End, secs(-1)),
+            trim_back("c2", Edge::End, secs(-1)),
             ItemRemove {
                 id: "c2".into(),
                 mode: DeleteMode::Ripple

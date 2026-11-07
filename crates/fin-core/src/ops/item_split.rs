@@ -125,6 +125,7 @@ pub(crate) fn apply(
             edge: Edge::End,
             delta: length,
             mode: TrimMode::Strict,
+            alone: false,
         }
         .into(),
     ])

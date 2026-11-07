@@ -1,14 +1,15 @@
-//! `item.delete`: takes an item of any kind off its track; `ripple` closes the gap (later
-//! items move by `−duration`), `lift` leaves it.
+//! `item.delete`: takes an item of any kind off its track, and every member of its link group
+//! off theirs (plan 4C Decision 19), in member order; `ripple` closes each gap (later items
+//! move by `−duration`), `lift` leaves it. The inverse restores them, the last member first.
 
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::Project;
-use crate::ops::util::{OpDiff, wrong_op};
+use crate::ops::util::{OpDiff, members, wrong_op};
 use crate::ops::{Bindings, Op, item_remove};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
-use crate::tx::Diff;
+use crate::tx::{ChangeKind, Diff, EntityKind};
 
 pub(crate) fn apply(
     project: &mut Project,
@@ -20,10 +21,16 @@ pub(crate) fn apply(
     let Op::ItemDelete(d) = op else {
         return Err(wrong_op(op));
     };
-    item_remove::remove(project, &bindings.resolve(&d.item)?, d.mode, bindings, diff)
+    let mut inverse = Vec::new();
+    for member in members(project, &bindings.resolve(&d.item)?)? {
+        inverse.push(item_remove::remove(
+            project, &member, d.mode, bindings, diff,
+        )?);
+    }
+    Ok(inverse.into_iter().rev().flatten().collect())
 }
 
-/// Removes the item (on the track its shift names, when it ripples).
+/// Removes the item; its group's members come from the diff.
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::ItemDelete(d) = op {
@@ -43,9 +50,12 @@ pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 
-/// The op's inverse is one op.
-pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
-    1
+/// One restore per item it removed.
+pub(crate) fn inverse_len(_op: &Op, own: &Diff) -> usize {
+    own.changes
+        .iter()
+        .filter(|c| c.kind == EntityKind::Item && c.change == ChangeKind::Removed)
+        .count()
 }
 
 /// The wire name.

@@ -3,8 +3,9 @@ mod common;
 use common::ids_json::{ids_cover_every_id_in_json, ids_cover_json};
 use fin_core::{
     AssetAdd, BlendMode, CaptionBlock, DeleteMode, Edge, Effect, InsertMode, Interp, Item,
-    ItemBody, ItemDelete, ItemInsert, ItemRemove, ItemRestore, ItemSlip, ItemSplit, ItemTrim,
-    Keyframe, Op, ParamValue, Rational, TrimMode, Word,
+    ItemBody, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide,
+    ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Keyframe, Op, ParamValue, Rational, SlideSides,
+    TrimMode, Word,
 };
 use serde_json::json;
 
@@ -84,6 +85,7 @@ fn every_variant() -> Vec<Op> {
             edge: Edge::Start,
             delta: r(1),
             mode: TrimMode::Ripple,
+            alone: true,
         }
         .into(),
         ItemDelete {
@@ -100,6 +102,31 @@ fn every_variant() -> Vec<Op> {
             item: "c1".into(),
             offset: r(1),
             id: "$r".into(),
+        }
+        .into(),
+        ItemMove {
+            item: "c1".into(),
+            track: "t2".into(),
+            at: r(3),
+            mode: InsertMode::Overwrite,
+        }
+        .into(),
+        ItemSlide {
+            item: "c1".into(),
+            delta: r(1),
+            sides: Some(SlideSides {
+                before: Some("c2".into()),
+                after: Some("c3".into()),
+            }),
+        }
+        .into(),
+        ItemLink {
+            items: vec!["c1".into(), "$c".into()],
+            id: "$lk".into(),
+        }
+        .into(),
+        ItemUnlink {
+            group: "lk1".into(),
         }
         .into(),
         Op::AssetRemove { id: "a1".into() },
@@ -138,6 +165,10 @@ fn every_variant() -> Vec<Op> {
             | Op::ItemDelete(_)
             | Op::ItemSlip(_)
             | Op::ItemSplit(_)
+            | Op::ItemMove(_)
+            | Op::ItemSlide(_)
+            | Op::ItemLink(_)
+            | Op::ItemUnlink(_)
             | Op::AssetRemove { .. }
             | Op::ItemRemove(_)
             | Op::ItemRestore(_)

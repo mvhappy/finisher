@@ -6,9 +6,13 @@ use serde_json::Value;
 
 use crate::ops::Op;
 
+mod audio;
 mod overwrite;
+mod split;
 
+pub use audio::clip_with_audio;
 pub use overwrite::overwrite;
+pub use split::split_linked;
 
 /// What a builder sends: the ops, in order, and echo data saying what it decided (for `fin`'s
 /// output).

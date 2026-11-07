@@ -187,6 +187,7 @@ mod tests {
             edge: Edge::End,
             delta: Rational::from_int(-1),
             mode: fin_core::TrimMode::Ripple,
+            alone: false,
         }
         .into()
     }

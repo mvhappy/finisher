@@ -451,6 +451,7 @@ fn any_op() -> impl Strategy<Value = Op> {
                     } else {
                         TrimMode::Ripple
                     },
+                    alone: false,
                 }
                 .into()
             }

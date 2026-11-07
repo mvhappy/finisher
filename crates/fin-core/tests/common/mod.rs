@@ -3,6 +3,7 @@
 
 pub mod ids_json;
 pub mod memlog;
+pub mod moves;
 
 use fin_core::{
     Applied, AssetAdd, AudioInfo, CoreError, DeleteMode, Edge, InsertMode, ItemBody, ItemDelete,
@@ -106,6 +107,19 @@ pub fn trim(item: &str, edge: Edge, delta: Rational) -> Op {
         edge,
         delta,
         mode: TrimMode::Ripple,
+        alone: false,
+    }
+    .into()
+}
+
+/// The inverse of a ripple trim: `item.trim` back in ripple mode, of `item` alone.
+pub fn trim_back(item: &str, edge: Edge, delta: Rational) -> Op {
+    ItemTrim {
+        item: item.into(),
+        edge,
+        delta,
+        mode: TrimMode::Ripple,
+        alone: true,
     }
     .into()
 }

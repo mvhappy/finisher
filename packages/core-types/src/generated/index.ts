@@ -27,7 +27,7 @@ export type Edge = "start" | "end";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EntityKind".
  */
-export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition";
+export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "link";
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -56,6 +56,18 @@ export type Op =
     })
   | (ItemSplit & {
       op: "item.split";
+    })
+  | (ItemMove & {
+      op: "item.move";
+    })
+  | (ItemSlide & {
+      op: "item.slide";
+    })
+  | (ItemLink & {
+      op: "item.link";
+    })
+  | (ItemUnlink & {
+      op: "item.unlink";
     })
   | {
       id: string;
@@ -638,6 +650,11 @@ export interface Word {
  * via the `definition` "ItemTrim".
  */
 export interface ItemTrim {
+  /**
+   * Internal (every trim's inverse): this item alone, not its link group (plan 4C
+   * Decision 19). A `strict` trim is always alone.
+   */
+  alone?: boolean;
   delta: Rational;
   edge: Edge;
   item: string;
@@ -677,6 +694,66 @@ export interface ItemSplit {
   id: string;
   item: string;
   offset: Rational;
+}
+/**
+ * `item.move`: moves `item` to `track` at `at` (a position in the frame before the op, plan
+ * 4C Decision 15), and every member of its link group by the same time on its own track
+ * (only the named item changes track). `ripple` closes the gap it leaves and opens room at
+ * the target on each track; `overwrite` lifts it and carves the target range.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemMove".
+ */
+export interface ItemMove {
+  at: Rational;
+  item: string;
+  mode: InsertMode;
+  track: string;
+}
+/**
+ * `item.slide`: moves `item` (alone) by `delta` seconds on its track, trimming the
+ * neighbour touching each side so nothing else moves: the one before it at its end, the one
+ * after it at its start. A side with no touching neighbour needs room in the gap
+ * (`SLIDE_BLOCKED`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemSlide".
+ */
+export interface ItemSlide {
+  delta: Rational;
+  item: string;
+  sides?: SlideSides;
+}
+/**
+ * The neighbours an internal `item.slide` trims; a side without one trims nothing there.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SlideSides".
+ */
+export interface SlideSides {
+  after?: string;
+  before?: string;
+}
+/**
+ * `item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group
+ * named `id` (a `$name` placeholder; a literal id in an internal apply, the inverse of
+ * `item.unlink`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemLink".
+ */
+export interface ItemLink {
+  id: string;
+  items: string[];
+}
+/**
+ * `item.unlink`: dissolves link group `group`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemUnlink".
+ */
+export interface ItemUnlink {
+  group: string;
 }
 /**
  * `item.remove` (internal): takes item `id` off its track.

@@ -94,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         edge: Edge::End,
         delta: secs(2),
         mode: fin_core::TrimMode::Ripple,
+        alone: false,
     }
     .into();
     store.commit(tx(next(), 3, vec![trim]))?; // rev 4

@@ -42,6 +42,7 @@ fn trim_in(item: &str, edge: Edge, delta: Rational, mode: TrimMode) -> Op {
         edge,
         delta,
         mode,
+        alone: false,
     }
     .into()
 }
@@ -381,10 +382,15 @@ fn roll_moves_both_edges_and_source() {
             change("c2", ChangeKind::Updated, Some(Edge::Start), Some(secs(-2))),
         ]
     );
-    assert_eq!(
-        a.inverse,
-        [trim_in("c1", Edge::End, secs(-2), TrimMode::Roll)]
-    );
+    let back: Op = ItemTrim {
+        item: "c1".into(),
+        edge: Edge::End,
+        delta: secs(-2),
+        mode: TrimMode::Roll,
+        alone: true,
+    }
+    .into();
+    assert_eq!(a.inverse, [back]);
     // The start edge of the named item: it records `by`, its neighbour the end edge.
     let a = golden_apply(
         &p,

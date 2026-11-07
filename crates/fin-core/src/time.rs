@@ -100,6 +100,10 @@ impl Rational {
         self.num > 0
     }
 
+    pub fn is_negative(&self) -> bool {
+        self.num < 0
+    }
+
     /// The nearest `f64` to `num / den` after converting each part (both conversions and the
     /// division are IEEE-754 round-to-nearest, so the result is the same on every platform).
     /// For evaluation only: positions stay rational.

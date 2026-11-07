@@ -149,6 +149,7 @@ pub fn trim_item(item: &str, edge: fin_core::Edge, delta: Rational) -> Op {
         edge,
         delta,
         mode: fin_core::TrimMode::Ripple,
+        alone: false,
     })
 }
 

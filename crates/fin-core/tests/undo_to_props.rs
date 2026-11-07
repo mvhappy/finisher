@@ -125,6 +125,7 @@ fn ops_for(p: &Project, kind: u8, k: usize) -> Option<Vec<Op>> {
                 } else {
                     TrimMode::Roll
                 },
+                alone: false,
             }
             .into(),
         ],

@@ -14,6 +14,10 @@
 //!
 //! A start-edge move shifts that item's relative times (keyframes, caption words) by `−delta`
 //! and records that content offset as the change's `by` (Decision 13).
+//!
+//! Every member of the item's link group is trimmed the same way, in member order (plan 4C
+//! Decision 19; a policy refusal of any member refuses the op); the inverse trims each back
+//! alone (internal `alone`), the last member first. `strict` trims are always alone.
 
 use serde_json::json;
 
@@ -23,7 +27,7 @@ use crate::model::{Project, Track};
 use crate::ops::util::roll::{back, neighbour, roll};
 use crate::ops::util::{
     Limits, OpDiff, TrackAt, carve, check_delta, check_track, check_unlocked, edge_limits, end,
-    intersect, item_index, move_start_edge, ripple, wrong_op,
+    intersect, item_index, members, move_start_edge, ripple, wrong_op,
 };
 use crate::ops::{Bindings, Edge, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
@@ -37,22 +41,41 @@ fn payload(op: &Op) -> Result<&ItemTrim, CoreError> {
     }
 }
 
-/// Resolved, checked trim: where the item is, and for a roll, its neighbour across the edge.
-pub(crate) struct Plan {
+/// Resolved, checked trim of one item: where it is, and for a roll, its neighbour across
+/// the edge.
+struct Plan {
     track: TrackAt,
     item: usize,
     neighbour: Option<usize>,
 }
 
-pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Result<Plan, CoreError> {
-    let t = payload(op)?;
-    if t.mode == TrimMode::Strict && !bindings.internal() {
-        return Err(CoreError::new("INVALID_OP", "strict trims are internal")
-            .with_details(json!({ "op": "item.trim", "mode": "strict" }))
-            .with_fix("trim with mode ripple, roll or overwrite"));
+/// The mode and flag checks clients may not pass.
+fn check_internal(t: &ItemTrim, bindings: &Bindings) -> Result<(), CoreError> {
+    let internal = match (t.mode, t.alone) {
+        (TrimMode::Strict, _) => Some(("strict trims are internal", "mode")),
+        (_, true) => Some((
+            "trims of one item of a link group alone are internal",
+            "alone",
+        )),
+        _ => None,
+    };
+    match internal {
+        Some((message, field)) if !bindings.internal() => {
+            Err(CoreError::new("INVALID_OP", message)
+                .with_details(json!({ "op": "item.trim", "field": field }))
+                .with_fix("trim with mode ripple, roll or overwrite; a link group trims together"))
+        }
+        _ => Ok(()),
     }
-    let id = bindings.resolve(&t.item)?;
-    let (ti, ci) = item_index(project, &id)?;
+}
+
+fn validate(
+    project: &Project,
+    t: &ItemTrim,
+    id: &str,
+    bindings: &Bindings,
+) -> Result<Plan, CoreError> {
+    let (ti, ci) = item_index(project, id)?;
     let track = ti.get(project);
     let plan = Plan {
         track: ti,
@@ -66,7 +89,7 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
     if !bindings.policy() {
         return Ok(plan);
     }
-    check_unlocked(track, Some(&id), bindings)?;
+    check_unlocked(track, Some(id), bindings)?;
     let mut limits: Limits = edge_limits(project, ti, ci, t.edge)?;
     match (t.mode, plan.neighbour) {
         // The start edge moves `start` itself, which stays at 0 or later.
@@ -83,7 +106,7 @@ pub(crate) fn validate(project: &Project, op: &Op, bindings: &Bindings) -> Resul
         }
         _ => {}
     }
-    check_delta(&id, t.edge, t.delta, limits)?;
+    check_delta(id, t.edge, t.delta, limits)?;
     Ok(plan)
 }
 
@@ -94,8 +117,30 @@ pub(crate) fn apply(
     _ids: &mut dyn IdAlloc,
     diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
-    let plan = validate(project, op, bindings)?;
     let t = payload(op)?;
+    check_internal(t, bindings)?;
+    let id = bindings.resolve(&t.item)?;
+    let group = if t.alone || t.mode == TrimMode::Strict {
+        vec![id]
+    } else {
+        members(project, &id)?
+    };
+    let mut inverse = Vec::new();
+    for member in group {
+        inverse.push(trim_one(project, t, &member, bindings, diff)?);
+    }
+    Ok(inverse.into_iter().rev().flatten().collect())
+}
+
+/// Trims item `id` alone; returns its inverse.
+fn trim_one(
+    project: &mut Project,
+    t: &ItemTrim,
+    id: &str,
+    bindings: &Bindings,
+    diff: &mut OpDiff<'_>,
+) -> Result<Vec<Op>, CoreError> {
+    let plan = validate(project, t, id, bindings)?;
     let track = plan.track.get_mut(project);
     match (t.mode, plan.neighbour) {
         (TrimMode::Roll, Some(n)) => roll(track, plan.item, n, t, diff),
@@ -181,12 +226,14 @@ pub(crate) fn offsets_mut(_op: &mut Op) -> Vec<(String, &mut Rational)> {
     Vec::new()
 }
 
-/// Every mode inverts to one trim back; an overwrite trim also to one op per item it carved
-/// (each records one change, as does the trim's own edge).
+/// Per member, every mode inverts to one trim back (an item's edge change), and an overwrite
+/// trim also to one op per item it carved (each records one change).
 pub(crate) fn inverse_len(op: &Op, own: &Diff) -> usize {
+    let changes = own.changes.len();
     match op {
-        Op::ItemTrim(t) if t.mode == TrimMode::Overwrite => own.changes.len(),
-        _ => 1,
+        // A roll records the item and its neighbour, and inverts to one roll back.
+        Op::ItemTrim(t) if t.mode == TrimMode::Roll => changes / 2,
+        _ => changes,
     }
 }
 

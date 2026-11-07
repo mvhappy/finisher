@@ -342,6 +342,7 @@ fn undo_conflicts_when_other_author_removed_target() {
         edge: Edge::End,
         delta: secs(-2),
         mode: fin_core::TrimMode::Ripple,
+        alone: false,
     }
     .into();
     edit(&mut s, "e1", "alice", vec![trim]);

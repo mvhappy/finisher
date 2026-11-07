@@ -699,7 +699,8 @@
         "track",
         "timeline",
         "item",
-        "transition"
+        "transition",
+        "link"
       ],
       "type": "string"
     },
@@ -1407,6 +1408,49 @@
       ],
       "type": "object"
     },
+    "ItemLink": {
+      "description": "`item.link`: makes `items` (at least two, on one timeline, none linked yet) one link group\nnamed `id` (a `$name` placeholder; a literal id in an internal apply, the inverse of\n`item.unlink`).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ItemMove": {
+      "description": "`item.move`: moves `item` to `track` at `at` (a position in the frame before the op, plan\n4C Decision 15), and every member of its link group by the same time on its own track\n(only the named item changes track). `ripple` closes the gap it leaves and opens room at\nthe target on each track; `overwrite` lifts it and carves the target range.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "item": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/InsertMode"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "track",
+        "at",
+        "mode"
+      ],
+      "type": "object"
+    },
     "ItemRemove": {
       "description": "`item.remove` (internal): takes item `id` off its track.",
       "properties": {
@@ -1440,6 +1484,25 @@
         "item",
         "track",
         "mode"
+      ],
+      "type": "object"
+    },
+    "ItemSlide": {
+      "description": "`item.slide`: moves `item` (alone) by `delta` seconds on its track, trimming the\nneighbour touching each side so nothing else moves: the one before it at its end, the one\nafter it at its start. A side with no touching neighbour needs room in the gap\n(`SLIDE_BLOCKED`).",
+      "properties": {
+        "delta": {
+          "$ref": "#/$defs/Rational"
+        },
+        "item": {
+          "type": "string"
+        },
+        "sides": {
+          "$ref": "#/$defs/SlideSides"
+        }
+      },
+      "required": [
+        "item",
+        "delta"
       ],
       "type": "object"
     },
@@ -1482,6 +1545,10 @@
     "ItemTrim": {
       "description": "`item.trim`: moves one edge of `item` by `delta` seconds (positive moves it later).",
       "properties": {
+        "alone": {
+          "description": "Internal (every trim's inverse): this item alone, not its link group (plan 4C\nDecision 19). A `strict` trim is always alone.",
+          "type": "boolean"
+        },
         "delta": {
           "$ref": "#/$defs/Rational"
         },
@@ -1500,6 +1567,18 @@
         "edge",
         "delta",
         "mode"
+      ],
+      "type": "object"
+    },
+    "ItemUnlink": {
+      "description": "`item.unlink`: dissolves link group `group`.",
+      "properties": {
+        "group": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "group"
       ],
       "type": "object"
     },
@@ -2030,6 +2109,86 @@
           "description": "Cuts an item in two at `offset`; the right part gets a new id."
         },
         {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemMove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.move",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Moves an item (and its link group) to a track and position."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemSlide"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.slide",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Moves an item between its neighbours, trimming them."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemLink"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.link",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Makes items one link group."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ItemUnlink"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "item.unlink",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Dissolves a link group."
+        },
+        {
           "description": "Internal (inverse of `asset.add`): removes an unused asset.",
           "properties": {
             "id": {
@@ -2534,6 +2693,18 @@
         "path",
         "reason"
       ],
+      "type": "object"
+    },
+    "SlideSides": {
+      "description": "The neighbours an internal `item.slide` trims; a side without one trims nothing there.",
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "SlotSpec": {

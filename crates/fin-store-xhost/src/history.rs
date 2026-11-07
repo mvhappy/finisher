@@ -179,6 +179,7 @@ pub fn brancher(a: &Args, em: &mut Emitter) -> Result<(), String> {
                     edge: Edge::End,
                     delta: secs(if i == 2 { -1 } else { -2 }),
                     mode: fin_core::TrimMode::Ripple,
+                    alone: false,
                 }
                 .into(),
                 true,

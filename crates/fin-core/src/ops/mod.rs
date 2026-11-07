@@ -2,9 +2,11 @@
 //! footprint, positions).
 //!
 //! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete`, `item.slip`,
-//! `item.split` (and the `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`,
-//! [`alias`]). Internal ops exist only as inverses (`asset.remove`, `item.remove`,
-//! `item.restore`, and `item.trim` in `strict` mode); clients sending them get `INVALID_OP`.
+//! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink` (and the `clip.*`
+//! aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops exist
+//! only as inverses (`asset.remove`, `item.remove`, `item.restore`, and `item.trim` in `strict`
+//! mode or `alone`, `item.slide` with `sides`, `item.link` with a literal id); clients sending
+//! them get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
 //! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
@@ -28,18 +30,22 @@ mod asset_remove;
 mod defs;
 mod item_delete;
 mod item_insert;
+mod item_link;
+mod item_move;
 mod item_remove;
 mod item_restore;
+mod item_slide;
 mod item_slip;
 mod item_split;
 mod item_trim;
+mod item_unlink;
 pub(crate) mod util;
 
 pub use alias::normalize;
 use alias::{clip_delete, clip_insert, clip_trim};
 pub use defs::{
-    AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemRemove, ItemRestore,
-    ItemSlip, ItemSplit, ItemTrim, Op, TrimMode,
+    AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
+    ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides, TrimMode,
 };
 
 /// `$name` placeholders bound during one transaction, in op order.
@@ -263,6 +269,10 @@ ops_table! {
     ItemDelete => item_delete,
     ItemSlip => item_slip,
     ItemSplit => item_split,
+    ItemMove => item_move,
+    ItemSlide => item_slide,
+    ItemLink => item_link,
+    ItemUnlink => item_unlink,
     AssetRemove => asset_remove,
     ItemRemove => item_remove,
     ItemRestore => item_restore,
@@ -320,6 +330,7 @@ mod tests {
             edge: Edge::End,
             delta: r(1),
             mode: TrimMode::Ripple,
+            alone: false,
         }
         .into();
         assert!(trim.positions_mut().is_empty());

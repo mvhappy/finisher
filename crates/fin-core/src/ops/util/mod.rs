@@ -8,6 +8,7 @@ use crate::ops::Op;
 mod carve;
 mod check;
 mod content;
+mod group;
 mod limits;
 mod lock;
 mod lookup;
@@ -22,6 +23,7 @@ pub(crate) use check::{
     kind_name, media_duration,
 };
 pub(crate) use content::{move_start_edge, shift_content};
+pub(crate) use group::{group_items, members};
 pub(crate) use limits::{Limits, check_delta, edge_limits, intersect};
 pub(crate) use lock::check_unlocked;
 pub(crate) use lookup::{

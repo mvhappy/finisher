@@ -109,6 +109,7 @@ fn rewind_from_head_equals_replay() {
                 edge: Edge::Start,
                 delta: secs(1),
                 mode: fin_core::TrimMode::Ripple,
+                alone: false,
             }
             .into(),
         ],
@@ -126,6 +127,7 @@ fn rewind_from_head_equals_replay() {
                 edge: Edge::End,
                 delta: secs(4),
                 mode: fin_core::TrimMode::Ripple,
+                alone: false,
             }
             .into(),
         ],

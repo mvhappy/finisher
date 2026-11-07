@@ -212,6 +212,7 @@ impl Script {
                 edge: Edge::End,
                 delta: secs(n),
                 mode: fin_core::TrimMode::Ripple,
+                alone: false,
             }
             .into(),
             _ => return Ok(()),
