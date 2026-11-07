@@ -12,6 +12,9 @@
 //! ([`open_for_read`], the only open of a file under a root) and the process's dataless
 //! policy ([`process`]). Windows is Task 3.
 //!
+//! Task 5: the budgeted reader ([`budget`]), the probe of one file ([`probe`], through
+//! `fin_probe::probe_reader`) and the on-demand whole-file hash ([`hash`]).
+//!
 //! Task 4: the parallel walker ([`walk()`], [`mod@walk`]; deadlines in [`timing`]) and, behind
 //! `test-hooks`, the overlay that marks real paths as placeholders, delays, errors and mount
 //! changes for worker tests (`overlay`).
@@ -19,13 +22,16 @@
 //! **Read-only roots:** nothing in this crate creates, writes, renames, locks or deletes
 //! anything under a root.
 
+pub mod budget;
 pub mod collide;
 pub mod exclude;
 pub mod glob;
+pub mod hash;
 pub mod listing;
 pub mod names;
 pub mod open;
 pub mod placeholder;
+pub mod probe;
 pub mod process;
 pub mod raw;
 pub mod reparse;
@@ -38,9 +44,12 @@ pub mod walk;
 #[cfg(feature = "test-hooks")]
 pub mod overlay;
 
+pub use budget::{BudgetedReader, Throttle};
 pub use collide::{Collision, collisions};
 pub use exclude::{ExcludeSpec, Excludes};
+pub use hash::{HashOutcome, hash_file};
 pub use open::open_for_read;
+pub use probe::{FileRef, ProbeOutcome, probe_file};
 pub use raw::RawRel;
 pub use source::{Attrs, DirHandle, RawEntry, RootStat, Source};
 pub use timing::Timing;

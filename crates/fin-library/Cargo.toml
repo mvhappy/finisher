@@ -11,6 +11,10 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+# The throttle of a probe or hash: `ReadBudget` (Decision 36).
+fin-jobs = { path = "../fin-jobs" }
+# `probe_reader` and `PROBE_VERSION` (Decision 35); fin-probe never opens a library file itself.
+fin-probe = { path = "../fin-probe" }
 # Raw name bytes and file ids on the wire (`RawRel`, `ScanEntry`, `Expect`).
 base64 = "0.23"
 # `VolumeIdentity.key`: BLAKE3-16 of the OS's volume fields.
@@ -29,5 +33,7 @@ libc = "0.2.191"
 
 [dev-dependencies]
 fin-library = { path = ".", features = ["test-hooks"] }
+# `write_png` for the probe tests.
+fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 serde_json = "1"
 tempfile = "3"
