@@ -162,7 +162,8 @@ pub(crate) struct Shared {
     pub(crate) calls: Calls,
     current: Mutex<Current>,
     alive: Alive,
-    ignore_eof: AtomicBool,
+    /// Test hooks: stdin is no longer read (`stop_reading_for_test`).
+    stop_reading: AtomicBool,
     hard_exit: bool,
     /// A helper: `shutdown` also cancels the running `run`.
     shutdown_cancels: bool,
@@ -184,7 +185,7 @@ impl Shared {
                 stop: Mutex::new(false),
                 cv: Condvar::new(),
             },
-            ignore_eof: AtomicBool::new(false),
+            stop_reading: AtomicBool::new(false),
             hard_exit,
             shutdown_cancels,
         })
@@ -241,8 +242,8 @@ impl Shared {
     }
 
     #[cfg(feature = "test-hooks")]
-    pub(crate) fn ignore_eof(&self) {
-        self.ignore_eof.store(true, Ordering::Relaxed);
+    pub(crate) fn stop_reading(&self) {
+        self.stop_reading.store(true, Ordering::Relaxed);
     }
 
     /// Stops the `alive` thread (the run is over).
@@ -293,6 +294,12 @@ fn read_loop(input: Box<dyn Read + Send>, shared: &Shared, tx: &Sender<Inbound>)
     let mut buf = Vec::new();
     let mut seq = 1u64;
     loop {
+        if shared.stop_reading.load(Ordering::Relaxed) {
+            // Never reads again: the host's writes fill the pipe, and EOF goes unseen.
+            loop {
+                std::thread::park();
+            }
+        }
         let line = match codec::read_line(&mut r, &mut buf, MAX_LINE) {
             Ok(Line::Line) => &buf,
             Ok(Line::Eof) | Err(_) => return host_gone(shared, tx),
@@ -336,7 +343,7 @@ fn read_loop(input: Box<dyn Read + Send>, shared: &Shared, tx: &Sender<Inbound>)
 }
 
 fn host_gone(shared: &Shared, tx: &Sender<Inbound>) {
-    if shared.ignore_eof.load(Ordering::Relaxed) {
+    if shared.stop_reading.load(Ordering::Relaxed) {
         return;
     }
     if shared.hard_exit {

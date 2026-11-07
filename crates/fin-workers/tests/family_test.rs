@@ -410,11 +410,29 @@ fn stall_ends_at_cancel_and_hang_ignores_everything() {
     s.limits.alive_ms = 30;
     let mut p = run_start(s);
     std::thread::sleep(Duration::from_millis(300));
-    p.stdin = None;
-    std::thread::sleep(Duration::from_millis(300));
+    // It no longer reads stdin: 4 MiB of host messages fill the pipe and the writes block.
+    let mut stdin = p.stdin.take().unwrap();
+    let (done_tx, done) = mpsc::channel();
+    std::thread::spawn(move || {
+        let pad = "x".repeat(16 << 10);
+        for seq in 2..258u64 {
+            let msg = HostMsg::Cancel {
+                job: pad.clone(),
+                reason: CancelReason::Cancel,
+            };
+            if stdin.write_all(&codec::encode(seq, &msg).unwrap()).is_err() {
+                break;
+            }
+        }
+        let _ = done_tx.send(());
+    });
+    assert!(
+        done.recv_timeout(Duration::from_millis(500)).is_err(),
+        "the host's writes block"
+    );
     assert!(
         p.child.try_wait().unwrap().is_none(),
-        "test.hang survives stdin EOF"
+        "test.hang survives a full stdin"
     );
     let mut lines = 0;
     while p.lines.try_recv().is_ok() {

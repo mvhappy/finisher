@@ -52,9 +52,10 @@ impl HelperCtx<'_> {
         self.shared.pause_alive();
     }
 
-    /// Stdin EOF no longer exits the process.
-    pub fn ignore_eof_for_test(&self) {
-        self.shared.ignore_eof();
+    /// Stops reading stdin for the rest of the process: the host's writes fill the pipe and
+    /// EOF no longer exits (the `hang` test helper).
+    pub fn stop_reading_for_test(&self) {
+        self.shared.stop_reading();
     }
 }
 

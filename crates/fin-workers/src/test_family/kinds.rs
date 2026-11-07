@@ -38,7 +38,7 @@ pub(crate) fn run(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<V
         "test.crash" => super::batch::crash(job, ctx),
         "test.hang" => {
             ctx.stop_alive_for_test();
-            ctx.ignore_eof_for_test();
+            ctx.stop_reading_for_test();
             loop {
                 std::thread::sleep(Duration::from_secs(3600));
             }

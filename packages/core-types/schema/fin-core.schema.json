@@ -8588,7 +8588,7 @@
     },
     "TestHangParams": {
       "additionalProperties": false,
-      "description": "`test.hang`: stops `alive`, ignores stdin and blocks.",
+      "description": "`test.hang`: stops `alive`, stops reading stdin (EOF unseen, the pipe fills) and blocks.",
       "type": "object"
     },
     "TestHelperBehaviour": {

@@ -234,9 +234,10 @@ impl JobCtx<'_> {
         self.reporter.shared.pause_alive();
     }
 
-    /// Stdin EOF no longer exits the process (`test.hang`: only the kill tree stops it).
-    pub fn ignore_eof_for_test(&self) {
-        self.reporter.shared.ignore_eof();
+    /// Stops reading stdin for the rest of the process: the host's writes fill the pipe and
+    /// EOF no longer exits (`test.hang`: only the kill tree stops it).
+    pub fn stop_reading_for_test(&self) {
+        self.reporter.shared.stop_reading();
     }
 
     /// Sends any message with the next `seq` (`test.exitAfterResult`, `test.garbage`).

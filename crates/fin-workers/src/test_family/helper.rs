@@ -1,7 +1,7 @@
 //! The test helper (`fin-workers --helper test:<behaviour>`): a codec helper with id `test`.
 //! - `ok`: attaches and waits for `shutdown`;
 //! - `exitEarly`: exits 3 right after `attach`;
-//! - `hang`: stops `alive`, ignores stdin and blocks;
+//! - `hang`: stops `alive`, stops reading stdin and blocks;
 //! - `spawn`: double-forks a sleeper (as `test.spawn`) and writes the pids to its first
 //!   writable file, then waits for `shutdown`;
 //! - `call`: calls `test.echo {from: "helper"}`; an error reply fails it.
@@ -48,7 +48,7 @@ impl Helper for TestHelper {
             HelperBehaviour::ExitEarly => std::process::exit(3),
             HelperBehaviour::Hang => {
                 ctx.stop_alive_for_test();
-                ctx.ignore_eof_for_test();
+                ctx.stop_reading_for_test();
                 loop {
                     std::thread::sleep(Duration::from_secs(3600));
                 }

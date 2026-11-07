@@ -99,7 +99,7 @@ params! {
         #[schemars(with = "u64")]
         pub item_ms: Option<u64>,
     }
-    /// `test.hang`: stops `alive`, ignores stdin and blocks.
+    /// `test.hang`: stops `alive`, stops reading stdin (EOF unseen, the pipe fills) and blocks.
     HangParams as "TestHangParams" {}
     /// `test.stall`: keeps `alive`, never reports progress, ends at cancel.
     StallParams as "TestStallParams" {}

@@ -4300,7 +4300,7 @@ export interface TestGarbageParams {
   what: TestGarbage;
 }
 /**
- * `test.hang`: stops `alive`, ignores stdin and blocks.
+ * `test.hang`: stops `alive`, stops reading stdin (EOF unseen, the pipe fills) and blocks.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestHangParams".
