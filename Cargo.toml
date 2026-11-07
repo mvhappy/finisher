@@ -19,3 +19,13 @@ default-members = [
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/mvhappy/finisher"
+
+# Debug and test builds keep line tables only (backtraces still show file:line), and
+# dependencies carry no debug info. Full debug info made `target/debug` grow past 70 GB
+# with several worktrees and agents building. Use `CARGO_PROFILE_DEV_DEBUG=full` for a
+# debugger session.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
