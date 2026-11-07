@@ -375,6 +375,8 @@ fn every_variant() -> Vec<Op> {
         }
         .into(),
     ];
+    let mut ops = ops;
+    ops.extend(styles_and_fonts());
     // Adding a variant breaks this match, so the list above cannot silently fall behind.
     for op in &ops {
         match op {
@@ -418,10 +420,98 @@ fn every_variant() -> Vec<Op> {
             | Op::EffectMove(_)
             | Op::KeyframeSet(_)
             | Op::KeyframeRemove(_)
-            | Op::EffectRestore(_) => {}
+            | Op::EffectRestore(_)
+            | Op::StyleAdd(_)
+            | Op::StyleSet(_)
+            | Op::StyleRemove(_)
+            | Op::FontPin(_)
+            | Op::FontUnpin(_)
+            | Op::FontRepin(_)
+            | Op::CaptionSetText(_)
+            | Op::CaptionSetWords(_)
+            | Op::CaptionSplit(_)
+            | Op::CaptionMerge(_)
+            | Op::CaptionSetStyle(_) => {}
         }
     }
     ops
+}
+
+/// The style and font ops (plan 4C Task 18): a style copied from a project style, an asset
+/// pin; and the caption edits (Task 19).
+fn styles_and_fonts() -> Vec<Op> {
+    use fin_core::{FontFormat, FontPin, FontPinOp, FontRepin, FontSource, FontUnpin};
+    use fin_core::{StyleAdd, StyleRemove, StyleSet};
+    let pin = FontPin {
+        family: "Test Sans".into(),
+        weight: 400,
+        italic: false,
+        face: 0,
+        sha256: "ab".repeat(32),
+        size: 10,
+        format: FontFormat::Ttf,
+        scripts: vec!["Latn".into()],
+        source: FontSource::Asset { asset: "a4".into() },
+    };
+    let key = "Test Sans|400|normal".to_string();
+    vec![
+        StyleAdd {
+            id: "$st".into(),
+            name: "Big".into(),
+            from: Some("st2".into()),
+            set: [("text.size".to_string(), ParamValue::Number(80.0))].into(),
+        }
+        .into(),
+        StyleSet {
+            style: "st2".into(),
+            path: "color".into(),
+            value: Some(ParamValue::Text("#ff0000".into())),
+        }
+        .into(),
+        StyleRemove {
+            style: "st2".into(),
+        }
+        .into(),
+        FontPinOp {
+            key: key.clone(),
+            pin: pin.clone(),
+            fallback: Some(0),
+        }
+        .into(),
+        FontUnpin { key: key.clone() }.into(),
+        FontRepin { key, pin }.into(),
+        fin_core::CaptionSetText {
+            item: "cap1".into(),
+            text: "Hello there".into(),
+        }
+        .into(),
+        fin_core::CaptionSetWords {
+            item: "cap1".into(),
+            words: vec![Word {
+                text: "hi".into(),
+                start: Rational::from_int(0),
+                end: Rational::from_int(1),
+            }],
+        }
+        .into(),
+        fin_core::CaptionSplit {
+            item: "cap1".into(),
+            word: 1,
+            id: "$cap".into(),
+        }
+        .into(),
+        fin_core::CaptionMerge {
+            item: "cap1".into(),
+            with: "cap2".into(),
+        }
+        .into(),
+        fin_core::CaptionSetStyle {
+            item: "cap1".into(),
+            style: "st2".into(),
+            overrides: Some([("text.size".to_string(), ParamValue::Number(90.0))].into()),
+        }
+        .into(),
+    ]
 }
 
 #[test]

@@ -2,6 +2,7 @@
 
 pub mod apply;
 pub mod branch;
+pub mod captions;
 pub mod compose;
 pub mod error;
 pub mod eval;
@@ -30,6 +31,10 @@ pub use ops::{
     ItemTrim, ItemUnlink, MarkerAdd, MarkerRemove, MarkerSet, Op, ParamSet, SlideSides,
     TimelineAdd, TimelineRemove, TimelineRestore, TimelineSet, TrackAdd, TrackMove, TrackRemove,
     TrackRestore, TrackSet, TransitionRemove, TransitionSet, TrimMode, normalize,
+};
+pub use ops::{
+    CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSetWords, CaptionSplit, FontPinOp,
+    FontRepin, FontUnpin, StyleAdd, StyleRemove, StyleSet,
 };
 pub use ops::{EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeSet};
 pub use rebase::{Conflict, Conflicts, rebase_tx};

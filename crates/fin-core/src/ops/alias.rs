@@ -113,6 +113,19 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
                     .try_for_each(|(k, v)| normalize_value(&format!("effects.{}.{k}", a.id), v)),
                 Op::KeyframeSet(k) => normalize_value(&k.path, &mut k.value)
                     .and_then(|()| normalize_interp(&k.path, &mut k.interp)),
+                Op::StyleAdd(a) => a
+                    .set
+                    .iter_mut()
+                    .try_for_each(|(k, v)| normalize_value(k, v)),
+                Op::CaptionSetStyle(c) => c
+                    .overrides
+                    .iter_mut()
+                    .flatten()
+                    .try_for_each(|(k, v)| normalize_value(&format!("overrides.{k}"), v)),
+                Op::StyleSet(s) => match &mut s.value {
+                    Some(v) => normalize_value(&s.path, v),
+                    None => Ok(()),
+                },
                 _ => Ok(()),
             };
             canonical.map_err(|mut e| {

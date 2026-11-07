@@ -5,11 +5,13 @@
 //! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink`, `transition.set`,
 //! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove`,
 //! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove`, `param.set`,
-//! `effect.add|remove|move`, `keyframe.set|remove` (and the
+//! `effect.add|remove|move`, `keyframe.set|remove`, `style.add|set|remove`,
+//! `font.pin|unpin|repin`, `caption.setText|split|merge|setStyle` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
 //! exist only as inverses (`item.remove`, `item.restore`, `track.restore`,
-//! `timeline.restore`, `effect.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
-//! `item.link` with a literal id); clients sending them get `INVALID_OP`.
+//! `timeline.restore`, `effect.restore`, `caption.setWords`, and `item.trim` in `strict` mode
+//! or `alone`, `item.slide` with `sides`, `item.link` with a literal id); clients sending them
+//! get `INVALID_OP`.
 //!
 //! Every change and shift an op records carries the op's index in its transaction
 //! ([`util::OpDiff`]), so a transaction's diff splits into its ops' own diffs
@@ -34,11 +36,19 @@ mod asset_remove;
 mod bin_add;
 mod bin_move;
 mod bin_remove;
+mod caption_merge;
+mod caption_set_style;
+mod caption_set_text;
+mod caption_set_words;
+mod caption_split;
 mod defs;
 mod effect_add;
 mod effect_move;
 mod effect_remove;
 mod effect_restore;
+mod font_pin;
+mod font_repin;
+mod font_unpin;
 mod item_delete;
 mod item_insert;
 mod item_link;
@@ -56,6 +66,9 @@ mod marker_add;
 mod marker_remove;
 mod marker_set;
 mod param_set;
+mod style_add;
+mod style_remove;
+mod style_set;
 mod timeline_add;
 mod timeline_remove;
 mod timeline_restore;
@@ -75,6 +88,11 @@ pub use asset_move::AssetMove;
 pub use bin_add::BinAdd;
 pub use bin_move::BinMove;
 pub use bin_remove::BinRemove;
+pub use caption_merge::CaptionMerge;
+pub use caption_set_style::CaptionSetStyle;
+pub use caption_set_text::CaptionSetText;
+pub use caption_set_words::CaptionSetWords;
+pub use caption_split::CaptionSplit;
 pub use defs::{
     AssetAdd, DeleteMode, Edge, InsertMode, ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove,
     ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim, ItemUnlink, Op, SlideSides,
@@ -84,12 +102,18 @@ pub use effect_add::EffectAdd;
 pub use effect_move::EffectMove;
 pub use effect_remove::EffectRemove;
 pub use effect_restore::EffectRestore;
+pub use font_pin::FontPinOp;
+pub use font_repin::FontRepin;
+pub use font_unpin::FontUnpin;
 pub use keyframe_remove::KeyframeRemove;
 pub use keyframe_set::KeyframeSet;
 pub use marker_add::MarkerAdd;
 pub use marker_remove::MarkerRemove;
 pub use marker_set::MarkerSet;
 pub use param_set::ParamSet;
+pub use style_add::StyleAdd;
+pub use style_remove::StyleRemove;
+pub use style_set::StyleSet;
 pub use timeline_add::TimelineAdd;
 pub use timeline_remove::TimelineRemove;
 pub use timeline_restore::TimelineRestore;
@@ -346,7 +370,8 @@ impl Op {
 
 /// Whether the post-op transition pass runs after `op` (plan 4C Decision 22): after every op
 /// but `transition.*`, and an alias's runs as the op it stands for. Track, timeline, marker,
-/// bin, asset, `param.set`, `effect.*` and `keyframe.*` ops never part touching items, so it
+/// bin, asset, `param.set`, `effect.*`, `keyframe.*`, `style.*`, `font.*`,
+/// `caption.setText|setWords|setStyle` ops never part touching items, so it
 /// does not run after them either: a track or timeline removal records its own transitions as
 /// removed, and a restore brings them back whole.
 fn prunes(op: &Op) -> bool {
@@ -378,6 +403,15 @@ fn prunes(op: &Op) -> bool {
                 | Op::EffectMove(_)
                 | Op::KeyframeSet(_)
                 | Op::KeyframeRemove(_)
+                | Op::StyleAdd(_)
+                | Op::StyleSet(_)
+                | Op::StyleRemove(_)
+                | Op::FontPin(_)
+                | Op::FontUnpin(_)
+                | Op::FontRepin(_)
+                | Op::CaptionSetText(_)
+                | Op::CaptionSetWords(_)
+                | Op::CaptionSetStyle(_)
         )
 }
 
@@ -483,6 +517,17 @@ ops_table! {
     KeyframeSet => keyframe_set,
     KeyframeRemove => keyframe_remove,
     EffectRestore => effect_restore,
+    StyleAdd => style_add,
+    StyleSet => style_set,
+    StyleRemove => style_remove,
+    FontPin => font_pin,
+    FontUnpin => font_unpin,
+    FontRepin => font_repin,
+    CaptionSetText => caption_set_text,
+    CaptionSetWords => caption_set_words,
+    CaptionSplit => caption_split,
+    CaptionMerge => caption_merge,
+    CaptionSetStyle => caption_set_style,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,

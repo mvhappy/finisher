@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use unicode_script::{Script, UnicodeScript};
 
+use crate::captions::resolve_style;
 use crate::error::CoreError;
+use crate::model::{CaptionBlock, CaptionStyle, FontPin, Item, ItemBody, Project, Word, font_key};
 
 /// Horizontal alignment of each line inside the layout box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -181,6 +183,140 @@ pub fn check_words(words: &[String]) -> Result<(), CoreError> {
         }
     }
     Ok(())
+}
+
+/// What a project needs from fonts (Decision 35): the faces its styles name
+/// (`(family, weight, italic)`: every project style and every caption's effective style, its
+/// overrides applied) and the scripts its captions' text is in ([`scripts_of_text`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FontNeeds {
+    pub faces: BTreeSet<(String, u16, bool)>,
+    pub scripts: BTreeSet<String>,
+}
+
+/// Every caption item of every timeline.
+fn captions(project: &Project) -> impl Iterator<Item = (&Item, &CaptionBlock)> {
+    project
+        .timelines
+        .iter()
+        .flat_map(|tl| tl.tracks.iter())
+        .flat_map(|t| t.items.iter())
+        .filter_map(|it| match &it.body {
+            ItemBody::Caption { block } => Some((it, block)),
+            _ => None,
+        })
+}
+
+/// The face key a style's text names.
+pub fn style_key(style: &CaptionStyle) -> String {
+    font_key(&style.text.family, style.text.weight, style.text.italic)
+}
+
+/// [`FontNeeds`] of `project`. A caption whose style does not resolve adds only its scripts.
+pub fn font_needs(project: &Project) -> FontNeeds {
+    let mut needs = FontNeeds::default();
+    let mut face = |s: &CaptionStyle| {
+        needs
+            .faces
+            .insert((s.text.family.clone(), s.text.weight, s.text.italic));
+    };
+    project.styles.values().for_each(&mut face);
+    let mut scripts = BTreeSet::new();
+    for (_, block) in captions(project) {
+        if let Ok(style) = resolve_style(project, block) {
+            face(&style);
+        }
+        scripts.extend(scripts_of(&block.words));
+    }
+    needs.scripts = scripts;
+    needs
+}
+
+/// The scripts of `words`' text ([`scripts_of_text`]; `Common`/`Inherited` ignored).
+pub fn scripts_of(words: &[Word]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for w in words {
+        out.extend(scripts_of_text(&w.text));
+    }
+    out
+}
+
+fn face_ref(pin: &FontPin) -> FaceRef {
+    FaceRef {
+        sha256: pin.sha256.clone(),
+        face: pin.face,
+        family: pin.family.clone(),
+        weight: pin.weight,
+        italic: pin.italic,
+    }
+}
+
+/// The faces a caption of `style` with `words` is measured with (Decision 36): the pin of the
+/// style's face first, then every `fonts.fallback` pin whose scripts meet the text's, in the
+/// fallback order. `Err` lists what has no pin: the style's face key, then `script:<code>`
+/// for each script of the text no chosen pin covers (both make the caption unmeasured,
+/// `FONT_UNPINNED`).
+pub fn faces_for(
+    project: &Project,
+    style: &CaptionStyle,
+    words: &[Word],
+) -> Result<Vec<FaceRef>, Vec<String>> {
+    let key = style_key(style);
+    let scripts = scripts_of(words);
+    let (mut faces, mut missing, mut covered) = (Vec::new(), Vec::new(), BTreeSet::new());
+    match project.fonts.pins.get(&key) {
+        Some(pin) => {
+            faces.push(face_ref(pin));
+            covered.extend(pin.scripts.iter().cloned());
+        }
+        None => missing.push(key.clone()),
+    }
+    for k in project.fonts.fallback.iter().filter(|k| **k != key) {
+        if let Some(pin) = project.fonts.pins.get(k)
+            && pin.scripts.iter().any(|s| scripts.contains(s))
+        {
+            faces.push(face_ref(pin));
+            covered.extend(pin.scripts.iter().cloned());
+        }
+    }
+    missing.extend(
+        scripts
+            .iter()
+            .filter(|s| !covered.contains(*s))
+            .map(|s| format!("script:{s}")),
+    );
+    if missing.is_empty() {
+        Ok(faces)
+    } else {
+        Err(missing)
+    }
+}
+
+/// Who uses pin `key` (`FONT_IN_USE`): the project styles whose face it is, and the captions
+/// measured with it (their effective style's face, or a fallback whose scripts meet their
+/// text's), each list in project order.
+pub fn key_users(project: &Project, key: &str) -> (Vec<String>, Vec<String>) {
+    let styles = project
+        .styles
+        .values()
+        .filter(|s| style_key(s) == key)
+        .map(|s| s.id.clone())
+        .collect();
+    let fallback = project.fonts.fallback.iter().any(|k| k == key);
+    let pin = project.fonts.pins.get(key);
+    let items = captions(project)
+        .filter(|(_, block)| {
+            let primary = resolve_style(project, block).is_ok_and(|s| style_key(&s) == key);
+            primary
+                || (fallback
+                    && pin.is_some_and(|p| {
+                        let scripts = scripts_of(&block.words);
+                        p.scripts.iter().any(|s| scripts.contains(s))
+                    }))
+        })
+        .map(|(it, _)| it.id.clone())
+        .collect();
+    (styles, items)
 }
 
 #[cfg(test)]

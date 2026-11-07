@@ -1,10 +1,10 @@
 //! A caption layer's words and layout. Measurement never blocks a plan (plan 4C Decision 36):
 //! without a layout the plan says why.
 //!
-//! As built in Task 15, no caption is measured yet: styles carry no text style until Task 18
-//! and faces are resolved from pins by `layout::faces_for` in Task 20, which replaces
-//! [`measure`] here. Until then a plan reports `noMeasurer` when none was given and
-//! `fontUnpinned` (no face resolves) when one was, and never calls the measurer.
+//! As built in Task 15, no caption is measured yet. Task 18 gave styles their text style
+//! (`captions::resolve_style`) and the face resolution from pins (`layout::faces_for`); Task
+//! 20 wires them into [`measure`] here. Until then a plan reports `noMeasurer` when none was
+//! given and `fontUnpinned` (no face resolves) when one was, and never calls the measurer.
 
 use crate::eval::plan::{CaptionPlan, Unmeasured, UnmeasuredReason, WordPlan};
 use crate::layout::{TextLayout, TextMeasurer};

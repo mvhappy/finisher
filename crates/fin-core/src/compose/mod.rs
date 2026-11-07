@@ -7,11 +7,13 @@ use serde_json::Value;
 use crate::ops::Op;
 
 mod audio;
+mod captions;
 mod overwrite;
 mod split;
 mod transition;
 
 pub use audio::clip_with_audio;
+pub use captions::caption_import;
 pub use overwrite::overwrite;
 pub use split::split_linked;
 pub use transition::transition_with_links;

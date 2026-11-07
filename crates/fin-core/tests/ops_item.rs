@@ -271,7 +271,10 @@ fn insert_rules_per_kind() {
         "TRACK_KIND_MISMATCH"
     );
     assert_eq!(code("t3", ItemBody::Adjustment {}), "TRACK_KIND_MISMATCH");
-    assert_eq!(code("t1", caption_body(&[])), "TRACK_KIND_MISMATCH");
+    assert_eq!(
+        code("t1", caption_body(&[("hi", 0, 1)])),
+        "TRACK_KIND_MISMATCH"
+    );
     let clip_on_caption = ItemBody::Clip {
         asset: "a1".into(),
         source_in: secs(0),

@@ -585,6 +585,7 @@ fn every_op_has_a_footprint() {
             vec![],
         ),
     ];
+    let styles_fonts = styles_and_fonts(&p).into_iter().chain(caption_edits(&p));
     let mut seen = BTreeSet::new();
     for (at, op, tracks) in cases
         .into_iter()
@@ -592,6 +593,7 @@ fn every_op_has_a_footprint() {
         .chain(transitions)
         .chain(structure)
         .chain(library)
+        .chain(styles_fonts)
     {
         let (op, f, _) = fp(&at, op);
         seen.insert(op.name());
@@ -743,6 +745,44 @@ fn every_op_has_a_footprint() {
                 f.creates == [format!("c2/{}", r.effect.id)]
                     && f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
             }
+            Op::StyleAdd(a) => f.creates == [a.id.clone()] && f.uses.is_empty(),
+            Op::StyleSet(s) => f.touches == [(s.style.clone(), Touch::Param(s.path.clone()))],
+            Op::StyleRemove(r) => {
+                f.removes == [r.style.clone()] && f.touches == [(r.style.clone(), Touch::Exists)]
+            }
+            Op::FontPin(p) => f.creates == [format!("font/{}", p.key)] && f.uses.is_empty(),
+            Op::FontUnpin(u) => {
+                let e = format!("font/{}", u.key);
+                f.removes == [e.clone()] && f.touches == [(e, Touch::Exists)]
+            }
+            Op::FontRepin(r) => {
+                f.touches == [(format!("font/{}", r.key), Touch::Param("sha256".into()))]
+            }
+            Op::CaptionSetText(fin_core::CaptionSetText { item, .. })
+            | Op::CaptionSetWords(fin_core::CaptionSetWords { item, .. }) => {
+                f.touches == [(item.clone(), Touch::Param("caption.words".into()))]
+            }
+            Op::CaptionSplit(s) => {
+                f.touches
+                    == [
+                        (s.item.clone(), Touch::Exists),
+                        (s.item.clone(), Touch::Edge(Edge::End)),
+                    ]
+                    && f.creates == [s.id.clone()]
+            }
+            Op::CaptionMerge(m) => {
+                f.touches
+                    == [
+                        (m.item.clone(), Touch::Exists),
+                        (m.with.clone(), Touch::Exists),
+                        (m.item.clone(), Touch::Edge(Edge::End)),
+                    ]
+                    && f.removes == [m.with.clone()]
+            }
+            Op::CaptionSetStyle(s) => {
+                f.touches == [(s.item.clone(), Touch::Param("caption.style".into()))]
+                    && f.uses.is_empty()
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -750,7 +790,81 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 38);
+    assert_eq!(seen.len(), 49);
+}
+
+/// The style and font ops (plan 4C Task 18), each at a project where it applies; none is on
+/// a track.
+fn styles_and_fonts(p: &Project) -> Vec<(Project, Op, Vec<&'static str>)> {
+    use fin_core::{FontFormat, FontPin, FontPinOp, FontRepin, FontSource, FontUnpin};
+    use fin_core::{StyleAdd, StyleRemove, StyleSet};
+    let file = |c: char| FontPin {
+        family: "Inter".into(),
+        weight: 700,
+        italic: false,
+        face: 0,
+        sha256: std::iter::repeat_n(c, 64).collect(),
+        size: 9,
+        format: FontFormat::Ttf,
+        scripts: vec!["Latn".into()],
+        source: FontSource::Catalog {
+            entry: "inter".into(),
+            style: "bold".into(),
+            catalog: "2026.11.1".into(),
+        },
+    };
+    let key = "Inter|700|normal".to_string();
+    let add: Op = StyleAdd {
+        id: "$st".into(),
+        name: "S".into(),
+        from: Some("preset:bold".into()),
+        set: Default::default(),
+    }
+    .into();
+    let pin: Op = FontPinOp {
+        key: key.clone(),
+        pin: file('a'),
+        fallback: None,
+    }
+    .into();
+    let styled = apply(p, vec![add.clone()]).project;
+    let pinned = apply(p, vec![pin.clone()]).project;
+    vec![
+        (p.clone(), add, vec![]),
+        (
+            styled.clone(),
+            StyleSet {
+                style: "st1".into(),
+                path: "color".into(),
+                value: None,
+            }
+            .into(),
+            vec![],
+        ),
+        (
+            styled,
+            StyleRemove {
+                style: "st1".into(),
+            }
+            .into(),
+            vec![],
+        ),
+        (p.clone(), pin, vec![]),
+        (
+            pinned.clone(),
+            FontUnpin { key: key.clone() }.into(),
+            vec![],
+        ),
+        (
+            pinned,
+            FontRepin {
+                key,
+                pin: file('b'),
+            }
+            .into(),
+            vec![],
+        ),
+    ]
 }
 
 fn timeline_add() -> Op {
@@ -1033,4 +1147,96 @@ fn an_existing_entity_ours_names_is_still_judged() {
         judge_tx(&p, vec![vec![delete("c1")]], ours),
         vec![None, removed("tx-1")]
     );
+}
+
+/// The caption edits (plan 4C Task 19) on caption track `t9`: `cap1` "a b" [0, 2) and `cap2`
+/// "c" [2, 3).
+fn caption_edits(p: &Project) -> Vec<(Project, Op, Vec<&'static str>)> {
+    use fin_core::{CaptionBlock, ItemBody, ItemInsert, Word};
+    use fin_core::{CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSetWords, CaptionSplit};
+    let mut q = p.clone();
+    q.timelines[0]
+        .tracks
+        .push(fin_core::Track::new("t9", TrackKind::Caption, "C9"));
+    let word = |t: &str, s: i64, e: i64| Word {
+        text: t.into(),
+        start: secs(s),
+        end: secs(e),
+    };
+    let cap = |id: &str, at: i64, words: Vec<Word>| -> Op {
+        let duration = words.last().map_or(secs(1), |w| w.end);
+        ItemInsert {
+            id: id.into(),
+            track: "t9".into(),
+            at: secs(at),
+            duration,
+            mode: InsertMode::Overwrite,
+            body: ItemBody::Caption {
+                block: CaptionBlock {
+                    words,
+                    style: "preset:bold".into(),
+                    overrides: Default::default(),
+                    source: None,
+                },
+            },
+        }
+        .into()
+    };
+    let q = apply(
+        &q,
+        vec![
+            cap("$a", 0, vec![word("a", 0, 1), word("b", 1, 2)]),
+            cap("$b", 2, vec![word("c", 0, 1)]),
+        ],
+    )
+    .project;
+    vec![
+        (
+            q.clone(),
+            CaptionSetText {
+                item: "cap1".into(),
+                text: "x y".into(),
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q.clone(),
+            CaptionSetWords {
+                item: "cap1".into(),
+                words: vec![word("z", 0, 2)],
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q.clone(),
+            CaptionSplit {
+                item: "cap1".into(),
+                word: 1,
+                id: "$cap".into(),
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q.clone(),
+            CaptionMerge {
+                item: "cap1".into(),
+                with: "cap2".into(),
+            }
+            .into(),
+            vec!["t9"],
+        ),
+        (
+            q,
+            CaptionSetStyle {
+                item: "cap1".into(),
+                style: "preset:clean".into(),
+                overrides: None,
+            }
+            .into(),
+            vec!["t9"],
+        ),
+    ]
 }

@@ -8,7 +8,7 @@
 //! - [`check_shape`] is the value's shape (structural: `PARAM_TYPE`), [`check_range`] its range
 //!   (policy: `INVALID_RANGE` with `{path, value, min, max, unit}`), [`validate`] both;
 //! - [`get`]/[`set`] read and write an item's value by path (and [`get_track`],
-//!   [`get_timeline`], [`get_marker`] and their setters the other scopes'). `None` is "nothing
+//!   [`get_timeline`], [`get_marker`], [`get_style`] and their setters the other scopes'). `None` is "nothing
 //!   stored": a sparse effect param or slot, or audio params an item does not have; setting
 //!   `None` resets to the default, so every set has an exact inverse.
 //!
@@ -32,6 +32,7 @@ mod check;
 mod effects;
 mod item;
 mod scopes;
+mod style;
 
 pub use access::{get, set};
 pub(crate) use check::fill as fill_fix;
@@ -40,6 +41,9 @@ pub use effects::effect_kinds;
 pub(crate) use effects::of as effect_specs;
 pub use item::slot_spec;
 pub use scopes::{get_marker, get_timeline, get_track, set_marker, set_timeline, set_track};
+#[cfg(test)]
+pub(crate) use style::SAFE_ZONES;
+pub use style::{get_style, set_style};
 
 /// One parameter: its path in its scope, type, whether keyframes may animate it, default, unit
 /// and fix text (`{min}`, `{max}`, `{unit}` and `{path}` are filled in errors).
@@ -148,7 +152,7 @@ static ALL: LazyLock<Vec<ParamSpec>> = LazyLock::new(|| {
         scopes::TRACK,
         scopes::TIMELINE,
         scopes::MARKER,
-        scopes::STYLE,
+        style::STYLE,
     ]
     .concat()
 });
@@ -173,6 +177,6 @@ pub fn find(scope: &ScopeOf<'_>, path: &str) -> Result<&'static ParamSpec, CoreE
         ScopeOf::Track => scopes::find(scopes::TRACK, "track", path),
         ScopeOf::Timeline => scopes::find(scopes::TIMELINE, "timeline", path),
         ScopeOf::Marker => scopes::find(scopes::MARKER, "marker", path),
-        ScopeOf::Style => scopes::find(scopes::STYLE, "style", path),
+        ScopeOf::Style => scopes::find(style::STYLE, "style", path),
     }
 }
