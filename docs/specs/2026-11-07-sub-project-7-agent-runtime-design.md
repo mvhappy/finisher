@@ -791,7 +791,7 @@ Checked against the npm and crates.io registries on 2026-11-07; each batch's pla
 | Claude Code | user-installed CLI | proprietary | drive, never bundle (D28) |
 | `@anthropic-ai/claude-agent-sdk` 0.3.x | — | "SEE LICENSE IN README.md" | not used (D28) |
 | `@anthropic-ai/sdk` 1.6.0 | — | Apache-2.0 | not used in v1: no direct Anthropic adapter (Owner decision 7) |
-| `openai` 7.53.0 | the built-in Chat Completions adapter, with OpenRouter's or a local server's base URL | Apache-2.0 | use (7A) |
+| `openai` 7.53.0 (7.47.0 pinned until 7.53.0 is ≥7 days old) | the built-in Chat Completions adapter, with OpenRouter's or a local server's base URL | Apache-2.0 | use (7A) |
 | `ai` (Vercel AI SDK) 7.0 | — | Apache-2.0 | rejected: hides the exact request bodies we record; an abstraction we do not need over one API |
 | `@modelcontextprotocol/sdk` 1.32.2 | — | MIT | not needed: `fin mcp` is Rust |
 | `rmcp` 3.9.0 | `fin mcp` | Apache-2.0 | candidate (7G); a hand-written stdio server if its async runtime grows `fin` too much |
