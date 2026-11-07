@@ -166,6 +166,23 @@ describe("font manager", () => {
     await waitFor(() => (server.hitsOf("rtl.ttf") > 0 ? true : undefined), 5_000, "fetch after switching on");
   });
 
+  test("a summary computed before a newer one is never published after it", async () => {
+    const f = file("sans", hooks.testFont("sans"));
+    useCatalog([f]);
+    FontManager.open(serverData).setAutoFetch(false);
+    const { engine, events } = await open();
+    // A refresh computes the summary without pins and pauses; meanwhile a pin is injected
+    // and its refresh (on the jobs thread) must wait, then publish last.
+    engine.fontPublishRaceForTest(catalogPin(f).fonts);
+    await waitFor(() => (events.some((s) => s.fonts.missing.length === 1) ? true : undefined), 5_000, "the newer summary");
+    await new Promise((r) => setTimeout(r, 300));
+    // Without the publish lock the paused (older) summary lands after the newer one.
+    const missing = events.map((s) => s.fonts.missing.length);
+    expect(missing).toContain(0);
+    expect(missing.slice(missing.indexOf(1))).not.toContain(0);
+    expect((await status(engine)).fonts.missing).toHaveLength(1);
+  });
+
   test("FIN_FONTS_OFFLINE=1 keeps background fetching off", async () => {
     process.env.FIN_FONTS_OFFLINE = "1";
     const f = file("sans", hooks.testFont("sans"));

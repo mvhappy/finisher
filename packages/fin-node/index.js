@@ -250,6 +250,15 @@ export class Engine {
       throw toFinError(e);
     }
   }
+
+  /** @internal Test builds only: forces two font status refreshes to interleave. */
+  fontPublishRaceForTest(fontsJson) {
+    try {
+      this.#hook("fontPublishRaceForTest")(fontsJson);
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
 }
 
 /** The font manager of a server data folder (shared with the engines opened on it). */

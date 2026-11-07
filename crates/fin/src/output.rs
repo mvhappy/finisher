@@ -172,6 +172,9 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // `fin fonts fetch` could not download a font (`details.reason`, `details.retryAt`); in
     // other replies it is a warning, not an error.
     "FONT_FETCH_FAILED",
+    // The font cache or catalog is unusable, so `fin fonts …` can fetch nothing until it is
+    // repaired; in other replies it is a warning that never blocks edits.
+    "FONTS_DAMAGED",
 ];
 
 /// The one place error codes become exit codes.
@@ -264,6 +267,7 @@ mod tests {
         assert_eq!(exit_code("VERIFY_FAILED"), 3);
         assert_eq!(exit_code("DB_IN_USE"), 5);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
+        assert_eq!(exit_code("FONTS_DAMAGED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
         assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
         assert_eq!(exit_code("NOT_ADJACENT"), 3);

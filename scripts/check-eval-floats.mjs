@@ -1,20 +1,26 @@
-// Evaluation determinism (plan 4C Global Constraints, spec §5.4): fin-core's eval, params,
-// captions and layout code may use only f64 + − × ÷, sqrt, comparisons, abs, min/max, floor and
-// conversions from integers. Transcendental and fused functions (method or path calls), libm
-// and the float constants (which only serve them) are refused, so plans hash the same on every
-// OS and on wasm32. Comments and string literals are not checked.
+// Evaluation determinism (plan 4C Global Constraints, spec §5.4): every fin-core source file
+// (eval, params, layout, time, model, ops, …) may use only f64 + − × ÷, sqrt, comparisons, abs,
+// min/max, floor and conversions from integers. Transcendental and fused functions are refused
+// as method calls (`x.sin()`, even split across lines) and as paths under any qualifier
+// (`f64::sin`, `F::sin` through an alias, `T::powf`, `<f64 as Tr>::powf`, `Self::ln`). A macro
+// that names the function by metavariable (`f64::$f`, `x.$f()`) is refused too, since the name
+// can't be checked; so are libm and the float constants (which only serve them), so plans hash the same on every OS and on wasm32. Comments and string
+// literals are not checked.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { report, rootArg, walk } from "./walk.mjs";
 
-const SCOPE = /^crates\/fin-core\/src\/(?:(?:eval|params|captions)\/.*\.rs|layout\.rs)$/;
+const SCOPE = /^crates\/fin-core\/src\/.*\.rs$/;
 const FNS =
   "sin|cos|tan|sin_cos|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|exp2|exp_m1|ln|ln_1p|log|log2|log10|powf|powi|cbrt|hypot|mul_add|gamma|ln_gamma|erf|erfc";
 const RULES = [
-  [new RegExp(`\\.\\s*(${FNS})\\s*\\(`), (m) => `calls .${m[1]}()`],
-  [new RegExp(`\\b(f32|f64)\\s*>?\\s*::\\s*(${FNS})\\b`), (m) => `calls ${m[1]}::${m[2]}`],
-  [/\blibm\s*::/, () => "uses libm"],
-  [/\bf(?:32|64)\s*::\s*consts\b/, () => "uses the float constants"],
+  // Whole-file regexes (\s spans newlines), so `x.sin\n()` is one call.
+  [new RegExp(`\\.\\s*(${FNS})\\s*\\(`, "g"), (m) => `calls .${m[1]}()`],
+  [new RegExp(`::\\s*(${FNS})\\b`, "g"), (m) => `calls ::${m[1]}`],
+  [/\b(f32|f64)\s*(?:as\s+[\w:]+\s*)?>?\s*::\s*\$/g, (m) => `calls ${m[1]}::$metavariable`],
+  [/\.\s*\$\w+\s*\(/g, () => "calls a metavariable method .$f()"],
+  [/\blibm\s*::/g, () => "uses libm"],
+  [/\bf(?:32|64)\s*::\s*consts\b/g, () => "uses the float constants"],
 ];
 
 /** The source with comments and string/char literals blanked (newlines kept). */
@@ -62,16 +68,13 @@ function code(src) {
 }
 
 function violations(path, src) {
-  const out = [];
-  code(src)
-    .split("\n")
-    .forEach((line, n) => {
-      for (const [re, what] of RULES) {
-        const m = line.match(re);
-        if (m) out.push(`${path}:${n + 1}: ${what(m)} (eval floats: + − × ÷ sqrt only)`);
-      }
-    });
-  return out;
+  const text = code(src);
+  const lineOf = (i) => text.slice(0, i).split("\n").length;
+  const hits = [];
+  for (const [re, what] of RULES)
+    for (const m of text.matchAll(re)) hits.push([lineOf(m.index), what(m)]);
+  hits.sort((a, b) => a[0] - b[0]);
+  return hits.map(([n, what]) => `${path}:${n}: ${what} (eval floats: + − × ÷ sqrt only)`);
 }
 
 const root = rootArg();

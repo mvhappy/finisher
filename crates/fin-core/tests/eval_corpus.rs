@@ -5,12 +5,13 @@
 //!
 //! The files are read relative to the package directory (where `cargo test` runs), so the
 //! wasm runner needs only `--dir .`. `FIN_EVAL_CORPUS_BLESS=1` rewrites `expected.json`
-//! (natively) after review; a mismatch prints the first differing plan.
+//! (natively) after review, and is refused when `CI` is set; a mismatch prints the first
+//! differing plan.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use fin_core::eval::{eval_audio, eval_frame};
+use fin_core::eval::{AudioPlan, FramePlan, Layer, eval_audio, eval_frame};
 use fin_core::layout::{LineBox, Measured, TextLayout, TextMeasurer, TextRequest, WordBox};
 use fin_core::params::{ParamType, Scope, specs};
 use fin_core::{
@@ -31,6 +32,11 @@ struct Case {
     /// Evaluate frames with [`FakeMeasurer`] instead of no measurer.
     #[serde(default)]
     measurer: bool,
+    /// Whether some caption layer of the case's frames has a layout. Required on every case
+    /// with a measurer and checked both ways, so the case says what its plans hold: `false`
+    /// until captions are measured (fonts resolved from pins, plan 4C Task 20), which flips it.
+    #[serde(default)]
+    requires_measured_caption: Option<bool>,
     frames: Vec<Rational>,
     audio: Vec<[Rational; 2]>,
     project: Value,
@@ -185,7 +191,12 @@ fn computed() -> Vec<(Entry, String)> {
 }
 
 fn bless() -> bool {
-    std::env::var("FIN_EVAL_CORPUS_BLESS").is_ok_and(|v| v == "1")
+    let bless = std::env::var("FIN_EVAL_CORPUS_BLESS").is_ok_and(|v| v == "1");
+    assert!(
+        !(bless && std::env::var_os("CI").is_some()),
+        "FIN_EVAL_CORPUS_BLESS is refused under CI: bless locally after review and commit"
+    );
+    bless
 }
 
 /// The cross-machine check: every plan hash equals the committed one.
@@ -362,4 +373,99 @@ fn corpus_covers_the_plan() {
         "{} cases (the plan asks for about 20)",
         cases.len()
     );
+}
+
+/// Every layer of a frame plan, children (adjustment and nested groups) included.
+fn layers(plan: &FramePlan) -> Vec<&Layer> {
+    fn walk<'a>(ls: &'a [Layer], out: &mut Vec<&'a Layer>) {
+        for l in ls {
+            out.push(l);
+            walk(l.children.as_deref().unwrap_or_default(), out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&plan.layers, &mut out);
+    out
+}
+
+/// A case with a measurer says whether its captions are measured, and its plans agree: once
+/// a measurer lays captions out (Task 20) at least one caption plan has a layout.
+#[test]
+fn measured_caption_flag_matches_the_plans() {
+    let mut declared = false;
+    for (id, case, project) in cases() {
+        let Some(want) = case.requires_measured_caption else {
+            assert!(
+                !case.measurer,
+                "{id}: a measurer case must set requiresMeasuredCaption"
+            );
+            continue;
+        };
+        assert!(
+            case.measurer,
+            "{id}: requiresMeasuredCaption without a measurer"
+        );
+        declared = true;
+        let mut captions = 0;
+        let mut measured = false;
+        for &t in &case.frames {
+            let plan = eval_frame(&project, &case.timeline, t, Some(&FakeMeasurer)).unwrap();
+            for c in layers(&plan).into_iter().filter_map(|l| l.caption.as_ref()) {
+                captions += 1;
+                measured |= c.layout.is_some();
+            }
+        }
+        assert!(captions > 0, "{id}: no caption plans");
+        assert_eq!(
+            measured,
+            want,
+            "{id}: requiresMeasuredCaption is {want} but a caption layout is {}",
+            if measured { "present" } else { "absent" }
+        );
+    }
+    assert!(declared, "no corpus case declares requiresMeasuredCaption");
+}
+
+/// The audio ranges test clipping: in every case with ranges over sounding items (a range
+/// over a silent timeline only checks the empty plan), some range starts or ends
+/// strictly inside a gain segment of the whole timeline's plan, and its plan has that
+/// segment cut at the range edge.
+#[test]
+fn audio_ranges_cut_segments() {
+    let whole = |p: &Project, tl: &str| -> AudioPlan {
+        eval_audio(p, tl, Rational::zero(), Rational::from_int(1_000_000)).unwrap()
+    };
+    let mut cases_with_audio = 0;
+    for (id, case, project) in cases() {
+        let full = whole(&project, &case.timeline);
+        if case.audio.is_empty() || full.items.is_empty() {
+            continue;
+        }
+        cases_with_audio += 1;
+        let mut cut = false;
+        for &[from, to] in &case.audio {
+            let plan = eval_audio(&project, &case.timeline, from, to).unwrap();
+            for item in &full.items {
+                let key = (&item.item, &item.track, &item.via);
+                let Some(part) = plan
+                    .items
+                    .iter()
+                    .find(|i| (&i.item, &i.track, &i.via) == key)
+                else {
+                    continue;
+                };
+                for s in &item.gain {
+                    for edge in [from, to] {
+                        if s.from < edge && edge < s.to {
+                            let at = part.gain.iter().any(|g| g.from == edge || g.to == edge);
+                            assert!(at, "{id} {from}..{to}: {} not cut at {edge}", item.item);
+                            cut = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cut, "{id}: no audio range cuts a gain segment");
+    }
+    assert!(cases_with_audio > 0);
 }

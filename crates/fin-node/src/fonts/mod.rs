@@ -14,25 +14,32 @@
 //! - Status: each engine's status gains `fonts {missing, fetching, failed}` and the warnings
 //!   `FONT_MISSING`, `FONT_FETCH_FAILED`, `FONTS_DAMAGED` ([`status`]); a change is a
 //!   `status` event on that engine (progress alone at most every [`PROGRESS_EVERY`]).
+//!   Computing, comparing and publishing a summary is serialised (`publish`), so a summary
+//!   computed earlier is never published after a newer one.
+//! - Hashing (a cache file or font asset file not yet verified at its length and mtime) stays
+//!   off the JS thread and the store's mutex: an open hashes on its worker before the engine
+//!   attaches, and a rescan (which runs under the store) hands hashing, fetch requests and
+//!   publishing to the `fin-node-fonts-jobs` thread ([`Job`]).
 //!
 //! Nothing here is written to a record, a diff or a snapshot, and nothing here blocks an edit.
 
 mod files;
 pub(crate) mod napi;
 mod provider;
+mod publish;
 pub(crate) mod scan;
 mod status;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use fin_core::CoreError;
 use fin_core::layout::TextMeasurer;
 use fin_fonts::{FetchOptions, Fetcher, FontCache, FontCatalog};
-use fin_store::{EngineEvent, Store};
+use fin_store::Store;
 use serde_json::Value;
 
 use crate::engine::{Inner, lock};
@@ -56,6 +63,19 @@ pub(crate) struct Manager {
     measurer: Arc<provider::Measurer>,
     engines: Mutex<BTreeMap<u64, Attached>>,
     next: AtomicU64,
+    /// Held while a summary is computed, compared with the published one and published.
+    publish: Mutex<()>,
+    /// The jobs thread's queue ([`Job`]).
+    jobs: mpsc::Sender<Job>,
+}
+
+/// Work done on the `fin-node-fonts-jobs` thread, off the caller's locks.
+enum Job {
+    /// Hash the files `needs` name (so later summaries hit the memo) and queue the missing
+    /// catalog ones.
+    Need(Vec<Need>),
+    /// Publish the engine's summary if it changed (`None`: every engine's).
+    Refresh(Option<u64>),
 }
 
 struct Attached {
@@ -159,6 +179,7 @@ impl Manager {
         };
         let changes = fetcher.as_ref().map(Fetcher::subscribe);
         let provider = Arc::new(Provider::new(cache));
+        let (jobs, queue) = mpsc::channel();
         let m = Arc::new_cyclic(|weak| Manager {
             catalog,
             fetcher,
@@ -169,7 +190,20 @@ impl Manager {
             provider,
             engines: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(1),
+            publish: Mutex::new(()),
+            jobs,
         });
+        let weak = Arc::downgrade(&m);
+        // Without the thread, `post` runs jobs inline (the queue's receiver is gone).
+        let _ = std::thread::Builder::new()
+            .name("fin-node-fonts-jobs".to_string())
+            .spawn(move || {
+                // Ends when the manager (which owns the sender) is gone.
+                while let Ok(job) = queue.recv() {
+                    let Some(m) = weak.upgrade() else { return };
+                    m.run(job);
+                }
+            });
         if let Some(rx) = changes {
             let weak = Arc::downgrade(&m);
             let _ = std::thread::Builder::new()
@@ -199,7 +233,8 @@ impl Manager {
         self.fetcher.is_some() && !self.env_offline && self.setting.load(Ordering::SeqCst)
     }
 
-    /// `fonts.autoFetch`. Turned on, the open projects' missing pins are queued.
+    /// `fonts.autoFetch`. Turned on, the open projects' missing pins are queued (on the jobs
+    /// thread, like the status events this publishes).
     pub(crate) fn set_auto_fetch(&self, on: bool) {
         self.setting.store(on, Ordering::SeqCst);
         if let Some(f) = &self.fetcher {
@@ -210,9 +245,37 @@ impl Manager {
                 .values()
                 .flat_map(Attached::needs)
                 .collect();
-            self.request_needs(needs.iter());
+            self.post(Job::Need(needs));
         }
-        self.refresh_all();
+        self.post(Job::Refresh(None));
+    }
+
+    /// Queues `job` for the jobs thread (inline when there is none).
+    fn post(&self, job: Job) {
+        if let Err(mpsc::SendError(job)) = self.jobs.send(job) {
+            self.run(job);
+        }
+    }
+
+    fn run(&self, job: Job) {
+        match job {
+            Job::Need(needs) => self.warm(&needs),
+            Job::Refresh(Some(key)) => self.refresh(key),
+            Job::Refresh(None) => self.refresh_all(),
+        }
+    }
+
+    /// Hashes what a summary of `needs` looks at (cache files through the fetcher's state,
+    /// asset files through the provider; each memoised by length and mtime), then queues
+    /// the missing catalog files.
+    fn warm(&self, needs: &[Need]) {
+        for n in needs {
+            match &n.asset {
+                Some(path) => drop(self.provider.check_asset(path, &n.sha256)),
+                None => drop(self.file_state(&n.sha256)),
+            }
+        }
+        self.request_needs(needs.iter());
     }
 
     /// Queues background fetches (a no-op for cached, unknown or fetching files, and while
@@ -233,7 +296,8 @@ impl Manager {
         );
     }
 
-    /// Registers an engine (at open) and queues what its pins lack.
+    /// Registers an engine (at open, on the JS thread: [`Opened::read`] already hashed and
+    /// queued what its pins lack, on the worker).
     pub(crate) fn attach(
         self: &Arc<Self>,
         project_id: String,
@@ -241,10 +305,6 @@ impl Manager {
         branches: BTreeMap<String, BranchFonts>,
     ) -> Handle {
         let key = self.next.fetch_add(1, Ordering::SeqCst);
-        let needs: Vec<Need> = branches
-            .values()
-            .flat_map(|b| b.needs.iter().cloned())
-            .collect();
         lock(&self.engines).insert(
             key,
             Attached {
@@ -257,7 +317,6 @@ impl Manager {
             },
         );
         self.update_assets();
-        self.request_needs(needs.iter());
         Handle {
             manager: self.clone(),
             key,
@@ -281,7 +340,8 @@ impl Manager {
         self.provider.set_assets(assets);
     }
 
-    /// Reads the pins again: of `branch`, or of every branch. New needs are queued.
+    /// Reads the pins again: of `branch`, or of every branch (under the store). Hashing the
+    /// new needs, queueing their fetches and publishing go to the jobs thread.
     fn rescan(&self, key: u64, store: &Store, branch: Option<&str>) {
         let fresh = match branch {
             Some(b) => match scan::branch(store, b) {
@@ -310,8 +370,8 @@ impl Manager {
             a.needs().difference(&before).cloned().collect()
         };
         self.update_assets();
-        self.request_needs(added.iter());
-        self.refresh(key);
+        self.post(Job::Need(added));
+        self.post(Job::Refresh(Some(key)));
     }
 
     /// Test builds: sets the engine's injected pins, as a commit pinning them would.
@@ -322,83 +382,8 @@ impl Manager {
             a.injected = fonts;
         }
         self.update_assets();
-        self.request_needs(needs.iter());
-        self.refresh(key);
-    }
-
-    /// The summary of an engine's pins now (`None` once detached).
-    fn summary_of(&self, key: u64) -> Option<Summary> {
-        let needs = lock(&self.engines).get(&key)?.needs();
-        Some(self.summary(&needs))
-    }
-
-    /// `raw` (the store's status) with the engine's font summary merged, which counts as
-    /// published.
-    fn merged(&self, key: u64, raw: Value) -> Value {
-        let Some(s) = self.summary_of(key) else {
-            return raw;
-        };
-        let out = status::merge(raw, &s);
-        if let Some(a) = lock(&self.engines).get_mut(&key) {
-            a.published = Some((s, Instant::now()));
-        }
-        out
-    }
-
-    /// Publishes a `status` event when the engine's summary changed since it was published
-    /// (progress alone: at most every [`PROGRESS_EVERY`]).
-    fn refresh(&self, key: u64) {
-        let Some(s) = self.summary_of(key) else {
-            return;
-        };
-        let inner = {
-            let mut engines = lock(&self.engines);
-            let Some(a) = engines.get_mut(&key) else {
-                return;
-            };
-            let due = match &a.published {
-                None => true,
-                Some((p, at)) => {
-                    p.shape != s.shape
-                        || p.warnings != s.warnings
-                        || (p.fonts != s.fonts && at.elapsed() >= PROGRESS_EVERY)
-                }
-            };
-            if !due {
-                return;
-            }
-            let Some(inner) = a.inner.upgrade() else {
-                return;
-            };
-            a.published = Some((s.clone(), Instant::now()));
-            inner
-        };
-        let raw = lock(&inner.status).clone();
-        if let Some(raw) = raw {
-            let status = status::merge(raw, &s);
-            if let Ok(json) = serde_json::to_string(&EngineEvent::Status { status }) {
-                inner.events.emit(json);
-            }
-        }
-    }
-
-    fn refresh_all(&self) {
-        let keys: Vec<u64> = lock(&self.engines).keys().copied().collect();
-        for key in keys {
-            self.refresh(key);
-        }
-    }
-
-    /// A file's state changed: refresh every engine that pins it.
-    fn file_changed(&self, sha: &str) {
-        let keys: Vec<u64> = lock(&self.engines)
-            .iter()
-            .filter(|(_, a)| a.all().any(|b| b.needs.iter().any(|n| n.sha256 == sha)))
-            .map(|(k, _)| *k)
-            .collect();
-        for key in keys {
-            self.refresh(key);
-        }
+        self.post(Job::Need(needs));
+        self.post(Job::Refresh(Some(key)));
     }
 
     /// What the open engines of `project_id` pin.
@@ -419,6 +404,23 @@ impl Manager {
 pub(crate) struct Opened {
     pub(crate) manager: Arc<Manager>,
     pub(crate) branches: BTreeMap<String, BranchFonts>,
+}
+
+impl Opened {
+    /// On the open's worker, off the JS thread: what every unarchived branch pins, its files
+    /// hashed and the missing ones queued (Decision 34's open trigger), so attaching hashes
+    /// nothing.
+    pub(crate) fn read(manager: Arc<Manager>, store: &Store) -> Opened {
+        let branches = scan::store(store);
+        let needs: Vec<Need> = branches
+            .values()
+            .flat_map(|b| b.needs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        manager.warm(&needs);
+        Opened { manager, branches }
+    }
 }
 
 /// An engine's place in its server's manager; dropping it detaches the engine.
@@ -449,6 +451,12 @@ impl Handle {
         self.manager.merged(self.key, raw)
     }
 
+    /// Emits the store's status event (see [`Manager::emit_status`]; the caller holds the
+    /// store).
+    pub(crate) fn emit_status(&self, raw: Value, events: &crate::maintenance::EventSink) {
+        self.manager.emit_status(self.key, raw, events);
+    }
+
     pub(crate) fn detach(&self) {
         self.manager.detach(self.key);
     }
@@ -456,6 +464,11 @@ impl Handle {
     #[cfg(feature = "test-hooks")]
     pub(crate) fn inject(&self, fonts: BranchFonts) {
         self.manager.inject(self.key, fonts);
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn publish_race(&self, fonts: BranchFonts) {
+        self.manager.publish_race(self.key, fonts);
     }
 }
 

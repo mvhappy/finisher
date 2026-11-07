@@ -246,8 +246,7 @@ fn tick(inner: &Shared) -> bool {
                 {
                     *lock(&inner.status) = Some(v.clone());
                     // The store's status with the font summary merged (Decision 34).
-                    let status = inner.fonts.merged(v);
-                    inner.events.emit(to_json(&EngineEvent::Status { status }));
+                    inner.fonts.emit_status(v, &inner.events);
                     continue;
                 }
                 inner.events.emit(event_json(e, incarnation.as_deref()));

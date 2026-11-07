@@ -149,7 +149,8 @@ impl Manager {
         self.catalog.by_sha(sha).map_or(0, |(_, s)| s.file.size)
     }
 
-    /// The file's state in this server (`Missing` without a fetcher, unless the cache has it).
+    /// The file's state in this server: the fetcher's, or `Missing` without one (a damaged
+    /// cache or catalog), whatever the cache holds.
     pub(crate) fn file_state(&self, sha: &str) -> FileState {
         match &self.fetcher {
             Some(f) => f.state(sha),

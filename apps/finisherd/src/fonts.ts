@@ -5,7 +5,7 @@ import type { FontCatalog, FontsStatus } from "@finisher/core-types";
 import type { FinError } from "@finisher/contracts";
 import { FontManager } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope } from "effect";
-import { readSettings, settingsPath } from "./config.ts";
+import { readSettings, type Settings, settingsPath } from "./config.ts";
 import { attempt, attemptJson } from "./errors.ts";
 
 /** `fonts.fetch`'s payload. */
@@ -39,9 +39,15 @@ export interface FontsOptions {
 export function makeFonts(serverData: string, { settingsPollMs = 1000 }: FontsOptions = {}): Effect.Effect<FontsShape, never, Scope.Scope> {
   return Effect.gen(function* () {
     const manager = FontManager.open(serverData);
+    // The last good settings, kept while the file is unusable (see `readSettings`).
+    let last: Settings | undefined;
     const apply = () => {
-      const { settings, error } = readSettings(serverData);
-      if (error !== undefined) process.stderr.write(`finisherd: settings.json ignored: ${error}\n`);
+      const { settings, error } = readSettings(serverData, last);
+      if (error === undefined) last = settings;
+      else {
+        const kept = last === undefined ? "auto-fetch off until it is fixed" : "keeping the last good settings";
+        process.stderr.write(`finisherd: warning: settings.json ignored (${kept}): ${error}\n`);
+      }
       manager.setAutoFetch(settings.fonts.autoFetch);
     };
     apply();

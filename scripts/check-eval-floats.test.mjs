@@ -5,7 +5,7 @@ import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 const gate = (root) => runGate("./check-eval-floats.mjs", ["--root", root]);
 const EVAL = "crates/fin-core/src/eval/x.rs";
 
-test("powf, f64::sin and libm::exp are three failures", () => {
+test("powf, f64::sin and libm::exp fail (libm::exp as both libm and ::exp)", () => {
   const r = gate(
     fixtureRoot({
       [EVAL]: "fn a(x: f64) -> f64 { x.powf(2.0) }\nfn b(x: f64) -> f64 { f64::sin(x) }\n",
@@ -13,17 +13,18 @@ test("powf, f64::sin and libm::exp are three failures", () => {
     }),
   );
   assert.equal(r.code, 1);
-  assert.equal(r.out.trim().split("\n").length, 3, r.out);
+  assert.equal(r.out.trim().split("\n").length, 4, r.out);
   assert.match(r.out, /eval\/x\.rs:1: calls \.powf\(\)/);
-  assert.match(r.out, /eval\/x\.rs:2: calls f64::sin/);
+  assert.match(r.out, /eval\/x\.rs:2: calls ::sin/);
   assert.match(r.out, /layout\.rs:1: uses libm/);
+  assert.match(r.out, /layout\.rs:1: calls ::exp/);
 });
 
 test("every scoped directory, other functions and spellings are refused", () => {
   const r = gate(
     fixtureRoot({
       "crates/fin-core/src/params/a.rs": "let (s, c) = x . sin_cos ();\n",
-      "crates/fin-core/src/captions/b.rs": "let y = f32 :: mul_add(x, 2.0, 1.0);\n",
+      "crates/fin-core/src/model/b.rs": "let y = f32 :: mul_add(x, 2.0, 1.0);\n",
       "crates/fin-core/src/eval/deep/c.rs": "use std::f64::consts::PI;\nlet z = x.hypot(y).atan2(w);\n",
       "crates/fin-core/src/eval/d.rs": "let g = <f64>::powi(x, 2);\nlet h = x.exp_m1();\n",
     }),
@@ -31,10 +32,10 @@ test("every scoped directory, other functions and spellings are refused", () => 
   assert.equal(r.code, 1);
   for (const want of [
     /params\/a\.rs:1: calls \.sin_cos\(\)/,
-    /captions\/b\.rs:1: calls f32::mul_add/,
+    /model\/b\.rs:1: calls ::mul_add/,
     /deep\/c\.rs:1: uses the float constants/,
     /deep\/c\.rs:2: calls \.hypot\(\)/,
-    /d\.rs:1: calls f64::powi/,
+    /d\.rs:1: calls ::powi/,
     /d\.rs:2: calls \.exp_m1\(\)/,
   ])
     assert.match(r.out, want);
@@ -51,11 +52,75 @@ test("allowed operations, comments, strings and other crates pass", () => {
         "let r = r#\"x.exp()\"#;",
         "let q = '\"'; let k = x.sqrt().abs().min(1.0).max(0.0).floor();",
         "fn f<'a>(v: &'a [f64]) -> f64 { v[0] * 2.0 / 3.0 - 1.0 + (4 as f64) }",
-        "let cosine = sinh_free; let logs = x.login;",
+        "let cosine = sinh_free; let logs = x.login; let e = Op::$variant { .. };",
+        "let t = x.sinh_free(); let u = path::lnx(1); let v = x.exp;",
       ].join("\n"),
-      "crates/fin-core/src/ops/x.rs": "let y = x.powf(2.0);\n",
+      "crates/fin-core/tests/x.rs": "let y = x.powf(2.0);\n",
       "crates/fin-text/src/lib.rs": "let y = libm::roundf(x);\n",
     }),
   );
   assert.equal(r.code, 0, r.out);
+});
+
+test("module-root files outside eval/params/layout are in scope", () => {
+  const r = gate(
+    fixtureRoot({
+      "crates/fin-core/src/time.rs": "fn a(x: f64) -> f64 { x.ln() }\n",
+      "crates/fin-core/src/lib.rs": "fn b(x: f64) -> f64 { x.cbrt() }\n",
+      "crates/fin-core/src/ops/c.rs": "fn c(x: f64) -> f64 { x.exp2() }\n",
+    }),
+  );
+  assert.equal(r.code, 1);
+  for (const want of [/time\.rs:1: calls \.ln\(\)/, /lib\.rs:1: calls \.cbrt\(\)/, /ops\/c\.rs:1: calls \.exp2\(\)/])
+    assert.match(r.out, want);
+});
+
+test("aliases, generic and qualified paths, function values, split calls and macros are refused", () => {
+  const r = gate(
+    fixtureRoot({
+      [EVAL]: [
+        "type F = f64; let a = F::sin(x);", // 1: alias
+        "fn g<G: Float>(x: G) -> G { G::exp(x) }", // 2: generic
+        "fn t<T: Float>(x: T) -> T { T::powf(x, x) }", // 3: generic
+        "let b = <f64 as Tr>::powf(x, 2.0);", // 4: qualified
+        "impl W { fn n(self) -> f64 { Self::ln(self) } }", // 5: Self
+        "let c = v.iter().map(f64::cos);", // 6: function value, no call
+        "let d = x.sin", // 7: split across lines …
+        "  ();", // 8
+        "let e = x", // 9: … and across the dot
+        "  .tanh(", // 10
+        "  );", // 11
+        "macro_rules! m { ($f:ident) => { f64::$f(x) }; }", // 12
+        "macro_rules! k { ($f:ident) => { x.$f() }; }", // 13
+        "macro_rules! q { ($f:ident) => { <f64 as Tr>::$f(x) }; }", // 14
+      ].join("\n"),
+    }),
+  );
+  assert.equal(r.code, 1, r.out);
+  for (const want of [
+    /x\.rs:1: calls ::sin/,
+    /x\.rs:2: calls ::exp/,
+    /x\.rs:3: calls ::powf/,
+    /x\.rs:4: calls ::powf/,
+    /x\.rs:5: calls ::ln/,
+    /x\.rs:6: calls ::cos/,
+    /x\.rs:7: calls \.sin\(\)/,
+    /x\.rs:10: calls \.tanh\(\)/,
+    /x\.rs:12: calls f64::\$metavariable/,
+    /x\.rs:13: calls a metavariable method/,
+    /x\.rs:14: calls f64::\$metavariable/,
+  ])
+    assert.match(r.out, want);
+  assert.equal(r.out.trim().split("\n").length, 11, r.out);
+});
+
+test("split calls hidden by a comment or string between the parts still count; text in them does not", () => {
+  const r = gate(
+    fixtureRoot({
+      [EVAL]: ["let a = x.sin /* gap */ ();", 'let b = "x.sin\n()";', "// x.sin", "// ()"].join("\n"),
+    }),
+  );
+  assert.equal(r.code, 1, r.out);
+  assert.equal(r.out.trim().split("\n").length, 1, r.out);
+  assert.match(r.out, /x\.rs:1: calls \.sin\(\)/);
 });

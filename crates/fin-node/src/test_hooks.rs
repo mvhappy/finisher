@@ -93,6 +93,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Forces two status refreshes to interleave: one computes the summary of the pins now
+    /// and pauses (300 ms) before comparing and publishing it while `fonts_json` is injected
+    /// as `injectFontPinsForTest` would, whose refresh runs on the jobs thread. The newer
+    /// summary must be the last one published.
+    #[napi(catch_unwind)]
+    pub fn font_publish_race_for_test(&self, fonts_json: String) -> Result<()> {
+        let fonts: fin_core::Fonts = serde_json::from_str(&fonts_json)
+            .map_err(|e| crate::reject(fin_core::CoreError::new("INVALID_OP", e.to_string())))?;
+        let scanned = crate::engine::with_store(&self.inner, |s| {
+            let (_, mut project) = s.snapshot("main").map_err(crate::reject)?;
+            project.fonts = fonts;
+            Ok(crate::fonts::scan::of_project(&project, s.project_dir()))
+        })?;
+        self.inner.fonts.publish_race(scanned);
+        Ok(())
+    }
+
     /// Whether the maintenance thread runs.
     #[napi(catch_unwind)]
     pub fn maintenance_running_for_test(&self) -> bool {

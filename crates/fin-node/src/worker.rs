@@ -102,12 +102,9 @@ pub(crate) fn open<'e>(
                 };
                 let store = store.map_err(reject)?;
                 let status = serde_json::to_value(store.status()).ok();
-                // Read here, off the JS thread: what every branch pins (Decision 34's open
-                // trigger fetches what of it is missing once the engine attaches).
-                let fonts = crate::fonts::Opened {
-                    manager,
-                    branches: crate::fonts::scan::store(&store),
-                };
+                // Read here, off the JS thread: what every branch pins, its files hashed and
+                // what of it is missing queued (Decision 34's open trigger).
+                let fonts = crate::fonts::Opened::read(manager, &store);
                 Ok((store, status, fonts))
             },
             || {},

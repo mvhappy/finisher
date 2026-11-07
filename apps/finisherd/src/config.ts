@@ -148,25 +148,42 @@ export function settingsPath(serverData: string): string {
   return join(serverData, "settings.json");
 }
 
-/** The settings (defaults for a missing file); `error` says why a present file was not used. */
-export function readSettings(serverData: string): { settings: Settings; error?: string } {
+/** What an unusable `settings.json` means before any good read: fetch nothing unasked. */
+export const UNREADABLE_SETTINGS: Settings = { fonts: { autoFetch: false } };
+
+/**
+ * The settings: defaults for a missing file. A present file that can't be used (unreadable,
+ * invalid or truncated JSON — an editor mid-save, a trailing comma — or a wrongly typed value)
+ * keeps `last`, the last good settings, or before any is known `UNREADABLE_SETTINGS`, so a bad
+ * save never switches fetching on; `error` says why the file was not used.
+ */
+export function readSettings(serverData: string, last?: Settings): { settings: Settings; error?: string } {
+  const fallback = last ?? UNREADABLE_SETTINGS;
   let text: string;
   try {
     text = readFileSync(settingsPath(serverData), "utf8");
   } catch (e) {
     const code = (e as { code?: unknown }).code;
-    return code === "ENOENT" ? { settings: DEFAULT_SETTINGS } : { settings: DEFAULT_SETTINGS, error: String(e) };
+    return code === "ENOENT" ? { settings: DEFAULT_SETTINGS } : { settings: fallback, error: String(e) };
   }
+  let raw: unknown;
   try {
-    const raw = JSON.parse(text) as { fonts?: { autoFetch?: unknown } } | null;
-    const autoFetch = raw?.fonts?.autoFetch;
-    if (autoFetch !== undefined && typeof autoFetch !== "boolean") {
-      return { settings: DEFAULT_SETTINGS, error: "fonts.autoFetch must be true or false" };
-    }
-    return { settings: { fonts: { autoFetch: autoFetch ?? true } } };
+    raw = JSON.parse(text);
   } catch (e) {
-    return { settings: DEFAULT_SETTINGS, error: (e as Error).message };
+    return { settings: fallback, error: (e as Error).message };
   }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { settings: fallback, error: "settings must be a JSON object" };
+  }
+  const fonts = (raw as { fonts?: unknown }).fonts;
+  if (fonts !== undefined && (fonts === null || typeof fonts !== "object" || Array.isArray(fonts))) {
+    return { settings: fallback, error: "fonts must be an object" };
+  }
+  const autoFetch = (fonts as { autoFetch?: unknown } | undefined)?.autoFetch;
+  if (autoFetch !== undefined && typeof autoFetch !== "boolean") {
+    return { settings: fallback, error: "fonts.autoFetch must be true or false" };
+  }
+  return { settings: { fonts: { autoFetch: autoFetch ?? DEFAULT_SETTINGS.fonts.autoFetch } } };
 }
 
 export function removeServerInfo(serverData: string): void {

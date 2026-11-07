@@ -2,6 +2,7 @@
   "what": "caption tracks evaluated with a fake measurer; a muted caption track is hidden",
   "timeline": "tl1",
   "measurer": true,
+  "requiresMeasuredCaption": false,
   "frames": [
     "0",
     "1/4",
