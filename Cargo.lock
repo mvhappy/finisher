@@ -493,6 +493,7 @@ name = "fin-media"
 version = "0.0.0"
 dependencies = [
  "fin-core",
+ "fin-media",
  "proptest",
  "schemars",
  "serde",

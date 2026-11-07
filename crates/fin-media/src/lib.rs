@@ -8,6 +8,8 @@ pub mod colour;
 pub mod format;
 pub mod info;
 pub mod sample;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod version;
 
 pub use colour::{ChromaSiting, ColourTags, Matrix, Primaries, Range, Transfer};
