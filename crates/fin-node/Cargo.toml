@@ -23,6 +23,11 @@ test-hooks = [
     "dep:fin-testfonts",
 ]
 
+# `cargo test -p fin-node` builds the examples; this one calls the journal's writer hooks.
+[[example]]
+name = "commit_overhead"
+required-features = ["test-hooks"]
+
 [dependencies]
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
