@@ -14,6 +14,8 @@ testing = []
 
 [dependencies]
 fin-core = { path = "../fin-core" }
+# Transfer functions on the hashed path (spec §13.4): pinned in the workspace.
+libm = { workspace = true }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

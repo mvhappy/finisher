@@ -461,6 +461,9 @@ export type DeleteMode = "ripple" | "lift";
  */
 export type Curve = "linear" | "equalPower";
 /**
+ * How a transition mixes its two items (sub-project 6 spec §4.3): both mix by
+ * `curve(progress)`; they differ in the space they mix in.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TransitionKind".
  */
@@ -3415,6 +3418,13 @@ export interface SourceRef {
  * A layer's transform, resolved at the plan's time: every field is present (the model's
  * `Transform` leaves defaults out).
  *
+ * **The base box** (sub-project 6 spec §5.1, owner question 4: "contain"): a source's display
+ * size (after its rotation and pixel aspect) fitted inside the timeline frame and centred.
+ * The item is that box with item-normalised coordinates 0…1; its `anchor` point is placed at
+ * the frame centre plus `position`, and the item is scaled by `scale` and rotated `rotation`
+ * degrees clockwise about it. The defaults leave the base box where it is. `crop` cuts
+ * fractions of the base box from each side without moving the rest.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "PlanTransform".
  */
@@ -3445,6 +3455,11 @@ export interface PlanTransform {
 }
 /**
  * A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.
+ *
+ * **Looks** (sub-project 6 spec §4.3, §5.1): the outgoing layer is drawn as it is; the incoming
+ * one is drawn over it and mixed with what is below by `curve(progress)` (`linear`: the
+ * progress; `equalPower`: its square root). `crossfade` mixes display-encoded values,
+ * `dissolve` linear light.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TransitionState".

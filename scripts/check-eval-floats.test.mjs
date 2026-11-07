@@ -124,3 +124,26 @@ test("split calls hidden by a comment or string between the parts still count; t
   assert.equal(r.out.trim().split("\n").length, 1, r.out);
   assert.match(r.out, /x\.rs:1: calls \.sin\(\)/);
 });
+
+test("render modules refuse platform transcendentals and SIMD but allow libm and the constants", () => {
+  const r = gate(
+    fixtureRoot({
+      "crates/fin-compositor/src/reference/blend.rs": "fn a(x: f32) -> f32 { x.powf(2.4) }\nfn b(x: f32) -> f32 { f32::powf(x, 2.4) }\n",
+      "crates/fin-media/src/colour/convert.rs": "use std::arch::aarch64::*;\nfn c(x: f64) -> f64 { x.mul_add(2.0, 1.0) }\n",
+      "crates/fin-compositor/src/geometry.rs": [
+        "fn d(r: f64) -> f64 { libm::sin(r) + libm :: cos(r) + core::f64::consts::PI }",
+        "fn e(x: f64) -> f64 { libm::log2(x).max(0.0) + x.sqrt() }",
+      ].join("\n"),
+      "crates/fin-media/src/sample.rs": "fn f(x: f64) -> f64 { x.floor() }\n",
+      // Outside the render modules nothing is checked.
+      "crates/fin-compositor/src/gpu.rs": "fn g(x: f32) -> f32 { x.powf(2.0) }\n",
+      "crates/fin-media/src/info.rs": "fn h(x: f64) -> f64 { x.ln() }\n",
+    }),
+  );
+  assert.equal(r.code, 1);
+  assert.equal(r.out.trim().split("\n").length, 4, r.out);
+  assert.match(r.out, /reference\/blend\.rs:1: calls \.powf\(\) \(render floats/);
+  assert.match(r.out, /reference\/blend\.rs:2: calls ::powf/);
+  assert.match(r.out, /colour\/convert\.rs:1: uses SIMD intrinsics/);
+  assert.match(r.out, /colour\/convert\.rs:2: calls \.mul_add\(\)/);
+});

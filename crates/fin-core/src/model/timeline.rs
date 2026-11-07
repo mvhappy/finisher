@@ -116,10 +116,14 @@ pub struct Transition {
     pub curve: Curve,
 }
 
+/// How a transition mixes its two items (sub-project 6 spec §4.3): both mix by
+/// `curve(progress)`; they differ in the space they mix in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum TransitionKind {
+    /// Mixes display-encoded (BT.1886) values.
     Crossfade,
+    /// Mixes linear light.
     Dissolve,
 }
 

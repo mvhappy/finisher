@@ -6845,7 +6845,7 @@
       "type": "object"
     },
     "PlanTransform": {
-      "description": "A layer's transform, resolved at the plan's time: every field is present (the model's\n`Transform` leaves defaults out).",
+      "description": "A layer's transform, resolved at the plan's time: every field is present (the model's\n`Transform` leaves defaults out).\n\n**The base box** (sub-project 6 spec §5.1, owner question 4: \"contain\"): a source's display\nsize (after its rotation and pixel aspect) fitted inside the timeline frame and centred.\nThe item is that box with item-normalised coordinates 0…1; its `anchor` point is placed at\nthe frame centre plus `position`, and the item is scaled by `scale` and rotated `rotation`\ndegrees clockwise about it. The defaults leave the base box where it is. `crop` cuts\nfractions of the base box from each side without moving the rest.",
       "properties": {
         "anchor": {
           "description": "Item-normalised.",
@@ -8454,11 +8454,19 @@
       "type": "object"
     },
     "TransitionKind": {
-      "enum": [
-        "crossfade",
-        "dissolve"
-      ],
-      "type": "string"
+      "description": "How a transition mixes its two items (sub-project 6 spec §4.3): both mix by\n`curve(progress)`; they differ in the space they mix in.",
+      "oneOf": [
+        {
+          "const": "crossfade",
+          "description": "Mixes display-encoded (BT.1886) values.",
+          "type": "string"
+        },
+        {
+          "const": "dissolve",
+          "description": "Mixes linear light.",
+          "type": "string"
+        }
+      ]
     },
     "TransitionRemove": {
       "description": "`transition.remove`: takes transition `transition` off its track.",
@@ -8509,7 +8517,7 @@
       "type": "object"
     },
     "TransitionState": {
-      "description": "A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.",
+      "description": "A layer inside a transition window `[cut − d/2, cut + d/2)`: `progress` runs 0 → 1 over it.\n\n**Looks** (sub-project 6 spec §4.3, §5.1): the outgoing layer is drawn as it is; the incoming\none is drawn over it and mixed with what is below by `curve(progress)` (`linear`: the\nprogress; `equalPower`: its square root). `crossfade` mixes display-encoded values,\n`dissolve` linear light.",
       "properties": {
         "curve": {
           "$ref": "#/$defs/Curve"

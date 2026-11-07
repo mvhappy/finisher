@@ -1,6 +1,8 @@
 //! Colour tags (spec §10.1): primaries, transfer, matrix, range and chroma siting, with their
 //! ITU-T H.273 (CICP) code points as `colr` `nclx` and codec headers carry them.
 
+pub mod convert;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
