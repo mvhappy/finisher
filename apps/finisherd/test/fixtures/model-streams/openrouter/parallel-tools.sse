@@ -1,0 +1,8 @@
+data: {"id":"gen-par-1","provider":"Moonshot AI","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_r1","type":"function","function":{"name":"workspace_read","arguments":"{\"path\":"}},{"index":1,"id":"call_r2","type":"function","function":{"name":"workspace_list","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-par-1","provider":"Moonshot AI","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"notes.md\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: {"id":"gen-par-1","provider":"Moonshot AI","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":400,"completion_tokens":20,"total_tokens":420,"cost":0.00001}}
+
+data: [DONE]
+

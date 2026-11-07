@@ -1,0 +1,10 @@
+data: {"id":"gen-tool-1","provider":"DeepSeek","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_a1","type":"function","function":{"name":"fin","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"gen-tool-1","provider":"DeepSeek","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"argv\":[\"item\","}}]},"finish_reason":null}]}
+
+data: {"id":"gen-tool-1","provider":"DeepSeek","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"trim\",\"c1\",\"--end\",\"-1s\"]}"}}]},"finish_reason":null}]}
+
+data: {"id":"gen-tool-1","provider":"DeepSeek","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":900,"completion_tokens":25,"total_tokens":925,"cost":0.00006,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]
+

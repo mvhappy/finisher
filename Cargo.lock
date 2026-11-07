@@ -486,6 +486,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "clap",
+ "fin",
  "fin-core",
  "fin-probe",
  "fin-store",
@@ -572,6 +573,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-jobs"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "fin-core",
+ "fin-jobs",
+ "schemars",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fin-journal"
 version = "0.0.0"
 dependencies = [
@@ -620,6 +634,7 @@ dependencies = [
 name = "fin-node"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "fin-core",
  "fin-fonts",
  "fin-journal",
@@ -632,6 +647,7 @@ dependencies = [
  "napi-derive",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -668,6 +684,7 @@ dependencies = [
  "crc32c",
  "fin-core",
  "fin-fonts",
+ "fin-jobs",
  "fin-journal",
  "fin-library",
  "fin-media",
@@ -730,6 +747,20 @@ dependencies = [
  "sha2",
  "unicode-bidi",
  "unicode-script",
+]
+
+[[package]]
+name = "fin-workers"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-jobs",
+ "fin-workers",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -55,10 +55,10 @@ async function createProject(c: NdjsonClient, name = "Demo"): Promise<string> {
 }
 
 describe("finisherd", () => {
-  test("hello returns protocol 1; finisherd.json and fin.sock are 0600", async () => {
+  test("hello returns protocol 1; finisherd.json and run/fin.sock are 0600", async () => {
     const { info } = await start();
     expect(info.protocolVersion).toBe(1);
-    expect(info.socket).toBe(WIN ? socketPath(serverData) : join(serverData, "fin.sock"));
+    expect(info.socket).toBe(WIN ? socketPath(serverData) : join(serverData, "run", "fin.sock"));
     expect(info.token.length).toBeGreaterThanOrEqual(32);
     if (!WIN) {
       expect(statSync(join(serverData, "finisherd.json")).mode & 0o777).toBe(0o600);
@@ -165,7 +165,7 @@ describe("finisherd", () => {
     server = undefined;
     if (!WIN) {
       expect(code).toBe(0);
-      for (const f of ["finisherd.json", "fin.sock"]) expect(existsSync(join(serverData, f)), f).toBe(false);
+      for (const f of ["finisherd.json", join("run", "fin.sock")]) expect(existsSync(join(serverData, f)), f).toBe(false);
     }
     // The lock file stays (never unlinked) but is released: this process can take it.
     lockExclusive(join(serverData, "finisherd.lock")).release();
@@ -202,8 +202,8 @@ describe("finisherd", () => {
   });
 
   test("two servers racing over a stale socket: exactly one wins", async () => {
-    mkdirSync(serverData, { recursive: true, mode: 0o700 });
-    writeFileSync(join(serverData, "fin.sock"), ""); // stale leftover, nothing listening
+    mkdirSync(join(serverData, "run"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(serverData, "run", "fin.sock"), ""); // stale leftover, nothing listening
     const results = await Promise.allSettled([startServer(serverData, 10_000), startServer(serverData, 10_000)]);
     const winners = results.filter((r): r is PromiseFulfilledResult<RunningServer> => r.status === "fulfilled");
     const losers = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
@@ -280,8 +280,8 @@ describe("finisherd", () => {
 describe("socketPath", () => {
   const appData = "C:\\Users\\ann\\AppData\\Local\\Finisher";
 
-  test("Unix: fin.sock inside server-data", () => {
-    expect(socketPath("/srv/sd", "linux", "/home/ann/.local/share/finisher", "ann")).toBe(join("/srv/sd", "fin.sock"));
+  test("Unix: run/fin.sock inside server-data", () => {
+    expect(socketPath("/srv/sd", "linux", "/home/ann/.local/share/finisher", "ann")).toBe(join("/srv/sd", "run", "fin.sock"));
   });
 
   test("Windows: the default server-data owns finisher-<username>, others get a hashed pipe", () => {

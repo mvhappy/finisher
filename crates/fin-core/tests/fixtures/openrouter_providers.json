@@ -1,0 +1,486 @@
+{
+ "source": "https://openrouter.ai/api/v1/providers",
+ "asOf": "2026-11-07",
+ "providers": [
+  {
+   "name": "AI21",
+   "slug": "ai21"
+  },
+  {
+   "name": "AionLabs",
+   "slug": "aion-labs"
+  },
+  {
+   "name": "AkashML",
+   "slug": "akashml"
+  },
+  {
+   "name": "Alibaba",
+   "slug": "alibaba"
+  },
+  {
+   "name": "Amazon Bedrock",
+   "slug": "amazon-bedrock"
+  },
+  {
+   "name": "Amazon Nova",
+   "slug": "amazon-nova"
+  },
+  {
+   "name": "Ambient",
+   "slug": "ambient"
+  },
+  {
+   "name": "Ant Digital",
+   "slug": "antdigital"
+  },
+  {
+   "name": "Anthropic",
+   "slug": "anthropic"
+  },
+  {
+   "name": "Arcee AI",
+   "slug": "arcee-ai"
+  },
+  {
+   "name": "AssemblyAI",
+   "slug": "assemblyai"
+  },
+  {
+   "name": "AtlasCloud",
+   "slug": "atlas-cloud"
+  },
+  {
+   "name": "Avian",
+   "slug": "avian"
+  },
+  {
+   "name": "Azure",
+   "slug": "azure"
+  },
+  {
+   "name": "Baidu",
+   "slug": "baidu"
+  },
+  {
+   "name": "BaseTen",
+   "slug": "baseten"
+  },
+  {
+   "name": "Black Forest Labs",
+   "slug": "black-forest-labs"
+  },
+  {
+   "name": "Cerebras",
+   "slug": "cerebras"
+  },
+  {
+   "name": "Chutes",
+   "slug": "chutes"
+  },
+  {
+   "name": "Cirrascale",
+   "slug": "cirrascale"
+  },
+  {
+   "name": "Clarifai",
+   "slug": "clarifai"
+  },
+  {
+   "name": "Claude Platform on AWS",
+   "slug": "claude-on-aws"
+  },
+  {
+   "name": "Cloudflare",
+   "slug": "cloudflare"
+  },
+  {
+   "name": "Cohere",
+   "slug": "cohere"
+  },
+  {
+   "name": "CoreWeave",
+   "slug": "coreweave"
+  },
+  {
+   "name": "Cosine",
+   "slug": "cosine"
+  },
+  {
+   "name": "Crucible",
+   "slug": "crucible"
+  },
+  {
+   "name": "Crusoe",
+   "slug": "crusoe"
+  },
+  {
+   "name": "Darkbloom",
+   "slug": "darkbloom"
+  },
+  {
+   "name": "Databricks",
+   "slug": "databricks"
+  },
+  {
+   "name": "Decart",
+   "slug": "decart"
+  },
+  {
+   "name": "Deepgram",
+   "slug": "deepgram"
+  },
+  {
+   "name": "DeepInfra",
+   "slug": "deepinfra"
+  },
+  {
+   "name": "DeepSeek",
+   "slug": "deepseek"
+  },
+  {
+   "name": "DekaLLM",
+   "slug": "dekallm"
+  },
+  {
+   "name": "DigitalOcean",
+   "slug": "digitalocean"
+  },
+  {
+   "name": "ElevenLabs",
+   "slug": "elevenlabs"
+  },
+  {
+   "name": "Featherless",
+   "slug": "featherless"
+  },
+  {
+   "name": "Fireworks",
+   "slug": "fireworks"
+  },
+  {
+   "name": "Fish Audio",
+   "slug": "fish-audio"
+  },
+  {
+   "name": "Friendli",
+   "slug": "friendli"
+  },
+  {
+   "name": "GMICloud",
+   "slug": "gmicloud"
+  },
+  {
+   "name": "Google AI Studio",
+   "slug": "google-ai-studio"
+  },
+  {
+   "name": "Google",
+   "slug": "google-vertex"
+  },
+  {
+   "name": "Groq",
+   "slug": "groq"
+  },
+  {
+   "name": "HeyGen",
+   "slug": "heygen"
+  },
+  {
+   "name": "Inception",
+   "slug": "inception"
+  },
+  {
+   "name": "Inceptron",
+   "slug": "inceptron"
+  },
+  {
+   "name": "Inferact vLLM",
+   "slug": "inferact-vllm"
+  },
+  {
+   "name": "InferenceNet",
+   "slug": "inference-net"
+  },
+  {
+   "name": "Infermatic",
+   "slug": "infermatic"
+  },
+  {
+   "name": "Inflection",
+   "slug": "inflection"
+  },
+  {
+   "name": "Io Net",
+   "slug": "io-net"
+  },
+  {
+   "name": "Ionstream",
+   "slug": "ionstream"
+  },
+  {
+   "name": "Krea",
+   "slug": "krea"
+  },
+  {
+   "name": "KT",
+   "slug": "kt"
+  },
+  {
+   "name": "Liquid",
+   "slug": "liquid"
+  },
+  {
+   "name": "Makora",
+   "slug": "makora"
+  },
+  {
+   "name": "Mancer 2",
+   "slug": "mancer"
+  },
+  {
+   "name": "Mara",
+   "slug": "mara"
+  },
+  {
+   "name": "Meta",
+   "slug": "meta"
+  },
+  {
+   "name": "Minimax",
+   "slug": "minimax"
+  },
+  {
+   "name": "Mistral",
+   "slug": "mistral"
+  },
+  {
+   "name": "Modal",
+   "slug": "modal"
+  },
+  {
+   "name": "ModelRun",
+   "slug": "modelrun"
+  },
+  {
+   "name": "Modular",
+   "slug": "modular"
+  },
+  {
+   "name": "Moonshot AI",
+   "slug": "moonshotai"
+  },
+  {
+   "name": "Morph",
+   "slug": "morph"
+  },
+  {
+   "name": "Near AI",
+   "slug": "near-ai"
+  },
+  {
+   "name": "Nebius",
+   "slug": "nebius"
+  },
+  {
+   "name": "Nex AGI",
+   "slug": "nex-agi"
+  },
+  {
+   "name": "NextBit",
+   "slug": "nextbit"
+  },
+  {
+   "name": "Novita",
+   "slug": "novita"
+  },
+  {
+   "name": "Nvidia",
+   "slug": "nvidia"
+  },
+  {
+   "name": "Ollama",
+   "slug": "ollama"
+  },
+  {
+   "name": "OpenInference",
+   "slug": "open-inference"
+  },
+  {
+   "name": "OpenAI",
+   "slug": "openai"
+  },
+  {
+   "name": "Parallel",
+   "slug": "parallel"
+  },
+  {
+   "name": "Parasail",
+   "slug": "parasail"
+  },
+  {
+   "name": "ParetoAlpha",
+   "slug": "pareto-alpha"
+  },
+  {
+   "name": "Particle AI",
+   "slug": "particle-ai"
+  },
+  {
+   "name": "Pearl Research",
+   "slug": "pearl-research"
+  },
+  {
+   "name": "Perceptron",
+   "slug": "perceptron"
+  },
+  {
+   "name": "Perplexity",
+   "slug": "perplexity"
+  },
+  {
+   "name": "Phala",
+   "slug": "phala"
+  },
+  {
+   "name": "Poolside",
+   "slug": "poolside"
+  },
+  {
+   "name": "PrimaLabs",
+   "slug": "primalabs"
+  },
+  {
+   "name": "PrimeIntellect",
+   "slug": "primeintellect"
+  },
+  {
+   "name": "Quiver",
+   "slug": "quiver"
+  },
+  {
+   "name": "Recraft",
+   "slug": "recraft"
+  },
+  {
+   "name": "Recursive",
+   "slug": "recursive"
+  },
+  {
+   "name": "Reka",
+   "slug": "reka"
+  },
+  {
+   "name": "Relace",
+   "slug": "relace"
+  },
+  {
+   "name": "Respan",
+   "slug": "respan"
+  },
+  {
+   "name": "River",
+   "slug": "river"
+  },
+  {
+   "name": "Runway",
+   "slug": "runway"
+  },
+  {
+   "name": "Sail Research",
+   "slug": "sail-research"
+  },
+  {
+   "name": "Sakana AI",
+   "slug": "sakana"
+  },
+  {
+   "name": "SambaNova",
+   "slug": "sambanova"
+  },
+  {
+   "name": "ScaleDown",
+   "slug": "scaledown"
+  },
+  {
+   "name": "Seed",
+   "slug": "seed"
+  },
+  {
+   "name": "SiliconFlow",
+   "slug": "siliconflow"
+  },
+  {
+   "name": "Sourceful",
+   "slug": "sourceful"
+  },
+  {
+   "name": "Stealth",
+   "slug": "stealth"
+  },
+  {
+   "name": "StepFun",
+   "slug": "stepfun"
+  },
+  {
+   "name": "StreamLake",
+   "slug": "streamlake"
+  },
+  {
+   "name": "Switchpoint",
+   "slug": "switchpoint"
+  },
+  {
+   "name": "Tencent",
+   "slug": "tencent"
+  },
+  {
+   "name": "Tenstorrent",
+   "slug": "tenstorrent"
+  },
+  {
+   "name": "Thinking Machines",
+   "slug": "thinkingmachines"
+  },
+  {
+   "name": "Together",
+   "slug": "together"
+  },
+  {
+   "name": "TypeSafe",
+   "slug": "typesafe"
+  },
+  {
+   "name": "Unbiased",
+   "slug": "unbiased"
+  },
+  {
+   "name": "Upstage",
+   "slug": "upstage"
+  },
+  {
+   "name": "Venice",
+   "slug": "venice"
+  },
+  {
+   "name": "VoyageAI by MongoDB",
+   "slug": "voyageai"
+  },
+  {
+   "name": "Wafer",
+   "slug": "wafer"
+  },
+  {
+   "name": "xAI",
+   "slug": "xai"
+  },
+  {
+   "name": "Xiaomi",
+   "slug": "xiaomi"
+  },
+  {
+   "name": "Z.AI",
+   "slug": "z-ai"
+  }
+ ]
+}

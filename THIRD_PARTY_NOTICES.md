@@ -501,3 +501,17 @@ the shipped graph is named here as `<name> <version>`.
 
 No MPL-2.0 crate is in the shipped graph yet (symphonia arrives in sub-project 6C).
 
+## openai (Apache-2.0) — the built-in agent's Chat Completions transport
+status: used (sub-project 7A), as an npm dependency of `finisherd` (`openai` 7.47.0, exact
+pin, no runtime dependencies; its optional peers are not installed); no code is copied. It
+carries request bodies Finisher builds and parses the SSE stream (`apps/finisherd/src/agent/
+builtin/compat.ts`), with OpenRouter's or a local server's base URL.
+
+## BLAKE3 (CC0-1.0 OR Apache-2.0) — test vectors
+status: used (sub-project 7A): `packages/fin-node/test/hash.test.ts` embeds hashes from
+BLAKE3-team/BLAKE3 `test_vectors/test_vectors.json`, used under CC0-1.0. The hashing itself is
+the `blake3` crate, already a dependency, exposed through fin-node; no code is copied.
+
+## fast-check (MIT) — property tests
+status: used (sub-project 7A) as a development dependency of `finisherd` (4.10.2, with
+`pure-rand`, MIT); not shipped.

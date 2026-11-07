@@ -223,11 +223,13 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
         .env_remove("FIN_SERVER")
         .env_remove("FIN_OFFLINE_SNAPSHOT")
         .env_remove("FIN_TEST_COMMIT_GATE")
+        .env_remove("FIN_DEADLINE_S")
         // What `fin` tells the server about itself follows these (plan D, Task D6).
         .env_remove("DO_NOT_TRACK")
         .env_remove("FIN_DIAGNOSTICS")
         .env_remove("FIN_SESSION")
         .env_remove("FIN_CALL")
+        .env_remove("FIN_CALL_IDEM")
         .env_remove("FIN_TEST_PANIC")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

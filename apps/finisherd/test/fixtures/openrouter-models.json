@@ -1,0 +1,31 @@
+{
+  "data": [
+    {
+      "id": "acme-closed/big",
+      "context_length": 200000,
+      "top_provider": { "max_completion_tokens": 32000 },
+      "supported_parameters": ["tools", "reasoning", "max_tokens"],
+      "architecture": { "input_modalities": ["text", "image"] },
+      "pricing": { "prompt": "0.000003", "completion": "0.000015", "input_cache_read": "0.0000003", "input_cache_write": "0.00000375" }
+    },
+    {
+      "id": "acme-closed/weights-on-hf",
+      "hugging_face_id": "acme/weights-on-hf",
+      "context_length": 32000,
+      "top_provider": { "max_completion_tokens": 2000 },
+      "supported_parameters": ["tools"],
+      "architecture": { "input_modalities": ["text"] },
+      "pricing": { "prompt": "0", "completion": "0" }
+    },
+    {
+      "id": "openai/test-codex-1",
+      "context_length": 400000,
+      "top_provider": {},
+      "supported_parameters": ["tools"],
+      "architecture": { "input_modalities": ["text"] },
+      "pricing": { "prompt": "0.000001", "completion": "0.000004" }
+    },
+    { "id": "acme-closed/no-window", "pricing": {} },
+    { "context_length": 1000 }
+  ]
+}

@@ -10,6 +10,19 @@ description = "The agent-only Finisher CLI."
 name = "fin"
 path = "src/main.rs"
 
+# Only for the self dev-dependency below (see the file).
+[lib]
+name = "fin_test_hooks_marker"
+path = "src/test_hooks_marker.rs"
+test = false
+doctest = false
+
+[features]
+# `FIN_OFFLINE_SNAPSHOT` and `FIN_TEST_COMMIT_GATE` are read only with this feature (5A
+# Decision 37). fin's own tests enable it through the self dev-dependency below; release
+# builds never do (`scripts/check-test-hooks.mjs`).
+test-hooks = []
+
 [dependencies]
 # No `color` or `help` features: fin never renders clap's own help or ANSI output.
 # `--idem-key` commits carry the blake3 hash of the command input (`Tx.argsHash`).
@@ -26,6 +39,7 @@ serde_json = "1"
 ulid = "1"
 
 [dev-dependencies]
+fin = { path = ".", features = ["test-hooks"] }
 fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 fin-testfonts = { path = "../fin-testfonts" }
 sha2 = "0.11"

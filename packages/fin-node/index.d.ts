@@ -247,6 +247,16 @@ export declare class Journal {
 /** fin-core's `RPC_METHODS` table: the keys `rpc.stats` accepts (`other` last). */
 export declare function rpcMethods(): string[];
 
+/**
+ * The BLAKE3 of `data` (unkeyed), 64 lower-case hex digits: the agent runtime's `bodyHash`,
+ * `systemHash` and `toolsHash` as it sends them (`blake3:<hex>`); the journal keys them when it
+ * records a turn.
+ */
+export declare function blake3Hex(data: Uint8Array): string;
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export declare function blake3KeyedHex(key: Uint8Array, data: Uint8Array): string;
+
 /** Every kind name of fin-core's event registry. */
 export declare function kindNames(): string[];
 
@@ -299,6 +309,35 @@ export declare class ServerLock {
  * `SERVER_START_FAILED` on I/O errors. The pid is written into the file for diagnostics only.
  */
 export declare function lockExclusive(path: string): ServerLock;
+
+/**
+ * This server data's current `server-id`, a lowercase ULID: created on first use, renewed when
+ * the server data turns out to be a copy (`fin-store` `server_identity`). Throws `IO_ERROR`.
+ */
+export declare function serverId(serverData: string): string;
+
+/** What `checkPrivateDir` found. */
+export interface PrivateDirReport {
+  ok: boolean;
+  /** The owner's SID (Windows only). */
+  owner?: string | undefined;
+  /** Why it is not private: `owner <sid>`, `allows <sid>`, `null dacl`, `unsupported ace <type>`. */
+  problems: string[];
+}
+
+/**
+ * Windows: the directory's owner is this user (or Administrators) and its DACL allows nobody
+ * but this user, SYSTEM, Administrators and CREATOR OWNER. Elsewhere `{ ok: true }` (POSIX
+ * modes are checked by the caller). Throws `SERVER_DATA_UNSAFE` when the path cannot be read.
+ */
+export declare function checkPrivateDir(path: string): PrivateDirReport;
+
+/**
+ * Creates `path` (and parents) private to this user: on Windows a protected DACL
+ * `D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` owned by the user; elsewhere
+ * mode 0700. Throws `SERVER_DATA_UNSAFE`.
+ */
+export declare function makePrivateDir(path: string): void;
 
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font

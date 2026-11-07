@@ -28,72 +28,121 @@
       ],
       "type": "string"
     },
-    "AgentEditVerdict": {
-      "description": "`agent.editVerdict`: what became of an agent's edits.",
+    "AgentApproval": {
+      "description": "`agent.approval`: an approval was answered or expired.",
       "properties": {
+        "approvalId": {
+          "$ref": "#/$defs/IdRef"
+        },
         "by": {
-          "$ref": "#/$defs/VerdictBy"
+          "$ref": "#/$defs/DecidedBy"
         },
-        "txIds": {
-          "items": {
-            "$ref": "#/$defs/IdRef"
-          },
-          "type": "array"
+        "decision": {
+          "$ref": "#/$defs/ApprovalDecision"
         },
-        "verdict": {
-          "$ref": "#/$defs/Verdict"
+        "kind": {
+          "$ref": "#/$defs/ApprovalKind"
+        },
+        "latencyMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "subject": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "userText"
+            }
+          ]
         }
       },
       "required": [
-        "txIds",
-        "verdict",
-        "by"
+        "approvalId",
+        "sessionId",
+        "kind",
+        "decision",
+        "by",
+        "latencyMs"
       ],
       "type": "object"
     },
     "AgentMode": {
+      "description": "The session's mode (§6.1).",
       "enum": [
-        "interactive",
-        "headless",
-        "other"
-      ],
-      "type": "string"
-    },
-    "AgentRole": {
-      "enum": [
-        "main",
-        "subagent",
-        "critic",
-        "other"
+        "plan",
+        "draft",
+        "auto"
       ],
       "type": "string"
     },
     "AgentSession": {
-      "description": "`agent.session`.",
+      "description": "`agent.session`: a session started, resumed, was interrupted or ended.",
       "properties": {
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
         "mode": {
           "$ref": "#/$defs/AgentMode"
         },
         "model": {
           "$ref": "#/$defs/Name"
         },
+        "modelHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "parent": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "phase": {
+          "$ref": "#/$defs/SessionPhase"
+        },
         "provider": {
           "$ref": "#/$defs/Name"
         },
+        "reason": {
+          "$ref": "#/$defs/Code"
+        },
         "role": {
-          "$ref": "#/$defs/AgentRole"
+          "$ref": "#/$defs/Name"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "signIn": {
+          "$ref": "#/$defs/SignIn"
+        },
+        "totals": {
+          "$ref": "#/$defs/SessionTotals"
+        },
+        "trigger": {
+          "$ref": "#/$defs/SessionTrigger"
+        },
+        "weights": {
+          "$ref": "#/$defs/Weights"
         }
       },
       "required": [
+        "sessionId",
+        "phase",
+        "harness",
         "provider",
         "model",
+        "weights",
         "role",
-        "mode"
+        "mode",
+        "trigger"
       ],
       "type": "object"
     },
     "AgentToolCall": {
-      "description": "`agent.toolCall`: the agent ran a command (`callId` is the `FIN_CALL` its `fin` run\ncarries).",
+      "description": "`agent.toolCall`: the agent called a tool. `callId` is the `FIN_CALL` its `fin` run\ncarries; `command` names the `fin` command when the tool ran `fin`.",
       "properties": {
         "args": {
           "allOf": [
@@ -115,6 +164,9 @@
         "command": {
           "$ref": "#/$defs/Name"
         },
+        "tool": {
+          "$ref": "#/$defs/Name"
+        },
         "turnId": {
           "$ref": "#/$defs/IdRef"
         }
@@ -122,7 +174,7 @@
       "required": [
         "callId",
         "turnId",
-        "command",
+        "tool",
         "argsHash"
       ],
       "type": "object"
@@ -130,11 +182,18 @@
     "AgentToolResult": {
       "description": "`agent.toolResult`.",
       "properties": {
+        "attribution": {
+          "$ref": "#/$defs/Attribution"
+        },
         "callId": {
           "$ref": "#/$defs/IdRef"
         },
         "code": {
           "$ref": "#/$defs/Code"
+        },
+        "exit": {
+          "format": "int32",
+          "type": "integer"
         },
         "micros": {
           "format": "uint64",
@@ -155,23 +214,31 @@
             }
           ]
         },
+        "truncated": {
+          "type": "boolean"
+        },
         "txIds": {
           "items": {
             "$ref": "#/$defs/IdRef"
           },
+          "maxItems": 64,
           "type": "array"
         }
       },
       "required": [
         "callId",
         "ok",
-        "micros"
+        "micros",
+        "attribution"
       ],
       "type": "object"
     },
     "AgentTurn": {
-      "description": "`agent.turn`: one model call. Content: the turn's new messages and the output; the system\nprompt and the tool definitions by hash.",
+      "description": "`agent.turn`: one model call. Content (training only, in the agent-trace store): the\nturn's new input messages, the output, and the system prompt and tool definitions, which\nare always blobs so identical prompts are stored once.",
       "properties": {
+        "bodyHash": {
+          "$ref": "#/$defs/Hashed"
+        },
         "cacheReadTokens": {
           "format": "uint64",
           "minimum": 0,
@@ -182,10 +249,19 @@
           "minimum": 0,
           "type": "integer"
         },
+        "capture": {
+          "$ref": "#/$defs/Capture"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/CostBasis"
+        },
         "costMicros": {
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
         },
         "inputTokens": {
           "format": "uint64",
@@ -197,7 +273,7 @@
           "minimum": 0,
           "type": "integer"
         },
-        "messages": {
+        "messagesDelta": {
           "allOf": [
             {
               "$ref": "#/$defs/Body"
@@ -210,6 +286,9 @@
         },
         "model": {
           "$ref": "#/$defs/Name"
+        },
+        "modelHash": {
+          "$ref": "#/$defs/Hashed"
         },
         "output": {
           "allOf": [
@@ -227,32 +306,91 @@
           "minimum": 0,
           "type": "integer"
         },
+        "parentTurnId": {
+          "$ref": "#/$defs/IdRef"
+        },
         "provider": {
           "$ref": "#/$defs/Name"
+        },
+        "reasoningTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "seq": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "stopReason": {
           "$ref": "#/$defs/StopReason"
         },
+        "system": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelInput"
+            }
+          ]
+        },
         "systemHash": {
           "$ref": "#/$defs/Hashed"
+        },
+        "tools": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelInput"
+            }
+          ]
         },
         "toolsHash": {
           "$ref": "#/$defs/Hashed"
         },
+        "ttftMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "turnId": {
           "$ref": "#/$defs/IdRef"
+        },
+        "upstream": {
+          "$ref": "#/$defs/Name"
+        },
+        "upstreamHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "weights": {
+          "$ref": "#/$defs/Weights"
         }
       },
       "required": [
         "turnId",
+        "runId",
+        "seq",
+        "harness",
         "provider",
         "model",
+        "weights",
         "inputTokens",
         "outputTokens",
         "cacheReadTokens",
         "cacheWriteTokens",
+        "reasoningTokens",
         "latencyMs",
         "stopReason",
+        "costBasis",
+        "capture",
         "systemHash",
         "toolsHash"
       ],
@@ -318,6 +456,12 @@
           "$ref": "#/$defs/ErrorPanic"
         },
         {
+          "$ref": "#/$defs/JobDone"
+        },
+        {
+          "$ref": "#/$defs/WorkerExit"
+        },
+        {
           "$ref": "#/$defs/AgentSession"
         },
         {
@@ -330,7 +474,7 @@
           "$ref": "#/$defs/AgentToolResult"
         },
         {
-          "$ref": "#/$defs/AgentEditVerdict"
+          "$ref": "#/$defs/AgentApproval"
         },
         {
           "$ref": "#/$defs/UiAction"
@@ -370,6 +514,23 @@
         "bindings"
       ],
       "type": "object"
+    },
+    "ApprovalDecision": {
+      "enum": [
+        "allow",
+        "deny",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "ApprovalKind": {
+      "enum": [
+        "rule",
+        "budget",
+        "provider",
+        "plugin"
+      ],
+      "type": "string"
     },
     "Arch": {
       "enum": [
@@ -524,6 +685,39 @@
         "asset"
       ],
       "type": "object"
+    },
+    "Attach": {
+      "description": "`attach`: a helper's job, its files only, and its directories.",
+      "properties": {
+        "dirs": {
+          "$ref": "#/$defs/Dirs"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FileGrant"
+          },
+          "type": "array"
+        },
+        "job": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "dirs"
+      ],
+      "type": "object"
+    },
+    "Attribution": {
+      "description": "How a tool result's txIds were joined to its call (§12.3).",
+      "enum": [
+        "exact",
+        "inferred",
+        "ambiguous",
+        "none"
+      ],
+      "type": "string"
     },
     "AudioCodec": {
       "oneOf": [
@@ -828,7 +1022,7 @@
       "x-fin-blob": true
     },
     "Body": {
-      "description": "Large or structured content (the reserved agent kinds): inline JSON, or a [`BlobRef`] when\nit would not fit an entry (Decision 20).",
+      "description": "Large or structured content (the agent kinds): inline JSON, or a [`BlobRef`] when\nit would not fit an entry (Decision 20).",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -939,6 +1133,14 @@
       "enum": [
         "debug",
         "release"
+      ],
+      "type": "string"
+    },
+    "CancelReason": {
+      "description": "Why a `cancel` was sent.",
+      "enum": [
+        "cancel",
+        "pause"
       ],
       "type": "string"
     },
@@ -1196,6 +1398,21 @@
         "gap"
       ],
       "type": "object"
+    },
+    "Capture": {
+      "description": "How faithful a turn's content is (§12.6).",
+      "oneOf": [
+        {
+          "const": "exact",
+          "description": "The request and response bodies as sent and received (the built-in agent).",
+          "type": "string"
+        },
+        {
+          "const": "stream",
+          "description": "What a CLI's stream reports.",
+          "type": "string"
+        }
+      ]
     },
     "CatalogEntry": {
       "additionalProperties": false,
@@ -1827,6 +2044,32 @@
       ],
       "type": "object"
     },
+    "CostBasis": {
+      "description": "Where a turn's cost comes from.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "reported",
+          "description": "The provider reported what it charged (OpenRouter's usage accounting).",
+          "type": "string"
+        },
+        {
+          "const": "priced",
+          "description": "Priced from the catalogue.",
+          "type": "string"
+        },
+        {
+          "const": "subscription",
+          "description": "A plan sign-in: notional, not charged.",
+          "type": "string"
+        }
+      ]
+    },
     "Crop": {
       "description": "Fractions of the item's size cut from each side.",
       "properties": {
@@ -1874,6 +2117,14 @@
       "enum": [
         "linear",
         "equalPower"
+      ],
+      "type": "string"
+    },
+    "DecidedBy": {
+      "description": "Who decided an approval.",
+      "enum": [
+        "user",
+        "policy"
       ],
       "type": "string"
     },
@@ -2054,6 +2305,22 @@
         "dir",
         "complete",
         "entries"
+      ],
+      "type": "object"
+    },
+    "Dirs": {
+      "description": "The job directory and the process's private temp directory.",
+      "properties": {
+        "job": {
+          "type": "string"
+        },
+        "tmp": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "tmp"
       ],
       "type": "object"
     },
@@ -2868,11 +3135,55 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "job.done",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/JobDone"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "worker.exit",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/WorkerExit"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "agent.session",
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2894,7 +3205,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2916,7 +3227,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2938,7 +3249,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -2956,15 +3267,15 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "agent.editVerdict",
+              "const": "agent.approval",
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
-              "$ref": "#/$defs/AgentEditVerdict"
+              "$ref": "#/$defs/AgentApproval"
             }
           },
           "required": [
@@ -3020,6 +3331,24 @@
         }
       ]
     },
+    "ExitReason": {
+      "description": "Why a process ended. A closed list (`worker_exit_reasons_closed`).",
+      "enum": [
+        "done",
+        "idleExpired",
+        "recycled",
+        "cancelled",
+        "killed",
+        "crashed",
+        "hung",
+        "stalled",
+        "abandoned",
+        "spawnFailed",
+        "oom",
+        "protocolError"
+      ],
+      "type": "string"
+    },
     "Expect": {
       "additionalProperties": false,
       "description": "What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the\ncatalog has one, file id. TS `ExpectWire`.",
@@ -3068,6 +3397,41 @@
         "ok",
         "failed",
         "cached"
+      ],
+      "type": "string"
+    },
+    "FileGrant": {
+      "description": "One mapped file (or directory, `name` ending in `/`) of the job directory.",
+      "properties": {
+        "bytes": {
+          "description": "The size 5C created it at; absent for a file written by `prepare` and for directories.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/FileMode"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "FileMode": {
+      "description": "How a mapped file may be used.",
+      "enum": [
+        "read",
+        "write",
+        "readWrite"
       ],
       "type": "string"
     },
@@ -3742,6 +4106,17 @@
       ],
       "type": "object"
     },
+    "Harness": {
+      "description": "What runs the agent.",
+      "enum": [
+        "builtin",
+        "claudeCode",
+        "codex",
+        "fake",
+        "plugin"
+      ],
+      "type": "string"
+    },
     "Hashed": {
       "pattern": "^k1:[0-9a-f]{32}$",
       "type": "string",
@@ -3761,6 +4136,102 @@
         }
       },
       "type": "object"
+    },
+    "Hello": {
+      "description": "`hello` (Decisions 3, 8). A worker names its `family`, `kinds` and `warm`; a helper its\nhelper `kind` and `id`. `envelope` is [`crate::envelope_id`] (bundled processes must send\nit; plugin processes may omit it); `selfSandbox` the profile applied (Decision 9a).",
+      "properties": {
+        "envelope": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "id": {
+          "description": "A helper's id (helpers only).",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/HelperKind"
+        },
+        "kinds": {
+          "items": {
+            "$ref": "#/$defs/KindVersion"
+          },
+          "type": "array"
+        },
+        "minor": {
+          "description": "The protocol minor ([`crate::MINOR`]).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role": {
+          "$ref": "#/$defs/HelloRole"
+        },
+        "selfSandbox": {
+          "type": "string"
+        },
+        "v": {
+          "description": "The protocol major ([`crate::PROTOCOL`]).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warm": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "v",
+        "minor",
+        "role",
+        "pid"
+      ],
+      "type": "object"
+    },
+    "HelloRole": {
+      "description": "What a process is.",
+      "enum": [
+        "worker",
+        "helper"
+      ],
+      "type": "string"
+    },
+    "HelperGrant": {
+      "description": "A helper started beside the worker: its id, kind and the names of the files it sees.",
+      "properties": {
+        "files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/HelperKind"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "HelperKind": {
+      "description": "A helper's kind.",
+      "enum": [
+        "codec",
+        "plugin"
+      ],
+      "type": "string"
     },
     "Histogram": {
       "description": "One window's timings for one key. `buckets[i]` counts the samples with\n`2^i ≤ micros < 2^(i+1)` (`buckets[0]` also counts 0, the last bucket everything above);\ntrailing empty buckets are omitted.",
@@ -3848,6 +4319,108 @@
         "dryRun"
       ],
       "type": "object"
+    },
+    "HostMsg": {
+      "description": "A message from the host to a worker or a helper.",
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Start"
+            },
+            {
+              "properties": {
+                "t": {
+                  "const": "start",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "t"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Run a job (workers)."
+        },
+        {
+          "description": "Stop the job: `cancel` gives up, `pause` checkpoints first (resumable families).",
+          "properties": {
+            "job": {
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/CancelReason"
+            },
+            "t": {
+              "const": "cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "job",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Exit 0 (sent only to an idle worker, or to a helper).",
+          "properties": {
+            "t": {
+              "const": "shutdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t"
+          ],
+          "type": "object"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Attach"
+            },
+            {
+              "properties": {
+                "t": {
+                  "const": "attach",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "t"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "A helper's job and files (helpers)."
+        },
+        {
+          "description": "The answer to a `call {id}` (Decision 5a): `value` or `error`.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/JobError"
+            },
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "t": {
+              "const": "reply",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "t",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "IdRef": {
       "pattern": "^([0-7][0-9A-HJKMNP-TV-Z]{25}|k1:[0-9a-f]{32})$",
@@ -4218,6 +4791,22 @@
       ],
       "type": "object"
     },
+    "ItemError": {
+      "description": "A failed item of a batch job (`itemErrors`).",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/JobError"
+        },
+        "item": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "error"
+      ],
+      "type": "object"
+    },
     "ItemInsert": {
       "description": "`item.insert`: an item of any kind (the flattened `body`, tagged by `kind`) at `at` on\n`track`, `duration` long, with default common fields. `id` is a `$name` placeholder bound\nto a new id of the item's kind.",
       "oneOf": [
@@ -4571,6 +5160,122 @@
       ],
       "type": "object"
     },
+    "JobDone": {
+      "description": "`job.done` (`kv` 1). Sub-project 6 adds its media fields as `kv` 2.",
+      "properties": {
+        "attempts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "family": {
+          "$ref": "#/$defs/Name"
+        },
+        "helpers": {
+          "description": "The helper processes started over all attempts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "isolated": {
+          "description": "Whether isolation (bisection) ran.",
+          "type": "boolean"
+        },
+        "items": {
+          "description": "Batch kinds: the job's item count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "itemsFailed": {
+          "description": "Batch kinds: the items that failed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/Name"
+        },
+        "outcome": {
+          "$ref": "#/$defs/JobOutcome"
+        },
+        "priority": {
+          "$ref": "#/$defs/JobPriority"
+        },
+        "queuedMs": {
+          "description": "From submit to the first start.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runMicros": {
+          "description": "The sum of every attempt's run time.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warm": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "family",
+        "outcome",
+        "attempts",
+        "priority",
+        "warm",
+        "queuedMs",
+        "runMicros",
+        "isolated",
+        "helpers"
+      ],
+      "type": "object"
+    },
+    "JobError": {
+      "description": "An error a worker, a helper or a host call answers: `{code, message, details, retry}`.\nIn a `reply`, `retry` is absent (it reads as `never`).",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "default": null
+        },
+        "message": {
+          "type": "string"
+        },
+        "retry": {
+          "$ref": "#/$defs/Retry"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "JobOutcome": {
+      "description": "A job's terminal state.",
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "JobPriority": {
+      "description": "A job's priority as submitted.",
+      "enum": [
+        "interactive",
+        "normal",
+        "background"
+      ],
+      "type": "string"
+    },
     "JournalDropped": {
       "properties": {
         "bytes": {
@@ -4745,6 +5450,24 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "KindVersion": {
+      "description": "A kind at a version that a worker serves.",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "version"
+      ],
+      "type": "object"
+    },
     "KnownDir": {
       "additionalProperties": false,
       "description": "One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`\n(written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):\n\n- `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the\n  directory when it differs;\n- `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is\n  `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);\n- `listed_gen`: the full-scan generation in which it was last listed completely; a\n  resumed full scan of that generation skips its listing and still descends;\n- `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is\n  `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.",
@@ -4872,6 +5595,33 @@
       "required": [
         "spdx",
         "url"
+      ],
+      "type": "object"
+    },
+    "Limits": {
+      "description": "The limits a process runs under.",
+      "properties": {
+        "aliveMs": {
+          "description": "The `alive` interval (5 s).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memoryBytes": {
+          "description": "The job's group memory limit (Decision 20), informative: the host enforces it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "readBytesPerSec": {
+          "description": "The read budget ([`crate::ReadBudget`]).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "aliveMs"
       ],
       "type": "object"
     },
@@ -7365,6 +8115,60 @@
       ],
       "type": "object"
     },
+    "ProcessHelperKind": {
+      "description": "A helper's kind.",
+      "enum": [
+        "codec",
+        "plugin"
+      ],
+      "type": "string"
+    },
+    "ProcessRole": {
+      "description": "What the process was.",
+      "enum": [
+        "worker",
+        "helper"
+      ],
+      "type": "string"
+    },
+    "Progress": {
+      "description": "`progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).",
+      "properties": {
+        "done": {
+          "format": "double",
+          "type": "number"
+        },
+        "job": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "total": {
+          "format": "double",
+          "type": "number"
+        },
+        "unit": {
+          "$ref": "#/$defs/ProgressUnit"
+        }
+      },
+      "required": [
+        "job",
+        "done",
+        "unit"
+      ],
+      "type": "object"
+    },
+    "ProgressUnit": {
+      "description": "The unit of a progress figure.",
+      "enum": [
+        "bytes",
+        "items",
+        "frames",
+        "seconds"
+      ],
+      "type": "string"
+    },
     "Project": {
       "properties": {
         "assets": {
@@ -7726,6 +8530,26 @@
         "height"
       ],
       "type": "object"
+    },
+    "Retry": {
+      "description": "How the engine may retry after a worker `error` (Decision 31).",
+      "oneOf": [
+        {
+          "const": "never",
+          "description": "Deterministic: no retry (the default).",
+          "type": "string"
+        },
+        {
+          "const": "backoff",
+          "description": "Transient (I/O, an offline root): retry with backoff.",
+          "type": "string"
+        },
+        {
+          "const": "fresh",
+          "description": "Retry once, at once, on a fresh process (`GPU_DEVICE_LOST`).",
+          "type": "string"
+        }
+      ]
     },
     "ReviewVerdict": {
       "type": "object"
@@ -8133,6 +8957,21 @@
       "type": "string",
       "x-fin-class": "scrubbed"
     },
+    "SelfSandbox": {
+      "description": "A requested self-sandbox: a profile name and its arguments.",
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "profile": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile"
+      ],
+      "type": "object"
+    },
     "SessionEnd": {
       "description": "The run ended cleanly.",
       "properties": {
@@ -8146,6 +8985,15 @@
         "uptimeS"
       ],
       "type": "object"
+    },
+    "SessionPhase": {
+      "enum": [
+        "started",
+        "resumed",
+        "interrupted",
+        "ended"
+      ],
+      "type": "string"
     },
     "SessionStart": {
       "description": "The process run began (the journal opened with a purpose on, or one turned on). Platform\nfacts only (Decision 5): no host, user, IP, serial or hardware model.",
@@ -8197,6 +9045,66 @@
         "profile"
       ],
       "type": "object"
+    },
+    "SessionTotals": {
+      "description": "A session's totals at `ended`.",
+      "properties": {
+        "costMicros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "toolCalls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turns": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "txs": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wallS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "turns",
+        "toolCalls",
+        "txs",
+        "inputTokens",
+        "outputTokens",
+        "wallS"
+      ],
+      "type": "object"
+    },
+    "SessionTrigger": {
+      "description": "What started the session.",
+      "enum": [
+        "user",
+        "savedPrompt",
+        "subagent",
+        "hook",
+        "eval"
+      ],
+      "type": "string"
     },
     "SessionUnclean": {
       "description": "A start found the previous run still open in `state.json`.",
@@ -8295,6 +9203,15 @@
         "op"
       ],
       "type": "object"
+    },
+    "SignIn": {
+      "description": "The kind of sign-in a CLI harness reports (CLI harnesses only).",
+      "enum": [
+        "plan",
+        "key",
+        "unknown"
+      ],
+      "type": "string"
     },
     "Size": {
       "properties": {
@@ -8414,6 +9331,82 @@
       ],
       "type": "object"
     },
+    "Start": {
+      "description": "`start`: the job, its limits, its mapped files, its helpers and directories.",
+      "properties": {
+        "diagnostics": {
+          "default": false,
+          "description": "Whether `diag` messages are forwarded (Decision 7).",
+          "type": "boolean"
+        },
+        "dirs": {
+          "$ref": "#/$defs/Dirs"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FileGrant"
+          },
+          "type": "array"
+        },
+        "helpers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/HelperGrant"
+          },
+          "type": "array"
+        },
+        "job": {
+          "$ref": "#/$defs/StartJob"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        }
+      },
+      "required": [
+        "job",
+        "limits",
+        "dirs"
+      ],
+      "type": "object"
+    },
+    "StartJob": {
+      "description": "The job a `start` runs.",
+      "properties": {
+        "attempt": {
+          "description": "1 on the first attempt.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "checkpoint": {
+          "description": "The last checkpoint (resumable kinds)."
+        },
+        "extra": {
+          "description": "What the kind's `prepare` hook returned (Decision 40)."
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "kindVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "params": true
+      },
+      "required": [
+        "id",
+        "kind",
+        "kindVersion",
+        "params",
+        "attempt"
+      ],
+      "type": "object"
+    },
     "StopReason": {
       "enum": [
         "endTurn",
@@ -8527,6 +9520,596 @@
         "off"
       ],
       "type": "string"
+    },
+    "TestBadHelloParams": {
+      "additionalProperties": false,
+      "description": "`test.badHello` (family `testbad`): its `hello` claims another envelope.",
+      "type": "object"
+    },
+    "TestCallParams": {
+      "additionalProperties": false,
+      "description": "`test.call`: one host call; returns the reply.",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "default": null
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "type": "object"
+    },
+    "TestCheckpointParams": {
+      "additionalProperties": false,
+      "description": "`test.checkpoint` (resumable): a checkpoint per step; crashes on attempt 1 at\n`crashAt`.",
+      "properties": {
+        "crashAt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stepMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "steps": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "type": "object"
+    },
+    "TestCheckpointResult": {
+      "properties": {
+        "resumedFrom": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "steps": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "steps",
+        "resumedFrom"
+      ],
+      "type": "object"
+    },
+    "TestCountResult": {
+      "properties": {
+        "sent": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sent"
+      ],
+      "type": "object"
+    },
+    "TestCrashHow": {
+      "description": "How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/\n`EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, or `exit(3)`.",
+      "enum": [
+        "abort",
+        "segv",
+        "bus",
+        "fastfail",
+        "exit"
+      ],
+      "type": "string"
+    },
+    "TestCrashParams": {
+      "additionalProperties": false,
+      "description": "`test.crash` (batch): `begin`/`item` per item; crashes inside a poison item (before\nits `begin` with `between`), or inside the second item of any run of two or more with\n`crashOnSecond`.",
+      "properties": {
+        "between": {
+          "default": false,
+          "type": "boolean"
+        },
+        "crashOnSecond": {
+          "default": false,
+          "type": "boolean"
+        },
+        "how": {
+          "$ref": "#/$defs/TestCrashHow"
+        },
+        "itemMs": {
+          "description": "Milliseconds per item.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "poison": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items",
+        "how"
+      ],
+      "type": "object"
+    },
+    "TestCrashResult": {
+      "properties": {
+        "done": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "done"
+      ],
+      "type": "object"
+    },
+    "TestDetach": {
+      "description": "`test.spawn`: the grandchild stays in the group or leaves it with `setsid`.",
+      "enum": [
+        "none",
+        "setsid"
+      ],
+      "type": "string"
+    },
+    "TestDiagParams": {
+      "additionalProperties": false,
+      "description": "`test.diag`: one `diag` of kind `test.diag`.",
+      "type": "object"
+    },
+    "TestDiagResult": {
+      "properties": {
+        "sent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sent"
+      ],
+      "type": "object"
+    },
+    "TestEchoParams": {
+      "additionalProperties": false,
+      "description": "`test.echo`: returns `value`, plus what `report` asks about the process.",
+      "properties": {
+        "report": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TestEchoReport"
+          },
+          "type": "array"
+        },
+        "value": true
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
+    },
+    "TestEchoReport": {
+      "description": "What `test.echo` reports about its own process.",
+      "enum": [
+        "pid",
+        "env",
+        "args",
+        "fds",
+        "cwd",
+        "pdeathsig",
+        "nice",
+        "cgroup"
+      ],
+      "type": "string"
+    },
+    "TestEchoResult": {
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cgroup": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "fds": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "nice": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "pdeathsig": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": true
+      },
+      "required": [
+        "value",
+        "pid"
+      ],
+      "type": "object"
+    },
+    "TestExitAfterResultParams": {
+      "additionalProperties": false,
+      "description": "`test.exitAfterResult`: writes `result` and exits 0 at once.",
+      "type": "object"
+    },
+    "TestFileReport": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hash": {
+          "description": "FNV-1a 64 of the content after the run, as hex.",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/FileMode"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "mode",
+        "bytes",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "TestFilesParams": {
+      "additionalProperties": false,
+      "description": "`test.files`: writes a pattern into every `write` file, reads every `read` file, and\nleaves a file in each `write` directory; fails (`retry: backoff`) on attempt\n`failOnAttempt`.",
+      "properties": {
+        "failOnAttempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "TestFilesResult": {
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/TestFileReport"
+          },
+          "type": "array"
+        },
+        "outEmpty": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "type": "object"
+    },
+    "TestGarbage": {
+      "description": "`test.garbage`: the protocol violation to commit.",
+      "enum": [
+        "json",
+        "seq",
+        "long",
+        "otherJob",
+        "unknownType"
+      ],
+      "type": "string"
+    },
+    "TestGarbageParams": {
+      "additionalProperties": false,
+      "description": "`test.garbage`: commits the protocol violation `what`, then waits to be killed.",
+      "properties": {
+        "what": {
+          "$ref": "#/$defs/TestGarbage"
+        }
+      },
+      "required": [
+        "what"
+      ],
+      "type": "object"
+    },
+    "TestHangParams": {
+      "additionalProperties": false,
+      "description": "`test.hang`: stops `alive`, stops reading stdin (EOF unseen, the pipe fills) and blocks.",
+      "type": "object"
+    },
+    "TestHelperBehaviour": {
+      "description": "The test helper's behaviour (`fin-workers --helper test:<behaviour>`).",
+      "enum": [
+        "ok",
+        "exitEarly",
+        "hang",
+        "spawn",
+        "call"
+      ],
+      "type": "string"
+    },
+    "TestHelperParams": {
+      "additionalProperties": false,
+      "description": "`test.helper`: the job of a test helper (`helper` picks its behaviour).",
+      "properties": {
+        "delayMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "helper": {
+          "$ref": "#/$defs/TestHelperBehaviour",
+          "default": "ok"
+        }
+      },
+      "type": "object"
+    },
+    "TestHelperResult": {
+      "properties": {
+        "helpers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "helpers"
+      ],
+      "type": "object"
+    },
+    "TestOomParams": {
+      "additionalProperties": false,
+      "description": "`test.oom`: allocates and touches `mib` MiB.",
+      "properties": {
+        "holdMs": {
+          "description": "Hold the memory this long before answering.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mib": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mib"
+      ],
+      "type": "object"
+    },
+    "TestOomResult": {
+      "properties": {
+        "mib": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mib"
+      ],
+      "type": "object"
+    },
+    "TestPluginMinorParams": {
+      "additionalProperties": false,
+      "description": "`test.pluginMinor` (family `testplugin`): `hello` with minor 1 and no envelope, then a\nmessage of an unknown type with an `id`. `key` is its warm key.",
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "TestPluginMinorResult": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reply": true,
+        "served": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reply",
+        "pid",
+        "served"
+      ],
+      "type": "object"
+    },
+    "TestProgressFloodParams": {
+      "additionalProperties": false,
+      "description": "`test.progressFlood`: `n` progress messages as fast as it can.",
+      "properties": {
+        "n": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "n"
+      ],
+      "type": "object"
+    },
+    "TestSleepParams": {
+      "additionalProperties": false,
+      "description": "`test.sleep`: sleeps `ms` (checking cancel), with optional progress.",
+      "properties": {
+        "ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "progressEveryMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ms"
+      ],
+      "type": "object"
+    },
+    "TestSleepResult": {
+      "properties": {
+        "sleptMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sleptMs"
+      ],
+      "type": "object"
+    },
+    "TestSpawnParams": {
+      "additionalProperties": false,
+      "description": "`test.spawn` (breaks the no-process rule on purpose): double-forks a sleeping\ngrandchild, writes the pids to the mapped file `out`, then sleeps.",
+      "properties": {
+        "detach": {
+          "$ref": "#/$defs/TestDetach"
+        },
+        "grandchildMs": {
+          "description": "How long the grandchild sleeps (default 600 s).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "out": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "detach",
+        "out"
+      ],
+      "type": "object"
+    },
+    "TestSpawnPids": {
+      "description": "What `test.spawn` writes to its `out` file (JSON, then zero padding).",
+      "properties": {
+        "grandchild": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "worker": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "worker",
+        "mid",
+        "grandchild"
+      ],
+      "type": "object"
+    },
+    "TestStallParams": {
+      "additionalProperties": false,
+      "description": "`test.stall`: keeps `alive`, never reports progress, ends at cancel.",
+      "type": "object"
+    },
+    "TestWarmParams": {
+      "additionalProperties": false,
+      "description": "`test.warm` (warm): returns `value` with the pid and how many jobs the process served.",
+      "properties": {
+        "delayMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "holdFile": {
+          "description": "A job-directory file kept open past `ready` (breaks the warm contract on purpose).",
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
+    },
+    "TestWarmResult": {
+      "properties": {
+        "pid": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "served": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": true
+      },
+      "required": [
+        "value",
+        "pid",
+        "served"
+      ],
+      "type": "object"
     },
     "TextLayout": {
       "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the\nlines' total advance. `overflow` is set when a line is wider than `max_width` or there are\nmore lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
@@ -9290,24 +10873,6 @@
       ],
       "type": "object"
     },
-    "Verdict": {
-      "enum": [
-        "accepted",
-        "rejected",
-        "undone",
-        "merged",
-        "abandoned"
-      ],
-      "type": "string"
-    },
-    "VerdictBy": {
-      "enum": [
-        "user",
-        "critic",
-        "agent"
-      ],
-      "type": "string"
-    },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",
       "type": "string",
@@ -9493,6 +11058,15 @@
       ],
       "type": "object"
     },
+    "Weights": {
+      "description": "The model's weights class, from the catalogue at the time (§12.7).",
+      "enum": [
+        "open",
+        "closed",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "Word": {
       "description": "One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).",
       "properties": {
@@ -9560,6 +11134,281 @@
         "active"
       ],
       "type": "object"
+    },
+    "WorkerExit": {
+      "description": "`worker.exit` (`kv` 1).",
+      "properties": {
+        "exitCode": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "family": {
+          "$ref": "#/$defs/Name"
+        },
+        "helperKind": {
+          "$ref": "#/$defs/ProcessHelperKind"
+        },
+        "jobsServed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lifetimeS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "reason": {
+          "$ref": "#/$defs/ExitReason"
+        },
+        "role": {
+          "$ref": "#/$defs/ProcessRole"
+        },
+        "sandboxed": {
+          "type": "boolean"
+        },
+        "signal": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "role",
+        "family",
+        "reason",
+        "jobsServed",
+        "lifetimeS",
+        "sandboxed"
+      ],
+      "type": "object"
+    },
+    "WorkerMsg": {
+      "description": "A message from a worker or a helper to its host. Any message counts as alive.",
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Hello"
+            },
+            {
+              "properties": {
+                "t": {
+                  "const": "hello",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "t"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "The first message of every process."
+        },
+        {
+          "description": "An item starts (batch kinds).",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "job": {
+              "type": "string"
+            },
+            "t": {
+              "const": "begin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "job",
+            "item"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An item ended: with `error`, it failed (recorded in `itemErrors`) and the job goes on.",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/JobError"
+            },
+            "item": {
+              "type": "string"
+            },
+            "job": {
+              "type": "string"
+            },
+            "t": {
+              "const": "item",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "t",
+            "job",
+            "item"
+          ],
+          "type": "object"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Progress"
+            },
+            {
+              "properties": {
+                "t": {
+                  "const": "progress",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "t"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "description": "A resumable job's state, ≤ 256 KiB of JSON.",
+          "properties": {
+            "data": true,
+            "job": {
+              "type": "string"
+            },
+            "t": {
+              "const": "checkpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "job",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Sent every `limits.aliveMs` from the runtime's own thread.",
+          "properties": {
+            "t": {
+              "const": "alive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "job": {
+              "type": "string"
+            },
+            "t": {
+              "const": "result",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "t",
+            "job",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/JobError"
+            },
+            "itemErrors": {
+              "items": {
+                "$ref": "#/$defs/ItemError"
+              },
+              "type": "array"
+            },
+            "job": {
+              "type": "string"
+            },
+            "t": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "job",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A warm worker is free again.",
+          "properties": {
+            "t": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A diagnostics payload of one of the family's `diagKinds` (Decision 7).",
+          "properties": {
+            "job": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "payload": true,
+            "t": {
+              "const": "diag",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "kind",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A host call (Decision 5a); answered by `reply {id}`.",
+          "properties": {
+            "id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "type": "string"
+            },
+            "params": true,
+            "t": {
+              "const": "call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "method",
+            "params"
+          ],
+          "type": "object"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

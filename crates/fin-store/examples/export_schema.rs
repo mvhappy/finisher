@@ -7,10 +7,12 @@
 //! `EventPayload` and every payload type, by `events::kinds::register_schemas`), and the
 //! journal's (`fin-journal`: `PrivacySettings`, `ConsentState`, `JournalStatus`, `Filter`,
 //! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`, `DiagnosticsReport`, `ExportPage`;
-//! `CollectPolicy` is fin-core's), and the media types of `fin-media` (`MediaInfo` and its
-//! parts, sub-project 6), and the library indexer's wire types of `fin-library` (`RawRel`,
-//! `Expect`, `ScanEntry`, `DirDone`, `ScanBatch`, `KnownDir`, `VolumeIdentity`, `RootState`,
-//! `Placeholder`, sub-project 5D).
+//! `CollectPolicy` is fin-core's), the media types of `fin-media` (`MediaInfo` and its
+//! parts, sub-project 6), the job envelope of `fin-jobs` with the test kinds' params and
+//! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others), and
+//! the library indexer's wire types of `fin-library` (`RawRel`, `Expect`, `ScanEntry`,
+//! `DirDone`, `ScanBatch`, `KnownDir`, `VolumeIdentity`, `RootState`, `Placeholder`,
+//! sub-project 5D).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -67,6 +69,8 @@ fn main() {
         g.subschema_for::<fin_library::VolumeIdentity>();
         g.subschema_for::<fin_library::RootState>();
         g.subschema_for::<fin_library::Placeholder>();
+        fin_jobs::register_schemas(g);
+        fin_jobs::test_kinds::register_schemas(g);
     });
     println!(
         "{}",

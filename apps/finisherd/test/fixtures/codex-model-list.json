@@ -1,0 +1,10 @@
+[
+  { "data": [
+    { "id": "m1", "model": "test-codex-1", "displayName": "Test Codex 1", "isDefault": true, "hidden": false, "description": "", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [] },
+    { "id": "m2", "model": "test-codex-hidden", "displayName": "Hidden", "isDefault": false, "hidden": true, "description": "", "defaultReasoningEffort": "low", "supportedReasoningEfforts": [] }
+  ], "nextCursor": "page-2" },
+  { "data": [
+    { "id": "m3", "model": "test-codex-2", "displayName": "Test Codex 2", "isDefault": false, "hidden": false, "description": "", "defaultReasoningEffort": "high", "supportedReasoningEfforts": [] },
+    { "id": "m1", "model": "test-codex-1", "displayName": "Test Codex 1", "isDefault": true, "hidden": false, "description": "", "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [] }
+  ], "nextCursor": null }
+]
