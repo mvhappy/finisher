@@ -159,6 +159,10 @@ pub(crate) fn long<'e>(
 /// Queues the backup or compaction a tick found due (`Store::due_work`) as a long call,
 /// unless one is queued already. Its failure is a non-fatal `error` event; a panic, a fatal one.
 pub(crate) fn auto(inner: &Shared, worker: &Worker) {
+    #[cfg(feature = "test-hooks")]
+    if !inner.hooks.auto_work_enabled() {
+        return;
+    }
     let due = {
         let g = lock(&inner.state);
         match &*g {
