@@ -5,6 +5,20 @@
  */
 
 /**
+ * Horizontal alignment of each line inside the layout box.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Align".
+ */
+export type Align = "left" | "center" | "right";
+/**
+ * The safe-zone edge a caption block is placed against.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Anchor".
+ */
+export type Anchor = "top" | "middle" | "bottom";
+/**
  * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -27,7 +41,8 @@ export type Edge = "start" | "end";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EntityKind".
  */
-export type EntityKind = "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker" | "bin" | "effect";
+export type EntityKind =
+  "asset" | "track" | "timeline" | "item" | "transition" | "link" | "marker" | "bin" | "effect" | "style" | "font";
 /**
  * A primitive edit operation, tagged by `op`.
  *
@@ -153,6 +168,24 @@ export type Op =
     })
   | (EffectRestore & {
       op: "effect.restore";
+    })
+  | (StyleAdd & {
+      op: "style.add";
+    })
+  | (StyleSet & {
+      op: "style.set";
+    })
+  | (StyleRemove & {
+      op: "style.remove";
+    })
+  | (FontPinOp & {
+      op: "font.pin";
+    })
+  | (FontUnpin & {
+      op: "font.unpin";
+    })
+  | (FontRepin & {
+      op: "font.repin";
     })
   | {
       asset: string;
@@ -381,15 +414,6 @@ export type Item1 =
       timeline: string;
     };
 /**
- * What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,
- * `lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`
- * colour lookup table).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AssetKind".
- */
-export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | "lut";
-/**
  * Where a pinned file comes from: a catalog entry's style (at the catalog version that
  * pinned it), or an imported font asset.
  *
@@ -407,6 +431,15 @@ export type FontSource =
       asset: string;
       type: "asset";
     };
+/**
+ * What an asset is: `media` (video and/or audio; every pre-4C asset), `image`, `svg`,
+ * `lottieTemplate` (a dotLottie template with replaceable slots), `font`, or `lut` (a `.cube`
+ * colour lookup table).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetKind".
+ */
+export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | "lut";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ArchiveFormat".
@@ -1485,6 +1518,97 @@ export interface EffectRestore {
   };
 }
 /**
+ * `style.add`: a project style named `name`, from `from`, with `set` applied.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StyleAdd".
+ */
+export interface StyleAdd {
+  from?: string;
+  id: string;
+  name: string;
+  set?: {
+    [k: string]: ParamValue;
+  };
+}
+/**
+ * `style.set`: sets `path` of `style` to `value`; no `value` resets it to the default
+ * style's (or removes an optional part).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StyleSet".
+ */
+export interface StyleSet {
+  path: string;
+  style: string;
+  value?: ParamValue;
+}
+/**
+ * `style.remove`: takes `style` off the project.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StyleRemove".
+ */
+export interface StyleRemove {
+  style: string;
+}
+/**
+ * `font.pin`: pins `key` to `pin`, at `fallback` in the fallback order if given.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontPinOp".
+ */
+export interface FontPinOp {
+  fallback?: number;
+  key: string;
+  pin: FontPin;
+}
+/**
+ * One face of one exact file: `face` is the index inside a collection (0 for a single font).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontPin".
+ */
+export interface FontPin {
+  face: number;
+  family: string;
+  format: FontFormat;
+  italic: boolean;
+  /**
+   * ISO 15924 script codes the face covers (as `fin_text::font_info` reports them).
+   */
+  scripts: string[];
+  /**
+   * The whole file's SHA-256, 64 lowercase hex digits.
+   */
+  sha256: string;
+  /**
+   * The file's size in bytes.
+   */
+  size: number;
+  source: FontSource;
+  weight: number;
+}
+/**
+ * `font.unpin`: drops pin `key`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontUnpin".
+ */
+export interface FontUnpin {
+  key: string;
+}
+/**
+ * `font.repin`: pins `key` to `pin` instead.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontRepin".
+ */
+export interface FontRepin {
+  key: string;
+  pin: FontPin;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Project".
  */
@@ -1551,39 +1675,91 @@ export interface Fonts {
   };
 }
 /**
- * One face of one exact file: `face` is the index inside a collection (0 for a single font).
+ * A caption style: a built-in preset (`preset:<name>`, `fin_core::captions::presets`) or a
+ * project style (`st<n>`, made by `style.add`). Lengths are px at the timeline resolution.
  *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "FontPin".
- */
-export interface FontPin {
-  face: number;
-  family: string;
-  format: FontFormat;
-  italic: boolean;
-  /**
-   * ISO 15924 script codes the face covers (as `fin_text::font_info` reports them).
-   */
-  scripts: string[];
-  /**
-   * The whole file's SHA-256, 64 lowercase hex digits.
-   */
-  sha256: string;
-  /**
-   * The file's size in bytes.
-   */
-  size: number;
-  source: FontSource;
-  weight: number;
-}
-/**
- * A project caption style (`st<n>`). Its fields arrive with captions (plan 4C Task 18); until
- * then the project holds none.
+ * - `text` names the face (**family, weight, italic**: it resolves to a font pin, Decision
+ *   29) and how lines are set;
+ * - `stroke`, `background` and `highlight` (the spoken word's colour) are optional;
+ * - `position` places the block inside the safe zone `safeZone` (a name from
+ *   `fin_core::captions::safe_zones`);
+ * - `maxChars` (per line), `maxLines`, `gap` (a pause at least this long starts a new block;
+ *   0 never does) and `maxDuration` are the block-splitting rule (`captions::blocks`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "CaptionStyle".
  */
-export interface CaptionStyle {}
+export interface CaptionStyle {
+  background?: CaptionBox;
+  color: string;
+  gap: Rational;
+  highlight?: string;
+  id: string;
+  maxChars: number;
+  maxDuration?: Rational;
+  maxLines: number;
+  name: string;
+  position: CaptionPosition;
+  safeZone: string;
+  stroke?: Stroke;
+  text: TextStyle;
+}
+/**
+ * A box behind the block. One equal to the default (transparent, no padding) is no box.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionBox".
+ */
+export interface CaptionBox {
+  color: string;
+  padding: number;
+  radius: number;
+}
+/**
+ * Where the block sits in its safe zone: against the zone's top, middle or bottom, moved
+ * towards the middle by `offset` (a fraction of the zone's height, 0 to 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionPosition".
+ */
+export interface CaptionPosition {
+  anchor: Anchor;
+  offset: number;
+}
+/**
+ * An outline around the glyphs. A stroke equal to the default (width 0) is no stroke.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Stroke".
+ */
+export interface Stroke {
+  color: string;
+  width: number;
+}
+/**
+ * The style a text is measured with.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TextStyle".
+ */
+export interface TextStyle {
+  align: Align;
+  family: string;
+  italic: boolean;
+  /**
+   * Extra advance after every glyph, in em (a multiple of `size`; may be negative).
+   */
+  letterSpacing: number;
+  /**
+   * Line advance as a multiple of `size` (e.g. 1.2).
+   */
+  lineHeight: number;
+  /**
+   * Font size in px.
+   */
+  size: number;
+  weight: number;
+}
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ArchiveMember".

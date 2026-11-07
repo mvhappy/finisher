@@ -1,5 +1,23 @@
 {
   "$defs": {
+    "Align": {
+      "description": "Horizontal alignment of each line inside the layout box.",
+      "enum": [
+        "left",
+        "center",
+        "right"
+      ],
+      "type": "string"
+    },
+    "Anchor": {
+      "description": "The safe-zone edge a caption block is placed against.",
+      "enum": [
+        "top",
+        "middle",
+        "bottom"
+      ],
+      "type": "string"
+    },
     "Applied": {
       "description": "The result of applying a transaction to a project.",
       "properties": {
@@ -453,6 +471,28 @@
       ],
       "type": "object"
     },
+    "CaptionBox": {
+      "description": "A box behind the block. One equal to the default (transparent, no padding) is no box.",
+      "properties": {
+        "color": {
+          "type": "string"
+        },
+        "padding": {
+          "format": "double",
+          "type": "number"
+        },
+        "radius": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color",
+        "padding",
+        "radius"
+      ],
+      "type": "object"
+    },
     "CaptionPlan": {
       "description": "A caption's words at the plan's time, and its layout when it was measured. `layout` is\n`null` when it was not, and `unmeasured` says why (plan 4C Decision 36).",
       "properties": {
@@ -487,6 +527,23 @@
       ],
       "type": "object"
     },
+    "CaptionPosition": {
+      "description": "Where the block sits in its safe zone: against the zone's top, middle or bottom, moved\ntowards the middle by `offset` (a fraction of the zone's height, 0 to 1).",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/Anchor"
+        },
+        "offset": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "anchor",
+        "offset"
+      ],
+      "type": "object"
+    },
     "CaptionSource": {
       "description": "The transcript artifact a caption came from, and its word range (`[first, end)`).",
       "properties": {
@@ -511,7 +568,63 @@
       "type": "object"
     },
     "CaptionStyle": {
-      "description": "A project caption style (`st<n>`). Its fields arrive with captions (plan 4C Task 18); until\nthen the project holds none.",
+      "description": "A caption style: a built-in preset (`preset:<name>`, `fin_core::captions::presets`) or a\nproject style (`st<n>`, made by `style.add`). Lengths are px at the timeline resolution.\n\n- `text` names the face (**family, weight, italic**: it resolves to a font pin, Decision\n  29) and how lines are set;\n- `stroke`, `background` and `highlight` (the spoken word's colour) are optional;\n- `position` places the block inside the safe zone `safeZone` (a name from\n  `fin_core::captions::safe_zones`);\n- `maxChars` (per line), `maxLines`, `gap` (a pause at least this long starts a new block;\n  0 never does) and `maxDuration` are the block-splitting rule (`captions::blocks`).",
+      "properties": {
+        "background": {
+          "$ref": "#/$defs/CaptionBox"
+        },
+        "color": {
+          "type": "string"
+        },
+        "gap": {
+          "$ref": "#/$defs/Rational"
+        },
+        "highlight": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "maxChars": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxDuration": {
+          "$ref": "#/$defs/Rational"
+        },
+        "maxLines": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "$ref": "#/$defs/CaptionPosition"
+        },
+        "safeZone": {
+          "type": "string"
+        },
+        "stroke": {
+          "$ref": "#/$defs/Stroke"
+        },
+        "text": {
+          "$ref": "#/$defs/TextStyle"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "text",
+        "color",
+        "position",
+        "safeZone",
+        "maxChars",
+        "maxLines",
+        "gap"
+      ],
       "type": "object"
     },
     "CatalogEntry": {
@@ -1252,7 +1365,9 @@
         "link",
         "marker",
         "bin",
-        "effect"
+        "effect",
+        "style",
+        "font"
       ],
       "type": "string"
     },
@@ -1553,6 +1668,43 @@
       ],
       "type": "object"
     },
+    "FontPinOp": {
+      "description": "`font.pin`: pins `key` to `pin`, at `fallback` in the fallback order if given.",
+      "properties": {
+        "fallback": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "pin": {
+          "$ref": "#/$defs/FontPin"
+        }
+      },
+      "required": [
+        "key",
+        "pin"
+      ],
+      "type": "object"
+    },
+    "FontRepin": {
+      "description": "`font.repin`: pins `key` to `pin` instead.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "pin": {
+          "$ref": "#/$defs/FontPin"
+        }
+      },
+      "required": [
+        "key",
+        "pin"
+      ],
+      "type": "object"
+    },
     "FontSource": {
       "description": "Where a pinned file comes from: a catalog entry's style (at the catalog version that\npinned it), or an imported font asset.",
       "oneOf": [
@@ -1597,6 +1749,18 @@
           "type": "object"
         }
       ]
+    },
+    "FontUnpin": {
+      "description": "`font.unpin`: drops pin `key`.",
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
     },
     "Fonts": {
       "description": "The pins, keyed by [`font_key`], and the fallback order (pin keys, first tried first).\nEmpty until a caption edit pins a face; omitted from the project JSON while empty.",
@@ -3949,6 +4113,126 @@
           "description": "Internal (inverse of `effect.remove`): puts an effect and its keyframes back."
         },
         {
+          "allOf": [
+            {
+              "$ref": "#/$defs/StyleAdd"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "style.add",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Adds a project caption style; `id` is a `$name` placeholder bound to a new `st<n>` id."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/StyleSet"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "style.set",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Sets (or, with no `value`, resets) one path of a project caption style."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/StyleRemove"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "style.remove",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Takes an unused project caption style off the project."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/FontPinOp"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "font.pin",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Pins a font face to an exact file by SHA-256."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/FontUnpin"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "font.unpin",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Drops an unused font pin."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/FontRepin"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "font.repin",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Points a pinned font face at another file."
+        },
+        {
           "description": "Client alias of `item.insert` of a clip in ripple mode.",
           "properties": {
             "asset": {
@@ -5030,6 +5314,79 @@
       ],
       "type": "object"
     },
+    "Stroke": {
+      "description": "An outline around the glyphs. A stroke equal to the default (width 0) is no stroke.",
+      "properties": {
+        "color": {
+          "type": "string"
+        },
+        "width": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color",
+        "width"
+      ],
+      "type": "object"
+    },
+    "StyleAdd": {
+      "description": "`style.add`: a project style named `name`, from `from`, with `set` applied.",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "set": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParamValue"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "StyleRemove": {
+      "description": "`style.remove`: takes `style` off the project.",
+      "properties": {
+        "style": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "style"
+      ],
+      "type": "object"
+    },
+    "StyleSet": {
+      "description": "`style.set`: sets `path` of `style` to `value`; no `value` resets it to the default\nstyle's (or removes an optional part).",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "style": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "style",
+        "path"
+      ],
+      "type": "object"
+    },
     "TextLayout": {
       "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the\nlines' total advance. `overflow` is set when a line is wider than `max_width` or there are\nmore lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
       "properties": {
@@ -5079,6 +5436,51 @@
         "overflow",
         "missing",
         "faces"
+      ],
+      "type": "object"
+    },
+    "TextStyle": {
+      "description": "The style a text is measured with.",
+      "properties": {
+        "align": {
+          "$ref": "#/$defs/Align"
+        },
+        "family": {
+          "type": "string"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "letterSpacing": {
+          "description": "Extra advance after every glyph, in em (a multiple of `size`; may be negative).",
+          "format": "double",
+          "type": "number"
+        },
+        "lineHeight": {
+          "description": "Line advance as a multiple of `size` (e.g. 1.2).",
+          "format": "double",
+          "type": "number"
+        },
+        "size": {
+          "description": "Font size in px.",
+          "format": "double",
+          "type": "number"
+        },
+        "weight": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "family",
+        "weight",
+        "italic",
+        "size",
+        "lineHeight",
+        "letterSpacing",
+        "align"
       ],
       "type": "object"
     },

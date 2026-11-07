@@ -1,6 +1,6 @@
-//! Track, timeline, marker and style parameters, and reading and writing them on the model
-//! (`track.set`, `timeline.set` and `marker.set` use these; caption style paths arrive with
-//! Task 18). None is animatable. A timeline's `rate` may change only while it has no items
+//! Track, timeline and marker parameters, and reading and writing them on the model
+//! (`track.set`, `timeline.set` and `marker.set` use these; caption styles are
+//! [`super::style`]'s). None is animatable. A timeline's `rate` may change only while it has no items
 //! (`TIMELINE_NOT_EMPTY`, the op's check).
 
 use serde_json::json;
@@ -148,9 +148,6 @@ pub(super) const MARKER: &[ParamSpec] = &[
         "use a duration of at least {min} {unit}",
     ),
 ];
-
-/// Caption style paths arrive with Task 18.
-pub(super) const STYLE: &[ParamSpec] = &[];
 
 pub(super) fn find(
     list: &'static [ParamSpec],

@@ -30,6 +30,8 @@ use crate::ops::track_move::TrackMove;
 use crate::ops::track_remove::TrackRemove;
 use crate::ops::track_restore::TrackRestore;
 use crate::ops::track_set::TrackSet;
+use crate::ops::{font_pin::FontPinOp, font_repin::FontRepin, font_unpin::FontUnpin};
+use crate::ops::{style_add::StyleAdd, style_remove::StyleRemove, style_set::StyleSet};
 use crate::time::Rational;
 
 /// A primitive edit operation, tagged by `op`.
@@ -154,6 +156,24 @@ pub enum Op {
     /// Internal (inverse of `effect.remove`): puts an effect and its keyframes back.
     #[serde(rename = "effect.restore")]
     EffectRestore(Box<EffectRestore>),
+    /// Adds a project caption style; `id` is a `$name` placeholder bound to a new `st<n>` id.
+    #[serde(rename = "style.add")]
+    StyleAdd(StyleAdd),
+    /// Sets (or, with no `value`, resets) one path of a project caption style.
+    #[serde(rename = "style.set")]
+    StyleSet(StyleSet),
+    /// Takes an unused project caption style off the project.
+    #[serde(rename = "style.remove")]
+    StyleRemove(StyleRemove),
+    /// Pins a font face to an exact file by SHA-256.
+    #[serde(rename = "font.pin")]
+    FontPin(FontPinOp),
+    /// Drops an unused font pin.
+    #[serde(rename = "font.unpin")]
+    FontUnpin(FontUnpin),
+    /// Points a pinned font face at another file.
+    #[serde(rename = "font.repin")]
+    FontRepin(FontRepin),
     /// Client alias of `item.insert` of a clip in ripple mode.
     #[serde(rename = "clip.insert")]
     ClipInsert {

@@ -120,6 +120,13 @@ const VALIDATION_CODES: &[&str] = &[
     "FONT_INVALID",
     "FONT_NOT_IN_CATALOG",
     "FONT_CATALOG_INVALID",
+    // Captions (sub-project 4C Task 18): a removal of a style a caption uses; a pin of a face
+    // already pinned to another file (`fix`: repin); an unpin of a face a style or caption
+    // uses; an SRT file breaking the format (`details.line`).
+    "STYLE_IN_USE",
+    "FONT_PINNED",
+    "FONT_IN_USE",
+    "SRT_INVALID",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).

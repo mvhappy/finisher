@@ -2,6 +2,7 @@
 
 pub mod apply;
 pub mod branch;
+pub mod captions;
 pub mod compose;
 pub mod error;
 pub mod eval;
@@ -32,6 +33,7 @@ pub use ops::{
     TrackRestore, TrackSet, TransitionRemove, TransitionSet, TrimMode, normalize,
 };
 pub use ops::{EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeSet};
+pub use ops::{FontPinOp, FontRepin, FontUnpin, StyleAdd, StyleRemove, StyleSet};
 pub use rebase::{Conflict, Conflicts, rebase_tx};
 pub use record::{
     Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,

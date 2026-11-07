@@ -13,6 +13,9 @@
 //!   (`TRACK_KIND_MISMATCH`, structural) and a positive speed (structural);
 //! - `image` (an `image`/`svg` asset), `graphic` (a `lottieTemplate` asset) and `adjustment`
 //!   go on video tracks; `caption` goes on caption tracks;
+//! - a caption's style exists and its overrides are style values (structural; ranges policy),
+//!   its words are at least one, ordered and not overlapping (structural) and inside the item
+//!   (policy, plan 4C Task 19);
 //! - `nested` is `INVALID_OP` (its edits arrive in sub-project 6);
 //! - a graphic's slots must be its template's (`SLOT_UNKNOWN`) with values of the slot's kind
 //!   (`PARAM_TYPE`), both structural, in range (policy; plan 4C Task 11).
@@ -24,9 +27,9 @@ use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Asset, AssetKind, Item, ItemBody, ParamValue, Project, Track, TrackKind};
 use crate::ops::util::param_check::check_value;
 use crate::ops::util::{
-    OpDiff, TrackAt, asset, carve, check_carve, check_frame, check_kind, check_source, check_speed,
-    check_unlocked, clip_containing, frame_of, insert_inside, invalid_range, kind_name,
-    normalize_body, place, ripple, track_index, wrong_op,
+    OpDiff, TrackAt, asset, carve, check_caption, check_carve, check_frame, check_kind,
+    check_source, check_speed, check_unlocked, clip_containing, frame_of, insert_inside,
+    invalid_range, kind_name, normalize_body, place, ripple, track_index, wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, InsertMode, ItemInsert, ItemRemove, Op};
 use crate::rebase::Footprint;
@@ -85,7 +88,10 @@ pub(crate) fn check_body(
             (TrackKind::Video, &[AssetKind::LottieTemplate])
         }
         ItemBody::Adjustment {} => (TrackKind::Video, &[]),
-        ItemBody::Caption { .. } => (TrackKind::Caption, &[]),
+        ItemBody::Caption { block } => {
+            check_caption(project, block, None, bindings)?;
+            (TrackKind::Caption, &[])
+        }
     };
     if !bindings.policy() {
         return Ok(());
@@ -154,6 +160,10 @@ pub(crate) fn validate(
         frame_of(project, ti)?,
         bindings,
     )?;
+    // Words of a new caption lie inside it (policy; later edits may move them out, Decision 13).
+    if let ItemBody::Caption { block } = &i.body {
+        check_caption(project, block, Some(i.duration), bindings)?;
+    }
     // Policy (skipped on replay). An insert inside an item also overlaps it, which replay
     // still rejects through the structural track check.
     if bindings.policy() {
@@ -223,6 +233,11 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&i.track), op_diff);
     f.creates.push(i.id.clone());
     f.uses.extend(i.body.asset().map(str::to_string));
+    if let ItemBody::Caption { block } = &i.body
+        && !block.style.starts_with(crate::captions::PRESET_PREFIX)
+    {
+        f.uses.push(block.style.clone());
+    }
     if let ItemBody::Graphic { slots, .. } = &i.body {
         f.uses.extend(
             slots

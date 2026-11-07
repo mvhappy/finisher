@@ -114,8 +114,10 @@ impl Applier {
                  item.slip, item.split, item.move, item.slide, item.link, item.unlink, \
                  transition.set, transition.remove, track.add, track.remove, track.move, \
                  track.set, timeline.add, timeline.set, timeline.remove, marker.add, \
-                 marker.set, marker.remove, bin.add, bin.move, bin.remove, asset.move or \
-                 asset.remove",
+                 marker.set, marker.remove, bin.add, bin.move, bin.remove, asset.move, \
+                 asset.remove, param.set, effect.add, effect.remove, effect.move, \
+                 keyframe.set, keyframe.remove, style.add, style.set, style.remove, font.pin, \
+                 font.unpin or font.repin",
             ))
         } else if self.mode != ApplyMode::Client && op.is_alias() {
             Err(CoreError::new(

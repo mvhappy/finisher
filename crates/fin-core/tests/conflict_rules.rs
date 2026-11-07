@@ -585,6 +585,7 @@ fn every_op_has_a_footprint() {
             vec![],
         ),
     ];
+    let styles_fonts = styles_and_fonts(&p);
     let mut seen = BTreeSet::new();
     for (at, op, tracks) in cases
         .into_iter()
@@ -592,6 +593,7 @@ fn every_op_has_a_footprint() {
         .chain(transitions)
         .chain(structure)
         .chain(library)
+        .chain(styles_fonts)
     {
         let (op, f, _) = fp(&at, op);
         seen.insert(op.name());
@@ -743,6 +745,19 @@ fn every_op_has_a_footprint() {
                 f.creates == [format!("c2/{}", r.effect.id)]
                     && f.touches == [("c2".to_string(), Touch::Param("effects".into()))]
             }
+            Op::StyleAdd(a) => f.creates == [a.id.clone()] && f.uses.is_empty(),
+            Op::StyleSet(s) => f.touches == [(s.style.clone(), Touch::Param(s.path.clone()))],
+            Op::StyleRemove(r) => {
+                f.removes == [r.style.clone()] && f.touches == [(r.style.clone(), Touch::Exists)]
+            }
+            Op::FontPin(p) => f.creates == [format!("font/{}", p.key)] && f.uses.is_empty(),
+            Op::FontUnpin(u) => {
+                let e = format!("font/{}", u.key);
+                f.removes == [e.clone()] && f.touches == [(e, Touch::Exists)]
+            }
+            Op::FontRepin(r) => {
+                f.touches == [(format!("font/{}", r.key), Touch::Param("sha256".into()))]
+            }
         };
         assert!(want, "{}: {f:?}", op.name());
         assert!(
@@ -750,7 +765,81 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 38);
+    assert_eq!(seen.len(), 44);
+}
+
+/// The style and font ops (plan 4C Task 18), each at a project where it applies; none is on
+/// a track.
+fn styles_and_fonts(p: &Project) -> Vec<(Project, Op, Vec<&'static str>)> {
+    use fin_core::{FontFormat, FontPin, FontPinOp, FontRepin, FontSource, FontUnpin};
+    use fin_core::{StyleAdd, StyleRemove, StyleSet};
+    let file = |c: char| FontPin {
+        family: "Inter".into(),
+        weight: 700,
+        italic: false,
+        face: 0,
+        sha256: std::iter::repeat_n(c, 64).collect(),
+        size: 9,
+        format: FontFormat::Ttf,
+        scripts: vec!["Latn".into()],
+        source: FontSource::Catalog {
+            entry: "inter".into(),
+            style: "bold".into(),
+            catalog: "2026.11.1".into(),
+        },
+    };
+    let key = "Inter|700|normal".to_string();
+    let add: Op = StyleAdd {
+        id: "$st".into(),
+        name: "S".into(),
+        from: Some("preset:bold".into()),
+        set: Default::default(),
+    }
+    .into();
+    let pin: Op = FontPinOp {
+        key: key.clone(),
+        pin: file('a'),
+        fallback: None,
+    }
+    .into();
+    let styled = apply(p, vec![add.clone()]).project;
+    let pinned = apply(p, vec![pin.clone()]).project;
+    vec![
+        (p.clone(), add, vec![]),
+        (
+            styled.clone(),
+            StyleSet {
+                style: "st1".into(),
+                path: "color".into(),
+                value: None,
+            }
+            .into(),
+            vec![],
+        ),
+        (
+            styled,
+            StyleRemove {
+                style: "st1".into(),
+            }
+            .into(),
+            vec![],
+        ),
+        (p.clone(), pin, vec![]),
+        (
+            pinned.clone(),
+            FontUnpin { key: key.clone() }.into(),
+            vec![],
+        ),
+        (
+            pinned,
+            FontRepin {
+                key,
+                pin: file('b'),
+            }
+            .into(),
+            vec![],
+        ),
+    ]
 }
 
 fn timeline_add() -> Op {

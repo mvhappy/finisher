@@ -33,7 +33,7 @@ test("item ops carry their payload and tag (plan 4C Task 7)", () => {
   expect(block("ItemRestore")).toMatch(/mode: DeleteMode;/);
   expect(block("AssetAdd")).toMatch(/kind\?: (AssetKind|"media" \| "image" \| "svg" \| "lottieTemplate" \| "font" \| "lut");/);
   // 4C adds kinds task by task (`effect`, ...) after these.
-  expect(ts).toMatch(/export type EntityKind = "asset" \| "track" \| "timeline" \| "item" \| "transition"( \| "\w+")*;/);
+  expect(ts).toMatch(/export type EntityKind =\s*"asset" \| "track" \| "timeline" \| "item" \| "transition"( \| "\w+")*;/);
   // The clip.* aliases stay accepted from clients.
   for (const op of ["clip.insert", "clip.trim", "clip.delete"]) {
     expect(ts).toContain(`op: "${op}";`);

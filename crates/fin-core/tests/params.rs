@@ -293,7 +293,24 @@ fn every_spec_path_gets_and_sets() {
                 assert_eq!(params::get_marker(&m, spec.path).unwrap(), Some(value));
                 seen += 1;
             }
-            Scope::Style => {}
+            Scope::Style => {
+                // On the default style: the registry's default is the default style's; a set
+                // reads back; a reset is the default again (or nothing, for optional parts).
+                let base = fin_core::CaptionStyle::default();
+                let mut st = base.clone();
+                let was = params::get_style(&base, spec.path).unwrap();
+                if spec.path != "name" {
+                    assert_eq!(was, default_value(spec), "{} default", spec.path);
+                }
+                let old = params::set_style(&mut st, spec.path, Some(value.clone())).unwrap();
+                assert_eq!(old, was, "{}", spec.path);
+                assert_eq!(params::get_style(&st, spec.path).unwrap(), Some(value));
+                if spec.path != "name" {
+                    params::set_style(&mut st, spec.path, None).unwrap();
+                    assert_eq!(st, base, "{} reset", spec.path);
+                }
+                seen += 1;
+            }
         }
     }
     assert_eq!(seen, specs().len(), "every spec was exercised");

@@ -45,6 +45,10 @@ pub enum EntityKind {
     Bin,
     // An item's effect, `<item>/<fx>` (plan 4C Decisions 10 and 20).
     Effect,
+    // A project caption style, `st<n>` (plan 4C Task 18).
+    Style,
+    // A font pin, `font/<key>` (plan 4C Decisions 20 and 29).
+    Font,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

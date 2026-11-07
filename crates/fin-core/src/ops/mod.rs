@@ -5,7 +5,8 @@
 //! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink`, `transition.set`,
 //! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove`,
 //! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove`, `param.set`,
-//! `effect.add|remove|move`, `keyframe.set|remove` (and the
+//! `effect.add|remove|move`, `keyframe.set|remove`, `style.add|set|remove`,
+//! `font.pin|unpin|repin` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
 //! exist only as inverses (`item.remove`, `item.restore`, `track.restore`,
 //! `timeline.restore`, `effect.restore`, and `item.trim` in `strict` mode or `alone`, `item.slide` with `sides`,
@@ -39,6 +40,9 @@ mod effect_add;
 mod effect_move;
 mod effect_remove;
 mod effect_restore;
+mod font_pin;
+mod font_repin;
+mod font_unpin;
 mod item_delete;
 mod item_insert;
 mod item_link;
@@ -56,6 +60,9 @@ mod marker_add;
 mod marker_remove;
 mod marker_set;
 mod param_set;
+mod style_add;
+mod style_remove;
+mod style_set;
 mod timeline_add;
 mod timeline_remove;
 mod timeline_restore;
@@ -84,12 +91,18 @@ pub use effect_add::EffectAdd;
 pub use effect_move::EffectMove;
 pub use effect_remove::EffectRemove;
 pub use effect_restore::EffectRestore;
+pub use font_pin::FontPinOp;
+pub use font_repin::FontRepin;
+pub use font_unpin::FontUnpin;
 pub use keyframe_remove::KeyframeRemove;
 pub use keyframe_set::KeyframeSet;
 pub use marker_add::MarkerAdd;
 pub use marker_remove::MarkerRemove;
 pub use marker_set::MarkerSet;
 pub use param_set::ParamSet;
+pub use style_add::StyleAdd;
+pub use style_remove::StyleRemove;
+pub use style_set::StyleSet;
 pub use timeline_add::TimelineAdd;
 pub use timeline_remove::TimelineRemove;
 pub use timeline_restore::TimelineRestore;
@@ -378,6 +391,12 @@ fn prunes(op: &Op) -> bool {
                 | Op::EffectMove(_)
                 | Op::KeyframeSet(_)
                 | Op::KeyframeRemove(_)
+                | Op::StyleAdd(_)
+                | Op::StyleSet(_)
+                | Op::StyleRemove(_)
+                | Op::FontPin(_)
+                | Op::FontUnpin(_)
+                | Op::FontRepin(_)
         )
 }
 
@@ -483,6 +502,12 @@ ops_table! {
     KeyframeSet => keyframe_set,
     KeyframeRemove => keyframe_remove,
     EffectRestore => effect_restore,
+    StyleAdd => style_add,
+    StyleSet => style_set,
+    StyleRemove => style_remove,
+    FontPin => font_pin,
+    FontUnpin => font_unpin,
+    FontRepin => font_repin,
     ClipInsert => clip_insert,
     ClipTrim => clip_trim,
     ClipDelete => clip_delete,
