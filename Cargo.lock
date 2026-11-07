@@ -594,9 +594,11 @@ dependencies = [
  "base64",
  "blake3",
  "fin-library",
+ "libc",
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "unicode-normalization",
 ]

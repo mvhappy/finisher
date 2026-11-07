@@ -1,4 +1,5 @@
-//! Volume rules (Decisions 15, 17), pure; the per-OS measurement is Tasks 2–3.
+//! Volume rules (Decisions 15, 17) and the per-OS measurement (Task 2: Linux, macOS; Task 3:
+//! Windows).
 //!
 //! - [`key`]: BLAKE3-16 of the OS's identity fields (macOS `ATTR_VOL_UUID`, or a network
 //!   volume's [`strip_userinfo`]-ed `f_mntfromname` plus `f_fstypename`; Linux the mount
@@ -6,9 +7,52 @@
 //!   volume serial plus `\\server\share`).
 //! - [`classify_root`]: unmounted, volume changed (a different key **and** a failed
 //!   confirmation by file ids), empty, or online.
+//! - [`identity`], [`root_state`] (frozen): the measurement of a root path now.
+//!
+//! ## Step 0 findings (2026-11-07; plan 5D Task 2, written into the spec by Task 16)
+//!
+//! **`libc` 0.2.191** has `statx` with `AT_NO_AUTOMOUNT`, `STATX_ATTR_MOUNT_ROOT`,
+//! `STATX_ATTR_AUTOMOUNT` and `STATX_MNT_ID`; `open_how`, `RESOLVE_*` and `SYS_openat2` (no
+//! wrapper: called through `syscall`); `O_NOATIME`; `getattrlistbulk`, `getattrlistat`,
+//! `fgetattrlist`, `attrlist`, `ATTR_VOL_UUID`, `ATTR_DIR_MOUNTSTATUS`, `O_NOFOLLOW_ANY`,
+//! `FSOPT_PACK_INVAL_ATTRS`, `_PC_CASE_SENSITIVE`. Declared locally: `setiopolicy_np`,
+//! `getiopolicy_np` and the `IOPOL_*` values ([`crate::process`]); `ATTR_CMN_ERROR`,
+//! `DIR_MNTSTATUS_TRIGGER`, `VREG`/`VDIR`/`VLNK` (`source::macos`); `SF_DATALESS`
+//! ([`crate::placeholder`]).
+//!
+//! **Linux identity across a remount** (kernel 6.8, ext4; bind mounts and tmpfs in an
+//! unprivileged user namespace, loop images as root in a container):
+//!
+//! | case | key | mount source | `f_fsid` | `st_dev` | root ino, sample |
+//! |---|---|---|---|---|---|
+//! | bind mount, umount and mount again | same | same | same | same | same |
+//! | ext4 image, umount and mount on the same loop device | same | same | same | same | same |
+//! | the same image on another loop device | same | changed | same (from the UUID) | changed | same |
+//! | a new tmpfs | **changed** | same | changed (per mount) | same (reused) | ino 1; content decides |
+//! | unmounted (the empty mount-point directory) | — | parent's | parent's | bind mount: equal to the mounted one | other |
+//!
+//! So: local filesystems are keyed by `f_fsid`, not the mount source (a loop or USB device
+//! number changes); a bind mount's unmount is seen only through `STATX_ATTR_MOUNT_ROOT`
+//! (`st_dev` is the parent's both before and after); a remount that changes the key is told
+//! apart from a new volume by the root's file id and the sample (Decision 17). NFS and CIFS
+//! (`FIN_TEST_SHARE`) and macOS (disk image detach/attach, SMB reconnect, a real dataless
+//! file and folder) are measured by the controller: the tests `identity_stable_across_remount`,
+//! `disk_image_detached_is_offline` and `dataless_dir_not_descended` (`FIN_TEST_ICLOUD=1`)
+//! print and assert them, and `examples/volume_identity.rs` prints the raw fields of any
+//! path.
+
+use std::io;
+use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use crate::source::{RawEntry, RootStat};
 use crate::types::{EntryType, RootState, SampleEntry, VolumeIdentity};
+
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 /// At most this many top-level entries are sampled.
 pub const SAMPLE_MAX: usize = 16;
@@ -134,5 +178,74 @@ pub fn linux_case_sensitive(fstype: &str, options: &str) -> bool {
             .split(',')
             .any(|o| o == "nocase" || o == "ignorecase"),
         _ => true,
+    }
+}
+
+/// A root's facts now ([`crate::source::Source::stat_root`] of the native source).
+pub fn root_stat(root: &Path) -> io::Result<RootStat> {
+    #[cfg(unix)]
+    {
+        use crate::source::Source as _;
+        crate::source::NativeSource::new(root).stat_root()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this OS's volume identity is not built yet",
+        ))
+    }
+}
+
+/// A root's volume identity, measured now (at `library.add` and each full scan).
+pub fn identity(root: &Path) -> io::Result<VolumeIdentity> {
+    root_stat(root).map(|s| s.identity())
+}
+
+/// The short code of an unreachable root (never a path).
+pub fn unreachable_code(e: &io::Error) -> &'static str {
+    #[cfg(unix)]
+    if let Some(code) = e.raw_os_error() {
+        match code {
+            libc::ESTALE => return "STALE",
+            libc::ENOTCONN | libc::EHOSTDOWN | libc::EHOSTUNREACH | libc::ENETUNREACH => {
+                return "DISCONNECTED";
+            }
+            libc::EIO => return "IO",
+            _ => {}
+        }
+    }
+    match e.kind() {
+        io::ErrorKind::NotFound => "NOT_FOUND",
+        io::ErrorKind::PermissionDenied => "PERMISSION_DENIED",
+        io::ErrorKind::NotADirectory => "NOT_A_DIRECTORY",
+        io::ErrorKind::TimedOut => "TIMEOUT",
+        _ => "IO",
+    }
+}
+
+/// A root's state now against its stored identity (Decision 17). The measurement runs on its
+/// own thread: past `timeout` (60 s for a first stat, spin-up included) the answer is
+/// `Timeout` and the thread is left to finish (a dead hard mount blocks only it).
+pub fn root_state(root: &Path, stored: &VolumeIdentity, timeout: Duration) -> RootState {
+    let (tx, rx) = mpsc::channel();
+    let path = root.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("fin-library-root-stat".into())
+        .spawn(move || {
+            let _ = tx.send(root_stat(&path));
+        });
+    if spawned.is_err() {
+        return RootState::Unreachable {
+            code: "THREAD".into(),
+        };
+    }
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(now)) => classify_root(stored, &now),
+        Ok(Err(e)) => RootState::Unreachable {
+            code: unreachable_code(&e).into(),
+        },
+        Err(_) => RootState::Timeout,
     }
 }

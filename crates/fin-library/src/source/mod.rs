@@ -1,5 +1,6 @@
-//! What a scan reads a root through (Decision 4). Implementations: `linux`, `macos`, `windows`
-//! (Tasks 2–3) and [`fake`] (feature `test-hooks`). A source **never opens a file**: it opens
+//! What a scan reads a root through (Decision 4). Implementations: [`NativeSource`] (Linux
+//! `getdents64` + `statx` and macOS `getattrlistbulk`, Task 2; Windows, Task 3) and [`fake`]
+//! (feature `test-hooks`). A source **never opens a file**: it opens
 //! directories (without following links, always by their raw component chain from the root)
 //! and lists them with each entry's metadata.
 
@@ -12,6 +13,15 @@ use crate::types::{EntryType, SampleEntry, VolumeIdentity};
 
 #[cfg(feature = "test-hooks")]
 pub mod fake;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos;
+#[cfg(unix)]
+pub(crate) mod unix;
+
+#[cfg(unix)]
+pub use unix::NativeSource;
 
 /// The OS attribute word of an entry, tagged by its OS family so the pure rules
 /// ([`crate::placeholder`]) read it the same on every host.
@@ -164,6 +174,12 @@ pub trait Source: Send + Sync {
     fn stat_root(&self) -> io::Result<RootStat>;
     /// Opens a directory by its raw chain from the root, following no link.
     fn open_dir(&self, rel: &RawRel) -> io::Result<DirHandle>;
+    /// Opens `name` below an open directory, following no link: the same directory as
+    /// `open_dir(&parent.rel().join(name))`, without re-walking the chain (one open instead
+    /// of one per component, which matters on network roots).
+    fn open_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<DirHandle> {
+        self.open_dir(&parent.rel().join(name))
+    }
     /// Lists an open directory, in the OS's order.
     fn read_dir(&self, dir: &DirHandle) -> io::Result<Vec<RawEntry>>;
     /// The volume an open directory is on (nested mounts).
