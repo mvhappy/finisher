@@ -1,18 +1,18 @@
 //! Test-time fixture writers (feature `fixtures`): MP4/MOV/M4A, PNG, JPEG, WebP, SVG,
 //! dotLottie, `.cube` and WAV, header-valid bytes made in code. No media is committed.
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{Cursor, Write};
 use std::path::Path;
 
-use bytes::Bytes;
-use mp4::{
-    AacConfig, AudioObjectType, AvcConfig, ChannelConfig, MediaConfig, Mp4Config, Mp4Sample,
-    Mp4Writer, SampleFreqIndex, TrackConfig, TrackType,
+use fin_container::{
+    AudioTrackConfig, Brands, CodecConfig, Mp4Options, Mp4Writer, VideoTrackConfig,
 };
+use fin_core::Rational;
+use fin_media::{ColourTags, Rotation, Size};
 
 /// Shape of the generated file: an H.264-tagged video track (320x180) and, optionally, a
-/// stereo AAC-tagged audio track. Sample payloads are dummy bytes.
+/// stereo AAC-tagged audio track. Sample payloads are dummy bytes. Written by `fin-container`'s
+/// muxer.
 #[derive(Debug, Clone, Copy)]
 pub struct FixtureOpts {
     pub seconds: u32,
@@ -34,27 +34,56 @@ impl Default for FixtureOpts {
     }
 }
 
-fn freq_index(rate: u32) -> SampleFreqIndex {
+fn freq_index(rate: u32) -> u8 {
     match rate {
-        96_000 => SampleFreqIndex::Freq96000,
-        48_000 => SampleFreqIndex::Freq48000,
-        44_100 => SampleFreqIndex::Freq44100,
-        32_000 => SampleFreqIndex::Freq32000,
-        24_000 => SampleFreqIndex::Freq24000,
-        22_050 => SampleFreqIndex::Freq22050,
-        16_000 => SampleFreqIndex::Freq16000,
-        8_000 => SampleFreqIndex::Freq8000,
+        96_000 => 0,
+        48_000 => 3,
+        44_100 => 4,
+        32_000 => 5,
+        24_000 => 6,
+        22_050 => 7,
+        16_000 => 8,
+        8_000 => 11,
         other => panic!("unsupported fixture sample rate {other}"),
     }
 }
 
+/// An `avcC` body: version 1, Baseline 3.0, 4-byte lengths, one SPS and one PPS.
+fn avcc() -> Vec<u8> {
+    let (sps, pps) = (
+        [0x67u8, 0x42, 0x00, 0x1e, 0x95, 0xa8],
+        [0x68u8, 0xce, 0x3c, 0x80],
+    );
+    let mut b = vec![1, 0x42, 0x00, 0x1e, 0xff, 0xe1];
+    b.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    b.extend_from_slice(&sps);
+    b.push(1);
+    b.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    b.extend_from_slice(&pps);
+    b
+}
+
+/// An `esds` body for stereo AAC-LC at `rate`.
+fn esds(rate: u32) -> Vec<u8> {
+    let asc = (2u16 << 11) | (u16::from(freq_index(rate)) << 7) | (2 << 3);
+    let dsi = [&[0x05, 2][..], &asc.to_be_bytes()].concat();
+    let mut dcd = vec![0x40, 0x15, 0, 0, 0];
+    dcd.extend_from_slice(&128_000u32.to_be_bytes());
+    dcd.extend_from_slice(&128_000u32.to_be_bytes());
+    dcd.extend(dsi);
+    let dcd = [&[0x04, dcd.len() as u8][..], &dcd].concat();
+    let sl = [0x06, 1, 0x02];
+    let es = [&[0u8, 1, 0][..], &dcd, &sl].concat();
+    [&[0u8, 0, 0, 0, 0x03, es.len() as u8][..], &es].concat()
+}
+
 pub fn write_fixture_mp4(path: &Path, opts: FixtureOpts) {
-    write(path, opts, true, "isom", &["isom", "mp41"]);
+    write(path, opts, true, b"isom", &[b"isom", b"mp41"]);
 }
 
 /// [`write_fixture_mp4`] as a QuickTime file: `ftyp` major brand `qt  `.
 pub fn write_fixture_mov(path: &Path, opts: FixtureOpts) {
-    write(path, opts, true, "qt  ", &["qt  "]);
+    write(path, opts, true, b"qt  ", &[b"qt  "]);
 }
 
 /// An audio-only M4A (`ftyp` brand `M4A `): one AAC-tagged stereo track, `opts.audio` ignored.
@@ -63,81 +92,58 @@ pub fn write_m4a(path: &Path, opts: FixtureOpts) {
         audio: true,
         ..opts
     };
-    write(path, opts, false, "M4A ", &["M4A ", "mp42", "isom"]);
+    write(path, opts, false, b"M4A ", &[b"M4A ", b"mp42", b"isom"]);
 }
 
-fn write(path: &Path, opts: FixtureOpts, video: bool, brand: &str, compatible: &[&str]) {
-    let file = BufWriter::new(File::create(path).unwrap());
-    let config = Mp4Config {
-        major_brand: brand.parse().unwrap(),
-        minor_version: 512,
-        compatible_brands: compatible.iter().map(|b| b.parse().unwrap()).collect(),
-        timescale: 1000,
+fn write(path: &Path, opts: FixtureOpts, video: bool, brand: &[u8; 4], compatible: &[&[u8; 4]]) {
+    let brands = Brands {
+        major: *brand,
+        compatible: compatible.iter().map(|b| **b).collect(),
     };
-    let mut w = Mp4Writer::write_start(file, &config).unwrap();
-    let track = |track_type, timescale, media_conf| TrackConfig {
-        track_type,
-        timescale,
-        language: "und".into(),
-        media_conf,
+    let mux_opts = Mp4Options {
+        brands: Some(brands),
+        ..Default::default()
     };
-    let avc = AvcConfig {
-        width: 320,
-        height: 180,
-        seq_param_set: vec![0x67, 0x42, 0x00, 0x1e, 0x95, 0xa8],
-        pic_param_set: vec![0x68, 0xce, 0x3c, 0x80],
-    };
+    let mut w = Mp4Writer::new(Cursor::new(Vec::new()), mux_opts).unwrap();
     // Timescale fps*1000 with 1000-tick samples gives an exact fps rate.
-    if video {
-        w.add_track(&track(
-            TrackType::Video,
-            opts.fps * 1000,
-            MediaConfig::AvcConfig(avc),
-        ))
-        .unwrap();
-    }
-    if opts.audio {
-        let aac = AacConfig {
-            bitrate: 128_000,
-            profile: AudioObjectType::AacLowComplexity,
-            freq_index: freq_index(opts.sample_rate),
-            chan_conf: ChannelConfig::Stereo,
-        };
-        w.add_track(&track(
-            TrackType::Audio,
-            opts.sample_rate,
-            MediaConfig::AacConfig(aac),
-        ))
-        .unwrap();
-    }
-    let frames = if video { opts.seconds * opts.fps } else { 0 };
-    for i in 0..u64::from(frames) {
-        let bytes = Bytes::from(vec![0u8; 64]);
-        let s = Mp4Sample {
-            start_time: i * 1000,
-            duration: 1000,
-            rendering_offset: 0,
-            is_sync: i == 0,
-            bytes,
-        };
-        w.write_sample(1, &s).unwrap();
-    }
-    if opts.audio {
-        // One sample per second, `sample_rate` ticks each.
-        for i in 0..u64::from(opts.seconds) {
-            let bytes = Bytes::from(vec![0u8; 32]);
-            let start_time = i * u64::from(opts.sample_rate);
-            let s = Mp4Sample {
-                start_time,
-                duration: opts.sample_rate,
-                rendering_offset: 0,
-                is_sync: true,
-                bytes,
-            };
-            w.write_sample(if video { 2 } else { 1 }, &s).unwrap();
+    let v = video.then(|| {
+        w.add_video(VideoTrackConfig {
+            config: CodecConfig::Avc { avcc: avcc() },
+            coded: Size::new(320, 180),
+            timescale: opts.fps * 1000,
+            rotation: Rotation::R0,
+            pixel_aspect: Rational::from_int(1),
+            colour: ColourTags::BT709,
+            hdr: None,
+        })
+        .unwrap()
+    });
+    let a = opts.audio.then(|| {
+        w.add_audio(AudioTrackConfig {
+            config: CodecConfig::Aac {
+                esds: esds(opts.sample_rate),
+            },
+            sample_rate: opts.sample_rate,
+            channels: 2,
+            priming: 0,
+        })
+        .unwrap()
+    });
+    if let Some(v) = v {
+        for i in 0..i64::from(opts.seconds * opts.fps) {
+            w.write(v, &[0u8; 64], i * 1000, i * 1000, 1000, i == 0)
+                .unwrap();
         }
     }
-    w.write_end().unwrap();
+    if let Some(a) = a {
+        // One sample per second, `sample_rate` ticks each.
+        for i in 0..i64::from(opts.seconds) {
+            let t = i * i64::from(opts.sample_rate);
+            w.write(a, &[0u8; 32], t, t, opts.sample_rate, true)
+                .unwrap();
+        }
+    }
+    put(path, &w.finish().unwrap().into_inner());
 }
 
 fn put(path: &Path, bytes: &[u8]) {

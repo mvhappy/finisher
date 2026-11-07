@@ -139,13 +139,17 @@ export const ProbeSchema = Schema.Struct({
   kind: Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]),
   lottie: Optional(LottieInfoSchema),
   lut: Optional(Schema.Struct({ size: Schema.Number })),
+  // MP4/MOV only: fin-media's `MediaInfo` (the generated type), what the file is (display size,
+  // rotation, colour, HDR, VFR). Validated in Rust and passed through; never in `asset.add`.
+  media: Optional(Schema.Unknown),
   size: Schema.Number,
   video: Optional(Schema.Struct({ height: Schema.Number, rate: Schema.String, width: Schema.Number })),
 });
 export const AssetProbeSuccess = ProbeSchema;
-// The schema's type and the generated `Probe` must stay assignable to each other.
+// The schema's type and the generated `Probe` must stay assignable to each other (`media` is a
+// pass-through, typed by the generated `MediaInfo`).
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-export const probeMatchesGenerated: Same<typeof ProbeSchema.Type, Probe> = true;
+export const probeMatchesGenerated: Same<Omit<typeof ProbeSchema.Type, "media">, Omit<Probe, "media">> = true;
 
 /**
  * What a client read a branch at: the database's `incarnation` (new after every rebuild) and

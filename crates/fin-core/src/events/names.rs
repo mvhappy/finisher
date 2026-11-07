@@ -428,23 +428,9 @@ pub static DETAIL_KEYS: NameTable = NameTable::new(
     ],
 );
 
-/// Agent providers (`agent.*`, reserved; sub-project 7 fills these tables).
-pub static AGENT_PROVIDERS: NameTable = NameTable::new(
-    "AGENT_PROVIDERS",
-    &["anthropic", "openai", "google", "mistral", "local", "other"],
-);
-
-/// Agent model ids (`agent.*`, reserved).
-pub static AGENT_MODELS: NameTable = NameTable::new(
-    "AGENT_MODELS",
-    &[
-        "claude-fable-5-1",
-        "claude-opus-5-5",
-        "claude-sonnet-5-5",
-        "claude-haiku-5-5",
-        "other",
-    ],
-);
+pub use super::agent_names::{
+    AGENT_MODELS, AGENT_PROVIDERS, AGENT_ROLES, AGENT_TOOLS, AGENT_UPSTREAMS, agent_upstream,
+};
 
 /// Every table, for the pattern test.
 pub static TABLES: &[&NameTable] = &[
@@ -458,6 +444,12 @@ pub static TABLES: &[&NameTable] = &[
     &DETAIL_KEYS,
     &AGENT_PROVIDERS,
     &AGENT_MODELS,
+    &AGENT_ROLES,
+    &AGENT_TOOLS,
+    &AGENT_UPSTREAMS,
+    &super::names_jobs::JOB_KINDS,
+    &super::names_jobs::WORKER_FAMILIES,
+    &super::names_jobs::SIGNALS,
 ];
 
 // `deserialize_with` helpers: a `Name` field reads through its table.
@@ -495,9 +487,21 @@ table_fns!(one -> Name:
     media_type => MEDIA_TYPES,
     agent_provider => AGENT_PROVIDERS,
     agent_model => AGENT_MODELS,
+    agent_role => AGENT_ROLES,
+    agent_tool => AGENT_TOOLS,
 );
 table_fns!(many -> Vec<Name>: cli_flags => CLI_FLAGS, detail_keys => DETAIL_KEYS);
 table_fns!(counts -> Counts<Name>: op_counts => OP_KINDS);
+
+fn one_opt<'de, D: Deserializer<'de>>(d: D, t: &NameTable) -> Result<Option<Name>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.map(|s| t.get_or_other(&s)))
+}
+
+table_fns!(one_opt -> Option<Name>:
+    cli_command_opt => CLI_COMMANDS,
+    agent_provider_opt => AGENT_PROVIDERS,
+    agent_upstream_opt => AGENT_UPSTREAMS,
+);
 
 /// A media extension: kept only when `MEDIA_EXTS` holds it (lower-cased), else absent.
 pub fn media_ext_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Name>, D::Error> {

@@ -1,0 +1,12 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-text-1","provider":"Anthropic","model":"test/closed-explicit","object":"chat.completion.chunk","created":1794571200,"choices":[{"index":0,"delta":{"role":"assistant","content":"The intro "},"finish_reason":null}]}
+
+data: {"id":"gen-text-1","provider":"Anthropic","model":"test/closed-explicit","object":"chat.completion.chunk","created":1794571200,"choices":[{"index":0,"delta":{"content":"runs long."},"finish_reason":null}]}
+
+data: {"id":"gen-text-1","provider":"Anthropic","model":"test/closed-explicit","object":"chat.completion.chunk","created":1794571200,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}
+
+data: {"id":"gen-text-1","provider":"Anthropic","model":"test/closed-explicit","object":"chat.completion.chunk","created":1794571200,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":5200,"completion_tokens":30,"total_tokens":5230,"cost":0.004215,"prompt_tokens_details":{"cached_tokens":4000,"cache_write_tokens":700},"completion_tokens_details":{"reasoning_tokens":0},"cost_details":{"upstream_inference_cost":0.004215}}}
+
+data: [DONE]
+

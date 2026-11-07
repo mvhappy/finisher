@@ -3,6 +3,8 @@ export { FinError } from "./errors.ts";
 export * from "./rpc.ts";
 export * from "./history.ts";
 export * from "./audit.ts";
+export * from "./agent-events.ts";
 export * from "./diagnostics.ts";
 export * from "./auth.ts";
 export * from "./scopes.ts";
+export * from "./jobs.ts";

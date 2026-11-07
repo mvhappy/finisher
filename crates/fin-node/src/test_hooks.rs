@@ -1,5 +1,10 @@
 //! Test-only exports (feature `test-hooks`, enabled by the vitest build). Never shipped.
 
+// napi-derive registers a free `#[napi] fn` only under `#[cfg(not(test))]`, so in the cfg(test)
+// build that `cargo clippy --all-targets` compiles (despite `test = false`) the exported
+// functions below have no caller. They are live in the real cdylib build; allow it for tests only.
+#![cfg_attr(test, allow(dead_code))]
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -14,13 +19,33 @@ use crate::tasks::{Call, StoreTask};
 use crate::{guarded, reject};
 
 /// Faults an engine's threads pick up.
-#[derive(Default)]
 pub(crate) struct Hooks {
     tick_panic: AtomicBool,
     long_delay_ms: AtomicU64,
+    /// Whether the maintenance thread may queue the daily backup and compaction. Off from the
+    /// start: a fresh engine's first tick finds today's backup due, and under load that
+    /// `backup (auto)` would hold the store while a test expects it idle (`ENGINE_BUSY`) or
+    /// take a one-shot long-call delay meant for another call. A test of the automatic work
+    /// turns it on (`set_auto_work_for_test`).
+    auto_work: AtomicBool,
+}
+
+impl Default for Hooks {
+    fn default() -> Hooks {
+        Hooks {
+            tick_panic: AtomicBool::new(false),
+            long_delay_ms: AtomicU64::new(0),
+            auto_work: AtomicBool::new(false),
+        }
+    }
 }
 
 impl Hooks {
+    /// Whether the automatic backup and compaction may be queued.
+    pub(crate) fn auto_work_enabled(&self) -> bool {
+        self.auto_work.load(Ordering::SeqCst)
+    }
+
     /// Whether the next tick should panic (once).
     pub(crate) fn take_tick_panic(&self) -> bool {
         self.tick_panic.swap(false, Ordering::SeqCst)
@@ -56,6 +81,14 @@ impl Engine {
             .hooks
             .long_delay_ms
             .store(u64::from(ms), Ordering::SeqCst);
+    }
+
+    /// Lets (or stops) the maintenance thread queue the daily backup and compaction. Test
+    /// engines start with it off, so no automatic long call holds the store unasked. Work
+    /// already queued or running is not affected.
+    #[napi(catch_unwind)]
+    pub fn set_auto_work_for_test(&self, enabled: bool) {
+        self.inner.hooks.auto_work.store(enabled, Ordering::SeqCst);
     }
 
     /// Emits a `rewound` event as the maintenance thread would for an import that took `branch`

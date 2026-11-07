@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::gen4c::{G, World, base4c, g_edit, shape};
+use common::gen4c::{G, Shape, World, base4c, g_edit, shape};
 use common::memlog::MemLog;
 use common::*;
 use fin_core::history::LogView;
@@ -390,6 +390,55 @@ fn build4(log: &mut MemLog, acts: &[Act4]) -> Vec<u64> {
     cps
 }
 
+/// One `undo --to` against the undos in a row over 4C edits from [`base4c`] (see the module
+/// docs), then a stale 4C edit at `base_pick`.
+fn undo_to_vs_undos_4c(
+    shape: &Shape,
+    acts: &[Act4],
+    cpi: usize,
+    redo: bool,
+    base_pick: u64,
+    stale: &[G],
+) -> Result<(), TestCaseError> {
+    let genesis = base4c(shape);
+    let (mut one, mut many) = (MemLog::new(genesis.clone()), MemLog::new(genesis));
+    let cps = build4(&mut one, acts);
+    build4(&mut many, acts);
+    let cp = cps[cpi % cps.len()];
+    let pre = one.head_seq("main");
+    let Ok(u) = one.undo_to("main", "alice", cp, "ut") else {
+        return Ok(());
+    };
+    let names = u.record.undoes.clone().unwrap();
+    for (i, n) in names.iter().enumerate() {
+        let r = many.undo("main", "alice", &format!("ua{i}"));
+        prop_assert!(r.is_ok(), "undo {i} in a row failed: {:?}", r.err());
+        prop_assert_eq!(r.unwrap().record.undoes.unwrap(), vec![n.clone()]);
+    }
+    prop_assert_eq!(one.state("main"), many.state("main"), "after undo");
+    if redo {
+        one.redo("main", "alice", "rr").unwrap();
+        for i in 0..names.len() {
+            many.redo("main", "alice", &format!("ra{i}")).unwrap();
+        }
+        prop_assert_eq!(one.state("main"), many.state("main"), "after redo");
+    }
+    let base = base_pick % (pre + 1);
+    let at_base = LogView::state_at(&one, "main", base).unwrap();
+    if let Some(ops) = realise4(&at_base, stale) {
+        let a = outcome(one.commit_at("main", "s", "carol", base, ops.clone()));
+        let b = outcome(many.commit_at("main", "s", "carol", base, ops));
+        prop_assert_eq!(&a, &b, "stale outcome at base {}", base);
+        prop_assert_eq!(
+            one.state("main"),
+            many.state("main"),
+            "stale at base {}",
+            base
+        );
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(config(256))]
 
@@ -405,36 +454,43 @@ proptest! {
         base_pick in 0u64..64,
         stale in prop::collection::vec(g_edit(), 1..3),
     ) {
-        let genesis = base4c(&shape);
-        let (mut one, mut many) = (MemLog::new(genesis.clone()), MemLog::new(genesis));
-        let cps = build4(&mut one, &acts);
-        build4(&mut many, &acts);
-        let cp = cps[cpi % cps.len()];
-        let pre = one.head_seq("main");
-        let Ok(u) = one.undo_to("main", "alice", cp, "ut") else {
-            return Ok(());
-        };
-        let names = u.record.undoes.clone().unwrap();
-        for (i, n) in names.iter().enumerate() {
-            let r = many.undo("main", "alice", &format!("ua{i}"));
-            prop_assert!(r.is_ok(), "undo {i} in a row failed: {:?}", r.err());
-            prop_assert_eq!(r.unwrap().record.undoes.unwrap(), vec![n.clone()]);
-        }
-        prop_assert_eq!(one.state("main"), many.state("main"), "after undo");
-        if redo {
-            one.redo("main", "alice", "rr").unwrap();
-            for i in 0..names.len() {
-                many.redo("main", "alice", &format!("ra{i}")).unwrap();
-            }
-            prop_assert_eq!(one.state("main"), many.state("main"), "after redo");
-        }
-        let base = base_pick % (pre + 1);
-        let at_base = LogView::state_at(&one, "main", base).unwrap();
-        if let Some(ops) = realise4(&at_base, &stale) {
-            let a = outcome(one.commit_at("main", "s", "carol", base, ops.clone()));
-            let b = outcome(many.commit_at("main", "s", "carol", base, ops));
-            prop_assert_eq!(&a, &b, "stale outcome at base {}", base);
-            prop_assert_eq!(one.state("main"), many.state("main"), "stale at base {}", base);
-        }
+        undo_to_vs_undos_4c(&shape, &acts, cpi, redo, base_pick, &stale)?;
     }
+}
+
+/// The shrunk case of an intermittent failure: alice re-pins the font asset's face as it is
+/// pinned (a no-op: its inverse holds no ops), then slides the caption; carol's stale
+/// overwrite move of the caption is based between the two. The `undo --to` names both units
+/// with only the slide in the interval, so its tail part (the no-op's inverse) is empty; it
+/// must still be cut, its first part mirroring the slide as the plain undo of it does, or the
+/// move meets the slide as `SAME_PARAM`.
+#[test]
+fn undo_to_with_a_no_op_unit_before_the_stale_base_mirrors_the_rest() {
+    let shape = Shape {
+        lens: vec![vec![], vec![], vec![]],
+        linked: false,
+        transitions: false,
+        captions: 1,
+        effects: false,
+        pinned: true,
+    };
+    let acts = [
+        Act4::Edit(
+            false,
+            vec![G::FontPin {
+                which: 3,
+                fallback: None,
+            }],
+        ),
+        Act4::Edit(false, vec![G::Slide { t: 2, k: 0, n: 1 }]),
+    ];
+    let stale = [G::Move {
+        t: 2,
+        k: 0,
+        to: 2,
+        at: None,
+        off: -6,
+        overwrite: true,
+    }];
+    undo_to_vs_undos_4c(&shape, &acts, 0, false, 55, &stale).unwrap();
 }

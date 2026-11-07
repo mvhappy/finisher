@@ -156,6 +156,7 @@ impl Journal {
             status: Mutex::new(Snapshot::default()),
             session,
             opts,
+            #[allow(clippy::default_constructed_unit_structs)] // a unit struct without test-hooks
             faults: Faults::default(),
             key: RwLock::new(key),
             consent: Mutex::new(ctl),

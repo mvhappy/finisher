@@ -2,6 +2,7 @@
 //! codes, no prompts, pagers or colour.
 
 mod addr;
+mod agent_env;
 mod auth;
 mod backend;
 mod client;
@@ -197,17 +198,25 @@ fn clap_usage(err: &clap::Error) -> CoreError {
     output::usage(message, details, fix)
 }
 
-fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
+/// The parsed command line and the registry name of its command.
+fn parse_named(args: Vec<OsString>) -> Result<(Cli, Option<String>), CoreError> {
     let mut cmd = configure(Cli::command());
     let matches = cmd
         .try_get_matches_from_mut(&args)
         .map_err(|e| clap_usage(&e))?;
     diag::note_matches(&cmd, &matches);
-    Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))
+    let cli = Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))?;
+    Ok((cli, agent_env::command_name(&matches)))
+}
+
+#[cfg(test)]
+fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
+    parse_named(args).map(|(cli, _)| cli)
 }
 
 fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
-    let cli = parse(args)?;
+    let (mut cli, name) = parse_named(args)?;
+    agent_env::apply(&mut cli.globals, name.as_deref())?;
     let g = &cli.globals;
     let backend = || backend::select(g.project.as_deref());
     match cli.command {
@@ -429,7 +438,11 @@ mod tests {
                 "{sample} vs {}",
                 command.name
             );
-            assert!(parse(args(sample)).is_ok(), "{sample}");
+            // The name `FIN_CALL`'s default keys on is the registry's (`schema param`, a
+            // read, is `schema` with an argument).
+            let (_, name) = parse_named(args(sample)).unwrap_or_else(|e| panic!("{sample}: {e:?}"));
+            let want = command.name.strip_suffix(".param").unwrap_or(command.name);
+            assert_eq!(name.as_deref(), Some(want), "{sample}");
         }
     }
 

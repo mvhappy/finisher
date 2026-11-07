@@ -7,18 +7,20 @@ repository.workspace = true
 
 [features]
 # Exposes the `fixtures` writers so other crates' tests can generate media.
-fixtures = ["dep:bytes"]
+fixtures = []
 
 [dependencies]
 blake3 = "1"
-bytes = { version = "1", optional = true }
 dunce = "1"
+# MP4/MOV media: sample tables, edit lists and limits (sub-project 6A Task 8); its muxer writes
+# the fixtures.
+fin-container = { path = "../fin-container" }
 fin-core = { path = "../fin-core" }
+fin-media = { path = "../fin-media" }
 # Font faces, family names and script coverage: the one source (4C Decision 38).
 fin-text = { path = "../fin-text" }
 # PNG, JPEG and WebP sizes from the header only.
 imagesize = { version = "0.15", default-features = false, features = ["png", "jpeg", "webp"] }
-mp4 = "0.14"
 # SVG root sizes.
 roxmltree = "0.21"
 schemars = "1"
@@ -31,6 +33,8 @@ sha2 = "0.11"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
+# `tests/media.rs`: rotated, VFR and edited files from the muxer's test knobs.
+fin-container = { path = "../fin-container", features = ["testing"] }
 fin-probe = { path = ".", features = ["fixtures"] }
 fin-testfonts = { path = "../fin-testfonts" }
 tempfile = "3"

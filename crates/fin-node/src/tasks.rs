@@ -137,10 +137,29 @@ fn parse_tx(json: &str) -> Result<Tx> {
         )
     };
     let input: serde_json::Value = serde_json::from_str(json).map_err(bad)?;
+    refuse_media(&input).map_err(reject)?;
     let tx: Tx = serde_json::from_value(input.clone()).map_err(bad)?;
     let decoded = serde_json::to_value(&tx).map_err(bad)?;
     fin_core::check_canonical_times(&input, &decoded).map_err(reject)?;
     Ok(tx)
+}
+
+/// An `asset.add` carries the model's fields only: `MediaInfo` is in the `asset.probe` answer
+/// and never stored (sub-project 6 spec §4.4). Decoding would drop the unknown key silently;
+/// refusing it tells a client that sent it.
+fn refuse_media(input: &serde_json::Value) -> std::result::Result<(), CoreError> {
+    let ops = input
+        .get("ops")
+        .and_then(|o| o.as_array())
+        .map_or(&[][..], |v| v.as_slice());
+    for (i, op) in ops.iter().enumerate() {
+        if op.get("op").and_then(|o| o.as_str()) == Some("asset.add") && op.get("media").is_some() {
+            return Err(CoreError::new("INVALID_OP", "asset.add does not take media facts")
+                .with_details(json!({ "path": format!("/ops/{i}/media") }))
+                .with_fix("send the probe's kind, duration, video and audio only; media stays in the asset.probe answer"));
+        }
+    }
+    Ok(())
 }
 
 fn parse_generation(json: &str) -> Result<Generation> {

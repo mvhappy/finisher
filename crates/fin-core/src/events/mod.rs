@@ -12,16 +12,19 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+mod agent_names;
 pub mod approx;
 pub mod class;
 pub mod intent;
 pub mod kinds;
 pub mod names;
+pub mod names_jobs;
 pub mod payloads;
 pub mod redact;
 mod refs;
 pub mod scrub;
 pub mod wire;
+pub mod wire_agent;
 
 pub use class::{
     Blake3Hex, BlobHash, BlobRef, BranchId, Code, Content, ContentKind, Hashed, IdRef, KindName,

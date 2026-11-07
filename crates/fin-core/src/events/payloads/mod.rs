@@ -22,6 +22,7 @@ pub mod cli;
 pub mod consent;
 pub mod errors;
 pub mod fonts;
+pub mod jobs;
 pub mod journal;
 pub mod log;
 pub mod reserved;
@@ -30,13 +31,17 @@ pub mod stats;
 pub mod storage;
 
 pub use agent::{
-    AgentEditVerdict, AgentMode, AgentRole, AgentSession, AgentToolCall, AgentToolResult,
-    AgentTurn, StopReason, Verdict, VerdictBy,
+    AgentApproval, AgentMode, AgentSession, AgentToolCall, AgentToolResult, AgentTurn,
+    ApprovalDecision, ApprovalKind, Attribution, Capture, CostBasis, DecidedBy, Harness,
+    MAX_TOOL_TX_IDS, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason, Weights,
 };
 pub use cli::CliCommand;
 pub use consent::ConsentChanged;
 pub use errors::{ErrorInternal, ErrorPanic, PanicThread, PanicWhere};
 pub use fonts::{FetchOutcome, FontsFetch};
+pub use jobs::{
+    ExitReason, JobDone, JobOutcome, JobPriority, ProcessHelperKind, ProcessRole, WorkerExit,
+};
 pub use journal::JournalDropped;
 pub use log::{CommitOutcome, CommitRecord, IntentOmitted, LogCommit};
 pub use reserved::{ReviewVerdict, UiAction};
@@ -91,7 +96,7 @@ impl<K: Ord + ApproxBytes> ApproxBytes for Counts<K> {
     }
 }
 
-/// Large or structured content (the reserved agent kinds): inline JSON, or a [`BlobRef`] when
+/// Large or structured content (the agent kinds): inline JSON, or a [`BlobRef`] when
 /// it would not fit an entry (Decision 20).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -120,9 +125,11 @@ impl Body {
 
 approx_fixed!(10 =>
     super::Basis, super::Source, super::Purposes,
-    AgentMode, AgentRole, StopReason, Verdict, VerdictBy,
+    AgentMode, Harness, SessionPhase, SessionTrigger, Weights, SignIn, StopReason, CostBasis,
+    Capture, Attribution, ApprovalKind, ApprovalDecision, DecidedBy,
     PanicThread, PanicWhere, FetchOutcome, CommitOutcome, CommitRecord, IntentOmitted,
     Arch, BuildProfile, OsFamily, StorageMode,
+    JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
 );
 
 /// The [`BlobRef`]s of each content [`Body`] given, for `AnyPayload::blobs`.

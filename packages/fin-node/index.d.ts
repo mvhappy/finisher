@@ -151,6 +151,8 @@ export declare class Engine {
   panicNextTickForTest(): void;
   /** @internal Test builds only: the next long call keeps the store `ms` longer. */
   delayNextLongCallForTest(ms: number): void;
+  /** @internal Test builds only: lets the maintenance thread queue the daily backup and compaction (off at open). */
+  setAutoWorkForTest(enabled: boolean): void;
   /** @internal Test builds only: emits a synthetic `rewound` event. */
   emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */
@@ -246,6 +248,16 @@ export declare class Journal {
 
 /** fin-core's `RPC_METHODS` table: the keys `rpc.stats` accepts (`other` last). */
 export declare function rpcMethods(): string[];
+
+/**
+ * The BLAKE3 of `data` (unkeyed), 64 lower-case hex digits: the agent runtime's `bodyHash`,
+ * `systemHash` and `toolsHash` as it sends them (`blake3:<hex>`); the journal keys them when it
+ * records a turn.
+ */
+export declare function blake3Hex(data: Uint8Array): string;
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export declare function blake3KeyedHex(key: Uint8Array, data: Uint8Array): string;
 
 /** Every kind name of fin-core's event registry. */
 export declare function kindNames(): string[];

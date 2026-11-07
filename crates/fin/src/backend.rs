@@ -534,3 +534,28 @@ mod hook_tests {
         const { assert!(cfg!(feature = "test-hooks")) };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `asset.probe` answers `media` (sub-project 6A Task 8); the `asset.add` built from the
+    /// answer carries the model's fields only.
+    #[test]
+    fn an_asset_add_from_a_probe_never_carries_media() {
+        let answer = json!({
+            "kind": "media",
+            "duration": "2",
+            "video": { "width": 320, "height": 180, "rate": "25" },
+            "media": { "container": "mp4", "duration": "2", "video": { "rotation": 90 } },
+            "fingerprint": "fp1:x",
+            "size": 10,
+        });
+        let probed: Probed = serde_json::from_value(answer).unwrap();
+        let op = serde_json::to_value(Op::AssetAdd(Box::new(probed.into_asset_add("$a".into()))))
+            .unwrap();
+        assert_eq!(op["op"], "asset.add");
+        assert!(op.get("media").is_none(), "{op}");
+        assert_eq!(op["video"]["width"], 320);
+    }
+}

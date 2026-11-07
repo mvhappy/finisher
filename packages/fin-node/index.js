@@ -236,6 +236,11 @@ export class Engine {
     this.#hook("delayNextLongCallForTest")(ms);
   }
 
+  /** @internal Test builds only: lets the maintenance thread queue the daily backup and compaction (off at open). */
+  setAutoWorkForTest(enabled) {
+    this.#hook("setAutoWorkForTest")(enabled);
+  }
+
   /** @internal Test builds only: emits a synthetic `rewound` event. */
   emitRewoundForTest(branch, fromRev) {
     this.#hook("emitRewoundForTest")(branch, fromRev);
@@ -387,6 +392,16 @@ export class Journal {
 /** fin-core's `RPC_METHODS`: the keys `rpc.stats` accepts (`other` for the rest). */
 export function rpcMethods() {
   return native.rpcMethods();
+}
+
+/** The BLAKE3 of `data`, 64 lower-case hex digits (the `blake3` crate). */
+export function blake3Hex(data) {
+  return native.blake3Hex(data);
+}
+
+/** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
+export function blake3KeyedHex(key, data) {
+  return sync(() => native.blake3KeyedHex(key, data));
 }
 
 /** Every kind name of fin-core's event registry. */

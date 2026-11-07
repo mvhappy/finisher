@@ -1,0 +1,4 @@
+data: {"id":"gen-err-1","provider":"OpenAI","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Partial"},"finish_reason":null}]}
+
+data: {"id":"gen-err-1","provider":"OpenAI","object":"chat.completion.chunk","error":{"code":"server_error","message":"Provider disconnected unexpectedly"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}
+

@@ -230,6 +230,7 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
         .env_remove("FIN_DIAGNOSTICS")
         .env_remove("FIN_SESSION")
         .env_remove("FIN_CALL")
+        .env_remove("FIN_CALL_IDEM")
         .env_remove("FIN_TEST_PANIC")
         .env_remove("FIN_CREDENTIAL")
         .env_remove("FIN_TEST_AUTH_GATE")
