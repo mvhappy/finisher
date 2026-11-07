@@ -21,7 +21,7 @@ rtk pnpm e2e    # slow: builds fin and fin-node, then runs the end-to-end check
 
 ## Run it
 
-Sub-projects 2, 4A and 4B ship a minimal core with durable storage and history: `finisherd` (the local server)
+Sub-projects 2, 4A, 4B and 4C ship the core with durable storage, history and the full edit model: `finisherd` (the local server)
 and `fin` (the agent CLI, JSON on stdout). Build both, start the server, then edit through `fin`.
 Node 26, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
 `rust-toolchain.toml` are required.
@@ -70,6 +70,53 @@ fin view
 (a shorter file fails with `INVALID_RANGE`). Any 7 s+ video works; `pnpm e2e` uses a 10 s one.
 
 Run `fin` with no arguments for the command map, and `fin help clip` for details.
+
+**A short reel** (sub-project 4C; `pnpm e2e` builds a 30 s one by `fin` only). A clip of an
+audio-and-video asset on a video track gets a linked audio item on the first audio track:
+
+```bash
+fin track add --kind video                          # V2, binds t3 (overlays)
+fin track add --kind caption                        # C1, binds t4
+fin asset add ~/Movies/logo.png                     # an image: binds a2 (kind echoed)
+fin clip insert --track t1 --at 0 --asset a1 --dur 4s           # c1 on V1 + linked audio c2 on A1
+fin clip insert --track t1 --at end --asset a1 --in 4s --dur 3s # c3 + c4
+fin image insert --track t3 --at 1s --asset a2 --dur 2s         # img1
+fin keyframe set img1 opacity --at 0 0 --interp easeOut
+fin keyframe set img1 opacity --at 1s 1
+fin transition set --between c1 c3 --kind dissolve --dur 1s     # the linked audio gets a crossfade
+fin caption import --track t4 --words words.json --style preset:bold   # [{"text","start","end"}]
+fin view --budget 400                                # screenplay view, elided to fit the budget
+fin status                                           # timelines, fonts, unmeasured captions, warnings
+fin eval frame --at 2s                               # the frame plan (needs finisherd)
+fin eval audio --range 0..7s
+fin fonts status                                     # every font file's state on this server
+fin fonts ls --pinned                                # this project's pins, their state and users
+```
+
+Every edit group has a command (`fin help <group>`; `fin schema param` lists every setting).
+Structural edits take `--mode` (`ripple` is the default for clips, `overwrite` for other kinds,
+`lift` for deletes, `roll` for trims), and every write echoes the mode and values it used.
+
+**Fonts.** No fonts are bundled. A project pins the exact font files its captions use (by
+SHA-256), from Finisher's pinned catalog (Inter, Noto Sans, Noto Sans Arabic, Hebrew and CJK,
+Noto Color Emoji; all OFL-1.1) or from a font asset (`fin fonts pin <family> --asset <a>`).
+`fin` asks the server to plan the pins a caption or style edit needs and sends them with the edit.
+`finisherd` then downloads pinned files it lacks on its own, from the catalog's upstream URLs at
+pinned commits, into `fonts/` in server data (shared by every project; each file verified by
+SHA-256). Until a file arrives, captions that use it are unmeasured (`fin status` warns
+`FONT_MISSING`); edits are never blocked, and nothing is rewritten when it arrives.
+- Offline: set `{"fonts": {"autoFetch": false}}` in `<server-data>/settings.json` (read while the
+  server runs) or start `finisherd` with `FIN_FONTS_OFFLINE=1`; then only `fin fonts fetch
+  --pinned` (or `fin fonts fetch <key|entry>`) downloads. Cached fonts work either way.
+- Proxies: `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`, and the Windows system proxy.
+  Certificates are checked against the OS trust store, so a corporate CA works.
+
+**Upgrading from 4B.** 4C's model and op schema are version 2, and its database is version 3:
+- the first edit a 4C server makes turns 4B followers of that project read-only (`NEWER_FORMAT`);
+- a project created by 4C opens read-only on 4B;
+- a 4B server refuses a database that 4C has migrated (`DB_TOO_NEW`); there is no downgrade;
+- older projects open in 4C with the same state and pin no fonts until their first caption or
+  style edit.
 
 **Branches and history** (every command takes `--branch <b>`, default `main` or the one
 `fin branch default` / `fin try` set; undo stacks are per `$FIN_AUTHOR`, default `fin`):
