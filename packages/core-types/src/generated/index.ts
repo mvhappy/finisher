@@ -107,6 +107,8 @@ export type AnyPayload =
   | StorageState
   | ErrorInternal
   | ErrorPanic
+  | JobDone
+  | WorkerExit
   | AgentSession
   | AgentTurn
   | AgentToolCall
@@ -639,6 +641,53 @@ export type PanicThread = "main" | "worker" | "tick" | "writer" | "other";
  */
 export type PanicWhere = "finNode" | "finisherd" | "fin";
 /**
+ * A job's terminal state.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobOutcome".
+ */
+export type JobOutcome = "succeeded" | "failed" | "cancelled" | "interrupted";
+/**
+ * A job's priority as submitted.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobPriority".
+ */
+export type JobPriority = "interactive" | "normal" | "background";
+/**
+ * A helper's kind.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProcessHelperKind".
+ */
+export type ProcessHelperKind = "codec" | "plugin";
+/**
+ * Why a process ended. A closed list (`worker_exit_reasons_closed`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ExitReason".
+ */
+export type ExitReason =
+  | "done"
+  | "idleExpired"
+  | "recycled"
+  | "cancelled"
+  | "killed"
+  | "crashed"
+  | "hung"
+  | "stalled"
+  | "abandoned"
+  | "spawnFailed"
+  | "oom"
+  | "protocolError";
+/**
+ * What the process was.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProcessRole".
+ */
+export type ProcessRole = "worker" | "helper";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ChangeKind".
  */
@@ -663,6 +712,13 @@ export type AssetKind = "media" | "image" | "svg" | "lottieTemplate" | "font" | 
  * via the `definition` "ArchiveFormat".
  */
 export type ArchiveFormat = "zip";
+/**
+ * How a mapped file may be used.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FileMode".
+ */
+export type FileMode = "read" | "write" | "readWrite";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ShapeKind".
@@ -730,6 +786,13 @@ export type Link =
       name?: string | null;
       recovers?: string | null;
     };
+/**
+ * Why a `cancel` was sent.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CancelReason".
+ */
+export type CancelReason = "cancel" | "pause";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UnmeasuredReason".
@@ -919,6 +982,16 @@ export type EventPayload =
       payload: ErrorPanic;
     }
   | {
+      kind: "job.done";
+      kv: 1;
+      payload: JobDone;
+    }
+  | {
+      kind: "worker.exit";
+      kv: 1;
+      payload: WorkerExit;
+    }
+  | {
       kind: "agent.session";
       kv: 0;
       payload: AgentSession;
@@ -993,6 +1066,54 @@ export type ItemKind = "clip" | "caption" | "graphic" | "image" | "adjustment" |
  * via the `definition` "Role".
  */
 export type Role = "out" | "in";
+/**
+ * A helper's kind.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HelperKind".
+ */
+export type HelperKind = "codec" | "plugin";
+/**
+ * What a process is.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HelloRole".
+ */
+export type HelloRole = "worker" | "helper";
+/**
+ * A message from the host to a worker or a helper.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HostMsg".
+ */
+export type HostMsg =
+  | (Start & {
+      t: "start";
+    })
+  | {
+      job: string;
+      reason: CancelReason;
+      t: "cancel";
+    }
+  | {
+      t: "shutdown";
+    }
+  | (Attach & {
+      t: "attach";
+    })
+  | {
+      error?: JobError;
+      id: number;
+      t: "reply";
+      value?: unknown;
+    };
+/**
+ * How the engine may retry after a worker `error` (Decision 31).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Retry".
+ */
+export type Retry = "never" | "backoff" | "fresh";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JournalState".
@@ -1086,6 +1207,13 @@ export type ParamType =
       type: "assetRef";
     };
 /**
+ * The unit of a progress figure.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProgressUnit".
+ */
+export type ProgressUnit = "bytes" | "items" | "frames" | "seconds";
+/**
  * A project's policy as `fin diagnostics show` reports it.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1107,6 +1235,42 @@ export type PurgeSelector =
       before: number;
     };
 /**
+ * How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
+ * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, or `exit(3)`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCrashHow".
+ */
+export type TestCrashHow = "abort" | "segv" | "bus" | "fastfail" | "exit";
+/**
+ * `test.spawn`: the grandchild stays in the group or leaves it with `setsid`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestDetach".
+ */
+export type TestDetach = "none" | "setsid";
+/**
+ * What `test.echo` reports about its own process.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestEchoReport".
+ */
+export type TestEchoReport = "pid" | "env" | "args" | "fds" | "cwd" | "pdeathsig" | "nice" | "cgroup";
+/**
+ * `test.garbage`: the protocol violation to commit.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestGarbage".
+ */
+export type TestGarbage = "json" | "seq" | "long" | "otherJob" | "unknownType";
+/**
+ * The test helper's behaviour (`fin-workers --helper test:<behaviour>`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestHelperBehaviour".
+ */
+export type TestHelperBehaviour = "ok" | "exitEarly" | "hang" | "spawn" | "call";
+/**
  * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1119,6 +1283,65 @@ export type UnitSource =
   | {
       kind: "redo";
       txId: string;
+    };
+/**
+ * A message from a worker or a helper to its host. Any message counts as alive.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerMsg".
+ */
+export type WorkerMsg =
+  | (Hello & {
+      t: "hello";
+    })
+  | {
+      item: string;
+      job: string;
+      t: "begin";
+    }
+  | {
+      error?: JobError;
+      item: string;
+      job: string;
+      t: "item";
+      value?: unknown;
+    }
+  | (Progress & {
+      t: "progress";
+    })
+  | {
+      data: unknown;
+      job: string;
+      t: "checkpoint";
+    }
+  | {
+      t: "alive";
+    }
+  | {
+      job: string;
+      t: "result";
+      value: unknown;
+    }
+  | {
+      error: JobError;
+      itemErrors?: ItemError[];
+      job: string;
+      t: "error";
+    }
+  | {
+      t: "ready";
+    }
+  | {
+      job?: string;
+      kind: string;
+      payload: unknown;
+      t: "diag";
+    }
+  | {
+      id: number;
+      method: string;
+      params: unknown;
+      t: "call";
     };
 
 export interface FinCore {
@@ -2359,6 +2582,63 @@ export interface ErrorPanic {
   where: PanicWhere;
 }
 /**
+ * `job.done` (`kv` 1). Sub-project 6 adds its media fields as `kv` 2.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobDone".
+ */
+export interface JobDone {
+  attempts: number;
+  code?: Code;
+  family: Name;
+  /**
+   * The helper processes started over all attempts.
+   */
+  helpers: number;
+  /**
+   * Whether isolation (bisection) ran.
+   */
+  isolated: boolean;
+  /**
+   * Batch kinds: the job's item count.
+   */
+  items?: number;
+  /**
+   * Batch kinds: the items that failed.
+   */
+  itemsFailed?: number;
+  kind: Name;
+  outcome: JobOutcome;
+  priority: JobPriority;
+  /**
+   * From submit to the first start.
+   */
+  queuedMs: number;
+  /**
+   * The sum of every attempt's run time.
+   */
+  runMicros: number;
+  warm: boolean;
+}
+/**
+ * `worker.exit` (`kv` 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerExit".
+ */
+export interface WorkerExit {
+  exitCode?: number;
+  family: Name;
+  helperKind?: ProcessHelperKind;
+  jobsServed: number;
+  lifetimeS: number;
+  plugin?: Hashed;
+  reason: ExitReason;
+  role: ProcessRole;
+  sandboxed: boolean;
+  signal?: Name;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UiAction".
  */
@@ -2597,6 +2877,42 @@ export interface ArchiveMember {
    * The member's path inside the archive.
    */
   member: string;
+}
+/**
+ * `attach`: a helper's job, its files only, and its directories.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Attach".
+ */
+export interface Attach {
+  dirs: Dirs;
+  files?: FileGrant[];
+  job: string;
+}
+/**
+ * The job directory and the process's private temp directory.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Dirs".
+ */
+export interface Dirs {
+  job: string;
+  tmp: string;
+}
+/**
+ * One mapped file (or directory, `name` ending in `/`) of the job directory.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FileGrant".
+ */
+export interface FileGrant {
+  /**
+   * The size 5C created it at; absent for a file written by `prepare` and for directories.
+   */
+  bytes?: number;
+  mode: FileMode;
+  name: string;
+  path: string;
 }
 /**
  * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
@@ -3351,6 +3667,57 @@ export interface Generation {
   n: number;
 }
 /**
+ * `hello` (Decisions 3, 8). A worker names its `family`, `kinds` and `warm`; a helper its
+ * helper `kind` and `id`. `envelope` is [`crate::envelope_id`] (bundled processes must send
+ * it; plugin processes may omit it); `selfSandbox` the profile applied (Decision 9a).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Hello".
+ */
+export interface Hello {
+  envelope?: string;
+  family?: string;
+  /**
+   * A helper's id (helpers only).
+   */
+  id?: string;
+  kind?: HelperKind;
+  kinds?: KindVersion[];
+  /**
+   * The protocol minor ([`crate::MINOR`]).
+   */
+  minor: number;
+  pid: number;
+  role: HelloRole;
+  selfSandbox?: string;
+  /**
+   * The protocol major ([`crate::PROTOCOL`]).
+   */
+  v: number;
+  warm?: boolean;
+}
+/**
+ * A kind at a version that a worker serves.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KindVersion".
+ */
+export interface KindVersion {
+  kind: string;
+  version: number;
+}
+/**
+ * A helper started beside the worker: its id, kind and the names of the files it sees.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HelperGrant".
+ */
+export interface HelperGrant {
+  files?: string[];
+  id: string;
+  kind: HelperKind;
+}
+/**
  * The answer of a history operation ([`Store::undo`](crate::Store::undo),
  * [`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and
  * rolled back, `dry_run`; a retry of a committed operation answers with its records,
@@ -3367,6 +3734,96 @@ export interface HistoryResult {
   dryRun: boolean;
   noOp?: string | null;
   undone: string[];
+}
+/**
+ * `start`: the job, its limits, its mapped files, its helpers and directories.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Start".
+ */
+export interface Start {
+  /**
+   * Whether `diag` messages are forwarded (Decision 7).
+   */
+  diagnostics?: boolean;
+  dirs: Dirs;
+  files?: FileGrant[];
+  helpers?: HelperGrant[];
+  job: StartJob;
+  limits: Limits;
+}
+/**
+ * The job a `start` runs.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StartJob".
+ */
+export interface StartJob {
+  /**
+   * 1 on the first attempt.
+   */
+  attempt: number;
+  /**
+   * The last checkpoint (resumable kinds).
+   */
+  checkpoint?: {
+    [k: string]: unknown;
+  };
+  /**
+   * What the kind's `prepare` hook returned (Decision 40).
+   */
+  extra?: {
+    [k: string]: unknown;
+  };
+  id: string;
+  kind: string;
+  kindVersion: number;
+  params: unknown;
+}
+/**
+ * The limits a process runs under.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Limits".
+ */
+export interface Limits {
+  /**
+   * The `alive` interval (5 s).
+   */
+  aliveMs: number;
+  /**
+   * The job's group memory limit (Decision 20), informative: the host enforces it.
+   */
+  memoryBytes?: number;
+  /**
+   * The read budget ([`crate::ReadBudget`]).
+   */
+  readBytesPerSec?: number;
+}
+/**
+ * An error a worker, a helper or a host call answers: `{code, message, details, retry}`.
+ * In a `reply`, `retry` is absent (it reads as `never`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobError".
+ */
+export interface JobError {
+  code: string;
+  details?: {
+    [k: string]: unknown;
+  };
+  message: string;
+  retry?: Retry;
+}
+/**
+ * A failed item of a batch job (`itemErrors`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ItemError".
+ */
+export interface ItemError {
+  error: JobError;
+  item: string;
 }
 /**
  * What the journal holds and whether it is writing (`fin diagnostics show`).
@@ -3501,6 +3958,19 @@ export interface Probe {
   video?: VideoInfo | null;
 }
 /**
+ * `progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Progress".
+ */
+export interface Progress {
+  done: number;
+  job: string;
+  phase?: string;
+  total?: number;
+  unit: ProgressUnit;
+}
+/**
  * What a purge removed.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3593,6 +4063,18 @@ export interface SkippedFile {
   reason: string;
 }
 /**
+ * A requested self-sandbox: a profile name and its arguments.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SelfSandbox".
+ */
+export interface SelfSandbox {
+  args?: {
+    [k: string]: unknown;
+  };
+  profile: string;
+}
+/**
  * A record kept in quarantine ([`TxStatus::SetAside`](crate::TxStatus)). `reason`:
  * `SUPERSEDED`, `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`,
  * `MALFORMED`, `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`; `origin`: `local`, `folder`,
@@ -3655,6 +4137,308 @@ export interface UnitEntry {
         kind: "redo";
         txId: string;
       };
+}
+/**
+ * `test.badHello` (family `testbad`): its `hello` claims another envelope.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestBadHelloParams".
+ */
+export interface TestBadHelloParams {}
+/**
+ * `test.call`: one host call; returns the reply.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCallParams".
+ */
+export interface TestCallParams {
+  method: string;
+  params?: {
+    [k: string]: unknown;
+  };
+}
+/**
+ * `test.checkpoint` (resumable): a checkpoint per step; crashes on attempt 1 at
+ * `crashAt`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCheckpointParams".
+ */
+export interface TestCheckpointParams {
+  crashAt?: number;
+  stepMs?: number;
+  steps: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCheckpointResult".
+ */
+export interface TestCheckpointResult {
+  resumedFrom: number;
+  steps: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCountResult".
+ */
+export interface TestCountResult {
+  sent: number;
+}
+/**
+ * `test.crash` (batch): `begin`/`item` per item; crashes inside a poison item (before
+ * its `begin` with `between`), or inside the second item of any run of two or more with
+ * `crashOnSecond`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCrashParams".
+ */
+export interface TestCrashParams {
+  between?: boolean;
+  crashOnSecond?: boolean;
+  how: TestCrashHow;
+  /**
+   * Milliseconds per item.
+   */
+  itemMs?: number;
+  items: string[];
+  poison?: string[];
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestCrashResult".
+ */
+export interface TestCrashResult {
+  done: string[];
+}
+/**
+ * `test.diag`: one `diag` of kind `test.diag`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestDiagParams".
+ */
+export interface TestDiagParams {}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestDiagResult".
+ */
+export interface TestDiagResult {
+  sent: boolean;
+}
+/**
+ * `test.echo`: returns `value`, plus what `report` asks about the process.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestEchoParams".
+ */
+export interface TestEchoParams {
+  report?: TestEchoReport[];
+  value: unknown;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestEchoResult".
+ */
+export interface TestEchoResult {
+  args?: string[];
+  cgroup?: string;
+  cwd?: string;
+  env?: {
+    [k: string]: string;
+  };
+  fds?: number[];
+  nice?: number;
+  pdeathsig?: number;
+  pid: number;
+  value: unknown;
+}
+/**
+ * `test.exitAfterResult`: writes `result` and exits 0 at once.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestExitAfterResultParams".
+ */
+export interface TestExitAfterResultParams {}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFileReport".
+ */
+export interface TestFileReport {
+  bytes: number;
+  /**
+   * FNV-1a 64 of the content after the run, as hex.
+   */
+  hash: string;
+  mode: FileMode;
+  name: string;
+}
+/**
+ * `test.files`: writes a pattern into every `write` file, reads every `read` file.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFilesParams".
+ */
+export interface TestFilesParams {}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFilesResult".
+ */
+export interface TestFilesResult {
+  files: TestFileReport[];
+  outEmpty?: boolean;
+}
+/**
+ * `test.garbage`: commits the protocol violation `what`, then waits to be killed.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestGarbageParams".
+ */
+export interface TestGarbageParams {
+  what: TestGarbage;
+}
+/**
+ * `test.hang`: stops `alive`, ignores stdin and blocks.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestHangParams".
+ */
+export interface TestHangParams {}
+/**
+ * `test.helper`: the job of a test helper (`helper` picks its behaviour).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestHelperParams".
+ */
+export interface TestHelperParams {
+  delayMs?: number;
+  /**
+   * The test helper's behaviour (`fin-workers --helper test:<behaviour>`).
+   */
+  helper?: "ok" | "exitEarly" | "hang" | "spawn" | "call";
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestHelperResult".
+ */
+export interface TestHelperResult {
+  helpers: string[];
+}
+/**
+ * `test.oom`: allocates and touches `mib` MiB.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestOomParams".
+ */
+export interface TestOomParams {
+  /**
+   * Hold the memory this long before answering.
+   */
+  holdMs?: number;
+  mib: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestOomResult".
+ */
+export interface TestOomResult {
+  mib: number;
+}
+/**
+ * `test.pluginMinor` (family `testplugin`): `hello` with minor 1 and no envelope, then a
+ * message of an unknown type with an `id`. `key` is its warm key.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestPluginMinorParams".
+ */
+export interface TestPluginMinorParams {
+  key?: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestPluginMinorResult".
+ */
+export interface TestPluginMinorResult {
+  key?: string;
+  pid: number;
+  reply: unknown;
+  served: number;
+}
+/**
+ * `test.progressFlood`: `n` progress messages as fast as it can.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestProgressFloodParams".
+ */
+export interface TestProgressFloodParams {
+  n: number;
+}
+/**
+ * `test.sleep`: sleeps `ms` (checking cancel), with optional progress.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestSleepParams".
+ */
+export interface TestSleepParams {
+  ms: number;
+  progressEveryMs?: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestSleepResult".
+ */
+export interface TestSleepResult {
+  sleptMs: number;
+}
+/**
+ * `test.spawn` (breaks the no-process rule on purpose): double-forks a sleeping
+ * grandchild, writes the pids to the mapped file `out`, then sleeps.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestSpawnParams".
+ */
+export interface TestSpawnParams {
+  detach: TestDetach;
+  out: string;
+}
+/**
+ * What `test.spawn` writes to its `out` file (JSON, then zero padding).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestSpawnPids".
+ */
+export interface TestSpawnPids {
+  grandchild: number;
+  mid: number;
+  worker: number;
+}
+/**
+ * `test.stall`: keeps `alive`, never reports progress, ends at cancel.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestStallParams".
+ */
+export interface TestStallParams {}
+/**
+ * `test.warm` (warm): returns `value` with the pid and how many jobs the process served.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestWarmParams".
+ */
+export interface TestWarmParams {
+  delayMs?: number;
+  /**
+   * A job-directory file kept open past `ready` (breaks the warm contract on purpose).
+   */
+  holdFile?: string;
+  value: unknown;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestWarmResult".
+ */
+export interface TestWarmResult {
+  pid: number;
+  served: number;
+  value: unknown;
 }
 /**
  * `tx.get` for a transaction that is not (or no longer) on its branch.

@@ -32,6 +32,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 # (`fin_fonts::{FontCatalog, FileState, FontsStatus, FontsPlan}`) in the TS contract.
 fin-core = { path = "../fin-core", features = ["test-measurer"] }
 fin-fonts = { path = "../fin-fonts" }
+# Only for `examples/export_schema.rs`: the job envelope and the test kinds' params and
+# results in the TS contract (`test-hooks` holds the test kinds; dev-only, never shipped).
+fin-jobs = { path = "../fin-jobs", features = ["test-hooks"] }
 # Only for `examples/export_schema.rs`: the journal's settings, consent, status, filter and
 # purge types in the TS contract. fin-store itself never depends on fin-journal.
 fin-journal = { path = "../fin-journal" }

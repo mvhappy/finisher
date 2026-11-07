@@ -22,6 +22,7 @@ pub mod cli;
 pub mod consent;
 pub mod errors;
 pub mod fonts;
+pub mod jobs;
 pub mod journal;
 pub mod log;
 pub mod reserved;
@@ -37,6 +38,9 @@ pub use cli::CliCommand;
 pub use consent::ConsentChanged;
 pub use errors::{ErrorInternal, ErrorPanic, PanicThread, PanicWhere};
 pub use fonts::{FetchOutcome, FontsFetch};
+pub use jobs::{
+    ExitReason, JobDone, JobOutcome, JobPriority, ProcessHelperKind, ProcessRole, WorkerExit,
+};
 pub use journal::JournalDropped;
 pub use log::{CommitOutcome, CommitRecord, IntentOmitted, LogCommit};
 pub use reserved::{ReviewVerdict, UiAction};
@@ -123,6 +127,7 @@ approx_fixed!(10 =>
     AgentMode, AgentRole, StopReason, Verdict, VerdictBy,
     PanicThread, PanicWhere, FetchOutcome, CommitOutcome, CommitRecord, IntentOmitted,
     Arch, BuildProfile, OsFamily, StorageMode,
+    JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
 );
 
 /// The [`BlobRef`]s of each content [`Body`] given, for `AnyPayload::blobs`.

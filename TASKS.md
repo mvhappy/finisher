@@ -269,6 +269,26 @@ Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3)
 - [ ] Task 13: spec, architecture pointer, README, tracker
 - [ ] Task 14: cross-platform validation
 
+## Sub-project 5C-1: job engine (in progress)
+
+Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3, §6 and §6.10). Plan: `docs/superpowers/plans/2026-11-07-sub-project-5c1-job-engine.md` (revision 2). Branch `sp5c1-engine`, stacked on 5A Tasks 1, 2 and 10. Batches: A (Tasks 1, 2, 7, 8), B (3 → 4 ∥ 5, 6), C (9a → 9b → 10 → 11), D (12 → 13 → 14).
+
+- [x] Task 1: `fin-jobs` (envelope, framing, worker and helper runtimes, host calls, self-sandbox entry, read budget, params registry type) and the `job.done`/`worker.exit` kinds with `JOB_KINDS`/`WORKER_FAMILIES`/`SIGNALS`. As built: `Hello` also has optional `kind`/`id` (a helper's, Decision 8) and `family`/`kinds`/`warm` are omitted when empty, so one `Hello` serves both roles; `Role`'s schema is `HelloRole` (fin-core has a `Role`); `codec::CodecError` adds `Version` and `CheckpointTooLarge`, and `codec::read_line` (a capped line reader both sides use); `worker::run_on`/`helper::run_on(…, Channel)` drive a runtime over any pipes (tests; `run` is `run_on(Channel::stdio())` and exits); the reader registers each `start`/`attach` for `cancel` as it decodes it, so a `cancel` right behind a `start` is never lost, and host loss (or a helper's `shutdown`) cancels every later token too; an undecodable host line exits 65; `JobCtx` test hooks (`stop_alive_for_test`, `ignore_eof_for_test`, `send_for_test`, `send_raw_for_test`, `send_type_for_test`, `skip_seq_for_test`, `call_unknown_for_test`) and `Family::hello_for_test` behind `test-hooks`; `kinds::{validate_as, schema_as, find}` build and look up `KindParams` (errors name the top-level field, `params.ms: …`); `ReadBudget::with_clock` (bucket of 100 ms, debt slept off); `envelope_id` hashes the canonical schema without string `description`s (golden `21a2bc69d2620ce6`); `WORKER_FAMILIES` also holds `testbad` and `testplugin`; test kinds' schema names are prefixed `Test`; fin-core's events test fixtures moved to `tests/events_samples/` (file cap)
+- [ ] Task 2: `fin-workers` with the `test` family and test helpers
+- [ ] Task 3: `fin-jobhost`: kill-domain trait, Unix spawning, framing, timers, cancel
+- [ ] Task 4: Unix host death (watchdog), cgroups, memory limits, foreign processes, abandonment
+- [ ] Task 5: Windows host, group and leaf Job Objects, suspended spawns
+- [ ] Task 6: napi `JobHost`, params validation, codes
+- [ ] Task 7: contracts, the `jobs` chain, the store, kinds and families, the test kinds, the event sink
+- [ ] Task 8: pools and the scheduler
+- [ ] Task 9a: engine: submit, cold runs, files, host calls, hooks
+- [ ] Task 9b: helpers, cancel and pause, abandonment, restart and close
+- [ ] Task 10: retries, backoff, poison handling and isolation
+- [ ] Task 11: warm workers
+- [ ] Task 12: wiring, `finisherd`-death tests, the spawn gate, budgets
+- [ ] Task 13: spec as built, architecture pointer, tracker
+- [ ] Task 14: cross-platform validation
+
 ## Diagnostics hooks (D1–D7)
 
 Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md` (batch F′, after 4C Task 26). Spec §21.1, D34. Branch `sp4c-edit-breadth`.
