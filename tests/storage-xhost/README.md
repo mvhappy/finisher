@@ -1,7 +1,7 @@
 # Cross-host storage harness
 
 Plan 4A Task 19 (spec `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §3.12, §3.13),
-with the history rows of plan 4B Task 23 (§4.8).
+with the history rows of plan 4B Task 23 (§4.8) and the 4C rows of plan 4C Task 29 (§5.10).
 It runs lease and follow scenarios between several Finisher "servers" on one project folder, then
 analyses what each server logged and what the folder ended up holding. A server is a server-data
 directory. Its nodes can be on one machine or on several.
@@ -32,9 +32,9 @@ into the spec.
     `xhost-clock-<label>` in the project folder and reads the file's mtime back (`clock`).
 - `run.mjs` is the controller. It runs a scenario round by round on N nodes, then collects and
   analyses the events.
-- `analyse.mjs` is the analyser, `analyse-history.mjs` its history checks. `analyse.test.mjs` and
-  `analyse-history.test.mjs` are their self-tests on synthetic rounds:
-  `node --test tests/storage-xhost/`.
+- `analyse.mjs` is the analyser, `analyse-history.mjs` its history checks and `analyse-edit4c.mjs`
+  its 4C checks. `analyse.test.mjs`, `analyse-history.test.mjs` and `analyse-edit4c.test.mjs` are
+  their self-tests on synthetic rounds: `node --test tests/storage-xhost/`.
 
 ## Building
 
@@ -85,6 +85,10 @@ node tests/storage-xhost/run.mjs skew --skew-ms -60000        # emulated server-
 node tests/storage-xhost/run.mjs follow                       # (c) follow latency
 node tests/storage-xhost/run.mjs history                      # a branch made on one host merges on another (5 rounds)
 node tests/storage-xhost/run.mjs mixed --nodes a,o            # a 4B holder with a 4A follower (XHOST_O_BIN: a 4A xhost)
+node tests/storage-xhost/run.mjs upgrade4c                    # a 4B project opens in 4C (4C rows, below)
+node tests/storage-xhost/run.mjs mixed4c --nodes a,b,c,d      # 4B and 4C servers on one project
+node tests/storage-xhost/run.mjs newer4c                      # a 4C project on 4B
+node tests/storage-xhost/run.mjs edit4c [--nodes a,b,c]       # fonts and captions across hosts (5 rounds)
 node tests/storage-xhost/run.mjs <scenario> --storage local   # the same on a local disk (control)
 node tests/storage-xhost/run.mjs analyse <results dir>        # re-analyse saved results
 ```
@@ -112,6 +116,64 @@ node tests/storage-xhost/run.mjs analyse <results dir>        # re-analyse saved
   (`followed`). Fresh verifiers run on nodes a and b.
 - `mixed`: a 4B `brancher` on node a edits `main` only for `--plain-ms` (20 s), then makes a
   branch and edits both; node b runs the `follower` of a 4A build (plan 4B Decision 4).
+
+## 4C rows
+
+Plan 4C Task 29 Steps 4–6. The 4B nodes run a 4B `xhost` (built from the 4B branch): put its
+path in that node's `XHOST_<N>_BIN`. Every other node runs the 4C `xhost` of this branch. 4B
+and 4C nodes never share server data (4B nodes use `*4b` subdirectories), except in
+`upgrade4c`, which upgrades 4B server data on purpose (a fresh directory each round).
+
+| Row | Nodes | 4B nodes | Same host |
+|---|---|---|---|
+| `upgrade4c` | a, b | a | a and b (`XHOST_A_HOST` = `XHOST_B_HOST`: b runs on a's server data) |
+| `mixed4c` | a, b, c, d (X = a, d; Y = b, c) | a, c | a with d, b with c |
+| `newer4c` | a, b | b | none (two hosts) |
+| `edit4c` | a, b[, c] | none | none (the offline follower c defaults to b) |
+
+- `upgrade4c` (Step 4): node a's 4B `brancher` makes branch `x`, edits `main` and `x`, waits
+  for the export and stops. Then node b's `xhost upgrade` opens the **same server data** (its
+  path as node a sees it), so the 4B database is migrated in place: it logs the heads and hashes
+  and each project database's `user_version` before and after the open (`upgraded`), runs
+  `Store::verify` (`upgradeVerify`), re-takes its own stopped lease, undoes the 4B brancher's
+  top unit on `main` (a `commit` of kind `undo`), logs the hashes (`undone`), exports and
+  closes. A fresh 4C `verify` on node b rebuilds from the folder alone.
+- `mixed4c` (Step 5): 4B holder a on host X writes every second for `--secs` (30) and closes.
+  When it has ended, 4C holder b on host Y (`holder --hold-secs`) waits for the takeover (45 s
+  staleness, then the ordering rule) and writes for `--hold-secs` (20), then writes its done
+  marker. 4B follower c on Y follows throughout (`--follow-secs`, 120; raise it when b's host
+  is a Mac, whose ordering-rule wait is 65 s) and must turn read-only `NEWER_FORMAT` at b's
+  first record. 4C follower d on X follows until b's done marker (`follower --until-done b`).
+  Fresh 4C verifiers on Y and X.
+- `newer4c` (Step 5): 4C holder a creates the project, writes for `--hold-secs` (10) and
+  closes; then 4B follower b on the other host follows for `--follow-secs` (15), and a 4B
+  `verify` runs there (role `verify-4b`). Each must open the project read-only
+  `NEWER_FORMAT` (the 4B branch has the project-file fix) or refuse it; the analyser records
+  which, and that 4B wrote nothing (no commit, segment, lease record or claim). A fresh 4C
+  verify on node a is the reference.
+- `edit4c` (Step 6), 5 rounds: `xhost editor` on node a holds the lease and runs the edit
+  script: a caption track; `caption import` (`compose::caption_import`) of Latin, Arabic, CJK
+  and emoji words in `preset:bold` (Inter 700), with the `font.pin` ops
+  `fin_fonts::plan::plan_pins` plans against the built-in catalog prepended (as `fin` does
+  through `fonts.plan`), committed with a `fin-text` measurer over its own font cache
+  (`<server-data>/fonts`), which the real fetcher fills first; a project style from
+  `preset:bold` on the second caption; a `caption.setText`; an `item.move`. Once exported it
+  logs `plans4c` (the hashes and the frame plans at a time inside each caption) and its done
+  marker, and closes. Follower `f` on node b (`--fonts fetch`) empties its own font cache at
+  start, follows until the editor's done marker plus one follow cycle (`followed`), fetches
+  every pinned file itself (`fonts`, with the files downloaded), and logs `plans4c`. Follower
+  `o` (node c, else b; `--fonts offline`) fetches nothing: its captions are unmeasured
+  (`fontMissing`). Fresh verifiers on nodes a and b.
+  - A frame in `plans4c` is `{t, sha256, shapeSha256, textEngine, captions, plan}`: `sha256`
+    digests the compact plan JSON without `textEngine` (as the reel e2e does); `shapeSha256`
+    also leaves out each caption's `layout` and `unmeasured`.
+  - `FIN_FONT_CACHE` (a warmed cache, e.g. from `cargo run -p fin-fonts --example warm_cache`)
+    on the editor's host seeds the editor's cache to save bandwidth; the fetch follower never
+    uses it. Proxies come from the usual variables (`HTTPS_PROXY`, …).
+
+The done marker is `xhost-done-<label>.json` in the project folder (`{label, heads}`), written
+once everything is exported; `follower --until-done L` stops `--settle-ms` after reaching those
+heads, after one more follow cycle.
 
 ## What the analyser reports
 
@@ -153,6 +215,27 @@ History counts (`history` and `mixed`, `analyse-history.mjs`):
 | `mixedEditsInBranchSegment` | edit-only records exported in the same segment as the branch record: that segment is v2, so a 4A reader never sees them (information) |
 | `mixedAppliedPastBranch` | records at or after the branch record the 4A follower applied (**critical**) |
 | `mixedNewerFormat` | the 4A follower turned read-only `NEWER_FORMAT` (0 is **critical**) |
+
+4C counts (`analyse-edit4c.mjs`; every row's 0 or missing reference is **critical**):
+
+| Count | Meaning |
+|---|---|
+| `upgradeMigrated` | the project's database was in the server data, at an older `user_version`, before the upgrade opened it |
+| `upgradeHeadsSame` | every branch head (seq and txHash) after the upgrade equals the 4B brancher's final heads |
+| `upgradeVerifyOk`, `upgradeUndone` | `Store::verify` after the upgrade is ok; an undo of a 4B record was accepted |
+| `upgradeRebuildSame` | the fresh verify's `stateHash` and `indexHash` equal the upgrade's after the undo |
+| `mixed4cFollowed4b` / `mixed4cAccepted4b` | the 4B holder's records the 4B follower applied (`mixed4cMissed`: **critical**) |
+| `mixed4cApplied4c` | 4C records the 4B follower applied (**critical**) |
+| `mixed4cNewerFormat` | the 4B follower turned read-only `NEWER_FORMAT` |
+| `mixed4cHashMismatches` / `mixed4cViews` | fresh verifiers whose hashes differ from the 4C follower's after b's done marker (**critical**) |
+| `newer4cReadOnly`, `newer4cRefused` | 4B processes (the follower and the verify) that opened the 4C project read-only `NEWER_FORMAT`, or refused it (both are accepted outcomes; a refused open is noted, not a problem) |
+| `newer4cWritable`, `newer4cWrote4b` | 4B processes that opened it writable, and 4B commits, segments, lease records or claims (**critical**) |
+| `edit4cHashMismatches` / `edit4cViews` | both followers after their follow cycle and the fresh verifiers whose hashes differ from the editor's (**critical**) |
+| `edit4cPlanMismatches` / `edit4cFrames` | frame plans of the fetch follower whose `sha256` differs from the editor's (**critical**) |
+| `edit4cOfflineUnmeasured`, `edit4cOfflineMeasured` | the offline follower's caption layers unmeasured with `fontMissing`, and others (**critical**) |
+| `edit4cOfflineOtherDiffs` | the offline follower's frames that differ from the editor's beyond caption `layout`/`unmeasured` and `textEngine` (**critical**) |
+| `edit4cEditorUnmeasured` | caption layers the editor did not measure (**critical**) |
+| `edit4cDownloaded` / `edit4cPinnedFiles` | files the fetch follower downloaded itself, of the distinct files the project pins (fewer is **critical**) |
 
 Lost records are the common `lostAcked` count: with `all`, every branch's accepted records
 (branch and merge records included) must be on the verifier's resolved rows.
