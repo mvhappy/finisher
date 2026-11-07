@@ -67,6 +67,9 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&m.track), op_diff);
     f.touches
         .push((m.track.clone(), Touch::Param(INDEX.into())));
+    f.uses.push(crate::ops::util::lists::TRACKS.into());
+    // An explicit index (its inverse's too) holds only in the order it was chosen in.
+    f.puts_back(crate::ops::util::lists::TRACKS);
     f
 }
 

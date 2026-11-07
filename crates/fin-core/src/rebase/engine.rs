@@ -154,7 +154,12 @@ pub fn rebase_prepared(
                 .map_content(n - k, &item, *v)
                 .map_err(|_| Conflict::from_rerun(&overflow(), tx_id, k, None))?;
         }
-        let fp = footprint(&op, &own[k]);
+        let mut fp = footprint(&op, &own[k]);
+        // A removal whose content the next op takes back into another item (an undo of a
+        // split) is judged as a put-back of the removed item.
+        if let Some(x) = super::footprint::absorbed(&r.tx.ops, k) {
+            fp.puts_back(x);
+        }
         if let Some((reason, against)) = entity_conflict_in(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
@@ -373,10 +378,10 @@ struct Ours<'a> {
 
 /// A re-run failure of op `k`. `DUPLICATE_ID` is a copy meeting an id that is already taken
 /// (Decision 18). The step to blame is the one unmirrored step (if exactly one) that touched,
-/// created or removed an entity ours touches or the error names, or one an earlier op of ours
-/// touched to create such an entity (the item our split cut, for an overwrite meeting the
-/// right part); tracks and the assets ours only uses are left out, since nearly every step
-/// shares them.
+/// created or removed an entity ours touches, would create (another pin of the key, for a
+/// `FONT_PINNED`) or the error names, or one an earlier op of ours touched to create such an
+/// entity (the item our split cut, for an overwrite meeting the right part); tracks and the
+/// assets ours only uses are left out, since nearly every step shares them.
 fn rerun_conflict(
     e: &CoreError,
     r: &PreparedRebase<'_>,
@@ -386,6 +391,15 @@ fn rerun_conflict(
     head: &Project,
 ) -> Conflict {
     let mut named: BTreeSet<&str> = ours.fp.touches.iter().map(|(x, _)| x.as_str()).collect();
+    // What the op would create: a pin whose key another record pinned since (`FONT_PINNED`) is
+    // blamed on that record. A placeholder names no entity here.
+    named.extend(
+        ours.fp
+            .creates
+            .iter()
+            .map(String::as_str)
+            .filter(|x| !x.starts_with('$')),
+    );
     for key in ["clip", "item", "id", "asset"] {
         named.extend(e.details[key].as_str());
     }

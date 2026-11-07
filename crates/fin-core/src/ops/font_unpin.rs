@@ -148,6 +148,7 @@ fn drop_fallback(
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::FontUnpin(u) = op {
+        f.uses.push(crate::ops::util::lists::FALLBACK_ORDER.into());
         if u.fallback_only {
             f.touches
                 .push((entity(&u.key), Touch::Param(FALLBACK.into())));

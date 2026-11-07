@@ -16,15 +16,25 @@
 //!   snapshot, such as `item.restore`, `effect.restore`, `track.restore`, `timeline.restore`, or the
 //!   `marker.add`, `asset.add`, `bin.add` and `style.add` of a removal's inverse) and an
 //!   intervening record changed X, an entity nested in it (`X/…`: an item's effects) or what
-//!   lies on it (X among its `tracks` or `uses`: an insert or move onto a put-back track, a
-//!   `marker.add` or `track.add` on a put-back timeline) in any way, touching, creating or
-//!   removing it → `SAME_EDGE` when it moved an edge of a put-back entity, else `SAME_PARAM`
-//!   ([`overwrite_conflict`]). Putting the snapshot back would take that edit
-//!   away without a word: an undo of a move after another author's trim, split or effect edit
-//!   of the item; a merged delete and undo over the target's edit. The engine judges it after
-//!   the op re-ran, so an op that cannot run at all keeps the re-run's reason
-//!   (`ALREADY_PRESENT`, `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that would succeed is
-//!   refused. A `$placeholder` re-creation makes a new entity and puts nothing back;
+//!   lies on it, in any way, touching, creating or removing it → `SAME_EDGE` when it moved an
+//!   edge of a put-back entity, else `SAME_PARAM` ([`overwrite_conflict`]). What lies on it is
+//!   any put-back entity among the record's `tracks` or `uses`: an insert or move onto a
+//!   put-back track, a `marker.add` or `track.add` on a put-back timeline, a placement in a
+//!   put-back ordered list. Putting the snapshot back would take that edit away without a
+//!   word: an undo of a move after another author's trim, split or effect edit of the item; a
+//!   merged delete and undo over the target's edit. The engine judges it after the op re-ran,
+//!   so an op that cannot run at all keeps the re-run's reason (`ALREADY_PRESENT`,
+//!   `ID_COLLISION`, `CLIP_OVERLAP`, …) and only one that would succeed is refused. A
+//!   `$placeholder` re-creation makes a new entity and puts nothing back;
+//! - an ordered list is an entity of its own (`ops::util::lists`): every op that adds, moves
+//!   or removes a member uses it, and an op that puts a member back at its old index
+//!   (`track.restore`, `timeline.restore`, `effect.restore`, a placing `font.pin`) puts the
+//!   list back. So a later placement by someone else meets that put-back (`SAME_PARAM`), while
+//!   two placements still merge;
+//! - a removal whose content the next op takes back into another item (a lift `item.remove`
+//!   followed by a growing `strict` trim: the inverse of a split, [`absorbed`]) is judged as a
+//!   put-back of the removed item. "Removing an entity someone else edited is not a conflict"
+//!   does not hold there, as that edit would be lost inside the item that absorbs the range;
 //! - an entity an earlier op of our own transaction created is ours: it is never judged. At a
 //!   stale base our placeholders bind the ids the intervening records allocated, and those name
 //!   other entities; the re-run at the head decides whether the creation itself still fits.
@@ -342,6 +352,20 @@ pub(crate) fn overwrite_conflict(
     })
 }
 
+/// The item that op `k` of `ops` removes when the next op takes its range back into another
+/// item: a lift `item.remove` followed by a `strict` trim that grows an end, as the inverse of
+/// `item.split` and `caption.split` is. The trim puts the removed item's content back into the
+/// left part, so a later change of the removed item by someone else would be lost without a
+/// word: the engine judges the removal as a put-back of it ([`overwrite_conflict`]), and the
+/// rule "removing an entity someone else edited is not a conflict" does not apply.
+pub(crate) fn absorbed(ops: &[Op], k: usize) -> Option<&str> {
+    let (Some(Op::ItemRemove(r)), Some(Op::ItemTrim(t))) = (ops.get(k), ops.get(k + 1)) else {
+        return None;
+    };
+    let fills = t.mode == ops::TrimMode::Strict && t.edge == Edge::End && t.delta.is_positive();
+    (r.mode == ops::DeleteMode::Lift && fills).then_some(r.id.as_str())
+}
+
 /// Whether `f` moved an edge of entity `x`.
 fn moved_edge(x: &str, f: &Footprint) -> bool {
     f.touches
@@ -350,8 +374,9 @@ fn moved_edge(x: &str, f: &Footprint) -> bool {
 }
 
 /// Whether `f` changed entity `x`, one nested in it (`x/…`) or what lies on it (`x` among its
-/// `tracks` or `uses`: an item put on a put-back track, a marker or track on a put-back
-/// timeline, which the snapshot does not hold): a touch of any kind, a creation or a removal.
+/// `tracks` or `uses`, for any put-back entity: an item put on a put-back track, a marker or
+/// track on a put-back timeline, a placement in a put-back list, none of which the snapshot
+/// holds): a touch of any kind, a creation or a removal.
 fn changed(x: &str, f: &Footprint) -> bool {
     let within = |y: &str| y == x || y.strip_prefix(x).is_some_and(|r| r.starts_with('/'));
     f.touches.iter().any(|(y, _)| within(y))

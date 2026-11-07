@@ -84,6 +84,7 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(Some(&r.track), op_diff);
     f.touches.push((r.track.clone(), Touch::Exists));
     f.removes.push(r.track.clone());
+    f.uses.push(crate::ops::util::lists::TRACKS.into());
     f
 }
 

@@ -89,6 +89,9 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
         f.creates.push(r.timeline.id.clone());
         // The timeline, its markers and tracks (with everything on them), as they were.
         f.puts_back(&r.timeline.id);
+        // Back at its old index: a later placement in the timeline order is a conflict.
+        f.uses.push(crate::ops::util::lists::TIMELINES.into());
+        f.puts_back(crate::ops::util::lists::TIMELINES);
         for m in &r.timeline.markers {
             f.puts_back(&m.id);
         }

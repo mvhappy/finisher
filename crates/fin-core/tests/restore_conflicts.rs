@@ -60,11 +60,19 @@ fn remove_fx(item: &str, fx: &str) -> Op {
 
 const INTER: &str = "Inter|700|normal";
 
+const LORA: &str = "Lora|400|normal";
+const ROBOTO: &str = "Roboto|400|normal";
+
 /// Inter 700 pinned to a file whose SHA-256 is `c` repeated.
 fn inter(c: char) -> FontPin {
+    face("Inter", 700, c)
+}
+
+/// `family` at `weight`, pinned to a file whose SHA-256 is `c` repeated.
+fn face(family: &str, weight: u16, c: char) -> FontPin {
     FontPin {
-        family: "Inter".into(),
-        weight: 700,
+        family: family.into(),
+        weight,
         italic: false,
         face: 0,
         sha256: std::iter::repeat_n(c, 64).collect(),
@@ -77,6 +85,27 @@ fn inter(c: char) -> FontPin {
             catalog: "2026.11.1".into(),
         },
     }
+}
+
+/// A pin of `key` (a 400 face of `family`), placed at `fallback` in the fallback order.
+fn pin_at(key: &str, family: &str, c: char, fallback: Option<u32>) -> Op {
+    FontPinOp {
+        key: key.into(),
+        pin: face(family, 400, c),
+        fallback,
+    }
+    .into()
+}
+
+fn add_track(id: &str, kind: TrackKind, index: Option<u32>) -> Op {
+    TrackAdd {
+        id: id.into(),
+        timeline: "tl1".into(),
+        kind,
+        index,
+        name: None,
+    }
+    .into()
 }
 
 fn remove_t2() -> Op {
@@ -372,6 +401,57 @@ fn cases() -> Vec<Case> {
             },
             reason: "SAME_PARAM",
         },
+        // Ordered lists (`ops::util::lists`): a put-back at its old index over another
+        // author's placement in the same list.
+        Case {
+            what: "track order (track.restore at its old index)",
+            setup: vec![add_track("$t3", TrackKind::Video, None)],
+            remove: |_| {
+                TrackRemove {
+                    track: "t2".into(),
+                    with_items: false,
+                }
+                .into()
+            },
+            edit: |_| add_track("$t4", TrackKind::Video, Some(1)),
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "effect order (effect.restore at its old index)",
+            setup: vec![
+                add_fx("c1", "$fa"),
+                add_fx("c1", "$fb"),
+                add_fx("c1", "$fc"),
+            ],
+            remove: |b| remove_fx("c1", &b["$fb"]),
+            edit: |b| remove_fx("c1", &b["$fa"]),
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "timeline order (timeline.restore at its old index)",
+            setup: vec![timeline()],
+            remove: remove_timeline,
+            edit: |_| {
+                TimelineAdd {
+                    id: "$tl4".into(),
+                    name: "Teaser".into(),
+                    rate: secs(30),
+                    resolution: Resolution {
+                        width: 1080,
+                        height: 1920,
+                    },
+                }
+                .into()
+            },
+            reason: "SAME_PARAM",
+        },
+        Case {
+            what: "fallback order (font.pin at its old index)",
+            setup: vec![pin_at(LORA, "Lora", 'a', Some(0))],
+            remove: |_| FontUnpin::new(LORA).into(),
+            edit: |_| pin_at(ROBOTO, "Roboto", 'b', Some(0)),
+            reason: "SAME_PARAM",
+        },
     ]
 }
 
@@ -444,4 +524,217 @@ fn track_put_back_by_pick_or_revert_meets_an_insert_onto_it() {
         .expect_err("a conflict");
     assert_eq!(blame(&e), ("SAME_PARAM".into(), "a1".into()));
     assert_eq!(log.state("main"), before);
+}
+
+/// The fallback order through a cherry-pick and a revert: main has `[Lora]`, alice pins Roboto
+/// at 0 (`[Roboto, Lora]`); bob's unpin of Lora and its undo would put Lora back at 0, ahead of
+/// her placement. The pick of the undo, or the revert of a merged unpin-and-undo after her
+/// placement, is `SAME_PARAM` blamed on her pin; nothing is written.
+#[test]
+fn fallback_put_back_by_pick_or_revert_meets_a_placement() {
+    let setup = || {
+        let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+        log.commit(
+            "main",
+            "s1",
+            "alice",
+            vec![pin_at(LORA, "Lora", 'a', Some(0))],
+        );
+        log.fork("br1", "main", log.head_seq("main"));
+        log.commit("br1", "r1", "bob", vec![FontUnpin::new(LORA).into()]);
+        log.undo("br1", "bob", "u1").unwrap();
+        log
+    };
+    let roboto = || pin_at(ROBOTO, "Roboto", 'b', Some(0));
+
+    let mut log = setup();
+    log.commit("main", "a1", "alice", vec![roboto()]);
+    log.pick("r1", "main", "carol", "p1")
+        .unwrap()
+        .expect("a copy");
+    let before = log.state("main");
+    let e = log
+        .pick("u1", "main", "carol", "p2")
+        .expect_err("a conflict");
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "a1".into()));
+    assert_eq!(log.state("main"), before);
+
+    let mut log = setup();
+    log.merge("br1", "main", "carol", "g1", false).unwrap();
+    log.commit("main", "a1", "alice", vec![roboto()]);
+    assert_eq!(log.state("main").fonts.fallback, [ROBOTO, LORA]);
+    let before = log.state("main");
+    let e = log
+        .revert("g1", "main", "carol", "v1")
+        .expect_err("a conflict");
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "a1".into()));
+    assert_eq!(log.state("main"), before);
+}
+
+/// The track order on one branch. Undo: alice removes t2 from `[t1, t2, t3]`, bob adds t4 at
+/// index 1, and the undo would put t2 back at 1, ahead of t4. Redo: alice adds t3 at 1 and
+/// undoes it, bob adds t4 at 1, and the redo would put t3 back at 1. Both are `SAME_PARAM`
+/// blamed on bob, and nothing is written.
+#[test]
+fn track_put_back_by_undo_or_redo_meets_a_placement() {
+    let base = || {
+        let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+        log.commit(
+            "main",
+            "s1",
+            "setup",
+            vec![add_track("$t3", TrackKind::Video, None)],
+        );
+        log
+    };
+    let t4 = || add_track("$t4", TrackKind::Video, Some(1));
+
+    let mut log = base();
+    log.commit("main", "x1", "alice", vec![remove_t2()]);
+    log.commit("main", "b1", "bob", vec![t4()]);
+    let before = log.state("main");
+    let e = log.undo("main", "alice", "u1").expect_err("a conflict");
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "b1".into()));
+    assert_eq!(log.state("main"), before);
+
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    log.commit(
+        "main",
+        "x1",
+        "alice",
+        vec![add_track("$t3", TrackKind::Video, Some(1))],
+    );
+    log.undo("main", "alice", "u1").unwrap();
+    log.commit("main", "b1", "bob", vec![t4()]);
+    let before = log.state("main");
+    let e = log.redo("main", "alice", "r1").expect_err("a conflict");
+    assert_eq!(blame(&e), ("SAME_PARAM".into(), "b1".into()));
+    assert_eq!(log.state("main"), before);
+}
+
+/// An undo of a split takes the right part back into the left part (a lift removal, then a
+/// strict trim over its range), so a later edit of the right part by someone else is a
+/// conflict: `SAME_PARAM`, or `SAME_EDGE` for its end, blamed on bob. Captions likewise. An
+/// edit of the left part is not in the way.
+#[test]
+fn undo_of_split_meets_a_later_edit_of_the_right_part() {
+    use common::gen4c::caption;
+    use fin_core::{CaptionSetStyle, CaptionSetText, CaptionSplit, ItemSplit};
+    type Edit = (&'static str, fn(&str) -> Op, &'static str);
+    let opacity = |item: &str| -> Op {
+        ParamSet {
+            item: item.into(),
+            path: "opacity".into(),
+            value: Some(ParamValue::Number(0.5)),
+        }
+        .into()
+    };
+    let clips: [Edit; 3] = [
+        ("opacity", opacity, "SAME_PARAM"),
+        ("effect.add", |r| add_fx(r, "$g"), "SAME_PARAM"),
+        ("end trim", |r| trim(r, Edge::End, frames(-9)), "SAME_EDGE"),
+    ];
+    let captions: [Edit; 2] = [
+        (
+            "caption.setText",
+            |r| {
+                CaptionSetText {
+                    item: r.into(),
+                    text: "new words".into(),
+                }
+                .into()
+            },
+            "SAME_PARAM",
+        ),
+        (
+            "caption.setStyle",
+            |r| {
+                CaptionSetStyle {
+                    item: r.into(),
+                    style: "preset:punch".into(),
+                    overrides: None,
+                }
+                .into()
+            },
+            "SAME_PARAM",
+        ),
+    ];
+    let mut failed = Vec::new();
+    for (caption_case, cases) in [(false, &clips[..]), (true, &captions[..])] {
+        for (what, later, reason) in cases {
+            let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+            let split: Op = if caption_case {
+                let tc = add_track("$tc", TrackKind::Caption, None);
+                let cap = caption(
+                    "$cap",
+                    "$tc",
+                    secs(0),
+                    &["one", "two", "three"],
+                    "preset:bold",
+                );
+                let ids = log
+                    .commit("main", "s0", "setup", vec![tc, cap])
+                    .record
+                    .bindings;
+                CaptionSplit {
+                    item: ids["$cap"].clone(),
+                    word: 1,
+                    id: "$r".into(),
+                }
+                .into()
+            } else {
+                ItemSplit {
+                    item: "c1".into(),
+                    offset: secs(1),
+                    id: "$r".into(),
+                }
+                .into()
+            };
+            let right = log
+                .commit("main", "s1", "alice", vec![split])
+                .record
+                .bindings["$r"]
+                .clone();
+            log.commit("main", "b1", "bob", vec![later(&right)]);
+            let before = log.state("main");
+            let got = log.undo("main", "alice", "u1").err().map(|e| blame(&e));
+            if got != Some(((*reason).into(), "b1".into())) || log.state("main") != before {
+                failed.push(format!("{what}: {got:?}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let split = ItemSplit {
+        item: "c1".into(),
+        offset: secs(1),
+        id: "$r".into(),
+    };
+    log.commit("main", "s1", "alice", vec![split.into()]);
+    log.commit("main", "b1", "bob", vec![opacity("c1")]);
+    log.undo("main", "alice", "u1").unwrap();
+    let c1 = &log.state("main").timelines[0].tracks[0].items[0];
+    assert_eq!((c1.id.as_str(), c1.duration), ("c1", secs(2)));
+    assert_eq!(c1.common.opacity, 0.5);
+}
+
+/// A re-run that fails is blamed on the step that changed the entity (spec §4.3): alice
+/// unpins Inter, bob pins another file for it, and alice's undo is `FONT_PINNED` against bob.
+#[test]
+fn undo_of_unpin_after_another_pin_blames_it() {
+    let mut log = MemLog::new(with_clips(&[2, 2, 2]));
+    let pin = |c: char| -> Op {
+        FontPinOp {
+            key: INTER.into(),
+            pin: inter(c),
+            fallback: None,
+        }
+        .into()
+    };
+    log.commit("main", "s1", "setup", vec![pin('a')]);
+    log.commit("main", "x1", "alice", vec![FontUnpin::new(INTER).into()]);
+    log.commit("main", "b1", "bob", vec![pin('b')]);
+    let e = log.undo("main", "alice", "u1").expect_err("a conflict");
+    assert_eq!(blame(&e), ("FONT_PINNED".into(), "b1".into()), "{e:?}");
 }

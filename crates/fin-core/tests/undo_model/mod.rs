@@ -69,17 +69,21 @@
 //!   (present by root; `UNDOES_TARGET_RECORDS`; an undo or redo of a skipped unit is
 //!   `DEPENDS_ON_SKIPPED`, found by this property: a skipped delete's undo re-created a clip
 //!   the target had deleted). A re-run failure blames the one unmirrored record that touched,
-//!   created or removed a clip the op touches or its error names (`rerun_conflict`); a
-//!   restore that re-ran is then refused by the first unmirrored record that changed its clip
-//!   at all, by a touch, a creation or a removal (`overwrite_conflict`: `SAME_EDGE` for its
-//!   end edge, else `SAME_PARAM`; the model has no nested entities, which the fixed cases of
-//!   `restore_conflicts` cover). The heads, which the transcribed part never computes, are
+//!   created or removed a clip the op touches, would create or its error names
+//!   (`rerun_conflict`); a restore that re-ran is then refused by the first unmirrored record
+//!   that changed its clip at all, by a touch, a creation or a removal (`overwrite_conflict`:
+//!   `SAME_EDGE` for its end edge, else `SAME_PARAM`; the model has no nested entities or
+//!   ordered lists, which the fixed cases of `restore_conflicts` cover). A split's inverse puts
+//!   its right part back the same way: the lift removal that the strict trim's range then
+//!   takes back into the left part is judged as a put-back of the right part
+//!   (`footprint::absorbed`). The heads, which the transcribed part never computes, are
 //!   checked by the list model alone.
 //!
 //! **Exclusions** (4C; none of them arises from 4B ops):
 //! - *Gaps.* The run stops at the first state with a gap: a lift removal the strict trim does
 //!   not fill (an undo of a split after the right part was lengthened, or moved elsewhere
-//!   than a track end), or a redo whose left part shrinks with no right part to fill it. The
+//!   than a track end, where its removal is not refused first as a put-back of a right part
+//!   someone else changed), or a redo whose left part shrinks with no right part to fill it. The
 //!   model predicts those gaps and the outcome of the step that makes them (and the run stops
 //!   on any real gap on a track whose order it is unsure of); what follows a gap is not
 //!   modelled.

@@ -214,7 +214,12 @@ fn track_add_appends_or_inserts() {
         .into(),
         &a,
     );
-    assert_eq!((f.creates, f.uses), (vec!["t3".into()], vec!["tl1".into()]));
+    // The track order is an entity it uses (`ops::util::lists`); no index, so no put-back.
+    assert_eq!(
+        (f.creates, f.uses),
+        (vec!["t3".into()], vec!["tl1".into(), "#tracks".into()])
+    );
+    assert!(f.overwrites.is_empty());
     // At the bottom, named.
     let b = golden_apply(
         &p,

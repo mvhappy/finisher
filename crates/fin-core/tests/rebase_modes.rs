@@ -248,7 +248,10 @@ fn undo_of_overwrite_and_split_are_exact() {
 }
 
 /// B4: the undo of a split trims the left part back strictly: a neighbour extended over the
-/// right part's range since is a conflict, not carved.
+/// right part's range since is a conflict, not carved. As built (spec §4.3): the extension
+/// carved the right part's start, and the undo puts the right part back into the left part,
+/// so it is `SAME_EDGE` against bob at the right part's removal, before the strict trim could
+/// meet the overlap.
 #[test]
 fn undo_of_split_after_neighbour_extend_conflicts() {
     let mut log = MemLog::new(with_sourced(&[(10, 0), (10, 10)]));
@@ -265,7 +268,8 @@ fn undo_of_split_after_neighbour_extend_conflicts() {
     );
     let before = log.state("main");
     let e = log.undo("main", "alice", "u1").unwrap_err();
-    assert_eq!(conflict(&e).0, "CLIP_OVERLAP");
+    assert_eq!(conflict(&e).0, "SAME_EDGE", "{e:?}");
+    assert_eq!(e.details["againstTx"], "b1", "{e:?}");
     assert_eq!(log.state("main"), before);
 }
 

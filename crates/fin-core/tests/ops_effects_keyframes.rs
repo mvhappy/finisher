@@ -811,24 +811,24 @@ fn replays(log: &MemLog, genesis: &Project, n: u64) {
     assert_eq!(p, log.state("main"));
 }
 
-/// S1: Alice removes fx3, Bob removes fx1, Alice undoes: the restore's index is past the end
-/// of the shorter list, so fx3 goes back at the end (and the undo replays).
+/// S1, as built (spec §4.3, ordered lists): Alice removes fx3, Bob removes fx1, Alice undoes.
+/// The restore names fx3's old index, which no longer holds in Bob's shorter list (removing
+/// fx2 instead would put it back after fx3), so the undo is `SAME_PARAM` against Bob and writes
+/// nothing. The inverse of a move to an index is judged the same way.
 #[test]
 fn undo_of_effect_remove_after_another_removal() {
     let p = three_effects();
-    let mut log = MemLog::new(p.clone());
-    log.commit("main", "tx-a", "alice", vec![remove("c1", "fx3")]);
-    log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
-    log.undo("main", "alice", "tx-u").unwrap();
-    assert_eq!(effect_ids(&log.state("main"), "c1"), ["fx2", "fx3"]);
-    replays(&log, &p, 3);
-    // The inverse of a move too: fx3 to the front, fx1 removed, undo moves fx3 to the end.
-    let mut log = MemLog::new(p.clone());
-    log.commit("main", "tx-a", "alice", vec![mv("c1", "fx3", 0)]);
-    log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
-    log.undo("main", "alice", "tx-u").unwrap();
-    assert_eq!(effect_ids(&log.state("main"), "c1"), ["fx2", "fx3"]);
-    replays(&log, &p, 3);
+    for first in [remove("c1", "fx3"), mv("c1", "fx3", 0)] {
+        let mut log = MemLog::new(p.clone());
+        log.commit("main", "tx-a", "alice", vec![first.clone()]);
+        log.commit("main", "tx-b", "bob", vec![remove("c1", "fx1")]);
+        let before = log.state("main");
+        let e = log.undo("main", "alice", "tx-u").unwrap_err();
+        assert_eq!(e.details["reason"], "SAME_PARAM", "{first:?}: {e:?}");
+        assert_eq!(e.details["againstTx"], "tx-b", "{first:?}: {e:?}");
+        assert_eq!(log.state("main"), before, "{first:?}");
+        replays(&log, &p, 2);
+    }
 }
 
 /// S1: a re-run that fails on an item's effect list blames the one step that changed it,

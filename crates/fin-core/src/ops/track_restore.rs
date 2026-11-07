@@ -73,6 +73,9 @@ pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     // The track, its items (with their effects) and transitions, as they were.
     put_back_track(&mut f, &r.track);
     f.uses.push(r.timeline.clone());
+    // Back at its old index: a later placement in the track order is a conflict.
+    f.uses.push(crate::ops::util::lists::TRACKS.into());
+    f.puts_back(crate::ops::util::lists::TRACKS);
     for a in r.track.items.iter().filter_map(|i| i.asset()) {
         if !f.uses.iter().any(|u| u == a) {
             f.uses.push(a.to_string());
