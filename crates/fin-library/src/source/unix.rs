@@ -225,7 +225,19 @@ impl Source for NativeSource {
     }
 
     fn read_dir(&self, dir: &DirHandle) -> io::Result<Vec<RawEntry>> {
-        os::list(Self::fd(dir)?)
+        os::list(Self::fd(dir)?, &|| {})
+    }
+
+    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
+        os::list(Self::fd(dir)?, progress)
+    }
+
+    fn stat_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<Option<RawEntry>> {
+        os::stat_child(Self::fd(parent)?, name)
+    }
+
+    fn dir_mtime(&self, dir: &DirHandle) -> io::Result<Option<i64>> {
+        os::dir_mtime(Self::fd(dir)?).map(Some)
     }
 
     fn volume(&self, dir: &DirHandle) -> io::Result<VolumeIdentity> {

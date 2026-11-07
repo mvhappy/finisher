@@ -8,7 +8,7 @@ repository.workspace = true
 [features]
 # The fake filesystem (`source::fake`, plan 5D Task 1) and, from Task 4, the test overlay.
 # Never enabled by a shipped build (`scripts/check-test-hooks.mjs`).
-test-hooks = ["dep:serde_json"]
+test-hooks = []
 
 [dependencies]
 # Raw name bytes and file ids on the wire (`RawRel`, `ScanEntry`, `Expect`).
@@ -17,7 +17,8 @@ base64 = "0.23"
 blake3 = "1.8.7"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", optional = true }
+# The fake spec and `in/dirs.ndjson` (`walk::KnownDirs`).
+serde_json = "1"
 thiserror = "2"
 # NFC display names and lookup keys (Decision 10).
 unicode-normalization = "0.1"

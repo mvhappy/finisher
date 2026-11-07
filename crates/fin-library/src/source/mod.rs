@@ -182,6 +182,27 @@ pub trait Source: Send + Sync {
     }
     /// Lists an open directory, in the OS's order.
     fn read_dir(&self, dir: &DirHandle) -> io::Result<Vec<RawEntry>>;
+    /// [`Source::read_dir`], calling `progress` as the listing advances (after each batch of
+    /// names and each entry's stat), so the walker's per-entry deadline (Decision 18: 30 s)
+    /// restarts on every step instead of covering a whole large directory. The default calls
+    /// `read_dir` without progress (the deadline then covers the whole call).
+    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
+        let _ = progress;
+        self.read_dir(dir)
+    }
+    /// The entry `name` of an open directory, stat'ed without listing it, following no link
+    /// and triggering no automount; `None` when it does not exist. Polls (Task 4) re-stat
+    /// known directories with it. The default lists `parent` and picks the entry.
+    fn stat_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<Option<RawEntry>> {
+        Ok(self.read_dir(parent)?.into_iter().find(|e| e.name == name))
+    }
+    /// An open directory's own mtime (ns since the Unix epoch), read before it is listed (the
+    /// root's, and a targeted directory's); `None` when the source cannot tell, which makes
+    /// a poll re-list it. The default answers `None`.
+    fn dir_mtime(&self, dir: &DirHandle) -> io::Result<Option<i64>> {
+        let _ = dir;
+        Ok(None)
+    }
     /// The volume an open directory is on (nested mounts).
     fn volume(&self, dir: &DirHandle) -> io::Result<VolumeIdentity>;
 }

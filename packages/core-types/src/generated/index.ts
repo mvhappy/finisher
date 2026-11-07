@@ -3733,6 +3733,29 @@ export interface JournalStatus {
   state: JournalState;
 }
 /**
+ * One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`
+ * (written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):
+ *
+ * - `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the
+ *   directory when it differs;
+ * - `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is
+ *   `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);
+ * - `listed_gen`: the full-scan generation in which it was last listed completely; a
+ *   resumed full scan of that generation skips its listing and still descends;
+ * - `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is
+ *   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KnownDir".
+ */
+export interface KnownDir {
+  dir: RawRel;
+  entries?: number;
+  listedGen?: number | null;
+  mountRoot?: boolean;
+  mtimeNs?: string | null;
+}
+/**
  * What a media file is (spec §6.3).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema

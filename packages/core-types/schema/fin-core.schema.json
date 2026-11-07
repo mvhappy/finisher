@@ -4745,6 +4745,43 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "KnownDir": {
+      "additionalProperties": false,
+      "description": "One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`\n(written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):\n\n- `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the\n  directory when it differs;\n- `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is\n  `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);\n- `listed_gen`: the full-scan generation in which it was last listed completely; a\n  resumed full scan of that generation skips its listing and still descends;\n- `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is\n  `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.",
+      "properties": {
+        "dir": {
+          "$ref": "#/$defs/RawRel"
+        },
+        "entries": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listedGen": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mountRoot": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mtimeNs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "dir"
+      ],
+      "type": "object"
+    },
     "Layer": {
       "description": "One item drawn at the plan's time. `local` is the time from the item's start: negative for\na transition's incoming item before its cut, past `duration` for the outgoing one after it.\nAn adjustment layer carries effects only (its transform and crop are the defaults); a\nnested item is a group layer whose `children` are its timeline's layers.",
       "properties": {

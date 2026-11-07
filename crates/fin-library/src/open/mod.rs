@@ -50,6 +50,10 @@ pub fn open_for_read(
     if rel.validate().is_err() {
         return Err(OpenError::Escapes);
     }
+    #[cfg(feature = "test-hooks")]
+    if let Some(refused) = crate::overlay::on_open(root, rel, hydrate) {
+        return Err(refused);
+    }
     let Some((name, dir)) = rel.components().split_last() else {
         return Err(OpenError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -137,15 +137,28 @@ fn stat_name(dir: &OwnedFd, name: &[u8]) -> io::Result<Option<libc::statx>> {
 
 /// A directory's entries; an entry that vanished between the listing and its stat is left
 /// out, any other failure fails the listing.
-pub(crate) fn list(dir: &OwnedFd) -> io::Result<Vec<RawEntry>> {
+/// `progress` is called after the names are read and after each entry's stat.
+pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
     let names = names(dir)?;
+    progress();
     let mut out = Vec::with_capacity(names.len());
     for n in names {
         if let Some(st) = stat_name(dir, &n)? {
             out.push(entry(n, &st));
         }
+        progress();
     }
     Ok(out)
+}
+
+/// One entry of `dir` by name, with the listing's `statx` flags; `None` when it is gone.
+pub(crate) fn stat_child(dir: &OwnedFd, name: &[u8]) -> io::Result<Option<RawEntry>> {
+    Ok(stat_name(dir, name)?.map(|st| entry(name.to_vec(), &st)))
+}
+
+/// An open directory's mtime.
+pub(crate) fn dir_mtime(dir: &OwnedFd) -> io::Result<i64> {
+    statx_fd(dir.as_raw_fd()).map(|st| mtime_ns(&st))
 }
 
 /// The facts of a directory as a root (Decision 17). Only the [`volume::SAMPLE_MAX`] entries

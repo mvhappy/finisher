@@ -52,6 +52,9 @@ fn yes() -> bool {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RootSpec {
     pub(super) volume: VolumeSpec,
+    /// The root directory's own mtime ([`crate::source::Source::dir_mtime`]).
+    #[serde(default)]
+    pub(super) mtime_ns: i64,
     #[serde(default)]
     pub(super) stat_delay_ms: u64,
     #[serde(default)]
@@ -133,7 +136,7 @@ fn hex(s: &str) -> Result<Vec<u8>, FakeError> {
         .collect()
 }
 
-pub(super) fn error(name: &str) -> io::Error {
+pub(crate) fn error(name: &str) -> io::Error {
     let kind = match name {
         "notFound" => io::ErrorKind::NotFound,
         "permissionDenied" => io::ErrorKind::PermissionDenied,
@@ -145,7 +148,7 @@ pub(super) fn error(name: &str) -> io::Error {
     io::Error::new(kind, format!("fake {name}"))
 }
 
-fn check_error(name: &Option<String>) -> Result<(), FakeError> {
+pub(crate) fn check_error(name: &Option<String>) -> Result<(), FakeError> {
     match name.as_deref() {
         None
         | Some(

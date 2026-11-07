@@ -7,7 +7,7 @@
 //! { "volume": { "key": "k1", "kind": "ext4", "devId": "1", "parentDevId": "0",
 //!               "mountRootAttr": null, "caseSensitive": true, "remote": false,
 //!               "rootFileId": "01" },
-//!   "statDelayMs": 0, "statError": null, "readDelayMs": 0, "error": null,
+//!   "mtimeNs": 0, "statDelayMs": 0, "statError": null, "readDelayMs": 0, "error": null,
 //!   "children": [
 //!     { "name": "a.mov", "size": 10, "mtimeNs": 5, "fileId": "0a" },
 //!     { "nameHex": "ff2e6d6f76" },
@@ -26,7 +26,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Mutex;
 use std::time::Duration;
 
-mod spec;
+pub(crate) mod spec;
 
 pub use spec::FakeError;
 use spec::{Node, Tree, error, parse};
@@ -47,8 +47,12 @@ pub struct FakeStats {
     pub file_opens: u64,
     pub placeholder_touches: u64,
     pub automount_triggers: u64,
+    /// `stat_child` calls (polls of unchanged directories).
+    pub entry_stats: u64,
     /// `open_dir` calls per directory.
     pub opens_by_dir: BTreeMap<RawRel, u64>,
+    /// `read_dir` calls per directory.
+    pub reads_by_dir: BTreeMap<RawRel, u64>,
 }
 
 /// The fake filesystem. [`FakeSource::reload`] swaps the tree (renames, deletions, unmounts
@@ -281,10 +285,36 @@ impl Source for FakeSource {
         };
         self.count(|s| {
             s.dir_reads += 1;
+            *s.reads_by_dir.entry(dir.rel().clone()).or_default() += 1;
             s.placeholder_touches += u64::from(placeholder);
         });
         std::thread::sleep(delay);
         outcome
+    }
+
+    fn stat_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<Option<RawEntry>> {
+        self.count(|s| s.entry_stats += 1);
+        let t = self.tree.lock().unwrap();
+        let level = if parent.rel().is_root() {
+            &t.children
+        } else {
+            &walk(&t.children, parent.rel())?
+                .last()
+                .expect("not the root")
+                .children
+        };
+        Ok(level
+            .iter()
+            .find(|n| n.entry.name == name)
+            .map(|n| n.entry.clone()))
+    }
+
+    fn dir_mtime(&self, dir: &DirHandle) -> io::Result<Option<i64>> {
+        let t = self.tree.lock().unwrap();
+        Ok(Some(match walk(&t.children, dir.rel())?.last() {
+            Some(n) => n.entry.mtime_ns,
+            None => t.root.mtime_ns,
+        }))
     }
 
     fn volume(&self, dir: &DirHandle) -> io::Result<VolumeIdentity> {

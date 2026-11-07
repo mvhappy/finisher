@@ -226,6 +226,7 @@ fn fake_reload_keeps_counters_and_injects_root_faults() {
             dir_opens: 1,
             dir_reads: 1,
             opens_by_dir: [(RawRel::root(), 1)].into(),
+            reads_by_dir: [(RawRel::root(), 1)].into(),
             ..FakeStats::default()
         }
     );

@@ -141,7 +141,8 @@ fn parse(rec: &[u8], dir_dev: i64) -> io::Result<Option<RawEntry>> {
 }
 
 /// A directory's entries, in `getattrlistbulk` order.
-pub(crate) fn list(dir: &OwnedFd) -> io::Result<Vec<RawEntry>> {
+/// `progress` is called after each `getattrlistbulk` buffer.
+pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
     let dir_dev = i64::from(fstat(dir.as_raw_fd())?.st_dev);
     let fresh = reopen_dir(dir)?;
     // SAFETY: `attrlist` is plain data; all-zero is valid.
@@ -182,8 +183,52 @@ pub(crate) fn list(dir: &OwnedFd) -> io::Result<Vec<RawEntry>> {
             }
             p += len;
         }
+        progress();
     }
     Ok(out)
+}
+
+/// One entry of `dir` by name, from `fstatat(AT_SYMLINK_NOFOLLOW)` (no listing, nothing
+/// materialised: a stat reads metadata only); `None` when it is gone. A trigger directory is
+/// not recognised here (only a listing's `ATTR_DIR_MOUNTSTATUS` sees it); polls stat only
+/// directories a listing already descended, which were not triggers.
+pub(crate) fn stat_child(dir: &OwnedFd, name: &[u8]) -> io::Result<Option<RawEntry>> {
+    let dir_dev = i64::from(fstat(dir.as_raw_fd())?.st_dev);
+    let c = super::unix::cname(name)?;
+    let st = match super::unix::lstat_at(dir.as_raw_fd(), &c) {
+        Ok(st) => st,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let entry_type = match st.st_mode & libc::S_IFMT {
+        libc::S_IFREG => EntryType::File,
+        libc::S_IFDIR => EntryType::Dir,
+        libc::S_IFLNK => EntryType::Symlink,
+        _ => EntryType::Other,
+    };
+    let dev = i64::from(st.st_dev);
+    Ok(Some(RawEntry {
+        name: name.to_vec(),
+        entry_type,
+        size: if entry_type == EntryType::Dir {
+            0
+        } else {
+            st.st_size.max(0) as u64
+        },
+        mtime_ns: ns(st.st_mtime, st.st_mtime_nsec),
+        file_id: Some(ino_id(st.st_ino)),
+        dev: Some(dev.to_string()),
+        attrs: Attrs::Macos { flags: st.st_flags },
+        reparse_tag: None,
+        mount_root: dev != dir_dev,
+        automount: false,
+    }))
+}
+
+/// An open directory's mtime.
+pub(crate) fn dir_mtime(dir: &OwnedFd) -> io::Result<i64> {
+    let st = fstat(dir.as_raw_fd())?;
+    Ok(ns(st.st_mtime, st.st_mtime_nsec))
 }
 
 /// Whether an open directory is a mount point (`ATTR_DIR_MOUNTSTATUS`).
@@ -216,7 +261,7 @@ pub(crate) fn root_stat(fd: &OwnedFd) -> io::Result<RootStat> {
     let status = mount_status(fd).unwrap_or(0);
     let mount_root = status & DIR_MNTSTATUS_MNTPOINT != 0
         || parent.as_ref().is_some_and(|p| p.st_dev != me.st_dev);
-    let entries = list(fd)?;
+    let entries = list(fd, &|| {})?;
     Ok(RootStat {
         key: fields.key(),
         kind: fields.fstype.clone(),

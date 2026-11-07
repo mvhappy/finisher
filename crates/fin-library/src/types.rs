@@ -158,6 +158,32 @@ pub struct ScanBatch {
     pub dirs_done: Vec<DirDone>,
 }
 
+/// One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`
+/// (written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):
+///
+/// - `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the
+///   directory when it differs;
+/// - `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is
+///   `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);
+/// - `listed_gen`: the full-scan generation in which it was last listed completely; a
+///   resumed full scan of that generation skips its listing and still descends;
+/// - `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is
+///   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KnownDir {
+    pub dir: RawRel,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "ns_opt")]
+    #[schemars(with = "Option<String>")]
+    pub mtime_ns: Option<i64>,
+    #[serde(default)]
+    pub entries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed_gen: Option<u64>,
+    #[serde(default)]
+    pub mount_root: bool,
+}
+
 /// One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:
 /// entries are matched by file id, size and mtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
