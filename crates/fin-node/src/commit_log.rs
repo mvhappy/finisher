@@ -191,6 +191,13 @@ impl Logged for RecoverReport {
     }
 }
 
+/// Whether an entry with `outcome` carries the intent (training only): what this attempt
+/// committed (`accepted`, `rebased`), or the request of a failed one. A dry run's plan, a
+/// deduped retry (the intent is the first attempt's entry's) and a no-op carry none.
+fn keeps_intent(outcome: CommitOutcome) -> bool {
+    matches!(outcome, CommitOutcome::Accepted | CommitOutcome::Rebased)
+}
+
 fn op_counts<'a>(ops: impl Iterator<Item = &'a Op>) -> Counts<Name> {
     let mut out = Counts::default();
     for op in ops {
@@ -339,7 +346,8 @@ impl Attempt {
             links: vec![],
             conflicts: Counts::default(),
             rebased_over: rebased_over.filter(|_| outcome == CommitOutcome::Rebased),
-            intent: training.then(|| vec![c.tx]),
+            // A plan or a retry committed nothing now: no intent, as for history calls.
+            intent: (training && keeps_intent(outcome)).then(|| vec![c.tx]),
         });
     }
 
@@ -359,9 +367,12 @@ impl Attempt {
             CommitOutcome::NoOp => r.no_op().map(code),
             _ => None,
         };
-        let first = r.records().first();
-        let tx_id = first.map_or_else(|| self.req.tx_id.clone(), |c| c.tx.tx_id.clone());
-        let branch = first
+        // The request's txId on every path (a merge's or recovery's is already `<id>-1`, its
+        // first record's).
+        let tx_id = std::mem::take(&mut self.req.tx_id);
+        let branch = r
+            .records()
+            .first()
             .map(|c| c.tx.branch.clone())
             .or(self.req.branch.take());
         self.ops = op_counts(r.records().iter().flat_map(|c| c.tx.ops.iter()));
@@ -372,8 +383,8 @@ impl Attempt {
             .map(str::to_owned)
             .collect();
         let conflicts = conflict_counts(r.conflicts().into_iter());
-        let intent =
-            (self.training && !dry).then(|| r.into_records().into_iter().map(|c| c.tx).collect());
+        let intent = (self.training && keeps_intent(outcome))
+            .then(|| r.into_records().into_iter().map(|c| c.tx).collect());
         self.emit(Done {
             outcome,
             code,

@@ -163,7 +163,7 @@ impl Manager {
         };
         let mut first = None;
         for sha in shas {
-            if fetcher.cache().has(sha) {
+            if self.fetches.on() && fetcher.cache().has(sha) {
                 self.fetches.already_cached(&self.catalog, sha);
             }
             if let Err(e) = fetcher.fetch_now(sha) {

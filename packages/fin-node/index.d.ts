@@ -230,6 +230,8 @@ export declare class Journal {
   panicOnThreadForTest(thread: string): boolean;
   /** @internal Test builds only: the writer panics at its next message. */
   panicWriterForTest(): void;
+  /** @internal Test builds only: `raw` as entries store an id (a ULID kept, else keyed); undefined while off. */
+  idRefForTest(raw: string): string | undefined;
   /** @internal Test builds only: stalls the writer until `resumeWriterForTest` (false when off). */
   pauseWriterForTest(): boolean;
   /** @internal Test builds only: lets a stalled writer go on. */

@@ -364,6 +364,11 @@ export class Journal {
   }
 
   /** @internal Test builds only. */
+  idRefForTest(raw) {
+    return this.#hook("idRefForTest")(raw) ?? undefined;
+  }
+
+  /** @internal Test builds only. */
   pauseWriterForTest() {
     return this.#hook("pauseWriterForTest")();
   }

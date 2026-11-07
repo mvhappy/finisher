@@ -244,7 +244,7 @@ describe("log.commit from history calls", () => {
     const merge = (await commits(j)).at(-1)!;
     expect(merge.payload).toMatchObject({ record: "merge", outcome: "noOp" });
     expect(merge.payload.code).toBeUndefined();
-    expect(merge.ctx?.txId).toBe(U(11));
+    expect(merge.ctx?.txId).toBe(j.idRefForTest(`${U(11)}-1`));
   });
 
   test("deduped_retry_on_every_write_path", async () => {
@@ -318,6 +318,7 @@ describe("log.commit from history calls", () => {
     expect(merge.payload).toMatchObject({ record: "merge", outcome: "accepted", links: [U(6), U(7)], ops: { "item.insert": 2 } });
     // The group's records are `<mergeId>-<n>`: not ULIDs, so keyed.
     expect(merge.ctx?.txId).toMatch(KEYED);
+    expect(merge.ctx?.txId).toBe(j.idRefForTest(`${U(8)}-1`));
     expect(merge.ctx?.branch).toBe("main");
   });
 
@@ -329,6 +330,34 @@ describe("log.commit from history calls", () => {
     await e.cherryPick(req({ txId: U(7), origin: U(6), into: "main" }));
     const pick = (await commits(j)).at(-1)!;
     expect(pick.payload).toMatchObject({ record: "pick", outcome: "accepted", links: [U(6)] });
+  });
+
+  test("merge_and_recover_name_their_first_record_on_every_path", async () => {
+    const j = open();
+    const e = await project();
+    const first = (id: string) => j.idRefForTest(`${id}-1`);
+    expect(j.idRefForTest(U(1))).toBe(U(1));
+    await e.branchCreate(req({ txId: U(5), name: "feature", from: "main" }));
+    await e.commit(tx(U(6), 2, [{ op: "clip.delete", clip: "c1" }], "br1"));
+    await e.commit(tx(U(7), 3, [{ op: "clip.delete", clip: "c1" }]));
+    // Refused (CONFLICT), then planned, then nothing merged (skipped), then a merge that copies.
+    expect((await rejection(e.merge(req({ txId: "m-a", from: "feature", into: "main" })))).code).toBe("CONFLICT");
+    await e.merge(req({ txId: "m-a", from: "feature", into: "main", skipConflicting: true, dryRun: true }));
+    await e.merge(req({ txId: "m-a", from: "feature", into: "main", skipConflicting: true }));
+    await e.commit(tx(U(8), 3, [insert(30)], "br1"));
+    await e.merge(req({ txId: "m-b", from: "feature", into: "main", skipConflicting: true }));
+    await e.merge(req({ txId: "m-b", from: "feature", into: "main", skipConflicting: true }));
+    await e.recover(req({ txId: "r-a", create: "all" }));
+    await rejection(e.recover(req({ txId: "r-b", create: "nope" })));
+    const merges = (await commits(j)).filter((c) => c.payload.record === "merge");
+    expect(merges.map((c) => c.payload.outcome)).toEqual(["conflict", "dryRun", "noOp", "accepted", "deduped"]);
+    expect(merges.slice(0, 3).map((c) => c.ctx?.txId)).toEqual(Array(3).fill(first("m-a")));
+    expect(merges.slice(3).map((c) => c.ctx?.txId)).toEqual(Array(2).fill(first("m-b")));
+    const recovers = (await commits(j)).filter((c) => c.payload.record === "recover");
+    expect(recovers.map((c) => [c.payload.outcome, c.ctx?.txId])).toEqual([
+      ["noOp", first("r-a")],
+      ["refused", first("r-b")],
+    ]);
   });
 
   test("checkpoint_and_branch_records", async () => {
@@ -360,7 +389,7 @@ describe("log.commit from history calls", () => {
     const [made, dry, refused] = rows((await commits(j)).slice(2), 3);
     // Nothing was set aside on this server, so nothing is made.
     expect(made.payload).toMatchObject({ record: "recover", outcome: "noOp" });
-    expect(made.ctx?.txId).toBe(U(3));
+    expect(made.ctx?.txId).toBe(j.idRefForTest(`${U(3)}-1`));
     expect(dry.payload).toMatchObject({ record: "recover", outcome: "dryRun" });
     expect(refused.payload).toMatchObject({ record: "recover", outcome: "refused" });
   });
@@ -397,6 +426,16 @@ describe("intents (training)", () => {
     await e.undo(req({ txId: U(4), branch: "main" }));
     const undo = (await commits(j)).at(-1)!;
     expect(undo.payload.intent.map((t: { txId: string }) => t.txId)).toEqual([U(4)]);
+    // A deduped retry and a dry run carry none (the first attempt's entry has it).
+    await e.commit(tx(U(3), 1, [insert(20, 1)], "main", "Someone Real"));
+    await e.undo(req({ txId: U(4), branch: "main" }));
+    await e.redo(req({ txId: U(5), branch: "main", dryRun: true }));
+    const [edit, again, dry] = rows((await commits(j)).slice(-3), 3);
+    expect([edit.payload.outcome, again.payload.outcome, dry.payload.outcome]).toEqual(["deduped", "deduped", "dryRun"]);
+    for (const c of [edit, again, dry]) {
+      expect(c.payload.intent).toBeUndefined();
+      expect(c.payload.intentOmitted).toBeUndefined();
+    }
   });
 
   test("failed_commit_intent_is_the_request", async () => {

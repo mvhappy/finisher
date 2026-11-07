@@ -127,7 +127,8 @@ pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
                 meta_json,
             } => {
                 let r = parse::<MergeReq>("merge", &req_json)?;
-                let q = req(j, &r.tx_id, &r.author, Some(&r.into));
+                // The group's first record, `<id>-1`, on every path (what `fin` reports).
+                let q = req(j, &format!("{}-1", r.tx_id), &r.author, Some(&r.into));
                 commit_log::history(s, j, CommitRecord::Merge, meta_json.as_deref(), q, |s| {
                     s.merge(r)
                 })
@@ -168,7 +169,8 @@ fn recover(s: &mut Store, j: &Journal, req_json: &str, meta: Option<&str>) -> Re
     if r.create.is_none() && r.dismiss.is_none() {
         return encode(&s.recover(r).map_err(reject)?);
     }
-    let q = req(j, &r.tx_id, &r.author, None);
+    // The recovery's first record, `<id>-1`, on every path (what `fin` reports).
+    let q = req(j, &format!("{}-1", r.tx_id), &r.author, None);
     commit_log::history(s, j, CommitRecord::Recover, meta, q, |s| s.recover(r)).map_err(reject)
 }
 

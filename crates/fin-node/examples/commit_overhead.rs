@@ -4,16 +4,17 @@
 //!
 //! It runs `commit_log::commit`, the function `Engine.commit` runs inside `with_store` (this
 //! file includes `src/commit_log.rs` and `src/journal/ctx.rs`, which hold no napi), on a
-//! 1k-item project, with the journal off, with diagnostics on, with training on, and with
-//! diagnostics on and the writer stalled (an injected slow disk, `test-hooks`). The modes take
-//! turns commit by commit (each round starting one mode later), so drift (the log grows) and
-//! position effects fall on all of them alike: blocks of 25 left a bias of up to 17 µs between
-//! two runs of the same mode.
+//! 1k-item project, with the journal off (twice: `off` and `off-2`), with diagnostics on, with
+//! training on, and with diagnostics on and the writer stalled (an injected slow disk,
+//! `test-hooks`). Each round makes one commit per mode, each round starting one mode later, so
+//! drift (the log grows) and position effects fall on all of them alike.
 //!
-//! Budgets (p50 against off): diagnostics ≤ 2 % and ≤ 20 µs (the stalled writer too);
-//! training ≤ 5 % and ≤ 50 µs. The p50 difference carries the commit's own noise (a few
-//! µs either way), so the logging work alone is timed too ([`direct`]): what
-//! `commit_log::commit` adds around the store call, on a committed tx of this project.
+//! **The gate** is the median over the rounds of each mode's commit minus the same round's
+//! `off` commit (paired differences), against off's p50: diagnostics ≤ 2 % and ≤ 20 µs (the
+//! stalled writer too), training ≤ 5 % and ≤ 50 µs. Two p50s of ~2 ms commits differ by
+//! ±25 µs from run to run with nothing changed; the paired median does not. `off-2` minus
+//! `off` is printed on every run: the noise floor the gate works within. The logging work
+//! alone is timed too ([`direct`]): what `commit_log::commit` adds around the store call.
 
 #![allow(dead_code)]
 
@@ -106,11 +107,39 @@ fn consent(purposes: Purposes) -> Consent {
 struct Mode {
     name: &'static str,
     journal: Journal,
+    /// One commit's µs per round (rounds after the first), in round order.
     samples: Vec<f64>,
+}
+
+impl Mode {
+    fn new(name: &'static str, journal: Journal) -> Mode {
+        Mode {
+            name,
+            journal,
+            samples: vec![],
+        }
+    }
 }
 
 fn p(sorted: &[f64], q: f64) -> f64 {
     sorted[((sorted.len() - 1) as f64 * q).round() as usize]
+}
+
+fn sorted(v: &[f64]) -> Vec<f64> {
+    let mut v = v.to_vec();
+    v.sort_by(f64::total_cmp);
+    v
+}
+
+/// The median of `m`'s commit minus the same round's `off` commit.
+fn paired(m: &Mode, off: &Mode) -> f64 {
+    let d: Vec<f64> = m
+        .samples
+        .iter()
+        .zip(&off.samples)
+        .map(|(a, b)| a - b)
+        .collect();
+    p(&sorted(&d), 0.5)
 }
 
 /// The logging work alone, `DIRECT` times: the attempt before the call and the
@@ -151,27 +180,13 @@ fn main() {
         .collect();
     assert!(stalled.pause_writer(), "the writer parks");
     let mut modes = vec![
-        Mode {
-            name: "off",
-            journal: Journal::disabled(),
-            samples: vec![],
-        },
-        Mode {
-            name: "diagnostics",
-            journal: diag.clone(),
-            samples: vec![],
-        },
-        Mode {
-            name: "training",
-            journal: training.clone(),
-            samples: vec![],
-        },
-        Mode {
-            name: "stalled",
-            journal: stalled.clone(),
-            samples: vec![],
-        },
+        Mode::new("off", Journal::disabled()),
+        Mode::new("off-2", Journal::disabled()),
+        Mode::new("diagnostics", diag.clone()),
+        Mode::new("training", training.clone()),
+        Mode::new("stalled", stalled.clone()),
     ];
+    let count = modes.len();
     let item = s.snapshot("main").expect("snapshot").1.timelines[0].tracks[0].items[ITEMS / 2]
         .id
         .clone();
@@ -179,7 +194,7 @@ fn main() {
     let mut sign = 1;
     for round in 0..ROUNDS {
         for k in 0..modes.len() {
-            let m = &mut modes[(round + k) % 4];
+            let m = &mut modes[(round + k) % count];
             {
                 let delta = if sign > 0 { "1/30" } else { "-1/30" };
                 sign = -sign;
@@ -229,36 +244,41 @@ fn main() {
     .collect();
     stalled.resume_writer();
     let mut ok = true;
-    for m in &mut modes {
-        m.samples.sort_by(f64::total_cmp);
-    }
-    let off = p(&modes[0].samples, 0.5);
+    let off = &modes[0];
+    let off_p50 = p(&sorted(&off.samples), 0.5);
     println!(
-        "commit on a {ITEMS}-item project, {} samples per mode (p50 / p90 µs):",
-        modes[0].samples.len()
+        "commit on a {ITEMS}-item project, {} rounds (µs; overhead = median paired difference \
+         against off, p50 difference for reference):",
+        off.samples.len()
     );
     for m in &modes {
-        let p50 = p(&m.samples, 0.5);
-        let over = p50 - off;
-        let pct = over / off * 100.0;
-        let (max_pct, max_us) = match m.name {
-            "off" => (f64::INFINITY, f64::INFINITY),
-            "training" => (5.0, 50.0),
-            _ => (2.0, 20.0),
+        let all = sorted(&m.samples);
+        let p50 = p(&all, 0.5);
+        let over = paired(m, off);
+        let pct = over / off_p50 * 100.0;
+        let budget = match m.name {
+            "off" | "off-2" => None,
+            "training" => Some((5.0, 50.0)),
+            _ => Some((2.0, 20.0)),
         };
-        let pass = pct <= max_pct && over <= max_us;
-        ok &= pass;
-        println!(
-            "  {:<12} {p50:>8.1} / {:>8.1}   overhead {over:>+7.1} µs ({pct:>+5.2} %){}",
-            m.name,
-            p(&m.samples, 0.9),
-            match m.name {
-                "off" => String::new(),
-                _ => format!(
+        let verdict = match budget {
+            None if m.name == "off" => String::new(),
+            None => "   (noise floor)".to_string(),
+            Some((max_pct, max_us)) => {
+                let pass = pct <= max_pct && over <= max_us;
+                ok &= pass;
+                format!(
                     "   budget ≤ {max_pct} % and ≤ {max_us} µs: {}",
                     if pass { "ok" } else { "MISS" }
-                ),
+                )
             }
+        };
+        println!(
+            "  {:<12} p50 {p50:>7.1} p90 {:>7.1}   overhead {over:>+6.1} µs ({pct:>+5.2} %), \
+             p50 diff {:>+6.1}{verdict}",
+            m.name,
+            p(&all, 0.9),
+            p50 - off_p50,
         );
     }
     println!("the logging work alone, {DIRECT} times (p50 / p99 µs):");

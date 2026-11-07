@@ -46,10 +46,20 @@ fn key_of(server_data: &Path) -> PathBuf {
 
 /// The journal open on `server_data`, or a disabled one (records nothing).
 pub(crate) fn for_server(server_data: &Path) -> fin_journal::Journal {
-    let key = key_of(server_data);
+    for_key(&key_of(server_data))
+}
+
+/// The canonical form of `server_data` that [`for_key`] takes (computed once by callers that
+/// look the journal up often).
+pub(crate) fn server_key(server_data: &Path) -> PathBuf {
+    key_of(server_data)
+}
+
+/// [`for_server`] by a [`server_key`], without touching the file system.
+pub(crate) fn for_key(key: &Path) -> fin_journal::Journal {
     lock(&JOURNALS)
         .iter()
-        .find(|(p, _)| *p == key)
+        .find(|(p, _)| p == key)
         .map(|(_, j)| j.clone())
         .unwrap_or_else(fin_journal::Journal::disabled)
 }
@@ -479,6 +489,13 @@ impl JournalHandle {
     #[napi(catch_unwind)]
     pub fn resume_writer_for_test(&self) {
         self.journal.resume_writer();
+    }
+
+    /// Test hook: `raw` as the journal stores an id (a ULID kept, anything else keyed with
+    /// the install key), so a test can compute the ids it expects; `None` while off.
+    #[napi(catch_unwind)]
+    pub fn id_ref_for_test(&self, raw: String) -> Option<String> {
+        self.journal.id_ref(&raw).map(|r| r.as_str().to_owned())
     }
 
     /// Test hook: how often the previous panic hook ran (it is chained after ours).

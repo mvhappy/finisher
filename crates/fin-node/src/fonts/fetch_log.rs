@@ -24,6 +24,7 @@ use fin_fonts::{FileState, FontCatalog};
 use crate::engine::lock;
 
 pub(crate) struct FetchLog {
+    /// The server data, canonical ([`crate::journal::server_key`]), computed once.
     server_data: PathBuf,
     /// Fetches under way: since when, and whether a download was seen.
     seen: Mutex<HashMap<String, (Instant, bool)>>,
@@ -32,14 +33,20 @@ pub(crate) struct FetchLog {
 impl FetchLog {
     pub(crate) fn new(server_data: &Path) -> FetchLog {
         FetchLog {
-            server_data: server_data.to_path_buf(),
+            server_data: crate::journal::server_key(server_data),
             seen: Mutex::new(HashMap::new()),
         }
     }
 
     fn journal(&self) -> Option<fin_journal::Journal> {
-        let j = crate::journal::for_server(&self.server_data);
+        let j = crate::journal::for_key(&self.server_data);
         j.gate().map(|_| j)
+    }
+
+    /// Whether the server's journal records anything now (callers skip their own checks
+    /// for `fonts.fetch` otherwise).
+    pub(crate) fn on(&self) -> bool {
+        self.journal().is_some()
     }
 
     /// A state change the fetcher published for `sha`.
