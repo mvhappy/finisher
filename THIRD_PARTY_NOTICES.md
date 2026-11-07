@@ -39,8 +39,24 @@ status: planned
 ## dav1d (BSD-2-Clause)
 status: planned
 
-## SVT-AV1 (BSD-3-Clause-Clear)
-status: planned
+## SVT-AV1 (BSD-3-Clause-Clear) — `fin-codecs` (AV1 encode)
+status: used (sub-project 6A), built from source: the git submodule `third_party/svt-av1` at
+tag v4.3.0 (commit e3d63405f9ba8219913a7276c2c47d10e5d022fe), the encoder library only, linked
+statically. Licences, as `third_party/native.json` hashes them:
+- `LICENSE.md`: the Clear BSD License (BSD-3-Clause-Clear), Copyright (c) 2021, Alliance for
+  Open Media. It grants no patent rights;
+- `PATENTS.md`: the Alliance for Open Media Patent License 1.0, which grants the AV1 patent
+  licence;
+- `LICENSE-BSD2.md`: BSD-2-Clause, for the files derived from libaom (Copyright (c) 2019,
+  Alliance for Open Media);
+- `third_party/fastfeat/LICENSE`: BSD-3-Clause (Edward Rosten), and
+  `third_party/safestringlib/LICENSE`: MIT (Intel Corporation).
+
+## rav1d (BSD-2-Clause) — `fin-codecs` (AV1 decode)
+status: used (sub-project 6A), as a Cargo dependency (`rav1d` 1.1), the Rust port of dav1d.
+BSD-2-Clause (Copyright the VideoLAN and dav1d authors, and the rav1d authors); AV1 itself is
+under the Alliance for Open Media Patent License 1.0. Its x86_64 assembly is compiled by its
+build script.
 
 ## libvpx (BSD-3-Clause)
 status: planned

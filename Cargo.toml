@@ -41,3 +41,8 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The AV1 decoder runs pure Rust on aarch64 (fin-codecs/Cargo.toml); unoptimised, the codec
+# tests would take minutes.
+[profile.dev.package.rav1d]
+opt-level = 3
