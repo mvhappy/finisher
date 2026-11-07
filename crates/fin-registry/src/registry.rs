@@ -139,7 +139,17 @@ impl Registry {
         })?;
         let root: tough::schema::Signed<tough::schema::Root> = serde_json::from_slice(&bytes)
             .map_err(|e| error("REGISTRY_INVALID", "parse", format!("1.root.json: {e}")))?;
-        let keys = &root.signed.roles[&tough::schema::RoleType::Root];
+        let keys = root
+            .signed
+            .roles
+            .get(&tough::schema::RoleType::Root)
+            .ok_or_else(|| {
+                error(
+                    "REGISTRY_INVALID",
+                    "parse",
+                    "1.root.json names no root keys",
+                )
+            })?;
         let mut root_key_ids: Vec<String> = keys
             .keyids
             .iter()

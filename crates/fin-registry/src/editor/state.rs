@@ -64,6 +64,28 @@ pub(crate) fn role_keys(ids: Vec<String>, threshold: u64) -> RoleKeys {
     }
 }
 
+/// The key ring must never be inside the folder that is published (or pushed).
+pub(crate) fn refuse_keys_inside(dir: &Path, keys_dir: &Path) -> Result<(), EditorError> {
+    let abs = |p: &Path| {
+        std::path::absolute(p).map(|a| {
+            a.components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect::<std::path::PathBuf>()
+        })
+    };
+    let (Ok(d), Ok(k)) = (abs(dir), abs(keys_dir)) else {
+        return Ok(());
+    };
+    let real = |p: &std::path::PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+    if k.starts_with(&d) || real(&k).starts_with(real(&d)) {
+        return Err(EditorError::invalid(
+            "keysInside",
+            "the key ring must not be inside the registry folder: it would be published",
+        ));
+    }
+    Ok(())
+}
+
 fn unsigned<T>(signed: T) -> Signed<T> {
     Signed {
         signed,
@@ -95,10 +117,35 @@ impl State {
             }
         }
         let root: Signed<Root> = read(&meta.join(format!("{newest}.root.json")))?;
+        let roles_ok = [
+            RoleType::Root,
+            RoleType::Targets,
+            RoleType::Snapshot,
+            RoleType::Timestamp,
+        ]
+        .iter()
+        .all(|r| root.signed.roles.contains_key(r));
+        if !roles_ok {
+            return Err(EditorError::invalid(
+                "layout",
+                "the root does not name all four roles",
+            ));
+        }
+        let missing = |what: &str| EditorError::invalid("layout", format!("no {what} is listed"));
         let timestamp: Signed<Timestamp> = read(&meta.join("timestamp.json"))?;
-        let sv = timestamp.signed.meta["snapshot.json"].version;
+        let sv = timestamp
+            .signed
+            .meta
+            .get("snapshot.json")
+            .ok_or_else(|| missing("snapshot"))?
+            .version;
         let snapshot: Signed<Snapshot> = read(&meta.join(format!("{sv}.snapshot.json")))?;
-        let tv = snapshot.signed.meta["targets.json"].version;
+        let tv = snapshot
+            .signed
+            .meta
+            .get("targets.json")
+            .ok_or_else(|| missing("targets"))?
+            .version;
         let targets: Signed<Targets> = read(&meta.join(format!("{tv}.targets.json")))?;
         let mut roles = BTreeMap::new();
         for (file, m) in &snapshot.signed.meta {
@@ -173,6 +220,7 @@ impl RepoBuilder {
         max_stale_days: Option<u16>,
         clock: Arc<dyn Clock>,
     ) -> Result<RepoBuilder, EditorError> {
+        refuse_keys_inside(dir, keys_dir)?;
         let meta = dir.join("metadata");
         if std::fs::read_dir(&meta).is_ok_and(|mut d| d.next().is_some()) {
             return Err(EditorError::new(

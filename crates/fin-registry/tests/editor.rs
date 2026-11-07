@@ -124,3 +124,18 @@ fn keys_round_trip_as_pem() {
     assert!(dbg.contains(&k.public().key_id()) && !dbg.contains(pem.lines().nth(1).unwrap()));
     assert!(SigningKey::from_pem(&k.public().to_pem()).is_err());
 }
+
+#[test]
+fn key_ring_inside_the_registry_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("registry");
+    let k = SigningKey::generate();
+    for keys in [repo.join("keys"), repo.join("./x/../keys")] {
+        let e = RepoBuilder::init(&repo, &keys, std::slice::from_ref(&k), 1, None).unwrap_err();
+        assert_eq!(e.details["reason"], "keysInside");
+    }
+    assert!(!repo.exists(), "a refused init wrote files");
+    RepoBuilder::init(&repo, &tmp.path().join("keys"), &[k], 1, None).unwrap();
+    let e = RepoBuilder::open(&repo, &repo.join("metadata")).unwrap_err();
+    assert_eq!(e.details["reason"], "keysInside");
+}

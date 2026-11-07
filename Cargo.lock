@@ -635,6 +635,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-plugin-cli"
+version = "0.0.0"
+dependencies = [
+ "fin-plugin-api",
+ "fin-registry",
+ "semver",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "fin-probe"
 version = "0.0.0"
 dependencies = [

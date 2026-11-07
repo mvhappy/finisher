@@ -169,6 +169,7 @@ pub(crate) fn sign<T: Serialize>(role: T, keys: &[SigningKey]) -> SignedFile<T> 
 impl RepoBuilder {
     /// Opens the registry in `dir`, signing with the keys in `keys_dir`.
     pub fn open(dir: &Path, keys_dir: &Path) -> Result<RepoBuilder, EditorError> {
+        state::refuse_keys_inside(dir, keys_dir)?;
         let keys = KeyRing::new(keys_dir);
         let st = State::load(dir, &keys)?;
         Ok(RepoBuilder {
