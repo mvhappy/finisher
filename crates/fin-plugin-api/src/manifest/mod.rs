@@ -10,7 +10,7 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 pub use contributes::{CaptionStyleContribution, Contributes, FontCatalogContribution};
-pub use id::{DEV_PUBLISHER, IdError, PluginId, RESERVED_PUBLISHERS};
+pub use id::{DEV_PUBLISHER, IdError, PluginId, RESERVED_DEVICE_NAMES, RESERVED_PUBLISHERS};
 pub use runtime::{Platform, Runtime};
 
 use crate::permission::Permission;

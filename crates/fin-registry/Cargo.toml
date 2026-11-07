@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Plugin packages (strict reader, reproducible packer, tree hashes) and TUF registries over local folders (trust store, refresh, repository editor)."
+description = "Plugin packages (strict reader, reproducible packer, tree hashes), install plans and the plugin store, and TUF registries over local folders (trust store, refresh, repository editor)."
 
 [dependencies]
 # Everything below `tough` is already in its tree: no new licence (8A Task 4a).
@@ -20,6 +20,7 @@ hex = "0.4"
 jiff = "0.2"
 olpc-cjson = "0.1"
 pem = "3"
+schemars = { version = "1", features = ["semver1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

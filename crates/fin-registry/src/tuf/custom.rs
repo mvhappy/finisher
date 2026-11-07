@@ -64,17 +64,10 @@ impl PackageCustom {
     }
 }
 
-/// Lowercase hex SHA-256 of the permissions as a JSON array, each permission's JSON sorted,
-/// so reordering the manifest does not change it.
+/// The digest publishers sign into `permissionsDigest`: one definition for the editor that
+/// signs it and the install plan that checks it ([`crate::target::permissions_digest`]).
 pub fn permissions_digest(perms: &[Permission]) -> String {
-    let mut each: Vec<String> = perms
-        .iter()
-        .map(|p| serde_json::to_string(p).unwrap_or_default())
-        .collect();
-    each.sort();
-    each.dedup();
-    let joined = format!("[{}]", each.join(","));
-    hex(&Sha256::digest(joined.as_bytes()))
+    crate::target::permissions_digest(perms)
 }
 
 /// `custom.finisher.maxStaleDays` of a root: default 7, at most 90.
