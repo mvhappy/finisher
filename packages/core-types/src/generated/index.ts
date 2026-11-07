@@ -313,6 +313,11 @@ export type Curve = "linear" | "equalPower";
 export type TransitionKind = "crossfade" | "dissolve";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ShapeKind".
+ */
+export type ShapeKind = "fadeIn" | "fadeOut" | "crossIn" | "crossOut";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "BranchState".
  */
 export type BranchState = "active" | "archived" | "merged";
@@ -994,6 +999,100 @@ export interface Transition {
   duration: Rational;
   id: string;
   kind: TransitionKind;
+}
+/**
+ * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
+ * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioItem".
+ */
+export interface AudioItem {
+  asset: string;
+  from: Rational;
+  gain: GainSegment[];
+  item: string;
+  pan: PanSegment[];
+  sourceFrom: Rational;
+  speed: Rational;
+  to: Rational;
+  track: string;
+}
+/**
+ * Gain over `[from, to)` in dB: `db` are the end values of the keyframe span the segment
+ * lies in, `u` the segment's progress range through that span, so the dB at progress `x` of
+ * the segment is `lerp(db[0], db[1], ease(lerp(u[0], u[1], x)))` with `ease` from `interp`
+ * (`hold`: `db[0]` throughout). The `shapes` multiply the amplitude.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GainSegment".
+ */
+export interface GainSegment {
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  db: [number, number];
+  from: Rational;
+  interp: Interp;
+  shapes?: Shape[];
+  to: Rational;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  u: [number, number];
+}
+/**
+ * A fade or crossfade side over a segment: `p` is its progress at the segment's ends (0 → 1
+ * across the whole fade). Its amplitude factor is `curve(p)` for `fadeIn`/`crossIn` and
+ * `curve(1 − p)` for `fadeOut`/`crossOut` (`linear`: `x`; `equalPower`: `sqrt(x)`-shaped, as
+ * the mixer defines it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Shape".
+ */
+export interface Shape {
+  curve: Curve;
+  kind: ShapeKind;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  p: [number, number];
+}
+/**
+ * Pan over `[from, to)` (−1 left … 1 right; the mixer clamps), read like [`GainSegment`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PanSegment".
+ */
+export interface PanSegment {
+  from: Rational;
+  interp: Interp;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  pan: [number, number];
+  to: Rational;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  u: [number, number];
+}
+/**
+ * The items sounding in `[from, to)` of one timeline, in track then time order.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioPlan".
+ */
+export interface AudioPlan {
+  from: Rational;
+  items: AudioItem[];
+  timeline: string;
+  to: Rational;
 }
 /**
  * The answer of [`Store::create_branch`](crate::Store::create_branch): the new branch and

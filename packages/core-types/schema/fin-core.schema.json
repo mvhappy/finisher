@@ -159,6 +159,56 @@
       ],
       "type": "object"
     },
+    "AudioItem": {
+      "description": "One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the\ntimeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "gain": {
+          "items": {
+            "$ref": "#/$defs/GainSegment"
+          },
+          "type": "array"
+        },
+        "item": {
+          "type": "string"
+        },
+        "pan": {
+          "items": {
+            "$ref": "#/$defs/PanSegment"
+          },
+          "type": "array"
+        },
+        "sourceFrom": {
+          "$ref": "#/$defs/Rational"
+        },
+        "speed": {
+          "$ref": "#/$defs/Rational"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "track",
+        "asset",
+        "from",
+        "to",
+        "sourceFrom",
+        "speed",
+        "gain",
+        "pan"
+      ],
+      "type": "object"
+    },
     "AudioParams": {
       "description": "The item's own audio: gain in dB, pan in −1…1, fades in seconds.",
       "properties": {
@@ -177,6 +227,33 @@
           "type": "number"
         }
       },
+      "type": "object"
+    },
+    "AudioPlan": {
+      "description": "The items sounding in `[from, to)` of one timeline, in track then time order.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/AudioItem"
+          },
+          "type": "array"
+        },
+        "timeline": {
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        }
+      },
+      "required": [
+        "timeline",
+        "from",
+        "to",
+        "items"
+      ],
       "type": "object"
     },
     "Bin": {
@@ -983,6 +1060,52 @@
         "t",
         "resolution",
         "layers"
+      ],
+      "type": "object"
+    },
+    "GainSegment": {
+      "description": "Gain over `[from, to)` in dB: `db` are the end values of the keyframe span the segment\nlies in, `u` the segment's progress range through that span, so the dB at progress `x` of\nthe segment is `lerp(db[0], db[1], ease(lerp(u[0], u[1], x)))` with `ease` from `interp`\n(`hold`: `db[0]` throughout). The `shapes` multiply the amplitude.",
+      "properties": {
+        "db": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "shapes": {
+          "items": {
+            "$ref": "#/$defs/Shape"
+          },
+          "type": "array"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        },
+        "u": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "db",
+        "interp",
+        "u"
       ],
       "type": "object"
     },
@@ -2459,6 +2582,46 @@
         }
       ]
     },
+    "PanSegment": {
+      "description": "Pan over `[from, to)` (−1 left … 1 right; the mixer clamps), read like [`GainSegment`].",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "pan": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        },
+        "u": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "pan",
+        "interp",
+        "u"
+      ],
+      "type": "object"
+    },
     "ParamValue": {
       "anyOf": [
         {
@@ -2832,6 +2995,41 @@
         "origin"
       ],
       "type": "object"
+    },
+    "Shape": {
+      "description": "A fade or crossfade side over a segment: `p` is its progress at the segment's ends (0 → 1\nacross the whole fade). Its amplitude factor is `curve(p)` for `fadeIn`/`crossIn` and\n`curve(1 − p)` for `fadeOut`/`crossOut` (`linear`: `x`; `equalPower`: `sqrt(x)`-shaped, as\nthe mixer defines it).",
+      "properties": {
+        "curve": {
+          "$ref": "#/$defs/Curve"
+        },
+        "kind": {
+          "$ref": "#/$defs/ShapeKind"
+        },
+        "p": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "curve",
+        "p"
+      ],
+      "type": "object"
+    },
+    "ShapeKind": {
+      "enum": [
+        "fadeIn",
+        "fadeOut",
+        "crossIn",
+        "crossOut"
+      ],
+      "type": "string"
     },
     "Shift": {
       "description": "Items on `track` at or after `from` moved by `by` (ripple), recorded by op `op` of the\ntransaction.",

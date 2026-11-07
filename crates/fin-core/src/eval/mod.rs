@@ -4,14 +4,17 @@
 //! integers (plan 4C Global Constraints, gated by Task 17), so plans hash the same on every
 //! platform and on wasm32. A plan never holds NaN or ∞ (`INTERNAL` if it would).
 
+mod audio;
 mod caption;
 mod frame;
 mod interp;
 mod plan;
 mod resolve;
+mod segments;
 mod source;
 mod transition;
 
+pub use audio::{AudioItem, AudioPlan, GainSegment, PanSegment, Shape, ShapeKind, eval_audio};
 pub use frame::{MAX_NESTING, eval_frame};
 pub use interp::{PRESETS, ValueType, bezier_y, colour_hex, interpolate, parse_colour};
 pub use plan::{
@@ -102,4 +105,23 @@ fn check_layers(at: &str, layers: &[Layer]) -> Result<(), CoreError> {
 
 pub(crate) fn check_frame(plan: &FramePlan) -> Result<(), CoreError> {
     check_layers("/layers", &plan.layers)
+}
+
+pub(crate) fn check_audio(plan: &AudioPlan) -> Result<(), CoreError> {
+    for (i, item) in plan.items.iter().enumerate() {
+        for (j, s) in item.gain.iter().enumerate() {
+            let p = format!("/items/{i}/gain/{j}");
+            finite(&p, &[s.db[0], s.db[1], s.u[0], s.u[1]])?;
+            for sh in &s.shapes {
+                finite(&p, &sh.p)?;
+            }
+        }
+        for (j, s) in item.pan.iter().enumerate() {
+            finite(
+                &format!("/items/{i}/pan/{j}"),
+                &[s.pan[0], s.pan[1], s.u[0], s.u[1]],
+            )?;
+        }
+    }
+    Ok(())
 }

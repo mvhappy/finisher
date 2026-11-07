@@ -73,6 +73,21 @@ pub(crate) fn roles(windows: &[Window], i: usize) -> (Option<&Window>, Option<&W
     )
 }
 
+/// The item's extent with its transitions: from the incoming window's start (else its own
+/// start) to the outgoing window's end (else its own end).
+pub(crate) fn extent(
+    item: &Item,
+    into: Option<&Window>,
+    out: Option<&Window>,
+) -> Result<(Rational, Rational), CoreError> {
+    let start = into.map_or(item.start, |w| w.start);
+    let end = match out {
+        Some(w) => w.end,
+        None => item.end()?,
+    };
+    Ok((start, end))
+}
+
 /// The items of `track` shown at `t`, in item order, each with its transition state. An item
 /// in two windows at once (a transition longer than the item) takes the earlier one.
 pub(crate) fn active(
