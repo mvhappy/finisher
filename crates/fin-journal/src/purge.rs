@@ -78,9 +78,8 @@ impl Writer {
         let mut result = Ok(());
         let mut removed = 0;
         for f in &self.files[..n] {
-            match fs::remove_file(self.dir.join(&f.name)) {
+            match files::remove(&self.dir.join(&f.name)) {
                 Ok(()) => removed += 1,
-                Err(e) if e.kind() == ErrorKind::NotFound => removed += 1,
                 Err(e) => {
                     result = Err(e);
                     break;
@@ -143,7 +142,7 @@ impl Writer {
         match fs::read_dir(&bdir) {
             Ok(rd) => {
                 for e in rd.flatten() {
-                    fs::remove_file(e.path())?;
+                    files::remove(&e.path())?;
                     r.blobs += 1;
                 }
                 fs::remove_dir(&bdir)?;
@@ -153,6 +152,11 @@ impl Writer {
         }
         self.blobs.clear();
         key::remove(&self.dir, KEY_FILE)?;
+        // The caller swapped in a new key before this message; a flush in between may have
+        // written it, and the file is gone now: it is written again before the next line.
+        if let Some(k) = self.sh.key() {
+            k.forget_persisted();
+        }
         key::remove(&self.dir, STATE_FILE)?;
         self.state_dirty = true;
         self.state_other.clear();
@@ -233,7 +237,11 @@ impl Writer {
                 self.blobs.drop_file(&f.name);
                 self.files.remove(i);
             } else {
-                key::write_private(&self.dir, &f.name, &kept)?;
+                self.sh.faults.purge_write()?;
+                let tmp = key::write_temp(&self.dir, &f.name, &kept)?;
+                self.sh.faults.before_purge_rename();
+                files::rename(&tmp, &path)?;
+                files::sync_dir(&self.dir)?;
                 self.blobs.set_file(&f.name, &blobs::blobs_in(&kept));
                 let m = &mut self.files[i];
                 m.bytes = kept.len() as u64;

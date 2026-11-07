@@ -17,6 +17,8 @@ blake3 = "1"
 fin-core = { path = "../fin-core" }
 # The install key's 32 random bytes.
 getrandom = "0.3"
+# Finding blob references in the files at open (already in the workspace's tree).
+memchr = "2"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

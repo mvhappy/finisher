@@ -40,7 +40,11 @@ pub struct JournalOptions {
 
 /// The server's [`ScrubCtx`]: its home, `server_data`, temp dir, user and host names, from
 /// the environment (`HOME`/`USERPROFILE`, `USER`/`USERNAME`, `HOSTNAME`/`COMPUTERNAME`, then
-/// `/etc/hostname` on unix). `host` overrides the host name (Node's `os.hostname()`).
+/// `/etc/hostname` on unix).
+///
+/// **Pass `host`** (from `finisherd`, Node's `os.hostname()`): macOS shells rarely export
+/// `HOSTNAME` and have no `/etc/hostname`, so without it the host name is not scrubbed there.
+/// `host` wins over the environment.
 pub fn server_scrub(server_data: &std::path::Path, host: Option<String>) -> ScrubCtx {
     let var = |names: &[&str]| {
         names

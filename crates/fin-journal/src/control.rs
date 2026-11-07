@@ -126,6 +126,8 @@ pub(crate) enum Control {
         ack: SyncSender<bool>,
     },
     Flush(SyncSender<Result<(), JournalError>>),
+    /// Flush, then answer the files that are closed (every one but the active file).
+    Closed(SyncSender<Vec<String>>),
     /// The effective consent changed (the gate word already holds `to`): journal
     /// `consent.changed` under `from`, persist `to`, re-check the buffered lines.
     Consent {

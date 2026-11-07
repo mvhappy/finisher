@@ -352,8 +352,11 @@ impl Journal {
             rev: next.rev,
             basis: next.basis,
         };
+        // What was queued before the new gate is handled before `consent.changed`; what is
+        // recorded under it, after.
+        let seen = h.seen();
         h.sh.word.store(pack(stamp), Release);
-        h.control(Control::Consent { from, to: next });
+        h.control_after(seen, Control::Consent { from, to: next });
         warning
     }
 

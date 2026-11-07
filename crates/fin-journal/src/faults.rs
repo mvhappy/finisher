@@ -35,6 +35,14 @@ impl Faults {
     pub(crate) fn in_purge(&self) {}
 
     #[inline]
+    pub(crate) fn purge_write(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn before_purge_rename(&self) {}
+
+    #[inline]
     pub(crate) fn park_if_paused(&self) {}
 }
 
@@ -64,6 +72,10 @@ mod hooks {
         panic_next: AtomicBool,
         /// Purge rewrites left before the writer parks for good (0: never).
         purge_park_after: AtomicU64,
+        /// Purge rewrites that fail (an I/O error) before one succeeds.
+        purge_fail: AtomicU64,
+        /// The next purge rewrite parks for good between its temp file and the rename.
+        purge_park_rename: AtomicBool,
         pause: Mutex<Pause>,
         cv: Condvar,
     }
@@ -195,6 +207,31 @@ mod hooks {
 
         pub(crate) fn note_repair(&self) {
             self.repairs.fetch_add(1, Ordering::SeqCst);
+        }
+
+        /// The next `n` purge rewrites fail with an I/O error.
+        pub fn fail_purge_writes(&self, n: u64) {
+            self.purge_fail.store(n, Ordering::SeqCst);
+        }
+
+        /// The next purge rewrite parks for good after its temp file, before the rename.
+        pub fn park_before_purge_rename(&self) {
+            self.purge_park_rename.store(true, Ordering::SeqCst);
+        }
+
+        pub(crate) fn purge_write(&self) -> io::Result<()> {
+            let n = self.purge_fail.load(Ordering::SeqCst);
+            if n == 0 {
+                return Ok(());
+            }
+            self.purge_fail.store(n - 1, Ordering::SeqCst);
+            Err(io::Error::other("injected: purge rewrite failed"))
+        }
+
+        pub(crate) fn before_purge_rename(&self) {
+            if self.purge_park_rename.swap(false, Ordering::SeqCst) {
+                self.park_torn();
+            }
         }
 
         /// Called after each purge rewrite: parks for good once the count runs out.

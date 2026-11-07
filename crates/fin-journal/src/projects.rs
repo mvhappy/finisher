@@ -50,11 +50,25 @@ impl Writer {
     pub fn on_project(&mut self, id: String, policy: Option<CollectPolicy>) {
         let before = self.policies.insert(id.clone(), policy);
         self.publish_policies();
-        if policy == Some(CollectPolicy::Never)
-            && before != Some(Some(CollectPolicy::Never))
-            && let Err(e) = self.purge(&PurgeSelector::Project(id))
+        if policy == Some(CollectPolicy::Never) && before != Some(Some(CollectPolicy::Never)) {
+            self.pending_purges.insert(id);
+            self.retry_purges();
+        }
+    }
+
+    /// Runs the `never` purges not done yet; one that fails suspends the journal and stays
+    /// pending, retried from `maintain` (each flush and tick) once the suspension's retry is
+    /// due.
+    pub fn retry_purges(&mut self) {
+        while self.suspended.is_none()
+            && let Some(id) = self.pending_purges.first().cloned()
         {
-            self.suspend(&e);
+            match self.purge(&PurgeSelector::Project(id.clone())) {
+                Ok(_) => {
+                    self.pending_purges.remove(&id);
+                }
+                Err(e) => self.suspend(&e),
+            }
         }
     }
 
@@ -87,5 +101,79 @@ impl Journal {
             .iter()
             .map(|(k, v)| (k.clone(), ProjectPolicy::from(*v)))
             .collect()
+    }
+}
+
+/// A project open on this server, for the journal: the policy its file states while at least
+/// one scope of it is alive, unknown once the last one drops. Engines that share a project
+/// (two windows, a follower beside its leader) each hold one, so closing one does not make the
+/// project unknown for the other. [`ProjectScope::update`] follows the `collect` event.
+#[derive(Debug)]
+pub struct ProjectScope {
+    journal: Journal,
+    id: Option<String>,
+}
+
+impl ProjectScope {
+    /// The project's flag changed (`collect` event); every scope of it sees the same file.
+    pub fn update(&self, policy: CollectPolicy) {
+        if let (Some(h), Some(id)) = (&self.journal.h, &self.id) {
+            h.control(Control::Project {
+                id: id.clone(),
+                policy: Some(policy),
+            });
+        }
+    }
+
+    /// The project id, lower-cased, or `None` when it was not one (the scope does nothing).
+    pub fn project(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+impl Drop for ProjectScope {
+    fn drop(&mut self) {
+        let (Some(h), Some(id)) = (&self.journal.h, &self.id) else {
+            return;
+        };
+        let mut scopes = h.sh.scopes.lock().unwrap_or_else(|e| e.into_inner());
+        let last = match scopes.get_mut(id) {
+            Some(n) if *n > 1 => {
+                *n -= 1;
+                false
+            }
+            Some(_) => {
+                scopes.remove(id);
+                true
+            }
+            None => false,
+        };
+        if last {
+            h.control(Control::Project {
+                id: id.clone(),
+                policy: None,
+            });
+        }
+    }
+}
+
+impl Journal {
+    /// Opens `project` for the journal under `policy` (its file's flag at engine open) and
+    /// returns the scope that keeps it known; see [`ProjectScope`]. Setting `never` purges
+    /// as [`Journal::set_project_policy`] does.
+    pub fn open_project(&self, project: &str, policy: CollectPolicy) -> ProjectScope {
+        let id = self.h.as_ref().and(project_key(project));
+        if let (Some(h), Some(id)) = (&self.h, &id) {
+            let mut scopes = h.sh.scopes.lock().unwrap_or_else(|e| e.into_inner());
+            *scopes.entry(id.clone()).or_default() += 1;
+            h.control(Control::Project {
+                id: id.clone(),
+                policy: Some(policy),
+            });
+        }
+        ProjectScope {
+            journal: self.clone(),
+            id,
+        }
     }
 }

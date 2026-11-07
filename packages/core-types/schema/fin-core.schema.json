@@ -4230,6 +4230,13 @@
           "minimum": 0,
           "type": "integer"
         },
+        "skippedUnknownProject": {
+          "default": 0,
+          "description": "Entries not written since the journal opened because their project's flag was not\nknown (not open here): not drops, but a sign a caller forgot to open a project.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "state": {
           "$ref": "#/$defs/JournalState"
         }

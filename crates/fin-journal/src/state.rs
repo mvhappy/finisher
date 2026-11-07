@@ -110,6 +110,14 @@ impl Writer {
         }
         self.enforce_gate();
         let _ = self.flush();
+        if from.purposes().has_training() && !new.has_training() {
+            // Training went: what the stripped lines referenced is collected now.
+            self.blobs.drop_pending();
+            if let Err(e) = self.blobs.gc(&self.dir) {
+                self.suspend(&e);
+            }
+            self.publish();
+        }
     }
 
     /// Rewrites the buffered lines the gate no longer allows as they stand: content goes

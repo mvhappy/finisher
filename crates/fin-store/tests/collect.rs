@@ -134,3 +134,31 @@ fn unreadable_project_file_keeps_cached_collect() {
     assert!(collects(&poll_events(&e, &mut b)).is_empty());
     assert_eq!(b.collect_policy(), CollectPolicy::Never);
 }
+
+#[test]
+fn set_collect_refused_when_the_lease_went_between_ticks() {
+    use fin_store::lease::record;
+    let e = env();
+    let mut a = e.create("a");
+    assert_eq!(a.read_only(), None, "a holds the lease");
+    // Another server takes the record over; `a` has not ticked since.
+    let dot = e.dir.join(".finisher");
+    let mut r = record::decode(&fs::read(dot.join("lease.json")).unwrap()).unwrap();
+    (r.server_id, r.epoch) = ("serverb".into(), r.epoch + 1);
+    fin_store::fsio::write_in_place(&dot.join("lease.json"), &record::encode(&r)).unwrap();
+    let before = fs::read(e.dir.join("finisher.project.json")).unwrap();
+    let err = fin_core::CoreError::from(a.set_collect(CollectPolicy::Never).unwrap_err());
+    assert_eq!(err.code, "PROJECT_READ_ONLY", "{err:?}");
+    assert_eq!(err.details["reason"], "LEASE_LOST");
+    assert_eq!(
+        fs::read(e.dir.join("finisher.project.json")).unwrap(),
+        before
+    );
+    assert_eq!(a.collect_policy(), CollectPolicy::Default);
+    let leftovers: Vec<_> = fs::read_dir(&e.dir)
+        .unwrap()
+        .map(|d| d.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}

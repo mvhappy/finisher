@@ -35,6 +35,7 @@ mod clock;
 mod consent;
 mod control;
 mod disk;
+mod dispatch;
 mod encode;
 mod export;
 mod faults;
@@ -61,7 +62,7 @@ pub use export::Export;
 pub use faults::Faults;
 pub use fin_core::events::CollectPolicy;
 pub use options::{JournalOptions, KeyFn, server_scrub};
-pub use projects::ProjectPolicy;
+pub use projects::{ProjectPolicy, ProjectScope};
 pub use purge::{PurgeReport, PurgeSelector};
 pub use read::{Entries, Filter};
 pub use stats::MAX_KEYS;
@@ -147,6 +148,8 @@ impl Journal {
             drop_count: AtomicU64::new(0),
             drop_bytes: AtomicU64::new(0),
             dropped_total: AtomicU64::new(0),
+            skipped_unknown: AtomicU64::new(0),
+            scopes: Mutex::new(Default::default()),
             status: Mutex::new(Snapshot::default()),
             session,
             opts,
@@ -354,6 +357,7 @@ impl Journal {
                 blobs: 0,
                 blob_bytes: 0,
                 dropped: 0,
+                skipped_unknown_project: 0,
                 oldest: None,
                 newest: None,
             };
@@ -372,6 +376,7 @@ impl Journal {
             blobs: s.blobs,
             blob_bytes: s.blob_bytes,
             dropped: h.sh.dropped_total.load(Relaxed),
+            skipped_unknown_project: h.sh.skipped_unknown.load(Relaxed),
             oldest: s.oldest,
             newest: s.newest,
         }

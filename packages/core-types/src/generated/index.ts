@@ -3394,6 +3394,11 @@ export interface JournalStatus {
    * The oldest entry's `ts` and the newest's (ms since the epoch).
    */
   oldest?: number;
+  /**
+   * Entries not written since the journal opened because their project's flag was not
+   * known (not open here): not drops, but a sign a caller forgot to open a project.
+   */
+  skippedUnknownProject?: number;
   state: JournalState;
 }
 /**

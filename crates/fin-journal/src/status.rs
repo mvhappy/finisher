@@ -62,6 +62,10 @@ pub struct JournalStatus {
     pub blob_bytes: u64,
     /// Entries dropped since the journal opened.
     pub dropped: u64,
+    /// Entries not written since the journal opened because their project's flag was not
+    /// known (not open here): not drops, but a sign a caller forgot to open a project.
+    #[serde(default)]
+    pub skipped_unknown_project: u64,
     /// The oldest entry's `ts` and the newest's (ms since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u64")]

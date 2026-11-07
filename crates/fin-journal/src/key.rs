@@ -5,7 +5,7 @@
 //! `purge --all` deletes it: old and new hashes are then unlinkable.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, ErrorKind, Read, Write as _};
+use std::io::{self, Read, Write as _};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,6 +67,12 @@ impl Key {
         Key::load(dir).or_else(Key::generate)
     }
 
+    /// `events/key` was deleted (`purge all`): the writer writes it again before the next
+    /// line.
+    pub fn forget_persisted(&self) {
+        self.persisted.store(false, Ordering::Release);
+    }
+
     pub fn persisted(&self) -> bool {
         self.persisted.load(Ordering::Acquire)
     }
@@ -98,6 +104,14 @@ impl Key {
 
 /// Writes `dir/name` temp-then-rename, 0600 on unix, fsynced with its directory.
 pub(crate) fn write_private(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let tmp = write_temp(dir, name, bytes)?;
+    files::rename(&tmp, &dir.join(name))?;
+    files::sync_dir(dir)
+}
+
+/// The first half of [`write_private`]: `dir/.<name>.tmp`, written and fsynced. A crash
+/// before the rename leaves it, which the next scan removes.
+pub(crate) fn write_temp(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<std::path::PathBuf> {
     let tmp = dir.join(format!(".{name}.tmp"));
     let mut o = OpenOptions::new();
     o.write(true).create(true).truncate(true);
@@ -109,17 +123,12 @@ pub(crate) fn write_private(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<
     let mut f = o.open(&tmp)?;
     f.write_all(bytes)?;
     files::sync_file(&f)?;
-    drop(f);
-    fs::rename(&tmp, dir.join(name))?;
-    files::sync_dir(dir)
+    Ok(tmp)
 }
 
 /// Removes `dir/name`; a missing file is fine.
 pub(crate) fn remove(dir: &Path, name: &str) -> io::Result<()> {
-    match fs::remove_file(dir.join(name)) {
-        Err(e) if e.kind() != ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
+    files::remove(&dir.join(name))
 }
 
 /// The 16-byte keyed hash a journal uses: the test override, else the install key.

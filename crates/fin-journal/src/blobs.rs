@@ -51,6 +51,9 @@ pub(crate) struct Blobs {
     /// Blobs of the line being written: a rotation's collection must not take them before
     /// the line counts its references.
     pinned: Vec<String>,
+    /// What the last [`Blobs::load`] saw (files and blobs with their sizes), while no
+    /// reference changed since: a retry that finds the same listing does not read again.
+    loaded: Option<Vec<(String, u64)>>,
 }
 
 pub(crate) fn blob_dir(events: &Path) -> PathBuf {
@@ -66,41 +69,58 @@ impl Blobs {
         *self = Blobs::default();
     }
 
+    /// Training went: blobs no entry has referenced yet are never written.
+    pub fn drop_pending(&mut self) {
+        self.pending.clear();
+        self.pending_bytes = 0;
+    }
+
     /// Lists `events/blobs/` (removing temp files a crash left) and, when it holds any blob,
-    /// counts the references of `files`' lines. Writes nothing but those removals.
+    /// counts the references of `files`' lines. Writes nothing but those removals. A listing
+    /// equal to the last load's, with no reference changed since, is not read again.
+    ///
+    /// It runs on the writer before the loop (and on a retry); the data channel holds what is
+    /// recorded meanwhile (8,192 entries), so a `session.start` right after the open waits in
+    /// it rather than being dropped.
     pub fn load(&mut self, events: &Path, list: &[FileMeta]) -> io::Result<()> {
-        self.refs.clear();
-        self.by_file.clear();
-        self.sizes.clear();
         let dir = blob_dir(events);
-        let rd = match fs::read_dir(&dir) {
-            Ok(rd) => rd,
-            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
-                return Ok(());
+        let mut sizes = HashMap::new();
+        match fs::read_dir(&dir) {
+            Ok(rd) => {
+                for e in rd {
+                    let e = e?;
+                    let Some(name) = e.file_name().to_str().map(str::to_owned) else {
+                        continue;
+                    };
+                    if name.starts_with('.') && name.ends_with(".tmp") {
+                        let _ = fs::remove_file(e.path());
+                    } else if is_blob_name(&name) {
+                        sizes.insert(name, e.metadata()?.len());
+                    }
+                }
             }
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {}
             Err(e) => return Err(e),
-        };
-        for e in rd {
-            let e = e?;
-            let Some(name) = e.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if name.starts_with('.') && name.ends_with(".tmp") {
-                let _ = fs::remove_file(e.path());
-            } else if is_blob_name(&name) {
-                self.sizes.insert(name, e.metadata()?.len());
-            }
         }
-        if self.sizes.is_empty() {
+        let mut seen: Vec<(String, u64)> = list.iter().map(|f| (f.name.clone(), f.bytes)).collect();
+        seen.extend(sizes.iter().map(|(h, n)| (h.clone(), *n)));
+        seen.sort();
+        if self.loaded.as_ref() == Some(&seen) {
             return Ok(());
         }
-        for f in list {
-            let Ok(text) = fs::read(events.join(&f.name)) else {
-                continue;
-            };
-            let hexes = blobs_in(&text);
-            self.add(&f.name, &hexes);
+        self.refs.clear();
+        self.by_file.clear();
+        self.sizes = sizes;
+        if !self.sizes.is_empty() {
+            for f in list {
+                let Ok(text) = fs::read(events.join(&f.name)) else {
+                    continue;
+                };
+                let hexes = blobs_in(&text);
+                self.add(&f.name, &hexes);
+            }
         }
+        self.loaded = Some(seen);
         Ok(())
     }
 
@@ -119,7 +139,11 @@ impl Blobs {
     /// Holds a blob until an entry references it.
     pub fn offer(&mut self, b: BlobData) {
         self.evict(Instant::now());
-        if self.sizes.contains_key(&b.hex) || self.pending.iter().any(|(p, _)| p.hex == b.hex) {
+        // On disk and referenced: nothing to keep. On disk with no reference, the bytes stay
+        // pending: a collection may take the file before the entry that references it.
+        if (self.sizes.contains_key(&b.hex) && self.refs.contains_key(&b.hex))
+            || self.pending.iter().any(|(p, _)| p.hex == b.hex)
+        {
             return;
         }
         self.pending_bytes += b.bytes.len();
@@ -158,6 +182,7 @@ impl Blobs {
             let (b, _) = self.pending.remove(i).expect("index found above");
             self.pending_bytes -= b.bytes.len();
             self.sizes.insert(b.hex, b.bytes.len() as u64);
+            self.loaded = None;
         }
         Ok(true)
     }
@@ -166,6 +191,7 @@ impl Blobs {
         if hexes.is_empty() {
             return;
         }
+        self.loaded = None;
         for h in hexes {
             *self.refs.entry(h.clone()).or_default() += 1;
         }
@@ -193,6 +219,7 @@ impl Blobs {
     }
 
     fn lower(&mut self, h: &str) {
+        self.loaded = None;
         if let Some(n) = self.refs.get_mut(h) {
             *n -= 1;
             if *n == 0 {
@@ -263,6 +290,7 @@ impl Blobs {
         for h in dead {
             key::remove(&dir, &h)?;
             self.sizes.remove(&h);
+            self.loaded = None;
             n += 1;
         }
         files::sync_dir(&dir)?;
@@ -270,17 +298,29 @@ impl Blobs {
     }
 }
 
-/// The blob references in a file's lines (only lines that can hold one are parsed).
+/// The blob references in a file's lines. Only the lines that hold `"kb:` are parsed, each
+/// once; a file without one is not split at all.
 pub(crate) fn blobs_in(text: &[u8]) -> Vec<String> {
-    text.split(|b| *b == b'\n')
-        .filter(|l| contains(l, b"\"kb:"))
-        .flat_map(encode::line_blobs)
-        .map(|b| b.hash.hex().to_owned())
-        .collect()
+    let mut out = Vec::new();
+    let mut next_line = 0;
+    for at in memchr::memmem::find_iter(text, b"\"kb:") {
+        if at < next_line {
+            continue;
+        }
+        let start = memchr::memrchr(b'\n', &text[..at]).map_or(0, |i| i + 1);
+        let end = memchr::memchr(b'\n', &text[at..]).map_or(text.len(), |i| at + i);
+        next_line = end + 1;
+        out.extend(
+            encode::line_blobs(&text[start..end])
+                .into_iter()
+                .map(|b| b.hash.hex().to_owned()),
+        );
+    }
+    out
 }
 
 pub(crate) fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+    memchr::memmem::find(hay, needle).is_some()
 }
 
 impl Journal {

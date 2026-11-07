@@ -63,12 +63,12 @@ pub(crate) struct Line {
 pub(crate) struct Writer {
     pub sh: Arc<Shared>,
     pub dir: PathBuf,
-    data: Receiver<Data>,
-    ctl: Receiver<(u64, Control)>,
+    pub data: Receiver<Data>,
+    pub ctl: Receiver<(u64, Control)>,
     /// A control message read ahead (`control_due`), handled before the data after it.
-    next_ctl: Option<(u64, Control)>,
+    pub next_ctl: Option<(u64, Control)>,
     /// Data messages handled (compared with a control message's count).
-    done: u64,
+    pub done: u64,
     /// Oldest first; with `active`, the last one is being appended to.
     pub files: Vec<FileMeta>,
     pub active: Option<File>,
@@ -91,6 +91,8 @@ pub(crate) struct Writer {
     pub active_blob_bytes: u64,
     /// What this server knows of each project's flag (`None`: unknown).
     pub policies: BTreeMap<String, Option<CollectPolicy>>,
+    /// Projects set to `never` whose purge failed: retried until it succeeds.
+    pub pending_purges: std::collections::BTreeSet<String>,
     /// The consent `state.json` must hold, and whether it does not yet.
     pub state: ConsentState,
     pub state_dirty: bool,
@@ -130,6 +132,7 @@ impl Writer {
             blobs: Blobs::default(),
             active_blob_bytes: 0,
             policies: BTreeMap::new(),
+            pending_purges: Default::default(),
             state: init.state,
             state_dirty: init.dirty,
             state_other: init.other,
@@ -202,108 +205,9 @@ impl Writer {
             .clamp(Duration::from_millis(1), idle)
     }
 
-    /// Handles every data message queued (close).
-    pub fn drain_data(&mut self) {
-        while let Ok(d) = self.data.try_recv() {
-            self.on_data(d);
-        }
-    }
-
-    /// Handles the data queued before a control message (`seen` messages in all), so it
-    /// sees every entry recorded before it and none recorded after.
-    fn catch_up(&mut self, seen: u64) {
-        while self.done < seen {
-            match self.data.try_recv() {
-                Ok(d) => self.on_data(d),
-                Err(_) => break,
-            }
-        }
-    }
-
-    /// Whether the next control message came before the data not handled yet (it saw at
-    /// most `done` data messages): it is handled first.
-    fn control_due(&mut self) -> bool {
-        if self.next_ctl.is_none() {
-            self.next_ctl = self.ctl.try_recv().ok();
-        }
-        self.next_ctl
-            .as_ref()
-            .is_some_and(|(seen, _)| *seen <= self.done)
-    }
-
-    /// One data message in channel order with the control messages: those sent before it
-    /// are handled first (a close after it). False once the journal is closed.
-    fn take_data(&mut self, d: Data) -> bool {
-        while self.control_due() {
-            if matches!(self.next_ctl, Some((_, Control::Close(_)))) {
-                self.on_data(d);
-                return self.drain_control();
-            }
-            let (seen, c) = self.next_ctl.take().expect("control_due holds one");
-            if !self.handle_control(seen, c) {
-                return false;
-            }
-        }
-        self.on_data(d);
-        true
-    }
-
-    fn drain_control(&mut self) -> bool {
-        while let Some((seen, c)) = self.next_ctl.take().or_else(|| self.ctl.try_recv().ok()) {
-            if !self.handle_control(seen, c) {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// A control message, after the data queued before it. False on close.
-    fn handle_control(&mut self, seen: u64, c: Control) -> bool {
-        {
-            self.catch_up(seen);
-            match c {
-                Control::Sync { entry, slot, ack } => {
-                    if slot.take() {
-                        let ok = self.write(*entry) && self.flush().is_ok();
-                        let _ = ack.try_send(ok);
-                    }
-                }
-                Control::Flush(ack) => {
-                    self.maintain();
-                    let _ = ack.try_send(self.flush());
-                }
-                Control::Consent { from, to } => self.on_consent(from, to),
-                Control::Caps => {
-                    let now = self.now();
-                    if (self.scanned || self.listed)
-                        && self.suspended.is_none()
-                        && let Err(e) = self.apply_caps(now)
-                    {
-                        self.suspend(&e);
-                    }
-                }
-                Control::Project { id, policy } => self.on_project(id, policy),
-                Control::Purge { sel, ack } => {
-                    let r = self.purge(&sel).map_err(|e| {
-                        let code = crate::disk::code_of(&e);
-                        self.suspend(&e);
-                        JournalError::new("JOURNAL_UNAVAILABLE", format!("{code}: {e}"))
-                    });
-                    let _ = ack.try_send(r);
-                }
-                Control::Close(ack) => {
-                    self.shutdown();
-                    let _ = ack.try_send(());
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
     /// One data message; a panic while handling it suspends the journal here, so a control
     /// message being handled still answers (with the suspension).
-    fn on_data(&mut self, d: Data) {
+    pub fn on_data(&mut self, d: Data) {
         self.done += 1;
         if catch_unwind(AssertUnwindSafe(|| self.handle_data(d))).is_err() {
             self.on_panic();
@@ -360,6 +264,7 @@ impl Writer {
         {
             self.suspend(&e);
         }
+        self.retry_purges();
     }
 
     pub fn stats_ms(&self) -> u64 {
@@ -424,6 +329,15 @@ impl Writer {
         if let Some(project) = p.ctx.as_ref().and_then(|c| c.project.as_ref())
             && !self.project_allowed(project.as_str())
         {
+            if self
+                .policies
+                .get(project.as_str())
+                .copied()
+                .flatten()
+                .is_none()
+            {
+                self.sh.skipped_unknown.fetch_add(1, Relaxed);
+            }
             return false;
         }
         let purposes = p.stamp.purposes.intersect(self.gate());
@@ -520,12 +434,16 @@ impl Writer {
     /// A due retry from `maintain`: with a purpose on, the directory is scanned again (which
     /// creates nothing), so the status recovers without waiting for an entry.
     fn retry_due(&mut self, now: u64) {
-        if self.suspended.as_ref().is_none_or(|s| now < s.retry_at) || self.gate().is_empty() {
+        if self.suspended.as_ref().is_none_or(|s| now < s.retry_at) {
             return;
         }
         self.suspended = None;
         self.scanned = false;
-        if let Err(e) = self.scan() {
+        if self.gate().is_empty() {
+            // Off: only what deletes runs (the caps, a pending `never` purge).
+            self.listed = false;
+            self.list_only();
+        } else if let Err(e) = self.scan() {
             self.suspend(&e);
         }
         self.publish();

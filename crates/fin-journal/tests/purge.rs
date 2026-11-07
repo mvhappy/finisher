@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use fin_core::events::{CollectPolicy, Source};
 use fin_journal::{Clock, Journal, JournalOptions, PurgeSelector};
-use support::purge_child::{ENV, parked, run};
+use support::purge_child::{AT_RENAME, ENV, parked, run};
 use support::*;
 
 /// Runs as the child when `purge.rs` re-executes itself with [`ENV`] set; otherwise passes.
@@ -98,16 +98,16 @@ fn purge_before_date() {
     let _ = c.now_ms();
 }
 
-#[test]
-fn purge_project_rewrites_files_atomically() {
-    let dir = tempfile::tempdir().unwrap();
-    let ev = events(&dir);
-    let c = clock();
+/// A journal of 60 entries over several files, P1 in every third; returns each file's bytes.
+fn mixed(
+    ev: &Path,
+    c: &std::sync::Arc<fin_journal::ManualClock>,
+) -> Vec<(std::path::PathBuf, Vec<u8>)> {
     let o = JournalOptions {
         max_file_bytes: 2048,
-        ..opts(&c)
+        ..opts(c)
     };
-    let j = Journal::open(&ev, diagnostics(), o);
+    let j = Journal::open(ev, diagnostics(), o);
     j.set_project_policy(P1, Some(CollectPolicy::Default));
     j.set_project_policy(P2, Some(CollectPolicy::Default));
     for i in 0..60 {
@@ -115,23 +115,28 @@ fn purge_project_rewrites_files_atomically() {
         j.record(Source::FinNode, in_project(p), commit(i));
     }
     j.close();
-    let before: Vec<(std::path::PathBuf, Vec<u8>)> = files(&ev)
+    files(ev)
         .into_iter()
         .map(|f| {
             let b = std::fs::read(&f).unwrap();
             (f, b)
         })
-        .collect();
-    assert!(before.len() > 4);
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["purge_child", "--exact", "--test-threads", "1"])
-        .env(ENV, &ev)
+        .collect()
+}
+
+fn kill_child(ev: &Path, at_rename: bool) {
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.args(["purge_child", "--exact", "--test-threads", "1"])
+        .env(ENV, ev)
+        .env_remove(AT_RENAME)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::null());
+    if at_rename {
+        cmd.env(AT_RENAME, "1");
+    }
+    let mut child = cmd.spawn().unwrap();
     let t = Instant::now();
-    while !parked(&ev).exists() {
+    while !parked(ev).exists() {
         assert!(
             t.elapsed() < Duration::from_secs(30),
             "the child never parked"
@@ -140,6 +145,115 @@ fn purge_project_rewrites_files_atomically() {
     }
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+#[test]
+fn purge_kill_between_temp_and_rename_keeps_the_old_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let ev = events(&dir);
+    let c = clock();
+    let before = mixed(&ev, &c);
+    kill_child(&ev, true);
+    let temps: Vec<_> = all_paths(&ev)
+        .into_iter()
+        .filter(|p| p.to_str().unwrap().ends_with(".tmp"))
+        .collect();
+    assert_eq!(temps.len(), 1, "the temp file was written: {temps:?}");
+    for (f, bytes) in &before {
+        assert_eq!(
+            &std::fs::read(f).unwrap(),
+            bytes,
+            "{f:?} changed before its rename"
+        );
+    }
+    // The next open removes the temp file; the purge then completes.
+    let j = Journal::open(&ev, diagnostics(), opts(&c));
+    j.flush().unwrap();
+    assert!(
+        all_paths(&ev)
+            .iter()
+            .all(|p| !p.to_str().unwrap().ends_with(".tmp"))
+    );
+    j.purge(PurgeSelector::Project(P1.into())).unwrap();
+    let all = read_all(&j);
+    assert_eq!(all.len(), 40);
+    assert!(all.iter().all(|e| project_of(e) == Some(P2)));
+}
+
+#[test]
+fn failed_never_purge_is_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let ev = events(&dir);
+    let c = clock();
+    mixed(&ev, &c);
+    let j = Journal::open(&ev, diagnostics(), opts(&c));
+    j.flush().unwrap();
+    j.faults().unwrap().fail_purge_writes(1);
+    j.set_project_policy(P1, Some(CollectPolicy::Never));
+    assert!(
+        j.flush().is_err(),
+        "the purge failed and suspended the journal"
+    );
+    assert!(
+        read_all(&j).iter().any(|e| project_of(e) == Some(P1)),
+        "not purged yet"
+    );
+    // The retry comes with the suspension's: the purge runs again and completes.
+    c.advance(Duration::from_secs(61));
+    j.flush().unwrap();
+    let all = read_all(&j);
+    assert_eq!(all.len(), 40, "every P1 entry gone");
+    assert!(all.iter().all(|e| project_of(e) == Some(P2)));
+    assert_eq!(j.status().state, fin_journal::JournalState::On);
+}
+
+#[test]
+fn purge_all_then_flush_keeps_a_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let ev = events(&dir);
+    let c = clock();
+    let o = JournalOptions {
+        flush_bytes: 1,
+        ..opts(&c)
+    };
+    let j = Journal::open(&ev, diagnostics(), o.clone());
+    j.record(Source::FinNode, None, commit(1));
+    j.flush().unwrap();
+    // An entry queued before the purge is written (and flushed, writing the caller's new
+    // key) before the purge deletes `events/key`.
+    assert!(j.pause_writer());
+    j.record(Source::FinNode, None, commit(2));
+    let purge = {
+        let j = j.clone();
+        std::thread::spawn(move || j.purge(PurgeSelector::All))
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    j.resume_writer();
+    purge.join().unwrap().unwrap();
+    j.record(Source::FinNode, None, commit(3));
+    j.flush().unwrap();
+    assert!(
+        ev.join("key").exists(),
+        "the key is written again before the next line"
+    );
+    let h = j.hash("someone").unwrap();
+    j.close();
+    let j = Journal::open(&ev, diagnostics(), o);
+    assert_eq!(
+        j.hash("someone").unwrap(),
+        h,
+        "the key on disk is the one in use"
+    );
+}
+
+#[test]
+fn purge_project_rewrites_files_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let ev = events(&dir);
+    let c = clock();
+    let before = mixed(&ev, &c);
+    assert!(before.len() > 4);
+    kill_child(&ev, false);
     // Each file is the old one or the rewritten one, whole.
     let (mut old, mut new) = (0, 0);
     for (f, bytes) in &before {

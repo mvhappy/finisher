@@ -13,9 +13,15 @@ use std::collections::{BTreeMap, VecDeque};
 
 use fin_core::events::{CollectPolicy, Envelope, Purposes, kind, redact};
 
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use crate::Journal;
+use crate::control::Control;
 use crate::files;
+use crate::handle::Handle;
 use crate::read::{Entries, Filter};
-use crate::{Journal, Snapshot};
 
 /// An export's entries, oldest first.
 pub struct Export {
@@ -58,6 +64,26 @@ fn view(
     Some(e)
 }
 
+/// The closed files, from the writer (after a flush). If it does not answer, the files on
+/// disk less the active one, or less the newest when none is known to be active.
+fn closed_files(h: &Handle) -> Vec<PathBuf> {
+    let (ack, rx) = mpsc::sync_channel(1);
+    if h.control(Control::Closed(ack))
+        && let Ok(names) = rx.recv_timeout(Duration::from_secs(10))
+    {
+        return names.into_iter().map(|n| h.dir.join(n)).collect();
+    }
+    let mut listed = files::paths(&h.dir);
+    let active = h.sh.lock_status().active.clone();
+    match active {
+        Some(a) => listed.retain(|p| p.file_name().and_then(|n| n.to_str()) != Some(a.as_str())),
+        None => {
+            listed.pop();
+        }
+    }
+    listed
+}
+
 impl Journal {
     /// The entries matching `filter`, oldest first (with `limit`, the newest that many).
     /// `as_upload: Some(purposes)` gives the upload view (module docs). Flushes first, so
@@ -73,19 +99,9 @@ impl Journal {
                 inner: Box::new(std::iter::empty()),
             };
         };
-        let _ = h.flush(std::time::Duration::from_secs(10));
+        let closed = closed_files(h);
         let gate = self.gate().unwrap_or(Purposes::NONE);
-        // The files first, then the active one: a rotation in between only closes a listed
-        // file, and a file made after the listing is not in it.
-        let listed = files::paths(&h.dir);
-        let (active, policies) = {
-            let s: std::sync::MutexGuard<'_, Snapshot> = h.sh.lock_status();
-            (s.active.clone(), s.policies.clone())
-        };
-        let closed: Vec<_> = listed
-            .into_iter()
-            .filter(|p| p.file_name().and_then(|n| n.to_str()) != active.as_deref())
-            .collect();
+        let policies = h.sh.lock_status().policies.clone();
         let unlimited = Filter {
             limit: None,
             ..filter.clone()

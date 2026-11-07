@@ -43,6 +43,10 @@ pub(crate) struct Shared {
     pub(crate) drop_count: AtomicU64,
     pub(crate) drop_bytes: AtomicU64,
     pub(crate) dropped_total: AtomicU64,
+    /// Entries not written because their project was unknown (not a drop).
+    pub(crate) skipped_unknown: AtomicU64,
+    /// Open [`crate::ProjectScope`]s per project id.
+    pub(crate) scopes: Mutex<std::collections::HashMap<String, usize>>,
     pub(crate) status: Mutex<Snapshot>,
     /// The process run (a ULID): every entry's `session` unless `record_value` names another.
     pub(crate) session: EventUlid,
@@ -126,10 +130,9 @@ impl Handle {
 
     /// `try_send`, counting what is queued so a control message knows what came before it.
     pub(crate) fn send_raw(&self, d: Data) -> bool {
-        self.sh.sent.fetch_add(1, Relaxed);
         let ok = self.data.try_send(d).is_ok();
-        if !ok {
-            self.sh.sent.fetch_sub(1, Relaxed);
+        if ok {
+            self.sh.sent.fetch_add(1, Relaxed);
         }
         ok
     }
@@ -138,7 +141,18 @@ impl Handle {
     /// channel means the writer is busy and drains control before its next batch. The
     /// writer handles the data queued before it first, and only that.
     pub(crate) fn control(&self, c: Control) -> bool {
-        let seen = self.sh.sent.load(Relaxed);
+        self.control_after(self.seen(), c)
+    }
+
+    /// The data messages queued so far: a control message sent with this count is handled
+    /// after them and before anything queued later.
+    pub(crate) fn seen(&self) -> u64 {
+        self.sh.sent.load(Relaxed)
+    }
+
+    /// [`Handle::control`] with a count read earlier (a consent change reads it before it
+    /// stores the gate, so the entries stamped under the new gate come after it).
+    pub(crate) fn control_after(&self, seen: u64, c: Control) -> bool {
         let sent = self.ctl.send((seen, c)).is_ok();
         self.send_raw(Data::Wake);
         sent

@@ -2,7 +2,6 @@
 //! the active file (made only by a write, a 0-byte newest file reused), rotation, the age
 //! and size caps, suspension and close.
 
-use std::fs;
 use std::io::{self, ErrorKind};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -57,11 +56,7 @@ impl Writer {
                 self.publish();
                 return Ok(());
             }
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
+            files::remove(&path)?;
             self.files.pop();
         }
         let id = self.next_id(ts);

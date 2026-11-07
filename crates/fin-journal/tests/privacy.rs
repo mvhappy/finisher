@@ -293,3 +293,43 @@ fn setting_never_purges_entries_and_blobs() {
 fn media(m: &str) -> fin_core::events::Name {
     fin_core::events::names::MEDIA_TYPES.get(m).unwrap()
 }
+
+#[test]
+fn project_scopes_are_counted_and_unknown_skips_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let j = open(&dir, json!({}), opts(&c));
+    j.record(Source::FinNode, in_project(P1), commit(1));
+    // Two engines on one project: closing one keeps it known for the other.
+    let a = j.open_project(&P1.to_uppercase(), CollectPolicy::Default);
+    let b = j.open_project(P1, CollectPolicy::Default);
+    assert_eq!(a.project(), Some(P1));
+    j.record(Source::FinNode, in_project(P1), commit(2));
+    drop(a);
+    j.record(Source::FinNode, in_project(P1), commit(3));
+    // The `collect` event reaches every scope's project.
+    b.update(CollectPolicy::Never);
+    j.record(Source::FinNode, in_project(P1), commit(4));
+    b.update(CollectPolicy::Default);
+    j.record(Source::FinNode, in_project(P1), commit(5));
+    drop(b);
+    j.record(Source::FinNode, in_project(P1), commit(6));
+    let micros: Vec<u64> = read_all(&j)
+        .iter()
+        .map(|e| e.payload["micros"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        micros,
+        [5],
+        "2 and 3 purged by never, 1 and 6 unknown, 4 never"
+    );
+    let s = j.status();
+    assert_eq!(s.skipped_unknown_project, 2, "{s:?}");
+    assert_eq!(s.dropped, 0);
+    assert_eq!(j.project_policies().get(P1), Some(&ProjectPolicy::Unknown));
+    // Not a project id: the scope does nothing.
+    let none = j.open_project("not a project", CollectPolicy::Default);
+    assert_eq!(none.project(), None);
+    // A disabled journal's scopes are inert too.
+    drop(Journal::disabled().open_project(P1, CollectPolicy::Default));
+}
