@@ -461,6 +461,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-journal"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-journal",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ulid",
+]
+
+[[package]]
 name = "fin-node"
 version = "0.0.0"
 dependencies = [
