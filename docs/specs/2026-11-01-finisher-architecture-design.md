@@ -80,6 +80,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 | D31 | Minimums | macOS 14+ on Apple Silicon; Windows 11 and Windows 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+ (Ubuntu 22.04+). Intel Macs are not supported |
 | D32 | Distribution | Direct download + auto-update: notarised DMG, signed Windows installer, AppImage/deb/rpm, Docker image for the server. No app stores in v1 |
 | D33 | Internationalisation | i18n-ready from the first commit, English-only at launch: every user-facing string is an ICU message in a catalogue, never a literal; translations are added later without code changes (§17.1). UI language and content language (transcripts, captions, generated text) are separate settings |
+| D34 | Diagnostics and training data | One versioned event envelope (types in `fin-core`, TS generated) written to a local, append-only, size- and age-capped journal in `<server-data>/events/` by `finisherd` only. Two purposes with separate consent, **diagnostics** (metadata only) and **training** (adds user and model content, LLM traffic included); a per-project `collect: never` flag in `finisher.project.json` binds every collaborator; env overrides; off means nothing is recorded. Every payload field is classed `meta`, `scrubbed` or `content`; paths and host details are never stored raw. Events link to the op log by `txId`. No upload until a later sub-project, behind one `Uploader` boundary (§21.1) |
 
 ---
 
@@ -699,8 +700,8 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 | Concern | v1 decision |
 |---|---|
-| Telemetry | Opt-in only, anonymous, documented events; off by default in self-hosted servers |
-| Crash reporting | Opt-in; minidumps from Electron, server and workers; scrubbed of paths and prompts |
+| Telemetry | D34 (§21.1): a local event journal with consent per purpose (diagnostics, training), a per-project never-collect flag and documented, versioned kinds. Defaults are an owner decision recorded in §21.1. No upload in v1 until the uploader sub-project ships |
+| Crash reporting | Panics and uncaught errors are `error.panic` journal events under the diagnostics purpose (§21.1), scrubbed of paths, host and user names. Minidumps from Electron, server and workers come with the uploader, under the same consent |
 | Model downloads | Guided first-run: shows size and purpose, resumable, verified, pausable; app usable before models finish; offline after download |
 | Offline clients | Read cached projections; edits queue only while the local embedded server is reachable (no client-only offline editing in v1) |
 | Localisation | All UI strings externalised from day one (ICU messages); English at launch |
@@ -710,6 +711,86 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | Minimum platforms | D31: macOS 14+ Apple Silicon only (no Intel Macs); Windows 11 / 10 22H2 x64 with a WebGPU-capable GPU; Linux glibc 2.35+. Machines below minimum fall back to server-rendered preview or headless use |
 | Distribution | D32: notarised DMG, signed Windows installer, AppImage/deb/rpm, server Docker image; auto-update; no app stores in v1 |
 | Indexing cost and privacy | D29: local embeddings by default. Cloud indexing shows an estimated cost and upload notice per library before starting |
+
+### 21.1 Diagnostics and training data (D34)
+
+**Why.** Finisher collects data for two purposes: to improve the app (**diagnostics**), and to fine-tune an open-weight model on video editing, i.e. what belongs in an edit and what does not (**training**). Training includes everything that goes through an LLM. This section fixes the plumbing so that later sub-projects only add sources, the uploader and the dataset builder, never a rewrite. Implementation plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`.
+
+**Phasing**
+
+| Phase | Delivers |
+|---|---|
+| Now (sub-project 4C branch) | Envelope and kinds, the journal, consent and the project flag, the first sources (edits, history, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, the `Uploader` trait with no network implementation |
+| Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts) and the large-content blob store |
+| Sub-project 9 | `ui.*` events, the consent screens and first-run prompt, a "what we collect" page |
+| Sub-project 10 | `review.*` verdicts (marker resolve, accept/reject per transaction) |
+| Sub-project 11 or the cloud phase | The uploader (HTTPS, batching, backoff), the receiving service, the first-upload notice |
+| After v1, cloud | The dataset builder (below) |
+
+**Events are data.** One envelope, versioned, with its types in `fin-core::events` (pure: no clock, no randomness; the emitter supplies `id` and `ts`) and the TypeScript types generated like every model type:
+
+```json
+{"v":1,"id":"01JC…","ts":1794571200123,"session":"01JC…","source":"finNode",
+ "kind":"log.commit","kv":1,
+ "consent":{"rev":3,"purposes":["diagnostics"],"basis":"default"},
+ "ctx":{"project":"…","branch":"br1","txId":"01JC…","author":"k1:3f…","actor":{"kind":"agent","session":"…"}},
+ "payload":{…}}
+```
+
+- `v` is the envelope version; `kv` the version of the kind's payload. Kinds are `domain.verb` (lower camel case within a segment) from one closed registry in `fin-core`; version 0 marks a **reserved** kind whose payload may still change.
+- `session` is the emitting process run (ULID), bracketed by `session.start` and `session.end`. `source` ∈ `fin`, `finisherd`, `finNode`, `ui`, `agent` (additive later). The server sets `source` from the caller's credential, never from the payload.
+- `ctx` links an event to the op log: project id, branch id, `txId` and the author as a keyed hash.
+
+**Field classes.** Every payload field has exactly one class, in its type and in the JSON Schema (`x-fin-class`):
+- **`meta`:** numbers, booleans, closed enums, error codes, entity and tx ids, keyed hashes, coarse platform facts (OS family and major version, arch, core count, memory bucket). Payloads cannot hold a free-form string as `meta`; a schema test enforces it.
+- **`scrubbed`:** free text authored by Finisher code (error and panic messages, backtrace symbols) with absolute paths, the home and server-data directories, the user name and the host name replaced by placeholders *before* it is written.
+- **`content`:** user text, captions, transcripts, file and library names, prompts, model outputs, tool arguments and results, media hashes. Each content field names its kind (`userText`, `caption`, `fileName`, `prompt`, `modelInput`, `modelOutput`, `toolArgs`, `toolResult`, `mediaHash`).
+- **Never stored, in any class:** raw paths (a path becomes `{root: project|library|workspace|serverData|other, ext, hash}`), host names, IPs, MAC addresses, user names, serial numbers, credentials, raw `fin` arguments.
+- Keyed hashes are BLAKE3 keyed with a per-install key (`events/key`, 0600), so they join records on this machine without being reversible by dictionary elsewhere. `purge --all` deletes the key.
+
+**Consent**
+- `<server-data>/settings.json` `privacy: {diagnostics: on|off, training: on|off, retentionDays, maxMiB}`. An absent key takes the build default and records `basis: default`; a present one `basis: user`.
+- Env overrides: `FIN_DIAGNOSTICS`, `FIN_TRAINING` (`on|off`, `basis: env`); `DO_NOT_TRACK=1` forces both off. Off always wins over on.
+- An unreadable settings file means both off until it is fixed (fail closed, as with fonts).
+- **Training implies content; diagnostics never does.** With only diagnostics on, content fields are removed at write time and training-only kinds are written as their metadata part. Training needs its own explicit `on` in the recommended defaults (owner question, plan Q1): content, LLM conversations above all, likely needs explicit consent under GDPR Art. 6(1)(a), and user footage may carry special-category data (Art. 9).
+- **Per project:** `finisher.project.json` `collect: "never"` (absent means "follow each user's settings"). It travels with the folder, so every collaborator's server honours it. Setting it needs the writer lease; clearing it is human-only once permissions exist (sub-project 7). While a project's flag is unknown, it counts as `never`. Setting it purges that project's entries from this server's journal; each collaborator's server does the same when it sees the flag.
+- **Off means off.** When no purpose is on, nothing is recorded anywhere: no file, no directory, no in-memory ring. The gate is one atomic load before a payload is even built. Normal stderr logs are unaffected.
+- Each entry carries the consent at write time (`rev`, `purposes`, `basis`). Changes are journaled as `consent.changed` while any purpose is still on. **An uploader re-checks current consent per entry**: withdrawing a purpose stops the upload of everything already recorded for it.
+
+**The journal** (`fin-journal`, linked by `fin-node`)
+- **One writer per server data:** `finisherd` (the `fin-node` journal). Other processes send events to it: `fin` over the local socket, the UI over RPC later. Offline `fin` records nothing.
+- `<server-data>/events/j-<yyyymmdd>-<ulid>.jsonl`: one JSON object per `\n`-terminated line, append-only. Files rotate at 8 MiB or a day. Retention defaults are 30 days and 128 MiB in total, oldest first.
+- **Crash-safe:** a torn last line is truncated on open and skipped by readers; closed files are fsynced; a panic flushes synchronously.
+- **Never blocks editing:** emitters enqueue onto a bounded channel. A full channel drops the event and counts it (`journal.dropped`). A failing disk suspends the journal and editing goes on. A writer thread serialises, batches and flushes every second or 64 KiB, and owns every file operation, purge and export included.
+- **High-rate signals are aggregated:** RPC and eval timings become per-minute histograms (`rpc.stats`, `eval.stats`), not one event per call.
+- **Cost is measured** (`journal_cost`): disabled emit, enqueue latency, writer throughput, and the commit-path overhead in `fin-node`. The budgets live in the plan.
+
+**Kinds now:**
+- `session.start|end|unclean`, `consent.changed`;
+- `log.commit`, one per attempt to append to the op log: `record` = `edit|undo|redo|merge|pick|revert|checkpoint|branch|branchSet` with the txIds it links to, outcome `accepted|rebased|deduped|conflict|refused|dryRun`, error code, op-kind counts, base lag, conflict codes and duration;
+- `cli.command` (registry name, flag names, keyed `argsHash`, duration, exit code, error code, online, dry run, txIds);
+- `rpc.stats`, `eval.stats`, `fonts.fetch`, `storage.state`, `error.internal`, `error.panic`, `journal.dropped`.
+
+**Reserved (v0) for sub-project 7:**
+- `agent.session` (provider, model, role, mode);
+- `agent.turn` (provider and model ids, input/output/cache tokens, latency, stop reason, cost; content: the new messages of the turn, system prompt and tool definitions by hash);
+- `agent.toolCall`, `agent.toolResult` (command, argsHash, ok/code, duration, txIds; content: arguments and output);
+- `agent.editVerdict` (txIds; `accepted|rejected|undone|merged|abandoned`; by user, critic or agent).
+
+Also reserved: `ui.action` (9) and `review.verdict` (10).
+
+**"Show me what's collected."**
+- `fin diagnostics show` gives the consent and its basis, the project flags, the files, sizes, counts per kind, the oldest and newest entries and the drops; `--recent <n>` prints entries.
+- `fin diagnostics export [--since] [--project] [--kind] [--as-upload <purpose>]` writes JSONL to stdout. `--as-upload` shows exactly what an uploader would send now.
+- `fin diagnostics purge (--all | --project <id> | --before <date>)`; `fin diagnostics project never|default`.
+- The same calls are RPCs for the UI.
+
+**Upload boundary (no network now).** The journal exposes `upload_batches(uploader, purposes)`: closed files only, filtered by current consent and the project flags, with content removed unless training is on, and a persisted cursor per uploader (`events/cursor-<name>.json`), acknowledged per batch, at least once, deduplicated by event `id`. An `Uploader` ships those bytes and nothing else. The uploader pseudonymises project, branch and tx ids with its own key before sending.
+
+**Dataset builder (planned, out of scope now).** It runs locally over the journal plus the op log, so it sees exactly what consent allowed:
+- **Example:** the state before a transaction (snapshot at `baseRev`, rendered like `fin view`), the instruction (the agent turn linked by `txId`, or the `fin` command), and the ops.
+- **Label:** kept, undone or reverted (a `log.commit` with `record: undo|revert` naming that txId, and how soon), merged into `main`, branch abandoned, or a conflict and its resolution (the next commit by the same actor on that branch), plus agent edit verdicts.
+- Pairs of kept and undone edits from the same context give preference data. Exports are versioned and licence-tagged, and only made from entries recorded under the training purpose.
 
 ---
 
