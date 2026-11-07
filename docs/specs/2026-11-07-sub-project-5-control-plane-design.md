@@ -1,6 +1,6 @@
 # Sub-project 5: Control plane breadth — Design
 
-- **Status:** revision 2 (2026-11-07), after an independent review of revision 1 (`45039ab`). §15 maps every review finding (B1–B5, H1–H6, M1–M5, the v1 cuts) to where it is resolved. Nothing here is built yet.
+- **Status:** revision 3 (2026-11-07). Revision 2 answered an independent review of revision 1 (`45039ab`; §15 maps every finding). Revision 3 applies the cross-design reconciliation with sub-projects 6, 7 and 8 (§16): 5C owns the shared job system, adds warm workers and helpers, calls sub-project 7's `fin-sandbox`, and is split so its engine can start after 5A Tasks 1–2. Nothing here is built yet.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 rule 6, §5 (`AuthProvider`, `ConnectRelay`), §6.4 ("conflicts become review items"), §6.7 (media libraries and indexing jobs), §8.3 (allow/ask/deny), §8.4 (token delivery, the env allow-list), §9.9 (jobs), §11.3 (per-transaction accept/reject), §16 (pairing, auth, security), §20 (library root mapping), §21.1 (sources and human-only operations) and §27.12.5 (the local transport and its WebSocket token). Where the two disagree, this document wins for sub-project 5, and arch §27 gets a pointer when each batch merges.
 - **Builds on:** sub-projects 2 and 4 (4A, 4B, 4C, on stacked branches; 4C is `sp4c-edit-breadth`) and the diagnostics hooks D1–D7 on the 4C branch. **D1 and D2 are done; D3–D7 are not.** 5A's Tasks 1, 2 and 10 can start now; the rest of 5A needs D4 (sources per transport) and D6 (actor headers), which it changes (§3.4).
 - **House style:** as `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`. Each batch gets its own plan; each batch section is rewritten "as built" when it lands.
@@ -23,7 +23,7 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 
 **Not in sub-project 5:**
 - **The frontend** (sub-project 9). §9 defines the server and RPC surfaces it needs. The desktop shell's keychain storage of its device key, SSH/WSL launch and forwarding are also sub-project 9 (arch §16).
-- **Agent sessions, modes, roles, the OS sandbox and command-pattern rules** (sub-project 7). Sub-project 5 defines the `agent` and `mcp` credentials, their file format, their verifier and the middleware stage that sub-project 7's rules and hooks plug into (§4.6). It also states what each sandbox must allow so that `fin` can reach the server (§4.11).
+- **Agent sessions, modes, roles, the OS sandbox and command-pattern rules** (sub-project 7). Sandboxing is sub-project 7's `fin-sandbox` crate with the profiles `agent`, `hook`, `worker` and `plugin`; 5C calls it when it spawns (§6.2). Sub-project 5 defines the `agent` and `mcp` credentials, their file format, their verifier and the middleware stage that sub-project 7's rules and hooks plug into (§4.6). It also states what each sandbox must allow so that `fin` can reach the server (§4.11).
 - **Plugin credentials and permissions** (sub-project 8). The `plugin` principal kind is reserved.
 - **Analysis stages** beyond probing: proxies (6), transcription, alignment, scenes, embeddings and semantic search (8). §7 builds the stage framework they plug into.
 - **QA gate, critic, review markers, share page** (sub-project 10). §8 builds the review items they will produce and consume.
@@ -50,12 +50,23 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 | Batch | Delivers | Depends on | Unblocks |
 |---|---|---|---|
 | **5A** Principals, local credentials, scopes | `control.db` and the audit log; the environment id; principals; key files with a mutual handshake bound to the environment and the endpoint; the socket in `<server-data>/run/` and a native Windows pipe listener with its own security descriptor; one-time WebSocket tickets; the authorisation middleware chain with store-resolved references, reach and an `ask` outcome; human-only enforcement; the TTY-gated `finisherd` console; `agent` and `mcp` credentials; event sources from credentials; protocol 2; the sub-project-5 follow-ups in `TASKS.md` | D1–D2 (Tasks 1, 2, 10); D4, D6 (the rest) | everything below; sub-project 7 |
-| **5C** Jobs | `fin-jobs` protocol types, the `fin-workers` binary, a persisted scheduler with resource pools, a host-owned kill tree on every OS, retries with targeted bisection, stall detection, progress streams, `fin job …`, `fin wait`, `job.done` events | 5A | 5D; sub-projects 6, 8 |
-| **5D** Library indexer | libraries per server, catalog databases, scans for local/network/sync roots that never open placeholders, mount and volume identity, demand-driven NAS polling, fingerprint and probe stages through jobs, the stage framework, offline libraries, metadata search, `fin library …`, `library.scan` events | 5C | sub-projects 6, 8, 11 |
+| **5C-1** Job engine | the shared job system (§6.0): `fin-jobs` (protocol types, envelope), the one `fin-workers <family>` binary with the `test` family, spawning in `fin-node` through a sandbox hook, a host-owned kill tree on every OS, the persisted scheduler with pools and warm workers, helpers and mapped files, retries, poison handling and isolation, stall detection, `job.done` and `worker.exit` | 5A Tasks 1–2 | 5D; sub-project 6 (6A-1 runs beside it), 8 |
+| **5C-2** Job RPCs | `jobs.*` with scopes, ownership and reach, `jobs.watch`, `fin job …`, `fin wait` | 5C-1; 5A Tasks 3–6 | sub-projects 6, 8 (their `fin` commands that return job ids) |
+| **5D** Library indexer | the `library` worker family; libraries per server, catalog databases, scans for local/network/sync roots that never open placeholders, mount and volume identity, demand-driven NAS polling, fingerprint and probe stages through jobs, the stage framework, offline libraries, metadata search, `fin library …`, `library.scan` events | 5C-1 (5C-2 for `fin library scan`'s job id) | sub-projects 6, 8, 11 |
 | **5E** Review workflow | review items, change lists from merge dry runs, merges limited by `include`/`sourceUpTo`, durable `drop` records in the op log, conflicts as review items, protected branches checked inside the store's write transaction, `fin review …`, `review.verdict` events | 5A | sub-projects 7, 10 |
 | **5B** Pairing, devices, remote access, environments | device keys, pairing links with owner approval, DPoP-bound tokens with server nonces, WebSocket tickets for devices, TLS listeners with SPKI pinning, environment descriptors and routes, revocation, server filesystem reach for remote principals, the secret store | 5A | sub-project 9 |
 
-**Order:** 5A → 5C → 5D → 5E → 5B. Sub-project 6, the next in arch §24, needs jobs most. 5B is needed only by the frontend, so it comes last, but it touches only transport and auth files: it may run in parallel with 5C–5E on its own stacked branch. (5B keeps its letter because it completes 5A's auth work.)
+**Order:**
+
+```text
+5A Tasks 1–2 ──┬──▶ 5A Tasks 3–14 ──▶ 5C-2 ──▶ 5D ──▶ 5E ──▶ 5B
+               └──▶ 5C-1 ───────────┘ (beside sub-project 6's 6A-1)
+```
+
+- **5C-1 starts right after 5A Tasks 1 and 2** and runs beside the rest of 5A and beside sub-project 6's 6A-1: it needs only `control.db` and the server-data layout (§6.8). 5A Tasks 1, 2 and 10 themselves can start now.
+- **5C-2** waits for 5C-1 and for 5A's principals, handshake, chain and protocol 2 (5A Tasks 3–6).
+- **5D** needs 5C-1; its `fin library scan` command (which returns a job id) needs 5C-2.
+- **5B** is needed only by the frontend, so it comes last, but it touches only transport and auth files: it may run in parallel with 5C–5E on its own stacked branch. (5B keeps its letter because it completes 5A's auth work.)
 
 ### 1.5 What exists today (the baseline)
 
@@ -64,8 +75,15 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 - **Server data** (`config.ts` `ensureServerData`): created 0700, refused if a symlink or owned by another uid; nothing is checked on Windows.
 - **Identity:** `<server-data>/server-id`, a lowercase ULID with clone detection (`fin-store::server_id`); it is reminted when server data turns up somewhere else.
 - **`fin`** finds the socket through `FIN_SERVER` or `finisherd.json`, sends `headers: []` today, never calls `server.hello`, and exits 0/2/3/4/5/6.
-- **Electron's Node is not the repository's Node.** Electron 44.9.3 and 45.0.0 embed Node 24.22.0, while the repository pins Node 26.12.1. A `finisherd` embedded in the desktop shell as an `ELECTRON_RUN_AS_NODE` child runs on Node 24 unless sub-project 9 ships its own Node. `node:sqlite` works there (checked 2026-11-07 on Linux x64: SQLite 3.53.4, FTS5, WAL, no experimental warning); sub-project 5 uses only APIs present in both.
+- **Electron's Node is not the repository's Node** (Electron 44/45 embed Node 24.22.0; the repository pins 26.12.1): see §1.6 for sub-project 9.
 - **`TASKS.md` "Follow-ups for sub-project 5":** Windows named-pipe DACL and pipe squatting, server-data ACL check, graceful stop without SIGTERM; decode failures and unknown tags as `FinError`; relative paths refused server-side; a client deadline and frame-size cap; test hooks out of release builds; `childEnv` provider variables (sub-project 7).
+
+### 1.6 Cross-cutting notes for other sub-projects
+
+- **Sub-project 6 (media):** the job system is 5C's (§6.0). Sub-project 6 contributes the `media` family inside `fin-workers`, its job specs, the mapped-file bulk channel (its own shared-memory crate) and `job.done` `kv` 2 with media fields; `fin look` uses a warm `interactive:media` worker (§6.3). It can build 6A-1 beside 5C-1 against the `JobEngine` API and the `test` family, and needs 5C-2 only for `fin` commands that return job ids.
+- **Sub-project 7 (agent runtime):** owns `fin-sandbox` (profiles `agent`, `hook`, `worker`, `plugin`), which 5C's `Spawner` trait calls at every spawn; owns approvals behind `APPROVAL_REQUIRED` and the rules and hooks of the chain's policy and after stages (§4.4); mints `agent` credentials (§4.1); applies the sandbox reachability rules of §4.11.
+- **Sub-project 8 (plugins):** contributes plugin job adapters, started by 5C as helpers or as a job's only process under the `plugin` profile (§6.4); `worker.exit` records them with a keyed plugin id. Generation providers add `externalRef` to jobs (cut from 5C, §1.2).
+- **Sub-project 9 (frontend and Electron):** **Electron 44 and 45 embed Node 24.22.0, while the repository pins Node 26.12.1.** A `finisherd` started by the desktop shell as an `ELECTRON_RUN_AS_NODE` child therefore runs on Node 24, a Node the server is not tested on today. Checked on 2026-11-07 on Linux x64 with Electron 44.9.3 and 45.0.0: `node:sqlite` loads without an experimental warning, with SQLite 3.53.4, FTS5 and WAL. Sub-project 9 must either ship its own Node 26 for `finisherd` or add Node 24 to the test matrix; sub-project 5 uses only APIs present in both (§3.1). The same applies to `fin-node`'s napi build (it must load in both runtimes; arch §27.1 measured the Electron loads). Sub-project 9 also owns SSH/WSL routes, the device key in the keychain, and the onboarding question that is the only RPC route to training content (§3.4).
 
 ---
 
@@ -95,10 +113,10 @@ Sub-project 5 turns `finisherd` from a single-user local server into the control
 - **One writer:** `finisherd`'s main thread. Library catalogs are separate databases with their own writer (§7.1).
 - **Event loop:** every statement is prepared once, indexed and small, with a budget of **p99 ≤ 1 ms** per statement (10k jobs, 100k audit rows, Linux VM). Bulk deletes (retention, purges) run in batches of ≤ 500 rows per statement, one batch per tick. Bulk inserts (catalog diffs) never run on the main thread.
 - **Node versions:** only APIs present in both Node 24.22 (Electron 44/45) and Node 26.12 (§1.5).
-- **Versioning:** `meta` holds `formatVersion`, `minReaderVersion`, `envId` (§3.7), `createdAt`. Migrations are frozen modules `m0001…`, applied in one transaction at start after a `VACUUM INTO control.db.pre-m<n>.bak` (the newest two kept). A `minReaderVersion` above this code fails the start with `CONTROL_DB_TOO_NEW`.
+- **Versioning:** `meta` holds `envId` (§3.7) and `createdAt`; `migrations {chain, n, appliedAt}` records what ran. **Migrations come in independent chains, one per area** (`core`, `auth`, `jobs`, `libraries`, `reviews`, `devices`), each a frozen ordered sequence (`control/migrations/<chain>/0001.ts`) with its own `formatVersion`/`minReaderVersion` in `meta`, and no foreign keys across chains. Batches that run in parallel (5A and 5C-1) therefore never fight over migration numbers. Pending migrations run in one transaction at start, after a `VACUUM INTO control.db.pre-migrate.bak` (the newest two kept). A chain whose `minReaderVersion` is above this code fails the start with `CONTROL_DB_TOO_NEW`.
 - **Damage:** `PRAGMA quick_check` at open. A failure moves the files aside to `control.db.corrupt-<ulid>` and starts empty with an audit entry: the environment id and devices are lost (devices re-pair: fail closed), catalogs rescan, jobs are lost, open reviews are re-derived (§8.1). Rejections are not lost: they are in the op log (§8.3).
 
-Tables per batch: 5A `meta`, `server_ids`, `audit`, `credentials` (agent and MCP sessions); 5B `devices`, `pair_offers`, `pair_pending`; 5C `jobs`; 5D `libraries`; 5E `reviews`, `review_events`, `review_comments`, `branch_policy`.
+Tables per chain: `core` (5A Task 1) `meta`, `migrations`, `server_ids`, `audit`; `auth` (5A Task 9) `credentials`; `jobs` (5C-1) `jobs`; `devices` (5B) `devices`, `pair_offers`, `pair_pending`; `libraries` (5D) `libraries`; `reviews` (5E) `reviews`, `review_events`, `review_comments`, `branch_policy`.
 
 ### 3.2 Principals
 
@@ -149,7 +167,8 @@ Principal {
 | Kind | Batch | Payload |
 |---|---|---|
 | `auth.pair` | 5B | `outcome: offered\|redeemed\|approved\|rejected\|expired\|revoked`, `platform: Name(PLATFORMS)`, `route: loopback\|lan\|tailscale\|public\|connect\|other`, `micros?` (redeem → approve) |
-| `job.done` | 5C | `kind: Name(JOB_KINDS)`, `outcome: succeeded\|failed\|cancelled\|interrupted`, `code?`, `attempts`, `priority`, `queuedMs`, `runMicros`, `items?`, `itemsFailed?`, `isolated` |
+| `job.done` | 5C-1 | `kv` 1: `kind: Name(JOB_KINDS)`, `family: Name(WORKER_FAMILIES)`, `outcome: succeeded\|failed\|cancelled\|interrupted`, `code?`, `attempts`, `priority`, `warm` (ran on a warm worker), `queuedMs`, `runMicros`, `items?`, `itemsFailed?`, `isolated`, `helpers` (count). Sub-project 6 adds its media fields as `kv` 2 |
+| `worker.exit` | 5C-1 | one per process 5C started: `role: worker\|helper`, `family: Name(WORKER_FAMILIES)`, `helperKind?: codec\|plugin`, `plugin?: Hashed` (the plugin id, keyed), `reason: done\|idleExpired\|recycled\|cancelled\|killed\|crashed\|hung\|stalled\|abandoned\|spawnFailed`, `exitCode?`, `signal?: Name(SIGNALS)`, `jobsServed`, `lifetimeS`, `sandboxed: bool` |
 | `library.scan` | 5D | `storage: local\|network\|sync`, `full`, `trigger: add\|schedule\|demand\|watch\|mount`, `outcome`, `code?`, `files` and `dirs` (log₂ buckets), `added`, `changed`, `missing`, `moved`, `placeholders`, `micros` |
 | `review.verdict` | 5E | fills the reserved v0 kind as v1: `itemKind`, `verdict: accepted\|rejected\|merged\|dismissed\|changesRequested`, `txIds: IdRef[]` (≤ 64), `accepted`, `rejected`, `by: user\|agent\|critic`, `openS`; training only: `reason: Content<userText>` |
 
@@ -256,7 +275,7 @@ A closed vocabulary in `@finisher/contracts` (`scopes.ts`). **Every RPC declares
 | `fonts.fetch` | `fonts.fetch` (network downloads from the pinned catalog) | — |
 | `branch.protected` | escalation (5E): a write whose resolved target is protected | — |
 | `review.write`, `review.decide` | 5E (§8.6) | — |
-| `jobs.read`, `jobs.submit`, `jobs.control` | 5C (§6.6) | — |
+| `jobs.read`, `jobs.submit`, `jobs.control` | 5C-2 (§6.7) | — |
 | `library.read`, `library.scan` | 5D (§7.6) | — |
 | `library.admin` | `library.add`, `library.remove`, `library.set` of hydration or bandwidth | **human** |
 | `diagnostics.read` | `diagnostics.status`, `diagnostics.export` (content redacted, below), `diagnostics.project {collect: never}` | — |
@@ -471,79 +490,135 @@ When `fin-store::server_id` remints the server id because server data turned up 
 
 ## 6. 5C — Jobs
 
+### 6.0 Ownership (cross-design reconciliation, 2026-11-07)
+
+**5C owns the shared job system**, and no other sub-project builds a second one:
+- the job model, the scheduler and its pools, persistence and restart;
+- **one worker binary, `fin-workers <family>`**, and the **`fin-jobs`** crate with the protocol types and the envelope;
+- spawning and the kill tree, retries, poison handling and isolation (bisection);
+- warm workers for short interactive jobs (§6.3);
+- helper processes started beside a job's worker (§6.4) and the lifecycle of the job's mapped files;
+- the `jobs.*` RPCs, `fin job …` and `fin wait`;
+- the diagnostics kinds **`job.done`** and **`worker.exit`** (every process 5C starts, plugin job processes included).
+
+**Contributions:**
+- **Sub-project 6** contributes only the **`media` family** (its job specs and the family's code inside `fin-workers`), the **mapped-file bulk channel** (a shared-memory crate that sub-project 6 owns; 5C only creates, sizes, hands over and deletes the files), and the **media fields of `job.done`** (as `kv` 2 of the kind, §3.4).
+- **Sub-project 7** owns sandboxing (`fin-sandbox`, profiles `agent`, `hook`, `worker`, `plugin`); 5C calls it at every spawn (§6.2).
+- **Sub-project 8** contributes **plugin job adapters**: a job kind whose work is done by a plugin process, started by 5C as a helper (§6.4) or as the job's process, under the `plugin` profile.
+- **5D** contributes the `library` family (§7).
+
 ### 6.1 Data model
 
 ```text
 Job {
-  id: ULID, kind: Name (JOB_KINDS), kindVersion, params: JSON (validated by the kind),
-  owner: {kind, id}, project?: ProjectId, library?: LibraryId,
+  id: ULID, kind: Name (JOB_KINDS), kindVersion, family: Name (WORKER_FAMILIES),
+  params: JSON (validated by the kind), owner: {kind, id}, project?: ProjectId, library?: LibraryId,
   priority: interactive | normal | background,
   state: queued | running | paused | succeeded | failed | cancelled | interrupted,
   attempts, maxAttempts, idemKey? (per owner), dedupeKey? (per kind),
   progress: {done, total?, unit: bytes|items|frames|seconds, phase?: Name, at},
   checkpoint?: JSON (resumable kinds), result?: JSON, error?: FinError, itemErrors?: [...],
+  files?: [MappedFile], helpers?: [HelperSpec],
   parent?: JobId, createdAt, startedAt?, finishedAt?, nextRunAt?
 }
+MappedFile { name, bytes, mode: read | write | readWrite }          (created by 5C, format owned by the family)
+HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
 ```
 
-- **Kinds** are declared in `finisherd` (`jobs/kinds/*.ts`): `{kind, version, scopes, params (Rust-generated schema for worker kinds), resources, runner: worker:<family> | inline, timeoutS, stallS, maxAttempts, resumable, batch?, dedupe(params), defaultPriority, qos}`. Sub-project 5 ships `library.scan`, `library.probe`, `library.hash` and, behind `test-hooks`, `test.sleep|echo|crash|hang|stall|spawn`.
-- **Worker protocol types** (`fin-jobs` crate, Rust → JSON Schema → generated TS): host → worker `start {job, limits}`, `cancel`; worker → host `begin {item}` (the item it starts now), `item {item, value}` (a finished item's result), `progress`, `checkpoint {data}`, `alive`, `result {value}`, `error {error, itemErrors?}`.
-- **Ownership:** a job belongs to its owner principal (`local` runs share the owner `local`; each credential and device is its own owner). Owners see and control their own jobs; `jobs.control` sees and controls all. Jobs on projects or libraries outside a principal's reach are invisible to it.
+- **Kinds** are declared in `finisherd` (`jobs/kinds/*.ts`): `{kind, version, family, scopes, params (Rust-generated schema), resources, warm?: bool, timeoutS, stallS, maxAttempts, resumable, batch?, dedupe(params), defaultPriority, qos, files?, helpers?}`. 5C ships the `test` family (behind `test-hooks`: `sleep|echo|crash|hang|stall|spawn|warm`); 5D the `library` family; sub-project 6 `media`; sub-project 8 plugin adapters.
+- **Ownership:** a job belongs to its owner principal (`local` runs share the owner `local`; each credential and device is its own owner; in-process callers inside `finisherd` use the owner `system`). Owners see and control their own jobs; `jobs.control` sees and controls all; jobs on projects or libraries outside a principal's reach are invisible to it.
 
-### 6.2 Execution and the kill tree
+### 6.2 The worker binary, the envelope and spawning
 
-- **`fin-workers`** (the crate arch §7 names) is one binary with a subcommand per worker family; it speaks JSONL over stdio, runs one job, and exits. It is spawned with `childEnv` and found beside the `fin-node` binary.
-- **A job is coarse:** one worker process per job, never per file; small work is batched (a `library.probe` job takes up to 256 files).
-- **The host owns the kill tree, on every OS:**
-  - **Windows:** `fin-node` creates one **host-owned Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`** at start and a nested Job per worker; it **assigns each worker by pid** right after spawn (`OpenProcess` + `AssignProcessToJobObject`). Workers wait for `start` before doing anything, so nothing is spawned before the assignment. Cancel is `TerminateJobObject` on the worker's job; if `finisherd` dies, the host job's handle closes and every worker and descendant dies.
-  - **Linux:** workers start in their own process group; each sets **`PR_SET_PDEATHSIG` = SIGKILL** at start (and exits if `getppid()` already changed). **Where cgroup v2 is delegated** to `finisherd` (a systemd user service, a container), each job gets a child cgroup, killed with `cgroup.kill`, which also catches double-forked descendants; otherwise the host kills `-pgid`.
-  - **macOS:** process groups; the host kills `-pgid` with SIGKILL.
-  - **Everywhere:** a worker **exits when stdin reaches EOF** (its parent is gone), checked by its reader thread.
-- **Cancel** sends `{"t":"cancel"}`, waits 2 s, then kills the tree.
-- **Liveness and progress are separate:** a worker that sends nothing for 30 s (`alive` every 5 s) is killed as **`WORKER_HUNG`**; a worker that stays alive but reports no `progress` or `item` for the kind's `stallS` (default 10 minutes) is killed as **`JOB_STALLED`**. A worker stuck in uninterruptible I/O (an NFS hard mount) may not die; the host abandons it, and after 2 abandoned workers on a resource it stops dispatching there (`RESOURCE_STUCK`).
-- **Priority and QoS:** library scans and probes run at **utility** QoS on macOS (background QoS throttles I/O far below what a scan needs) and `nice 5` on Linux; CPU-heavy background kinds (embeddings, 8) at background QoS, `nice 10`, `BELOW_NORMAL_PRIORITY_CLASS` on Windows.
+- **`fin-workers <family>`** is the one worker binary (arch §7's `fin-workers`), one subcommand per family; it is found beside the `fin-node` binary and versioned with it. **Workers never start processes**: anything a job needs beside its worker (a codec backend, a plugin) is a helper that 5C starts (§6.4). `fin-sandbox`'s `worker` profile denies process creation once it exists; until then a test-only check and code review hold the rule.
+- **The envelope** (`fin-jobs`, Rust → JSON Schema → generated TS): newline-delimited JSON on the worker's stdin/stdout, `{"v":1,"t":<type>,"seq":n,"job"?:<id>,…}`; stderr is a log stream. The worker opens with `hello {v, family, kinds, warm}`; a `v` the host does not speak is `WORKER_PROTOCOL_MISMATCH`.
+  - host → worker: `start {job: {id, kind, params, checkpoint?}, limits, files: [{name, path}], helpers: [{id, files}]}`, `cancel {job}`, `shutdown`;
+  - worker → host: `begin {job, item}`, `item {job, item, value}`, `progress`, `checkpoint {data}`, `alive`, `result {job, value}`, `error {job, error, itemErrors?}`, `ready` (a warm worker is free again, §6.3).
+  - Bulk data never travels in the envelope: it goes through the job's mapped files, in the format of the family's channel (sub-project 6's crate for `media`).
+- **Spawning lives in `fin-node`** (`jobhost`), not in `child_process`: it starts the process with an explicit environment (the `childEnv` allow-list computed by `finisherd`, arch §27.7; nothing inherited), frames the envelope, runs the liveness timers and owns the kill tree. The scheduler, persistence and RPCs stay in TypeScript (D24). *Why in Rust:* the process must enter its Job Object before it runs, and `fin-sandbox` (a Rust crate) must wrap the spawn.
+- **Sandboxing:** every spawn goes through a `Spawner` trait in `jobhost`. Its implementation is **`fin-sandbox`** (sub-project 7) with the `worker` profile for workers and codec helpers and the `plugin` profile for plugin processes. **Until `fin-sandbox` exists, 5C spawns unsandboxed with the env allow-list only**, and `server.status` says so.
+- **The kill tree, owned by the host, on every OS:**
+  - **Windows:** one host-owned Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, created at start, and a nested Job per job; every process (worker and helpers) is created **suspended**, assigned to its job, then resumed, so nothing runs outside it. Cancel is `TerminateJobObject` on the job's Job; if `finisherd` dies, the host job's handle closes and everything dies;
+  - **Linux:** each job's processes share a process group, and each sets `PR_SET_PDEATHSIG` = SIGKILL at start (exiting if `getppid()` already changed); where cgroup v2 is delegated to `finisherd` (a systemd user service, a container), each job gets a child cgroup, killed with `cgroup.kill`; otherwise the host kills `-pgid`;
+  - **macOS:** process groups; the host kills `-pgid` with SIGKILL;
+  - **everywhere:** a worker or helper exits when its stdin reaches EOF (the host is gone).
+- **Cancel** sends `cancel`, waits 2 s (500 ms for interactive jobs), then kills the job's tree.
+- **Liveness and progress are separate:** silence for 30 s (`alive` every 5 s) is `WORKER_HUNG`; no `progress` or `item` for the kind's `stallS` (default 10 minutes) is `JOB_STALLED`. A process stuck in uninterruptible I/O may not die; the host abandons it and, after 2 abandoned processes on a resource, stops dispatching there (`RESOURCE_STUCK`).
+- **QoS:** library scans and probes at **utility** QoS on macOS and `nice 5` on Linux; CPU-heavy background kinds at background QoS, `nice 10`, `BELOW_NORMAL_PRIORITY_CLASS`. Interactive jobs run at normal priority.
 - **Bandwidth:** a per-root byte budget is enforced in the worker by a token bucket on reads.
 
-### 6.3 Scheduling
+### 6.3 Scheduling and warm workers
 
-- **Pools:** `cpu` (cores − 1, at least 1), `gpu` (1; sub-project 6), `io:<rootKey>` per library root (network and sync: 1 scan + 2 probe jobs; local: 4), `net` (4; sub-project 8). A job runs when every pool it needs has a slot.
-- **Order:** priority, then FIFO, with aging (10 minutes waiting counts one level higher). The scheduler is a pure function `schedule(queue, pools, now) → dispatches`, property-tested.
-- **Pause:** a job, or everything (`jobs.pause {job} | {all}`). Pausing stops dispatch; running resumable jobs checkpoint and stop; others finish.
+- **Pools:** `cpu` (cores − 1, at least 1), `gpu` (1; sub-project 6), `io:<rootKey>` per library root (network and sync: 1 scan + 2 probe jobs; local: 4), `net` (4; sub-project 8), and **`interactive:<family>`** (warm workers, below). A job runs when every pool it needs has a slot.
+- **Cold jobs** (the default): one worker process per job; small work is batched (a `library.probe` job takes up to 256 files).
+- **Warm workers** (new requirement, for sub-project 6's `fin look` ≤ 300 ms): kinds marked `warm` with priority `interactive` run on a **kept-alive worker of their family** that serves short jobs back to back:
+  - the `interactive:<family>` pool has its own slots (default 1 worker per family, at most 2), so a long cold job never delays an interactive one, and a warm worker uses a `cpu` slot only while it runs a job;
+  - a warm worker announces `ready` after each job and gets the next `start`; dispatch to a ready worker is a write on its stdin (host-side budget ≤ 5 ms from submit to `start`; the 300 ms end-to-end budget is sub-project 6's);
+  - **idle expiry:** a warm worker that has been idle for **60 s** (per-family setting) is shut down; it is also replaced after **500 jobs** or **30 minutes**, whichever comes first, to bound leaks;
+  - **no state between jobs** except caches keyed by content hash (a family contract, tested by running the same job on a fresh and a reused worker and comparing results);
+  - each job on a warm worker gets its own nested Job / cgroup for its helpers; the worker itself lives in a per-worker one;
+  - a crash or kill during a job loses the worker: the job is retried once on a fresh worker (cold start), and the pool starts a replacement on the next interactive submit;
+  - pre-warming: the pool starts a worker at the first interactive submit of a family and keeps it under the expiry rules; `jobs.warm {family}` (internal, used by sub-project 6 when a project opens) starts one ahead.
+- **Order:** priority, then FIFO, with aging (10 minutes waiting counts one level higher). The scheduler is a pure function `schedule(queue, pools, workers, now) → dispatches`, property-tested.
+- **Pause:** a job, or everything (`jobs.pause {job} | {all}`). Pausing stops dispatch; running resumable jobs checkpoint and stop; others finish; warm workers are kept until they expire.
 - **Limits:** 50,000 queued jobs (`JOB_QUEUE_FULL`); finished jobs kept 7 days or 10,000 rows.
 - **Idempotent submit:** the same `idemKey` from the same owner returns the existing job; the same `dedupeKey` while queued or running returns that job.
 
-### 6.4 Persistence, retries and isolation
+### 6.4 Helpers and mapped files
 
-- Jobs live in `control.db`; state transitions are written at once, progress only in memory, checkpoints at most every 10 s.
-- **Restart:** `running` jobs become `interrupted`; resumable ones with attempts left are re-queued from their checkpoint; others fail `JOB_INTERRUPTED`.
-- **Retries** with backoff 5 s × 2ⁿ (≤ 5 min), up to `maxAttempts` (default 3).
-- **Isolation of a crashing batch,** not blind bisection:
+- **Mapped files:** a kind may declare files; 5C creates them in `<server-data>/jobs/<jobId>/` (0700 directory, 0600 files; local disk), sizes them, passes their paths to the worker and its helpers in `start`, and deletes the directory when the job ends (also after a crash, at the next start). Their layout is the family's (sub-project 6's shared-memory crate for `media`); 5C never reads them.
+- **Helpers** (codec backends, plugins) are **siblings of the worker, started by 5C**, never by the worker:
+  - started before the worker's `start`, inside the job's kill tree, each through `fin-sandbox` with its profile (`worker` for codecs, `plugin` for plugins);
+  - connected to the worker **only through the job's mapped files**; each has its own envelope channel to the host (`hello`, `alive`, `error`), not to the worker;
+  - a helper that exits early fails the job with `HELPER_FAILED {helper, code}`; all helpers are killed with the job;
+  - warm workers keep no helpers between jobs: helpers are per job.
+- Sub-project 8's plugin job adapters are helpers (or, for a job that is all plugin, the job's only process) under the `plugin` profile.
+
+### 6.5 Persistence, retries and isolation
+
+- Jobs live in `control.db` (the `jobs` migration chain, §3.1); state transitions are written at once, progress only in memory, checkpoints at most every 10 s. Warm-worker state is in memory only.
+- **Restart:** `running` jobs become `interrupted`; resumable ones with attempts left are re-queued from their checkpoint; others fail `JOB_INTERRUPTED`. Leftover `jobs/<jobId>/` directories are deleted.
+- **Retries** with backoff 5 s × 2ⁿ (≤ 5 min), up to `maxAttempts` (default 3); interactive jobs retry once, at once, on a fresh worker.
+- **Poison handling and isolation of a crashing batch:**
   1. items the worker already reported (`item`) are never re-run;
   2. the item that was **in flight** (`begin` without `item`) is retried **alone** first; if it crashes again it fails as **`POISON_ITEM`** and the rest re-run without it;
   3. only when no item was in flight (a crash between items) is the remainder split in halves;
-  4. **never bisected:** `WORKER_HUNG`, `JOB_STALLED`, I/O errors and an offline root. Those are resource problems, not poison files: the job is retried with backoff, or the library goes offline (§7.2).
+  4. **never bisected:** `WORKER_HUNG`, `JOB_STALLED`, `HELPER_FAILED`, I/O errors and an offline root. Those are resource problems: retry with backoff, or the library goes offline (§7.2).
 
-### 6.5 Events and hooks
+### 6.6 Events and hooks
 
-An in-process `JobDone` bus (sub-project 7's hooks attach to it; arch §10), `jobs.watch` streams, and `job.done` journal events (§3.4).
+- An in-process `JobDone` bus (sub-project 7's hooks attach to it; arch §10) and `jobs.watch` streams.
+- **`job.done`** for every job, and **`worker.exit`** for every process 5C started (§3.4). Sub-project 6 adds its media fields to `job.done` as the kind's `kv` 2.
 
-### 6.6 RPCs and `fin` (5C)
+### 6.7 RPCs and `fin` (5C-2)
 
 | RPC | Scopes |
 |---|---|
 | `jobs.submit {kind, params, priority?, idemKey?, project?}` | `jobs.submit` **and** the kind's scopes (e.g. `library.scan`), plus reach over its project or library |
 | `jobs.get`, `jobs.list {filter, cursor?, limit ≤ 500}`, `jobs.wait {ids, any?, timeoutMs ≤ 600000}`, `jobs.watch` (stream) | `jobs.read`; own jobs, or all with `jobs.control` |
 | `jobs.cancel`, `jobs.pause {job}`, `jobs.resume {job}` | `jobs.submit` for own jobs, `jobs.control` for others' |
-| `jobs.pause {all}`, `jobs.resume {all}` | `jobs.control` |
+| `jobs.pause {all}`, `jobs.resume {all}`, `jobs.workers` (warm pools and live processes) | `jobs.control` |
 
-`fin job ls|show|cancel|pause|resume`, `fin wait <id>… [--any] [--timeout <s>]` (exit 0 when all succeeded, 4 `JOB_FAILED`, 5 `WAIT_TIMEOUT`). Commands that start jobs print `{job}` and return at once (arch §9.9).
+`fin job ls|show|cancel|pause|resume`, `fin wait <id>… [--any] [--timeout <s>]` (exit 0 when all succeeded, 4 `JOB_FAILED`, 5 `WAIT_TIMEOUT`). Commands that start jobs print `{job}` and return at once (arch §9.9). Inside `finisherd`, other services (5D, sub-project 6's `look` handler) use the engine's TypeScript API (`JobEngine.submit(owner, spec)`) directly; their own RPCs are authorised by the chain (§4.4).
 
-### 6.7 Security, codes, cross-platform, tests (5C)
+### 6.8 Split and what 5C needs from 5A
 
-- **Security:** workers get the cleared environment and no credential, speak only to their parent's stdio, and never receive a path outside the job's project or library root. Sub-project 7 adds the OS sandbox to workers (they parse untrusted media).
-- **Codes:** 3 `JOB_KIND_UNKNOWN`, `JOB_PARAMS_INVALID`, `JOB_NOT_FOUND`; 4 `JOB_FAILED`, `JOB_CANCELLED`, `JOB_INTERRUPTED`; 5 `JOB_QUEUE_FULL`, `WORKER_UNAVAILABLE`, `WAIT_TIMEOUT`, `RESOURCE_STUCK`; in results: `WORKER_CRASHED`, `WORKER_HUNG`, `JOB_STALLED`, `JOB_TIMEOUT`, `POISON_ITEM`.
-- **Cross-platform:** the kill tree above; signals do not exist on Windows (cancel is the stdio message, then the job kill); a killed worker's open file on SMB causes transient sharing violations for the next attempt.
-- **Tests:** scheduler properties; a `test.spawn` worker whose double-forked grandchild must be gone after cancel and after `finisherd` is killed with SIGKILL / `TerminateProcess`, on all three OSes; `test.crash` with a known poison item is isolated in two runs, not log₂(256); `test.hang` is never bisected; `test.stall` hits `JOB_STALLED`; restart resumes from the checkpoint; `fin wait` exit codes.
+- **5C-1, the engine:** `fin-jobs`, `fin-workers` with the `test` family, `fin-node` `jobhost` (spawner trait, kill tree, envelope framing, timers), the TypeScript scheduler with pools and warm workers, persistence, restart, retries and isolation, mapped files and helpers, the `job.done`/`worker.exit` kinds in `fin-core::events`, and the `JobEngine` API. **It needs only 5A Task 1** (`control.db`, its migration chains and the audit log) **and Task 2** (`<server-data>` layout and private directories, for `jobs/`). It can therefore start right after them and run beside sub-project 6's 6A-1. Until diagnostics D4 wires the journal into `finisherd`, events go to a `JobEvents` sink that tests read; D4's journal becomes the sink when it lands. Owners are recorded (`system` for in-process callers) but not yet checked.
+- **5C-2, the surface:** the `jobs.*` RPCs with their scopes, ownership and reach checks, `jobs.watch`, `fin job …` and `fin wait`. **It needs 5A Tasks 3–6** (principals, the `fin` handshake, the chain and scopes, protocol 2).
+- What 5C never needs from 5A: credentials, the console, tickets (beyond what the chain gives), the native pipe listener.
+
+### 6.9 Security, codes, cross-platform, tests (5C)
+
+- **Security:** workers and helpers get the cleared environment and no credential, speak only to their host over their own stdio, never start processes, and never receive a path outside the job's project, library root or job directory. Sandboxing is `fin-sandbox`'s (sub-project 7), applied at every spawn once it exists.
+- **Codes:** 3 `JOB_KIND_UNKNOWN`, `JOB_PARAMS_INVALID`, `JOB_NOT_FOUND`; 4 `JOB_FAILED`, `JOB_CANCELLED`, `JOB_INTERRUPTED`; 5 `JOB_QUEUE_FULL`, `WORKER_UNAVAILABLE`, `WORKER_PROTOCOL_MISMATCH`, `WAIT_TIMEOUT`, `RESOURCE_STUCK`; in results: `WORKER_CRASHED`, `WORKER_HUNG`, `JOB_STALLED`, `JOB_TIMEOUT`, `POISON_ITEM`, `HELPER_FAILED`.
+- **Cross-platform:** the kill tree above; signals do not exist on Windows (cancel is the envelope message, then the job kill); a killed process's open file on SMB causes transient sharing violations for the next attempt; mapped files on local disk only.
+- **Tests:**
+  - scheduler properties (pools never over-committed, priority and aging, warm pool separation);
+  - a `test.spawn` worker (test-only: it breaks the no-processes rule on purpose) whose double-forked grandchild is gone after cancel and after `finisherd` is killed with SIGKILL / `TerminateProcess`, on all three OSes; and a check that the shipped families never call a process-spawning API;
+  - `test.crash` with a known poison item is isolated in two runs; `test.hang` and helper failures are never bisected; `test.stall` hits `JOB_STALLED`;
+  - warm workers: 100 back-to-back `test.warm` jobs on one process with p99 dispatch ≤ 5 ms; idle expiry and the 500-job/30-minute replacement with an injected clock; a crash mid-job retries on a fresh worker; fresh-vs-reused results equal;
+  - helpers start before the worker, die with the job, and only see their mapped files; mapped-file directories are gone after the job and after a crash;
+  - restart resumes from the checkpoint; `fin wait` exit codes (5C-2); `job.done` and `worker.exit` entries.
 
 ---
 
@@ -574,7 +649,7 @@ An in-process `JobDone` bus (sub-project 7's hooks attach to it; arch §10), `jo
 
 ### 7.3 Fingerprint, probe, placeholders and stages
 
-- `library.probe` jobs compute `fp1` and run `fin-probe` in one pass, in the worker (untrusted bytes), with the isolation rules of §6.4.
+- `library.probe` jobs compute `fp1` and run `fin-probe` in one pass, in the worker (untrusted bytes), with the isolation rules of §6.5.
 - **The fingerprint stays `fp1`** (size, mtime and sampled BLAKE3, as `fin-probe` computes it for assets), so a library file and its asset share it; relinking across machines falls back to the full hash (arch §20), computed by `library.hash` on demand, never in a sweep.
 - **Placeholders are catalogued from metadata and never opened or read** (opening or reading makes the provider download them):
   - macOS: `SF_DATALESS` on files **and directories** (a dataless directory is not descended into: its listing would be fetched; it is recorded `cloudOnly` as a whole); legacy `.<name>.icloud` stubs;
@@ -710,6 +785,9 @@ All over the ticketed WebSocket as a `device` principal:
 | WebSocket server under our protocol | `ws` 8 (already under `@effect/platform-node`; pinned directly) | MIT | 5A |
 | Windows pipes, ACLs, Job Objects, enumeration | `windows-sys` 0.61 (already in the tree) | MIT OR Apache-2.0 | 5A, 5C, 5D |
 | Linux `prctl`, `statx`, cgroups | `libc` (already in the tree) | MIT OR Apache-2.0 | 5C, 5D |
+| Job protocol, worker binary | `fin-jobs`, `fin-workers` (ours) | MIT | 5C-1 |
+| Sandboxing at spawn | `fin-sandbox` (sub-project 7's crate, behind 5C's `Spawner` trait) | MIT | 5C-1 hook; 7 |
+| Mapped-file bulk channel | sub-project 6's shared-memory crate (5C only creates, hands over and deletes the files) | MIT | 6 |
 | DPoP / JWS / JWK thumbprints | `jose` 6 | MIT | 5B |
 | Self-signed certificates | `rcgen` 0.14, `ring` provider, in `fin-node` | MIT OR Apache-2.0 (`ring`: Apache-2.0 AND ISC, allowed) | 5B |
 | Keychain | `keyring` 3, exact pin, `async-secret-service` over `zbus` (pinned), no `dbus` | MIT OR Apache-2.0 (`zbus` MIT) | 5B |
@@ -746,8 +824,12 @@ All over the ticketed WebSocket as a `device` principal:
 | 20 | Every device is the owner in v1; no roles, no project lists, no typed codes, no capability URLs, no signed rotations | §1.2 |
 | 21 | DPoP freshness from server nonces; `htu` checked against public URLs | §5.3 |
 | 22 | A locked or missing keyring falls back to the file store without prompting | §5.5 |
-| 23 | Job kill trees owned by the host on every OS; stdin-EOF exit everywhere | §6.2 |
-| 24 | Crash isolation targets the in-flight item; resource failures are never bisected; stall detection is separate from liveness | §6.2, §6.4 |
+| 23 | 5C owns the one job system and the one `fin-workers <family>` binary; spawning lives in `fin-node` behind a sandbox hook; processes enter their kill tree before they run; stdin-EOF exit everywhere | §6.0, §6.2 |
+| 24 | Crash isolation targets the in-flight item; resource failures are never bisected; stall detection is separate from liveness | §6.2, §6.5 |
+| 24a | Warm workers in an `interactive:<family>` pool serve short jobs back to back, with idle expiry (60 s) and recycling (500 jobs / 30 min) | §6.3 |
+| 24b | Workers never start processes; helpers are siblings started by 5C, connected only through the job's mapped files | §6.4 |
+| 24c | 5C is split: the engine needs only 5A Tasks 1–2; the RPCs need 5A Tasks 3–6 | §6.8 |
+| 24d | `control.db` migrations run in independent per-area chains | §3.1 |
 | 25 | Enumeration never opens a file; placeholders (files and directories, Nextcloud suffixes) are never read | §7.2, §7.3 |
 | 26 | Volume identity per library; an unmounted share is offline; spin-up-tolerant timeouts | §7.1, §7.2 |
 | 27 | Demand-driven NAS polling: 60 s while in use, 6 h otherwise, freshness pass before answering | §7.2 |
@@ -779,6 +861,8 @@ All over the ticketed WebSocket as a `device` principal:
 | Electron's Node (24) differs from the repository's (26) | only APIs present in both; sub-project 9 decides whether the desktop ships its own Node for `finisherd` |
 | Keychain prompts, missing or locked Secret Service | file store with optional wrapping; never prompt |
 | Browsers and self-signed TLS | Owner question 3 |
+| Warm workers leak memory or carry state between jobs | recycling after 500 jobs / 30 minutes; fresh-vs-reused equality tests per family; a crash loses only the worker |
+| `fin-sandbox` arrives after 5C | the `Spawner` trait; unsandboxed spawns with the env allow-list, reported in `server.status` |
 | NAS scans hang, disks sleep | worker processes, abandonment limits, spin-up-tolerant timeouts, demand polling |
 | Sync providers hydrate on access | enumeration without opening; process-wide materialisation off on macOS; placeholder markers on every OS; an `open` counter in tests |
 | A `drop` record makes a project unreadable to 4C-era servers | by design read-only (`NEWER_FORMAT`), never wrong; written only when someone rejects |
@@ -823,7 +907,7 @@ Contradictions and gaps found while designing this; each batch's "as built" pass
 | **H2** socket beside secrets; pipe security; sandbox reach; `FIN_CREDENTIAL` | §4.1, §4.3 (native pipe listener decided), §4.11, arch §8.4 amended |
 | **H3** no middleware chain, branch refs unresolved, no `ask`; `branches` dropped from mint | §4.4, §4.1, §4.8 |
 | **H4** RPC scope errors | §4.5: `project.open` by state; resolvers for `dir`; `asset.probe {projectId}` with reach; protected-branch guards in the write transaction (§4.4); job ownership (§6.1); `jobs.submit` all-of scopes; `auth.revokeSelf` without an id; capability URLs cut to 6 (with reach); `diagnostics.record` scope; `fonts.fetch` scope |
-| **H5** jobs kill tree and bisection | §6.2, §6.4 |
+| **H5** jobs kill tree and bisection | §6.2, §6.5 |
 | **H6** library enumeration and mounts | §7.1–7.3 |
 | **M1** `node:sqlite` under Electron | checked (§1.5); repeated on macOS and Windows in 5A Task 14 |
 | **M2** WAL checkpoint on the event loop; unbatched deletes | §3.1 |
@@ -832,3 +916,19 @@ Contradictions and gaps found while designing this; each batch's "as built" pass
 | **M5** audit aggregation; MAC binding | §3.3, §4.2 |
 | v1 cuts | §1.2 |
 | Defaults: credential expiry, NAS poll | §4.1 (24 h / 7 d, justified), §7.2 (demand polling, justified; no owner question needed) |
+
+---
+
+## 16. Cross-design reconciliation (revision 3)
+
+| Item | Resolution |
+|---|---|
+| 5C owns the shared job system (model, scheduler, pools, the one `fin-workers <family>` binary, `fin-jobs`, kill tree, retries, poison handling, `jobs.*`, `fin wait`, `job.done`, `worker.exit`) | §6.0; batches §1.4; kinds §3.4; nothing in sub-project 5 builds media, plugin or sandbox code |
+| Sub-project 6 contributes only the `media` family, the mapped-file channel crate and `job.done` media fields | §6.0, §6.4 (5C creates and deletes the files, never reads them), §3.4 (`kv` 2) |
+| Sub-project 8 contributes plugin job adapters | §6.0, §6.4 |
+| Warm workers for `fin look` ≤ 300 ms | §6.3 (interactive pool, idle expiry 60 s, recycling, ≤ 5 ms dispatch) |
+| Helpers are siblings started by 5C; workers never start processes | §6.2, §6.4 |
+| Sandboxing is sub-project 7's `fin-sandbox`; 5C calls it at spawn, unsandboxed with the env allow-list until then | §6.2 (`Spawner` trait in `fin-node` `jobhost`), §1.2 |
+| 5C runs beside sub-project 6's 6A-1; what it needs from 5A | §6.8, §1.4: 5C-1 needs 5A Tasks 1–2; 5C-2 needs 5A Tasks 3–6; per-area migration chains in `control.db` so they never collide (§3.1) |
+| Electron embeds Node 24 | §1.6 (note for sub-project 9), §1.5, §14 item 16 |
+| Kill-tree race on Windows | improved: processes are created suspended, assigned to their Job, then resumed (§6.2), instead of assignment by pid after spawn |

@@ -4,6 +4,8 @@
 
 **Revision 2** (2026-11-07), after the review of `45039ab`: reordered so that every commit is green, with the `fin` handshake right after the server's; the middleware chain with resolvers, reach, `ask` and an in-transaction write guard; no training opt-in from any command line; a TTY-gated console with server-issued challenges; fix texts with no commands; the socket in `run/`; a native Windows pipe listener; `envId` and endpoint inside the MACs; one retry after a restart; `mcp` credentials; credential expiry. Spec §15 maps every finding.
 
+**Revision 3** (2026-11-07), after the cross-design reconciliation (spec §16): `control.db` migrations run in per-area chains so that 5C-1 (the job engine) can start right after Tasks 1 and 2 and run beside the rest of this plan; Tasks 1 and 2 are the interfaces 5C-1 consumes, so their signatures are frozen once they merge.
+
 **Goal:** every caller of `finisherd` is a principal with a credential, every RPC declares the scopes it needs, one middleware chain checks them against resolved state, and the human-only operations are enforced by the server. After this plan:
 - `<server-data>/control.db` (`node:sqlite`) holds the environment id, the server-id map, the always-on local **audit log** and **credentials**;
 - a connection proves a credential with a **mutual HMAC handshake** bound to the environment and the endpoint (`server.hello` + `auth.prove`); `fin` retries once after a restart and otherwise refuses a squatted or foreign server (`SERVER_UNTRUSTED`); a connection without a credential can only say hello;
@@ -33,6 +35,7 @@
 
 **Branch:** `sp5a-principals`, stacked on `sp4c-edit-breadth`.
 - **Can start now** (they need only what exists: D1, D2 and 4C as it stands): **Tasks 1, 2 and 10.**
+- **5C-1 (the job engine, its own plan) can start once Tasks 1 and 2 have merged,** and runs beside Tasks 3–14 and beside sub-project 6's 6A-1. It uses `openControlStore`/`registerChain` (its `jobs` chain), `Audit`, the `<server-data>` layout of Task 2 and `childEnv`, nothing else from this plan. 5C-2 (the `jobs.*` RPCs) waits for Tasks 3–6.
 - **Wait for diagnostics D4 and D6:** Tasks 3–9 and 11–14. They change D4's per-transport `RpcSource`, D4's `diagnostics.*` handlers and D6's actor headers, which do not exist yet. When D4 and D6 land, rebase the branch onto them and continue at Task 3.
 
 **Out of scope:** pairing, devices, DPoP, TLS, remote listeners, routes, allowed roots for devices (5B); jobs (5C); libraries (5D); reviews, protected-branch policy and `drop` records (5E; the guard and the `branch.protected` scope exist here); agent sessions created by an agent runtime, approvals, hooks and the OS sandbox (sub-project 7); plugin credentials (8); the frontend (9).
@@ -70,7 +73,7 @@
 ### Store
 
 1. **`control.db`:** `node:sqlite` `DatabaseSync`, `journal_mode = WAL`, `synchronous = NORMAL`, `foreign_keys = ON`, `busy_timeout = 250` (`CONTROL_DB_BUSY`, exit 5, past it), **`wal_autocheckpoint = 0`** on the main connection. A `worker_thread` with its own connection runs `PRAGMA wal_checkpoint(PASSIVE)` every 30 s or when `control.db-wal` passes 4 MiB, and `TRUNCATE` after 60 s without writes. The file is created 0600.
-2. **Versioning:** `meta(key, value)` with `formatVersion` 1, `minReaderVersion` 1, `envId` (a ULID minted on first open, never changed by this plan), `createdAt`. `server_ids(serverId PRIMARY KEY, envId, since)` gets the current `server-id` at every start. Frozen migrations `control/migrations/m000N.ts`; `VACUUM INTO control.db.pre-m<n>.bak` before the first pending one (the newest two kept); `minReaderVersion` above ours → `CONTROL_DB_TOO_NEW`.
+2. **Versioning:** `meta(key, value)` with `envId` (a ULID minted on first open, never changed by this plan) and `createdAt`; `migrations(chain, n, appliedAt)`. **Migrations come in independent per-area chains** (spec §3.1): `control/migrations/<chain>/0001.ts…`, each frozen and ordered within its chain, each chain with its own `formatVersion.<chain>`/`minReaderVersion.<chain>` in `meta`, no foreign keys across chains. This plan owns `core` (Task 1: `meta`, `migrations`, `server_ids`, `audit`) and `auth` (Task 9: `credentials`); 5C-1 owns `jobs`. A chain registers itself with `registerChain(name, migrations)` before `openControlStore` runs them. `server_ids(serverId PRIMARY KEY, envId, since)` gets the current `server-id` at every start. `VACUUM INTO control.db.pre-migrate.bak` before the first pending migration (the newest two kept); a chain's `minReaderVersion` above ours → `CONTROL_DB_TOO_NEW`.
 3. **`PRAGMA quick_check` at open;** a failure moves the files to `control.db.corrupt-<ulid>`, starts empty (a new `envId`) and writes `audit {kind: "control.reset"}` first.
 4. **Audit:** `audit(id, at, kind, principalKind, principalId, credentialKind, outcome, code, remote, count, details)`, indexed on `at` and `kind`. `auth.fail` aggregates **per `(credentialKind, remote)` per minute** into one row with `count`. Retention 180 days or 100,000 rows, swept at start and hourly, **≤ 500 rows per `DELETE`**, one batch per event-loop turn. `remote` stays `NULL` in 5A.
 
@@ -175,7 +178,7 @@ Questions 1, 3 and 4 do not affect 5A.
 ### Task 1: The control store, the environment id and the audit log — tier: sonnet — can start now
 
 **Files:**
-- Create: `apps/finisherd/src/control/{db.ts, checkpoint-worker.ts, migrations.ts, migrations/m0001.ts, audit.ts}`.
+- Create: `apps/finisherd/src/control/{db.ts, checkpoint-worker.ts, migrations.ts (chains, `registerChain`), migrations/core/0001.ts, audit.ts}`.
 - Modify: `apps/finisherd/src/main.ts` (open the store in `serve` after the server lock and before the transports; a layer; record `server_ids`), `TASKS.md`.
 - Test: `apps/finisherd/test/control.test.ts`, `apps/finisherd/test/audit.test.ts`, `apps/finisherd/scripts/control-budget.ts`.
 
@@ -213,7 +216,7 @@ Decisions 1–4.
   - `opens_wal_0600_with_meta_and_env_id` (unix mode; `wal`; `envId` is a ULID and survives a reopen);
   - `main_connection_never_autocheckpoints` (`PRAGMA wal_autocheckpoint` reads 0; 10k inserts leave the WAL growing until the worker runs; the worker's checkpoint shrinks it);
   - `server_ids_map_every_server_id` (two different server ids over two starts → two rows, one `envId`);
-  - `migrations_run_once_in_order_with_backup`, `newer_min_reader_refuses_start`, `corrupt_db_is_moved_aside_and_audited` (and gets a new `envId`), `busy_maps_to_control_db_busy`;
+  - `migrations_run_once_in_order_with_backup`, `chains_are_independent` (two test chains registered in either order, each applied once; a newer `minReaderVersion` in one chain refuses the start, naming the chain), `newer_min_reader_refuses_start`, `corrupt_db_is_moved_aside_and_audited` (and gets a new `envId`), `busy_maps_to_control_db_busy`;
   - `audit_append_list_cursor_purge`, `auth_fail_aggregates_per_credential_kind_per_minute` (100 failures on 100 connections in one minute → one row, `count` 100), `retention_by_age_and_rows`, `deletes_are_batched` (a purge of 10k rows runs ≥ 20 statements and yields between them), `audit_failure_never_throws`;
   - `control_store_budget` (100k audit rows; prepared-statement p99 ≤ 1 ms on Linux; the test asserts ≤ 5 ms for CI stability and prints the measure).
 - [ ] **Step 2: Implement** with APIs present in Node 24.22 too (check each against Node 24's `node:sqlite` docs; note them in `db.ts`).
@@ -479,7 +482,7 @@ Decisions 29–31. The help text of each mutating command says it needs an inter
 ### Task 9: Agent and MCP credentials — tier: opus — after Task 5
 
 **Files:**
-- Create: `apps/finisherd/src/auth/credentials.ts`, `apps/finisherd/src/control/migrations/m0002.ts` (`credentials`).
+- Create: `apps/finisherd/src/auth/credentials.ts`, `apps/finisherd/src/control/migrations/auth/0001.ts` (`credentials`).
 - Modify: `apps/finisherd/src/auth/handshake.ts` (credential hellos), `apps/finisherd/src/handlers.ts`, `apps/finisherd/src/env.ts` (`FIN_CREDENTIAL` in `ChildEnvExtra`), `packages/contracts/src/{auth.ts, rpc.ts}` (`auth.credential.mint|list|revoke`), `apps/finisherd/src/console/commands/{agent.ts, mcp.ts}` if Task 8 is in (otherwise Task 8 wires them).
 - Test: `apps/finisherd/test/credentials.test.ts`, `apps/finisherd/test/env.test.ts`.
 
