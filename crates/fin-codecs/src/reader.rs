@@ -22,8 +22,9 @@ pub struct FrameReader<R: Read + Seek> {
     demux: Demuxer<R>,
     track: VideoTrack,
     decoder: Box<dyn VideoDecoder>,
-    /// The next sample (decode order) to send, when a run is in progress.
-    next: Option<usize>,
+    /// The run in progress: the sample it began at (a sync sample) and the next one to send,
+    /// both in decode order.
+    run: Option<(usize, usize)>,
     cache: VecDeque<DecodedFrame>,
     buf: Vec<u8>,
 }
@@ -41,7 +42,7 @@ impl<R: Read + Seek> FrameReader<R> {
             demux,
             track,
             decoder,
-            next: None,
+            run: None,
             cache: VecDeque::new(),
             buf: Vec::new(),
         })
@@ -68,11 +69,13 @@ impl<R: Read + Seek> FrameReader<R> {
             return Ok(&self.cache[k]);
         }
         let start = decode_start(&self.track.table, index);
-        let resume = matches!(self.next, Some(n) if n >= start && n <= d);
+        // Continue only a run that began at or before `start` and has not passed the frame:
+        // it holds every reference the frame needs.
+        let resume = matches!(self.run, Some((began, n)) if began <= start && n >= start && n <= d);
         if !resume {
             self.decoder.flush()?;
             self.cache.clear();
-            self.next = Some(start);
+            self.run = Some((start, start));
         }
         let total = self.track.sample_count();
         loop {
@@ -86,9 +89,9 @@ impl<R: Read + Seek> FrameReader<R> {
                     return Ok(self.cache.back().expect("just pushed"));
                 }
             }
-            let n = self.next.expect("a run is in progress");
+            let (began, n) = self.run.expect("a run is in progress");
             if n >= total {
-                self.next = None;
+                self.run = None;
                 return Err(CoreError::new(
                     "DECODE_FAILED",
                     "the decoder did not produce the frame",
@@ -98,9 +101,9 @@ impl<R: Read + Seek> FrameReader<R> {
             let s = self.track.sample(n).expect("n < total");
             self.demux
                 .read_sample(self.track.track, n as u32, &mut self.buf)?;
-            self.next = Some(n + 1);
+            self.run = Some((began, n + 1));
             if let Err(e) = self.decoder.send(&self.buf, s.cts) {
-                self.next = None;
+                self.run = None;
                 return Err(
                     e.with_details(json!({ "backend": self.decoder.backend().0, "frame": index }))
                 );
