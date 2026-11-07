@@ -263,6 +263,24 @@ Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`
 - [ ] D6: `fin`: actor headers, `cli.command` and `fin diagnostics`
 - [ ] D7: e2e, docs and tracker
 
+## Sub-project 6: media engine (designed 2026-11-07, revision 2 after review)
+
+Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps the review findings). Plan for 6A: `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`: 6A-1 (Tasks 1–8, branch `sp6a1-media-foundations` from `sp4c-edit-breadth`, ready now, beside 5C-1) and 6A-2 (Tasks 9–16, after 5C-1). Sub-batches 6A-1/6A-2, 6B-1/6B-2, 6C–6G (spec §19); 6A's plan adds its task list here in its Task 1.
+
+- [ ] Owner questions (spec §21): 1 Linux AAC; 2 Electron's bundled LGPL ffmpeg; 3 hardware codec drivers in the Docker image; 4 default base box; 5 5C-1 alongside 6A-1; 6 worker sandbox timing; 7 GPU ids in diagnostics; 8 6B platform scope and NVIDIA on Linux; 9 H.264/HEVC export encoders, the HEVC template and D31's Windows 10. 6A proceeds on the recommendations of 4 and 6
+- [ ] Asks of 5C (spec §3.2): an `onSucceeded` hook before the job directory is deleted (needed by 6A-2 Task 12), a `hwenc` pool, RAM-scaled memory limits (6B)
+- [ ] Requirements on sub-project 7 (spec §3.5): the `worker` sandbox profile (GPU, media engines, library reads, `out/` writes, no network, no exec)
+- [ ] Spec follow-ups (spec §22): reword core §5.6 and arch §27.10 "fonts always bundled"; arch §18 exception for Electron's ffmpeg if question 2 is (a); D31 and Windows 10 22H2 (question 9)
+- [ ] 6A-1: foundations
+- [ ] 6A-2: first pixels (after 5C-1)
+- [ ] 6B-1: stateful platform codecs and proxies
+- [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
+- [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
+- [ ] 6D: layers (effects, masks and mattes, nested, images, SVG, Lottie, captions raster)
+- [ ] 6E: export
+- [ ] 6F: preview engine
+- [ ] 6G: hardening (zero-copy, NVIDIA on Linux, sandbox, fuzzing, validation matrix)
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
