@@ -142,3 +142,89 @@ impl Reg {
         out
     }
 }
+
+/// A folder transport that records every fetch and can fail or panic at one path.
+pub struct Faulty {
+    pub inner: FsTransport,
+    pub panic_at: Option<String>,
+    pub fail_at: Option<(String, fin_registry::transport::TransportError)>,
+    pub log: std::sync::Mutex<Vec<(String, u64)>>,
+}
+
+impl Faulty {
+    pub fn new(repo: &Path) -> Faulty {
+        Faulty {
+            inner: FsTransport::new(repo),
+            panic_at: None,
+            fail_at: None,
+            log: Default::default(),
+        }
+    }
+
+    pub fn fetched(&self) -> Vec<(String, u64)> {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl Transport for Faulty {
+    fn fetch(
+        &self,
+        path: &str,
+        max: u64,
+    ) -> Result<Vec<u8>, fin_registry::transport::TransportError> {
+        self.log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((path.to_string(), max));
+        if self.panic_at.as_deref() == Some(path) {
+            panic!("killed while fetching {path}");
+        }
+        if let Some((p, e)) = &self.fail_at
+            && p == path
+        {
+            return Err(e.clone());
+        }
+        self.inner.fetch(path, max)
+    }
+}
+
+impl Reg {
+    pub fn refresh_with(
+        &self,
+        c: &mut TrustedRepo,
+        t: Arc<dyn Transport>,
+        policy: Policy,
+        clock: &dyn Clock,
+    ) -> Result<RefreshReport, TufError> {
+        c.refresh(t, &policy, clock)
+    }
+
+    /// Parses `metadata/<name>` of the registry.
+    pub fn meta<T: serde::de::DeserializeOwned>(&self, name: &str) -> T {
+        serde_json::from_slice(&std::fs::read(self.repo.join("metadata").join(name)).unwrap())
+            .unwrap()
+    }
+
+    pub fn meta_path(&self, name: &str) -> PathBuf {
+        self.repo.join("metadata").join(name)
+    }
+
+    /// The newest root of the registry, parsed.
+    pub fn newest_root(&self) -> tough::schema::Signed<tough::schema::Root> {
+        let mut v = 1;
+        while self.meta_path(&format!("{}.root.json", v + 1)).exists() {
+            v += 1;
+        }
+        self.meta(&format!("{v}.root.json"))
+    }
+
+    /// The private keys of a top-level role of the newest root, from the key ring.
+    pub fn role_keys(&self, role: tough::schema::RoleType) -> Vec<SigningKey> {
+        let root = self.newest_root();
+        root.signed.roles[&role]
+            .keyids
+            .iter()
+            .filter_map(|id| self.b.keys().get(&hex::encode(id.as_ref())).unwrap())
+            .collect()
+    }
+}

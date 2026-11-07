@@ -269,3 +269,9 @@ impl RepoBuilder {
         Ok(keys)
     }
 }
+
+/// Signs `role` with `keys` over its canonical JSON and returns the file bytes, for tools
+/// that write metadata the editor does not (and for the attack tests, which forge it).
+pub fn sign_metadata<T: Serialize>(role: T, keys: &[SigningKey]) -> Vec<u8> {
+    sign(role, keys).bytes
+}

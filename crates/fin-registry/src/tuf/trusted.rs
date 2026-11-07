@@ -19,10 +19,11 @@ use url::Url;
 
 use super::adapter::{self, Adapter, State};
 use super::checks;
-use super::clock::unix_secs;
+use super::clock::{self, unix_secs};
 use super::custom::{self, PackageCustom};
 use super::error::{from_tough, verify_error};
-use super::{Clock, Policy, RefreshReport, TrustState, TrustStore, TufError};
+use super::freshness;
+use super::{Clock, Policy, RefreshReport, TrustState, TrustStore, TufError, Warning};
 use crate::atomic;
 use crate::package::hex;
 use crate::transport::{Transport, TransportError};
@@ -164,6 +165,22 @@ impl TrustedRepo {
         custom::max_stale_days(&self.trusted.root.signed)
     }
 
+    /// Whole days (rounded up) the trusted metadata is past its earliest expiry at `clock`'s
+    /// now, or `None` while it is fresh.
+    pub fn stale_days(&self, clock: &dyn Clock) -> Option<u16> {
+        freshness::stale_days(&self.trusted, clock.now())
+    }
+
+    /// The freshness of the trusted metadata under `policy` at `clock`'s now:
+    /// `REGISTRY_STALE` as a warning, `TUF_EXPIRED` as an error.
+    pub fn freshness(
+        &self,
+        policy: &Policy,
+        clock: &dyn Clock,
+    ) -> Result<Option<Warning>, TufError> {
+        freshness::check(&self.trusted, policy, clock.now())
+    }
+
     /// Unix seconds of the injected clock at the last successful refresh.
     pub fn last_refresh_at(&self) -> Result<Option<i64>, TufError> {
         Ok(self.store.state()?.last_refresh_at)
@@ -195,9 +212,12 @@ impl TrustedRepo {
     fn refresh_inner(
         &mut self,
         t: Arc<dyn Transport>,
-        _policy: &Policy,
+        policy: &Policy,
         clock: &dyn Clock,
     ) -> Result<RefreshReport, TufError> {
+        let now = clock.now();
+        let last = self.store.state()?.last_refresh_at;
+        clock::check(now, last)?;
         let before = self.versions();
         let (anchor_version, anchor) = self
             .store
@@ -255,15 +275,19 @@ impl TrustedRepo {
         let fresh = Trusted::from_files(repo.root().clone(), &files)?;
         let mut report = RefreshReport {
             roots_added: st.roots_added,
+            stale_days: freshness::stale_days(&fresh, now),
             ..RefreshReport::default()
         };
+        report
+            .warnings
+            .extend(freshness::check(&fresh, policy, now)?);
         let changed = self.store.current()? != files;
         if changed {
             self.store.commit(&files)?;
         }
         self.trusted = fresh;
         self.store.save_state(&TrustState {
-            last_refresh_at: Some(unix_secs(clock.now())),
+            last_refresh_at: Some(last.unwrap_or(i64::MIN).max(unix_secs(now))),
         })?;
         let after = self.versions();
         report.root_version = after.0;

@@ -86,7 +86,13 @@ impl RepoBuilder {
 
     /// Adds the delegation of a pending publisher and its empty role.
     fn activate(&mut self, publisher: &str) -> Result<(), EditorError> {
-        let key = self.st.pending[publisher];
+        let key = *self.st.pending.get(publisher).ok_or_else(|| {
+            EditorError::new(
+                "PUBLISHER_NOT_DELEGATED",
+                format!("{publisher} is not delegated"),
+                json!({ "publisher": publisher }),
+            )
+        })?;
         let d = self
             .st
             .targets
@@ -324,6 +330,30 @@ impl RepoBuilder {
                 })
             }
         }
+    }
+
+    /// The current content of `publisher`'s role.
+    pub fn role(&self, publisher: &str) -> Option<&Targets> {
+        self.st.roles.get(publisher).map(|r| &r.signed)
+    }
+
+    /// Replaces `publisher`'s role with `role` as given and signs it with `signers`, then the
+    /// snapshot and timestamp: no check that the keys or the targets belong to the publisher.
+    /// The attack tests use it to forge what a compromised or revoked key would sign.
+    #[doc(hidden)]
+    pub fn commit_unchecked_role(
+        &mut self,
+        publisher: &str,
+        role: Targets,
+        signers: &[SigningKey],
+    ) -> Result<(), EditorError> {
+        let new = self.ensure_active(publisher)?;
+        self.st.roles.get_mut(publisher).expect("active").signed = role;
+        self.commit(Change {
+            targets: new,
+            roles: BTreeMap::from([(publisher.to_string(), signers.to_vec())]),
+            ..Change::default()
+        })
     }
 
     /// The SHA-256 of every package byte the registry lists, by target name (for tests and

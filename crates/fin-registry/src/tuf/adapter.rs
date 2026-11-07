@@ -33,7 +33,9 @@ pub(crate) const MAX_TARGETS: u64 = 4 * MIB;
 pub(crate) const MAX_DELEGATED: u64 = 4 * MIB;
 pub(crate) const MAX_TIMESTAMP: u64 = 16 * 1024;
 pub(crate) const MAX_SNAPSHOT: u64 = MIB;
-pub(crate) const MAX_ROOT_UPDATES: u64 = 32;
+/// `tough` stops when the trusted root reaches `anchor + max_root_updates` before looking for
+/// the next, so 33 lets one refresh trust at most 32 new roots (Decision 15).
+pub(crate) const MAX_ROOT_UPDATES: u64 = 33;
 pub(crate) const MAX_DELEGATIONS: usize = 500;
 
 #[derive(Default)]

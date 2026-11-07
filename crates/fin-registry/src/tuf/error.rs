@@ -244,11 +244,14 @@ pub(crate) fn from_tough(e: &tough::error::Error) -> TufError {
         ),
         E::MaxUpdatesExceeded {
             max_root_updates, ..
-        } => TufError::new(
-            "REGISTRY_INVALID",
-            format!("more than {max_root_updates} root versions in one refresh"),
-            json!({ "reason": "tooManyRoots", "max": max_root_updates }),
-        ),
+        } => {
+            let max = max_root_updates - 1;
+            TufError::new(
+                "REGISTRY_INVALID",
+                format!("more than {max} new root versions in one refresh; refresh again"),
+                json!({ "reason": "tooManyRoots", "max": max }),
+            )
+        }
         E::InvalidPath { source, .. } => TufError::delegation("targets", format!("{source}")),
         E::ParseMetadata { role, .. } => TufError::new(
             "REGISTRY_INVALID",

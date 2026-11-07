@@ -2,18 +2,21 @@
 //! client workflow over `tough` 0.24 (8A Decision 8) and keeps what it trusts in a
 //! [`TrustStore`] per root. `tough` is wrapped where the 8A Task 1 gate found it short: no
 //! write of its datastore is trusted, roots are kept as fetched, a root-walk transport error
-//! fails the refresh, caps apply per file, and the clock is injected ([`Clock`]).
+//! fails the refresh, caps apply per file, and the clock is injected ([`Clock`]): expiry
+//! (`strict`, or `relaxed` with `maxStaleDays`) and the clock check (`CLOCK_SUSPECT`) are
+//! ours, never `tough`'s.
 
 mod adapter;
 mod checks;
 pub mod clock;
 pub mod custom;
 mod error;
+mod freshness;
 mod store;
 mod trusted;
 
 pub(crate) use checks::publisher_name_ok as checks_publisher_name;
-pub use clock::{Clock, FixedClock, SystemClock};
+pub use clock::{CLOCK_SLACK_SECS, Clock, FixedClock, SystemClock};
 pub use custom::{DEFAULT_MAX_STALE_DAYS, MAX_STALE_DAYS_CAP, PackageCustom, permissions_digest};
 pub use error::TufError;
 pub use store::{TrustState, TrustStore};
