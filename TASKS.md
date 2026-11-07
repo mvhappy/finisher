@@ -263,14 +263,24 @@ Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`
 - [ ] D6: `fin`: actor headers, `cli.command` and `fin diagnostics`
 - [ ] D7: e2e, docs and tracker
 
+## Owner decisions of 2026-11-07 (sub-projects 5–8, cross-cutting)
+
+Recorded in each sub-project spec's "Owner decisions (2026-11-07)" section and in the architecture spec (D7, D8, D13, D14, D28, D30, D31, D34, D35, D36; §8, §12.1, §14–§16, §18, §21, §21.1).
+
+- [x] Sub-project 5 (spec §12): all six as recommended (review state in `control.db`; human-only from 5A through the TTY console; browsers on trusted certificates or an SSH tunnel; audit log keeps device names and IPs for pairing, revocation and failed authentication only, local, 180 days, never uploaded; `local` keeps `branch.protected`/`review.decide`; human-only advisory against raw-shell agents until 7C, documented)
+- [x] Sub-project 6 (spec §21), sub-project 7 (spec §20), sub-project 8 (spec §20): recorded; the designs and first-batch plans follow them
+- [x] Platform changes (D36, D31): Windows 11 only; Linux kernel ≥ 6.2
+- [ ] **Switch the repository from Node 26 to Node 24** (D35, to match Electron's embedded Node 24.x): `package.json` `engines`, `.node-version` (and any `.nvmrc`), `.superpowers/env.sh`, CI (`actions/setup-node` reads `.node-version`), the README's toolchain notes, and the plans that still name Node 26 (4A, diagnostics hooks). **Verify** on Node 24: `node:sqlite` (`DatabaseSync`, WAL, FTS5, no experimental warning) and every other Node API in use (`node:crypto`, `worker_threads`, `net` pipes and sockets, the `--permission` flags sub-project 8 relies on), then `pnpm test`, `pnpm gates` and `pnpm e2e`; record the Node 24 patch version and the result here
+- [ ] **Counsel before release/upload** (one review; blocks the first public release, and the first training run or upload): the data-collection consent model (D34, arch §21.1: diagnostics on by default, training by a person's opt-in); 6.1 AAC on Linux (symphonia decode, vendored vo-aacenc export: patents); 6.2 Electron's bundled ffmpeg as the documented exception to "no LGPL in Finisher's code" (open-codecs-only build); 6.9 the encoder policy, both halves (OS-vendor H.264 encoders for export and QA renders, GPU-vendor encoders for proxies only; no built-in HEVC); 7.1 closed-model outputs as training targets (provider terms forbid it; a person records counsel's result in the mandatory gate `training.closedModelTargets`, default `pendingCounsel`, before the first training run or upload); 7.6 Claude Code and Codex subscription use through the user's own sign-in, including whether Finisher driving the CLI in sessions that share its sign-in file is ordinary use (Anthropic's and OpenAI's terms); 8.4 model provenance (weight licences govern model choice), plus the output terms of the v1 generation providers (OpenRouter, fal.ai) and their curated models. Also the codec patent posture (arch §26 question 1)
+
 ## Sub-project 6: media engine (designed 2026-11-07, revision 2 after review)
 
 Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps the review findings). Plan for 6A: `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`: 6A-1 (Tasks 1–8, branch `sp6a1-media-foundations` from `sp4c-edit-breadth`, ready now, beside 5C-1) and 6A-2 (Tasks 9–16, after 5C-1). Sub-batches 6A-1/6A-2, 6B-1/6B-2, 6C–6G (spec §19); 6A's plan adds its task list here in its Task 1.
 
-- [ ] Owner questions (spec §21): 1 Linux AAC; 2 Electron's bundled LGPL ffmpeg; 3 hardware codec drivers in the Docker image; 4 default base box; 5 5C-1 alongside 6A-1; 6 worker sandbox timing; 7 GPU ids in diagnostics; 8 6B platform scope and NVIDIA on Linux; 9 H.264/HEVC export encoders, the HEVC template and D31's Windows 10. 6A proceeds on the recommendations of 4 and 6
+- [x] Owner decisions (2026-11-07, spec §21): 1 Linux AAC by symphonia decode and vendored vo-aacenc export (counsel checks patents); 2 Electron's ffmpeg a documented exception, open-codecs-only build (arch §18 "no LGPL in Finisher's code"); 3 no hardware codec drivers in the Docker image; 4 default fit `contain`; 5 5C-1 alongside 6A-1; 6 Linux Landlock worker profile in 6B, full sandbox in 6G; 7 GPU ids as numeric meta; 8 6B on all three OSes, NVIDIA on Linux in 6G; 9 H.264 export only through OS-vendor encoders (VideoToolbox, Microsoft's own MF), never GPU-vendor ones, elsewhere AV1 or H.264 via the codec plugin; no built-in HEVC export template; Windows 10 dropped (D31 Windows 11 only)
 - [ ] Asks of 5C (spec §3.2): an `onSucceeded` hook before the job directory is deleted (needed by 6A-2 Task 12), a `hwenc` pool, RAM-scaled memory limits (6B)
 - [ ] Requirements on sub-project 7 (spec §3.5): the `worker` sandbox profile (GPU, media engines, library reads, `out/` writes, no network, no exec)
-- [ ] Spec follow-ups (spec §22): reword core §5.6 and arch §27.10 "fonts always bundled"; arch §18 exception for Electron's ffmpeg if question 2 is (a); D31 and Windows 10 22H2 (question 9)
+- [ ] Spec follow-ups (spec §22): reword core §5.6 and arch §27.10 "fonts always bundled". (Arch §18's Electron ffmpeg exception and D31's Windows 11 only: done 2026-11-07)
 - [ ] 6A-1: foundations
 - [ ] 6A-2: first pixels (after 5C-1)
 - [ ] 6B-1: stateful platform codecs and proxies
@@ -285,25 +295,28 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
 
 Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `docs/superpowers/plans/2026-11-07-sub-project-8a-packages-and-registries.md` (branch `sp8a-packages`; Tasks 1–3 can start now, 4–7 after Task 1, 8 and 11 without sub-project 5; 9a onward on `sp5a-principals`). Sub-batches 8A–8H (spec §1.5).
 
-- [ ] Owner questions (spec §20): 1 does 8B wait for 7C; 2 brokered secrets vs raw grants; 3 mattes as project assets (schema version 3); 4 model provenance policy (no acceptable-use restriction); 5 first-party generation providers; 6 evaluation data (generated TTS clips, the owner's footage, MUSAN per-file filtering); 7 who holds first-party registry signing keys, and when. 8A proceeds on the recommendation of 1
+- [x] Owner decisions (2026-11-07, spec §20): 1 third-party code plugins allowed now, before 7C (high-risk install warning, a person approves the permissions, nothing auto-updates; env allow-list, no credentials, brokered egress and in/out rules still apply; the `plugin` profile applies automatically once 7C lands; no `SANDBOX_UNAVAILABLE` gating for registry plugins); 2 brokered secrets; 3 mattes are project assets (schema version 3); 4 the weight licence governs model choice, no acceptable-use restriction; 5 generation providers in v1 are OpenRouter and fal.ai (8G; uncovered modalities are a known v1 gap); 6 evaluation data: generated TTS clips retired, permissive human speech relabelled, the owner's footage eval-only under a written licence, MUSAN filtered per file (PD/CC0/CC-BY); 7 the owner holds 3 offline signing keys, 2-of-3, ceremony before the first registry
 - [ ] Cross-design requirement X1 (spec §16.1): sub-project 7 adds a `plugin` profile to `fin-sandbox` (no network, read and write roots, per-job ACL grants, GPU rules, TCC and Apple Events denial, a plugin escape suite) and binds `ModelGateway` grants to (plugin, name, origins)
 - [ ] Ownership (spec §1.6): sub-project 6 provides `fin-shm` (in/out rules, host-created rings) in 6A; one `fin-workers <family>` binary owned by sub-project 5C (sp5 rev 3); spec text still says `fin-worker`: rename
 - [ ] Spec follow-ups from the design (spec §22): arch §13/§18 drop whisper.cpp and sherpa-onnx; arch §13 and §22 point to the §27.4 alignment gate; arch §15 git registries are local folders; D29 cloud embeddings after v1; re-select the end-boundary rule on permissive labels in 8C
+- [ ] Signing-key ceremony (decision 7): 3 offline root keys held by the owner, 2-of-3, before the first registry is published
 - [ ] 8A: packages, registries and lifecycle
 - [ ] 8B: plugin host and SDKs (Rust, TS)
 - [ ] 8C: analysis foundation and speech (transcription, alignment, boundary-correction retrain)
 - [ ] 8D: scenes and audio analysis
 - [ ] 8E: semantic search (exact scan, then `usearch`)
 - [ ] 8F: reframe
-- [ ] 8G: generation providers
+- [ ] 8G: generation providers (OpenRouter, fal.ai)
 - [ ] 8H: media interfaces (codec backends, mattes, effects with pins, schema version 3)
 
 ## Sub-project 7: agent runtime (designed 2026-11-07)
 
 Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2, answering an independent review; §23). Plan for the first batch: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md`. **7A-1 runs before 5A; 7A-2 after it; 7C's policy, launcher and suites can start now.**
 
-- [ ] Owner questions 1–7 (spec §20): training targets (human edits and open-weight outputs only), CLI capture fidelity, hosts without a sandbox, `auto` merging into `main`, agent egress and what an injected agent can take, Claude Code on a subscription login (Anthropic's terms), Finisher starting a provider login and the sign-in UX for sub-project 9
-- [ ] S9 spike in `archive/` (plan Task 0): seccomp io_uring/x32, macOS mach-lookup allow-list, per-session CLI config dirs and Windows capability SIDs, `--bare`/init/budget-flag checks
+- [x] Owner decisions (2026-11-07, spec §20): 1 closed-model outputs MAY be training targets (against the recommendation): every example tagged with model provenance (provider, model, harness), counsel before the first training run or upload is mandatory; 2 CLI capture records the stream; 3 Linux minimum kernel 6.2+ (D31), no older-kernel fallbacks, Landlock-disabled hosts still handled; 4 `auto` may merge into `main` under a per-project owner policy (off by default, human-only setting, QA gate and critic must pass, audited); 5 egress open in v1, proxy after v1, per-project API keys with spend limits; 6 the user signs in to the unmodified CLI themselves, Finisher never copies, stores or intermediates credentials (B7 reworked); 7 v1 providers: Claude Code and Codex on the user's own sign-in, the built-in agent on OpenRouter only (direct Anthropic and OpenAI adapters removed); sub-project 9 stores only the pasted OpenRouter key
+- [ ] S9 spike in `archive/` (plan Task 0): seccomp io_uring/x32 on a 6.2-series kernel and a Landlock-disabled boot (B5), macOS mach-lookup allow-list (B6), B7 the user's own CLI sign-in shared in place and never copied (per-session config dirs linking one sign-in file; in-place updates; keychain keying; Windows links without elevation), H2 Claude Code without `--bare` (`--setting-sources user`, `--strict-mcp-config`), Windows capability SIDs, init/budget-flag checks
+- [ ] Auto merge needs sub-project 10: QA-gate and critic verdicts recorded on review items and bound to a snapshot (sp5 §8.5, agent §6.5); until then enabling the policy is `AUTO_MERGE_UNAVAILABLE`
+- [ ] 7C must deliver the Linux Landlock `worker` profile before 6B-1 (sp6 decision 6, agent §1.4)
 - [ ] 7A-1 pure pieces, before 5A (plan Tasks 1, 3a, 4, 5, 6a, 8a, 9)
 - [ ] 7A-2 runtime core and the built-in agent, after 5A (plan Tasks 2, 3b, 6b, 7, 8b, 10–15)
 - [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox (`fin-sandbox`: agent, hook, worker and plugin profiles; ACL broker) · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
