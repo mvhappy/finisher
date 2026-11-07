@@ -23,3 +23,7 @@ testing = []
 [dev-dependencies]
 fin-container = { path = ".", features = ["testing"] }
 mp4-atom = { version = "0.17", default-features = false }
+
+[[example]]
+name = "fuzz_seeds"
+required-features = ["testing"]

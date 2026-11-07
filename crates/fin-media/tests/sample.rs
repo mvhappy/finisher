@@ -180,8 +180,9 @@ fn a_negative_first_pts_and_out_of_range() {
 fn construction_refuses_duplicates_and_sorts() {
     let dup = SampleTable::new(1_000, vec![entry(0, 40, 0, true), entry(0, 40, 1, false)]);
     assert_eq!(dup.unwrap_err().code, "MEDIA_CORRUPT");
-    let twice = SampleTable::new(1_000, vec![entry(0, 40, 0, true), entry(40, 40, 0, false)]);
-    assert_eq!(twice.unwrap_err().code, "MEDIA_CORRUPT");
+    // An edit list that repeats media presents one sample twice.
+    let twice = SampleTable::new(1_000, vec![entry(0, 40, 0, true), entry(40, 40, 0, true)]);
+    assert_eq!(twice.unwrap().len(), 2);
     assert_eq!(
         SampleTable::new(1_000, vec![]).unwrap_err().code,
         "MEDIA_CORRUPT"

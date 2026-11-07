@@ -40,8 +40,8 @@ pub struct SampleTable {
 
 impl SampleTable {
     /// The table of `frames` (any order; sorted here), whose sync points are its keyframes.
-    /// `MEDIA_CORRUPT` for a zero timescale, no frames, two frames at one pts, or a decode
-    /// index used twice.
+    /// `MEDIA_CORRUPT` for a zero timescale, no frames, or two frames at one pts. A decode
+    /// index may appear twice (an edit list that repeats media).
     pub fn new(timescale: u32, frames: Vec<FrameEntry>) -> Result<SampleTable, CoreError> {
         let sync = frames
             .iter()
@@ -75,14 +75,6 @@ impl SampleTable {
             return Err(media_corrupt(
                 format!("two frames share presentation time {} ticks", w[0].pts),
                 json!({ "pts": w[0].pts, "decodeIndex": [w[0].decode_index, w[1].decode_index] }),
-            ));
-        }
-        let mut decode: Vec<u32> = frames.iter().map(|f| f.decode_index).collect();
-        decode.sort_unstable();
-        if let Some(w) = decode.windows(2).find(|w| w[0] == w[1]) {
-            return Err(media_corrupt(
-                format!("decode index {} is used twice", w[0]),
-                json!({ "decodeIndex": w[0] }),
             ));
         }
         sync.sort_by_key(|s| s.decode_index);
