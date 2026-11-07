@@ -262,6 +262,14 @@ Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`
 - [ ] D6: `fin`: actor headers, `cli.command` and `fin diagnostics`
 - [ ] D7: e2e, docs and tracker
 
+## Sub-project 7: agent runtime (designed 2026-11-07)
+
+Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md`. Plan for the first batch: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (7A starts after 5A).
+
+- [ ] Owner questions 1–5 (spec §20): training targets from closed-model outputs, CLI capture fidelity, hosts without a sandbox, `auto` merging into `main`, agent egress
+- [ ] 7A runtime core and the built-in agent (Tasks 1–15)
+- [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
