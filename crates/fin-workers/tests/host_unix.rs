@@ -178,7 +178,15 @@ fn pdeathsig_survives_spawning_thread_exit() {
     let (tx, rx) = mpsc::channel();
     let host = &h.host;
     std::thread::scope(|s| {
-        s.spawn(|| host.spawn(g, req, Box::new(move |r| tx.send(r).unwrap())));
+        s.spawn(|| {
+            host.spawn(
+                g,
+                req,
+                Box::new(move |r| {
+                    let _ = tx.send(r);
+                }),
+            )
+        });
     });
     let p = rx.recv_timeout(WAIT).unwrap().unwrap();
     h.hello(p);

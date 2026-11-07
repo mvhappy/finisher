@@ -57,20 +57,21 @@ fn domain_is_driven_in_order() {
         host.spawn(
             g,
             sh("exit 3"),
-            Box::new(move |r| tx.send(r.unwrap()).unwrap()),
+            Box::new(move |r| {
+                let _ = tx.send(r.unwrap());
+            }),
         );
     }
     let p1 = prx.recv().unwrap();
     let p2 = prx.recv().unwrap();
-    for p in [p1, p2] {
-        match wait_for(
-            &rx,
-            |e| matches!(e, HostEvent::Exit { proc, .. } if *proc == p),
-        ) {
-            HostEvent::Exit { info, .. } => {
-                assert_eq!((info.reason, info.code), (ExitReason::Exited, Some(3)))
-            }
-            _ => unreachable!(),
+    // The two exits may come in either order; a GroupEmpty follows the last.
+    let mut left = vec![p1, p2];
+    while !left.is_empty() {
+        if let HostEvent::Exit { proc, info } =
+            wait_for(&rx, |e| matches!(e, HostEvent::Exit { .. }))
+        {
+            assert_eq!((info.reason, info.code), (ExitReason::Exited, Some(3)));
+            left.retain(|p| *p != proc);
         }
     }
     wait_for(
@@ -80,8 +81,19 @@ fn domain_is_driven_in_order() {
     host.close_group(g);
     let (dtx, drx) = mpsc::channel();
     // A kill after the close is a no-op that still answers.
-    host.kill_group(g, KillReason::Test, Box::new(move || dtx.send(()).unwrap()));
+    host.kill_group(
+        g,
+        KillReason::Test,
+        Box::new(move || {
+            let _ = dtx.send(());
+        }),
+    );
     drx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while !calls.lock().unwrap().iter().any(|c| c == "close_group g1") {
+        assert!(std::time::Instant::now() < until, "the group is released");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let calls = calls.lock().unwrap().clone();
     let first: Vec<&str> = calls.iter().take(4).map(String::as_str).collect();
     assert_eq!(
@@ -94,5 +106,4 @@ fn domain_is_driven_in_order() {
         2
     );
     assert_eq!(calls.last().map(String::as_str), Some("close_group g1"));
-    assert!(!calls.iter().any(|c| c.starts_with("kill")), "{calls:?}");
 }

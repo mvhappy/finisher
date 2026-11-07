@@ -3,6 +3,7 @@
 //! the thread that forked) fires only when the host itself goes. `done` callbacks run here
 //! and must be quick.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
@@ -47,24 +48,32 @@ pub(crate) fn refuse(cmd: Cmd) {
 
 pub(crate) fn run(inner: &Arc<Inner>, rx: Receiver<Cmd>) {
     while let Ok(cmd) = rx.recv() {
-        match cmd {
-            Cmd::Spawn(g, req, done) => done(spawn(inner, g, *req)),
-            Cmd::Kill(g, reason, done) => kill(inner, g, reason, done),
-            Cmd::KillFor(p, reason) => kill_for(inner, p, reason),
-            Cmd::KillWaitOver(g) => kill_wait_over(inner, g),
-            Cmd::Close(g) => close(inner, g),
-            Cmd::Finalize(g) => finalize(inner, g),
-            Cmd::Shutdown(grace, done) => shutdown(inner, grace, done),
-            Cmd::ShutdownKill => shutdown_kill(inner),
-            Cmd::ShutdownFinish => shutdown_finish(inner),
-            Cmd::Stop => {
-                stop(inner);
-                break;
-            }
+        let stop = matches!(cmd, Cmd::Stop);
+        // A panicking callback must not take the spawn thread (and every later spawn) with it.
+        if catch_unwind(AssertUnwindSafe(|| one(inner, cmd))).is_err() {
+            inner.log("a spawn-thread command panicked");
+        }
+        if stop {
+            break;
         }
     }
     while let Ok(cmd) = rx.try_recv() {
         refuse(cmd);
+    }
+}
+
+fn one(inner: &Arc<Inner>, cmd: Cmd) {
+    match cmd {
+        Cmd::Spawn(g, req, done) => done(spawn(inner, g, *req)),
+        Cmd::Kill(g, reason, done) => kill(inner, g, reason, done),
+        Cmd::KillFor(p, reason) => kill_for(inner, p, reason),
+        Cmd::KillWaitOver(g) => kill_wait_over(inner, g),
+        Cmd::Close(g) => close(inner, g),
+        Cmd::Finalize(g) => finalize(inner, g),
+        Cmd::Shutdown(grace, done) => shutdown(inner, grace, done),
+        Cmd::ShutdownKill => shutdown_kill(inner),
+        Cmd::ShutdownFinish => shutdown_finish(inner),
+        Cmd::Stop => stop(inner),
     }
 }
 

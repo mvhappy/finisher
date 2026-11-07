@@ -471,8 +471,15 @@ fn shutdown_closes_stdin_then_kills() {
     let p2 = h.worker(stuck);
     h.hello(p2);
     h.start(p2, "test.hang", json!({}));
+    // Let `test.hang` stop reading first, or it may see the stdin EOF and exit 70.
+    std::thread::sleep(Duration::from_millis(300));
     let (tx, rx) = mpsc::channel();
-    h.host.shutdown(300, Box::new(move || tx.send(()).unwrap()));
+    h.host.shutdown(
+        300,
+        Box::new(move || {
+            let _ = tx.send(());
+        }),
+    );
     let e1 = h.exit(p1);
     assert_eq!(
         (e1.reason, e1.code),
