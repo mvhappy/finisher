@@ -573,6 +573,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-jobs"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "fin-core",
+ "fin-jobs",
+ "schemars",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fin-journal"
 version = "0.0.0"
 dependencies = [
@@ -654,6 +667,7 @@ dependencies = [
  "crc32c",
  "fin-core",
  "fin-fonts",
+ "fin-jobs",
  "fin-journal",
  "fin-media",
  "fin-probe",
@@ -715,6 +729,20 @@ dependencies = [
  "sha2",
  "unicode-bidi",
  "unicode-script",
+]
+
+[[package]]
+name = "fin-workers"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-jobs",
+ "fin-workers",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

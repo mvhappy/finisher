@@ -10,6 +10,7 @@ const steps = [
   ["node", ["scripts/check-wasm-deps.mjs"]],
   ["node", ["scripts/check-generated-types.mjs"]],
   ["node", ["scripts/check-typecheck.mjs"]],
+  ["node", ["scripts/check-strip-types.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],
   ["node", ["scripts/check-test-hooks.mjs"]],
   ["node", ["scripts/check-native-deps.mjs"]],

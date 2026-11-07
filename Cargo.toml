@@ -13,6 +13,7 @@ default-members = [
     "crates/fin-container",
     "crates/fin-core",
     "crates/fin-fonts",
+    "crates/fin-jobs",
     "crates/fin-journal",
     "crates/fin-media",
     "crates/fin-node",
@@ -21,6 +22,7 @@ default-members = [
     "crates/fin-store",
     "crates/fin-testfonts",
     "crates/fin-text",
+    "crates/fin-workers",
 ]
 
 [workspace.dependencies]

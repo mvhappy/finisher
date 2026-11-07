@@ -456,6 +456,9 @@ pub static TABLES: &[&NameTable] = &[
     &DETAIL_KEYS,
     &AGENT_PROVIDERS,
     &AGENT_MODELS,
+    &super::names_jobs::JOB_KINDS,
+    &super::names_jobs::WORKER_FAMILIES,
+    &super::names_jobs::SIGNALS,
 ];
 
 // `deserialize_with` helpers: a `Name` field reads through its table.
