@@ -8,6 +8,14 @@
 //! fallback order) drops the key's fallback place and keeps the pin: no use check, as the pin
 //! stays; a key out of the order is a no-op. Its diff records `font/<key>`'s `fallback`; its
 //! inverse is `font.pin` with the pin and the old index.
+//!
+//! The asymmetry is deliberate: a full unpin is refused while a caption is measured with the
+//! pin, but `fallbackOnly` is not, though a caption whose text needed that fallback loses it
+//! (its script is unmeasured, `fontUnpinned`, or a later fallback covers it). It only ever
+//! undoes a placement, so it returns those captions to how they were measured before the
+//! placement; refusing it would make that undo impossible. The overflow check looks at the
+//! key's users after the op ([`key_users`]), which no longer include those captions, so they
+//! are not re-measured.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

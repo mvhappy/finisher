@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 
-use crate::captions::check_overflow;
+use std::collections::BTreeSet;
+
+use crate::captions::{LayoutInputs, check_overflow, is_restore};
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::layout::TextMeasurer;
@@ -106,6 +108,11 @@ pub(crate) struct Applier<'e> {
     inverses: Vec<Vec<Op>>,
     mode: ApplyMode,
     env: ApplyEnv<'e>,
+    /// What the overflow check compares the result with: the layout inputs of the project
+    /// the transaction started from (only when it will measure).
+    before: Option<LayoutInputs>,
+    /// The indices of the restore ops applied ([`is_restore`]).
+    restores: BTreeSet<u32>,
 }
 
 impl<'e> Applier<'e> {
@@ -124,7 +131,10 @@ impl<'e> Applier<'e> {
             .with_details(json!({ "expected": SCHEMA_VERSION, "actual": schema_version }))
             .with_fix(format!("send schemaVersion {SCHEMA_VERSION}")));
         }
+        let measures = env.measurer.is_some() && mode != ApplyMode::Replay;
         Ok(Applier {
+            before: measures.then(|| LayoutInputs::of(project)),
+            restores: BTreeSet::new(),
             project: project.clone(),
             bindings: Bindings::new(mode),
             diff: Diff::default(),
@@ -144,6 +154,9 @@ impl<'e> Applier<'e> {
     ) -> Result<Diff, CoreError> {
         let before = self.diff.shifts.len();
         let changes_before = self.diff.changes.len();
+        if is_restore(op) {
+            self.restores.insert(op_index(index));
+        }
         let applied = if self.mode == ApplyMode::Client && op.is_internal() {
             Err(CoreError::new(
                 "INVALID_OP",
@@ -212,8 +225,8 @@ impl<'e> Applier<'e> {
     /// (and not replaying), the captions the transaction changed are measured once here
     /// (`CAPTION_OVERFLOW` with `details.opIndex`).
     pub(crate) fn finish(self) -> Result<Applied, CoreError> {
-        if let (Some(m), true) = (self.env.measurer, self.mode != ApplyMode::Replay) {
-            check_overflow(&self.project, &self.diff, m)?;
+        if let (Some(m), Some(before)) = (self.env.measurer, &self.before) {
+            check_overflow(before, &self.project, &self.diff, &self.restores, m)?;
         }
         Ok(Applied {
             project: self.project,

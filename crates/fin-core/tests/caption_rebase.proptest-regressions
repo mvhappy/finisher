@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 49edc6b6c41676ebf7905d5a7ca501046298155a2a6b618565b5b6983a4a64e0 # shrinks to a = ItemTrim(ItemTrim { item: "cap2", edge: Start, delta: Rational { num: 1, den: 2 }, mode: Overwrite, alone: false }), b = CaptionSetText(CaptionSetText { item: "cap2", text: "a b c d" })
+cc 7ddd5f62b520634d39b2aa2a092ea79d737ecf5cdec5be0057009332354b4f62 # shrinks to a = CaptionMerge(CaptionMerge { item: "cap1", with: "cap2" }), b = ItemTrim(ItemTrim { item: "cap1", edge: Start, delta: Rational { num: 1, den: 2 }, mode: Overwrite, alone: false })

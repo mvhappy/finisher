@@ -1,30 +1,31 @@
 //! Captions (plan 4C Task 18, spec §5.5): splitting words into blocks by a style's rule
 //! ([`blocks`]), SubRip import ([`parse_srt`]), re-timing edited text ([`align_text`]), the
-//! built-in styles and safe zones ([`presets`], [`safe_zones`]), and a caption's effective
-//! style ([`resolve_style`]).
+//! built-in styles and safe zones ([`presets`], [`safe_zones`]), a caption's effective style
+//! ([`resolve_style`]), which of its words are shown ([`shown_words`]), and which captions a
+//! transaction's overflow check measures ([`to_check`]).
 //!
 //! Evaluation-pure (Global Constraints, Determinism): exact rationals, and `f64` arithmetic
 //! only.
 
-use std::collections::BTreeMap;
-
 use crate::error::CoreError;
-use crate::layout::key_users;
-use crate::model::{CaptionBlock, CaptionStyle, ItemBody, Project};
+use crate::model::{CaptionBlock, CaptionStyle, Project};
 use crate::ops::util::not_found;
 use crate::params::set_style;
-use crate::tx::{ChangeKind, Diff, EntityKind};
 
 pub(crate) mod align;
 mod blocks;
+mod check;
 mod overflow;
 mod presets;
+mod shown;
 mod srt;
 
 pub use align::{GRID, align_text};
 pub use blocks::{BlockDraft, blocks};
+pub use check::{LayoutInputs, is_layout_path, is_restore, to_check, to_check_at};
 pub use overflow::{caption_request, check_overflow, measure_caption};
 pub use presets::{SafeZone, preset, presets, safe_box, safe_zone, safe_zones};
+pub use shown::{hidden_after_end, hidden_before_start, is_shown, shown_words};
 pub use srt::{Srt, SrtWarning, parse_srt};
 
 /// The prefix of the built-in styles' ids.
@@ -56,74 +57,4 @@ pub fn resolve_style(project: &Project, block: &CaptionBlock) -> Result<CaptionS
         set_style(&mut style, path, Some(value.clone()))?;
     }
     Ok(style)
-}
-
-/// The caption items a transaction's overflow check measures (plan 4C Task 19; Task 20
-/// measures them once, at the end of the transaction, never per op), in project order, each
-/// once: every caption the diff added or changed; every user of a style it changed; every
-/// caption measured with a font pin it changed (`font/<key>`, [`key_users`]); every caption of
-/// a timeline it added or whose resolution it changed, and of a track it added. Removed
-/// entities need nothing measured; ripple shifts move captions without changing them.
-pub fn to_check(project: &Project, diff: &Diff) -> Vec<String> {
-    to_check_at(project, diff)
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect()
-}
-
-/// [`to_check`], each caption with the last op of the diff that put it on the list.
-pub fn to_check_at(project: &Project, diff: &Diff) -> Vec<(String, u32)> {
-    fn note(map: &mut BTreeMap<String, u32>, id: &str, op: u32) {
-        let at = map.entry(id.to_string()).or_insert(op);
-        *at = (*at).max(op);
-    }
-    let (mut items, mut styles) = (BTreeMap::new(), BTreeMap::new());
-    let (mut timelines, mut tracks) = (BTreeMap::new(), BTreeMap::new());
-    for c in diff
-        .changes
-        .iter()
-        .filter(|c| c.change != ChangeKind::Removed)
-    {
-        match c.kind {
-            EntityKind::Item => note(&mut items, &c.id, c.op),
-            EntityKind::Style => note(&mut styles, &c.id, c.op),
-            EntityKind::Font => {
-                if let Some(key) = c.id.strip_prefix("font/") {
-                    for it in key_users(project, key).1 {
-                        note(&mut items, &it, c.op);
-                    }
-                }
-            }
-            EntityKind::Timeline
-                if c.change == ChangeKind::Added || c.path.as_deref() == Some("resolution") =>
-            {
-                note(&mut timelines, &c.id, c.op);
-            }
-            EntityKind::Track if c.change == ChangeKind::Added => note(&mut tracks, &c.id, c.op),
-            _ => {}
-        }
-    }
-    let mut out = Vec::new();
-    for tl in &project.timelines {
-        for t in &tl.tracks {
-            for it in &t.items {
-                let ItemBody::Caption { block } = &it.body else {
-                    continue;
-                };
-                let op = [
-                    items.get(&it.id),
-                    styles.get(&block.style),
-                    timelines.get(&tl.id),
-                    tracks.get(&t.id),
-                ]
-                .into_iter()
-                .flatten()
-                .max();
-                if let Some(op) = op {
-                    out.push((it.id.clone(), *op));
-                }
-            }
-        }
-    }
-    out
 }

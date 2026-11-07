@@ -291,7 +291,7 @@ fn commits_and_history_recheck_overflow() {
 }
 
 #[test]
-fn recovery_rechecks_overflow() {
+fn recovery_notes_overflow() {
     let e = env();
     // A commits an overflowing caption while it measures nothing; it diverges.
     let Split { mut a, .. } = diverged_with_setup(&e, |a| {
@@ -301,15 +301,42 @@ fn recovery_rechecks_overflow() {
             vec![set_text("cap1", "supercalifragilisticexpialidocious")],
         );
     });
-    // Recovered on a store that measures: the record conflicts.
+    // Recovered on a store that measures: still recoverable, with the overflow as a note.
     a.set_measurer(Some(Arc::new(FakeMeasurer::default())));
     let groups = a.recover_groups().unwrap();
     assert_eq!(groups.len(), 1);
-    assert!(!groups[0].recoverable, "{groups:#?}");
-    assert_eq!(groups[0].problems[0].reason, "CAPTION_OVERFLOW");
-    // Without a measurer it is recoverable.
+    assert!(groups[0].recoverable, "{groups:#?}");
+    assert!(groups[0].problems.is_empty(), "{groups:#?}");
+    let note = groups[0]
+        .notes
+        .iter()
+        .find(|n| n.reason == "CAPTION_OVERFLOW");
+    let note = note.unwrap_or_else(|| panic!("{groups:#?}"));
+    assert!(note.fix.contains("cap1"), "{note:?}");
+    // Without a measurer there is nothing to note.
     a.set_measurer(None);
-    assert!(a.recover_groups().unwrap()[0].recoverable);
+    let groups = a.recover_groups().unwrap();
+    assert!(groups[0].recoverable);
+    assert!(
+        groups[0]
+            .notes
+            .iter()
+            .all(|n| n.reason != "CAPTION_OVERFLOW")
+    );
+    // Written while measuring, the record is recovered as it is.
+    a.set_measurer(Some(Arc::new(FakeMeasurer::default())));
+    let report = a
+        .recover(fin_store::RecoverReq {
+            tx_id: "rec1".into(),
+            author: "rec".into(),
+            create: Some(fin_store::RecoverSel::All),
+            import_dir: None,
+            dismiss: None,
+            dry_run: false,
+        })
+        .unwrap();
+    assert_eq!(report.created.len(), 1, "{report:#?}");
+    assert!(!report.committed.is_empty());
 }
 
 fn diverged_with_setup(e: &Env, tail: impl FnOnce(&mut Store)) -> Split {

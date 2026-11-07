@@ -19,10 +19,15 @@ fn project() -> Project {
 }
 
 fn caption(id: &str, text: &str, style: &str) -> Op {
+    caption_at(id, 0, text, style)
+}
+
+/// A 2 s caption at `at` s.
+fn caption_at(id: &str, at: i64, text: &str, style: &str) -> Op {
     ItemInsert {
         id: id.into(),
         track: "t3".into(),
-        at: Rational::zero(),
+        at: Rational::from_int(at),
         duration: Rational::from_int(2),
         mode: InsertMode::Overwrite,
         body: ItemBody::Caption {
@@ -170,4 +175,82 @@ fn plan_never_pins_unknown_face() {
     // A tx that cannot apply fails as it would at commit.
     let e = plan_pins(&p, &[caption("$c", "Hi", "st9")], c).unwrap_err();
     assert_eq!(e.code, "NOT_FOUND");
+}
+
+/// The plan's ops prepended to `ops`, committed on `p`.
+fn planned(p: &Project, ops: Vec<Op>, c: &FontCatalog) -> (Vec<(String, Option<u64>)>, Project) {
+    let plan = plan_pins(p, &ops, c).unwrap();
+    assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+    let got = pins(&plan.ops);
+    let mut all = plan.ops;
+    all.extend(ops);
+    (got, commit(p, all))
+}
+
+#[test]
+fn plan_places_fallbacks_in_index_order() {
+    let c = FontCatalog::builtin();
+    let p = project();
+    // cap1's style face is Noto Sans Hebrew 400; cap2 (Inter 700) needs Arabic, then Hebrew:
+    // the Hebrew face pinned for cap1's style is placed after Noto Sans Arabic.
+    let ops = vec![
+        style("Noto Sans Hebrew", 400.0),
+        caption_at("$a", 0, "שלום", "$st"),
+        caption_at("$b", 3, "مرحبا שלום", "preset:bold"),
+    ];
+    let (got, after) = planned(&p, ops, c);
+    assert_eq!(
+        got,
+        [
+            ("Inter|700|normal".to_string(), None),
+            ("Noto Sans Arabic|400|normal".to_string(), Some(0)),
+            ("Noto Sans Hebrew|400|normal".to_string(), Some(1)),
+        ]
+    );
+    assert_eq!(
+        after.fonts.fallback,
+        ["Noto Sans Arabic|400|normal", "Noto Sans Hebrew|400|normal"]
+    );
+    assert!(plan_pins(&after, &[], c).unwrap().ops.is_empty());
+}
+
+#[test]
+fn plan_skips_a_placed_fallback_that_does_not_cover() {
+    // Noto Sans placed for Latin (its pin covers Latin, Cyrillic, Greek).
+    let builtin = FontCatalog::builtin();
+    let (_, head) = planned(
+        &project(),
+        vec![
+            style("Noto Sans Hebrew", 400.0),
+            caption("$a", "Hello", "$st"),
+        ],
+        builtin,
+    );
+    assert_eq!(head.fonts.fallback, ["Noto Sans|400|normal"]);
+    // A catalog that offers Noto Sans for Arabic too: its placed pin does not cover it, so
+    // the next entry is placed.
+    let mut c = builtin.clone();
+    let ns = c.entries.iter_mut().find(|e| e.id == "noto-sans").unwrap();
+    ns.scripts.push("Arab".into());
+    let ops = vec![caption_at("$b", 3, "مرحبا", "preset:bold")];
+    let (got, _) = planned(&head, ops.clone(), &c);
+    assert_eq!(
+        got,
+        [
+            ("Inter|700|normal".to_string(), None),
+            ("Noto Sans Arabic|400|normal".to_string(), Some(1)),
+        ]
+    );
+    // With no other entry for it: a note, never nothing.
+    c.fallback.retain(|id| id != "noto-sans-arabic");
+    let plan = plan_pins(&head, &ops, &c).unwrap();
+    assert_eq!(pins(&plan.ops), [("Inter|700|normal".to_string(), None)]);
+    assert_eq!(plan.notes.len(), 1);
+    assert_eq!(
+        (
+            plan.notes[0].code.as_str(),
+            &plan.notes[0].details["script"]
+        ),
+        ("FONT_NOT_IN_CATALOG", &"Arab".into())
+    );
 }

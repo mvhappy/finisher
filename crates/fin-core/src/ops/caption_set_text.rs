@@ -1,22 +1,27 @@
 //! `caption.setText`: new text for a caption (plan 4C Task 19, spec §5.5). The words are the
 //! text split on whitespace, timed against the old ones by [`crate::captions::align_text`]:
 //! matching words keep their times, the rest share the time around them by characters, on a
-//! millisecond grid. No
-//! words, or a control character, is `INVALID_OP`; a locked track `TRACK_LOCKED` (policy).
+//! millisecond grid. A typed word timed where the caption does not show it (old words a trim
+//! hid: merge, measurement and eval all drop it, [`crate::captions::shown_words`]) is refused,
+//! `INVALID_RANGE {item, word, start, end, duration}`, never silently hidden: extend the
+//! caption first. (Timing against the shown words only would make the result depend on
+//! concurrent trims, so a trim and a `caption.setText` would not converge.) No words, or a
+//! control character, is `INVALID_OP`; a locked track `TRACK_LOCKED` (policy).
 //! The transcript source is kept: the caption still covers the same transcript words. The diff
 //! records the item's `caption.words`; the inverse is the internal `caption.setWords` with the
 //! old words.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-use crate::captions::align_text;
+use crate::captions::{align_text, is_shown};
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::caption_set_words::CaptionSetWords;
 use crate::ops::util::{
-    OpDiff, block_mut, caption_at, check_caption_words, check_unlocked, wrong_op,
+    OpDiff, block_mut, caption_at, check_caption_words, check_unlocked, invalid_range, wrong_op,
 };
 use crate::ops::{Bindings, Op};
 use crate::rebase::{Footprint, Touch};
@@ -54,9 +59,21 @@ pub(crate) fn apply(
     let (ti, i) = caption_at(project, &id)?;
     check_unlocked(ti.get(project), Some(&id), bindings)?;
     let track = ti.get(project).id.clone();
+    let duration = ti.get(project).items[i].duration;
     let block = block_mut(project, ti, i)?;
     let words = align_text(&block.words, &s.text)?;
     check_caption_words(&words, None)?;
+    if let Some(k) = words.iter().position(|w| !is_shown(w, duration)) {
+        let w = &words[k];
+        return Err(invalid_range(
+            format!(
+                "word {k} ({:?}) of the new text would be timed {} to {}, outside caption {id} (0 to {duration}), and not shown",
+                w.text, w.start, w.end
+            ),
+            json!({ "item": id, "path": "words", "word": k, "start": w.start, "end": w.end, "duration": duration }),
+            "extend the caption to cover its words first (fin item trim), or type less text",
+        ));
+    }
     let old = std::mem::replace(&mut block.words, words);
     diff.record_path(&track, &id, WORDS);
     Ok(vec![

@@ -5,7 +5,10 @@
 
 use std::collections::BTreeSet;
 
-use fin_core::{ApplyEnv, ApplyMode, Conflict, Link, Project, Record, RecordKind, apply_tx_env};
+use fin_core::captions::{LayoutInputs, check_overflow, is_restore};
+use fin_core::{
+    ApplyEnv, ApplyMode, Conflict, CoreError, Link, Project, Record, RecordKind, apply_tx_env,
+};
 
 use super::groups::{Fork, resolve_fork};
 use super::ids::{Preset, Root, root};
@@ -19,6 +22,12 @@ use crate::{MAIN, StoreError};
 
 /// What one row gave: records on the group's branch, and whether anything stands for it.
 pub(super) type Done = Result<(u64, bool), Conflict>;
+
+/// The `opIndex` of `e`, else 0.
+fn op_of(e: &CoreError) -> usize {
+    let op = e.details.get("opIndex").and_then(serde_json::Value::as_u64);
+    usize::try_from(op.unwrap_or(0)).unwrap_or(0)
+}
 
 /// A note: `reason` for row `tx_id`, with `fix`.
 fn note(tx_id: &str, reason: &str, fix: String) -> Conflict {
@@ -113,19 +122,53 @@ impl Runner<'_, '_, '_> {
             tx.branch = b.to_string();
             tx.base_rev = self.ctx.as_deref_mut().expect("writing").head(b)?.rev;
         }
+        let before = self.measurer.as_ref().map(|_| LayoutInputs::of(state));
+        let planning = !self.writes();
         let queue = self.root_ids.preset(self.conn, &root, rec, &tx)?;
         let mut alloc = Preset {
             queue,
             ids: &mut self.ids,
         };
-        let env = ApplyEnv::measuring(self.measurer.as_deref());
-        let applied = match apply_tx_env(state, &tx, &mut alloc, ApplyMode::Internal, env) {
-            Ok(a) => a,
-            Err(e) => {
-                let op = e.details.get("opIndex").and_then(serde_json::Value::as_u64);
-                let op = usize::try_from(op.unwrap_or(0)).unwrap_or(0);
-                return Ok(Err(Conflict::from_rerun(&e, &rec.tx_id, op, None)));
+        // Re-run without measuring, then check overflow apart: a caption that no longer fits
+        // never keeps work from being recovered (it was committed once); it is a note on the
+        // group, to fix after. A measurer refusing the request still stops the group.
+        let checked = apply_tx_env(
+            state,
+            &tx,
+            &mut alloc,
+            ApplyMode::Internal,
+            ApplyEnv::default(),
+        )
+        .and_then(|a| {
+            if let (Some(m), Some(before)) = (self.measurer.as_deref(), &before) {
+                let restores = tx
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, op)| is_restore(op))
+                    .map(|(i, _)| u32::try_from(i).unwrap_or(u32::MAX))
+                    .collect();
+                if let Err(e) = check_overflow(before, &a.project, &a.diff, &restores, m) {
+                    if e.code != "CAPTION_OVERFLOW" {
+                        return Err(e);
+                    }
+                    if !planning {
+                        return Ok(a);
+                    }
+                    let mut c = Conflict::new(&rec.tx_id, op_of(&e), &e.code, None);
+                    c.fix = format!(
+                        "{}; recovered as it is: {}",
+                        e.message,
+                        e.fix.as_deref().unwrap_or("shorten the caption")
+                    );
+                    self.notes[g].push(c);
+                }
             }
+            Ok(a)
+        });
+        let applied = match checked {
+            Ok(a) => a,
+            Err(e) => return Ok(Err(Conflict::from_rerun(&e, &rec.tx_id, op_of(&e), None))),
         };
         remap.learn(rec, &applied.bindings);
         self.root_ids.learn(&root, rec, &applied.bindings);

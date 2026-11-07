@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use common::ids_json::ids_cover_every_id_in_json;
 use common::stale::{conflict_reason, rebase_over};
 use common::*;
-use fin_core::captions::to_check;
+use fin_core::captions::{LayoutInputs, to_check};
 use fin_core::rebase::{Touch, footprint, split_diff};
 use fin_core::{
     ApplyMode, CaptionBlock, CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSetWords,
@@ -471,6 +471,16 @@ fn caption_split_vs_start_trim() {
     );
 }
 
+/// The captions an overflow check of `a` (applied to `p`) measures.
+fn checks(p: &Project, a: &fin_core::Applied) -> Vec<String> {
+    to_check(
+        &LayoutInputs::of(p),
+        &a.project,
+        &a.diff,
+        &Default::default(),
+    )
+}
+
 #[test]
 fn overflow_is_checked_for_what_the_tx_changed() {
     let p = captioned();
@@ -490,7 +500,7 @@ fn overflow_is_checked_for_what_the_tx_changed() {
     .project;
     // A caption edit: that caption.
     let a = apply(&p, vec![set_text("cap1", "x y")]);
-    assert_eq!(to_check(&a.project, &a.diff), ["cap1"]);
+    assert_eq!(checks(&p, &a), ["cap1"]);
     // A style edit: its users.
     let op: Op = StyleSet {
         style: "st1".into(),
@@ -499,7 +509,7 @@ fn overflow_is_checked_for_what_the_tx_changed() {
     }
     .into();
     let a = apply(&p, vec![op]);
-    assert_eq!(to_check(&a.project, &a.diff), ["cap2"]);
+    assert_eq!(checks(&p, &a), ["cap2"]);
     // A resolution change: every caption of that timeline, once.
     let op: Op = fin_core::TimelineSet {
         timeline: "tl1".into(),
@@ -508,15 +518,91 @@ fn overflow_is_checked_for_what_the_tx_changed() {
     }
     .into();
     let a = apply(&p, vec![op, set_text("cap1", "z")]);
-    assert_eq!(to_check(&a.project, &a.diff), ["cap1", "cap2"]);
+    assert_eq!(checks(&p, &a), ["cap1", "cap2"]);
     // A split: both parts; a merge: the merged one; a clip edit: nothing.
     let a = apply(&p, vec![split("cap1", 2)]);
-    assert_eq!(to_check(&a.project, &a.diff), ["cap1", "cap3"]);
+    assert_eq!(checks(&p, &a), ["cap1", "cap3"]);
     let a = apply(&p, vec![merge("cap1", "cap2")]);
-    assert_eq!(to_check(&a.project, &a.diff), ["cap1"]);
+    assert_eq!(checks(&p, &a), ["cap1"]);
     let q = with_clips(&[2, 2]);
     let a = apply(&q, vec![trim("c2", Edge::End, secs(-1))]);
-    assert!(to_check(&a.project, &a.diff).is_empty());
+    assert!(checks(&q, &a).is_empty());
 }
 
 use fin_core::Rational;
+
+#[test]
+fn set_text_never_hides_typed_words() {
+    use fin_core::captions::shown_words;
+    use fin_core::eval::eval_frame;
+    let p = captioned();
+    // Trim cap1 to [0, 2): "three" and "four" stay stored but are hidden.
+    let p = apply(&p, vec![trim("cap1", Edge::End, secs(-2))]).project;
+    assert_eq!(block(&p, "cap1").words.len(), 4);
+    let shown: Vec<_> = shown_words(&block(&p, "cap1").words, secs(2))
+        .into_iter()
+        .map(|w| w.text)
+        .collect();
+    assert_eq!(shown, ["one", "two"]);
+    let plan = eval_frame(&p, "tl1", r("1/2"), None).unwrap();
+    let c = plan.layers.iter().find_map(|l| l.caption.clone()).unwrap();
+    assert_eq!(c.words.len(), 2);
+    // Typed words timed past the end (a hidden word matched, or text after the last shown
+    // word) are refused, not hidden.
+    for text in ["one two three", "one two more"] {
+        let e = try_apply(&p, vec![set_text("cap1", text)]).unwrap_err();
+        assert_eq!(e.code, "INVALID_RANGE", "{text}: {e:?}");
+        assert_eq!(
+            (&e.details["item"], &e.details["word"]),
+            (&"cap1".into(), &2.into())
+        );
+        assert!(e.fix.is_some());
+    }
+    // Text within the shown words is fine; the hidden ones go, and the undo brings them back.
+    let a = apply(&p, vec![set_text("cap1", "one 2")]);
+    let texts: Vec<_> = block(&a.project, "cap1")
+        .words
+        .iter()
+        .map(|w| w.text.clone())
+        .collect();
+    assert_eq!(texts, ["one", "2"]);
+    assert_eq!(undo(&a), p);
+    // A zero-length word at the very end is shown.
+    let z = Word {
+        text: "z".into(),
+        start: secs(2),
+        end: secs(2),
+    };
+    assert!(fin_core::captions::is_shown(&z, secs(2)));
+    assert!(!fin_core::captions::is_shown(&w("z", "2", "3"), secs(2)));
+}
+
+#[test]
+fn merge_drops_words_hidden_by_trims_on_both_sides() {
+    let p = captioned();
+    // cap2 [5, 7) trimmed to [5, 6): "six" hidden; cap1 trimmed to [0, 3): "four" hidden.
+    let p = apply(
+        &p,
+        vec![
+            trim("cap2", Edge::End, secs(-1)),
+            trim("cap1", Edge::End, secs(-1)),
+        ],
+    )
+    .project;
+    let m = apply(&p, vec![merge("cap1", "cap2")]);
+    let texts: Vec<_> = block(&m.project, "cap1")
+        .words
+        .iter()
+        .map(|w| w.text.as_str())
+        .collect();
+    // "four" (past cap1's end, at the seam) goes; "six" (past cap2's end) stays, hidden.
+    assert_eq!(texts, ["one", "two", "three", "five", "six"]);
+    let merged = &m.project.timelines[0].tracks[2].items[0];
+    let shown: Vec<_> =
+        fin_core::captions::shown_words(&block(&m.project, "cap1").words, merged.duration)
+            .into_iter()
+            .map(|w| w.text)
+            .collect();
+    assert_eq!(shown, ["one", "two", "three", "five"]);
+    assert_eq!(undo(&m), p);
+}

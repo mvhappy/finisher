@@ -6,11 +6,13 @@
 //! the result needs:
 //! - each face `(family, weight, italic)` of a style in use with no pin is pinned to the
 //!   catalog entry of that family's style of that weight and slope;
-//! - each script a caption's text needs that no chosen pin covers ([`faces_for`]: the style's
-//!   face, then the fallback order) is covered by the first entry of the catalog's
-//!   `fallback` order whose scripts hold it, pinned at the end of the fallback order (its
-//!   regular style, else its first). A face already pinned but out of the order is placed
-//!   with a same-hash pin.
+//! - each script a caption's shown text needs that no chosen pin covers ([`faces_for`]: the
+//!   style's face, then the fallback order) is covered by the first entry of the catalog's
+//!   `fallback` order whose scripts hold it, not placed in the order yet, and whose pin covers
+//!   it, pinned at the end of the fallback order (its regular style, else its first). A face
+//!   already pinned but out of the order is placed with a same-hash pin; a face this plan
+//!   pins for a style and then places moves after the placements before it, so the ops place
+//!   fallback indices in order.
 //!
 //! What the catalog cannot pin is a `FONT_NOT_IN_CATALOG` note, never an error: that text is
 //! unmeasured (`FONT_UNPINNED`). Pins name the catalog's version; nothing reads font bytes.
@@ -106,46 +108,55 @@ pub fn plan_pins(
         if !uncovered(&after).contains(&script) {
             continue;
         }
-        let entry = catalog
+        // The first entry of the fallback order offered for the script whose face is not
+        // placed yet and whose pin (the project's own, if it has one) covers it: a face
+        // already placed that does not cover it cannot help, so the next entry is tried.
+        let found = catalog
             .fallback
             .iter()
             .filter_map(|id| catalog.entries.iter().find(|e| e.id == *id))
-            .find(|e| e.scripts.contains(&script));
-        let style = entry.and_then(|e| {
-            e.styles
-                .iter()
-                .find(|s| s.weight == 400 && !s.italic)
-                .or(e.styles.first())
-                .map(|s| (e, s))
-        });
-        let Some((entry, style)) = style else {
+            .filter(|e| e.scripts.contains(&script))
+            .filter_map(|e| {
+                let s = e
+                    .styles
+                    .iter()
+                    .find(|s| s.weight == 400 && !s.italic)
+                    .or(e.styles.first())?;
+                let key = font_key(&e.family, s.weight, s.italic);
+                let pin = after
+                    .fonts
+                    .pins
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| pin_of(catalog, e, s));
+                Some((key, pin))
+            })
+            .find(|(key, pin)| {
+                !after.fonts.fallback.contains(key) && pin.scripts.contains(&script)
+            });
+        let Some((key, pin)) = found else {
             notes.push(not_in_catalog(
-                format!("the font catalog has no face for script {script}"),
+                format!("the font catalog has no face for script {script} that is not already in the fallback order"),
                 json!({ "script": script }),
                 "import a font that covers it (fin asset add, then fin fonts pin --asset --fallback)",
             ));
             continue;
         };
-        let key = font_key(&entry.family, style.weight, style.italic);
-        let pin = after
-            .fonts
-            .pins
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| pin_of(catalog, entry, style));
-        if after.fonts.fallback.contains(&key) {
-            continue;
-        }
-        let i = planned.iter().position(|p| p.key == key);
+        // Fallback indices must be placed in order: a face pin this plan already made moves
+        // after the pins placed before it, carrying its index.
         let index = u32::try_from(at).unwrap_or(u32::MAX);
-        match i {
-            Some(i) => planned[i].fallback = Some(index),
-            None => planned.push(FontPinOp {
+        let op = match planned.iter().position(|p| p.key == key) {
+            Some(i) => FontPinOp {
+                fallback: Some(index),
+                ..planned.remove(i)
+            },
+            None => FontPinOp {
                 key: key.clone(),
                 pin: pin.clone(),
                 fallback: Some(index),
-            }),
-        }
+            },
+        };
+        planned.push(op);
         after.fonts.pins.insert(key.clone(), pin);
         after.fonts.fallback.push(key);
         at += 1;
@@ -169,7 +180,8 @@ fn uncovered(project: &Project) -> BTreeSet<String> {
             let Ok(style) = fin_core::captions::resolve_style(project, block) else {
                 continue;
             };
-            if let Err(missing) = faces_for(project, &style, &block.words)
+            let shown = fin_core::captions::shown_words(&block.words, it.duration);
+            if let Err(missing) = faces_for(project, &style, &shown)
                 && missing.iter().all(|m| m.starts_with("script:"))
             {
                 out.extend(

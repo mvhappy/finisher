@@ -4,9 +4,11 @@
 //! earlier item, a later one with an item between, another track, itself) is `NOT_ADJACENT`;
 //! a locked track `TRACK_LOCKED` (policy).
 //!
-//! Only the words each caption shows are joined, so the result stays in order: `item`'s words
-//! that start at or past its end and `with`'s that end before its start (a trim keeps them,
-//! Decision 13) are dropped, and a word across that edge is cut at it. Both sources of one
+//! At the seam only the words each caption shows are joined (the rule measurement and eval
+//! use, [`crate::captions::shown_words`]), so the result stays in order and shows what both
+//! showed: `item`'s words a trim left past its end and `with`'s left before its start
+//! (Decision 13) are dropped, and a word across the seam is cut at it. The hidden words at
+//! the outer edges are kept as they are, hidden still. Both sources of one
 //! transcript join into one word range ([`merge_source`]). The diff records `item`'s end and
 //! `caption.words`, so a concurrent `caption.setText` of it is `SAME_PARAM`. The inverse is
 //! internal: `caption.setWords` with the old words and source, a `strict` trim of the end
@@ -17,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::captions::{hidden_after_end, hidden_before_start};
 use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::{ItemBody, Project, Word};
@@ -70,30 +73,28 @@ pub(crate) fn apply(
     let (first, stop) = (&mut track.items[i], end(&next)?);
     let by = next.start.checked_sub(first.start)?;
     let delta = stop.checked_sub(end(first)?)?;
-    let (zero, length) = (Rational::zero(), first.duration);
+    let length = first.duration;
     let (mut old, mut old_source) = (Vec::new(), None);
     if let (ItemBody::Caption { block }, ItemBody::Caption { block: theirs }) =
         (&mut first.body, &next.body)
     {
         old.clone_from(&block.words);
         old_source.clone_from(&block.source);
+        // At the seam, what either caption hides there goes and a word across it is cut;
+        // the outer edges' hidden words stay as they are, hidden still.
         let mut words: Vec<_> = block
             .words
             .iter()
-            .filter(|w| w.start < length)
+            .filter(|w| !hidden_after_end(w, length))
             .map(|w| Word {
                 end: w.end.min(length),
                 ..w.clone()
             })
             .collect();
-        for w in theirs
-            .words
-            .iter()
-            .filter(|w| w.end > zero || w.start >= zero)
-        {
+        for w in theirs.words.iter().filter(|w| !hidden_before_start(w)) {
             words.push(Word {
                 text: w.text.clone(),
-                start: w.start.max(zero).checked_add(by)?,
+                start: w.start.max(Rational::zero()).checked_add(by)?,
                 end: w.end.checked_add(by)?,
             });
         }

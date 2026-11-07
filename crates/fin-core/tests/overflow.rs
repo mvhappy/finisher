@@ -19,9 +19,10 @@ use fin_core::eval::{UnmeasuredReason, eval_frame};
 use fin_core::layout::TextMeasurer;
 use fin_core::layout::testing::{CountingMeasurer, FakeMeasurer, PanicMeasurer};
 use fin_core::{
-    Applied, ApplyEnv, ApplyMode, CaptionBlock, CaptionSetText, CoreError, FontFormat, FontPin,
-    FontPinOp, FontRepin, FontSource, InsertMode, ItemBody, ItemInsert, MemIds, Op, ParamValue,
-    Project, Rational, StyleAdd, StyleSet, TimelineSet, Track, TrackKind, Word, apply_tx_env,
+    Applied, ApplyEnv, ApplyMode, CaptionBlock, CaptionSetStyle, CaptionSetText, CoreError, Edge,
+    FontFormat, FontPin, FontPinOp, FontRepin, FontSource, InsertMode, ItemBody, ItemInsert,
+    ItemMove, MemIds, Op, ParamValue, Project, Rational, StyleAdd, StyleSet, TimelineSet, Track,
+    TrackKind, Word, apply_tx_env,
 };
 
 const INTER: &str = "Inter|700|normal";
@@ -398,4 +399,112 @@ fn undo_rechecks_overflow() {
     // Undoing t1 brings back cap2's long word, which no longer fits.
     let e = log.undo("main", "a", "u1").unwrap_err();
     assert_eq!(conflict_reason(&e), "CAPTION_OVERFLOW", "{e:?}");
+}
+
+fn set(path: &str, value: ParamValue) -> Op {
+    StyleSet {
+        style: "st1".into(),
+        path: path.into(),
+        value: Some(value),
+    }
+    .into()
+}
+
+fn restyle(item: &str, style: &str, overrides: &[(&str, ParamValue)]) -> Op {
+    CaptionSetStyle {
+        item: item.into(),
+        style: style.into(),
+        overrides: Some(
+            overrides
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        ),
+    }
+    .into()
+}
+
+#[test]
+fn edits_that_cannot_change_layout_measure_nothing() {
+    let p = captioned();
+    let m = CountingMeasurer::default();
+    let none = |ops: Vec<Op>| {
+        measured(&p, ops, &m).unwrap();
+        assert_eq!(m.calls(), 0);
+    };
+    // A move, an end trim that shows the same words, a colour, a stroke, a colour override.
+    none(vec![
+        ItemMove {
+            item: "cap2".into(),
+            track: "t3".into(),
+            at: secs(8),
+            mode: InsertMode::Overwrite,
+        }
+        .into(),
+    ]);
+    none(vec![trim("cap2", Edge::End, secs(-1))]);
+    none(vec![set("color", ParamValue::Text("#ff0000".into()))]);
+    none(vec![set("stroke.width", ParamValue::Number(4.0))]);
+    none(vec![restyle(
+        "cap2",
+        "st1",
+        &[("color", ParamValue::Text("#00ff00".into()))],
+    )]);
+    // An undo of a delete brings back what was measured before: even at a size its long
+    // word no longer fits, it is not re-measured.
+    let gone = apply(&p, vec![delete("cap2")]);
+    let big = apply(&gone.project, vec![size(200.0)]);
+    let undo = apply_tx_env(
+        &big.project,
+        &tx(gone.inverse.clone()),
+        &mut MemIds::after(&big.project),
+        ApplyMode::Internal,
+        ApplyEnv::measuring(Some(&m)),
+    )
+    .unwrap();
+    assert_eq!(m.calls(), 0);
+    assert!(
+        undo.project.timelines[0].tracks[2]
+            .items
+            .iter()
+            .any(|i| i.id == "cap2")
+    );
+}
+
+#[test]
+fn edits_that_can_change_layout_are_measured() {
+    let p = captioned();
+    let m = FakeMeasurer::default();
+    let overflows = |ops: Vec<Op>| {
+        let e = measured(&p, ops, &m).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), &e.details["item"]),
+            ("CAPTION_OVERFLOW", &"cap2".into())
+        );
+    };
+    // Words.
+    overflows(vec![set_text("cap2", &format!("{LONG}{LONG}{LONG}"))]);
+    // A style reference: to a style at 200 px.
+    overflows(vec![
+        StyleAdd {
+            id: "$st".into(),
+            name: "Big".into(),
+            from: Some("st1".into()),
+            set: [("text.size".to_string(), ParamValue::Number(200.0))].into(),
+        }
+        .into(),
+        restyle("cap2", "$st", &[]),
+    ]);
+    // A layout override, and the style's own layout paths.
+    overflows(vec![restyle(
+        "cap2",
+        "st1",
+        &[("text.size", ParamValue::Number(200.0))],
+    )]);
+    overflows(vec![size(200.0)]);
+    overflows(vec![set("background.padding", ParamValue::Number(400.0))]);
+    // cap2 on two lines, then one line at most.
+    let q = apply(&p, vec![set_text("cap2", &format!("{LONG} {LONG} {LONG}"))]).project;
+    let e = measured(&q, vec![set("maxLines", ParamValue::Number(1.0))], &m).unwrap_err();
+    assert_eq!(e.details["item"], "cap2");
 }

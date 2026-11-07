@@ -333,8 +333,12 @@ fn word_range_follows_split_merge_and_set_text() {
 
 // ---- Differential: stale (rebased) vs fresh, and convergence of both orders.
 
-fn edits() -> impl Strategy<Value = Op> {
-    let cap = |c: u8| ["cap1", "cap2"][c as usize];
+fn cap(c: u8) -> &'static str {
+    ["cap1", "cap2"][c as usize]
+}
+
+/// A `caption.setText` or `caption.setStyle` of either caption.
+fn text_or_style_edits() -> impl Strategy<Value = Op> {
     prop_oneof![
         (
             0u8..2,
@@ -346,15 +350,21 @@ fn edits() -> impl Strategy<Value = Op> {
                 "two four"
             ])
         )
-            .prop_map(move |(c, t)| set_text(cap(c), t)),
-        (0u8..2, 1u32..4).prop_map(move |(c, k)| split(cap(c), k)),
-        Just(merge("cap1", "cap2")),
+            .prop_map(|(c, t)| set_text(cap(c), t)),
         (
             0u8..2,
             prop::sample::select(vec!["preset:clean", "preset:punch"])
         )
-            .prop_map(move |(c, s)| set_style(cap(c), s)),
-        (0u8..2, prop::sample::select(vec!["1/2", "-1/2", "1"])).prop_map(move |(c, d)| trim_mode(
+            .prop_map(|(c, s)| set_style(cap(c), s)),
+    ]
+}
+
+fn edits() -> impl Strategy<Value = Op> {
+    prop_oneof![
+        text_or_style_edits(),
+        (0u8..2, 1u32..4).prop_map(|(c, k)| split(cap(c), k)),
+        Just(merge("cap1", "cap2")),
+        (0u8..2, prop::sample::select(vec!["1/2", "-1/2", "1"])).prop_map(|(c, d)| trim_mode(
             cap(c),
             Edge::Start,
             d,
@@ -397,10 +407,9 @@ proptest! {
     /// (Decisions 13, 16).
     #[test]
     fn set_words_inverse_maps_through_start_trim(
-        e in edits(),
+        e in text_or_style_edits(),
         d in prop::sample::select(vec!["1/2", "-1/2"]),
     ) {
-        prop_assume!(matches!(e, Op::CaptionSetText(_) | Op::CaptionSetStyle(_)));
         let p = captioned();
         let Ok(a) = try_apply(&p, vec![e.clone()]) else { return Ok(()) };
         let item = match &e {
