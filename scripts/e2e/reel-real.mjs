@@ -7,7 +7,8 @@ import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, writeFileSy
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { assertEqual, fin, log, startServer, stopServer, waitFor } from "./lib.mjs";
-import { checkGolden, digest, layerSummary } from "./reel-lib.mjs";
+import { TEST_NATIVE_DIR } from "./fixture.mjs";
+import { checkGolden, engineProblem, frameGolden } from "./reel-lib.mjs";
 
 /** One caption block per script: Latin (the face), then Arabic, CJK and emoji (fallbacks). */
 export const REAL_WORDS = [
@@ -63,7 +64,7 @@ export async function realFonts(tmp) {
   const project = join(tmp, "reel-real");
   log(`real fonts: seeded ${seed(cache, join(sd, "fonts"))} cache files from ${cache}`);
   // The built-in catalog (no FIN_FONT_CATALOG), and nothing fetched.
-  const server = await startServer(sd, { FIN_FONTS_OFFLINE: "1" });
+  const server = await startServer(sd, { FIN_NODE_BINARY_DIR: TEST_NATIVE_DIR, FIN_FONTS_OFFLINE: "1" });
   try {
     const f = (args) => fin(sd, project, args);
     fin(sd, tmp, ["project", "create", project, "--name", "Reel real fonts"]);
@@ -89,7 +90,9 @@ export async function realFonts(tmp) {
         throw new Error(`real fonts: the caption at ${t} should be laid out with nothing missing: ${JSON.stringify(caps)}`);
       }
     }
-    checkGolden("frames-real.json", plans.map(({ t, plan }) => ({ t, sha256: digest(plan), layers: layerSummary(plan) })));
+    const problems = plans.map(({ t, plan }) => engineProblem(plan, `real fonts at ${t}`)).filter(Boolean);
+    if (problems.length > 0) throw new Error(problems.join("; "));
+    checkGolden("frames-real.json", plans.map(({ t, plan }) => frameGolden(t, plan)), { plans });
     return true;
   } finally {
     await stopServer(server);

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkRevs, parseFrames } from "./e2e.mjs";
 import { clipsOf, failure } from "./e2e/history-lib.mjs";
-import { audioSummary, blessing, checkGolden, firstDifference, hashTree, layerSummary } from "./e2e/reel-lib.mjs";
+import { audioSummary, blessing, checkGolden, cubicBezier, engineProblem, firstDifference, frameGolden, hashTree, layerSummary } from "./e2e/reel-lib.mjs";
 import { realCache } from "./e2e/reel-real.mjs";
 
 test("parseFrames splits one message carrying several NDJSON frames", () => {
@@ -103,6 +103,43 @@ test("checkGolden writes when blessing, compares otherwise, and leaves the actua
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("checkGolden writes the full plans beside the golden on a mismatch", () => {
+  const dir = mkdtempSync(join(tmpdir(), "reel-golden-"));
+  try {
+    checkGolden("frames.json", [1], { dir, bless: true });
+    assert.throws(() => checkGolden("frames.json", [2], { dir, bless: false, plans: [{ p: 1 }] }), /frames\.plans\.actual\.json/);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "frames.plans.actual.json"), "utf8")), [{ p: 1 }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("frameGolden digests the plan without its text engine and summarises the captions", () => {
+  const layout = { lines: [{}, {}], words: [{}, {}, {}], faces: ["f1"], width: 10, height: 20, missing: [] };
+  const plan = { layers: [{ item: "cap1", kind: "caption", track: "t4", opacity: 1, caption: { layout } }] };
+  const a = frameGolden("1s", { ...plan, textEngine: "fin-text/0.0.0 rev/1 x" });
+  const b = frameGolden("1s", { ...plan, textEngine: "fin-text/0.0.0 rev/2 y" });
+  assert.equal(a.sha256, b.sha256);
+  assert.deepEqual(a.captions, [{ item: "cap1", lines: 2, faces: ["f1"], width: 10, height: 20, words: 3, missing: [] }]);
+});
+
+test("engineProblem wants a text engine exactly on plans that measured a caption", () => {
+  const measured = { layers: [{ caption: { layout: {} } }] };
+  const bare = { layers: [{ caption: { layout: null } }, { item: "c1" }] };
+  assert.equal(engineProblem({ ...measured, textEngine: "fin-text/0.0.0 rev/3 cosmic-text/0.19" }, "x"), undefined);
+  assert.match(engineProblem(measured, "x"), /textEngine undefined/);
+  assert.match(engineProblem({ ...measured, textEngine: "fake/1" }, "x"), /not "fin-text/);
+  assert.equal(engineProblem(bare, "x"), undefined);
+  assert.match(engineProblem({ ...bare, textEngine: "fin-text/0.0.0 rev/3 a" }, "x"), /measured nothing/);
+});
+
+test("cubicBezier solves the CSS easeOut curve", () => {
+  assert.ok(Math.abs(cubicBezier(0, 0, 0.58, 1, 0) - 0) < 1e-9);
+  assert.ok(Math.abs(cubicBezier(0, 0, 0.58, 1, 1) - 1) < 1e-9);
+  const mid = cubicBezier(0, 0, 0.58, 1, 0.25);
+  assert.ok(mid > 0.35 && mid < 0.5, `${mid}`);
 });
 
 test("firstDifference names the first differing path", () => {

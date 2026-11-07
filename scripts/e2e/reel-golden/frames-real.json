@@ -1,28 +1,83 @@
 [
   {
     "t": "0.2s",
-    "sha256": "c0405716a9819b481d57e8e79051e585ecba6bbfc2679a201c3d1c6734cca93b",
+    "sha256": "62880c6b8abe7760dc9d93967b15288351766abcaa1650ab139e40cf0d15b0e2",
+    "captions": [
+      {
+        "item": "cap1",
+        "lines": 1,
+        "faces": [
+          "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf"
+        ],
+        "width": 25384,
+        "height": 5530,
+        "words": 2,
+        "missing": []
+      }
+    ],
     "layers": [
       "cap1 caption t3 1 lines, 1 faces, 25384x5530/64 px"
     ]
   },
   {
     "t": "1.8s",
-    "sha256": "005d8dc8c7fc2266e678e1d97fc7790108b32b5493cc5e6c68295ad512990951",
+    "sha256": "a9d6dc942b003bbc93c909bfea136a8d18bd0bd12abc8f6e586929f778e21468",
+    "captions": [
+      {
+        "item": "cap2",
+        "lines": 1,
+        "faces": [
+          "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+          "bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0"
+        ],
+        "width": 22094,
+        "height": 5530,
+        "words": 2,
+        "missing": []
+      }
+    ],
     "layers": [
       "cap2 caption t3 1 lines, 2 faces, 22094x5530/64 px"
     ]
   },
   {
     "t": "3.2s",
-    "sha256": "f79f3a983d27f420f960a8aaf934479750266551ef3d4170940498ba3b257593",
+    "sha256": "6d0eebc7732614917824139558a1cca9960712051da0f4534682e33f1735918d",
+    "captions": [
+      {
+        "item": "cap3",
+        "lines": 1,
+        "faces": [
+          "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+          "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+        ],
+        "width": 19524,
+        "height": 5530,
+        "words": 2,
+        "missing": []
+      }
+    ],
     "layers": [
       "cap3 caption t3 1 lines, 2 faces, 19524x5530/64 px"
     ]
   },
   {
     "t": "4.8s",
-    "sha256": "0718734efa665214eaddb470c4cea92fe28b9cd301a82e0b3be0f1572801579a",
+    "sha256": "a1ba22a2e50f247d2ac655d116f96b861154fdeff95f0679ff9516c3f5604fe9",
+    "captions": [
+      {
+        "item": "cap4",
+        "lines": 1,
+        "faces": [
+          "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
+          "15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44"
+        ],
+        "width": 12566,
+        "height": 5530,
+        "words": 2,
+        "missing": []
+      }
+    ],
     "layers": [
       "cap4 caption t3 1 lines, 2 faces, 12566x5530/64 px"
     ]

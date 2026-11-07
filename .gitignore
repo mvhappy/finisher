@@ -10,3 +10,4 @@ __pycache__/
 /archive/
 # A reel golden mismatch leaves the actual value beside the golden.
 /scripts/e2e/reel-golden/*.actual
+/scripts/e2e/reel-golden/*.actual.json

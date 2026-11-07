@@ -21,9 +21,11 @@ export function blessing(env = process.env) {
 /**
  * Compares `actual` with the golden `name` (`reel-golden/<name>`), or writes it when blessing.
  * A mismatch names the first differing entry and leaves the actual value beside the golden
- * (`<name>.actual`, git-ignored by its suffix) for a diff.
+ * (`<name>.actual`, git-ignored by its suffix) for a diff; with `plans` (the full plans the
+ * golden summarises) it also writes them to `<name without .json>.plans.actual.json`, so a
+ * difference between hosts can be bisected down to the plan field.
  */
-export function checkGolden(name, actual, { dir = GOLDEN_DIR, bless = blessing() } = {}) {
+export function checkGolden(name, actual, { dir = GOLDEN_DIR, bless = blessing(), plans } = {}) {
   const path = join(dir, name);
   const text = `${JSON.stringify(actual, null, 2)}\n`;
   if (bless) {
@@ -36,7 +38,13 @@ export function checkGolden(name, actual, { dir = GOLDEN_DIR, bless = blessing()
   const expected = JSON.parse(readFileSync(path, "utf8"));
   if (isDeepStrictEqual(actual, expected)) return;
   writeFileSync(`${path}.actual`, text);
-  throw new Error(`${name} differs from its golden: ${firstDifference(actual, expected)} (actual in ${name}.actual)`);
+  let where = `${name}.actual`;
+  if (plans !== undefined) {
+    const plansName = `${name.replace(/\.json$/, "")}.plans.actual.json`;
+    writeFileSync(join(dir, plansName), `${JSON.stringify(plans, null, 2)}\n`);
+    where += ` and ${plansName}`;
+  }
+  throw new Error(`${name} differs from its golden: ${firstDifference(actual, expected)} (actual in ${where})`);
 }
 
 /** The first path where `a` and `b` differ, with both values. */
@@ -54,6 +62,59 @@ export function firstDifference(a, b, path = "$") {
 
 /** SHA-256 of the compact JSON of `value` (a frame or audio plan). */
 export const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+/** The text engine `fin-text` names in a plan that measured captions: its crate and revision, then the versions. */
+export const TEXT_ENGINE = /^fin-text\/\S+ rev\/\d+ /;
+
+/** A frame plan without its `textEngine` (crate versions differ between builds), which is checked apart. */
+export const withoutEngine = ({ textEngine, ...rest }) => rest;
+
+/**
+ * One frame's golden entry: `{t, sha256, captions, layers}`. `sha256` digests the plan without
+ * its `textEngine`; `captions` is the measured shape of each caption layer, so a change of
+ * layout shows without hashing.
+ */
+export function frameGolden(t, plan) {
+  return { t, sha256: digest(withoutEngine(plan)), captions: captionSummary(plan), layers: layerSummary(plan) };
+}
+
+/** The measured shape of each caption layer of a frame plan (`layout` is null when unmeasured). */
+export function captionSummary(plan) {
+  return plan.layers
+    .filter((l) => l.caption)
+    .map((l) => {
+      const lay = l.caption.layout;
+      if (!lay) return { item: l.item, unmeasured: l.caption.unmeasured?.reason ?? null };
+      return { item: l.item, lines: lay.lines.length, faces: lay.faces, width: lay.width, height: lay.height, words: lay.words.length, missing: lay.missing };
+    });
+}
+
+/**
+ * Whether `plan` names its text engine as it should: present (and shaped like `TEXT_ENGINE`)
+ * exactly when it measured a caption, else absent.
+ */
+export function engineProblem(plan, label) {
+  const measured = plan.layers.some((l) => l.caption?.layout);
+  if (!measured) return plan.textEngine === undefined ? undefined : `${label}: textEngine ${plan.textEngine} on a plan that measured nothing`;
+  if (typeof plan.textEngine !== "string" || !TEXT_ENGINE.test(plan.textEngine)) return `${label}: textEngine ${JSON.stringify(plan.textEngine)} is not "fin-text/<v> rev/<n> ..."`;
+  return undefined;
+}
+
+/**
+ * `y` of `cubic-bezier(x1, y1, x2, y2)` at `x`, found by bisection on the curve's own
+ * parameter (independent of the engine's solver): the reference for eased keyframe values.
+ */
+export function cubicBezier(x1, y1, x2, y2, x) {
+  const at = (a, b, s) => 3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * b + s * s * s;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (at(x1, x2, mid) < x) lo = mid;
+    else hi = mid;
+  }
+  return at(y1, y2, (lo + hi) / 2);
+}
 
 /** A readable line per layer of a frame plan, beside its digest in the goldens. */
 export function layerSummary(plan) {

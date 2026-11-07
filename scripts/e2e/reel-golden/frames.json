@@ -1,7 +1,20 @@
 [
   {
     "t": "0",
-    "sha256": "31657aba6519f731a4736e31a428f23d32cd9fd3ad9126034aa718ef7da76fe6",
+    "sha256": "c80a734e83dda9c8f5957732b7712e0495c08790bbeaba2adcd25a2bb7464c81",
+    "captions": [
+      {
+        "item": "cap1",
+        "lines": 2,
+        "faces": [
+          "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1"
+        ],
+        "width": 45158,
+        "height": 11060,
+        "words": 5,
+        "missing": []
+      }
+    ],
     "layers": [
       "c1 clip t1 src 0",
       "cap1 caption t4 2 lines, 1 faces, 45158x11060/64 px"
@@ -9,7 +22,20 @@
   },
   {
     "t": "0.5s",
-    "sha256": "ef1f7f49efc6e62b09559ea5b6c78512a968c96f8945bbe9657020c12d739f69",
+    "sha256": "558e164074e90298b868867803f4c68c6e2db7c629800b0caf51254706468512",
+    "captions": [
+      {
+        "item": "cap1",
+        "lines": 2,
+        "faces": [
+          "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1"
+        ],
+        "width": 45158,
+        "height": 11060,
+        "words": 5,
+        "missing": []
+      }
+    ],
     "layers": [
       "c1 clip t1 src 1/2",
       "cap1 caption t4 2 lines, 1 faces, 45158x11060/64 px"
@@ -17,16 +43,31 @@
   },
   {
     "t": "4.9s",
-    "sha256": "670ef38278cfbf36fa2eb450959c28c3af89d5579d18213b69fe76d1cd4e2f64",
+    "sha256": "411bdbae7c2ce4f419047e0ae6034d489674e5e34f27c4b85ec2e966bb617320",
+    "captions": [
+      {
+        "item": "cap2",
+        "lines": 1,
+        "faces": [
+          "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1",
+          "5c54d42b6178df4d24d644b33b84e5406bd88a3eb6bd7f305efb4d891949c36a"
+        ],
+        "width": 41472,
+        "height": 5530,
+        "words": 4,
+        "missing": []
+      }
+    ],
     "layers": [
       "c1 clip t1 src 49/10",
       "cap2 caption t4 1 lines, 2 faces, 41472x5530/64 px",
-      "img1 image t5 src 0 opacity 0.975"
+      "img1 image t5 src 0 opacity 0.9988512587765868"
     ]
   },
   {
     "t": "9.8s",
     "sha256": "2e323f2065c9465076ddb5d62de19722b35b9e4fa8a2ce95bfc93c185a9b7386",
+    "captions": [],
     "layers": [
       "c1 clip t1 src 49/5 tr1 out 0.3",
       "c3 clip t1 src 17/10 tr1 in 0.3",
@@ -36,6 +77,7 @@
   {
     "t": "12s",
     "sha256": "cc3706a6305b1e3ce506de503ea3b4aecac9af774dff5ff8a48ef9578049996e",
+    "captions": [],
     "layers": [
       "c3 clip t1 src 5"
     ]
@@ -43,6 +85,7 @@
   {
     "t": "20s",
     "sha256": "ceec48c19541495a2ebf27d876c22471ad4f1a7c724b17aac3c4d9acef6fad30",
+    "captions": [],
     "layers": [
       "c5 clip t1 src 5"
     ]
@@ -50,6 +93,7 @@
   {
     "t": "29.9s",
     "sha256": "172880f5b09815d70de4cb469005f8ee3ab7991e2d68da430fc0ccc61ce752b7",
+    "captions": [],
     "layers": [
       "c5 clip t1 src 149/10"
     ]

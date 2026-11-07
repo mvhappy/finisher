@@ -223,10 +223,13 @@ mod tests {
 
     #[test]
     fn keys_go_to_the_row_of_their_style() {
-        // One variable file serving two styles, and a static file.
+        // One variable file serving three styles (regular, bold, italic), and a static file.
+        let mut italic = row("v", "italic", 400);
+        italic.italic = true;
         let mut rows = [
             row("v", "regular", 400),
             row("v", "bold", 700),
+            italic,
             row("s", "regular", 400),
         ];
         let mut keys: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -234,6 +237,7 @@ mod tests {
             keys.entry(sha.into()).or_default().insert(key.into());
         };
         add("v", "Inter|700|normal");
+        add("v", "Inter|400|italic"); // the italic row, not the regular one of the same weight
         add("v", "Inter|900|normal"); // no row of its own: the file's first row
         add("s", "Other|400|italic"); // a different face of the same file: its only row
         add("x", "Asset|400|normal"); // not in the catalog: left for the caller
@@ -244,6 +248,7 @@ mod tests {
             [
                 vec!["Inter|900|normal".to_string()],
                 vec!["Inter|700|normal".to_string()],
+                vec!["Inter|400|italic".to_string()],
                 vec!["Other|400|italic".to_string()],
             ]
         );

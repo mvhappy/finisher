@@ -9,10 +9,10 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertEqual, fin, finRaw, live, log, removeTmp, startServer, stopServer, waitFor } from "./lib.mjs";
-import { testFont, writeFixture, writeFixtureOf } from "./fixture.mjs";
+import { TEST_NATIVE_DIR, testFont, writeFixture, writeFixtureOf } from "./fixture.mjs";
 import { catalogJson, startFontServer } from "./fontserver.mjs";
 import { failure } from "./history-lib.mjs";
-import { audioSummary, checkGolden, digest, hashTree, layerSummary } from "./reel-lib.mjs";
+import { audioSummary, checkGolden, cubicBezier, digest, engineProblem, frameGolden, hashTree, withoutEngine } from "./reel-lib.mjs";
 import { realFonts } from "./reel-real.mjs";
 
 const step = (n, text) => log(`step ${n}: ${text}`);
@@ -48,10 +48,23 @@ async function testCatalog(fonts) {
   return catalogJson("2026.11.1", files, ["hebrew"]);
 }
 
-/** The frame plans at `FRAME_TIMES`: `[{t, sha256, layers}]`, plus the plans themselves. */
+/** The frame plans at `FRAME_TIMES`: `[{t, sha256, captions, layers}]` (`frameGolden`), plus the plans themselves. */
 function frames(f) {
   const plans = FRAME_TIMES.map((t) => ({ t, plan: f(["eval", "frame", "--at", t]).plan }));
-  return { plans, golden: plans.map(({ t, plan }) => ({ t, sha256: digest(plan), layers: layerSummary(plan) })) };
+  return { plans, golden: plans.map(({ t, plan }) => frameGolden(t, plan)) };
+}
+
+/** Throws when a plan of `plans` names its text engine wrongly (present only when it measured a caption). */
+function assertEngines(plans, what) {
+  const problems = plans.map(({ t, plan }) => engineProblem(plan, `${what} at ${t}`)).filter(Boolean);
+  if (problems.length > 0) throw new Error(problems.join("; "));
+}
+
+/** The opacity of layer `item` in the frame plan at `at`. */
+function opacityAt(f, item, at) {
+  const layer = f(["eval", "frame", "--at", at]).plan.layers.find((l) => l.item === item);
+  if (!layer) throw new Error(`no layer ${item} at ${at}`);
+  return layer.opacity;
 }
 
 const captionsOf = (plans) => plans.flatMap(({ plan }) => plan.layers.filter((l) => l.caption).map((l) => l.caption));
@@ -88,7 +101,7 @@ export async function run() {
     mkdirSync(sd, { recursive: true });
     const settings = join(sd, "settings.json");
     writeFileSync(settings, JSON.stringify({ fonts: { autoFetch: false } }));
-    server = await startServer(sd, { FIN_FONT_CATALOG: catalog, FIN_FONTS_TEST_BACKOFF_MS: "0", FIN_FONTS_TEST_NO_PROXY: "1" });
+    server = await startServer(sd, { FIN_NODE_BINARY_DIR: TEST_NATIVE_DIR, FIN_FONT_CATALOG: catalog, FIN_FONTS_TEST_BACKOFF_MS: "0", FIN_FONTS_TEST_NO_PROXY: "1" });
     const f = (args) => fin(sd, project, args);
     const raw = (args) => finRaw(sd, project, args);
 
@@ -145,10 +158,13 @@ export async function run() {
     assertEqual(missing.fonts.missing.map((m) => [m.key, m.reason]), PINNED.map(([key]) => [key, "offline"]), "missing fonts");
     assertEqual(missing.fonts.unmeasured, ["cap1", "cap2", "cap3"].map((item) => ({ item, reason: "font missing" })), "unmeasured captions");
     const captionLines = (view) => view.lines.filter((l) => / C1 /.test(l));
-    for (const line of captionLines(f(["view"]))) {
+    const offlineLines = captionLines(f(["view"]));
+    assertEqual(offlineLines.length, 3, "caption lines in the view");
+    for (const line of offlineLines) {
       if (!line.endsWith("(unmeasured: font missing)")) throw new Error(`caption line not marked unmeasured: ${line}`);
     }
     const before = frames(f);
+    assertEngines(before.plans, "offline");
     const offlineCaptions = captionsOf(before.plans);
     if (offlineCaptions.length === 0 || offlineCaptions.some((c) => c.layout !== null || c.unmeasured?.reason !== "fontMissing")) {
       throw new Error(`offline captions should be unmeasured (fontMissing): ${JSON.stringify(offlineCaptions)}`);
@@ -167,7 +183,11 @@ export async function run() {
     assertEqual(["inter-bold.ttf", "hebrew.ttf"].map((n) => fonts.hitsOf(n)), [1, 1], "one download per font");
     await poll("no font warnings", () => f(["status"]).warnings.length === 0 || undefined, 10_000);
     const online = frames(f);
+    assertEngines(online.plans, "online");
     const onlineCaptions = captionsOf(online.plans);
+    if (onlineCaptions.length === 0 || onlineCaptions.length !== offlineCaptions.length) {
+      throw new Error(`online and offline plans should hold the same caption layers: ${onlineCaptions.length} online, ${offlineCaptions.length} offline`);
+    }
     if (onlineCaptions.some((c) => !c.layout || c.unmeasured)) throw new Error(`online captions should be laid out: ${JSON.stringify(onlineCaptions)}`);
     // Only the caption layers changed (and the plan names the text engine that measured them).
     assertEqual(online.plans.map(({ plan }) => digest(withoutCaptions(plan))), before.plans.map(({ plan }) => digest(withoutCaptions(plan))), "non-caption layers");
@@ -176,8 +196,9 @@ export async function run() {
     assertEqual(records(project), recordsBefore, "records byte-identical before and after the fetch");
 
     step(6, "keyframed overlay opacity (easeOut); a dissolve between c1 and c3, crossfade on the linked audio");
-    f(["keyframe", "set", "img1", "opacity", "--at", "0", "0"]);
-    f(["keyframe", "set", "img1", "opacity", "--at", "4s", "1", "--interp", "easeOut"]);
+    // A segment takes the EARLIER keyframe's interp, so easeOut goes on the first of the two.
+    f(["keyframe", "set", "img1", "opacity", "--at", "0", "0", "--interp", "easeOut"]);
+    f(["keyframe", "set", "img1", "opacity", "--at", "4s", "1"]);
     const dissolve = f(["transition", "set", "--between", "c1", "c3", "--kind", "dissolve", "--dur", "1s"]);
     assertEqual(
       dissolve.resolved.transitions.map((t) => [t.between, t.track]),
@@ -192,7 +213,17 @@ export async function run() {
     const view = f(["view"]);
     checkGolden("view.json", view);
     const final = frames(f);
-    checkGolden("frames.json", final.golden);
+    assertEngines(final.plans, "final");
+    // The overlay (img1 from 1 s, keyframes at 0 and 4 s of the item) eases out: near 1 at 4.9 s
+    // (not the linear 0.975), and at 1 s into the item the cubic-bezier(0, 0, 0.58, 1) value.
+    const late = opacityAt(f, "img1", "4.9s");
+    if (!(late > 0.99) || late === 0.975) throw new Error(`img1 opacity at 4.9s should be eased (> 0.99, not 0.975): ${late}`);
+    const early = opacityAt(f, "img1", "2s");
+    const wantEarly = cubicBezier(0, 0, 0.58, 1, 0.25);
+    if (Math.abs(early - wantEarly) > 1e-3 || Math.abs(early - 0.25) < 0.05) {
+      throw new Error(`img1 opacity 1 s into the item should be the eased ${wantEarly.toFixed(4)} (linear is 0.25): ${early}`);
+    }
+    checkGolden("frames.json", final.golden, { plans: final.plans });
     const audio = f(["eval", "audio", "--range", "0..30s"]).plan;
     checkGolden("audio.json", { range: "0..30s", sha256: digest(audio), items: audioSummary(audio) });
     if (!audio.items.some((i) => i.item === "c7" && i.gain[0].db[0] === -6 && i.gain[0].shapes?.[0]?.kind === "fadeIn")) {
@@ -214,9 +245,15 @@ export async function run() {
     if (await realFonts(tmp)) log("real fonts: frames equal frames-real.json");
     log(`PASS reel in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
-    if (server) await stopServer(server);
-    await fonts.close();
-    removeTmp(tmp);
+    try {
+      if (server) await stopServer(server);
+    } finally {
+      try {
+        await fonts.close();
+      } finally {
+        removeTmp(tmp);
+      }
+    }
   }
 }
 
@@ -229,6 +266,6 @@ const PINNED = [
 const withoutRev = ({ rev, ...rest }) => rest;
 
 /** A frame plan without its caption layers and text engine. */
-function withoutCaptions({ textEngine, ...plan }) {
-  return { ...plan, layers: plan.layers.filter((l) => !l.caption) };
+function withoutCaptions(plan) {
+  return { ...withoutEngine(plan), layers: plan.layers.filter((l) => !l.caption) };
 }
