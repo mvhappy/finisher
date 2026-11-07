@@ -38,5 +38,6 @@ windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation
 
 [dev-dependencies]
 fin-core = { path = "../fin-core" }
+fin-jobhost = { path = "../fin-jobhost", features = ["test-hooks"] }
 fin-workers = { path = ".", features = ["test-hooks"] }
 tempfile = "3"

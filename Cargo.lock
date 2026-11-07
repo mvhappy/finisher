@@ -462,6 +462,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-jobhost"
+version = "0.0.0"
+dependencies = [
+ "fin-jobs",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "fin-jobs"
 version = "0.0.0"
 dependencies = [
@@ -598,6 +607,7 @@ name = "fin-workers"
 version = "0.0.0"
 dependencies = [
  "fin-core",
+ "fin-jobhost",
  "fin-jobs",
  "fin-workers",
  "libc",

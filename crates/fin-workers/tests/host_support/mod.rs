@@ -1,0 +1,297 @@
+//! A `fin-jobhost` host over the test-hooks `fin-workers` binary, for the process tests
+//! (`host_common.rs`, `host_unix.rs`). Events of every process arrive on one channel; the
+//! helpers pick the next event of one process and keep the others in order.
+
+#![allow(dead_code)]
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
+
+use fin_jobhost::*;
+use fin_jobs::{Dirs, Hello, HostMsg, Limits, Start, StartJob, WorkerMsg};
+use serde_json::Value;
+
+pub const BIN: &str = env!("CARGO_BIN_EXE_fin-workers");
+pub const WAIT: Duration = Duration::from_secs(10);
+
+pub fn bin_dir() -> PathBuf {
+    Path::new(BIN).parent().unwrap().to_path_buf()
+}
+
+/// Test timers: long enough not to fire by accident, short where a test needs them.
+pub fn timing() -> Timing {
+    Timing {
+        hello_ms: 10_000,
+        hung_ms: 30_000,
+        kill_wait_ms: 3_000,
+        rss_sample_ms: 1_000,
+        exit_drain_ms: 200,
+    }
+}
+
+pub struct TestHost {
+    pub host: Host,
+    rx: Receiver<HostEvent>,
+    backlog: Vec<HostEvent>,
+    pub dir: tempfile::TempDir,
+}
+
+pub fn host() -> TestHost {
+    host_with(|_| {})
+}
+
+pub fn host_with(f: impl FnOnce(&mut HostOptions)) -> TestHost {
+    let mut opts = HostOptions::new(bin_dir());
+    opts.timing = timing();
+    opts.watchdog = false;
+    f(&mut opts);
+    let (sink, rx) = EventSink::channel(1024);
+    let host = Host::start(opts, sink).expect("the host starts");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("tmp")).unwrap();
+    TestHost {
+        host,
+        rx,
+        backlog: Vec::new(),
+        dir,
+    }
+}
+
+/// The environment every test process gets: one marker and its temp directory.
+pub fn base_env(dir: &Path) -> Vec<(OsString, OsString)> {
+    let tmp = dir.join("tmp").into_os_string();
+    vec![
+        ("FIN_TEST_MARKER".into(), "1".into()),
+        ("TMPDIR".into(), tmp),
+    ]
+}
+
+pub fn proc_of(e: &HostEvent) -> Option<ProcId> {
+    match e {
+        HostEvent::Hello { proc, .. }
+        | HostEvent::Message { proc, .. }
+        | HostEvent::Stderr { proc, .. }
+        | HostEvent::Exit { proc, .. } => Some(*proc),
+        HostEvent::GroupEmpty { .. } => None,
+    }
+}
+
+impl TestHost {
+    pub fn group(&self) -> GroupId {
+        self.group_qos(Qos::Normal)
+    }
+
+    pub fn group_qos(&self, qos: Qos) -> GroupId {
+        self.host.open_group(GroupSpec {
+            label: "test".into(),
+            memory_bytes: None,
+            qos,
+        })
+    }
+
+    /// A worker request for `fin-workers <args…>`.
+    pub fn req(&self, args: &[&str]) -> SpawnRequest {
+        SpawnRequest {
+            role: Role::Worker,
+            profile: Profile::Worker,
+            family: "test".into(),
+            program: Program::Bundled("fin-workers".into()),
+            args: args.iter().map(OsString::from).collect(),
+            env: base_env(self.dir.path()),
+            cwd: self.dir.path().to_path_buf(),
+            grants: Vec::new(),
+            qos: Qos::Normal,
+            label: "test".into(),
+        }
+    }
+
+    pub fn spawn(&self, group: GroupId, req: SpawnRequest) -> Result<ProcId, HostError> {
+        let (tx, rx) = mpsc::channel();
+        self.host.spawn(
+            group,
+            req,
+            Box::new(move |r| {
+                let _ = tx.send(r);
+            }),
+        );
+        rx.recv_timeout(WAIT).expect("the spawn answers")
+    }
+
+    /// `fin-workers test` in `group`.
+    pub fn worker(&self, group: GroupId) -> ProcId {
+        self.spawn(group, self.req(&["test"]))
+            .expect("the worker spawns")
+    }
+
+    /// The next event matching `pred`, keeping the others for later.
+    pub fn next(&mut self, mut pred: impl FnMut(&HostEvent) -> bool) -> HostEvent {
+        if let Some(i) = self.backlog.iter().position(&mut pred) {
+            return self.backlog.remove(i);
+        }
+        let until = Instant::now() + WAIT;
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            let e = self.rx.recv_timeout(left).unwrap_or_else(|_| {
+                panic!(
+                    "no matching event within {WAIT:?}; backlog {:?}",
+                    self.backlog
+                )
+            });
+            if pred(&e) {
+                return e;
+            }
+            self.backlog.push(e);
+        }
+    }
+
+    /// The next event of `proc` other than `Stderr`.
+    pub fn next_of(&mut self, proc: ProcId) -> HostEvent {
+        self.next(|e| proc_of(e) == Some(proc) && !matches!(e, HostEvent::Stderr { .. }))
+    }
+
+    pub fn hello(&mut self, proc: ProcId) -> Hello {
+        match self.next_of(proc) {
+            HostEvent::Hello { hello, .. } => hello,
+            e => panic!("hello first, got {e:?}"),
+        }
+    }
+
+    pub fn message(&mut self, proc: ProcId) -> WorkerMsg {
+        match self.next_of(proc) {
+            HostEvent::Message { msg, .. } => msg,
+            e => panic!("a message, got {e:?}"),
+        }
+    }
+
+    pub fn result(&mut self, proc: ProcId) -> Value {
+        loop {
+            match self.message(proc) {
+                WorkerMsg::Result { value, .. } => return value,
+                WorkerMsg::Progress(_) | WorkerMsg::Begin { .. } | WorkerMsg::Item { .. } => {}
+                m => panic!("a result, got {m:?}"),
+            }
+        }
+    }
+
+    /// The process's `Exit`, skipping its other events.
+    pub fn exit(&mut self, proc: ProcId) -> ExitInfo {
+        match self.next(|e| matches!(e, HostEvent::Exit { proc: p, .. } if *p == proc)) {
+            HostEvent::Exit { info, .. } => info,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn group_empty(&mut self, group: GroupId) {
+        self.next(|e| matches!(e, HostEvent::GroupEmpty { group: g } if *g == group));
+    }
+
+    pub fn start_msg(&self, job: &str, kind: &str, params: Value) -> HostMsg {
+        HostMsg::Start(Start {
+            job: StartJob {
+                id: job.into(),
+                kind: kind.into(),
+                kind_version: 1,
+                params,
+                checkpoint: None,
+                attempt: 1,
+                extra: None,
+            },
+            limits: Limits {
+                alive_ms: 100,
+                memory_bytes: None,
+                read_bytes_per_sec: None,
+            },
+            files: Vec::new(),
+            helpers: Vec::new(),
+            dirs: Dirs {
+                job: self.dir.path().to_path_buf(),
+                tmp: self.dir.path().join("tmp"),
+            },
+            diagnostics: false,
+        })
+    }
+
+    pub fn start(&self, proc: ProcId, kind: &str, params: Value) {
+        self.host
+            .send(proc, &self.start_msg("j1", kind, params))
+            .expect("start is queued");
+    }
+
+    /// Spawns a `test` worker in a new group, starts `kind` and returns its result.
+    pub fn run(&mut self, kind: &str, params: Value) -> (ProcId, Value) {
+        let g = self.group();
+        let p = self.worker(g);
+        self.hello(p);
+        self.start(p, kind, params);
+        let v = self.result(p);
+        (p, v)
+    }
+
+    /// Runs `kill_group` and waits for its callback.
+    pub fn kill(&self, group: GroupId, reason: KillReason) {
+        let (tx, rx) = mpsc::channel();
+        self.host.kill_group(
+            group,
+            reason,
+            Box::new(move || {
+                let _ = tx.send(());
+            }),
+        );
+        rx.recv_timeout(WAIT).expect("kill_group answers");
+    }
+}
+
+/// A spawner that rewrites the command with `f`.
+pub struct Rewrite<F>(pub F);
+
+impl<F> Spawner for Rewrite<F>
+where
+    F: Fn(&mut PlatformCommand) + Send + Sync,
+{
+    fn name(&self) -> &'static str {
+        "rewrite"
+    }
+    fn sandboxed(&self) -> bool {
+        false
+    }
+    fn prepare(&self, _req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError> {
+        (self.0)(cmd);
+        Ok(())
+    }
+}
+
+pub fn rewrite(f: impl Fn(&mut PlatformCommand) + Send + Sync + 'static) -> Arc<dyn Spawner> {
+    Arc::new(Rewrite(f))
+}
+
+/// Whether `pid` is gone: no such process, or (Linux) a zombie nobody has reaped yet.
+#[cfg(unix)]
+pub fn gone(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks for existence.
+    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && let Some(rest) = stat.rsplit_once(") ")
+    {
+        return rest.1.starts_with('Z');
+    }
+    false
+}
+
+/// Polls [`gone`] for ≤ 5 s.
+#[cfg(unix)]
+pub fn wait_gone(pid: u32) -> bool {
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        if gone(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    gone(pid)
+}

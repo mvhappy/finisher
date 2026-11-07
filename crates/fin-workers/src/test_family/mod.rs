@@ -38,6 +38,9 @@ static TEST_KINDS: &[KindVersion] = &[
 static TESTBAD_KINDS: &[KindVersion] = &[KindVersion::new("test.badHello", 1)];
 static TESTPLUGIN_KINDS: &[KindVersion] = &[KindVersion::new("test.pluginMinor", 1)];
 
+/// Set, the `hello` claims this self-sandbox profile (test families only).
+pub const FAKE_SELF_SANDBOX_ENV: &str = "FIN_TEST_FAKE_SELF_SANDBOX";
+
 /// The envelope `testbad` claims.
 pub const BAD_ENVELOPE: &str = "0000000000000000";
 
@@ -100,6 +103,11 @@ impl Family for TestFamily {
     }
 
     fn hello_for_test(&self, hello: &mut Hello) {
+        // A `hello` claiming a self-sandbox nobody requested (the host's
+        // `self_sandbox_mismatch_is_protocol_error`).
+        if let Ok(profile) = std::env::var(FAKE_SELF_SANDBOX_ENV) {
+            hello.self_sandbox = Some(profile);
+        }
         match self.name {
             "testbad" => hello.envelope = Some(BAD_ENVELOPE.to_owned()),
             "testplugin" => {

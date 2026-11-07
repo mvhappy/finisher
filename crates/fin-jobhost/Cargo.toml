@@ -1,0 +1,20 @@
+[package]
+name = "fin-jobhost"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The job host (5C-1): spawning through a Spawner hook, kill domains, envelope framing, liveness and cancel."
+
+[features]
+# Test-only hooks (a delayed resume on macOS). Enabled by fin-workers' process tests and,
+# from Task 6, by fin-node's `test-hooks`; never in a shipped build.
+test-hooks = []
+
+[dependencies]
+fin-jobs = { path = "../fin-jobs" }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"

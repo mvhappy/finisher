@@ -8,6 +8,7 @@ default-members = [
     "crates/fin",
     "crates/fin-core",
     "crates/fin-fonts",
+    "crates/fin-jobhost",
     "crates/fin-jobs",
     "crates/fin-journal",
     "crates/fin-node",
