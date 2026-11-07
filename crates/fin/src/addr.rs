@@ -1,10 +1,10 @@
 //! Addressing: turns the strings agents type (`12.4s`, `f300`, `+0.5s`, `after:c12`, `end`,
 //! `2s..5s`) into exact `Rational` seconds against a project. Callers echo what they resolved.
 
-use fin_core::{CoreError, Project, Rational, Track, parse_time};
+use fin_core::{CoreError, Item, Project, Rational, Timeline, Track, parse_time};
 use serde_json::json;
 
-fn not_found(kind: &str, id: &str, alternatives: Vec<String>) -> CoreError {
+pub fn not_found(kind: &str, id: &str, alternatives: Vec<String>) -> CoreError {
     CoreError::new("NOT_FOUND", format!("{kind} {id} does not exist"))
         .with_details(json!({ "id": id, "kind": kind, "alternatives": alternatives }))
         .with_fix(format!(
@@ -22,12 +22,17 @@ fn for_field(mut e: CoreError, field: &str) -> CoreError {
 
 /// An absolute time (`12.4s`, `00:12.4`, `f300`, `62/5`) at the project rate.
 pub fn time(project: &Project, field: &str, input: &str) -> Result<Rational, CoreError> {
-    parse_time(input, project.rate).map_err(|e| for_field(e, field))
+    time_at(project.rate, field, input)
 }
 
-/// A signed relative time for trims: `+0.5s`, `-1s`, `+f3`. The sign is required so a delta is
-/// never mistaken for a position.
-pub fn delta(project: &Project, field: &str, input: &str) -> Result<Rational, CoreError> {
+/// An absolute time whose frames (`f300`) count at `rate` (a timeline's).
+pub fn time_at(rate: Rational, field: &str, input: &str) -> Result<Rational, CoreError> {
+    parse_time(input, rate).map_err(|e| for_field(e, field))
+}
+
+/// A signed relative time for trims: `+0.5s`, `-1s`, `+f3`, frames counted at `rate` (a
+/// timeline's). The sign is required so a delta is never mistaken for a position.
+pub fn delta_at(rate: Rational, field: &str, input: &str) -> Result<Rational, CoreError> {
     let (negative, body) = match (input.strip_prefix('+'), input.strip_prefix('-')) {
         (Some(rest), _) => (false, rest),
         (_, Some(rest)) => (true, rest),
@@ -42,7 +47,7 @@ pub fn delta(project: &Project, field: &str, input: &str) -> Result<Rational, Co
             )));
         }
     };
-    let magnitude = parse_time(body, project.rate).map_err(|e| for_field(e, field))?;
+    let magnitude = parse_time(body, rate).map_err(|e| for_field(e, field))?;
     if magnitude < Rational::zero() {
         return Err(CoreError::new(
             "INVALID_TIME",
@@ -71,6 +76,64 @@ fn clip_ids(project: &Project) -> Vec<String> {
 
 pub fn track_ids(project: &Project) -> Vec<String> {
     tracks(project).map(|t| t.id.clone()).collect()
+}
+
+pub fn timeline_ids(project: &Project) -> Vec<String> {
+    project.timelines.iter().map(|t| t.id.clone()).collect()
+}
+
+/// The timeline `id` names (`--timeline`), or the first one.
+pub fn timeline<'p>(project: &'p Project, id: Option<&str>) -> Result<&'p Timeline, CoreError> {
+    match id {
+        None => project
+            .timelines
+            .first()
+            .ok_or_else(|| not_found("timeline", "(first)", Vec::new())),
+        Some(id) => project
+            .timelines
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| for_field(not_found("timeline", id, timeline_ids(project)), "timeline")),
+    }
+}
+
+/// The timeline and track holding track `id`.
+pub fn track<'p>(project: &'p Project, id: &str) -> Result<(&'p Timeline, &'p Track), CoreError> {
+    project
+        .timelines
+        .iter()
+        .find_map(|tl| tl.tracks.iter().find(|t| t.id == id).map(|t| (tl, t)))
+        .ok_or_else(|| not_found("track", id, track_ids(project)))
+}
+
+/// The timeline, track and item of item `id`.
+pub fn item<'p>(
+    project: &'p Project,
+    id: &str,
+) -> Result<(&'p Timeline, &'p Track, &'p Item), CoreError> {
+    project
+        .timelines
+        .iter()
+        .find_map(|tl| {
+            tl.tracks
+                .iter()
+                .find_map(|t| t.items.iter().find(|i| i.id == id).map(|i| (tl, t, i)))
+        })
+        .ok_or_else(|| not_found("item", id, clip_ids(project)))
+}
+
+/// The members of `item`'s link group (the item alone when it has none), named item first.
+pub fn link_members(project: &Project, item: &Item) -> Vec<String> {
+    let mut out = vec![item.id.clone()];
+    if let Some(link) = &item.common.link {
+        out.extend(
+            tracks(project)
+                .flat_map(|t| t.items.iter())
+                .filter(|i| i.id != item.id && i.common.link.as_deref() == Some(link))
+                .map(|i| i.id.clone()),
+        );
+    }
+    out
 }
 
 /// The end of the last clip on `track` (0 when empty).
@@ -102,7 +165,12 @@ pub fn position(
             None => Err(for_field(not_found("clip", id, clip_ids(project)), field)),
         };
     }
-    time(project, field, input)
+    time_at(rate_of(project, track), field, input)
+}
+
+/// The frame rate of the timeline holding `track` (the project rate when there is none).
+pub fn rate_of(project: &Project, track: &str) -> Rational {
+    self::track(project, track).map_or(project.rate, |(tl, _)| tl.rate)
 }
 
 /// `a..b`, `a..` or `..b`; both ends absolute times. Rejects `a >= b`.
@@ -182,10 +250,16 @@ mod tests {
     #[test]
     fn deltas_need_a_sign() {
         let p = project();
-        assert_eq!(delta(&p, "end", "+0.5s").unwrap(), r("1/2"));
-        assert_eq!(delta(&p, "end", "-1s").unwrap(), r("-1"));
-        assert_eq!(delta(&p, "end", "1s").unwrap_err().code, "INVALID_TIME");
-        assert_eq!(delta(&p, "end", "+-1s").unwrap_err().code, "INVALID_TIME");
+        assert_eq!(delta_at(p.rate, "end", "+0.5s").unwrap(), r("1/2"));
+        assert_eq!(delta_at(p.rate, "end", "-1s").unwrap(), r("-1"));
+        assert_eq!(
+            delta_at(p.rate, "end", "1s").unwrap_err().code,
+            "INVALID_TIME"
+        );
+        assert_eq!(
+            delta_at(p.rate, "end", "+-1s").unwrap_err().code,
+            "INVALID_TIME"
+        );
     }
 
     #[test]

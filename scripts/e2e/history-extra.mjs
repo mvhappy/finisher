@@ -72,7 +72,7 @@ export async function recover({ tmp, sd, server, servers, sockets, writeFixture 
   const projectId = created.project.projectId;
   await writeFixture(join(a, "clip.mp4"));
   fa(["asset", "add", "clip.mp4"]);
-  fa(["clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "4s"]);
+  fa(["clip", "insert", "--no-audio", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "4s"]);
   await exported(sd, a);
   cpSync(a, b, { recursive: true });
   for (const name of readdirSync(join(b, ".finisher"))) if (name.startsWith("lease.")) rmSync(join(b, ".finisher", name));
@@ -81,11 +81,11 @@ export async function recover({ tmp, sd, server, servers, sockets, writeFixture 
   fb(["project", "open", b]);
   await waitFor("server B to take its own lease", () => !fb(["project", "status"]).status.readOnly, 40_000);
   const bTail = [
-    fb(["clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "2s"]),
-    fb(["clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s"]),
+    fb(["clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "2s"]),
+    fb(["clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s"]),
   ];
   await exported(sdB, b);
-  fa(["clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "3s"]);
+  fa(["clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "3s"]);
   const moved = join(tmp, "moved-segments");
   cpSync(join(b, ".finisher", "segments"), moved, { recursive: true });
 

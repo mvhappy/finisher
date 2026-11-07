@@ -33,14 +33,14 @@ export async function run() {
     const snap = (branch) => ws.call("snapshot.get", { projectId, branch });
     const heads = () => Object.fromEntries(f(["branch", "ls", "--all"]).branches.map((b) => [b.display, b.head]));
     const insertT1 = (extra = [], dur = "1s") =>
-      f([...extra, "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", dur]);
+      f([...extra, "clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", dur]);
 
     step(1, "asset, two clips on t1");
     await writeFixture(join(project, "clip.mp4"));
     // Another author adds the asset, so `fin`'s own undo stack starts at its clips.
     f(["asset", "add", "clip.mp4"], { FIN_AUTHOR: "setup" });
-    f(["clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "4s"]);
-    f(["clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--in", "4s", "--dur", "3s"]);
+    f(["clip", "insert", "--no-audio", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "4s"]);
+    f(["clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--in", "4s", "--dur", "3s"]);
 
     step(2, "branch new feature; on it: insert on t2 (audio), trim c1 +1s");
     const feature = f(["branch", "new", "feature"]);
@@ -49,7 +49,7 @@ export async function run() {
     const fSnap0 = await snap("feature");
     const featureWatch = watch(ws, projectId, "feature", fSnap0.rev, fSnap0.generation);
     const onFeature = ["--branch", "feature"];
-    const t2 = f([...onFeature, "clip", "insert", "--track", "t2", "--at", "0", "--asset", "a1", "--dur", "2s"]);
+    const t2 = f([...onFeature, "clip", "insert", "--no-audio", "--track", "t2", "--at", "0", "--asset", "a1", "--dur", "2s"]);
     const featureTrim = f([...onFeature, "clip", "trim", "c1", "--end", "+1s"]);
     await featureWatch.waitFor("both feature edits", (s) => s.length >= 2);
     assertEqual(featureWatch.txIds(), [t2.txId, featureTrim.txId], "feature subscriber txIds");
@@ -130,7 +130,7 @@ export async function run() {
     f(["branch", "archive", "feat"]);
     assertEqual(f(["branch", "ls"]).branches.map((b) => b.display), ["main"], "archived branch is hidden");
     assertEqual(f(["branch", "ls", "--all"]).branches.find((b) => b.id === featureId).state, "archived", "ls --all shows it archived");
-    const refused = raw(["--branch", featureId, "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s"]);
+    const refused = raw(["--branch", featureId, "clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s"]);
     failure(refused, "BRANCH_ARCHIVED", 3, "write to an archived branch");
     f(["branch", "archive", featureId, "--restore"]);
     assertEqual(f(["branch", "ls"]).branches.map((b) => b.display), ["main", "feat"], "restored");

@@ -3,17 +3,27 @@
 //! transaction — or, for `--dry-run` and the offline hook, applied locally with `MemIds`.
 
 pub mod asset;
+pub mod bin;
 pub mod branch;
 mod builder;
 pub mod clip;
+pub mod edit;
+mod fixes;
 pub mod history;
+pub mod item;
+pub mod marker;
+pub mod media;
 pub mod project;
 pub mod schema;
+pub mod timeline;
+pub mod track;
+pub mod transition;
 pub mod try_cmd;
 pub mod view;
 
 pub use builder::Builder;
 use builder::with_detail;
+pub use edit::Edit;
 
 use std::path::PathBuf;
 
@@ -43,6 +53,10 @@ pub struct Globals {
     /// switched to (fin-config.json), else `main`.
     #[arg(long, global = true, value_name = "b")]
     pub branch: Option<String>,
+    /// Timeline that commands naming no track, item or timeline act on (track add, marker
+    /// add): an id; default the first timeline.
+    #[arg(long, global = true, value_name = "tl")]
+    pub timeline: Option<String>,
 }
 
 /// The branch reference a command names: `--branch`, else the project's default in
@@ -99,6 +113,8 @@ pub enum Write {
     ClipInsert(clip::InsertArgs),
     ClipTrim(clip::TrimArgs),
     ClipDelete(clip::DeleteArgs),
+    /// The 4C edit commands (not batchable, Decision 44).
+    Edit(Edit),
 }
 
 /// `tx.get`: `Some` when `tx_id` committed, `None` when the server never saw it, and
@@ -154,8 +170,15 @@ fn idem_key_reused(committed: &CommittedTx) -> CoreError {
 
 /// Echoes what was committed rather than what was planned: the server may have rebased the tx
 /// over concurrent commits (moving insert positions), or returned an earlier commit for the same
-/// `--idem-key`. Each planned step pushed exactly one op, so steps and ops pair up in order.
-fn echo_committed(resolved: &mut Value, ops: &[Op]) {
+/// `--idem-key`. `steps` are each step's op range (planned pins already left out of `ops`); a
+/// step's first clip insert is the one its echo describes.
+fn echo_committed(resolved: &mut Value, ops: &[Op], steps: &[std::ops::Range<usize>]) {
+    let first_clip = |n: usize| {
+        let range = steps.get(n)?;
+        ops.get(range.clone())?.iter().find(|op| {
+            matches!(op, Op::ItemInsert(i) if matches!(i.body, fin_core::ItemBody::Clip { .. }))
+        })
+    };
     let patch = |r: &mut Value, op: &Op| {
         if let (Op::ItemInsert(i), Some(map)) = (op, r.as_object_mut())
             && let fin_core::ItemBody::Clip { source_in, .. } = &i.body
@@ -169,15 +192,15 @@ fn echo_committed(resolved: &mut Value, ops: &[Op]) {
         }
     };
     match resolved {
-        Value::Array(steps) => {
-            for (step, op) in steps.iter_mut().zip(ops) {
-                if let Some(r) = step.get_mut("resolved") {
+        Value::Array(lines) => {
+            for (n, line) in lines.iter_mut().enumerate() {
+                if let (Some(r), Some(op)) = (line.get_mut("resolved"), first_clip(n)) {
                     patch(r, op);
                 }
             }
         }
         single => {
-            if let Some(op) = ops.first() {
+            if let Some(op) = first_clip(0) {
                 patch(single, op);
             }
         }
@@ -198,7 +221,7 @@ pub fn args_hash(inputs: &[Value]) -> String {
 /// that a media path is the file it names: canonical (`..` and symlinks resolved) when it
 /// exists, else absolute. The same words from another directory name another file, and
 /// other words (`../media/a.mov` inside `media/`) the same one.
-fn input(step: &Write) -> Value {
+pub(crate) fn input(step: &Write) -> Value {
     let (cmd, args) = match step {
         Write::AssetAdd(a) => {
             let path = crate::paths::resolve_str(&a.path);
@@ -208,6 +231,7 @@ fn input(step: &Write) -> Value {
         Write::ClipInsert(a) => ("clip.insert", json!(a)),
         Write::ClipTrim(a) => ("clip.trim", json!(a)),
         Write::ClipDelete(a) => ("clip.delete", json!(a)),
+        Write::Edit(e) => (e.name(), e.args()),
     };
     json!({ "cmd": cmd, "args": args })
 }
@@ -215,14 +239,35 @@ fn input(step: &Write) -> Value {
 /// Plans one write step; `n` numbers placeholders in a batch (`$clip3`), `None` for a single
 /// command (`$clip`). Returns the step's resolved values.
 pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value, CoreError> {
-    b.inputs.push(input(step));
+    let mut hashed = input(step);
+    // `--timeline` is hashed only when given (Decision 7: an equivalent 4B call is unchanged).
+    if let Some(tl) = &b.timeline {
+        hashed["timeline"] = json!(tl);
+    }
+    b.inputs.push(hashed);
     let suffix = n.map(|n| n.to_string()).unwrap_or_default();
-    match step {
+    let start = b.len();
+    let resolved = match step {
         Write::AssetAdd(a) => asset::plan_add(b, a, &format!("$asset{suffix}")),
-        Write::ClipInsert(a) => clip::plan_insert(b, a, &format!("$clip{suffix}")),
+        Write::ClipInsert(a) => clip::plan_insert(b, a, &suffix),
         Write::ClipTrim(a) => clip::plan_trim(b, a),
         Write::ClipDelete(a) => clip::plan_delete(b, a),
+        Write::Edit(e) => e.plan(b, &suffix),
     }
+    .map_err(fixes::for_cli);
+    let resolved = match resolved {
+        Ok(r) => r,
+        Err(e) => {
+            let e = match n {
+                Some(n) => with_detail(e, "line", json!(n)),
+                None => e,
+            };
+            b.defer_step(e)?;
+            Value::Null
+        }
+    };
+    b.steps.push(start..b.len());
+    Ok(resolved)
 }
 
 /// Runs one write command.
@@ -300,3 +345,6 @@ pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod builder_tests;

@@ -266,8 +266,19 @@ pub fn assert_error(run: &Run, code: i32, error: &str) {
     );
 }
 
-/// Writes a small MP4 (H.264 video + AAC audio) the server can probe.
+/// Writes a small video-only MP4 (H.264) the server can probe: `fin clip insert` of it adds no
+/// linked audio (plan 4C Decision 21), so tests about other things keep one item per insert.
 pub fn media(path: &Path, seconds: u32) {
+    write_media(path, seconds, false);
+}
+
+/// Writes a small MP4 with H.264 video and AAC audio: `fin clip insert` of it on a video track
+/// adds a linked audio clip by default.
+pub fn media_av(path: &Path, seconds: u32) {
+    write_media(path, seconds, true);
+}
+
+fn write_media(path: &Path, seconds: u32, audio: bool) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
@@ -275,7 +286,19 @@ pub fn media(path: &Path, seconds: u32) {
         path,
         fin_probe::fixtures::FixtureOpts {
             seconds,
+            audio,
             ..Default::default()
         },
     );
+}
+
+/// Runs `fin` against the `FIN_OFFLINE_SNAPSHOT` hook holding `snapshot` (every write is a dry
+/// run), with server data pointed at an empty folder so no real finisherd is reached.
+pub fn offline(snapshot: &Value, args: &[&str]) -> Run {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("snapshot.json");
+    std::fs::write(&file, snapshot.to_string()).unwrap();
+    let mut cmd = fin_cmd(&dir.path().join("no-server"), dir.path(), args);
+    cmd.env("FIN_OFFLINE_SNAPSHOT", &file);
+    finish(args, cmd.output().unwrap())
 }

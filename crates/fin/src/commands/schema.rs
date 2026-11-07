@@ -4,7 +4,7 @@ use fin_core::CoreError;
 use serde_json::{Value, json};
 
 use crate::output::usage;
-use crate::registry::{COMMANDS, find, groups, names};
+use crate::registry::{commands, find, groups, names};
 
 fn entry(c: &crate::registry::Command) -> Value {
     json!({ "name": c.name, "usage": c.usage(), "summary": c.summary, "write": c.write, "input": (c.schema)() })
@@ -12,11 +12,7 @@ fn entry(c: &crate::registry::Command) -> Value {
 
 /// The commands of a group (or a single command by name), with usage and input schema.
 pub fn help(topic: &str) -> Result<Value, CoreError> {
-    let commands: Vec<Value> = COMMANDS
-        .iter()
-        .filter(|c| c.group == topic)
-        .map(entry)
-        .collect();
+    let commands: Vec<Value> = commands().filter(|c| c.group == topic).map(entry).collect();
     if !commands.is_empty() {
         return Ok(json!({ "group": topic, "commands": commands }));
     }

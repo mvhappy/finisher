@@ -7,7 +7,7 @@ use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 
 use fin_core::{
-    AssetKind, AudioInfo, CommittedTx, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo,
+    AssetKind, AudioInfo, CommittedTx, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo, Op,
     Project, Rational, Tx, VideoInfo,
 };
 use serde::de::DeserializeOwned;
@@ -87,6 +87,16 @@ impl Probed {
     }
 }
 
+/// What `fonts.plan` answers (plan 4C Decision 35): `font.pin` ops for the faces and scripts a
+/// tx needs that the project has no pin for, and notes (`FONT_NOT_IN_CATALOG`, …).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FontPlan {
+    #[serde(default)]
+    pub ops: Vec<Op>,
+    #[serde(default)]
+    pub notes: Vec<Value>,
+}
+
 pub trait Backend {
     /// The current project state on `branch` (a branch reference; the offline hook has one
     /// branch and ignores it).
@@ -123,6 +133,11 @@ pub trait Backend {
     /// True when writes can only be dry runs (no server to commit to).
     fn dry_run_only(&self) -> bool {
         false
+    }
+    /// The font pins the server plans for `ops` on `branch` (`fonts.plan`). It never alters
+    /// the tx: the client prepends what it answers.
+    fn fonts_plan(&self, _branch: &str, _ops: &[Op]) -> Result<FontPlan, CoreError> {
+        Ok(FontPlan::default())
     }
 }
 
@@ -404,6 +419,11 @@ impl Backend for Online {
             payload["relocate"] = json!(true);
         }
         self.call("project.open", payload)
+    }
+
+    fn fonts_plan(&self, branch: &str, ops: &[Op]) -> Result<FontPlan, CoreError> {
+        let value = self.project_call("fonts.plan", json!({ "branch": branch, "ops": ops }))?;
+        serde_json::from_value(value.clone()).map_err(|e| unexpected("fonts.plan", e, &value))
     }
 }
 

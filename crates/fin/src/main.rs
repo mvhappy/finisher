@@ -12,6 +12,8 @@ mod map;
 mod output;
 mod paths;
 mod registry;
+mod registry_edit;
+mod values;
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -21,14 +23,21 @@ use clap::{Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use fin_core::CoreError;
 use serde_json::{Map, Value, json};
 
-use commands::asset::AssetCmd;
+use commands::asset::{AssetCmd, AssetEdit};
+use commands::bin::BinCmd;
 use commands::branch::BranchCmd;
 use commands::clip::ClipCmd;
 use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, UndoArgs};
+use commands::item::ItemCmd;
+use commands::marker::MarkerCmd;
+use commands::media::{GraphicCmd, ImageCmd};
 use commands::project::ProjectCmd;
+use commands::timeline::TimelineCmd;
+use commands::track::TrackCmd;
+use commands::transition::TransitionCmd;
 use commands::try_cmd::TryArgs;
 use commands::view::ViewArgs;
-use commands::{Globals, Write};
+use commands::{Edit, Globals, Write};
 
 #[derive(Debug, Parser)]
 #[command(name = "fin")]
@@ -49,6 +58,22 @@ enum Cmd {
     Asset(AssetCmd),
     #[command(subcommand)]
     Clip(ClipCmd),
+    #[command(subcommand)]
+    Image(ImageCmd),
+    #[command(subcommand)]
+    Graphic(GraphicCmd),
+    #[command(subcommand)]
+    Item(ItemCmd),
+    #[command(subcommand)]
+    Transition(TransitionCmd),
+    #[command(subcommand)]
+    Track(TrackCmd),
+    #[command(subcommand)]
+    Timeline(TimelineCmd),
+    #[command(subcommand)]
+    Marker(MarkerCmd),
+    #[command(subcommand)]
+    Bin(BinCmd),
     #[command(subcommand)]
     Branch(BranchCmd),
     Undo(UndoArgs),
@@ -155,6 +180,12 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Project(ProjectCmd::Create(a))) => {
             commands::project::create(backend()?.as_ref(), g, &a)
         }
+        // Not a write: `--dry-run` would be silently ignored, so it is refused (SP2 follow-up).
+        Some(Cmd::Project(ProjectCmd::Open(_))) if g.dry_run => Err(output::usage(
+            "project open is not a write and takes no --dry-run",
+            json!({ "command": "project.open", "flag": "dry-run" }),
+            "run fin project open <dir> without --dry-run (it only registers the folder)",
+        )),
         Some(Cmd::Project(ProjectCmd::Open(a))) => commands::project::open(backend()?.as_ref(), &a),
         Some(Cmd::Project(cmd)) => commands::project::storage(backend()?.as_ref(), g, &cmd),
         Some(Cmd::Asset(AssetCmd::Add(a))) => {
@@ -169,6 +200,16 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Clip(ClipCmd::Delete(a))) => {
             commands::write(backend()?.as_ref(), g, Write::ClipDelete(a))
         }
+        Some(Cmd::Asset(AssetCmd::Move(a))) => edit(g, Edit::Asset(AssetEdit::Move(a))),
+        Some(Cmd::Asset(AssetCmd::Remove(a))) => edit(g, Edit::Asset(AssetEdit::Remove(a))),
+        Some(Cmd::Image(c)) => edit(g, Edit::Image(c)),
+        Some(Cmd::Graphic(c)) => edit(g, Edit::Graphic(c)),
+        Some(Cmd::Item(c)) => edit(g, Edit::Item(c)),
+        Some(Cmd::Transition(c)) => edit(g, Edit::Transition(c)),
+        Some(Cmd::Track(c)) => edit(g, Edit::Track(c)),
+        Some(Cmd::Timeline(c)) => edit(g, Edit::Timeline(c)),
+        Some(Cmd::Marker(c)) => edit(g, Edit::Marker(c)),
+        Some(Cmd::Bin(c)) => edit(g, Edit::Bin(c)),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
         Some(Cmd::Undo(a)) => commands::history::undo(backend()?.as_ref(), g, &a),
         Some(Cmd::Redo) => commands::history::redo(backend()?.as_ref(), g),
@@ -189,6 +230,12 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
             commands::batch(backend()?.as_ref(), g, &input)
         }
     }
+}
+
+/// Runs one 4C edit command.
+fn edit(g: &Globals, step: Edit) -> Result<Value, CoreError> {
+    let backend = backend::select(g.project.as_deref())?;
+    commands::write(backend.as_ref(), g, Write::Edit(step))
 }
 
 fn main() {
@@ -242,19 +289,78 @@ mod tests {
             "asset add f.mp4",
             "clip insert --track t1 --at end --asset a1 --dur 1s",
             "clip trim c1 --end -1s",
-            "clip delete c1",
+            "clip delete c1 --mode lift",
+            "image insert --track t1 --at end --asset a2 --dur 1s",
+            "graphic insert --track t1 --at 0 --template a3 --slot title=Hi --slot tint=#fff",
+            "item move c1 --to after:c2 --track t3 --mode overwrite",
+            "item split c1 --at 2s",
+            "item delete c1 --mode lift",
+            "item trim c1 --start -1s --mode roll",
+            "item slip c1 -0.5s",
+            "item slide c1 +f3",
+            "item link c1 c2 c3",
+            "item unlink lk1",
+            "transition set --between c1 c2 --dur 1s --kind dissolve --curve equalPower --no-linked",
+            "transition remove tr1",
+            "track add --kind audio --index 0 --name Music",
+            "track remove t3 --with-items",
+            "track move t3 --index 1",
+            "track set t1 gain -6dB",
+            "timeline add --name Alt --rate 25 --resolution 1920x1080",
+            "timeline set tl1 name Main",
+            "timeline remove tl2",
+            "marker add --at 2s --label drop --dur 1s --color #f00 --timeline tl2",
+            "marker set m1 label --reset",
+            "marker remove m1",
+            "bin add --name Footage --parent b1",
+            "bin move b2 --parent b1",
+            "bin remove b2",
+            "asset move a1 --bin b1",
+            "asset remove a1",
             "batch",
             "help clip",
             "schema clip.insert",
         ];
-        assert_eq!(samples.len(), registry::COMMANDS.len());
-        for (sample, command) in samples.iter().zip(registry::COMMANDS) {
+        let commands: Vec<_> = registry::commands().collect();
+        assert_eq!(samples.len(), commands.len());
+        for (sample, command) in samples.iter().zip(commands) {
             assert!(
                 sample.starts_with(&command.name.replace('.', " ")),
                 "{sample} vs {}",
                 command.name
             );
             assert!(parse(args(sample)).is_ok(), "{sample}");
+        }
+    }
+
+    /// Decision 7 from argv: the 4B command lines, parsed by this `fin` (new flags absent, no
+    /// `--timeline`), hash to the values the 4B fixture pinned.
+    #[test]
+    fn args_hash_of_4b_inputs_is_unchanged_from_argv() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fin-store/tests/fixtures/4b/expected.json");
+        let expected: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let pinned = expected["argsHashes"].as_array().unwrap();
+        let lines = [
+            "clip insert --track t1 --at end --asset a1 --dur 2s",
+            "clip trim c3 --start +0.5s",
+            "clip delete c2",
+        ];
+        assert_eq!(pinned.len(), lines.len());
+        for (line, case) in lines.iter().zip(pinned) {
+            let step = match parse(args(line)).unwrap().command {
+                Some(Cmd::Clip(ClipCmd::Insert(a))) => Write::ClipInsert(a),
+                Some(Cmd::Clip(ClipCmd::Trim(a))) => Write::ClipTrim(a),
+                Some(Cmd::Clip(ClipCmd::Delete(a))) => Write::ClipDelete(a),
+                other => panic!("{line}: {other:?}"),
+            };
+            let input = commands::input(&step);
+            assert_eq!(
+                input,
+                json!({ "cmd": case["cmd"], "args": case["args"] }),
+                "{line}"
+            );
+            assert_eq!(json!(commands::args_hash(&[input])), case["hash"], "{line}");
         }
     }
 
