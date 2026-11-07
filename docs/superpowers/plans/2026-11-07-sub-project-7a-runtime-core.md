@@ -27,7 +27,7 @@
 - **`fin`:** the default idempotency key from `FIN_CALL` (7A-1); under an agent credential, the session-root default branch, per-session try state, no local-key fallback, confined path arguments and a server-set author (7A-2).
 - **`fin-node`:** a second `Journal` instance for the agent-trace store (options for directory, cap and retention) and `attachBlob` on the napi `Journal` if D4 did not expose it.
 
-**Tech Stack:** Node 24 (the repo moves from Node 26 to 24 to match Electron's embedded Node; TASKS.md item, which also verifies `node:sqlite` there), Effect 4.0.6, `node:sqlite` (through 5A's `ControlStore`, 7A-2), `openai` 7.53.0 (Apache-2.0; Chat Completions transport with OpenRouter's or a local server's base URL), fast-check, vitest; Rust 2024, `schemars` 1. No other new dependencies (`chacha20poly1305` and `@anthropic-ai/sdk` are not used); `pnpm gates` runs the licence gates over these.
+**Tech Stack:** Node 24 (the repo moves from Node 26 to 24 to match Electron's embedded Node; TASKS.md item, which also verifies `node:sqlite` there), Effect 4.0.6, `node:sqlite` (through 5A's `ControlStore`, 7A-2), `openai` 7.53.0 (7.47.0 is pinned until 7.53.0 is ≥7 days old, see TASKS.md; Apache-2.0; Chat Completions transport with OpenRouter's or a local server's base URL), fast-check, vitest; Rust 2024, `schemars` 1. No other new dependencies (`chacha20poly1305` and `@anthropic-ai/sdk` are not used); `pnpm gates` runs the licence gates over these.
 
 **Spec:** `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §1–5, §6.1, §10, §12, §13, §15, §16 (7A parts), §19–20, §23. Parent: arch §8, §9, §16, §21.1. Related: the diagnostics plan Decisions 3, 14b, 15–20, 23a, 24, 28, 34; the sub-project 5 design (revision 3) §3.2–3.5, §4.1–4.6 (principals, the agent credential, scopes, human-only, exit 7) and its 5A plan.
 
@@ -522,7 +522,7 @@ Decisions 6, 7, 10–14 (14a–14d), 17.
 
 **Files:**
 - Create: `apps/finisherd/src/agent/builtin/{request.ts, compat.ts}`, `apps/finisherd/test/support/fake-model-server.ts`, `apps/finisherd/test/fixtures/model-streams/{openrouter,local}/*.sse`.
-- Modify: `apps/finisherd/package.json` (`openai` 7.53.0, exact pin; no `@anthropic-ai/sdk`), `pnpm-lock.yaml`, `TASKS.md`.
+- Modify: `apps/finisherd/package.json` (`openai` exact pin: 7.47.0 until 7.53.0 is ≥7 days old; no `@anthropic-ai/sdk`), `pnpm-lock.yaml`, `TASKS.md`.
 - Test: `apps/finisherd/test/agent-model-clients.test.ts`.
 
 **Interfaces:**

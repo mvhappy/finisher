@@ -2,7 +2,7 @@
 // classified from typed results and the store's write note; `storage.state`, `eval.stats`,
 // `fonts.fetch` and `error.internal`. Each test opens the server's journal first, then its
 // engines, which find it at open.
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Envelope, ExportPage } from "@finisher/core-types";
@@ -17,7 +17,9 @@ let journals: Journal[] = [];
 let engines: Engine[] = [];
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "fin-node-sources-"));
+  // Canonical: the journal registry is keyed by canonical server data, and `Journal.open` runs
+  // before the folder exists (macOS's temp dir is a symlink, so the keys would differ).
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "fin-node-sources-")));
   serverData = join(tmp, "server-data");
   projectDir = join(tmp, "My Project");
 });

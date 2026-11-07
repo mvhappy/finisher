@@ -19,6 +19,13 @@ rtk pnpm gates
 rtk pnpm e2e    # slow: builds fin and fin-node, then runs the end-to-end check
 ```
 
+Lints: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`, and also
+with `--all-features`; both are clean. Every build of the workspace compiles SVT-AV1 (`fin-svt-sys`,
+needs cmake and, on x86_64, nasm) and rav1d (needs nasm): without nasm on `PATH` they fail in
+their build scripts, not in clippy. A check-only run can skip the SVT-AV1 C build with
+`FIN_SVT_CHECK_ONLY=1`, but rav1d still needs nasm, so install it (`apt install nasm`, or extract
+the `.deb` into a user directory and add its `usr/bin` to `PATH`).
+
 ## Run it
 
 Sub-projects 2, 4A, 4B and 4C ship the core with durable storage, history and the full edit model: `finisherd` (the local server)
