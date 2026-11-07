@@ -1341,8 +1341,8 @@ Run 2026-11-06 on `sp4b-history` (c4ef8db plus the harness rows) and the 4A setu
 ### 5.9 Acceptance (4C)
 
 - Golden tests for each edit (apply, inverse, shift map, mirrored inverse shifts), and every edit in the property generators (§4.6). *(Done.)*
-- A plan-hash determinism corpus that matches across the OSes and wasm32 (§5.4). *(Done locally on Linux, macOS arm64, Windows 11 and wasm32-wasip1; re-run in §5.10.)*
-- `fin-text` measurement identical across OSes for a fixed corpus: the generated corpus (§5.6). *(Done.)* The real-font corpus (15 cases over the catalog files, Inter Bold at `wght` 700 included). *(Blessed on Linux; cross-host in §5.10.)*
+- A plan-hash determinism corpus that matches across the OSes and wasm32 (§5.4). *(Done on Linux, macOS arm64, Windows 11 and wasm32-wasip1; re-run in §5.10.)*
+- `fin-text` measurement identical across OSes for a fixed corpus: the generated corpus (§5.6). *(Done.)* The real-font corpus (15 cases over the catalog files, Inter Bold at `wght` 700 included). *(Blessed on Linux; equal on macOS and Windows, §5.10.)*
 - **`pnpm e2e` `reel`** (`scripts/e2e/{reel,reel-lib,reel-real,fontserver}.mjs`, goldens `scripts/e2e/reel-golden/{view,frames,audio,frames-real}.json`; 4.5 s with the real pass). A 30 s reel built by `fin` only, on a test-hooks `finisherd` whose `FIN_FONT_CATALOG` is a loopback test catalog (generated fonts as Inter 700 and a Hebrew fallback):
   - three V1 clips with linked audio on A1 (the second pair at speed 3/2), an image and a dotLottie graphic (a `title` slot) on V2, a 30 s WAV on A2 at −6 dB with a 2 s fade-in, and `caption import --style preset:bold`, which plans both pins;
   - with `fonts.autoFetch` false, `fin status` shows both pins `FONT_MISSING` (`offline`) and each caption `unmeasured`, `fin view` marks `(unmeasured: font missing)`, and eval's captions are `fontMissing`;
@@ -1352,19 +1352,53 @@ Run 2026-11-06 on `sp4b-history` (c4ef8db plus the harness rows) and the 4A setu
   - a 40-word `caption set-text` is `CAPTION_OVERFLOW` (exit 3); deleting the dissolve's clip prunes both transitions, and `undo` restores the view and frames;
   - **golden shape:** each frame is `{t, sha256, captions, layers}`. `sha256` digests the compact plan JSON **without `textEngine`** (crate versions), which is checked apart: present only on plans that measured a caption, matching `/^fin-text\/\S+ rev\/\d+ /`. `captions` is `{item, lines, faces, width, height, words, missing}` per caption layer, and `layers` one readable line per layer. A mismatch names the first differing path and writes `<golden>.actual` and `<name>.plans.actual.json` (git-ignored) with the full plans to bisect cross-host differences. `E2E_REEL_BLESS=1` rewrites the goldens (refused under CI).
   - **Real pass** (only with `FIN_FONT_CACHE`; CI sets it with `FIN_REQUIRE_FONTS=1`): a second server with the built-in catalog, offline, its cache linked from `FIN_FONT_CACHE`; Latin, Arabic, CJK and emoji captions pin Inter 700 and Noto Sans Arabic, CJK and Color Emoji, and equal `frames-real.json`; it also checks the `fonts.status` key rows.
-  *(Done on Linux; macOS and Windows in §5.10.)*
+  *(Done on Linux, macOS and Windows, §5.10.)*
 - A migration test: SP2, 4A and 4B projects open in the 4C model with the states of hand-checked v2 goldens; their upcast v1 diffs equal a fresh replay; undo, merge, cherry-pick and rebuild of 4B records work. *(Done.)*
 
-### 5.10 Validation results (Task 29) — pending
+### 5.10 Validation results (Task 29)
 
-Task 29 (controller-run, needs the hosts) has not run. It covers, on macOS arm64, Windows 11 x64 and the Linux VM, each with a font cache warmed on that host:
-1. full suites (`cargo test --workspace` with `FIN_REQUIRE_SERVER=1` and `FIN_REQUIRE_FONTS=1`, `pnpm test`, `pnpm gates`, `pnpm e2e`);
-2. determinism with fetched fonts: cache hashes equal the catalog's; the generated and real `fin-text` corpora, the eval corpus and the reel goldens (generated and real) equal the committed hashes; on Linux the wasm32-wasip1 runs match. **Any mismatch blocks the merge**;
-3. fetch rows: a cold fetch on the host's real network, an HTTP proxy (and a corporate CA where the host allows it), a kill mid-download and a resume, two `finisherd` processes on one server data (one download);
-4. upgrade rows: a real 4B project opens in 4C (`verify` ok, undo of a 4B record) and rebuilds from the folder to the same `stateHash`;
-5. a mixed-version row per NAS pair: a 4B follower goes read-only at the first 4C record with no lost records; a 4C-created project is read-only on 4B (the cherry-pick is in); a 4C follower follows to the same hashes;
-6. an `edit4c` row per NAS pair, 5 runs, pinning fonts and setting captions: equal `stateHash` and eval plan hashes after one follow cycle; the follower fetches the pinned fonts itself; a follower kept offline reports `unmeasured` and nothing else differs;
-7. sizes, by hand: `fin` (no `fin-text`, `fin-fonts` or TLS) and the `fin-node` package (no fonts; the TLS stack added).
+Run 2026-11-07 on `sp4c-t29-fixes`: the 4C and diagnostics integration de1a455 plus the fixes in item 8. Hosts: macOS arm64, Windows 11 x64 and the Linux VM, with the §3.13 NAS share (SMB 3.1.1). Each host warmed its own font cache with `warm_cache`, a cold fetch on its real network. The harness is `tests/storage-xhost/` with the 4C rows `upgrade4c`, `mixed4c`, `newer4c` and `edit4c` (`xhost upgrade`, `xhost editor`, and followers with `--fonts fetch|offline`). Raw runs stay in `archive/`. **Every row passes.**
+
+1. **Full suites**, `--release`, `FIN_REQUIRE_SERVER=1`, `FIN_REQUIRE_FONTS=1`:
+   - `cargo test --workspace`: Linux 1,666, macOS 1,661, Windows 1,650. The counts differ only by platform-gated tests.
+   - `pnpm test`: 208 on Linux and macOS; 206 on Windows, plus 2 `skipIf(WIN)` tests.
+   - `pnpm gates`: passes everywhere. cargo-deny runs on Linux and macOS and is skipped on Windows.
+   - `pnpm e2e`: storage, history, reel (with its real-font pass) and diagnostics all pass on all three OSes. The reel takes 4.7–5.5 s, diagnostics 4.3–7.3 s, history 18.9–20.7 s.
+2. **Determinism:**
+   - The cache files equal the catalog's SHA-256s on each host.
+   - The generated and real `fin-text` corpora, the eval corpus and the reel goldens (`frames.json`, `view.json`, `audio.json`, `frames-real.json`) match unchanged on all three OSes.
+   - On Linux, the wasm32-wasip1 runs match (eval corpus, `measure`, `corpus_real`).
+   - Cross-host, the editor's eval plan hashes equal those of a follower on another OS (item 6).
+   - No mismatch anywhere.
+3. **Fetch rows**, per OS, through a local CONNECT proxy:
+   - `HTTPS_PROXY` is used: one tunnel, 50 MiB.
+   - A dead proxy fails every style; the fetcher never bypasses it.
+   - A kill -9 mid-download leaves a `.part` and its `.part.json`. The resume fetches only the remainder (31.8–33.9 of 50 MiB).
+   - Two fetchers on one cache download once (50 MiB in all).
+   - The corporate-CA case was not simulated, since it needs a CA in each host's trust store. Verification uses the OS store (`rustls-platform-verifier`).
+4. **Upgrade rows**, 2 per OS: a project made by the 4B `xhost` (branch `x`, edits on both lines) opens in 4C on the same server data.
+   - The database migrates in place, the heads are kept and `verify` is ok.
+   - An undo of a 4B record is accepted.
+   - A rebuild from the folder alone has the post-undo `stateHash` and `indexHash`. 6/6 runs are clean.
+5. **Mixed-version rows**, 2 per NAS pair: a 4B holder, then a 4C holder on the other host, with a 4B and a 4C follower.
+   - The 4B follower applies every 4B record (177/177) and none of the 108 4C records, and turns read-only `NEWER_FORMAT` in 6/6 runs.
+   - 0 of 285 accepted records are lost.
+   - The 4C follower and fresh verifiers on both hosts have the same hashes (18/18 views).
+   - **A 4C-created project opens read-only `NEWER_FORMAT` on 4B** (`sp4b-history` carries the cherry-pick `276eb66`): 12/12 opens, none refused, no writes.
+6. **`edit4c` rows**, 5 per pair (Linux→macOS, Windows→Linux, macOS→Windows). The editor pins Inter 700 plus Noto Sans Arabic, CJK and Color Emoji by `plan_pins`, and measures Latin, Arabic, CJK and emoji captions.
+   - After one follow cycle all hosts have the same `stateHash` and `indexHash` (60/60 views).
+   - The follower on the other OS fetches the 4 pinned files itself, and its eval plan hashes equal the editor's (60/60).
+   - A follower kept offline reports every caption `unmeasured`/`fontMissing`, and nothing else in its plans differs.
+7. **Sizes** (release):
+   - `fin` is 11.7–14.2 MB (Linux 11.4 MB stripped), with no `fin-text`, `fin-fonts` or TLS crates.
+   - The `fin-node` binary is 19.1–23.0 MB, with no font files and the TLS stack (`ureq`, `rustls`, `rustls-platform-verifier`) in.
+   - The diagnostics cost check (`journal_cost`, `commit_overhead`) meets every budget on macOS and Windows: on the commit path, diagnostics +3.3–4.0 µs (≤ 0.29 %) and training +6.0–12.7 µs (≤ 0.91 %). The figures are in TASKS.md.
+8. **Defects found and fixed** (each with a test):
+   - `1de5910` (fin-node): the journal registry keyed server data that did not exist yet by its raw path, while engines looked it up by the canonical path. On macOS (`/var` → `/private/var`) and Windows (`\\?\`) an engine then found no journal and recorded nothing. The key is now the nearest existing ancestor made canonical. finisherd creates server data before it opens the journal, so the shipped server was not affected; the 27 failing fin-node tests on macOS and Windows were.
+   - `76b81b3`, `fbe6066`: two tests used POSIX-only endpoints and paths.
+   - `307ab74`: `journal_cost` read a Windows directory entry's lagging size.
+   - The other failures were environmental: a crate proxy that refuses crates under 7 days old (`Cargo.lock` downgraded locally only), a mise `RUSTUP_TOOLCHAIN` override on macOS, and `pnpm e2e` ignoring `CARGO_TARGET_DIR`.
+   - Two macOS timing flakes were seen once and did not recur (TASKS.md follow-ups).
 
 ### 5.11 Known limitations and follow-ups
 
