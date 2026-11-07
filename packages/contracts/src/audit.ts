@@ -98,6 +98,8 @@ const COMMON = {
   projectId: Schema.optional(Id),
   deviceId: Schema.optional(Id),
   count: Schema.optional(Schema.Int),
+  /** The transport a connection came over (5A Task 3). */
+  transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
 };
 const NAMES = { deviceName: Schema.optional(Name), label: Schema.optional(Name) };
 const ADDRESS = { address: Schema.optional(Address) };

@@ -3,6 +3,10 @@ import { type FinError, FinRpcs, PROTOCOL_VERSION, type Probe } from "@finisher/
 import { probe } from "@finisher/fin-node";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
+import { withAuthentication } from "./auth/gate.ts";
+import { HandshakeTag } from "./auth/handshake.ts";
+import { ConnectionsTag } from "./connections.ts";
+import { AuditTag } from "./control/audit.ts";
 import { callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
@@ -18,8 +22,9 @@ const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
 
 /**
  * The handlers of one transport: built once per transport (`Layer.fresh`), with that transport's
- * `RpcSource` (local socket `fin`, WebSocket `ui`). Every non-stream call is timed into
- * `rpc.stats` (`guard`); the stream handlers do not use it.
+ * `RpcSource` (local socket `fin`, WebSocket `ui`) and `Connections`. Every non-stream call is
+ * timed into `rpc.stats` (`guard`); the stream handlers do not use it. Every RPC but the
+ * handshake's passes the authentication stage first (`withAuthentication`).
  */
 export const HandlersLive = FinRpcs.toLayer(
   Effect.gen(function* () {
@@ -27,17 +32,23 @@ export const HandlersLive = FinRpcs.toLayer(
     const fonts = yield* Fonts;
     const diagnostics = yield* Diagnostics;
     const source = yield* RpcSource;
+    const connections = yield* ConnectionsTag;
+    const handshake = yield* HandshakeTag;
+    const audit = yield* AuditTag;
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
-    return {
-      "server.hello": () =>
+    return withAuthentication(FinRpcs.of({
+      // Public: the handshake (5A Decisions 8 and 9).
+      "server.hello": (req, { client }) =>
         guard(
           "server.hello",
-          Effect.succeed({
+          Effect.map(handshake.hello(connections.get(client.id), connections.endpoint(), req), (proof) => ({
             protocolVersion: PROTOCOL_VERSION,
             serverVersion: SERVER_VERSION,
             capabilities: CAPABILITIES,
-          }),
+            ...proof,
+          })),
         ),
+      "auth.prove": (req, { client }) => guard("auth.prove", handshake.prove(connections, client.id, req)),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
       "project.create": ({ dir, name, rate, idemKey }) =>
         guard("project.create", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.create(d, name, rate, idemKey))),
@@ -114,6 +125,6 @@ export const HandlersLive = FinRpcs.toLayer(
       "diagnostics.consent": ({ purpose, value }) => guard("diagnostics.consent", diagnostics.consent(source, purpose, value)),
       "diagnostics.record": (req, { client, headers }) =>
         guard("diagnostics.record", diagnostics.record(source, client.id, req, headers)),
-    };
+    }), connections, audit, guard);
   }),
 );

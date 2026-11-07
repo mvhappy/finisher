@@ -10,8 +10,10 @@ import { Effect, Layer } from "effect";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { SocketServer } from "effect/socket/SocketServer";
 import { ServerStartError, startFailure } from "./config.ts";
+import { type Connections, ConnectionsTag } from "./connections.ts";
 import { RpcSource, type Source } from "./diagnostics.ts";
 import { HandlersLive } from "./handlers.ts";
+import { MAX_FRAME, makeFinProtocol } from "./protocol.ts";
 
 /** One server per server-data: a live finisherd already owns the socket. */
 function serverRunning(socket: string): ServerStartError {
@@ -101,6 +103,9 @@ export const makeWebSocketServer = (token: string) =>
   NodeSocketServer.makeWebSocket({
     host: "127.0.0.1",
     port: 0,
+    // A message over the frame cap and its slack is dropped by ws (close 1009); one just over the
+    // cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
+    maxPayload: MAX_FRAME + 64 * 1024,
     verifyClient: (info: { req: IncomingMessage }, cb: (ok: boolean, code?: number, message?: string) => void) => {
       if (hasBearer(info.req, token)) cb(true);
       else cb(false, 401, "Unauthorized");
@@ -149,16 +154,18 @@ export function quietPeerClose(server: SocketServer["Service"]): SocketServer["S
 }
 
 /**
- * `FinRpcs` served over one `SocketServer` with NDJSON framing, by handlers of its own that know
- * the transport's `source` (plan D, Decision 24: the local socket is `fin`, the WebSocket `ui`).
- * `fresh`: layers are memoized by reference, so a shared `HandlersLive` would serve both
- * transports with the first one's source.
+ * `FinRpcs` served over one `SocketServer` with NDJSON framing (`protocol.ts`), by handlers of its
+ * own that know the transport's `source` (plan D, Decision 24: the local socket is `fin`, the
+ * WebSocket `ui`) and its `connections` (5A Decision 12). `fresh`: layers are memoized by
+ * reference, so a shared `HandlersLive` would serve both transports with the first one's source.
  */
-export function serveRpc(server: SocketServer["Service"], source: Source) {
+export function serveRpc(server: SocketServer["Service"], source: Source, connections: Connections) {
   return RpcServer.layer(FinRpcs).pipe(
-    Layer.provide(Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.succeed(RpcSource, source)))),
-    // `fresh`: layers are memoized by reference, and each transport needs its own protocol.
-    Layer.provide(Layer.fresh(RpcServer.layerProtocolSocketServer)),
+    Layer.provide(
+      Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.mergeAll(Layer.succeed(RpcSource, source), Layer.succeed(ConnectionsTag, connections)))),
+    ),
+    // Each transport needs its own protocol.
+    Layer.provide(Layer.effect(RpcServer.Protocol)(makeFinProtocol(FinRpcs, connections))),
     Layer.provide(Layer.succeed(SocketServer, source === "fin" ? quietPeerClose(server) : server)),
     Layer.provide(RpcSerialization.layerNdjson),
   );

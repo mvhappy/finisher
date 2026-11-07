@@ -16,8 +16,12 @@ import {
   writeServerInfo,
 } from "./config.ts";
 import { serverId } from "@finisher/fin-node";
+import { canonicalEndpoint } from "./auth/crypto.ts";
+import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { KeysTag, rotateKeys } from "./auth/keys.ts";
-import { layerAudit } from "./control/audit.ts";
+import { Connections } from "./connections.ts";
+import { AuditTag, layerAudit } from "./control/audit.ts";
+import { LOCAL } from "./principal.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
@@ -56,8 +60,17 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
 
       const local = yield* makeLocalSocketServer(socket);
       const ws = yield* Effect.mapError(makeWebSocketServer(token), (e) => startFailure(e.reason.cause ?? e));
+      // The endpoints both MACs bind (Decision 7): the socket's real path or the pipe's name.
+      const localEndpoint = canonicalEndpoint(socket);
+      const wsEndpoint = `ws://127.0.0.1:${portOf(ws)}`;
+      const connections = {
+        local: new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint),
+        // The bearer token (until Task 6's tickets) is as good as `local.key`: both are the user's files.
+        ws: new Connections("ws", () => wsEndpoint, LOCAL),
+      };
+      const handshake = new Handshake({ keys, envId, audit: Context.get(control, AuditTag) });
       yield* Layer.build(
-        Layer.mergeAll(serveRpc(local, "fin"), serveRpc(ws, "ui")).pipe(
+        Layer.mergeAll(serveRpc(local, "fin", connections.local), serveRpc(ws, "ui", connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
               layerProjectRegistry(serverData, registry),
@@ -65,6 +78,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),
+              Layer.succeed(HandshakeTag, handshake),
             ),
           ),
         ),

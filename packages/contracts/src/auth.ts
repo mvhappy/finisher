@@ -1,0 +1,75 @@
+// Principals and the handshake (spec §3.2, §4.2; plan 5A Decisions 6–9). Nonces and MACs are
+// base64url without padding on the wire; keys never are.
+import { Schema } from "effect";
+import { HUMAN_ONLY, SCOPES, type Scope, ScopeSchema } from "./scopes.ts";
+
+export const PrincipalKind = Schema.Literals(["anonymous", "local", "console", "device", "agent", "mcp", "plugin"]);
+export type PrincipalKind = typeof PrincipalKind.Type;
+
+export const PrincipalSchema = Schema.Struct({
+  kind: PrincipalKind,
+  id: Schema.String,
+  scopes: Schema.Array(ScopeSchema),
+  projects: Schema.Union([Schema.Literal("*"), Schema.Array(Schema.String)]),
+  branches: Schema.Union([Schema.Literal("*"), Schema.Array(Schema.String)]),
+  human: Schema.Boolean,
+});
+export type Principal = typeof PrincipalSchema.Type;
+
+/**
+ * The credential a hello names: `local` (`fin`, `<server-data>/auth/local.key`), `console`
+ * (`finisherd <command>`, `console.key`), or an `agent`/`mcp` credential by id (its key is
+ * derived from `credential.master`).
+ */
+export const CredentialRefSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literals(["local", "console"]) }),
+  Schema.Struct({ kind: Schema.Literals(["agent", "mcp"]), id: Schema.String }),
+]);
+export type CredentialRef = typeof CredentialRefSchema.Type;
+
+/**
+ * `server.hello` (Decision 8). Without `clientNonce` it is protocol 1's hello. With one, the
+ * answer carries `envId`, the canonical `endpoint`, a `serverNonce` and, when the named
+ * credential is live and `env`/`endpoint` (if sent) are this server's, the `proof`.
+ * `credential` defaults to `{kind: "local"}`.
+ */
+export const ServerHelloPayload = Schema.Struct({
+  clientNonce: Schema.optional(Schema.String),
+  env: Schema.optional(Schema.String),
+  endpoint: Schema.optional(Schema.String),
+  credential: Schema.optional(CredentialRefSchema),
+});
+export const ServerHelloSuccess = Schema.Struct({
+  protocolVersion: Schema.Number,
+  serverVersion: Schema.String,
+  capabilities: Schema.Array(Schema.String),
+  envId: Schema.optional(Schema.String),
+  endpoint: Schema.optional(Schema.String),
+  serverNonce: Schema.optional(Schema.String),
+  proof: Schema.optional(Schema.String),
+});
+
+/** `auth.prove {mac}` (Decision 9): binds the hello's credential to the connection. */
+export const AuthProvePayload = Schema.Struct({ mac: Schema.String });
+export const AuthProveSuccess = Schema.Struct({ principal: PrincipalSchema });
+
+/** The RPCs a connection may call before it proves (spec §4.2). */
+export const PUBLIC_RPCS: ReadonlySet<string> = new Set(["server.hello", "auth.prove"]);
+
+/**
+ * A kind's default scopes (Decision 20): `console` every scope; `local` every scope but the
+ * human-only ones; `agent`/`mcp` none by default (their credential lists them); `anonymous` only
+ * `public`. `device` (5B) and `plugin` (8) hold none yet.
+ */
+export function defaultScopes(kind: PrincipalKind): ReadonlyArray<Scope> {
+  switch (kind) {
+    case "console":
+      return SCOPES;
+    case "local":
+      return SCOPES.filter((s) => !HUMAN_ONLY.has(s));
+    case "anonymous":
+      return ["public"];
+    default:
+      return [];
+  }
+}

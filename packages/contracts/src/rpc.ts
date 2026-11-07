@@ -13,6 +13,7 @@ import type {
 } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
+import { AuthProvePayload, AuthProveSuccess, ServerHelloPayload, ServerHelloSuccess } from "./auth.ts";
 import { FinError } from "./errors.ts";
 import {
   BranchCreatePayload,
@@ -71,12 +72,6 @@ export type TxPayload = Tx;
 export type ProjectPayload = Project;
 export type CommittedTxPayload = CommittedTx;
 
-export const ServerHelloPayload = Schema.Struct({});
-export const ServerHelloSuccess = Schema.Struct({
-  protocolVersion: Schema.Number,
-  serverVersion: Schema.String,
-  capabilities: Schema.Array(Schema.String),
-});
 
 /**
  * `idemKey`: makes a retry of this create (its answer lost) return the project it made rather
@@ -335,6 +330,8 @@ export const FinRpcs = RpcGroup.make(
     success: ServerHelloSuccess,
     error: FinError,
   }),
+  // The handshake's second half (5A Decision 9): binds the hello's credential to the connection.
+  Rpc.make("auth.prove", { payload: AuthProvePayload, success: AuthProveSuccess, error: FinError }),
   Rpc.make("project.create", {
     payload: ProjectCreatePayload,
     success: ProjectRefSuccess,

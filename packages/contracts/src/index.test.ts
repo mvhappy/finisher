@@ -11,6 +11,7 @@ test("the group exposes exactly the v1 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
       "asset.probe",
+      "auth.prove",
       "branch.create",
       "branch.list",
       "branch.set",

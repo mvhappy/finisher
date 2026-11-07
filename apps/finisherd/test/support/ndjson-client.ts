@@ -5,6 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { b64u, canonicalEndpoint, helloProof, nonce, proveMac, sameMac } from "../../src/auth/crypto.ts";
+import { authDir, readKeyFile } from "../../src/auth/keys.ts";
 
 export type Frame = Record<string, unknown> & { _tag: string };
 export type Exit =
@@ -74,9 +76,23 @@ export class NdjsonClient {
 
   close(): Promise<void> {
     return new Promise((resolve) => {
+      if (this.#socket.closed) return resolve();
       this.#socket.once("close", () => resolve());
       this.#socket.end();
     });
+  }
+
+  /** Resolves when the server closes the connection. */
+  closed(): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.#socket.closed) return resolve();
+      this.#socket.once("close", () => resolve());
+    });
+  }
+
+  /** Writes raw bytes (malformed or oversized frames). */
+  write(data: string | Buffer): void {
+    this.#socket.write(data);
   }
 
   #onData(data: string): void {
@@ -110,6 +126,46 @@ export class NdjsonClient {
       }
     }
   }
+}
+
+export type CredentialName = "local" | "console";
+
+/** The key a test proves with: the server's `auth/<name>.key`. */
+export function keyOf(serverData: string, name: CredentialName = "local"): Buffer {
+  return readKeyFile(join(authDir(serverData), `${name}.key`));
+}
+
+/** `server.hello` with a fresh client nonce; checks nothing (tests look at the answer). */
+export async function hello(
+  client: NdjsonClient,
+  fields: { env?: string; endpoint?: string; credential?: unknown } = {},
+): Promise<{ clientNonce: Buffer; exit: Exit }> {
+  const clientNonce = nonce();
+  const exit = await client.call("server.hello", { clientNonce: b64u.encode(clientNonce), ...fields });
+  return { clientNonce, exit };
+}
+
+/**
+ * The whole handshake as `fin` does it (5A Decisions 6–9): hello, check the server's proof with
+ * `key`, prove. Resolves with the `auth.prove` exit.
+ */
+export async function prove(client: NdjsonClient, info: ServerInfo, key: Buffer, credential: CredentialName = "local"): Promise<Exit> {
+  const endpoint = canonicalEndpoint(info.socket);
+  const { clientNonce, exit } = await hello(client, { env: info.envId, endpoint, credential: { kind: credential } });
+  const answer = ok<{ envId: string; endpoint: string; serverNonce: string; proof?: string }>(exit);
+  const serverNonce = b64u.decode(answer.serverNonce)!;
+  const proof = answer.proof === undefined ? null : b64u.decode(answer.proof);
+  if (proof === null || !sameMac(proof, helloProof(key, answer.envId, answer.endpoint, clientNonce, serverNonce))) {
+    throw new Error("the server did not prove itself");
+  }
+  return client.call("auth.prove", { mac: b64u.encode(proveMac(key, answer.envId, answer.endpoint, serverNonce, clientNonce)) });
+}
+
+/** Connects to a running server's socket and proves `credential` (default `local`). */
+export async function connectProved(server: { info: ServerInfo }, serverData: string, credential: CredentialName = "local"): Promise<NdjsonClient> {
+  const client = await NdjsonClient.connect(server.info.socket);
+  ok(await prove(client, server.info, keyOf(serverData, credential), credential));
+  return client;
 }
 
 /** Unwraps a successful exit or throws with the error frame. */
