@@ -404,3 +404,19 @@ fn tx_ids_capped_at_64() {
     let schema = (spec.schema)();
     assert_eq!(schema["properties"]["txIds"]["maxItems"], json!(64));
 }
+
+/// `AGENT_MODELS` is the bundled catalogue's ids plus `other` (sub-project 7 §4.7).
+#[test]
+fn catalogue_ids_in_agent_models() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/finisherd/src/agent/catalogue/models.json");
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut ids: Vec<&str> = doc["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    ids.push("other");
+    assert_eq!(AGENT_MODELS.entries(), ids.as_slice());
+}

@@ -1,0 +1,363 @@
+{
+  "asOf": "2026-11-07",
+  "openrouterBaseUrl": "https://openrouter.ai/api/v1",
+  "models": [
+    {
+      "id": "anthropic/claude-sonnet-5.5",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "explicit"
+      },
+      "price": {
+        "input": 2000000,
+        "output": 10000000,
+        "cacheRead": 100000,
+        "cacheWrite": 2500000
+      }
+    },
+    {
+      "id": "anthropic/claude-opus-5.5",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "explicit"
+      },
+      "price": {
+        "input": 4000000,
+        "output": 20000000,
+        "cacheRead": 200000,
+        "cacheWrite": 5000000
+      }
+    },
+    {
+      "id": "anthropic/claude-haiku-5.5",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "explicit"
+      },
+      "price": {
+        "input": 100000,
+        "output": 500000,
+        "cacheRead": 10000,
+        "cacheWrite": 125000
+      }
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "openai",
+      "weights": "closed",
+      "window": 1050000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 2000000,
+        "output": 10000000,
+        "cacheRead": 100000,
+        "cacheWrite": 2500000
+      }
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "deepseek",
+      "weights": "open",
+      "window": 1048576,
+      "maxOutput": 384000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": false,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 565848,
+        "output": 1131696,
+        "cacheRead": 47154,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "moonshotai/kimi-k3",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "moonshotai",
+      "weights": "open",
+      "window": 1048576,
+      "maxOutput": 943718,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 192000,
+        "output": 16000000,
+        "cacheRead": 182000,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "z-ai",
+      "weights": "open",
+      "window": 1048576,
+      "maxOutput": 943718,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": false,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 69900,
+        "output": 1400000,
+        "cacheRead": 68900,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "openai",
+      "weights": "open",
+      "window": 131072,
+      "maxOutput": 65536,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": false,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 150000,
+        "output": 600000,
+        "cacheRead": 75000,
+        "cacheWrite": 0
+      }
+    },
+    {
+      "id": "claude-fable-5-1",
+      "harness": "claudeCode",
+      "provider": "anthropic",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 10000000,
+        "output": 50000000,
+        "cacheRead": 250000,
+        "cacheWrite": 12500000
+      }
+    },
+    {
+      "id": "claude-opus-5-5",
+      "harness": "claudeCode",
+      "provider": "anthropic",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 4000000,
+        "output": 20000000,
+        "cacheRead": 200000,
+        "cacheWrite": 5000000
+      }
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "harness": "claudeCode",
+      "provider": "anthropic",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 2000000,
+        "output": 10000000,
+        "cacheRead": 100000,
+        "cacheWrite": 2500000
+      }
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "harness": "claudeCode",
+      "provider": "anthropic",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 1000000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 100000,
+        "output": 500000,
+        "cacheRead": 10000,
+        "cacheWrite": 125000
+      }
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "harness": "codex",
+      "provider": "openai",
+      "maker": "openai",
+      "weights": "closed",
+      "window": 1050000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 2000000,
+        "output": 10000000,
+        "cacheRead": 100000,
+        "cacheWrite": 2500000
+      }
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "harness": "codex",
+      "provider": "openai",
+      "maker": "openai",
+      "weights": "closed",
+      "window": 1050000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 1000000,
+        "output": 5000000,
+        "cacheRead": 50000,
+        "cacheWrite": 1250000
+      }
+    },
+    {
+      "id": "gpt-6-sol",
+      "harness": "codex",
+      "provider": "openai",
+      "maker": "openai",
+      "weights": "closed",
+      "window": 1050000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 2000000,
+        "output": 10000000,
+        "cacheRead": 200000,
+        "cacheWrite": 2500000
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "harness": "codex",
+      "provider": "openai",
+      "maker": "openai",
+      "weights": "closed",
+      "window": 1050000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 100000,
+        "output": 500000,
+        "cacheRead": 10000,
+        "cacheWrite": 125000
+      }
+    },
+    {
+      "id": "gpt-6-astra",
+      "harness": "codex",
+      "provider": "openai",
+      "maker": "openai",
+      "weights": "closed",
+      "window": 1050000,
+      "maxOutput": 128000,
+      "capabilities": {
+        "tools": true,
+        "thinking": true,
+        "images": true,
+        "caching": "automatic"
+      },
+      "price": {
+        "input": 10000000,
+        "output": 50000000,
+        "cacheRead": 1000000,
+        "cacheWrite": 12500000
+      }
+    }
+  ]
+}

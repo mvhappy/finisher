@@ -1,0 +1,50 @@
+{
+  "asOf": "2026-01-01",
+  "openrouterBaseUrl": "http://127.0.0.1:9/api/v1/",
+  "models": [
+    {
+      "id": "test/closed-explicit",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "test",
+      "weights": "closed",
+      "window": 100000,
+      "maxOutput": 4000,
+      "capabilities": { "tools": true, "thinking": true, "images": true, "caching": "explicit" },
+      "price": { "input": 3000000, "output": 15000000, "cacheRead": 300000, "cacheWrite": 3750000 }
+    },
+    {
+      "id": "test/open-auto",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "test",
+      "weights": "open",
+      "variant": "free",
+      "window": 32000,
+      "maxOutput": 2000,
+      "capabilities": { "tools": true, "thinking": false, "images": false, "caching": "automatic" },
+      "price": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+    },
+    {
+      "id": "test/no-tools",
+      "harness": "builtin",
+      "provider": "openrouter",
+      "maker": "test",
+      "weights": "open",
+      "window": 8000,
+      "maxOutput": 1000,
+      "capabilities": { "tools": false, "thinking": false, "images": false, "caching": "none" }
+    },
+    {
+      "id": "claude-test-cli",
+      "harness": "claudeCode",
+      "provider": "anthropic",
+      "maker": "anthropic",
+      "weights": "closed",
+      "window": 200000,
+      "maxOutput": 8000,
+      "capabilities": { "tools": true, "thinking": true, "images": true, "caching": "automatic" },
+      "price": { "input": 1000000, "output": 5000000, "cacheRead": 100000, "cacheWrite": 1250000 }
+    }
+  ]
+}

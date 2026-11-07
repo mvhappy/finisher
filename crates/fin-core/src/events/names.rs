@@ -449,10 +449,23 @@ pub static AGENT_PROVIDERS: NameTable = NameTable::new(
 pub static AGENT_MODELS: NameTable = NameTable::new(
     "AGENT_MODELS",
     &[
+        "anthropic/claude-sonnet-5.5",
+        "anthropic/claude-opus-5.5",
+        "anthropic/claude-haiku-5.5",
+        "openai/gpt-6.1-sol",
+        "deepseek/deepseek-v4-pro",
+        "moonshotai/kimi-k3",
+        "z-ai/glm-5.3",
+        "openai/gpt-oss-120b",
         "claude-fable-5-1",
         "claude-opus-5-5",
         "claude-sonnet-5-5",
         "claude-haiku-5-5",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
         "other",
     ],
 );
