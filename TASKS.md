@@ -262,6 +262,20 @@ Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`
 - [ ] D6: `fin`: actor headers, `cli.command` and `fin diagnostics`
 - [ ] D7: e2e, docs and tracker
 
+## Sub-project 6: media engine (designed 2026-11-07)
+
+Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md`. Plan for 6A: `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md` (branch `sp6a-media-foundations`, from `sp4c-edit-breadth`). Sub-batches 6A–6G (spec §19); 6A's plan adds its own task list here in its Task 1.
+
+- [ ] Owner questions (spec §21): 1 Linux AAC; 2 Electron's bundled LGPL ffmpeg; 3 OS/hardware codec patents and the Docker image; 4 default base box; 5 media jobs before sub-project 5; 6 worker OS sandbox timing; 7 GPU ids in diagnostics; 8 6B platform scope and NVIDIA on Linux. 6A proceeds on the recommendations of 4–6
+- [ ] Spec follow-ups from the design (spec §22): reword core §5.6 and arch §27.10 "fonts always bundled" (4C fetches pinned fonts on demand); arch §18 exception for Electron's ffmpeg if question 2 is (a)
+- [ ] 6A: media foundations and first pixels
+- [ ] 6B: platform codecs and proxies
+- [ ] 6C: audio
+- [ ] 6D: layers (effects, masks, nested, images, SVG, Lottie, captions raster)
+- [ ] 6E: export
+- [ ] 6F: preview engine
+- [ ] 6G: hardening (zero-copy, NVIDIA on Linux, sandbox, fuzzing, validation matrix)
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
