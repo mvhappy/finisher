@@ -1,7 +1,7 @@
 //! Colour conversion against hand-computed values (spec §13.1 unit layer).
 
 use fin_media::colour::convert::{
-    convert_gamut, expand, from_linear, primaries_to_709, to_linear, to_rgb,
+    convert_gamut, decode, expand, from_linear, primaries_to_709, to_linear, to_rgb,
 };
 use fin_media::{Matrix, Primaries, Range};
 
@@ -47,8 +47,30 @@ fn range_expansion_and_matrices() {
         [1.0, 0.0, 0.0],
         0.01
     ));
-    // Identity is GBR.
-    assert_eq!(to_rgb(0.25, 0.0, 0.25, Matrix::Identity), [0.75, 0.25, 0.5]);
+    // Identity is GBR, each channel expanded as luma: limited (v − 16)/219, no chroma offset.
+    assert_eq!(
+        decode(16.0, 16.0, 16.0, Range::Limited, 8, Matrix::Identity),
+        [0.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        decode(235.0, 235.0, 235.0, Range::Limited, 8, Matrix::Identity),
+        [1.0, 1.0, 1.0]
+    );
+    // Y = G, Cb = B, Cr = R.
+    assert_eq!(
+        decode(235.0, 16.0, 125.5, Range::Limited, 8, Matrix::Identity),
+        [0.5, 1.0, 0.0]
+    );
+    assert_eq!(
+        decode(0.0, 255.0, 51.0, Range::Full, 8, Matrix::Identity),
+        [0.2, 0.0, 1.0]
+    );
+    // Y′CbCr through decode equals expand + to_rgb.
+    let (l, pb, pr) = expand(81.0, 90.0, 240.0, Range::Limited, 8);
+    assert_eq!(
+        decode(81.0, 90.0, 240.0, Range::Limited, 8, Matrix::Bt601),
+        to_rgb(l, pb, pr, Matrix::Bt601)
+    );
     // 10-bit limited white.
     assert!(near(
         {

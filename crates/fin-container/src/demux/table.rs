@@ -22,9 +22,42 @@ pub(crate) struct Sample {
 }
 
 impl Sample {
-    /// Composition time.
+    /// A sample whose decode end, composition time and composition end all fit `i64`
+    /// (`None` otherwise), so later arithmetic on them cannot overflow.
+    pub fn checked(
+        dts: i64,
+        cto: i64,
+        duration: u32,
+        size: u32,
+        offset: u64,
+        key: bool,
+    ) -> Option<Sample> {
+        let d = i64::from(duration);
+        dts.checked_add(d)?;
+        dts.checked_add(cto)?.checked_add(d)?;
+        Some(Sample {
+            dts,
+            cto,
+            duration,
+            size,
+            offset,
+            key,
+        })
+    }
+
+    /// Composition time (fits: see [`Sample::checked`]).
     pub fn ct(&self) -> i64 {
         self.dts + self.cto
+    }
+
+    /// Composition end.
+    pub fn ce(&self) -> i64 {
+        self.ct() + i64::from(self.duration)
+    }
+
+    /// Decode end.
+    pub fn end(&self) -> i64 {
+        self.dts + i64::from(self.duration)
     }
 }
 
@@ -71,6 +104,14 @@ fn sizes<R: Read + Seek>(rd: &mut Reader<R>, b: &Boxes, at: u64) -> Result<Vec<u
             as u64;
         if count > max {
             return Err(limit("maxSamples", count, max));
+        }
+        // Each sample is at least a byte of the file (zero-size samples are not media).
+        if count > rd.len {
+            return Err(corrupt(
+                format!("stsz declares {count} samples in a {}-byte file", rd.len),
+                h.start,
+                "stsz",
+            ));
         }
         let uniform = super::reader::be_u32(&body, 4).unwrap_or(0);
         if uniform == 0 {
@@ -248,20 +289,21 @@ pub(crate) fn expand<R: Read + Seek>(
     };
     let offsets = sample_offsets(&stsc.0, &stsc.1, &chunks, &sizes, rd.len)?;
     let mut dts = 0i64;
-    Ok((0..n)
-        .map(|i| {
-            let s = Sample {
-                dts,
-                cto: offsets_cto[i],
-                duration: durations[i],
-                size: sizes[i],
-                offset: offsets[i],
-                key: key[i],
-            };
-            dts += durations[i] as i64;
-            s
-        })
-        .collect())
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = Sample::checked(
+            dts,
+            offsets_cto[i],
+            durations[i],
+            sizes[i],
+            offsets[i],
+            key[i],
+        )
+        .ok_or_else(|| corrupt("sample times overflow", stbl.start, "stts"))?;
+        dts = s.end();
+        out.push(s);
+    }
+    Ok(out)
 }
 
 /// Each sample's file offset from the chunk map; `MEDIA_CORRUPT` for a sample past the end of

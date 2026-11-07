@@ -124,6 +124,9 @@ pub mod knobs {
         pub matrix: Option<[i32; 9]>,
         /// An empty edit of this many movie ticks before the media.
         pub empty_edit: Option<u64>,
+        /// This edit list (`(movie ticks, media time)`, `None` an empty edit) in place of the
+        /// computed one.
+        pub edits: Option<Vec<(u64, Option<u64>)>>,
         pub colr: ColrKnob,
     }
 }

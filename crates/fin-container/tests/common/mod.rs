@@ -71,6 +71,22 @@ pub fn write(
     w.finish().unwrap().into_inner()
 }
 
+/// As [`write`] with every sample `size` bytes (so `stsz` is one entry).
+pub fn write_sized(
+    cfg: VideoTrackConfig,
+    knobs: TrackKnobs,
+    frames: &[(i64, i64, u32, bool)],
+    size: usize,
+) -> Vec<u8> {
+    let mut w = Mp4Writer::new(Cursor::new(Vec::new()), Mp4Options::default()).unwrap();
+    let v = w.add_video(cfg).unwrap();
+    w.set_knobs(v, knobs);
+    for &(pts, dts, d, key) in frames {
+        w.write(v, &vec![7u8; size], pts, dts, d, key).unwrap();
+    }
+    w.finish().unwrap().into_inner()
+}
+
 /// `n` CFR frames of 1001 ticks at 30000, a keyframe every 30.
 pub fn cfr_frames(n: u32) -> Vec<(i64, i64, u32, bool)> {
     (0..n)

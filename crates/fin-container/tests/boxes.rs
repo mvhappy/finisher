@@ -57,6 +57,11 @@ fn avc1(width: u16, height: u16) -> Vec<u8> {
 /// The file: `ftyp` (`qt  `), `mdat`, an unknown box, then the `moov`. `offsets_box` writes the
 /// chunk offset (relative to the file) as `stco` or `co64` (`bad_offset` overrides it).
 fn file(offsets_box: &[u8; 4], bad_offset: Option<u64>) -> Vec<u8> {
+    build(offsets_box, bad_offset, true, [0, 20, -20, 20, -20])
+}
+
+/// [`file`] with or without its edit list and with these composition offsets.
+fn build(offsets_box: &[u8; 4], bad_offset: Option<u64>, edit: bool, offsets: [i32; 5]) -> Vec<u8> {
     let ftyp = bx(
         b"ftyp",
         &[b"qt  ".as_slice(), &0x0200u32.to_be_bytes(), b"qt  "].concat(),
@@ -118,7 +123,6 @@ fn file(offsets_box: &[u8; 4], bad_offset: Option<u64>) -> Vec<u8> {
     let stsd = full(b"stsd", 0, 0, &[u32s(&[1]), avc1(640, 360)].concat());
     let stts = full(b"stts", 0, 0, &u32s(&[1, 5, 20]));
     // Decode order I P B P B: composition offsets 0, +20, −20, +20, −20 (version 1, signed).
-    let offsets: [i32; 5] = [0, 20, -20, 20, -20];
     let mut ctts = u32s(&[5]);
     for o in offsets {
         ctts.extend(u32s(&[1]));
@@ -158,7 +162,10 @@ fn file(offsets_box: &[u8; 4], bad_offset: Option<u64>) -> Vec<u8> {
     );
     let minf = bx(b"minf", &cat(&[vmhd, dinf, stbl]));
     let mdia = bx(b"mdia", &cat(&[mdhd, hdlr, minf]));
-    let trak = bx(b"trak", &cat(&[tkhd, edts, mdia]));
+    let trak = match edit {
+        true => bx(b"trak", &cat(&[tkhd, edts, mdia])),
+        false => bx(b"trak", &cat(&[tkhd, mdia])),
+    };
     let moov = bx(b"moov", &cat(&[mvhd, trak]));
     cat(&[ftyp, mdat, unknown, moov])
 }
@@ -250,4 +257,29 @@ fn not_an_mp4_is_unsupported() {
             .unwrap();
         assert_eq!(e.code, "UNSUPPORTED_CONTAINER");
     }
+}
+
+/// Without an edit list, pts is the composition time itself, negative ones included (they
+/// used to be clamped to 0, which put two frames at 0).
+#[test]
+fn negative_composition_times_without_an_edit_list() {
+    // dts 0 20 40 60 80, offsets −20 0 −40 0 −40: composition times −20 20 0 60 40.
+    let bytes = build(b"stco", None, false, [-20, 0, -40, 0, -40]);
+    let d = Demuxer::open(Cursor::new(bytes), &Limits::default()).unwrap();
+    let t = &d.video().unwrap().table;
+    let got: Vec<(i64, i64, u32)> = t
+        .frames()
+        .iter()
+        .map(|f| (f.pts, f.ct, f.decode_index))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (-20, -20, 0),
+            (0, 0, 2),
+            (20, 20, 1),
+            (40, 40, 4),
+            (60, 60, 3)
+        ]
+    );
 }

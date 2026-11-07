@@ -34,15 +34,39 @@ pub fn expand(y: f32, cb: f32, cr: f32, range: Range, bits: u32) -> (f32, f32, f
     }
 }
 
-/// Y′PbPr to R′G′B′ (display-encoded) with matrix `m`.
+/// Y′PbPr to R′G′B′ (display-encoded) with a Y′CbCr matrix `m`. Identity (GBR) is not
+/// Y′PbPr: use [`decode`], which expands each of its channels as luma.
 pub fn to_rgb(y: f32, pb: f32, pr: f32, m: Matrix) -> [f32; 3] {
+    let (kr, kb) = luma_coefficients(m).unwrap_or((0.2126, 0.0722));
+    let r = y + 2.0 * (1.0 - kr) * pr;
+    let b = y + 2.0 * (1.0 - kb) * pb;
+    let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+    [r, g, b]
+}
+
+/// One luma-like code value to 0…1: limited range `(v − 16)/219` (scaled for more bits),
+/// full range `v / (2ⁿ − 1)`.
+fn expand_luma(v: f32, range: Range, bits: u32) -> f32 {
+    let scale = (1u32 << (bits - 8)) as f32;
+    match range {
+        Range::Limited => (v - 16.0 * scale) / (219.0 * scale),
+        Range::Full => v / ((1u32 << bits) - 1) as f32,
+    }
+}
+
+/// Code values (`bits` deep) to display-encoded R′G′B′: Y′CbCr through [`expand`] and
+/// [`to_rgb`]; identity (GBR: Y is G, Cb is B, Cr is R) with every channel expanded as luma
+/// (no chroma offset).
+pub fn decode(y: f32, cb: f32, cr: f32, range: Range, bits: u32, m: Matrix) -> [f32; 3] {
     match luma_coefficients(m) {
-        None => [pr + 0.5, y, pb + 0.5],
-        Some((kr, kb)) => {
-            let r = y + 2.0 * (1.0 - kr) * pr;
-            let b = y + 2.0 * (1.0 - kb) * pb;
-            let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
-            [r, g, b]
+        None => [
+            expand_luma(cr, range, bits),
+            expand_luma(y, range, bits),
+            expand_luma(cb, range, bits),
+        ],
+        Some(_) => {
+            let (l, pb, pr) = expand(y, cb, cr, range, bits);
+            to_rgb(l, pb, pr, m)
         }
     }
 }

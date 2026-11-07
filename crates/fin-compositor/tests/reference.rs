@@ -65,6 +65,7 @@ fn table(rate: Rational) -> SampleTable {
     let (ts, d) = (rate.num() as u32, rate.den() as u32);
     let frames = (0..10_000u32)
         .map(|i| FrameEntry {
+            ct: i as i64 * d as i64,
             pts: i as i64 * d as i64,
             duration: d,
             keyframe: true,
@@ -264,4 +265,79 @@ fn transitions_at_their_ends_equal_the_single_layers() {
         render(by("dissolve-0.5")),
         "the two looks differ mid-way"
     );
+}
+
+/// A provider of one fixed picture.
+struct Fixed {
+    format: PixelFormat,
+    planes: [Vec<u8>; 3],
+    size: Size,
+}
+
+impl SourceProvider for Fixed {
+    fn frame(&mut self, _: &Layer) -> Result<SourceFrame<'_>, LayerIssue> {
+        Ok(SourceFrame {
+            format: self.format,
+            size: self.size,
+            planes: [&self.planes[0], &self.planes[1], &self.planes[2]],
+            strides: [
+                self.size.width as usize,
+                self.size.width.div_ceil(2) as usize,
+                self.size.width.div_ceil(2) as usize,
+            ],
+            colour: ColourTags::BT709,
+            rotation: Rotation::R0,
+            pixel_aspect: Rational::from_int(1),
+        })
+    }
+}
+
+/// Review item 8: pictures the reference cannot read (other formats, a monochrome picture
+/// with empty chroma, planes shorter than their size) are skipped, never a panic.
+#[test]
+fn unreadable_pictures_are_skipped_not_a_panic() {
+    let c = cases()
+        .into_iter()
+        .find(|c| c.name == "single-clip")
+        .unwrap();
+    let size = Size::new(320, 180);
+    for (format, planes) in [
+        (
+            PixelFormat::I444,
+            [
+                vec![0; 320 * 180],
+                vec![128; 320 * 180],
+                vec![128; 320 * 180],
+            ],
+        ),
+        (
+            PixelFormat::I420p10,
+            [
+                vec![0; 2 * 320 * 180],
+                vec![0; 2 * 160 * 90],
+                vec![0; 2 * 160 * 90],
+            ],
+        ),
+        (PixelFormat::I420, [vec![0; 320 * 180], vec![], vec![]]),
+        (
+            PixelFormat::I420,
+            [vec![0; 10], vec![128; 160 * 90], vec![128; 160 * 90]],
+        ),
+    ] {
+        let r = reference::render(
+            &c.plan,
+            &mut Fixed {
+                format,
+                planes,
+                size,
+            },
+            size,
+        );
+        assert_eq!(r.skipped.len(), 1, "{format:?}");
+        assert_eq!(r.skipped[0].code, "UNSUPPORTED_PIXEL_FORMAT");
+        assert!(
+            r.rgba8.chunks(4).all(|p| p[..3] == [0, 0, 0]),
+            "nothing drawn"
+        );
+    }
 }

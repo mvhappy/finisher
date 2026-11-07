@@ -27,7 +27,11 @@ pub struct Rav1dDecoder {
 
 impl Rav1dDecoder {
     pub fn new() -> Result<Rav1dDecoder, CoreError> {
-        let ctx = Context::open(0).map_err(|e| failed(e, "start"))?;
+        // One thread: with worker threads, rav1d 1.1.0's debug overlap checker (`DisjointMut`)
+        // caught two threads borrowing one buffer region while decoding test input (6A-1
+        // review). Release builds do not check, so that would be a data race on untrusted
+        // media. Single-threaded until the dav1d decision (TASKS.md) or a fixed rav1d.
+        let ctx = Context::open(1).map_err(|e| failed(e, "start"))?;
         Ok(Rav1dDecoder {
             ctx,
             waiting: VecDeque::new(),
@@ -45,6 +49,10 @@ impl Rav1dDecoder {
                 Status::Error(e) => {
                     self.waiting.pop_front();
                     return Err(failed(e, "decode a packet"));
+                }
+                Status::Refused(e) => {
+                    self.waiting.pop_front();
+                    return Err(e);
                 }
             }
         }
@@ -74,6 +82,7 @@ impl VideoDecoder for Rav1dDecoder {
                 }
                 Status::Again => return Ok(None),
                 Status::Error(e) => return Err(failed(e, "decode a picture")),
+                Status::Refused(e) => return Err(e),
             }
         }
     }

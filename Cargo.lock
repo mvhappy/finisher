@@ -503,12 +503,12 @@ dependencies = [
 name = "fin-codecs"
 version = "0.0.0"
 dependencies = [
- "cc",
- "cmake",
+ "blake3",
  "fin-codecs",
  "fin-container",
  "fin-core",
  "fin-media",
+ "fin-svt-sys",
  "rav1d",
  "serde",
  "serde_json",
@@ -680,6 +680,14 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "fin-svt-sys"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "cmake",
 ]
 
 [[package]]

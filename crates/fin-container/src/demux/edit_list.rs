@@ -8,7 +8,7 @@ use mp4_atom::Elst;
 
 use super::reader::{BoxHeader, check_count, decode, full_box_count};
 use super::table::Sample;
-use crate::error::{limit, unsupported_container};
+use crate::error::{corrupt, limit, unsupported_container};
 
 /// Edits per track: presenting is O(edits × samples), so a hostile edit list is capped.
 const MAX_EDITS: u64 = 1024;
@@ -74,32 +74,106 @@ fn spans(edits: &[Edit], media_ts: u32, movie_ts: u32) -> Vec<(i64, i64, i64)> {
     out
 }
 
+/// What one candidate sample of an edit gives.
+enum Visit {
+    /// It ends before the edit starts.
+    Before,
+    /// `(sample index, pts, end)`.
+    Frame(u32, i64, i64),
+    Overflow,
+}
+
+/// The candidate samples of one edit in composition order: binary search over `order`
+/// (sample indices sorted by composition time) for those starting in
+/// `[edit start − longest duration, edit end)`.
+fn shown<'a>(
+    samples: &'a [Sample],
+    order: &'a [u32],
+    longest: i64,
+    (at, mt, end): (i64, i64, i64),
+) -> impl Iterator<Item = Visit> + 'a {
+    let lo = order.partition_point(|&i| samples[i as usize].ct() < mt.saturating_sub(longest));
+    let hi = order.partition_point(|&i| samples[i as usize].ct() < end);
+    order[lo..hi.max(lo)].iter().map(move |&i| {
+        let s = &samples[i as usize];
+        if s.ce() <= mt {
+            return Visit::Before;
+        }
+        let pts = s
+            .ct()
+            .max(mt)
+            .checked_sub(mt)
+            .and_then(|d| at.checked_add(d));
+        let stop = s
+            .ce()
+            .min(end)
+            .checked_sub(mt)
+            .and_then(|d| at.checked_add(d));
+        match pts.zip(stop) {
+            Some((p, e)) => Visit::Frame(i, p, e),
+            None => Visit::Overflow,
+        }
+    })
+}
+
 /// The presented frames (sorted by pts, durations from one pts to the next, the last frame's
-/// to its end) and the sync samples with their presentation times.
+/// to its end) and the sync samples with their composition times. Frames are counted against
+/// `max` before any is stored (an edit list can repeat the media 1,024 times), and every
+/// sample looked at against `2 × max` (one very long sample widens each edit's window):
+/// `MEDIA_LIMIT` past either, `MEDIA_CORRUPT` when a presentation time overflows.
 pub(crate) fn present(
     samples: &[Sample],
     edits: &[Edit],
     media_ts: u32,
     movie_ts: u32,
-) -> (Vec<FrameEntry>, Vec<SyncPoint>) {
+    max: u64,
+) -> Result<(Vec<FrameEntry>, Vec<SyncPoint>), CoreError> {
+    // Without an edit list, pts is the composition time itself (negative ones included).
+    let first = samples.iter().map(Sample::ct).min().unwrap_or(0);
     let spans = match edits.is_empty() {
-        true => vec![(0, 0, i64::MAX)],
+        true => vec![(first, first, i64::MAX)],
         false => spans(edits, media_ts, movie_ts),
     };
-    let mut frames: Vec<(FrameEntry, i64)> = Vec::new();
-    for &(at, mt, end) in &spans {
-        for (i, s) in samples.iter().enumerate() {
-            let (ct, ce) = (s.ct(), s.ct() + s.duration as i64);
-            if ce <= mt || ct >= end {
-                continue;
+    let mut order: Vec<u32> = (0..samples.len() as u32).collect();
+    order.sort_by_key(|&i| (samples[i as usize].ct(), i));
+    let longest = samples
+        .iter()
+        .map(|s| i64::from(s.duration))
+        .max()
+        .unwrap_or(0);
+    let overflow = || corrupt("an edit list moves a frame past the time range", 0, "elst");
+    let (mut count, mut work) = (0u64, 0u64);
+    for &span in &spans {
+        for v in shown(samples, &order, longest, span) {
+            work += 1;
+            if work > max.saturating_mul(2) {
+                return Err(limit("maxEditWork", work, max.saturating_mul(2)));
             }
-            let pts = at + (ct.max(mt) - mt);
-            let stop = at + (ce.min(end) - mt);
+            match v {
+                Visit::Before => {}
+                Visit::Overflow => return Err(overflow()),
+                Visit::Frame(..) => {
+                    count += 1;
+                    if count > max {
+                        return Err(limit("maxPresentedFrames", count, max));
+                    }
+                }
+            }
+        }
+    }
+    let mut frames: Vec<(FrameEntry, i64)> = Vec::with_capacity(count as usize);
+    for &span in &spans {
+        for v in shown(samples, &order, longest, span) {
+            let Visit::Frame(i, pts, stop) = v else {
+                continue;
+            };
+            let s = &samples[i as usize];
             let f = FrameEntry {
                 pts,
+                ct: s.ct(),
                 duration: 0,
                 keyframe: s.key,
-                decode_index: i as u32,
+                decode_index: i,
                 offset: s.offset,
                 size: s.size,
             };
@@ -114,19 +188,20 @@ pub(crate) fn present(
         } else {
             frames[k].1
         };
-        frames[k].0.duration = (next - frames[k].0.pts).clamp(0, u32::MAX as i64) as u32;
+        frames[k].0.duration = next
+            .saturating_sub(frames[k].0.pts)
+            .clamp(0, u32::MAX as i64) as u32;
     }
-    let (at, mt, _) = spans.first().copied().unwrap_or((0, 0, 0));
     let sync = samples
         .iter()
         .enumerate()
         .filter(|(_, s)| s.key)
         .map(|(i, s)| SyncPoint {
             decode_index: i as u32,
-            pts: at + (s.ct() - mt),
+            ct: s.ct(),
         })
         .collect();
-    (frames.into_iter().map(|(f, _)| f).collect(), sync)
+    Ok((frames.into_iter().map(|(f, _)| f).collect(), sync))
 }
 
 /// An audio track's priming (media ticks before the first presented sample) and presented

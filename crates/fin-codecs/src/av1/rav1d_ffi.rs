@@ -4,12 +4,13 @@
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
+use fin_core::CoreError;
 use fin_media::{ChromaSiting, ColourTags, PixelFormat, Size};
 use rav1d::include::dav1d::data::Dav1dData;
 use rav1d::include::dav1d::dav1d::{Dav1dContext, Dav1dSettings};
 use rav1d::include::dav1d::headers::{
     DAV1D_CHR_COLOCATED, DAV1D_CHR_VERTICAL, DAV1D_PIXEL_LAYOUT_I400, DAV1D_PIXEL_LAYOUT_I420,
-    DAV1D_PIXEL_LAYOUT_I422, Dav1dSequenceHeader,
+    DAV1D_PIXEL_LAYOUT_I422, DAV1D_PIXEL_LAYOUT_I444, Dav1dSequenceHeader,
 };
 use rav1d::include::dav1d::picture::Dav1dPicture;
 use rav1d::src::lib::{
@@ -17,6 +18,7 @@ use rav1d::src::lib::{
     dav1d_get_picture, dav1d_open, dav1d_parse_sequence_header, dav1d_picture_unref,
     dav1d_send_data,
 };
+use serde_json::json;
 
 use crate::frame::{DecodedFrame, Plane};
 
@@ -43,6 +45,8 @@ pub(crate) enum Status<T> {
     /// The decoder wants the other call first.
     Again,
     Error(i32),
+    /// A picture Finisher does not take (`UNSUPPORTED_PIXEL_FORMAT`).
+    Refused(CoreError),
 }
 
 /// A dav1d context; closed on drop.
@@ -127,7 +131,10 @@ impl Context {
         let frame = copy_picture(&p);
         // SAFETY: `p` holds a reference dav1d gave us.
         unsafe { dav1d_picture_unref(Some(NonNull::from(&mut p))) };
-        Status::Done(frame)
+        match frame {
+            Ok(f) => Status::Done(f),
+            Err(e) => Status::Refused(e),
+        }
     }
 
     /// Drops buffered packets and pictures (a seek).
@@ -161,15 +168,51 @@ fn colour(seq: &Dav1dSequenceHeader) -> ColourTags {
     t
 }
 
-fn copy_picture(p: &Dav1dPicture) -> DecodedFrame {
+/// The pixel format of a dav1d layout and bit depth: 4:2:0, 4:2:2 and 4:4:4 at 8 or 10 bits.
+/// Monochrome (I400) and 12-bit pictures are `UNSUPPORTED_PIXEL_FORMAT`.
+pub(crate) fn pixel_format(layout: u32, bpc: i32) -> Result<PixelFormat, CoreError> {
+    let f = match (layout, bpc) {
+        (DAV1D_PIXEL_LAYOUT_I420, 8) => Some(PixelFormat::I420),
+        (DAV1D_PIXEL_LAYOUT_I420, 10) => Some(PixelFormat::I420p10),
+        (DAV1D_PIXEL_LAYOUT_I422, 8) => Some(PixelFormat::I422),
+        (DAV1D_PIXEL_LAYOUT_I422, 10) => Some(PixelFormat::I422p10),
+        (DAV1D_PIXEL_LAYOUT_I444, 8) => Some(PixelFormat::I444),
+        (DAV1D_PIXEL_LAYOUT_I444, 10) => Some(PixelFormat::I444p10),
+        _ => None,
+    };
+    f.ok_or_else(|| {
+        let name = match layout {
+            DAV1D_PIXEL_LAYOUT_I400 => "monochrome",
+            DAV1D_PIXEL_LAYOUT_I420 => "4:2:0",
+            DAV1D_PIXEL_LAYOUT_I422 => "4:2:2",
+            DAV1D_PIXEL_LAYOUT_I444 => "4:4:4",
+            _ => "unknown",
+        };
+        CoreError::new(
+            "UNSUPPORTED_PIXEL_FORMAT",
+            format!("{name} pictures at {bpc} bits are not supported"),
+        )
+        .with_details(json!({ "backend": "rav1d", "layout": name, "bitDepth": bpc }))
+        .with_fix("transcode the source to 8- or 10-bit 4:2:0")
+    })
+}
+
+/// Chroma plane size for `format` at `w × h`.
+fn chroma_size(format: PixelFormat, w: u32, h: u32) -> (u32, u32) {
+    match format {
+        PixelFormat::I420 | PixelFormat::I420p10 | PixelFormat::Nv12 | PixelFormat::P010 => {
+            (w.div_ceil(2), h.div_ceil(2))
+        }
+        PixelFormat::I422 | PixelFormat::I422p10 => (w.div_ceil(2), h),
+        _ => (w, h),
+    }
+}
+
+fn copy_picture(p: &Dav1dPicture) -> Result<DecodedFrame, CoreError> {
+    let format = pixel_format(p.p.layout, p.p.bpc)?;
     let (w, h) = (p.p.w.max(0) as u32, p.p.h.max(0) as u32);
     let bytes = if p.p.bpc > 8 { 2 } else { 1 };
-    let (cw, ch) = match p.p.layout {
-        DAV1D_PIXEL_LAYOUT_I400 => (0, 0),
-        DAV1D_PIXEL_LAYOUT_I420 => (w.div_ceil(2), h.div_ceil(2)),
-        DAV1D_PIXEL_LAYOUT_I422 => (w.div_ceil(2), h),
-        _ => (w, h),
-    };
+    let (cw, ch) = chroma_size(format, w, h);
     let plane = |k: usize, pw: u32, ph: u32| {
         let stride = p.stride[if k == 0 { 0 } else { 1 }];
         let row = pw as usize * bytes;
@@ -194,23 +237,18 @@ fn copy_picture(p: &Dav1dPicture) -> DecodedFrame {
             height: ph,
         }
     };
-    let format = match (p.p.layout, bytes) {
-        (DAV1D_PIXEL_LAYOUT_I420, 1) | (DAV1D_PIXEL_LAYOUT_I400, 1) => PixelFormat::I420,
-        (DAV1D_PIXEL_LAYOUT_I420, _) | (DAV1D_PIXEL_LAYOUT_I400, _) => PixelFormat::I420p10,
-        _ => PixelFormat::I444,
-    };
     // SAFETY: a picture from dav1d_get_picture carries its sequence header.
     let colour = p
         .seq_hdr
         .map(|s| colour(unsafe { s.as_ref() }))
         .unwrap_or_default();
-    DecodedFrame {
+    Ok(DecodedFrame {
         pts: p.m.timestamp,
         format,
         size: Size::new(w, h),
         planes: [plane(0, w, h), plane(1, cw, ch), plane(2, cw, ch)],
         colour,
-    }
+    })
 }
 
 /// What an AV1 sequence header OBU says, for `av1C`.
@@ -258,4 +296,40 @@ pub(crate) fn parse_sequence_header(obus: &[u8]) -> Option<SequenceInfo> {
         subsampling: (ssx, ssy),
         chroma_position: s.chr as u8,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layouts_and_depths_map_exactly() {
+        let ok = |l, b| pixel_format(l, b).unwrap();
+        assert_eq!(ok(DAV1D_PIXEL_LAYOUT_I420, 8), PixelFormat::I420);
+        assert_eq!(ok(DAV1D_PIXEL_LAYOUT_I420, 10), PixelFormat::I420p10);
+        assert_eq!(ok(DAV1D_PIXEL_LAYOUT_I422, 8), PixelFormat::I422);
+        assert_eq!(ok(DAV1D_PIXEL_LAYOUT_I422, 10), PixelFormat::I422p10);
+        assert_eq!(ok(DAV1D_PIXEL_LAYOUT_I444, 8), PixelFormat::I444);
+        assert_eq!(ok(DAV1D_PIXEL_LAYOUT_I444, 10), PixelFormat::I444p10);
+        for (l, b) in [
+            (DAV1D_PIXEL_LAYOUT_I400, 8),
+            (DAV1D_PIXEL_LAYOUT_I400, 10),
+            (DAV1D_PIXEL_LAYOUT_I420, 12),
+            (DAV1D_PIXEL_LAYOUT_I444, 12),
+        ] {
+            let e = pixel_format(l, b).unwrap_err();
+            assert_eq!(e.code, "UNSUPPORTED_PIXEL_FORMAT");
+            assert_eq!(e.details["bitDepth"], b);
+        }
+        assert_eq!(
+            pixel_format(DAV1D_PIXEL_LAYOUT_I400, 8)
+                .unwrap_err()
+                .details["layout"],
+            "monochrome"
+        );
+        // Chroma planes follow the subsampling.
+        assert_eq!(chroma_size(PixelFormat::I422p10, 7, 5), (4, 5));
+        assert_eq!(chroma_size(PixelFormat::I420, 7, 5), (4, 3));
+        assert_eq!(chroma_size(PixelFormat::I444p10, 7, 5), (7, 5));
+    }
 }

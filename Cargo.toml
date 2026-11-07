@@ -4,9 +4,11 @@ members = ["crates/*"]
 # Everything but the cross-host harness, which enables `fin-store/test-hooks`: a build or test
 # of the default members never unifies that feature into `fin` or `fin-node`
 # (`scripts/check-test-hooks.mjs`). Build the harness alone: `cargo build -p fin-store-xhost`.
+# Nor the codecs (`fin-codecs`, `fin-svt-sys`), whose SVT-AV1 build needs cmake, nasm on x86_64
+# and the `third_party/svt-av1` submodule: `cargo test -p fin-codecs --features testing`. They
+# join the default members when 6A-2's media worker needs them.
 default-members = [
     "crates/fin",
-    "crates/fin-codecs",
     "crates/fin-compositor",
     "crates/fin-container",
     "crates/fin-core",

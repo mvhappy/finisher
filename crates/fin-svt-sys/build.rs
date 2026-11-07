@@ -26,6 +26,11 @@ fn main() {
         "cargo:rerun-if-changed={}",
         src.join("Source/API").display()
     );
+    println!("cargo:rerun-if-env-changed=FIN_SVT_CHECK_ONLY");
+    // `cargo check --target <other>` type-checks without compiling C: nothing links.
+    if env::var("FIN_SVT_CHECK_ONLY").as_deref() == Ok("1") {
+        return;
+    }
     if !src.join("CMakeLists.txt").exists() {
         panic!(
             "SVT-AV1 sources are missing at {}: run `git submodule update --init --depth 1 third_party/svt-av1`",

@@ -1,6 +1,6 @@
 # Sub-project 6: Media engine — Design
 
-- **Status:** revision 2 (2026-11-07), after an independent review of revision 1 (`e6f7e64`); §24 maps each finding to its resolution. Nothing is implemented yet. The plan for the first sub-batch (6A) is `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`.
+- **Status:** revision 2 (2026-11-07), after an independent review of revision 1 (`e6f7e64`); §24 maps each finding to its resolution. 6A-1 is built (branch `sp6a1-media-foundations`; "As built (6A-1)" notes in §5.1, §6.1, §6.4, §10.1, §13.4, §17). The plan for the first sub-batch (6A) is `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 (rule 3), §7, §12, §17 (performance budgets), §18, §21.1, §22 and §27.2–27.3 and §27.10 for sub-project 6. Where the two disagree, this document wins for sub-project 6, and arch §27 gets a pointer when a sub-batch merges.
 - **Builds on:** sub-project 4 (`docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`, cited as *core §n*): `fin-core::eval` (core §5.4), captions and `fin-text` (core §5.5–5.6), the asset kinds (core §5.7), and the diagnostics journal (arch §21.1).
 - **Siblings** (all in revision; cited by branch): sub-project 5 (*cp §n*, `sp5-design`, `docs/specs/2026-11-07-sub-project-5-control-plane-design.md`): jobs, the worker binary, the library stage framework; sub-project 7 (*ar §n*, `sp7-design`): `fin-sandbox`; sub-project 8 (*pl §n*, `sp8-design`): plugins, analyzers, codec and matte interfaces. **Ownership splits fixed by the coordinator** are stated where they apply and summarised in §3.6.
@@ -237,7 +237,7 @@ For each frame plan, bottom layer first:
 
 - **Precision:** sources are 8-bit (or 10-bit where the codec allows, arch §12.8); intermediate targets are `rgba16float` with premultiplied alpha; the output is 8-bit. *Amendment to arch §12.8 "8-bit internally":* 8-bit intermediates band under stacked opacity and gradients, `rgba16float` render targets with blending are core WebGPU, and the 10-bit/HDR path needs float anyway.
 - **Premultiplied alpha and division:** wherever a stage needs straight colour (effects, LUTs, blend formulas), it un-premultiplies as `a > 0 ? c / a : 0` with an explicit branch, in both compositors, so no NaN is ever produced (NaN payload bits differ between wasm32 and native, and a NaN would propagate differently on GPUs).
-- **Base box:** a source's base box is its display size (after rotation and pixel aspect) fitted inside the timeline frame ("contain"), centred. `transform` then applies: `anchor` is item-normalised in the base box, `position` is pixels from the frame centre, `scale` multiplies the base box, `rotation` is degrees clockwise. The matrix is built in Rust (`f64`, `libm` for `sin`/`cos`, deterministic) and passed to shaders as `f32`. Owner question 4 asks whether "contain" is the right default.
+- **Base box:** a source's base box is its display size (after rotation and pixel aspect) fitted inside the timeline frame ("contain"), centred. `transform` then applies: `anchor` is item-normalised in the base box, `position` is pixels from the frame centre, `scale` multiplies the base box, `rotation` is degrees clockwise. **The anchor convention:** the anchor point is placed at the frame centre plus `position`, and the item scales and rotates about it, so the defaults (anchor ½, ½; position 0) leave the base box centred, and changing the anchor alone moves the item (as Premiere and After Effects do). The matrix is built in Rust (`f64`, `libm` for `sin`/`cos`, deterministic) and passed to shaders as `f32`. Owner question 4 asks whether "contain" is the right default.
 - **Sampling and downscaling** (defined identically in both compositors, §13.4):
   - magnification and scale ≥ ½: bilinear sampling of the source at the output pixel centre;
   - minification: each source gets a **mip chain by exact 2×2 box averaging** (our own pass; WebGPU generates no mipmaps), and the layer samples with an **explicit level** `L = log2(1 / s)` where `s` is the layer's smaller axis scale in output pixels per source pixel (constant per layer, since transforms are affine; computed in Rust with `libm`), bilinear in levels `⌊L⌋` and `⌈L⌉` blended by the fraction. No derivative-based LOD, which differs between GPUs.
@@ -283,6 +283,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
   - **libva is loaded at run time, never linked**, so the binary starts on machines without libva and the capability report says what is missing. That needs either a `cros-libva` fork whose FFI table is resolved with `libloading`, or Finisher's own VA-API backend over `cros-codecs`' parsers and state machines; the 6B-2 spike decides which.
   - **D3D11VA** gets Finisher's own backend; it reuses `cros-codecs`' parsers and state machines if the crate builds on Windows without its `vaapi` feature *(verify in the spike)*, else Finisher writes the DXVA parameter filling on its own parsers for H.264 and HEVC only (AV1 and VP9 go through MF there).
   - **HEVC encoding on VA-API** is not in `cros-codecs`; it is out of v1 unless owner question 9 wants Linux HEVC export (it recommends none).
+- *As built (6A-1), `fin-container`'s limits* apply per file (`maxBoxes` 1 M, `maxBoxBytes` 64 MiB, `maxDepth` 16) and per track: `maxSamples` (10 M) bounds a track's samples, which are also at most the file's length in bytes (a fragment run with no per-sample fields costs no bytes a sample), and bounds the **presented frames** after edit lists (`maxPresentedFrames`; up to 1,024 edits may repeat the media), counted before any frame is stored, with the samples an edit looks at bounded by twice that (`maxEditWork`). A video sample in a fragment must have at least one byte. Times that overflow 64 bits are `MEDIA_CORRUPT`.
 - **Process-based backends** (the FFmpeg plugin, others) implement the same `Decoder`/`Encoder` traits through a helper process that 5C starts as the job's sibling, with packets and frames in `fin-shm` rings (§3.4, §6.5).
 
 ### 6.2 Formats per OS
@@ -355,6 +356,8 @@ Owner question 9 asks which of these H.264/HEVC encoders Finisher may use for ex
 | `mp4-atom` | ISOBMFF box encode/decode | crate, under `fin-container`'s limits (§6.1) |
 | `cros-codecs` | stateless decoding state machines and parsers (6B) | crate, with Finisher's VA-API and D3D11VA backends |
 | `fin-container` | sample tables, edit lists, fragments, limits, MP4 mux, WebM demux | ours; fuzzed (§13.5) |
+
+*As built (6A-1):* `rav1d` 1.1.0's crate package leaves out its `*.h` files, so its aarch64 assembly cannot build: the assembly is enabled on x86_64 only, and aarch64 runs rav1d's Rust paths, 2.7–4.2× slower than dav1d 1.5.3 on an Apple M4 (627 against ~1,710 fps at 540p, 257 against ~1,090 at 1080p, frame delay 1). That is past the 15 % threshold: the dav1d FFI follow-up is open in `TASKS.md`. After the 6A-1 review, rav1d decodes with **one thread**: with worker threads its debug-only `DisjointMut` overlap checker panicked once on test input, which in release builds (unchecked) would be a data race on untrusted media. Single-threaded on aarch64 it decodes 215 fps at 540p and 22 fps at 1080p, which makes the dav1d decision urgent for 6A-2's latency budgets (§14). SVT-AV1 v4.3.0 is built once by `fin-svt-sys` (a featureless crate) through a small C shim of Finisher's that owns its configuration struct; `fin-codecs` and `fin-svt-sys` are not default workspace members until 6A-2 needs them.
 
 ### 6.5 The process codec backend
 
@@ -488,6 +491,7 @@ Chunked parallel export (GOP-aligned segments encoded on several workers and con
   - Because the two algorithms differ, HDR goldens are compared within an OS only (§13.2, tier T4).
 - **10-bit sources** are decoded at 10 bits (P010) and converted in the shader. The working space stays SDR.
 - **LUTs** (`.cube`) apply in encoded space as 3D textures (`rgba16float`, trilinear), as `.cube` LUTs for Rec.709 expect.
+- *As built (6A-1), the CPU reference:* wide-gamut SDR (BT.2020, Display P3) is converted to Rec.709 and **hard-clipped** to 0…1 (the soft clip is 6B's); the BT.601 primaries (525 and 625 lines) are treated as Rec.709 (no primaries conversion, only the BT.601 matrix); HDR transfers are not tone-mapped yet (6B). Identity-matrix (GBR) sources expand every channel as luma (limited range `(v − 16)/219`).
 
 ### 10.2 Frame rate, VFR and the sampling rule
 
@@ -598,6 +602,7 @@ Chunked parallel export (GOP-aligned segments encoded on several workers and con
 - **No NaN on the hashed path:** divisions by alpha are guarded (§5.1), and a debug assertion checks every reference output buffer for NaN.
 - GPU shaders may use any WGSL built-in; their variance is what T1 absorbs. Both compositors share the definitions that decide *which* samples are taken (coverage, mip level, base box, matrix), computed in Rust.
 - `RENDER_VERSION` is bumped by any change that alters T0 hashes or T1 references on purpose; a test fails when T0 hashes change without a bump.
+- *As built (6A-1):* the T0 goldens (33 cases) were blessed on macOS arm64 and match on x86_64 Linux natively and on `wasm32-wasip1`. **Encoded output is deterministic on one machine only:** SVT-AV1 with one thread gives byte-identical output run to run, and across its C, SSE4.2 and AVX2 kernels on one x86_64 machine, but its C code is compiled with the platform's floating-point contraction (arm64 clang contracts to FMA), so bytes may differ between machine classes. `fin-codecs/tests/golden/encode.json` records one hash per machine class for comparison and is asserted only on request.
 
 ### 13.5 Conformance suite for codec backends
 
@@ -740,6 +745,9 @@ All errors use the one shape `{code, message, details, fix?}` (arch §19). Job-l
 | `EXPORT_DESTINATION` | the destination is not writable or is inside `.finisher/` or `assets/` | |
 | `LOUDNESS_TARGET_UNREACHABLE` | (warning) normalisation could not reach the target | `measured`, `target` |
 | `PLAN_MISMATCH` | a worker's plan or caption layout differs from `fin-node`'s | `at`, `expected`, `got`; internal |
+| `UNSUPPORTED_PIXEL_FORMAT` | a decoded picture Finisher does not take (monochrome, 12-bit) or a compositor cannot read | `layout`, `bitDepth` or `format`, `reason` |
+
+*As built (6A-1):* `fin` maps `UNSUPPORTED_CONTAINER`, `UNSUPPORTED_TRANSFORM`, `MEDIA_CORRUPT` and `MEDIA_LIMIT` to exit 3 (validation), beside the existing `UNSUPPORTED_CONTAINER`; the plan's "2" is `USAGE`. The codec and GPU codes join `fin`'s table with `fin look` (6A-2).
 
 ## 18. Crate and file map
 

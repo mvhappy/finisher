@@ -23,6 +23,7 @@ fn sub(a: Rational, b: Rational) -> Rational {
 fn entry(pts: i64, duration: u32, decode_index: u32, keyframe: bool) -> FrameEntry {
     FrameEntry {
         pts,
+        ct: pts,
         duration,
         keyframe,
         decode_index,
@@ -255,12 +256,66 @@ fn decode_start_with_closed_and_open_gops() {
         vec![entry(0, 1, 1, false), entry(1, 1, 2, false)],
         vec![SyncPoint {
             decode_index: 0,
-            pts: -1,
+            ct: -1,
         }],
     )
     .unwrap();
     assert_eq!(decode_start(&edited, 0), 0);
     assert_eq!(decode_start(&edited, 1), 0);
+}
+
+/// An edit list that presents the media twice (the second time 7 ticks later): a leading
+/// picture of the open GOP in the second edit still decodes from the previous GOP, because
+/// `decode_start` compares media composition times, not presentation times.
+#[test]
+fn decode_start_with_repeated_media_and_an_open_gop() {
+    // Decode order: I(ct 0) P(3) B(1) B(2) I(6) B(4) B(5).
+    let order = [
+        (0i64, true),
+        (3, false),
+        (1, false),
+        (2, false),
+        (6, true),
+        (4, false),
+        (5, false),
+    ];
+    let mut frames = Vec::new();
+    for (d, &(ct, key)) in order.iter().enumerate() {
+        for shift in [0, 7] {
+            frames.push(FrameEntry {
+                pts: ct + shift,
+                ct,
+                ..entry(0, 1, d as u32, key)
+            });
+        }
+    }
+    let sync = vec![
+        SyncPoint {
+            decode_index: 0,
+            ct: 0,
+        },
+        SyncPoint {
+            decode_index: 4,
+            ct: 6,
+        },
+    ];
+    let t = SampleTable::with_sync(1, frames, sync).unwrap();
+    let at = |pts: i64| t.frames().iter().position(|f| f.pts == pts).unwrap();
+    // B(ct 4) is a leading picture of the second GOP, in both edits.
+    assert_eq!(decode_start(&t, at(4)), 0);
+    assert_eq!(
+        decode_start(&t, at(11)),
+        0,
+        "the repeated leading picture needs GOP 0 too"
+    );
+    assert_eq!(decode_start(&t, at(13)), 4, "I(ct 6) in the second edit");
+    assert_eq!(decode_start(&t, at(8)), 0, "B(ct 1) in the second edit");
+}
+
+#[test]
+fn a_frame_whose_end_overflows_is_refused() {
+    let e = SampleTable::new(1, vec![entry(i64::MAX - 1, 5, 0, true)]).unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT");
 }
 
 #[test]

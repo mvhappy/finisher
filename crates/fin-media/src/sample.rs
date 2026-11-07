@@ -12,6 +12,9 @@ use crate::media_corrupt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FrameEntry {
     pub pts: i64,
+    /// The sample's composition time in the media, before edit lists (`pts` without one). An
+    /// edit that repeats media presents one `ct` at several `pts`.
+    pub ct: i64,
     pub duration: u32,
     pub keyframe: bool,
     /// The sample's index in decode order (its index in the track's sample list).
@@ -20,13 +23,13 @@ pub struct FrameEntry {
     pub size: u32,
 }
 
-/// A sync sample in decode order with its presentation time (after edit lists), including
-/// sync samples that edit lists leave out of the presented frames: a decoder may have to
-/// start there.
+/// A sync sample in decode order with its composition time in the media, including sync
+/// samples that edit lists leave out of the presented frames: a decoder may have to start
+/// there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SyncPoint {
     pub decode_index: u32,
-    pub pts: i64,
+    pub ct: i64,
 }
 
 /// A video track's presented frames sorted by `pts` (strictly increasing), and its sync
@@ -48,7 +51,7 @@ impl SampleTable {
             .filter(|f| f.keyframe)
             .map(|f| SyncPoint {
                 decode_index: f.decode_index,
-                pts: f.pts,
+                ct: f.ct,
             })
             .collect();
         SampleTable::with_sync(timescale, frames, sync)
@@ -68,6 +71,15 @@ impl SampleTable {
             return Err(media_corrupt(
                 "the video track presents no frames",
                 json!("stbl"),
+            ));
+        }
+        if let Some(f) = frames
+            .iter()
+            .find(|f| f.pts.checked_add(i64::from(f.duration)).is_none())
+        {
+            return Err(media_corrupt(
+                "a frame's end overflows",
+                json!({ "pts": f.pts, "decodeIndex": f.decode_index }),
             ));
         }
         frames.sort_by_key(|f| f.pts);
@@ -113,7 +125,7 @@ impl SampleTable {
         Rational::new(self.frames[i].pts, self.timescale as i64).expect("timescale > 0")
     }
 
-    /// The end of the last frame in ticks.
+    /// The end of the last frame in ticks (fits: checked at construction).
     pub fn end_ticks(&self) -> i64 {
         let last = self.frames[self.frames.len() - 1];
         last.pts + last.duration as i64
@@ -166,7 +178,9 @@ pub fn frame_at(table: &SampleTable, s: Rational) -> FrameAt {
 /// The decode index of the sync sample a decoder must start from to output presented frame
 /// `i`: the last sync sample at or before the frame in decode order, or the one before it
 /// when the frame is a leading picture of an open GOP (it precedes that sync sample in
-/// presentation, so it references the previous GOP). 0 when no sync sample precedes it.
+/// composition time, so it references the previous GOP). Compared in media composition time,
+/// so edit lists (one that repeats media too) do not change the answer. 0 when no sync sample
+/// precedes it.
 pub fn decode_start(table: &SampleTable, i: usize) -> usize {
     let f = table.frames[i];
     let sync = &table.sync;
@@ -175,7 +189,7 @@ pub fn decode_start(table: &SampleTable, i: usize) -> usize {
         return 0;
     }
     let at = sync[k - 1];
-    if f.pts < at.pts && at.decode_index != f.decode_index {
+    if f.ct < at.ct && at.decode_index != f.decode_index {
         return if k >= 2 {
             sync[k - 2].decode_index as usize
         } else {

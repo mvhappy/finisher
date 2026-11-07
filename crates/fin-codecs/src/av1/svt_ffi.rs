@@ -1,52 +1,16 @@
-//! The SVT-AV1 encoder calls, through `csrc/svt_shim.c` (which owns SVT-AV1's configuration
+//! The SVT-AV1 encoder calls, through `fin-svt-sys`' shim (which owns SVT-AV1's configuration
 //! struct), each wrapped once. This module and `rav1d_ffi.rs` are the only places with
 //! `unsafe` in `fin-codecs`.
 
-use std::ffi::{CString, c_void};
+use std::ffi::CString;
 
 use fin_media::Size;
+use fin_svt_sys::{
+    FinSvt, FinSvtPacket, fin_svt_free, fin_svt_header, fin_svt_init, fin_svt_new, fin_svt_packet,
+    fin_svt_param, fin_svt_release, fin_svt_send,
+};
 
-#[repr(C)]
-struct FinSvt {
-    _opaque: [u8; 0],
-}
-
-#[repr(C)]
-struct FinSvtPacket {
-    data: *const u8,
-    len: u32,
-    pts: i64,
-    dts: i64,
-    flags: u32,
-    pic_type: u32,
-    raw: *mut c_void,
-}
-
-unsafe extern "C" {
-    fn fin_svt_new(err: *mut i32) -> *mut FinSvt;
-    fn fin_svt_param(s: *mut FinSvt, name: *const i8, value: *const i8) -> i32;
-    fn fin_svt_init(s: *mut FinSvt) -> i32;
-    fn fin_svt_header(s: *mut FinSvt, out: *mut u8, cap: u32, len: *mut u32) -> i32;
-    fn fin_svt_send(
-        s: *mut FinSvt,
-        y: *const u8,
-        u: *const u8,
-        v: *const u8,
-        y_stride: u32,
-        uv_stride: u32,
-        luma_bytes: u32,
-        pts: i64,
-        force_key: i32,
-    ) -> i32;
-    fn fin_svt_packet(s: *mut FinSvt, done: u8, out: *mut FinSvtPacket) -> i32;
-    fn fin_svt_release(p: *mut FinSvtPacket);
-    fn fin_svt_free(s: *mut FinSvt);
-}
-
-/// `EB_BUFFERFLAG_EOS`.
-pub(crate) const FLAG_EOS: u32 = 1;
-/// `EB_AV1_KEY_PICTURE`.
-pub(crate) const KEY_PICTURE: u32 = 3;
+pub(crate) use fin_svt_sys::{FLAG_EOS, KEY_PICTURE};
 
 /// One packet copied out of SVT-AV1.
 pub(crate) struct Packet {

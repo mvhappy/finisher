@@ -71,7 +71,15 @@ pub fn render(plan: &FramePlan, src: &mut dyn SourceProvider, out: Size) -> Rend
             continue;
         }
         match src.frame(l) {
-            Ok(frame) => layer::draw(&mut acc, out, plan.resolution, l, &frame),
+            Ok(frame) => match ingest::readable(&frame) {
+                Ok(()) => layer::draw(&mut acc, out, plan.resolution, l, &frame),
+                Err(details) => skips.push(skipped(
+                    &l.item,
+                    l.kind,
+                    "UNSUPPORTED_PIXEL_FORMAT",
+                    details,
+                )),
+            },
             Err(issue) => skips.push(skipped(&l.item, l.kind, &issue.code, issue.details)),
         }
     }

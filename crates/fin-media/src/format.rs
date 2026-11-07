@@ -15,8 +15,14 @@ pub enum PixelFormat {
     I420,
     /// 10-bit 4:2:0, three planes of 16-bit words (low bits).
     I420p10,
+    /// 8-bit 4:2:2, three planes.
+    I422,
+    /// 10-bit 4:2:2, three planes of 16-bit words (low bits).
+    I422p10,
     /// 8-bit 4:4:4, three planes.
     I444,
+    /// 10-bit 4:4:4, three planes of 16-bit words (low bits).
+    I444p10,
     Rgba8,
     Rgba16f,
 }

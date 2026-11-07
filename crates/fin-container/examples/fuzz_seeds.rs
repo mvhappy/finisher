@@ -116,4 +116,87 @@ fn main() {
         let bytes = w.finish().unwrap().into_inner();
         std::fs::write(dir.join(name), bytes).expect("seed written");
     }
+    // The 6A-1 review's shapes: edits that repeat the media, a fragment run of zero-size
+    // samples, and fragment decode times near i64::MAX.
+    let mut w = Mp4Writer::new(
+        Cursor::new(Vec::new()),
+        Mp4Options {
+            moov_reserve: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let v = w.add_video(video(Rotation::R0, one, None)).unwrap();
+    w.set_knobs(
+        v,
+        TrackKnobs {
+            edits: Some(vec![(12_000, Some(0)); 16]),
+            ..Default::default()
+        },
+    );
+    for i in 0..12i64 {
+        w.write(v, &[i as u8; 3], i * 1000, i * 1000, 1000, i == 0)
+            .unwrap();
+    }
+    std::fs::write(dir.join("edits-repeat"), w.finish().unwrap().into_inner())
+        .expect("seed written");
+    let fragmented = || {
+        let opts = Mp4Options {
+            knobs: FileKnobs {
+                fragment_every: Some(1),
+            },
+            ..Default::default()
+        };
+        let mut w = Mp4Writer::new(Cursor::new(Vec::new()), opts).unwrap();
+        let v = w.add_video(video(Rotation::R0, one, None)).unwrap();
+        w.write(v, &[1; 3], 0, 0, 1000, true).unwrap();
+        w.finish().unwrap().into_inner()
+    };
+    for (name, size, count, tfdt) in [
+        ("trun-zero-size", 0u32, 1_000_000u32, None),
+        ("tfdt-overflow", 1, 2, Some(i64::MAX as u64 - 10)),
+    ] {
+        let mut bytes = fragmented();
+        bytes.extend(moof(size, count, tfdt));
+        std::fs::write(dir.join(name), bytes).expect("seed written");
+    }
+}
+
+fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat()
+}
+
+fn full(kind: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
+    let mut b = flags.to_be_bytes();
+    b[0] = version;
+    bx(kind, &[&b[..], body].concat())
+}
+
+/// A `moof` for track 1: base is the moof, default duration 1000 and size `size`, an optional
+/// `tfdt` v1, a `trun` of `count` samples with no per-sample fields.
+fn moof(size: u32, count: u32, tfdt: Option<u64>) -> Vec<u8> {
+    let mut traf = full(
+        b"tfhd",
+        0,
+        0x02_0000 | 0x08 | 0x10,
+        &[
+            1u32.to_be_bytes(),
+            1000u32.to_be_bytes(),
+            size.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    if let Some(t) = tfdt {
+        traf.extend(full(b"tfdt", 1, 0, &t.to_be_bytes()));
+    }
+    traf.extend(full(
+        b"trun",
+        0,
+        0x1,
+        &[count.to_be_bytes(), 0i32.to_be_bytes()].concat(),
+    ));
+    bx(
+        b"moof",
+        &[full(b"mfhd", 0, 0, &9u32.to_be_bytes()), bx(b"traf", &traf)].concat(),
+    )
 }

@@ -359,11 +359,11 @@ fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed, CoreError>
     let moofs: Vec<BoxHeader> = top.iter().filter(|h| &h.kind == b"moof").copied().collect();
     let fragmented = !moofs.is_empty() || child(&moov_parts, b"mvex").is_some();
     for moof in &moofs {
-        let mut chosen: Vec<(u32, &mut Vec<Sample>)> = traks
+        let mut chosen: Vec<(u32, &mut Vec<Sample>, bool)> = traks
             .iter_mut()
             .enumerate()
             .filter(|(i, _)| Some(*i) == vi || Some(*i) == ai)
-            .map(|(_, t)| (t.id, &mut t.samples))
+            .map(|(i, t)| (t.id, &mut t.samples, Some(i) == vi))
             .collect();
         fragment::append(&mut rd, moof, &defaults, &mut chosen, 1)?;
     }
@@ -382,7 +382,13 @@ fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed, CoreError>
             )
         })?;
         let e = codec_config::entry(&mut rd, &stsd, true, 6)?;
-        let (frames, sync) = edit_list::present(&samples, &t.edits, t.timescale, movie_ts);
+        let (frames, sync) = edit_list::present(
+            &samples,
+            &t.edits,
+            t.timescale,
+            movie_ts,
+            limits.max_samples as u64,
+        )?;
         let table = SampleTable::with_sync(t.timescale, frames, sync)?;
         let rotation: Rotation = matrix::rotation(t.matrix)?;
         let pixel_aspect = e.pasp.map_or(Rational::from_int(1), |(h, v)| {

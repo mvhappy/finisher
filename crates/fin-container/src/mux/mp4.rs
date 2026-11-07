@@ -129,6 +129,17 @@ fn edits(t: &Track, movie_ts: u32, fragmented: bool) -> Result<Vec<ElstEntry>, C
         return Ok(Vec::new());
     }
     let rate = FixedPoint::new(1, 0);
+    #[cfg(feature = "testing")]
+    if let Some(e) = &t.knobs.edits {
+        return Ok(e
+            .iter()
+            .map(|&(d, m)| ElstEntry {
+                segment_duration: d,
+                media_time: m,
+                media_rate: rate,
+            })
+            .collect());
+    }
     let mut out = Vec::new();
     #[cfg(feature = "testing")]
     if let Some(e) = t.knobs.empty_edit {

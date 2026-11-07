@@ -9,6 +9,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
 use common::*;
+use fin_container::mux::knobs::{FileKnobs, TrackKnobs};
 use fin_container::{Demuxer, Limits};
 use fin_core::CoreError;
 
@@ -211,5 +212,147 @@ fn random_mutations_never_panic() {
             };
         }
         let _ = attempt(&b, &Limits::default(), &format!("mutation {case}"));
+    }
+}
+
+/// Reviewer repro (6A-1 review, blocker 1): a small file whose 1,024 full-length edits would
+/// present 30,000 samples 1,024 times is `MEDIA_LIMIT` before the frames are stored.
+#[test]
+fn edits_that_repeat_the_media_are_capped() {
+    let n = 30_000u32;
+    let frames: Vec<_> = (0..n)
+        .map(|i| (i as i64, i as i64, 1, i % 30 == 0))
+        .collect();
+    let mut cfg = video(fin_media::Rotation::R0);
+    cfg.timescale = 30;
+    let knobs = TrackKnobs {
+        edits: Some(vec![(n as u64, Some(0)); 1024]),
+        ..Default::default()
+    };
+    let bytes = write_sized(cfg, knobs, &frames, 1);
+    assert!(
+        bytes.len() < 100_000,
+        "a small file ({} bytes)",
+        bytes.len()
+    );
+    let start = Instant::now();
+    let e = Demuxer::open(Cursor::new(bytes.clone()), &Limits::default())
+        .err()
+        .unwrap();
+    assert_eq!(e.code, "MEDIA_LIMIT", "{e:?}");
+    assert_eq!(e.details["limit"], "maxPresentedFrames");
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "took {:?}",
+        start.elapsed()
+    );
+    // Under a tighter limit it fails at once; with room, three repeats present 90,000 frames.
+    let tight = Limits {
+        max_samples: 50_000,
+        ..Limits::default()
+    };
+    assert_eq!(
+        attempt(&bytes, &tight, "tight").unwrap_err().code,
+        "MEDIA_LIMIT"
+    );
+    let mut cfg = video(fin_media::Rotation::R0);
+    cfg.timescale = 30;
+    let three = TrackKnobs {
+        edits: Some(vec![(n as u64, Some(0)); 3]),
+        ..Default::default()
+    };
+    let d = Demuxer::open(
+        Cursor::new(write_sized(cfg, three, &frames, 1)),
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(d.video().unwrap().table.len(), 3 * n as usize);
+}
+
+fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    [&((body.len() + 8) as u32).to_be_bytes()[..], kind, body].concat()
+}
+
+fn full(kind: &[u8; 4], version: u8, flags: u32, body: &[u8]) -> Vec<u8> {
+    let mut b = flags.to_be_bytes();
+    b[0] = version;
+    bx(kind, &[&b[..], body].concat())
+}
+
+/// A fragmented file (one real fragment) with `moof` appended: `tfhd` (track 1, base is the
+/// moof, default duration 1000 and size `size`), an optional `tfdt` v1 and a `trun` of
+/// `count` samples with no per-sample fields and data offset 0.
+fn with_fragment(size: u32, count: u32, tfdt: Option<u64>) -> Vec<u8> {
+    let mut bytes = write(
+        video(fin_media::Rotation::R0),
+        TrackKnobs::default(),
+        FileKnobs {
+            fragment_every: Some(1),
+        },
+        &cfr_frames(1),
+    );
+    let tfhd = full(
+        b"tfhd",
+        0,
+        0x02_0000 | 0x08 | 0x10,
+        &[
+            1u32.to_be_bytes(),
+            1000u32.to_be_bytes(),
+            size.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    let mut traf = tfhd;
+    if let Some(t) = tfdt {
+        traf.extend(full(b"tfdt", 1, 0, &t.to_be_bytes()));
+    }
+    traf.extend(full(
+        b"trun",
+        0,
+        0x1,
+        &[count.to_be_bytes(), 0i32.to_be_bytes()].concat(),
+    ));
+    let moof = bx(
+        b"moof",
+        &[full(b"mfhd", 0, 0, &9u32.to_be_bytes()), bx(b"traf", &traf)].concat(),
+    );
+    bytes.extend(moof);
+    bytes
+}
+
+/// Reviewer repro (blocker 2): a `trun` with no per-sample fields and default size 0 declared
+/// 10 M samples in 748 bytes.
+#[test]
+fn zero_size_fragment_samples_are_refused_and_counts_capped_by_the_file() {
+    let huge = with_fragment(0, 10_000_000, None);
+    assert!(huge.len() < 2_000);
+    assert_eq!(
+        attempt(&huge, &Limits::default(), "10M zero-size")
+            .unwrap_err()
+            .code,
+        "MEDIA_LIMIT"
+    );
+    let sized = with_fragment(1, 10_000_000, None);
+    assert_eq!(
+        attempt(&sized, &Limits::default(), "10M one-byte")
+            .unwrap_err()
+            .code,
+        "MEDIA_LIMIT"
+    );
+    let few = with_fragment(0, 5, None);
+    let e = attempt(&few, &Limits::default(), "5 zero-size").unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{e:?}");
+}
+
+/// Review item 7: decode times near `i64::MAX` are `MEDIA_CORRUPT`, not an overflow.
+#[test]
+fn fragment_times_that_overflow_are_corrupt() {
+    for t in [i64::MAX as u64 - 10, i64::MAX as u64, u64::MAX] {
+        let b = with_fragment(1, 2, Some(t));
+        assert_eq!(
+            attempt(&b, &Limits::default(), "tfdt").unwrap_err().code,
+            "MEDIA_CORRUPT",
+            "tfdt {t}"
+        );
     }
 }

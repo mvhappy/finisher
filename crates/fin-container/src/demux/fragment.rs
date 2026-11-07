@@ -31,9 +31,6 @@ pub(crate) fn trex(body: &[u8], h: &BoxHeader) -> Result<Defaults, CoreError> {
 
 const NON_SYNC: u32 = 0x0001_0000;
 
-/// A trun entry's optional duration, size, flags and composition offset.
-type Fields = (Option<u32>, Option<u32>, Option<u32>, Option<i64>);
-
 /// A `trun`'s declared count against its size: 4 bytes for each per-sample field present.
 fn check_trun(body: &[u8], h: &BoxHeader) -> Result<(), CoreError> {
     let flags = be_u32(body, 0)
@@ -47,16 +44,17 @@ fn check_trun(body: &[u8], h: &BoxHeader) -> Result<(), CoreError> {
     check_count(body, head, count, per, h)
 }
 
-/// Appends the samples of fragment `moof` to `tracks` (`(track id, samples)` pairs); tracks
-/// the fragment names but the file does not are skipped.
+/// Appends the samples of fragment `moof` to `tracks` (`(track id, samples, is video)`); tracks
+/// the fragment names but the file does not are skipped. A track holds at most
+/// `min(max_samples, file length)` samples, a video sample at least one byte.
 pub(crate) fn append<R: Read + Seek>(
     rd: &mut Reader<R>,
     moof: &BoxHeader,
     defaults: &[Defaults],
-    tracks: &mut [(u32, &mut Vec<Sample>)],
+    tracks: &mut [(u32, &mut Vec<Sample>, bool)],
     depth: u8,
 ) -> Result<(), CoreError> {
-    let max = rd.limits.max_samples as u64;
+    let max = (rd.limits.max_samples as u64).min(rd.len);
     for traf in rd.children(moof.body, moof.end, depth + 1)? {
         if &traf.kind != b"traf" {
             continue;
@@ -67,7 +65,7 @@ pub(crate) fn append<R: Read + Seek>(
             .find(|p| &p.kind == b"tfhd")
             .ok_or_else(|| corrupt("a traf has no tfhd", traf.start, "traf"))?;
         let tfhd = decode::<Tfhd>(&rd.body(tfhd_h)?, tfhd_h)?;
-        let Some(k) = tracks.iter().position(|(id, _)| *id == tfhd.track_id) else {
+        let Some(k) = tracks.iter().position(|(id, _, _)| *id == tfhd.track_id) else {
             continue;
         };
         let d = defaults
@@ -80,8 +78,12 @@ pub(crate) fn append<R: Read + Seek>(
                 size: 0,
                 flags: 0,
             });
+        let video = tracks[k].2;
         let samples = &mut *tracks[k].1;
-        let mut dts = samples.last().map_or(0, |s| s.dts + s.duration as i64);
+        let mut dts = match samples.last() {
+            Some(s) => s.end(),
+            None => 0,
+        };
         if let Some(h) = parts.iter().find(|p| &p.kind == b"tfdt") {
             dts = i64::try_from(decode::<Tfdt>(&rd.body(h)?, h)?.base_media_decode_time)
                 .map_err(|_| corrupt("tfdt is out of range", h.start, "tfdt"))?;
@@ -97,37 +99,34 @@ pub(crate) fn append<R: Read + Seek>(
                     corrupt("a trun data offset is out of range", h.start, "trun")
                 })?;
             }
-            let entries: Vec<Fields> = match &trun.samples {
-                TrunSamples::Explicit(e) => e
-                    .iter()
-                    .map(|e| (e.duration, e.size, e.flags, e.cts))
-                    .collect(),
-                TrunSamples::Inherited { count, first_flags } => {
-                    if samples.len() as u64 + *count as u64 > max {
-                        return Err(limit(
-                            "maxSamples",
-                            samples.len() as u64 + *count as u64,
-                            max,
-                        ));
-                    }
-                    (0..*count)
-                        .map(|i| (None, None, if i == 0 { *first_flags } else { None }, None))
-                        .collect()
-                }
+            let count = match &trun.samples {
+                TrunSamples::Explicit(e) => e.len() as u64,
+                TrunSamples::Inherited { count, .. } => u64::from(*count),
             };
-            if samples.len() as u64 + entries.len() as u64 > max {
-                return Err(limit(
-                    "maxSamples",
-                    samples.len() as u64 + entries.len() as u64,
-                    max,
-                ));
+            // A run without per-sample fields costs no bytes a sample, so a few bytes could
+            // declare millions: samples are capped by the file's length too.
+            if samples.len() as u64 + count > max {
+                return Err(limit("maxSamples", samples.len() as u64 + count, max));
             }
-            for (duration, size, flags, cts) in entries {
+            for i in 0..count as usize {
+                let (duration, size, flags, cts) = match &trun.samples {
+                    TrunSamples::Explicit(e) => (e[i].duration, e[i].size, e[i].flags, e[i].cts),
+                    TrunSamples::Inherited { first_flags, .. } => {
+                        (None, None, if i == 0 { *first_flags } else { None }, None)
+                    }
+                };
                 let duration = duration
                     .or(tfhd.default_sample_duration)
                     .unwrap_or(d.duration);
                 let size = size.or(tfhd.default_sample_size).unwrap_or(d.size);
                 let flags = flags.or(tfhd.default_sample_flags).unwrap_or(d.flags);
+                if video && size == 0 {
+                    return Err(corrupt(
+                        "a fragment video sample has no bytes",
+                        h.start,
+                        "trun",
+                    ));
+                }
                 if at.saturating_add(size as u64) > rd.len {
                     return Err(corrupt(
                         format!("a fragment sample at {at} runs past the end of the file"),
@@ -135,15 +134,17 @@ pub(crate) fn append<R: Read + Seek>(
                         "trun",
                     ));
                 }
-                samples.push(Sample {
+                let s = Sample::checked(
                     dts,
-                    cto: cts.unwrap_or(0),
+                    cts.unwrap_or(0),
                     duration,
                     size,
-                    offset: at,
-                    key: flags & NON_SYNC == 0,
-                });
-                dts += duration as i64;
+                    at,
+                    flags & NON_SYNC == 0,
+                )
+                .ok_or_else(|| corrupt("fragment times overflow", h.start, "trun"))?;
+                dts = s.dts + i64::from(duration);
+                samples.push(s);
                 at += size as u64;
             }
         }

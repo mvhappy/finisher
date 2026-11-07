@@ -116,3 +116,26 @@ test("the gate script runs on a fake metadata document", () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /NATIVE_LICENSE_FILE/);
 });
+
+test("more build tools, build scripts that run a compiler, and listed versions are checked", () => {
+  const root = fixtureRoot({ "w/runs/build.rs": 'fn main() { std::process::Command::new("cc").arg("x.c").status().unwrap(); }\n', "w/quiet/build.rs": "fn main() {}\n" });
+  const doc = fakeMetadata(["app"], [
+    ["app", { deps: [["auto"], ["runs"], ["quiet"], ["foo-sys"]] }],
+    ["auto", { deps: [["autotools", "build"]] }],
+    ["runs", {}],
+    ["quiet", {}],
+    ["foo-sys", { links: "foo" }],
+    ["autotools", {}],
+  ]);
+  for (const p of doc.packages) {
+    if (p.name === "runs" || p.name === "quiet") p.targets = [{ kind: ["custom-build"], src_path: join(root, "w", p.name, "build.rs") }];
+  }
+  const native = shipped([doc]).filter((p) => p.native).map((p) => `${p.name}: ${p.native}`).sort();
+  assert.deepEqual(native, ["auto: build-depends on autotools", "foo-sys: links = \"foo\"", "runs: its build script runs cc"]);
+  const hash = () => blake3(Buffer.from(LICENSE));
+  const listed = (version) => ({ libraries: [{ name: "LibFoo", package: "foo-sys", version, license: "MIT", files: {} }], allow: ALLOW });
+  const run = (version) => check({ pkgs: shipped([doc]).filter((p) => p.name === "foo-sys"), native: listed(version), notices: `## LibFoo ${version}\n`, gitlink: () => null, hash });
+  assert.deepEqual(run("1"), []);
+  assert.deepEqual(run("1.0"), []);
+  assert.match(run("2").join("\n"), /NATIVE_VERSION: LibFoo \(foo-sys\): native\.json says 2, the graph has 1\.0\.0/);
+});
