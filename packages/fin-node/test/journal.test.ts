@@ -177,10 +177,14 @@ describe("Journal", () => {
     const j = open();
     engine = await Engine.create(serverData, join(tmp, "Project"), "Demo", "30");
     const id = engine.projectId;
+    await j.status();
     expect(JSON.parse(j.projectPolicies())).toEqual({ [id]: "default" });
     j.record("cli.command", 1, JSON.stringify({ project: id }), JSON.stringify(cli()), "fin");
     expect((await all(j, { project: id })).length).toBe(1);
     expect(JSON.parse(await engine.setCollect("never"))).toEqual({ project: id, collect: "never" });
+    // The policy reaches the writer on its control channel; `status` waits for it to catch up
+    // (`projectPolicies` is a snapshot that does not).
+    await j.status();
     expect(JSON.parse(j.projectPolicies())[id]).toBe("never");
     expect(await all(j, { project: id })).toHaveLength(0);
     j.record("cli.command", 1, JSON.stringify({ project: id }), JSON.stringify(cli()), "fin");
