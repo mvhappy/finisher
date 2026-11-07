@@ -1,20 +1,29 @@
-//! The host's calls into its kill domain, in order, over the recording double (Unix:
-//! `/bin/sh` stands in for a worker; it never says `hello`).
+//! The host's calls into its kill domain, in order, over the recording double (`/bin/sh` on
+//! Unix and `cmd.exe` on Windows stand in for a worker; they never say `hello`).
 
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::domain::double::Recording;
-use crate::unix::pgroup::ProcessGroups;
 use crate::*;
 
+/// A shell running `script` (`exit 3` means the same to both).
 fn sh(script: &str) -> SpawnRequest {
+    #[cfg(unix)]
+    let (program, flag) = (std::path::PathBuf::from("/bin/sh"), "-c");
+    #[cfg(windows)]
+    let (program, flag) = (
+        std::path::PathBuf::from(
+            std::env::var_os("ComSpec").unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".into()),
+        ),
+        "/c",
+    );
     SpawnRequest {
         role: Role::Worker,
         profile: Profile::Plugin,
         family: "sh".into(),
-        program: Program::Path("/bin/sh".into()),
-        args: vec!["-c".into(), script.into()],
+        program: Program::Path(program),
+        args: vec![flag.into(), script.into()],
         env: Vec::new(),
         cwd: std::env::temp_dir(),
         grants: Vec::new(),
@@ -36,8 +45,12 @@ fn wait_for(rx: &mpsc::Receiver<HostEvent>, mut pred: impl FnMut(&HostEvent) -> 
 fn domain_is_driven_in_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let opts = HostOptions::new(std::env::temp_dir());
+    #[cfg(unix)]
+    let inner = crate::unix::pgroup::ProcessGroups;
+    #[cfg(windows)]
+    let inner = crate::windows::job::JobObjects::new(&opts).unwrap();
     let domain = Box::new(Recording {
-        inner: ProcessGroups,
+        inner,
         calls: calls.clone(),
     });
     let (sink, rx) = EventSink::channel(64);
@@ -105,5 +118,14 @@ fn domain_is_driven_in_order() {
         calls.iter().filter(|c| c.starts_with("exit_facts")).count(),
         2
     );
+    let leaves: Vec<usize> = (0..calls.len())
+        .filter(|&i| calls[i] == "close_leaf g1")
+        .collect();
+    assert_eq!(
+        leaves.len(),
+        2,
+        "one close_leaf per exited process: {calls:?}"
+    );
+    assert!(leaves.iter().all(|&i| i + 1 < calls.len()), "{calls:?}");
     assert_eq!(calls.last().map(String::as_str), Some("close_group g1"));
 }

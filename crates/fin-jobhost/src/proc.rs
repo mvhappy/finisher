@@ -108,8 +108,9 @@ pub(crate) struct Proc {
     emit: Mutex<bool>,
     sink: EventSink,
     tail: Mutex<Tail>,
-    /// The process's leaf domain, held while the process lives (a leaf Job, Task 5).
-    _leaf: LeafHandle,
+    /// The process's leaf domain (a leaf Job on Windows), held while the process lives and
+    /// handed to `KillDomain::close_leaf` at its exit.
+    leaf: Mutex<Option<LeafHandle>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -149,7 +150,7 @@ impl Proc {
             emit: Mutex::new(false),
             sink,
             tail: Mutex::default(),
-            _leaf: leaf,
+            leaf: Mutex::new(Some(leaf)),
         }
     }
 
@@ -182,6 +183,11 @@ impl Proc {
             proc: self.id,
             info,
         });
+    }
+
+    /// The leaf, once: at the exit, for `close_leaf`.
+    pub fn take_leaf(&self) -> Option<LeafHandle> {
+        lock(&self.leaf).take()
     }
 
     pub fn stderr_tail(&self) -> String {

@@ -1,5 +1,5 @@
 //! A `fin-jobhost` host over the test-hooks `fin-workers` binary, for the process tests
-//! (`host_common.rs`, `host_unix.rs`). Events of every process arrive on one channel; the
+//! (`host_common.rs`, `host_unix.rs`, `host_windows.rs`, `host_death_windows.rs`). Events of every process arrive on one channel; the
 //! helpers pick the next event of one process and keep the others in order.
 
 #![allow(dead_code)]
@@ -11,6 +11,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use fin_jobhost::*;
+use fin_jobs::test_kinds::SpawnPids;
 use fin_jobs::{Dirs, Hello, HostMsg, Limits, Start, StartJob, WorkerMsg};
 use serde_json::Value;
 
@@ -267,6 +268,32 @@ pub fn rewrite(f: impl Fn(&mut PlatformCommand) + Send + Sync + 'static) -> Arc<
     Arc::new(Rewrite(f))
 }
 
+/// Reads the pids `test.spawn` wrote into `name` (JSON, then the file's zero padding).
+pub fn spawn_pids(h: &TestHost, name: &str) -> SpawnPids {
+    let path = h.dir.path().join(name);
+    let until = Instant::now() + WAIT;
+    loop {
+        if let Ok(bytes) = std::fs::read(&path) {
+            let text = String::from_utf8_lossy(&bytes);
+            let text = text.trim_end_matches('\0');
+            if let Ok(p) = serde_json::from_str(text) {
+                return p;
+            }
+        }
+        assert!(Instant::now() < until, "test.spawn wrote no pids");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Whether the host killed the process: `SIGKILL` on Unix, [`KILLED_EXIT_CODE`] on Windows
+/// (which has no signals).
+pub fn killed(exit: &ExitInfo) -> bool {
+    #[cfg(unix)]
+    return exit.signal == Some("kill");
+    #[cfg(windows)]
+    return exit.signal.is_none() && exit.code == Some(i64::from(KILLED_EXIT_CODE));
+}
+
 /// Whether `pid` is gone: no such process, or (Linux) a zombie nobody has reaped yet.
 #[cfg(unix)]
 pub fn gone(pid: u32) -> bool {
@@ -283,8 +310,32 @@ pub fn gone(pid: u32) -> bool {
     false
 }
 
+/// Whether `pid` is gone: it cannot be opened, or it has exited.
+#[cfg(windows)]
+pub fn gone(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    // SAFETY: opens a process by id; the handle is closed below.
+    let h = unsafe {
+        OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if h.is_null() {
+        return true;
+    }
+    // SAFETY: a process handle we just opened.
+    let running = unsafe { WaitForSingleObject(h, 0) } == WAIT_TIMEOUT;
+    // SAFETY: as above, closed once.
+    unsafe { CloseHandle(h) };
+    !running
+}
+
 /// Polls [`gone`] for ≤ 5 s.
-#[cfg(unix)]
 pub fn wait_gone(pid: u32) -> bool {
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {

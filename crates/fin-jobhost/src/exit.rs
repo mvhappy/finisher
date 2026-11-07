@@ -28,9 +28,9 @@ pub enum ExitReason {
     Stalled,
     /// The watch's `timeout_ms` passed.
     TimedOut,
-    /// Over its group's memory limit (Task 4, Task 5).
+    /// Over its group's memory limit (a Job's violation, a cgroup's or the sampler's).
     Oom,
-    /// The kernel reported a resource fault (Task 4, Task 5).
+    /// The kernel reported a resource fault (Task 4).
     ResourceFault,
     /// A framing or protocol violation (`json`, `seq`, `long`, `otherJob`, `unknownType`,
     /// `order`, `hello`, `role`, `selfSandbox`, …).

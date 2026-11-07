@@ -29,6 +29,7 @@ pub(crate) enum Cmd {
     Kill(GroupId, KillReason, Option<Done>),
     KillFor(ProcId, ExitReason),
     KillWaitOver(GroupId),
+    CloseLeaves(GroupId),
     Close(GroupId),
     Finalize(GroupId),
     Shutdown(u32, Done),
@@ -68,6 +69,7 @@ fn one(inner: &Arc<Inner>, cmd: Cmd) {
         Cmd::Kill(g, reason, done) => kill(inner, g, reason, done),
         Cmd::KillFor(p, reason) => kill_for(inner, p, reason),
         Cmd::KillWaitOver(g) => kill_wait_over(inner, g),
+        Cmd::CloseLeaves(g) => close_leaves(inner, g),
         Cmd::Close(g) => close(inner, g),
         Cmd::Finalize(g) => finalize(inner, g),
         Cmd::Shutdown(grace, done) => shutdown(inner, grace, done),
@@ -347,7 +349,23 @@ fn close(inner: &Arc<Inner>, gid: GroupId) {
     }
 }
 
-/// A closing group is empty: release its domain, then let the leader be reaped.
+/// Releases the leaves of the group's exited processes (`KillDomain::close_leaf`).
+fn close_leaves(inner: &Inner, gid: GroupId) {
+    let (handle, leaves) = {
+        let mut t = inner.tables();
+        let Some(g) = t.groups.get_mut(&gid) else {
+            return;
+        };
+        (g.handle.clone(), std::mem::take(&mut g.leaves))
+    };
+    if let Some(h) = handle {
+        for leaf in leaves {
+            inner.domain.close_leaf(&h, leaf);
+        }
+    }
+}
+
+/// A closing group is empty: release its leaves and its domain, then let the leader be reaped.
 fn finalize(inner: &Inner, gid: GroupId) {
     let g = {
         let mut t = inner.tables();
@@ -357,6 +375,11 @@ fn finalize(inner: &Inner, gid: GroupId) {
         }
     };
     let Some(mut g) = g else { return };
+    if let Some(h) = &g.handle {
+        for leaf in std::mem::take(&mut g.leaves) {
+            inner.domain.close_leaf(h, leaf);
+        }
+    }
     if let Some(h) = g.handle.take() {
         match Arc::try_unwrap(h) {
             Ok(h) => inner.domain.close_group(h),

@@ -1,7 +1,6 @@
-//! `fin-jobhost` over the test `fin-workers`, on every OS with a kill domain (5C-1 plan, Task
-//! 3). Unix only until Task 5 gives Windows its Job Objects and removes the `cfg` below.
-
-#![cfg(unix)]
+//! `fin-jobhost` over the test `fin-workers`, on every OS (5C-1 plan, Tasks 3 and 5): process
+//! groups on Unix, Job Objects on Windows. Where the OSes differ (Windows has no signals), the
+//! assertions say so.
 
 mod host_support;
 
@@ -80,7 +79,7 @@ fn protocol_errors_kill_the_process() {
             ExitReason::ProtocolError(want.into()),
             "{what}"
         );
-        assert_eq!(exit.signal, Some("kill"), "{what}");
+        assert!(killed(&exit), "{what}: {exit:?}");
     }
 }
 
@@ -315,7 +314,7 @@ fn cancel_grace_then_kill() {
     h.kill(g, KillReason::Cancel);
     let exit = h.exit(p);
     assert_eq!(exit.reason, ExitReason::Killed(KillReason::Cancel));
-    assert_eq!(exit.signal, Some("kill"));
+    assert!(killed(&exit), "{exit:?}");
 }
 
 #[test]
@@ -372,7 +371,12 @@ fn stderr_tail_is_kept_and_capped() {
 #[test]
 fn exit_reports_code_and_signal() {
     let mut h = host();
-    for (how, code, signal) in [("exit", Some(3), None), ("segv", None, Some("segv"))] {
+    #[cfg(unix)]
+    let cases = [("exit", Some(3), None), ("segv", None, Some("segv"))];
+    // Windows: the NTSTATUS of the exception (STATUS_ACCESS_VIOLATION), never a signal.
+    #[cfg(windows)]
+    let cases = [("exit", Some(3), None), ("segv", Some(0xC000_0005), None)];
+    for (how, code, signal) in cases {
         let g = h.group();
         let p = h.worker(g);
         h.hello(p);
@@ -406,9 +410,19 @@ fn unsandboxed_caps() {
     let caps = h.host.caps();
     assert_eq!(caps.sandbox, "none");
     assert!(!caps.sandboxed);
-    assert_eq!(caps.kill_tree, KillTree::ProcessGroup);
-    assert!(!caps.leaf_limits);
-    assert!(!caps.cgroup_memory);
+    assert!(!caps.watchdog);
+    #[cfg(unix)]
+    {
+        assert_eq!(caps.kill_tree, KillTree::ProcessGroup);
+        assert!(!caps.leaf_limits);
+        assert!(!caps.cgroup_memory);
+    }
+    #[cfg(windows)]
+    {
+        assert_eq!(caps.kill_tree, KillTree::JobObject);
+        assert!(caps.leaf_limits);
+        assert!(caps.cgroup_memory);
+    }
 }
 
 #[test]
@@ -486,10 +500,8 @@ fn shutdown_closes_stdin_then_kills() {
         (ExitReason::Killed(KillReason::Shutdown), Some(70))
     );
     let e2 = h.exit(p2);
-    assert_eq!(
-        (e2.reason, e2.signal),
-        (ExitReason::Killed(KillReason::Shutdown), Some("kill"))
-    );
+    assert_eq!(e2.reason, ExitReason::Killed(KillReason::Shutdown));
+    assert!(killed(&e2), "{e2:?}");
     rx.recv_timeout(WAIT).expect("shutdown answers");
     assert!(matches!(
         h.spawn(quiet, h.req(&["test"])),

@@ -16,6 +16,8 @@ use serde_json::Value;
 mod batch;
 pub mod helper;
 mod kinds;
+#[cfg(windows)]
+mod windows;
 
 static TEST_KINDS: &[KindVersion] = &[
     KindVersion::new("test.sleep", 1),
@@ -236,8 +238,12 @@ pub(crate) fn spawn_grandchild(detach: Detach, sleep_ms: u64) -> std::io::Result
 }
 
 /// The hidden entries of the test binary: `--test-spawn-mid <none|setsid> <ms>` and
-/// `--test-sleep <ms>`. `None` for anything else.
+/// `--test-sleep <ms>`, and on Windows those of [`windows`]. `None` for anything else.
 pub fn hidden_main(args: &[String]) -> Option<i32> {
+    #[cfg(windows)]
+    if let Some(code) = windows::hidden_main(args) {
+        return Some(code);
+    }
     match args.first().map(String::as_str)? {
         "--test-spawn-mid" => {
             #[cfg(unix)]

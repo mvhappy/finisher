@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use fin_jobs::HostMsg;
 
 use crate::commands::{Cmd, Done, SpawnDone};
-use crate::domain::{GroupHandle, KillDomain};
+use crate::domain::{GroupHandle, KillDomain, LeafHandle};
 use crate::exit::{ExitReason, RawExit, signal_name};
 use crate::proc::Proc;
 use crate::spawner::SpawnRequest;
@@ -38,6 +38,8 @@ pub(crate) struct Group {
     pub kill_done: Vec<(Instant, Done)>,
     /// Dropping it lets the leader's waiter reap the leader.
     pub reap: Option<mpsc::Sender<()>>,
+    /// Leaves of exited processes, waiting for `KillDomain::close_leaf`.
+    pub leaves: Vec<LeafHandle>,
 }
 
 #[derive(Default)]
@@ -127,6 +129,7 @@ impl Host {
                 closing: false,
                 kill_done: Vec::new(),
                 reap: None,
+                leaves: Vec::new(),
             },
         );
         id
@@ -278,6 +281,14 @@ impl Inner {
     }
 
     pub fn on_hello(self: &Arc<Self>, p: &Proc) {
+        let handle = self
+            .tables()
+            .groups
+            .get(&p.group)
+            .and_then(|g| g.handle.clone());
+        if let Some(h) = handle {
+            self.domain.hello(&h, p.pid);
+        }
         let at = Instant::now() + ms_(self.opts.timing.hung_ms);
         self.arm(at, p.id, |i, id| i.check_hung(id));
     }
@@ -373,6 +384,11 @@ impl Inner {
             let (empty, waiters, finalize) = match t.groups.get_mut(&p.group) {
                 Some(g) => {
                     g.live.remove(&p.id);
+                    // Released on the spawn thread; `finalize` releases any still waiting first.
+                    if let Some(leaf) = p.take_leaf() {
+                        g.leaves.push(leaf);
+                        self.post(Cmd::CloseLeaves(p.group));
+                    }
                     if g.live.is_empty() && g.pending == 0 {
                         let w: Vec<Done> = g.kill_done.drain(..).map(|(_, d)| d).collect();
                         (true, w, g.closing)
