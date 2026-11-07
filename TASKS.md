@@ -262,6 +262,21 @@ Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`
 - [ ] D6: `fin`: actor headers, `cli.command` and `fin diagnostics`
 - [ ] D7: e2e, docs and tracker
 
+## Sub-project 8: plugins and registry (designed 2026-11-07)
+
+Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `docs/superpowers/plans/2026-11-07-sub-project-8a-packages-and-registries.md` (branch `sp8a-packages`, stacked on `sp5a-principals`; its pure-Rust Tasks 1–7 may start on `sp4c-edit-breadth`). Sub-batches 8A–8H (spec §1.4); 8A's plan adds its own task list here.
+
+- [ ] Owner questions (spec §19): 1 third-party code before the OS sandbox; 2 WASM runtime in v1; 3 brokered secrets vs raw grants; 4 mattes as project assets; 5 model provenance policy; 6 first-party generation providers. 8A proceeds on the recommendation of 1
+- [ ] Spec follow-ups from the design (spec §21): arch §13/§18 drop whisper.cpp and sherpa-onnx (ONNX Runtime through `ort`); arch §13 and §22 point to the §27.4 alignment gate; settle `fin-workers` (5C) vs `fin-worker` (6) before 8C; AGENTS.md on owner-held, uncommitted evaluation references
+- [ ] 8A: packages, registries and lifecycle
+- [ ] 8B: plugin host and SDKs (Rust, TS)
+- [ ] 8C: analysis foundation and speech (transcription, alignment, boundary-correction retrain)
+- [ ] 8D: scenes and audio analysis
+- [ ] 8E: semantic search
+- [ ] 8F: reframe
+- [ ] 8G: generation providers
+- [ ] 8H: media interfaces (codec backends, mattes, effects, Python SDK)
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
