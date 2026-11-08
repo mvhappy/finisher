@@ -152,3 +152,55 @@ fn a_light_tick_leaves_compaction_to_the_caller() {
     assert_eq!(json["deleted"], 3);
     assert!(json["packsWritten"].is_number());
 }
+
+#[test]
+fn a_due_compaction_runs_one_step_at_a_time() {
+    let e = env();
+    let mut a = e.create("a");
+    a.set_test_lease(1, true);
+    a.set_compaction_grace_for_test(Duration::from_secs(5));
+    commit(&mut a, "t0", vec![asset("/m/0.mov")]);
+    let feature = a
+        .create_branch(fin_store::BranchCreate {
+            tx_id: "b1".into(),
+            author: "test".into(),
+            name: Some("feature".into()),
+            from: fin_store::MAIN.into(),
+            at: None,
+            dry_run: false,
+            args_hash: None,
+        })
+        .unwrap()
+        .branch
+        .id;
+    e.flush(&mut a);
+    for (i, branch) in [fin_store::MAIN, &feature]
+        .iter()
+        .cycle()
+        .take(6)
+        .enumerate()
+    {
+        let tx = fin_core::Tx {
+            tx_id: format!("t{}", i + 1),
+            author: "test".into(),
+            branch: (*branch).to_string(),
+            base_rev: a.head(branch),
+            schema_version: fin_core::SCHEMA_VERSION,
+            args_hash: None,
+            ops: vec![asset(&format!("/m/{}.mov", i + 1))],
+        };
+        a.commit(tx).unwrap();
+        assert_eq!(e.flush(&mut a), 1);
+    }
+    // A manifest per branch; both past their grace at once.
+    assert_eq!(a.compact(true).unwrap().manifests.len(), 2);
+    e.clock.advance(Duration::from_secs(6));
+    for left in [2, 1] {
+        light_poll(&e, &mut a);
+        assert!(a.due_work().compaction, "{left} manifests left");
+        let step = a.run_due_compaction_step().unwrap();
+        assert_eq!(step.finished.len(), 1, "{step:?}");
+    }
+    light_poll(&e, &mut a);
+    assert!(!a.due_work().compaction, "all done");
+}

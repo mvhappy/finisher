@@ -332,7 +332,7 @@ impl Store {
     }
 
     /// Whether the daily backup of unix ms `now_ms` is still to take.
-    fn backup_due(&self, now_ms: i64) -> bool {
+    pub(crate) fn backup_due(&self, now_ms: i64) -> bool {
         let today = crate::localdate::local_ymd(now_ms);
         self.daily.done != Some(today)
             && !self
@@ -353,14 +353,21 @@ impl Store {
         if !self.backup_due(now_ms) {
             return;
         }
-        let today = crate::localdate::local_ymd(now_ms);
         match self.daily_backup(now_ms) {
-            Ok(_) => {
-                self.daily.done = Some(today);
-                self.daily.failed_at = None;
-            }
-            Err(_) => self.daily.failed_at = Some(now_ms),
+            Ok(_) => self.backup_done(now_ms),
+            Err(_) => self.backup_failed(now_ms),
         }
+    }
+
+    /// The local day of unix ms `now_ms` has its backup.
+    pub(crate) fn backup_done(&mut self, now_ms: i64) {
+        self.daily.done = Some(crate::localdate::local_ymd(now_ms));
+        self.daily.failed_at = None;
+    }
+
+    /// A backup attempt at unix ms `now_ms` failed: retried after [`BACKUP_RETRY_MS`].
+    pub(crate) fn backup_failed(&mut self, now_ms: i64) {
+        self.daily.failed_at = Some(now_ms);
     }
 
     /// Whether this store holds the lease now (in memory, no folder I/O).

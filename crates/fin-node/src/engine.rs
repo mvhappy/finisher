@@ -1,6 +1,5 @@
 //! The `Engine` class: one project's store, its worker thread and its maintenance thread.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -43,8 +42,9 @@ impl State {
 }
 
 /// How long a short call waits for a long call to give the store back before it fails with
-/// `ENGINE_BUSY`: long enough for an automatic backup or compaction of a small project, short
-/// enough not to park a libuv thread.
+/// `ENGINE_BUSY`: short enough not to park a libuv thread. Automatic maintenance never takes
+/// the store out (`crate::auto`), so only `takeover`, `verify`, `rebuild`, `compact`,
+/// `recover` and the like can make a call wait.
 pub(crate) const BUSY_WAIT: Duration = Duration::from_millis(250);
 
 /// What an `Engine`, its in-flight calls and its threads share.
@@ -54,8 +54,8 @@ pub(crate) struct Inner {
     pub(crate) returned: Condvar,
     /// The last `ProjectStatus` seen (JSON): what `status()` answers during a long call.
     pub(crate) status: Mutex<Option<serde_json::Value>>,
-    /// An automatic backup or compaction is queued on the worker (or running).
-    pub(crate) auto_queued: AtomicBool,
+    /// The automatic backup and compaction: when they may start, the running backup.
+    pub(crate) auto: crate::auto::Auto,
     pub(crate) events: EventSink,
     /// The maintenance thread, until `close` (or the engine's drop) stops it.
     pub(crate) maintenance: Mutex<Option<Maintenance>>,
@@ -113,6 +113,7 @@ pub(crate) fn observe_read_only(shared: &Shared, now: Option<&'static str>) {
 
 /// Runs `f` against the open store, or fails with `ENGINE_CLOSED` / `ENGINE_BUSY`.
 pub(crate) fn with_store<T>(shared: &Shared, f: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
+    shared.auto.touch();
     let mut guard = lock_state(shared, BUSY_WAIT);
     match &mut *guard {
         State::Open(store) => f(store),
@@ -166,7 +167,7 @@ impl Engine {
             state: Mutex::new(State::Open(Box::new(store))),
             returned: Condvar::new(),
             status: Mutex::new(status),
-            auto_queued: AtomicBool::new(false),
+            auto: crate::auto::Auto::default(),
             events: EventSink::default(),
             maintenance: Mutex::new(None),
             journal: Mutex::new(Some(journal)),
@@ -176,7 +177,7 @@ impl Engine {
             #[cfg(feature = "test-hooks")]
             hooks: Default::default(),
         });
-        let m = Maintenance::start(&inner, worker.clone())?;
+        let m = Maintenance::start(&inner)?;
         *lock(&inner.maintenance) = Some(m);
         Ok(Engine {
             inner,

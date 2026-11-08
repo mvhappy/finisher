@@ -58,6 +58,7 @@ use std::path::{Path, PathBuf};
 use fin_core::{CommittedTx, CoreError, Project};
 use serde_json::json;
 
+pub use backup::{BackupCancel, BackupOutcome, DailyBackup};
 pub use branch::create::{At, BranchCreate, BranchSet};
 pub use collect::{CollectPolicy, policy_of};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -393,7 +394,7 @@ impl Store {
             .parent()
             .unwrap_or(Path::new("."))
             .to_path_buf();
-        backup::daily(&self.conn, &dir, now_ms)
+        backup::daily(&self.conn, &dir, now_ms, None)
     }
 
     /// What became of `tx_id` (`tx.get`): committed, set aside (a superseded record is

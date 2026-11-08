@@ -19,33 +19,13 @@ use crate::tasks::{Call, StoreTask};
 use crate::{guarded, reject};
 
 /// Faults an engine's threads pick up.
+#[derive(Default)]
 pub(crate) struct Hooks {
     tick_panic: AtomicBool,
     long_delay_ms: AtomicU64,
-    /// Whether the maintenance thread may queue the daily backup and compaction. Off from the
-    /// start: a fresh engine's first tick finds today's backup due, and under load that
-    /// `backup (auto)` would hold the store while a test expects it idle (`ENGINE_BUSY`) or
-    /// take a one-shot long-call delay meant for another call. A test of the automatic work
-    /// turns it on (`set_auto_work_for_test`).
-    auto_work: AtomicBool,
-}
-
-impl Default for Hooks {
-    fn default() -> Hooks {
-        Hooks {
-            tick_panic: AtomicBool::new(false),
-            long_delay_ms: AtomicU64::new(0),
-            auto_work: AtomicBool::new(false),
-        }
-    }
 }
 
 impl Hooks {
-    /// Whether the automatic backup and compaction may be queued.
-    pub(crate) fn auto_work_enabled(&self) -> bool {
-        self.auto_work.load(Ordering::SeqCst)
-    }
-
     /// Whether the next tick should panic (once).
     pub(crate) fn take_tick_panic(&self) -> bool {
         self.tick_panic.swap(false, Ordering::SeqCst)
@@ -83,12 +63,23 @@ impl Engine {
             .store(u64::from(ms), Ordering::SeqCst);
     }
 
-    /// Lets (or stops) the maintenance thread queue the daily backup and compaction. Test
-    /// engines start with it off, so no automatic long call holds the store unasked. Work
-    /// already queued or running is not affected.
+    /// Automatic work starts once the engine has been quiet for `ms` (instead of 30 s).
     #[napi(catch_unwind)]
-    pub fn set_auto_work_for_test(&self, enabled: bool) {
-        self.inner.hooks.auto_work.store(enabled, Ordering::SeqCst);
+    pub fn set_auto_idle_for_test(&self, ms: u32) {
+        self.inner.auto.set_idle_for_test(u64::from(ms));
+    }
+
+    /// Each automatic backup from now on waits `ms` between its copy and its checks (cut short
+    /// when cancelled).
+    #[napi(catch_unwind)]
+    pub fn pause_auto_backup_for_test(&self, ms: u32) {
+        self.inner.auto.set_backup_pause_for_test(u64::from(ms));
+    }
+
+    /// Whether an automatic backup is running.
+    #[napi(catch_unwind)]
+    pub fn auto_backup_running_for_test(&self) -> bool {
+        self.inner.auto.backup_running()
     }
 
     /// Emits a `rewound` event as the maintenance thread would for an import that took `branch`

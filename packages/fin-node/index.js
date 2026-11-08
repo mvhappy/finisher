@@ -190,9 +190,19 @@ export class Engine {
     this.#hook("delayNextLongCallForTest")(ms);
   }
 
-  /** @internal Test builds only: lets the maintenance thread queue the daily backup and compaction (off at open). */
-  setAutoWorkForTest(enabled) {
-    this.#hook("setAutoWorkForTest")(enabled);
+  /** @internal Test builds only: automatic work starts once the engine has been quiet for `ms` (30 s otherwise). */
+  setAutoIdleForTest(ms) {
+    this.#hook("setAutoIdleForTest")(ms);
+  }
+
+  /** @internal Test builds only: each automatic backup waits `ms` between its copy and its checks. */
+  pauseAutoBackupForTest(ms) {
+    this.#hook("pauseAutoBackupForTest")(ms);
+  }
+
+  /** @internal Test builds only: whether an automatic backup is running. */
+  autoBackupRunningForTest() {
+    return this.#hook("autoBackupRunningForTest")();
   }
 
   /** @internal Test builds only: emits a synthetic `rewound` event. */
