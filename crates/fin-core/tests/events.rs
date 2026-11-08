@@ -394,6 +394,7 @@ fn content_fields_name_their_kind() {
         ("agent.approval.subject".to_string(), ContentKind::UserText),
         ("agent.toolCall.args".into(), ContentKind::ToolArgs),
         ("agent.toolResult.output".into(), ContentKind::ToolResult),
+        ("agent.turn.bodyBlake3".into(), ContentKind::ModelInput),
         ("agent.turn.messagesDelta".into(), ContentKind::ModelInput),
         ("agent.turn.output".into(), ContentKind::ModelOutput),
         ("agent.turn.system".into(), ContentKind::ModelInput),

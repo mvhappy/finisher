@@ -31,7 +31,7 @@ export const DiagnosticsStatusSuccess = Schema.Unknown;
  * `project`, `kinds`, `limit`: the newest n); `cursor`: the previous page's `next` (an opaque
  * position for paging one export, not an upload cursor); `limit` 1–1000 per page (default
  * 1000); `asUpload`: exactly what an uploader may ship now (closed files, current consent,
- * content only under training). Answers `ExportPage {lines, next?}`.
+ * content only under training); `store`: which store. Answers `ExportPage {lines, next?}`.
  */
 export const DiagnosticsExportPayload = Schema.Struct({
   filter: Schema.optional(Schema.Unknown),
@@ -39,6 +39,8 @@ export const DiagnosticsExportPayload = Schema.Struct({
   limit: Schema.optional(Schema.Number),
   asUpload: Schema.optional(Schema.Literals(["diagnostics", "training"])),
   content: Schema.optional(Schema.Boolean),
+  /** The diagnostics journal (default) or the agent-trace store (agent content; sp7 §12.1). */
+  store: Schema.optional(Schema.Literals(["diagnostics", "agentTraces"])),
 });
 export const DiagnosticsExportSuccess = Schema.Unknown;
 

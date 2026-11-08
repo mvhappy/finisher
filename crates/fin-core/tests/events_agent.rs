@@ -85,14 +85,27 @@ fn turn() -> AgentTurn {
         cost_micros: Some(310),
         cost_basis: CostBasis::Reported,
         capture: Capture::Exact,
-        system_hash: h('e'),
-        tools_hash: h('f'),
+        system_hash: Some(h('e')),
+        tools_hash: Some(h('f')),
         body_hash: Some(h('b')),
+        body_blake3: Some(Content(
+            Blake3Hex::parse(&format!("blake3:{}", "c".repeat(64))).unwrap(),
+        )),
         messages_delta: inline(json!([{ "role": "user", "content": "tighten the intro" }])),
         output: blobbed(2),
         system: blobbed(3),
         tools: blobbed(4),
     }
+}
+
+fn provenance() -> Option<Provenance> {
+    Some(Provenance {
+        harness: Harness::ClaudeCode,
+        provider: AGENT_PROVIDERS.get("anthropic").unwrap(),
+        model: Name::OTHER,
+        model_hash: Some(h('9')),
+        weights: Weights::Closed,
+    })
 }
 
 fn tool_call() -> AgentToolCall {
@@ -102,6 +115,7 @@ fn tool_call() -> AgentToolCall {
         tool: AGENT_TOOLS.get("workspace").unwrap(),
         command: None,
         args_hash: h('a'),
+        provenance: provenance(),
         args: blobbed(5),
     }
 }
@@ -115,6 +129,7 @@ fn tool_result(tx_ids: usize) -> AgentToolResult {
         micros: 5,
         tx_ids: (0..tx_ids).map(|_| id(TX)).collect(),
         attribution: Attribution::Ambiguous,
+        provenance: provenance(),
         truncated: true,
         output: blobbed(6),
     }
@@ -128,6 +143,7 @@ fn approval() -> AgentApproval {
         decision: ApprovalDecision::Expired,
         by: DecidedBy::Policy,
         latency_ms: 90_000,
+        provenance: provenance(),
         subject: blobbed(7),
     }
 }
@@ -203,7 +219,7 @@ fn redact_drops_agent_content() {
         ("agent.session", &[]),
         (
             "agent.turn",
-            &["messagesDelta", "output", "system", "tools"],
+            &["bodyBlake3", "messagesDelta", "output", "system", "tools"],
         ),
         ("agent.toolCall", &["args"]),
         ("agent.toolResult", &["output"]),

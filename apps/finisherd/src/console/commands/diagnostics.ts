@@ -96,15 +96,23 @@ async function project(ctx: CommandContext, rest: ReadonlyArray<string>): Promis
   return 0;
 }
 
-/** `export --content [--kind <k>]… [--since <date>] [--project <id>] [--limit <n>]`: JSONL on stdout. */
+const STORES = ["diagnostics", "agentTraces"] as const;
+
+/**
+ * `export --content [--store diagnostics|agentTraces] [--kind <k>]… [--since <date>] [--project <id>] [--limit <n>]`:
+ * JSONL on stdout. `--store agentTraces` reads the agent-trace store (sp7 §12.1); content stays
+ * the owner's (`--content`, a person's console), whichever store.
+ */
 async function exportContent(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
-  onlyFlags(ctx.args, "diagnostics export", ["content", "kind", "since", "project", "limit"]);
+  onlyFlags(ctx.args, "diagnostics export", ["content", "store", "kind", "since", "project", "limit"]);
   if (rest.length > 0) usage("diagnostics export takes only flags");
   if (!has(ctx.args, "content")) usage("diagnostics export here is for content: add --content", "Without content, the fin command exports diagnostics too.");
   const since = one(ctx.args, "since");
   const project = one(ctx.args, "project");
   const limit = one(ctx.args, "limit");
   const kinds = all(ctx.args, "kind");
+  const store = one(ctx.args, "store");
+  if (store !== undefined && !(STORES as ReadonlyArray<string>).includes(store)) usage("--store is diagnostics or agentTraces");
   const filter = {
     ...(since === undefined ? {} : { since: parseDate("since", since) }),
     ...(project === undefined ? {} : { project }),
@@ -115,7 +123,7 @@ async function exportContent(ctx: CommandContext, rest: ReadonlyArray<string>): 
     let cursor: string | undefined;
     do {
       const page = valueOf<{ lines: unknown[]; next?: string }>(
-        await c.call("diagnostics.export", { filter, content: true, ...(cursor === undefined ? {} : { cursor }) }),
+        await c.call("diagnostics.export", { filter, content: true, ...(store === undefined ? {} : { store }), ...(cursor === undefined ? {} : { cursor }) }),
       );
       for (const line of page.lines) ctx.output.out(JSON.stringify(line));
       cursor = page.next;

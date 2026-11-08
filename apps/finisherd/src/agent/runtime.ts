@@ -110,7 +110,10 @@ export class Runtime extends RuntimeEngine {
    * the retention sweep (Decision 4). Answers how many sessions the retention removed.
    */
   sweep(now = this.clock.now()): Promise<number> {
-    for (const s of this.store.expireOverdueApprovals(now)) this.publishStatus(s, this.store.activeRun(s.id));
+    for (const s of this.store.expireOverdueApprovals(now)) {
+      this.publishStatus(s, this.store.activeRun(s.id));
+      this.#journalExpired(s);
+    }
     return this.store.sweep(now, this.deps.retentionDays);
   }
 
@@ -344,7 +347,17 @@ export class Runtime extends RuntimeEngine {
         throw finError("APPROVAL_NOT_FOUND", "no such approval", { id: approvalId });
       })();
       return this.serial(found.sessionId, async () => {
-        const { approval, session } = this.store.answerApproval(approvalId, decision, principalRef(by));
+        let answered: { approval: Approval; session: Session };
+        try {
+          answered = this.store.answerApproval(approvalId, decision, principalRef(by));
+        } catch (e) {
+          // Past its deadline it expired instead (`APPROVAL_EXPIRED`): that is journaled.
+          const s = (e as { code?: unknown }).code === "APPROVAL_EXPIRED" ? this.store.get(found.sessionId) : undefined;
+          if (s !== undefined) this.#journalExpired(s);
+          throw e;
+        }
+        const { approval, session } = answered;
+        this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
         if (approval.kind !== "budget" || decision !== "allow") return { approval, session };
         const b = this.budget(session);
@@ -359,6 +372,13 @@ export class Runtime extends RuntimeEngine {
         return { approval: this.store.approval(approvalId)!, session: resumed };
       });
     });
+  }
+
+  /** Journals the session's expired approvals (the journal records each once). */
+  #journalExpired(s: Session): void {
+    for (const approval of this.store.approvals(s.id)) {
+      if (approval.status === "expired") this.record("an approval", () => this.journal.approval({ session: s, approval }));
+    }
   }
 
   /** `agent.watch`: the stored nodes from `fromSeq`, the status, then live items until `ended`. */

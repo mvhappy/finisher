@@ -60,6 +60,15 @@ test("fin-node reaching wgpu through another crate, a stranger linking the compo
   assert.match(out.join("\n"), /fin-workers takes fin-fonts with its fetcher/);
 });
 
+test("fin-dataset-inputs may reach fin-core only (sp7 §16.2: never control.db)", () => {
+  const members = [...MEMBERS, "fin-dataset-inputs", "fin-core", "fin-journal", "fin-store"];
+  assert.deepEqual(check(graph(members, { "fin-dataset-inputs": [["fin-core"], ["fin-journal", "dev"], ["serde_json"]] })), []);
+  assert.deepEqual(check(graph(members, { "fin-dataset-inputs": [["fin-core"], ["fin-journal"]], "fin-journal": [["fin-store"]] })), [
+    "CRATE_DEPENDENCY: fin-dataset-inputs reaches fin-journal (the dataset builder reads the journal's files only, never control.db)",
+    "CRATE_DEPENDENCY: fin-dataset-inputs reaches fin-store (the dataset builder reads the journal's files only, never control.db)",
+  ]);
+});
+
 test("the gate script reads a fake metadata document", () => {
   const root = fixtureRoot({});
   const meta = join(root, "meta.json");

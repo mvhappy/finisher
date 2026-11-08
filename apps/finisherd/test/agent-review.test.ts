@@ -157,6 +157,17 @@ describe("2. approvals expire", () => {
     expect(store.approval(fresh.approval.id)!.status).toBe("open");
     expect(openList(fresh.s.id)).toEqual([fresh.approval.id]);
     expect((await failure(h.runtime.approve(overdue.approval.id, "allow", { moneyMicros: 1 }, PEOPLE))).code).toBe("INVALID_REQUEST");
+    // The expiry reaches the journal (Task 10: `agent.approval` with `decision: expired`).
+    expect(h.journal.entries.filter((e) => e.kind === "approval").map((e) => e.id)).toEqual([overdue.approval.id]);
+  });
+
+  test("a late answer through the runtime is APPROVAL_EXPIRED, and the expiry is journaled", async () => {
+    const h = harness(FakeAdapter([idleScript]));
+    await h.runtime.boot();
+    const { approval } = await interruptedWithApproval(1000);
+    clock.advance(1000);
+    expect((await failure(h.runtime.approve(approval.id, "allow", { moneyMicros: 1 }, PEOPLE))).code).toBe("APPROVAL_EXPIRED");
+    expect(h.journal.entries.filter((e) => e.kind === "approval").map((e) => e.id)).toEqual([approval.id]);
   });
 });
 

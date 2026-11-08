@@ -3,7 +3,7 @@
 // secret is printed. Commands run in-process through an injected `Prompt`, and spawned with
 // piped stdio for the cases a terminal decides.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -403,5 +403,21 @@ describe("read-only, service and confirmed commands", () => {
     const code = /: ([0-9A-Z]{6})$/.exec(p.shown.find((t) => t.startsWith("To go ahead"))!)![1]!;
     expect(printed).not.toContain(code);
     expect(printed).not.toMatch(/serverNonce|clientNonce|"mac"|"proof"|finisher\.ticket\./);
+  });
+});
+
+describe("diagnostics export --store (Task 10 review L3)", () => {
+  test("export_store_reads_the_store_named: the agent-trace store, still content-only here; a bad store is a usage error", async () => {
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ privacy: { diagnostics: "on", training: "on" } }));
+    await start();
+    // The diagnostics journal holds this run's `session.start`; the trace store holds no agent entry yet.
+    const diag = await run(["diagnostics", "export", "--content", "--kind", "session.start"]);
+    expect(diag.code, diag.err).toBe(0);
+    expect(diag.out.trim().split("\n").length).toBeGreaterThan(0);
+    const traces = await run(["diagnostics", "export", "--content", "--store", "agentTraces", "--kind", "session.start"]);
+    expect(traces.code, traces.err).toBe(0);
+    expect(traces.out).toBe("");
+    expect((await run(["diagnostics", "export", "--store", "agentTraces"])).code).toBe(2);
+    expect((await run(["diagnostics", "export", "--content", "--store", "nope"])).code).toBe(2);
   });
 });

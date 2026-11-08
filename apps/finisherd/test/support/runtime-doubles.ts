@@ -14,7 +14,7 @@ import { OutcomeTracker } from "../../src/agent/outcomes.ts";
 import { BranchLineage } from "../../src/agent/reach.ts";
 import { Runtime, type RuntimeDeps } from "../../src/agent/runtime.ts";
 import type { Pricing, RuntimeJournal, SessionPlan, SessionPlanner, StartRequest, ToolCall, ToolExecutor, ToolOutcome } from "../../src/agent/runtime-deps.ts";
-import { REPORTED_PRICING } from "../../src/agent/runtime-deps.ts";
+import { NO_JOURNAL, REPORTED_PRICING } from "../../src/agent/runtime-deps.ts";
 import type { AgentStore } from "../../src/agent/store.ts";
 import { Credentials } from "../../src/auth/credentials.ts";
 import { Audit } from "../../src/control/audit.ts";
@@ -102,7 +102,7 @@ export function testCore(store: AgentStore, control: ControlStore, clock: Clock)
   });
   const lineage = new BranchLineage();
   const outcomes = new OutcomeTracker({ store, lineage, clock: () => clock.now(), verdicts: { version: () => null, emit: () => false } });
-  return { store, credentials, lineage, outcomes, clock, ids: systemIds(clock), auth };
+  return { store, credentials, lineage, outcomes, clock, ids: systemIds(clock), journal: NO_JOURNAL, auth };
 }
 
 export function journal(): RuntimeJournal & { readonly entries: { kind: string; [k: string]: unknown }[]; failSessions: boolean } {

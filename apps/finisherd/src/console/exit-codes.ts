@@ -67,3 +67,14 @@ export function exitCodeOf(code: string): number {
   if (VALIDATION_CODES.includes(code)) return EXIT.validation;
   return EXIT.internal;
 }
+
+/** Every code of the FinError table (the lists above, and `INTERNAL`): what a record may name. */
+export const FIN_ERROR_CODES: ReadonlySet<string> = new Set([
+  ...DENIED_CODES,
+  ...USAGE_CODES,
+  ...CONFLICT_CODES,
+  ...JOB_RESULT_CODES,
+  ...UNAVAILABLE_CODES,
+  ...VALIDATION_CODES,
+  "INTERNAL",
+]);

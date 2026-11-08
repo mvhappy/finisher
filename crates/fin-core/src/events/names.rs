@@ -236,6 +236,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "slot",
         "srt",
         "start",
+        "store",
         "style",
         "template",
         "timeline",

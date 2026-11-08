@@ -150,6 +150,21 @@ pub(crate) fn id_ref(f: &KeyFn, raw: &str) -> IdRef {
 }
 
 impl crate::Journal {
+    /// A keyed hash that is always this journal's install key in force (after `purge all`,
+    /// the new one), for a second store whose ids and hashes must join this one's
+    /// ([`crate::JournalOptions::key`] of the agent-trace store; its blob addresses stay its
+    /// own). Once this journal is gone it keys with a random key of its own (unlinkable).
+    pub fn shared_keyer(&self) -> Option<KeyFn> {
+        let weak = std::sync::Arc::downgrade(self.h.as_ref()?);
+        let fallback = Key::generate()?;
+        Some(std::sync::Arc::new(move |b: &[u8]| {
+            match weak.upgrade().and_then(|h| h.sh.hasher()) {
+                Some(f) => f(b),
+                None => fallback.hash16(b),
+            }
+        }))
+    }
+
     /// The keyed hash of `raw` (`k1:…`, Decision 6), or `None` while off: no key is made
     /// or read for it then.
     pub fn hash(&self, raw: &str) -> Option<Hashed> {

@@ -1,1 +1,1 @@
-{"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"removed":0,"files":0,"blobs":0}}}
+{"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"removed":0,"files":0,"blobs":0,"stores":{"agentTraces":{"removed":0,"files":0,"blobs":0},"diagnostics":{"removed":0,"files":0,"blobs":0}}}}}

@@ -6,6 +6,7 @@
 //! policy in force when it was recorded.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Weak};
 
 use fin_core::events::{CollectPolicy, ProjectId};
 use schemars::JsonSchema;
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Journal;
 use crate::control::Control;
+use crate::handle::Handle;
 use crate::purge::PurgeSelector;
 use crate::writer::Writer;
 
@@ -87,7 +89,7 @@ impl Journal {
         let (Some(h), Some(id)) = (&self.h, project_key(project)) else {
             return;
         };
-        h.control(Control::Project { id, policy });
+        h.project(id, policy);
     }
 
     /// Every project the journal was told about, with its policy now (as of the last
@@ -118,10 +120,7 @@ impl ProjectScope {
     /// The project's flag changed (`collect` event); every scope of it sees the same file.
     pub fn update(&self, policy: CollectPolicy) {
         if let (Some(h), Some(id)) = (&self.journal.h, &self.id) {
-            h.control(Control::Project {
-                id: id.clone(),
-                policy: Some(policy),
-            });
+            h.project(id.clone(), Some(policy));
         }
     }
 
@@ -149,10 +148,7 @@ impl Drop for ProjectScope {
             None => false,
         };
         if last {
-            h.control(Control::Project {
-                id: id.clone(),
-                policy: None,
-            });
+            h.project(id.clone(), None);
         }
     }
 }
@@ -166,14 +162,76 @@ impl Journal {
         if let (Some(h), Some(id)) = (&self.h, &id) {
             let mut scopes = h.sh.scopes.lock().unwrap_or_else(|e| e.into_inner());
             *scopes.entry(id.clone()).or_default() += 1;
-            h.control(Control::Project {
-                id: id.clone(),
-                policy: Some(policy),
-            });
+            h.project(id.clone(), Some(policy));
         }
         ProjectScope {
             journal: self.clone(),
             id,
         }
+    }
+}
+
+/// What callers told an instance of each project, in their order, and the instances that
+/// follow its policies (the agent-trace store follows the diagnostics journal, which the
+/// engines tell).
+#[derive(Default)]
+pub(crate) struct Sent {
+    policies: BTreeMap<String, Option<CollectPolicy>>,
+    followers: Vec<Weak<Handle>>,
+}
+
+impl Handle {
+    /// Tells the writer, and every follower, `id`'s policy. The lock is held across the sends,
+    /// so every instance sees one order.
+    pub(crate) fn project(&self, id: String, policy: Option<CollectPolicy>) {
+        let mut sent = self
+            .sh
+            .projects_sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        sent.policies.insert(id.clone(), policy);
+        sent.followers.retain(|f| f.strong_count() > 0);
+        let followers: Vec<Arc<Handle>> = sent.followers.iter().filter_map(Weak::upgrade).collect();
+        self.control(Control::Project {
+            id: id.clone(),
+            policy,
+        });
+        for f in followers {
+            f.project(id.clone(), policy);
+        }
+    }
+}
+
+impl Journal {
+    /// From now on this instance is told every project policy `leader` is told, starting with
+    /// those it knows (the agent-trace store follows the diagnostics journal, so a `never`
+    /// project purges both and an unknown one records in neither).
+    pub fn follow_projects(&self, leader: &Journal) {
+        let (Some(me), Some(lh)) = (&self.h, &leader.h) else {
+            return;
+        };
+        if Arc::ptr_eq(me, lh) {
+            return;
+        }
+        let mut sent = lh
+            .sh
+            .projects_sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (id, policy) in &sent.policies {
+            me.project(id.clone(), *policy);
+        }
+        sent.followers.push(Arc::downgrade(me));
+    }
+
+    /// Whether an entry of `project` would be recorded under the policies callers sent so far
+    /// (`default`: yes; `never` or unknown: no). Emitters check it before they attach blobs,
+    /// so nothing of a `never` project reaches the disk.
+    pub fn records_project(&self, project: &str) -> bool {
+        let (Some(h), Some(id)) = (&self.h, project_key(project)) else {
+            return false;
+        };
+        let sent = h.sh.projects_sent.lock().unwrap_or_else(|e| e.into_inner());
+        sent.policies.get(&id) == Some(&Some(CollectPolicy::Default))
     }
 }

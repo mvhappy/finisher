@@ -94,6 +94,30 @@ pub struct ExportArgs {
     #[arg(long)]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub content: bool,
+    /// Which store: the diagnostics journal (default) or the agent-trace store (`agentTraces`;
+    /// metadata only here, as `--content` stays human-only).
+    #[arg(long, value_name = "store")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<Store>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Deserialize, Serialize, JsonSchema)]
+pub enum Store {
+    #[value(name = "diagnostics")]
+    #[serde(rename = "diagnostics")]
+    Diagnostics,
+    #[value(name = "agentTraces")]
+    #[serde(rename = "agentTraces")]
+    AgentTraces,
+}
+
+impl Store {
+    fn as_str(self) -> &'static str {
+        match self {
+            Store::Diagnostics => "diagnostics",
+            Store::AgentTraces => "agentTraces",
+        }
+    }
 }
 
 /// Deletes recorded entries: `--all` (also the key and every blob), `--project <id>` or
@@ -180,18 +204,20 @@ fn export_page(
     backend: &dyn Backend,
     filter: &Value,
     cursor: Option<&str>,
-    as_upload: Option<Purpose>,
-    content: bool,
+    a: &ExportArgs,
     limit: u32,
 ) -> Result<Value, CoreError> {
     let mut payload = json!({ "filter": filter, "limit": limit });
-    if content {
+    if a.content {
         payload["content"] = json!(true);
+    }
+    if let Some(s) = a.store {
+        payload["store"] = json!(s.as_str());
     }
     if let Some(c) = cursor {
         payload["cursor"] = json!(c);
     }
-    if let Some(p) = as_upload {
+    if let Some(p) = a.as_upload {
         payload["asUpload"] = json!(p.as_str());
     }
     backend.server_call("diagnostics.export", payload)
@@ -214,14 +240,7 @@ fn export(backend: &dyn Backend, g: &Globals, a: &ExportArgs) -> Result<Value, C
     output::streaming();
     let mut cursor: Option<String> = None;
     loop {
-        let page = export_page(
-            backend,
-            &filter,
-            cursor.as_deref(),
-            a.as_upload,
-            a.content,
-            1000,
-        )?;
+        let page = export_page(backend, &filter, cursor.as_deref(), a, 1000)?;
         for line in page["lines"]
             .as_array()
             .map(Vec::as_slice)

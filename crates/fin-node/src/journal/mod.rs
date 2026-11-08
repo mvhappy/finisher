@@ -175,18 +175,26 @@ fn off_thread<'e>(
     Ok(promise)
 }
 
-/// Test-only options (`test-hooks` builds): a short stats window and flush interval.
+/// Test-only options (`test-hooks` builds): a short stats window and flush interval; small
+/// caps (the trace store's eviction tests).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestOptions {
     stats_every_ms: Option<u64>,
     flush_every_ms: Option<u64>,
+    max_total_bytes: Option<u64>,
+    max_file_bytes: Option<u64>,
 }
 
-fn options(server_data: &Path, hostname: String, test: Option<&str>) -> Result<JournalOptions> {
+fn options(
+    base: JournalOptions,
+    server_data: &Path,
+    hostname: String,
+    test: Option<&str>,
+) -> Result<JournalOptions> {
     let mut opts = JournalOptions {
         scrub: server_scrub(server_data, Some(hostname)),
-        ..JournalOptions::default()
+        ..base
     };
     if let Some(t) = test {
         let t: TestOptions = parse("test options", t)?;
@@ -197,17 +205,26 @@ fn options(server_data: &Path, hostname: String, test: Option<&str>) -> Result<J
             if let Some(ms) = t.flush_every_ms {
                 opts.flush_every = Duration::from_millis(ms);
             }
+            if let Some(b) = t.max_total_bytes {
+                opts.max_total_bytes = b;
+            }
+            if let Some(b) = t.max_file_bytes {
+                opts.max_file_bytes = b;
+            }
         }
     }
     Ok(opts)
 }
 
-/// The diagnostics journal of one server data (`<server-data>/events`).
+/// The diagnostics journal of one server data (`<server-data>/events`), or its agent-trace
+/// store (`<server-data>/agent-traces`, [`JournalHandle::open_traces`]).
 #[napi(js_name = "Journal")]
 pub struct JournalHandle {
     journal: fin_journal::Journal,
     key: PathBuf,
     warning: Option<String>,
+    /// The diagnostics journal, which engines find by server data (not the trace store).
+    registered: bool,
 }
 
 #[napi]
@@ -225,7 +242,12 @@ impl JournalHandle {
         test_options_json: Option<String>,
     ) -> Result<JournalHandle> {
         let dir = PathBuf::from(&server_data);
-        let opts = options(&dir, hostname, test_options_json.as_deref())?;
+        let opts = options(
+            JournalOptions::default(),
+            &dir,
+            hostname,
+            test_options_json.as_deref(),
+        )?;
         let (privacy, unparsable) = privacy_value(privacy_json.as_deref());
         let (journal, w) = fin_journal::Journal::open_with_settings(
             &dir.join("events"),
@@ -244,6 +266,7 @@ impl JournalHandle {
             journal,
             key,
             warning: warning_of(w, unparsable),
+            registered: true,
         })
     }
 
@@ -440,7 +463,9 @@ impl JournalHandle {
     pub fn close<'e>(&self, env: &'e Env) -> Result<Object<'e>> {
         let j = self.journal.clone();
         let key = self.key.clone();
-        lock(&JOURNALS).retain(|(p, other)| !(*p == key && other.session() == j.session()));
+        if self.registered {
+            lock(&JOURNALS).retain(|(p, other)| !(*p == key && other.session() == j.session()));
+        }
         let (deferred, promise) = env.create_deferred::<(), _>()?;
         std::thread::Builder::new()
             .name("fin-node-journal-call".to_string())
@@ -481,58 +506,6 @@ impl JournalHandle {
             .or_else(|| self.journal.session().map(str::to_owned))
             .unwrap_or_default();
         Ok((source, ctx, payload, session))
-    }
-}
-
-#[cfg(feature = "test-hooks")]
-#[napi]
-impl JournalHandle {
-    /// Test hook: panics on a thread named `thread` (the hook records it); returns whether
-    /// the panic was caught.
-    #[napi(catch_unwind)]
-    pub fn panic_on_thread_for_test(&self, thread: String) -> bool {
-        std::thread::Builder::new()
-            .name(thread)
-            .spawn(|| {
-                catch_unwind(|| panic!("fin-node test panic in {}", std::env::temp_dir().display()))
-                    .is_err()
-            })
-            .ok()
-            .and_then(|t| t.join().ok())
-            .unwrap_or(false)
-    }
-
-    /// Test hook: makes the journal's writer panic at its next message.
-    #[napi(catch_unwind)]
-    pub fn panic_writer_for_test(&self) {
-        if let Some(f) = self.journal.faults() {
-            f.panic_next();
-        }
-    }
-
-    /// Test hook: stalls the writer before its next message (a slow disk); true once it is.
-    #[napi(catch_unwind)]
-    pub fn pause_writer_for_test(&self) -> bool {
-        self.journal.pause_writer()
-    }
-
-    /// Test hook: lets a stalled writer go on.
-    #[napi(catch_unwind)]
-    pub fn resume_writer_for_test(&self) {
-        self.journal.resume_writer();
-    }
-
-    /// Test hook: `raw` as the journal stores an id (a ULID kept, anything else keyed with
-    /// the install key), so a test can compute the ids it expects; `None` while off.
-    #[napi(catch_unwind)]
-    pub fn id_ref_for_test(&self, raw: String) -> Option<String> {
-        self.journal.id_ref(&raw).map(|r| r.as_str().to_owned())
-    }
-
-    /// Test hook: how often the previous panic hook ran (it is chained after ours).
-    #[napi(catch_unwind)]
-    pub fn previous_hook_calls_for_test(&self) -> f64 {
-        hook::PREVIOUS_CALLS.load(std::sync::atomic::Ordering::SeqCst) as f64
     }
 }
 
@@ -585,3 +558,8 @@ pub fn validate_privacy(privacy_json: String) -> Option<String> {
     }
     None
 }
+
+// After `JournalHandle`: napi expands an `impl` only once it has seen the struct.
+#[cfg(feature = "test-hooks")]
+mod test_api;
+mod traces;
