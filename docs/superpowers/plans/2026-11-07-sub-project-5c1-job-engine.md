@@ -19,7 +19,7 @@
 
 **Tech Stack:**
 - Rust 1.99.1, edition 2024. `serde`, `serde_json`, `schemars` 1, `blake3` 1, `napi` 3 (all already in the tree); **`libc` 0.2** (MIT OR Apache-2.0; already in the lock file, now a direct dependency of `fin-jobhost`, `fin-workers` and `fin-jobs` on Unix); **`windows-sys` 0.61** (MIT OR Apache-2.0; already in the tree) with `Win32_Foundation`, `Win32_Security`, `Win32_System_JobObjects`, `Win32_System_Threading`, `Win32_System_Pipes`, `Win32_System_IO`, `Win32_Storage_FileSystem` in `fin-jobhost`, and `Win32_System_Diagnostics_Debug`, `Win32_System_ErrorReporting` in `fin-jobs` (the runtime's crash-UI suppression, Decision 6); `proptest` 1 (dev, already in the tree). Pipes through `std::io::pipe` (stable since 1.87).
-- Node 26.12 using only APIs Node 24.22 also has; Effect 4.0.6; vitest; **`fast-check` 4** (MIT; dev-only, exact pin) for the scheduler and isolation properties.
+- Node 24.22 (the repository's Node since 2026-11-08); Effect 4.0.6; vitest; **`fast-check` 4** (MIT; dev-only, exact pin) for the scheduler and isolation properties.
 - **No other new dependency.** Rejected: `nix` (not needed beyond `libc`), `tokio`/`async-process` (blocking threads per process are simpler and bounded), `command-group` and `process-wrap` (they cannot create processes suspended or join a pre-made Job and cgroup), `sysinfo` (heavy; the memory figures are a few syscalls), `jsonschema` (params are validated by their Rust types).
 
 **Spec:** `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` revision 3, §3.1 (migration chains), §3.4 (`job.done`, `worker.exit`), §6.0–6.6, §6.8, §6.9, §6.10 (the interface additions of this plan, added with revision 2), §10, §11 Decisions 23–24d. Sub-project 6: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §3.1–3.6, §14 (memory defaults), §17 (`WORKER_OOM`). Sub-project 8: `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §3.3–3.7, §16.2. 6A plan: `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md` (6A-2 entry check and Task 12's kind declaration). 5A plan: `docs/superpowers/plans/2026-11-07-sub-project-5a-principals-and-scopes.md` (Tasks 1 and 2 are frozen).
@@ -1122,7 +1122,7 @@ Decisions 31, 32.
   - the `setsid` gap; a spawn helper process if Task 12's large-heap spawn passes 150 ms;
   - sub-project 9: package and sign `fin-workers` beside `fin-node`.
 
-- [ ] **Step 1:** Write the as-built notes from the code, listing every deviation from spec revision 3. **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 5C-1 as built`.
+- [x] **Step 1:** Write the as-built notes from the code, listing every deviation from spec revision 3. **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 5C-1 as built`.
 
 ### Task 14: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
 

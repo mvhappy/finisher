@@ -22,7 +22,7 @@
 
 **Tech Stack:**
 - Rust 2024: rusqlite 0.37 bundled; new crates `blake3`, `crc32c`, `libc` (unix) and `windows-sys` (windows), all MIT or Apache-2.0.
-- Node 26, Effect 4, vitest.
+- Node 24, Effect 4, vitest.
 
 **Spec:** `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §2, §3, §6 and §8. Parent: `docs/specs/2026-11-01-finisher-architecture-design.md` §6.7, §6.8 and §27.9.
 
@@ -42,7 +42,7 @@
 - Backups: daily `VACUUM INTO`, keep 7; pre-migration backups, keep 3.
 - Every task runs `cargo test --workspace`, `pnpm test` and `pnpm gates` before committing.
 - Commits use Conventional Commits, author `mvhappy <333925574+mvhappy@users.noreply.github.com>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Prefix shell commands with `rtk`. Node 26 via `source .superpowers/env.sh`.
+- Prefix shell commands with `rtk`. Node 24 via `source .superpowers/env.sh`.
 - The repo is public: no host names, IPs, user names or key names in tracked files. Cross-host access details live in `archive/hosts.md` (git-ignored).
 
 ## Decisions taken here (the spec leaves them open; Task 20 records them in the spec)

@@ -40,7 +40,7 @@
 **Tech Stack:**
 - Rust 2024, `serde`/`serde_json`, `schemars` 1 (`extend` attributes for `x-fin-class` and `x-fin-content`), `ulid` 1, `blake3` 1 (keyed mode), `getrandom` 0.3 (MIT OR Apache-2.0, already in the lock file) for the install key, `std::sync::mpsc` (`sync_channel` for data, `channel` for control).
 - **No new third-party crates beyond those.** No `erased-serde`: the payload is one closed enum. No compression in this phase. No HTTP: `fin-journal` must not depend on `ureq`, `rustls` or `fin-fonts`, and a test checks it with `cargo tree`.
-- Node 26, Effect 4, vitest.
+- Node 24, Effect 4, vitest.
 
 **Spec:** `docs/specs/2026-11-01-finisher-architecture-design.md` §21.1 and D34. Related:
 - §6.3–6.4 (txIds, records);

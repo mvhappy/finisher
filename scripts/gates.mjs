@@ -17,6 +17,7 @@ const steps = [
   // Workers never start processes (5C-1 plan Decision 24).
   ["node", ["scripts/check-worker-spawn.mjs"]],
   ["node", ["scripts/check-native-deps.mjs"]],
+  ["node", ["scripts/check-notices.mjs"]],
   ["node", ["scripts/check-runtime-libs.mjs"]],
   ["node", ["scripts/check-crate-deps.mjs"]],
   ["node", ["scripts/check-clippy-config.mjs"]],

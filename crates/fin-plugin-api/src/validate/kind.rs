@@ -151,7 +151,7 @@ fn code_kind(m: &Manifest, out: &mut Vec<Invalid>) {
     }
 }
 
-/// Whether a range bounds Node from below (`>=26.12`, `^26`, `26.*`); `*` and `<30` do not.
+/// Whether a range bounds Node from below (`>=24.22`, `^24`, `24.*`); `*` and `<30` do not.
 fn has_minimum(req: &VersionReq) -> bool {
     req.comparators
         .iter()
