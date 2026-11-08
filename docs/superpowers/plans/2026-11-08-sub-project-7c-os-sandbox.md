@@ -193,11 +193,118 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 
 **Files:** Create (git-ignored): `archive/s9/{notes.md, linux/, macos/, windows/, h2/}`. Modify: `TASKS.md` (the S9 line), spec §8.2–8.6 and §4.5–4.6 with the conclusions.
 
-- [ ] **Step 1 (B5, Linux; kernel ≥ 6.2):** on the Linux VM, a 6.2-series kernel, and a supported kernel booted with `landlock` left out of `lsm=`: a seccomp filter that checks the architecture and refuses x32/compat, io_uring, `AF_UNIX` and the other calls of Decision 11, each denial observed; libuv and the installed Codex and Claude Code still run (the io_uring fallback included); the per-CLI validation list of spec §8.3 (SSSD/LDAP user lookup, gpg-agent signing, git credential-cache, fsmonitor) and whether `AF_NETLINK`/`NETLINK_ROUTE` is needed; whether any newer Landlock ABI mediates pathname sockets; on the Landlock-disabled boot, that the status probe of Decision 12 says `Disabled` and a process runs. Record the base toolchain read list for `data/linux/toolchain-base.txt`.
-- [ ] **Step 2 (B6, macOS 14+):** under a log-only `(deny default)` profile, the minimal `mach-lookup` list per CLI and for `fin` and `fin-workers`; with default-deny, `open`, `osascript`, `launchctl` and `security` fail, nothing starts outside the sandbox, and a test keychain item created for the spike is unreadable. Record `data/macos/mach-*.txt` candidates and the base toolchain list.
-- [ ] **Step 3 (B7, the user's own sign-in, never copied):** with a test account a person signs in to through each CLI's own flow, in a sign-in home: where each CLI keeps its store per OS (file or keychain; keyed by config directory?); whether a per-session `CLAUDE_CONFIG_DIR`/`CODEX_HOME` holding a link to the store works and refreshes **in place**; parallel sessions refreshing at once; a file link on Windows without elevation; else the fallback of spec §8.6; that `system/init` and `account/read` report the sign-in kind and an account label; **per-session capability SIDs on a session directory under a normal AppContainer**, and that a second session's process cannot open it (decides Decision 16 or 17). No spike script opens a credential file.
-- [ ] **Step 4 (H2):** Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
+- [~] **Step 1 (B5, Linux; kernel ≥ 6.2):** *Linux Landlock status query done (see S9 results (Linux)); seccomp moved to Task 4; the Landlock-disabled boot and the toolchain read list are still open.* on the Linux VM, a 6.2-series kernel, and a supported kernel booted with `landlock` left out of `lsm=`: a seccomp filter that checks the architecture and refuses x32/compat, io_uring, `AF_UNIX` and the other calls of Decision 11, each denial observed; libuv and the installed Codex and Claude Code still run (the io_uring fallback included); the per-CLI validation list of spec §8.3 (SSSD/LDAP user lookup, gpg-agent signing, git credential-cache, fsmonitor) and whether `AF_NETLINK`/`NETLINK_ROUTE` is needed; whether any newer Landlock ABI mediates pathname sockets; on the Landlock-disabled boot, that the status probe of Decision 12 says `Disabled` and a process runs. Record the base toolchain read list for `data/linux/toolchain-base.txt`.
+- [x] **Step 2 (B6, macOS 14+):** *done, see S9 results (macOS).* under a log-only `(deny default)` profile, the minimal `mach-lookup` list per CLI and for `fin` and `fin-workers`; with default-deny, `open`, `osascript`, `launchctl` and `security` fail, nothing starts outside the sandbox, and a test keychain item created for the spike is unreadable. Record `data/macos/mach-*.txt` candidates and the base toolchain list.
+- [ ] **Step 3 (B7, Windows still in progress elsewhere; the user's own sign-in, never copied):** with a test account a person signs in to through each CLI's own flow, in a sign-in home: where each CLI keeps its store per OS (file or keychain; keyed by config directory?); whether a per-session `CLAUDE_CONFIG_DIR`/`CODEX_HOME` holding a link to the store works and refreshes **in place**; parallel sessions refreshing at once; a file link on Windows without elevation; else the fallback of spec §8.6; that `system/init` and `account/read` report the sign-in kind and an account label; **per-session capability SIDs on a session directory under a normal AppContainer**, and that a second session's process cannot open it (decides Decision 16 or 17). No spike script opens a credential file.
+- [ ] **Step 4 (H2):** *moved to 7D/7E or a later S9 rerun.* Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
 - [ ] **Step 5:** conclusions into the spec (each marked *verified on <host class>*), tick `TASKS.md`. **Commit** `docs: record spike S9 conclusions` (spec and `TASKS.md` only).
+
+#### S9 results (macOS)
+
+*Verified on Apple silicon (M4), macOS 27.0.1, non-elevated, 2026-11-08.* Versions: Node 24.22.2, Claude Code 2.1.319, Codex CLI 0.166.0, wgpu 30.0.1. Spike code and raw logs are kept outside the repo. This settles Step 2 (B6). Step 3 (B7) is only partly settled: the sign-in flows were run up to the point where a person must act, and nothing was signed in.
+
+**`sandbox-exec` and SBPL on this macOS.** The man page marks `sandbox-exec` DEPRECATED, but it works on 27.0.1: `-f`, `-p`, `-D` with `(param …)`, last match wins, and `(deny default)`. `sandbox_init_with_parameters` (the `self_apply` path) accepts the same profile text and parameters, and after it a process cannot fork or read outside the policy. Findings that shape the generator and its tests:
+- Rules match resolved paths. A rule on `/etc/hosts` is a no-op, and `/private/etc/hosts` works. The generator canonicalizes every path (`/etc`, `/var` and `/tmp` live under `/private`).
+- Denials are reported by default. `(with report)` on a deny rule is a profile error ("report modifier does not apply to deny action").
+- launchd's `denied lookup … Sandbox restriction` lines persist and `log show` finds them. The kernel's `Sandbox: proc(pid) deny(1) op …` lines for `sandbox-exec` processes appear only to a `log stream` started before the run, never to `log show`. Escape tests assert on errno and behaviour, not on logs.
+- The denial log is not the full list. A lookup only appears once the code gets that far: VideoToolbox encode logs no `videoencoder` lookup until `trustd.agent` is allowed. Every list below was confirmed by leave-one-out runs, not read off the log.
+- `(deny default)` refuses three things with no extra rule: exec of setuid binaries (`forbidden-exec-sugid`), `fork`, and `lsopen` (LaunchServices opening an app or URL).
+
+**Method.** Discovery ran under `(allow default)(deny mach-lookup)` with an allow-list, minimized by leave-one-out. Confirmation ran under a full `(deny default)` profile shaped like the target profile (`agent`: read roots, write roots, network; `worker` and `hook`: exec of the one binary only, no fork). Each run used an empty environment and a throwaway `HOME`. Credentials were dummies only.
+
+**Minimal `mach-lookup` per workload (full default-deny confirmed):**
+
+| Workload | Minimal `mach-lookup` | Other non-default rules it needed | Without it |
+|---|---|---|---|
+| Node 24.22.2, finisherd-like (fs, crypto, Intl, loopback HTTP, Unix-socket server, `sh` + `git` children, `worker_threads`, `os.userInfo`, DNS, TLS `fetch`) | `com.apple.system.opendirectoryd.libinfo` | `network-bind`/`network-outbound` on `(local\|remote unix-socket (subpath …))` for its own socket; `network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder"))` for DNS | `os.userInfo()` throws `ENOENT` (`uv_os_get_passwd`); everything else works. DNS uses the mDNSResponder **Unix socket**, not mach; TLS uses Node's bundled roots. |
+| Claude Code 2.1.319 (`auth status`, `-p` round trip to a 401 on a dummy key) | none (`libinfo` recommended for its shells and `git`) | `CLAUDE_CODE_TMPDIR` pointed into a write root | Nothing breaks. Denied lookups it attempts: `SecurityServer`, `securityd.xpc` (keychain), and `FSEvents` (settings hot reload will not fire). It also tries to exec `/usr/bin/security` 4 times. **Without `CLAUDE_CODE_TMPDIR` it exits with `EPERM` on `/tmp/claude-<uid>`**, which it uses whatever `TMPDIR` says. |
+| Codex CLI 0.166.0 (`login status`, `exec` round trip to a 401 on a dummy key) | `com.apple.cfprefsd.daemon`, `com.apple.cfprefsd.agent` (+ `libinfo` recommended) | `ipc-posix-shm-read-data (ipc-posix-name-prefix "apple.cfprefs.")`; `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` set to `/etc/ssl/cert.pem` | Without either cfprefsd service it exits at start with "Failed to synchronize managed preferences". Without a CA bundle env var, its platform TLS verifier needs `com.apple.trustd.agent` **and** `com.apple.SecurityServer` (`stage=Tls` errors otherwise). It does not need `user-preference-read`: cfprefsd checks that operation itself, so allowing the lookup does not open other apps' preference domains. |
+| wgpu 30.0.1 on Metal (adapter, device, compute dispatch, readback) | `com.apple.MTLCompilerService` | `iokit-open-user-client` of `AGXDeviceUserClient` and `IOSurfaceRootUserClient` (`iokit-get-properties` not needed) | Without the compiler service: an adapter is found but `request_device` returns `Device(Lost)`. Without the user clients: no adapter. |
+| VideoToolbox hardware decode, H.264 and HEVC 1080p (`VTDecompressionSession` with hardware required, and `AVAssetReader` to BGRA) | `com.apple.coremedia.videodecoder` | `iokit-open-user-client` of `IOSurfaceRootUserClient` | Without the service: `VTDecompressionSessionCreate` returns −12911, and `AVAssetReader` reports −11821 "Cannot Decode". **Without `IOSurfaceRootUserClient` it fails silently: the session is created and reports hardware, but it delivers 0 frames with no error.** |
+| VideoToolbox hardware encode, H.264 and HEVC (`VTCompressionSession`; not in Task 0's list, but workers make proxies) | `com.apple.coremedia.videoencoder`, `com.apple.trustd.agent` | `IOSurfaceRootUserClient` | Without `trustd.agent`: −12908. Without `IOSurfaceRootUserClient`: a crash (SIGTRAP). |
+| `fin`-like Unix-socket client (Rust std `UnixStream`) | none | `network-outbound (remote unix-socket (path-literal "<fin.sock>"))` plus `file-read-metadata` on its ancestors | It works with no other server-data read, and a file next to the socket stays unreadable. `getpwuid` needs `libinfo`, so `fin` takes its paths from env and args, never from the passwd database. |
+
+Lookups attempted by every workload and denied with no observed effect: `com.apple.logd`, `com.apple.diagnosticd`, `com.apple.system.notification_center`, `com.apple.analyticsd`, `com.apple.bsd.dirhelper`, `com.apple.system.opendirectoryd.membership`, `com.apple.CoreServices.coreservicesd`, `com.apple.DiskArbitration.diskarbitrationd`, `com.apple.SystemConfiguration.{configd,DNSConfiguration}`, `com.apple.PerfPowerTelemetryClientRegistrationService`, `com.apple.powerlog.plxpclogger.xpc`, and, for `AVAssetReader`, `com.apple.tccd.system` and `com.apple.windowserver.active`.
+
+**Default-deny escape checks (agent-shaped profile):**
+- Exec of `open`, `osascript`, `launchctl` and `security` is denied (`EPERM`).
+- A mutant that allows those execs while mach stays default-deny shows the next layers:
+  - `open -a` and `open <url>` fail: the LaunchServices lookups (`lsd.mapdb`, `lsd.modifydb`, `coreservicesd`) are denied.
+  - `osascript` fails before any Apple Event, because it cannot load its scripting components.
+  - `launchctl submit` fails on the Seatbelt `job-creation` operation.
+  - `security` cannot reach the keychain.
+  - No marker file appeared, no launchd job was added, and no app started.
+- **Allowing `mach-lookup` globally still does not let `open` launch an app**, because `(deny default)` refuses `lsopen`.
+- A private named pasteboard (`NSPasteboard(name:)`, written outside the sandbox) reads as `nil` under the allow-list and returns the marker under global `mach-lookup`. It is the case that only the mach allow-list protects.
+- Keychain: a spike-only item created with `-A` (any application may read it) cannot be read under the profile. It became readable only when **both** `com.apple.SecurityServer` and `file-read*` on `~/Library/Keychains` were allowed. With all files readable, `SecurityServer` alone was enough. The two layers are independent. The item was deleted afterwards.
+- `ls ~/Library/Keychains` is denied.
+- With `(remote ip "localhost:<port>")` only that loopback port connects, and another listening port is refused.
+- With no IP rule (the `hook` shape), name resolution fails.
+- In the `worker` shape, `fork` and `exec` both return `EPERM`.
+
+**Sign-in observations (B7 partial, no account signed in):**
+- **Claude Code.** `claude auth login` with `open` denied prints the authorize URL and asks for a pasted code. It opens no loopback listener and makes no network call before the paste. With the keychain lookups denied, it reads the file store `.credentials.json` in `CLAUDE_CONFIG_DIR`: a dummy token showed `loggedIn: true`, `authMethod: claude.ai`. With `CLAUDE_CONFIG_DIR` and `HOME` both redirected, it still tries to read `.claude/CLAUDE.md` under the passwd home directory. The profile's `deny_read` of `~/.claude` (Decision 6) stopped it and is required.
+- **Codex.** `codex login status` with a fresh `CODEX_HOME` attempts no keychain lookup, so its store is the file by default. The browser flow (`codex login`) needs a loopback listener on `127.0.0.1:1455` plus LaunchServices, so it cannot run under the `agent` profile. `codex login --device-auth` reaches the code prompt with only the `agent` list above.
+
+**Base toolchain reads (`data/macos/toolchain-base.txt` candidate).** These are verified for the `agent` shape:
+- `literal "/"`, `/usr`, `/bin`, `/sbin`, `/System`, `/Library/Apple`, `/private/etc`, `/private/var/db/timezone`, `/private/var/db/dyld`, `/private/var/select/sh`, `/Library/Preferences/Logging`;
+- `/dev/{null,zero,random,urandom,tty,dtracehelper}`;
+- the active developer directory (`xcode-select -p`; only the whole subtree was verified);
+- `file-read-metadata`, `sysctl-read`, `system-socket`, `ipc-posix-shm` on the `apple.shm.notification_center` prefix, and the mDNSResponder socket above.
+
+The `worker` and `hook` shapes need `literal "/"` (dyld refuses to start without it), `/usr/lib`, `/System`, `/private/var/db/dyld`, and `/private/etc/ssl` only for TLS clients.
+
+The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOME` or `TMPDIR`, the `xcrun` cache is empty, so the shim runs `xcodebuild`, which needs all of `Xcode.app` plus LaunchServices, FSEvents and configd. Under default-deny it fails ("developer directory … isn't accessible"). The real binary in `$(xcode-select -p)/usr/bin` needs only `libinfo`.
+
+**Recommendations for Task 8:**
+1. `mach-agent.txt`: `com.apple.system.opendirectoryd.libinfo`, `com.apple.cfprefsd.daemon`, `com.apple.cfprefsd.agent`, plus `ipc-posix-shm-read-data` on the `apple.cfprefs.` prefix. Keep `user-preference-read` denied.
+2. `mach-hook.txt`: empty, since `fin` needs none. Add `libinfo` only if hook shells need user lookups. They ran without it here.
+3. `mach-worker.txt`: `com.apple.coremedia.videodecoder`, `com.apple.coremedia.videoencoder`, `com.apple.trustd.agent` (encode only), and `com.apple.MTLCompilerService`. Add `iokit-open-user-client` of `IOSurfaceRootUserClient` (every media job) and `AGXDeviceUserClient` (wgpu). Only Apple silicon was tested; Intel and AMD Macs use other user-client classes.
+4. `mach-plugin.txt`: empty. The `gpu` grant adds the worker's GPU rows.
+5. Never put these in a profile list: `SecurityServer`, `securityd.xpc`, `lsd.*`, `coreservicesd`, `launchservicesd`, `windowserver.*`, `tccd*`, `pboard`, `FSEvents`. Decision 15 stands. Neither CLI tested needs the keychain:
+   - Claude Code reads its file store.
+   - Codex runs on the file store and a CA bundle.
+6. The adapters set these environment variables:
+   - 7D sets `CLAUDE_CODE_TMPDIR` to the session's `tmp/`.
+   - 7E sets `CODEX_CA_CERTIFICATE=/etc/ssl/cert.pem`.
+
+   A user whose TLS roots live only in the keychain (a corporate proxy) needs `trustd.agent` and `SecurityServer` in the Codex list, which is a per-provider opt-in under Decision 15.
+7. Resolve developer shims when the policy is built (`xcrun --find <tool>`) and put the real directory first on `PATH`. Never allow `xcodebuild`.
+8. The generator canonicalizes paths (`/private/...`) and never emits `(with report)` on a deny rule.
+9. The worker checks that decode returns a frame count above zero, because a missing `IOSurfaceRootUserClient` fails silently.
+10. Escape tests assert on errno and behaviour. Where a test needs a log, it starts `log stream` before the run.
+11. **The Step 2 mutant ("allow `mach-lookup` globally; the Terminal case must fail") does not trip on the Terminal case**: the exec denial and `lsopen` still block it. Add the private-pasteboard read as the case that must fail under that mutant. Keep the Terminal, `osascript` and `launchctl` cases for their own layers.
+
+**Not tested:**
+- B7 completion: a real sign-in and token refresh in place, parallel refreshes, and whether Claude Code writes `.credentials.json` at login when the keychain is denied (only the read path was tested).
+- The real `fin` and `fin-workers` binaries. Probes with the same APIs stood in: std `UnixStream`, wgpu, Swift VideoToolbox and AVFoundation.
+- macOS 14–26 and Intel or AMD GPUs.
+- Split DNS or VPN with `DNSConfiguration` denied.
+- ONNX Runtime and CoreML for `plugin` with `gpu`.
+- TCC prompts on Documents and Desktop. These are outside every read root, so file rules deny them first.
+- `appleevent-send` to Finder beyond `osascript` failing to start.
+- The Metal shader-cache cost of denying `bsd.dirhelper`.
+- Codex's keyring store mode.
+
+#### S9 results (Linux)
+
+**Tested** (Ubuntu 24.04, kernel 6.8.0 generic, glibc 2.39; active LSMs `lockdown,capability,landlock,yama,apparmor`):
+
+- `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` returns ABI **4**. The `ERRATA` flag returns 5, so the distro has backported fixes 1 and 3.
+- Kernel config: `CONFIG_IO_URING=y`, `CONFIG_X86_X32_ABI` not set, `CONFIG_SECCOMP_FILTER=y`.
+- Under Docker's default seccomp profile the Landlock version query still returns 4, but `prctl(PR_GET_SECCOMP)` returns 2 and `/proc/self/status` shows `Seccomp: 2`. With `seccomp=unconfined` it returns 0.
+
+**Recommendations for Task 3 / Decision 12:**
+
+- `PR_GET_SECCOMP == 2` must **not** be read as "Landlock disabled": every default Docker container reports it while Landlock works. The Landlock status comes from the version query alone.
+- Map `EPERM` from the version query to `Disabled`, as well as `ENOSYS` and `EOPNOTSUPP`. Some older container seccomp profiles answer unknown syscalls with `EPERM` (unverified).
+
+**Not tested yet:**
+
+- A real Landlock-disabled boot. A static status probe and kernels (6.8 and mainline 6.2) were prepared for a throwaway QEMU VM, but none was booted. Expectation, unverified: `EOPNOTSUPP` when Landlock is built in but left out of `lsm=`, `ENOSYS` when it is not built.
+- B5 seccomp (architecture/x32 check, io_uring refusal, the socket policy, and how a refused call appears to Rust, Node and glibc) **moves to Task 4**. Build and test it there with an established, permissively licensed Rust seccomp library (for example `seccompiler`, Apache-2.0, at least 7 days old), not a hand-written C filter. Note for Task 4: glibc 2.34+ falls back from `clone3` to `clone` only on `ENOSYS`, so refusing `clone3` with `EPERM` would likely break threads; use `ENOSYS` for refused syscalls that have a fallback (untested).
+- The base toolchain read list, and whether a newer Landlock ABI mediates pathname sockets.
+- H2, all of it (the Claude Code isolation flags, `system/init`, `--max-budget-usd`, `--disallowedTools`, the Codex `-c project_doc_max_bytes=0` and `developer_instructions` checks). It moves to 7D/7E or a later S9 rerun. Versions seen: Codex 0.167.0, Claude Code 2.1.319.
 
 ### Task 1: `fin-sandbox`: the policy, the profiles and enumeration — tier: opus — 7C-1
 
