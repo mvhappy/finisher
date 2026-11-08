@@ -9,6 +9,9 @@
 //   an older listing applied late never overwrites a newer one's;
 // - `files.missingGen`: the generation in which the row went missing, so `purgeMissing` needs
 //   full scans since as well as days (a forward clock jump alone purges nothing);
+// - `dirs.entries`, `dirs.volume`: how many entries the recorded listing held and the nested
+//   mount's volume it reported (`DirDone.volume`, JSON), both handed back in `in/dirs.ndjson`
+//   so the walker can apply its N → 0 and nested-mount rules;
 // - `files_rename`: the pending renames a missing row may resolve;
 // - `files_order`: the stage pump's `pending` order (`state`, `lastChange`, `id`).
 import type { DatabaseSync } from "node:sqlite";
@@ -22,6 +25,8 @@ export const catalogCore0002: Migration = {
       ALTER TABLE files ADD COLUMN missingGen INTEGER;
       ALTER TABLE dirs ADD COLUMN emptyJob TEXT;
       ALTER TABLE dirs ADD COLUMN listedAt INTEGER;
+      ALTER TABLE dirs ADD COLUMN entries INTEGER;
+      ALTER TABLE dirs ADD COLUMN volume TEXT;
       CREATE INDEX files_rename ON files (renameOf) WHERE renameOf IS NOT NULL;
       CREATE INDEX files_order ON files (state, lastChange, id);
     `);

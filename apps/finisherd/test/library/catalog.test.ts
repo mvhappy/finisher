@@ -345,8 +345,8 @@ test("writeKnownDirs writes every known directory's raw chain", async () => {
   expect(await run(c.indexer.writeKnownDirs(lib, 3, path))).toEqual({ dirs: 2 });
   const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as unknown);
   expect(lines).toEqual([
-    { dir: { components: [] }, mtimeNs: "1700000000000000001", listed: true },
-    { dir: rel("Interviews"), mtimeNs: "1700000000000000001", listed: true },
+    { dir: { components: [] }, mtimeNs: "1700000000000000001", listed: true, entries: 2, mountRoot: false },
+    { dir: rel("Interviews"), mtimeNs: "1700000000000000001", listed: true, entries: 4, mountRoot: false },
   ]);
   // Exclusive create, and only inside a job's in/.
   expect(await failCode(c.indexer.writeKnownDirs(lib, 3, path))).toBe("CATALOG_OP_FAILED");

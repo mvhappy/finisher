@@ -270,19 +270,36 @@ function testFault(a: Record<string, unknown>): unknown {
 }
 
 /**
- * Writes the job's `in/dirs.ndjson` (Decision 27): one line per known directory (present or
- * unreadable) `{dir: RawRel, mtimeNs: string | null, listed: bool}`, `listed` when its last
- * complete listing was in generation `gen`. Created exclusively, 0600.
+ * Writes the job's `in/dirs.ndjson` (Decision 27): one line per known directory (present,
+ * unreadable, or offline under an unmounted nested mount)
+ * `{dir: RawRel, mtimeNs: string | null, listed: bool, entries?, mountRoot, volume?}` (what
+ * `fin_library::KnownDirs::from_ndjson` reads): `listed` when its last complete listing was in
+ * generation `gen`, `entries` that listing's count (for the walker's N → 0 rule), `mountRoot`
+ * for a nested mount point and `volume` its volume as last listed (for `ROOT_UNMOUNTED` and
+ * `ROOT_VOLUME_CHANGED`). Created exclusively, 0600.
  */
 function writeKnownDirs(a: Record<string, unknown>): unknown {
   const c = catalog(a.lib);
   const gen = int(a.gen, "gen");
   const path = jobInputPath(a.path);
+  type Row = { id: number; mtimeNs: string | null; listedGen: number | null; entries: number | null; mount: string | null; volume: string | null };
   const rows = c.db
-    .prepare("SELECT id, CAST(mtimeNs AS TEXT) AS mtimeNs, listedGen FROM dirs WHERE state IN ('present', 'unreadable') ORDER BY id")
-    .all() as Array<{ id: number; mtimeNs: string | null; listedGen: number | null }>;
+    .prepare(
+      "SELECT id, CAST(mtimeNs AS TEXT) AS mtimeNs, listedGen, entries, mount, volume FROM dirs " +
+        "WHERE state IN ('present', 'unreadable', 'offline') ORDER BY id",
+    )
+    .all() as Row[];
   const chains = new DirChains(c.db);
-  const lines = rows.map((r) => JSON.stringify({ dir: { components: chains.of(r.id) }, mtimeNs: r.mtimeNs, listed: r.listedGen === gen }));
+  const lines = rows.map((r) =>
+    JSON.stringify({
+      dir: { components: chains.of(r.id) },
+      mtimeNs: r.mtimeNs,
+      listed: r.listedGen === gen,
+      ...(r.entries === null ? {} : { entries: r.entries }),
+      mountRoot: r.mount !== null,
+      ...(r.volume === null ? {} : { volume: JSON.parse(r.volume) as unknown }),
+    }),
+  );
   writeFileSync(path, lines.length === 0 ? "" : `${lines.join("\n")}\n`, { flag: "wx", mode: 0o600 });
   return { dirs: rows.length };
 }

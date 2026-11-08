@@ -24,6 +24,11 @@
 // An empty **root** listing while the catalog holds files fails the whole batch file before
 // anything is written (`ROOT_EMPTY_SUSPECT`): the service puts the library offline.
 //
+// **Nested mounts** (Decision 17): a mount point closed `ROOT_UNMOUNTED` or
+// `ROOT_VOLUME_CHANGED` makes itself and its subtree `offline`; no listing below it marks
+// anything, and a vanished offline directory is not marked either, until the mount point's
+// own complete listing brings it back.
+//
 // **Excluded** (Decision 16): a known directory or file a listing reports excluded (a glob
 // changed, an automount) goes missing with code `EXCLUDED`, the directory with its whole
 // subtree, once that listing closes; such rows are never a move's or a rename's old row (their
@@ -96,6 +101,10 @@ export interface DiffStatements {
   readonly cloudDirIds: S;
   readonly cloudFilesIn: S;
   readonly cloudFileIds: S;
+  readonly offlineDirIds: S;
+  readonly offlineFilesIn: S;
+  readonly offlineFileIds: S;
+  readonly underOffline: S;
   readonly hasChildren: S;
   readonly dirEmpty: S;
   readonly suspect: S;
@@ -158,7 +167,7 @@ export function prepareDiff(db: DatabaseSync): DiffConn {
     // Selected first, then updated by id only when there is something to mark: `RETURNING`
     // costs ~100 µs a statement, and almost every listing marks nothing.
     goneFiles: db.prepare("SELECT id, fileId FROM files WHERE dirId = ? AND state != 'missing' AND lastSeen < ? ORDER BY id LIMIT ?"),
-    goneDirs: db.prepare("SELECT id FROM dirs WHERE parent = ? AND state != 'missing' AND lastSeen < ? ORDER BY id LIMIT ?"),
+    goneDirs: db.prepare("SELECT id FROM dirs WHERE parent = ? AND state NOT IN ('missing', 'offline') AND lastSeen < ? ORDER BY id LIMIT ?"),
     markFileIds: db.prepare(
       `UPDATE files SET state = 'missing', missingSince = ?, missingGen = ?, code = coalesce(?, code), renameOf = NULL, hardlink = 0 WHERE id ${IDS}`,
     ),
@@ -169,6 +178,13 @@ export function prepareDiff(db: DatabaseSync): DiffConn {
     cloudDirIds: db.prepare(`UPDATE dirs SET state = 'cloudOnly' WHERE id ${IDS} AND state NOT IN ('missing', 'excluded', 'cloudOnly')`),
     cloudFilesIn: db.prepare("SELECT id FROM files WHERE dirId = ? AND state NOT IN ('missing', 'cloudOnly') ORDER BY id LIMIT ?"),
     cloudFileIds: db.prepare(`UPDATE files SET state = 'cloudOnly' WHERE id ${IDS}`),
+    offlineDirIds: db.prepare(`UPDATE dirs SET state = 'offline' WHERE id ${IDS} AND state NOT IN ('missing', 'excluded', 'offline')`),
+    offlineFilesIn: db.prepare("SELECT id FROM files WHERE dirId = ? AND state NOT IN ('missing', 'offline') ORDER BY id LIMIT ?"),
+    offlineFileIds: db.prepare(`UPDATE files SET state = 'offline' WHERE id ${IDS}`),
+    underOffline: db.prepare(
+      "WITH RECURSIVE up (id) AS (SELECT parent FROM dirs WHERE id = ? UNION ALL SELECT d.parent FROM dirs d JOIN up ON d.id = up.id) " +
+        "SELECT EXISTS (SELECT 1 FROM dirs WHERE id IN (SELECT id FROM up) AND state = 'offline') AS x",
+    ),
     hasChildren: db.prepare(
       "SELECT EXISTS (SELECT 1 FROM files WHERE dirId = ? AND state != 'missing') OR " +
         "EXISTS (SELECT 1 FROM dirs WHERE parent = ? AND state != 'missing') AS x",
@@ -376,23 +392,33 @@ export function* markSubtree(diff: DiffConn, dirId: number, ctx: DiffCtx, code: 
   return files;
 }
 
-/** A placeholder directory's subtree becomes `cloudOnly`, never missing (Decision 13), in steps. */
-export function* cloudSubtree(diff: DiffConn, dirId: number, b: Budget): Work {
+/** Sets a state on `dirId`'s subtree (the directories below it, the files in it and below), in steps. */
+function* stateSubtree(diff: DiffConn, dirId: number, b: Budget, dirIds: S, filesIn: S, fileIds: S): Work {
   const sub = (diff.st.subtree.all(dirId) as Array<{ id: number }>).map((r) => r.id);
   for (const part of chunks(sub.filter((id) => id !== dirId), STEP_ROWS)) {
     yield* room(b, part.length);
-    diff.st.cloudDirIds.run(JSON.stringify(part));
+    dirIds.run(JSON.stringify(part));
   }
   for (const d of sub) {
     yield* room(b, 1);
     for (;;) {
-      const rows = diff.st.cloudFilesIn.all(d, limit(b)) as Array<{ id: number }>;
+      const rows = filesIn.all(d, limit(b)) as Array<{ id: number }>;
       if (rows.length === 0) break;
       yield* room(b, rows.length);
-      diff.st.cloudFileIds.run(JSON.stringify(rows.map((r) => r.id)));
+      fileIds.run(JSON.stringify(rows.map((r) => r.id)));
       if (rows.length < limit(b)) break;
     }
   }
+}
+
+/** A placeholder directory's subtree becomes `cloudOnly`, never missing (Decision 13), in steps. */
+export function cloudSubtree(diff: DiffConn, dirId: number, b: Budget): Work {
+  return stateSubtree(diff, dirId, b, diff.st.cloudDirIds, diff.st.cloudFilesIn, diff.st.cloudFileIds);
+}
+
+/** An unmounted or replaced nested mount's subtree becomes `offline`, never missing (Decision 17), in steps. */
+export function offlineSubtree(diff: DiffConn, dirId: number, b: Budget): Work {
+  return stateSubtree(diff, dirId, b, diff.st.offlineDirIds, diff.st.offlineFilesIn, diff.st.offlineFileIds);
 }
 
 export interface CloseCounts extends MarkCounts {
@@ -422,6 +448,11 @@ export function* closeListing(
 ): Work<CloseOutcome> {
   const l = endListing(diff, ctx.job, dirId);
   if (diff.offline) {
+    counts.incomplete++;
+    return { kind: "skip" };
+  }
+  if ((diff.st.underOffline.get(dirId) as { x: number }).x === 1) {
+    diff.st.seenOnly.run(ctx.at, dirId);
     counts.incomplete++;
     return { kind: "skip" };
   }

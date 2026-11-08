@@ -360,10 +360,11 @@ class Run {
         const path = join(s.jobsRoot, att.job, "in", `dirs-${++this.#files}.ndjson`);
         await run(c.indexer.writeKnownDirs(this.lib, p.gen, path));
         const lines = readFileSync(path, "utf8").split("\n").filter((x) => x !== "");
-        const known = lines.map((x) => JSON.parse(x) as { dir: { components: string[] }; mtimeNs: string | null; listed: boolean });
+        type Known = { dir: { components: string[] }; mtimeNs: string | null; listed: boolean; entries?: number; mountRoot: boolean };
+        const known = lines.map((x) => JSON.parse(x) as Known);
         const asKey = (comps: ReadonlyArray<string>) => comps.join("/");
-        expect(known.map((k) => ({ chain: asKey(k.dir.components.map(hexOf)), mtimeNs: k.mtimeNs, listed: k.listed }))).toEqual(
-          this.model.knownDirs(p.gen).map((d) => ({ chain: asKey(this.model.chain(d.id)), mtimeNs: d.mtimeNs, listed: d.listed })),
+        expect(known.map(({ dir, ...k }) => ({ chain: asKey(dir.components.map(hexOf)), ...k }))).toEqual(
+          this.model.knownDirs(p.gen).map(({ id, ...d }) => ({ chain: asKey(this.model.chain(id)), ...d })),
         );
         const listed = new Set(known.filter((k) => k.listed).map((k) => asKey(k.dir.components.map(hexOf))));
         const all = new Set(known.map((k) => asKey(k.dir.components.map(hexOf))));
@@ -456,7 +457,7 @@ class Run {
     try {
       const dirs = db
         .prepare(
-          "SELECT id, parent, hex(name) AS name, nameNfc, relKey, state, code, placeholder, CAST(mtimeNs AS TEXT) AS mtimeNs, listedGen, listedAt, " +
+          "SELECT id, parent, hex(name) AS name, nameNfc, relKey, state, code, placeholder, CAST(mtimeNs AS TEXT) AS mtimeNs, listedGen, listedAt, entries, " +
             "emptySince, emptyJob, collision, lastSeen FROM dirs ORDER BY id",
         )
         .all() as Array<Record<string, unknown> & { id: number; parent: number | null; name: string }>;
@@ -469,7 +470,7 @@ class Run {
       const mDirPath = (id: number) => this.model.chain(id).join("/");
       const dirView = (d: Record<string, unknown>) => ({
         nameNfc: d.nameNfc, relKey: d.relKey, state: d.state, code: d.code, placeholder: d.placeholder, mtimeNs: d.mtimeNs,
-        listedGen: d.listedGen, listedAt: d.listedAt, emptySince: d.emptySince, emptyJob: d.emptyJob, collision: d.collision, lastSeen: d.lastSeen,
+        listedGen: d.listedGen, listedAt: d.listedAt, entries: d.entries, emptySince: d.emptySince, emptyJob: d.emptyJob, collision: d.collision, lastSeen: d.lastSeen,
       });
       const catDirs = Object.fromEntries(dirs.map((d) => [dirPath(d.id), dirView(d)]));
       const modelDirs = Object.fromEntries(this.model.dirs.map((d) => [mDirPath(d.id), dirView(d as unknown as Record<string, unknown>)]));

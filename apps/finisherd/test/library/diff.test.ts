@@ -1,6 +1,6 @@
 // The catalog diff, case by case (plan 5D Task 7b, Decisions 11, 18, 22, 25). The property
 // test (`diff.property.test.ts`) covers the combinations; these pin each rule's meaning.
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ScanBatch, ScanEntry } from "@finisher/core-types";
@@ -467,4 +467,64 @@ test("a pending rename between two vanished siblings resolves the same whichever
   // Both directories vanish: two missing rows, nothing merged (the new row was gone as well).
   expect(await apply("s3", batch([dirEntry([], "keep")], [done([], 1)]))).toMatchObject({ missing: 2, renamed: 0 });
   expect(Object.values(rows()).map((r) => r.state)).toEqual(["missing", "missing"]);
+});
+
+describe("nested mounts (Decision 17)", () => {
+  const volume = {
+    key: "0123456789abcdef0123456789abcdef", kind: "nfs4", devId: "99", mountRoot: true, caseSensitive: true, enumeration: "getdents64",
+    remote: true, sample: [{ size: 1, mtimeNs: "5" }],
+  };
+  const mountEntry = { ...dirEntry([], "M"), mountRoot: true, dev: "99" };
+  const state = (path: string) => rows()[path]?.state;
+  const known = async (gen: number) => {
+    const path = join(s.jobsRoot, "k", "in", `dirs-${gen}-${now}.ndjson`);
+    mkdirSync(join(s.jobsRoot, "k", "in"), { recursive: true });
+    await run(c.indexer.writeKnownDirs(lib, gen, path));
+    return readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+  };
+
+  test("a mount point's volume, entries and mountRoot reach dirs.ndjson", async () => {
+    await apply("s1", batch([mountEntry, entry(["M"], "a.mov")], [done([], 1), done(["M"], 1, { volume })]));
+    const lines = await known(1);
+    expect(lines.find((l) => (l.dir as { components: string[] }).components.length === 0)).toMatchObject({ entries: 1, mountRoot: false, listed: true });
+    expect(lines.find((l) => (l.dir as { components: string[] }).components.length === 1)).toEqual({
+      dir: rel("M"), mtimeNs: "1700000000000000001", listed: true, entries: 1, mountRoot: true, volume,
+    });
+  });
+
+  test("a DirDone volume is validated field for field", async () => {
+    const reason = (v: unknown) =>
+      apply("s1", batch([mountEntry], [done([], 1), done(["M"], 0, { volume: v as typeof volume })])).then(
+        () => "accepted",
+        (e: { details: { reason: string } }) => e.details.reason,
+      );
+    expect(await reason({ ...volume, extra: 1 })).toBe("schema");
+    expect(await reason({ ...volume, sample: [{ size: -1, mtimeNs: "5" }] })).toBe("schema");
+    expect(await reason({ ...volume, sample: Array.from({ length: 65 }, () => ({ size: 1, mtimeNs: "5" })) })).toBe("schema");
+    expect(await reason(volume)).toBe("accepted");
+  });
+
+  test("an unmounted mount point makes its subtree offline, never missing, until it lists again", async () => {
+    await apply("s1", batch([mountEntry, dirEntry(["M"], "sub"), entry(["M", "sub"], "a.mov"), entry(["M"], "b.mov")], [
+      done([], 1), done(["M"], 2, { volume }), done(["M", "sub"], 1),
+    ]));
+    // Unmounted: the parent lists an empty plain directory; the walker closes it `ROOT_UNMOUNTED`.
+    expect(await apply("s2", batch([dirEntry([], "M")], [done([], 1), done(["M"], 0, { complete: false, code: "ROOT_UNMOUNTED" })]))).toMatchObject({ missing: 0 });
+    expect(dirRow("M")).toMatchObject({ state: "offline", code: "ROOT_UNMOUNTED" });
+    expect([state("M/sub/a.mov"), state("M/b.mov"), dirRow("M/sub").state]).toEqual(["offline", "offline", "offline"]);
+    // Nothing under it marks anything, the parent's next listing keeps it offline, and it
+    // stays a mount root for the walker.
+    expect(await apply("s3", batch([], [done(["M", "sub"], 0)]))).toMatchObject({ missing: 0, incomplete: 1, suspect: 0 });
+    await apply("s4", batch([dirEntry([], "M")], [done([], 1)]));
+    expect(dirRow("M")).toMatchObject({ state: "offline" });
+    expect((await known(1)).find((l) => (l.dir as { components: string[] }).components.length === 1)).toMatchObject({ mountRoot: true, volume });
+    // A replaced volume is offline the same way.
+    expect(await apply("s5", batch([], [done(["M"], 0, { complete: false, code: "ROOT_VOLUME_CHANGED" })]))).toMatchObject({ missing: 0 });
+    expect(dirRow("M")).toMatchObject({ state: "offline", code: "ROOT_VOLUME_CHANGED" });
+    // Mounted again: its own complete listing brings it back, and what is gone goes missing.
+    await apply("s6", batch([mountEntry, entry(["M"], "b.mov"), dirEntry(["M"], "sub")], [done([], 1), done(["M"], 2, { volume }), done(["M", "sub"], 0)]));
+    expect(dirRow("M")).toMatchObject({ state: "present", code: null });
+    expect(state("M/b.mov")).toBe("present");
+    expect(await apply("s7", batch([], [done(["M", "sub"], 0)]))).toMatchObject({ suspect: 1 });
+  });
 });

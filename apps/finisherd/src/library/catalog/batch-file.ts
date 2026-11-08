@@ -16,7 +16,7 @@
 // and keys mean is checked later, against the catalog (`core/entry-check.ts`).
 import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
-import type { DirDone, Placeholder, ScanBatch, ScanEntry } from "@finisher/core-types";
+import type { DirDone, Placeholder, SampleEntry, ScanBatch, ScanEntry, VolumeIdentity } from "@finisher/core-types";
 import { CatalogFailure } from "./protocol.ts";
 
 export const BATCH_MAX_BYTES = 8 * 1024 * 1024;
@@ -224,12 +224,32 @@ const ScanEntrySpec: Spec = {
   reparseTag: opt(nullOr(uint(0xffff_ffff))),
   size: req(uint(Number.MAX_SAFE_INTEGER)),
 } satisfies Record<keyof ScanEntry, Field>;
+const SampleEntrySpec: Spec = {
+  fileId: opt(nullOr(b64)),
+  mtimeNs: req(i64),
+  size: req(uint(Number.MAX_SAFE_INTEGER)),
+} satisfies Record<keyof SampleEntry, Field>;
+/** At most this many sampled entries (`fin_library::volume` keeps 16). */
+const MAX_SAMPLE = 64;
+const sampleList: Check = (v, at) => (Array.isArray(v) && v.length > MAX_SAMPLE ? at : arrayOf(object(SampleEntrySpec))(v, at));
+const VolumeIdentitySpec: Spec = {
+  caseSensitive: req(bool),
+  devId: req(str),
+  enumeration: req(str),
+  key: req(str),
+  kind: req(str),
+  mountRoot: req(bool),
+  remote: req(bool),
+  rootFileId: opt(nullOr(b64)),
+  sample: req(sampleList),
+} satisfies Record<keyof VolumeIdentity, Field>;
 const DirDoneSpec: Spec = {
   code: opt(nullOr(str)),
   complete: req(bool),
   dir: req(object(RawRelSpec)),
   entries: req(uint(0xffff_ffff)),
   mtimeNs: opt(nullOr(i64)),
+  volume: opt(nullOr(object(VolumeIdentitySpec))),
 } satisfies Record<keyof DirDone, Field>;
 const ScanBatchSpec: Spec = {
   dirsDone: req(arrayOf(object(DirDoneSpec))),
@@ -238,4 +258,7 @@ const ScanBatchSpec: Spec = {
 } satisfies Record<keyof ScanBatch, Field>;
 
 /** The validated shapes, by their generated names (the drift test reads them). */
-export const SPECS = { RawRel: RawRelSpec, ScanEntry: ScanEntrySpec, DirDone: DirDoneSpec, ScanBatch: ScanBatchSpec } as const;
+export const SPECS = {
+  RawRel: RawRelSpec, ScanEntry: ScanEntrySpec, DirDone: DirDoneSpec, ScanBatch: ScanBatchSpec, VolumeIdentity: VolumeIdentitySpec,
+  SampleEntry: SampleEntrySpec,
+} as const;

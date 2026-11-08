@@ -16,6 +16,7 @@ export interface MDir {
   mtimeNs: string | null;
   listedGen: number | null;
   listedAt: number | null;
+  entries: number | null;
   emptySince: number | null;
   emptyJob: string | null;
   collision: number;
@@ -109,7 +110,7 @@ export class Model {
   constructor() {
     this.dirs.push({
       id: 1, parent: null, name: "", nameNfc: "", relKey: "", state: "present", code: null, placeholder: null, mtimeNs: null,
-      listedGen: null, listedAt: null, emptySince: null, emptyJob: null, collision: 0, lastSeen: 0,
+      listedGen: null, listedAt: null, entries: null, emptySince: null, emptyJob: null, collision: 0, lastSeen: 0,
     });
   }
 
@@ -291,7 +292,7 @@ export class Model {
     const known = this.dirs.find((d) => d.parent === parent.id && d.name === hex(e.name));
     if (known === undefined) {
       this.dirs.push({
-        id: this.#nextDir++, parent: parent.id, name: hex(e.name), ...fields, mtimeNs: null, listedGen: null, listedAt: null,
+        id: this.#nextDir++, parent: parent.id, name: hex(e.name), ...fields, mtimeNs: null, listedGen: null, listedAt: null, entries: null,
         emptySince: null, emptyJob: null, collision: 0,
       });
       return;
@@ -389,7 +390,7 @@ export class Model {
     this.#collisions(dir.id);
     if (dir.listedAt === null || start >= dir.listedAt) {
       if (d.mtimeNs != null) dir.mtimeNs = d.mtimeNs;
-      Object.assign(dir, { listedGen: ctx.gen, listedAt: start, code: d.code ?? null });
+      Object.assign(dir, { listedGen: ctx.gen, listedAt: start, entries: d.entries, code: d.code ?? null });
       if (dir.state === "unreadable") dir.state = "present";
     } else if (dir.code === "DIR_EMPTY_SUSPECT") dir.code = null;
     Object.assign(dir, { emptySince: null, emptyJob: null, lastSeen: at });
@@ -442,11 +443,11 @@ export class Model {
   }
 
   /** What `writeKnownDirs` writes: present and unreadable directories by id. */
-  knownDirs(gen: number): Array<{ id: number; mtimeNs: string | null; listed: boolean }> {
+  knownDirs(gen: number): Array<{ id: number; mtimeNs: string | null; listed: boolean; entries?: number; mountRoot: boolean }> {
     return this.dirs
       .filter((d) => d.state === "present" || d.state === "unreadable")
       .sort((a, b) => a.id - b.id)
-      .map((d) => ({ id: d.id, mtimeNs: d.mtimeNs, listed: d.listedGen === gen }));
+      .map((d) => ({ id: d.id, mtimeNs: d.mtimeNs, listed: d.listedGen === gen, ...(d.entries === null ? {} : { entries: d.entries }), mountRoot: false }));
   }
 
   /** The raw chain of a directory, as hex components. */

@@ -28,8 +28,8 @@ import type { DirDone, RawRel, ScanBatch, ScanEntry } from "@finisher/core-types
 import { type FtsStatements, ftsAdd, ftsReplace, prepareFts } from "../fts.ts";
 import { CatalogFailure } from "../protocol.ts";
 import {
-  type DiffConn, type DiffCtx, cloudSubtree, closeListing, endListing, holds, listingOf, prefetchIds, prepareDiff, renameCandidate, touch,
-  unsuspect, usableId,
+  type DiffConn, type DiffCtx, cloudSubtree, closeListing, endListing, holds, listingOf, offlineSubtree, prefetchIds, prepareDiff,
+  renameCandidate, touch, unsuspect, usableId,
 } from "./diff.ts";
 import { checkChain, checkEntry } from "./entry-check.ts";
 import { type Budget, type Work, room } from "./steps.ts";
@@ -59,6 +59,7 @@ export interface ApplyStatements {
   readonly dirDone: StatementSync;
   readonly dirDoneStale: StatementSync;
   readonly dirIncomplete: StatementSync;
+  readonly dirOffline: StatementSync;
   readonly fileGet: StatementSync;
   readonly fileInsert: StatementSync;
   readonly fileSeen: StatementSync;
@@ -67,17 +68,19 @@ export interface ApplyStatements {
 
 export function prepareApply(db: DatabaseSync): ApplyConn {
   const st: ApplyStatements = {
-    dirGet: db.prepare("SELECT id, relKey, state FROM dirs WHERE parent = ? AND name = ?"),
+    dirGet: db.prepare("SELECT id, relKey, state, code FROM dirs WHERE parent = ? AND name = ?"),
     dirInsert: db.prepare(
       "INSERT INTO dirs (parent, name, nameNfc, relKey, fileId, devId, mount, placeholder, state, code, lastSeen) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     ),
     dirUpdate: db.prepare(
-      "UPDATE dirs SET nameNfc = ?, relKey = ?, fileId = ?, devId = ?, mount = ?, placeholder = ?, state = ?, code = ?, lastSeen = ? WHERE id = ?",
+      // `mount` sticks: a mount point whose parent now lists it as a plain directory is an
+      // unmount the walker reports (`ROOT_UNMOUNTED`), not a directory to list.
+      "UPDATE dirs SET nameNfc = ?, relKey = ?, fileId = ?, devId = ?, mount = coalesce(?, mount), placeholder = ?, state = ?, code = ?, lastSeen = ? WHERE id = ?",
     ),
     dirDone: db.prepare(
-      "UPDATE dirs SET mtimeNs = coalesce(?, mtimeNs), listedGen = ?, listedAt = ?, code = ?, emptySince = NULL, emptyJob = NULL, " +
-        "state = CASE WHEN state = 'unreadable' THEN 'present' ELSE state END, lastSeen = ? WHERE id = ?",
+      "UPDATE dirs SET mtimeNs = coalesce(?, mtimeNs), listedGen = ?, listedAt = ?, entries = ?, volume = coalesce(?, volume), code = ?, " +
+        "emptySince = NULL, emptyJob = NULL, state = CASE WHEN state IN ('unreadable', 'offline') THEN 'present' ELSE state END, lastSeen = ? WHERE id = ?",
     ),
     // A listing older than the one recorded: it marked what it could, records nothing else.
     dirDoneStale: db.prepare(
@@ -87,6 +90,7 @@ export function prepareApply(db: DatabaseSync): ApplyConn {
     dirIncomplete: db.prepare(
       "UPDATE dirs SET code = ?, state = CASE WHEN state = 'present' THEN 'unreadable' ELSE state END, lastSeen = ? WHERE id = ?",
     ),
+    dirOffline: db.prepare("UPDATE dirs SET code = ?, state = 'offline', lastSeen = ? WHERE id = ? AND state NOT IN ('missing', 'excluded')"),
     fileGet: db.prepare(
       "SELECT id, size, CAST(mtimeNs AS TEXT) AS mtimeNs, fileId, dev, fp, state, code FROM files WHERE dirId = ? AND name = ?",
     ),
@@ -222,8 +226,10 @@ function* applyDir(conn: ApplyConn, parent: DirRef, e: ScanEntry, ctx: ApplyCtx,
   const name = raw(e.name);
   const fileId = e.fileId == null ? null : raw(e.fileId);
   const mount = e.mountRoot ? (e.dev ?? "") : null;
-  const { state, code } = dirState(e);
-  const known = conn.st.dirGet.get(parent.id, name) as { id: number; state: string } | undefined;
+  let { state, code } = dirState(e);
+  const known = conn.st.dirGet.get(parent.id, name) as { id: number; state: string; code: string | null } | undefined;
+  // An offline mount point stays offline until its own complete listing (`applyDone`).
+  if (known?.state === "offline" && state === "present") ({ state, code } = known);
   let id: number;
   if (known === undefined) {
     const row = conn.st.dirInsert.get(parent.id, name, e.nameNfc, e.relKey, fileId, e.dev ?? null, mount, e.placeholder ?? null, state, code, ctx.at) as {
@@ -313,20 +319,28 @@ function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, ctx: ApplyCtx, co
   else counts.seen++;
 }
 
+/** A nested mount's closes that make its subtree `offline` (Decision 17). */
+const MOUNT_GONE = new Set(["ROOT_UNMOUNTED", "ROOT_VOLUME_CHANGED"]);
+
 function* applyDone(conn: ApplyConn, d: DirDone, ctx: ApplyCtx, counts: ApplyCounts, b: Budget): Work {
   const dir = findDir(conn, d.dir);
   if (dir === undefined) throw new CatalogFailure("LIBRARY_BATCH_INVALID", "the scan batch file is not valid", { reason: "unknownDir" });
   counts.listings++;
   if (!d.complete) {
     endListing(conn.diff, ctx.job, dir.id);
-    if (!conn.diff.offline) conn.st.dirIncomplete.run(d.code ?? null, ctx.at, dir.id);
+    if (conn.diff.offline) return;
+    if (d.code != null && MOUNT_GONE.has(d.code)) {
+      conn.st.dirOffline.run(d.code, ctx.at, dir.id);
+      yield* offlineSubtree(conn.diff, dir.id, b);
+    } else conn.st.dirIncomplete.run(d.code ?? null, ctx.at, dir.id);
     return;
   }
   const outcome = yield* closeListing(conn.diff, conn.fts, dir.id, d.entries, ctx, counts, b);
   if (outcome.kind !== "closed") return;
   if (outcome.fresh) {
     const mtime = d.mtimeNs == null ? null : BigInt(d.mtimeNs);
-    conn.st.dirDone.run(mtime, ctx.gen, outcome.start, d.code ?? null, ctx.at, dir.id);
+    const volume = d.volume == null ? null : JSON.stringify(d.volume);
+    conn.st.dirDone.run(mtime, ctx.gen, outcome.start, d.entries, volume, d.code ?? null, ctx.at, dir.id);
   } else conn.st.dirDoneStale.run(ctx.at, dir.id);
 }
 
