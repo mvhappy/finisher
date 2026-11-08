@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::plan::PlanWarning;
 
-/// A target's signed custom metadata (`custom` in the delegated targets role).
+/// A package target's signed custom metadata (`custom` in its publisher's delegated role): one
+/// type for the editor that signs it, the TUF client that reads it and the plan that checks it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TargetCustom {
@@ -28,6 +29,26 @@ pub struct TargetCustom {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub yanked: bool,
     pub bytes_unpacked: u64,
+}
+
+impl TargetCustom {
+    /// The custom metadata of a package whose manifest is `m` (bytes `manifest_bytes`) and
+    /// whose files unpack to `bytes_unpacked` bytes.
+    pub fn from_manifest(m: &Manifest, manifest_bytes: &[u8], bytes_unpacked: u64) -> Self {
+        custom_for(m, manifest_bytes, bytes_unpacked)
+    }
+
+    pub fn to_map(&self) -> serde_json::Map<String, serde_json::Value> {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => unreachable!("a struct serialises to an object"),
+        }
+    }
+
+    /// The metadata in a target's `custom` map, when it is valid package metadata.
+    pub fn from_map(m: &serde_json::Map<String, serde_json::Value>) -> Option<TargetCustom> {
+        serde_json::from_value(serde_json::Value::Object(m.clone())).ok()
+    }
 }
 
 /// A target fetched by the TUF client, whose bytes matched its signed length and hashes.

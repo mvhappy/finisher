@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "id": "@finisher/captions-basic",
+  "version": "1.0.0",
+  "kind": "content",
+  "hostApi": "^1.0",
+  "license": "MIT",
+  "publisher": { "name": "Finisher" },
+  "messages": "messages",
+  "locales": ["en"],
+  "contributes": {
+    "captionStyles": [
+      { "name": "bold", "file": "styles/bold.json", "title": "style.bold" },
+      { "name": "clean", "file": "styles/clean.json", "title": "style.clean" },
+      { "name": "punch", "file": "styles/punch.json", "title": "style.punch" }
+    ]
+  }
+}

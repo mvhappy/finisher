@@ -344,6 +344,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmov"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -491,6 +497,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "914a755b7c2d4af2bdcff7ce1739e2db9a1b81a9b07123d8015786ae03c0980d"
 
 [[package]]
+name = "ctutils"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a"
+dependencies = [
+ "cmov",
+]
+
+[[package]]
 name = "defmt"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -551,6 +566,7 @@ dependencies = [
  "block-buffer",
  "const-oid",
  "crypto-common",
+ "ctutils",
 ]
 
 [[package]]
@@ -657,6 +673,7 @@ dependencies = [
 name = "fin"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "blake3",
  "clap",
  "fin",
@@ -664,6 +681,8 @@ dependencies = [
  "fin-probe",
  "fin-store",
  "fin-testfonts",
+ "getrandom 0.3.4",
+ "hmac",
  "interprocess",
  "schemars",
  "serde",
@@ -850,6 +869,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 
@@ -868,6 +888,8 @@ dependencies = [
 name = "fin-plugin-cli"
 version = "0.0.0"
 dependencies = [
+ "fin-core",
+ "fin-fonts",
  "fin-plugin-api",
  "fin-registry",
  "semver",
@@ -889,12 +911,14 @@ dependencies = [
  "fin-testfonts",
  "fin-text",
  "imagesize",
+ "libc",
  "roxmltree",
  "schemars",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
@@ -1346,6 +1370,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "http"

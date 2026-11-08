@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use fin_core::events::{Envelope, Purposes, Ulid};
+use fin_core::events::{Envelope, Purposes, Ulid, kind, redact};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,9 @@ pub struct DiagnosticsReport {
 }
 
 /// One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as
-/// the next request's `cursor`; absent on the last page.
+/// the next request's `cursor`; absent on the last page. `redacted`: content fields (and the
+/// blob references inside them) were removed, as for a caller that is not a person (5A
+/// Decision 22); absent otherwise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportPage {
@@ -35,6 +37,26 @@ pub struct ExportPage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub next: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redacted: bool,
+}
+
+impl ExportPage {
+    /// Removes every content field, as the diagnostics-only upload view does (a training-only
+    /// kind keeps its metadata part), and marks the page `redacted`. An entry of a kind (or
+    /// kind version) this build does not know is dropped, as the upload view drops it: its
+    /// content fields are unknown, so nothing of it can be shown safely (review of Task 7, L5).
+    pub fn redact(&mut self) {
+        self.lines
+            .retain_mut(|e| match kind(e.kind.as_str(), e.kv) {
+                Some(spec) => {
+                    redact(spec, &mut e.payload, Purposes::DIAGNOSTICS);
+                    true
+                }
+                None => false,
+            });
+        self.redacted = true;
+    }
 }
 
 impl Journal {
@@ -80,6 +102,10 @@ impl Journal {
         let next = more
             .then(|| lines.last().map(|e| e.id.as_str().to_owned()))
             .flatten();
-        Ok(ExportPage { lines, next })
+        Ok(ExportPage {
+            lines,
+            next,
+            redacted: false,
+        })
     }
 }

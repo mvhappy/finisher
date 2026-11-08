@@ -20,6 +20,7 @@ pub mod keyframe;
 pub mod marker;
 pub mod media;
 pub mod param;
+pub mod plugin;
 pub mod project;
 pub mod schema;
 pub mod style;
@@ -28,6 +29,7 @@ pub mod track;
 pub mod transition;
 pub mod try_cmd;
 pub mod view;
+pub mod whoami;
 
 pub use builder::Builder;
 use builder::with_detail;

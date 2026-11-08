@@ -1,5 +1,6 @@
 // The fin-node napi binding (crates/fin-node): JS wrappers over `native.js`.
 import { call, native, sync, toFinError } from "./native.js";
+import { defineRegistry } from "./registry.js";
 
 export {
   JobHost,
@@ -23,7 +24,7 @@ export class Engine {
   }
 
   static async open(serverData, projectDir, options = {}) {
-    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true)));
+    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true, options.expectId ?? null)));
   }
 
   get projectId() {
@@ -271,8 +272,8 @@ export class Journal {
     return sync(() => this.#native.statusNow());
   }
 
-  async export(filterJson, cursor, limit, asUpload) {
-    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null)));
+  async export(filterJson, cursor, limit, asUpload, redact) {
+    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null, redact === true)));
   }
 
   async purge(selectorJson) {
@@ -377,6 +378,15 @@ export class FontManager {
     this.#native.setAutoFetch(on === true);
   }
 
+  /** `[{id, catalogs: [text]}]` JSON → `{rejected: [{id, code, message, details}]}` JSON. */
+  setExtraCatalogs(packsJson) {
+    try {
+      return this.#native.setExtraCatalogs(packsJson);
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
   catalog() {
     try {
       return this.#native.catalog();
@@ -405,43 +415,31 @@ export class FontManager {
  * Keep the returned `ServerLock` until shutdown, then call `release()`.
  */
 export function lockExclusive(path) {
-  try {
-    return native.lockExclusive(path);
-  } catch (e) {
-    throw toFinError(e);
-  }
+  return sync(() => native.lockExclusive(path));
 }
 
 /** This server data's `server-id` (created on first use; renewed for a copied server data). */
 export function serverId(serverData) {
-  try {
-    return native.serverId(serverData);
-  } catch (e) {
-    throw toFinError(e);
-  }
+  return sync(() => native.serverId(serverData));
 }
 
 /** Windows: owner and DACL private to this user; elsewhere `{ ok: true }`. */
 export function checkPrivateDir(path) {
-  try {
-    const r = native.checkPrivateDir(path);
-    return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
-  } catch (e) {
-    throw toFinError(e);
-  }
+  const r = sync(() => native.checkPrivateDir(path));
+  return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
 }
 
 /** Creates `path` private to this user (protected owner-only DACL on Windows, 0700 elsewhere). */
 export function makePrivateDir(path) {
-  try {
-    native.makePrivateDir(path);
-  } catch (e) {
-    throw toFinError(e);
-  }
+  sync(() => native.makePrivateDir(path));
 }
 
 export function probe(path) {
   return call(native.probe(path));
+}
+
+export function probeBeneath(root, path) {
+  return call(native.probeBeneath(root, path));
 }
 
 export function libraryCanonicalRoot(path, serverData, timeoutMs) {
@@ -456,38 +454,8 @@ export function libraryProbeStatus() {
   return native.libraryProbeStatus();
 }
 
-export class Registry {
-  #native;
-
-  constructor(nativeRegistry) {
-    if (!(nativeRegistry instanceof native.Registry)) throw new TypeError("use Registry.open");
-    this.#native = nativeRegistry;
-  }
-
-  static open(serverData) {
-    try {
-      return new Registry(native.Registry.open(serverData));
-    } catch (e) {
-      throw toFinError(e);
-    }
-  }
-
-  plan(reqJson) {
-    return call(this.#native.plan(reqJson));
-  }
-
-  commit(planId, digest, acceptJson) {
-    return call(this.#native.commit(planId, digest, acceptJson ?? null));
-  }
-
-  removePlugin(id, version, purgeData) {
-    return call(this.#native.removePlugin(id, version, purgeData === true));
-  }
-
-  sweep() {
-    return call(this.#native.sweep());
-  }
-}
+/** The plugin store and registries of a server (`registry.js`). */
+export const Registry = defineRegistry({ native, call, toFinError });
 
 export function validateManifest(dir, source) {
   return call(native.validateManifest(dir, source ?? null));
@@ -529,6 +497,27 @@ export const testHooks = native.writeFixtureMp4ForTest
       packPlugin(src, out) {
         try {
           return native.packPluginForTest(src, out);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
+      buildRegistry(dir, keysDir, specJson) {
+        try {
+          return native.buildRegistryForTest(dir, keysDir, specJson);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
+      treeHash(dir) {
+        try {
+          return native.treeHashForTest(dir);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
+      publishToRegistry(dir, keysDir, specJson) {
+        try {
+          native.publishToRegistryForTest(dir, keysDir, specJson);
         } catch (e) {
           throw toFinError(e);
         }

@@ -54,5 +54,25 @@
   {
     "path": "crates/fin-workers/tests",
     "reason": "Tests drive the worker binary and inspect job directories by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/build.rs",
+    "reason": "Hashes the repository's own resources/plugins/bundled at build time; never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/bundled.rs",
+    "reason": "Stats and reads the app's own resources/plugins/bundled folder; never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/registry/registries.rs",
+    "reason": "Reads the root file the owner named in registry.add; plugin registries are never library paths."
+  },
+  {
+    "path": "crates/fin-node/src/registry/host.rs",
+    "reason": "Reads an installed plugin's manifest from the plugin store; never a library path."
+  },
+  {
+    "path": "crates/fin-node/tests/bundled.rs",
+    "reason": "Reads the app's own bundled resources and temporary trees by path; not a library reader."
   }
 ]

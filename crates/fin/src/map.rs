@@ -38,7 +38,7 @@ pub fn map() -> Value {
         "modes": "ripple (default for clips) | overwrite (default for other kinds; lift for deletes) | roll (trims); echoed as resolved.mode",
         "write": "{rev, txId, bindings, diff, resolved}; --dry-run: {dryRun:true, txId, bindings, diff, resolved}",
         "error": "{error:{code, message, details, fix}}",
-        "exit": "0 ok, 2 USAGE, 3 validation, 4 CONFLICT, 5 SERVER_UNAVAILABLE, 6 internal",
+        "exit": "0 ok, 2 USAGE, 3 validation, 4 CONFLICT, 5 SERVER_UNAVAILABLE, 6 internal, 7 denied (needs a person; do not retry)",
         "more": "fin help <group>; fin schema <cmd>",
     })
 }

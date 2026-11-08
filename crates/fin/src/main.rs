@@ -3,6 +3,7 @@
 
 mod addr;
 mod agent_env;
+mod auth;
 mod backend;
 mod client;
 mod client_fonts;
@@ -17,6 +18,7 @@ mod output;
 mod paths;
 mod registry;
 mod registry_edit;
+mod registry_plugins;
 mod registry_settings;
 mod values;
 mod view;
@@ -44,6 +46,7 @@ use commands::keyframe::KeyframeCmd;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
 use commands::param::ParamCmd;
+use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
 use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
@@ -105,6 +108,10 @@ enum Cmd {
     #[command(subcommand)]
     Diagnostics(DiagnosticsCmd),
     #[command(subcommand)]
+    Plugin(PluginCmd),
+    #[command(subcommand)]
+    Registry(RegistryCmd),
+    #[command(subcommand)]
     Branch(BranchCmd),
     Undo(UndoArgs),
     Redo,
@@ -114,6 +121,7 @@ enum Cmd {
     Revert(RevertArgs),
     Try(TryArgs),
     Batch,
+    Whoami,
     Help {
         topic: Option<String>,
     },
@@ -280,6 +288,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),
         Some(Cmd::Fonts(c)) => commands::fonts::read(backend()?.as_ref(), g, &c),
         Some(Cmd::Diagnostics(c)) => commands::diagnostics::run(backend()?.as_ref(), g, &c),
+        Some(Cmd::Plugin(c)) => commands::plugin::plugin(backend()?.as_ref(), &c),
+        Some(Cmd::Registry(c)) => commands::plugin::registry(backend()?.as_ref(), &c),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
         Some(Cmd::Undo(a)) => commands::history::undo(backend()?.as_ref(), g, &a),
         Some(Cmd::Redo) => commands::history::redo(backend()?.as_ref(), g),
@@ -288,6 +298,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::CherryPick(a)) => commands::history::cherry_pick(backend()?.as_ref(), g, &a),
         Some(Cmd::Revert(a)) => commands::history::revert(backend()?.as_ref(), g, &a),
         Some(Cmd::Try(a)) => commands::try_cmd::run(backend()?.as_ref(), g, &a),
+        Some(Cmd::Whoami) => commands::whoami::run(),
         Some(Cmd::Batch) => {
             let mut input = String::new();
             std::io::stdin().read_to_string(&mut input).map_err(|e| {
@@ -421,8 +432,24 @@ mod tests {
             "diagnostics purge --before 2026-11-01",
             "diagnostics project never",
             "diagnostics consent training off",
+            "plugin search fonts --kind content --registry team",
+            "plugin info @acme/fonts",
+            "plugin ls",
+            "plugin suggest @acme/fonts --reason why",
+            "plugin install @acme/fonts@1.0.0 --registry team",
+            "plugin update @acme/fonts",
+            "plugin rm @acme/fonts --purge-data",
+            "plugin enable @acme/fonts",
+            "plugin disable @acme/fonts",
+            "registry ls",
+            "registry status team",
+            "registry refresh team",
+            "registry add team --dir d --root-sha256 ab",
+            "registry rm team",
+            "registry forget --root ab",
             "batch",
             "help clip",
+            "whoami",
             "schema clip.insert",
             "schema param --scope style --path text.",
         ];

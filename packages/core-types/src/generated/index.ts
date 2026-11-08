@@ -15,6 +15,11 @@ export type IdRef = string;
  */
 export type ActorKind = "user" | "agent" | "plugin" | "system" | "unknown";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AdvisoryAction".
+ */
+export type AdvisoryAction = "warn" | "disable";
+/**
  * Who decided an approval.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1111,13 +1116,15 @@ export type Ulid = string;
  */
 export type KindName = string;
 /**
- * Which program emitted an entry. The server sets it from the transport (local socket →
- * `fin`, WebSocket → `ui`), never from the payload.
+ * Which program emitted an entry. The server sets it from the connection's principal (5A
+ * Decision 27: `local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` →
+ * `ui`), never from the payload. `console`, a person at the server, sends no events of its
+ * own; `mcp`, the MCP adapter (D16), sends the kinds `fin` does.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Source".
  */
-export type Source = "fin" | "finisherd" | "finNode" | "ui" | "agent";
+export type Source = "fin" | "finisherd" | "finNode" | "ui" | "agent" | "console" | "mcp";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EventPayload".
@@ -1803,6 +1810,11 @@ export type ParamType =
  */
 export type Placeholder =
   "dataless" | "icloudStub" | "nextcloud" | "owncloud" | "recallOnOpen" | "recallOnData" | "offline" | "unpinned";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Severity".
+ */
+export type Severity = "low" | "medium" | "high" | "critical";
 /**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
@@ -4335,7 +4347,9 @@ export interface Expect {
 }
 /**
  * One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as
- * the next request's `cursor`; absent on the last page.
+ * the next request's `cursor`; absent on the last page. `redacted`: content fields (and the
+ * blob references inside them) were removed, as for a caller that is not a person (5A
+ * Decision 22); absent otherwise.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ExportPage".
@@ -4343,6 +4357,7 @@ export interface Expect {
 export interface ExportPage {
   lines: Envelope[];
   next?: string;
+  redacted?: boolean;
 }
 /**
  * Which entries to read. Empty fields match everything.
@@ -4837,6 +4852,11 @@ export interface IgnoredTrack {
  */
 export interface InstallPlan {
   action: PlanAction;
+  /**
+   * The package contributes agent-facing content (spec §4.2): an update of it never
+   * installs without a person's approval (§5.3).
+   */
+  agentFacing?: boolean;
   /**
    * Unpacked bytes.
    */
@@ -5610,6 +5630,23 @@ export interface VolumeIdentity2 {
   sample: SampleEntry[];
 }
 /**
+ * A plugin in search results: its newest version that is not yanked.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Listing".
+ */
+export interface Listing {
+  id: string;
+  kind: PluginKind;
+  latest: string;
+  license: string;
+  registryId: string;
+  /**
+   * Versions offered to new installs (not yanked), oldest first.
+   */
+  versions: string[];
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Manifest".
  */
@@ -5745,6 +5782,72 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
+ * Everything a registry signs about one plugin.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginInfo".
+ */
+export interface PluginInfo {
+  /**
+   * In-scope advisories that apply to at least one listed version.
+   */
+  advisories: SignedAdvisory[];
+  id: string;
+  registryId: string;
+  /**
+   * Every version, yanked ones included, oldest first.
+   */
+  versions: VersionInfo[];
+}
+/**
+ * An advisory with the role that signed it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SignedAdvisory".
+ */
+export interface SignedAdvisory {
+  action: AdvisoryAction;
+  id: string;
+  /**
+   * The plugin id, `@publisher/name`.
+   */
+  plugin: string;
+  severity: Severity;
+  /**
+   * `targets` for registry-wide advisories, else the publisher.
+   */
+  signedBy: string;
+  summary: string;
+  url?: string | null;
+  /**
+   * A semver range of affected versions.
+   */
+  versions: string;
+}
+/**
+ * One published version.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VersionInfo".
+ */
+export interface VersionInfo {
+  bytesUnpacked: number;
+  hostApi: string;
+  kind: PluginKind;
+  length: number;
+  license: string;
+  manifestSha256: string;
+  permissionsDigest: string;
+  platforms: Platform[];
+  sha256: string;
+  /**
+   * The target name, its signed length and SHA-256.
+   */
+  target: string;
+  version: string;
+  yanked: boolean;
+}
+/**
  * `settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown
  * keys are ignored.
  *
@@ -5854,6 +5957,120 @@ export interface RecoverReport {
 export interface SkippedFile {
   path: string;
   reason: string;
+}
+/**
+ * What a refresh found.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RefreshReport".
+ */
+export interface RefreshReport {
+  /**
+   * Whether the trusted set changed.
+   */
+  changed: boolean;
+  rootVersion: number;
+  /**
+   * Roots newly trusted by this refresh.
+   */
+  rootsAdded: number;
+  snapshotVersion: number;
+  /**
+   * Whole days the metadata is past its earliest expiry, when it is.
+   */
+  staleDays?: number | null;
+  targetsVersion: number;
+  timestampVersion: number;
+  warnings: Warning[];
+}
+/**
+ * A warning `{code, details}`, e.g. `REGISTRY_STALE {days, maxStaleDays, role}`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Warning".
+ */
+export interface Warning {
+  code: string;
+  details: {
+    [k: string]: unknown;
+  };
+}
+/**
+ * `registry.list`'s answer.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RegistryList".
+ */
+export interface RegistryList {
+  problems: RegistryProblem[];
+  registries: RegistryStatus[];
+}
+/**
+ * A registry that could not be opened (its config or trusted set is damaged); the others
+ * are still listed.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RegistryProblem".
+ */
+export interface RegistryProblem {
+  code: string;
+  id: string;
+  message: string;
+}
+/**
+ * One added registry (spec §5.1: `registry.json` and the trusted set).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RegistryStatus".
+ */
+export interface RegistryStatus {
+  /**
+   * Advisories in scope of the trusted set.
+   */
+  advisories: number;
+  /**
+   * `relaxed` for local folders.
+   */
+  freshness: string;
+  id: string;
+  /**
+   * `local`: a folder (a git registry is a folder the user pulls).
+   */
+  kind: string;
+  /**
+   * Seconds since the epoch of the last successful refresh, `None` before the first.
+   */
+  lastRefreshAt: number;
+  /**
+   * `maxStaleDays` from the signed root (default 7, at most 90).
+   */
+  maxStaleDays: number;
+  path: string;
+  /**
+   * Plugins listed (with at least one version), yanked-only ones included.
+   */
+  plugins: number;
+  /**
+   * The root this registry is trusted through (also the name of its trust directory).
+   */
+  rootSha256: string;
+  /**
+   * Whole days past the trusted metadata's earliest expiry, `None` while fresh.
+   */
+  staleDays: number;
+  trusted: TrustedVersions;
+}
+/**
+ * The versions of the trusted metadata roles; a role not yet fetched has none.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TrustedVersions".
+ */
+export interface TrustedVersions {
+  root: number;
+  snapshot: number;
+  targets: number;
+  timestamp: number;
 }
 /**
  * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
@@ -5987,7 +6204,8 @@ export interface UnitEntry {
       };
 }
 /**
- * A target's signed custom metadata (`custom` in the delegated targets role).
+ * A package target's signed custom metadata (`custom` in its publisher's delegated role): one
+ * type for the editor that signs it, the TUF client that reads it and the plan that checks it.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TargetCustom".
@@ -6372,4 +6590,22 @@ export interface ValidationReport {
   errors: Invalid[];
   manifest?: Manifest | null;
   ok: boolean;
+}
+/**
+ * The branches a write may change, by branch id (`br<n>`, `main`). The default guards
+ * nothing.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WriteGuard".
+ */
+export interface WriteGuard {
+  /**
+   * When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise). Absent
+   * means no allow-list; `null` is refused, so a sender's bug cannot open the guard.
+   */
+  allowBranches?: string[];
+  /**
+   * Branches no write may change (`BRANCH_PROTECTED`).
+   */
+  denyBranches?: string[];
 }

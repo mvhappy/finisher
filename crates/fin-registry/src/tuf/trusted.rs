@@ -20,14 +20,15 @@ use url::Url;
 use super::adapter::{self, Adapter, State};
 use super::checks;
 use super::clock::{self, unix_secs};
+use super::custom;
 use super::custom::ADVISORIES_FILE;
-use super::custom::{self, PackageCustom};
 use super::error::{from_tough, verify_error};
 use super::freshness;
 use super::{Clock, Layout, Policy, RefreshReport, TrustState, TrustStore, TufError, Warning};
 use crate::advisory::AdvisoryFile;
 use crate::atomic;
 use crate::package::hex;
+use crate::target::TargetCustom;
 use crate::transport::{Transport, TransportError};
 
 /// A target of the trusted metadata.
@@ -45,11 +46,11 @@ pub struct TargetInfo {
 
 impl TargetInfo {
     /// The package custom metadata, when this target is a package carrying valid metadata.
-    pub fn package(&self) -> Option<PackageCustom> {
+    pub fn package(&self) -> Option<TargetCustom> {
         if !self.name.ends_with(".finpkg") {
             return None;
         }
-        PackageCustom::from_map(&self.custom)
+        TargetCustom::from_map(&self.custom)
     }
 
     /// The path of the target's file under `targets/`.
@@ -412,13 +413,25 @@ pub(crate) fn is_advisories(t: &TargetInfo) -> bool {
 
 /// Parses an advisories file; one that does not parse is `REGISTRY_INVALID`.
 pub(crate) fn advisory_file(name: &str, bytes: &[u8]) -> Result<AdvisoryFile, TufError> {
-    serde_json::from_slice(bytes).map_err(|e| {
+    let invalid = |why: String, field: Option<&str>| {
         TufError::new(
             "REGISTRY_INVALID",
-            format!("{name}: {e}"),
-            json!({ "reason": "advisories", "target": name }),
+            format!("{name}: {why}"),
+            json!({ "reason": "advisories", "target": name, "field": field }),
         )
-    })
+    };
+    let file: AdvisoryFile =
+        serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string(), None))?;
+    // Text a person reads: plain and short (a control character could rewrite the screen).
+    for a in &file.advisories {
+        a.check().map_err(|field| {
+            invalid(
+                format!("an advisory's {field} is too long or holds a control character"),
+                Some(field),
+            )
+        })?;
+    }
+    Ok(file)
 }
 
 /// `tough` reports a delegated role's failures as `targets`; name the role it was loading.

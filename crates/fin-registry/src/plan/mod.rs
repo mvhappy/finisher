@@ -10,7 +10,6 @@ mod checks;
 mod stage;
 mod types;
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -66,14 +65,40 @@ pub struct PlanRequest {
     /// Other plugin ids people may confuse this one with (installed, bundled, listed).
     #[serde(default)]
     pub known_ids: Vec<String>,
+    /// The plan's registry is not the one the installed version came from (another id, or the
+    /// same id under another trust root): the plan carries a `registryChanged` warning, which
+    /// is part of its digest. `finisherd` decides; the plan only says so.
+    #[serde(default)]
+    pub registry_changed: bool,
+    /// Tests only (`fin-node`'s `test-hooks` builds set it): mark the plan agent-facing, since
+    /// no agent-facing kind is consumable in 8A and the update rule must still be tested
+    /// (8A Decision 23).
+    #[doc(hidden)]
+    #[serde(default)]
+    pub test_agent_facing: bool,
+}
+
+/// A contributed font catalog that would not merge into the server's (8A Decision 22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogClash {
+    /// The catalog's index in `contributes.fontCatalogs`.
+    pub index: usize,
+    /// `catalogIdTaken` (an entry id the built-in catalog, another pack or an earlier catalog
+    /// of this pack has), else the rule the merged catalog breaks (`unique`: the same file or
+    /// face listed under two ids).
+    pub rule: String,
+    /// The entry id, for `catalogIdTaken`.
+    pub entry: Option<String>,
+    pub message: String,
 }
 
 /// What a plan needs from crates above this one; `fin-node` implements it over `fin-fonts`.
 pub trait PlanHost {
-    /// The entry ids of a contributed font catalog (already validated).
-    fn font_catalog_ids(&self, bytes: &[u8]) -> Vec<String>;
-    /// Entry ids the built-in catalog and other installed packs (not `except`) hold.
-    fn taken_font_ids(&self, except: &PluginId) -> BTreeSet<String>;
+    /// The first of `catalogs` (a pack's contributed font catalogs in manifest order, already
+    /// validated one by one) that would not merge, one after the other, into the built-in
+    /// catalog and the catalogs of the other installed content packs (not `except`), as the
+    /// server merges them: `None` when they all do.
+    fn catalog_clash(&self, catalogs: &[Vec<u8>], except: &PluginId) -> Option<CatalogClash>;
 }
 
 /// Makes a plan for `req` from `src` in `store`'s staging directory.
@@ -159,7 +184,7 @@ fn build(
             (source, None, Vec::new(), None)
         }
     };
-    checks::catalog_ids(&manifest, &files, id, host)?;
+    checks::catalog_merge(&manifest, &files, id, host)?;
     let (action, from, old_perms) = checks::action(&manifest, req)?;
 
     let third_party_code = manifest.kind == PluginKind::Code && source.kind == SourceKind::Registry;
@@ -178,6 +203,9 @@ fn build(
             "thirdPartyCode",
             json!({ "confined": false }),
         ));
+    }
+    if req.registry_changed {
+        warnings.push(PlanWarning::new("registryChanged", json!({})));
     }
     warnings.append(&mut registry_warnings);
     warnings.extend(checks::licence_warning(&licence));
@@ -212,6 +240,7 @@ fn build(
         models: models(&manifest),
         warnings,
         registry_stale_days: stale,
+        agent_facing: manifest.agent_facing() || req.test_agent_facing,
         tree_hash: unpacked.tree_hash.clone(),
         target_sha256,
         expires_at: now.saturating_add(PLAN_TTL_MS),

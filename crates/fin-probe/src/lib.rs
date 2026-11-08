@@ -20,6 +20,7 @@ mod font;
 mod image;
 mod lottie;
 mod lut;
+mod open;
 mod svg;
 mod wav;
 
@@ -241,9 +242,27 @@ pub struct ProbeOutcome {
 /// `MEDIA_CORRUPT`, `MEDIA_LIMIT`, `UNSUPPORTED_CONTAINER` or `UNSUPPORTED_TRANSFORM` with
 /// `details.path`.
 ///
-/// For a project file. A file under a library root goes through [`probe_with`].
+/// For a project file. A file under a library root goes through [`probe_with`]. The file is
+/// opened without blocking and must be a regular file (a folder, FIFO, socket or device is
+/// `ASSET_UNREADABLE` with `details.reason = "NotAFile"`); symlinks are followed.
 pub fn probe(path: &Path) -> Result<Probe, CoreError> {
-    probe_with(path, |p| File::open(p))
+    let (mut file, meta) = open::open(path).map_err(|r| r.into_core(path, None))?;
+    probe_reader(&mut file, FileMeta::of(&meta), path).probe
+}
+
+/// [`probe`] for a file that must be inside `root`: `path` is `root` joined with plain
+/// components (no `..`), each reached from the root's open folder without following a
+/// symlink, decided on the open handle so that a symlink swapped in meanwhile cannot redirect
+/// it (Linux `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, else one `O_NOFOLLOW`
+/// open per component; Windows: no reparse point, and the handle's final path inside the
+/// root's). Anything else is `PATH_NOT_ALLOWED` with `details.path` (as given, never
+/// resolved), `details.root` and `details.reason` (`outsideRoot` or `symlink`).
+///
+/// `root` itself is opened as given: callers pass it canonical.
+pub fn probe_beneath(root: &Path, path: &Path) -> Result<Probe, CoreError> {
+    let (mut file, meta) =
+        open::open_beneath(root, path).map_err(|r| r.into_core(path, Some(root)))?;
+    probe_reader(&mut file, FileMeta::of(&meta), path).probe
 }
 
 /// [`probe`] over the handle `open` returns for `path`, called once: the metadata, the
@@ -404,11 +423,11 @@ fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> 
 /// - `head`: bytes `[0, 64 KiB)`; `middle`: 64 KiB starting at `size/2 - 32 KiB`; `tail`: the
 ///   last 64 KiB.
 ///
-/// Files under 192 KiB are hashed whole (once) in place of head/middle/tail.
+/// Files under 192 KiB are hashed whole (once) in place of head/middle/tail. Opened as by
+/// [`probe`]: without blocking, and only a regular file (else `InvalidInput`).
 pub fn fingerprint(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let meta = FileMeta::of(&file.metadata()?);
-    fingerprint_reader(&mut file, meta)
+    let (mut file, meta) = open::open(path)?;
+    fingerprint_reader(&mut file, FileMeta::of(&meta))
 }
 
 fn mtime_ns(meta: &Metadata) -> i64 {

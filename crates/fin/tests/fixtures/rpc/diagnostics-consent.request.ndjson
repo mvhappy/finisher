@@ -1,1 +1,1 @@
-{"_tag":"Request","id":"1","tag":"diagnostics.consent","payload":{"purpose":"diagnostics","value":"on"},"headers":[]}
+{"_tag":"Request","id":"1","tag":"diagnostics.consent","payload":{"purpose":"diagnostics","value":"on","challenge":"0FIXTURECHALLENGE0"},"headers":[]}

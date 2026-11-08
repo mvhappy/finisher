@@ -5,10 +5,9 @@
 // records stay byte-identical. View, frame and audio plans are checked against goldens
 // (`reel-golden/`, `E2E_REEL_BLESS=1` rewrites them). An optional pass measures real catalog
 // fonts from a warmed cache (`FIN_FONT_CACHE`; `FIN_REQUIRE_FONTS=1` makes it required).
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { assertEqual, fin, finRaw, live, log, removeTmp, startServer, stopServer, waitFor } from "./lib.mjs";
+import { assertEqual, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer, waitFor } from "./lib.mjs";
 import { TEST_NATIVE_DIR, testFont, writeFixture, writeFixtureOf } from "./fixture.mjs";
 import { catalogJson, startFontServer } from "./fontserver.mjs";
 import { failure } from "./history-lib.mjs";
@@ -87,7 +86,7 @@ async function exported(f) {
 
 export async function run() {
   const started = Date.now();
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-reel-")));
+  const tmp = scenarioTmp("finisher-e2e-reel-");
   live.tmp = tmp;
   const sd = join(tmp, "server");
   const project = join(tmp, "reel");

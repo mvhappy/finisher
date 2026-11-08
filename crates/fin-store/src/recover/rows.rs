@@ -328,7 +328,9 @@ impl Runner<'_, '_, '_> {
             ));
             return Ok(Ok((0, false)));
         }
-        if self.writes() {
+        if let Some(ctx) = self.ctx.as_deref() {
+            // A change to an existing branch: guarded as `Store::set_branch` is.
+            ctx.guarded(info)?;
             let link = Link::BranchSet {
                 branch_id: target,
                 name: rec.name.clone(),

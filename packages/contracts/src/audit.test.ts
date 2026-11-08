@@ -12,6 +12,23 @@ describe("audit details", () => {
     }
   });
 
+  test("plugin_and_registry_kinds_take_ids_a_version_and_a_risk_only", () => {
+    const kinds = AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry."));
+    expect(kinds).toEqual(expect.arrayContaining(["plugin.install", "plugin.update", "plugin.remove", "plugin.enable", "plugin.disable", "plugin.revoke", "plugin.grant", "registry.add", "registry.remove", "registry.trust", "registry.forget", "registry.verifyFail"]));
+    const ok = { pluginId: "@acme/pack", version: "1.2.0-beta.1", registryId: "team", permissionsAdded: 2, risk: "high", code: "TUF_EXPIRED", thirdPartyCode: { accepted: true, confined: false } };
+    const sha = { rootSha256: "a".repeat(64) };
+    for (const kind of kinds) {
+      expect(auditDetailsValid(kind, ok), kind).toBe(true);
+      expect(auditDetailsValid(kind, sha), kind).toBe(true);
+      for (const bad of [{ pluginId: "acme/pack" }, { registryId: "Team Registry" }, { version: "v 1" }, { risk: "severe" }, { rootSha256: "xyz" }, { path: "/home/someone/plugin" }, { thirdPartyCode: { accepted: true } }, { publisher: "Acme Studio" }]) {
+        expect(auditDetailsValid(kind, bad), `${kind} ${JSON.stringify(bad)}`).toBe(false);
+      }
+    }
+    // The fields are the plugin kinds' own.
+    expect(auditDetailsValid("auth.denied", { pluginId: "@acme/pack" })).toBe(false);
+    expect(auditDetailsValid("consent.change", { registryId: "team" })).toBe(false);
+  });
+
   test("free text, paths and unknown fields are refused", () => {
     for (const details of [
       { path: "/home/someone/film" },

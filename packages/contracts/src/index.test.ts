@@ -3,17 +3,35 @@ import { RpcSchema } from "effect/rpc";
 import { expect, test } from "vitest";
 import { FinError, FinRpcs, PROTOCOL_VERSION, STREAM_RPCS } from "./index.ts";
 
-test("protocol version starts at 1", () => {
-  expect(PROTOCOL_VERSION).toBe(1);
+test("protocol version is 2 (5A: the handshake, tickets, asset.probe {projectId})", () => {
+  expect(PROTOCOL_VERSION).toBe(2);
 });
 
-test("the group exposes exactly the v1 RPC tags", () => {
+test("generation_is_required, probe_requires_project_id (protocol 2)", () => {
+  const decode = (tag: string, payload: unknown) => Schema.decodeUnknownExit(FinRpcs.requests.get(tag)!.payloadSchema as Schema.Codec<unknown>)(payload)._tag;
+  const generation = { incarnation: "i", n: 0 };
+  expect(decode("tx.commit", { projectId: "p", tx: {} })).toBe("Failure");
+  expect(decode("tx.commit", { projectId: "p", tx: {}, generation })).toBe("Success");
+  expect(decode("ops.subscribe", { projectId: "p", branch: "main", fromRev: 0 })).toBe("Failure");
+  expect(decode("ops.subscribe", { projectId: "p", branch: "main", fromRev: 0, generation })).toBe("Success");
+  expect(decode("asset.probe", { path: "/m/a.mov" })).toBe("Failure");
+  expect(decode("asset.probe", { projectId: "p", path: "/m/a.mov" })).toBe("Success");
+});
+
+test("the group exposes exactly the protocol 2 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
       "asset.probe",
+      "auth.audit.list",
+      "auth.audit.purge",
+      "auth.prove",
+      "auth.revokeSelf",
+      "auth.ticket",
+      "auth.whoami",
       "branch.create",
       "branch.list",
       "branch.set",
+      "console.challenge",
       "diagnostics.consent",
       "diagnostics.export",
       "diagnostics.project",
@@ -33,6 +51,17 @@ test("the group exposes exactly the v1 RPC tags", () => {
       "history.revert",
       "history.undo",
       "ops.subscribe",
+      "plugin.content.get",
+      "plugin.disable",
+      "plugin.discard",
+      "plugin.enable",
+      "plugin.info",
+      "plugin.install",
+      "plugin.list",
+      "plugin.plan",
+      "plugin.remove",
+      "plugin.search",
+      "plugin.suggest",
       "project.acknowledgeRewind",
       "project.acknowledgeSalvage",
       "project.compact",
@@ -44,7 +73,15 @@ test("the group exposes exactly the v1 RPC tags", () => {
       "project.status",
       "project.takeover",
       "project.verify",
+      "registry.add",
+      "registry.forget",
+      "registry.list",
+      "registry.refresh",
+      "registry.remove",
+      "registry.status",
       "server.hello",
+      "server.status",
+      "server.stop",
       "snapshot.get",
       "tx.commit",
       "tx.get",

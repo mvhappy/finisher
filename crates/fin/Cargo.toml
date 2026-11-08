@@ -24,6 +24,8 @@ doctest = false
 test-hooks = []
 
 [dependencies]
+# The handshake (5A Task 4): credential keys and MACs are base64url; nonces come from the OS.
+base64 = "0.23"
 # No `color` or `help` features: fin never renders clap's own help or ANSI output.
 # `--idem-key` commits carry the blake3 hash of the command input (`Tx.argsHash`).
 blake3 = "1"
@@ -31,16 +33,18 @@ clap = { version = "4", default-features = false, features = ["std", "derive", "
 fin-core = { path = "../fin-core" }
 # `fin project rebuild` with no server running rebuilds the database in-process.
 fin-store = { path = "../fin-store" }
+getrandom = "0.3"
+hmac = "0.13"
 # Unix domain sockets and Windows named pipes with blocking IO (0BSD OR Apache-2.0).
 interprocess = "2"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 ulid = "1"
 
 [dev-dependencies]
 fin = { path = ".", features = ["test-hooks"] }
 fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 fin-testfonts = { path = "../fin-testfonts" }
-sha2 = "0.11"
 tempfile = "3"

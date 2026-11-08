@@ -10,8 +10,8 @@ use fin_core::events::Code;
 use fin_core::events::Source;
 use fin_core::events::names::PLUGIN_ACTIONS;
 use fin_core::events::payloads::{
-    PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RiskName,
-    log2_bucket,
+    PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RegistryRefresh,
+    RiskName, log2_bucket,
 };
 use fin_plugin_api::{PluginKind, Risk};
 use fin_registry::RegistryError;
@@ -103,6 +103,49 @@ pub(crate) fn lifecycle(
             None => RiskName::Unknown,
         },
         bytes_log2: log2_bucket(about.bytes),
+        micros: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+    };
+    j.record(Source::FinNode, None, p.into());
+}
+
+/// What a refresh left behind, for [`refresh`].
+pub(crate) struct Refreshed {
+    pub(crate) roles_updated: u16,
+    pub(crate) targets: u64,
+    pub(crate) stale_days: Option<u16>,
+}
+
+/// Records `registry.refresh` (8A Decision 27): the outcome and `TUF_*` code, how many roles
+/// moved, the listed targets as a log₂ bucket and whether a person asked. No registry id,
+/// path or publisher.
+pub(crate) fn registry_refresh(
+    server_key: &Path,
+    by_human: bool,
+    result: Result<&Refreshed, &str>,
+    started: Instant,
+) {
+    let j = crate::journal::for_key(server_key);
+    if j.gate().is_none() {
+        return;
+    }
+    let (outcome, code, seen) = match result {
+        Ok(r) => (PluginOutcome::Ok, None, Some(r)),
+        Err(code) => {
+            let outcome = if matches!(code, "IO_ERROR" | "INTERNAL" | "REGISTRY_UNREACHABLE") {
+                PluginOutcome::Failed
+            } else {
+                PluginOutcome::Refused
+            };
+            (outcome, Code::parse(code), None)
+        }
+    };
+    let p = RegistryRefresh {
+        outcome,
+        code,
+        roles_updated: seen.map_or(0, |r| r.roles_updated),
+        targets_log2: seen.map_or(0, |r| log2_bucket(r.targets)),
+        stale_days: seen.and_then(|r| r.stale_days),
+        by_human,
         micros: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
     };
     j.record(Source::FinNode, None, p.into());

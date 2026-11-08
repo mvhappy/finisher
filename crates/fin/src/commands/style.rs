@@ -3,12 +3,21 @@
 //! (a preset or a style) or the default style, with `--set p=v` paths of the style scope
 //! (`fin schema param --scope style`). Like every write that may need fonts, these plan their
 //! pins through `fonts.plan` (the `Builder`). `ls` reads the project and works offline.
+//!
+//! `--from @pub/pack:<name>` (plan 8A Task 12c) copies a caption style an enabled content pack
+//! contributes: the server's `plugin.content.get` answers the style (without `id`), and the
+//! copy is a `style.add` from the default style whose `set` holds every style path of the
+//! registry (`params::specs()`, scope `Style`) the pack's style has a value for, read with
+//! `get_style`; `--set` paths apply on top. The project keeps a copy, so it renders the same
+//! after the pack is disabled or removed.
 
 use clap::{Args, Subcommand};
 use fin_core::captions::presets;
 use fin_core::layout::style_key;
-use fin_core::params::ScopeOf;
-use fin_core::{CaptionStyle, CoreError, Op, Project, StyleAdd, StyleRemove, StyleSet};
+use std::collections::BTreeMap;
+
+use fin_core::params::{Scope, ScopeOf, get_style, specs};
+use fin_core::{CaptionStyle, CoreError, Op, ParamValue, Project, StyleAdd, StyleRemove, StyleSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,7 +26,7 @@ use super::param::parse_sets;
 use super::track::{SetArgs, set_value};
 use super::{Builder, Globals, target_branch};
 use crate::backend::Backend;
-use crate::output::usage;
+use crate::output::{internal, usage};
 
 #[derive(Debug, Clone, Subcommand, Serialize)]
 #[serde(untagged)]
@@ -34,7 +43,8 @@ pub enum StyleCmd {
 pub struct AddArgs {
     #[arg(long, value_name = "s")]
     pub name: String,
-    /// A preset (`preset:bold`) or project style to start from (default: the default style).
+    /// A preset (`preset:bold`), a project style, or an enabled content pack's style
+    /// (`@pub/pack:<name>`) to start from (default: the default style).
     #[arg(long, value_name = "style")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
@@ -65,16 +75,29 @@ pub fn plan(b: &mut Builder<'_>, cmd: &StyleCmd, suffix: &str) -> Result<Value, 
     let rate = b.work.rate;
     match cmd {
         StyleCmd::Add(a) => {
-            let set = parse_sets(&ScopeOf::Style, &a.set, rate)?;
+            let own = parse_sets(&ScopeOf::Style, &a.set, rate)?;
+            let (from, mut set, pack) = match a.from.as_deref() {
+                Some(f) if f.starts_with('@') => {
+                    let (set, pack) = pack_style(b.backend, f)?;
+                    (None, set, Some(pack))
+                }
+                other => (other.map(|f| b.id(f)), BTreeMap::new(), None),
+            };
+            set.extend(own);
             let id = format!("$style{suffix}");
             b.push(Op::StyleAdd(StyleAdd {
                 id: id.clone(),
                 name: a.name.clone(),
-                from: a.from.as_ref().map(|f| b.id(f)),
+                from,
                 set: set.clone(),
             }))?;
             let font = fin_core::captions::style_of(&b.work, &b.id(&id)).map(style_key);
-            Ok(json!({ "style": id, "name": a.name, "from": a.from, "set": set, "font": font }))
+            let mut echo =
+                json!({ "style": id, "name": a.name, "from": a.from, "set": set, "font": font });
+            if let Some(pack) = pack {
+                echo["pack"] = pack;
+            }
+            Ok(echo)
         }
         StyleCmd::Set(a) => {
             let value = set_value(ScopeOf::Style, a, rate)?;
@@ -98,6 +121,48 @@ pub fn plan(b: &mut Builder<'_>, cmd: &StyleCmd, suffix: &str) -> Result<Value, 
             "run fin style ls on its own",
         )),
     }
+}
+
+/// The `set` paths that make the default style into the caption style `from`
+/// (`@pub/pack:<name>`) names, and `{id, version, name}` of what was copied.
+fn pack_style(
+    backend: &dyn Backend,
+    from: &str,
+) -> Result<(BTreeMap<String, ParamValue>, Value), CoreError> {
+    let Some((id, name)) = from.split_once(':').filter(|(_, n)| !n.is_empty()) else {
+        return Err(usage(
+            format!("--from {from:?} names no style of a pack"),
+            json!({ "from": from }),
+            "write a pack's style as --from @publisher/pack:<name> (fin plugin info <id> lists them)",
+        ));
+    };
+    let answer = backend.server_call(
+        "plugin.content.get",
+        json!({ "id": id, "kind": "captionStyle", "name": name }),
+    )?;
+    let unexpected = |why: String| {
+        internal(
+            format!("plugin.content.get answered a style fin cannot read: {why}"),
+            json!({ "id": id, "name": name }),
+        )
+        .with_fix("update fin and finisherd to the same version")
+    };
+    let bytes = serde_json::to_vec(&answer["style"]).map_err(|e| unexpected(e.to_string()))?;
+    // The server checked the file; this is the same check, so nothing outside the model or
+    // the registry's ranges reaches the op.
+    let style = fin_core::captions::parse_style_file(&bytes).map_err(unexpected)?;
+    let mut set = BTreeMap::new();
+    for spec in specs().iter().filter(|s| s.scope == Scope::Style) {
+        // The copy is named by `--name`; the pack's own name stays in `pack`.
+        if spec.path == "name" {
+            continue;
+        }
+        if let Some(value) = get_style(&style, spec.path)? {
+            set.insert(spec.path.to_string(), value);
+        }
+    }
+    let pack = json!({ "id": answer["id"], "version": answer["version"], "name": answer["name"] });
+    Ok((set, pack))
 }
 
 /// One style, compactly: id, name, font key (and whether the project pins it), size, safe

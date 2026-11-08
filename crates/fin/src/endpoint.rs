@@ -17,7 +17,7 @@ pub const SERVER_DATA_ENV: &str = "FIN_SERVER_DATA";
 const INFO_FILE: &str = "finisherd.json";
 const PIPE_PREFIX: &str = r"\\.\pipe\";
 /// The `protocolVersion` this client speaks (`@finisher/contracts` `PROTOCOL_VERSION`).
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 
 /// A local socket address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +103,25 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
     Ok(Endpoint::parse(socket))
 }
 
+/// The `envId` the running server published in `finisherd.json` (5A Task 2), unless `FIN_SERVER`
+/// names the endpoint: the handshake expects it (5A Decision 10).
+///
+/// Why `FIN_SERVER` drops the binding: it names a server directly (a test server, one run with
+/// other server data), and `finisherd.json` in this fin's server data then describes some other
+/// server, whose `envId` would refuse the right one. The proof still binds what matters: only a
+/// holder of the key can make it, and the canonical endpoint is inside both MACs. A credential
+/// file's own `env` is still expected under `FIN_SERVER` (`auth::target`).
+pub fn info_env_id() -> Option<String> {
+    if std::env::var_os(SERVER_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let text = std::fs::read_to_string(server_data()?.join(INFO_FILE)).ok()?;
+    let info: Value = serde_json::from_str(&text).ok()?;
+    info.get("envId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// The endpoint to connect to; `SERVER_UNAVAILABLE` (fix "start finisherd") when no server
 /// has published one.
 pub fn resolve() -> Result<Endpoint, CoreError> {
@@ -150,7 +169,7 @@ mod tests {
     #[test]
     fn info_file_gives_the_socket_and_checks_the_protocol() {
         let file = Path::new("/sd/finisherd.json");
-        let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","token":"t","protocolVersion":1}"#;
+        let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","protocolVersion":2}"#;
         assert_eq!(
             from_info(file, ok).unwrap().display(),
             Endpoint::parse("/sd/fin.sock").display()
@@ -166,11 +185,13 @@ mod tests {
                 .code,
             "PROTOCOL_MISMATCH"
         );
-        let newer = r#"{"socket":"/sd/fin.sock","protocolVersion":2}"#;
-        assert_eq!(
-            from_info(file, newer).unwrap_err().code,
-            "PROTOCOL_MISMATCH"
-        );
+        for other in [1, 3] {
+            let text = format!(r#"{{"socket":"/sd/fin.sock","protocolVersion":{other}}}"#);
+            assert_eq!(
+                from_info(file, &text).unwrap_err().code,
+                "PROTOCOL_MISMATCH"
+            );
+        }
     }
 
     #[test]

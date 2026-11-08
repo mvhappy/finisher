@@ -43,6 +43,20 @@
       ],
       "type": "string"
     },
+    "AdvisoryAction": {
+      "oneOf": [
+        {
+          "const": "warn",
+          "description": "Shown with the plugin; nothing changes.",
+          "type": "string"
+        },
+        {
+          "const": "disable",
+          "description": "The plugin is disabled on refresh by any principal (`PLUGIN_REVOKED`).",
+          "type": "string"
+        }
+      ]
+    },
     "AgentApproval": {
       "description": "`agent.approval`: an approval was answered or expired.",
       "properties": {
@@ -3566,7 +3580,7 @@
       "type": "object"
     },
     "ExportPage": {
-      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page.",
+      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page. `redacted`: content fields (and the\nblob references inside them) were removed, as for a caller that is not a person (5A\nDecision 22); absent otherwise.",
       "properties": {
         "lines": {
           "items": {
@@ -3576,6 +3590,9 @@
         },
         "next": {
           "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -4729,6 +4746,10 @@
       "properties": {
         "action": {
           "$ref": "#/$defs/PlanAction"
+        },
+        "agentFacing": {
+          "description": "The package contributes agent-facing content (spec §4.2): an update of it never\ninstalls without a person's approval (§5.3).",
+          "type": "boolean"
         },
         "bytes": {
           "description": "Unpacked bytes.",
@@ -7454,6 +7475,42 @@
         }
       ]
     },
+    "Listing": {
+      "description": "A plugin in search results: its newest version that is not yanked.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "latest": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "registryId": {
+          "type": "string"
+        },
+        "versions": {
+          "description": "Versions offered to new installs (not yanked), oldest first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "registryId",
+        "id",
+        "latest",
+        "versions",
+        "kind",
+        "license"
+      ],
+      "type": "object"
+    },
     "LogCommit": {
       "properties": {
         "baseRev": {
@@ -10009,6 +10066,38 @@
       "pattern": "^@[a-z0-9][a-z0-9-]{1,38}/[a-z0-9][a-z0-9-]{1,63}$",
       "type": "string"
     },
+    "PluginInfo": {
+      "description": "Everything a registry signs about one plugin.",
+      "properties": {
+        "advisories": {
+          "description": "In-scope advisories that apply to at least one listed version.",
+          "items": {
+            "$ref": "#/$defs/SignedAdvisory"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "registryId": {
+          "type": "string"
+        },
+        "versions": {
+          "description": "Every version, yanked ones included, oldest first.",
+          "items": {
+            "$ref": "#/$defs/VersionInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "registryId",
+        "id",
+        "versions",
+        "advisories"
+      ],
+      "type": "object"
+    },
     "PluginKind": {
       "oneOf": [
         {
@@ -10781,6 +10870,109 @@
       ],
       "type": "object"
     },
+    "RefreshReport": {
+      "description": "What a refresh found.",
+      "properties": {
+        "changed": {
+          "description": "Whether the trusted set changed.",
+          "type": "boolean"
+        },
+        "rootVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rootsAdded": {
+          "description": "Roots newly trusted by this refresh.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshotVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "staleDays": {
+          "description": "Whole days the metadata is past its earliest expiry, when it is.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "targetsVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestampVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/Warning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "rootVersion",
+        "timestampVersion",
+        "snapshotVersion",
+        "targetsVersion",
+        "rootsAdded",
+        "changed",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "RegistryList": {
+      "description": "`registry.list`'s answer.",
+      "properties": {
+        "problems": {
+          "items": {
+            "$ref": "#/$defs/RegistryProblem"
+          },
+          "type": "array"
+        },
+        "registries": {
+          "items": {
+            "$ref": "#/$defs/RegistryStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "registries",
+        "problems"
+      ],
+      "type": "object"
+    },
+    "RegistryProblem": {
+      "description": "A registry that could not be opened (its config or trusted set is damaged); the others\nare still listed.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
     "RegistryRefresh": {
       "description": "`registry.refresh`: one refresh of a registry's trusted metadata.",
       "properties": {
@@ -10828,6 +11020,77 @@
         "targetsLog2",
         "byHuman",
         "micros"
+      ],
+      "type": "object"
+    },
+    "RegistryStatus": {
+      "description": "One added registry (spec §5.1: `registry.json` and the trusted set).",
+      "properties": {
+        "advisories": {
+          "description": "Advisories in scope of the trusted set.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "description": "`relaxed` for local folders.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`local`: a folder (a git registry is a folder the user pulls).",
+          "type": "string"
+        },
+        "lastRefreshAt": {
+          "description": "Seconds since the epoch of the last successful refresh, `None` before the first.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxStaleDays": {
+          "description": "`maxStaleDays` from the signed root (default 7, at most 90).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "plugins": {
+          "description": "Plugins listed (with at least one version), yanked-only ones included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rootSha256": {
+          "description": "The root this registry is trusted through (also the name of its trust directory).",
+          "type": "string"
+        },
+        "staleDays": {
+          "description": "Whole days past the trusted metadata's earliest expiry, `None` while fresh.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "trusted": {
+          "$ref": "#/$defs/TrustedVersions"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "path",
+        "rootSha256",
+        "freshness",
+        "trusted",
+        "plugins",
+        "advisories",
+        "staleDays",
+        "maxStaleDays",
+        "lastRefreshAt"
       ],
       "type": "object"
     },
@@ -11566,6 +11829,15 @@
       ],
       "type": "object"
     },
+    "Severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "type": "string"
+    },
     "Shape": {
       "description": "A fade or crossfade side over a segment: `p` is its progress at the segment's ends (0 → 1\nacross the whole fade). Its amplitude factor is `curve(p)` for `fadeIn`/`crossIn` and\n`curve(1 − p)` for `fadeOut`/`crossOut` (`linear`: `x`; `equalPower`: `sqrt(x)`-shaped, as\nthe mixer defines it).",
       "properties": {
@@ -11636,6 +11908,51 @@
       ],
       "type": "string"
     },
+    "SignedAdvisory": {
+      "description": "An advisory with the role that signed it.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/AdvisoryAction"
+        },
+        "id": {
+          "type": "string"
+        },
+        "plugin": {
+          "description": "The plugin id, `@publisher/name`.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "signedBy": {
+          "description": "`targets` for registry-wide advisories, else the publisher.",
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versions": {
+          "description": "A semver range of affected versions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signedBy",
+        "id",
+        "plugin",
+        "versions",
+        "severity",
+        "action",
+        "summary"
+      ],
+      "type": "object"
+    },
     "Size": {
       "properties": {
         "height": {
@@ -11701,13 +12018,15 @@
       "type": "object"
     },
     "Source": {
-      "description": "Which program emitted an entry. The server sets it from the transport (local socket →\n`fin`, WebSocket → `ui`), never from the payload.",
+      "description": "Which program emitted an entry. The server sets it from the connection's principal (5A\nDecision 27: `local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` →\n`ui`), never from the payload. `console`, a person at the server, sends no events of its\nown; `mcp`, the MCP adapter (D16), sends the kinds `fin` does.",
       "enum": [
         "fin",
         "finisherd",
         "finNode",
         "ui",
-        "agent"
+        "agent",
+        "console",
+        "mcp"
       ],
       "type": "string"
     },
@@ -11954,7 +12273,7 @@
     },
     "TargetCustom": {
       "additionalProperties": false,
-      "description": "A target's signed custom metadata (`custom` in the delegated targets role).",
+      "description": "A package target's signed custom metadata (`custom` in its publisher's delegated role): one\ntype for the editor that signs it, the TUF client that reads it and the plan that checks it.",
       "properties": {
         "bytesUnpacked": {
           "format": "uint64",
@@ -13247,6 +13566,38 @@
       ],
       "type": "string"
     },
+    "TrustedVersions": {
+      "description": "The versions of the trusted metadata roles; a role not yet fetched has none.",
+      "properties": {
+        "root": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshot": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "targets": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root",
+        "timestamp",
+        "snapshot",
+        "targets"
+      ],
+      "type": "object"
+    },
     "Tx": {
       "properties": {
         "argsHash": {
@@ -13468,6 +13819,70 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "VersionInfo": {
+      "description": "One published version.",
+      "properties": {
+        "bytesUnpacked": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostApi": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "license": {
+          "type": "string"
+        },
+        "manifestSha256": {
+          "type": "string"
+        },
+        "permissionsDigest": {
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "type": "array"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "target": {
+          "description": "The target name, its signed length and SHA-256.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "version",
+        "yanked",
+        "kind",
+        "hostApi",
+        "platforms",
+        "license",
+        "permissionsDigest",
+        "manifestSha256",
+        "bytesUnpacked",
+        "target",
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
     "VideoCodec": {
       "oneOf": [
         {
@@ -13645,6 +14060,23 @@
         "enumeration",
         "remote",
         "sample"
+      ],
+      "type": "object"
+    },
+    "Warning": {
+      "description": "A warning `{code, details}`, e.g. `REGISTRY_STALE {days, maxStaleDays, role}`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "code",
+        "details"
       ],
       "type": "object"
     },
@@ -14015,6 +14447,28 @@
           "type": "object"
         }
       ]
+    },
+    "WriteGuard": {
+      "additionalProperties": false,
+      "description": "The branches a write may change, by branch id (`br<n>`, `main`). The default guards\nnothing.",
+      "properties": {
+        "allowBranches": {
+          "description": "When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise). Absent\nmeans no allow-list; `null` is refused, so a sender's bug cannot open the guard.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "denyBranches": {
+          "default": [],
+          "description": "Branches no write may change (`BRANCH_PROTECTED`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

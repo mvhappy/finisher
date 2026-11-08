@@ -1,68 +1,15 @@
 //! Signed custom metadata (spec §6.1): what a package target and the root carry for
-//! Finisher, and the registry's target names.
+//! Finisher, and the registry's target names. A package target's custom metadata is
+//! [`crate::target::TargetCustom`].
 
-use fin_plugin_api::{Manifest, Permission, Platform, PluginKind};
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
+use fin_plugin_api::Permission;
+use serde_json::Value;
 use tough::schema::Root;
-
-use crate::package::hex;
 
 /// `custom.finisher.maxStaleDays` when the root does not set it (spec §6.3, owner decision).
 pub const DEFAULT_MAX_STALE_DAYS: u16 = 7;
 /// The largest `maxStaleDays` a root may set; larger values are clamped.
 pub const MAX_STALE_DAYS_CAP: u16 = 90;
-
-/// The custom metadata of a package target, signed by its publisher's role.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageCustom {
-    pub id: String,
-    pub version: String,
-    pub kind: PluginKind,
-    pub host_api: String,
-    #[serde(default)]
-    pub platforms: Vec<Platform>,
-    pub license: String,
-    /// [`permissions_digest`] of the manifest's permissions.
-    pub permissions_digest: String,
-    /// Lowercase hex SHA-256 of `finisher-plugin.json`.
-    pub manifest_sha256: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub yanked: bool,
-    pub bytes_unpacked: u64,
-}
-
-impl PackageCustom {
-    /// The custom metadata of a package whose manifest is `manifest` (bytes `manifest_bytes`)
-    /// and whose files unpack to `bytes_unpacked` bytes.
-    pub fn from_manifest(m: &Manifest, manifest_bytes: &[u8], bytes_unpacked: u64) -> Self {
-        PackageCustom {
-            id: m.id.to_string(),
-            version: m.version.to_string(),
-            kind: m.kind,
-            host_api: m.host_api.to_string(),
-            platforms: m.platforms.clone(),
-            license: m.license.clone(),
-            permissions_digest: permissions_digest(&m.permissions),
-            manifest_sha256: hex(&Sha256::digest(manifest_bytes)),
-            yanked: false,
-            bytes_unpacked,
-        }
-    }
-
-    pub fn to_map(&self) -> Map<String, Value> {
-        match serde_json::to_value(self) {
-            Ok(Value::Object(m)) => m,
-            _ => unreachable!("a struct serialises to an object"),
-        }
-    }
-
-    pub fn from_map(m: &Map<String, Value>) -> Option<PackageCustom> {
-        serde_json::from_value(Value::Object(m.clone())).ok()
-    }
-}
 
 /// The digest publishers sign into `permissionsDigest`: one definition for the editor that
 /// signs it and the install plan that checks it ([`crate::target::permissions_digest`]).

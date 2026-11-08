@@ -176,9 +176,13 @@ describe("log.commit from edits", () => {
     expect(withMeta.ctx?.actor).toEqual({ kind: "agent", session: expect.stringMatching(KEYED), call: U(90) });
     expect(without.ctx?.actor).toEqual({ kind: "unknown" });
     expect(cp.ctx?.actor).toEqual(withMeta.ctx?.actor);
-    // A meta that does not decode is an unknown actor, never a failed commit.
-    await e.commit(tx(U(4), 3, [insert(10)]), undefined, "{ nope");
+    // A meta without an actor is an unknown actor.
+    await e.commit(tx(U(4), 3, [insert(10)]), undefined, "{}");
     expect((await commits(j)).at(-1)?.ctx?.actor).toEqual({ kind: "unknown" });
+    // A meta that does not decode may have carried a write guard (5A Task 5): the write is
+    // refused, never run unguarded.
+    await expect(e.commit(tx(U(5), 4, [insert(20)]), undefined, "{ nope")).rejects.toMatchObject({ code: "INVALID_OP" });
+    expect(await e.txGet(U(5))).toBeNull();
   });
 
   test("ctx_author_is_hashed", async () => {

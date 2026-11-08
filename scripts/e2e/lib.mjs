@@ -1,13 +1,20 @@
 // Shared helpers of the e2e scenarios: running `fin`, starting finisherd, a WebSocket RPC client.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 export const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 export const WIN = process.platform === "win32";
-export const FIN = join(ROOT, "target", "release", WIN ? "fin.exe" : "fin");
+/** Where cargo builds: `CARGO_TARGET_DIR` when set (relative to the repository, as the builds below run there), else `target/`. */
+export const TARGET_DIR = resolve(ROOT, process.env.CARGO_TARGET_DIR || "target");
+export const FIN = join(TARGET_DIR, "release", WIN ? "fin.exe" : "fin");
+/** The publisher tooling (`cargo build --release -p fin-plugin-cli`): not part of the app. */
+export const FIN_PLUGIN = join(TARGET_DIR, "release", WIN ? "fin-plugin.exe" : "fin-plugin");
 export const START_TIMEOUT_MS = Number(process.env.E2E_START_TIMEOUT_MS ?? 30_000);
 
 /** What the watchdog must clean up: the spawned servers and the temp dir, once they exist. */
@@ -19,6 +26,20 @@ export function parseFrames(text) {
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line));
+}
+
+/**
+ * A fresh temp dir for a scenario, as a real path. The server's socket lives in it
+ * (`<dir>/<server-data>/run/fin.sock`) and a unix socket path may hold 104 bytes (macOS; Linux
+ * 108): when `os.tmpdir()` is deep (macOS's `/var/folders/…/T`) the dir goes under `/tmp`
+ * instead, so no scenario depends on how long the user's `TMPDIR` is. Names under it must stay
+ * short (`prefix` ≤ 20 characters, server-data `s`).
+ */
+export function scenarioTmp(prefix) {
+  const probe = `${prefix}XXXXXX/server-data/run/fin.sock`;
+  let base = realpathSync(tmpdir());
+  if (!WIN && Buffer.byteLength(join(base, probe)) > 100 && existsSync("/tmp")) base = realpathSync("/tmp");
+  return realpathSync(mkdtempSync(join(base, prefix)));
 }
 
 export function log(message) {
@@ -110,7 +131,7 @@ export async function startServer(serverData, env = {}) {
   child.stderr.setEncoding("utf8").on("data", (d) => (stderr += d));
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve(code ?? signal)));
   const file = join(serverData, "finisherd.json");
-  const server = { child, exited, stderr: () => stderr };
+  const server = { child, exited, serverData, stderr: () => stderr };
   try {
     server.info = await waitFor(
       "finisherd.json",
@@ -145,14 +166,107 @@ export async function stopServer(server) {
   log(`finisherd stopped (${result})`);
 }
 
-/** A minimal Effect-RPC client over the bearer-token WebSocket (NDJSON frames). */
-export async function connectWs({ wsPort, token }) {
-  // Node's WebSocket (undici) accepts `headers` in its options object.
-  const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`, { headers: { Authorization: `Bearer ${token}` } });
+/** HMAC-SHA-256 over the handshake's input: the label, then each field (strings length-prefixed). */
+export function handshakeMac(key, label, fields) {
+  const parts = [Buffer.from(label, "ascii")];
+  for (const f of fields) {
+    if (typeof f !== "string") {
+      parts.push(f);
+      continue;
+    }
+    const b = Buffer.from(f, "utf8");
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(b.length);
+    parts.push(len, b);
+  }
+  return createHmac("sha256", key).update(Buffer.concat(parts)).digest();
+}
+
+/**
+ * Proves `credential` (`local` or `console`, `<server-data>/auth/<credential>.key`) over the
+ * server's socket and calls `tag` once (5A Decision 6): the same handshake `fin` runs. With
+ * `confirm`, a console asks for a `console.challenge` first and types its code back in
+ * `challenge` (5A Decision 30: the mutating human-only calls).
+ */
+export function socketCall(server, tag, payload, credential = "local", { confirm = false } = {}) {
+  const key = Buffer.from(readFileSync(join(server.serverData, "auth", `${credential}.key`), "utf8").trim(), "base64url");
+  return new Promise((resolve, reject) => {
+    const sock = connect({ path: server.info.socket });
+    let buf = "";
+    const waiting = new Map();
+    let nextId = 1;
+    const call = (t, p) =>
+      new Promise((done) => {
+        const id = String(nextId++);
+        waiting.set(id, done);
+        sock.write(`${JSON.stringify({ _tag: "Request", id, tag: t, payload: p, headers: [] })}\n`);
+      });
+    const value = (exit, what) => {
+      if (exit._tag !== "Success") throw new Error(`${what} failed: ${JSON.stringify(exit)}`);
+      return exit.value;
+    };
+    sock.setEncoding("utf8");
+    sock.on("data", (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const frame = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (frame._tag === "Exit") waiting.get(frame.requestId)?.(frame.exit);
+      }
+    });
+    sock.once("error", reject);
+    sock.once("connect", async () => {
+      try {
+        const cn = randomBytes(32);
+        const hello = value(await call("server.hello", { clientNonce: cn.toString("base64url"), credential: { kind: credential } }), "server.hello");
+        const sn = Buffer.from(hello.serverNonce, "base64url");
+        const proof = Buffer.from(hello.proof ?? "", "base64url");
+        const want = handshakeMac(key, "finisherd/hello/v2", [hello.envId, hello.endpoint, cn, sn]);
+        if (proof.length !== want.length || !timingSafeEqual(proof, want)) throw new Error("the server did not prove itself");
+        const mac = handshakeMac(key, "fin/prove/v2", [hello.envId, hello.endpoint, sn, cn]).toString("base64url");
+        value(await call("auth.prove", { mac }), "auth.prove");
+        const challenge = confirm ? { challenge: value(await call("console.challenge", {}), "console.challenge").code } : {};
+        resolve(value(await call(tag, { ...payload, ...challenge }), tag));
+      } catch (e) {
+        reject(e);
+      } finally {
+        sock.end();
+      }
+    });
+  });
+}
+
+/** A mutating human-only call as the server's console makes it: proved as `console`, confirmed. */
+export function consoleCall(server, tag, payload) {
+  return socketCall(server, tag, payload, "console", { confirm: true });
+}
+
+/** Every entry the journal stored (content included: the console is a person), oldest first. */
+export async function storedEntries(server, filter = {}) {
+  const out = [];
+  let cursor;
+  for (;;) {
+    const page = await socketCall(server, "diagnostics.export", { filter, content: true, ...(cursor ? { cursor } : {}) }, "console");
+    out.push(...page.lines);
+    if (page.next === undefined) return out;
+    cursor = page.next;
+  }
+}
+
+/**
+ * A minimal Effect-RPC client over the WebSocket (NDJSON frames). Since 5A Task 6 it mints a
+ * one-time ticket over the socket (`auth.ticket`) and offers it in `Sec-WebSocket-Protocol`
+ * beside `finisher.v2`; the connection then runs as the ticket's principal.
+ */
+export async function connectWs(server, credential = "local") {
+  const { ticket } = await socketCall(server, "auth.ticket", {}, credential);
+  const ws = new WebSocket(`ws://127.0.0.1:${server.info.wsPort}/rpc`, ["finisher.v2", `finisher.ticket.${ticket}`]);
   await new Promise((resolve, reject) => {
     ws.onopen = resolve;
     ws.onerror = () => reject(new Error("websocket failed to open"));
   });
+  if (ws.protocol !== "finisher.v2") throw new Error(`the server chose ${ws.protocol}`);
   let nextId = 1;
   const exits = new Map();
   const chunks = new Map();

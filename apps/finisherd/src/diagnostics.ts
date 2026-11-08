@@ -1,74 +1,132 @@
 // The server's diagnostics journal (plan D, Task D4; spec §21.1): fin-node's `Journal` for this
 // server data, opened after `settings.json`'s `privacy` was read and kept in step with it;
 // sessions; uncaught errors as `error.panic`; RPC timings; and the `diagnostics.*` calls with
-// their trust rules (the source comes from the transport, never from the request).
+// their trust rules: the source and the actor come from the connection's principal (5A
+// Decision 27, spec §3.4), never from the request.
 import { arch, availableParallelism, hostname, platform, release, totalmem } from "node:os";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConsentState, DiagnosticsReport, ExportPage, PurgeReport } from "@finisher/core-types";
-import { type FinError, PROTOCOL_VERSION } from "@finisher/contracts";
+import type { ConsentState, DiagnosticsReport, ExportPage, PurgeReport, Source, WriteGuard } from "@finisher/core-types";
+import { type FinError, type Principal, PROTOCOL_VERSION } from "@finisher/contracts";
 import { Journal, kindNames, validatePrivacy } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope } from "effect";
+import { consentUiOnly } from "./chain/fixes.ts";
 import { privacyArg, readPrivacy, SERVER_VERSION } from "./config.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { mergeSettings } from "./settings-write.ts";
 
-/** Who is on the other end of a connection: the local socket is `fin`, the WebSocket the UI. */
-export type Source = "fin" | "ui";
+export type { Source } from "@finisher/core-types";
 
-/** The transport's source, provided to each transport's handlers (`main.ts`). */
-export class RpcSource extends Context.Service<RpcSource, Source>()("finisherd/RpcSource") {}
+/**
+ * The source of a principal's events (spec §3.4): `local` and `agent` are `fin`, `mcp` the MCP
+ * adapter, `console` a person at the server, `device` the UI. Nothing else may send any.
+ */
+export function sourceOf(p: Principal): Source | undefined {
+  switch (p.kind) {
+    case "local":
+    case "agent":
+      return "fin";
+    case "mcp":
+      return "mcp";
+    case "console":
+      return "console";
+    case "device":
+      return "ui";
+    default:
+      return undefined;
+  }
+}
 
-/** The kinds `diagnostics.record` accepts per source (Decision 24). */
-export const RECORD_KINDS: Readonly<Record<Source, ReadonlyArray<string>>> = {
+/** The kinds `diagnostics.record` accepts per source (Decisions 24 and 27). */
+export const RECORD_KINDS: Readonly<Partial<Record<Source, ReadonlyArray<string>>>> = {
   fin: ["cli.command", "error.panic"],
+  mcp: ["cli.command", "error.panic"],
+  console: [],
   ui: [],
 };
 
-/** 50 events/s per source, burst 200, shared by every connection of the source. */
+/**
+ * 50 events/s, burst 200, per principal (shared by its connections), and for `local` per
+ * connection: every `fin` is `local`, so one looping client must not silence the others
+ * (review of Task 7, M1). `local` as a whole has `LOCAL_RECORD_RATE` above that.
+ */
 export const RECORD_RATE = { perSecond: 50, burst: 200 } as const;
+/** Every `local` connection together. */
+export const LOCAL_RECORD_RATE = { perSecond: 200, burst: 800 } as const;
+/** Principals with a rate-limit bucket at once; past it the least recently created goes. */
+export const MAX_BUCKETS = 1024;
 /** A `diagnostics.record` payload over this many bytes is refused `EVENT_TOO_LARGE`. */
 export const MAX_RECORD_BYTES = 64 * 1024;
 /** `MAX_RAW_ID` of fin-core: a longer id from a header is dropped. */
 export const MAX_HEADER_ID = 256;
 
-/** The actor kinds a source may claim; any other becomes `unknown`. `fin` is a person's or an agent's. */
-const ACTOR_KINDS: Readonly<Record<Source, ReadonlySet<string>>> = {
-  fin: new Set(["user", "agent", "unknown"]),
-  ui: new Set(["user", "agent", "plugin", "system", "unknown"]),
-};
+/** The actor kinds `local` may claim from its headers; any other becomes `unknown`. */
+const LOCAL_ACTOR_KINDS: ReadonlySet<string> = new Set(["user", "agent", "unknown"]);
 
-/** The actor of a request (Decision 23a), from its `fin-actor-*` headers, validated. */
+/** The actor of a request (Decision 23a), and the chain's write guard for a write. */
 export interface CallMeta {
   readonly actor: { readonly kind: string; readonly session?: string; readonly call?: string };
+  /** The chain's write guard (5A Task 5), checked by the store inside the write transaction. */
+  readonly guard?: WriteGuard;
 }
 
 /**
- * `callMeta(headers, source)`: Effect RPC hands a handler the request's headers as a record of
- * lower-case names (pairs are accepted too). A missing kind, or one the source may not claim
- * (`fin`: `user`, `agent`), is `unknown`; an empty or over-long id is dropped. The ids stay raw:
- * the journal keys every one that is not a ULID.
+ * Effect RPC hands a handler the request's headers as a record of lower-case names (pairs are
+ * accepted too). An empty or over-long value is dropped.
  */
-export function callMeta(headers: unknown, source: Source = "fin"): CallMeta {
-  const get = (name: string): string | undefined => {
-    if (Array.isArray(headers)) {
-      const hit = headers.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === name);
-      return typeof hit?.[1] === "string" ? hit[1] : undefined;
+function header(headers: unknown, name: string): string | undefined {
+  let v: unknown;
+  if (Array.isArray(headers)) {
+    const hit = headers.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === name);
+    v = hit?.[1];
+  } else if (headers !== null && typeof headers === "object") {
+    v = (headers as Record<string, unknown>)[name];
+  }
+  return typeof v === "string" && v.length > 0 && Buffer.byteLength(v) <= MAX_HEADER_ID ? v : undefined;
+}
+
+/**
+ * `actorFor(principal, headers)` (spec §3.4): the principal bounds the actor, D6's
+ * `fin-actor-*` headers only narrow it.
+ * - `agent`/`mcp`: always `{kind: agent, session: <credential id>}`; only `call` is read;
+ * - `device`: `{kind: user, session: <device id>}`; `console`: `{kind: user}`;
+ * - `local`: D6's unverified header actor (`user`, `agent` or `unknown`; a session; a call);
+ * - anything else: `unknown`.
+ * The ids stay raw: the journal keys every one that is not a ULID.
+ */
+export function actorFor(p: Principal, headers: unknown): CallMeta {
+  const call = header(headers, "fin-actor-call");
+  const withCall = call === undefined ? {} : { call };
+  switch (p.kind) {
+    case "agent":
+    case "mcp":
+      return { actor: { kind: "agent", session: p.id, ...withCall } };
+    case "device":
+      return { actor: { kind: "user", session: p.id } };
+    case "console":
+      return { actor: { kind: "user" } };
+    case "local": {
+      const kind = header(headers, "fin-actor-kind");
+      const session = header(headers, "fin-actor-session");
+      return {
+        actor: {
+          kind: kind !== undefined && LOCAL_ACTOR_KINDS.has(kind) ? kind : "unknown",
+          ...(session === undefined ? {} : { session }),
+          ...withCall,
+        },
+      };
     }
-    const v = headers !== null && typeof headers === "object" ? (headers as Record<string, unknown>)[name] : undefined;
-    return typeof v === "string" ? v : undefined;
-  };
-  const id = (v: string | undefined) => (v !== undefined && v.length > 0 && Buffer.byteLength(v) <= MAX_HEADER_ID ? v : undefined);
-  const kind = get("fin-actor-kind");
-  const session = id(get("fin-actor-session"));
-  const call = id(get("fin-actor-call"));
-  return {
-    actor: {
-      kind: kind !== undefined && ACTOR_KINDS[source].has(kind) ? kind : "unknown",
-      ...(session === undefined ? {} : { session }),
-      ...(call === undefined ? {} : { call }),
-    },
-  };
+    default:
+      return { actor: { kind: "unknown" } };
+  }
+}
+
+/**
+ * The rate-limit key of a principal's call: `local:<connection>` (per connection), `console`,
+ * `<kind>:<id>` for the others.
+ */
+export function principalKey(p: Principal, connection: string): string {
+  return p.kind === "local" ? `local:${connection}` : p.kind === "console" ? p.kind : `${p.kind}:${p.id}`;
 }
 
 /** A token bucket: `take()` is false once the burst is spent until the rate refills it. */
@@ -85,13 +143,21 @@ export class TokenBucket {
     this.#tokens = burst;
     this.#at = now();
   }
+  /** Whether a token is there now, taking none. */
+  peek(): boolean {
+    this.#refill();
+    return this.#tokens >= 1;
+  }
   take(): boolean {
-    const t = this.now();
-    this.#tokens = Math.min(this.burst, this.#tokens + ((t - this.#at) / 1000) * this.perSecond);
-    this.#at = t;
+    this.#refill();
     if (this.#tokens < 1) return false;
     this.#tokens -= 1;
     return true;
+  }
+  #refill(): void {
+    const t = this.now();
+    this.#tokens = Math.min(this.burst, this.#tokens + ((t - this.#at) / 1000) * this.perSecond);
+    this.#at = t;
   }
 }
 
@@ -197,6 +263,13 @@ export interface ExportRequest {
   readonly asUpload?: "diagnostics" | "training" | undefined;
 }
 
+/** What `record` needs to know of the request's connection. */
+export interface RecordFrom {
+  readonly principal: Principal;
+  /** The connection, unique across transports (`<transport>:<client id>`): one run id each. */
+  readonly connection: string;
+}
+
 export interface DiagnosticsShape {
   readonly journal: Journal;
   /** Whether any purpose is on (`finisherd.json` `diagnostics.enabled`). */
@@ -205,12 +278,14 @@ export interface DiagnosticsShape {
   readonly onEnabledChange: (listener: (enabled: boolean) => void) => void;
   /** Times `self` into `rpc.stats` under `tag` (never a stream RPC). */
   readonly timed: <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => Effect.Effect<A, FinError, R>;
-  readonly record: (source: Source, client: number, req: RecordRequest, headers: unknown) => Effect.Effect<{ recorded: boolean }, FinError>;
-  readonly consent: (source: Source, purpose: "diagnostics" | "training", value: "on" | "off" | "unset") => Effect.Effect<ConsentState, FinError>;
+  readonly record: (from: RecordFrom, req: RecordRequest, headers: unknown) => Effect.Effect<{ recorded: boolean }, FinError>;
+  /** The chain already refused what `principal` may not change; training on is re-checked here. */
+  readonly consent: (principal: Principal, purpose: "diagnostics" | "training", value: "on" | "off" | "unset") => Effect.Effect<ConsentState, FinError>;
   readonly status: () => Effect.Effect<DiagnosticsReport, FinError>;
-  readonly export: (req: ExportRequest) => Effect.Effect<ExportPage, FinError>;
+  /** `redact`: content fields removed (a caller that is not a person, Decision 22). */
+  readonly export: (req: ExportRequest, redact: boolean) => Effect.Effect<ExportPage, FinError>;
   readonly purge: (selector: unknown) => Effect.Effect<PurgeReport, FinError>;
-  /** Events dropped by the per-source rate limit since start. */
+  /** Events dropped by the per-principal rate limit since start. */
   readonly rateLimited: () => number;
 }
 
@@ -222,9 +297,6 @@ export interface DiagnosticsOptions {
   /** The rate limit's clock (ms). */
   readonly now?: () => number;
 }
-
-const TRAINING_WAYS_IN =
-  "a person opts in: in the Finisher app, by setting privacy.training to \"on\" in <server-data>/settings.json, or by starting finisherd with FIN_TRAINING=on";
 
 /** How long startup waits for the writer to confirm `session.start` (then it goes on). */
 const START_ACK_MS = 100;
@@ -310,20 +382,30 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
     );
 
     const now = options.now ?? (() => performance.now());
-    const buckets: Record<Source, TokenBucket> = {
-      fin: new TokenBucket(RECORD_RATE.perSecond, RECORD_RATE.burst, now),
-      ui: new TokenBucket(RECORD_RATE.perSecond, RECORD_RATE.burst, now),
+    // One bucket per key (`principalKey`), the newest MAX_BUCKETS kept; `local` as a whole has
+    // its own, kept apart from the per-key map so that it is never evicted.
+    const buckets = new Map<string, TokenBucket>();
+    const localBucket = new TokenBucket(LOCAL_RECORD_RATE.perSecond, LOCAL_RECORD_RATE.burst, now);
+    const bucketOf = (key: string) => {
+      let b = buckets.get(key);
+      if (b === undefined) {
+        b = new TokenBucket(RECORD_RATE.perSecond, RECORD_RATE.burst, now);
+        buckets.set(key, b);
+        if (buckets.size > MAX_BUCKETS) buckets.delete(buckets.keys().next().value!);
+      }
+      return b;
     };
+    /** One event from the call's buckets (`local`: the whole first, so a refusal costs the connection nothing). */
+    const admit = (p: Principal, connection: string) =>
+      p.kind === "local" ? localBucket.peek() && bucketOf(principalKey(p, connection)).take() && localBucket.take() : bucketOf(principalKey(p, connection)).take();
     let rateLimited = 0;
     // One run id per connection (`fin` makes one connection per run), the newest 1024 kept.
-    // Client ids are per transport: the key names the source too.
     const sessions = new Map<string, string>();
-    const sessionOf = (source: Source, client: number) => {
-      const key = `${source}:${client}`;
-      let s = sessions.get(key);
+    const sessionOf = (connection: string) => {
+      let s = sessions.get(connection);
       if (s === undefined) {
         s = ulid();
-        sessions.set(key, s);
+        sessions.set(connection, s);
         if (sessions.size > 1024) sessions.delete(sessions.keys().next().value!);
       }
       return s;
@@ -345,18 +427,19 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
             Effect.tapError((e) => Effect.sync(() => observe(e.code))),
           );
         }),
-      record: (source, client, req, headers) =>
+      record: ({ principal, connection }, req, headers) =>
         Effect.gen(function* () {
+          const source = sourceOf(principal);
           if (!KNOWN_KINDS.has(req.kind)) {
             return yield* Effect.fail(finError("EVENT_KIND_UNKNOWN", `${req.kind} is not a known event kind`, { kind: req.kind }));
           }
-          if (!RECORD_KINDS[source].includes(req.kind)) {
+          if (source === undefined || !(RECORD_KINDS[source] ?? []).includes(req.kind)) {
             return yield* Effect.fail(
-              finError("EVENT_INVALID", `${req.kind} is not accepted from ${source}`, { kind: req.kind, source }),
+              finError("EVENT_INVALID", `${req.kind} is not accepted from ${source ?? principal.kind}`, { kind: req.kind, source: source ?? principal.kind }),
             );
           }
           if (!journal.enabled) return { recorded: false };
-          if (!buckets[source].take()) {
+          if (!admit(principal, connection)) {
             rateLimited += 1;
             return { recorded: false };
           }
@@ -366,16 +449,15 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
               finError("EVENT_TOO_LARGE", `the ${req.kind} payload is over ${MAX_RECORD_BYTES} bytes`, { kind: req.kind }),
             );
           }
-          const ctx = { ...(req.ctx ?? {}), actor: callMeta(headers, source).actor };
-          yield* sync(() => journal.record(req.kind, req.kv, JSON.stringify(ctx), payload, source, sessionOf(source, client)));
+          const ctx = { ...(req.ctx ?? {}), actor: actorFor(principal, headers).actor };
+          yield* sync(() => journal.record(req.kind, req.kv, JSON.stringify(ctx), payload, source, sessionOf(connection)));
           return { recorded: true };
         }),
-      consent: (source, purpose, value) =>
+      consent: (principal, purpose, value) =>
         Effect.gen(function* () {
-          if (purpose === "training" && value === "on" && source !== "ui") {
-            return yield* Effect.fail(
-              finError("CONSENT_UI_ONLY", "turning training on is a person's choice, not a command's", { purpose, value, source }, TRAINING_WAYS_IN),
-            );
+          // The chain refuses it first (`deviceOnly`); kept here so no other path can.
+          if (purpose === "training" && value === "on" && principal.kind !== "device") {
+            return yield* Effect.fail(consentUiOnly("diagnostics.consent", principal));
           }
           // The merged section is checked with the journal's own rules before it is written:
           // a change stored beside a key the journal refuses would answer success and not apply.
@@ -396,9 +478,15 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
           return JSON.parse(journal.consent()) as ConsentState;
         }),
       status: () => attemptJson<DiagnosticsReport>(() => journal.status()),
-      export: (req) =>
+      export: (req, redact) =>
         attemptJson<ExportPage>(() =>
-          journal.export(JSON.stringify(req.filter ?? {}), req.cursor, Math.min(Math.max(Math.trunc(req.limit ?? 1000), 1), 1000), req.asUpload),
+          journal.export(
+            JSON.stringify(req.filter ?? {}),
+            req.cursor,
+            Math.min(Math.max(Math.trunc(req.limit ?? 1000), 1), 1000),
+            req.asUpload ?? null,
+            redact,
+          ),
         ),
       purge: (selector) => attemptJson<PurgeReport>(() => journal.purge(JSON.stringify(selector))),
       rateLimited: () => rateLimited,

@@ -1,7 +1,9 @@
 //! `fin` and `fin diagnostics` against a real `finisherd` (plan D, Task D6): what a run
 //! records (names, never values), the actor, the panic report, `FIN_SERVER` and the server's
 //! gate, and `show`, `export`, `purge`, `project` and `consent`. Entries are written by the
-//! server asynchronously, so tests poll `export` until what they expect is there.
+//! server asynchronously, so tests poll `export` until what they expect is there. Since 5A
+//! Task 7 consent changes, purges, `project default` and content exports are a person's: `fin`
+//! is refused (`HUMAN_ONLY`, exit 7) and the tests make those changes as the console.
 
 mod support;
 
@@ -10,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use support::console::{Console, error_code};
 use support::{Server, assert_error, fin, fin_cmd, fin_env, ok};
 
 const SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -56,9 +59,18 @@ fn lines(sd: &Path, cwd: &Path, args: &[&str]) -> Vec<Value> {
         .collect()
 }
 
-/// Polls `export` until `want` holds (the server writes entries a moment after the call).
+/// A whole number of seconds from the environment variable `k`, else `d`.
+fn env_secs(k: &str, d: u64) -> u64 {
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
+}
+
+/// Polls `export` until `want` holds (the server writes entries a moment after the call). The
+/// deadline is generous (60 s, `FIN_TEST_WAIT_SECS`): a loaded machine is slow, never wrong.
 fn wait(sd: &Path, cwd: &Path, args: &[&str], want: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-    let end = Instant::now() + Duration::from_secs(15);
+    let end = Instant::now() + Duration::from_secs(env_secs("FIN_TEST_WAIT_SECS", 60));
     loop {
         let found = lines(sd, cwd, args);
         if want(&found) || Instant::now() > end {
@@ -67,6 +79,16 @@ fn wait(sd: &Path, cwd: &Path, args: &[&str], want: impl Fn(&[Value]) -> bool) -
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// `fin` is not a person: each of these is `HUMAN_ONLY` (exit 7) and changes nothing.
+fn refused_to_fin(sd: &Path, cwd: &Path, args: &[&str]) {
+    let r = fin(sd, cwd, args);
+    assert_error(&r, 7, "HUMAN_ONLY");
+    assert_eq!(
+        r.json["error"]["details"]["scope"], "diagnostics.admin",
+        "{args:?}"
+    );
 }
 
 fn show(sd: &Path, cwd: &Path) -> Value {
@@ -401,6 +423,36 @@ fn panic_reports_then_prints_internal() {
 }
 
 #[test]
+fn export_is_redacted_for_fin_and_content_needs_a_person() {
+    let training = vec![("FIN_TRAINING".to_string(), OsString::from("on"))];
+    let Some((server, dir, _)) = project("export_redacted_for_fin", training) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    let (code, _) = raw(sd, &dir, &["status"], &[("FIN_TEST_PANIC", "1")]);
+    assert_eq!(code, 6);
+    // Under training the panic's message is stored; `fin` is not a person and gets it removed.
+    let found = wait(sd, root, &["--kind", "error.panic"], |e| e.len() == 1);
+    assert!(found[0]["payload"].get("message").is_none(), "{}", found[0]);
+    assert!(found[0]["payload"]["messageHash"].is_string());
+    let r = fin(sd, root, &["diagnostics", "export", "--content"]);
+    assert_error(&r, 7, "HUMAN_ONLY");
+    assert_eq!(r.json["error"]["details"]["scope"], "diagnostics.admin");
+    // The console, a person, reads what was stored (reading needs no typed code).
+    let mut console = Console::open(&server);
+    let page = console.call(
+        "diagnostics.export",
+        json!({ "filter": { "kinds": ["error.panic"] }, "content": true }),
+    );
+    assert_eq!(page["_tag"], "Success", "{page}");
+    assert!(page["value"].get("redacted").is_none(), "{page}");
+    assert!(
+        page["value"]["lines"][0]["payload"]["message"].is_string(),
+        "{page}"
+    );
+}
+
+#[test]
 fn diagnostics_export_filters_limit_and_as_upload() {
     let Some((server, dir, id)) = project("diagnostics_export_filters", vec![]) else {
         return;
@@ -485,28 +537,32 @@ fn diagnostics_purge_selectors() {
     let (sd, root) = (&server.sd, &server.root);
     marker_edit(&dir, sd, "a");
     wait(sd, root, &[], |e| !commands(e, "marker.add").is_empty());
-    let none = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "purge", "--before", "2000-01-01"],
-    ));
+    for args in [
+        &["diagnostics", "purge", "--before", "2000-01-01"][..],
+        &["diagnostics", "purge", "--project", &id],
+        &["diagnostics", "purge", "--all"],
+    ] {
+        refused_to_fin(sd, root, args);
+    }
+    assert!(!lines(sd, root, &["--project", &id]).is_empty());
+    let mut console = Console::open(&server);
+    let purge = |c: &mut Console, selector: Value| {
+        c.confirmed_ok("diagnostics.purge", json!({ "selector": selector }))
+    };
+    let none = purge(&mut console, json!({ "before": 946_684_800_000_u64 }));
     assert_eq!(none["removed"], 0, "{none}");
-    let mine = ok(fin(sd, root, &["diagnostics", "purge", "--project", &id]));
+    let mine = purge(&mut console, json!({ "project": id }));
     assert!(mine["removed"].as_u64().unwrap() >= 1, "{mine}");
     assert!(lines(sd, root, &["--project", &id]).is_empty());
     assert!(!lines(sd, root, &[]).is_empty(), "other entries stay");
     marker_edit(&dir, sd, "b");
     wait(sd, root, &[], |e| !commands(e, "marker.add").is_empty());
-    let before = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "purge", "--before", "2999-01-01"],
-    ));
+    let before = purge(&mut console, json!({ "before": 32_503_680_000_000_u64 }));
     assert!(before["removed"].as_u64().unwrap() >= 1, "{before}");
     assert!(lines(sd, root, &[]).is_empty());
     marker_edit(&dir, sd, "c");
     wait(sd, root, &[], |e| !commands(e, "marker.add").is_empty());
-    let all = ok(fin(sd, root, &["diagnostics", "purge", "--all"]));
+    let all = purge(&mut console, json!("all"));
     assert!(all["removed"].as_u64().unwrap() >= 1, "{all}");
     assert!(all["files"].is_u64() && all["blobs"].is_u64());
     // A purge is not recorded: nothing, not even a key, is left behind.
@@ -563,7 +619,13 @@ fn diagnostics_project_never_then_default() {
         "and no new ones are written"
     );
     assert_eq!(show(sd, root)["projects"][&id], "never");
-    let back = ok(fin(sd, &dir, &["diagnostics", "project", "default"]));
+    // Clearing the flag binds every collaborator: a person's.
+    refused_to_fin(sd, &dir, &["diagnostics", "project", "default"]);
+    assert_eq!(show(sd, root)["projects"][&id], "never");
+    let back = Console::open(&server).confirmed_ok(
+        "diagnostics.project",
+        json!({ "projectId": id, "collect": "default" }),
+    );
     assert_eq!(back, json!({ "project": id, "collect": "default" }));
     marker_edit(&dir, sd, "c");
     wait(sd, root, &["--project", &id], |e| {
@@ -585,11 +647,18 @@ fn diagnostics_consent_diagnostics_on_off_unset() {
         return;
     };
     let (sd, root) = (&server.sd, &server.root);
-    let off = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "consent", "diagnostics", "off"],
-    ));
+    for value in ["off", "on", "unset"] {
+        refused_to_fin(sd, root, &["diagnostics", "consent", "diagnostics", value]);
+    }
+    assert!(!sd.join("settings.json").exists());
+    let mut console = Console::open(&server);
+    let mut consent = |value: &str| {
+        console.confirmed_ok(
+            "diagnostics.consent",
+            json!({ "purpose": "diagnostics", "value": value }),
+        )
+    };
+    let off = consent("off");
     assert_eq!(off["diagnostics"], "off", "{off}");
     assert_eq!(show(sd, root)["state"], "off");
     let counted = show(sd, root)["kinds"]["cli.command"].as_u64().unwrap_or(0);
@@ -600,21 +669,13 @@ fn diagnostics_consent_diagnostics_on_off_unset() {
         show(sd, root)["kinds"]["cli.command"].as_u64().unwrap_or(0),
         counted
     );
-    let on = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "consent", "diagnostics", "on"],
-    ));
+    let on = consent("on");
     assert_eq!(on["diagnostics"], "on");
     marker_edit(&dir, sd, "on again");
     wait(sd, root, &["--kind", "cli.command"], |e| {
         !commands(e, "marker.add").is_empty()
     });
-    let unset = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "consent", "diagnostics", "unset"],
-    ));
+    let unset = consent("unset");
     assert_eq!(
         (&unset["diagnostics"], &unset["basis"]),
         (&json!("on"), &json!("default")),
@@ -640,19 +701,28 @@ fn diagnostics_consent_training_off_unset() {
     };
     let (sd, root) = (&server.sd, &server.root);
     assert_eq!(show(sd, root)["consent"]["training"], "undecided");
-    let off = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "consent", "training", "off"],
-    ));
+    for value in ["off", "unset"] {
+        refused_to_fin(sd, root, &["diagnostics", "consent", "training", value]);
+    }
+    let mut console = Console::open(&server);
+    let off = console.confirmed_ok(
+        "diagnostics.consent",
+        json!({ "purpose": "training", "value": "off" }),
+    );
     assert_eq!(off["training"], "off", "{off}");
     assert_eq!(show(sd, root)["consent"]["training"], "off");
-    let unset = ok(fin(
-        sd,
-        root,
-        &["diagnostics", "consent", "training", "unset"],
-    ));
+    let unset = console.confirmed_ok(
+        "diagnostics.consent",
+        json!({ "purpose": "training", "value": "unset" }),
+    );
     assert_eq!(unset["training"], "undecided", "{unset}");
+    assert_eq!(show(sd, root)["consent"]["training"], "undecided");
+    // Training on is the app's alone: the console is refused as well (5A Decision 21).
+    let on = console.confirmed(
+        "diagnostics.consent",
+        json!({ "purpose": "training", "value": "on" }),
+    );
+    assert_eq!(error_code(&on).as_deref(), Some("CONSENT_UI_ONLY"), "{on}");
     assert_eq!(show(sd, root)["consent"]["training"], "undecided");
 }
 
@@ -734,12 +804,15 @@ fn journal_unavailable_exit_5() {
     server.stop();
     std::fs::write(sd.join("settings.json"), b"{ not json").unwrap();
     server.restart();
-    let r = fin(
-        &sd,
-        &root,
-        &["diagnostics", "consent", "diagnostics", "off"],
+    let exit = Console::open(&server).confirmed(
+        "diagnostics.consent",
+        json!({ "purpose": "diagnostics", "value": "off" }),
     );
-    assert_error(&r, 5, "SETTINGS_INVALID");
+    assert_eq!(
+        error_code(&exit).as_deref(),
+        Some("SETTINGS_INVALID"),
+        "{exit}"
+    );
     assert_eq!(
         std::fs::read(sd.join("settings.json")).unwrap(),
         b"{ not json"

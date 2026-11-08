@@ -44,6 +44,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod bundled;
 mod commit_log;
 mod engine;
 mod eval;
@@ -60,6 +61,8 @@ mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]
 mod test_hooks;
+#[cfg(feature = "test-hooks")]
+mod test_registry;
 mod worker;
 
 pub use engine::Engine;
@@ -134,13 +137,27 @@ fn now_ms() -> i64 {
 }
 
 /// Probes a file of any asset kind; resolves to `Probe` JSON (`{kind, duration?, video?,
-/// audio?, image?, lottie?, font?, lut?, fingerprint, size}`).
+/// audio?, image?, lottie?, font?, lut?, fingerprint, size}`). Never blocks on a FIFO.
 #[napi(catch_unwind)]
 pub fn probe(path: String) -> AsyncTask<ProbeTask> {
-    AsyncTask::new(ProbeTask { path: path.into() })
+    AsyncTask::new(ProbeTask {
+        root: None,
+        path: path.into(),
+    })
+}
+
+/// [`probe`] of a file that must be inside `root` (canonical), reached without a symlink
+/// (`fin_probe::probe_beneath`): otherwise `PATH_NOT_ALLOWED`.
+#[napi(catch_unwind)]
+pub fn probe_beneath(root: String, path: String) -> AsyncTask<ProbeTask> {
+    AsyncTask::new(ProbeTask {
+        root: Some(root.into()),
+        path: path.into(),
+    })
 }
 
 pub struct ProbeTask {
+    root: Option<PathBuf>,
     path: PathBuf,
 }
 
@@ -149,10 +166,16 @@ impl Task for ProbeTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<String> {
-        let path = &self.path;
+        let (root, path) = (self.root.as_deref(), &self.path);
         guarded(
             // `Probe`'s serde form: the `Probe` type of `@finisher/core-types`.
-            || encode(&fin_probe::probe(path).map_err(reject)?),
+            || {
+                let probed = match root {
+                    Some(root) => fin_probe::probe_beneath(root, path),
+                    None => fin_probe::probe(path),
+                };
+                encode(&probed.map_err(reject)?)
+            },
             || {},
         )
     }

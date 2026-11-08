@@ -1,8 +1,6 @@
 //! The plan's checks beyond manifest validation: the signed custom metadata, catalog ids, the
 //! action against the installed version, licence warnings and look-alike ids.
 
-use std::collections::BTreeSet;
-
 use fin_plugin_api::{Invalid, LicenceClass, Manifest, PackageFiles, Permission, PluginId};
 use semver::{Version, VersionReq};
 use serde_json::{Value, json};
@@ -84,9 +82,9 @@ pub(super) fn custom_matches(
     }
 }
 
-/// A contributed font catalog may not reuse an entry id the built-in catalog or another pack
-/// holds (8A Decision 22).
-pub(super) fn catalog_ids(
+/// A contributed font catalog must merge into the server's (8A Decision 22): no entry id the
+/// built-in catalog or another pack holds, and no file or face listed twice between them.
+pub(super) fn catalog_merge(
     m: &Manifest,
     files: &dyn PackageFiles,
     id: &PluginId,
@@ -95,23 +93,29 @@ pub(super) fn catalog_ids(
     if m.contributes.font_catalogs.is_empty() {
         return Ok(());
     }
-    let taken = host.taken_font_ids(id);
-    let mut own = BTreeSet::new();
-    for (i, c) in m.contributes.font_catalogs.iter().enumerate() {
-        let bytes = files.read(&c.file).unwrap_or_default();
-        for entry in host.font_catalog_ids(&bytes) {
-            if taken.contains(&entry) || !own.insert(entry.clone()) {
-                let mut e = mismatch(
-                    &format!("/contributes/fontCatalogs/{i}/file"),
-                    "catalogIdTaken",
-                    format!("font catalog entry {entry:?} is taken"),
-                );
-                e.details.insert("entry".into(), json!(entry));
-                return Err(e);
-            }
-        }
+    let catalogs: Vec<Vec<u8>> = m
+        .contributes
+        .font_catalogs
+        .iter()
+        .map(|c| files.read(&c.file).unwrap_or_default())
+        .collect();
+    let Some(clash) = host.catalog_clash(&catalogs, id) else {
+        return Ok(());
+    };
+    let path = format!("/contributes/fontCatalogs/{}/file", clash.index);
+    let mut e = match &clash.entry {
+        Some(entry) if clash.rule == "catalogIdTaken" => mismatch(
+            &path,
+            "catalogIdTaken",
+            format!("font catalog entry {entry:?} is taken"),
+        ),
+        _ => mismatch(&path, "catalogMerge", clash.message.clone()),
+    };
+    e.details.insert("rule".into(), json!(clash.rule));
+    if let Some(entry) = clash.entry {
+        e.details.insert("entry".into(), json!(entry));
     }
-    Ok(())
+    Err(e)
 }
 
 /// The action against the installed version, and the grants the diff is taken against.

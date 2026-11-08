@@ -120,8 +120,8 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
     cmd(
         "style.add",
         "style",
-        "--name <s> [--from <preset:x|stN>] [--set p=v]...",
-        "add a caption style; binds $style",
+        "--name <s> [--from <preset:x|stN|@pub/pack:name>] [--set p=v]...",
+        "add a caption style (a copy of a pack's with --from @pub/pack:name); binds $style",
         true,
         || schema_of::<style::AddArgs>("style.add"),
     ),

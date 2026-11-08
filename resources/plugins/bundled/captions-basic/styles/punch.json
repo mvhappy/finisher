@@ -1,0 +1,12 @@
+{
+  "name": "Punch",
+  "text": { "family": "Inter", "weight": 700, "italic": false, "size": 96.0, "lineHeight": 1.2, "letterSpacing": 0.0, "align": "center" },
+  "color": "#ffffff",
+  "stroke": { "color": "#000000", "width": 8.0 },
+  "position": { "anchor": "middle", "offset": 0.0 },
+  "safeZone": "shorts",
+  "maxChars": 12,
+  "maxLines": 1,
+  "gap": "1/4",
+  "maxDuration": "3/2"
+}

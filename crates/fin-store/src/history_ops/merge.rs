@@ -16,7 +16,7 @@ use crate::branch::create::{check_key, key_reused};
 use crate::branch::index;
 use crate::commit::{check_args_hash, same_args_hash};
 use crate::db;
-use crate::write::{Draft, WriteCtx, writable};
+use crate::write::{Draft, WriteCtx};
 use crate::{MergeReport, Store, StoreError};
 
 /// [`Store::merge`]'s request.
@@ -143,7 +143,7 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
     // The mergeId names the group; it must not also be a record's txId.
     taken(txn, &r.tx_id, &r.tx_id)?;
     let from = index::resolve(txn, &r.from)?.id;
-    let into = writable(txn, &r.into)?.id;
+    let into = ctx.target(&r.into)?.id;
     let measurer = ctx.measurer.clone();
     let head = ctx.head(&into)?;
     let log = SqlLog::with_head(txn, &into, head.rev, &head.project).measuring(measurer.as_deref());

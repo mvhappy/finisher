@@ -270,3 +270,32 @@ fn a_hand_edited_noncanonical_rate_still_opens() {
     assert_eq!(s.snapshot(MAIN).unwrap().1.rate, secs(30));
     assert!(s.read_only().is_none(), "{:?}", s.read_only());
 }
+
+/// `OpenOptions::expect_id` (review of 5A Task 6, finding 6): a folder that no longer holds
+/// the project the caller checked is refused before anything is rebuilt, locked or leased.
+#[test]
+fn open_with_another_expected_id_touches_nothing() {
+    let e = env();
+    let store = Store::create(&e.data, &e.dir, "Film", secs(30), None).unwrap();
+    let id = store.project_id().to_string();
+    drop(store);
+    // A server that never saw the project: opening it would build its database here.
+    let other = e._tmp.path().join("other-server");
+    let opts = fin_store::OpenOptions {
+        expect_id: Some("01otherprojectotherprojec".to_string()),
+        ..fin_store::OpenOptions::default()
+    };
+    let err = code(Store::open_with(&other, &e.dir, opts).unwrap_err());
+    assert_eq!(err.code, "PROJECT_NOT_FOUND");
+    assert_eq!(err.details["reason"], "changed");
+    assert!(files(&other).is_empty(), "{:?}", files(&other));
+    // The id it holds opens.
+    let opts = fin_store::OpenOptions {
+        expect_id: Some(id.clone()),
+        ..fin_store::OpenOptions::default()
+    };
+    assert_eq!(
+        Store::open_with(&other, &e.dir, opts).unwrap().project_id(),
+        id
+    );
+}

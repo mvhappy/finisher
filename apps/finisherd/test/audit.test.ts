@@ -88,6 +88,25 @@ describe("audit", () => {
     ]);
   });
 
+  test("denials_aggregate_per_principal_code_and_rpc_per_minute (review of Task 5, M5)", () => {
+    const audit = new Audit(store, () => now);
+    // An agent refused 1,000 times in a minute cannot flush the log: one row.
+    for (let i = 0; i < 1000; i++) audit.append(denied());
+    audit.append(denied("HUMAN_ONLY"));
+    audit.append({ ...denied(), details: { rpc: "branch.set", scope: "project.write" } });
+    audit.append({ ...denied(), principal: { kind: "agent", id: "01other" } });
+    now += 60_000;
+    audit.append(denied());
+    const rows = audit.list({ kind: "auth.denied" }).entries;
+    expect(rows.map((r) => [r.principalId, r.code, r.details.rpc, r.count])).toEqual([
+      ["01agent", "SCOPE_DENIED", "tx.commit", 1],
+      ["01other", "SCOPE_DENIED", "tx.commit", 1],
+      ["01agent", "SCOPE_DENIED", "branch.set", 1],
+      ["01agent", "HUMAN_ONLY", "tx.commit", 1],
+      ["01agent", "SCOPE_DENIED", "tx.commit", 1000],
+    ]);
+  });
+
   test("retention_by_age_and_rows", async () => {
     const day = 86_400_000;
     const audit = new Audit(store, () => now, { maxRows: 50 });
@@ -128,7 +147,7 @@ describe("audit", () => {
   test("details outside the kind's schema are dropped and counted", () => {
     const audit = new Audit(store, () => now);
     audit.append({ ...denied(), details: { path: "/somewhere/film" } });
-    audit.append({ ...denied(), details: { deviceName: "Laptop" } });
+    audit.append({ ...denied(), principal: { kind: "mcp", id: "01mcp" }, details: { deviceName: "Laptop" } });
     audit.append({ kind: "device.revoke", principal: { kind: "console", id: "console" }, outcome: "ok", details: { deviceName: "Laptop" } });
     const [revoke, named, path] = audit.list().entries;
     expect(path!.details).toEqual({});
