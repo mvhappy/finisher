@@ -198,7 +198,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // Plan 6A Task 13. A look reads the project and submits a job (`jobs.submit` and the kind's own
   // `project.read`, spec §6.7); its frames go to `out`, which a principal with roots may name only
   // inside its project's folder. It commits nothing, so it takes no branch write guard.
-  "media.look": { scopes: ["project.read", "jobs.submit"], resolve: [...BRANCH, "outDir"] },
+  // A read-only token gets the default place only: naming a folder (`out`) writes files where
+  // the caller chooses, which takes `project.write` (owner decision, review of Tasks 11-12, M1).
+  "media.look": {
+    scopes: ["project.read", "jobs.submit"],
+    resolve: [...BRANCH, "outDir"],
+    escalate: (p) => (p.out === undefined ? [] : ["project.write"]),
+  },
   // What this machine's media worker can decode and draw on.
   "media.capabilities": { scopes: ["server.read"] },
   "diagnostics.status": { scopes: ["diagnostics.read"] },

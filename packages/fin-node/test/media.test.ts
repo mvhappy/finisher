@@ -1,6 +1,6 @@
 // Media job inputs (6A plan Task 12): `Engine.prepareMediaJob` writes a job's snapshot,
 // manifest and params, and `commitJobOutput` moves a finished file out of a job directory.
-import { linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, linkSync, mkdirSync, openSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -148,9 +148,35 @@ describe("prepareMediaJob", () => {
     expect((await rejection(e.prepareMediaJob("main", "tl1", ["1"], inDir, { paramsJson: bad }))).code).toBe("JOB_PARAMS_INVALID");
     expect((await rejection(e.prepareMediaJob("main", "tl1", ["1"], inDir, { paramsJson: "{" }))).code).toBe("JOB_PARAMS_INVALID");
     expect(readdirSync(inDir)).toEqual([]);
-    // The directory must exist: a write failure is `IO_ERROR`, naming the file.
+    // The directory must exist: a write failure is `SHM_REFUSED`, naming the file.
     const e2 = await rejection(e.prepareMediaJob("main", "tl1", ["1"], join(tmp, "nowhere")));
-    expect(e2.code).toBe("IO_ERROR");
+    expect([e2.code, (e2.details as { reason: string }).reason]).toEqual(["SHM_REFUSED", "missing"]);
+  });
+
+  // Review M3: the limit on a frame's side applies to the size drawn, named or not.
+  test("a timeline larger than the limit needs a size", async () => {
+    const { e, inDir } = await project();
+    await e.commit(tx("t2", 1, [{ op: "timeline.set", timeline: "tl1", path: "resolution", value: [8200, 64] }]));
+    const params = { timeline: "tl1", at: ["1"], outName: "look", projectId: e.projectId, branch: "main", rev: 2 };
+    const err = await rejection(e.prepareMediaJob("main", "tl1", ["1"], inDir, { paramsJson: JSON.stringify(params) }));
+    expect([err.code, (err.details as { field: string }).field]).toEqual(["JOB_PARAMS_INVALID", "size"]);
+    expect(readdirSync(inDir)).toEqual([]);
+    const sized = { ...params, size: { width: 640, height: 8 } };
+    await e.prepareMediaJob("main", "tl1", ["1"], inDir, { paramsJson: JSON.stringify(sized) });
+    expect(readdirSync(inDir).sort()).toEqual(["manifest.json", "params.json", "snapshot.json"]);
+  });
+
+  // Review L2: the inputs go in below no link.
+  test.skipIf(process.platform === "win32")("an in/ that is a link is refused and nothing is written through it", async () => {
+    const { e } = await project();
+    const job = join(tmp, "job2");
+    const elsewhere = join(tmp, "elsewhere");
+    mkdirSync(job);
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(job, "in"));
+    const err = await rejection(e.prepareMediaJob("main", "tl1", ["1"], join(job, "in")));
+    expect([err.code, (err.details as { reason: string }).reason]).toEqual(["SHM_REFUSED", "link"]);
+    expect(readdirSync(elsewhere)).toEqual([]);
   });
 
   test("a second prepare replaces the files; a planted link is replaced, not followed", async () => {
@@ -183,6 +209,37 @@ describe("commitJobOutput", () => {
     await commitJobOutput(join(out, "look-0.png"), join(dest, "x.png"), 1 << 20);
     expect(readFileSync(join(dest, "x.png"), "utf8")).toBe("frame");
     expect(readdirSync(out)).toEqual([]);
+  });
+
+  // Review B1: a warm worker is alive and may hold the file it wrote. `copy` gives the
+  // destination a new inode, so what the worker writes later never reaches it.
+  test.skipIf(!unix)("a copy commit is safe from a writer that still holds the file", async () => {
+    const out = join(tmp, "job", "out");
+    mkdirSync(out, { recursive: true });
+    const dest = join(tmp, "dest");
+    mkdirSync(dest);
+    writeFileSync(join(out, "look-0.png"), "frame");
+    const fd = openSync(join(out, "look-0.png"), "a");
+    try {
+      await commitJobOutput(join(out, "look-0.png"), join(dest, "x.png"), 1 << 20, true);
+      expect(readdirSync(dest)).toEqual(["x.png"]);
+      writeSync(fd, " and more");
+      expect(readFileSync(join(dest, "x.png"), "utf8")).toBe("frame");
+      expect(statSync(join(dest, "x.png")).nlink).toBe(1);
+      // A rename (the default) hands the destination the writer's own file.
+      writeFileSync(join(out, "look-1.png"), "frame");
+      const fd2 = openSync(join(out, "look-1.png"), "a");
+      await commitJobOutput(join(out, "look-1.png"), join(dest, "y.png"), 1 << 20);
+      writeSync(fd2, " and more");
+      closeSync(fd2);
+      expect(readFileSync(join(dest, "y.png"), "utf8")).toBe("frame and more");
+    } finally {
+      closeSync(fd);
+    }
+    const link = join(out, "link.png");
+    symlinkSync(join(dest, "x.png"), link);
+    const err = await rejection(commitJobOutput(link, join(dest, "z.png"), 1 << 20, true));
+    expect((err.details as { reason: string }).reason).toBe("link");
   });
 
   test("refuses what is not a plain file of the job, and a file over the cap", async () => {

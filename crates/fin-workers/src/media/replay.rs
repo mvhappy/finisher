@@ -4,6 +4,11 @@
 //! `in/snapshot.json` and `in/manifest.json`, the PNGs go to its `out/`. The family runs over
 //! an in-memory envelope exactly as under a host; the job's answer is printed as one JSON line,
 //! `{"result": …}` (exit 0) or `{"error": …}` (exit 1). Exit 2 for usage errors.
+//!
+//! A replay trusts nothing in the directory it is pointed at (review B3): `out/` must be a real
+//! directory, never a link; an output already there is refused, never overwritten; and
+//! originals open only from inside the directory unless `--originals-anywhere` is given (a
+//! manifest names absolute paths, which a bug report's does not need).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -53,7 +58,9 @@ impl Write for Capture {
 
 fn usage(msg: &str) -> ! {
     eprintln!("fin-workers: {msg}");
-    eprintln!("usage: fin-workers media --replay <jobdir> [--params <file>]");
+    eprintln!(
+        "usage: fin-workers media --replay <jobdir> [--params <file>] [--originals-anywhere]"
+    );
     std::process::exit(2)
 }
 
@@ -105,9 +112,11 @@ pub fn start(root: &Path, params: Value) -> Start {
 pub fn main(args: &[String]) -> i32 {
     let mut dir = None;
     let mut params_file = None;
+    let mut anywhere = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--originals-anywhere" => anywhere = true,
             "--params" => {
                 params_file = Some(it.next().unwrap_or_else(|| usage("--params needs a file")))
             }
@@ -134,7 +143,8 @@ pub fn main(args: &[String]) -> i32 {
         self_sandbox: None,
         pid: std::process::id(),
     };
-    run_on(MediaFamily::new(false), chan);
+    let confine = (!anywhere).then(|| root.clone());
+    run_on(MediaFamily::replaying(confine), chan);
     let bytes = out.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let (answer, code) = answer(&bytes);
     println!("{answer}");

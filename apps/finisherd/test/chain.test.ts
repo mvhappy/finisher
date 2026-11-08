@@ -230,6 +230,10 @@ describe("the chain", () => {
       symlinkSync(tmp, join(dirA, "workspace", "looklink"));
       expect(code(await h.call("media.look", look({ out: join(dirA, "workspace", "looklink", "x") })))).toBe("PATH_NOT_ALLOWED");
     }
+    // Review M1: naming a folder takes `project.write`; a read-only token gets the default place.
+    const readOnly = harness(agent({ scopes: MINT.filter((s) => s !== "project.write") }));
+    expect(code(await readOnly.call("media.look", look()))).toBeUndefined();
+    expect(code(await readOnly.call("media.look", look({ out: join(dirA, "shots") })))).toBe("SCOPE_DENIED");
     // Scopes: both `project.read` and `jobs.submit`; a project outside the reach.
     expect(code(await harness(agent({ scopes: MINT.filter((s) => s !== "jobs.submit") })).call("media.look", look()))).toBe("SCOPE_DENIED");
     expect(code(await harness(agent({ scopes: MINT.filter((s) => s !== "project.read") })).call("media.look", look()))).toBe("SCOPE_DENIED");

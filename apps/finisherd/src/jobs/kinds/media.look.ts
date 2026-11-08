@@ -3,12 +3,16 @@
 // - `prepare` makes the job's `in/`, then asks the project's engine to write `snapshot.json`,
 //   `manifest.json` and `params.json` there (`Engine.prepareMediaJob`), and passes the plan
 //   hashes it computed to the worker as `extra.planSamples`;
-// - `onSucceeded` moves each `out/<outName>-<i>.png` to its final place with
-//   `commitJobOutput` (`fin-shm::commit_output`) one file at a time, before 5C deletes the job
-//   directory. The directory has been walked for links by then and the worker has exited, so
-//   nothing can write the files any more.
+// - `onSucceeded` puts each `out/<outName>-<i>.png` in its final place with `commitJobOutput`
+//   (`fin-shm::commit_output_copy`) one file at a time, before 5C deletes the job directory.
+//   The worker is warm: it has answered and is idle, but it is alive and may hold the file
+//   open, so nothing is renamed out of its reach: the bytes of the checked handle are copied
+//   into a temporary file the host creates beside the destination and that is renamed over it
+//   (review B1). The name of every destination is built from the host's own params and plan
+//   samples (`p.at[i]`, `extra.planSamples[i]`), never from what the worker's answer says
+//   (review B2).
 import { mkdir, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { FinError } from "@finisher/contracts";
 import type { LookFrame, LookParams, LookResult } from "@finisher/core-types";
 import { commitJobOutput } from "@finisher/fin-node";
@@ -59,8 +63,13 @@ export function lookDedupe(p: LookJobParams): string | undefined {
   return JSON.stringify([p.projectId, p.branch, p.rev, p.timeline, p.at, p.size ?? null, p.outName, p.outDir ?? null]);
 }
 
+const RATIONAL = /^-?\d{1,38}(?:\/\d{1,38})?$/;
+const PLAN_HASH = /^[0-9a-f]{64}$/;
+
 /** `<timeline>-<n>_<d>-<plan hash, 8 hex>.png` (Decision 7). */
 export function finalName(timeline: string, at: string, plan: string): string {
+  if (!RATIONAL.test(at)) throw finError("JOB_FAILED", "a frame time is not a rational number", { at });
+  if (!PLAN_HASH.test(plan)) throw finError("JOB_FAILED", "a frame's plan hash is not a BLAKE3 digest", { plan });
   const [n, d] = at.split("/");
   const safe = timeline.replace(/[^A-Za-z0-9_-]/g, "_");
   return `${safe}-${n}_${d ?? "1"}-${plan.slice(0, 8)}.png`;
@@ -94,18 +103,55 @@ async function resolveThroughLinks(path: string): Promise<string> {
   }
 }
 
+/** `dev:ino` of `path` (not following a final link), or `undefined` when it does not exist. */
+async function identity(path: string): Promise<string | undefined> {
+  try {
+    const st = await stat(path, { bigint: true });
+    return `${st.dev}:${st.ino}`;
+  } catch (e) {
+    if ((e as { code?: unknown }).code === "ENOENT" || (e as { code?: unknown }).code === "ENOTDIR") return undefined;
+    throw e;
+  }
+}
+
+/** `dir` and every directory above it, nearest first. */
+function ancestors(dir: string): string[] {
+  const out: string[] = [];
+  for (let cur = dir; ; cur = resolve(cur, "..")) {
+    out.push(cur);
+    if (resolve(cur, "..") === cur) return out;
+  }
+}
+
 /**
  * Where a look's frames go: `outDir` (absolute, or relative to the project folder), else
- * `workspace/shared/look/`; created if need be. Refused (`EXPORT_DESTINATION`) when it lies
- * inside `.finisher/` or `assets/`, spelled or resolved through links, or cannot be made.
+ * `workspace/shared/look/`; created if need be. Refused (`EXPORT_DESTINATION`) when:
+ * - it lies inside `.finisher/` or `assets/` of the project, spelled or resolved through links
+ *   (compared by name, and by `(dev, ino)` against the protected folders and **every ancestor** of
+ *   the resolved destination, so a case-folded name on a case-insensitive volume, an 8.3 name, a
+ *   junction or a bind mount cannot get around the names);
+ * - any ancestor of the resolved destination is named `.finisher` (case-folded, whatever the
+ *   volume), or is one of `protect` (the server's data);
+ * - it cannot be made (review M1).
  */
-export async function lookDestination(projectDir: string, outDir: string | null | undefined): Promise<string> {
+export async function lookDestination(projectDir: string, outDir: string | null | undefined, protect: ReadonlyArray<string> = []): Promise<string> {
   const base = outDir == null ? join(projectDir, ...LOOK_DIR) : resolve(projectDir, outDir);
   const check = async (): Promise<string> => {
     const root = await realpath(projectDir);
     const real = await resolveThroughLinks(base);
     for (const name of PROTECTED_DIRS) {
       if (inside(base, join(projectDir, name)) || inside(real, join(root, name))) throw exportDestination(base, `inside ${name}/`);
+    }
+    const guarded = new Map<string, string>();
+    for (const [what, dir] of [...PROTECTED_DIRS.map((n) => [`${n}/`, join(root, n)] as const), ...protect.map((p) => ["the server's data", p] as const)]) {
+      const id = await identity(dir);
+      if (id !== undefined) guarded.set(id, what);
+    }
+    for (const a of ancestors(real)) {
+      if (basename(a).toLowerCase() === ".finisher") throw exportDestination(base, "inside a .finisher folder");
+      const id = await identity(a);
+      const what = id === undefined ? undefined : guarded.get(id);
+      if (what !== undefined) throw exportDestination(base, `inside ${what}`);
     }
     return real;
   };
@@ -193,27 +239,44 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
           const p = ctx.job.params;
           const dir = p.projectId == null ? undefined : deps.projects.dirOf(p.projectId);
           if (dir === undefined) throw finError("PROJECT_NOT_FOUND", `project ${p.projectId ?? ""} is not open`, { projectId: p.projectId ?? null }, "open the project and look again");
-          const dest = await lookDestination(dir, p.outDir);
+          const dest = await lookDestination(dir, p.outDir, [deps.serverData]);
           const jobDir = jobDirs(root, ctx.job.id).job;
+          const samples = planSamplesOf(ctx.extra);
+          const name = new RegExp(`^${p.outName}-(\\d+)\\.png$`);
           const frames: LookFrame[] = [];
-          for (const f of ctx.result.frames) {
-            // The worker's own name for the file: `<outName>-<i>.png`, never a path.
-            if (!/^[A-Za-z0-9_-]+-\d+\.png$/.test(f.file)) throw finError("JOB_FAILED", "the worker named an output file oddly", { file: f.file });
-            const to = join(dest, finalName(p.timeline, String(f.at), f.plan));
+          for (const [position, f] of ctx.result.frames.entries()) {
+            // The worker's own name for the file, `<outName>-<i>.png`, is all of its answer that
+            // is believed: the time, the plan hash and the destination come from the host's.
+            const i = Number(name.exec(f.file)?.[1] ?? Number.NaN);
+            if (!Number.isSafeInteger(i) || i !== position || i >= p.at.length) throw finError("JOB_FAILED", "the worker named an output file oddly", { file: f.file });
+            const at = String(p.at[i]);
+            const want = samples[i];
+            if (!PLAN_HASH.test(f.plan) || f.plan !== want) {
+              throw finError("PLAN_MISMATCH", "the worker's frame does not carry the plan the host sampled", { frame: i, reason: PLAN_HASH.test(f.plan) ? "hash" : "malformed" });
+            }
+            const to = join(dest, finalName(p.timeline, at, f.plan));
+            if (dirname(to) !== dest) throw finError("JOB_FAILED", "a frame's destination is outside its folder", { frame: i });
             try {
-              await commitJobOutput(join(jobDir, "out", f.file), to, MAX_FRAME_BYTES);
+              await commitJobOutput(join(jobDir, "out", f.file), to, MAX_FRAME_BYTES, true);
             } catch (e) {
               const err = refusal(e, jobDir);
               // A rerun after a crash: this file was moved by the run before.
               if (!(ctx.rerun && (err.details as { reason?: unknown })?.reason === "missing" && (await exists(to)))) throw err;
             }
-            frames.push({ ...f, file: to });
+            frames.push({ ...f, at, file: to });
           }
           return { ...ctx.result, frames };
         },
         catch: toFinError,
       }),
   };
+}
+
+/** The plan hashes `prepare` computed, in `at` order (`extra.planSamples`). */
+function planSamplesOf(extra: unknown): ReadonlyArray<string> {
+  const samples = (extra as { planSamples?: ReadonlyArray<{ blake3?: unknown }> } | null | undefined)?.planSamples;
+  if (!Array.isArray(samples)) throw finError("JOB_FAILED", "the job lost the plan samples its prepare computed", {});
+  return samples.map((s) => String(s.blake3));
 }
 
 /** Registers the family and its kinds (`media.look`, `media.capabilities`). */

@@ -112,7 +112,7 @@ impl SourceProvider for Sources<'_> {
         }
         let reader = match entry {
             Entry::Failed(issue) => return Err(issue.clone()),
-            Entry::Open(r) => r,
+            Entry::Open(o) => &mut o.reader,
         };
         let video = reader
             .info()

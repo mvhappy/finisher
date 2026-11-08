@@ -446,8 +446,8 @@ export function probeBeneath(root, path) {
   return call(native.probeBeneath(root, path));
 }
 
-export function commitJobOutput(from, to, maxBytes) {
-  return call(native.commitJobOutput(from, to, maxBytes));
+export function commitJobOutput(from, to, maxBytes, copy) {
+  return call(native.commitJobOutput(from, to, maxBytes, copy ?? null));
 }
 
 export function libraryCanonicalRoot(path, serverData, timeoutMs) {

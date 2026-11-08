@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use fin_core::eval::eval_frame;
 use fin_core::{CoreError, Rational};
+use fin_media::Size;
 use fin_media::jobs::{JobSnapshot, LookParams, PlanSample};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -85,6 +86,12 @@ fn prepare(store: &Shared, req: Request) -> Result<String> {
     let mut samples = Vec::with_capacity(times.len());
     for &at in &times {
         let plan = eval_frame(&project, &req.timeline, at, Some(&*measurer)).map_err(reject)?;
+        // The size drawn is limited like a named one (M3): no job for a frame no worker draws.
+        if let Some(p) = &params {
+            let res = plan.resolution;
+            p.effective_size(Size::new(res.width, res.height))
+                .map_err(reject)?;
+        }
         samples.push(PlanSample {
             at,
             blake3: inputs::plan_hash(&plan),
@@ -161,6 +168,7 @@ pub struct CommitTask {
     from: PathBuf,
     to: PathBuf,
     cap: u64,
+    copy: bool,
 }
 
 impl Task for CommitTask {
@@ -169,8 +177,16 @@ impl Task for CommitTask {
 
     fn compute(&mut self) -> Result<()> {
         let (from, to, cap): (&Path, &Path, u64) = (&self.from, &self.to, self.cap);
+        let copy = self.copy;
         guarded(
-            || fin_shm::commit_output(from, to, cap).map_err(reject),
+            || {
+                if copy {
+                    fin_shm::commit_output_copy(from, to, cap)
+                } else {
+                    fin_shm::commit_output(from, to, cap)
+                }
+                .map_err(reject)
+            },
             || {},
         )
     }
@@ -181,12 +197,20 @@ impl Task for CommitTask {
 }
 
 /// Moves the finished file `from` (inside a job directory, absolute) to `to` (absolute; its
-/// directory must exist), replacing it: `fin_shm::commit_output` with `maxBytes` as the cap.
+/// directory must exist), replacing it, with `maxBytes` as the cap. By default
+/// `fin_shm::commit_output` (a rename: the destination is the writer's own inode, so call it
+/// only once the worker has exited); with `copy`, `fin_shm::commit_output_copy`: the bytes of
+/// the checked handle go into a temporary file the host creates beside `to` and that is renamed
+/// over it, so a worker that is still alive (warm) never holds the destination.
 /// Rejects with `SHM_REFUSED {file, reason}` when `from` is a link, not a regular file, hard
-/// linked or over the cap, or when the arrival is not the file that was checked. Call it only
-/// once the worker can no longer write the file.
+/// linked or over the cap, or when the arrival is not the file that was checked.
 #[napi(catch_unwind)]
-pub fn commit_job_output(from: String, to: String, max_bytes: f64) -> AsyncTask<CommitTask> {
+pub fn commit_job_output(
+    from: String,
+    to: String,
+    max_bytes: f64,
+    copy: Option<bool>,
+) -> AsyncTask<CommitTask> {
     AsyncTask::new(CommitTask {
         from: from.into(),
         to: to.into(),
@@ -195,5 +219,6 @@ pub fn commit_job_output(from: String, to: String, max_bytes: f64) -> AsyncTask<
         } else {
             0
         },
+        copy: copy.unwrap_or(false),
     })
 }

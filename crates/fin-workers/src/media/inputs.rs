@@ -72,22 +72,39 @@ pub fn read_json<T: DeserializeOwned>(
     serde_json::from_slice(&text).map_err(|e| input_invalid(name, e))
 }
 
-/// `out/` (the `out/` grant must exist).
-pub fn out_dir(ctx: &JobCtx<'_>, dir: &JobDir) -> Result<PathBuf, JobError> {
+/// The `out/` grant must exist. The directory itself is checked when a file is created in it
+/// ([`write_png`]: no link at any segment).
+pub fn out_dir(ctx: &JobCtx<'_>, dir: &JobDir) -> Result<(), JobError> {
     granted(ctx, dir, "out/")?;
-    Ok(dir.output())
+    Ok(())
 }
 
-/// Writes an 8-bit RGBA frame as a PNG at `path` with fixed settings, so the same pixels are
-/// always the same bytes. The file is closed when this returns.
-pub fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), JobError> {
+/// Writes an 8-bit RGBA frame as a PNG `out/<file>` of the job with fixed settings, so the same
+/// pixels are always the same bytes. The file is made new, `O_EXCL` and no-follow, below an
+/// `out/` that is a real directory (a link at any segment is `SHM_REFUSED`, review B3); a
+/// retried attempt's earlier output of that name, whatever it is, is unlinked first unless
+/// `replace` is false (`--replay`: an existing output is refused, never overwritten). The file
+/// is closed when this returns.
+pub fn write_png(
+    dir: &JobDir,
+    file: &str,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    replace: bool,
+) -> Result<(), JobError> {
     let io = |e: &dyn std::fmt::Display| {
-        JobError::new("IO_ERROR", format!("cannot write {}: {e}", file_name(path)))
-            .with_details(json!({ "file": format!("out/{}", file_name(path)) }))
+        JobError::new("IO_ERROR", format!("cannot write {file}: {e}"))
+            .with_details(json!({ "file": format!("out/{file}") }))
             .with_retry(fin_jobs::Retry::Backoff)
     };
-    // `create` (not `create_new`): a retried attempt rewrites its own outputs.
-    let f = std::fs::File::create(path).map_err(|e| io(&e))?;
+    let path = dir.output().join(file);
+    let f = if replace {
+        fin_shm::create_output(&path)
+    } else {
+        fin_shm::create_new_output(&path)
+    }
+    .map_err(|e| relative_refusal(dir, e))?;
     let mut w = BufWriter::new(f);
     {
         let mut enc = png::Encoder::new(&mut w, width, height);
@@ -102,10 +119,4 @@ pub fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()
     let f = w.into_inner().map_err(|e| io(&e.error()))?;
     drop(f);
     Ok(())
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
 }

@@ -24,7 +24,9 @@
 //!   copy whose `seq` changed ([`SlotState::Busy`]). The file's size must equal the header's.
 //! - **Outputs** leave `out/` through [`commit_output`]: the checks, then a rename from the
 //!   checked directory (or a bounded copy across volumes), then a check that what arrived is
-//!   the file that was checked.
+//!   the file that was checked. A writer that may still be alive (a warm worker) is never
+//!   given the destination's inode: [`commit_output_copy`] copies from the checked handle into
+//!   a host-created temporary file and renames that.
 
 mod checks;
 mod layout;
@@ -45,7 +47,9 @@ pub use layout::{
     DATA_ALIGN, HEADER_BYTES, MAGIC, MAX_SLOTS, RingLayout, RingSpec, SLOT_ENTRY_BYTES, VERSION,
     decode_header, encode_header,
 };
-pub use open::{checked_open, commit_output};
+pub use open::{
+    checked_open, commit_output, commit_output_copy, create_new_output, create_output, write_input,
+};
 pub use ring::{RingReader, RingWriter, SlotState};
 
 /// The error code of every refusal (sub-project 6 spec §17, exit 5).

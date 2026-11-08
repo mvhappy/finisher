@@ -12,12 +12,17 @@ use fin_media::{MediaInfo, SampleTable, decode_start};
 use serde_json::json;
 
 use crate::av1::DecodeThreads;
-use crate::caps::{Capabilities, open_decoder_with};
+use crate::caps::{Capabilities, open_decoder_limited};
 use crate::frame::DecodedFrame;
 use crate::traits::VideoDecoder;
 
 /// Decoded frames kept for reuse.
 const CACHE: usize = 64;
+
+/// The bytes of a frame's planes.
+fn frame_bytes(f: &DecodedFrame) -> usize {
+    f.planes.iter().map(|p| p.data.len()).sum()
+}
 
 /// A demuxer, a decoder and the track's tables.
 pub struct FrameReader<R: Read + Seek> {
@@ -32,6 +37,10 @@ pub struct FrameReader<R: Read + Seek> {
     /// The run reached the last sample and the decoder was told the stream ended.
     ended: bool,
     cache: VecDeque<DecodedFrame>,
+    /// The bytes of the frames in `cache`.
+    cached: usize,
+    /// The most bytes `cache` keeps (the newest frame is always kept).
+    cache_cap: usize,
     buf: Vec<u8>,
 }
 
@@ -48,12 +57,24 @@ impl<R: Read + Seek> FrameReader<R> {
         caps: &Capabilities,
         threads: DecodeThreads,
     ) -> Result<Self, CoreError> {
+        Self::open_with_limit(r, limits, caps, threads, crate::av1::MAX_PIXELS)
+    }
+
+    /// [`FrameReader::open_with`] refusing pictures of more than `max_pixels` pixels
+    /// (`DECODE_FAILED` before the decoder allocates for them).
+    pub fn open_with_limit(
+        r: R,
+        limits: &Limits,
+        caps: &Capabilities,
+        threads: DecodeThreads,
+        max_pixels: u32,
+    ) -> Result<Self, CoreError> {
         let demux = Demuxer::open(r, limits)?;
         let track = demux.video().cloned().ok_or_else(|| {
             CoreError::new("NOT_FOUND", "the file has no video track")
                 .with_details(json!({ "kind": "videoTrack" }))
         })?;
-        let decoder = open_decoder_with(&track, caps, threads)?;
+        let decoder = open_decoder_limited(&track, caps, threads, max_pixels)?;
         Ok(FrameReader {
             demux,
             track,
@@ -62,8 +83,42 @@ impl<R: Read + Seek> FrameReader<R> {
             in_flight: VecDeque::new(),
             ended: false,
             cache: VecDeque::new(),
+            cached: 0,
+            cache_cap: usize::MAX,
             buf: Vec::new(),
         })
+    }
+
+    /// Keeps at most `bytes` of decoded frames (the newest is kept whatever its size); older
+    /// ones are dropped as new ones arrive.
+    pub fn set_cache_cap(&mut self, bytes: usize) {
+        self.cache_cap = bytes;
+        self.shrink(0);
+    }
+
+    /// The bytes of decoded frames held for reuse.
+    pub fn cached_bytes(&self) -> usize {
+        self.cached
+    }
+
+    /// Drops every cached frame (the decoder's run goes on; a later request for a dropped
+    /// frame decodes it again).
+    pub fn drop_cache(&mut self) {
+        self.cache.clear();
+        self.cached = 0;
+    }
+
+    /// Drops the oldest frames until `incoming` more bytes fit under the cap and the count
+    /// under [`CACHE`]; with nothing incoming the newest frame stays whatever its size.
+    fn shrink(&mut self, incoming: usize) {
+        let floor = usize::from(incoming == 0);
+        while self.cache.len() > floor
+            && (self.cache.len() >= CACHE || self.cached + incoming > self.cache_cap)
+        {
+            if let Some(old) = self.cache.pop_front() {
+                self.cached -= frame_bytes(&old);
+            }
+        }
     }
 
     pub fn info(&self) -> &MediaInfo {
@@ -95,7 +150,7 @@ impl<R: Read + Seek> FrameReader<R> {
             matches!(self.run, Some((began, n)) if began <= start && n >= start && ahead(n));
         if !resume {
             self.decoder.flush()?;
-            self.cache.clear();
+            self.drop_cache();
             self.in_flight.clear();
             self.ended = false;
             self.run = Some((start, start));
@@ -107,9 +162,9 @@ impl<R: Read + Seek> FrameReader<R> {
                     self.in_flight.remove(k);
                 }
                 let hit = frame.pts == want;
-                if self.cache.len() == CACHE {
-                    self.cache.pop_front();
-                }
+                let bytes = frame_bytes(&frame);
+                self.shrink(bytes);
+                self.cached += bytes;
                 self.cache.push_back(frame);
                 if hit {
                     return Ok(self.cache.back().expect("just pushed"));

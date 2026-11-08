@@ -491,14 +491,17 @@ export declare function checkPrivateDir(path: string): PrivateDirReport;
 export declare function makePrivateDir(path: string): void;
 
 /**
- * Moves the finished file `from` (absolute, inside a job directory) to `to` (absolute; its
- * directory must exist), replacing it: `fin_shm::commit_output` with `maxBytes` as the cap.
- * Rejects with `SHM_REFUSED` (`details.file` is absolute, `details.reason`: `link`,
- * `notRegular`, `hardLinked`, `overCap`, `changed`, `busy`, …) when `from` is not a plain
- * file of the job or the arrival is not the file that was checked. Call it only once the
- * worker can no longer write `from`.
+ * Moves the finished file `from` (inside a job directory, absolute) to `to` (absolute; its
+ * directory must exist), replacing it, with `maxBytes` as the cap. By default
+ * `fin_shm::commit_output` (a rename: the destination is the writer's own inode, so call it
+ * only once the worker has exited); with `copy`, `fin_shm::commit_output_copy`: the bytes of
+ * the checked handle go into a temporary file the host creates beside `to` (`O_EXCL`, synced)
+ * and that is renamed over it, so a worker that is still alive (warm) never holds the
+ * destination. Rejects with `SHM_REFUSED` (`details.file` is absolute, `details.reason`:
+ * `link`, `notRegular`, `hardLinked`, `overCap`, `changed`, `busy`, …) when `from` is not a
+ * plain file of the job or the arrival is not the file that was checked.
  */
-export declare function commitJobOutput(from: string, to: string, maxBytes: number): Promise<void>;
+export declare function commitJobOutput(from: string, to: string, maxBytes: number, copy?: boolean | undefined | null): Promise<void>;
 
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font

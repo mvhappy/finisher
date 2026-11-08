@@ -4451,7 +4451,14 @@ export interface FontFileRef {
   sha256: string;
 }
 /**
- * A file a worker opens, with what it looked like when the manifest was written. The worker
+ * A file a worker opens, with what it looked like when the manifest was written.
+ *
+ * `path` may be absolute anywhere on the machine (the model stores the path the user gave:
+ * plan 6A Decision 5) and the directories above the file may be links: **by design** only the
+ * file itself is opened no-follow and checked against these facts. The manifest is the host's,
+ * written from the project's own model, never from anything a worker or a client sent in the
+ * job; `--replay` of a directory that is not the caller's own is the exception, and confines
+ * originals to the directory (`--originals-anywhere` lifts that). The worker
  * opens it through `fin-library`'s no-follow opener, which refuses it once its size, mtime or
  * file id changed (`ORIGINALS_MISSING {reason: changed}`); `mtimeNs` and `fileId` are
  * encoded as `fin-library`'s `Expect` encodes them (a decimal string; standard base64).

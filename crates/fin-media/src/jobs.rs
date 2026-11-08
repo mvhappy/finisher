@@ -75,6 +75,21 @@ pub struct LookParams {
     pub out_dir: Option<String>,
 }
 
+/// Each side of a frame 1 to [`LOOK_MAX_SIDE`].
+fn check_size(s: Size) -> Result<(), CoreError> {
+    let side = 1..=LOOK_MAX_SIDE;
+    if side.contains(&s.width) && side.contains(&s.height) {
+        return Ok(());
+    }
+    Err(invalid(
+        "size",
+        format!(
+            "each side 1 to {LOOK_MAX_SIDE}, not {}×{}",
+            s.width, s.height
+        ),
+    ))
+}
+
 fn invalid(field: &str, message: String) -> CoreError {
     CoreError::new("JOB_PARAMS_INVALID", format!("params.{field}: {message}"))
         .with_details(json!({ "field": field }))
@@ -90,16 +105,7 @@ impl LookParams {
             ));
         }
         if let Some(s) = self.size {
-            let side = 1..=LOOK_MAX_SIDE;
-            if !side.contains(&s.width) || !side.contains(&s.height) {
-                return Err(invalid(
-                    "size",
-                    format!(
-                        "each side 1 to {LOOK_MAX_SIDE}, not {}×{}",
-                        s.width, s.height
-                    ),
-                ));
-            }
+            check_size(s)?;
         }
         let ok = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
         if self.out_name.is_empty()
@@ -112,6 +118,18 @@ impl LookParams {
             ));
         }
         Ok(())
+    }
+
+    /// The size frames are drawn at: `size`, else the timeline's resolution `res`. The limit
+    /// of [`LOOK_MAX_SIDE`] applies to the size actually drawn, so a timeline larger than that
+    /// needs a `size` (plan 6A Task 11-12 review M3).
+    pub fn effective_size(&self, res: Size) -> Result<Size, CoreError> {
+        match self.size {
+            Some(s) => Ok(s),
+            None => check_size(res).map(|()| res).map_err(|e| {
+                e.with_fix("name a smaller size: the timeline's resolution is over the limit")
+            }),
+        }
     }
 
     /// The sample for time `t` (the first, should several be given).
@@ -286,7 +304,14 @@ pub struct ManifestAsset {
     pub original: Option<OriginalFile>,
 }
 
-/// A file a worker opens, with what it looked like when the manifest was written. The worker
+/// A file a worker opens, with what it looked like when the manifest was written.
+///
+/// `path` may be absolute anywhere on the machine (the model stores the path the user gave:
+/// plan 6A Decision 5) and the directories above the file may be links: **by design** only the
+/// file itself is opened no-follow and checked against these facts. The manifest is the host's,
+/// written from the project's own model, never from anything a worker or a client sent in the
+/// job; `--replay` of a directory that is not the caller's own is the exception, and confines
+/// originals to the directory (`--originals-anywhere` lifts that). The worker
 /// opens it through `fin-library`'s no-follow opener, which refuses it once its size, mtime or
 /// file id changed (`ORIGINALS_MISSING {reason: changed}`); `mtimeNs` and `fileId` are
 /// encoded as `fin-library`'s `Expect` encodes them (a decimal string; standard base64).
@@ -360,6 +385,26 @@ mod tests {
             assert!(p.check().is_err(), "{bad:?}");
         }
         assert_eq!(params().file_name(3), "look-3.png");
+    }
+
+    #[test]
+    fn the_effective_size_is_limited_whether_named_or_not() {
+        let big = Size::new(LOOK_MAX_SIDE + 1, 1080);
+        let mut p = params();
+        assert_eq!(
+            p.effective_size(Size::new(1920, 1080)).unwrap(),
+            Size::new(1920, 1080)
+        );
+        let e = p.effective_size(big).unwrap_err();
+        assert_eq!(e.code, "JOB_PARAMS_INVALID");
+        assert_eq!(e.details["field"], "size");
+        p.size = Some(Size::new(640, 360));
+        assert_eq!(p.effective_size(big).unwrap(), Size::new(640, 360));
+        assert!(
+            params()
+                .effective_size(Size::new(LOOK_MAX_SIDE, LOOK_MAX_SIDE))
+                .is_ok()
+        );
     }
 
     #[test]

@@ -87,6 +87,16 @@ pub fn open_decoder_with(
     caps: &Capabilities,
     threads: DecodeThreads,
 ) -> Result<Box<dyn VideoDecoder>, CoreError> {
+    open_decoder_limited(track, caps, threads, crate::av1::MAX_PIXELS)
+}
+
+/// [`open_decoder_with`] refusing pictures of more than `max_pixels` pixels.
+pub fn open_decoder_limited(
+    track: &VideoTrack,
+    caps: &Capabilities,
+    threads: DecodeThreads,
+    max_pixels: u32,
+) -> Result<Box<dyn VideoDecoder>, CoreError> {
     let codec = match &track.config {
         CodecConfig::Av1 { .. } => VideoCodec::Av1,
         CodecConfig::Avc { .. } => VideoCodec::H264,
@@ -102,9 +112,9 @@ pub fn open_decoder_with(
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
     match (codec, caps.get(codec).map(|c| c.decode)) {
-        (VideoCodec::Av1, Some(Support::Software | Support::Hardware)) => {
-            Ok(Box::new(crate::av1::Dav1dDecoder::new(threads)?))
-        }
+        (VideoCodec::Av1, Some(Support::Software | Support::Hardware)) => Ok(Box::new(
+            crate::av1::Dav1dDecoder::with_limit(threads, max_pixels)?,
+        )),
         _ => Err(unavailable(&name, "decode")),
     }
 }

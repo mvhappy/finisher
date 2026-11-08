@@ -14,8 +14,6 @@
 //!   followed.
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fin_core::eval::{EffectPlan, FramePlan, GraphicPlan, Layer, PlanValue};
@@ -152,39 +150,17 @@ pub fn build_manifest(
     }
 }
 
-fn io(dir: &Path, name: &str, step: &str, e: std::io::Error) -> CoreError {
-    CoreError::new(
-        "IO_ERROR",
-        format!("cannot write the job input {name}: {step}: {e}"),
-    )
-    .with_details(json!({ "file": name, "step": step, "dir": dir.to_string_lossy() }))
-}
-
-#[allow(clippy::disallowed_methods)] // the job's own private `in/` directory, never a library path
-/// Writes `value` as `dir/name` (compact JSON): to `<name>.tmp` created exclusively (0600),
-/// synced, then renamed over the target. `dir` is the job's own `in/` directory.
+/// Writes `value` as `dir/name` (compact JSON) through `fin_shm::write_input`: a temporary
+/// file made new (0600), synced and renamed over the target, below `dir` with no link at any
+/// segment. `dir` is the job's own `in/` directory.
 pub fn write_json(dir: &Path, name: &str, value: &impl Serialize) -> Result<(), CoreError> {
     let bytes = serde_json::to_vec(value)
         .map_err(|e| CoreError::new("INTERNAL", format!("cannot encode {name}: {e}")))?;
-    let tmp = dir.join(format!("{name}.tmp"));
-    // A leftover of a crashed earlier attempt (ours: the directory is private).
-    let _ = fs::remove_file(&tmp);
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    let mut file = opts.open(&tmp).map_err(|e| io(dir, name, "create", e))?;
-    let done = file
-        .write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| io(dir, name, "write", e));
-    drop(file);
-    if let Err(e) = done {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    fs::rename(&tmp, dir.join(name)).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        io(dir, name, "rename", e)
-    })
+    // The host's own links above the job directory (macOS `/var`, a symlinked home) are
+    // resolved once, as the worker does; the job directory and `in/` themselves may not be links.
+    let dir = match (dir.parent(), dir.file_name()) {
+        (Some(job), Some(last)) => fin_shm::JobDir::resolve(job)?.root.join(last),
+        _ => dir.to_path_buf(),
+    };
+    fin_shm::write_input(&dir, name, &bytes)
 }

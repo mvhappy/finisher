@@ -36,6 +36,13 @@ fn validate_look(params: &Value) -> Result<Value, Vec<String>> {
     let filled = validate_as::<LookParams>(params)?;
     let p: LookParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
     p.check().map_err(|e| vec![e.message])?;
+    // The plan samples are the host's: `prepare` computes them from the snapshot it writes. A
+    // submitter's would only ever be ignored (the worker prefers the kind's), so say so.
+    if !p.plan_samples.is_empty() {
+        return Err(vec![
+            "params.planSamples: computed by the kind's prepare; leave it out".to_string(),
+        ]);
+    }
     Ok(filled)
 }
 

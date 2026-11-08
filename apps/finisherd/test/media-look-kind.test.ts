@@ -2,7 +2,7 @@
 // over a real project engine, and the whole job through a real `fin-workers media` (lavapipe
 // with `FIN_GPU=software`; without any adapter the worker tests skip unless `FIN_REQUIRE_GPU=1`).
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
@@ -156,9 +156,13 @@ describe("the kind", () => {
   });
 
   test("frames are named for their timeline, time and plan", () => {
-    expect(finalName("tl1", "37/5", "0123456789abcdef")).toBe("tl1-37_5-01234567.png");
-    expect(finalName("tl1", "12", "ffffffffff")).toBe("tl1-12_1-ffffffff.png");
-    expect(finalName("a b/../c", "0", "aabbccdd00")).toBe("a_b____c-0_1-aabbccdd.png");
+    const h = (c: string) => c.repeat(64);
+    expect(finalName("tl1", "37/5", "0123456789abcdef".repeat(4))).toBe("tl1-37_5-01234567.png");
+    expect(finalName("tl1", "12", h("f"))).toBe("tl1-12_1-ffffffff.png");
+    expect(finalName("a b/../c", "0", h("a"))).toBe("a_b____c-0_1-aaaaaaaa.png");
+    // Review B2: neither the time nor the hash may carry a path, whatever called this.
+    for (const at of ["..\\..\\x", "/../x", "1/../2", "a", "", "1/2/3"]) expect(() => finalName("tl1", at, h("a")), at).toThrow();
+    for (const plan of ["../../x", "abc", h("g"), `${h("a")}/`, h("A")]) expect(() => finalName("tl1", "0", plan), plan).toThrow();
   });
 });
 
@@ -191,6 +195,116 @@ describe("destinations", () => {
     // Not writable: a file where a folder belongs.
     writeFileSync(join(dir, "afile"), "x");
     expect(await code("afile/sub")).toBe("EXPORT_DESTINATION");
+  });
+});
+
+describe("destinations, by identity (review M1)", () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = realpathSync(mkdtempSync(join(work, "dest2-")));
+    mkdirSync(join(dir, ".finisher"));
+    mkdirSync(join(dir, "assets"));
+  });
+
+  const code = async (out: string, protect: string[] = []): Promise<string> => ((await lookDestination(dir, out, protect).catch((e: FinError) => e)) as FinError).code;
+
+  test("a folder named .finisher is refused at any depth and in any case, and nothing is made", async () => {
+    for (const out of [".FINISHER/x", "a/.Finisher/b", ".finisher", join(dir, "sub", ".FiniSher")]) {
+      expect(await code(out), out).toBe("EXPORT_DESTINATION");
+    }
+    expect(existsSync(join(dir, ".FINISHER"))).toBe(false);
+    expect(existsSync(join(dir, "a"))).toBe(false);
+  });
+
+  test.skipIf(process.platform === "win32")("a link to a protected folder or to any folder inside it is refused by identity", async () => {
+    mkdirSync(join(dir, "assets", "deep"));
+    symlinkSync(join(dir, "assets", "deep"), join(dir, "to-deep"));
+    symlinkSync(join(dir, "assets"), join(dir, "to-assets"));
+    symlinkSync(join(dir, ".finisher"), join(dir, "to-finisher"));
+    for (const out of ["to-deep/x", "to-assets", "to-assets/y/z", "to-finisher/q"]) expect(await code(out), out).toBe("EXPORT_DESTINATION");
+    expect(existsSync(join(dir, "assets", "y"))).toBe(false);
+    // A folder with the same name elsewhere is not the protected one.
+    mkdirSync(join(dir, "other", "assets"), { recursive: true });
+    expect(await code("other/assets")).not.toBe("EXPORT_DESTINATION");
+  });
+
+  test("the server's data and everything inside it is refused", async () => {
+    const sd = realpathSync(mkdtempSync(join(work, "sd-protected-")));
+    mkdirSync(join(sd, "jobs"));
+    expect(await code(join(sd, "looks"), [sd])).toBe("EXPORT_DESTINATION");
+    expect(await code(join(sd, "jobs", "x"), [sd])).toBe("EXPORT_DESTINATION");
+    expect(await code(sd, [sd])).toBe("EXPORT_DESTINATION");
+    if (process.platform !== "win32") {
+      symlinkSync(sd, join(dir, "to-sd"));
+      expect(await code("to-sd/looks", [sd])).toBe("EXPORT_DESTINATION");
+    }
+    expect(existsSync(join(sd, "looks"))).toBe(false);
+    // Unprotected, the same folder is just a folder.
+    expect(await code(join(sd, "looks"))).not.toBe("EXPORT_DESTINATION");
+  });
+
+  // UNC paths are Windows'; here their spellings stay harmless (Windows rows: Task 16).
+  test("UNC spellings are a folder in the project or an unwritable path, never a way around", async () => {
+    expect(await code("//no-such-server/share/looks")).toBe("EXPORT_DESTINATION");
+    const dest = await lookDestination(dir, "\\\\no-such-server\\share\\looks").catch((e: FinError) => e);
+    if (process.platform !== "win32") expect(typeof dest === "string" ? dirname(dest) : "").toBe(dir);
+  });
+});
+
+describe("onSucceeded believes the host, not the worker (review B2)", () => {
+  const h = (c: string): string => c.repeat(64);
+
+  /** A kind over a fake job directory holding `out/look-0.png`, and the hook's ctx. */
+  function fixture(over: { at?: string[]; frames?: Array<Partial<LookFrame>>; samples?: string[] } = {}) {
+    const dir = realpathSync(mkdtempSync(join(work, "b2-proj-")));
+    const jobsRoot = realpathSync(mkdtempSync(join(work, "b2-jobs-")));
+    mkdirSync(join(jobsRoot, "j1", "out"), { recursive: true });
+    writeFileSync(join(jobsRoot, "j1", "out", "look-0.png"), "png");
+    const k = mediaLookKind({ serverData: join(work, "sd-none"), jobsRoot, projects: { prepareMediaJob: () => fail(0), dirOf: () => dir } });
+    const at = over.at ?? ["0"];
+    const params = { timeline: "tl1", at, outName: "look", projectId: "p", branch: "main", rev: 1, planSamples: [] };
+    const frames = (over.frames ?? [{}]).map((f) => ({ at: "0", file: "look-0.png", width: 8, height: 8, plan: h("a"), ...f }));
+    const extra = { planSamples: (over.samples ?? [h("a")]).map((blake3, i) => ({ at: at[i] ?? "0", blake3 })), rev: 1 };
+    const ctx = { job: { id: "j1", params }, result: { frames, skipped: [], adapter: {}, stats: {} }, extra, items: new Map(), rerun: false, attempt: 1, open: () => fail(0) };
+    const run = () => Effect.runPromise(Effect.flip(k.onSucceeded!(ctx as never) as Effect.Effect<LookResult, FinError>));
+    const ok = () => Effect.runPromise(k.onSucceeded!(ctx as never) as Effect.Effect<LookResult, FinError>);
+    return { dir, jobsRoot, run, ok, look: join(dir, "workspace", "shared", "look") };
+  }
+
+  test("a hostile time in the params builds no path and moves nothing", async () => {
+    for (const at of ["..\\..\\x", "/../x", "1/../2"]) {
+      const f = fixture({ at: [at] });
+      expect(await f.run(), at).toMatchObject({ code: "JOB_FAILED" });
+      expect(readdirSync(f.look), at).toEqual([]);
+      expect(existsSync(join(f.jobsRoot, "j1", "out", "look-0.png"))).toBe(true);
+    }
+  });
+
+  test("a hostile time in the worker's answer is ignored: the name comes from the params", async () => {
+    const f = fixture({ at: ["7/2"], frames: [{ at: "..\\..\\x" }] });
+    const r = await f.ok();
+    expect(r.frames).toHaveLength(1);
+    expect(r.frames[0]).toMatchObject({ at: "7/2", file: join(f.look, `tl1-7_2-${h("a").slice(0, 8)}.png`) });
+    expect(readdirSync(f.look)).toEqual([`tl1-7_2-aaaaaaaa.png`]);
+  });
+
+  test("a plan hash that is not the one the host sampled, or not a digest, fails the job", async () => {
+    for (const plan of ["../../x", "/../x", "aaaa", h("A"), `${h("a")}/`, h("b")]) {
+      const f = fixture({ frames: [{ plan }] });
+      expect(await f.run(), plan).toMatchObject({ code: "PLAN_MISMATCH" });
+      expect(readdirSync(f.look), plan).toEqual([]);
+    }
+    // No samples at all (the job lost its extra): not trusted either.
+    const lost = fixture({ samples: [] });
+    expect(await lost.run()).toMatchObject({ code: "PLAN_MISMATCH" });
+  });
+
+  test("a file name that is not the worker's own scheme, or is out of order, fails the job", async () => {
+    for (const file of ["../look-0.png", "look-0.png/../../x", "look-1.png", "look-0.png.png", "other-0.png", "look--1.png", "look-9007199254740993.png"]) {
+      const f = fixture({ frames: [{ file }] });
+      expect(await f.run(), file).toMatchObject({ code: "JOB_FAILED" });
+      expect(readdirSync(f.look), file).toEqual([]);
+    }
   });
 });
 
@@ -278,7 +392,8 @@ describe("media.look jobs", () => {
     const k = mediaLookKind({ serverData: s.serverData, projects: projectsOf(s.p) });
     // As the engine passes it: the worker's `out/`-relative names, the job gone from `jobs/`.
     const worker: LookResult = { ...result, frames: result.frames.map((f, i) => ({ ...f, file: `look-${i}.png` })) };
-    const ctx = { job: { id: "j-gone", params: s.params() }, result: worker, items: new Map(), rerun: true, attempt: 1, open: () => fail(0) };
+    const extra = { planSamples: result.frames.map((f) => ({ at: f.at, blake3: f.plan })), rev: 1 };
+    const ctx = { job: { id: "j-gone", params: s.params() }, result: worker, extra, items: new Map(), rerun: true, attempt: 1, open: () => fail(0) };
     const again = await Effect.runPromise(k.onSucceeded!(ctx as never) as Effect.Effect<LookResult, FinError>);
     expect(again.frames.map((f) => f.file)).toEqual(result.frames.map((f) => f.file));
     // Not a rerun: a missing output is a failure, SHM_REFUSED with a job-relative file.
@@ -319,7 +434,7 @@ describe("replay", () => {
     const done = JSON.parse(await s.p.engine.prepareMediaJob("main", "tl1", ["0", "3/5"], join(jobDir, "in"), { fontCache: join(s.serverData, "fonts"), paramsJson: JSON.stringify(params) })) as {
       planSamples: { at: string; blake3: string }[];
     };
-    const run = spawnSync(workersBinaryPath(), ["media", "--replay", jobDir], { env: { FIN_GPU: process.env.FIN_GPU ?? "software" }, encoding: "utf8" });
+    const run = spawnSync(workersBinaryPath(), ["media", "--replay", jobDir, "--originals-anywhere"], { env: { FIN_GPU: process.env.FIN_GPU ?? "software" }, encoding: "utf8" });
     const answer = JSON.parse(run.stdout) as { result?: LookResult; error?: { code: string } };
     if (answer.error?.code === "GPU_UNAVAILABLE" && !GPU_REQUIRED) return;
     expect(answer.error).toBeUndefined();

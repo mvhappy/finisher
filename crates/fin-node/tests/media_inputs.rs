@@ -115,7 +115,7 @@ mod tests {
         let missing = dir.path().join("nope");
         assert_eq!(
             write_json(&missing, "x.json", &json!({})).unwrap_err().code,
-            "IO_ERROR"
+            "SHM_REFUSED"
         );
     }
 

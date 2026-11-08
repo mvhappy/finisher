@@ -80,8 +80,8 @@
     "reason": "Reads the app's own bundled resources and temporary trees by path; not a library reader."
   },
   {
-    "path": "crates/fin-node/src/media/inputs.rs",
-    "reason": "Writes the job's own input files into its private job directory (never a library path)."
+    "path": "crates/fin-workers/src/media/open_cache.rs",
+    "reason": "Unit tests write fixture clips and stat them by path; the module itself opens originals only through fin-library's no-follow opener."
   },
   {
     "path": "crates/fin-node/tests/media_inputs.rs",

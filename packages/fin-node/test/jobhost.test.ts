@@ -497,13 +497,20 @@ describe("params, rules and paths", () => {
   });
 
   test("media_look_params_are_checked_as_the_worker_checks_them", () => {
-    const look = { timeline: "tl1", at: ["1/2"], planSamples: [{ at: "1/2", blake3: "ab" }], outName: "look" };
+    const look = { timeline: "tl1", at: ["1/2"], outName: "look" };
     expect(jobKindVersions()).toContainEqual({ kind: "media.look", version: 1 });
-    expect(validateJobParams("media.look", 1, look)).toEqual({ ok: true, params: look });
+    expect(jobKindVersions()).toContainEqual({ kind: "media.capabilities", version: 1 });
+    expect(validateJobParams("media.look", 1, look)).toEqual({ ok: true, params: { ...look, planSamples: [] } });
+    expect(validateJobParams("media.capabilities", 1, {})).toEqual({ ok: true, params: {} });
+    expect(validateJobParams("media.capabilities", 1, { gpu: "x" })).toMatchObject({ ok: false });
     const name = validateJobParams("media.look", 1, { ...look, outName: "../x" });
     expect(!name.ok && name.errors.join(" ")).toMatch(/outName/);
     const none = validateJobParams("media.look", 1, { ...look, at: [] });
     expect(!none.ok && none.errors.join(" ")).toMatch(/params\.at/);
+    // Review L1: the plan samples are the host's; a submitter's are refused.
+    const samples = validateJobParams("media.look", 1, { ...look, planSamples: [{ at: "0", blake3: "0".repeat(64) }] });
+    expect(samples).toMatchObject({ ok: false });
+    expect(JSON.stringify(samples)).toContain("planSamples");
     const extra = validateJobParams("media.look", 1, { ...look, bogus: 1 });
     expect(!extra.ok && extra.errors.join(" ")).toMatch(/bogus/);
   });

@@ -61,10 +61,9 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("params: {e}")))?;
     params.check().map_err(job_error)?;
     // The kind's `prepare` computes the samples from the snapshot it writes and returns them as
-    // `extra.planSamples`; params that carry their own (replay, tests) win.
-    if params.plan_samples.is_empty()
-        && let Some(samples) = job.extra.as_ref().and_then(|e| e.get("planSamples"))
-    {
+    // `extra.planSamples`: those win over any in the params (a submitter's are refused at
+    // submit; `--replay` has no `extra` and reads the ones `in/params.json` carries).
+    if let Some(samples) = job.extra.as_ref().and_then(|e| e.get("planSamples")) {
         params.plan_samples = serde_json::from_value(samples.clone())
             .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("extra.planSamples: {e}")))?;
     }
@@ -81,7 +80,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         )
         .with_details(json!({ "file": "in/manifest.json", "version": manifest.version })));
     }
-    let out = inputs::out_dir(ctx, &dir)?;
+    inputs::out_dir(ctx, &dir)?;
     warm.fonts.set(&manifest.fonts);
     warm.sources.forget_failures();
     let device_reused = warm.gpu.is_some();
@@ -112,8 +111,8 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
             return Err(mismatch(t, want, &hash));
         }
         let size = params
-            .size
-            .unwrap_or(Size::new(plan.resolution.width, plan.resolution.height));
+            .effective_size(Size::new(plan.resolution.width, plan.resolution.height))
+            .map_err(job_error)?;
         let mut src = Sources::new(&manifest, &mut warm.sources, &warm.caps);
         let state = warm.gpu.as_mut().expect("made above");
         let rendered = state.compositor.render(&state.gpu, &plan, &mut src, size);
@@ -130,7 +129,14 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
             }
         };
         let file = params.file_name(i);
-        inputs::write_png(&out.join(&file), size.width, size.height, &rendered.rgba8)?;
+        inputs::write_png(
+            &dir,
+            &file,
+            size.width,
+            size.height,
+            &rendered.rgba8,
+            !warm.replay,
+        )?;
         skipped.extend(rendered.skipped.into_iter().map(|s| LookSkipped {
             at: t,
             item: s.item,

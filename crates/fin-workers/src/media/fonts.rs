@@ -3,6 +3,13 @@
 //! manifest lists (opened through the no-follow opener and kept only when their SHA-256 is the
 //! one their asset pins). The measurer and its font systems (keyed by the faces' SHA-256) stay
 //! across jobs; each job replaces the sources.
+//!
+//! **Known gap (review L5, follow-up):** the font cache is read through `fin-fonts`'
+//! `FontCache`, which opens `<cache>/<sha256>` by path and so follows a link there. The cache
+//! is the server's own directory (`<server-data>/fonts`, private to the user) and a file is
+//! kept only when its bytes hash to the name, so a swapped link can at most hide a font, not
+//! change what is drawn; opening the cache through the no-follow opener belongs with the
+//! sandbox work (6B-1's Landlock profile takes the cache read-only by directory).
 
 use std::collections::HashMap;
 use std::io::Read;

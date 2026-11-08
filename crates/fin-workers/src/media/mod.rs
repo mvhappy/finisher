@@ -47,6 +47,8 @@ pub(crate) struct Warm {
     pub caps: Capabilities,
     /// Jobs started on this worker.
     pub jobs: u32,
+    /// `--replay`: outputs are never replaced (a leftover is refused).
+    pub replay: bool,
 }
 
 /// The `media` family.
@@ -65,8 +67,18 @@ impl MediaFamily {
                 fonts: fonts::Fonts::new(),
                 caps: fin_codecs::capabilities(),
                 jobs: 0,
+                replay: false,
             },
         }
+    }
+
+    /// The family as `--replay` runs it: outputs are never replaced, and originals open only
+    /// below `confine` (`None`: anywhere, `--originals-anywhere`).
+    pub fn replaying(confine: Option<std::path::PathBuf>) -> Self {
+        let mut family = Self::new(false);
+        family.state.replay = true;
+        family.state.sources.confine(confine);
+        family
     }
 }
 
