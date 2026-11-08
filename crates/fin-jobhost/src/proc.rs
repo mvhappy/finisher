@@ -88,8 +88,14 @@ pub(crate) struct ProcState {
     /// The reason it will be reported with, once the host decided to kill it.
     pub kill: Option<ExitReason>,
     pub exited: bool,
+    /// The waiter released its pid (`waitpid`; not a Unix leader): the pid may be reused.
+    pub reaped: bool,
     /// Reported `Abandoned` after the kill wait; its real exit is only logged.
     pub abandoned: bool,
+    /// The waiter holds the observed exit this long (tests: a kill that seems not to work,
+    /// so the process is abandoned and exits later).
+    #[cfg(feature = "test-hooks")]
+    pub hold_exit_for_test: Option<Duration>,
 }
 
 pub(crate) struct Proc {
@@ -143,7 +149,10 @@ impl Proc {
                 last_progress: started,
                 kill: None,
                 exited: false,
+                reaped: false,
                 abandoned: false,
+                #[cfg(feature = "test-hooks")]
+                hold_exit_for_test: None,
             }),
             emit: Mutex::new(false),
             sink,
@@ -166,20 +175,33 @@ impl Proc {
         true
     }
 
-    fn emit(&self, e: HostEvent) {
+    pub(crate) fn emit(&self, e: HostEvent) {
         let closed = lock(&self.emit);
         if !*closed {
             self.sink.send(e);
         }
     }
 
-    /// Marks it abandoned unless it already exited. `true` if it was.
-    pub fn abandon(&self) -> bool {
-        let mut st = self.state();
-        if st.exited || st.abandoned {
-            return false;
+    /// Marks it abandoned unless it already exited, and reports `info` as its `Exit`, both
+    /// under the emit lock: the waiter takes that lock before it reports `AbandonedExit`, so
+    /// the real exit never overtakes the `Exit {abandoned}` (9b review H2). `true` if it was.
+    pub fn abandon_with_exit(&self, info: ExitInfo, delay: Option<Duration>) -> bool {
+        let mut closed = lock(&self.emit);
+        {
+            let mut st = self.state();
+            if st.exited || st.abandoned {
+                return false;
+            }
+            st.abandoned = true;
         }
-        st.abandoned = true;
+        if let Some(d) = delay {
+            std::thread::sleep(d);
+        }
+        *closed = true;
+        self.sink.send(HostEvent::Exit {
+            proc: self.id,
+            info,
+        });
         true
     }
 
@@ -331,6 +353,15 @@ pub(crate) fn wait_exit(
         code: None,
         signal: None,
     });
+    // Before any hold: a kill by pid must not reach a process that reused it.
+    p.state().reaped = !p.leader;
+    #[cfg(feature = "test-hooks")]
+    {
+        let hold = p.state().hold_exit_for_test;
+        if let Some(d) = hold {
+            std::thread::sleep(d);
+        }
+    }
     let abandoned = {
         let mut st = p.state();
         st.exited = true;
@@ -344,6 +375,9 @@ pub(crate) fn wait_exit(
                 p.id, p.pid
             ));
         }
+        // After the kill wait's `Exit {abandoned}`, which is sent under the emit lock.
+        drop(lock(&p.emit));
+        p.sink.send(HostEvent::AbandonedExit { proc: p.id });
         return reap_leader(&p, reap);
     }
     let exit = Instant::now();

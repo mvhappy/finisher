@@ -579,7 +579,7 @@ HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
 ### 6.5 Persistence, retries and isolation
 
 - Jobs live in `control.db` (the `jobs` migration chain, §3.1); state transitions are written at once, progress only in memory, checkpoints at most every 10 s. Warm-worker state is in memory only.
-- **Restart:** `running` jobs become `interrupted`; resumable ones with attempts left are re-queued from their checkpoint; others fail `JOB_INTERRUPTED`. Leftover `jobs/<jobId>/` directories are deleted.
+- **Restart:** `running` jobs become `interrupted`; resumable ones with attempts left are re-queued from their checkpoint; others fail `JOB_INTERRUPTED`. Leftover `jobs/<jobId>/` directories are deleted. A row found `running` means a crash, so its run spends an attempt; a **graceful stop** spends none: its resumable jobs go back to the queue as a pause leaves them (5C-1 9b review, owner decision).
 - **Retries** with backoff 5 s × 2ⁿ (≤ 5 min), up to `maxAttempts` (default 3); interactive jobs retry once, at once, on a fresh worker.
 - **Poison handling and isolation of a crashing batch:**
   1. items the worker already reported (`item`) are never re-run;
@@ -590,7 +590,7 @@ HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
 ### 6.6 Events and hooks
 
 - An in-process `JobDone` bus (sub-project 7's hooks attach to it; arch §10) and `jobs.watch` streams.
-- **`job.done`** for every job, and **`worker.exit`** for every process 5C started (§3.4). Sub-project 6 adds its media fields to `job.done` as the kind's `kv` 2.
+- **`job.done`** for every job, at least once (a consumer dedupes by job id: one cut short by a crash or a failing sink is sent again at the next start), and **`worker.exit`** for every process 5C started (§3.4). Sub-project 6 adds its media fields to `job.done` as the kind's `kv` 2.
 
 ### 6.7 RPCs and `fin` (5C-2)
 

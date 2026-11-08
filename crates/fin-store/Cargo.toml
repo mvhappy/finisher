@@ -35,6 +35,8 @@ fin-fonts = { path = "../fin-fonts" }
 # Only for `examples/export_schema.rs`: the job envelope and the test kinds' params and
 # results in the TS contract (`test-hooks` holds the test kinds; dev-only, never shipped).
 fin-jobs = { path = "../fin-jobs", features = ["test-hooks"] }
+# Only for `examples/export_schema.rs`: the JSON shapes of fin-node's `JobHost`.
+fin-jobhost = { path = "../fin-jobhost" }
 # Only for `examples/export_schema.rs`: the journal's settings, consent, status, filter and
 # purge types in the TS contract. fin-store itself never depends on fin-journal.
 fin-journal = { path = "../fin-journal" }

@@ -96,7 +96,7 @@ describe("job kinds", () => {
   test("test_kinds_register", async () => {
     const r = makeKindRegistry();
     registerTestKinds(r, { binaryDir: "/bin-dir" });
-    expect(r.kinds().length).toBe(18);
+    expect(r.kinds().length).toBe(19);
     expect(r.kind("test.crash")?.batch?.restrict({ items: ["a", "b"], how: "abort" } as never, ["b"])).toEqual({ items: ["b"], how: "abort" });
     expect(r.kind("test.checkpoint")?.resumable).toBe(true);
     expect(r.kind("test.warm")).toMatchObject({ warm: true, defaultPriority: "interactive" });
@@ -131,14 +131,10 @@ describe("job kinds", () => {
     expect(await Effect.runPromise(testOnCall(ctx, "test.slow", { ms: 5 }))).toEqual({ ms: 5 });
   });
 
-  const validate = (finNode as unknown as Record<string, unknown>).validateJobParams as
-    | ((kind: string, version: number, params: unknown) => { ok: boolean })
-    | undefined;
-  if (validate === undefined) console.warn("test_kinds_match_rust_params: skipped until Task 6 adds fin-node's validateJobParams");
-  test.skipIf(validate === undefined)("test_kinds_match_rust_params", () => {
+  test("test_kinds_match_rust_params", () => {
     const r = makeKindRegistry();
     registerTestKinds(r, { binaryDir: "/bin-dir" });
-    const known = (finNode as unknown as { jobKindVersions(): Array<{ kind: string; version: number }> }).jobKindVersions();
+    const known = finNode.jobKindVersions();
     for (const k of r.kinds()) expect(known, k.kind).toContainEqual({ kind: k.kind, version: k.version });
   });
 });

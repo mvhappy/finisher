@@ -29,8 +29,17 @@ pub(crate) fn run(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<V
         "test.echo" => echo(job),
         "test.progressFlood" => {
             let p: ProgressFloodParams = params(job)?;
-            for i in 1..=p.n {
-                ctx.progress(Progress::new(i as f64, ProgressUnit::Items).of(p.n as f64));
+            if let Some(bytes) = p.stderr_bytes {
+                let mut err = std::io::stderr().lock();
+                for i in 1..=p.n {
+                    let head = format!("flood {i} ");
+                    let pad = (bytes as usize).saturating_sub(head.len());
+                    writeln!(err, "{head}{}", "x".repeat(pad)).map_err(io)?;
+                }
+            } else {
+                for i in 1..=p.n {
+                    ctx.progress(Progress::new(i as f64, ProgressUnit::Items).of(p.n as f64));
+                }
             }
             out(CountResult { sent: p.n })
         }
@@ -50,6 +59,19 @@ pub(crate) fn run(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<V
         "test.files" => files(job, ctx),
         "test.checkpoint" => checkpoint(job, ctx),
         "test.oom" => oom(job, ctx),
+        "test.fail" => {
+            let p: FailParams = params(job)?;
+            if p.fail_until.is_none_or(|n| job.attempt <= n) {
+                return Err(JobError::new(
+                    p.code,
+                    format!("test.fail fails attempt {}", job.attempt),
+                )
+                .with_retry(p.retry));
+            }
+            out(FailResult {
+                attempt: job.attempt,
+            })
+        }
         "test.call" => {
             let p: CallParams = params(job)?;
             ctx.call(&p.method, p.params)

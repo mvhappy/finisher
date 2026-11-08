@@ -113,3 +113,36 @@ export const JobViewSchema = Schema.Struct({
   nextRunAt: Schema.optionalKey(Schema.Number),
 });
 export type JobView = typeof JobViewSchema.Type;
+
+/**
+ * The job engine's error codes and their `fin` exit class (5C-1 plan, Decision 41; the classes
+ * live in `crates/fin/src/output.rs`): 3 the request (`JOBHOST_STATE`: a job host call on a
+ * group or host the caller should know is gone), 4 a job that did not succeed and the
+ * result codes it carries, 5 unavailable for now, 6 internal (`UNKNOWN_MESSAGE` and
+ * `CALL_LIMIT` appear only in `reply` errors to a worker).
+ */
+export const JOB_ERROR_CODES = {
+  INVALID_REQUEST: 3,
+  JOB_KIND_UNKNOWN: 3,
+  JOB_PARAMS_INVALID: 3,
+  JOB_NOT_FOUND: 3,
+  JOBHOST_STATE: 3,
+  JOB_FAILED: 4,
+  JOB_CANCELLED: 4,
+  JOB_INTERRUPTED: 4,
+  WORKER_CRASHED: 4,
+  WORKER_HUNG: 4,
+  JOB_STALLED: 4,
+  JOB_TIMEOUT: 4,
+  POISON_ITEM: 4,
+  HELPER_FAILED: 4,
+  JOB_QUEUE_FULL: 5,
+  WORKER_UNAVAILABLE: 5,
+  WORKER_PROTOCOL_MISMATCH: 5,
+  WAIT_TIMEOUT: 5,
+  RESOURCE_STUCK: 5,
+  WORKER_OOM: 5,
+  UNKNOWN_MESSAGE: 6,
+  CALL_LIMIT: 6,
+} as const satisfies Record<string, 3 | 4 | 5 | 6>;
+export type JobErrorCode = keyof typeof JOB_ERROR_CODES;

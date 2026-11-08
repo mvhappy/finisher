@@ -760,6 +760,8 @@ version = "0.0.0"
 dependencies = [
  "fin-jobs",
  "libc",
+ "schemars",
+ "serde",
  "serde_json",
  "windows-sys 0.61.2",
 ]
@@ -832,6 +834,8 @@ dependencies = [
  "blake3",
  "fin-core",
  "fin-fonts",
+ "fin-jobhost",
+ "fin-jobs",
  "fin-journal",
  "fin-library",
  "fin-plugin-api",
@@ -949,6 +953,7 @@ dependencies = [
  "crc32c",
  "fin-core",
  "fin-fonts",
+ "fin-jobhost",
  "fin-jobs",
  "fin-journal",
  "fin-library",

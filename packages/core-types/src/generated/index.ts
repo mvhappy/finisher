@@ -1428,6 +1428,231 @@ export type Risk = "low" | "medium" | "high";
 export type SourceKind = "bundled" | "registry" | "dev";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostKillTree".
+ */
+export type JobHostKillTree = "jobObject" | "cgroup" | "processGroup";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostCgroups".
+ */
+export type JobHostCgroups = "auto" | "off";
+/**
+ * What the host reports. Per process: `spawned` (its `spawn` has resolved), `hello`, its
+ * messages and `stderr` lines, then `exit`; `groupEmpty` follows the last `exit` of a group.
+ * `progress` is coalesced (at most every 250 ms, the newest value, and always before the
+ * next other message); `alive` never arrives. `memory` (the worker group's bytes) comes with
+ * `ready` only.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostEvent".
+ */
+export type JobHostEvent =
+  | {
+      group: number;
+      proc: number;
+      type: "spawned";
+    }
+  | {
+      hello: Hello;
+      proc: number;
+      type: "hello";
+    }
+  | {
+      memory?: number;
+      msg: WorkerMsg;
+      proc: number;
+      type: "message";
+    }
+  | {
+      line: string;
+      proc: number;
+      type: "stderr";
+    }
+  | {
+      info: JobHostExitInfo;
+      proc: number;
+      type: "exit";
+    }
+  | {
+      group: number;
+      type: "groupEmpty";
+    }
+  | {
+      proc: number;
+      type: "abandonedExit";
+    };
+/**
+ * A message from a worker or a helper to its host. Any message counts as alive.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerMsg".
+ */
+export type WorkerMsg =
+  | (Hello & {
+      t: "hello";
+    })
+  | {
+      item: string;
+      job: string;
+      t: "begin";
+    }
+  | {
+      error?: JobError;
+      item: string;
+      job: string;
+      t: "item";
+      value?: unknown;
+    }
+  | (Progress & {
+      t: "progress";
+    })
+  | {
+      data: unknown;
+      job: string;
+      t: "checkpoint";
+    }
+  | {
+      t: "alive";
+    }
+  | {
+      job: string;
+      t: "result";
+      value: unknown;
+    }
+  | {
+      error: JobError;
+      itemErrors?: ItemError[];
+      job: string;
+      t: "error";
+    }
+  | {
+      t: "ready";
+    }
+  | {
+      job?: string;
+      kind: string;
+      payload: unknown;
+      t: "diag";
+    }
+  | {
+      id: number;
+      method: string;
+      params: unknown;
+      t: "call";
+    };
+/**
+ * The unit of a progress figure.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProgressUnit".
+ */
+export type ProgressUnit = "bytes" | "items" | "frames" | "seconds";
+/**
+ * An `exit` event's facts.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostExitInfo".
+ */
+export type JobHostExitInfo = {
+  /**
+   * The exit code (Windows: the NTSTATUS or code; a process the host killed: 137).
+   */
+  code?: number;
+  /**
+   * Processes in the group the host did not start.
+   */
+  foreign?: number;
+  lifetimeMs: number;
+  memoryPeak?: number;
+  /**
+   * Lower case without `SIG` (fin-core's `SIGNALS`; `other` outside them). Never on Windows.
+   */
+  signal?: string;
+  /**
+   * The last 8 KiB of stderr.
+   */
+  stderrTail: string;
+} & JobHostExitInfo1;
+export type JobHostExitInfo1 =
+  | {
+      reason: "exited";
+    }
+  | {
+      kill: JobHostKillReason;
+      reason: "killed";
+    }
+  | {
+      reason: "hung";
+    }
+  | {
+      reason: "stalled";
+    }
+  | {
+      reason: "timedOut";
+    }
+  | {
+      reason: "oom";
+    }
+  | {
+      reason: "resourceFault";
+    }
+  | {
+      reason: "protocolError";
+      what: string;
+    }
+  | {
+      expected: string;
+      got: string;
+      reason: "protocolMismatch";
+    }
+  | {
+      reason: "noHello";
+    }
+  | {
+      reason: "spawnFailed";
+      what: string;
+    }
+  | {
+      reason: "abandoned";
+    };
+/**
+ * Why the host killed a group.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostKillReason".
+ */
+export type JobHostKillReason =
+  "cancel" | "shutdown" | "recycle" | "idleExpired" | "helperFailed" | "jobEnded" | "hung" | "test";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostQos".
+ */
+export type JobHostQos = "normal" | "utility" | "background";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnProfile".
+ */
+export type JobSpawnProfile = "worker" | "plugin";
+/**
+ * `bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnProgram".
+ */
+export type JobSpawnProgram =
+  | {
+      bundled: string;
+    }
+  | {
+      path: string;
+    };
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnRole".
+ */
+export type JobSpawnRole = "worker" | "helper";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "VideoCodec".
  */
 export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
@@ -1579,13 +1804,6 @@ export type ParamType =
 export type Placeholder =
   "dataless" | "icloudStub" | "nextcloud" | "owncloud" | "recallOnOpen" | "recallOnData" | "offline" | "unpinned";
 /**
- * The unit of a progress figure.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProgressUnit".
- */
-export type ProgressUnit = "bytes" | "items" | "frames" | "seconds";
-/**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1639,12 +1857,13 @@ export type RootState =
     };
 /**
  * How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
- * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, or `exit(3)`.
+ * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, `exit(3)`, or by allocating until its
+ * group's memory limit kills it (`oom`; it aborts past 2 GiB).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestCrashHow".
  */
-export type TestCrashHow = "abort" | "segv" | "bus" | "fastfail" | "exit";
+export type TestCrashHow = "abort" | "segv" | "bus" | "fastfail" | "exit" | "oom";
 /**
  * `test.spawn`: the grandchild stays in the group or leaves it with `setsid`.
  *
@@ -1686,65 +1905,6 @@ export type UnitSource =
   | {
       kind: "redo";
       txId: string;
-    };
-/**
- * A message from a worker or a helper to its host. Any message counts as alive.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "WorkerMsg".
- */
-export type WorkerMsg =
-  | (Hello & {
-      t: "hello";
-    })
-  | {
-      item: string;
-      job: string;
-      t: "begin";
-    }
-  | {
-      error?: JobError;
-      item: string;
-      job: string;
-      t: "item";
-      value?: unknown;
-    }
-  | (Progress & {
-      t: "progress";
-    })
-  | {
-      data: unknown;
-      job: string;
-      t: "checkpoint";
-    }
-  | {
-      t: "alive";
-    }
-  | {
-      job: string;
-      t: "result";
-      value: unknown;
-    }
-  | {
-      error: JobError;
-      itemErrors?: ItemError[];
-      job: string;
-      t: "error";
-    }
-  | {
-      t: "ready";
-    }
-  | {
-      job?: string;
-      kind: string;
-      payload: unknown;
-      t: "diag";
-    }
-  | {
-      id: number;
-      method: string;
-      params: unknown;
-      t: "call";
     };
 
 export interface FinCore {
@@ -4869,6 +5029,163 @@ export interface ItemError {
   item: string;
 }
 /**
+ * `openGroup`'s spec.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobGroupSpec".
+ */
+export interface JobGroupSpec {
+  label: string;
+  /**
+   * The group's memory limit: the sum of its processes (Decision 20).
+   */
+  memoryBytes?: number;
+  qos?: "normal" | "utility" | "background";
+}
+/**
+ * What this host can enforce.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostCaps".
+ */
+export interface JobHostCaps {
+  /**
+   * Group memory limits are enforced by the kernel (cgroup `memory.max` or a Job).
+   */
+  cgroupMemory: boolean;
+  killTree: JobHostKillTree;
+  /**
+   * Per-process limits are enforced (leaf Jobs or leaf cgroups).
+   */
+  leafLimits: boolean;
+  /**
+   * The spawner's name (`none` unsandboxed).
+   */
+  sandbox: string;
+  sandboxed: boolean;
+  watchdog: boolean;
+}
+/**
+ * `progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Progress".
+ */
+export interface Progress {
+  done: number;
+  job: string;
+  phase?: string;
+  total?: number;
+  unit: ProgressUnit;
+}
+/**
+ * `JobHost.start`'s options. Timers in milliseconds; unset ones take the defaults.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostOptions".
+ */
+export interface JobHostOptions {
+  /**
+   * Where `{ bundled }` programs resolve: the directory of `workersBinaryPath()`.
+   */
+  binaryDir: string;
+  /**
+   * Delegated cgroups where they are ours (Linux; default `auto`).
+   */
+  cgroups?: "auto" | "off";
+  /**
+   * Events waiting for the JS thread before the host's readers wait too (default 1,024).
+   */
+  eventQueue?: number;
+  /**
+   * The summed JSON bytes of those events (default 16 MiB; one larger event still goes
+   * alone). `exit`, `spawned` and `groupEmpty` are not counted: a process has one of each.
+   */
+  eventQueueBytes?: number;
+  timing?: JobHostTiming;
+  /**
+   * The Unix host watchdog (default on; ignored on Windows).
+   */
+  watchdog?: boolean;
+}
+/**
+ * The host's timers in milliseconds; unset ones take the defaults.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostTiming".
+ */
+export interface JobHostTiming {
+  exitDrainMs?: number;
+  helloMs?: number;
+  hungMs?: number;
+  killWaitMs?: number;
+  rssSampleMs?: number;
+}
+/**
+ * A group memory rule (Decision 20).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobMemoryRule".
+ */
+export interface JobMemoryRule {
+  capMiB?: number;
+  fixedMiB?: number;
+  ramFraction?: number;
+}
+/**
+ * A path the process may use (for a sandbox's rules).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnGrant".
+ */
+export interface JobSpawnGrant {
+  mode: FileMode;
+  path: string;
+}
+/**
+ * A helper's `{kind, id}`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnHelper".
+ */
+export interface JobSpawnHelper {
+  id: string;
+  kind: HelperKind;
+}
+/**
+ * One process to start. `env` is its whole environment: nothing else is inherited. `helper`
+ * is required for a helper and refused for a worker.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnRequest".
+ */
+export interface JobSpawnRequest {
+  args?: string[];
+  cwd: string;
+  env?: {
+    [k: string]: string;
+  };
+  family: string;
+  grants?: JobSpawnGrant[];
+  helper?: JobSpawnHelper;
+  label?: string;
+  profile?: JobSpawnProfile;
+  program: JobSpawnProgram;
+  qos?: "normal" | "utility" | "background";
+  role: JobSpawnRole;
+}
+/**
+ * `watch`'s argument: `stallMs` without `begin`, `item` or `progress`; `timeoutMs` from now.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobWatch".
+ */
+export interface JobWatch {
+  job: string;
+  stallMs?: number;
+  timeoutMs?: number;
+}
+/**
  * What the journal holds and whether it is writing (`fin diagnostics show`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5447,19 +5764,6 @@ export interface PrivacySettings {
   training?: Switch | null;
 }
 /**
- * `progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Progress".
- */
-export interface Progress {
-  done: number;
-  job: string;
-  phase?: string;
-  total?: number;
-  unit: ProgressUnit;
-}
-/**
  * What a purge removed.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5827,6 +6131,28 @@ export interface TestEchoResult {
  */
 export interface TestExitAfterResultParams {}
 /**
+ * `test.fail`: answers `error {code, retry}` on every attempt up to `failUntil` (every
+ * attempt without it), then succeeds with the attempt number.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFailParams".
+ */
+export interface TestFailParams {
+  code: string;
+  failUntil?: number;
+  /**
+   * How the engine may retry after a worker `error` (Decision 31).
+   */
+  retry?: "never" | "backoff" | "fresh";
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFailResult".
+ */
+export interface TestFailResult {
+  attempt: number;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestFileReport".
  */
@@ -5944,13 +6270,15 @@ export interface TestPluginMinorResult {
   served: number;
 }
 /**
- * `test.progressFlood`: `n` progress messages as fast as it can.
+ * `test.progressFlood`: `n` progress messages as fast as it can; with `stderrBytes`, `n`
+ * stderr lines of that many bytes (`flood <i> ` then padding) instead.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestProgressFloodParams".
  */
 export interface TestProgressFloodParams {
   n: number;
+  stderrBytes?: number;
 }
 /**
  * `test.sleep`: sleeps `ms` (checking cancel), with optional progress.
