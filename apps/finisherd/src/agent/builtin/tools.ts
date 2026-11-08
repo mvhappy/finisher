@@ -94,14 +94,19 @@ export interface BuiltinToolsDeps {
 const interrupted = () => finError("SESSION_INTERRUPTED", "the tool call was stopped", {});
 
 /**
- * `p`, or `SESSION_INTERRUPTED` as soon as `signal` aborts (a budget stop past its grace, an
- * interrupt). A workspace operation already under way finishes on its own, unheard: each write
- * is temp-then-rename, so it lands whole or not at all.
+ * `start()`, or `SESSION_INTERRUPTED` as soon as `signal` aborts (a budget stop past its grace,
+ * an interrupt). An aborted signal starts nothing. A workspace operation already under way
+ * finishes on its own, unheard (each write is temp-then-rename, so it lands whole or not at
+ * all); its late failure is dropped, never an unhandled rejection.
  */
-function abortable<A>(p: Promise<A>, signal: AbortSignal): Promise<A> {
+function abortable<A>(start: () => Promise<A>, signal: AbortSignal): Promise<A> {
   if (signal.aborted) return Promise.reject(interrupted());
+  const p = start();
   return new Promise<A>((resolve, reject) => {
-    const onAbort = () => reject(interrupted());
+    const onAbort = () => {
+      p.catch(() => {});
+      reject(interrupted());
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
@@ -114,7 +119,7 @@ function abortable<A>(p: Promise<A>, signal: AbortSignal): Promise<A> {
  */
 export function builtinTools(deps: BuiltinToolsDeps): ToolExecutor {
   return {
-    run: (call: ToolCall, signal: AbortSignal) => abortable(runOne(deps, call, signal), signal),
+    run: (call: ToolCall, signal: AbortSignal) => abortable(() => runOne(deps, call, signal), signal),
   };
 }
 
