@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "The one worker binary: `fin-workers <family>` (5C-1)."
+description = "The one worker binary: `fin-workers <family>` (5C-1; the `media` family, sub-project 6)."
 
 [[bin]]
 name = "fin-workers"
@@ -26,6 +26,19 @@ test-hooks = ["fin-jobs/test-hooks", "fin-library/test-hooks", "dep:windows-sys"
 
 [dependencies]
 fin-jobs = { path = "../fin-jobs" }
+# The `media` family (sub-project 6 plan 6A Task 11): eval, the measurer over the read-only
+# font cache (no fetcher: workers never fetch), containers, codecs, the compositor and the job
+# directory's rules.
+blake3 = "1"
+fin-codecs = { path = "../fin-codecs" }
+fin-compositor = { path = "../fin-compositor" }
+fin-container = { path = "../fin-container" }
+fin-core = { path = "../fin-core" }
+fin-fonts = { path = "../fin-fonts", default-features = false }
+fin-media = { path = "../fin-media" }
+fin-shm = { path = "../fin-shm" }
+fin-text = { path = "../fin-text" }
+png = "0.18"
 # The `library` family: the walker, the safe opener, probe and hash (plan 5D Decision 1).
 fin-library = { path = "../fin-library" }
 serde = "1"
@@ -64,7 +77,12 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-fin-core = { path = "../fin-core" }
+# Pattern clips (AV1 in MP4) and the frame-id readers for the media family tests, and the
+# CPU reference the GPU frames are compared with.
+fin-codecs = { path = "../fin-codecs", features = ["testing"] }
+fin-compositor = { path = "../fin-compositor", features = ["reference"] }
+fin-media = { path = "../fin-media", features = ["testing"] }
+fin-testfonts = { path = "../fin-testfonts" }
 fin-jobhost = { path = "../fin-jobhost", features = ["test-hooks"] }
 fin-workers = { path = ".", features = ["test-hooks"] }
 # PNG fixtures for the library probe tests.

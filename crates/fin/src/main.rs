@@ -49,8 +49,10 @@ use commands::fonts::{FontEdit, FontsCmd};
 use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, UndoArgs};
 use commands::item::ItemCmd;
 use commands::keyframe::KeyframeCmd;
+use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
+use commands::media_caps::MediaCmd;
 use commands::param::ParamCmd;
 use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
@@ -109,6 +111,9 @@ enum Cmd {
     Style(StyleCmd),
     #[command(subcommand)]
     Eval(EvalCmd),
+    Look(LookArgs),
+    #[command(subcommand)]
+    Media(MediaCmd),
     #[command(subcommand)]
     Fonts(FontsCmd),
     #[command(subcommand)]
@@ -296,6 +301,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Style(StyleCmd::Ls)) => commands::style::ls(backend()?.as_ref(), g),
         Some(Cmd::Style(c)) => edit(g, Edit::Style(c)),
         Some(Cmd::Eval(c)) => commands::eval::run(backend()?.as_ref(), g, &c),
+        Some(Cmd::Look(a)) => commands::look::run(backend()?.as_ref(), g, &a),
+        Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
         Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),
@@ -371,6 +378,7 @@ mod tests {
             "project recover --create all --import d --dismiss abc123abc123",
             "project acknowledge --rewind 2 --branch main",
             "status",
+            "look --at 1s,f30 --size 960x540 --out looks --no-wait",
             "view --track t1 --range 1s.. --budget 200",
             "branch new b --from main@3",
             "branch ls --all",
@@ -434,6 +442,7 @@ mod tests {
             "style ls",
             "eval frame --at 2s",
             "eval audio --range 0..2s",
+            "media caps",
             "fonts ls --cached --detail",
             "fonts fetch noto-sans",
             "fonts status",

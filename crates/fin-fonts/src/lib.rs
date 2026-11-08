@@ -13,17 +13,25 @@
 //!   bypasses them), else the Windows system proxy when it is one `host:port`; per-protocol
 //!   Windows settings, PAC files and WPAD are not read (set `HTTPS_PROXY` instead).
 //!
+//! - Feature `fetch` (default): the [`Fetcher`] and its HTTP/TLS stack. Without it the cache,
+//!   the catalog and the plan build alone (media workers read the cache, never fetch).
+//!
 //! Nothing here is ever written to a record, a diff or a snapshot.
 
+#[cfg(feature = "fetch")]
 mod archive;
 mod cache;
 mod catalog;
+#[cfg(feature = "fetch")]
 mod download;
+#[cfg(feature = "fetch")]
 mod fetch;
+#[cfg(feature = "fetch")]
 mod http;
 mod lock;
 mod merge;
 pub mod plan;
+#[cfg_attr(not(feature = "fetch"), allow(dead_code))]
 mod slot;
 mod validate;
 mod wire;
@@ -37,14 +45,15 @@ pub use catalog::{
     ArchiveFormat, ArchiveMember, CatalogEntry, CatalogFace, CatalogFile, CatalogSource,
     CatalogStyle, FontCatalog, Licence, Variable,
 };
-pub use fetch::{FetchOptions, Fetcher, FileState};
+#[cfg(feature = "fetch")]
+pub use fetch::{FetchOptions, Fetcher};
 /// The model's font file format (`fin_core::FontFormat`), which the catalog's files use too.
 pub use fin_core::FontFormat;
 pub use slot::MAX_DOWNLOADS;
 pub use validate::{
     MAX_FILE_SIZE, RULES_JSON, is_allowed_source_host, is_immutable_url, is_sha256,
 };
-pub use wire::{FontFileStatus, FontsPlan, FontsStatus};
+pub use wire::{FileState, FontFileStatus, FontsPlan, FontsStatus};
 
 /// Lowercase hex SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -66,6 +75,7 @@ pub(crate) fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+#[cfg_attr(not(feature = "fetch"), allow(dead_code))]
 pub(crate) fn not_in_catalog(sha256: &str) -> CoreError {
     CoreError::new(
         "FONT_NOT_IN_CATALOG",

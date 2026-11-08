@@ -43,6 +43,17 @@
       ],
       "type": "string"
     },
+    "AdapterType": {
+      "description": "A GPU adapter's type (`wgpu::DeviceType`).",
+      "enum": [
+        "integrated",
+        "discrete",
+        "virtual",
+        "cpu",
+        "other"
+      ],
+      "type": "string"
+    },
     "AdvisoryAction": {
       "oneOf": [
         {
@@ -534,6 +545,18 @@
         },
         {
           "$ref": "#/$defs/ReviewVerdict"
+        },
+        {
+          "$ref": "#/$defs/MediaCapabilitiesEvent"
+        },
+        {
+          "$ref": "#/$defs/RenderStats"
+        },
+        {
+          "$ref": "#/$defs/PreviewStats"
+        },
+        {
+          "$ref": "#/$defs/RenderSample"
         }
       ]
     },
@@ -960,6 +983,41 @@
       ],
       "type": "object"
     },
+    "BackendClass": {
+      "description": "Who provides a backend (spec §6.1): the export-encoder policy and the capability report key\non it.",
+      "oneOf": [
+        {
+          "enum": [
+            "os",
+            "gpu",
+            "software",
+            "plugin"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "A GPU API (the compositor's), or a backend not in [`MEDIA_BACKENDS`].",
+          "type": "string"
+        }
+      ]
+    },
+    "BackendEntry": {
+      "description": "A backend and who provides it.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/BackendClass"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "name",
+        "class"
+      ],
+      "type": "object"
+    },
     "Basis": {
       "description": "What decided a purpose (Decision 8): the build default, the environment, or the user's\nsettings. Ordered weakest first; a stamp with two bases carries the weaker\n([`Basis::weaker`]).",
       "enum": [
@@ -1201,6 +1259,20 @@
         "pause"
       ],
       "type": "string"
+    },
+    "CapSupport": {
+      "description": "How a codec direction is served on this machine (spec §6.2).",
+      "enum": [
+        "hardware",
+        "software",
+        "none"
+      ],
+      "type": "string"
+    },
+    "CapabilitiesParams": {
+      "additionalProperties": false,
+      "description": "`media.capabilities` v1 takes no params.",
+      "type": "object"
     },
     "CaptionBox": {
       "description": "A box behind the block. One equal to the default (transparent, no padding) is no box.",
@@ -1837,6 +1909,77 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "CodecCapabilities": {
+      "description": "What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.",
+      "properties": {
+        "video": {
+          "items": {
+            "$ref": "#/$defs/CodecCaps"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "video"
+      ],
+      "type": "object"
+    },
+    "CodecCaps": {
+      "description": "One codec's support: the shape of `fin-codecs`' `CodecSupport`.",
+      "properties": {
+        "backends": {
+          "description": "The backends that would be used, decode first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec"
+        },
+        "decode": {
+          "$ref": "#/$defs/CapSupport"
+        },
+        "encode": {
+          "$ref": "#/$defs/CapSupport"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
+    },
+    "CodecEntry": {
+      "description": "One codec's support on this machine.",
+      "properties": {
+        "backends": {
+          "description": "The backends that would be used, decode first.",
+          "items": {
+            "$ref": "#/$defs/BackendEntry"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/Name"
+        },
+        "decode": {
+          "$ref": "#/$defs/SupportClass"
+        },
+        "encode": {
+          "$ref": "#/$defs/SupportClass"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
+    },
     "CollectPolicy": {
       "description": "A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by\n`fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of\nthe project is recorded, and setting it purges the project's entries. A project whose\npolicy is not known (not open here) is neither: the journal drops its new entries and\npurges nothing.",
       "oneOf": [
@@ -2154,6 +2297,14 @@
         "slots",
         "importers",
         "embedders"
+      ],
+      "type": "string"
+    },
+    "CopyPath": {
+      "description": "How frames travel between the decoder, the compositor and the encoder (spec §5.4): through\nhost memory (`copy`; all of 6A) or as shared GPU surfaces (`zeroCopy`, 6G).",
+      "enum": [
+        "copy",
+        "zeroCopy"
       ],
       "type": "string"
     },
@@ -3330,7 +3481,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -3511,6 +3662,94 @@
             },
             "payload": {
               "$ref": "#/$defs/ReviewVerdict"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "media.capabilities",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/MediaCapabilitiesEvent"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "render.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RenderStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "preview.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PreviewStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "render.sample",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RenderSample"
             }
           },
           "required": [
@@ -3892,6 +4131,22 @@
         "size",
         "format",
         "faces"
+      ],
+      "type": "object"
+    },
+    "FontFileRef": {
+      "description": "A project font asset's file and the SHA-256 its asset pins.",
+      "properties": {
+        "original": {
+          "$ref": "#/$defs/OriginalFile"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "original"
       ],
       "type": "object"
     },
@@ -4341,6 +4596,90 @@
       "required": [
         "incarnation",
         "n"
+      ],
+      "type": "object"
+    },
+    "GpuAdapter": {
+      "description": "The GPU adapter frames were composited on (numeric ids, spec §21 decision 7).",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "device": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deviceType": {
+          "type": "string"
+        },
+        "driverMajor": {
+          "description": "The driver's major version, when its version text has a number (the text itself is\nnot kept).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "software": {
+          "description": "A CPU adapter (lavapipe, WARP).",
+          "type": "boolean"
+        },
+        "vendor": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backend",
+        "deviceType",
+        "name",
+        "vendor",
+        "device",
+        "software"
+      ],
+      "type": "object"
+    },
+    "GpuEntry": {
+      "description": "The GPU adapter frames are composited on: numeric ids only (owner decision 7). The\nadapter's and driver's name strings identify hardware and are never recorded.",
+      "properties": {
+        "adapterType": {
+          "$ref": "#/$defs/AdapterType"
+        },
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "deviceId": {
+          "description": "The PCI device id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "driverMajor": {
+          "description": "The driver's major version, when its version string has one.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "software": {
+          "description": "A CPU adapter (lavapipe, WARP).",
+          "type": "boolean"
+        },
+        "vendorId": {
+          "description": "The PCI vendor id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backend",
+        "adapterType",
+        "vendorId",
+        "deviceId",
+        "software"
       ],
       "type": "object"
     },
@@ -5641,7 +5980,7 @@
       "type": "object"
     },
     "JobDone": {
-      "description": "`job.done` (`kv` 1). Sub-project 6 adds its media fields as `kv` 2.",
+      "description": "`job.done` (`kv` 2: `kv` 1 plus the optional `media` object of sub-project 6).",
       "properties": {
         "attempts": {
           "format": "uint32",
@@ -5678,6 +6017,9 @@
         },
         "kind": {
           "$ref": "#/$defs/Name"
+        },
+        "media": {
+          "$ref": "#/$defs/JobMedia"
         },
         "outcome": {
           "$ref": "#/$defs/JobOutcome"
@@ -6274,6 +6616,54 @@
       },
       "type": "object"
     },
+    "JobMedia": {
+      "description": "The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`\ndescribe the decode that served the job (the first source it decoded; `none` when it\ndecoded nothing).",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "cacheHit": {
+          "description": "Every source the job needed was already open in the warm worker (and it needed one).",
+          "type": "boolean"
+        },
+        "codec": {
+          "$ref": "#/$defs/Name"
+        },
+        "copyPath": {
+          "$ref": "#/$defs/CopyPath"
+        },
+        "frames": {
+          "description": "Frames the job produced.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hw": {
+          "type": "boolean"
+        },
+        "resolution": {
+          "$ref": "#/$defs/ResolutionBucket",
+          "description": "The largest frame the job produced."
+        },
+        "rtFactorMilli": {
+          "description": "Media seconds produced per wall second of rendering, in thousandths (1000 = real\ntime): the frames' durations at the timeline's rate over decode + composite +\nreadback time. `0` when the job took no measurable time.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "backend",
+        "hw",
+        "resolution",
+        "frames",
+        "rtFactorMilli",
+        "cacheHit",
+        "copyPath"
+      ],
+      "type": "object"
+    },
     "JobMemoryRule": {
       "additionalProperties": false,
       "description": "A group memory rule (Decision 20).",
@@ -6316,6 +6706,28 @@
         "background"
       ],
       "type": "string"
+    },
+    "JobSnapshot": {
+      "description": "`in/snapshot.json` (plan 6A Decision 2).",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "project": {
+          "$ref": "#/$defs/Project"
+        },
+        "rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "branch",
+        "rev",
+        "project"
+      ],
+      "type": "object"
     },
     "JobSpawnGrant": {
       "additionalProperties": false,
@@ -7622,6 +8034,204 @@
       ],
       "type": "object"
     },
+    "LookFrame": {
+      "description": "One rendered frame of a `media.look`.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "file": {
+          "description": "Relative to `out/` in a worker's result; the frame's final absolute path in the job's\nstored result, once the kind's `onSucceeded` has moved it.",
+          "type": "string"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plan": {
+          "description": "The plan's BLAKE3 (lowercase hex).",
+          "type": "string"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "file",
+        "width",
+        "height",
+        "plan"
+      ],
+      "type": "object"
+    },
+    "LookParams": {
+      "additionalProperties": false,
+      "description": "`media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.",
+      "properties": {
+        "at": {
+          "description": "Timeline times in seconds, 1 to [`LOOK_MAX_TIMES`] of them.",
+          "items": {
+            "$ref": "#/$defs/Rational"
+          },
+          "type": "array"
+        },
+        "branch": {
+          "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outDir": {
+          "description": "Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project\nfolder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`\n(`EXPORT_DESTINATION`). The worker ignores it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outName": {
+          "description": "The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to\n[`OUT_NAME_MAX`] characters.",
+          "type": "string"
+        },
+        "planSamples": {
+          "default": [],
+          "description": "One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker\nevaluates differently is `PLAN_MISMATCH`. A submitter leaves them out: the kind's\n`prepare` computes them from the snapshot it writes and hands them to the worker as\n`start.job.extra.planSamples` (and in `in/params.json`, with the rest of these params,\nfor `--replay`).",
+          "items": {
+            "$ref": "#/$defs/PlanSample"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "description": "The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);\nthe worker works from the job directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rev": {
+          "description": "The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`\nsnapshots the head it finds, and `in/snapshot.json` says which rev that was.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "$ref": "#/$defs/Size",
+          "description": "The frame size; the timeline's resolution when absent. Each side 1 to\n[`LOOK_MAX_SIDE`]."
+        },
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeline",
+        "at",
+        "outName"
+      ],
+      "type": "object"
+    },
+    "LookResult": {
+      "description": "What `media.look` v1 answers.",
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/GpuAdapter"
+        },
+        "frames": {
+          "description": "In `at` order.",
+          "items": {
+            "$ref": "#/$defs/LookFrame"
+          },
+          "type": "array"
+        },
+        "skipped": {
+          "description": "Every frame's, in `at` order, bottom layer first within a frame.",
+          "items": {
+            "$ref": "#/$defs/LookSkipped"
+          },
+          "type": "array"
+        },
+        "stats": {
+          "$ref": "#/$defs/LookStats"
+        }
+      },
+      "required": [
+        "frames",
+        "skipped",
+        "adapter",
+        "stats"
+      ],
+      "type": "object"
+    },
+    "LookSkipped": {
+      "description": "A layer, or an effect or mask of a drawn one, that a frame left out (spec §2.7).",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "code": {
+          "description": "`CODEC_UNAVAILABLE`, `ORIGINALS_MISSING`, `LAYER_UNAVAILABLE`, `MEDIA_CORRUPT`, …",
+          "type": "string"
+        },
+        "details": true,
+        "item": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ItemKind"
+        }
+      },
+      "required": [
+        "at",
+        "item",
+        "kind",
+        "code",
+        "details"
+      ],
+      "type": "object"
+    },
+    "LookStats": {
+      "description": "What a warm worker reused (spec §3.2 item 1: caches keyed by content).",
+      "properties": {
+        "deviceReused": {
+          "description": "The GPU device and pipelines were made by an earlier job of this worker.",
+          "type": "boolean"
+        },
+        "media": {
+          "$ref": "#/$defs/JobMedia"
+        },
+        "sourcesOpened": {
+          "description": "Sources opened (container parsed, decoder made) by this job.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourcesReused": {
+          "description": "Sources an earlier job of this worker had open.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workerJobs": {
+          "description": "Jobs this worker ran, this one included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deviceReused",
+        "sourcesOpened",
+        "sourcesReused",
+        "workerJobs"
+      ],
+      "type": "object"
+    },
     "LottieInfo": {
       "description": "A dotLottie template: its canvas, timing, replaceable slots and the font families it names.",
       "properties": {
@@ -7763,6 +8373,54 @@
         "license",
         "publisher"
       ],
+      "type": "object"
+    },
+    "ManifestAsset": {
+      "description": "One asset of the manifest.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "original": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OriginalFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it\nis missing."
+        }
+      },
+      "required": [
+        "asset",
+        "kind",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "ManifestFonts": {
+      "description": "Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the\nproject's font asset files by SHA-256.",
+      "properties": {
+        "cache": {
+          "description": "`<server-data>/fonts`.",
+          "type": "string"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FontFileRef"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "Marker": {
@@ -7971,6 +8629,65 @@
           "type": "string"
         }
       ]
+    },
+    "MediaCapabilities": {
+      "description": "What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use\n(`null` when no adapter, not even a software one, can be opened) and the worker's versions.",
+      "properties": {
+        "codecs": {
+          "$ref": "#/$defs/CodecCapabilities"
+        },
+        "gpu": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuAdapter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worker": {
+          "$ref": "#/$defs/WorkerInfo"
+        }
+      },
+      "required": [
+        "codecs",
+        "worker"
+      ],
+      "type": "object"
+    },
+    "MediaCapabilitiesEvent": {
+      "description": "`media.capabilities` (`kv` 1): once per server run, what the media worker can decode,\nencode and draw on.",
+      "properties": {
+        "codecs": {
+          "items": {
+            "$ref": "#/$defs/CodecEntry"
+          },
+          "type": "array"
+        },
+        "copyPath": {
+          "$ref": "#/$defs/CopyPath"
+        },
+        "gpu": {
+          "$ref": "#/$defs/GpuEntry"
+        },
+        "renderVersion": {
+          "description": "`RENDER_VERSION`: part of every cache key.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/Sandbox"
+        }
+      },
+      "required": [
+        "codecs",
+        "copyPath",
+        "sandbox",
+        "renderVersion"
+      ],
+      "type": "object"
     },
     "MediaInfo": {
       "description": "What a media file is (spec §6.3).",
@@ -9198,6 +9915,32 @@
       "description": "`https://host[:port]`.",
       "type": "string"
     },
+    "OriginalFile": {
+      "description": "A file a worker opens, with what it looked like when the manifest was written.\n\n`path` may be absolute anywhere on the machine (the model stores the path the user gave:\nplan 6A Decision 5) and the directories above the file may be links: **by design** only the\nfile itself is opened no-follow and checked against these facts. The manifest is the host's,\nwritten from the project's own model, never from anything a worker or a client sent in the\njob; `--replay` of a directory that is not the caller's own is the exception, and confines\noriginals to the directory (`--originals-anywhere` lifts that). The worker\nopens it through `fin-library`'s no-follow opener, which refuses it once its size, mtime or\nfile id changed (`ORIGINALS_MISSING {reason: changed}`); `mtimeNs` and `fileId` are\nencoded as `fin-library`'s `Expect` encodes them (a decimal string; standard base64).",
+      "properties": {
+        "fileId": {
+          "type": "string"
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute.",
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "mtimeNs"
+      ],
+      "type": "object"
+    },
     "OsFamily": {
       "enum": [
         "linux",
@@ -9940,6 +10683,23 @@
       ],
       "type": "object"
     },
+    "PlanSample": {
+      "additionalProperties": false,
+      "description": "The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's\ncompact JSON, as `fin-core`'s eval corpus hashes it.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "blake3": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "blake3"
+      ],
+      "type": "object"
+    },
     "PlanSource": {
       "additionalProperties": false,
       "properties": {
@@ -10271,6 +11031,9 @@
         "dev"
       ],
       "type": "string"
+    },
+    "PreviewStats": {
+      "type": "object"
     },
     "Primaries": {
       "oneOf": [
@@ -11176,6 +11939,76 @@
       ],
       "type": "object"
     },
+    "RenderManifest": {
+      "description": "`in/manifest.json` (spec §4.2): built by `fin-node` from the snapshot's asset table,\nnever by the worker.",
+      "properties": {
+        "assets": {
+          "description": "Every asset the snapshot references, once.",
+          "items": {
+            "$ref": "#/$defs/ManifestAsset"
+          },
+          "type": "array"
+        },
+        "fonts": {
+          "$ref": "#/$defs/ManifestFonts",
+          "default": {
+            "files": []
+          }
+        },
+        "version": {
+          "description": "[`MANIFEST_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "assets"
+      ],
+      "type": "object"
+    },
+    "RenderPhase": {
+      "description": "A stage of a render, for [`RenderStats`].",
+      "oneOf": [
+        {
+          "enum": [
+            "decode",
+            "composite",
+            "readback"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "encode",
+          "description": "No emitter before sub-project 6B (export).",
+          "type": "string"
+        }
+      ]
+    },
+    "RenderSample": {
+      "type": "object"
+    },
+    "RenderStats": {
+      "description": "`render.stats` (`kv` 1): per-minute histograms of render stages in micros, one entry per\nphase and backend. `backend` is the decode backend for `decode` and the GPU API for\n`composite` and `readback`. A worker sends what it measured since its last job ended, so\nseveral entries may share a window (`histogram.start`): readers add them.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "histogram": {
+          "$ref": "#/$defs/Histogram"
+        },
+        "phase": {
+          "$ref": "#/$defs/RenderPhase"
+        }
+      },
+      "required": [
+        "phase",
+        "backend",
+        "histogram"
+      ],
+      "type": "object"
+    },
     "Resolution": {
       "description": "Frame size in pixels.",
       "properties": {
@@ -11195,6 +12028,18 @@
         "height"
       ],
       "type": "object"
+    },
+    "ResolutionBucket": {
+      "description": "A frame size as a bucket: the smallest standard size the frame fits within, by pixel count\n(so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,\n`hd1080` ≤ 2048×1080, `qhd` ≤ 2560×1440, `uhd4k` ≤ 4096×2160, `uhd8k` above.",
+      "enum": [
+        "sd",
+        "hd720",
+        "hd1080",
+        "qhd",
+        "uhd4k",
+        "uhd8k"
+      ],
+      "type": "string"
     },
     "Retry": {
       "description": "How the engine may retry after a worker `error` (Decision 31).",
@@ -11501,6 +12346,15 @@
         "mtimeNs"
       ],
       "type": "object"
+    },
+    "Sandbox": {
+      "description": "The worker sandbox in force (spec §3.5): `none` in 6A.",
+      "enum": [
+        "none",
+        "landlock",
+        "worker"
+      ],
+      "type": "string"
     },
     "ScanBatch": {
       "additionalProperties": false,
@@ -12344,6 +13198,15 @@
         "path"
       ],
       "type": "object"
+    },
+    "SupportClass": {
+      "description": "How a codec direction is served: hardware, software, or not at all.",
+      "enum": [
+        "hw",
+        "sw",
+        "none"
+      ],
+      "type": "string"
     },
     "Switch": {
       "description": "One purpose's switch.",
@@ -14301,6 +15164,26 @@
         "jobsServed",
         "lifetimeS",
         "sandboxed"
+      ],
+      "type": "object"
+    },
+    "WorkerInfo": {
+      "description": "The worker binary's versions.",
+      "properties": {
+        "renderVersion": {
+          "description": "[`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "The `fin-workers` crate's version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "renderVersion"
       ],
       "type": "object"
     },

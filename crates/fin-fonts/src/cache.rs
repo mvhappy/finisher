@@ -8,6 +8,8 @@
 //!   last verified is not hashed again.
 //! - Stray temps (and abandoned resumable downloads nobody holds the lock for) are swept
 //!   after [`STRAY_AFTER`]. No total-size limit in 4C.
+// The write side (temps, placing, the locks) is the fetcher's.
+#![cfg_attr(not(feature = "fetch"), allow(dead_code))]
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -97,6 +99,18 @@ impl FontCache {
         };
         cache.sweep(SystemTime::now());
         Ok(cache)
+    }
+
+    /// The cache at `dir` for reading only (media workers, sub-project 6 plan 6A Decision 3):
+    /// nothing is created, swept or written; a missing directory is an empty cache. Only
+    /// [`FontCache::get`], [`FontCache::has`], [`FontCache::mismatch`] and
+    /// [`FontCache::list`] are meant for it.
+    pub fn open_read_only(dir: &Path) -> FontCache {
+        FontCache {
+            dir: dir.to_path_buf(),
+            verified: Mutex::new(HashMap::new()),
+            mismatched: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn dir(&self) -> &Path {

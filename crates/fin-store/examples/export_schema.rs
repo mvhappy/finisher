@@ -9,7 +9,8 @@
 //! journal's (`fin-journal`: `PrivacySettings`, `ConsentState`, `JournalStatus`, `Filter`,
 //! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`, `DiagnosticsReport`, `ExportPage`;
 //! `CollectPolicy` is fin-core's), the media types of `fin-media` (`MediaInfo` and its
-//! parts, sub-project 6), the job envelope of `fin-jobs` with the test kinds' params and
+//! parts; the media job params, inputs and results of `fin_media::jobs`, sub-project 6),
+//! the job envelope of `fin-jobs` with the test kinds' params and
 //! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others),
 //! the JSON shapes of fin-node's `JobHost` (`fin-jobhost`'s `wire`),
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
@@ -67,6 +68,12 @@ fn main() {
         g.subschema_for::<fin_journal::DiagnosticsReport>();
         g.subschema_for::<fin_journal::ExportPage>();
         g.subschema_for::<fin_media::MediaInfo>();
+        g.subschema_for::<fin_media::jobs::LookParams>();
+        g.subschema_for::<fin_media::jobs::LookResult>();
+        g.subschema_for::<fin_media::jobs::CapabilitiesParams>();
+        g.subschema_for::<fin_media::jobs::MediaCapabilities>();
+        g.subschema_for::<fin_media::jobs::JobSnapshot>();
+        g.subschema_for::<fin_media::jobs::RenderManifest>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

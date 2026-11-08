@@ -61,3 +61,13 @@ export function childEnv(
   if (extra.FIN_CALL !== undefined) env.FIN_CALL = extra.FIN_CALL;
   return env;
 }
+
+/** The listed variables of `parent` that are set (a family's `env`, `jobs/kinds.ts`). */
+export function passEnv(names: ReadonlyArray<string> | undefined, parent: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of names ?? []) {
+    const value = parent[key];
+    if (value !== undefined && !denied(key)) env[key] = value;
+  }
+  return env;
+}

@@ -216,6 +216,7 @@ impl FontCatalog {
     }
 
     /// The styles whose files an archive with this SHA-256 holds, with their members.
+    #[cfg_attr(not(feature = "fetch"), allow(dead_code))]
     pub(crate) fn archive_members(
         &self,
         archive_sha256: &str,

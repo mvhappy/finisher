@@ -1,0 +1,39 @@
+{
+  "note": "T0 hashes (BLAKE3 of the CPU reference's RGBA8) of the e2e look scenario, per fixture set. An entry is keyed by the SHA-256 of the two clips make_fixture wrote: SVT-AV1's bytes may differ between machine classes (see fin-codecs/tests/golden/encode.json), and the reference is only comparable over identical decoded pixels. dav1d is bit-exact, so entries with the same fixtures digest must agree on every OS. A machine whose digest has no entry compares nothing (E2E_LOOK_REQUIRE_T0=1 fails instead); E2E_LOOK_BLESS=1 records one.",
+  "entries": [
+    {
+      "class": "linux-x86_64",
+      "fixtures": "003308da28b5f0356e561d01c794886a569e231329d191aa3d5308557c7c4dcd",
+      "frames": [
+        {
+          "at": "0",
+          "blake3": "f43e19199dd9464f9086c8b63e54bbe24119f9aa44c1813e9bc880a6f690add7"
+        },
+        {
+          "at": "0.5s",
+          "blake3": "cc6100456c489efb0b63ff5319e3c4db6ac01ee4c69b2ed8b54568d8dd38130b"
+        },
+        {
+          "at": "1s",
+          "blake3": "c0fd0f079a216d7e240bd3cfc6a2315939209a12cd888bef917965f836badb46"
+        },
+        {
+          "at": "1.5s",
+          "blake3": "417582fa9dd7dc62c77d33087d3ac6ab911ed295b68d69593496920905da35d1"
+        },
+        {
+          "at": "2s",
+          "blake3": "475257273a2f15c58eddb58b3187fa497c5e9b7c744bd95548876d6dcd3e1280"
+        },
+        {
+          "at": "13/6",
+          "blake3": "406bb8ed9563ee55e94004c67baa064ef52f79ce1f966c321b2b2281b70e5519"
+        },
+        {
+          "at": "73/30",
+          "blake3": "e44f68060541bce6b1bf356f1c560617d3d6f6363bd799dcfe14ba3da872b2dc"
+        }
+      ]
+    }
+  ]
+}

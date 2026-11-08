@@ -204,7 +204,7 @@ registry! {
     RegistryRefresh(p::RegistryRefresh) = "registry.refresh" v 1 [FinNode];
     ErrorInternal(p::ErrorInternal) = "error.internal" v 1 [FinNode, Finisherd];
     ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Mcp, Finisherd, FinNode];
-    JobDone(p::JobDone) = "job.done" v 1 [Finisherd];
+    JobDone(p::JobDone) = "job.done" v 2 [Finisherd];
     WorkerExit(p::WorkerExit) = "worker.exit" v 1 [Finisherd];
     AgentSession(p::AgentSession) = "agent.session" v 1 via wa::AgentSessionIn [Agent];
     AgentTurn(p::AgentTurn) = "agent.turn" v 1 training_only true via wa::AgentTurnIn [Agent];
@@ -213,6 +213,10 @@ registry! {
     AgentApproval(p::AgentApproval) = "agent.approval" v 1 via wa::AgentApprovalIn [Agent];
     UiAction(p::UiAction) = "ui.action" v 0 [Ui];
     ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 0 [Ui];
+    MediaCapabilities(p::MediaCapabilitiesEvent) = "media.capabilities" v 1 [Finisherd];
+    RenderStats(p::RenderStats) = "render.stats" v 1 [Finisherd];
+    PreviewStats(p::PreviewStats) = "preview.stats" v 0 [Ui];
+    RenderSample(p::RenderSample) = "render.sample" v 0 training_only true [Finisherd];
 }
 
 impl Payload for p::SessionStart {}
@@ -249,6 +253,10 @@ impl Payload for p::ErrorPanic {
 impl Payload for p::AgentSession {}
 impl Payload for p::UiAction {}
 impl Payload for p::ReviewVerdict {}
+impl Payload for p::MediaCapabilitiesEvent {}
+impl Payload for p::RenderStats {}
+impl Payload for p::PreviewStats {}
+impl Payload for p::RenderSample {}
 
 impl Payload for p::AgentTurn {
     fn blobs(&self) -> Vec<&BlobRef> {

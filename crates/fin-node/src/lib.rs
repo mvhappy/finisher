@@ -56,6 +56,7 @@ mod journal;
 mod kinds;
 mod library;
 mod maintenance;
+mod media;
 #[cfg(windows)]
 mod pipe_loop;
 #[cfg(windows)]
@@ -84,6 +85,7 @@ pub use kinds::kind_version;
 pub use library::{library_canonical_root, library_probe_root, library_probe_status};
 #[cfg(feature = "test-hooks")]
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
+pub use media::commit_job_output;
 pub use pipe_server::{PipeOptions, PipeServer};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use private_file::{PrivateFile, create_private_file};

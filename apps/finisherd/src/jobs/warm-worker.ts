@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Hello, JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 import type { FinError } from "@finisher/contracts";
 import { toFinError } from "../errors.ts";
-import { childEnv } from "../env.ts";
+import { childEnv, passEnv } from "../env.ts";
 import type { ProcEvent } from "./host.ts";
 import type { FamilySpec, ProgramSpec } from "./kinds.ts";
 import type { AttemptOutcome } from "./runner.ts";
@@ -90,7 +90,7 @@ export function spawnRequest(w: Worker, root: string): JobSpawnRequest {
     family: w.family.family,
     program: "path" in w.program ? { path: w.program.path } : { bundled: w.program.binary },
     args: [...w.program.args],
-    env: { ...childEnv(), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
+    env: { ...childEnv(), ...passEnv(w.family.env), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
     cwd: w.dir,
     // Its own directory, and the jobs root: the jobs it will serve are not known yet. This
     // grant never ships under a sandbox (warm kinds then run cold, Task 11 review H3);

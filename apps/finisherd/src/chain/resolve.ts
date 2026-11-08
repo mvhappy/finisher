@@ -148,6 +148,17 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
         out = { ...out, importDir: real };
       }
     }
+    if (want.has("outDir")) {
+      // Files written for `projectId` go inside that project's folder, whatever other projects
+      // the principal may reach (as a probe's path does).
+      const dir = yield* requireAbsoluteOpt("out", out.out as string | undefined);
+      if (dir !== undefined) {
+        const real = yield* canonical(dir);
+        paths.push(real);
+        out = { ...out, out: real };
+        if (typeof out.projectId === "string") pathsIn = out.projectId;
+      }
+    }
     return {
       payload: out,
       projects,

@@ -15,6 +15,13 @@ export type IdRef = string;
  */
 export type ActorKind = "user" | "agent" | "plugin" | "system" | "unknown";
 /**
+ * A GPU adapter's type (`wgpu::DeviceType`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AdapterType".
+ */
+export type AdapterType = "integrated" | "discrete" | "virtual" | "cpu" | "other";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AdvisoryAction".
  */
@@ -185,7 +192,11 @@ export type AnyPayload =
   | AgentToolResult
   | AgentApproval
   | UiAction
-  | ReviewVerdict;
+  | ReviewVerdict
+  | MediaCapabilitiesEvent
+  | RenderStats
+  | PreviewStats
+  | RenderSample;
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Version".
@@ -756,6 +767,14 @@ export type PanicThread = "main" | "worker" | "tick" | "writer" | "other";
  */
 export type PanicWhere = "finNode" | "finisherd" | "fin";
 /**
+ * How frames travel between the decoder, the compositor and the encoder (spec §5.4): through
+ * host memory (`copy`; all of 6A) or as shared GPU surfaces (`zeroCopy`, 6G).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CopyPath".
+ */
+export type CopyPath = "copy" | "zeroCopy";
+/**
  * A job's terminal state.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -802,6 +821,35 @@ export type ExitReason =
  * via the `definition` "ProcessRole".
  */
 export type ProcessRole = "worker" | "helper";
+/**
+ * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
+ * on it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BackendClass".
+ */
+export type BackendClass = ("os" | "gpu" | "software" | "plugin") | "other";
+/**
+ * How a codec direction is served: hardware, software, or not at all.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SupportClass".
+ */
+export type SupportClass = "hw" | "sw" | "none";
+/**
+ * The worker sandbox in force (spec §3.5): `none` in 6A.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Sandbox".
+ */
+export type Sandbox = "none" | "landlock" | "worker";
+/**
+ * A stage of a render, for [`RenderStats`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RenderPhase".
+ */
+export type RenderPhase = ("decode" | "composite" | "readback") | "encode";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ChangeKind".
@@ -914,6 +962,13 @@ export type Link =
  */
 export type CancelReason = "cancel" | "pause";
 /**
+ * How a codec direction is served on this machine (spec §6.2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CapSupport".
+ */
+export type CapSupport = "hardware" | "software" | "none";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UnmeasuredReason".
  */
@@ -932,6 +987,11 @@ export type Chroma = "mono" | "yuv420" | "yuv422" | "yuv444";
  * via the `definition` "ChromaSiting".
  */
 export type ChromaSiting = "unknown" | "left" | "center" | "topLeft";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoCodec".
+ */
+export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
 /**
  * A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by
  * `fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of
@@ -1212,7 +1272,7 @@ export type EventPayload =
     }
   | {
       kind: "job.done";
-      kv: 1;
+      kv: 2;
       payload: JobDone;
     }
   | {
@@ -1254,6 +1314,26 @@ export type EventPayload =
       kind: "review.verdict";
       kv: 0;
       payload: ReviewVerdict;
+    }
+  | {
+      kind: "media.capabilities";
+      kv: 1;
+      payload: MediaCapabilitiesEvent;
+    }
+  | {
+      kind: "render.stats";
+      kv: 1;
+      payload: RenderStats;
+    }
+  | {
+      kind: "preview.stats";
+      kv: 0;
+      payload: PreviewStats;
+    }
+  | {
+      kind: "render.sample";
+      kv: 0;
+      payload: RenderSample;
     };
 /**
  * A catalog file's state in this server (Decision 34).
@@ -1664,11 +1744,6 @@ export type JobSpawnProgram =
  */
 export type JobSpawnRole = "worker" | "helper";
 /**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoCodec".
- */
-export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
-/**
  * Clockwise display rotation in degrees, from the track matrix.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1834,6 +1909,15 @@ export type PurgeSelector =
   | {
       before: number;
     };
+/**
+ * A frame size as a bucket: the smallest standard size the frame fits within, by pixel count
+ * (so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,
+ * `hd1080` ≤ 2048×1080, `qhd` ≤ 2560×1440, `uhd4k` ≤ 4096×2160, `uhd8k` above.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ResolutionBucket".
+ */
+export type ResolutionBucket = "sd" | "hd720" | "hd1080" | "qhd" | "uhd4k" | "uhd8k";
 /**
  * A root's state (Decision 17): `online` carries the identity measured now (its key may
  * differ from the stored one when the change was confirmed harmless); every other state
@@ -3301,7 +3385,7 @@ export interface ErrorPanic {
   where: PanicWhere;
 }
 /**
- * `job.done` (`kv` 1). Sub-project 6 adds its media fields as `kv` 2.
+ * `job.done` (`kv` 2: `kv` 1 plus the optional `media` object of sub-project 6).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobDone".
@@ -3327,6 +3411,7 @@ export interface JobDone {
    */
   itemsFailed?: number;
   kind: Name;
+  media?: JobMedia;
   outcome: JobOutcome;
   priority: JobPriority;
   /**
@@ -3338,6 +3423,38 @@ export interface JobDone {
    */
   runMicros: number;
   warm: boolean;
+}
+/**
+ * The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`
+ * describe the decode that served the job (the first source it decoded; `none` when it
+ * decoded nothing).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobMedia".
+ */
+export interface JobMedia {
+  backend: Name;
+  /**
+   * Every source the job needed was already open in the warm worker (and it needed one).
+   */
+  cacheHit: boolean;
+  codec: Name;
+  copyPath: CopyPath;
+  /**
+   * Frames the job produced.
+   */
+  frames: number;
+  hw: boolean;
+  /**
+   * The largest frame the job produced.
+   */
+  resolution: "sd" | "hd720" | "hd1080" | "qhd" | "uhd4k" | "uhd8k";
+  /**
+   * Media seconds produced per wall second of rendering, in thousandths (1000 = real
+   * time): the frames' durations at the timeline's rate over decode + composite +
+   * readback time. `0` when the job took no measurable time.
+   */
+  rtFactorMilli: number;
 }
 /**
  * `worker.exit` (`kv` 1).
@@ -3367,6 +3484,99 @@ export interface UiAction {}
  * via the `definition` "ReviewVerdict".
  */
 export interface ReviewVerdict {}
+/**
+ * `media.capabilities` (`kv` 1): once per server run, what the media worker can decode,
+ * encode and draw on.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaCapabilitiesEvent".
+ */
+export interface MediaCapabilitiesEvent {
+  codecs: CodecEntry[];
+  copyPath: CopyPath;
+  gpu?: GpuEntry;
+  /**
+   * `RENDER_VERSION`: part of every cache key.
+   */
+  renderVersion: number;
+  sandbox: Sandbox;
+}
+/**
+ * One codec's support on this machine.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecEntry".
+ */
+export interface CodecEntry {
+  /**
+   * The backends that would be used, decode first.
+   */
+  backends: BackendEntry[];
+  codec: Name;
+  decode: SupportClass;
+  encode: SupportClass;
+}
+/**
+ * A backend and who provides it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BackendEntry".
+ */
+export interface BackendEntry {
+  class: BackendClass;
+  name: Name;
+}
+/**
+ * The GPU adapter frames are composited on: numeric ids only (owner decision 7). The
+ * adapter's and driver's name strings identify hardware and are never recorded.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GpuEntry".
+ */
+export interface GpuEntry {
+  adapterType: AdapterType;
+  backend: Name;
+  /**
+   * The PCI device id.
+   */
+  deviceId: number;
+  /**
+   * The driver's major version, when its version string has one.
+   */
+  driverMajor?: number;
+  /**
+   * A CPU adapter (lavapipe, WARP).
+   */
+  software: boolean;
+  /**
+   * The PCI vendor id.
+   */
+  vendorId: number;
+}
+/**
+ * `render.stats` (`kv` 1): per-minute histograms of render stages in micros, one entry per
+ * phase and backend. `backend` is the decode backend for `decode` and the GPU API for
+ * `composite` and `readback`. A worker sends what it measured since its last job ended, so
+ * several entries may share a window (`histogram.start`): readers add them.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RenderStats".
+ */
+export interface RenderStats {
+  backend: Name;
+  histogram: Histogram;
+  phase: RenderPhase;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PreviewStats".
+ */
+export interface PreviewStats {}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RenderSample".
+ */
+export interface RenderSample {}
 /**
  * The result of applying a transaction to a project.
  *
@@ -3824,6 +4034,13 @@ export interface Tx {
   txId: string;
 }
 /**
+ * `media.capabilities` v1 takes no params.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CapabilitiesParams".
+ */
+export interface CapabilitiesParams {}
+/**
  * A caption's words at the plan's time, and its layout when it was measured. `layout` is
  * `null` when it was not, and `unmeasured` says why (plan 4C Decision 36).
  *
@@ -4043,6 +4260,30 @@ export interface CatalogSource {
   sha256?: string | null;
   size?: number | null;
   url: string;
+}
+/**
+ * What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecCapabilities".
+ */
+export interface CodecCapabilities {
+  video: CodecCaps[];
+}
+/**
+ * One codec's support: the shape of `fin-codecs`' `CodecSupport`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecCaps".
+ */
+export interface CodecCaps {
+  /**
+   * The backends that would be used, decode first.
+   */
+  backends: string[];
+  codec: VideoCodec;
+  decode: CapSupport;
+  encode: CapSupport;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4426,6 +4667,41 @@ export interface FontCatalog {
   fallback: string[];
 }
 /**
+ * A project font asset's file and the SHA-256 its asset pins.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFileRef".
+ */
+export interface FontFileRef {
+  original: OriginalFile;
+  sha256: string;
+}
+/**
+ * A file a worker opens, with what it looked like when the manifest was written.
+ *
+ * `path` may be absolute anywhere on the machine (the model stores the path the user gave:
+ * plan 6A Decision 5) and the directories above the file may be links: **by design** only the
+ * file itself is opened no-follow and checked against these facts. The manifest is the host's,
+ * written from the project's own model, never from anything a worker or a client sent in the
+ * job; `--replay` of a directory that is not the caller's own is the exception, and confines
+ * originals to the directory (`--originals-anywhere` lifts that). The worker
+ * opens it through `fin-library`'s no-follow opener, which refuses it once its size, mtime or
+ * file id changed (`ORIGINALS_MISSING {reason: changed}`); `mtimeNs` and `fileId` are
+ * encoded as `fin-library`'s `Expect` encodes them (a decimal string; standard base64).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "OriginalFile".
+ */
+export interface OriginalFile {
+  fileId?: string;
+  mtimeNs: string;
+  /**
+   * Absolute.
+   */
+  path: string;
+  size: number;
+}
+/**
  * One font file. `entry` and `style` name its catalog style, when the catalog lists it;
  * `keys` are the font keys (`<family>|<weight>|<normal|italic>`) open projects pin it as.
  *
@@ -4654,6 +4930,28 @@ export interface TransitionState {
 export interface Generation {
   incarnation: string;
   n: number;
+}
+/**
+ * The GPU adapter frames were composited on (numeric ids, spec §21 decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GpuAdapter".
+ */
+export interface GpuAdapter {
+  backend: string;
+  device: number;
+  deviceType: string;
+  /**
+   * The driver's major version, when its version text has a number (the text itself is
+   * not kept).
+   */
+  driverMajor?: number;
+  name: string;
+  /**
+   * A CPU adapter (lavapipe, WARP).
+   */
+  software: boolean;
+  vendor: number;
 }
 /**
  * What the `library.hash` kind reports for one file; `hash` is `blake3:<hex>`.
@@ -5181,6 +5479,17 @@ export interface JobMemoryRule {
   ramFraction?: number;
 }
 /**
+ * `in/snapshot.json` (plan 6A Decision 2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSnapshot".
+ */
+export interface JobSnapshot {
+  branch: string;
+  project: Project;
+  rev: number;
+}
+/**
  * A path the process may use (for a sandbox's rules).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5675,6 +5984,151 @@ export interface Listing {
   versions: string[];
 }
 /**
+ * One rendered frame of a `media.look`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookFrame".
+ */
+export interface LookFrame {
+  at: Rational;
+  /**
+   * Relative to `out/` in a worker's result; the frame's final absolute path in the job's
+   * stored result, once the kind's `onSucceeded` has moved it.
+   */
+  file: string;
+  height: number;
+  /**
+   * The plan's BLAKE3 (lowercase hex).
+   */
+  plan: string;
+  width: number;
+}
+/**
+ * `media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookParams".
+ */
+export interface LookParams {
+  /**
+   * Timeline times in seconds, 1 to [`LOOK_MAX_TIMES`] of them.
+   */
+  at: Rational[];
+  /**
+   * The branch of the snapshot (an id, a name or `<name>#<id>`).
+   */
+  branch?: string | null;
+  /**
+   * Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
+   * folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
+   * (`EXPORT_DESTINATION`). The worker ignores it.
+   */
+  outDir?: string | null;
+  /**
+   * The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to
+   * [`OUT_NAME_MAX`] characters.
+   */
+  outName: string;
+  /**
+   * One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker
+   * evaluates differently is `PLAN_MISMATCH`. A submitter leaves them out: the kind's
+   * `prepare` computes them from the snapshot it writes and hands them to the worker as
+   * `start.job.extra.planSamples` (and in `in/params.json`, with the rest of these params,
+   * for `--replay`).
+   */
+  planSamples?: PlanSample[];
+  /**
+   * The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);
+   * the worker works from the job directory.
+   */
+  projectId?: string | null;
+  /**
+   * The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`
+   * snapshots the head it finds, and `in/snapshot.json` says which rev that was.
+   */
+  rev?: number | null;
+  size?: Size2;
+  timeline: string;
+}
+/**
+ * The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's
+ * compact JSON, as `fin-core`'s eval corpus hashes it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanSample".
+ */
+export interface PlanSample {
+  at: Rational;
+  blake3: string;
+}
+/**
+ * The frame size; the timeline's resolution when absent. Each side 1 to
+ * [`LOOK_MAX_SIDE`].
+ */
+export interface Size2 {
+  height: number;
+  width: number;
+}
+/**
+ * What `media.look` v1 answers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookResult".
+ */
+export interface LookResult {
+  adapter: GpuAdapter;
+  /**
+   * In `at` order.
+   */
+  frames: LookFrame[];
+  /**
+   * Every frame's, in `at` order, bottom layer first within a frame.
+   */
+  skipped: LookSkipped[];
+  stats: LookStats;
+}
+/**
+ * A layer, or an effect or mask of a drawn one, that a frame left out (spec §2.7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookSkipped".
+ */
+export interface LookSkipped {
+  at: Rational;
+  /**
+   * `CODEC_UNAVAILABLE`, `ORIGINALS_MISSING`, `LAYER_UNAVAILABLE`, `MEDIA_CORRUPT`, …
+   */
+  code: string;
+  details: unknown;
+  item: string;
+  kind: ItemKind;
+}
+/**
+ * What a warm worker reused (spec §3.2 item 1: caches keyed by content).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookStats".
+ */
+export interface LookStats {
+  /**
+   * The GPU device and pipelines were made by an earlier job of this worker.
+   */
+  deviceReused: boolean;
+  media?: JobMedia;
+  /**
+   * Sources opened (container parsed, decoder made) by this job.
+   */
+  sourcesOpened: number;
+  /**
+   * Sources an earlier job of this worker had open.
+   */
+  sourcesReused: number;
+  /**
+   * Jobs this worker ran, this one included.
+   */
+  workerJobs: number;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Manifest".
  */
@@ -5741,6 +6195,64 @@ export interface ModelRef {
 export interface Publisher {
   name: string;
   url?: string | null;
+}
+/**
+ * One asset of the manifest.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestAsset".
+ */
+export interface ManifestAsset {
+  asset: string;
+  fingerprint: string;
+  kind: AssetKind;
+  /**
+   * The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it
+   * is missing.
+   */
+  original?: OriginalFile | null;
+}
+/**
+ * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the
+ * project's font asset files by SHA-256.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestFonts".
+ */
+export interface ManifestFonts {
+  /**
+   * `<server-data>/fonts`.
+   */
+  cache?: string;
+  files?: FontFileRef[];
+}
+/**
+ * What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
+ * (`null` when no adapter, not even a software one, can be opened) and the worker's versions.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaCapabilities".
+ */
+export interface MediaCapabilities {
+  codecs: CodecCapabilities;
+  gpu?: GpuAdapter | null;
+  worker: WorkerInfo;
+}
+/**
+ * The worker binary's versions.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerInfo".
+ */
+export interface WorkerInfo {
+  /**
+   * [`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).
+   */
+  renderVersion: number;
+  /**
+   * The `fin-workers` crate's version.
+   */
+  version: string;
 }
 /**
  * What a media file is (spec §6.3).
@@ -6111,6 +6623,35 @@ export interface TrustedVersions {
   timestamp: number;
 }
 /**
+ * `in/manifest.json` (spec §4.2): built by `fin-node` from the snapshot's asset table,
+ * never by the worker.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RenderManifest".
+ */
+export interface RenderManifest {
+  /**
+   * Every asset the snapshot references, once.
+   */
+  assets: ManifestAsset[];
+  fonts?: ManifestFonts1;
+  /**
+   * [`MANIFEST_VERSION`].
+   */
+  version: number;
+}
+/**
+ * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the
+ * project's font asset files by SHA-256.
+ */
+export interface ManifestFonts1 {
+  /**
+   * `<server-data>/fonts`.
+   */
+  cache?: string;
+  files?: FontFileRef[];
+}
+/**
  * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6188,7 +6729,7 @@ export interface SetAside {
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Size".
  */
-export interface Size2 {
+export interface Size3 {
   height: number;
   width: number;
 }

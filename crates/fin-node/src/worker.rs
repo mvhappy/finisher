@@ -136,6 +136,22 @@ pub(crate) fn open<'e>(
     Ok(promise)
 }
 
+/// Runs `f` on the worker thread, queued behind the long calls, without taking the store out
+/// of the shared state: `f` reads what it needs under the mutex and works on its copy (plan
+/// 6A Task 12: the media job inputs). Resolves to `f`'s JSON.
+pub(crate) fn offload<'e>(
+    env: &'e Env,
+    worker: &Worker,
+    f: impl FnOnce() -> Result<String> + Send + 'static,
+) -> Result<Object<'e>> {
+    let (deferred, promise) = env.create_deferred::<String, _>()?;
+    worker.submit(Box::new(move || match guarded(f, || {}) {
+        Ok(s) => deferred.resolve(move |_env| Ok(s)),
+        Err(e) => deferred.reject(e),
+    }))?;
+    Ok(promise)
+}
+
 /// Runs `f` on the worker with the store taken out of the shared state (module docs).
 pub(crate) fn long<'e>(
     env: &'e Env,

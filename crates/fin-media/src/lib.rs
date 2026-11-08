@@ -7,6 +7,7 @@
 pub mod colour;
 pub mod format;
 pub mod info;
+pub mod jobs;
 pub mod sample;
 #[cfg(feature = "testing")]
 pub mod testing;

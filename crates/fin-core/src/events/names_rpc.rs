@@ -69,6 +69,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "history.redo",
         "history.revert",
         "history.undo",
+        "media.capabilities",
+        "media.look",
         "ops.subscribe",
         "plugin.content.get",
         "plugin.disable",

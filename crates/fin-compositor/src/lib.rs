@@ -31,7 +31,7 @@ pub mod reference;
 mod source;
 
 #[cfg(not(target_os = "wasi"))]
-pub use device::{AdapterChoice, AdapterSummary, Gpu, map_error};
+pub use device::{AdapterChoice, AdapterSummary, Gpu, driver_major, map_error};
 #[cfg(not(target_os = "wasi"))]
 pub use gpu::{Compositor, Stage};
 #[cfg(not(target_os = "wasi"))]

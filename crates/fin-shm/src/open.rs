@@ -65,6 +65,48 @@ pub(crate) fn create_new(path: &Path) -> Result<Opened, CoreError> {
     os::create(path).map_err(|f| to_error(path, f))
 }
 
+/// Creates the output file `path` for a worker to fill: no segment may be a link (so a linked
+/// `out/` is refused), the file itself is made `O_EXCL` and `O_NOFOLLOW`, read-write, mode 0600.
+/// An entry of that name already there (a retried attempt's earlier output, or a link or file a
+/// worker or a previous run left) is unlinked first, never followed, and the file made new.
+pub fn create_output(path: &Path) -> Result<File, CoreError> {
+    check_path(path).map_err(|f| to_error(path, f))?;
+    let made = match os::create(path) {
+        Err(f) if f.reason == Reason::Exists => {
+            os::remove(path).map_err(|f| to_error(path, f))?;
+            os::create(path)
+        }
+        other => other,
+    };
+    made.map(|o| o.file).map_err(|f| to_error(path, f))
+}
+
+/// [`create_output`] that never replaces: an entry of that name already there is
+/// `SHM_REFUSED {reason: exists}`.
+pub fn create_new_output(path: &Path) -> Result<File, CoreError> {
+    check_path(path).map_err(|f| to_error(path, f))?;
+    create_new(path).map(|o| o.file)
+}
+
+/// Writes `bytes` as `dir/name` for a worker to read: to `dir/<name>.tmp` made new (an earlier
+/// attempt's leftover is unlinked first), synced, then renamed over `dir/name`. No segment of
+/// `dir` may be a link, and the rename happens on the descriptor of the directory the
+/// temporary file was made in, so a link swapped in for `dir` between the two steps cannot
+/// redirect either (plan 6A Task 11-12 review L2). A link planted at `dir/name` is replaced,
+/// not followed.
+pub fn write_input(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), CoreError> {
+    use std::io::Write;
+    let tmp = dir.join(format!("{name}.tmp"));
+    let mut file = create_output(&tmp)?;
+    let done = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io_refusal(&tmp, &e));
+    drop(file);
+    done?;
+    os::rename_within(&tmp, std::ffi::OsStr::new(name)).map_err(|f| to_error(&tmp, f))
+}
+
 /// The handle's current facts (`fstat`).
 pub(crate) fn facts(file: &File) -> Result<Facts, Fail> {
     os::facts(file)
@@ -77,11 +119,29 @@ pub(crate) fn facts(file: &File) -> Result<Facts, Fail> {
 /// `to` must be the one that was checked, with one link and at most `cap` bytes; otherwise it
 /// is removed and the move is refused (`changed`, `hardLinked`, `overCap`).
 ///
-/// `to`'s directory is the host's own and must exist. Call this once the writer has exited
-/// (5C's `onSucceeded`): on Windows a file another handle can still write is refused
-/// (`busy`); unix has no such check, so a live writer could still change the moved file.
+/// `to`'s directory is the host's own and must exist. **A rename gives the destination the
+/// writer's own inode**, so call this only once the writer has exited (5C's `onSucceeded` of a
+/// cold job): on Windows a file another handle can still write is refused (`busy`); unix has
+/// no such check, so a live writer could still change the moved file. For a writer that may
+/// still be alive (a warm worker) use [`commit_output_copy`].
 pub fn commit_output(from: &Path, to: &Path, cap: u64) -> Result<(), CoreError> {
-    let src = open_checked(from, cap, Mode::Commit)?;
+    commit(from, to, cap, false)
+}
+
+/// [`commit_output`] that never renames: the bytes of the checked handle are copied (bounded
+/// by its size, which must not change meanwhile: a file that grew is `changed`, one that shrank
+/// `truncated`) into a temporary file the host creates beside `to` (`O_EXCL`, no links, 0600),
+/// synced and renamed over `to`; the source is then unlinked. The destination is a new inode no
+/// other process holds, so a writer that outlives the call (a warm worker, spec §3.2) cannot
+/// change it afterwards.
+pub fn commit_output_copy(from: &Path, to: &Path, cap: u64) -> Result<(), CoreError> {
+    commit(from, to, cap, true)
+}
+
+fn commit(from: &Path, to: &Path, cap: u64, copy: bool) -> Result<(), CoreError> {
+    // A copy reads a file a writer may hold open (Windows: `Commit` refuses that as `busy`).
+    let mode = if copy { Mode::Read } else { Mode::Commit };
+    let src = open_checked(from, cap, mode)?;
     let (Some(_), Some(_)) = (to.parent(), to.file_name()) else {
         return Err(refusal(
             to,
@@ -97,7 +157,7 @@ pub fn commit_output(from: &Path, to: &Path, cap: u64) -> Result<(), CoreError> 
         ));
     }
     hooks::run_before_rename();
-    os::commit(&src, to, cap, hooks::copy_forced()).map_err(|f| to_error(from, f))
+    os::commit(&src, to, cap, copy || hooks::copy_forced()).map_err(|f| to_error(from, f))
 }
 
 /// A path the walk accepts: absolute, no `.` or `..` segment, at least one normal segment.

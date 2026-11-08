@@ -39,9 +39,13 @@ fin-jobhost = { path = "../fin-jobhost" }
 fin-jobs = { path = "../fin-jobs" }
 fin-journal = { path = "../fin-journal" }
 fin-library = { path = "../fin-library" }
+# `media.look` params (`validateJobParams`) and, from 6A Task 12, the media job inputs.
+fin-media = { path = "../fin-media" }
 fin-plugin-api = { path = "../fin-plugin-api" }
 fin-probe = { path = "../fin-probe" }
 fin-registry = { path = "../fin-registry" }
+# The move of a finished job output out of its directory (`commitJobOutput`).
+fin-shm = { path = "../fin-shm" }
 fin-store = { path = "../fin-store" }
 fin-testfonts = { path = "../fin-testfonts", optional = true }
 fin-text = { path = "../fin-text" }

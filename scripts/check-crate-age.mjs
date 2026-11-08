@@ -1,12 +1,13 @@
-// Crate-age gate (supply-chain rule): every crate in Cargo.lock must have been published at
-// least N days ago (default 7). Needs network access (crates.io API), so it is NOT part of
+// Crate-age gate (supply-chain rule): every crate in Cargo.lock, and in each committed
+// `crates/*/fuzz/Cargo.lock` (the nightly fuzz targets are outside the workspace and resolve
+// on their own), must have been published at least N days ago (default 7). Needs network access (crates.io API), so it is NOT part of
 // `pnpm gates`; run it with `pnpm check:crate-age` before merging dependency changes.
 //
 //   node scripts/check-crate-age.mjs [--days N] [--delay-ms MS] [--root DIR]
 //
 // Publication dates never change, so every answer is cached in `target/crate-age-cache.json`
 // (git-ignored); only new name@version pairs hit the network, about one request per second.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -91,6 +92,26 @@ export async function fetchCreatedAt(name, version, { fetchFn = fetch, sleep = d
   }
 }
 
+/** The lockfiles under `root` the gate covers: the workspace `Cargo.lock`, then every
+ * `crates/<name>/fuzz/Cargo.lock` in name order (relative paths, `/`-separated). */
+export function lockfiles(root) {
+  const out = ["Cargo.lock"];
+  const crates = join(root, "crates");
+  if (existsSync(crates)) {
+    for (const entry of readdirSync(crates, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.isDirectory() && existsSync(join(crates, entry.name, "fuzz", "Cargo.lock"))) out.push(`crates/${entry.name}/fuzz/Cargo.lock`);
+    }
+  }
+  return out;
+}
+
+/** Registry packages of all `locks` merged, sorted and de-duplicated by name and version. */
+export function parseLocks(texts) {
+  const out = new Map();
+  for (const text of texts) for (const c of parseLock(text)) out.set(`${c.name}@${c.version}`, c);
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+}
+
 export function readCache(path) {
   try {
     const cache = JSON.parse(readFileSync(path, "utf8"));
@@ -120,7 +141,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const delayMs = option(argv, "--delay-ms", DEFAULT_DELAY_MS);
   const lock = join(root, "Cargo.lock");
   if (!existsSync(lock)) throw new Error(`no Cargo.lock under ${root}`);
-  const crates = parseLock(readFileSync(lock, "utf8"));
+  const crates = parseLocks(lockfiles(root).map((f) => readFileSync(join(root, f), "utf8")));
   const cachePath = join(root, "target", "crate-age-cache.json");
   const cache = readCache(cachePath);
   const missing = crates.filter((c) => !cache[`${c.name}@${c.version}`]).length;

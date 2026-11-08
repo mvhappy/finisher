@@ -19,6 +19,8 @@ use std::time::Duration;
 
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
+pub(crate) use crate::validate::is_loopback_http;
+
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -54,19 +56,6 @@ pub(crate) struct Body {
 pub(crate) struct Http {
     agent: ureq::Agent,
     allow_loopback_http: bool,
-}
-
-/// `http://` to `127.0.0.1`, `localhost` or `[::1]`.
-pub(crate) fn is_loopback_http(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => authority.split(':').next().unwrap_or(""),
-    };
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 impl Http {

@@ -286,6 +286,19 @@ pub(crate) fn create(path: &Path) -> Result<Opened, Fail> {
     finish(h, &full, held)
 }
 
+/// Removes the entry `path` names (a link itself, not its target). The caller has just walked
+/// the same path (`create` failed with `Exists`).
+pub(crate) fn remove(path: &Path) -> Result<(), Fail> {
+    std::fs::remove_file(path).map_err(Fail::io)
+}
+
+/// Renames the entry `from` names to `to_name` in the same directory (the caller has just
+/// created `from` through the checked walk).
+pub(crate) fn rename_within(from: &Path, to_name: &std::ffi::OsStr) -> Result<(), Fail> {
+    let to = from.with_file_name(to_name);
+    std::fs::rename(from, to).map_err(Fail::io)
+}
+
 pub(crate) fn facts(file: &File) -> Result<Facts, Fail> {
     info(file)
 }
