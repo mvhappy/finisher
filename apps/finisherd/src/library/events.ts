@@ -1,12 +1,13 @@
 // What the library service tells others (plan 5D Decision 50, D34): `library.scan` journal
 // events, and file events for sub-projects 6 and 8 (`Libraries.onFile`).
 //
-// **Journal.** One `library.scan` per full scan, targeted scan and watch rescan, and per poll
-// that found changes or did not succeed; a poll that found nothing is only counted
-// (`library.status`), so a 60 s poll does not write 1,440 events a day. The payload is closed
+// **Journal.** One `library.scan` per full scan, and per poll, targeted scan or watch rescan
+// that found changes or did not succeed; one that found nothing is only counted
+// (`library.status` `noChangePolls`), so a 60 s poll, or a watch firing on every save, does not
+// write 1,440 events a day. The payload is closed
 // and names nothing: no library id, name, root or path; library sizes are log₂ buckets
-// (`@finisher/core-types` `LibraryScan`, checked by the journal itself). A refused event is
-// logged, never thrown.
+// (`@finisher/core-types` `LibraryScan`, checked by the journal itself, which drops unknown
+// fields; `recordScan` refuses a payload with any). A refused event is logged, never thrown.
 import type { LibraryScan, ScanTrigger } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
 import type { FileEvent } from "./api.ts";
@@ -31,9 +32,9 @@ export function changesOf(a: ApplyCounts): number {
   return a.added + a.changed + a.missing + a.renamed + a.reappeared;
 }
 
-/** Decision 50: every full, targeted and watch scan; a poll only when it changed something or did not succeed. */
+/** Decision 50: every full scan; a poll or targeted scan only when it changed something or did not succeed. */
 export function journaled(mode: ScanMode, outcome: ScanOutcome, applied: ApplyCounts): boolean {
-  return mode !== "poll" || outcome !== "succeeded" || changesOf(applied) > 0;
+  return mode === "full" || outcome !== "succeeded" || changesOf(applied) > 0;
 }
 
 const live = (by: Record<string, number>): number => Object.entries(by).reduce((n, [state, k]) => (state === "missing" ? n : n + k), 0);
@@ -76,9 +77,16 @@ export function libraryScanPayload(s: ScanSummary): LibraryScan {
   };
 }
 
-/** Records `library.scan` (source `finisherd`) when the journal is on; a refusal is logged. */
+/** The fields of a `library.scan` payload (`kv` 1): nothing else is ever recorded. */
+const SCAN_FIELDS: ReadonlySet<string> = new Set(["storage", "full", "trigger", "outcome", "code", "files", "dirs", "added", "changed", "missing", "moved", "placeholders", "micros"]);
+
+/** Records `library.scan` (source `finisherd`) when the journal is on; a refusal (an unknown field too) is logged. */
 export function recordScan(journal: JournalLike | undefined, payload: LibraryScan, log: (message: string) => void): void {
   if (journal === undefined || !journal.enabled) return;
+  if (Object.keys(payload).some((k) => !SCAN_FIELDS.has(k))) {
+    log("library service: the journal refused a library.scan: the payload has unknown fields");
+    return;
+  }
   try {
     journal.record("library.scan", 1, null, JSON.stringify(payload), "finisherd");
   } catch (e) {

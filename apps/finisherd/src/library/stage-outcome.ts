@@ -3,12 +3,16 @@
 // permanently for this version); a whole failed job → `failed` for its items. A failure that
 // says the library was unusable (`LIBRARY_OFFLINE`, `RESOURCE_STUCK`), and a job the pump
 // cancelled because the library went offline or was paused, cost no attempt: the rows go back
-// to pending (`stale` at the same version, attempts kept).
+// to pending (`stale` at the same version, attempts kept). So does an item whose file is not
+// what the catalog says (`FILE_CHANGED`, `FILE_NOT_FOUND`, `FILE_CLOUD_ONLY`): the file is not
+// to blame, and its directory is listed again (`rescanItems`), as for a hash.
 import type { JobView } from "@finisher/contracts";
 import { MAX_ATTEMPTS } from "./stages.ts";
 
 /** Codes that blame the library, not the file: no attempt is spent. */
 export const FREE_CODES: ReadonlySet<string> = new Set(["LIBRARY_OFFLINE", "RESOURCE_STUCK"]);
+/** Item codes that say the catalog is behind the file: no attempt, and its directory is rescanned. */
+export const RESCAN_CODES: ReadonlySet<string> = new Set(["FILE_CHANGED", "FILE_NOT_FOUND", "FILE_CLOUD_ONLY"]);
 export const POISON = "POISON_ITEM";
 
 export type ItemFate =
@@ -36,7 +40,7 @@ export function itemFates(job: Pick<JobView, "state" | "result" | "error" | "ite
     if (job.state === "succeeded" && code === undefined && Object.hasOwn(values, item)) {
       out.set(item, { fate: "done" });
     } else if (code !== undefined) {
-      if (FREE_CODES.has(code)) out.set(item, { fate: "pending", code });
+      if (FREE_CODES.has(code) || RESCAN_CODES.has(code)) out.set(item, { fate: "pending", code });
       else out.set(item, { fate: "failed", code, permanent: code === POISON });
     } else if (job.state === "succeeded") {
       out.set(item, { fate: "failed", code: "STAGE_ITEM_UNANSWERED", permanent: false });
@@ -63,4 +67,9 @@ export function rowOf(
     case "failed":
       return { ...base, state: "failed", code: fate.code, jobId: null, attempts: fate.permanent ? Math.max(MAX_ATTEMPTS, attempts + 1) : attempts + 1 };
   }
+}
+
+/** The items of `fates` whose files must be listed again (`RESCAN_CODES`). */
+export function rescanItems(fates: ReadonlyMap<string, ItemFate>): string[] {
+  return [...fates].filter(([, f]) => f.fate === "pending" && RESCAN_CODES.has(f.code)).map(([item]) => item);
 }

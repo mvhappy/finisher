@@ -2,8 +2,9 @@
 // search or listing of a network or sync library whose last poll is older than 5 minutes, the
 // service submits an `interactive` poll of what the answer touches (a listing: that directory,
 // as a targeted scan; a search: the whole library, as a poll) and waits up to 5 s. Past that
-// the answer says `stale: true` and the poll goes on. Polls run on the volume's poll pool, so a
-// full scan never holds them up. Local roots are watched and answer at once. Every search and
+// the answer says `stale: true` and the poll goes on. A directory listed by a targeted scan in
+// the last 5 minutes is fresh, and a listing asks for its directory at most once a minute
+// (`dirs-queue.ts`). Polls run on the volume's poll pool, so a full scan never holds them up. Local roots are watched and answer at once. Every search and
 // listing counts as use (Decision 28). Later pages of a search slice its snapshot and run no
 // pass.
 import type { RawRel } from "@finisher/core-types";
@@ -37,6 +38,16 @@ export async function freshen(svc: LibraryService, ids: ReadonlyArray<string>, d
     if (row.storage === "local" || row.state === "offline" || row.state === "paused") continue;
     if (last !== undefined && svc.now() - last < FRESH_MS) continue;
     const rel = dir === undefined ? undefined : await dir(id).catch(() => undefined);
+    if (rel !== undefined) {
+      // A directory a targeted scan listed within 5 minutes is fresh; one asked for within the
+      // last minute is not asked for again (the answer says stale): listings cannot queue scans.
+      const listed = svc.dirsQueue.listedAt(id, rel);
+      if (listed !== undefined && svc.now() - listed < FRESH_MS) continue;
+      if (!svc.dirsQueue.tryFresh(id, rel, svc.now())) {
+        stale = true;
+        continue;
+      }
+    }
     const job = await svc.submitScan(
       id,
       rel === undefined

@@ -9,7 +9,7 @@ import type { LibraryView } from "./api.ts";
 import { libraryDir } from "./catalog/open.ts";
 import { submitProbe } from "./pump.ts";
 import type { Actor, LibraryPatch, NewLibrary } from "./registry.ts";
-import { type LibraryService, exec } from "./service.ts";
+import { type LibraryService, RECHECK_PROBE_MS, exec } from "./service.ts";
 
 const ACTIVE = ["queued", "running", "paused"] as const;
 /** Files of `libraries/<id>/` that belong to sub-project 8E, never deleted here (Decision 42). */
@@ -82,14 +82,31 @@ export async function setLibrary(svc: LibraryService, id: string, patch: Library
  * human-only, Decision 17): a changed volume, or a root that is no longer a mount root. The
  * identity is measured again and stored (audited), the pools follow its key, and the library
  * comes back with a full scan (`trigger: mount`; rows the new volume lacks go missing).
+ *
+ * Decision 18 (never mark missing when unsure), the Tasks 9–11 review: the root is probed
+ * first, and a root that is unmounted or empty is refused (`LIBRARY_ROOT_SUSPECT`) unless
+ * `force`: accepting it would drop the whole library. Until a full scan succeeds, a root listing
+ * that would mark more than half of its directories missing is held instead
+ * (`ROOT_DROP_SUSPECT`, the library offline); accepting again with `force` confirms it.
  */
-export async function acceptVolume(svc: LibraryService, id: string, actor: Actor): Promise<LibraryView> {
+export async function acceptVolume(svc: LibraryService, id: string, actor: Actor, opts: { readonly force?: boolean } = {}): Promise<LibraryView> {
   const row = svc.registry.get(id);
   if (row === undefined) throw notFound(id);
+  const force = opts.force === true;
+  const probe = await exec(svc.registry.probe(row, RECHECK_PROBE_MS));
+  if (!force && (probe.state === "unmounted" || probe.state === "empty")) {
+    throw new FinError({
+      code: "LIBRARY_ROOT_SUSPECT",
+      message: "the root looks unmounted or empty: accepting it would mark the whole library missing (pass force to accept it anyway)",
+      details: { id, state: probe.state },
+    });
+  }
   const identity = await exec(svc.registry.measure(row));
   svc.registry.setVolume(id, identity, actor);
   const updated = svc.registry.get(id)!;
   svc.book.add(updated);
+  await exec(svc.deps.catalogs.indexer.setDropGuard(id, !force));
+  // Any offline reason but an unusable catalog (`CATALOG_*`, kept by `goOnline`) gives way to the accept.
   if (updated.state === "offline") await svc.goOnline(id);
   else await svc.submitScan(id, { mode: "full", trigger: "demand" });
   return svc.view(svc.registry.get(id) ?? updated);

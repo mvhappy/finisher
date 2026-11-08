@@ -215,25 +215,35 @@ describe("watches", () => {
     h.emitWatch({ type: "watch", lib: lib.id, dirs: [], all: true });
     await settle();
     expect(scans(h, "poll")).toHaveLength(1);
-    await finishAll(h);
-    expect(h.journal.map((j) => (j.payload as { trigger: string }).trigger)).toContain("watch");
+    // A watch rescan that found something is journaled; one that found nothing is only counted.
+    const [dirsJob, pollJob] = h.active().map((j) => j.id);
+    h.svc.kindEvents.batchApplied?.(lib.id, dirsJob!, { ...emptyCounts(), added: 1, transactions: 1 });
+    await h.finish(dirsJob!);
+    await h.finish(pollJob!);
+    expect(h.journal.map((j) => (j.payload as { trigger: string }).trigger)).toEqual(["watch"]);
+    expect(h.svc.status(lib.id).noChangePolls).toBe(1);
   });
 
   test("watch_overflow_degrades_to_5min_polls", async () => {
     const h = await rig();
     const lib = await h.add("/data/media", {}, "local");
-    // Watched: no polls at all.
-    await h.time.advance(7 * H);
+    // Watched: only the 6-hour safety-net poll.
+    await h.time.advance(6 * H - S);
     expect(scans(h, "poll")).toHaveLength(0);
+    await h.time.advance(S);
+    expect(scans(h, "poll")).toHaveLength(1);
+    await finishAll(h);
+    await h.time.advance(H);
+    expect(scans(h, "poll")).toHaveLength(1);
     h.emitWatch({ type: "watchDegraded", lib: lib.id, reason: "ENOSPC" });
     await settle();
     expect(h.svc.status(lib.id)).toMatchObject({ watch: "degraded", watchReason: "ENOSPC" });
     expect(h.svc.view(h.registry.get(lib.id)!).warnings).toContainEqual({ code: "WATCH_DEGRADED" });
     await h.time.advance(5 * MIN);
-    expect(scans(h, "poll")).toHaveLength(1);
+    expect(scans(h, "poll")).toHaveLength(2);
     await finishAll(h);
     await h.time.advance(5 * MIN);
-    expect(scans(h, "poll")).toHaveLength(2);
+    expect(scans(h, "poll")).toHaveLength(3);
   });
 });
 
@@ -281,6 +291,21 @@ describe("journal", () => {
       const lines = page.lines as Envelope[];
       expect(lines).toHaveLength(1);
       expect(lines[0]).toMatchObject({ kind: "library.scan", source: "finisherd", payload: { storage: "sync", trigger: "watch", missing: 1 } });
+      // The payload is closed: an unknown field is refused (logged, never thrown), and nothing lands.
+      const good = libraryScanPayload({ storage: "local", mode: "full", trigger: "add", outcome: "succeeded", applied: emptyCounts(), micros: 1 });
+      for (const extra of [{ library: "01abc" }, { path: "/nas/Secret Show" }, { files: 3, extra: true }]) {
+        recordScan(journal, { ...good, ...extra } as typeof good, (m) => refused.push(m));
+      }
+      expect(refused).toHaveLength(3);
+      for (const m of refused) expect(m).toMatch(/refused a library\.scan/);
+      const after = JSON.parse(await journal.export(JSON.stringify({ kinds: ["library.scan"] }), null, 10)) as ExportPage;
+      expect(after.lines).toHaveLength(1);
+      // Past `recordScan`, the journal's typed decode drops them: they never reach the disk.
+      journal.record("library.scan", 1, null, JSON.stringify({ ...good, library: "01abc", path: "/nas/Secret Show" }), "finisherd");
+      const direct = JSON.parse(await journal.export(JSON.stringify({ kinds: ["library.scan"] }), null, 10)) as ExportPage;
+      expect(direct.lines).toHaveLength(2);
+      const text = JSON.stringify(direct.lines);
+      for (const leaked of ["01abc", "Secret", "library\""]) expect(text).not.toContain(leaked);
     } finally {
       await journal.close();
       rmSync(dir, { recursive: true, force: true });

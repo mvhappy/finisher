@@ -7,6 +7,8 @@
 // The set is memory only: at start the pump rebuilds it from the catalogs' `queued`/`running`
 // rows (`stages.jobId`) and the engine's active probe jobs.
 
+import type { JobView } from "@finisher/contracts";
+
 const stageKey = (fp: string, stage: string): string => `s\u0000${stage}\u0000${fp}`;
 const probeKey = (library: string, fileId: number): string => `p\u0000${library}\u0000${fileId}`;
 
@@ -31,6 +33,9 @@ export interface JobClaim {
   readonly waiters: Map<string, Map<string, number>>;
   /** Cancelled by the pump (offline, paused): items return to pending, no attempt is spent. */
   free: boolean;
+  /** Its `queued` rows are being written: an end is held in `ended` until they are. */
+  recording?: boolean;
+  ended?: JobView;
 }
 
 export class InFlight {

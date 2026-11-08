@@ -37,6 +37,8 @@ export function liveRoots(): string {
 
 export interface LiveRigOptions {
   readonly watchQuietMs?: number;
+  /** `fs.inotify.max_user_watches` as the indexer's watches see it. */
+  readonly watchMaxUserWatches?: number;
   /** More kinds (the stage tests' `test.stage`). */
   readonly register?: (kinds: KindRegistry) => void;
   /** The service's clock and timers (the engine keeps real time). */
@@ -51,7 +53,9 @@ export async function liveRig(opts: LiveRigOptions = {}): Promise<LiveRig> {
   const jobsRoot = join(serverData, "jobs");
   mkdirSync(jobsRoot, { recursive: true, mode: 0o700 });
   const control = openControlStore(serverData, { serverId: "sid-test", checkpoint: false });
-  const catalogs = await startCatalogThreads({ serverData, jobsRoot, testHooks: true, ...(opts.watchQuietMs === undefined ? {} : { watchQuietMs: opts.watchQuietMs }) });
+  const catalogs = await startCatalogThreads({ serverData, jobsRoot, testHooks: true, ...(opts.watchQuietMs === undefined ? {} : { watchQuietMs: opts.watchQuietMs }),
+    ...(opts.watchMaxUserWatches === undefined ? {} : { watchMaxUserWatches: opts.watchMaxUserWatches }),
+  });
   const journal: LiveRig["journal"] = [];
   const wiring = libraryWiring({
     serverData,

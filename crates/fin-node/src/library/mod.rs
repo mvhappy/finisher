@@ -8,7 +8,9 @@
 //!   root's [`fin_library::RootState`] against its stored identity, one outstanding stat per
 //!   root (`fin_library::root_state` is single-flight; [`rootprobe`]);
 //! - [`library_probe_status`]: how many roots' latest probe timed out;
-//! - [`library_probe_version`]: `fin_probe::PROBE_VERSION`, for the catalog.
+//! - [`library_probe_version`]: `fin_probe::PROBE_VERSION`, for the catalog;
+//! - [`library_watch_start`] (Linux): a local root's per-directory inotify watch, on a thread
+//!   of its own (`fin_library::watch`).
 //!
 //! Nothing here opens a file under a root, and nothing writes there. Values cross as JSON
 //! strings, like the rest of this crate.
@@ -28,6 +30,9 @@ use serde_json::json;
 use crate::{encode, reject};
 
 mod rootprobe;
+mod watch;
+
+pub use watch::{LibraryWatch, library_watch_start};
 
 /// This module's own results (`Result` here is napi's).
 type CoreResult<T> = std::result::Result<T, CoreError>;

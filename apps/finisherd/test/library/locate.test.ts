@@ -65,6 +65,12 @@ describe("locate", () => {
     expect(await Effect.runPromise(rig.svc.locate({ path: "/mnt/media/sub/a.png" }))).toMatchObject({ fileId: a.id, match: "alias" });
     expect(await Effect.runPromise(rig.svc.locate({ path: "\\\\SERVER\\media\\sub\\a.png" }))).toMatchObject({ fileId: a.id, match: "alias" });
     expect(await Effect.runPromise(rig.svc.locate({ fingerprint: a.fp! }))).toMatchObject({ fileId: a.id, match: "fingerprint" });
+    // A caller's reach filters the libraries searched: by path, by alias and by content alike.
+    const none = () => false;
+    expect(await Effect.runPromise(rig.svc.locate({ path: join(root, "sub", "a.png") }, none))).toBeUndefined();
+    expect(await Effect.runPromise(rig.svc.locate({ path: "/mnt/media/sub/a.png" }, none))).toBeUndefined();
+    expect(await Effect.runPromise(rig.svc.locate({ fingerprint: a.fp! }, none))).toBeUndefined();
+    expect(await Effect.runPromise(rig.svc.locate({ fingerprint: a.fp! }, (id) => id === lib))).toMatchObject({ fileId: a.id });
     // A path nobody holds falls through to the fingerprint.
     expect(await Effect.runPromise(rig.svc.locate({ path: "/elsewhere/a.png", fingerprint: a.fp! }))).toMatchObject({ fileId: a.id, match: "fingerprint" });
     // A full hash, once `library.hash` stored it.

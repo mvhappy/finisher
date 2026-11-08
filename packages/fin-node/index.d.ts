@@ -507,6 +507,23 @@ export declare function libraryProbeStatus(): { stuckProbes: number };
 
 /** `fin_probe::PROBE_VERSION`: the probe version the catalog stores per file (a file probed at an older one is probed again). */
 export declare function libraryProbeVersion(): number;
+
+/** A running watch of one library root (`libraryWatchStart`). */
+export interface LibraryWatch {
+  /** Stops the watch (idempotent): no message is delivered after it returns. */
+  close(): void;
+}
+
+/**
+ * Linux only (other systems throw `WATCH_UNSUPPORTED`): watches a local library root with one
+ * inotify watch per directory, on the root's mount only (nested mounts and automount points
+ * are not descended into, nothing is triggered), never a dot-directory, at most `maxWatches`
+ * directories, on a thread of its own. `callback` gets JSON strings on the calling thread:
+ * `{ ready: number }` after the first walk, `{ dirs: RawRel[] }` (directories whose entries
+ * changed), `{ all: true }` (events were lost: poll everything), `{ failed: code }` (the watch
+ * stopped: `WATCH_LIMIT`, `ENOSPC`, `EACCES`, `WATCH_ROOT_GONE`, …). Opens no file.
+ */
+export declare function libraryWatchStart(root: string, maxWatches: number, callback: (json: string) => void): LibraryWatch;
 // The job host and the job params helpers (`jobhost.js`).
 export * from "./jobhost.js";
 

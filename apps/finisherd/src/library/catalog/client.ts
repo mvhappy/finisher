@@ -41,6 +41,8 @@ export interface CatalogThreadsOptions {
   readonly testHooks?: boolean;
   /** Quiet time before a watch hint is posted (default 2 s, Decision 30). */
   readonly watchQuietMs?: number;
+  /** `fs.inotify.max_user_watches` as the indexer's watches see it (tests). */
+  readonly watchMaxUserWatches?: number;
 }
 
 /** A thread's health: `dead` once it exited or failed after start. */
@@ -286,6 +288,12 @@ export interface IndexerClient {
    */
   setOffline(lib: string, offline: boolean): Effect.Effect<{ offline: boolean }, FinError>;
   /**
+   * Turns the mass-drop guard on (an accepted volume) or off (a full scan succeeded, or the
+   * owner confirmed): while on, a root listing that would mark more than half of the root's
+   * directories missing fails with `ROOT_DROP_SUSPECT` and marks nothing.
+   */
+  setDropGuard(lib: string, on: boolean): Effect.Effect<{ on: boolean }, FinError>;
+  /**
    * Watches a local root in the indexer thread (Decision 30; the catalog must be open). Hints
    * and degradations arrive through `Catalogs.onWatch`. `{ok: false, reason}`: the OS refused.
    */
@@ -388,6 +396,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         ...(opts.txRows === undefined ? {} : { txRows: opts.txRows }),
         ...(opts.testHooks === true ? { testHooks: true } : {}),
         ...(opts.watchQuietMs === undefined ? {} : { watchQuietMs: opts.watchQuietMs }),
+        ...(opts.watchMaxUserWatches === undefined ? {} : { watchMaxUserWatches: opts.watchMaxUserWatches }),
       },
       onFatal,
     ),
@@ -436,6 +445,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     purgeMissing: (lib, cutoff) => fx(() => indexer.call("purgeMissing", { lib, before: cutoff.before, beforeGen: cutoff.beforeGen })),
     testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
     setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
+    setDropGuard: (lib, on) => fx(() => indexer.call("setDropGuard", { lib, on })),
     watch: (lib, root) => fx(() => indexer.call("watch", { lib, root })),
     unwatch: (lib) => fx<void>(async () => void (await indexer.call("unwatch", { lib }))),
     watchFault: (lib) => fx(() => indexer.call("watchFault", { lib })),

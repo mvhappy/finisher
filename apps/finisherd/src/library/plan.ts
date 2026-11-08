@@ -7,9 +7,9 @@
 //   due**, so an unused NAS wakes at most at the 6-hour ticks.
 // - **Sync roots** poll at their interval (default 10 minutes) and scan fully daily, the same
 //   way (Decision 29).
-// - **Local roots** are watched (Decision 30): no polls while the watch is healthy, 5-minute
-//   polls once it degraded; a full scan weekly, when due. A fixed `poll` interval always wins
-//   (a degraded watch caps it at 5 minutes).
+// - **Local roots** are watched (Decision 30): a safety-net poll every 6 hours while the watch
+//   is healthy, 5-minute polls once it degraded; a full scan weekly, when due. A fixed `poll`
+//   interval always wins (a degraded watch caps it at 5 minutes).
 // - **Offline** libraries are only re-probed, every 60 s (Decision 18); **paused** ones do
 //   nothing.
 // - At most one job per pool kind per library: no full scan while one runs, no poll while one
@@ -59,8 +59,9 @@ export function pollInterval(lib: Pick<PlanLibrary, "storage" | "scan" | "watch"
   if (lib.storage === "local") {
     if (lib.watch === "degraded") return Math.min(fixed ?? DEGRADED_POLL_MS, DEGRADED_POLL_MS);
     if (fixed !== undefined) return fixed;
-    // Watched: changes arrive as hints. Without a watcher (it could not start), demand cadence.
-    return lib.watch === "ok" ? undefined : inUse ? IN_USE_POLL_MS : IDLE_POLL_MS;
+    // Watched: changes arrive as hints, and a safety-net poll every 6 hours catches what a
+    // watch cannot see. Without a watcher (offline, not started yet), demand cadence.
+    return lib.watch === "ok" || !inUse ? IDLE_POLL_MS : IN_USE_POLL_MS;
   }
   return fixed ?? (inUse ? IN_USE_POLL_MS : IDLE_POLL_MS);
 }

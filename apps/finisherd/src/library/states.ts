@@ -56,4 +56,4 @@ export const identityOf = (s: Extract<RootState, { state: "online" }>): VolumeId
 export const sameVolume = (a: VolumeIdentity, b: VolumeIdentity): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** Offline reasons shown as `library.status` warnings. */
-export const WARNING_REASONS = new Set(["ROOT_EMPTY_SUSPECT", "ROOT_UNMOUNTED", "ROOT_VOLUME_CHANGED", "RESOURCE_STUCK", "CATALOG_TOO_NEW"]);
+export const WARNING_REASONS = new Set(["ROOT_EMPTY_SUSPECT", "ROOT_DROP_SUSPECT", "ROOT_UNMOUNTED", "ROOT_VOLUME_CHANGED", "RESOURCE_STUCK", "CATALOG_TOO_NEW"]);

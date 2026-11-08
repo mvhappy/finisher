@@ -151,9 +151,13 @@ export interface Libraries {
   /**
    * A path under a library root or one of its aliases (by `relKey`; several rows →
    * `PATH_AMBIGUOUS`), else a fingerprint, else a full hash; nothing when no library holds it.
-   * `INVALID_PATH` for a relative path or one with `.`/`..` components.
+   * `INVALID_PATH` for a relative path or one with `.`/`..` components. `reach`: only the
+   * libraries it answers `true` for are searched (a caller's reach; aliases never grant any).
    */
-  locate(ref: { readonly path?: string; readonly fingerprint?: string; readonly fullHash?: string }): Effect.Effect<Located | undefined, FinError>;
+  locate(
+    ref: { readonly path?: string; readonly fingerprint?: string; readonly fullHash?: string },
+    reach?: (library: string) => boolean,
+  ): Effect.Effect<Located | undefined, FinError>;
   /** Registers a stage (throws on an invalid spec or a duplicate name). */
   registerStage(spec: StageSpec): void;
   /** Runs `stage` for `fp` now at `normal` priority, after its dependencies (Decision 41). */

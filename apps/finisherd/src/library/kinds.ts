@@ -179,7 +179,7 @@ export function registerLibraryKinds(registry: KindRegistry, deps: LibraryKindsD
       return Effect.fail(new FinError({ code: "INTERNAL", message: "the probe's attempt has no prepared files", details: { job: ctx.job.id } }));
     }
     const lib = (ctx.job.params as LibraryProbeParams).library;
-    return Effect.try({ try: () => planProbed(decodeProbed(params, PROBED_MAX), expected), catch: toFinError }).pipe(
+    return Effect.try({ try: () => planProbed(decodeProbed(params, PROBED_MAX, libraryProbeVersion()), expected), catch: toFinError }).pipe(
       Effect.flatMap((plan) => {
         if (plan.rescan.length > 0) deps.events?.rescan?.(lib, plan.rescan);
         if (plan.rows.length === 0) return Effect.succeed({ updated: 0, stale: 0, moved: [] } satisfies ProbedApplied);
