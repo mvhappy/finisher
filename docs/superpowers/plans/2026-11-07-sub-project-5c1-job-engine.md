@@ -1060,7 +1060,7 @@ Decisions 31, 32.
 
 **Interfaces:** `JobEngine.warm(family)` live; `workers()` lists warm workers `{family, key, pid, state: spawning|ready|busy|retiring, served, ageS, idleS, memory}`. Decisions 6, 23, 31 (`oomWarm`), 35, 36; spec §6.3.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - `back_to_back_on_one_process` (100 `test.warm` jobs: one pid, `served` 1…100);
   - **`dispatch_p99_under_5ms_under_load`** (submit → `start` enqueued for 1,000 `test.warm` jobs while 10,000 cold `test.sleep` jobs are queued and 4 cold spawns are in flight; asserts ≤ 5 ms p99 on Linux, records the others), `ready_worker_bypasses_schedule` (a spy on `schedule()` sees no call for a direct hand-off);
   - `first_submit_prewarms`, `warm_family_starts_one_ahead`, `slots_default_one_max_two`;
@@ -1074,8 +1074,8 @@ Decisions 31, 32.
   - `warm_key_separates_workers` (`testplugin` with keys A and B: two workers, never crossed), `full_pool_retires_longest_idle_key`;
   - `fresh_and_reused_results_equal` (the same `test.warm` params on a fresh and on a reused worker give equal results apart from `pid`/`served`, the family contract of spec §6.3);
   - `warm_kind_at_normal_priority_runs_cold`, `memory_limit_is_the_interactive_rule`, `close_shuts_down_warm_workers`.
-- [ ] **Step 2: Implement.** `warm.ts` ≤ 550 lines (split `warm-keys.ts` if needed).
-- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): warm interactive worker pools with keys, expiry and recycling`.
+- [x] **Step 2: Implement.** `warm.ts` ≤ 550 lines (split `warm-keys.ts` if needed).
+- [x] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): warm interactive worker pools with keys, expiry and recycling`.
 
 ### Task 12: Wiring, `finisherd`-death tests, the spawn gate and budgets — tier: sonnet — after Task 11
 

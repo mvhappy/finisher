@@ -83,13 +83,14 @@ export function registerTestKinds(
     diagKinds: ["test.diag"],
     ...(opts.families?.test ?? {}),
   });
-  registry.registerFamily({ family: "testbad", profile: "worker", program: { binary: "fin-workers", args: ["testbad"] } });
+  registry.registerFamily({ family: "testbad", profile: "worker", program: { binary: "fin-workers", args: ["testbad"] }, ...(opts.families?.testbad ?? {}) });
   registry.registerFamily({
     family: "testplugin",
     profile: "plugin",
     program: { path: join(opts.binaryDir, exe), args: ["testplugin"] },
     warmKey: (job) => (job.params as TestPluginMinorParams).key ?? "",
     pluginId: "test.plugin",
+    ...(opts.families?.testplugin ?? {}),
   });
   registry.registerHelper({
     kind: "codec",
