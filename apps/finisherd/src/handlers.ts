@@ -9,6 +9,7 @@ import { CredentialsTag } from "./auth/credentials.ts";
 import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
 import { deviceHandlers } from "./auth/device-rpc.ts";
+import { PairingTag } from "./auth/pairing.ts";
 import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
 import { envHandlers } from "./env/rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
@@ -77,6 +78,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const agents = yield* AgentCoreTag;
     const agentRuntime = yield* AgentRuntimeTag;
     const environment = yield* EnvironmentTag;
+    const pairing = yield* PairingTag;
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -398,7 +400,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
       // 5B: pairing, devices, settings writes and the environment.
-      ...deviceHandlers({ guard }),
+      ...deviceHandlers({ guard, pairing }),
       ...envHandlers({ guard, env: environment }),
     }), {
       connections,

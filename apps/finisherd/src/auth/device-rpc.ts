@@ -5,7 +5,10 @@
 // control chain (`devices.ts`).
 import type { FinError } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
-import { finError } from "../errors.ts";
+import type { Principal } from "@finisher/contracts";
+import { chainOf } from "../chain/chain.ts";
+import { finError, toFinError } from "../errors.ts";
+import type { Pairing } from "./pairing.ts";
 import "./devices.ts";
 
 const notYet = (tag: string): FinError =>
@@ -16,12 +19,27 @@ type Guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => Effect.
 const unary = (guard: Guard, tag: string) => () => guard(tag, Effect.fail(notYet(tag)));
 const stream = (tag: string) => () => Stream.fail(notYet(tag));
 
-export function deviceHandlers({ guard }: { readonly guard: Guard }) {
+/** The principal the chain bound to this call. */
+const principalOf = (options: object): Principal => {
+  const p = chainOf(options)?.principal;
+  if (p === undefined) throw new Error("a pairing call reached its handler without the chain");
+  return p;
+};
+
+export function deviceHandlers({ guard, pairing }: { readonly guard: Guard; readonly pairing: Pairing }) {
+  const run = <A>(tag: string, f: () => A) => guard(tag, Effect.try({ try: f, catch: toFinError }));
   return {
-    "auth.pair.offer": unary(guard, "auth.pair.offer"),
-    "auth.pair.approve": unary(guard, "auth.pair.approve"),
-    "auth.pair.reject": unary(guard, "auth.pair.reject"),
-    "auth.pair.pending": stream("auth.pair.pending"),
+    // Pairing (Task 8): the owner's offers and answers; the chain checked scopes and codes.
+    "auth.pair.offer": (req: { label?: string | undefined; ttlS?: number | undefined; self?: boolean | undefined }, options: object) =>
+      run("auth.pair.offer", () => pairing.offer(principalOf(options), req)),
+    "auth.pair.approve": ({ pendingId }: { pendingId: string }, options: object) =>
+      run("auth.pair.approve", () => ({ device: pairing.approve(principalOf(options), pendingId) })),
+    "auth.pair.reject": ({ pendingId }: { pendingId: string }, options: object) =>
+      run("auth.pair.reject", () => {
+        pairing.reject(principalOf(options), pendingId);
+        return { rejected: true as const };
+      }),
+    "auth.pair.pending": () => pairing.pending(),
     "auth.device.list": unary(guard, "auth.device.list"),
     "auth.device.rename": unary(guard, "auth.device.rename"),
     "auth.device.revoke": unary(guard, "auth.device.revoke"),
