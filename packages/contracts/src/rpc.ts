@@ -1,11 +1,6 @@
 import type {
-  AudioPlan,
   CommittedTx,
   EngineEvent,
-  FontCatalog,
-  FontsPlan,
-  FontsStatus,
-  FramePlan,
   Probe,
   Project,
   Tx,
@@ -14,6 +9,20 @@ import type {
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
+import {
+  AudioPlanSchema,
+  EvalAudioPayload,
+  EvalFramePayload,
+  FontCatalogSchema,
+  FontStatusSchema,
+  FontsFetchPayload,
+  FontsPlanPayload,
+  FontsPlanSchema,
+  FramePlanSchema,
+  MediaCapabilitiesSuccess,
+  MediaLookPayload,
+  MediaLookSuccess,
+} from "./media.ts";
 import {
   AgentApprovalAnswerPayload,
   AgentApprovalAnswerSuccess,
@@ -360,6 +369,7 @@ export const ProjectEventSchema = Schema.Union([
 export type ProjectEvent = Exclude<EngineEvent, { type: "applied" } | { type: "lagged" } | { type: "collect" }>;
 
 export { TxSetAsideSchema };
+export * from "./media.ts";
 export const TxGetPayload = Schema.Struct({ projectId: Schema.String, txId: Schema.String });
 /** `tx.get`: the `CommittedTx`, a set-aside record, or `null` when the server never saw it. */
 export const TxGetSuccess = Schema.NullOr(Schema.Union([TxSetAsideSchema, CommittedTxSchema]));
@@ -377,94 +387,6 @@ export const OpsSubscribePayload = Schema.Struct({
   generation: GenerationSchema,
 });
 
-/**
- * Plan 4C Decisions 40–43: evaluation runs on the server. `branch` defaults to `main` (an id,
- * a name or `<name>#<id>`), `timeline` to the main (first) timeline; times are rational
- * strings (`"12"`, `"1001/30000"`). Captions are measured with the server's shared measurer
- * from the project's pinned font bytes; a caption whose bytes are missing is unmeasured
- * (`layout: null`, `unmeasured`), never an error.
- */
-export const EvalFramePayload = Schema.Struct({
-  projectId: Schema.String,
-  branch: Schema.optional(Schema.String),
-  timeline: Schema.optional(Schema.String),
-  at: Schema.String,
-});
-export const EvalAudioPayload = Schema.Struct({
-  projectId: Schema.String,
-  branch: Schema.optional(Schema.String),
-  timeline: Schema.optional(Schema.String),
-  from: Schema.String,
-  to: Schema.String,
-});
-/**
- * Plan 6A Task 13: frames of a timeline as PNGs, rendered by a `media.look` job on the media
- * worker. `at`: 1 to 64 rational times (`"12"`, `"1001/30000"`, canonical; past the timeline's
- * end is `INVALID_RANGE`). `branch` defaults to `main`, `timeline` to the first. `out`: an
- * absolute folder for the files (`workspace/shared/look/` of the project when absent; never
- * inside `.finisher/`, `assets/` or the server's data, `EXPORT_DESTINATION`); naming it needs
- * `project.write` on top of `project.read` and `jobs.submit`, and a principal with roots writes
- * only inside its project's folder. `size`: each side 1 to 8192 (the timeline's resolution when
- * absent). `wait` (default true) answers the `LookResult` (frames with their final paths, what
- * was `skipped`, the adapter) once the job finished, or its error; `wait: false` answers
- * `{job}` at once.
- */
-export const MediaLookPayload = Schema.Struct({
-  projectId: Schema.String,
-  branch: Schema.optional(Schema.String),
-  timeline: Schema.optional(Schema.String),
-  at: Schema.Array(Schema.String),
-  out: Schema.optional(Schema.String),
-  size: Schema.optional(Schema.Struct({ width: Schema.Number, height: Schema.Number })),
-  wait: Schema.optional(Schema.Boolean),
-});
-/** The generated `LookResult` (`wait`), or `{job}` (the job's view: `wait: false`). */
-export const MediaLookSuccess = Schema.Unknown;
-/** The generated `MediaCapabilities`: `{codecs, gpu, worker}`. */
-export const MediaCapabilitiesSuccess = Schema.Unknown;
-/** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
-export const FramePlanSchema = Schema.Unknown;
-export const AudioPlanSchema = Schema.Unknown;
-export type FramePlanPayload = FramePlan;
-export type AudioPlanPayload = AudioPlan;
-
-/** fin-fonts' `FontCatalog`: the catalog this server fetches from. */
-export const FontCatalogSchema = Schema.Unknown;
-export type FontCatalogPayload = FontCatalog;
-/**
- * fin-fonts' `FontsStatus`: every font file's state in this server (`cached | missing |
- * queued | fetching {bytes, total} | failed {reason, retryAtMs}`), `autoFetch` and
- * `damaged`. A project's own font summary is in `project.status` (`fonts {missing, fetching,
- * failed}`, warnings `FONT_MISSING`, `FONT_FETCH_FAILED`, `FONTS_DAMAGED`).
- */
-export const FontStatusSchema = Schema.Unknown;
-export type FontStatusPayload = FontsStatus;
-/**
- * `fonts.fetch`: fetch now and wait (background fetching being off does not stop it).
- * `sha256`: catalog files; `entries`: catalog entry ids (each of their styles); `keys`: font
- * keys `<family>|<weight>|<normal|italic>` (the catalog's face); `pinned`: a project id
- * (what its branches pin). Fails with `FONT_FETCH_FAILED` (`details {key, entry, style,
- * sha256, reason, retryAt}`), `FONT_NOT_IN_CATALOG`, `PROJECT_NOT_FOUND`, `FONTS_DAMAGED`.
- */
-export const FontsFetchPayload = Schema.Struct({
-  sha256: Schema.optional(Schema.Array(Schema.String)),
-  entries: Schema.optional(Schema.Array(Schema.String)),
-  keys: Schema.optional(Schema.Array(Schema.String)),
-  pinned: Schema.optional(Schema.String),
-});
-/**
- * `fonts.plan` (Decision 35): the `font.pin` ops a client prepends to its own tx of `ops`
- * before committing it; `notes` list faces or scripts the catalog cannot pin. The server
- * applies `ops` to a copy of the head (a tx that cannot apply fails here as at commit) and
- * never alters a client's tx. Planned files are fetched.
- */
-export const FontsPlanPayload = Schema.Struct({
-  projectId: Schema.String,
-  branch: Schema.String,
-  ops: Schema.Array(Schema.Unknown),
-});
-export const FontsPlanSchema = Schema.Unknown;
-export type FontsPlanResult = FontsPlan;
 
 export const FinRpcs = RpcGroup.make(
   Rpc.make("server.hello", {

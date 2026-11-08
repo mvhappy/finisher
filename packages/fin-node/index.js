@@ -9,7 +9,14 @@ export {
   validateJobParams,
   workersBinaryPath,
 } from "./jobhost.js";
-export { libraryProbeFile } from "./library.js";
+export {
+  libraryCanonicalRoot,
+  libraryProbeFile,
+  libraryProbeRoot,
+  libraryProbeStatus,
+  libraryProbeVersion,
+  libraryWatchStart,
+} from "./library.js";
 export { PipeServer } from "./pipe.js";
 
 export class Engine {
@@ -501,26 +508,6 @@ export function probeBeneath(root, path) {
 
 export function commitJobOutput(from, to, maxBytes, copy) {
   return call(native.commitJobOutput(from, to, maxBytes, copy ?? null));
-}
-
-export function libraryCanonicalRoot(path, serverData, timeoutMs) {
-  return call(native.libraryCanonicalRoot(path, serverData, timeoutMs ?? null));
-}
-
-export function libraryProbeRoot(root, identityJson, timeoutMs) {
-  return call(native.libraryProbeRoot(root, identityJson, timeoutMs ?? null));
-}
-
-export function libraryProbeStatus() {
-  return native.libraryProbeStatus();
-}
-
-export function libraryProbeVersion() {
-  return native.libraryProbeVersion();
-}
-
-export function libraryWatchStart(root, maxWatches, callback) {
-  return sync(() => native.libraryWatchStart(root, maxWatches, callback));
 }
 
 /** The plugin store and registries of a server (`registry.js`). */
