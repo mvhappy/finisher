@@ -73,6 +73,9 @@ export function describeMint(kind: CredentialKind, label: string, scopes: Readon
   );
 }
 
+/** What `fin` needs beside an agent credential (7A Decision 14b and the 8b review): it reads no server data. */
+const FIN_UNDER_AGENT = "Under it fin also needs FIN_SERVER (the server's socket, in finisherd.json) and FIN_PROJECT_DIR (the project's folder).";
+
 export async function mint(ctx: CommandContext, kind: CredentialKind, rest: ReadonlyArray<string>): Promise<number> {
   const command = kind === "agent" ? "agent mint" : "mcp setup";
   onlyFlags(ctx.args, command, ["label", "scope", "project", "branch", "idle", "absolute", "out"]);
@@ -135,10 +138,12 @@ export async function mint(ctx: CommandContext, kind: CredentialKind, rest: Read
     ctx.output.out(`Minted ${credential.kind} credential ${credential.id} ("${credential.label}"). Its file, shown this once:`);
     ctx.output.out(JSON.stringify(minted.file));
     ctx.output.out("Save it as a file only you can read, and point the harness's FIN_CREDENTIAL variable at that file.");
+    if (kind === "agent") ctx.output.out(FIN_UNDER_AGENT);
     return 0;
   }
   ctx.output.out(`Minted ${credential.kind} credential ${credential.id} ("${credential.label}") into ${file.path}.`);
   ctx.output.out(`Point the ${kind === "agent" ? "harness's" : "MCP adapter's"} FIN_CREDENTIAL variable at that file.`);
+  if (kind === "agent") ctx.output.out(FIN_UNDER_AGENT);
   return 0;
 }
 
