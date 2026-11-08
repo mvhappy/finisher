@@ -518,7 +518,9 @@ fn config_h(t: &Target, asm: Asm, p: &Arm64Probes) -> String {
     if let Some(l) = &p.arch_level {
         writeln!(s, "#define AS_ARCH_LEVEL {l}").expect("a string");
     }
-    if unix {
+    // meson defines `PIC` only for arm assembly, when the compiler builds position-independent
+    // code (`check_pic_code`; cc passes `-fPIC` there). nasm takes it from `config.asm`.
+    if asm == Asm::Aarch64 {
         s.push_str("#define PIC 3\n");
     }
     if t.apple() {

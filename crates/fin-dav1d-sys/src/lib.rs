@@ -83,3 +83,21 @@ unsafe extern "C" {
         out: *mut FinDav1dSequence,
     ) -> i32;
 }
+
+#[cfg(test)]
+mod tests {
+    /// The build's `config.h` defines `PIC` only where meson's would: arm targets with
+    /// assembly (none on MSVC aarch64).
+    #[test]
+    fn config_h_defines_pic_only_for_arm_assembly() {
+        let config = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/gen/config.h"))
+            .expect("build.rs writes config.h");
+        let arm_asm = cfg!(all(target_arch = "aarch64", not(target_env = "msvc")));
+        let pic: Vec<&str> = config
+            .lines()
+            .filter(|l| l.starts_with("#define PIC "))
+            .collect();
+        let want: &[&str] = if arm_asm { &["#define PIC 3"] } else { &[] };
+        assert_eq!(pic, want, "{config}");
+    }
+}
