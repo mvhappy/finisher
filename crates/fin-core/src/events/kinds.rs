@@ -210,7 +210,7 @@ registry! {
     AgentTurn(p::AgentTurn) = "agent.turn" v 1 training_only true via wa::AgentTurnIn [Agent];
     AgentToolCall(p::AgentToolCall) = "agent.toolCall" v 1 training_only true via wa::AgentToolCallIn [Agent];
     AgentToolResult(p::AgentToolResult) = "agent.toolResult" v 1 training_only true via wa::AgentToolResultIn [Agent];
-    AgentApproval(p::AgentApproval) = "agent.approval" v 1 [Agent];
+    AgentApproval(p::AgentApproval) = "agent.approval" v 1 via wa::AgentApprovalIn [Agent];
     UiAction(p::UiAction) = "ui.action" v 0 [Ui];
     ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 0 [Ui];
 }
@@ -261,6 +261,7 @@ impl Payload for p::AgentTurn {
     }
 
     fn strip_content(&mut self) {
+        self.body_blake3 = None;
         self.messages_delta = None;
         self.output = None;
         self.system = None;

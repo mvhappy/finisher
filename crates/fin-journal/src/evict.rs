@@ -2,12 +2,18 @@
 //! every other entry of an agent session it held (`ctx.actor.session`) goes too, oldest first,
 //! and later entries of that session are not written, so the store never keeps half a
 //! conversation. Off ([`crate::JournalOptions::whole_sessions`]), nothing here runs.
+//!
+//! The evicted sessions are kept in `state.json` (`evictedSessions`, written before the
+//! rewrite), so late entries of one are still dropped after a restart (Task 10 review M2). The
+//! rewrite looks only at files holding one of the sessions' ids, and parses only the lines that
+//! do.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::io::{self, ErrorKind};
 
 use fin_core::events::{Ctx, Envelope};
+use serde_json::{Map, Value};
 
 use crate::control::Pending;
 use crate::files::{self, FileMeta};
@@ -23,7 +29,30 @@ pub(crate) struct Evicted {
     set: BTreeSet<String>,
 }
 
+/// The `state.json` key of the evicted sessions (oldest first).
+pub(crate) const EVICTED_KEY: &str = "evictedSessions";
+
 impl Evicted {
+    /// The sessions a previous run evicted (`state.json`'s [`EVICTED_KEY`]; anything else
+    /// there is ignored).
+    pub(crate) fn from_state(other: &Map<String, Value>) -> Evicted {
+        let mut e = Evicted::default();
+        for s in other
+            .get(EVICTED_KEY)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            e.add(s.to_owned());
+        }
+        e
+    }
+
+    fn to_state(&self) -> Value {
+        Value::from(self.order.iter().cloned().collect::<Vec<_>>())
+    }
+
     fn add(&mut self, s: String) {
         if self.set.insert(s.clone()) {
             self.order.push_back(s);
@@ -76,12 +105,21 @@ impl Writer {
         for s in &sessions {
             self.evicted.add(s.clone());
         }
+        // Remembered before the rewrite: a crash in between still drops the late entries.
+        self.state_other
+            .insert(EVICTED_KEY.into(), self.evicted.to_state());
+        self.state_dirty = true;
+        self.persist_meta()?;
         self.flush_buf()?;
         if let Some(f) = self.active.take() {
             files::sync_file(&f)?;
         }
+        let needles: Vec<String> = sessions
+            .iter()
+            .map(|s| format!("\"session\":\"{s}\""))
+            .collect();
         self.rewrite_each(
-            |f| (false, None, f.bytes > 0),
+            |f| (false, &needles[..], f.bytes > 0),
             |e| session_of(e.ctx.as_ref()).is_some_and(|s| sessions.contains(s)),
         )?;
         Ok(())

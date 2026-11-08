@@ -40,6 +40,7 @@ fn result(output: Body) -> fin_core::events::AnyPayload {
         micros: 7,
         tx_ids: vec![],
         attribution: Attribution::Exact,
+        provenance: None,
         truncated: false,
         output: Some(Content(output)),
     }

@@ -1,0 +1,91 @@
+{
+  "turns": [
+    {
+      "turnId": "01JT0000000000000000000000",
+      "delta": {
+        "v": 1,
+        "from": 0,
+        "messages": "[{\"role\":\"user\",\"content\":\"trim the intro\"}]",
+        "keys": [
+          "model",
+          "messages",
+          "tools",
+          "max_tokens",
+          "stream",
+          "stream_options"
+        ],
+        "rest": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "system": "{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"}",
+      "tools": "[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}]",
+      "bodyBlake3": "blake3:2c28e80d60b8596cbbcefc3abe63567a218fb09b5e2f72ed5f6d13c561d2248e",
+      "body": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"messages\":[{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"},{\"role\":\"user\",\"content\":\"trim the intro\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}],\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+    },
+    {
+      "turnId": "01JT0000000000000000000001",
+      "delta": {
+        "v": 1,
+        "from": 1,
+        "baseTurnId": "01JT0000000000000000000000",
+        "messages": "[{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"fin\",\"arguments\":\"{\\\"argv\\\":[\\\"item\\\",\\\"trim\\\",\\\"c1\\\"]}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_1\",\"content\":\"{\\\"txId\\\":\\\"tx\\\"}\"}]",
+        "keys": [
+          "model",
+          "messages",
+          "tools",
+          "max_tokens",
+          "stream",
+          "stream_options"
+        ],
+        "rest": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "system": "{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"}",
+      "tools": "[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}]",
+      "bodyBlake3": "blake3:85b6b3645bfc65b1e319dae13ae1cac900d66e400df939137ee64fa4372c750f",
+      "body": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"messages\":[{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"},{\"role\":\"user\",\"content\":\"trim the intro\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"fin\",\"arguments\":\"{\\\"argv\\\":[\\\"item\\\",\\\"trim\\\",\\\"c1\\\"]}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_1\",\"content\":\"{\\\"txId\\\":\\\"tx\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}],\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+    },
+    {
+      "turnId": "01JT0000000000000000000002",
+      "delta": {
+        "v": 1,
+        "from": 3,
+        "baseTurnId": "01JT0000000000000000000001",
+        "messages": "[{\"role\":\"assistant\",\"content\":\"Trimmed.\"},{\"role\":\"user\",\"content\":\"and the outro\"}]",
+        "keys": [
+          "model",
+          "messages",
+          "tools",
+          "max_tokens",
+          "stream",
+          "stream_options"
+        ],
+        "rest": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "system": "{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"}",
+      "tools": "[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}]",
+      "bodyBlake3": "blake3:29ef5768b2e87e90fdea0e299094338e84c60706aec39cf73c4660bddf6d64de",
+      "body": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"messages\":[{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"},{\"role\":\"user\",\"content\":\"trim the intro\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"fin\",\"arguments\":\"{\\\"argv\\\":[\\\"item\\\",\\\"trim\\\",\\\"c1\\\"]}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_1\",\"content\":\"{\\\"txId\\\":\\\"tx\\\"}\"},{\"role\":\"assistant\",\"content\":\"Trimmed.\"},{\"role\":\"user\",\"content\":\"and the outro\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}],\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+    },
+    {
+      "turnId": "01JT0000000000000000000003",
+      "delta": {
+        "v": 1,
+        "from": 5,
+        "baseTurnId": "01JT0000000000000000000002",
+        "messages": "[{\"role\":\"assistant\",\"content\":\"Trimmed.\"}]",
+        "keys": [
+          "model",
+          "messages",
+          "tools",
+          "max_tokens",
+          "stream",
+          "stream_options"
+        ],
+        "rest": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "system": "{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"}",
+      "tools": "[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}]",
+      "bodyBlake3": "blake3:dd532800d96a64abd6c5654d3b2b16b50caccc15449fde39d00d89137a5fee31",
+      "body": "{\"model\":\"anthropic/claude-sonnet-5.5\",\"messages\":[{\"role\":\"system\",\"content\":\"You are the editor. Use fin.\"},{\"role\":\"user\",\"content\":\"trim the intro\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"fin\",\"arguments\":\"{\\\"argv\\\":[\\\"item\\\",\\\"trim\\\",\\\"c1\\\"]}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_1\",\"content\":\"{\\\"txId\\\":\\\"tx\\\"}\"},{\"role\":\"assistant\",\"content\":\"Trimmed.\"},{\"role\":\"user\",\"content\":\"and the outro\"},{\"role\":\"assistant\",\"content\":\"Trimmed.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"fin\",\"description\":\"Run fin.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"argv\":{\"type\":\"array\"}}}}}],\"max_tokens\":1000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+    }
+  ]
+}

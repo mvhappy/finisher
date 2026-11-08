@@ -111,6 +111,7 @@ impl Writer {
         init: Init,
     ) -> Writer {
         let now = sh.opts.clock.now_ms();
+        let evicted = crate::evict::Evicted::from_state(&init.other);
         Writer {
             sh,
             dir,
@@ -140,7 +141,7 @@ impl Writer {
             state_dirty: init.dirty,
             state_other: init.other,
             session: Default::default(),
-            evicted: Default::default(),
+            evicted,
         }
     }
 

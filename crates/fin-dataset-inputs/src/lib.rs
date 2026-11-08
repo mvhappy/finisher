@@ -6,7 +6,15 @@
 //! `fin-core`, and a test runs the readers against a server-data directory through a spy
 //! [`Files`] that records every path opened.
 //!
-//! Reading goes through [`Files`], so every path the readers touch is observable.
+//! Reading goes through [`Files`], so every path the readers touch is observable. [`dedup`]
+//! applies the duplicate rule of at-least-once delivery; [`replay`] rebuilds a run's exact
+//! request bodies from the trace store's deltas, checked against each turn's `bodyBlake3`.
+
+mod dedup;
+mod replay;
+
+pub use dedup::dedup;
+pub use replay::{ReplayTurn, hash_of, replay};
 
 use std::io;
 use std::path::{Path, PathBuf};

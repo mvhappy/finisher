@@ -753,6 +753,7 @@ dependencies = [
 name = "fin-dataset-inputs"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "fin-core",
  "fin-journal",
  "serde_json",

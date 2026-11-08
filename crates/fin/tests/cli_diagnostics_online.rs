@@ -438,6 +438,33 @@ fn export_is_redacted_for_fin_and_content_needs_a_person() {
     let r = fin(sd, root, &["diagnostics", "export", "--content"]);
     assert_error(&r, 7, "HUMAN_ONLY");
     assert_eq!(r.json["error"]["details"]["scope"], "diagnostics.admin");
+    // `--store agentTraces` reads the agent-trace store (Task 10 review L3), redacted for `fin`
+    // too: its content stays a person's.
+    let (code, out) = raw(
+        sd,
+        root,
+        &["diagnostics", "export", "--store", "agentTraces"],
+        &[],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        !out.contains("error.panic"),
+        "the panic is in the diagnostics journal: {out}"
+    );
+    let r = fin(
+        sd,
+        root,
+        &[
+            "diagnostics",
+            "export",
+            "--store",
+            "agentTraces",
+            "--content",
+        ],
+    );
+    assert_error(&r, 7, "HUMAN_ONLY");
+    let r = fin(sd, root, &["diagnostics", "export", "--store", "nope"]);
+    assert_error(&r, 2, "USAGE");
     // The console, a person, reads what was stored (reading needs no typed code).
     let mut console = Console::open(&server);
     let page = console.call(

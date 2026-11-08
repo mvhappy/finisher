@@ -71,7 +71,7 @@ export function content(serverData: string, body: { inline?: unknown; blob?: { h
   return JSON.parse(readFileSync(join(serverData, "agent-traces", "blobs", name), "utf8"));
 }
 
-export const CONTENT_FIELDS = ["messagesDelta", "output", "system", "tools", "args", "subject"];
+export const CONTENT_FIELDS = ["messagesDelta", "output", "system", "tools", "bodyBlake3", "args", "subject"];
 
 /** A session as the store holds one (only the fields the journal reads matter). */
 export function session(over: Partial<Session> = {}): Session {

@@ -4,15 +4,20 @@
 // the turn's `bodyHash`.
 //
 // A turn's `messagesDelta` (`application/json`), version 1, is one of:
-//   {v: 1, from, messages, keys, rest}: the body's messages after the system message are the
-//     previous turn's first `from` plus `messages` (a JSON array, as text); `keys` is the
+//   {v: 1, from, baseTurnId?, messages, keys, rest}: the body's messages after the system
+//     message are the first `from` of turn `baseTurnId`'s plus `messages` (a JSON array, as
+//     text). `baseTurnId` is the run's last turn whose content the trace store took; without
+//     one, `from` is 0 (the delta stands alone). `keys` is the
 //     body's key order; `rest` (a JSON object, as text) holds every key but `messages` and
 //     `tools`, which come from the turn's `system` and `tools` blobs (`null` when the body had
 //     none). JSON text, because the journal stores inline JSON with its keys sorted, and the
 //     replay must keep every object's key order to rebuild the bytes;
 //   {v: 1, raw}: the body as sent, when it does not rebuild exactly from a delta (checked at
 //     record time), or is not a JSON object with a `messages` array.
-// The first turn of a run has `from: 0`. `replayBodies` is the reference reader.
+// The first turn of a run has `from: 0`. `replayBodies` is the reference reader: it drops a turn
+// whose base is not the turn it replayed just before, or whose rebuilt body's BLAKE3 is not the
+// turn's `bodyBlake3` (the unkeyed hash stored beside the content); `fin-dataset-inputs`'
+// `replay` is its Rust twin.
 import type { BlobRef, Body, StopReason } from "@finisher/core-types";
 import { blake3Hex } from "@finisher/fin-node";
 
@@ -73,7 +78,7 @@ export function blobOf(sink: BlobSink, text: string): { body: Body; truncated: b
 type Json = Record<string, unknown>;
 
 export type MessagesDelta =
-  | { readonly v: 1; readonly from: number; readonly messages: string; readonly keys: string[]; readonly rest: string }
+  | { readonly v: 1; readonly from: number; readonly baseTurnId?: string; readonly messages: string; readonly keys: string[]; readonly rest: string }
   | { readonly v: 1; readonly raw: string };
 
 /** One exact request split for the trace store. */
@@ -89,8 +94,8 @@ export interface SplitRequest {
 
 const isObject = (v: unknown): v is Json => v !== null && typeof v === "object" && !Array.isArray(v);
 
-/** `request` (the body as sent) against the previous turn's messages of the run. */
-export function splitRequest(request: string, previous: readonly unknown[]): SplitRequest {
+/** `request` (the body as sent) against the messages of turn `baseTurnId` (none: `previous` is empty). */
+export function splitRequest(request: string, previous: readonly unknown[], baseTurnId?: string): SplitRequest {
   let body: unknown;
   try {
     body = JSON.parse(request);
@@ -108,7 +113,14 @@ export function splitRequest(request: string, previous: readonly unknown[]): Spl
   while (from < previous.length && from < messages.length && JSON.stringify(previous[from]) === JSON.stringify(messages[from])) from += 1;
   const rest: Json = {};
   for (const [k, v] of Object.entries(body)) if (k !== "messages" && k !== "tools") rest[k] = v;
-  const delta: MessagesDelta = { v: 1, from, messages: JSON.stringify(messages.slice(from)), keys: Object.keys(body), rest: JSON.stringify(rest) };
+  const delta: MessagesDelta = {
+    v: 1,
+    from,
+    ...(baseTurnId === undefined || from === 0 ? {} : { baseTurnId }),
+    messages: JSON.stringify(messages.slice(from)),
+    keys: Object.keys(body),
+    rest: JSON.stringify(rest),
+  };
   // Kept only when it rebuilds the exact bytes; else the body itself.
   const rebuilt = rebuild(delta, previous, system, tools);
   return { delta: rebuilt?.body === request ? delta : { v: 1, raw: request }, system, tools, messages };
@@ -143,16 +155,36 @@ function rebuild(d: MessagesDelta, previous: readonly unknown[], system: string,
   }
 }
 
+/** One turn of the trace store as the replay reads it: its id, delta, blobs' text and `bodyBlake3`. */
+export interface ReplayTurn {
+  readonly turnId: string;
+  readonly delta: MessagesDelta;
+  readonly system: string;
+  readonly tools: string;
+  readonly bodyBlake3: string | undefined;
+}
+
 /**
  * The dataset builder's replay of one run's turns, oldest first: each turn's exact request
- * body, or undefined where a delta does not apply (that example is dropped).
+ * body, or undefined where it cannot be trusted (that example is dropped): a delta based on a
+ * turn other than the one replayed just before, one that does not apply, or a body whose
+ * BLAKE3 is not `bodyBlake3` (none counts as a mismatch). After a drop, only a turn that
+ * stands alone (`from: 0`, or raw) replays again.
  */
-export function replayBodies(turns: ReadonlyArray<{ delta: MessagesDelta; system: string; tools: string }>): Array<string | undefined> {
+export function replayBodies(turns: ReadonlyArray<ReplayTurn>): Array<string | undefined> {
   let previous: unknown[] = [];
+  let previousTurnId: string | undefined;
   return turns.map((t) => {
-    const r = rebuild(t.delta, previous, t.system, t.tools);
-    if (r === undefined) return undefined;
+    const d = t.delta;
+    const based = "raw" in d || d.from === 0 || (d.baseTurnId !== undefined && d.baseTurnId === previousTurnId);
+    const r = based ? rebuild(d, previous, t.system, t.tools) : undefined;
+    if (r === undefined || t.bodyBlake3 === undefined || hashOf(r.body) !== t.bodyBlake3) {
+      previous = [];
+      previousTurnId = undefined;
+      return undefined;
+    }
     previous = r.messages;
+    previousTurnId = t.turnId;
     return r.body;
   });
 }

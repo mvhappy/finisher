@@ -77,6 +77,9 @@
           "minimum": 0,
           "type": "integer"
         },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
         "sessionId": {
           "$ref": "#/$defs/IdRef"
         },
@@ -193,6 +196,9 @@
         "command": {
           "$ref": "#/$defs/Name"
         },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
         "tool": {
           "$ref": "#/$defs/Name"
         },
@@ -243,6 +249,9 @@
             }
           ]
         },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
         "truncated": {
           "type": "boolean"
         },
@@ -265,6 +274,17 @@
     "AgentTurn": {
       "description": "`agent.turn`: one model call. Content (training only, in the agent-trace store): the\nturn's new input messages, the output, and the system prompt and tool definitions, which\nare always blobs so identical prompts are stored once.",
       "properties": {
+        "bodyBlake3": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Blake3Hex"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "modelInput"
+            }
+          ]
+        },
         "bodyHash": {
           "$ref": "#/$defs/Hashed"
         },
@@ -419,9 +439,7 @@
         "latencyMs",
         "stopReason",
         "costBasis",
-        "capture",
-        "systemHash",
-        "toolsHash"
+        "capture"
       ],
       "type": "object"
     },
@@ -1015,6 +1033,11 @@
         "bin"
       ],
       "type": "object"
+    },
+    "Blake3Hex": {
+      "pattern": "^blake3:[0-9a-f]{64}$",
+      "type": "string",
+      "x-fin-class": "meta"
     },
     "BlendMode": {
       "enum": [
@@ -10598,6 +10621,33 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "Provenance": {
+      "description": "A session's provenance, as the agent-trace store stamps it on every content entry that is\nnot a session or a turn (those carry the same fields flat).",
+      "properties": {
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "model": {
+          "$ref": "#/$defs/Name"
+        },
+        "modelHash": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "provider": {
+          "$ref": "#/$defs/Name"
+        },
+        "weights": {
+          "$ref": "#/$defs/Weights"
+        }
+      },
+      "required": [
+        "harness",
+        "provider",
+        "model",
+        "weights"
+      ],
+      "type": "object"
     },
     "Publisher": {
       "additionalProperties": false,

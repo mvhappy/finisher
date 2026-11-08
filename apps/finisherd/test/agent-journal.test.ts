@@ -256,7 +256,11 @@ describe("provenance and attribution", () => {
     const t = agentEntries(dir, "agent-traces");
     expect(content(dir, of(t, "agent.toolCall")[0]!.payload.args)).toEqual({ argv: ["item", "trim", "c1", "--end", "-1"] });
     expect(of(t, "agent.toolResult")[0]!.payload.txIds).toEqual(result.payload.txIds);
-    expect(of(t, "agent.session")).toEqual([]);
+    // Its sessions' phases too, and every call and result carries the session's provenance.
+    expect(of(t, "agent.session").map((e) => e.payload.phase)).toEqual(["started", "ended"]);
+    for (const e of [...of(t, "agent.toolCall"), ...of(t, "agent.toolResult")]) {
+      expect(e.payload.provenance).toMatchObject({ harness: "builtin", provider: "openrouter", weights: "closed" });
+    }
   });
 });
 
@@ -289,10 +293,19 @@ describe("content", () => {
     expect(turns).toHaveLength(6);
     const parts = turns.map((t) => ({
       run: t.payload.runId as string,
+      turnId: t.payload.turnId as string,
       delta: content(dir, t.payload.messagesDelta) as MessagesDelta,
       system: JSON.stringify(content(dir, t.payload.system)),
       tools: JSON.stringify(content(dir, t.payload.tools)),
+      bodyBlake3: t.payload.bodyBlake3 as string,
     }));
+    // Each delta past the first names its base, the run's previous turn.
+    for (const run of ["01JR0000000000000000000001", "01JR0000000000000000000002"]) {
+      const mine = parts.filter((p) => p.run === run);
+      mine.forEach((p, i) => {
+        if ("from" in p.delta && p.delta.from > 0) expect(p.delta.baseTurnId).toBe(mine[i - 1]!.turnId);
+      });
+    }
     // Without cache breakpoints, turn n holds only the messages turn n-1 did not.
     expect(parts.slice(0, 3).map((p) => ("from" in p.delta ? [p.delta.from, (JSON.parse(p.delta.messages) as unknown[]).length] : "raw"))).toEqual([
       [0, 1],
@@ -315,6 +328,7 @@ describe("content", () => {
     expect(meta.map((m) => m.payload.capture)).toEqual(Array(6).fill("exact"));
     expect(meta.map((m) => m.payload.bodyHash)).toEqual(turns.map((t) => t.payload.bodyHash));
     expect(meta.filter(hasContent)).toEqual([]);
+    expect(meta.some((m) => "bodyBlake3" in m.payload)).toBe(false);
   });
 
   test("system_and_tools_blobs_deduplicate: two sessions of one role share each blob; purging one keeps it", async () => {
@@ -378,10 +392,11 @@ describe("content", () => {
     const kept = agentEntries(dir, "agent-traces");
     const bySession = new Map<string, number>();
     for (const e of kept) bySession.set(e.ctx!.actor.session, (bySession.get(e.ctx!.actor.session) ?? 0) + 1);
-    // Old sessions are gone whole; every one left has all 12 of its entries; the newest stays.
+    // Old sessions are gone whole; every one left has all 13 of its entries (6 calls, 6
+    // results, its `ended`); the newest stays.
     expect(bySession.has(sessions[0]!.id)).toBe(false);
     expect(bySession.has(sessions[11]!.id)).toBe(true);
-    for (const count of bySession.values()) expect(count).toBe(12);
+    for (const count of bySession.values()) expect(count).toBe(13);
     const d = agentEntries(dir, "events");
     expect(of(d, "agent.toolResult")).toHaveLength(72);
     expect(of(d, "agent.session")).toHaveLength(12);

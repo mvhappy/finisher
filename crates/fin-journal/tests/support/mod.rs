@@ -181,6 +181,7 @@ pub fn tool_result(blob: Option<BlobRef>) -> AnyPayload {
         micros: 7,
         tx_ids: vec![],
         attribution: Attribution::None,
+        provenance: None,
         truncated: false,
         output: Some(Content(match blob {
             Some(b) => Body::Blob(b),

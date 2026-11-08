@@ -6,12 +6,13 @@
 import { arch, availableParallelism, hostname, platform, release, totalmem } from "node:os";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConsentState, DiagnosticsReport, ExportPage, PurgeReport, Source, WriteGuard } from "@finisher/core-types";
+import type { ConsentState, DiagnosticsReport, ExportPage, Source, WriteGuard } from "@finisher/core-types";
 import { type FinError, type Principal, PROTOCOL_VERSION } from "@finisher/contracts";
 import { Journal, kindNames, validatePrivacy } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope } from "effect";
 import { consentUiOnly } from "./chain/fixes.ts";
 import { privacyArg, readPrivacy, SERVER_VERSION } from "./config.ts";
+import { type PurgeOutcome, purgeStores } from "./diagnostics-purge.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { mergeSettings } from "./settings-write.ts";
 
@@ -288,8 +289,11 @@ export interface DiagnosticsShape {
   readonly status: () => Effect.Effect<DiagnosticsReport, FinError>;
   /** `redact`: content fields removed (a caller that is not a person, Decision 22). */
   readonly export: (req: ExportRequest, redact: boolean) => Effect.Effect<ExportPage, FinError>;
-  /** Purges both stores' entries (their reports summed); never product state (`control.db`). */
-  readonly purge: (selector: unknown) => Effect.Effect<PurgeReport, FinError>;
+  /**
+   * Purges both stores' entries, the agent-trace store first, each retried once; answers their
+   * reports summed and each store's (`diagnostics-purge.ts`). Never product state (`control.db`).
+   */
+  readonly purge: (selector: unknown) => Effect.Effect<PurgeOutcome, FinError>;
   /** Events dropped by the per-principal rate limit since start. */
   readonly rateLimited: () => number;
 }
@@ -502,12 +506,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
             redact,
           ),
         ),
-      purge: (selector) =>
-        Effect.zipWith(
-          attemptJson<PurgeReport>(() => journal.purge(JSON.stringify(selector))),
-          attemptJson<PurgeReport>(() => traces.purge(JSON.stringify(selector))),
-          (a, b) => ({ removed: a.removed + b.removed, files: a.files + b.files, blobs: a.blobs + b.blobs }),
-        ),
+      purge: (selector) => purgeStores({ agentTraces: traces, diagnostics: journal }, selector),
       rateLimited: () => rateLimited,
     } satisfies DiagnosticsShape;
   });

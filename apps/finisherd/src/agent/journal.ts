@@ -11,9 +11,16 @@
 //   no record: nothing here reads it.
 // - **Content** goes to the agent-trace store (`<server-data>/agent-traces`) only while
 //   training is on (only a person turns it on) and the project records: the same entries with
-//   their content fields (`messagesDelta`, `output`, `system`, `tools`; `args`; `output`;
-//   `subject`), large ones as blobs (`journal-content.ts`). Diagnostics entries never carry
-//   content.
+//   their content fields (`messagesDelta`, `output`, `system`, `tools`, `bodyBlake3`; `args`;
+//   `output`; `subject`), large ones as blobs (`journal-content.ts`). Diagnostics entries never
+//   carry content.
+// - **Provenance in the trace store too** (Task 10 review B1): it holds every `agent.session`
+//   phase and every turn (a stream turn, or one whose blobs were refused, without content), and
+//   its calls, results and approvals carry the session's `provenance`. Content is never there
+//   without the harness, provider, model and weights that made it, even once `events/` aged out.
+// - **Deltas chain only through recorded turns** (review H1): a turn's delta is based on the
+//   previous turn of its run only when that turn's content is in the trace store (`baseTurnId`);
+//   otherwise it starts over (`from: 0`).
 // - **Off means off:** each call checks the gates (one atomic load each) and the project's
 //   `collect` policy before it builds a payload; a project that is `never` or unknown records
 //   nothing in either store, and no blob is attached for it.
@@ -25,6 +32,7 @@
 //   `callId` and `agent.approval` by `approvalId` (first wins), and collapse an `agent.session`
 //   that repeats the previous entry of its session (same phase and reason).
 import type { Approval, Session, Usage } from "@finisher/contracts";
+import { FIN_ERROR_CODES } from "../console/exit-codes.ts";
 import type { AgentApproval, AgentSession, AgentToolCall, AgentToolResult, AgentTurn, Attribution, Body, SessionTotals } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
 import type { Clock, Ids } from "./clock.ts";
@@ -68,6 +76,13 @@ export function codeOf(reason: string | null | undefined): string | undefined {
   return CODE.test(c) ? c : undefined;
 }
 
+/** A tool result's `code`: one of the FinError table's, else `OTHER` (free text never enters a record). */
+export function resultCodeOf(code: unknown): string | undefined {
+  if (code === undefined || code === null) return undefined;
+  const c = typeof code === "string" ? codeOf(code) : undefined;
+  return c !== undefined && FIN_ERROR_CODES.has(c) ? c : "OTHER";
+}
+
 /** The `fin` command of an argv (`["item", "trim", "c1"]` → `item.trim`); the journal maps unknown ones to `other`. */
 export function commandOf(input: unknown): string | undefined {
   const argv = (input as { argv?: unknown } | null)?.argv;
@@ -101,8 +116,10 @@ interface RunState {
   nextTurnId?: string | undefined;
   /** The capture of the call whose `usage` comes next. */
   capture?: CaptureMeta | undefined;
-  /** The previous turn's messages (after the system message): the next delta's base. */
+  /** The messages (after the system message) of the run's last turn whose content is in the trace store: the next delta's base. */
   previous: unknown[];
+  /** That turn's id (the next delta's `baseTurnId`); undefined: the next delta starts over. */
+  previousTurnId?: string | undefined;
 }
 
 export class AgentJournal implements RuntimeJournal {
@@ -138,15 +155,22 @@ export class AgentJournal implements RuntimeJournal {
     });
   }
 
-  /** Records `meta` in the diagnostics journal, and `meta` with `content()` in the trace store. */
-  #emit(kind: string, s: Session, meta: object, content?: () => object | undefined, call?: string): void {
-    const ctx = this.#ctx(s, call);
+  /**
+   * Records `meta` in the diagnostics journal, and in the trace store `meta` with the session's
+   * `provenance` (`stamp`: a kind that does not carry it flat) and `content()`, or without the
+   * content when it has none or a blob was refused. True when the trace store took the entry
+   * with its content.
+   */
+  #emit(kind: string, s: Session, meta: object, opts: { content?: () => object | undefined; call?: string; stamp?: boolean } = {}): boolean {
+    const ctx = this.#ctx(s, opts.call);
     const d = this.#d.diagnostics;
-    if (d.enabled && d.recordsProject(s.projectId)) d.record(kind, KV, ctx, JSON.stringify(meta), SOURCE);
+    if (d.enabled && d.recordsProject(s.projectId)) this.#guard(`a ${kind} entry`, () => d.record(kind, KV, ctx, JSON.stringify(meta), SOURCE));
     const t = this.#d.traces;
-    if (content === undefined || !t.training || !t.recordsProject(s.projectId)) return;
-    const c = content();
-    if (c !== undefined) t.record(kind, KV, ctx, JSON.stringify({ ...meta, ...c }), SOURCE);
+    if (!t.training || !t.recordsProject(s.projectId)) return false;
+    const c = opts.content?.();
+    const entry = { ...meta, ...(opts.stamp === true ? { provenance: this.#provenance(s) } : {}), ...c };
+    t.record(kind, KV, ctx, JSON.stringify(entry), SOURCE);
+    return c !== undefined;
   }
 
   #remember(s: Session): Session {
@@ -248,8 +272,10 @@ export class AgentJournal implements RuntimeJournal {
       const parent = run.lastTurnId;
       run.seq += 1;
       run.lastTurnId = turnId;
-      const split = cap?.request === undefined ? undefined : splitRequest(cap.request, run.previous);
-      if (split !== undefined) run.previous = split.messages;
+      const split = cap?.request === undefined ? undefined : splitRequest(cap.request, run.previous, run.previousTurnId);
+      // The next delta's base, once this turn's content is known to be in the trace store.
+      run.previous = [];
+      run.previousTurnId = undefined;
       const u = r.usage;
       const basis = u.costBasis ?? "unknown";
       const meta: TurnIn = {
@@ -270,18 +296,24 @@ export class AgentJournal implements RuntimeJournal {
         ...(basis === "unknown" ? {} : { costMicros: u.moneyMicros }),
         costBasis: basis,
         capture: cap === undefined ? "stream" : "exact",
-        systemHash: hashOf(split?.system ?? ""),
-        toolsHash: hashOf(split?.tools ?? ""),
+        // A stream turn has no prompt or tool definitions of its own: no hash of nothing.
+        ...(split === undefined ? {} : { systemHash: hashOf(split.system), toolsHash: hashOf(split.tools) }),
         ...(cap?.request === undefined ? {} : { bodyHash: hashOf(cap.request) }),
       };
-      this.#emit("agent.turn", s, meta, () => {
-        if (cap === undefined || split === undefined) return undefined;
-        const t = this.#d.traces;
-        const parts = [bodyOf(t, split.delta), bodyOf(t, cap.response), blobOf(t, split.system), blobOf(t, split.tools)];
-        if (parts.some((p) => p === undefined)) return undefined;
-        const [messagesDelta, output, system, tools] = parts.map((p) => p!.body) as [Body, Body, Body, Body];
-        return { messagesDelta, output, system, tools };
+      const built = this.#emit("agent.turn", s, meta, {
+        content: () => {
+          if (cap?.request === undefined || split === undefined) return undefined;
+          const t = this.#d.traces;
+          const parts = [bodyOf(t, split.delta), bodyOf(t, cap.response), blobOf(t, split.system), blobOf(t, split.tools)];
+          if (parts.some((p) => p === undefined)) return undefined;
+          const [messagesDelta, output, system, tools] = parts.map((p) => p!.body) as [Body, Body, Body, Body];
+          return { bodyBlake3: hashOf(cap.request), messagesDelta, output, system, tools };
+        },
       });
+      if (built && split !== undefined) {
+        run.previous = split.messages;
+        run.previousTurnId = turnId;
+      }
     });
   }
 
@@ -300,10 +332,14 @@ export class AgentJournal implements RuntimeJournal {
         ...(command === undefined ? {} : { command }),
         argsHash: hashOf(JSON.stringify(r.input ?? null)),
       };
-      this.#emit("agent.toolCall", s, meta, () => {
-        const args = bodyOf(this.#d.traces, r.input);
-        return args === undefined ? undefined : { args: args.body };
-      }, r.callId);
+      this.#emit("agent.toolCall", s, meta, {
+        content: () => {
+          const args = bodyOf(this.#d.traces, r.input);
+          return args === undefined ? undefined : { args: args.body };
+        },
+        call: r.callId,
+        stamp: true,
+      });
     });
   }
 
@@ -317,7 +353,7 @@ export class AgentJournal implements RuntimeJournal {
       this.#calls.delete(r.callId);
       const txs = this.#d.store.txsOfCall(r.callId);
       const out = (r.output ?? null) as { code?: unknown; exit?: unknown } | null;
-      const code = r.synthetic ? "SESSION_INTERRUPTED" : r.ok ? undefined : codeOf(typeof out?.code === "string" ? out.code : undefined);
+      const code = r.synthetic ? "SESSION_INTERRUPTED" : r.ok ? undefined : resultCodeOf(out?.code);
       const exit = typeof out?.exit === "number" && Number.isInteger(out.exit) ? out.exit : undefined;
       const meta: Omit<AgentToolResult, "truncated" | "output"> = {
         callId: r.callId,
@@ -328,10 +364,14 @@ export class AgentJournal implements RuntimeJournal {
         ...(txs.length === 0 ? {} : { txIds: txs.slice(0, MAX_TX_IDS).map((t) => t.txId) }),
         attribution: attributionOf(s.harness, txs.map((t) => t.attribution)),
       };
-      this.#emit("agent.toolResult", s, meta, () => {
-        const o = bodyOf(this.#d.traces, r.output);
-        return o === undefined ? undefined : { truncated: o.truncated, output: o.body };
-      }, r.callId);
+      this.#emit("agent.toolResult", s, meta, {
+        content: () => {
+          const o = bodyOf(this.#d.traces, r.output);
+          return o === undefined ? undefined : { truncated: o.truncated, output: o.body };
+        },
+        call: r.callId,
+        stamp: true,
+      });
     });
   }
 
@@ -361,9 +401,12 @@ export class AgentJournal implements RuntimeJournal {
       by: expired || a.by === "policy" ? "policy" : "user",
       latencyMs: Math.max(0, end - a.requestedAt),
     };
-    this.#emit("agent.approval", s, meta, () => {
-      const subject = bodyOf(this.#d.traces, a.subject);
-      return subject === undefined ? undefined : { subject: subject.body };
+    this.#emit("agent.approval", s, meta, {
+      content: () => {
+        const subject = bodyOf(this.#d.traces, a.subject);
+        return subject === undefined ? undefined : { subject: subject.body };
+      },
+      stamp: true,
     });
   }
 }

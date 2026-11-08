@@ -177,6 +177,53 @@ fn eviction_removes_whole_sessions_and_their_late_entries() {
 }
 
 #[test]
+fn evicted_sessions_are_remembered_across_a_restart() {
+    // Task 10 review M2: the evicted ids are in `state.json`, so a late entry of an evicted
+    // session is dropped by the next run of the store too.
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let o = || JournalOptions {
+        max_file_bytes: 2048,
+        max_total_bytes: 6000,
+        ..traces(&c)
+    };
+    let j = Journal::open(&events(&dir), training(), o());
+    for _ in 0..4 {
+        j.record(Source::Agent, agent(A, None), tool_result(None));
+    }
+    j.flush().unwrap();
+    for _ in 0..40 {
+        j.record(Source::Agent, agent(B, None), tool_result(None));
+        j.flush().unwrap();
+    }
+    assert!(
+        !sessions_on_disk(&events(&dir)).contains(&A.to_owned()),
+        "A evicted"
+    );
+    j.close();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(events(&dir).join("state.json")).unwrap()).unwrap();
+    assert!(
+        state["evictedSessions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(A)),
+        "{state}"
+    );
+    let j = Journal::open(&events(&dir), training(), o());
+    j.record(Source::Agent, agent(A, None), tool_result(None));
+    j.record(Source::Agent, agent(B, None), tool_result(None));
+    j.flush().unwrap();
+    let on_disk = sessions_on_disk(&events(&dir));
+    assert!(
+        !on_disk.contains(&A.to_owned()),
+        "a late A entry was written after the restart"
+    );
+    assert!(on_disk.contains(&B.to_owned()));
+    j.close();
+}
+
+#[test]
 fn the_diagnostics_journal_never_evicts_by_session() {
     let dir = tempfile::tempdir().unwrap();
     let c = clock();

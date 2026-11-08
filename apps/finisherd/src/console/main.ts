@@ -62,7 +62,7 @@ short code, and goes ahead once you type the code back.
   auth rotate-master                       a new key for all credentials: every one of them ends
 
 Reading recorded content needs no code:
-  diagnostics export --content [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
+  diagnostics export --content [--store diagnostics|agentTraces] [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
 
 Plugins and registries (spec §5):
   plugin search [text] [--kind content|code] [--registry <id>] [--json]
