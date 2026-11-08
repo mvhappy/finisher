@@ -88,23 +88,83 @@ pub fn prove<S: Read + Write>(io: &mut BufReader<S>, sd: &Path, socket: &str, na
     exchange(io, "auth-2", "auth.prove", json!({ "mac": B64.encode(m) }))["principal"].clone()
 }
 
-/// A fake server that answers every request with `FinError {code}` (and the hello normally).
+/// Writes `text` as a private (0600 on Unix) key or credential file: fin refuses others.
+pub fn write_private(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+/// A fake server that proves itself with the `local.key` of its server data `sd`, then answers
+/// every other request with `FinError {code}` (fix "ask the owner").
 pub struct FailingServer {
     _dir: tempfile::TempDir,
     pub socket: std::path::PathBuf,
+    pub sd: std::path::PathBuf,
+}
+
+/// A fixed, obviously fake key for fake servers.
+pub const FAKE_SERVER_KEY: &str = "RkFLRS1mYWlsaW5nLXNlcnZlci1rZXktZm9yLXRlc3Q";
+const FAKE_SERVER_ENV: &str = "01failingenv00000000000000";
+
+/// Gives the server data `sd` the fake servers' key (`auth/local.key`, private) and returns it:
+/// since 5A fin connects only with a credential.
+pub fn give_key(sd: &Path) -> Vec<u8> {
+    std::fs::create_dir_all(sd.join("auth")).unwrap();
+    write_private(&sd.join("auth/local.key"), &format!("{FAKE_SERVER_KEY}\n"));
+    B64.decode(FAKE_SERVER_KEY).unwrap()
+}
+
+/// A fake server's answer (the whole `Exit` frame) to the handshake's requests when it holds
+/// `key`: a proof for the endpoint the hello names, then `local`. `None` for any other request.
+pub fn handshake_answer(frame: &Value, key: &[u8]) -> Option<Value> {
+    let ok = |value: Value| json!({ "_tag": "Exit", "requestId": frame["id"], "exit": { "_tag": "Success", "value": value } });
+    match frame["tag"].as_str() {
+        Some("server.hello") => {
+            let p = &frame["payload"];
+            let cn = B64
+                .decode(p["clientNonce"].as_str().unwrap_or(""))
+                .unwrap_or_default();
+            let endpoint = p["endpoint"].as_str().unwrap_or("");
+            let env = p["env"].as_str().unwrap_or(FAKE_SERVER_ENV);
+            let sn = [3u8; 32];
+            let proof = mac(key, "finisherd/hello/v2", env, endpoint, &cn, &sn);
+            Some(ok(
+                json!({ "protocolVersion": 1, "serverVersion": "0.0.0", "capabilities": [],
+                "envId": env, "endpoint": endpoint, "serverNonce": B64.encode(sn), "proof": B64.encode(proof) }),
+            ))
+        }
+        Some("auth.prove") => Some(ok(
+            json!({ "principal": { "kind": "local", "id": "local" } }),
+        )),
+        _ => None,
+    }
+}
+
+fn failing_answer(frame: &Value, key: &[u8], code: &str) -> Value {
+    handshake_answer(frame, key).unwrap_or_else(|| {
+        let error = json!({ "_tag": "FinError", "code": code, "message": "denied", "details": {}, "fix": "ask the owner" });
+        json!({ "_tag": "Exit", "requestId": frame["id"], "exit": { "_tag": "Failure", "cause": [{ "_tag": "Fail", "error": error }] } })
+    })
 }
 
 pub fn fake_failing_server(code: &str) -> FailingServer {
     use interprocess::local_socket::prelude::*;
     use interprocess::local_socket::{GenericFilePath, ListenerOptions};
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().canonicalize().unwrap().join("failing.sock");
+    let root = dir.path().canonicalize().unwrap();
+    let socket = root.join("failing.sock");
+    let sd = root.join("sd");
+    let key = give_key(&sd);
     let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
     let code = code.to_string();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
-            let code = code.clone();
+            let (code, key) = (code.clone(), key.clone());
             std::thread::spawn(move || {
                 let mut io = BufReader::new(conn);
                 let mut line = String::new();
@@ -114,8 +174,7 @@ pub fn fake_failing_server(code: &str) -> FailingServer {
                     if frame["_tag"] != "Request" {
                         continue;
                     }
-                    let error = json!({ "_tag": "FinError", "code": code, "message": "denied", "details": {}, "fix": "ask the owner" });
-                    let exit = json!({ "_tag": "Exit", "requestId": frame["id"], "exit": { "_tag": "Failure", "cause": [{ "_tag": "Fail", "error": error }] } });
+                    let exit = failing_answer(&frame, &key, &code);
                     if io
                         .get_mut()
                         .write_all(format!("{exit}\n").as_bytes())
@@ -127,5 +186,9 @@ pub fn fake_failing_server(code: &str) -> FailingServer {
             });
         }
     });
-    FailingServer { _dir: dir, socket }
+    FailingServer {
+        _dir: dir,
+        socket,
+        sd,
+    }
 }

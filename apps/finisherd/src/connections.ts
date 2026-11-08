@@ -75,14 +75,12 @@ export class Connections {
     this.now = now;
   }
 
-  /** The connection with this id, created on first sight. */
-  get(clientId: number): Connection {
-    let c = this.#byId.get(clientId);
-    if (c === undefined) {
-      c = { clientId, transport: this.transport, openedAt: this.now(), principal: this.initial, failures: 0 };
-      this.#byId.set(clientId, c);
-    }
-    return c;
+  /**
+   * The live connection with this id. Only `attach` creates one: an id that is unknown or
+   * already closed is `undefined` and stays unknown (it is never brought back to life).
+   */
+  get(clientId: number): Connection | undefined {
+    return this.#byId.get(clientId);
   }
 
   has(clientId: number): boolean {
@@ -91,8 +89,10 @@ export class Connections {
 
   /** Registers the protocol's handle on a new connection (`protocol.ts`). */
   attach(clientId: number, link: Link): Connection {
+    const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal: this.initial, failures: 0 };
+    this.#byId.set(clientId, c);
     this.#links.set(clientId, link);
-    return this.get(clientId);
+    return c;
   }
 
   /** Drops the connection (on disconnect). */
@@ -127,10 +127,10 @@ export class Connections {
   /**
    * The principal a request of this connection runs as: `anonymous` until it proves (Decision 9;
    * Task 3 ran unproved connections as `local`, audited once as `auth.legacy`, until `fin`
-   * proved).
+   * proved), and `anonymous` for an id that is not live (fail closed).
    */
   principalOf(clientId: number): Principal {
-    return this.get(clientId).principal;
+    return this.#byId.get(clientId)?.principal ?? ANONYMOUS;
   }
 }
 

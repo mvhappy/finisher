@@ -211,7 +211,7 @@ pub struct Client {
     limited: bool,
     /// The `fin-actor-*` headers of every request (computed once per run).
     headers: Vec<[String; 2]>,
-    /// What the handshake bound (`None`: no credential, so nothing was proved; 5A Decision 11).
+    /// What the handshake bound (`None` only on [`Client::open`]'s unproved test connections).
     principal: Option<Value>,
     /// Why the handshake was retried once, when it was (`keyStale` after a server restart).
     retried: Option<&'static str>,
@@ -354,7 +354,9 @@ impl Client {
             .map_err(|e| self.io_error("send", &e))
     }
 
-    fn read_frame(&mut self) -> Result<Frame, CoreError> {
+    /// The next frame. Outer error: fin's own (transport, timeout, deadline); inner error: what
+    /// the server sent did not parse.
+    fn read_frame(&mut self) -> Result<Result<Frame, CoreError>, CoreError> {
         loop {
             self.arm()?;
             let line = self
@@ -373,7 +375,7 @@ impl Client {
                 ));
             }
             if !line.trim().is_empty() {
-                return parse_frame(line.trim_end());
+                return Ok(parse_frame(line.trim_end()));
             }
         }
     }
@@ -382,6 +384,17 @@ impl Client {
     /// and dropped; frames for other requests are ignored.
     pub fn call(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
         self.request(tag, payload)
+    }
+
+    /// [`Client::call`], keeping apart what the server answered (inner: its value or its error,
+    /// a defect or an unparsable frame) from fin's own failures (outer: transport, timeout).
+    /// The handshake believes no server error before the server has proved itself.
+    pub fn call_answer(
+        &mut self,
+        tag: &str,
+        payload: Value,
+    ) -> Result<Result<Value, CoreError>, CoreError> {
+        self.answer(tag, payload)
     }
 
     /// `tx.commit`. Once the request may have reached the server, a transport failure
@@ -411,28 +424,30 @@ impl Client {
     }
 
     fn request(&mut self, tag: &str, payload: Value) -> Result<Value, CoreError> {
+        self.answer(tag, payload)?
+    }
+
+    fn answer(&mut self, tag: &str, payload: Value) -> Result<Result<Value, CoreError>, CoreError> {
         let id = self.next_id.to_string();
         self.next_id += 1;
         self.send(&request_frame(&id, tag, &payload, &self.headers))?;
         loop {
-            match self.read_frame()? {
-                // Without a credential the server refuses everything but the hello: say why.
-                Frame::Exit { request_id, result } if request_id == id => {
-                    return result.map_err(|e| match self.principal {
-                        None if e.code == "UNAUTHENTICATED" => crate::auth::no_credential(e),
-                        _ => e,
-                    });
-                }
+            let frame = match self.read_frame()? {
+                Ok(frame) => frame,
+                Err(e) => return Ok(Err(e)),
+            };
+            match frame {
+                Frame::Exit { request_id, result } if request_id == id => return Ok(result),
                 Frame::Chunk { request_id, .. } if request_id == id => {
                     self.send(&json!({ "_tag": "Ack", "requestId": id }))?;
                 }
                 Frame::Defect(defect) => {
-                    return Err(CoreError::new(
+                    return Ok(Err(CoreError::new(
                         "INTERNAL",
                         "the server reported a protocol defect",
                     )
                     .with_details(json!({ "defect": defect, "tag": tag }))
-                    .with_fix("report this as a bug in finisherd"));
+                    .with_fix("report this as a bug in finisherd")));
                 }
                 Frame::Exit { .. } | Frame::Chunk { .. } | Frame::Pong => {}
             }

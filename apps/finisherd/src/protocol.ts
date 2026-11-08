@@ -228,7 +228,13 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
             const chunks = yield* pull;
             for (const chunk of chunks) {
               const { lines: got, tooLarge } = lines.push(chunk);
-              for (const line of got) yield* onLine(clientId, client, line);
+              for (const line of got) {
+                // A close flagged by an earlier line (five failed proves, a frame with no id)
+                // stops this connection here: the rest of the chunk is not read.
+                if (Deferred.isDoneUnsafe(closed)) return;
+                if (client.closing) return yield* Deferred.await(closed);
+                yield* onLine(clientId, client, line);
+              }
               if (tooLarge !== undefined) {
                 const id = salvageId(tooLarge);
                 if (id !== undefined) {
@@ -240,6 +246,7 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
                 return;
               }
               if (Deferred.isDoneUnsafe(closed)) return;
+              if (client.closing) return yield* Deferred.await(closed);
             }
           }
         }).pipe(Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void), Effect.orDie);

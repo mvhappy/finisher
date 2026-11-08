@@ -10,10 +10,14 @@ import { Rpc, RpcGroup, RpcSerialization, RpcServer } from "effect/rpc";
 import { SocketServer } from "effect/socket/SocketServer";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { b64u, canonicalEndpoint, proveMac } from "../src/auth/crypto.ts";
+import { PUBLIC_RPCS, STREAM_RPCS } from "@finisher/contracts";
+import { ANONYMOUS } from "../src/principal.ts";
 import { Connections } from "../src/connections.ts";
+import { CAPABILITIES } from "../src/handlers.ts";
 import { clientHeaders, LineSplitter, makeFinProtocol, salvageId } from "../src/protocol.ts";
 import { controlDbPath } from "../src/control/db.ts";
 import { hello, keyOf, NdjsonClient, ok, prove, type RunningServer, startServer } from "./support/ndjson-client.ts";
+import { type FinRpcTag, SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
 const WIN = process.platform === "win32";
 
@@ -139,6 +143,27 @@ describe("the handshake on a real server", () => {
     expect(rows.map((r) => r.details).join()).not.toMatch(/[A-Za-z0-9_-]{43}/);
   });
 
+  test("lines_after_the_fifth_failure_are_not_read", async () => {
+    const failed = () => auditRows(serverData, "auth.fail").reduce((n, r) => n + r.count, 0);
+    const before = failed();
+    const c = await connect();
+    for (let i = 1; i <= 4; i++) {
+      await hello(c);
+      await c.call("auth.prove", { mac: b64u.encode(Buffer.alloc(32, i)) });
+    }
+    await hello(c);
+    // The fifth failed prove and two more arrive in one chunk: only the fifth is handled (and
+    // audited), then the connection closes.
+    const frame = (id: string, mac: number) =>
+      JSON.stringify({ _tag: "Request", id, tag: "auth.prove", payload: { mac: b64u.encode(Buffer.alloc(32, mac)) }, headers: [] });
+    c.write(`${frame("p5", 5)}\n${frame("p6", 6)}\n${frame("p7", 7)}\n`);
+    await c.closed();
+    expect(failed() - before).toBe(5);
+    const answered = c.transcript.filter((t) => t.dir === "<<").map((t) => JSON.parse(t.line).requestId as string);
+    expect(answered).toContain("p5");
+    expect(answered).not.toContain("p6");
+  });
+
   test("bad_frame_is_invalid_request_not_defect", async () => {
     const c = await connect();
     const frames: Array<Record<string, unknown>> = [];
@@ -170,17 +195,16 @@ describe("the handshake on a real server", () => {
     expect(refused.ok ? null : refused.error).toMatchObject({ code: "UNAUTHENTICATED", details: { reason: "unproved" } });
     // The handler never ran: no project folder.
     expect(existsSync(dir)).toBe(false);
-    for (const [tag, payload] of [
-      ["fonts.status", {}],
-      ["diagnostics.status", {}],
-      ["diagnostics.record", { kind: "cli.command", kv: 1, payload: {} }],
-    ] as const) {
-      const r = await c.call(tag, payload);
-      expect(r.ok ? null : r.error.code, tag).toBe("UNAUTHENTICATED");
+    // Every RPC but the public ones, unary and stream, with a payload its schema accepts.
+    const refusedTags: string[] = [];
+    for (const tag of CAPABILITIES.filter((t) => !PUBLIC_RPCS.has(t))) {
+      const payload = SAMPLE_PAYLOADS[tag as FinRpcTag];
+      const r = STREAM_RPCS.includes(tag) ? await c.stream(tag, payload, () => undefined).done : await c.call(tag, payload);
+      expect(r.ok ? null : r.error, tag).toMatchObject({ code: "UNAUTHENTICATED", details: { reason: "unproved" } });
+      refusedTags.push(tag);
     }
-    const stream = c.stream("project.events", { projectId: "01aaaaaaaaaaaaaaaaaaaaaaaa" }, () => undefined);
-    const ended = await stream.done;
-    expect(ended.ok ? null : ended.error.code).toBe("UNAUTHENTICATED");
+    expect(refusedTags.length).toBe(CAPABILITIES.length - PUBLIC_RPCS.size);
+    expect(existsSync(dir)).toBe(false);
     // The hello still answers, and after a proof the same connection is served.
     ok(await c.call("server.hello", {}));
     ok(await prove(c, server.info, keyOf(serverData)));
@@ -199,13 +223,19 @@ describe("the protocol in-process", () => {
   let path: string;
   let connections: Connections;
   let fiber: Fiber.Fiber<unknown, unknown>;
+  /** Every `n` the echo handler saw. */
+  const echoed: number[] = [];
 
   beforeAll(async () => {
     tmp = mkdtempSync(join(tmpdir(), "finisherd-proto-"));
     path = WIN ? `\\\\.\\pipe\\finisherd-proto-test-${process.pid}` : join(tmp, "p.sock");
     connections = new Connections("socket", () => path);
     const handlers = Echo.toLayer({
-      "test.echo": ({ n }, { headers, client }) => Effect.succeed({ n, client: client.id, headers: Object.keys(headers).sort() }),
+      "test.echo": ({ n }, { headers, client }) =>
+        Effect.sync(() => {
+          echoed.push(n);
+          return { n, client: client.id, headers: Object.keys(headers).sort() };
+        }),
     });
     const layer = RpcServer.layer(Echo).pipe(
       Layer.provide(handlers),
@@ -251,9 +281,15 @@ describe("the protocol in-process", () => {
     expect(missing.ok ? null : missing.error).toMatchObject({ code: "INVALID_REQUEST", details: { tag: "test.echo" } });
     const badHeaders = await c.call("test.echo", { n: 1 }, [["only-a-name"]] as never);
     expect(badHeaders.ok ? null : badHeaders.error.code).toBe("INVALID_REQUEST");
-    // A frame with no id to answer ends the connection.
-    c.write("not json at all\n");
+    // A frame with no id to answer ends the connection, and nothing after it in the same chunk
+    // is read.
+    // (`after` names an unknown RPC, which the protocol itself would answer at once.)
+    const after = (id: string, tag: string) => JSON.stringify({ _tag: "Request", id, tag, payload: { n: 4004 }, headers: [] });
+    c.write(`not json at all\n${after("after", "no.such")}\n${after("echo", "test.echo")}\n`);
     await c.closed();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(c.transcript.filter((t) => t.dir === "<<" && /"requestId":"(after|echo)"/.test(t.line))).toEqual([]);
+    expect(echoed).not.toContain(4004);
   });
 
   test("oversized_frame_is_frame_too_large_then_closed (in-process)", async () => {
@@ -274,6 +310,20 @@ describe("the protocol in-process", () => {
     await c.close();
     for (let i = 0; i < 100 && connections.has(client); i++) await new Promise((r) => setTimeout(r, 10));
     expect(connections.has(client)).toBe(false);
+  });
+
+  test("closed_ids_fail_closed", async () => {
+    const c = await NdjsonClient.connect(path);
+    const { client } = ok<{ client: number }>(await c.call("test.echo", { n: 5 }));
+    expect(connections.get(client)).toBeDefined();
+    await c.close();
+    for (let i = 0; i < 100 && connections.has(client); i++) await new Promise((r) => setTimeout(r, 10));
+    // A closed or never-seen id is anonymous and is not created by looking it up.
+    for (const id of [client, 987654]) {
+      expect(connections.get(id)).toBeUndefined();
+      expect(connections.principalOf(id)).toBe(ANONYMOUS);
+      expect(connections.has(id)).toBe(false);
+    }
   });
 
   test("terminate answers open requests, then closes", async () => {

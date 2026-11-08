@@ -105,6 +105,12 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
 
 /// The `envId` the running server published in `finisherd.json` (5A Task 2), unless `FIN_SERVER`
 /// names the endpoint: the handshake expects it (5A Decision 10).
+///
+/// Why `FIN_SERVER` drops the binding: it names a server directly (a test server, one run with
+/// other server data), and `finisherd.json` in this fin's server data then describes some other
+/// server, whose `envId` would refuse the right one. The proof still binds what matters: only a
+/// holder of the key can make it, and the canonical endpoint is inside both MACs. A credential
+/// file's own `env` is still expected under `FIN_SERVER` (`auth::target`).
 pub fn info_env_id() -> Option<String> {
     if std::env::var_os(SERVER_ENV).is_some_and(|v| !v.is_empty()) {
         return None;

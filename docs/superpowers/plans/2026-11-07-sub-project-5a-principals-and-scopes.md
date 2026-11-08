@@ -89,7 +89,7 @@
 8. **`server.hello {clientNonce?, env?, endpoint?, credential?}`.** `credential` defaults to `{kind: "local"}`; `{kind: "console"}`, `{kind: "agent"|"mcp", id}` name the others. With a `clientNonce` the answer carries `envId`, `endpoint`, `serverNonce` and the `proof` for the named credential; an unknown, expired or revoked credential gets a `serverNonce` and no `proof`. A client-sent `env` that is not ours gets no proof either.
 9. **`auth.prove {mac}`** binds the principal and answers `{principal}`; a second `auth.prove` on a proved connection is `INVALID_REQUEST`; five failures close the connection; each failure is audited (Decision 4).
 10. **`fin`'s handshake and retry** (spec §4.2): on `noProof`, `badProof`, `envMismatch` or `endpointMismatch`, `fin` re-reads `finisherd.json` and its key file **once**, reconnects and retries the handshake. A second failure is `SERVER_UNTRUSTED` (exit 7, `details {endpoint, reason}`); a successful retry after a changed key is silent (`keyStale` is logged at debug level only).
-11. **Credential discovery in `fin`:** `FIN_CREDENTIAL` (a credential file, spec §4.1), else `<server-data>/auth/local.key`. Unreadable or malformed → no credential: `fin` connects, and anything but the hello answers `UNAUTHENTICATED` (`details.reason: noCredential`).
+11. **Credential discovery in `fin`:** `FIN_CREDENTIAL` (a credential file, spec §4.1), else `<server-data>/auth/local.key`. Unreadable or malformed → no credential. *Amended after the Task 3+4 review:* with no credential `fin` sends nothing: it fails locally with `UNAUTHENTICATED {reason: noCredential}` (exit 7), `fin whoami` answers `anonymous` and diagnostics send nothing, so an unproved server never receives a request.
 
 ### Connections and the chain
 

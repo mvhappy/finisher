@@ -1,0 +1,51 @@
+// A payload every RPC's schema accepts (it need not name anything that exists). The mapped type
+// makes a new RPC without one a type error, so tests that walk every RPC cover it.
+import type { FinRpcs } from "@finisher/contracts";
+import type { RpcGroup } from "effect/rpc";
+
+export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
+
+export const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+const W = { projectId: P, txId: "01bbbbbbbbbbbbbbbbbbbbbbbb", author: "test" };
+
+export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknown> } = {
+  "server.hello": {},
+  "auth.prove": { mac: "x" },
+  "project.create": { dir: "/nowhere/never-created", name: "X", rate: "30" },
+  "project.open": { dir: "/nowhere/never-opened" },
+  "asset.probe": { path: "/nowhere/a.png" },
+  "tx.commit": { projectId: P, tx: {} },
+  "snapshot.get": { projectId: P, branch: "main" },
+  "ops.subscribe": { projectId: P, branch: "main", fromRev: 0 },
+  "project.status": { projectId: P },
+  "project.takeover": { projectId: P, confirm: false },
+  "project.verify": { projectId: P },
+  "project.rebuild": { projectId: P },
+  "project.compact": { projectId: P },
+  "project.recover": { projectId: P },
+  "branch.create": { ...W, from: "main" },
+  "branch.list": { projectId: P },
+  "branch.set": { ...W, branch: "main", name: "x" },
+  "history.undo": { ...W, branch: "main" },
+  "history.redo": { ...W, branch: "main" },
+  "history.checkpoint": { ...W, branch: "main", name: "c" },
+  "history.merge": { ...W, from: "try", into: "main" },
+  "history.cherryPick": { ...W, origin: "01cccccccccccccccccccccccc", into: "main" },
+  "history.revert": { ...W, mergeId: "01cccccccccccccccccccccccc", branch: "main" },
+  "project.acknowledgeRewind": { projectId: P, branch: "main", generation: 1 },
+  "project.acknowledgeSalvage": { projectId: P, copy: "x" },
+  "project.events": { projectId: P },
+  "tx.get": { projectId: P, txId: "01bbbbbbbbbbbbbbbbbbbbbbbb" },
+  "eval.frame": { projectId: P, at: "0" },
+  "eval.audio": { projectId: P, from: "0", to: "1" },
+  "fonts.catalog": {},
+  "fonts.status": {},
+  "fonts.fetch": {},
+  "fonts.plan": { projectId: P, branch: "main", ops: [] },
+  "diagnostics.status": {},
+  "diagnostics.export": {},
+  "diagnostics.purge": { selector: "all" },
+  "diagnostics.project": { projectId: P, collect: "never" },
+  "diagnostics.consent": { purpose: "diagnostics", value: "off" },
+  "diagnostics.record": { kind: "cli.command", kv: 1, payload: {} },
+};

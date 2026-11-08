@@ -57,6 +57,9 @@ impl Fake {
     fn start(after: After) -> Fake {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
+        // Both server data `run` may use hold the key the fake proves itself with.
+        support::auth::give_key(&root.join("sd"));
+        support::auth::give_key(&root.join("no-server"));
         let socket = endpoint(&root);
         let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -127,6 +130,13 @@ impl Fake {
     }
 }
 
+fn base64_key() -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(support::auth::FAKE_SERVER_KEY)
+        .unwrap()
+}
+
 fn serve(
     conn: interprocess::local_socket::Stream,
     after: After,
@@ -144,6 +154,14 @@ fn serve(
             continue;
         };
         if frame["_tag"] != "Request" {
+            continue;
+        }
+        // The handshake is answered and not recorded: the tests are about what follows it.
+        let key = base64_key();
+        if let Some(reply) = support::auth::handshake_answer(&frame, &key) {
+            let out = reader.get_mut();
+            let _ = writeln!(out, "{reply}");
+            let _ = out.flush();
             continue;
         }
         seen.lock().unwrap().push(frame.clone());

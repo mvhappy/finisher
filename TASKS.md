@@ -339,6 +339,12 @@ Spec: `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (revision 3)
 - [ ] Task 13: spec, architecture pointer, README, tracker
 - [ ] Task 14: cross-platform validation
 
+Review of Tasks 3 and 4 (fixed on `sp5a-t5` before Task 5): `fin` without a credential sends nothing and fails locally (`UNAUTHENTICATED {reason: noCredential}`, exit 7; `SERVER_UNAVAILABLE` still when no server runs; `whoami` is `anonymous` without connecting; diagnostics send nothing); any error answer to `server.hello` is `helloFailed` (one retry, then `SERVER_UNTRUSTED`; only fin's own transport and timeout errors pass through before the proof); a server from before the handshake is `versionMismatch` (exit 7, no MAC sent); on Unix a key or credential file that is not the user's or not private (`mode & 0o077`) is refused (`reason: credentialUnsafe`), and neither is read past 4 KiB; protocol lines after a flagged close are not read; `Connections.get` never creates (unknown ids are `anonymous`); `auth.legacy` is reserved.
+- **Release gate (M1): this branch must not reach `main` or a release before Task 6.** Until then the WebSocket's connections are `local` on the bearer token alone (`finisherd.json`'s `token`), with no proof: any reader of that file is `local`.
+- Task 6: when `PROTOCOL_VERSION` becomes 2, `fin`'s `versionMismatch` check (`auth::handshake`) can drop its "no `serverNonce`" clause and test `protocolVersion < 2` alone; today this branch's own server still says 1.
+- Task 12: the e2e `auth` scenario must exercise the socket proofs end to end (`fin` and the console over `fin.sock`, a squatted socket, a stale key), not only the WebSocket: e2e talks over the WebSocket today, so no e2e step proves over the socket yet.
+- Windows: `fin` checks a credential file's owner and mode on Unix only; on Windows the private `auth/` directory (Task 2) protects `local.key`, and Task 9 should check a `FIN_CREDENTIAL` file's DACL the same way.
+
 Notes for later tasks (review of Tasks 1, 2, 10):
 - Task 3: finisherd caps its own inbound lines at 16 MiB (socket and WebSocket, `FRAME_TOO_LARGE`); today only `fin` caps what it reads.
 - Sub-project 9 (packaging): the control store's checkpoint worker is started with `new Worker(new URL("./checkpoint-worker.ts", import.meta.url))` and relies on Node's type stripping; a bundled or packaged finisherd must ship that file (or a compiled `.js`, with the URL changed) next to `control/db.ts`.

@@ -13,6 +13,16 @@ fn arr(v: &[u8]) -> [u8; 32] {
     v.try_into().unwrap()
 }
 
+/// Writes `text` as a private (0600 on Unix) key or credential file.
+fn write_private(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 fn vectors() -> Value {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/auth/handshake.json");
@@ -88,14 +98,13 @@ fn credential_files_need_every_field() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("c.json");
     let key = "RkFLRS1sb2NhbC1rZXktZm9yLXRlc3QtdmVjdG9ycyE";
-    std::fs::write(
+    write_private(
         &file,
-        format!(
+        &format!(
             r#"{{"v":1,"kind":"mcp","id":"01mcp00000000000000000000a","key":"{key}","env":"e"}}"#
         ),
-    )
-    .unwrap();
-    let c = read_credential_file(&file).unwrap();
+    );
+    let c = read_credential_file(&file).unwrap().unwrap();
     assert_eq!(
         (c.kind, c.id.as_deref(), c.env.as_deref()),
         (
@@ -112,23 +121,23 @@ fn credential_files_need_every_field() {
         r#"{"v":1,"kind":"agent","id":"x","key":"short"}"#,
         "not json",
     ] {
-        std::fs::write(&file, bad.replace('K', key)).unwrap();
-        assert!(read_credential_file(&file).is_none(), "{bad}");
+        write_private(&file, &bad.replace('K', key));
+        assert!(read_credential_file(&file).unwrap().is_none(), "{bad}");
     }
 }
 
 #[test]
 fn local_key_is_found_in_server_data() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(discover(Some(dir.path())).is_none() || std::env::var_os(CREDENTIAL_ENV).is_some());
+    let set = std::env::var_os(CREDENTIAL_ENV).is_some();
+    assert!(set || discover(Some(dir.path())).unwrap().is_none());
     std::fs::create_dir_all(dir.path().join("auth")).unwrap();
-    std::fs::write(
-        dir.path().join("auth/local.key"),
+    write_private(
+        &dir.path().join("auth/local.key"),
         "RkFLRS1sb2NhbC1rZXktZm9yLXRlc3QtdmVjdG9ycyE\n",
-    )
-    .unwrap();
-    if std::env::var_os(CREDENTIAL_ENV).is_none() {
-        let c = discover(Some(dir.path())).unwrap();
+    );
+    if !set {
+        let c = discover(Some(dir.path())).unwrap().unwrap();
         assert_eq!((c.kind, c.id, c.env), (CredentialKind::Local, None, None));
     }
 }
@@ -165,19 +174,110 @@ fn errors_name_no_secret_and_no_command() {
         e.details,
         json!({ "endpoint": "/sd/run/fin.sock", "reason": "badProof" })
     );
-    let n = no_credential(
-        CoreError::new("UNAUTHENTICATED", "x").with_details(json!({ "reason": "unproved" })),
+    let n = no_credential(&Endpoint::Socket("/sd/run/fin.sock".into()));
+    assert_eq!(
+        (n.code.as_str(), &n.details["reason"]),
+        ("UNAUTHENTICATED", &json!("noCredential"))
     );
-    assert_eq!(n.details["reason"], "noCredential");
     let fix = n.fix.unwrap();
     assert!(
         fix.contains("FIN_CREDENTIAL") && fix.contains("server's data"),
         "{fix}"
     );
-    for f in [e.fix.unwrap(), fix] {
+    let old = untrusted(
+        &Endpoint::Socket("/sd/run/fin.sock".into()),
+        "versionMismatch",
+    );
+    assert_eq!(old.details["reason"], "versionMismatch");
+    assert!(
+        old.message.contains("older Finisher release"),
+        "{}",
+        old.message
+    );
+    let unsafe_file = unsafe_credential(Path::new("/sd/c.json"), "readableByOthers", 0o100644);
+    assert_eq!(unsafe_file.details["mode"], "644");
+    for f in [
+        e.fix.unwrap(),
+        fix,
+        old.fix.unwrap(),
+        unsafe_file.fix.unwrap(),
+    ] {
         assert!(
             !f.contains('`') && !f.contains("fin ") && !f.contains("finisherd "),
             "{f}"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn credential_files_must_be_private() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("c.json");
+    let key = "RkFLRS1sb2NhbC1rZXktZm9yLXRlc3QtdmVjdG9ycyE";
+    write_private(
+        &file,
+        &format!(r#"{{"v":1,"kind":"agent","id":"01agent0000000000000000000","key":"{key}"}}"#),
+    );
+    assert!(read_credential_file(&file).unwrap().is_some());
+    for mode in [0o644, 0o640, 0o604, 0o660, 0o666] {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        let e = read_credential_file(&file).unwrap_err();
+        assert_eq!(e.code, "UNAUTHENTICATED", "{mode:o}");
+        assert_eq!(e.details["reason"], "credentialUnsafe");
+        assert_eq!(e.details["problem"], "readableByOthers");
+        assert_eq!(e.details["mode"], format!("{mode:03o}"));
+        assert!(
+            !format!("{e:?}").contains(key),
+            "the error never shows the key"
+        );
+    }
+    // `local.key` in server data is held to the same rule.
+    std::fs::create_dir_all(dir.path().join("auth")).unwrap();
+    let local = dir.path().join("auth/local.key");
+    std::fs::write(&local, format!("{key}\n")).unwrap();
+    std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if std::env::var_os(CREDENTIAL_ENV).is_none() {
+        let e = discover(Some(dir.path())).unwrap_err();
+        assert_eq!(e.details["reason"], "credentialUnsafe");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn private_problem_checks_owner_then_mode() {
+    assert_eq!(private_problem(0o100600, 501, 501), None);
+    assert_eq!(private_problem(0o100400, 501, 501), None);
+    assert_eq!(private_problem(0o100700, 501, 501), None);
+    assert_eq!(
+        private_problem(0o100600, 0, 501),
+        Some("ownedByAnotherUser")
+    );
+    assert_eq!(
+        private_problem(0o100644, 501, 501),
+        Some("readableByOthers")
+    );
+    assert_eq!(
+        private_problem(0o100602, 501, 501),
+        Some("readableByOthers")
+    );
+    assert_eq!(
+        private_problem(0o100610, 501, 501),
+        Some("readableByOthers")
+    );
+}
+
+#[test]
+fn credential_files_are_read_up_to_4_kib() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("c.json");
+    let key = "RkFLRS1sb2NhbC1rZXktZm9yLXRlc3QtdmVjdG9ycyE";
+    let doc =
+        format!(r#"{{"v":1,"kind":"agent","id":"01agent0000000000000000000","key":"{key}"}}"#);
+    let pad = |to: usize| format!("{doc}{}", " ".repeat(to - doc.len()));
+    write_private(&file, &pad(MAX_CREDENTIAL_BYTES as usize));
+    assert!(read_credential_file(&file).unwrap().is_some());
+    write_private(&file, &pad(MAX_CREDENTIAL_BYTES as usize + 1));
+    assert!(read_credential_file(&file).unwrap().is_none());
 }

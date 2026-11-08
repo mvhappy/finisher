@@ -6,6 +6,8 @@ import { Schema } from "effect";
 export const AUDIT_KINDS = [
   "auth.fail",
   "auth.denied",
+  // Reserved: 5A Task 3 audited unproved connections run as `local` under it; since Task 4 no
+  // connection runs unproved, so nothing writes it. Kept so that rows written then still read.
   "auth.legacy",
   "auth.ticket",
   "credential.mint",

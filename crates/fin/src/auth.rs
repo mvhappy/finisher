@@ -8,10 +8,19 @@
 //!
 //! - **Credential discovery:** `FIN_CREDENTIAL` (a credential file
 //!   `{"v":1,"kind":"agent"|"mcp","id","key","env"}`), else `<server-data>/auth/local.key`. An
-//!   unreadable or malformed one is no credential: fin connects without a handshake and the
-//!   server answers anything but the hello `UNAUTHENTICATED` (`details.reason: noCredential`).
+//!   unreadable or malformed one is no credential: fin then fails **before sending anything**
+//!   with `UNAUTHENTICATED` (`details.reason: noCredential`), so an unproved server never
+//!   receives a request (nor `cli.command`); a server that is not running is still
+//!   `SERVER_UNAVAILABLE`. On Unix a key or credential file that other users can read or
+//!   that another user owns is refused, as ssh refuses such a key (`reason: credentialUnsafe`);
+//!   neither file is read past 4 KiB.
+//! - **Nothing an unproved server says is believed:** an error answer to `server.hello` is
+//!   `helloFailed` (its code, message and fix are dropped: they would be the squatter's), and a
+//!   server from before the handshake is `versionMismatch`. Only fin's own transport and timeout
+//!   errors pass through before the proof.
 //! - **The retry:** when the server cannot prove itself (`noProof`, `badProof`, `envMismatch`,
-//!   `endpointMismatch`), fin re-reads `finisherd.json` and the key **once**, reconnects and
+//!   `endpointMismatch`, `helloFailed`, `versionMismatch`), fin re-reads `finisherd.json` and the
+//!   key **once**, reconnects and
 //!   retries: a restart between reading the key and connecting is invisible. A retry that
 //!   succeeds through a changed key is noted as `keyStale` on the connection (`fin whoami`
 //!   shows it); a second failure is `SERVER_UNTRUSTED` (exit 7), and nothing but the two hellos
@@ -20,6 +29,7 @@
 //!   handshake.json` pins the bytes); the proof is checked in constant time. Keys, nonces and
 //!   MACs are never printed.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -40,6 +50,12 @@ pub const AUTH_GATE_ENV: &str = "FIN_TEST_AUTH_GATE";
 pub const LABEL_HELLO: &str = "finisherd/hello/v2";
 pub const LABEL_PROVE: &str = "fin/prove/v2";
 pub const KEY_BYTES: usize = 32;
+/// The most fin reads of a key or credential file; a longer one is malformed.
+pub const MAX_CREDENTIAL_BYTES: u64 = 4096;
+/// The protocol whose hello carries the handshake. A server below it that answers without the
+/// handshake's fields is from an older release (`versionMismatch`), not a squatter. Until 5A
+/// Task 6 this branch's own server still says protocol 1, so the missing fields decide.
+pub const HANDSHAKE_PROTOCOL: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
@@ -116,8 +132,78 @@ fn decode_key(text: &str) -> Option<[u8; KEY_BYTES]> {
     bytes.try_into().ok()
 }
 
-fn read_credential_file(path: &Path) -> Option<Credential> {
-    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+#[cfg(unix)]
+unsafe extern "C" {
+    /// POSIX `geteuid(2)`: always succeeds. (`uid_t` is `u32` on every Unix fin builds for.)
+    safe fn geteuid() -> u32;
+}
+
+/// Why a key or credential file with this `mode` and owner `uid` is refused, if it is.
+#[cfg(unix)]
+fn private_problem(mode: u32, uid: u32, euid: u32) -> Option<&'static str> {
+    if uid != euid {
+        Some("ownedByAnotherUser")
+    } else if mode & 0o077 != 0 {
+        Some("readableByOthers")
+    } else {
+        None
+    }
+}
+
+fn unsafe_credential(path: &Path, problem: &str, mode: u32) -> CoreError {
+    CoreError::new(
+        "UNAUTHENTICATED",
+        format!(
+            "the credential file {} is not private, so fin will not use it",
+            path.display()
+        ),
+    )
+    .with_details(json!({
+        "reason": "credentialUnsafe",
+        "path": path.display().to_string(),
+        "problem": problem,
+        "mode": format!("{:03o}", mode & 0o777),
+    }))
+    .with_fix(
+        "A credential file must belong to you and be readable and writable by you alone (mode \
+         600), as for an SSH key, so other users cannot copy it. Change its owner or permissions \
+         that way, or ask for a new credential, then try again.",
+    )
+}
+
+/// The text of a key or credential file: `Ok(None)` when it cannot be read or is over
+/// [`MAX_CREDENTIAL_BYTES`]; an error when it is not private (Unix: the opened file's owner and
+/// mode, so a swap after the check reads nothing else).
+fn read_private(path: &Path) -> Result<Option<String>, CoreError> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Ok(None);
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let Ok(meta) = file.metadata() else {
+            return Ok(None);
+        };
+        if let Some(problem) = private_problem(meta.mode(), meta.uid(), geteuid()) {
+            return Err(unsafe_credential(path, problem, meta.mode()));
+        }
+    }
+    let mut text = String::new();
+    match file
+        .take(MAX_CREDENTIAL_BYTES + 1)
+        .read_to_string(&mut text)
+    {
+        Ok(n) if n as u64 <= MAX_CREDENTIAL_BYTES => Ok(Some(text)),
+        _ => Ok(None),
+    }
+}
+
+fn read_credential_file(path: &Path) -> Result<Option<Credential>, CoreError> {
+    Ok(read_private(path)?.and_then(|text| parse_credential(&text)))
+}
+
+fn parse_credential(text: &str) -> Option<Credential> {
+    let doc: Value = serde_json::from_str(text).ok()?;
     if doc.get("v").and_then(Value::as_u64) != Some(1) {
         return None;
     }
@@ -135,14 +221,19 @@ fn read_credential_file(path: &Path) -> Option<Credential> {
     Some(Credential::new(kind, Some(id.to_string()), env, key))
 }
 
-/// `FIN_CREDENTIAL`, else `<server-data>/auth/local.key` (Decision 11).
-pub fn discover(server_data: Option<&Path>) -> Option<Credential> {
+/// `FIN_CREDENTIAL`, else `<server-data>/auth/local.key` (Decision 11). `Ok(None)`: none found
+/// (missing, unreadable or malformed); an error: one was found and is not private.
+pub fn discover(server_data: Option<&Path>) -> Result<Option<Credential>, CoreError> {
     if let Some(file) = std::env::var_os(CREDENTIAL_ENV).filter(|v| !v.is_empty()) {
         return read_credential_file(&crate::paths::resolve(Path::new(&file)));
     }
-    let path = server_data?.join("auth").join("local.key");
-    let key = decode_key(&std::fs::read_to_string(path).ok()?)?;
-    Some(Credential::new(CredentialKind::Local, None, None, key))
+    let Some(sd) = server_data else {
+        return Ok(None);
+    };
+    let text = read_private(&sd.join("auth").join("local.key"))?;
+    Ok(text
+        .and_then(|t| decode_key(&t))
+        .map(|key| Credential::new(CredentialKind::Local, None, None, key)))
 }
 
 /// The form both MACs bind (Decision 7): a socket's real path, a pipe's name lower-cased.
@@ -222,7 +313,7 @@ pub fn prove_mac(
 pub enum Failure {
     /// The server did not prove itself: worth one retry (Decision 10).
     Untrusted(&'static str),
-    /// Anything else (the server's own error, a transport failure).
+    /// fin's own transport or timeout error, or the error of a server that has proved itself.
     Other(CoreError),
 }
 
@@ -243,8 +334,19 @@ pub fn handshake(conn: &mut Client, cred: &Credential, expect: &Expect) -> Resul
     if let Some(env) = &expect.env_id {
         hello["env"] = json!(env);
     }
-    let answer = conn.call("server.hello", hello).map_err(Failure::Other)?;
+    // An error answer comes from a server that has not proved anything: its code, message and
+    // fix are not shown (a squatter would choose them); only fin's own transport errors are.
+    let Ok(answer) = conn
+        .call_answer("server.hello", hello)
+        .map_err(Failure::Other)?
+    else {
+        return Err(Failure::Untrusted("helloFailed"));
+    };
     let field = |k: &str| answer.get(k).and_then(Value::as_str);
+    let version = answer.get("protocolVersion").and_then(Value::as_u64);
+    if version.is_none_or(|v| v < HANDSHAKE_PROTOCOL) && answer.get("serverNonce").is_none() {
+        return Err(Failure::Untrusted("versionMismatch"));
+    }
     let Some(env) = field("envId") else {
         return Err(Failure::Untrusted("noProof"));
     };
@@ -275,8 +377,8 @@ pub fn handshake(conn: &mut Client, cred: &Credential, expect: &Expect) -> Resul
 }
 
 /// The credential and the expected server for `endpoint`, read now.
-fn target(endpoint: &Endpoint) -> (Option<Credential>, Expect) {
-    let cred = discover(endpoint::server_data().as_deref());
+fn target(endpoint: &Endpoint) -> Result<(Option<Credential>, Expect), CoreError> {
+    let cred = discover(endpoint::server_data().as_deref())?;
     let env_id = cred
         .as_ref()
         .and_then(|c| c.env.clone())
@@ -285,7 +387,7 @@ fn target(endpoint: &Endpoint) -> (Option<Credential>, Expect) {
         env_id,
         endpoint: canonical_endpoint(endpoint),
     };
-    (cred, expect)
+    Ok((cred, expect))
 }
 
 fn gate() {
@@ -303,35 +405,46 @@ fn gate() {
 }
 
 pub fn untrusted(endpoint: &Endpoint, reason: &str) -> CoreError {
+    let at = endpoint.display();
+    let details = json!({ "endpoint": at, "reason": reason });
+    if reason == "versionMismatch" {
+        return CoreError::new(
+            "SERVER_UNTRUSTED",
+            format!("the server at {at} is from an older Finisher release and cannot prove it is your Finisher server"),
+        )
+        .with_details(details)
+        .with_fix(
+            "Your Finisher server is older than this command and does not know how to prove \
+             itself. Restart it from the same Finisher release as this command, then try again.",
+        );
+    }
     CoreError::new(
         "SERVER_UNTRUSTED",
-        format!(
-            "the server at {} did not prove it is your Finisher server",
-            endpoint.display()
-        ),
+        format!("the server at {at} did not prove it is your Finisher server"),
     )
-    .with_details(json!({ "endpoint": endpoint.display(), "reason": reason }))
+    .with_details(details)
     .with_fix(
         "Another program may be listening where your Finisher server should be. Stop it, or check \
          that this command uses the same server data as your Finisher server, then try again.",
     )
 }
 
-/// The `UNAUTHENTICATED` answer of a connection made without a credential, in words.
-pub fn no_credential(mut e: CoreError) -> CoreError {
-    if let Some(map) = e.details.as_object_mut() {
-        map.insert("reason".into(), json!("noCredential"));
-    } else {
-        e.details = json!({ "reason": "noCredential" });
-    }
-    e.fix = Some(
+/// The `UNAUTHENTICATED` of a run that found no credential: fin sends the server nothing.
+pub fn no_credential(endpoint: &Endpoint) -> CoreError {
+    CoreError::new(
+        "UNAUTHENTICATED",
+        format!(
+            "fin found no credential to prove to the server at {}",
+            endpoint.display()
+        ),
+    )
+    .with_details(json!({ "reason": "noCredential", "endpoint": endpoint.display() }))
+    .with_fix(
         "This command found no credential. It reads the key in your Finisher server's data \
          folder (the FIN_SERVER_DATA variable, or the default folder), or the credential file the \
          FIN_CREDENTIAL variable names. Run it as the user who runs the server, with that \
-         server's data, or give it a credential file."
-            .into(),
-    );
-    e
+         server's data, or give it a credential file.",
+    )
 }
 
 /// Connects with `open` and proves the discovered credential, retrying once (Decision 10).
@@ -339,11 +452,13 @@ pub fn connect(
     endpoint: &Endpoint,
     open: impl Fn(&Endpoint) -> Result<Client, CoreError>,
 ) -> Result<Client, CoreError> {
-    let (cred, expect) = target(endpoint);
+    let (cred, expect) = target(endpoint)?;
     gate();
+    // Connecting first keeps "no server is running" the answer when none is; without a
+    // credential nothing can be proved, so nothing is sent (Decision 11).
     let mut client = open(endpoint)?;
     let Some(cred) = cred else {
-        return Ok(client);
+        return Err(no_credential(endpoint));
     };
     let first = match handshake(&mut client, &cred, &expect) {
         Ok(principal) => {
@@ -360,7 +475,7 @@ pub fn connect(
     } else {
         endpoint::resolve().map_err(|_| untrusted(endpoint, first))?
     };
-    let (again, expect) = target(&endpoint);
+    let (again, expect) = target(&endpoint)?;
     let Some(again) = again else {
         return Err(untrusted(&endpoint, first));
     };

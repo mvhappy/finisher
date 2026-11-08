@@ -70,10 +70,13 @@ export class Handshake {
     }
   }
 
-  /** The handshake fields of the hello on `conn`, whose canonical endpoint is `endpoint`. */
-  hello(conn: Connection, endpoint: string, req: HelloRequest): Effect.Effect<HelloAnswer, FinError> {
+  /**
+   * The handshake fields of the hello on `conn`, whose canonical endpoint is `endpoint`. A
+   * connection that is not live (`undefined`) gets no handshake fields: nothing can be proved.
+   */
+  hello(conn: Connection | undefined, endpoint: string, req: HelloRequest): Effect.Effect<HelloAnswer, FinError> {
     return Effect.suspend(() => {
-      if (req.clientNonce === undefined) return Effect.succeed({});
+      if (req.clientNonce === undefined || conn === undefined) return Effect.succeed({});
       const clientNonce = b64u.decode(req.clientNonce);
       if (clientNonce === null || clientNonce.length !== NONCE_BYTES) {
         return Effect.fail(
@@ -105,6 +108,7 @@ export class Handshake {
   prove(connections: Connections, clientId: number, req: { readonly mac: string }): Effect.Effect<{ principal: Principal }, FinError> {
     return Effect.suspend(() => {
       const conn = connections.get(clientId);
+      if (conn === undefined) return Effect.fail(unauthenticated("unknownConnection"));
       if (isProved(conn.principal)) {
         return Effect.fail(finError("INVALID_REQUEST", "this connection has already proved its credential", {}, "prove once per connection"));
       }
