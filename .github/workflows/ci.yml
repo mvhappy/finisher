@@ -18,7 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # third_party/svt-av1 (fin-svt-sys builds SVT-AV1 from it; shallow per .gitmodules).
+          # third_party/svt-av1 and third_party/dav1d (fin-svt-sys and fin-dav1d-sys build SVT-AV1
+          # and dav1d from them; shallow per .gitmodules).
           submodules: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -29,7 +30,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Install nasm (SVT-AV1's x86_64 assembly; cmake is on every runner)
+      - name: Install nasm (SVT-AV1's and dav1d's x86_64 assembly; cmake is on every runner)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y nasm
       - name: Install nasm (Windows)
@@ -60,7 +61,7 @@ jobs:
           # The real-font tests read the warmed cache and fail rather than skip without it.
           FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
           FIN_REQUIRE_FONTS: "1"
-      - name: Codecs (not a default member until 6A-2; needs cmake, nasm on x86_64, the submodule)
+      - name: Codecs (not a default member until 6A-2; needs cmake, nasm on x86_64, the submodules)
         run: cargo test --release -p fin-codecs --features testing
       - name: Install wasmtime (the wasm32 determinism runs)
         if: runner.os == 'Linux'

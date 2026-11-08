@@ -22,23 +22,44 @@ doctest = false
 # The `test`, `testbad` and `testplugin` families and the test helper. fin-workers' own tests
 # enable it through the self dev-dependency below, and fin-node's `build:test` builds the
 # binary with it; release builds never do (`scripts/check-test-hooks.mjs`).
-test-hooks = ["fin-jobs/test-hooks", "dep:libc", "dep:windows-sys"]
+test-hooks = ["fin-jobs/test-hooks", "dep:windows-sys"]
 
 [dependencies]
 fin-jobs = { path = "../fin-jobs" }
 serde = "1"
 serde_json = "1"
 
-# The test family's signals, `setsid` and process reports (test-hooks only; Task 4's watchdog
-# makes it a plain Unix dependency).
+# The host watchdog (`fin-workers watchdog`), and the test family's signals, `setsid` and
+# process reports.
 [target.'cfg(unix)'.dependencies]
-libc = { version = "0.2.191", optional = true }
+libc = "0.2.191"
 
-# The test family's `EXCEPTION_IN_PAGE_ERROR` (test-hooks only).
+# The test family's `EXCEPTION_IN_PAGE_ERROR` and its Job, breakaway and handle probes
+# (test-hooks only).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug"] }
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# The Windows process tests: Jobs, process state, pipes and handle flags.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 fin-core = { path = "../fin-core" }
+fin-jobhost = { path = "../fin-jobhost", features = ["test-hooks"] }
 fin-workers = { path = ".", features = ["test-hooks"] }
 tempfile = "3"

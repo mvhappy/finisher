@@ -88,6 +88,7 @@ pub fn run_on(mut family: impl Family, chan: Channel) -> i32 {
     #[cfg(feature = "test-hooks")]
     family.hello_for_test(&mut hello);
     let _ = shared.out.send(&WorkerMsg::Hello(hello));
+    crate::qos::lower_after_hello();
     let (tx, rx) = mpsc::channel();
     spawn_reader(chan.input, &shared, tx);
     spawn_alive(&shared);

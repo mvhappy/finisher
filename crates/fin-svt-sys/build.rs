@@ -48,7 +48,13 @@ fn main() {
             "nasm is needed to build SVT-AV1's x86_64 assembly: install it (macOS `brew install nasm`, Debian/Ubuntu `apt install nasm`, Windows `winget install NASM.NASM`)"
         );
     }
-    let dst = cmake::Config::new(&src)
+    let mut cfg = cmake::Config::new(&src);
+    // SVT-AV1's `LOG_QUIET` macros (`MAYBE_UNUSED_ARGS`) need a conforming preprocessor:
+    // MSVC's traditional one passes `__VA_ARGS__` on as one argument (C2059).
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        cfg.cflag("/Zc:preprocessor");
+    }
+    let dst = cfg
         .profile("Release")
         .define("BUILD_APPS", "OFF")
         .define("BUILD_TESTING", "OFF")

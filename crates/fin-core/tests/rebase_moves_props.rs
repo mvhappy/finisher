@@ -67,3 +67,40 @@ fn partner_of_overwrite_move_refuses_unblamed() {
     ];
     check(&base(&lens, true, false), &committed, &mine).unwrap();
 }
+
+/// The shrunk case of a workspace run (spec §4.3 *self relocation*): t1 holds c1, c2, c3 and
+/// the head ripples c2 to t1's end, so c3 now starts where c2 did (frame 10). Ours slides c3
+/// back a frame, then ripple-moves c4 before c2, written at frame 10. That position maps to 10
+/// (c2's range collapses to its start), but at the head our rebased slide put c3's start at 9
+/// without a shift, so 10 is inside c3 and the re-run refuses `INSERT_INSIDE_CLIP`, unblamed:
+/// the head only shifted c3 (`keyed4c::self_drift`).
+#[test]
+fn slide_then_move_at_moved_anchor_refuses_unblamed() {
+    use keyed4c::Intent::{Move, Slide};
+    let lens = [vec![10, 10, 10], vec![], vec![], vec![10]];
+    let committed = [(
+        vec![Move {
+            track: 0,
+            clip: 4,
+            to: 0,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Slide {
+            track: 0,
+            clip: 2,
+            frames: -1,
+        },
+        Move {
+            track: 3,
+            clip: 0,
+            to: 0,
+            before: Some(4),
+            overwrite: false,
+        },
+    ];
+    check(&base(&lens, false, false), &committed, &mine).unwrap();
+}

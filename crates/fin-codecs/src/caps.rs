@@ -6,6 +6,7 @@ use fin_media::VideoCodec;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::av1::DecodeThreads;
 use crate::traits::VideoDecoder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +39,7 @@ impl Capabilities {
     }
 }
 
-/// 6A: AV1 decode (`rav1d`) and encode (SVT-AV1) in software; nothing else.
+/// 6A: AV1 decode (dav1d) and encode (SVT-AV1) in software; nothing else.
 pub fn capabilities() -> Capabilities {
     let none = |codec| CodecSupport {
         codec,
@@ -52,7 +53,7 @@ pub fn capabilities() -> Capabilities {
                 codec: VideoCodec::Av1,
                 decode: Support::Software,
                 encode: Support::Software,
-                backends: vec!["rav1d".into(), "svt-av1".into()],
+                backends: vec!["dav1d".into(), "svt-av1".into()],
             },
             none(VideoCodec::H264),
             none(VideoCodec::Hevc),
@@ -71,10 +72,20 @@ fn unavailable(codec: &str, direction: &str) -> CoreError {
     .with_fix("see `fin media caps` for what this machine decodes; the codec plugin adds more")
 }
 
-/// A decoder for `track` (AV1 only in 6A); `CODEC_UNAVAILABLE` otherwise.
+/// A decoder for `track` (AV1 only in 6A) with dav1d's default threading (a worker per
+/// logical processor, frame threading on); `CODEC_UNAVAILABLE` otherwise.
 pub fn open_decoder(
     track: &VideoTrack,
     caps: &Capabilities,
+) -> Result<Box<dyn VideoDecoder>, CoreError> {
+    open_decoder_with(track, caps, DecodeThreads::default())
+}
+
+/// [`open_decoder`] with the decoder's threads and frames in flight chosen.
+pub fn open_decoder_with(
+    track: &VideoTrack,
+    caps: &Capabilities,
+    threads: DecodeThreads,
 ) -> Result<Box<dyn VideoDecoder>, CoreError> {
     let codec = match &track.config {
         CodecConfig::Av1 { .. } => VideoCodec::Av1,
@@ -92,7 +103,7 @@ pub fn open_decoder(
         .unwrap_or_default();
     match (codec, caps.get(codec).map(|c| c.decode)) {
         (VideoCodec::Av1, Some(Support::Software | Support::Hardware)) => {
-            Ok(Box::new(crate::av1::Rav1dDecoder::new()?))
+            Ok(Box::new(crate::av1::Dav1dDecoder::new(threads)?))
         }
         _ => Err(unavailable(&name, "decode")),
     }

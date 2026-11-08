@@ -7,7 +7,7 @@ use fin_core::{CoreError, Rational};
 use fin_media::{ColourTags, PixelFormat, Size};
 use serde_json::json;
 
-use super::rav1d_ffi::parse_sequence_header;
+use super::dav1d_ffi::parse_sequence_header;
 use super::svt_ffi::{Encoder, FLAG_EOS, KEY_PICTURE};
 use crate::frame::{EncodedPacket, RawFrame};
 use crate::traits::VideoEncoder;
