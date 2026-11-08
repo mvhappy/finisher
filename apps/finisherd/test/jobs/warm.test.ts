@@ -156,7 +156,9 @@ describe("hand-off", () => {
     if (strict) {
       if (linux) expect(p99).toBeLessThanOrEqual(5);
     } else {
-      expect(p50).toBeLessThanOrEqual(2);
+      // The median moves under load too (3–4 ms under a full Linux suite, 45 ms on Windows):
+      // only a gross regression fails here; the strict run holds the budget.
+      expect(p50).toBeLessThanOrEqual(10);
       expect(p99).toBeLessThanOrEqual(50);
     }
   });
@@ -436,9 +438,12 @@ describe("failures", () => {
   });
 
   test("cancel_keeps_a_cooperative_worker", async () => {
-    const t = await testEngine();
+    const { factory, rec } = proxied();
+    const t = await testEngine({ jobHost: factory });
     const v = await t.submit("test.warm", { value: 1, delayMs: 30_000 });
-    const w = await until(() => warmList(t).find((x) => x.state === "busy"));
+    // The pool marks the worker busy before `start` is handed to the host; a cancel before then
+    // ends the job at once without the worker, which is not what this test is about.
+    const w = await until(() => rec.starts.has(v.id) && warmList(t).find((x) => x.state === "busy"));
     const cancelled = await run(t.engine.cancel(v.id));
     expect(cancelled).toMatchObject({ state: "cancelled", error: { code: "JOB_CANCELLED" } });
     expect(await readyWorker(t)).toMatchObject({ pid: w.pid });
@@ -447,9 +452,10 @@ describe("failures", () => {
   });
 
   test("cancel_kills_an_uncooperative_worker", async () => {
-    const t = await testEngine({ testKinds: { overrides: { "test.hang": { warm: true, defaultPriority: "interactive" } } } });
+    const { factory, rec } = proxied();
+    const t = await testEngine({ jobHost: factory, testKinds: { overrides: { "test.hang": { warm: true, defaultPriority: "interactive" } } } });
     const v = await t.submit("test.hang", {});
-    await until(() => warmList(t).find((x) => x.state === "busy"));
+    await until(() => rec.starts.has(v.id) && warmList(t).find((x) => x.state === "busy"));
     const t0 = Date.now();
     const cancelled = await run(t.engine.cancel(v.id));
     const took = Date.now() - t0;
