@@ -13,7 +13,8 @@ import { toFinError } from "../src/errors.ts";
 import { registerMediaKinds } from "../src/jobs/kinds/media.look.ts";
 import { mediaCapabilities } from "../src/media/caps.ts";
 import { LOOK_MAX_SIDE, look, type LookRequest, type MediaRpcDeps } from "../src/media/look.ts";
-import { closeTestEngines, OWNER, type TestEngine, testEngine } from "./support/jobs.ts";
+import type { JobEngineOptions } from "../src/jobs/layer.ts";
+import { closeTestEngines, OWNER, type TestEngine, testEngine, until } from "./support/jobs.ts";
 import { type LookProject, lookProject, makeAv1Fixture } from "./support/media.ts";
 
 const GPU_REQUIRED = process.env.FIN_REQUIRE_GPU === "1";
@@ -51,7 +52,7 @@ interface Setup {
   look(over?: Partial<LookRequest>): Effect.Effect<unknown, FinError>;
 }
 
-async function setup(): Promise<Setup> {
+async function setup(engineOpts: Partial<JobEngineOptions> = {}): Promise<Setup> {
   const serverData = mkdtempSync(join(work, "sd-"));
   const p = await lookProject(serverData, mkdtempSync(join(work, "proj-")) + "/p", media);
   engines.push(p.engine);
@@ -65,7 +66,7 @@ async function setup(): Promise<Setup> {
           }),
     dirOf: (projectId: string) => (projectId === p.engine.projectId ? p.dir : undefined),
   };
-  const t = await testEngine({ serverData, register: (r) => registerMediaKinds(r, { serverData, projects }) });
+  const t = await testEngine({ serverData, register: (r) => registerMediaKinds(r, { serverData, projects }), ...engineOpts });
   const deps: MediaRpcDeps = {
     engine: t.engine,
     registry: {
@@ -212,5 +213,57 @@ describe("media.capabilities", () => {
     expect((await failure(caps(OWNER))).code).toBe("JOB_QUEUE_FULL");
     expect((await failure(caps(OWNER))).code).toBe("JOB_QUEUE_FULL");
     expect(calls).toBe(2);
+  });
+});
+
+describe("media diagnostics (Task 14)", () => {
+  test("with diagnostics on, a look's job.done carries media and the worker's stats are forwarded", async () => {
+    const s = await setup({ diagnostics: () => true });
+    const r = await rendered(s, { at: ["0", "1/10"], size: { width: 80, height: 45 } });
+    if (r === undefined) return;
+    const done = await until(() => s.t.sink.done.find((d) => d.kind === "media.look"));
+    const m = done.extra?.["media"] as Record<string, unknown>;
+    expect(m).toMatchObject({ codec: "av1", backend: "dav1d", hw: false, resolution: "sd", frames: 2, copyPath: "copy" });
+    expect(typeof m["rtFactorMilli"]).toBe("number");
+    expect(typeof m["cacheHit"]).toBe("boolean");
+    const stats = await until(() => (s.t.sink.forwarded.some((f) => f.kind === "render.stats") ? s.t.sink.forwarded.filter((f) => f.kind === "render.stats") : undefined));
+    const phases = stats.map((f) => (f.payload as { phase: string }).phase).sort();
+    expect(phases).toEqual(expect.arrayContaining(["composite", "decode", "readback"]));
+    expect(stats.every((f) => f.origin.family === "media")).toBe(true);
+    // Nothing a user wrote, and no adapter name, is in what the family sent.
+    const sent = JSON.stringify([m, stats.map((f) => f.payload)]);
+    expect(sent).not.toContain(s.p.dir);
+    expect(sent).not.toContain(r.adapter.name);
+  });
+
+  test("media.capabilities is forwarded once per server run, with numeric GPU ids", async () => {
+    const s = await setup({ diagnostics: () => true });
+    const caps = mediaCapabilities(s.deps);
+    const first = await Effect.runPromise(caps(OWNER)).catch((e: FinError) => {
+      if (noGpu(e)) return undefined;
+      throw e;
+    });
+    if (first === undefined) return;
+    const sent = await until(() => (s.t.sink.forwarded.some((f) => f.kind === "media.capabilities") ? s.t.sink.forwarded.filter((f) => f.kind === "media.capabilities") : undefined));
+    await Effect.runPromise(caps(OWNER));
+    expect(s.t.sink.forwarded.filter((f) => f.kind === "media.capabilities")).toHaveLength(1);
+    const event = sent[0]?.payload as { gpu?: Record<string, unknown>; sandbox: string; copyPath: string };
+    expect(event).toMatchObject({ sandbox: "none", copyPath: "copy" });
+    const gpu = first.gpu;
+    if (gpu != null) {
+      expect(event.gpu).toMatchObject({ vendorId: gpu.vendor, deviceId: gpu.device, software: gpu.software });
+      expect(JSON.stringify(event)).not.toContain(gpu.name);
+    }
+  });
+
+  test("with diagnostics off nothing media-specific is built or forwarded", async () => {
+    const s = await setup();
+    const r = await rendered(s, { size: { width: 80, height: 45 } });
+    if (r === undefined) return;
+    await Effect.runPromise(mediaCapabilities(s.deps)(OWNER));
+    const done = await until(() => s.t.sink.done.find((d) => d.kind === "media.look"));
+    expect(done.extra ?? {}).not.toHaveProperty("media");
+    expect(s.t.sink.forwarded).toEqual([]);
+    expect(r.stats.media).toBeUndefined();
   });
 });

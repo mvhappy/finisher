@@ -31,6 +31,8 @@ pub enum Ev {
     Call(String, Value),
     Progress(f64),
     Checkpoint(Value),
+    /// A `diag` message: its kind and payload.
+    Diag(String, Value),
 }
 
 /// How a job ended.
@@ -57,6 +59,17 @@ impl Run {
             .iter()
             .filter_map(|e| match e {
                 Ev::Call(m, p) if m == method => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The payloads of the `diag` messages of `kind`, in order.
+    pub fn diags(&self, kind: &str) -> Vec<&Value> {
+        self.events
+            .iter()
+            .filter_map(|e| match e {
+                Ev::Diag(k, p) if k == kind => Some(p),
                 _ => None,
             })
             .collect()
@@ -245,7 +258,8 @@ impl Proc {
                 }
                 WorkerMsg::Result { value, .. } => break End::Result(value),
                 WorkerMsg::Error { error, .. } => break End::Error(error),
-                WorkerMsg::Ready {} | WorkerMsg::Diag { .. } | WorkerMsg::Hello(_) => {}
+                WorkerMsg::Diag { kind, payload, .. } => events.push(Ev::Diag(kind, payload)),
+                WorkerMsg::Ready {} | WorkerMsg::Hello(_) => {}
                 other => panic!("unexpected {other:?}"),
             }
         };

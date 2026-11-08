@@ -5,7 +5,10 @@
 //! a [`LookResult`]. A cancel is seen between frames.
 
 use fin_compositor::{AdapterChoice, AdapterSummary, Compositor, Gpu};
+use std::time::Instant;
+
 use fin_core::eval::{FramePlan, eval_frame};
+use fin_core::events::payloads::RenderPhase;
 use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::Size;
@@ -15,8 +18,9 @@ use fin_media::jobs::{
 };
 use serde_json::{Value, json};
 
+use super::diag::{self, JobFacts};
 use super::inputs::{self, MANIFEST_CAP, SNAPSHOT_CAP};
-use super::sources::Sources;
+use super::sources::{Sources, micros_since};
 use super::{GpuState, Warm, job_error};
 
 /// BLAKE3 of the plan's compact JSON (plan 6A Decision 4), lowercase hex.
@@ -32,6 +36,7 @@ pub(super) fn adapter(a: AdapterSummary) -> GpuAdapter {
         name: a.name,
         vendor: a.vendor,
         device: a.device,
+        driver_major: a.driver_major,
         software: a.software,
     }
 }
@@ -90,6 +95,16 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         worker_jobs: warm.jobs,
         ..LookStats::default()
     };
+    let diagnostics = ctx.diagnostics();
+    let gpu_info = warm.gpu.as_ref().expect("made above").gpu.info();
+    let rate = snapshot
+        .project
+        .timelines
+        .iter()
+        .find(|t| t.id == params.timeline)
+        .map(|t| t.rate);
+    let mut first_decode = None;
+    let mut render_micros = 0u64;
     let mut frames = Vec::with_capacity(params.at.len());
     let mut skipped = Vec::new();
     for (i, &t) in params.at.iter().enumerate() {
@@ -115,9 +130,28 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
             .map_err(job_error)?;
         let mut src = Sources::new(&manifest, &mut warm.sources, &warm.caps);
         let state = warm.gpu.as_mut().expect("made above");
+        let started = Instant::now();
         let rendered = state.compositor.render(&state.gpu, &plan, &mut src, size);
+        let frame_micros = micros_since(started);
         stats.sources_opened += src.opened;
         stats.sources_reused += src.reused;
+        first_decode = first_decode.or(src.first_decode);
+        if diagnostics && rendered.is_ok() {
+            // Decode happens inside `render` (the compositor asks the sources for each layer);
+            // composite is the rest, less the readback.
+            let decode: u64 = src.decodes.iter().map(|d| d.1).sum();
+            let readback = state.compositor.last_readback_micros();
+            let composite = frame_micros.saturating_sub(decode).saturating_sub(readback);
+            for &(backend, micros) in &src.decodes {
+                warm.render_stats
+                    .record(RenderPhase::Decode, backend, micros);
+            }
+            warm.render_stats
+                .record(RenderPhase::Composite, &gpu_info.backend, composite);
+            warm.render_stats
+                .record(RenderPhase::Readback, &gpu_info.backend, readback);
+            render_micros += frame_micros;
+        }
         let rendered = match rendered {
             Ok(r) => r,
             Err(e) => {
@@ -157,7 +191,19 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         );
         frames.push(frame);
     }
-    let adapter = adapter(warm.gpu.as_ref().expect("made above").gpu.info());
+    let hw = first_decode.is_some_and(|(codec, _)| diag::decodes_in_hardware(&warm.caps, codec));
+    if diagnostics {
+        stats.media = Some(diag::job_media(&JobFacts {
+            frames: &frames,
+            decode: first_decode,
+            hw,
+            rate,
+            render_micros,
+            sources_opened: stats.sources_opened,
+            sources_reused: stats.sources_reused,
+        }));
+    }
+    let adapter = adapter(gpu_info);
     let result = LookResult {
         frames,
         skipped,

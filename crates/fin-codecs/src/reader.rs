@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::av1::DecodeThreads;
 use crate::caps::{Capabilities, open_decoder_limited};
 use crate::frame::DecodedFrame;
-use crate::traits::VideoDecoder;
+use crate::traits::{BackendId, VideoDecoder};
 
 /// Decoded frames kept for reuse.
 const CACHE: usize = 64;
@@ -123,6 +123,11 @@ impl<R: Read + Seek> FrameReader<R> {
 
     pub fn info(&self) -> &MediaInfo {
         self.demux.info()
+    }
+
+    /// The decoder's backend (`dav1d`, …).
+    pub fn backend(&self) -> BackendId {
+        self.decoder.backend()
     }
 
     pub fn table(&self) -> &SampleTable {

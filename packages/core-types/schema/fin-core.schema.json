@@ -43,6 +43,17 @@
       ],
       "type": "string"
     },
+    "AdapterType": {
+      "description": "A GPU adapter's type (`wgpu::DeviceType`).",
+      "enum": [
+        "integrated",
+        "discrete",
+        "virtual",
+        "cpu",
+        "other"
+      ],
+      "type": "string"
+    },
     "AdvisoryAction": {
       "oneOf": [
         {
@@ -516,6 +527,18 @@
         },
         {
           "$ref": "#/$defs/ReviewVerdict"
+        },
+        {
+          "$ref": "#/$defs/MediaCapabilitiesEvent"
+        },
+        {
+          "$ref": "#/$defs/RenderStats"
+        },
+        {
+          "$ref": "#/$defs/PreviewStats"
+        },
+        {
+          "$ref": "#/$defs/RenderSample"
         }
       ]
     },
@@ -939,6 +962,41 @@
         "channels",
         "priming",
         "padding"
+      ],
+      "type": "object"
+    },
+    "BackendClass": {
+      "description": "Who provides a backend (spec §6.1): the export-encoder policy and the capability report key\non it.",
+      "oneOf": [
+        {
+          "enum": [
+            "os",
+            "gpu",
+            "software",
+            "plugin"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "A GPU API (the compositor's), or a backend not in [`MEDIA_BACKENDS`].",
+          "type": "string"
+        }
+      ]
+    },
+    "BackendEntry": {
+      "description": "A backend and who provides it.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/BackendClass"
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "required": [
+        "name",
+        "class"
       ],
       "type": "object"
     },
@@ -1871,6 +1929,34 @@
       ],
       "type": "object"
     },
+    "CodecEntry": {
+      "description": "One codec's support on this machine.",
+      "properties": {
+        "backends": {
+          "description": "The backends that would be used, decode first.",
+          "items": {
+            "$ref": "#/$defs/BackendEntry"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/Name"
+        },
+        "decode": {
+          "$ref": "#/$defs/SupportClass"
+        },
+        "encode": {
+          "$ref": "#/$defs/SupportClass"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
+    },
     "CollectPolicy": {
       "description": "A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by\n`fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of\nthe project is recorded, and setting it purges the project's entries. A project whose\npolicy is not known (not open here) is neither: the journal drops its new entries and\npurges nothing.",
       "oneOf": [
@@ -2188,6 +2274,14 @@
         "slots",
         "importers",
         "embedders"
+      ],
+      "type": "string"
+    },
+    "CopyPath": {
+      "description": "How frames travel between the decoder, the compositor and the encoder (spec §5.4): through\nhost memory (`copy`; all of 6A) or as shared GPU surfaces (`zeroCopy`, 6G).",
+      "enum": [
+        "copy",
+        "zeroCopy"
       ],
       "type": "string"
     },
@@ -3364,7 +3458,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -3545,6 +3639,94 @@
             },
             "payload": {
               "$ref": "#/$defs/ReviewVerdict"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "media.capabilities",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/MediaCapabilitiesEvent"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "render.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RenderStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "preview.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PreviewStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "render.sample",
+              "type": "string"
+            },
+            "kv": {
+              "const": 0,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RenderSample"
             }
           },
           "required": [
@@ -4408,6 +4590,12 @@
         "deviceType": {
           "type": "string"
         },
+        "driverMajor": {
+          "description": "The driver's major version, when its version text has a number (the text itself is\nnot kept).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "name": {
           "type": "string"
         },
@@ -4427,6 +4615,47 @@
         "name",
         "vendor",
         "device",
+        "software"
+      ],
+      "type": "object"
+    },
+    "GpuEntry": {
+      "description": "The GPU adapter frames are composited on: numeric ids only (owner decision 7). The\nadapter's and driver's name strings identify hardware and are never recorded.",
+      "properties": {
+        "adapterType": {
+          "$ref": "#/$defs/AdapterType"
+        },
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "deviceId": {
+          "description": "The PCI device id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "driverMajor": {
+          "description": "The driver's major version, when its version string has one.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "software": {
+          "description": "A CPU adapter (lavapipe, WARP).",
+          "type": "boolean"
+        },
+        "vendorId": {
+          "description": "The PCI vendor id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backend",
+        "adapterType",
+        "vendorId",
+        "deviceId",
         "software"
       ],
       "type": "object"
@@ -5722,7 +5951,7 @@
       "type": "object"
     },
     "JobDone": {
-      "description": "`job.done` (`kv` 1). Sub-project 6 adds its media fields as `kv` 2.",
+      "description": "`job.done` (`kv` 2: `kv` 1 plus the optional `media` object of sub-project 6).",
       "properties": {
         "attempts": {
           "format": "uint32",
@@ -5759,6 +5988,9 @@
         },
         "kind": {
           "$ref": "#/$defs/Name"
+        },
+        "media": {
+          "$ref": "#/$defs/JobMedia"
         },
         "outcome": {
           "$ref": "#/$defs/JobOutcome"
@@ -6353,6 +6585,54 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "JobMedia": {
+      "description": "The `media` object of `job.done` `kv` 2: what a media job did. `codec`, `backend` and `hw`\ndescribe the decode that served the job (the first source it decoded; `none` when it\ndecoded nothing).",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "cacheHit": {
+          "description": "Every source the job needed was already open in the warm worker (and it needed one).",
+          "type": "boolean"
+        },
+        "codec": {
+          "$ref": "#/$defs/Name"
+        },
+        "copyPath": {
+          "$ref": "#/$defs/CopyPath"
+        },
+        "frames": {
+          "description": "Frames the job produced.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hw": {
+          "type": "boolean"
+        },
+        "resolution": {
+          "$ref": "#/$defs/ResolutionBucket",
+          "description": "The largest frame the job produced."
+        },
+        "rtFactorMilli": {
+          "description": "Media seconds produced per wall second of rendering, in thousandths (1000 = real\ntime): the frames' durations at the timeline's rate over decode + composite +\nreadback time. `0` when the job took no measurable time.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "backend",
+        "hw",
+        "resolution",
+        "frames",
+        "rtFactorMilli",
+        "cacheHit",
+        "copyPath"
+      ],
       "type": "object"
     },
     "JobMemoryRule": {
@@ -7893,6 +8173,9 @@
           "description": "The GPU device and pipelines were made by an earlier job of this worker.",
           "type": "boolean"
         },
+        "media": {
+          "$ref": "#/$defs/JobMedia"
+        },
         "sourcesOpened": {
           "description": "Sources opened (container parsed, decoder made) by this job.",
           "format": "uint32",
@@ -8341,6 +8624,39 @@
       "required": [
         "codecs",
         "worker"
+      ],
+      "type": "object"
+    },
+    "MediaCapabilitiesEvent": {
+      "description": "`media.capabilities` (`kv` 1): once per server run, what the media worker can decode,\nencode and draw on.",
+      "properties": {
+        "codecs": {
+          "items": {
+            "$ref": "#/$defs/CodecEntry"
+          },
+          "type": "array"
+        },
+        "copyPath": {
+          "$ref": "#/$defs/CopyPath"
+        },
+        "gpu": {
+          "$ref": "#/$defs/GpuEntry"
+        },
+        "renderVersion": {
+          "description": "`RENDER_VERSION`: part of every cache key.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/Sandbox"
+        }
+      },
+      "required": [
+        "codecs",
+        "copyPath",
+        "sandbox",
+        "renderVersion"
       ],
       "type": "object"
     },
@@ -10681,6 +10997,9 @@
       ],
       "type": "string"
     },
+    "PreviewStats": {
+      "type": "object"
+    },
     "Primaries": {
       "oneOf": [
         {
@@ -11567,6 +11886,47 @@
       ],
       "type": "object"
     },
+    "RenderPhase": {
+      "description": "A stage of a render, for [`RenderStats`].",
+      "oneOf": [
+        {
+          "enum": [
+            "decode",
+            "composite",
+            "readback"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "encode",
+          "description": "No emitter before sub-project 6B (export).",
+          "type": "string"
+        }
+      ]
+    },
+    "RenderSample": {
+      "type": "object"
+    },
+    "RenderStats": {
+      "description": "`render.stats` (`kv` 1): per-minute histograms of render stages in micros, one entry per\nphase and backend. `backend` is the decode backend for `decode` and the GPU API for\n`composite` and `readback`. A worker sends what it measured since its last job ended, so\nseveral entries may share a window (`histogram.start`): readers add them.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/Name"
+        },
+        "histogram": {
+          "$ref": "#/$defs/Histogram"
+        },
+        "phase": {
+          "$ref": "#/$defs/RenderPhase"
+        }
+      },
+      "required": [
+        "phase",
+        "backend",
+        "histogram"
+      ],
+      "type": "object"
+    },
     "Resolution": {
       "description": "Frame size in pixels.",
       "properties": {
@@ -11586,6 +11946,18 @@
         "height"
       ],
       "type": "object"
+    },
+    "ResolutionBucket": {
+      "description": "A frame size as a bucket: the smallest standard size the frame fits within, by pixel count\n(so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,\n`hd1080` ≤ 2048×1080, `qhd` ≤ 2560×1440, `uhd4k` ≤ 4096×2160, `uhd8k` above.",
+      "enum": [
+        "sd",
+        "hd720",
+        "hd1080",
+        "qhd",
+        "uhd4k",
+        "uhd8k"
+      ],
+      "type": "string"
     },
     "Retry": {
       "description": "How the engine may retry after a worker `error` (Decision 31).",
@@ -11892,6 +12264,15 @@
         "mtimeNs"
       ],
       "type": "object"
+    },
+    "Sandbox": {
+      "description": "The worker sandbox in force (spec §3.5): `none` in 6A.",
+      "enum": [
+        "none",
+        "landlock",
+        "worker"
+      ],
+      "type": "string"
     },
     "ScanBatch": {
       "additionalProperties": false,
@@ -12735,6 +13116,15 @@
         "path"
       ],
       "type": "object"
+    },
+    "SupportClass": {
+      "description": "How a codec direction is served: hardware, software, or not at all.",
+      "enum": [
+        "hw",
+        "sw",
+        "none"
+      ],
+      "type": "string"
     },
     "Switch": {
       "description": "One purpose's switch.",

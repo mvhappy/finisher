@@ -21,6 +21,7 @@ use fin_jobs::{JobError, KindVersion, Retry, StartJob};
 use serde_json::Value;
 
 mod caps;
+mod diag;
 mod fonts;
 mod inputs;
 mod look;
@@ -47,6 +48,8 @@ pub(crate) struct Warm {
     pub caps: Capabilities,
     /// Jobs started on this worker.
     pub jobs: u32,
+    /// Stage timings since the last flush (`render.stats`; filled only with diagnostics on).
+    pub render_stats: diag::RenderBook,
     /// `--replay`: outputs are never replaced (a leftover is refused).
     pub replay: bool,
 }
@@ -67,6 +70,7 @@ impl MediaFamily {
                 fonts: fonts::Fonts::new(),
                 caps: fin_codecs::capabilities(),
                 jobs: 0,
+                render_stats: diag::RenderBook::default(),
                 replay: false,
             },
         }
@@ -97,14 +101,17 @@ impl Family for MediaFamily {
 
     fn run(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
         self.state.jobs += 1;
-        match (job.kind.as_str(), job.kind_version) {
+        let out = match (job.kind.as_str(), job.kind_version) {
             ("media.look", 1) => look::run(job, ctx, &mut self.state),
-            ("media.capabilities", 1) => caps::run(job, &mut self.state),
+            ("media.capabilities", 1) => caps::run(job, ctx, &mut self.state),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),
             )),
-        }
+        };
+        // The timings of a failed job count too (the stages that ran).
+        diag::flush(&mut self.state.render_stats, ctx);
+        out
     }
 }
 

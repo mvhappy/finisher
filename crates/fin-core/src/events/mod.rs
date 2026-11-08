@@ -19,6 +19,7 @@ pub mod intent;
 pub mod kinds;
 pub mod names;
 pub mod names_jobs;
+pub mod names_media;
 pub mod payloads;
 pub mod redact;
 mod refs;

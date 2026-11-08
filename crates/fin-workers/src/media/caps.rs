@@ -5,6 +5,7 @@
 //! a software one, answers `gpu: null`; any other GPU error is the job's.
 
 use fin_codecs::{CodecSupport, Support};
+use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::RENDER_VERSION;
 use fin_media::jobs::{
@@ -12,6 +13,7 @@ use fin_media::jobs::{
 };
 use serde_json::Value;
 
+use super::diag;
 use super::look::{adapter, gpu};
 use super::{Warm, job_error};
 
@@ -32,7 +34,7 @@ fn codec(c: &CodecSupport) -> CodecCaps {
     }
 }
 
-pub fn run(job: &StartJob, warm: &mut Warm) -> Result<Value, JobError> {
+pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Value, JobError> {
     serde_json::from_value::<CapabilitiesParams>(job.params.clone())
         .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("params: {e}")))?;
     let gpu = match gpu(warm) {
@@ -50,6 +52,15 @@ pub fn run(job: &StartJob, warm: &mut Warm) -> Result<Value, JobError> {
             render_version: RENDER_VERSION,
         },
     };
+    // Once per server run in practice: the server caches the answer (Task 13). Built only
+    // when diagnostics are on.
+    if ctx.diagnostics() {
+        let event = diag::capabilities_event(&result);
+        ctx.diag(
+            "media.capabilities",
+            serde_json::to_value(event).expect("capabilities serialise"),
+        );
+    }
     serde_json::to_value(result)
         .map_err(|e| job_error(fin_core::CoreError::new("INTERNAL", e.to_string())))
 }

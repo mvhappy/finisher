@@ -532,6 +532,8 @@ pub static TABLES: &[&NameTable] = &[
     &super::names_jobs::JOB_KINDS,
     &super::names_jobs::WORKER_FAMILIES,
     &super::names_jobs::SIGNALS,
+    &super::names_media::MEDIA_CODECS,
+    &super::names_media::MEDIA_BACKENDS,
     &BUNDLED_PLUGINS,
     &PLUGIN_ACTIONS,
 ];

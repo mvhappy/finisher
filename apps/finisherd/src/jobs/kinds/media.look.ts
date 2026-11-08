@@ -13,7 +13,7 @@
 //   (review B2).
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { FinError } from "@finisher/contracts";
+import { FinError, type JobView } from "@finisher/contracts";
 import type { LookFrame, LookParams, LookResult } from "@finisher/core-types";
 import { commitJobOutput } from "@finisher/fin-node";
 import { Effect } from "effect";
@@ -190,6 +190,8 @@ export function registerMediaFamily(registry: KindRegistry): void {
     memory: { interactive: MEDIA_MEMORY, batch: MEDIA_MEMORY },
     // 5C clears a worker's environment; `FIN_GPU` picks the adapter (`software` for CI).
     env: ["FIN_GPU"],
+    // The kinds the worker may send as `diag` (Task 14); the journal sink records them.
+    diagKinds: ["media.capabilities", "render.stats"],
   });
 }
 
@@ -214,6 +216,7 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
       { name: "out/", mode: "write" },
     ],
     dedupe: lookDedupe,
+    journal: lookJournal,
     prepare: (ctx) =>
       Effect.gen(function* () {
         const p = ctx.job.params;
@@ -270,6 +273,17 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
         catch: toFinError,
       }),
   };
+}
+
+/**
+ * `job.done`'s `media` object (Task 14): the worker's account of the job, `stats.media` of its
+ * result (present only when diagnostics were on at the worker). It is passed on as it came; the
+ * journal decodes it against the registered `job.done` kind, which has `meta` fields only, so
+ * nothing else can reach an entry.
+ */
+export function lookJournal(job: JobView): Readonly<Record<string, unknown>> {
+  const media = (job.result as { stats?: { media?: unknown } } | null | undefined)?.stats?.media;
+  return typeof media === "object" && media !== null && !Array.isArray(media) ? { media } : {};
 }
 
 /** The plan hashes `prepare` computed, in `at` order (`extra.planSamples`). */

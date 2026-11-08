@@ -9,6 +9,7 @@
 //!   `item` (`"0"`, `"1"`, … in `at` order) whose value is its [`LookFrame`].
 
 use fin_core::eval::ItemKind;
+use fin_core::events::payloads::JobMedia;
 use fin_core::{AssetKind, CoreError, Project, Rational};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -179,6 +180,11 @@ pub struct GpuAdapter {
     pub name: String,
     pub vendor: u32,
     pub device: u32,
+    /// The driver's major version, when its version text has a number (the text itself is
+    /// not kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
+    pub driver_major: Option<u32>,
     /// A CPU adapter (lavapipe, WARP).
     pub software: bool,
 }
@@ -195,6 +201,11 @@ pub struct LookStats {
     pub sources_reused: u32,
     /// Jobs this worker ran, this one included.
     pub worker_jobs: u32,
+    // The `media` object of the job's `job.done` (6A Task 14): present when diagnostics were
+    // on at the worker. `finisherd` reads it when the job ends; it holds no path or name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "JobMedia")]
+    pub media: Option<JobMedia>,
 }
 
 /// What `media.look` v1 answers.

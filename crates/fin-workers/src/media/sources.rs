@@ -5,11 +5,13 @@
 //! Colour: the container's tags (`colr`) win field by field over the bitstream's, and
 //! untagged fields follow spec §10.1's rule (`resolve_defaults`).
 
+use std::time::Instant;
+
 use fin_codecs::Capabilities;
 use fin_compositor::{LayerIssue, SourceFrame, SourceProvider};
 use fin_core::eval::Layer;
 use fin_media::jobs::RenderManifest;
-use fin_media::{ChromaSiting, ColourTags, Matrix, Primaries, Transfer, frame_at};
+use fin_media::{ChromaSiting, ColourTags, Matrix, Primaries, Transfer, VideoCodec, frame_at};
 use serde_json::json;
 
 use super::open_cache::{Entry, Got, OpenCache, missing};
@@ -24,6 +26,11 @@ pub struct Sources<'a> {
     pub reused: u32,
     /// The presented frame index each drawn layer got, by item id.
     pub chosen: Vec<(String, usize)>,
+    /// Microseconds spent getting each source picture (decoding, or the reader's cache), with
+    /// the decoder's backend: one entry per drawn layer.
+    pub decodes: Vec<(&'static str, u64)>,
+    /// The first source this frame decoded from: its codec and the decoder's backend.
+    pub first_decode: Option<(VideoCodec, &'static str)>,
 }
 
 impl<'a> Sources<'a> {
@@ -39,6 +46,8 @@ impl<'a> Sources<'a> {
             opened: 0,
             reused: 0,
             chosen: Vec::new(),
+            decodes: Vec::new(),
+            first_decode: None,
         }
     }
 }
@@ -76,6 +85,11 @@ fn merge(container: ColourTags, stream: ColourTags) -> ColourTags {
             stream.siting
         },
     }
+}
+
+/// Microseconds since `started`, saturating.
+pub(super) fn micros_since(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 fn decode_issue(asset: &str, e: fin_core::CoreError) -> LayerIssue {
@@ -121,9 +135,12 @@ impl SourceProvider for Sources<'_> {
             .ok_or_else(|| missing(&s.asset, "noVideo", None))?;
         let at = frame_at(reader.table(), s.time);
         self.chosen.push((l.item.clone(), at.index));
-        let f = reader
-            .frame(at.index)
-            .map_err(|e| decode_issue(&s.asset, e))?;
+        let backend = reader.backend().0;
+        let started = Instant::now();
+        let f = reader.frame(at.index);
+        self.decodes.push((backend, micros_since(started)));
+        let f = f.map_err(|e| decode_issue(&s.asset, e))?;
+        self.first_decode.get_or_insert((video.codec, backend));
         let colour = merge(video.colour, f.colour).resolve_defaults(f.size.height);
         Ok(SourceFrame {
             format: f.format,
