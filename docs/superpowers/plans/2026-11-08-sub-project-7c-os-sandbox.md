@@ -131,6 +131,15 @@ Every "before 7C" item in the specs and the tracker, and where it closes:
 23. **One status source** (`apps/finisherd/src/sandbox/status.ts`): `sandboxStatus()` from fin-node per profile → `server.status.warnings` entries `SANDBOX_DISABLED {profile, os, reason: landlockDisabled, fix}` (the `fix` names the `lsm=` boot parameter) for each disabled profile, `PLUGINS_UNCONFINED` for plugins (sp8's name), `SANDBOX_DISABLED {worker}` with `media.capabilities.sandbox: none` (sp6's names); the `sandbox.unconfined {profile, os, reason}` event once per profile per server start and on change. `agent/warnings.ts`'s constant `before7C` warning is replaced by a call into it. A profile not yet in `READY` on this OS keeps the warning its sub-project already shows (`reason: before7C` for agents becomes `reason: profileNotReady` with the same fix text pointing at the release notes).
 24. **Violations** (spec §8.8): only what the launcher or host observes (seccomp `SIGSYS`, job-object limit messages, a broker refusal, a failure to apply) becomes an audit entry `sandbox.violation {session?, jobId?, op, profile, rootKind}` and, for a session, a `notice` node. Paths are stored as root kind plus keyed hash. Finisher never reads the macOS unified log.
 
+### Node tools in a Windows container
+
+25. **Node piped stdio on Windows** (S9 Windows point 8). **Owner decision (2026-11-08): Node piped stdio on Windows.**
+    - **The problem.** Inside an AppContainer, libuv names its stdio pipes outside `\\.\pipe\LOCAL\` (`\\?\pipe\uv\…`). The container refuses those names and libuv retries forever, so a Node `child_process` spawn with piped stdio hangs (`spawn`, `spawnSync`, `execSync`; the `spawnSync` timeout does not fire). This hits npm scripts, Node hooks that run commands, and Node MCP servers started by a CLI. Pipes the parent makes outside the container, Rust `std::process` with pipes, and Bun (Claude Code) are unaffected.
+    - **Decision: ship with the limit, but fail fast.** On Windows, a Node process inside the container ends with a clear error naming the limit instead of freezing. The detection is the Node guard of Task 9 Step 3 (a preload that probes pipe creation from a worker thread, so a stuck main thread cannot hide it), with the launcher's wall-time limit as the backstop for a Node process that did not load the guard. Task 9 Step 3 records which detection was verified.
+    - **Node flags.** Node launched inside the container carries `--preserve-symlinks --preserve-symlinks-main` (S9 point 8a: Node's `realpath` `lstat`s `C:\`, which a container cannot read). Task 9 Step 3 also tests the `NODE_OPTIONS` form, so children of children inherit both the flags and the guard.
+    - **Upstream.** Task 9 Step 4 prepares a small libuv patch that creates stdio pipes under `\\.\pipe\LOCAL\` when running in an AppContainer. The patch stays in `archive/` (git-ignored) and **the owner files it upstream**. Agents must not open upstream issues or pull requests.
+    - **User-facing limit.** "Node tools that spawn child processes with piped stdio (npm scripts, Node hooks, Node MCP servers) fail with an error inside the Windows sandbox." Recorded in the README limits of Task 15. It lifts once Node ships the fix; the guard's probe then passes and stops blocking, so no Finisher change is needed.
+
 ## Frozen interfaces
 
 ```rust
@@ -306,6 +315,123 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 - The base toolchain read list, and whether a newer Landlock ABI mediates pathname sockets.
 - H2, all of it (the Claude Code isolation flags, `system/init`, `--max-budget-usd`, `--disallowedTools`, the Codex `-c project_doc_max_bytes=0` and `developer_instructions` checks). It moves to 7D/7E or a later S9 rerun. Versions seen: Codex 0.167.0, Claude Code 2.1.319.
 
+#### S9 results (Windows)
+
+*Verified on a Windows 11 Pro host (build 26300; AMD discrete and integrated GPUs) on 2026-11-08: a non-elevated, medium-integrity user process in the console session (started through Task Scheduler), a normal AppContainer (not LPAC), Node 24.22.2, wgpu 30.0.1, `windows` 0.62.2. Spike code and raw logs stay outside the repository, on the host and on the VM. No credential file was opened: the sign-in checks used dummy store files, and Claude Code's behaviour was read from the embedded code of the installed 2.1.319 binary.*
+
+**Verdict: Decision 16 holds; Decision 17's fallback is not needed.** Capability SIDs derived from a name are honoured for a normal AppContainer, on files, directories and named pipes, and a process of session B cannot open session A's directory.
+
+1. **Capability SIDs (B7, Decision 16).**
+   - `DeriveCapabilitySidsFromName(n)` is `S-1-15-3-1024-` followed by the eight little-endian 32-bit words of SHA-256 over the UTF-16LE of **`n` upper-cased**. The derivation is case-insensitive, and Rust can compute it without the API (checked against an independent SHA-256 for three names).
+   - **Interaction with the owner-only DACL.** The session directory sits below `private_dir`'s protected owner-only DACL (`D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`) and carries an inheritable allow ACE (`0x1301bf`: modify, no `WRITE_DAC`/`WRITE_OWNER`) for session A's capability. Results:
+     - Project X's container with capability A can read, create, list and `mkdir` there.
+     - The same container with capability B, or with no session capability, is refused (`ERROR_ACCESS_DENIED`) for A's files and A's listing.
+     - Another project's container that carries capability A is admitted. A capability is not bound to a container; the launcher alone decides which capability a process gets.
+     - A grant to the container SID (a project directory) admits that project only.
+   - **Objects the container creates** inherit the capability ACE and the owner-only ACEs, and get a Low label (`S:(ML;;NW;;;LW)`). Capability B cannot read them.
+   - **Owner rights don't reach the container.** It can neither change the DACL (`WRITE_DAC` → 5) nor take ownership of the session directory or of its own files, although the user owns both.
+   - **Revoke** applies to the next open. Handles that are already open were not tested.
+   - **Ancestors.** The token keeps `SeChangeNotifyPrivilege` (with `SeIncreaseWorkingSetPrivilege` only), so open-by-path needs no grant on ancestors. `<server-data>` and `agents/` stay unlistable and un-stat-able.
+   - **Broker cost** per grant or revoke (process start subtracted): about 1 ms on an empty session directory, about 105 ms with 2,000 files below it (inheritance propagation).
+2. **Images and the toolchain.**
+   - The executable the launcher starts is opened with the launcher's token and needs no grant.
+   - Every image the container opens itself (a child process, a non-system DLL) needs read and execute. Without it, `CreateProcess` inside the container fails with 5.
+   - **One static capability SID granted RX once on the toolchain roots, and added to every sandboxed process, works** (a child exe started from inside through that grant alone). Per-container grants on large trees are therefore unnecessary.
+3. **The server pipe (Task 10).** The pipe used `pipe_sec::sddl`'s descriptor (`D:P(A;;GA;;;<user>)(A;;GA;;;SY)(A;;0x12008b;;;<container SID>)S:(ML;;NW;;;LW)`), and the client opened it with `GENERIC_READ | FILE_WRITE_DATA`, as `fin` does.
+   - Project X's container connects, and the server reads its container SID from the client's token.
+   - Project Y's container is refused with 5, whatever unrelated capabilities it holds.
+   - **`GENERIC_READ | GENERIC_WRITE` is refused** (the ACE grants no append, EA or attribute writes), so keep `fin`'s mask.
+   - Without the Low label the container still connected on this build. Keep the label.
+   - A capability SID in the pipe DACL works as well, but `peer_allowed` checks the container SID, so `PipeServer.allow(<container SID>)` per project stays the design.
+   - **A container cannot create a named pipe outside `\\.\pipe\LOCAL\`** (5). Inside `LOCAL\`, which redirects into its own namespace, it can.
+4. **Job objects.**
+   - **Nesting:** the launcher was already in a job (Task Scheduler's), and a launcher that puts itself in another job first can still give the container its own kill-on-close job.
+   - **Assignment at creation:** `PROC_THREAD_ATTRIBUTE_JOB_LIST` works together with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`, so no suspended-then-assign window is needed.
+   - **Active-process limit:** with a limit of 1, every `CreateProcess` from inside fails with `ERROR_NOT_ENOUGH_QUOTA` (1816) and the completion port gets `ACTIVE_PROCESS_LIMIT` (3). With a limit of 3, two children start.
+   - **Memory limit:** at 64 MB, allocation fails at 62 MB and the port gets `JOB_MEMORY_LIMIT` (10).
+   - **Inside the container:** it can create a job and assign its own child (nested jobs are not blocked). `CREATE_BREAKAWAY_FROM_JOB` is refused (5) unless the job has `BREAKAWAY_OK`, which therefore must never be set.
+   - **Launcher death:** killing the launcher killed the container.
+   - **WER:** a WerFault started for the container is not counted in its job.
+5. **Desktop.**
+   - A **named** `CreateWindowStationW` fails with 5 from this non-elevated, medium-integrity context. An **unnamed** one (`NULL` name, as Chromium does; read the name back with `GetUserObjectInformationW`) works.
+   - Inside the container, `OpenInputDesktop` is refused.
+   - Without a private desktop, the container started on the user's `WinSta0\Default`.
+6. **Network.**
+   - With no capability, TCP to the internet fails with `WSAEACCES` (10013).
+   - With `internetClient`, it connects.
+   - Loopback to a listener of the same user timed out with and without `internetClient`; there is no exemption.
+7. **The environment block is rewritten.**
+   - **What changes:** creating an AppContainer process replaces `TEMP`, `TMP` and `LOCALAPPDATA` with `<LOCALAPPDATA of the block>\Packages\<container name>\AC\Temp` and `…\AC`, and the launcher's `TEMP` is ignored.
+   - **The leak:** by default `TEMP` is per container, that is per project, and session B read a file that session A wrote there.
+   - **The fix (verified):** the launcher sets `LOCALAPPDATA=<session>\localappdata` in the block and pre-creates `<session>\localappdata\Packages\finisher-<project-uuid>\AC\Temp`, which inherits the session's capability ACE. `TEMP` then lands in the session directory and session B is refused.
+   - **Nested processes:** a process the container starts keeps the `TEMP` it is given; there is no rewrite.
+   - Other per-container folders (`AC\INetCache`, cookies) were not tested.
+8. **Node 24.22.2 in the container.**
+   - **Works:** file operations in granted roots, rename, `fs.watch`, `worker_threads`, crypto, `os.userInfo`, `os.networkInterfaces`, `fs.realpathSync.native`, and a `net` client on the server pipe. DNS and HTTPS work only with `internetClient`. The server-data root stays unreadable. Child processes with `stdio: 'inherit'` or `'ignore'` work.
+   - **(a) Script paths fail.** Node's JS `realpath` (used for the main script and for every `require` by path) `lstat`s each ancestor, including the drive root. On this host `C:\` and `E:\` have no `ALL APPLICATION PACKAGES` ACE, and neither do `C:\Users`, the profile or `AppData`. So `node script.js` fails with `EPERM, lstat 'C:\'`. `--preserve-symlinks --preserve-symlinks-main` on the command line avoids it (main script plus relative `require` verified), and so does `node -e`. The `NODE_OPTIONS` form was not tested.
+   - **(b) Piped stdio hangs.** `spawn`, `spawnSync` and `execSync` with **piped stdio hang forever**, and the `spawnSync` timeout does not fire. libuv names its stdio pipes `\\?\pipe\uv\…`; the container may not create them (point 3), libuv reports `EADDRINUSE` and retries forever. So Node tools that spawn with pipes from inside a container hang: npm scripts, Node hooks that run commands, and Node MCP servers started by the CLI.
+   - **Unaffected:** pipes the parent creates outside the container (`finisherd` starting a Node plugin host). Rust `std::process` with pipes works inside, and Claude Code 2.1.319 (Bun) starts (`--version`). S8 ran real Claude Code turns with PowerShell.
+9. **wgpu over D3D12**, with no capability (toolchain read only): enumerates the discrete, integrated and WARP adapters, picks the discrete GPU, and runs a 1M-element compute pass with a correct readback. This holds on a private desktop and on the user's desktop.
+10. **Media Foundation**, with no capability:
+    - **Decode:** `SourceReader` decodes a 4 s 720p H.264 MP4 both through a D3D11 DXGI device manager (120/120 frames in DXGI surfaces, so DXVA) and in software.
+    - **Encode:** the vendor's hardware **encoder** MFTs (H.264, HEVC, AV1) enumerate and activate.
+    - **Sharing:** a D3D11 texture shared by NT handle opens on D3D12 (`OpenSharedHandle`).
+    - **Decoder MFTs:** hardware decoder MFT enumeration returns none on this GPU, unsandboxed as well; decode goes through DXVA.
+    - **Grants:** the media file itself needs a grant; without one, `0x80070005`.
+    - sp6's "to be proven in 6B's validation" is answered for this GPU only.
+11. **WER (Decision 22).**
+    - **Error mode set before `CreateProcess` and inherited:** an access violation in the container starts no WerFault and logs no Application Error event.
+    - **`__fastfail` (`int 0x29`) still reaches WER.** The service starts two headless `WerFault.exe -u` (one parented to the crashing process, one to the service). This holds with `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`, and also with a per-user `WerAddExcludedApplication` entry.
+    - **No visible trace:** no window appeared (no WerFault had a main window), and no report directory appeared under the per-user or machine `ReportArchive`/`ReportQueue`.
+    - **Exclusion not provable here:** this host wrote no report for unsandboxed crashes either, so the exclusion's effect on reports could not be observed.
+    - **Without the error mode,** both crash kinds start WerFault and log event 1000.
+    - **Conclusion:** the inherited error mode is required, and the reworded `fastfail_dies_without_wer` assertion (no window, no report; not "no process") is the right one.
+12. **The sign-in store shared in place (B7, Windows).**
+    - **Links without elevation.** A file symbolic link is refused (no `SeCreateSymbolicLinkPrivilege`, Developer Mode off), so §8.6's Windows file symlink is unavailable on a default machine. A hard link works (same volume). The file has one DACL under both names: an ACE for one shared sign-in capability on the store file alone let sessions A and B read through their own links, and an in-place write through A's link was seen by B. A could not list the sign-in home or create a file in it, and without the capability it was refused. A directory junction can be created, but the target's ACL still applies.
+    - **Rename breaks the link.** A temp-and-rename write through A's hard link replaced A's name with a private file and left the home stale.
+    - **Claude Code 2.1.319: no link works.** The CLI's code applies on every OS.
+      - Its file store is `<dir>\.credentials.json`, with `<dir>` = `CLAUDE_SECURESTORAGE_CONFIG_DIR` when set, else the config directory.
+      - It writes by temp file (`<file>.tmp.<hex>`) and rename. Its in-place fallback **refuses a target with more than one link** (`EMLINK`, "it is hard-linked"), and its reader **refuses symlinks** (`O_NOFOLLOW`, "refused-symlink").
+      - The first refresh therefore replaces a hard link, and a symlink is refused.
+      - A server-side flag (`tengu_windows_credman`, cached in `.claude.json`) or `CLAUDE_CODE_FORCE_WINDOWS_CREDMAN=1` moves the Windows store to Credential Manager, under a target name keyed by the store directory (`Claude Code-credentials-<first 8 hex of SHA-256 of the dir>`). A container cannot reach Credential Manager (S8).
+    - **What should work instead (recommendation for 7D and spec §8.6; not exercised with a real sign-in):**
+      - The session gets a per-session `CLAUDE_CONFIG_DIR` plus `CLAUDE_SECURESTORAGE_CONFIG_DIR=<server-data>/providers/claude/store/`, a directory that holds only the store. The user's sign-in command sets both variables.
+      - The sandbox grants the shared sign-in capability modify on that one directory, since temp and rename need create and delete there, and nothing else of `providers/`.
+      - Claude Code loads nothing from that directory as configuration, so the persistence escape stays closed.
+      - The variable is undocumented, so re-validate it per CLI version; §8.6's fallback (the sign-in home as config directory) remains the fallback.
+    - **Codex** keeps `auth.json` as a file in its home. Its write pattern was not checked here (compiled binary); B7 on Linux/macOS decides, since the code is the same.
+
+**Recommendations for Task 9.**
+- **Capabilities:**
+  - Implement Decision 16 as written. Derive the session capability in Rust (SHA-256 of the upper-cased UTF-16LE `finisher-session-<id>`), and make point 1's matrix the escape test.
+  - Add two **static** capabilities to every sandboxed process: one for the read-only toolchain roots (granted once, point 2) and, for agents, one per harness for the sign-in store (point 12), instead of granting the store to every session's capability.
+- **Process set-up:**
+  - `desktop.rs` creates the window station unnamed.
+  - `launch.rs` sets `LOCALAPPDATA` in the block to a per-session directory and pre-creates the derived `AC\Temp`, and also sets `TMPDIR`.
+  - Assign the job with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, and never set `BREAKAWAY_OK`.
+  - Map `ACTIVE_PROCESS_LIMIT`/1816 and `JOB_MEMORY_LIMIT` to `sandbox.violation`.
+- **`worker` profile:** it can stay capability-free for D3D12, DXVA decode and the MF encoders.
+- **Escape and compatibility suite:** add Node's root `lstat` and the hang on piped `spawn` from inside the container. **Decided (owner, 2026-11-08):** see Decision 25 and Task 9 Steps 3 and 4: ship with the limit but fail fast, carry `--preserve-symlinks --preserve-symlinks-main`, and prepare a libuv patch in `archive/` for the owner to file.
+
+**Recommendations for Task 10.**
+- **Session directories:**
+  - The broker creates them with the capability ACE already in the creating security descriptor (nothing to propagate).
+  - Their revoke is their deletion at session end, still recorded in the WAL for the sweep.
+  - Grants on existing trees cost about 50 ms per 1,000 files.
+- **Pipe:** `PipeServer.allow(<container SID>)` as planned. `fin` keeps `GENERIC_READ | FILE_WRITE_DATA`, and the Low label stays.
+
+**Not tested.**
+- Real sign-in, refresh in place and parallel refresh. `system/init` and `account/read` labels (they need a person signing in).
+- Codex's store writer.
+- `CLAUDE_SECURESTORAGE_CONFIG_DIR` with a real sign-in.
+- The `NODE_OPTIONS` form of the Node flags.
+- Bun's own piped spawn inside a container (relied on S8).
+- Other GPU vendors and hybrid laptops. HEVC without the extensions. Hardware decoder MFTs.
+- WER report creation on a host that keeps reports.
+- Handles that stay open across a revoke.
+- A second local account.
+- The other per-container folders.
+
 ### Task 1: `fin-sandbox`: the policy, the profiles and enumeration — tier: opus — 7C-1
 
 **Files:**
@@ -422,9 +548,15 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 - Create: `crates/fin-sandbox/src/windows/{mod.rs, appcontainer.rs, capability.rs, job.rs, desktop.rs, apply.rs, wer.rs}`, `crates/fin-sandbox/tests/escape_windows.rs`.
 - Modify: `launch.rs` (error mode before `CreateProcessW`, Decision 22), `spawner.rs` (Windows arm: the AppContainer token for `CreateProcessAsUserW` and the `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` attribute through `PlatformCommand.{token, attributes}`; the host's spawn broker keeps `HANDLE_LIST`, `crates/fin-jobhost/src/windows/{spawn.rs, broker.rs}`; `job_limits {active_processes: 1}` for `worker`), `crates/fin-workers/tests/host_windows.rs:240` and `crates/fin-jobs/tests/worker_runtime.rs:478-484` (`fastfail_dies_without_wer` asserts no window and no report, Decision 22), `TASKS.md`.
 
-- [ ] **Step 1: Write failing tests** (non-elevated session): container profile create/reuse/delete per project; capability SID derivation is stable and distinct per session; **a process of session B cannot open session A's directory** (Decision 16, or 17's fallback per Task 0 B7); the S8 Windows paths (junctions, ADS, 8.3 names, `\\?\`, admin shares, WMI, `schtasks`) refused; Credential Manager denied; server data unreadable; no loopback for any profile; `worker`: a second process is refused by the job's active-process limit; `plugin`: no network capability; the job object kills the tree when the launcher dies; **no window appears on any desktop for an access violation or a `__fastfail`** and no report lands in `ReportArchive`/`ReportQueue` (Decision 22).
+- [ ] **Step 1: Write failing tests** (non-elevated session): container profile create/reuse/delete per project; capability SID derivation is stable and distinct per session; **a process of session B cannot open session A's directory** (Decision 16, or 17's fallback per Task 0 B7); the S8 Windows paths (junctions, ADS, 8.3 names, `\\?\`, admin shares, WMI, `schtasks`) refused; Credential Manager denied; server data unreadable; no loopback for any profile; `worker`: a second process is refused by the job's active-process limit; `plugin`: no network capability; the job object kills the tree when the launcher dies; **no window appears on any desktop for an access violation or a `__fastfail`** and no report lands in `ReportArchive`/`ReportQueue` (Decision 22); **a Node child with piped stdio inside the container ends with the `WINDOWS_NODE_PIPES` error within the guard's timeout instead of hanging, and `node script.js` runs with the carried flags** (Decision 25).
 - [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** the gates on the Windows host through a non-elevated session → PASS; `cargo check` for the other targets. **Commit** `feat(sandbox): Windows AppContainer profiles, job objects and no-UI fault reporting`.
+- [ ] **Step 3 (Decision 25: fail fast on Node piped stdio):** build the Node guard and make the Windows launcher carry it. In `archive/` first, check these on the Windows host and keep the one that works; each is cheap to test:
+  - **Guard (the intended design).** A small CommonJS preload shipped with `fin-sandbox-exec` (`crates/fin-sandbox/data/windows/node-guard.cjs`, no dependencies). The launcher sets a marker variable in the container's environment. On the first `child_process` call with piped stdio the guard runs a probe in a `worker_threads` worker: create a named pipe with a libuv-style name (`\\?\pipe\uv\…`) and give up after about 2 s; if it cannot, the call throws an error with code `WINDOWS_NODE_PIPES` and a message naming the limit ("Node child processes with piped stdio are not supported inside the Windows sandbox until Node ships the AppContainer pipe fix; see the Finisher README"). The probe runs off the main thread because the hang is in `uv_spawn` on the calling thread and `spawnSync`'s timeout does not fire. A probe that succeeds caches the result and changes nothing, so the guard goes inert once Node is fixed.
+  - **Delivery.** Node started by the launcher gets `--preserve-symlinks --preserve-symlinks-main --require <guard>` on its command line. Also test the `NODE_OPTIONS` form (`--preserve-symlinks --preserve-symlinks-main --require <guard>`), which S9 did not: if it works, set it in the container environment so Node started by npm, hooks and MCP servers inherits both the flags and the guard. Bun and Rust children ignore it.
+  - **Backstop.** A Node process that did not load the guard still hangs, so the launcher's wall-time limit (`Limits.wall_ms`, Decision 4a) ends the job tree and reports `sandbox.violation {op: "nodePipes"}` if the tree was alive with no I/O progress at the end. Do not add a CPU-sampling heuristic: it would kill legitimate compute.
+  - **Tests:** `node_piped_spawn_fails_fast` (`spawn`, `spawnSync` and `execSync` with piped stdio from inside the container end within 5 s with `WINDOWS_NODE_PIPES`, the process exits non-zero), `node_inherit_and_ignore_stdio_still_work`, `node_script_runs_with_preserve_symlinks`, `guard_inert_when_pipes_work` (the probe against a pipe name the container may create passes and the call goes through).
+- [ ] **Step 4 (libuv patch, for the owner to file):** prepare the smallest patch to libuv that creates stdio pipes under `\\.\pipe\LOCAL\` when the process runs in an AppContainer (the pipe-name builder in `src/win/pipe.c`, selected by the process-token's AppContainer flag), with a reproduction (the S9 hang from inside a container) and a test, against a current libuv checkout and Node 24.22.2's bundled libuv. Put the patch, the repro and a short note in `archive/s9/windows/libuv-appcontainer-pipes/` (git-ignored). **The owner files it upstream. Agents must not open upstream issues or pull requests**, and must not push the patch anywhere. Check libuv's licence (MIT) before copying any code.
+- [ ] **Step 5: Run** the gates on the Windows host through a non-elevated session → PASS; `cargo check` for the other targets. **Commit** `feat(sandbox): Windows AppContainer profiles, job objects and no-UI fault reporting`.
 
 ### Task 10: The ACL broker and per-project pipe SIDs — tier: opus — 7C-4
 
@@ -484,7 +616,7 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 
 ### Task 15: Spec as built, cross-references, tracker — tier: sonnet — after Task 14
 
-**Files:** Modify `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (§8 rewritten "as built": names, data files, codes, the `READY` table, Decisions 16/17 outcome; §1.4 7C row; §18 file map; §19 decisions; §8.9's `before7C` paragraph replaced), `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§4.6, §4.17, §6.2, §6.3, §6.12: each "until 7C" marked closed with a pointer, or left open with the reason), `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §3.5.1 (the Landlock phase delivered), `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §16.1 (the profile delivered; the store follow-up's outcome), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 pointer; §8.4 "bwrap fallback" removed), `README.md` (security model: what the sandbox now guarantees per OS, and what F2 hosts lack), `TASKS.md` (follow-ups).
+**Files:** Modify `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (§8 rewritten "as built": names, data files, codes, the `READY` table, Decisions 16/17 outcome; §1.4 7C row; §18 file map; §19 decisions; §8.9's `before7C` paragraph replaced), `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§4.6, §4.17, §6.2, §6.3, §6.12: each "until 7C" marked closed with a pointer, or left open with the reason), `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §3.5.1 (the Landlock phase delivered), `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §16.1 (the profile delivered; the store follow-up's outcome), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 pointer; §8.4 "bwrap fallback" removed), `README.md` (security model: what the sandbox now guarantees per OS, and what F2 hosts lack; **the limits list: on Windows, Node tools that spawn child processes with piped stdio fail fast with `WINDOWS_NODE_PIPES` (Decision 25), until Node ships the fix**), `TASKS.md` (follow-ups).
 
 - [ ] **Step 1: Write** the as-built sections from the code (names, defaults, codes), and every residual that stays open, with its reason.
 - [ ] **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 7C as built`.
@@ -499,4 +631,4 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 
 ## Questions for the owner
 
-**Answered (2026-11-08)**, each recorded in the Decision it concerns as "Owner decision (2026-11-08)": mounts and `RESOLVE_NO_XDEV` (Decision 20); one warm worker per open project (Decision 19); other sessions' workspaces (Decision 6); WER exclusion at install (Decision 22); no plugin-tree re-hash (Decision 21); no opt-out of enforced profiles (Decision 5). No open questions.
+**Answered (2026-11-08)**, each recorded in the Decision it concerns as "Owner decision (2026-11-08)": mounts and `RESOLVE_NO_XDEV` (Decision 20); one warm worker per open project (Decision 19); other sessions' workspaces (Decision 6); WER exclusion at install (Decision 22); no plugin-tree re-hash (Decision 21); no opt-out of enforced profiles (Decision 5); Node piped stdio on Windows (Decision 25: ship with the limit but fail fast, carry the symlink flags, libuv patch prepared in `archive/` for the owner to file). No open questions.
