@@ -47,3 +47,9 @@ export function generateIdentityKey() {
 export function spkiPin(pem) {
   return sync(() => native.spkiPin(pem));
 }
+
+/** This server data's `server-id`, and why it was just renewed (`otherMachine`, `otherDirectory`). */
+export function serverIdentity(serverData) {
+  const r = sync(() => native.serverIdentity(serverData));
+  return { id: r.id, ...(r.renewed == null ? {} : { renewed: r.renewed }) };
+}

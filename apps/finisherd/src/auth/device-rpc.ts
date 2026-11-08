@@ -1,4 +1,5 @@
-// 5B's RPC handlers (`DEVICE_RPCS`), spread into `handlers.ts`. Task 1 lands the contracts and
+// 5B's pairing, device and settings handlers, spread into `handlers.ts` (the `env.*` ones are
+// `env/rpc.ts`). Task 1 lands the contracts and
 // the `devices` store only: until each RPC's task, its handler answers `INTERNAL {reason:
 // notYet}` so the handler map stays complete. Importing this module registers the `devices`
 // control chain (`devices.ts`).
@@ -26,15 +27,5 @@ export function deviceHandlers({ guard }: { readonly guard: Guard }) {
     "auth.device.revoke": unary(guard, "auth.device.revoke"),
     "auth.devices.watch": stream("auth.devices.watch"),
     "settings.write": unary(guard, "settings.write"),
-  };
-}
-
-export function envHandlers({ guard }: { readonly guard: Guard }) {
-  return {
-    "env.describe": unary(guard, "env.describe"),
-    "env.name": unary(guard, "env.name"),
-    "env.adopt": unary(guard, "env.adopt"),
-    "env.reset": unary(guard, "env.reset"),
-    "env.rotateIdentity": unary(guard, "env.rotateIdentity"),
   };
 }

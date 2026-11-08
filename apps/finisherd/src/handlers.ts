@@ -8,7 +8,9 @@ import { TicketsTag } from "./auth/tickets.ts";
 import { CredentialsTag } from "./auth/credentials.ts";
 import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
-import { deviceHandlers, envHandlers } from "./auth/device-rpc.ts";
+import { deviceHandlers } from "./auth/device-rpc.ts";
+import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
+import { envHandlers } from "./env/rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
@@ -73,6 +75,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const jobEngine = yield* JobEngineTag;
     const agents = yield* AgentCoreTag;
     const agentRuntime = yield* AgentRuntimeTag;
+    const environment = yield* EnvironmentTag;
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -393,7 +396,18 @@ export const HandlersLive = FinRpcs.toLayer(
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
       // 5B: pairing, devices, settings writes and the environment.
       ...deviceHandlers({ guard }),
-      ...envHandlers({ guard }),
-    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
+      ...envHandlers({ guard, env: environment }),
+    }), {
+      connections,
+      projects,
+      jobs: chainJobs(jobEngine),
+      audit,
+      timed: guard,
+      touch: (p) => credentials.touch(p.id),
+      hooks,
+      policies,
+      // Copied or moved server data refuses devices until its owner decides (5B Decision 31).
+      refuse: (p) => (p.kind === "device" && environment.state() === "moved" ? envMoved() : undefined),
+    });
   }),
 );

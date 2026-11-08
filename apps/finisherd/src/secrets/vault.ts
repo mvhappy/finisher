@@ -16,24 +16,26 @@
 //   **without** an identity key or a usable secret box (`SECRETS_KEYCHAIN_UNAVAILABLE`), never
 //   reading the missing key as lost. Asking for another store (`FIN_SECRETS`, a key file) moves
 //   to it, and a key not found there is then a rotation.
-// - A new key is recorded first (`meta.identitySpki`), devices are revoked, then it is stored:
-//   a crash in between is read as a lost key at the next start, never as a mismatch.
+// - At start a missing key is made, recorded, then stored: a crash in between is read as a lost
+//   key at the next start. A rotation or reset of a live key is staged, committed, promoted
+//   (`ServerSecrets.stageIdentity`, `recoverStaged`).
 // - The PEM goes only to the TLS context (Task 10); it is never logged.
 import { join } from "node:path";
-import { generateIdentityKey, identityKey, type IdentityKey, Vault, type VaultBackend } from "@finisher/fin-node";
+import { generateIdentityKey, identityKey, type IdentityKey, spkiPin, Vault, type VaultBackend } from "@finisher/fin-node";
 import { finError } from "../errors.ts";
 import type { DeviceStore } from "../auth/devices.ts";
 import { ensurePrivateDir } from "../config.ts";
 import type { Audit } from "../control/audit.ts";
 import type { ControlStore } from "../control/db.ts";
 import type { SecretBox } from "./box.ts";
-import { vaultBox } from "./vault-box.ts";
+import { DEK_NAME, vaultBox } from "./vault-box.ts";
 
 export const IDENTITY_SPKI_META = "identitySpki";
 export const SECRETS_BACKEND_META = "secretsBackend";
 
 export interface ServerSecrets {
-  readonly vault: Vault;
+  /** The vault of the current environment (`promoteEnv` replaces it). */
+  vault: Vault;
   readonly backend: VaultBackend;
   /**
    * The current identity key (`rotate` replaces it, Task 5); `undefined` while the keychain that
@@ -44,6 +46,20 @@ export interface ServerSecrets {
   readonly box: SecretBox;
   /** `server.status` warnings about where secrets are kept. */
   readonly warnings: () => ReadonlyArray<Record<string, unknown>>;
+  /**
+   * A change of key or environment is **staged, committed, promoted** (review of Task 5), so a
+   * crash leaves the old state or the new one, never a server that refuses to start:
+   * `stageIdentity`/`stageEnv` write the new entries under staged names (`identity-next`,
+   * `secrets-dek-next`; for a reset in the new environment's vault, the same store); the
+   * caller then commits `control.db` (the new pin, the new `envId`) in one transaction; then
+   * `promoteIdentity`/`promoteEnv` put them in place. At every start `recoverStaged` promotes
+   * staged entries whose identity pin is the recorded one and discards any others.
+   */
+  stageIdentity(fresh: IdentityKey): void;
+  promoteIdentity(fresh: IdentityKey): void;
+  /** The new environment's vault (exactly this store, or it throws), with the data key and `fresh` staged in it. */
+  stageEnv(envId: string, fresh: IdentityKey): Vault;
+  promoteEnv(next: Vault, fresh: IdentityKey): void;
 }
 
 export interface OpenSecretsDeps {
@@ -141,6 +157,51 @@ export function secretsWarnings(backend: VaultBackend): ReadonlyArray<Record<str
   ];
 }
 
+export const STAGED_IDENTITY = "identity-next";
+export const STAGED_DEK = "secrets-dek-next";
+
+/**
+ * At start, before the identity loads: a staged identity whose pin is the recorded one was
+ * committed (a rotation or reset that crashed before promoting it): promote it, with a staged
+ * data key. Anything else staged (unreadable here, another pin) never committed: discard it.
+ */
+export function recoverStaged(vault: Vault, recordedSpki: string | undefined): "promoted" | "discarded" | "none" {
+  let unreadable = false;
+  const read = (name: string): Buffer | undefined => {
+    try {
+      return vault.get(name);
+    } catch {
+      // Sealed for another environment (a reset that never committed), or damaged.
+      unreadable = true;
+      return undefined;
+    }
+  };
+  const drop = (name: string) => {
+    try {
+      vault.delete(name);
+    } catch {
+      // Nothing to drop, or the store refuses: the next start tries again.
+    }
+  };
+  const staged = read(STAGED_IDENTITY);
+  const stagedDek = read(STAGED_DEK);
+  let promote = false;
+  if (staged !== undefined) {
+    try {
+      promote = spkiPin(staged.toString("utf8")) === recordedSpki;
+    } catch {
+      promote = false;
+    }
+  }
+  if (promote) {
+    if (stagedDek !== undefined) vault.set(DEK_NAME, stagedDek);
+    vault.set("identity", staged!);
+  }
+  drop(STAGED_IDENTITY);
+  drop(STAGED_DEK);
+  return promote ? "promoted" : staged !== undefined || stagedDek !== undefined || unreadable ? "discarded" : "none";
+}
+
 /** A box that refuses while the keychain holding the data key does not answer. */
 function unavailableBox(reason: string): SecretBox {
   const refuse = (): never => {
@@ -168,9 +229,70 @@ export function openSecrets(deps: OpenSecretsDeps): ServerSecrets {
       message: "the system keychain that holds this server's identity and secrets does not answer: paired devices, remote access and stored provider keys are unavailable",
       fix: "Unlock the system keychain, then restart the server.",
     };
-    return { vault, backend, identity: undefined, box: unavailableBox(reason), warnings: () => [warning] };
+    const refuse = (): never => {
+      throw finError("SECRET_STORE_UNAVAILABLE", "the server's secrets are not available now", { reason }, "Unlock the system keychain, then restart the server.");
+    };
+    return {
+      vault,
+      backend,
+      identity: undefined,
+      box: unavailableBox(reason),
+      warnings: () => [warning],
+      stageIdentity: refuse,
+      promoteIdentity: refuse,
+      stageEnv: refuse,
+      promoteEnv: refuse,
+    };
   }
+  recoverStaged(vault, readMeta(deps.store, IDENTITY_SPKI_META));
   const identity = loadIdentity(vault, deps);
   if (recorded !== backend.kind) writeMeta(deps.store, SECRETS_BACKEND_META, backend.kind);
-  return { vault, backend, identity, box: vaultBox(vault), warnings: () => secretsWarnings(backend) };
+  const pem = (k: IdentityKey) => Buffer.from(k.pem, "utf8");
+  const secrets: ServerSecrets = {
+    vault,
+    backend,
+    identity,
+    box: vaultBox(vault),
+    warnings: () => secretsWarnings(backend),
+    stageIdentity: (fresh) => secrets.vault.set(STAGED_IDENTITY, pem(fresh)),
+    promoteIdentity: (fresh) => {
+      secrets.vault.set("identity", pem(fresh));
+      secrets.vault.delete(STAGED_IDENTITY);
+      secrets.identity = { ...fresh, created: false };
+    },
+    stageEnv: (envId, fresh) => {
+      // Exactly this store: `keychain` insists on it, a file store stays one.
+      const mode = backend.kind === "keychain" ? "keychain" : "file";
+      const next = openVault(deps.serverData, envId, { ...(deps.env ?? process.env), FIN_SECRETS: mode });
+      if (next.backend().kind !== backend.kind) {
+        throw finError("SECRET_STORE_UNAVAILABLE", "the server's secret store changed since it started", {}, "Restart the server, then reset the environment again.");
+      }
+      const dek = secrets.vault.get(DEK_NAME);
+      if (dek !== undefined) next.set(STAGED_DEK, dek);
+      next.set(STAGED_IDENTITY, pem(fresh));
+      return next;
+    },
+    promoteEnv: (next, fresh) => {
+      const old = secrets.vault;
+      const dek = next.get(STAGED_DEK);
+      if (dek !== undefined) next.set(DEK_NAME, dek);
+      next.set("identity", pem(fresh));
+      next.delete(STAGED_DEK);
+      next.delete(STAGED_IDENTITY);
+      // A keychain keeps entries per environment: the old ones go (best effort; a file store
+      // keeps one file per name, rewritten above).
+      if (backend.kind === "keychain") {
+        for (const name of ["identity", DEK_NAME]) {
+          try {
+            old.delete(name);
+          } catch (e) {
+            process.stderr.write(`finisherd: warning: cannot remove an old keychain entry: ${String(e)}\n`);
+          }
+        }
+      }
+      secrets.vault = next;
+      secrets.identity = { ...fresh, created: false };
+    },
+  };
+  return secrets;
 }

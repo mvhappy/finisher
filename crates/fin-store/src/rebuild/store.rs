@@ -76,6 +76,7 @@ impl Store {
         let identity = crate::ServerIdentity {
             id: self.server_id.clone(),
             renewed: None,
+            renewed_reason: None,
             shortcut_ok: false,
         };
         let opts = OpenOptions::default();

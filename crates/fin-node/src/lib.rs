@@ -99,7 +99,9 @@ pub use pipe_server::{PipeOptions, PipeServer};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use private_file::{PrivateFile, create_private_file};
 pub use registry::{Registry, validate_manifest};
-pub use server_lock::{ServerLock, lock_exclusive, server_id};
+pub use server_lock::{
+    ServerIdentityReport, ServerLock, lock_exclusive, server_id, server_identity,
+};
 pub use tasks::StoreTask;
 pub use tls::{qr_svg, qr_text, self_signed_cert};
 pub use vault::{IdentityKey, Vault, VaultBackend, generate_identity_key, identity_key, spki_pin};

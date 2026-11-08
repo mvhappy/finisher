@@ -1,7 +1,7 @@
 // The server's own RPCs (spec §4.8, plan 5A Task 8): `server.status` (`server.read`),
 // `server.stop` (`auth.admin`: the graceful stop Windows lacks, a service command that needs no
 // terminal) and the owner's audit log (`auth.audit.list`, `auth.audit.purge`, `auth.admin`).
-import { PROTOCOL_VERSION, type AuditKind, type FinError } from "@finisher/contracts";
+import { PROTOCOL_VERSION, type AuditKind, type FinError, type Route } from "@finisher/contracts";
 import type { JobHostCaps } from "@finisher/fin-node";
 import { Context, Effect } from "effect";
 import { SERVER_VERSION } from "./config.ts";
@@ -17,6 +17,8 @@ export interface ServerControl {
   readonly listeners: () => ReadonlyArray<{ readonly transport: Transport; readonly endpoint: string }>;
   /** Starts the graceful shutdown: `serve` returns, its finalizers run, the process exits 0. */
   readonly stop: () => void;
+  /** The environment's state, pin and routes (5B Task 5). */
+  readonly environment?: () => { readonly state: "ok" | "moved"; readonly spki: string; readonly routes: ReadonlyArray<Route> };
   /** Standing warnings of the server itself (5B: where secrets are kept). */
   readonly warnings?: () => ReadonlyArray<Record<string, unknown>>;
 }
@@ -60,6 +62,7 @@ export function serverStatus(deps: AdminDeps) {
       version: SERVER_VERSION,
       protocol: PROTOCOL_VERSION,
       envId: deps.control.envId,
+      ...(deps.control.environment === undefined ? {} : { env: deps.control.environment() }),
       pid: process.pid,
       listeners: [...deps.control.listeners()],
       connections: deps.connections.count(),
@@ -82,6 +85,10 @@ export function serverStatus(deps: AdminDeps) {
         ...(agentWarnings() as Array<Record<string, unknown>>),
         // Where secrets are kept (5B Decision 4): a file store standing in for the keychain.
         ...(deps.control.warnings?.() ?? []),
+        // Copied or moved server data waits for its owner (5B Decision 31).
+        ...(deps.control.environment?.().state === "moved"
+          ? [{ code: "ENV_MOVED", message: "this server data was copied or moved: paired devices wait until its owner adopts or resets it" }]
+          : []),
       ],
     };
   });

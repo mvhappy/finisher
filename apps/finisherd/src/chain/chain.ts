@@ -133,6 +133,11 @@ export interface ChainDeps {
   readonly clock?: () => number;
   /** What the chain asks of agent sessions (sub-project 7A Task 7); none: 5A's chain. */
   readonly hooks?: ChainHooks;
+  /**
+   * A refusal of the principal itself before anything is resolved (5B: a device while the
+   * server data is moved, `ENV_MOVED`); `undefined` lets it through.
+   */
+  readonly refuse?: (p: Principal) => FinError | undefined;
 }
 
 /** What a handler sees in its options beside Effect's: the policy stage's guard and what was resolved. */
@@ -206,6 +211,8 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       // A credential revoked after this connection proved it (or took its ticket) runs nothing (M3).
       if (deps.connections.revoked(clientId)) return yield* Effect.fail(credentialRevoked());
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
+      const refused = deps.refuse?.(principal);
+      if (refused !== undefined) return yield* Effect.fail(refused);
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);

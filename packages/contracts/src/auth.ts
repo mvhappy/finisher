@@ -2,6 +2,7 @@
 // base64url without padding on the wire; keys never are.
 import { Schema } from "effect";
 import { AuditEntrySchema, AuditKindSchema } from "./audit.ts";
+import { EnvStateSchema, RouteSchema } from "./devices.ts";
 import { HUMAN_ONLY, SCOPES, type Scope, ScopeSchema } from "./scopes.ts";
 
 export const PrincipalKind = Schema.Literals(["anonymous", "local", "console", "device", "agent", "mcp", "plugin"]);
@@ -107,6 +108,8 @@ export const ServerStatusSuccess = Schema.Struct({
   version: Schema.String,
   protocol: Schema.Number,
   envId: Schema.String,
+  /** 5B: the environment's state, its identity pin and its routes. */
+  env: Schema.optional(Schema.Struct({ state: EnvStateSchema, spki: Schema.String, routes: Schema.Array(RouteSchema) })),
   pid: Schema.Number,
   listeners: Schema.Array(Schema.Struct({ transport: Schema.Literals(["socket", "pipe", "ws"]), endpoint: Schema.String })),
   connections: Schema.Record(Schema.String, Schema.Number),

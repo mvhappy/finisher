@@ -17,11 +17,11 @@ import {
   socketPath,
   writeServerInfo,
 } from "./config.ts";
-import { serverId } from "@finisher/fin-node";
+import { serverIdentity } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
-import { sweepExpired } from "./auth/revoke.ts";
+import { revokeCredential, sweepExpired } from "./auth/revoke.ts";
 import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
@@ -29,6 +29,11 @@ import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { DeviceStore } from "./auth/devices.ts";
 import { openSecrets } from "./secrets/vault.ts";
+import { endDevice } from "./auth/devices.ts";
+import { Environment, EnvironmentTag } from "./env/descriptor.ts";
+import { checkMoved } from "./env/moved.ts";
+import { OS_ROUTES, ROUTES_POLL_MS, Routes } from "./net/routes.ts";
+import { CAPABILITIES } from "./handlers.ts";
 // Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
 import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
@@ -99,9 +104,12 @@ export const serve = ({
       // Held until shutdown, before touching the socket: claim + listen is then race-free.
       yield* withServerLock(serverData);
       // The control store (5A Task 1) before any listener: the environment id, the audit log.
-      const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
+      // The id, and why it was just renewed (a copy, or moved): 5B's moved check reads it below.
+      const identity = yield* Effect.try({ try: () => serverIdentity(serverData), catch: startFailure });
+      const id = identity.id;
       const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
-      const envId = Context.get(control, ControlStoreTag).envId;
+      // `env.reset` (5B) renews the environment's id while the server runs: read it live.
+      const controlStore = Context.get(control, ControlStoreTag);
       // Paired devices (5B Task 1) and the vault with the identity key (Task 2): after the control
       // store, before any listener. A lost identity key revokes every device (a rotation).
       const devices = new DeviceStore(Context.get(control, ControlStoreTag), Context.get(control, AuditTag), credentialOptions?.clock);
@@ -229,7 +237,9 @@ export const serve = ({
       );
       const handshake = new Handshake({
         keys,
-        envId,
+        get envId() {
+          return controlStore.envId;
+        },
         audit,
         credentials: (ref) => credentials.forHello(ref),
         revoke: (ref) => credentials.markEnded(ref, "self"),
@@ -258,6 +268,39 @@ export const serve = ({
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
+      // The environment (5B Task 5): routes, the descriptor, moved or copied server data.
+      const routes = new Routes(OS_ROUTES, { loopbackPort: () => wsPort });
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const timer = setInterval(() => routes.poll(), ROUTES_POLL_MS);
+          timer.unref();
+          return timer;
+        }),
+        (timer) => Effect.sync(() => clearInterval(timer)),
+      );
+      const environment = new Environment({
+        store: controlStore,
+        audit,
+        devices,
+        secrets,
+        routes,
+        capabilities: CAPABILITIES,
+        endDevice: (deviceId) => endDevice({ tickets, connections: everyConnection }, deviceId),
+        revokeCredentials: () => {
+          let ended = 0;
+          const ownerRevoke = { ...revokeDeps, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "owner") };
+          for (const c of credentials.list()) {
+            if (revokeCredential(ownerRevoke, { kind: c.kind, id: c.id }, { rpc: "env.reset", reason: "owner" }).revoked) ended++;
+          }
+          return ended;
+        },
+        rewriteInfo: () => {
+          if (!removed) publish(diagnostics.enabled());
+        },
+      });
+      if (checkMoved(environment, controlStore, identity.renewed)) {
+        yield* Effect.logWarning("finisherd: this server data was copied or moved: paired devices wait until its owner adopts or resets it");
+      }
       // The agent runtime's shared pieces (7A-2): the session store, each session's credential
       // (minted, refreshed and revoked through the one revoke path) and the branch lineage the
       // chains read for branch reach. Credential effects a crash left in the outbox are done now.
@@ -319,7 +362,12 @@ export const serve = ({
         { transport: connections.local.transport, endpoint: localEndpoint },
         { transport: connections.ws.transport, endpoint: wsEndpoint },
       ] as const;
-      const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void), warnings: secrets.warnings };
+      const serverControl = {
+        get envId() {
+          return controlStore.envId;
+        },
+        environment: () => ({ state: environment.state(), spki: environment.spki(), routes: [...routes.current()] }),
+        listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void), warnings: secrets.warnings };
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
@@ -338,6 +386,7 @@ export const serve = ({
               Layer.succeed(TicketsTag, tickets),
               Layer.succeed(ConnectionRegistryTag, everyConnection),
               Layer.succeed(ServerControlTag, serverControl),
+              Layer.succeed(EnvironmentTag, environment),
               Layer.succeed(AgentCoreTag, agentCore),
               Layer.succeed(AgentRuntimeTag, agentRuntime),
             ),
@@ -346,7 +395,7 @@ export const serve = ({
       );
 
       const publish = (enabled: boolean) =>
-        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId, diagnostics: { enabled } });
+        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId: controlStore.envId, diagnostics: { enabled } });
       // Set when `finisherd.json` is removed: a late gate change must not bring it back.
       let removed = false;
       const info = yield* Effect.acquireRelease(

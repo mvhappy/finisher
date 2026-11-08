@@ -82,6 +82,7 @@ const END_REASONS: ReadonlySet<string> = new Set(DEVICE_END_REASONS);
 
 export class DeviceStore {
   readonly #audit: Audit;
+  readonly #db: ControlStore["db"];
   readonly #clock: () => number;
   readonly #rows = new Map<string, DeviceRow>();
   readonly #byJkt = new Map<string, DeviceRow>();
@@ -99,6 +100,7 @@ export class DeviceStore {
     this.#audit = audit;
     this.#clock = clock;
     const db = store.db;
+    this.#db = db;
     db.prepare("DELETE FROM devices WHERE revokedAt IS NOT NULL AND revokedAt < ?").run(clock() - DEVICE_RETENTION_MS);
     for (const r of db.prepare("SELECT * FROM devices ORDER BY createdAt, rowid").all() as Array<Record<string, unknown>>) {
       let jwk: DeviceJwk;
@@ -276,6 +278,20 @@ export class DeviceStore {
     this.#backoffMs = 500;
   }
 
+  /**
+   * Deletes every row (`env.reset`: the data is a copy, so its devices belong to the original).
+   * Callers end the devices first; this forgets them.
+   */
+  deleteAll(): number {
+    this.#unsaved.clear();
+    const n = this.#rows.size;
+    this.#db.prepare("DELETE FROM devices").run();
+    this.#rows.clear();
+    this.#byJkt.clear();
+    this.#written.clear();
+    return n;
+  }
+
   /** Ends not yet written. */
   unsaved(): number {
     return this.#unsaved.size;
@@ -292,4 +308,37 @@ export class DeviceStore {
   principalOf(d: Pick<Device, "id">): Principal {
     return { kind: "device", id: d.id, scopes: [...SCOPES], projects: "*", branches: "*", human: true };
   }
+}
+
+/** `DEVICE_REVOKED` (exit 7, 401): the fix speaks to the person, in words. */
+export function deviceRevoked() {
+  return finError(
+    "DEVICE_REVOKED",
+    "this device is no longer paired with the server",
+    {},
+    "Pair this device with the server again: its owner makes a new pairing link or QR code.",
+  );
+}
+
+/**
+ * Ends what a device ended in the store still holds (`markEnded` is done already): no ticket
+ * or connection proves it again, its tickets are dropped, and every live connection it proved
+ * ends with `DEVICE_REVOKED`. Task 9 adds its access tokens.
+ */
+export function endDevice(
+  deps: {
+    readonly tickets: { dropWhere(pred: (p: Principal) => boolean): number };
+    readonly connections: {
+      revoke(ref: { readonly kind: string; readonly id: string }): void;
+      closeWhere(pred: (c: { readonly principal: Principal }) => boolean, error: ReturnType<typeof finError>): number;
+    };
+  },
+  id: string,
+): { tickets: number; connections: number } {
+  const ref = { kind: "device", id };
+  deps.connections.revoke(ref);
+  const mine = (p: Principal) => p.kind === "device" && p.id === id;
+  const tickets = deps.tickets.dropWhere(mine);
+  const connections = deps.connections.closeWhere((c) => mine(c.principal), deviceRevoked());
+  return { tickets, connections };
 }
