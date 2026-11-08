@@ -382,7 +382,7 @@ Notes for later tasks (review of Tasks 1, 2, 10):
 ## Sub-project 5B: pairing, devices, remote access and environments (planned 2026-11-08)
 
 Spec: control-plane spec §5. Needs 5A (built).
-- [x] Plan 5B: `docs/superpowers/plans/2026-11-08-sub-project-5b-pairing-and-remote-access.md` (branch `sp5b-remote`; 15 tasks; four questions for the owner at its end: device confirmations, ports and SSH tunnels, self-pairing of the desktop renderer, trusted-certificate routes). One line per task below; each task ticks its line with as-built notes.
+- [x] Plan 5B: `docs/superpowers/plans/2026-11-08-sub-project-5b-pairing-and-remote-access.md` (branch `sp5b-remote`; 15 tasks; four questions for the owner at its end: device confirmations, ports and SSH tunnels, self-pairing of the desktop renderer, trusted-certificate routes; **all answered 2026-11-08**: from devices only `server.stop` is confirmed, through the app's dialog (owner; Decision 22, Task 4 reworked); Decisions 29, 21 and 9 as written (coordinator)). One line per task below; each task ticks its line with as-built notes.
 - [ ] Task 1: contracts, the `devices` chain and the device principal
 - [ ] Task 2: the vault, the identity key and the secret box
 - [ ] Task 3: certificates, SPKI pins and QR codes
@@ -398,7 +398,7 @@ Spec: control-plane spec §5. Needs 5A (built).
 - [ ] Task 13: e2e `remote` scenario and a device test client
 - [ ] Task 14: spec as built, architecture pointer, README and tracker
 - [ ] Task 15: cross-platform validation (controller-run)
-- [ ] Make `server.stop`, and every other confirmed call, confirmable by a device with `auth.admin` (the chain answers `CONFIRMATION_REQUIRED` until then; spec §4.7, §4.17)
+- [ ] Make `server.stop` confirmable by a device with `auth.admin`, and exempt devices from every other confirmation (owner decision of 2026-11-08; the chain answers `CONFIRMATION_REQUIRED` until then; spec §4.7, §4.17, §5.4; plan 5B Task 4)
 
 ## Sub-project 5C-1: job engine (in progress)
 
@@ -544,7 +544,7 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-5d-library-indexer.md` (spe
 ## Sub-project 5E: review workflow (planned 2026-11-08)
 
 Spec: control-plane spec §8. Needs 5A (built) and 4B. 5C-2 (the job RPCs) is tracked under 5C-1.
-- [x] Plan 5E: `docs/superpowers/plans/2026-11-08-sub-project-5e-review-workflow.md` (branch `sp5e-review`; 13 tasks; four questions for the owner at its end: re-derived reviews, merging a stale review, the scope of "reject all", plugin suggestions). It registers `review.verdict` v1 with sources `finisherd` and `agent` (the 7A Task 11 note), moves 8A's `plugin_suggestions` into `pluginSuggestion` items, and keeps auto merge `AUTO_MERGE_UNAVAILABLE` until sub-project 10. One line per task below; each task ticks its line with as-built notes.
+- [x] Plan 5E: `docs/superpowers/plans/2026-11-08-sub-project-5e-review-workflow.md` (branch `sp5e-review`; 13 tasks; four questions for the owner at its end: re-derived reviews, merging a stale review, the scope of "reject all", plugin suggestions; **all answered 2026-11-08**: re-derive items for unmerged agent branches, marked re-derived (owner, Decision 22); merge a stale review with `targetMoved: true` (owner, Decision 14); "reject all" drops accepted entries too, spec §8.2 updated (owner, Decision 15); plugin suggestions as written (coordinator, Decision 11)). It registers `review.verdict` v1 with sources `finisherd` and `agent` (the 7A Task 11 note), moves 8A's `plugin_suggestions` into `pluginSuggestion` items, and keeps auto merge `AUTO_MERGE_UNAVAILABLE` until sub-project 10. One line per task below; each task ticks its line with as-built notes.
 - [ ] Task 1: the `drop` record kind and what is dropped
 - [ ] Task 2: format 3, the `drops` index and `Store::drop`
 - [ ] Task 3: merge limits and the review plan

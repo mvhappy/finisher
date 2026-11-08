@@ -507,7 +507,7 @@ The numbers are the **plan's** Decision numbers, not §11's. **As built** = buil
 
 **Owed:**
 - **5A Task 14, cross-platform validation:** the whole of 5A on macOS and Windows 11 as a non-elevated user (private server data and `SERVER_DATA_UNSAFE`, `PIPE_SQUATTED` and a second account kept off the real pipe, a stale `finisherd.json` naming a squatted pipe, `finisherd stop`, the credential file's DACL, the e2e `auth` scenario); `node:sqlite` under Electron's Node on macOS and Windows; and the measurements: the handshake's added p50/p99 to `fin view` per OS (budget 1 ms), control-store statement p99 per OS (budget 1 ms) and the checkpoint worker's WAL size under the e2e load. **Windows has run** (§4.11, 2026-11-08) except the second-account checks, `finisherd stop` by hand and the two measurements; macOS has not.
-- **5B** must make `server.stop` (and every other confirmed call) confirmable from a device with `auth.admin`; until then the chain refuses it.
+- **5B** must make `server.stop` confirmable from a device with `auth.admin` (owner decision of 2026-11-08: the only device call that needs a confirmation, §5.4); until then the chain refuses it.
 - **Sub-project 7:** the sandbox rules of §4.11, approvals behind `APPROVAL_REQUIRED`, `childEnv`'s provider variables.
 - **Sub-project 9:** `FIN_NODE_BINARY_DIR` out of release builds; the control store's checkpoint worker is loaded from its `.ts` file through Node's type stripping, so a packaged `finisherd` must ship it (or a compiled `.js`) beside `control/db.ts`.
 
@@ -527,7 +527,7 @@ The numbers are the **plan's** Decision numbers, not §11's. **As built** = buil
 
 1. **Offer** (owner): `auth.pair.offer {label?, ttlS ≤ 600}` → `{offerId, link, qr, expiresAt}`. Link: `finisher://pair?v=1&env=<envId>&spki=<pin>&r=<base64url(routes)>#<offerId>.<secret>` (256-bit secret in the fragment, arch §16); for browsers, `https://<route>/pair#…` on a route with a trusted certificate (§5.5). The console's `finisherd pair` prints the link and a terminal QR code and waits.
 2. **Redeem:** the device makes a P-256 key pair (non-extractable where the platform allows), then `POST /pair/redeem {offerId, secret, device: {name, platform, jwk}}` over the pinned route. The offer is consumed at the first valid redeem. Answer: `{pendingId, safetyCode}` (6 digits, `HMAC(secret, jkt) mod 10⁶`). Redeems are limited to 10 per minute per remote address and 30 per minute per server.
-3. **Approve:** the owner compares the device name and safety code and approves (`auth.pair.approve`) or rejects, on the console or an existing device; a pending request expires 10 minutes after the redeem. The one exception: the desktop shell pairs its own renderer with a console offer flagged `self`, redeemed over loopback only, approved at redeem.
+3. **Approve:** the owner compares the device name and safety code and approves (`auth.pair.approve`) or rejects, on the console or an existing device; a pending request expires 10 minutes after the redeem. The one exception: the desktop shell pairs its own renderer with a console offer flagged `self`, redeemed over loopback only, approved at redeem, needing no challenge code (coordinator decision of 2026-11-08, plan 5B Decision 21).
 4. **Finish:** the device polls `POST /pair/status` with a DPoP proof made with its key.
 
 ### 5.3 Tokens, DPoP and tickets
@@ -541,8 +541,12 @@ The numbers are the **plan's** Decision numbers, not §11's. **As built** = buil
 
 `auth.device.list|rename|revoke`, `auth.devices.watch` (stream), and `auth.revokeSelf` (§4.5). Revocation forgets the device's tokens and tickets and closes its live connections at once.
 
+**Confirmations from devices (owner decision of 2026-11-08, plan 5B Decision 22):** a device is a human principal, and only its `server.stop` needs a confirmation: the app asks in its dialog, then fetches `console.challenge` on its own connection and sends the code, as the console does (§4.7). The chain's confirmation stage exempts devices from every other human-only call.
+
 ### 5.5 Listeners and TLS
 
+- **Ports (coordinator decision of 2026-11-08, plan 5B Decision 29):** the remote listener defaults to `0.0.0.0:7311`; the loopback listener stays on a random port unless `server.loopback.port` is set; an SSH tunnel uses the same port number on both ends, because the Host check names the port.
+- **Trusted-certificate routes (coordinator decision of 2026-11-08, plan 5B Decision 9):** on a `files` route native clients verify the certificate normally and check the `envId`; there is no second, pinned listener.
 - **Local by default (D6).** Remote listening is off until the owner enables it on the console (`finisherd remote enable [--listen <host:port>]`, TTY-gated), which writes `settings.json` `server.remote {enabled, listen, tls: {mode: selfSigned|files, certFile?, keyFile?}, publicUrl?, origins?, hosts?}`; `FIN_LISTEN` does the same for Docker.
 - **A non-loopback listener is TLS only** (`LISTEN_NEEDS_TLS` at start otherwise), with a **Host allow-list** of its route names, `publicUrl`'s host and `server.remote.hosts`.
 - **Self-signed mode:** the certificate is made by `rcgen` (in `fin-node`, `ring` provider) from the identity key, with the current addresses and names as SANs, and remade with the same key when they change, so the pin never changes.
@@ -967,7 +971,7 @@ The watchdog's cleanup time after host death, the macOS spawn times, and the p99
 - **States:** `open` ↔ `changesRequested` → `merged` | `rejected` | `dismissed` | `superseded`.
 - **Change list** (derived at the snapshot, cached): one entry per merge candidate, as `history.merge {dryRun: true}` plans it at `snapshot`: `{txId (origin root), sourceSeq, record kind, author, actor?, ops, at, decision: pending|accept|reject, decidedBy?, status: willMerge|alreadyPresent|dropped|excluded|dependsOnSkipped|conflict}`, plus `conflicts`.
 - `review_events`, `review_comments {id, itemId, principal, actor, body, at?: rational time, txId?, createdAt}`.
-- **Where review items live:** `control.db` of the server that holds the project (owner decision 1). **Rejections are not review state:** they are `drop` records in the op log (§8.3), so they are never lost. What a move loses is open items' comments and their not-yet-merged accept marks; open `branchReview` items for active branches are re-derived.
+- **Where review items live:** `control.db` of the server that holds the project (owner decision 1). **Rejections are not review state:** they are `drop` records in the op log (§8.3), so they are never lost. What a move loses is open items' comments and their not-yet-merged accept marks; open `branchReview` items for active branches are re-derived: every active agent branch with something left to merge into its parent gets one, marked `rederived: true` (owner decision of 2026-11-08, plan 5E Decision 22).
 - `branch_policy {projectId, protected: [branchId], requireReview, autoMerge: {enabled, into?, roles?, changedBy?, changedAt?}}`, default `protected: [main]`, `requireReview: false`, `autoMerge.enabled: false` (§8.5). It lives in this server's `control.db`, never in the project folder, so a shared project cannot switch it on for another machine.
 
 ### 8.2 Workflow
@@ -979,8 +983,9 @@ The watchdog's cleanup time after host death, the macOS spawn times, and the p99
    - the merge is limited to what was reviewed: `history.merge {from, into, include: [accepted origins], sourceUpTo: snapshot.sourceSeq}` (§8.4); with `acceptPending: true`, pending entries **of the snapshot** are added to `include`. Nothing outside the snapshot is ever included, so a commit that lands on the source after the review is never merged by it;
    - with `requireReview`, pending entries refuse the merge (`REVIEW_UNDECIDED`), whatever `acceptPending` says;
    - conflicts (`REVIEW_HAS_CONFLICTS`) are resolved by rejecting the conflicting entries or by fixing the source branch and refreshing;
+   - **a target that moved since the snapshot does not block the merge** (owner decision of 2026-11-08, plan 5E Decision 14): only the reviewed transactions are copied, a conflict refuses it, and the result says `targetMoved: true`;
    - afterwards: state `merged`, `mergeId` stored, and the source archived when it was an agent branch and nothing of it is left to merge.
-5. **Reject all, request changes, dismiss:** `review.close {itemId, state: rejected|dismissed}` (rejecting all writes one `drop` for every pending entry); `review.decide` with `changesRequested` hands the branch back to its agent (sub-project 7 delivers it as a turn).
+5. **Reject all, request changes, dismiss:** `review.close {itemId, state: rejected|dismissed}` (rejecting all writes one `drop` for every entry of the snapshot not yet merged into the target, **pending and accepted alike**, so a later plain `fin merge` cannot bring in what was rejected as a whole: owner decision of 2026-11-08, plan 5E Decision 15); `review.decide` with `changesRequested` hands the branch back to its agent (sub-project 7 delivers it as a turn).
 
 ### 8.3 Durable rejections: the `drop` record
 
@@ -1136,6 +1141,11 @@ The owner answered every question as recommended. The options weighed are kept i
 **Decisions taken during the 5C-1 build (2026-11-07/08), recorded in §6.11:** 7. A graceful stop spends no attempt for a resumable job (§6.5; Decision 34). 8. Warm kinds run cold under a sandbox until sub-project 7C provides per-job grants (§6.3; Decision 35).
 
 **Cross-cutting decisions of the same day that change this design:** the repository targets **Node 24** (§1.6, §3.1); **`auto` may merge into `main` under a per-project owner policy** (agent §20 item 4; §8.5 here); **third-party code plugins are allowed before 7C** (plugins §20 item 1; §6.2 here); **v1 API models go through one OpenAI-compatible adapter (OpenRouter or a local server), and CLI agents use the user's own sign-in** (agent §20 items 6–7 and F1; §1.6, §5.5 here); the platform floor is **Windows 11 only and Linux kernel ≥ 6.2** (arch D-table; §4.11 here).
+
+**Owner and coordinator decisions of 2026-11-08:**
+- **Console confirmations (owner):** most human-only console actions ask `Proceed? [y/N]` in a real TTY; irreversible or destructive ones (purges, removals, rotations, `plugin rm --purge-data`, takeovers, relocations, accepting a gone mount or an empty root) ask for the target's name typed back. The TTY rule and the server's challenge stay; the console fetches and sends the code itself (§4.7).
+- **5B (owner):** from devices only `server.stop` is confirmed, through the app's dialog (§5.4; plan 5B Decision 22). **(Coordinator):** ports and SSH tunnels as written (§5.5; Decision 29), desktop self-pairing as written (§5.2; Decision 21), `files` routes verified normally plus the `envId` (§5.5; Decision 9).
+- **5E (owner):** re-derived review items for unmerged agent branches (§8.1; plan 5E Decision 22); merging a stale review with `targetMoved: true` (§8.2; Decision 14); "reject all" drops accepted entries too (§8.2; Decision 15). **(Coordinator):** plugin suggestions as written (Decision 11).
 
 ---
 
