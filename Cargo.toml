@@ -17,6 +17,7 @@ default-members = [
     "crates/fin-jobhost",
     "crates/fin-jobs",
     "crates/fin-journal",
+    "crates/fin-library",
     "crates/fin-media",
     "crates/fin-node",
     "crates/fin-plugin-api",

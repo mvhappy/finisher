@@ -10,7 +10,6 @@ import { basename, dirname, join, sep } from "node:path";
 import type { FinError, Principal, RpcRule, RuleFacts } from "@finisher/contracts";
 import { Effect } from "effect";
 import { requireAbsolute, requireAbsoluteOpt } from "../paths.ts";
-import { pathNotAllowed } from "./fixes.ts";
 
 /** What the chain needs from the project registry. */
 export interface ChainProjects {
@@ -64,14 +63,6 @@ export async function canonicalPath(p: string): Promise<string> {
 }
 
 const canonical = (p: string): Effect.Effect<string> => Effect.promise(() => canonicalPath(p));
-
-/** `PATH_NOT_ALLOWED` when `path`, canonical when checked, no longer is (a swapped symlink). */
-export function stillCanonical(tag: string, path: string): Effect.Effect<void, FinError> {
-  return Effect.flatMap(
-    Effect.promise(() => canonicalPath(path)),
-    (now) => (now === path ? Effect.void : Effect.fail(pathNotAllowed(tag, path))),
-  );
-}
 
 /** The most of `finisher.project.json` read before authorisation. */
 export const PROJECT_FILE_MAX = 64 * 1024;
@@ -161,10 +152,10 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
   });
 }
 
-/** The ids of the branches the call writes to (its `writes` fields), through the store. */
+/** The ids of the branches the call writes to or acts on (its `writes` and `targets` fields), through the store. */
 export function resolveWrites(rule: RpcRule, payload: unknown, deps: ChainProjects): Effect.Effect<ReadonlyArray<string>, FinError> {
   const projectId = field(payload, "projectId");
-  const refs = (rule.writes ?? []).map((f) => field(payload, f)).filter((v): v is string => typeof v === "string");
+  const refs = [...(rule.writes ?? []), ...(rule.targets ?? [])].map((f) => field(payload, f)).filter((v): v is string => typeof v === "string");
   if (typeof projectId !== "string" || refs.length === 0) return Effect.succeed([]);
   return Effect.forEach(refs, (ref) => deps.resolveBranch(projectId, ref));
 }

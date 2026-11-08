@@ -51,6 +51,7 @@ mod fonts;
 mod hash;
 mod history;
 mod journal;
+mod library;
 mod maintenance;
 mod private_dir;
 mod registry;
@@ -65,6 +66,9 @@ mod worker;
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
+pub use library::{library_canonical_root, library_probe_root, library_probe_status};
+#[cfg(feature = "test-hooks")]
+pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use registry::{Registry, validate_manifest};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
@@ -128,13 +132,27 @@ fn now_ms() -> i64 {
 }
 
 /// Probes a file of any asset kind; resolves to `Probe` JSON (`{kind, duration?, video?,
-/// audio?, image?, lottie?, font?, lut?, fingerprint, size}`).
+/// audio?, image?, lottie?, font?, lut?, fingerprint, size}`). Never blocks on a FIFO.
 #[napi(catch_unwind)]
 pub fn probe(path: String) -> AsyncTask<ProbeTask> {
-    AsyncTask::new(ProbeTask { path: path.into() })
+    AsyncTask::new(ProbeTask {
+        root: None,
+        path: path.into(),
+    })
+}
+
+/// [`probe`] of a file that must be inside `root` (canonical), reached without a symlink
+/// (`fin_probe::probe_beneath`): otherwise `PATH_NOT_ALLOWED`.
+#[napi(catch_unwind)]
+pub fn probe_beneath(root: String, path: String) -> AsyncTask<ProbeTask> {
+    AsyncTask::new(ProbeTask {
+        root: Some(root.into()),
+        path: path.into(),
+    })
 }
 
 pub struct ProbeTask {
+    root: Option<PathBuf>,
     path: PathBuf,
 }
 
@@ -143,10 +161,16 @@ impl Task for ProbeTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<String> {
-        let path = &self.path;
+        let (root, path) = (self.root.as_deref(), &self.path);
         guarded(
             // `Probe`'s serde form: the `Probe` type of `@finisher/core-types`.
-            || encode(&fin_probe::probe(path).map_err(reject)?),
+            || {
+                let probed = match root {
+                    Some(root) => fin_probe::probe_beneath(root, path),
+                    None => fin_probe::probe(path),
+                };
+                encode(&probed.map_err(reject)?)
+            },
             || {},
         )
     }

@@ -45,6 +45,7 @@ pub(super) static JOURNALS: Mutex<Vec<(PathBuf, fin_journal::Journal)>> = Mutex:
 /// and canonicalising only an existing path keyed the two apart wherever the canonical form
 /// differs (a symlink; macOS temp dirs behind `/var` → `/private/var`; Windows `\\?\`
 /// paths), so the engines found no journal and recorded nothing.
+#[allow(clippy::disallowed_methods)] // the server data directory
 fn key_of(server_data: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut at = server_data;
@@ -382,8 +383,8 @@ impl JournalHandle {
     }
 
     /// One page of the export (`Filter` JSON; `cursor`: a page's `next`; `limit` 1–1000;
-    /// `as_upload`: `diagnostics` or `training` for the upload view). Resolves to the
-    /// `ExportPage` JSON.
+    /// `as_upload`: `diagnostics` or `training` for the upload view; `redact`: remove content,
+    /// for a caller that is not a person). Resolves to the `ExportPage` JSON.
     #[napi(catch_unwind, ts_return_type = "Promise<string>")]
     pub fn export<'e>(
         &self,
@@ -392,14 +393,18 @@ impl JournalHandle {
         cursor: Option<String>,
         limit: u32,
         as_upload: Option<String>,
+        redact: Option<bool>,
     ) -> Result<Object<'e>> {
         let filter: Filter = parse("export filter", &filter_json)?;
         let as_upload = as_upload.as_deref().map(purposes_of).transpose()?;
         let j = self.journal.clone();
         off_thread(env, move || {
-            let page = j
+            let mut page = j
                 .export_page(&filter, as_upload, cursor.as_deref(), limit as usize)
                 .map_err(reject)?;
+            if redact == Some(true) {
+                page.redact();
+            }
             encode(&page)
         })
     }

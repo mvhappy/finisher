@@ -239,24 +239,28 @@ everything off, no `events/` directory is created at all.
 later version), set `"privacy": {"training": "on"}` in `<server-data>/settings.json` by hand
 (the running server picks it up within a few seconds), or start `finisherd` with
 `FIN_TRAINING=on` on your own machine. `fin diagnostics consent training on` is refused on
-purpose, with a message that names these three ways.
+purpose, with a message that names these three ways, and so is every other command line.
 
 **See it, change it, delete it:**
 
 ```bash
 fin diagnostics show                          # consent and its basis, project flags, files, sizes, counts per kind, drops
-fin diagnostics export --limit 20             # the newest 20 entries, as JSONL (content included: it is your data)
+fin diagnostics export --limit 20             # the newest 20 entries, as JSONL (content removed: fin is not a person)
 fin diagnostics export --kind log.commit --since 2026-11-01
 fin diagnostics export --as-upload diagnostics   # exactly what a future uploader could send now
-fin diagnostics consent diagnostics off       # or on, or unset (back to the default)
-fin diagnostics consent training off          # withdraw; unset makes it undecided again
 fin diagnostics project never                 # this project: record nothing, purge its entries (default: follow the settings)
-fin diagnostics purge --project <id>          # or --before 2026-10-01, or --all (also removes the key and every blob)
 ```
 
+Changing consent, deleting what was recorded, clearing a project's `never` flag and exporting
+recorded content are yours alone: `fin` (and any agent that runs it) is refused with
+`HUMAN_ONLY`. You make these changes in the Finisher app or the server's console
+(`finisherd diagnostics consent …`, `purge`, `project default`, `export --content`), which asks
+you to type a short code it shows before anything changes. Training cannot be turned on from
+the console either.
+
 Withdrawing a purpose takes effect before anything else is written. It stops the upload view
-from offering anything recorded under that purpose. It deletes nothing by itself: use
-`fin diagnostics purge` for that.
+from offering anything recorded under that purpose. It deletes nothing by itself: purge from
+the console for that.
 
 ## License
 

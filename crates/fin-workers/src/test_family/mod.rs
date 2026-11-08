@@ -3,6 +3,9 @@
 //! plugin-like process: minor 1, no envelope). Several kinds break the worker rules on
 //! purpose (`test.spawn` starts processes, `test.garbage` breaks the protocol): they exist to
 //! test the host. This directory is outside the worker spawn gate (Decision 24).
+// Its kinds read and write the job's own files by path, never a library path
+// (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};

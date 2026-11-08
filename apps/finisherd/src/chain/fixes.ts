@@ -74,6 +74,21 @@ export function approvalRequired(tag: string, approvalId: string, reason: string
   );
 }
 
+/**
+ * `CONSENT_UI_ONLY` (exit 2; arch §21.1, D14b): turning training on is the app's onboarding
+ * question, answered by a person; every principal but a `device` is refused, the console too.
+ * The fix names the ways in, in words.
+ */
+export function consentUiOnly(tag: string, principal: Principal): FinError {
+  return finError(
+    "CONSENT_UI_ONLY",
+    "turning training on is a person's choice, made in the Finisher app, not a command's",
+    { tag, purpose: "training", value: "on", principal: principal.kind, where: "app" satisfies Where },
+    "Only you, the owner of this Finisher server, can opt in to training data: answer the question in the Finisher app, " +
+      "or set privacy.training to on by hand in the server's settings file, or set FIN_TRAINING to on in the environment the server starts in.",
+  );
+}
+
 /** Every human-only refusal's fix, for the test that keeps commands out of them. */
 export function humanOnlyFixes(): ReadonlyArray<FinError> {
   const nobody = { kind: "agent", id: "x", scopes: [], projects: "*", branches: "*", human: false } as unknown as Principal;

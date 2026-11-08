@@ -13,11 +13,12 @@
 import type { FinError, Principal } from "@finisher/contracts";
 import { Context, Effect } from "effect";
 import type { Audit } from "../control/audit.ts";
-import type { Connection, Connections, CredentialRef } from "../connections.ts";
+import type { Connection, Connections, CredentialRef, Transport } from "../connections.ts";
 import { finError } from "../errors.ts";
 import { CONSOLE, isProved, LOCAL } from "../principal.ts";
 import { b64u, helloProof, NONCE_BYTES, nonce, proveMac, sameMac } from "./crypto.ts";
 import type { Keys } from "./keys.ts";
+import { revokeCredential, type RevokeDeps } from "./revoke.ts";
 
 /** Failed proves after which a connection is closed (Decision 9). */
 export const MAX_PROVE_FAILURES = 5;
@@ -49,8 +50,6 @@ export interface HandshakeDeps {
   readonly credentials?: CredentialLookup;
   readonly revoke?: CredentialRevoke;
 }
-
-const CREDENTIAL_ID = /^[0-9A-Za-z]{26}$/;
 
 const UNAUTHENTICATED_FIX =
   "Run the command as the same user as the Finisher server, with that server's data, or give it a credential file through the FIN_CREDENTIAL variable.";
@@ -147,14 +146,13 @@ export class Handshake {
 
 /**
  * `auth.revokeSelf` (spec §4.8): the calling `agent`/`mcp` credential revokes itself. It takes no
- * id, so it cannot name another credential. Its tickets are dropped and this connection is
- * closed after the reply; Task 9's store closes its other connections.
+ * id, so it cannot name another credential. It goes the one revoke path (`revoke.ts`): its
+ * tickets are dropped and its other connections ended; this one is closed after the reply.
  */
 export function revokeSelf(
-  deps: Pick<HandshakeDeps, "audit" | "revoke">,
+  deps: RevokeDeps,
   principal: Principal,
-  close: () => void,
-  dropTickets: (pred: (p: Principal) => boolean) => void,
+  caller: { readonly transport: Transport; readonly clientId: number; readonly closeAfterReply: () => void },
 ): Effect.Effect<Record<string, never>, FinError> {
   return Effect.suspend(() => {
     const { kind, id } = principal;
@@ -168,18 +166,8 @@ export function revokeSelf(
         ),
       );
     }
-    const revoked = deps.revoke?.({ kind, id }) ?? false;
-    dropTickets((p) => p.kind === kind && p.id === id);
-    if (revoked) {
-      deps.audit.append({
-        kind: "credential.revoke",
-        principal: { kind, id },
-        credentialKind: kind,
-        outcome: "ok",
-        details: { rpc: "auth.revokeSelf", reason: "self", ...(CREDENTIAL_ID.test(id) ? { credentialId: id } : {}) },
-      });
-    }
-    close();
+    revokeCredential(deps, { kind, id }, { rpc: "auth.revokeSelf", reason: "self", except: caller });
+    caller.closeAfterReply();
     return Effect.succeed({});
   });
 }

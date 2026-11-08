@@ -77,7 +77,7 @@ export class Engine {
   }
 
   static async open(serverData, projectDir, options = {}) {
-    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true)));
+    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true, options.expectId ?? null)));
   }
 
   get projectId() {
@@ -334,8 +334,8 @@ export class Journal {
     return sync(() => this.#native.statusNow());
   }
 
-  async export(filterJson, cursor, limit, asUpload) {
-    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null)));
+  async export(filterJson, cursor, limit, asUpload, redact) {
+    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null, redact === true)));
   }
 
   async purge(selectorJson) {
@@ -468,43 +468,43 @@ export class FontManager {
  * Keep the returned `ServerLock` until shutdown, then call `release()`.
  */
 export function lockExclusive(path) {
-  try {
-    return native.lockExclusive(path);
-  } catch (e) {
-    throw toFinError(e);
-  }
+  return sync(() => native.lockExclusive(path));
 }
 
 /** This server data's `server-id` (created on first use; renewed for a copied server data). */
 export function serverId(serverData) {
-  try {
-    return native.serverId(serverData);
-  } catch (e) {
-    throw toFinError(e);
-  }
+  return sync(() => native.serverId(serverData));
 }
 
 /** Windows: owner and DACL private to this user; elsewhere `{ ok: true }`. */
 export function checkPrivateDir(path) {
-  try {
-    const r = native.checkPrivateDir(path);
-    return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
-  } catch (e) {
-    throw toFinError(e);
-  }
+  const r = sync(() => native.checkPrivateDir(path));
+  return { ok: r.ok, ...(r.owner == null ? {} : { owner: r.owner }), problems: r.problems };
 }
 
 /** Creates `path` private to this user (protected owner-only DACL on Windows, 0700 elsewhere). */
 export function makePrivateDir(path) {
-  try {
-    native.makePrivateDir(path);
-  } catch (e) {
-    throw toFinError(e);
-  }
+  sync(() => native.makePrivateDir(path));
 }
 
 export function probe(path) {
   return call(native.probe(path));
+}
+
+export function probeBeneath(root, path) {
+  return call(native.probeBeneath(root, path));
+}
+
+export function libraryCanonicalRoot(path, serverData, timeoutMs) {
+  return call(native.libraryCanonicalRoot(path, serverData, timeoutMs ?? null));
+}
+
+export function libraryProbeRoot(root, identityJson, timeoutMs) {
+  return call(native.libraryProbeRoot(root, identityJson, timeoutMs ?? null));
+}
+
+export function libraryProbeStatus() {
+  return native.libraryProbeStatus();
 }
 
 /** The plugin store and registries of a server (`registry.js`). */
@@ -545,6 +545,8 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
+      libraryProbeHang: (root, hang) => native.libraryProbeHangForTest(root, hang),
+      libraryProbeStarted: (root) => native.libraryProbeStartedForTest(root),
       packPlugin(src, out) {
         try {
           return native.packPluginForTest(src, out);

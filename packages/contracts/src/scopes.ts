@@ -92,11 +92,31 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly writes?: ReadonlyArray<string>;
   /**
+   * Branches the call changes state on without writing a record through the store's guard
+   * (`project.acknowledgeRewind`): the payload fields naming them, checked by the policy stage
+   * like `writes` (agent branch limits; review of Task 6, finding 7).
+   */
+  readonly targets?: ReadonlyArray<string>;
+  /**
    * The payload field holding the author a new branch records (`createdBy`): for a principal
    * with branch limits the server sets it to the principal's own author, so `"own"` cannot be
    * claimed by naming someone else (review of Task 5, M4).
    */
   readonly author?: string;
+  /**
+   * Whenever a call needs a human-only scope, a `console` principal must send the typed code
+   * of a fresh `console.challenge` of the same connection (`challenge`; Decision 30), or it is
+   * `CONFIRMATION_REQUIRED`: on by default (owner decision, review of Task 7, L2). A rule opts
+   * out only as `readOnly` (it changes nothing: reading content, asking for a code, listing the
+   * audit) or `service` (`server.stop`, which service managers call without a terminal, spec
+   * §4.7).
+   */
+  readonly unconfirmed?: "readOnly" | "service";
+  /**
+   * True for a payload only a `device` may send (the app's onboarding question: training on).
+   * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
+   */
+  readonly deviceOnly?: (payload: PayloadOf<T>) => boolean;
 }
 
 /** A rule with its RPC's types erased, as the chain reads it. */
@@ -105,7 +125,10 @@ export interface RpcRule {
   readonly resolve?: ReadonlyArray<ResolverName>;
   readonly escalate?: (payload: never, facts: RuleFacts) => ReadonlyArray<Scope>;
   readonly writes?: ReadonlyArray<string>;
+  readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
+  readonly unconfirmed?: "readOnly" | "service";
+  readonly deviceOnly?: (payload: never) => boolean;
 }
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
@@ -115,11 +138,6 @@ const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
  * Every RPC's rule (spec §4.5 and §4.8); the mapped type makes a missing RPC a type error and
  * types each escalation by its RPC's payload; `scopes.test.ts` compares the keys with `FinRpcs`
  * and the writers with `WRITE_RPCS`.
- *
- * Until 5A Task 7 the diagnostics RPCs keep the scopes every `local` caller holds
- * (`diagnostics.read`): Task 7 makes `diagnostics.consent`, `diagnostics.purge`,
- * `diagnostics.project {collect: "default"}` and content exports need `diagnostics.admin`, moving
- * their tests to the console in the same commit. No `agent`/`mcp` credential exists before Task 9.
  */
 export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "server.hello": { scopes: ["public"] },
@@ -128,6 +146,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.whoami": { scopes: ["server.read"] },
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
+  // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
+  "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  // 5A Task 8. Stopping is the owner's, but service managers call it without a terminal.
+  "server.status": { scopes: ["server.read"] },
+  "server.stop": { scopes: ["auth.admin"], unconfirmed: "service" },
+  "auth.audit.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.audit.purge": { scopes: ["auth.admin"] },
   "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": {
@@ -157,7 +182,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "history.merge": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
   "history.cherryPick": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
   "history.revert": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
-  "project.acknowledgeRewind": { scopes: ["project.write"], resolve: BRANCH },
+  // Clears a branch's rewind warning: a branch-limited principal only on its own branches.
+  "project.acknowledgeRewind": { scopes: ["project.write"], resolve: BRANCH, targets: ["branch"] },
   "project.acknowledgeSalvage": { scopes: ["project.write"], resolve: PROJECT },
   "project.events": { scopes: ["project.read"], resolve: PROJECT },
   "tx.get": { scopes: ["project.read"], resolve: PROJECT },
@@ -168,10 +194,24 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "fonts.fetch": { scopes: ["fonts.fetch"], resolve: PROJECT },
   "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
   "diagnostics.status": { scopes: ["diagnostics.read"] },
-  "diagnostics.export": { scopes: ["diagnostics.read"] },
-  "diagnostics.purge": { scopes: ["diagnostics.read"] },
-  "diagnostics.project": { scopes: ["diagnostics.read"], resolve: PROJECT },
-  "diagnostics.consent": { scopes: ["diagnostics.read"] },
+  // Redacted for a caller that is not a person; the content itself is human-only (Decision 22).
+  "diagnostics.export": {
+    scopes: ["diagnostics.read"],
+    escalate: (p) => (p.content === true ? ["diagnostics.admin"] : []),
+    unconfirmed: "readOnly",
+  },
+  "diagnostics.purge": { scopes: ["diagnostics.admin"] },
+  // Setting `never` stays open; clearing it binds every collaborator.
+  "diagnostics.project": {
+    scopes: ["diagnostics.read"],
+    resolve: PROJECT,
+    escalate: (p) => (p.collect === "default" ? ["diagnostics.admin"] : []),
+  },
+  // Every consent change needs a person; training on, the app's onboarding question alone.
+  "diagnostics.consent": {
+    scopes: ["diagnostics.admin"],
+    deviceOnly: (p) => p.purpose === "training" && p.value === "on",
+  },
   "diagnostics.record": { scopes: ["diagnostics.record"] },
   // Plugins and registries (sub-project 8A Decision 29). Reads and refreshes are open to any
   // principal with `plugin.read` (a refresh by a non-human installs nothing); the registries
@@ -217,6 +257,14 @@ export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFac
   const r = ruleOf(tag);
   const more = [...(r.escalate?.(payload as never, facts) ?? []), ...(facts.reopens === true ? (["project.write"] as const) : [])];
   return [...new Set(more)].filter((s) => !r.scopes.includes(s));
+}
+
+/**
+ * Whether a `console` principal's call must carry its connection's typed code: it needs a
+ * human-only scope and its rule does not opt out (`unconfirmed`).
+ */
+export function needsConfirmation(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): boolean {
+  return ruleOf(tag).unconfirmed === undefined && requiredScopes(tag, payload, facts).some((s) => HUMAN_ONLY.has(s));
 }
 
 /** Every scope `tag` needs for `payload`, given the resolved `facts`. */

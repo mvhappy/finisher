@@ -496,6 +496,7 @@ fn remove(
 
 /// Validates the unpacked plugin in `dir` (`source`: `registry`, the default, `bundled` or
 /// `dev`); resolves to the `ValidationReport` JSON. Offline: nothing is fetched or run.
+#[allow(clippy::disallowed_methods)] // a plugin source directory, never a library path
 #[napi(catch_unwind, ts_return_type = "Promise<string>")]
 pub fn validate_manifest<'e>(
     env: &'e Env,

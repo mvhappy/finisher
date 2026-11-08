@@ -679,14 +679,24 @@ fn read_only_commit_exits_4() {
     let human = run(&["project", "takeover", "--confirm"]);
     assert_error(&human, 7, "HUMAN_ONLY");
     assert_eq!(human.json["error"]["details"]["scope"], "project.confirm");
-    // ...and the console, a person, is refused too while the holder is alive.
+    // ...and the console, a person, is refused too while the holder is alive (with the typed
+    // code; without it the server asks for one first).
     let id = status["status"]["projectId"]
         .as_str()
         .or_else(|| status["projectId"].as_str())
         .expect("the status names the project")
         .to_string();
     let mut console = support::console::Console::open(&follower);
-    let exit = console.call(
+    let unconfirmed = console.call(
+        "project.takeover",
+        json!({ "projectId": id, "confirm": true }),
+    );
+    assert_eq!(
+        support::console::error_code(&unconfirmed).as_deref(),
+        Some("CONFIRMATION_REQUIRED"),
+        "{unconfirmed}"
+    );
+    let exit = console.confirmed(
         "project.takeover",
         json!({ "projectId": id, "confirm": true }),
     );

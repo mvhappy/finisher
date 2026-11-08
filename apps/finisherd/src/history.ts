@@ -29,7 +29,7 @@ export function requestJson(payload: object): string {
   return JSON.stringify(request);
 }
 
-/** A call's actor (`callMeta(headers, source)`) as the engine's `metaJson`: its `log.commit` actor. */
+/** A call's actor (`actorFor(principal, headers)`) as the engine's `metaJson`: its `log.commit` actor. */
 export function metaJson(meta: { readonly actor: object } | undefined): string | undefined {
   return meta === undefined ? undefined : JSON.stringify(meta);
 }

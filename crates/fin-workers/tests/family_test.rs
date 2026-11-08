@@ -1,5 +1,7 @@
 //! `fin-workers` with the `test` families, driven through the binary by a minimal host over
 //! pipes (5C-1 plan, Task 2).
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

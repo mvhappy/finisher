@@ -5,6 +5,9 @@
 //! limit refused is an `Oom`, not a crash. The outer-Job cases run in this test binary
 //! re-executed (`outer_child`), which first puts itself into a Job with that limit.
 
+// Tests drive the host and inspect job directories and process state by path; none is a
+// library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(windows)]
 
 mod host_support;

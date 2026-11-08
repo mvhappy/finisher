@@ -3,7 +3,9 @@
 import { Effect } from "effect";
 import { describe, expect, test } from "vitest";
 import { revokeSelf } from "../src/auth/handshake.ts";
-import { MAX_LIVE_TICKETS, Tickets } from "../src/auth/tickets.ts";
+import { revokeCredential } from "../src/auth/revoke.ts";
+import { ConnectionRegistry, Connections, type Link } from "../src/connections.ts";
+import { LOCAL_MINT_RATE, MAX_LIVE_TICKETS, MAX_TICKETS_LOCAL, MAX_TICKETS_PER_PRINCIPAL, MINT_RATE, Tickets } from "../src/auth/tickets.ts";
 import type { Audit } from "../src/control/audit.ts";
 import { CONSOLE, LOCAL, type Principal } from "../src/principal.ts";
 import { makeUpgradeCheck, type UpgradeResult } from "../src/upgrade.ts";
@@ -56,12 +58,96 @@ describe("tickets", () => {
     expect(t.take(ticket)).toEqual(LOCAL);
   });
 
-  test("a minting flood keeps at most MAX_LIVE_TICKETS", () => {
-    const t = new Tickets();
-    const first = t.mint(LOCAL).ticket;
-    for (let i = 0; i < MAX_LIVE_TICKETS + 10; i++) t.mint(LOCAL);
+  test("a principal's flood evicts only its own tickets (review of Task 6, finding 4)", () => {
+    const c = clock();
+    const t = new Tickets(c.now);
+    // The UI's ticket, minted first.
+    const ui = t.mint(CONSOLE).ticket;
+    const flooder = agent("01floodfloodfloodfloodfloo");
+    const firsts: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      c.advance(1000 / MINT_RATE.perSecond); // within the mint rate
+      const minted = t.mint(flooder).ticket;
+      if (i < 2) firsts.push(minted);
+    }
+    // At most 8 of its own, its oldest dropped; the UI's ticket untouched.
+    expect(t.size).toBe(MAX_TICKETS_PER_PRINCIPAL + 1);
+    for (const f of firsts) expect(t.take(f)).toBeUndefined();
+    expect(t.take(ui)).toEqual(CONSOLE);
+  });
+
+  test("minting is rate limited per principal", () => {
+    const c = clock();
+    const t = new Tickets(c.now);
+    const a = agent("01aaaaaaaaaaaaaaaaaaaaaaaa");
+    for (let i = 0; i < MINT_RATE.burst; i++) t.mint(a);
+    expect(() => t.mint(a)).toThrow(expect.objectContaining({ code: "TICKET_LIMIT", details: { reason: "rateLimited" } }));
+    // Another principal is not slowed down; the first refills at its rate.
+    expect(t.mint(LOCAL).ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    c.advance(1000 / MINT_RATE.perSecond);
+    expect(t.mint(a).ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  test("past the global cap a mint is refused, nobody's ticket dropped", () => {
+    const c = clock();
+    const t = new Tickets(c.now);
+    const kept: string[] = [];
+    for (let i = 0; t.size < MAX_LIVE_TICKETS; i++) kept.push(t.mint(agent(`01${String(i).padStart(24, "0")}`)).ticket);
+    expect(() => t.mint(LOCAL)).toThrow(expect.objectContaining({ code: "TICKET_LIMIT", details: { reason: "full" } }));
     expect(t.size).toBe(MAX_LIVE_TICKETS);
-    expect(t.take(first)).toBeUndefined();
+    expect(t.take(kept[0]!)).toBeDefined();
+    // Expired ones make room again.
+    c.advance(60_000);
+    expect(t.mint(LOCAL).ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  test("local tickets are limited per connection, under a cap for local as a whole (review of Task 7, M1)", () => {
+    const c = clock();
+    const t = new Tickets(c.now);
+    // One looping client spends its own burst; another `fin` is not slowed down.
+    for (let i = 0; i < MINT_RATE.burst; i++) t.mint(LOCAL, 30, "socket:1");
+    expect(() => t.mint(LOCAL, 30, "socket:1")).toThrow(expect.objectContaining({ code: "TICKET_LIMIT", details: { reason: "rateLimited" } }));
+    expect(t.mint(LOCAL, 30, "socket:2").ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    // Its own 8 live tickets at most: the newer drop its own oldest, never another connection's.
+    expect(t.size).toBe(MAX_TICKETS_PER_PRINCIPAL + 1);
+    const other = t.mint(LOCAL, 30, "socket:2").ticket;
+    for (let i = 0; i < 4; i++) {
+      c.advance(1000 / MINT_RATE.perSecond);
+      t.mint(LOCAL, 30, "socket:1");
+    }
+    expect(t.take(other)).toEqual(LOCAL);
+    // `local` as a whole: at most MAX_TICKETS_LOCAL live, then refused (no eviction).
+    const t2 = new Tickets(c.now);
+    let minted = 0;
+    let refused: unknown;
+    for (let conn = 0; conn < 20 && refused === undefined; conn++) {
+      for (let i = 0; i < MAX_TICKETS_PER_PRINCIPAL; i++) {
+        c.advance(1000 / LOCAL_MINT_RATE.perSecond);
+        try {
+          t2.mint(LOCAL, 60, `socket:${conn}`);
+          minted++;
+        } catch (e) {
+          refused = e;
+          break;
+        }
+      }
+    }
+    expect(minted).toBe(MAX_TICKETS_LOCAL);
+    expect(refused).toMatchObject({ code: "TICKET_LIMIT", details: { reason: "full" } });
+    // And a whole-`local` mint rate above the per-connection one.
+    const t3 = new Tickets(c.now);
+    let n = 0;
+    for (let conn = 0; conn < 10; conn++) {
+      for (let i = 0; i < MINT_RATE.burst; i++) {
+        try {
+          t3.mint(LOCAL, 1, `ws:${conn}`);
+          n++;
+        } catch {
+          break;
+        }
+      }
+    }
+    expect(n).toBe(LOCAL_MINT_RATE.burst);
   });
 
   test("dropWhere drops one principal's tickets", () => {
@@ -88,7 +174,7 @@ describe("upgrade check", () => {
   test("ticket_in_subprotocol_header", () => {
     const { tickets, req } = setup();
     const r = req(proto(tickets.mint(LOCAL).ticket));
-    expect(r).toEqual({ ok: true, principal: LOCAL, protocol: "finisher.v2" });
+    expect(r).toEqual({ ok: true, principal: LOCAL, owner: "local:", protocol: "finisher.v2" });
   });
 
   test("ticket_not_accepted_in_query", () => {
@@ -175,6 +261,28 @@ describe("auth.revokeSelf", () => {
     return { rows, audit: { append: (e: unknown) => void rows.push(e) } as unknown as Audit };
   };
 
+  /** Two transports; `links` records what happened to each connection. */
+  const transports = () => {
+    const links = new Map<string, string[]>();
+    const registry = new ConnectionRegistry();
+    const socket = registry.add(new Connections("socket", () => "/sd/run/fin.sock"));
+    const ws = registry.add(new Connections("ws", () => "ws://127.0.0.1:1"));
+    const open = (c: Connections, clientId: number, p: Principal) => {
+      const seen: string[] = [];
+      links.set(`${c.transport}:${clientId}`, seen);
+      const link: Link = {
+        close: () => void seen.push("close"),
+        closeAfterReply: () => void seen.push("closeAfterReply"),
+        terminate: (e) => {
+          seen.push(`terminate:${e.code}`);
+          c.close(clientId);
+        },
+      };
+      c.attach(clientId, link, p);
+    };
+    return { links, registry, socket, ws, open };
+  };
+
   test("revoke_self_needs_no_id: an agent credential revokes itself, never another", async () => {
     const { rows, audit: a } = audit();
     const revoked: string[] = [];
@@ -183,13 +291,21 @@ describe("auth.revokeSelf", () => {
     const other = agent("01otherotherotherotherothe");
     const mine = tickets.mint(self).ticket;
     const theirs = tickets.mint(other).ticket;
+    const { links, registry, socket, open } = transports();
+    open(socket, 1, self);
     let closed = 0;
     const out = await Effect.runPromise(
-      revokeSelf({ audit: a, revoke: (ref) => (revoked.push(`${ref.kind}:${ref.id}`), true) }, self, () => closed++, (p) => tickets.dropWhere(p)),
+      revokeSelf(
+        { audit: a, tickets, connections: registry, revoke: (ref) => (revoked.push(`${ref.kind}:${ref.id}`), true) },
+        self,
+        { transport: "socket", clientId: 1, closeAfterReply: () => closed++ },
+      ),
     );
     expect(out).toEqual({});
     expect(revoked).toEqual(["agent:01selfselfselfselfselfself"]);
+    // The caller gets its answer, then its connection closes.
     expect(closed).toBe(1);
+    expect(links.get("socket:1")).toEqual([]);
     expect(tickets.take(mine)).toBeUndefined();
     expect(tickets.take(theirs)).toEqual(other);
     expect(rows).toEqual([
@@ -198,15 +314,89 @@ describe("auth.revokeSelf", () => {
         principal: { kind: "agent", id: self.id },
         credentialKind: "agent",
         outcome: "ok",
-        details: { rpc: "auth.revokeSelf", reason: "self", credentialId: self.id },
+        details: { rpc: "auth.revokeSelf", reason: "self", count: 0, credentialId: self.id },
       },
     ]);
+  });
+
+  test("revocation_reaches_tickets_and_every_live_connection (review of Task 6, finding 3)", async () => {
+    const { audit: a } = audit();
+    const tickets = new Tickets();
+    const self = agent("01selfselfselfselfselfself");
+    const other = agent("01otherotherotherotherothe");
+    for (let i = 0; i < 3; i++) tickets.mint(self);
+    const theirs = tickets.mint(other).ticket;
+    const { links, registry, socket, ws, open } = transports();
+    // The caller, another socket connection of the same credential (a live stream there), one
+    // of its WebSockets, and someone else's connections.
+    open(socket, 1, self);
+    open(socket, 2, self);
+    open(ws, 1, self);
+    open(socket, 3, other);
+    open(ws, 2, LOCAL);
+    await Effect.runPromise(
+      revokeSelf({ audit: a, tickets, connections: registry, revoke: () => true }, self, { transport: "socket", clientId: 1, closeAfterReply: () => undefined }),
+    );
+    expect(links.get("socket:2")).toEqual(["terminate:CREDENTIAL_REVOKED"]);
+    expect(links.get("ws:1")).toEqual(["terminate:CREDENTIAL_REVOKED"]);
+    expect([links.get("socket:1"), links.get("socket:3"), links.get("ws:2")]).toEqual([[], [], []]);
+    expect(tickets.size).toBe(1);
+    expect(tickets.take(theirs)).toEqual(other);
+    // The same path for the owner's revoke (Task 9): every connection, no exception.
+    open(socket, 4, other);
+    const report = revokeCredential({ audit: a, tickets, connections: registry }, { kind: "agent", id: other.id }, { rpc: "auth.credential.revoke", reason: "owner" });
+    expect(report).toEqual({ revoked: false, tickets: 0, connections: 2 });
+    expect(links.get("socket:3")).toEqual(["terminate:CREDENTIAL_REVOKED"]);
+    expect(links.get("socket:4")).toEqual(["terminate:CREDENTIAL_REVOKED"]);
+  });
+
+  test("a revoked credential cannot come back through a ticket taken before, nor run another request (review of Task 7, M3)", async () => {
+    const { audit: a } = audit();
+    const tickets = new Tickets();
+    const self = agent("01selfselfselfselfselfself");
+    const { links, registry, socket, ws, open } = transports();
+    open(socket, 1, self);
+    expect(socket.principalOf(1)).toEqual(self);
+    revokeCredential({ audit: a, tickets, connections: registry }, { kind: "agent", id: self.id }, { rpc: "auth.credential.revoke", reason: "owner" });
+    // A WebSocket whose ticket was taken before the revocation registers after it: closed at
+    // once, and anonymous meanwhile.
+    open(ws, 7, self);
+    expect(links.get("ws:7")).toEqual(["close"]);
+    expect(ws.principalOf(7).kind).toBe("anonymous");
+    // A connection the sweep missed runs nothing more: every request re-checks.
+    const missed = new Connections("socket", () => "/sd/run/fin.sock");
+    registry.add(missed);
+    missed.attach(9, { close: () => undefined, closeAfterReply: () => undefined, terminate: () => undefined }, LOCAL);
+    const c = missed.get(9)!;
+    c.principal = self;
+    expect(missed.principalOf(9).kind).toBe("anonymous");
+    expect(missed.revoked(9)).toBe(true);
+    // Other credentials and `local` are untouched.
+    open(socket, 2, agent("01otherotherotherotherothe"));
+    open(socket, 3, LOCAL);
+    expect(socket.principalOf(2).kind).toBe("agent");
+    expect(socket.principalOf(3)).toEqual(LOCAL);
+  });
+
+  test("without a credential store (5A) a revocation is still audited", async () => {
+    const { rows, audit: a } = audit();
+    const { registry } = transports();
+    const self = agent("01selfselfselfselfselfself");
+    await Effect.runPromise(
+      revokeSelf({ audit: a, tickets: new Tickets(), connections: registry }, self, { transport: "socket", clientId: 1, closeAfterReply: () => undefined }),
+    );
+    expect(rows).toEqual([expect.objectContaining({ kind: "credential.revoke", details: expect.objectContaining({ rpc: "auth.revokeSelf", reason: "self" }) })]);
+    // A store that says it was not live: nothing to audit.
+    const { rows: none, audit: b } = audit();
+    revokeCredential({ audit: b, tickets: new Tickets(), connections: registry, revoke: () => false }, { kind: "agent", id: self.id }, { rpc: "auth.credential.revoke", reason: "owner" });
+    expect(none).toEqual([]);
   });
 
   test("local and console have nothing of their own to revoke", async () => {
     const { audit: a } = audit();
     for (const p of [LOCAL, CONSOLE]) {
-      const e = await Effect.runPromise(Effect.flip(revokeSelf({ audit: a, revoke: () => true }, p, () => undefined, () => undefined)));
+      const deps = { audit: a, tickets: new Tickets(), connections: new ConnectionRegistry(), revoke: () => true };
+      const e = await Effect.runPromise(Effect.flip(revokeSelf(deps, p, { transport: "socket", clientId: 1, closeAfterReply: () => undefined })));
       expect(e.code).toBe("INVALID_REQUEST");
       expect(e.fix).not.toMatch(/`|\bfin(isherd)? [a-z]/);
     }

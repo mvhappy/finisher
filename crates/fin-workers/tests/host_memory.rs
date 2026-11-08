@@ -2,6 +2,9 @@
 //! process groups the host samples every limited group and kills it when the sum of its
 //! processes passes the limit; delegated cgroups leave it to the kernel (`memory.max`).
 
+// Tests drive the host and inspect job directories and process state by path; none is a
+// library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod host_support;

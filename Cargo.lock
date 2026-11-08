@@ -727,6 +727,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-library"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "blake3",
+ "fin-jobs",
+ "fin-library",
+ "fin-probe",
+ "libc",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fin-media"
 version = "0.0.0"
 dependencies = [
@@ -747,6 +766,7 @@ dependencies = [
  "fin-core",
  "fin-fonts",
  "fin-journal",
+ "fin-library",
  "fin-plugin-api",
  "fin-probe",
  "fin-registry",
@@ -799,12 +819,14 @@ dependencies = [
  "fin-testfonts",
  "fin-text",
  "imagesize",
+ "libc",
  "roxmltree",
  "schemars",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "windows-sys 0.61.2",
  "zip",
 ]
 
@@ -856,6 +878,7 @@ dependencies = [
  "fin-fonts",
  "fin-jobs",
  "fin-journal",
+ "fin-library",
  "fin-media",
  "fin-plugin-api",
  "fin-probe",
@@ -929,6 +952,8 @@ dependencies = [
  "fin-core",
  "fin-jobhost",
  "fin-jobs",
+ "fin-library",
+ "fin-probe",
  "fin-workers",
  "libc",
  "serde",

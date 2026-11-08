@@ -171,6 +171,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "clear",
         "color",
         "confirm",
+        "content",
         "create",
         "curve",
         "detail",
@@ -229,11 +230,14 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
 
 /// `finisherd` RPC methods (`@finisher/contracts` `FinRpcs`), plus the `diagnostics.*` RPCs of
 /// Task D4, the handshake's `auth.prove` (5A Task 3) and `auth.ticket`, `auth.whoami`,
-/// `auth.revokeSelf` (5A Task 6), and the plugin and registry RPCs (8A Tasks 9a and 9b).
+/// `auth.revokeSelf` (5A Task 6), `console.challenge` (5A Task 7), `server.status`, `server.stop`
+/// and `auth.audit.list|purge` (5A Task 8), and the plugin and registry RPCs (8A Tasks 9a and 9b).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
         "asset.probe",
+        "auth.audit.list",
+        "auth.audit.purge",
         "auth.prove",
         "auth.revokeSelf",
         "auth.ticket",
@@ -241,6 +245,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "branch.create",
         "branch.list",
         "branch.set",
+        "console.challenge",
         "diagnostics.consent",
         "diagnostics.export",
         "diagnostics.project",
@@ -287,6 +292,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "registry.remove",
         "registry.status",
         "server.hello",
+        "server.status",
+        "server.stop",
         "snapshot.get",
         "tx.commit",
         "tx.get",

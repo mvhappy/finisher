@@ -61,6 +61,7 @@ pub fn make_private_dir(path: String) -> Result<()> {
 mod imp {
     use super::*;
 
+    #[allow(clippy::disallowed_methods)] // the server's private directories
     pub fn check(path: &str) -> Result<PrivateDirReport> {
         std::fs::metadata(path).map_err(|e| io_error(path, "inspect", &e))?;
         Ok(PrivateDirReport {

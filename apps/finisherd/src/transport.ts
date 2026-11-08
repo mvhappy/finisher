@@ -9,7 +9,6 @@ import { RpcSerialization, RpcServer } from "effect/rpc";
 import { SocketServer } from "effect/socket/SocketServer";
 import { ServerStartError, startFailure } from "./config.ts";
 import { type Connections, ConnectionsTag } from "./connections.ts";
-import { RpcSource, type Source } from "./diagnostics.ts";
 import { HandlersLive } from "./handlers.ts";
 import { makeFinProtocol } from "./protocol.ts";
 
@@ -120,18 +119,17 @@ export function quietPeerClose(server: SocketServer["Service"]): SocketServer["S
 
 /**
  * `FinRpcs` served over one `SocketServer` with NDJSON framing (`protocol.ts`), by handlers of its
- * own that know the transport's `source` (plan D, Decision 24: the local socket is `fin`, the
- * WebSocket `ui`) and its `connections` (5A Decision 12). `fresh`: layers are memoized by
- * reference, so a shared `HandlersLive` would serve both transports with the first one's source.
+ * own that know the transport's `connections` (5A Decision 12); sources and actors come from each
+ * call's principal (Decision 27), not from the transport. `fresh`: layers are memoized by
+ * reference, so a shared `HandlersLive` would serve both transports with the first one's
+ * connections.
  */
-export function serveRpc(server: SocketServer["Service"], source: Source, connections: Connections) {
+export function serveRpc(server: SocketServer["Service"], connections: Connections) {
   return RpcServer.layer(FinRpcs).pipe(
-    Layer.provide(
-      Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.mergeAll(Layer.succeed(RpcSource, source), Layer.succeed(ConnectionsTag, connections)))),
-    ),
+    Layer.provide(Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.succeed(ConnectionsTag, connections)))),
     // Each transport needs its own protocol.
     Layer.provide(Layer.effect(RpcServer.Protocol)(makeFinProtocol(FinRpcs, connections))),
-    Layer.provide(Layer.succeed(SocketServer, source === "fin" ? quietPeerClose(server) : server)),
+    Layer.provide(Layer.succeed(SocketServer, connections.transport === "ws" ? server : quietPeerClose(server))),
     Layer.provide(RpcSerialization.layerNdjson),
   );
 }

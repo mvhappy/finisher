@@ -52,12 +52,19 @@ export interface Link {
   closeAfterReply(): void;
   /** Answers every open request with `error`, then closes. */
   terminate(error: FinError): void;
+  /** Runs `f` once the reply being written now has been sent (`server.stop`). */
+  afterReply?(f: () => void): void;
 }
+
+/** `<kind>:<id>` of a principal (revocation is by credential). */
+const credentialKey = (p: { readonly kind: string; readonly id: string }) => `${p.kind}:${p.id}`;
 
 /** The connections of one transport, by Effect RPC client id. */
 export class Connections {
   readonly #byId = new Map<number, Connection>();
   readonly #links = new Map<number, Link>();
+  /** Whether a principal's credential was revoked (`ConnectionRegistry.add` sets it). */
+  #revoked: (p: Principal) => boolean = () => false;
 
   /** `initial`: the principal a new connection carries unless `attach` names one (`anonymous`). */
   readonly transport: Transport;
@@ -92,7 +99,24 @@ export class Connections {
     const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal, failures: 0 };
     this.#byId.set(clientId, c);
     this.#links.set(clientId, link);
+    // A ticket taken before its credential was revoked must not bring a connection in after
+    // the revocation swept the live ones (review of Task 7, M3).
+    if (this.#revoked(principal)) {
+      c.principal = ANONYMOUS;
+      link.close();
+    }
     return c;
+  }
+
+  /** Sets how this transport learns of revoked credentials (`ConnectionRegistry`). */
+  useRevocations(revoked: (p: Principal) => boolean): void {
+    this.#revoked = revoked;
+  }
+
+  /** Whether the connection proved a credential that has since been revoked. */
+  revoked(clientId: number): boolean {
+    const c = this.#byId.get(clientId);
+    return c !== undefined && this.#revoked(c.principal);
   }
 
   /** Drops the connection (on disconnect). */
@@ -130,17 +154,30 @@ export class Connections {
    * proved), and `anonymous` for an id that is not live (fail closed).
    */
   principalOf(clientId: number): Principal {
-    return this.#byId.get(clientId)?.principal ?? ANONYMOUS;
+    const p = this.#byId.get(clientId)?.principal ?? ANONYMOUS;
+    // Re-checked on every request: a revoked credential runs nothing more (M3).
+    return this.#revoked(p) ? ANONYMOUS : p;
   }
 }
 
 /** Every transport's connections, for status counts and revocation. */
 export class ConnectionRegistry {
   readonly #all: Connections[] = [];
+  /**
+   * Credentials revoked while this server runs (`<kind>:<id>`), checked when a connection
+   * registers and on every request; Task 9's store answers for earlier ones at the handshake.
+   */
+  readonly #revoked = new Set<string>();
 
   add(c: Connections): Connections {
+    c.useRevocations((p) => (p.kind === "agent" || p.kind === "mcp" || p.kind === "device") && this.#revoked.has(credentialKey(p)));
     this.#all.push(c);
     return c;
+  }
+
+  /** Marks a credential revoked for every transport, before its live connections are ended. */
+  revoke(ref: { readonly kind: string; readonly id: string }): void {
+    this.#revoked.add(credentialKey(ref));
   }
 
   closeWhere(pred: (c: Connection) => boolean, error: FinError): number {
@@ -153,6 +190,9 @@ export class ConnectionRegistry {
     return out;
   }
 }
+
+/** Every transport's connections (revocation reaches them all). */
+export class ConnectionRegistryTag extends Context.Service<ConnectionRegistryTag, ConnectionRegistry>()("finisherd/ConnectionRegistry") {}
 
 /** The connections of the transport a handler serves (provided per transport, `transport.ts`). */
 export class ConnectionsTag extends Context.Service<ConnectionsTag, Connections>()("finisherd/Connections") {}

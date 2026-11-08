@@ -72,6 +72,10 @@ pub struct OpenOptions {
     /// [`Store::set_measurer`] changes it later). `None` measures nothing. Replay (import,
     /// rebuild) never measures.
     pub measurer: Option<Arc<dyn TextMeasurer>>,
+    /// The project the caller checked this folder holds (`finisherd`'s chain read
+    /// `finisher.project.json` before authorising): another id is `PROJECT_NOT_FOUND {reason:
+    /// changed}` before anything is rebuilt, locked or leased (review of 5A Task 6, finding 6).
+    pub expect_id: Option<String>,
 }
 
 impl std::fmt::Debug for OpenOptions {
@@ -81,6 +85,7 @@ impl std::fmt::Debug for OpenOptions {
             .field("poll", &self.poll)
             .field("relocate", &self.relocate)
             .field("measurer", &self.measurer.as_ref().map(|m| m.fingerprint()))
+            .field("expect_id", &self.expect_id)
             .finish()
     }
 }
@@ -118,6 +123,17 @@ impl Store {
         opts: OpenOptions,
     ) -> Result<Store, StoreError> {
         let file = read_project_file(project_dir)?;
+        if let Some(want) = &opts.expect_id
+            && *want != file.id
+        {
+            return Err(CoreError::new(
+                "PROJECT_NOT_FOUND",
+                format!("the folder {} no longer holds project {want}", project_dir.display()),
+            )
+            .with_details(json!({ "dir": project_dir.to_string_lossy(), "projectId": want, "reason": "changed" }))
+            .with_fix("open the project by its folder again")
+            .into());
+        }
         let db_path = db_path(server_data, &file.id);
         let identity = server_identity(server_data)?;
         let kind = storage_kind::resolve(project_dir, file.storage_override.as_ref());

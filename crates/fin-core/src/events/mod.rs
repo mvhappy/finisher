@@ -115,8 +115,10 @@ impl<'a> EnvelopeRef<'a> {
     }
 }
 
-/// Which program emitted an entry. The server sets it from the transport (local socket →
-/// `fin`, WebSocket → `ui`), never from the payload.
+/// Which program emitted an entry. The server sets it from the connection's principal (5A
+/// Decision 27: `local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` →
+/// `ui`), never from the payload. `console`, a person at the server, sends no events of its
+/// own; `mcp`, the MCP adapter (D16), sends the kinds `fin` does.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
 )]
@@ -127,6 +129,8 @@ pub enum Source {
     FinNode,
     Ui,
     Agent,
+    Console,
+    Mcp,
 }
 
 /// What an entry is about: the project, branch and transaction it joins the op log on, the

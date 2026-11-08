@@ -1,6 +1,8 @@
-//! A console-proved RPC helper (plan 5A Task 5): the human-only operations (`project.takeover
-//! {confirm: true}`, `project.open {relocate: true}`) answer `HUMAN_ONLY` to `fin`, so tests that
-//! need them talk to the server as `console`, the way `finisherd <command>` will (Task 8).
+//! A console-proved RPC helper (plan 5A Tasks 5 and 7): the human-only operations
+//! (`project.takeover {confirm: true}`, `project.open {relocate: true}`, consent changes,
+//! purges, `diagnostics.project {collect: default}`, content exports) answer `HUMAN_ONLY` to
+//! `fin`, so tests that need them talk to the server as `console`, the way `finisherd <command>`
+//! will (Task 8). The mutating ones need the connection's typed challenge: [`Console::confirmed`].
 
 use std::io::{BufRead, BufReader, Write};
 use std::time::Duration;
@@ -56,6 +58,25 @@ impl Console {
                 return f["exit"].clone();
             }
         }
+    }
+}
+
+impl Console {
+    /// `tag` as the console sends a mutating human-only call (Decision 30): a fresh
+    /// `console.challenge` of this connection, its code typed back in `challenge`.
+    pub fn confirmed(&mut self, tag: &str, payload: Value) -> Value {
+        let challenge = self.call("console.challenge", json!({}));
+        assert_eq!(challenge["_tag"], "Success", "{challenge}");
+        let mut payload = payload;
+        payload["challenge"] = challenge["value"]["code"].clone();
+        self.call(tag, payload)
+    }
+
+    /// [`Console::confirmed`], which must succeed: its value.
+    pub fn confirmed_ok(&mut self, tag: &str, payload: Value) -> Value {
+        let exit = self.confirmed(tag, payload);
+        assert_eq!(exit["_tag"], "Success", "{tag}: {exit}");
+        exit["value"].clone()
     }
 }
 

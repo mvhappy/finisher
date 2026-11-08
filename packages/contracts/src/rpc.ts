@@ -19,8 +19,16 @@ import {
   AuthTicketPayload,
   AuthTicketSuccess,
   AuthWhoamiSuccess,
+  AuditListPayload,
+  AuditListSuccess,
+  AuditPurgePayload,
+  AuditPurgeSuccess,
+  ChallengeField,
+  ConsoleChallengeSuccess,
   ServerHelloPayload,
   ServerHelloSuccess,
+  ServerStatusSuccess,
+  ServerStopSuccess,
 } from "./auth.ts";
 import { FinError } from "./errors.ts";
 import {
@@ -126,6 +134,8 @@ export const ProjectCreatePayload = Schema.Struct({
 export const ProjectOpenPayload = Schema.Struct({
   dir: Schema.String,
   relocate: Schema.optional(Schema.Boolean),
+  /** The console's typed confirmation of a relocation (5A Decision 30). */
+  challenge: ChallengeField,
 });
 export const ProjectRefSuccess = Schema.Struct({
   projectId: Schema.String,
@@ -229,6 +239,8 @@ export const ProjectTakeoverPayload = Schema.Struct({
   projectId: Schema.String,
   /** Needed on sync folders, which never take over without a person's say-so. */
   confirm: Schema.Boolean,
+  /** The console's typed confirmation of `confirm: true` (5A Decision 30). */
+  challenge: ChallengeField,
 });
 export const ProjectAcknowledgeRewindPayload = Schema.Struct({
   projectId: Schema.String,
@@ -375,6 +387,12 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("auth.ticket", { payload: AuthTicketPayload, success: AuthTicketSuccess, error: FinError }),
   Rpc.make("auth.whoami", { payload: Schema.Struct({}), success: AuthWhoamiSuccess, error: FinError }),
   Rpc.make("auth.revokeSelf", { payload: Schema.Struct({}), success: Schema.Struct({}), error: FinError }),
+  Rpc.make("console.challenge", { payload: Schema.Struct({}), success: ConsoleChallengeSuccess, error: FinError }),
+  // 5A Task 8: the server's own state and graceful stop; the owner's audit log.
+  Rpc.make("server.status", { payload: Schema.Struct({}), success: ServerStatusSuccess, error: FinError }),
+  Rpc.make("server.stop", { payload: Schema.Struct({}), success: ServerStopSuccess, error: FinError }),
+  Rpc.make("auth.audit.list", { payload: AuditListPayload, success: AuditListSuccess, error: FinError }),
+  Rpc.make("auth.audit.purge", { payload: AuditPurgePayload, success: AuditPurgeSuccess, error: FinError }),
   Rpc.make("project.create", {
     payload: ProjectCreatePayload,
     success: ProjectRefSuccess,

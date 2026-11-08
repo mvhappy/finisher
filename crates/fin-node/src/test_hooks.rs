@@ -246,6 +246,7 @@ pub fn write_fixture_for_test(kind: String, path: String) -> Result<()> {
 
 /// Packs the unpacked plugin in `src` into `out` (`fin-registry`'s reproducible packer, the
 /// manifest's executables marked); resolves to the archive's SHA-256.
+#[allow(clippy::disallowed_methods)] // a test plugin source directory (test-hooks builds only)
 #[napi(catch_unwind)]
 pub fn pack_plugin_for_test(src: String, out: String) -> Result<String> {
     let src = Path::new(&src);
