@@ -15,6 +15,11 @@ pub struct Image {
 
 impl Image {
     pub fn create(dir: &Path, fs_name: &str) -> Option<Image> {
+        Self::create_at(dir, fs_name, &dir.join("m"))
+    }
+
+    /// The image kept in `dir`, attached at `mnt` (created when missing).
+    pub fn create_at(dir: &Path, fs_name: &str, mnt: &Path) -> Option<Image> {
         let dmg = dir.join("t.dmg");
         run(
             "hdiutil",
@@ -31,11 +36,10 @@ impl Image {
                 dmg.to_str()?,
             ],
         )?;
-        let mnt = dir.join("m");
-        fs::create_dir_all(&mnt).ok()?;
+        fs::create_dir_all(mnt).ok()?;
         let mut img = Image {
             dmg,
-            mnt,
+            mnt: mnt.to_path_buf(),
             attached: false,
         };
         img.attach().then_some(img)

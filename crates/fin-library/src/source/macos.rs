@@ -11,6 +11,9 @@
 //! of the fixed area from the name's `attrreference_t` (the name is the only variable-length
 //! attribute, so its bytes start where the fixed area ends) and reads `ATTR_FILE_DATALENGTH`
 //! as its last 8 bytes and `ATTR_DIR_MOUNTSTATUS` as the first 4 after `ATTR_CMN_FILEID`.
+//!
+//! **Mount points** are the one exception to "nothing per entry": their record describes the
+//! covered directory, so each is re-stat'ed ([`mounted`]).
 
 use std::io;
 use std::mem::MaybeUninit;
@@ -198,12 +201,38 @@ pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Listing> {
     Listing::collect(
         records,
         |r| match r {
+            Record::Entry(e) if e.mount_root && e.entry_type == EntryType::Dir && !e.automount => {
+                mounted(dir, e)
+            }
             Record::Entry(e) => Ok(Some(e)),
             Record::Gone => Ok(None),
             Record::Failed(e) => Err(e),
         },
         progress,
     )
+}
+
+/// A mount point's entry as the mounted volume's root. `getattrlistbulk` describes the
+/// covered directory (its device is the parent's, its id and mtime the hidden directory's),
+/// while `fstatat` of the name, like a poll's [`stat_child`] and Linux's `statx`, gives the
+/// mounted root: re-stat it so the row's device, id and mtime are the volume's. Metadata
+/// only; an automount trigger never reaches here.
+fn mounted(dir: &OwnedFd, mut e: RawEntry) -> io::Result<Option<RawEntry>> {
+    let c = super::unix::cname(&e.name)?;
+    let st = match lstat_at(dir.as_raw_fd(), &c) {
+        Ok(st) => st,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if st.st_mode & libc::S_IFMT != libc::S_IFDIR {
+        // Replaced since the listing: the next listing tells.
+        return Ok(Some(e));
+    }
+    e.dev = Some(i64::from(st.st_dev).to_string());
+    e.file_id = Some(ino_id(st.st_ino));
+    e.mtime_ns = ns(st.st_mtime, st.st_mtime_nsec);
+    e.attrs = Attrs::Macos { flags: st.st_flags };
+    Ok(Some(e))
 }
 
 /// One entry of `dir` by name, from `fstatat(AT_SYMLINK_NOFOLLOW)` (no listing, nothing

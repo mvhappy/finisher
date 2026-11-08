@@ -4,6 +4,8 @@
 #![cfg(unix)]
 
 mod support;
+#[cfg(target_os = "macos")]
+mod walk_util;
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -290,7 +292,94 @@ mod linux {
 #[cfg(target_os = "macos")]
 mod mac {
     use super::*;
-    use support::image::image;
+    use fin_library::source::NativeSource;
+    use fin_library::{EntryType, Expect, OpenError, RawRel, Source, open_for_read};
+    use support::image::{Image, image};
+    use support::{expect_of, rel};
+
+    /// A disk image attached below a root (a nested mount): listed as a mount root with its
+    /// own device, walked with its volume, and crossed by the opener, which checks the handle
+    /// against the row's device (another is `Changed`; none, off the root's mount, `Escapes`).
+    #[test]
+    fn nested_mount_reported_and_crossed() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("top.mov"), b"top").unwrap();
+        let Some(img) = Image::create_at(t.path(), "APFS", &root.join("sub")) else {
+            skip(
+                "mac::nested_mount_reported_and_crossed",
+                "hdiutil could not create and attach a disk image here",
+            );
+            return;
+        };
+        fs::write(img.mnt.join("x.mov"), b"x").unwrap();
+
+        let src = NativeSource::new(&root);
+        let d = src.open_dir(&RawRel::root()).unwrap();
+        let entries = src.read_dir(&d).unwrap();
+        let sub = entries.iter().find(|e| e.name == b"sub").unwrap();
+        let top = entries.iter().find(|e| e.name == b"top.mov").unwrap();
+        assert!(sub.mount_root && sub.entry_type == EntryType::Dir);
+        assert_ne!(sub.dev, top.dev, "the image is another device");
+        let x = expect_of(&root.join("sub/x.mov"));
+        let top_x = expect_of(&root.join("top.mov"));
+        assert_eq!(x.dev, sub.dev, "the row's device is the listing's");
+        assert_eq!(top_x.dev, top.dev);
+
+        // The mount point's row is the mounted root, as a stat sees it (not the covered
+        // directory `getattrlistbulk` describes).
+        let m = fs::symlink_metadata(root.join("sub")).unwrap();
+        assert_eq!(sub.file_id, Some(m.ino().to_be_bytes().to_vec()));
+        assert_eq!(sub.mtime_ns, m.mtime() * 1_000_000_000 + m.mtime_nsec());
+        assert_eq!(src.stat_child(&d, b"sub").unwrap().as_ref(), Some(sub));
+
+        let src_of =
+            || -> std::sync::Arc<dyn Source> { std::sync::Arc::new(NativeSource::new(&root)) };
+        let opts = walk_util::opts(4);
+        let (r, batches) = walk_util::run(src_of(), walk_util::full(1, None), &opts);
+        r.unwrap();
+        let dones = walk_util::dones(&batches);
+        let rows = walk_util::entries(&batches);
+        let done = dones.iter().find(|d| d.dir == rel(&[b"sub"])).unwrap();
+        assert!(done.complete, "{done:?}");
+        assert!(
+            done.volume.as_ref().is_some_and(|v| v.mount_root),
+            "{done:?}"
+        );
+        let row = rows.iter().find(|e| e.name == b"x.mov").unwrap();
+        assert_eq!(row.dev, x.dev, "the walked row carries the nested device");
+
+        let xr = rel(&[b"sub", b"x.mov"]);
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut open_for_read(&root, &xr, &x, false).unwrap(), &mut got)
+            .unwrap();
+        assert_eq!(got, b"x");
+        let other = Expect {
+            dev: top.dev.clone(),
+            ..x.clone()
+        };
+        let r = open_for_read(&root, &xr, &other, false);
+        assert!(matches!(r, Err(OpenError::Changed)), "{r:?}");
+        let no_dev = |e: &Expect| Expect {
+            dev: None,
+            ..e.clone()
+        };
+        let r = open_for_read(&root, &xr, &no_dev(&x), false);
+        assert!(matches!(r, Err(OpenError::Escapes)), "{r:?}");
+        let topr = rel(&[b"top.mov"]);
+        assert!(open_for_read(&root, &topr, &no_dev(&top_x), false).is_ok());
+
+        // A poll after the root changed re-lists the root only: the mount point's listed
+        // mtime is the one its own listing recorded.
+        let known = walk_util::known_from(&batches, 1);
+        fs::write(root.join("new.mov"), b"n").unwrap();
+        let later = std::time::SystemTime::now() + Duration::from_secs(5);
+        fs::File::open(&root).unwrap().set_modified(later).unwrap();
+        let (r, polled) = walk_util::run(src_of(), fin_library::WalkMode::Poll { known }, &opts);
+        assert_eq!(r.unwrap().listed, 1, "{:?}", walk_util::done_paths(&polled));
+        drop(img);
+    }
 
     #[test]
     fn disk_image_detached_is_offline() {
