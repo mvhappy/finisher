@@ -377,6 +377,29 @@ fn pathname_sockets_are_a_residual_until_seccomp() {
 }
 
 #[test]
+fn udp_is_a_residual_until_seccomp() {
+    let Some(_) = abi("udp_is_a_residual_until_seccomp") else {
+        return;
+    };
+    // Recorded residual (plan Task 4, deferred): Landlock handles TCP only, so a `hook` (network
+    // "none") and an `agent` (loopback limited) still send UDP, to loopback services too. The
+    // datagram is observed arriving; when the seccomp filter is wired in, this must fail.
+    let t = Tree::new();
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let port = sock.local_addr().unwrap().port().to_string();
+    for req in [t.hook(None), t.agent(Harness::Codex, None)] {
+        assert_eq!(
+            launched(&req, &op(&["send-udp", &port])),
+            Outcome::Ran(None)
+        );
+        let mut b = [0u8; 4];
+        assert_eq!(sock.recv(&mut b).unwrap(), 1);
+    }
+}
+
+#[test]
 fn git_works_under_the_session_configuration() {
     let Some(_) = abi("git_works_under_the_session_configuration") else {
         return;

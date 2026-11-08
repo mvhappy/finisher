@@ -15,8 +15,16 @@
 //! offered anywhere but the descriptor; [`EXIT_UNAVAILABLE`] when the request is unreadable or
 //! invalid, or the mechanism is enabled but the policy cannot be applied
 //! (`SANDBOX_UNAVAILABLE`); 126/127 when the program cannot be started (refused, or missing).
-//! Each writes one JSON line on stderr. Where the mechanism is disabled (F2), the program runs
-//! unconfined: `finisherd` already reports that from `sandboxStatus()`.
+//! Each writes one JSON line on stderr. Where Landlock is disabled (F2,
+//! `Disabled {landlockDisabled}`), the program runs unconfined: `finisherd` already reports
+//! that from `sandboxStatus()`. Any other `Disabled` reason (macOS and Windows until Tasks 8
+//! and 9) is refused with exit 78, so `finisherd` must not start programs through the launcher
+//! on those OSes before then.
+//!
+//! The descriptor is read to end of file: the parent must close its copy of the pipe's write
+//! end in the child (and its own after writing), or the launcher waits forever.
+
+use std::ffi::OsString;
 
 use serde::{Deserialize, Serialize};
 
@@ -70,16 +78,23 @@ impl LaunchRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
     pub policy_fd: i32,
-    pub argv: Vec<String>,
+    /// The program and its arguments, as given (they need not be UTF-8).
+    pub argv: Vec<OsString>,
 }
 
 /// Parses `--policy-fd <n> -- <program> [args…]`. Nothing else is accepted before `--`, so a
 /// policy cannot be passed on argv; `<n>` must be 3 or above (not stdio).
-pub fn parse_args(args: &[String]) -> Result<Args, String> {
+pub fn parse_args(args: &[OsString]) -> Result<Args, String> {
     let mut fd = None;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
+        let Some(flag) = args[i].to_str() else {
+            return Err(format!(
+                "unexpected {:?}: the request comes only through --policy-fd",
+                args[i]
+            ));
+        };
+        match flag {
             "--" => {
                 let argv = args[i + 1..].to_vec();
                 let policy_fd = fd.ok_or("--policy-fd is required")?;
@@ -91,6 +106,7 @@ pub fn parse_args(args: &[String]) -> Result<Args, String> {
             "--policy-fd" if fd.is_none() => {
                 let n: i32 = args
                     .get(i + 1)
+                    .and_then(|n| n.to_str())
                     .and_then(|n| n.parse().ok())
                     .ok_or("--policy-fd needs a descriptor number")?;
                 if n < 3 {
@@ -138,8 +154,8 @@ pub fn failure_line(code: &str, profile: Option<Profile>, need: &str) -> String 
 mod tests {
     use super::*;
 
-    fn s(v: &[&str]) -> Vec<String> {
-        v.iter().map(|x| x.to_string()).collect()
+    fn s(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
     }
 
     #[test]
@@ -162,6 +178,16 @@ mod tests {
         ] {
             assert!(parse_args(&s(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn program_arguments_need_not_be_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let odd = std::ffi::OsStr::from_bytes(b"\xff").to_os_string();
+        let mut a = s(&["--policy-fd", "3", "--", "echo"]);
+        a.push(odd.clone());
+        assert_eq!(parse_args(&a).unwrap().argv[1], odd);
     }
 
     #[test]

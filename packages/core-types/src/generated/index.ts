@@ -1798,7 +1798,7 @@ export type JobHostQos = "normal" | "utility" | "background";
  */
 export type JobSpawnProfile = "worker" | "plugin";
 /**
- * `bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.
+ * `bundled`: `fin-workers`, `fin-analyze` or `fin-sandbox-exec` in `binaryDir`; `path`: plugin processes only.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobSpawnProgram".

@@ -15,7 +15,7 @@ fn fail(exit: i32, code: &str, profile: Option<Profile>, need: &str) -> ! {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let args = launch::parse_args(&args).unwrap_or_else(|e| fail(EXIT_USAGE, "USAGE", None, &e));
     if let Some(v) = launch::refused_env(|v| std::env::var_os(v).is_some()) {
         fail(
@@ -30,6 +30,11 @@ fn main() {
     let (req, policy) = launch::read_request(&bytes)
         .unwrap_or_else(|e| fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", None, &e));
     let profile = Some(req.profile());
+    // Before the restriction (Landlock does not reach descriptors opened before it), in every
+    // mode: the program inherits its standard streams and nothing else.
+    if let Err(e) = os::cloexec_from_3() {
+        fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
+    }
     match mechanism() {
         Mechanism::Disabled {
             reason: DisabledReason::LandlockDisabled,
@@ -59,7 +64,7 @@ fn main() {
         exit,
         "EXEC_FAILED",
         profile,
-        &format!("{}: {e}", args.argv[0]),
+        &format!("{}: {e}", args.argv[0].to_string_lossy()),
     )
 }
 
@@ -132,19 +137,49 @@ mod os {
         Ok(())
     }
 
-    /// Replaces the process with `argv`. Descriptors 3 and up are marked close-on-exec first,
-    /// so the program inherits only its standard streams. Returns only on failure.
-    pub fn exec(argv: &[String]) -> std::io::Error {
+    /// Marks every descriptor from 3 up close-on-exec: `close_range(CLOSE_RANGE_CLOEXEC)` on
+    /// Linux, and where that is refused (an older kernel, a container's seccomp profile) or off
+    /// Linux, `fcntl` on each number below the soft `RLIMIT_NOFILE`. Any failure is an error.
+    pub fn cloexec_from_3() -> Result<(), String> {
         #[cfg(target_os = "linux")]
         // SAFETY: `close_range` with `CLOSE_RANGE_CLOEXEC` only sets flags on descriptors.
-        unsafe {
+        if unsafe {
             libc::syscall(
                 libc::SYS_close_range,
                 3u32,
                 u32::MAX,
                 libc::CLOSE_RANGE_CLOEXEC,
-            );
+            )
+        } == 0
+        {
+            return Ok(());
         }
+        // SAFETY: plain data, written by getrlimit before use.
+        let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid out pointer.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+            return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+        }
+        let top = i32::try_from(r.rlim_cur.min(1 << 20)).unwrap_or(1 << 20);
+        for fd in 3..top {
+            // SAFETY: `fcntl` only queries and sets descriptor flags.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if flags < 0 {
+                continue; // not open
+            }
+            // SAFETY: as above.
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+                return Err(format!(
+                    "descriptor {fd}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Replaces the process with `argv`. Returns only on failure.
+    pub fn exec(argv: &[std::ffi::OsString]) -> std::io::Error {
         std::process::Command::new(&argv[0]).args(&argv[1..]).exec()
     }
 }
@@ -163,7 +198,11 @@ mod os {
         Err("the Windows launcher (plan 7C Task 9)".into())
     }
 
-    pub fn exec(_argv: &[String]) -> std::io::Error {
+    pub fn cloexec_from_3() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn exec(_argv: &[std::ffi::OsString]) -> std::io::Error {
         std::io::Error::other("the Windows launcher (plan 7C Task 9)")
     }
 }

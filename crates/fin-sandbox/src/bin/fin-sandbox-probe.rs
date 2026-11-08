@@ -14,7 +14,7 @@
 //!   `unlink <file>`, `rmdir <dir>`, `mkdir <dir>`, `mkfifo <path>`, `link <from> <to>`,
 //!   `rename <from> <to>`, `symlink <target> <link>`, `exec <file>`, `connect-tcp <port>`,
 //!   `bind-tcp <port>`, `listen-tcp` (`listen` on an unbound socket), `bind-unix <path>`,
-//!   `connect-unix <path>`, `signal-parent`.
+//!   `connect-unix <path>`, `send-udp <port>` (one datagram to loopback), `signal-parent`.
 //!
 //! Exit 0 when the attempt ran (whatever its result), 3 when the sandbox could not be applied
 //! (`{"apply": "<error>"}`), 2 for a usage error.
@@ -198,6 +198,25 @@ mod probe {
         }
     }
 
+    /// One datagram to `127.0.0.1:<port>`.
+    fn udp(port: u16) -> Result<(), i32> {
+        // SAFETY: a socket we own, a fully initialised address and a one-byte buffer.
+        unsafe {
+            let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            rc(s)?;
+            let mut a: libc::sockaddr_in = std::mem::zeroed();
+            a.sin_family = libc::AF_INET as libc::sa_family_t;
+            a.sin_port = port.to_be();
+            a.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
+            let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            let b = *b"x";
+            let n = libc::sendto(s, b.as_ptr().cast(), 1, 0, (&raw const a).cast(), len);
+            let out = rc(if n < 0 { -1 } else { 0 });
+            libc::close(s);
+            out
+        }
+    }
+
     /// `bind` (which creates the socket file) or `connect` on a pathname socket.
     fn unix(path: &str, bind: bool) -> Result<(), i32> {
         let bytes = Path::new(path).as_os_str().as_bytes();
@@ -260,6 +279,7 @@ mod probe {
                 "listen-tcp" => listen_tcp(),
                 "bind-unix" => unix(a(1), true),
                 "connect-unix" => unix(a(1), false),
+                "send-udp" => udp(port(1)),
                 "signal-parent" => rc(libc::kill(libc::getppid(), 0)),
                 _ => usage(&format!("unknown op {op:?}")),
             }

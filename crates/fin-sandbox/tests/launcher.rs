@@ -5,14 +5,18 @@
 
 mod linux_support;
 
+use std::io::{BufRead, BufReader};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::Command;
+use std::process::Stdio;
 
 use fin_core::events::payloads::agent::{AgentMode, Harness};
 use fin_sandbox::launch::LaunchRequest;
 use fin_sandbox::{AgentInput, Os};
-use linux_support::{failure, landlock_or_skip, launch_cmd, launch_raw, tempdir, write};
+use linux_support::{
+    failure, inherit_fd4, landlock_or_skip, launch_cmd, launch_raw, tempdir, write,
+};
 
 const PATH: (&str, &str) = ("PATH", "/usr/bin:/bin");
 
@@ -123,11 +127,21 @@ fn exit_code_and_signals_are_the_programs() {
     );
     assert_eq!(run(&["no-such-program-here"]).status.code(), Some(127));
 
-    // A signal sent to the launcher's process reaches the program: it is the same process.
-    let (mut cmd, keep) = launch_cmd(Some(&req), &[&fd[..], &["sleep", "30"]].concat(), &[PATH]);
+    // A signal sent to the launcher's process reaches the program: it is the same process. The
+    // program says it is running first, so the signal cannot land on the launcher before `exec`.
+    let (mut cmd, keep) = launch_cmd(
+        Some(&req),
+        &[&fd[..], &["sh", "-c", "echo running; exec sleep 30"]].concat(),
+        &[PATH],
+    );
+    cmd.stdout(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
     drop(keep);
-    std::thread::sleep(Duration::from_millis(300));
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "running\n");
     // SAFETY: signalling our own child.
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
     let status = child.wait().unwrap();
@@ -151,10 +165,42 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
         String::from_utf8_lossy(&out.stderr).contains("Permission denied"),
         "{out:?}"
     );
-    // A program outside the toolchain cannot be started.
+    // A descriptor the parent leaked (open on local.key, without close-on-exec) does not reach
+    // the program: Landlock would not stop reads through it. Control: it is open and readable
+    // in the launcher's process before the exec (a shell started without the launcher sees it).
+    let leaked = || std::fs::File::open(key(&t)).unwrap();
+    let mut plain = Command::new("sh");
+    plain
+        .args(["-c", "cat <&4"])
+        .env_clear()
+        .env(PATH.0, PATH.1);
+    let _fd = inherit_fd4(&mut plain, leaked());
+    assert_eq!(plain.output().unwrap().stdout, b"k", "control");
+    let (mut cmd, keep) = launch_cmd(
+        Some(&req),
+        &["--policy-fd", "3", "--", "sh", "-c", "cat <&4"],
+        &[PATH],
+    );
+    let _fd4 = inherit_fd4(&mut cmd, leaked());
+    let out = cmd.output().unwrap();
+    drop(keep);
+    assert_ne!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Bad file descriptor"),
+        "{out:?}"
+    );
+    // A program outside the toolchain cannot be started. Control: it runs unconfined (a
+    // `noexec` temporary directory would refuse it without any sandbox).
     let copy = t.join("home/bin/true");
     std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
     std::fs::copy("/usr/bin/true", &copy).unwrap();
+    let control = launch_raw(
+        Some(&req),
+        &["--policy-fd", "3", "--", &copy.to_string_lossy()],
+        &[PATH, (fin_sandbox::status::TEST_ENV, "disabled")],
+    );
+    assert_eq!(control.status.code(), Some(0), "control {control:?}");
     let out = launch_raw(
         Some(&req),
         &["--policy-fd", "3", "--", &copy.to_string_lossy()],
@@ -170,18 +216,18 @@ fn landlock_disabled_runs_unconfined_and_unavailable_refuses() {
     let req = bytes(&agent(&t));
     let stub = |v| [PATH, (fin_sandbox::status::TEST_ENV, v)];
     // F2: the program runs, unconfined, and still inherits nothing but its streams.
-    let out = launch_raw(
+    let script = format!(
+        "cat {} && test ! -e /proc/self/fd/3 && test ! -e /proc/self/fd/4",
+        key(&t)
+    );
+    let (mut cmd, keep) = launch_cmd(
         Some(&req),
-        &[
-            "--policy-fd",
-            "3",
-            "--",
-            "sh",
-            "-c",
-            &format!("cat {} && test ! -e /proc/self/fd/3", key(&t)),
-        ],
+        &["--policy-fd", "3", "--", "sh", "-c", &script],
         &stub("disabled"),
     );
+    let _fd4 = inherit_fd4(&mut cmd, std::fs::File::open(key(&t)).unwrap());
+    let out = cmd.output().unwrap();
+    drop(keep);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "k");
     let out = launch_raw(

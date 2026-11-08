@@ -6,7 +6,8 @@
 //!   (a worker applies its sandbox after its own `exec` and never starts a program);
 //! - **write roots**: the read rights, `WRITE_FILE`, `TRUNCATE`, `REMOVE_*`, `MAKE_DIR`,
 //!   `MAKE_REG`, `MAKE_SYM` and `REFER`; `MAKE_FIFO` for `agent` and `hook` (never
-//!   `MAKE_SOCK`, Decision 6a); `EXECUTE` for `agent` only (scripts in its workspace). `REFER` exists only here, so a link
+//!   `MAKE_SOCK`, Decision 6a); `EXECUTE` for `agent` only (scripts in its workspace).
+//!   `REFER` exists only here, so a link
 //!   or rename can only move a file between write roots, never in from a read-only, protected
 //!   or unlisted tree (the kernel also refuses any move that would gain a right);
 //! - **devices**: `READ_FILE` (and `READ_DIR` for a directory), plus `WRITE_FILE` and

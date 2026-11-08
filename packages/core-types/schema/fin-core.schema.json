@@ -7055,7 +7055,7 @@
       "type": "string"
     },
     "JobSpawnProgram": {
-      "description": "`bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.",
+      "description": "`bundled`: `fin-workers`, `fin-analyze` or `fin-sandbox-exec` in `binaryDir`; `path`: plugin processes only.",
       "oneOf": [
         {
           "additionalProperties": false,

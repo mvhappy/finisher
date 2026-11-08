@@ -332,8 +332,9 @@ fin merge <branch>                           # take its work into your branch
   filter is an open hardening item. Landlock confines reads, writes, program starts, links and
   TCP ports, but a sandboxed process can still connect to local Unix sockets its user may open
   (the D-Bus session bus, `ssh-agent`, `docker.sock`) on kernels without Landlock's socket rule,
-  and keeps the rest of the kernel's interface (process creation, `io_uring`, 32-bit system
-  calls, namespaces).
+  send UDP (hooks included, although they have no network otherwise), accept TCP connections
+  on an ephemeral port, and use the rest of the kernel's interface (process creation,
+  `io_uring`, 32-bit system calls, namespaces).
 
 ## Plugins
 
