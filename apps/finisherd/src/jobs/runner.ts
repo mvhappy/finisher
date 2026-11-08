@@ -1,44 +1,42 @@
 // One attempt of one cold job (spec §6.2–6.4, 5C-1 plan Task 9a): the job directory and its
-// files → `prepare` (once per directory) → the worker in its own group (hello, kinds check,
-// start) → its messages → result, error or exit → the group gone. Then, for a success, the
-// result and `phase: hooks` are persisted and `onSucceeded` runs (Decision 40). The attempt's
-// outcome carries what Task 10's isolation needs: the items acknowledged in this run and the
-// items begun without an `item` (a set: a family may acknowledge a group of items after one
-// reply, e.g. 5D's probe groups of up to 32).
-import type { HostMsg, JobError as JobErrorMsg, Retry, WorkerMsg } from "@finisher/core-types";
+// files → `prepare` (until it succeeds once per directory) → the worker in its own group
+// (hello, kinds check, start) → its messages → result, error or exit → the group gone. Then,
+// for a success, the result and `phase: hooks` are persisted and `onSucceeded` runs (Decision
+// 40). The attempt's outcome carries what Task 10's isolation needs: the items acknowledged in
+// this run and the items begun without an `item` (a set: a family may acknowledge a group of
+// items after one reply, e.g. 5D's probe groups of up to 32).
+import type { Hello, HostMsg, JobError as JobErrorMsg, Retry, StartJob, WorkerMsg } from "@finisher/core-types";
 import { FinError, type JobProgress, type JobView, type MappedFile } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { Cause, Effect, Exit, type Fiber } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import { childEnv } from "../env.ts";
-import type { JobEventSink } from "./events.ts";
+import type { JobEventSink, WorkerExitEvent } from "./events.ts";
 import { CallRouter, type RunFork } from "./calls.ts";
-import { checkPrepared, createFiles, createJobDir, type JobDirs, jobDirs, mappedPath } from "./files.ts";
+import { checkNoLinks, checkPrepared, createFiles, createJobDir, isPrepared, type JobDirs, jobDirs, mappedPath, markPrepared } from "./files.ts";
 import { type EngineHost, type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
 import { type FamilySpec, type ItemOutcome, type KindRegistry, type KindSpec, type MemoryRule, resolveOrFn } from "./kinds.ts";
-import type { JobRow, JobStore } from "./store.ts";
+import type { JobRow } from "./store.ts";
+import { CheckpointWriter, ItemWriter, type WriterEnv } from "./writers.ts";
 
 export const ALIVE_MS = 5000;
 export const DEFAULT_STALL_S = 600;
 export const DEFAULT_HOOK_TIMEOUT_S = 60;
 /** After a worker's answer, how long it may take to exit before its group is killed. */
 export const EXIT_GRACE_MS = 2000;
-export const ITEM_FLUSH_MS = 1000;
-export const ITEM_FLUSH_ROWS = 256;
-export const CHECKPOINT_EVERY_MS = 10_000;
+/** The longest item name a worker may report (a longer one is a protocol error). */
+export const MAX_ITEM_CHARS = 1024;
 
 type Log = (level: "debug" | "warning" | "error", message: string) => void;
 
 /** What a runner needs from its engine. */
-export interface RunnerEnv {
+export interface RunnerEnv extends WriterEnv {
   readonly host: EngineHost;
-  readonly store: JobStore;
   readonly registry: KindRegistry;
   readonly sink: JobEventSink;
   /** `<server-data>/jobs`. */
   readonly root: string;
   readonly totalMem: number;
-  readonly now: () => number;
   readonly run: RunFork;
   readonly diagnostics: () => boolean;
   /** fin-node is a test-hooks build: a non-`test` family that leaves foreign processes fails (Decision 22). */
@@ -51,20 +49,20 @@ export interface RunnerEnv {
 }
 
 /** Why an attempt failed, for the retry policy (Task 10 classifies it, Decision 31). */
-export type FailureCause = "files" | "prepare" | "spawn" | "mismatch" | "worker" | "exit" | "foreign";
+export type FailureCause = "files" | "tampered" | "prepare" | "spawn" | "mismatch" | "worker" | "exit" | "foreign" | "protocol";
 
-export type AttemptOutcome = AttemptFacts &
-  (
-    | { readonly ok: true; readonly value: unknown }
-    | {
-        readonly ok: false;
-        readonly error: FinError;
-        readonly cause: FailureCause;
-        /** A worker `error`'s retry hint. */
-        readonly retry?: Retry;
-        readonly exit?: JobHostExitInfo;
-      }
-  );
+type Outcome =
+  | { readonly ok: true; readonly value: unknown }
+  | {
+      readonly ok: false;
+      readonly error: FinError;
+      readonly cause: FailureCause;
+      /** A worker `error`'s retry hint. */
+      readonly retry?: Retry;
+      readonly exit?: JobHostExitInfo;
+    };
+
+export type AttemptOutcome = AttemptFacts & Outcome;
 
 export interface AttemptFacts {
   /** Items acknowledged (`item`) in this run, in order. */
@@ -80,67 +78,7 @@ export function memoryRule(kind: KindSpec, family: FamilySpec, view: JobView): M
   return view.priority === "interactive" ? family.memory?.interactive : family.memory?.batch;
 }
 
-const jobErr = (e: JobErrorMsg): FinError =>
-  new FinError({ code: e.code, message: e.message, details: e.details ?? {} });
-
-/** Buffers item outcomes: one transaction per second or per 256 rows (Decision 26). */
-class ItemWriter {
-  #pending: Array<[string, ItemOutcome]> = [];
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  readonly store: JobStore;
-  readonly id: string;
-  constructor(store: JobStore, id: string) {
-    this.store = store;
-    this.id = id;
-  }
-  add(item: string, outcome: ItemOutcome): void {
-    this.#pending.push([item, outcome]);
-    if (this.#pending.length >= ITEM_FLUSH_ROWS) this.flush();
-    else this.#timer ??= setTimeout(() => this.flush(), ITEM_FLUSH_MS);
-  }
-  flush(): void {
-    if (this.#timer !== undefined) clearTimeout(this.#timer);
-    this.#timer = undefined;
-    const rows = this.#pending;
-    this.#pending = [];
-    this.store.writeItems(this.id, rows);
-  }
-}
-
-/** Keeps the newest checkpoint and writes at most one per 10 s; `flush` writes what is held. */
-class CheckpointWriter {
-  #last = -Infinity;
-  #held: { data: unknown } | undefined;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  readonly store: JobStore;
-  readonly id: string;
-  readonly now: () => number;
-  constructor(store: JobStore, id: string, now: () => number) {
-    this.store = store;
-    this.id = id;
-    this.now = now;
-  }
-  add(data: unknown): void {
-    const wait = this.#last + CHECKPOINT_EVERY_MS - this.now();
-    if (wait <= 0) {
-      this.#write(data);
-      return;
-    }
-    this.#held = { data };
-    this.#timer ??= setTimeout(() => this.flush(), wait);
-  }
-  #write(data: unknown): void {
-    this.#last = this.now();
-    this.store.checkpoint(this.id, data);
-  }
-  flush(): void {
-    if (this.#timer !== undefined) clearTimeout(this.#timer);
-    this.#timer = undefined;
-    const held = this.#held;
-    this.#held = undefined;
-    if (held !== undefined) this.#write(held.data);
-  }
-}
+const jobErr = (e: JobErrorMsg): FinError => new FinError({ code: e.code, message: e.message, details: e.details ?? {} });
 
 /** Awaits a fiber's exit. */
 export function awaitFiber<A, E>(fiber: Fiber.Fiber<A, E>): Promise<Exit.Exit<A, E>> {
@@ -189,55 +127,54 @@ export async function runOnSucceeded(
   return { ok: true, result: out.value === undefined ? result : out.value };
 }
 
+interface Facts {
+  done: string[];
+  inFlight: Set<string>;
+}
+
 /**
  * One attempt of the running job `row` (already `running`, its `attempts` counting this one).
- * `params` are what the worker runs (a batch's remaining items, Task 10).
+ * `params` are what the worker runs (a batch's remaining items).
  */
 export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, family: FamilySpec, params: unknown): Promise<AttemptOutcome> {
   const t0 = performance.now();
-  const facts = { done: [] as string[], inFlight: new Set<string>() };
-  const finish = (o: Record<string, unknown>): AttemptOutcome =>
-    ({ ...o, done: facts.done, inFlight: [...facts.inFlight], runMicros: (performance.now() - t0) * 1000 }) as unknown as AttemptOutcome;
+  const facts: Facts = { done: [], inFlight: new Set<string>() };
+  const finish = (o: Outcome): AttemptOutcome => ({ ...o, done: facts.done, inFlight: [...facts.inFlight], runMicros: (performance.now() - t0) * 1000 });
   const dirs = jobDirs(env.root, row.id);
   let files: ReadonlyArray<MappedFile>;
   let extra = row.extra;
   try {
     files = resolveOrFn(kind.files ?? [], params as never);
-    const created = await createJobDir(dirs);
+    // A directory a worker used may hold links it planted: refused before anything follows them (9a review B1).
+    if (!(await createJobDir(dirs))) await checkNoLinks(dirs.job, ["tmp/", ...files.map((f) => f.name)]);
+  } catch (e) {
+    const err = toFinError(e);
+    return finish({ ok: false, error: err, cause: err.code === "JOB_FAILED" ? "tampered" : "files" });
+  }
+  try {
     await createFiles(dirs.job, files);
-    if (created && kind.prepare !== undefined) {
+    // `prepare` runs until it succeeded once for this directory (9a review M3).
+    if (kind.prepare !== undefined && !(await isPrepared(dirs))) {
       const prepare = kind.prepare;
       const out = await runHook(env, Effect.suspend(() => prepare(hookCtx(row, dirs, row.attempts))));
       if (!out.ok) return finish({ ok: false, error: out.error, cause: "prepare" });
       const value = out.value as { extra?: unknown } | undefined;
-      if (value?.extra !== undefined) {
+      if (value?.extra !== undefined && !env.dead()) {
         extra = value.extra;
         env.store.transition(row.id, "running", { extra });
       }
+      await markPrepared(dirs);
     }
     await checkPrepared(dirs.job, files);
   } catch (e) {
     return finish({ ok: false, error: toFinError(e), cause: "files" });
   }
-  return new Attempt(env, row, kind, family, params, dirs, files, extra, facts).run().then((o) => finish(o));
+  return new Attempt({ env, row, kind, family, params, dirs, files, extra, facts }).run().then(finish);
 }
 
 type Answer = { readonly value: unknown } | { readonly error: JobErrorMsg; readonly retry: Retry };
 
-class Attempt {
-  readonly #items: ItemWriter;
-  readonly #checkpoints: CheckpointWriter;
-  #group = -1;
-  #proc: number | undefined;
-  #started = false;
-  #answer: Answer | undefined;
-  #mismatch: FinError | undefined;
-  #foreign = 0;
-  #exitTimer: ReturnType<typeof setTimeout> | undefined;
-  #calls: CallRouter | undefined;
-  #diagnostics = false;
-  #settle: (o: Record<string, unknown>) => void = () => {};
-
+interface AttemptSpec {
   readonly env: RunnerEnv;
   readonly row: JobRow;
   readonly kind: KindSpec;
@@ -246,41 +183,30 @@ class Attempt {
   readonly dirs: JobDirs;
   readonly files: ReadonlyArray<MappedFile>;
   readonly extra: unknown;
-  readonly facts: { done: string[]; inFlight: Set<string> };
+  readonly facts: Facts;
+}
 
-  constructor(
-    env: RunnerEnv,
-    row: JobRow,
-    kind: KindSpec,
-    family: FamilySpec,
-    params: unknown,
-    dirs: JobDirs,
-    files: ReadonlyArray<MappedFile>,
-    extra: unknown,
-    facts: { done: string[]; inFlight: Set<string> },
-  ) {
-    this.env = env;
-    this.row = row;
-    this.kind = kind;
-    this.family = family;
-    this.params = params;
-    this.dirs = dirs;
-    this.files = files;
-    this.extra = extra;
-    this.facts = facts;
-    this.#items = new ItemWriter(env.store, row.id);
-    this.#checkpoints = new CheckpointWriter(env.store, row.id, env.now);
-  }
+class Attempt {
+  readonly #a: AttemptSpec;
+  readonly #items: ItemWriter;
+  readonly #checkpoints: CheckpointWriter;
+  readonly #calls: CallRouter;
+  #group = -1;
+  #proc: number | undefined;
+  #started = false;
+  #answer: Answer | undefined;
+  /** Why the attempt failed before or beside the worker's own outcome (the first one counts). */
+  #fault: { error: FinError; cause: FailureCause } | undefined;
+  #foreign = 0;
+  #cancelExit: (() => void) | undefined;
+  #diagnostics = false;
+  #settle: (o: Outcome) => void = () => {};
 
-  async run(): Promise<Record<string, unknown>> {
-    const { env, row, kind, family } = this;
-    const rule = memoryRule(kind, family, row);
-    const memoryBytes = rule === undefined ? undefined : resolveMemoryRule(rule, env.totalMem);
-    const qos = row.priority === "interactive" ? "normal" : kind.qos;
-    this.#group = env.host.openGroup({ label: `${kind.kind} ${row.id}`, qos, ...(memoryBytes === undefined ? {} : { memoryBytes }) });
-    const done = new Promise<Record<string, unknown>>((resolve) => {
-      this.#settle = resolve;
-    });
+  constructor(a: AttemptSpec) {
+    this.#a = a;
+    const { env, row, family } = a;
+    this.#items = new ItemWriter(env, row.id);
+    this.#checkpoints = new CheckpointWriter(env, row.id);
     this.#calls = new CallRouter(
       family.onCall,
       () => ({
@@ -293,104 +219,156 @@ class Attempt {
       (msg) => (this.#proc === undefined ? "gone" : env.host.send(this.#proc, msg)),
       env.run,
     );
+  }
+
+  /** Records the attempt's failure (the first one counts) and ends the job's group. */
+  #failWith(error: FinError, cause: FailureCause, kill: "jobEnded"): void {
+    if (this.#fault !== undefined || this.#answer !== undefined) return;
+    this.#fault = { error, cause };
+    void this.#a.env.host.killGroup(this.#group, kill).catch(() => {});
+  }
+
+  async run(): Promise<Outcome> {
+    const { env, row, kind, family } = this.#a;
+    const rule = memoryRule(kind, family, row);
+    const memoryBytes = rule === undefined ? undefined : resolveMemoryRule(rule, env.totalMem);
+    const qos = row.priority === "interactive" ? "normal" : kind.qos;
+    this.#group = env.host.openGroup({ label: `${kind.kind} ${row.id}`, qos, ...(memoryBytes === undefined ? {} : { memoryBytes }) });
+    const done = new Promise<Outcome>((resolve) => {
+      this.#settle = resolve;
+    });
     try {
-      // Held events are replayed inside `spawn`, so the proc id comes with each event too.
-      this.#proc = await env.host.spawn(this.#group, this.#request(), (e, proc) => this.#onEvent(e, proc, memoryBytes), row.id);
+      await env.host.spawn(this.#group, this.#request(), (e, proc) => this.#onEvent(e, proc, memoryBytes), row.id);
     } catch (e) {
-      env.host.closeGroup(this.#group);
+      await this.#endGroup();
       return { ok: false, error: toFinError(e), cause: "spawn" };
     }
     return done;
   }
 
+  async #endGroup(): Promise<void> {
+    try {
+      await this.#a.env.host.killGroup(this.#group, "jobEnded");
+    } catch (e) {
+      this.#a.env.log("warning", `job ${this.#a.row.id}: ending its group failed: ${toFinError(e).message}`);
+    }
+    this.#a.env.host.closeGroup(this.#group);
+  }
+
   #request(): JobSpawnRequest {
-    const { env, row, family } = this;
+    const { env, row, family, kind, dirs, files } = this.#a;
     const program = env.registry.program(family.family, row, "cold");
-    const tmp = this.dirs.tmp;
-    const envVars = { ...childEnv(), TMPDIR: tmp, TEMP: tmp, TMP: tmp };
     return {
       role: "worker",
       profile: family.profile,
       family: family.family,
       program: "path" in program ? { path: program.path } : { bundled: program.binary },
       args: [...program.args],
-      env: envVars,
-      cwd: this.dirs.job,
+      env: { ...childEnv(), TMPDIR: dirs.tmp, TEMP: dirs.tmp, TMP: dirs.tmp },
+      cwd: dirs.job,
+      // The job directory read-only, `tmp/` read-write, each mapped file at its own mode (9a review H1).
       grants: [
-        { path: this.dirs.job, mode: "readWrite" },
-        ...this.files.map((f) => ({ path: mappedPath(this.dirs.job, f.name), mode: f.mode })),
+        { path: dirs.job, mode: "read" },
+        { path: dirs.tmp, mode: "readWrite" },
+        ...files.map((f) => ({ path: mappedPath(dirs.job, f.name), mode: f.mode })),
       ],
-      qos: row.priority === "interactive" ? "normal" : this.kind.qos,
-      label: `${this.kind.kind} ${row.id}`,
-    } as JobSpawnRequest;
-  }
-
-  #send(msg: HostMsg): void {
-    if (this.#proc !== undefined) this.env.host.send(this.#proc, msg);
+      qos: row.priority === "interactive" ? "normal" : kind.qos,
+      label: `${kind.kind} ${row.id}`,
+    };
   }
 
   #onEvent(e: ProcEvent, proc: number, memoryBytes: number | undefined): void {
     this.#proc ??= proc;
     switch (e.type) {
       case "hello":
-        return this.#onHello(e.hello.kinds ?? [], memoryBytes);
+        return this.#onHello(e.hello, memoryBytes);
       case "message":
         return this.#onMessage(e.msg);
       case "stderr":
-        return this.env.log("debug", `[job ${this.row.id} ${this.family.family}] ${e.line}`);
+        return this.#a.env.log("debug", `[job ${this.#a.row.id} ${this.#a.family.family}] ${e.line}`);
       case "exit":
         return void this.#onExit(e.info);
     }
   }
 
-  #onHello(kinds: ReadonlyArray<{ kind: string; version: number }>, memoryBytes: number | undefined): void {
-    const { env, row, kind } = this;
-    if (this.#started || this.#proc === undefined) return;
-    if (!kinds.some((k) => k.kind === kind.kind && k.version === kind.version)) {
-      this.#mismatch = finError("WORKER_PROTOCOL_MISMATCH", `the worker does not serve ${kind.kind} v${kind.version}`, {
-        expected: { kind: kind.kind, version: kind.version },
-        got: kinds,
+  #onHello(hello: Hello, memoryBytes: number | undefined): void {
+    const { kind, family } = this.#a;
+    if (this.#started || this.#fault !== undefined || this.#proc === undefined) return;
+    const kinds = hello.kinds ?? [];
+    if (hello.role !== "worker" || hello.family !== family.family || !kinds.some((k) => k.kind === kind.kind && k.version === kind.version)) {
+      const error = finError("WORKER_PROTOCOL_MISMATCH", `the worker does not serve ${family.family}'s ${kind.kind} v${kind.version}`, {
+        expected: { role: "worker", family: family.family, kind: kind.kind, version: kind.version },
+        got: { role: hello.role, family: hello.family ?? null, kinds },
       });
-      void env.host.killGroup(this.#group, "jobEnded").catch(() => {});
+      this.#failWith(error, "mismatch", "jobEnded");
       return;
     }
+    this.#start(memoryBytes);
+  }
+
+  #start(memoryBytes: number | undefined): void {
+    const { env, row, kind, dirs, files, params, extra } = this.#a;
+    if (this.#proc === undefined) return;
     this.#started = true;
     this.#diagnostics = env.diagnostics();
-    const job: Record<string, unknown> = { id: row.id, kind: row.kind, kindVersion: row.kindVersion, params: this.params, attempt: row.attempts };
-    if (row.checkpoint !== undefined) job.checkpoint = row.checkpoint;
-    if (this.extra !== undefined) job.extra = this.extra;
-    const start = {
+    const job: StartJob = {
+      id: row.id,
+      kind: row.kind,
+      kindVersion: row.kindVersion,
+      params,
+      attempt: row.attempts,
+      ...(row.checkpoint === undefined ? {} : { checkpoint: row.checkpoint as NonNullable<StartJob["checkpoint"]> }),
+      ...(extra === undefined ? {} : { extra: extra as NonNullable<StartJob["extra"]> }),
+    };
+    const start: HostMsg = {
       t: "start",
       job,
       limits: { aliveMs: env.aliveMs, ...(memoryBytes === undefined ? {} : { memoryBytes }) },
-      files: this.files.map((f) => ({ name: f.name, path: mappedPath(this.dirs.job, f.name), mode: f.mode, ...(f.bytes === undefined ? {} : { bytes: f.bytes }) })),
+      files: files.map((f) => ({ name: f.name, path: mappedPath(dirs.job, f.name), mode: f.mode, ...(f.bytes === undefined ? {} : { bytes: f.bytes }) })),
       helpers: [],
-      dirs: { job: this.dirs.job, tmp: this.dirs.tmp },
+      dirs: { job: dirs.job, tmp: dirs.tmp },
       diagnostics: this.#diagnostics,
-    } as unknown as HostMsg;
-    this.#send(start);
+    };
+    env.host.send(this.#proc, start);
     env.host.watch(this.#proc, { job: row.id, stallMs: (kind.stallS ?? DEFAULT_STALL_S) * 1000, timeoutMs: kind.timeoutS * 1000 });
   }
 
+  /** An item name over the bound is a protocol error (the job's group is ended). */
+  #itemOk(item: string): boolean {
+    if (item.length <= MAX_ITEM_CHARS) return true;
+    this.#failWith(finError("WORKER_CRASHED", `the worker reported an item name of ${item.length} characters`, { protocol: "itemTooLong", limit: MAX_ITEM_CHARS }), "protocol", "jobEnded");
+    return false;
+  }
+
   #onMessage(msg: WorkerMsg): void {
-    const { env, row } = this;
+    const { env, row, family, facts } = this.#a;
+    if ((this.#answer !== undefined || this.#fault !== undefined) && msg.t !== "ready" && msg.t !== "call") {
+      // Nothing counts after the answer (9a review M1): no item, checkpoint or progress is taken.
+      env.log("warning", `job ${row.id}: ${msg.t} after the worker's answer is refused (INVALID_REQUEST)`);
+      return;
+    }
     switch (msg.t) {
       case "begin":
-        this.facts.inFlight.add(msg.item);
+        if (this.#itemOk(msg.item)) facts.inFlight.add(msg.item);
         return;
       case "item": {
-        this.facts.inFlight.delete(msg.item);
-        this.facts.done.push(msg.item);
+        if (!this.#itemOk(msg.item)) return;
+        facts.inFlight.delete(msg.item);
+        facts.done.push(msg.item);
         const outcome: ItemOutcome = msg.error !== undefined ? { error: jobErr(msg.error) } : msg.value === undefined ? {} : { value: msg.value };
         this.#items.add(msg.item, outcome);
         env.item(row.id, msg.item, outcome);
         return;
       }
       case "progress": {
-        const p: Record<string, unknown> = { done: msg.done, unit: msg.unit, at: env.now() };
-        if (msg.total !== undefined) p.total = msg.total;
-        if (msg.phase !== undefined) p.phase = msg.phase;
-        env.progress(row.id, p as unknown as JobProgress);
+        const p: JobProgress = {
+          done: msg.done,
+          unit: msg.unit,
+          at: env.now(),
+          ...(msg.total === undefined ? {} : { total: msg.total }),
+          ...(msg.phase === undefined ? {} : { phase: msg.phase }),
+        };
+        env.progress(row.id, p);
         return;
       }
       case "checkpoint":
@@ -401,20 +379,21 @@ class Attempt {
         return;
       case "error":
         for (const ie of msg.itemErrors ?? []) {
+          if (!this.#itemOk(ie.item)) return;
           const outcome: ItemOutcome = { error: jobErr(ie.error) };
-          this.facts.inFlight.delete(ie.item);
+          facts.inFlight.delete(ie.item);
           this.#items.add(ie.item, outcome);
           env.item(row.id, ie.item, outcome);
         }
         this.#answered({ error: msg.error, retry: msg.error.retry ?? "never" });
         return;
       case "diag":
-        if (this.#diagnostics && (this.family.diagKinds ?? []).includes(msg.kind)) {
-          env.sink.forward({ family: this.family.family, job: msg.job ?? row.id }, msg.kind, msg.payload);
+        if (this.#diagnostics && (family.diagKinds ?? []).includes(msg.kind)) {
+          env.sink.forward({ family: family.family, job: msg.job ?? row.id }, msg.kind, msg.payload);
         } else env.diagDropped();
         return;
       case "call":
-        this.#calls?.call(msg.id, msg.method, msg.params);
+        this.#calls.call(msg.id, msg.method, msg.params);
         return;
       default:
         return; // `ready`, a repeated `hello`: nothing for a cold job
@@ -422,54 +401,64 @@ class Attempt {
   }
 
   #answered(a: Answer): void {
-    if (this.#answer !== undefined) return;
+    const { env } = this.#a;
+    if (this.#answer !== undefined || this.#fault !== undefined) return;
     this.#answer = a;
-    if (this.#proc !== undefined) this.env.host.watch(this.#proc, null);
+    this.#calls.refuse("after the job's answer");
+    if (this.#proc !== undefined) env.host.watch(this.#proc, null);
     // A cold worker exits once it answered; one that does not is ended with its group.
-    this.#exitTimer = setTimeout(() => void this.env.host.killGroup(this.#group, "jobEnded").catch(() => {}), EXIT_GRACE_MS);
+    this.#cancelExit = env.timers.after(EXIT_GRACE_MS, () => void env.host.killGroup(this.#group, "jobEnded").catch(() => {}));
   }
 
   async #onExit(info: JobHostExitInfo): Promise<void> {
-    const { env, row, family } = this;
-    if (this.#exitTimer !== undefined) clearTimeout(this.#exitTimer);
-    this.#calls?.close();
-    const verdict = exitVerdict(info, this.#answer !== undefined);
-    env.sink.workerExit({
-      role: "worker",
-      family: family.family,
-      reason: verdict.reason,
-      jobsServed: this.#started ? 1 : 0,
-      lifetimeS: info.lifetimeMs / 1000,
-      sandboxed: env.host.caps().sandboxed,
-      ...(info.code === undefined ? {} : { exitCode: info.code }),
-      ...(info.signal === undefined ? {} : { signal: info.signal }),
-      ...(family.pluginId === undefined ? {} : { pluginId: family.pluginId }),
-    } as Parameters<JobEventSink["workerExit"]>[0]);
-    this.#foreign = info.foreign ?? 0;
-    // Every process of the group, the worker's leftovers too, is gone before the outcome counts.
+    const { env, row, family } = this.#a;
+    let outcome: Outcome | undefined;
     try {
-      await env.host.killGroup(this.#group, "jobEnded");
+      this.#cancelExit?.();
+      // Open host calls end before anything that reads the directory runs (9a review M1).
+      await this.#calls.close();
+      const verdict = exitVerdict(info, this.#answer !== undefined);
+      const exit: WorkerExitEvent = {
+        role: "worker",
+        family: family.family,
+        reason: verdict.reason,
+        jobsServed: this.#started ? 1 : 0,
+        lifetimeS: info.lifetimeMs / 1000,
+        sandboxed: env.host.caps().sandboxed,
+        ...(info.code === undefined ? {} : { exitCode: info.code }),
+        ...(info.signal === undefined ? {} : { signal: info.signal }),
+        ...(family.pluginId === undefined ? {} : { pluginId: family.pluginId }),
+      };
+      try {
+        env.sink.workerExit(exit);
+      } catch (e) {
+        env.log("error", `job ${row.id}: worker.exit failed: ${toFinError(e).message}`);
+      }
+      this.#foreign = info.foreign ?? 0;
+      // Every process of the group, the worker's leftovers too, is gone before the outcome counts.
+      await this.#endGroup();
+      if (this.#foreign > 0) env.log("warning", `job ${row.id} (${family.family}) left ${this.#foreign} foreign process(es)`);
+      outcome = this.#outcome(info, verdict.error);
     } catch (e) {
-      env.log("warning", `job ${row.id}: ending its group failed: ${toFinError(e).message}`);
+      outcome = { ok: false, error: finError("INTERNAL", `the attempt's end failed: ${toFinError(e).message}`), cause: "exit", exit: info };
+    } finally {
+      try {
+        this.#items.flush();
+        this.#checkpoints.flush();
+      } catch (e) {
+        env.log("error", `job ${row.id}: flushing items or the checkpoint failed: ${toFinError(e).message}`);
+      }
+      this.#settle(outcome ?? { ok: false, error: finError("INTERNAL", "the attempt ended without an outcome"), cause: "exit", exit: info });
     }
-    env.host.closeGroup(this.#group);
-    this.#items.flush();
-    this.#checkpoints.flush();
-    if (this.#foreign > 0) env.log("warning", `job ${row.id} (${family.family}) left ${this.#foreign} foreign process(es)`);
-    this.#settle(this.#outcome(info, verdict.error));
   }
 
-  #outcome(info: JobHostExitInfo, exitError: FinError): Record<string, unknown> {
-    if (this.#mismatch !== undefined) return { ok: false, error: this.#mismatch, cause: "mismatch", exit: info };
+  #outcome(info: JobHostExitInfo, exitError: FinError): Outcome {
+    const { env, family } = this.#a;
+    if (this.#fault !== undefined) return { ok: false, ...this.#fault, exit: info };
     const a = this.#answer;
     if (a !== undefined && "value" in a) {
-      if (this.env.testHooks && this.#foreign > 0 && this.family.family !== "test") {
-        return {
-          ok: false,
-          error: finError("WORKER_CRASHED", "the worker started processes", { foreign: this.#foreign }),
-          cause: "foreign",
-          exit: info,
-        };
+      if (env.testHooks && this.#foreign > 0 && family.family !== "test") {
+        return { ok: false, error: finError("WORKER_CRASHED", "the worker started processes", { foreign: this.#foreign }), cause: "foreign", exit: info };
       }
       return { ok: true, value: a.value };
     }

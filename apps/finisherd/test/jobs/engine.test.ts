@@ -2,7 +2,7 @@
 import { FinError } from "@finisher/contracts";
 import { Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
-import { closeTestEngines, failure, OWNER, run, testEngine, until } from "../support/jobs.ts";
+import { closeTestEngines, failure, OWNER, run, testClock, testEngine, until } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
@@ -100,16 +100,22 @@ describe("runs", () => {
   });
 
   test("progress_events_are_throttled", async () => {
-    const t = await testEngine();
-    const v = await t.submit("test.sleep", { ms: 1500, progressEveryMs: 5 });
-    const seen = await until(() => t.engine.list({}).jobs[0]?.progress);
-    expect(seen.unit).toBe("seconds");
-    await t.wait(v.id);
-    const progress = t.events.filter((e) => e.type === "progress" && e.job.id === v.id);
-    expect(progress.length).toBeGreaterThan(0);
-    // ≤ 4 a second (Decision 26), plus one for the edges.
-    expect(progress.length).toBeLessThanOrEqual(8);
-    expect((await run(t.engine.get(v.id))).progress).toBeUndefined();
+    // The engine's clock is a TestClock: only `adjust` lets a held progress event out.
+    const tc = await testClock();
+    const t = await testEngine({ clock: tc.clock });
+    const v = await t.submit("test.sleep", { ms: 60_000, progressEveryMs: 5 });
+    const progressEvents = () => t.events.filter((e) => e.type === "progress" && e.job.id === v.id);
+    await until(() => progressEvents().length === 1);
+    const first = progressEvents()[0]!.job.progress!.done;
+    // More progress arrives (the view shows the newest) but no event leaves before 250 ms pass.
+    await until(() => (t.engine.list({}).jobs[0]?.progress?.done ?? 0) > first);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(progressEvents()).toHaveLength(1);
+    await tc.adjust(250);
+    await until(() => progressEvents().length === 2);
+    expect(progressEvents()[1]!.job.progress!.done).toBeGreaterThan(first);
+    await t.close();
+    await tc.close();
   });
 
   test("items_are_recorded", async () => {

@@ -3,7 +3,8 @@
 // DACL, inherited) with `tmp/`. 5C creates a kind's files and directories, empties `write`
 // directories and recreates `write` files before each attempt, checks the files `prepare`
 // wrote, and never reads any of them. Every call is asynchronous (libuv's pool), so no file
-// operation blocks the event loop.
+// operation blocks the event loop. A directory a worker has already used is checked before it
+// is prepared again (`checkNoLinks`): a link the worker planted is never followed (9a review B1).
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,6 +14,8 @@ import { finError } from "../errors.ts";
 
 export const JOBS_DIR = "jobs";
 const REMOVE_TRIES = 20;
+/** Written once `prepare` succeeded (Decision 40; not a mapped name: `~` is not allowed there). */
+export const PREPARED_MARKER = ".prepared~";
 const REMOVE_WAIT_MS = 25;
 
 /** `<server-data>/jobs`, made private (`SERVER_DATA_UNSAFE` when it is not). */
@@ -60,8 +63,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * Makes the job directory and its `tmp/` (0700). Resolves `true` when the directory is new,
- * which is when the kind's `prepare` runs (once per job directory, Decision 40).
+ * Makes the job directory and its `tmp/` (0700). Resolves `true` when the directory is new
+ * (nothing in it can have been planted by a worker yet).
  */
 export async function createJobDir(dirs: JobDirs): Promise<boolean> {
   try {
@@ -74,14 +77,70 @@ export async function createJobDir(dirs: JobDirs): Promise<boolean> {
   }
 }
 
-async function emptyDir(path: string): Promise<void> {
-  for (const entry of await readdir(path)) await rm(join(path, entry), { recursive: true, force: true });
+/** Whether the kind's `prepare` already succeeded for this directory (9a review M3). */
+export async function isPrepared(dirs: JobDirs): Promise<boolean> {
+  try {
+    return (await lstat(join(dirs.job, PREPARED_MARKER))).isFile();
+  } catch {
+    return false;
+  }
 }
 
-/** Creates (0600) or truncates a file to `bytes`, zero-filled. */
+/** Records that `prepare` succeeded: it does not run again for this directory. */
+export async function markPrepared(dirs: JobDirs): Promise<void> {
+  const fh = await open(join(dirs.job, PREPARED_MARKER), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0), 0o600);
+  await fh.close();
+}
+
+/**
+ * A directory a worker has used may hold links it planted (a symlinked `out/`, a junction for
+ * `in/`): every existing segment from the job directory down to each mapped path, `tmp/` and
+ * each helper directory, is `lstat`ed, and a symlink or junction (Node reports both as
+ * symbolic links) fails the job, never retried (9a review B1). Other reparse points are not
+ * visible to `lstat`; sub-project 7's sandbox keeps the worker from making them.
+ */
+export async function checkNoLinks(dir: string, names: ReadonlyArray<string>): Promise<void> {
+  const seen = new Set<string>();
+  const check = async (path: string, name: string): Promise<boolean> => {
+    if (seen.has(path)) return true;
+    seen.add(path);
+    let st;
+    try {
+      st = await lstat(path);
+    } catch (e) {
+      if ((e as { code?: unknown }).code === "ENOENT") return false;
+      throw ioError(e, path, name);
+    }
+    if (st.isSymbolicLink()) {
+      throw finError("JOB_FAILED", `the job directory holds a link at ${name}, which a worker planted`, { path, file: name, problem: "link" }, "the worker must not replace its files with links");
+    }
+    return true;
+  };
+  if (!(await check(dir, "."))) return;
+  for (const name of names) {
+    const segments = (name.endsWith("/") ? name.slice(0, -1) : name).split("/");
+    let path = dir;
+    for (const seg of segments) {
+      path = join(path, seg);
+      if (!(await check(path, name))) break;
+    }
+  }
+}
+
+/** Empties a writable directory by replacing it: `rm` removes a link itself, never its target. */
+async function emptyDir(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true });
+  await mkdir(path, { recursive: true, mode: 0o700 });
+}
+
+/**
+ * Creates a file (0600) of `bytes`, zero-filled. An old one is unlinked first and the new one
+ * made with `O_EXCL | O_NOFOLLOW`, so neither a link at the name nor a hard link to a file
+ * elsewhere is ever opened or truncated (9a review B1).
+ */
 async function sizedFile(path: string, bytes: number): Promise<void> {
-  // O_NOFOLLOW: a symlink planted at the name is refused, never followed (Unix only).
-  const flags = constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0);
+  await rm(path, { force: true });
+  const flags = constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
   const fh = await open(path, flags, 0o600);
   try {
     await fh.truncate(bytes);
@@ -100,8 +159,8 @@ export async function createFiles(dir: string, files: ReadonlyArray<MappedFile>)
     const path = mappedPath(dir, f.name);
     try {
       if (isDirName(f.name)) {
-        await mkdir(path, { recursive: true, mode: 0o700 });
         if (writable(f)) await emptyDir(path);
+        else await mkdir(path, { recursive: true, mode: 0o700 });
         continue;
       }
       const parent = mappedPath(dir, f.name.split("/").slice(0, -1).join("/") || ".");

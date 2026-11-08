@@ -2,7 +2,8 @@
 // job host started, the store and the registry (the test kinds with `testKinds`), the engine
 // built and started; released by `engine.close()`, before the control store closes.
 import { availableParallelism, totalmem } from "node:os";
-import { type JobHostOptions, testHooks, workersBinaryPath } from "@finisher/fin-node";
+import type { JobHostOptions } from "@finisher/core-types";
+import { testHooks, workersBinaryPath } from "@finisher/fin-node";
 import { Clock, Context, Effect, Layer } from "effect";
 import { dirname } from "node:path";
 import { type ServerStartError, startFailure } from "../config.ts";
@@ -10,11 +11,12 @@ import { ControlStoreTag } from "../control/db.ts";
 import { type JobEngine, JobEngineTag, makeJobEngine, QUEUE_LIMIT } from "./engine.ts";
 import { JobEventSinkTag } from "./events.ts";
 import { ensureJobsRoot } from "./files.ts";
-import { EngineHost } from "./host.ts";
+import { EngineHost, type JobHostFactory } from "./host.ts";
 import { type FamilySpec, type KindSpec, makeKindRegistry } from "./kinds.ts";
 import { registerTestKinds } from "./kinds/test.ts";
 import { defaultPools } from "./pools.ts";
 import { JobStore } from "./store.ts";
+import { clockTimers } from "./timers.ts";
 
 export { JobEngineTag } from "./engine.ts";
 
@@ -40,6 +42,9 @@ export interface JobEngineOptions {
   readonly diagnostics?: () => boolean;
   /** The unfinished-job limit (50,000; tests lower it). */
   readonly queueLimit?: number;
+  /** Starts the job host (tests pass a fake; default fin-node's `JobHost.start`). */
+  readonly jobHost?: JobHostFactory;
+  readonly eventQueueBytes?: number;
 }
 
 /** The engine over `serverData`, its host started; the caller closes it. */
@@ -69,9 +74,11 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
             ...(opts.timing === undefined ? {} : { timing: opts.timing }),
             ...(opts.cgroups === undefined ? {} : { cgroups: opts.cgroups }),
             ...(opts.watchdog === undefined ? {} : { watchdog: opts.watchdog }),
+            ...(opts.eventQueueBytes === undefined ? {} : { eventQueueBytes: opts.eventQueueBytes }),
           },
           now,
           log,
+          ...(opts.jobHost === undefined ? [] : [opts.jobHost]),
         ),
       catch: startFailure,
     });
@@ -89,6 +96,7 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
           totalMem: opts.totalMem ?? totalmem(),
           now,
           run,
+          timers: clockTimers(run, (m) => log("error", m)),
           log,
           diagnostics: opts.diagnostics ?? (() => false),
           testHooks: testHooks !== undefined,

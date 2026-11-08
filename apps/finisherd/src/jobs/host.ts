@@ -1,27 +1,49 @@
 // The engine's side of fin-node's `JobHost` (5C-1 plan Task 9a): routes the host's events by
 // process id to the runner that spawned the process, and by group id to whoever waits for the
 // group to empty, and turns an `ExitInfo` into a `worker.exit` reason and, when the exit ends a
-// job, its error. A process's events can reach JS before its `spawn` promise settles (Task 6),
-// so events of a process nobody has claimed yet are held until `spawn` claims it.
-import type { ExitReason, Hello, HostMsg, WorkerMsg } from "@finisher/core-types";
+// job, its error. A process's `spawn` has resolved, and the code after its `await` has run,
+// before its first event (`spawned`) arrives (Task 6 review), so the listener is always in place;
+// an event for an id nobody spawned is dropped (9a review L4).
+import type {
+  ExitReason,
+  Hello,
+  HostMsg,
+  JobGroupSpec,
+  JobHostCaps,
+  JobHostEvent,
+  JobHostExitInfo,
+  JobHostKillReason,
+  JobHostOptions,
+  JobSpawnRequest,
+  JobWatch,
+  WorkerMsg,
+} from "@finisher/core-types";
 import type { FinError } from "@finisher/contracts";
-import { JobHost, type JobHostCaps, type JobHostEvent, type JobHostKillReason, type JobHostOptions, type JobHostQos } from "@finisher/fin-node";
+import { JobHost, type JobHostSendResult } from "@finisher/fin-node";
 import { finError } from "../errors.ts";
 
-/** An exit's facts (derived from the event, so the binding's type name does not matter here). */
-export type JobHostExitInfo = Extract<JobHostEvent, { type: "exit" }>["info"];
-export type JobSpawnRequest = Parameters<JobHost["spawn"]>[1];
+export type { JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 
-/**
- * What `send` did. Never a cause: why a process is gone arrives with its `exit`. (The Task 6
- * review turns the binding's boolean into these words; `true`/`false` read as `ok`/`gone`.)
- */
-export type SendResult = "ok" | "full" | "gone";
+/** What `send` did. Never a cause: why a process is gone arrives with its `exit`. */
+export type SendResult = JobHostSendResult;
 
-function sendResult(r: unknown): SendResult {
-  if (r === "ok" || r === "full" || r === "gone") return r;
-  return r === true ? "ok" : "gone";
+/** The part of fin-node's `JobHost` the engine uses (tests pass a fake, 9a review). */
+export interface JobHostLike {
+  caps(): JobHostCaps;
+  openGroup(spec: JobGroupSpec): number;
+  spawn(group: number, req: JobSpawnRequest): Promise<number>;
+  send(proc: number, msg: HostMsg): JobHostSendResult;
+  watch(proc: number, w: JobWatch | null): void;
+  closeStdin(proc: number): void;
+  killGroup(group: number, reason: JobHostKillReason): Promise<void>;
+  closeGroup(group: number): void;
+  shutdown(graceMs: number): Promise<void>;
+  readonly killProcForTest?: ((proc: number) => void) | undefined;
+  readonly abandonForTest?: ((proc: number, holdMs?: number) => void) | undefined;
 }
+
+/** Starts a host whose events go to `onEvent` (default: fin-node's `JobHost.start`). */
+export type JobHostFactory = (opts: JobHostOptions, onEvent: (e: JobHostEvent) => void) => Promise<JobHostLike>;
 
 /** What a process's owner receives, in order: `hello`, messages and `stderr` lines, then `exit`. */
 export type ProcEvent =
@@ -30,7 +52,7 @@ export type ProcEvent =
   | { readonly type: "stderr"; readonly line: string }
   | { readonly type: "exit"; readonly info: JobHostExitInfo };
 
-/** Receives each event with its process id (held events are replayed before `spawn` resolves). */
+/** Receives each event with its process id. */
 export type ProcListener = (e: ProcEvent, proc: number) => void;
 
 /** A live process, for `workers()`. */
@@ -47,51 +69,57 @@ export interface ProcView {
 type Log = (level: "debug" | "warning" | "error", message: string) => void;
 
 export class EngineHost {
-  readonly #host: JobHost;
+  readonly #host: JobHostLike;
   readonly #caps: JobHostCaps;
   readonly #listeners = new Map<number, ProcListener>();
-  readonly #held = new Map<number, ProcEvent[]>();
   readonly #groups = new Map<number, Array<() => void>>();
   readonly #live = new Map<object, { view: ProcView }>();
   readonly #byProc = new Map<number, object>();
   readonly #clock: () => number;
+  #log: Log = () => {};
 
-  private constructor(host: JobHost, clock: () => number, router: { deliver: (e: JobHostEvent) => void }) {
+  private constructor(host: JobHostLike, clock: () => number, router: { deliver: (e: JobHostEvent) => void }) {
     this.#host = host;
     this.#caps = host.caps();
     this.#clock = clock;
     router.deliver = (e) => this.#deliver(e);
   }
 
-  /** Starts fin-node's host. `log` receives what the engine logs about processes. */
-  static async start(opts: JobHostOptions, clock: () => number, log: Log): Promise<EngineHost> {
+  /** Starts the host (`factory`: fin-node's by default). `log` receives what the engine logs about processes. */
+  static async start(opts: JobHostOptions, clock: () => number, log: Log, factory: JobHostFactory = (o, f) => JobHost.start(o, f)): Promise<EngineHost> {
     let early: JobHostEvent[] | undefined = [];
     const router = {
       deliver: (e: JobHostEvent): void => {
         early?.push(e);
       },
     };
-    const host = await JobHost.start(opts, (e) => router.deliver(e));
+    const host = await factory(opts, (e) => router.deliver(e));
     const engineHost = new EngineHost(host, clock, router);
+    engineHost.#log = log;
     for (const e of early) router.deliver(e);
     early = undefined;
-    engineHost.#log = log;
     return engineHost;
   }
-
-  #log: Log = () => {};
 
   caps(): JobHostCaps {
     return this.#caps;
   }
 
   #deliver(e: JobHostEvent): void {
-    // `spawned` (Task 6 review) only says the proc id exists; events stay held until `spawn` claims it.
-    if ((e as { type: string }).type === "spawned") return;
-    if (e.type === "groupEmpty") {
-      const waiters = this.#groups.get(e.group);
-      this.#groups.delete(e.group);
-      for (const w of waiters ?? []) w();
+    switch (e.type) {
+      case "spawned":
+        return;
+      case "groupEmpty": {
+        const waiters = this.#groups.get(e.group);
+        this.#groups.delete(e.group);
+        for (const w of waiters ?? []) w();
+        return;
+      }
+    }
+    const listener = this.#listeners.get(e.proc);
+    if (listener === undefined) {
+      // Nobody spawned this id (or its exit was handled): dropped, never held (9a review L4).
+      this.#log("debug", `job host: a ${e.type} event of unknown process ${e.proc} was dropped`);
       return;
     }
     const ev: ProcEvent =
@@ -105,20 +133,9 @@ export class EngineHost {
             ? { type: "stderr", line: e.line }
             : { type: "exit", info: e.info };
     if (ev.type === "hello") this.#notePid(e.proc, ev.hello.pid);
-    const listener = this.#listeners.get(e.proc);
-    if (listener === undefined) {
-      const held = this.#held.get(e.proc) ?? [];
-      held.push(ev);
-      this.#held.set(e.proc, held);
-      return;
-    }
     if (ev.type === "exit") this.#gone(e.proc);
-    this.#call(listener, ev, e.proc);
-  }
-
-  #call(listener: ProcListener, ev: ProcEvent, proc: number): void {
     try {
-      listener(ev, proc);
+      listener(ev, e.proc);
     } catch (err) {
       this.#log("error", `a job process listener threw: ${(err as Error).stack ?? String(err)}`);
     }
@@ -137,21 +154,18 @@ export class EngineHost {
     if (key !== undefined) this.#live.delete(key);
   }
 
-  openGroup(spec: { label: string; memoryBytes?: number; qos: JobHostQos }): number {
+  openGroup(spec: JobGroupSpec): number {
     return this.#host.openGroup(spec);
   }
 
-  /** Calls `f` once the group's last process exited (at once for an unknown or empty group: never). */
+  /** Calls `f` once the group's last process exited. */
   onGroupEmpty(group: number, f: () => void): void {
     const list = this.#groups.get(group) ?? [];
     list.push(f);
     this.#groups.set(group, list);
   }
 
-  /**
-   * Spawns a process whose events go to `listener` (held ones first, in order). The process
-   * counts as live from this call until its `exit`.
-   */
+  /** Spawns a process whose events go to `listener`. It counts as live from this call until its `exit`. */
   async spawn(group: number, req: JobSpawnRequest, listener: ProcListener, job?: string): Promise<number> {
     const key = {};
     const view: ProcView = { group, role: req.role, family: req.family, spawnedAt: this.#clock(), ...(job === undefined ? {} : { job }) };
@@ -163,26 +177,20 @@ export class EngineHost {
       this.#live.delete(key);
       throw e;
     }
+    // Before any event of the process: the host delivers `spawned` only after this code ran.
     const entry = this.#live.get(key);
     if (entry !== undefined) entry.view = { ...entry.view, proc };
     this.#byProc.set(proc, key);
-    const held = this.#held.get(proc) ?? [];
-    this.#held.delete(proc);
     this.#listeners.set(proc, listener);
-    for (const ev of held) {
-      if (ev.type === "hello") this.#notePid(proc, ev.hello.pid);
-      if (ev.type === "exit") this.#gone(proc);
-      this.#call(listener, ev, proc);
-    }
     return proc;
   }
 
   /** Enqueues; `full` and `gone` say only that nothing was queued (the cause comes with `exit`). */
   send(proc: number, msg: HostMsg): SendResult {
-    return sendResult(this.#host.send(proc, msg));
+    return this.#host.send(proc, msg);
   }
 
-  watch(proc: number, w: { job: string; stallMs?: number; timeoutMs?: number } | null): void {
+  watch(proc: number, w: JobWatch | null): void {
     this.#host.watch(proc, w);
   }
 
@@ -190,6 +198,7 @@ export class EngineHost {
     this.#host.closeStdin(proc);
   }
 
+  /** Kills the group and resolves once its processes exited or were abandoned; a closed group is a no-op. */
   killGroup(group: number, reason: JobHostKillReason): Promise<void> {
     return this.#host.killGroup(group, reason);
   }
@@ -215,6 +224,11 @@ export class EngineHost {
   /** The test-hooks build's direct process kill (a crash), or `undefined`. */
   get killProcForTest(): ((proc: number) => void) | undefined {
     return this.#host.killProcForTest;
+  }
+
+  /** The test-hooks build's abandonment: the process's exit is held `holdMs` once seen. */
+  get abandonForTest(): ((proc: number, holdMs?: number) => void) | undefined {
+    return this.#host.abandonForTest;
   }
 }
 

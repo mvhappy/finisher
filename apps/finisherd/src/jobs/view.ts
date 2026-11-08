@@ -37,7 +37,24 @@ export function doneEvent(view: JobView, kind: KindSpec | undefined, stats: RunS
   const outcome = OUTCOMES[view.state as keyof typeof OUTCOMES];
   if (outcome === undefined) throw new Error(`job ${view.id} is not finished (${view.state})`);
   const queuedMs = Math.max(0, (view.startedAt ?? view.finishedAt ?? view.createdAt) - view.createdAt);
-  const e: Record<string, unknown> = {
+  let items: { items?: number; itemsFailed?: number } = {};
+  if (kind?.batch !== undefined) {
+    try {
+      items = { items: kind.batch.items(view.params as never).length };
+    } catch (err) {
+      log(`job ${view.id}: batch.items threw: ${String(err)}`);
+    }
+    items = { ...items, itemsFailed: view.itemErrors?.length ?? 0 };
+  }
+  let extra: { extra?: Readonly<Record<string, unknown>> } = {};
+  if (kind?.journal !== undefined) {
+    try {
+      extra = { extra: kind.journal(view) };
+    } catch (err) {
+      log(`job ${view.id}: the kind's journal() threw: ${String(err)}`);
+    }
+  }
+  return {
     kind: view.kind,
     family: view.family,
     outcome,
@@ -48,22 +65,8 @@ export function doneEvent(view: JobView, kind: KindSpec | undefined, stats: RunS
     runMicros: Math.round(stats.runMicros),
     isolated: stats.isolated,
     helpers: stats.helpers,
+    ...(view.error !== undefined && outcome !== "succeeded" ? { code: view.error.code } : {}),
+    ...items,
+    ...extra,
   };
-  if (view.error !== undefined && outcome !== "succeeded") e.code = view.error.code;
-  if (kind?.batch !== undefined) {
-    try {
-      e.items = kind.batch.items(view.params as never).length;
-    } catch (err) {
-      log(`job ${view.id}: batch.items threw: ${String(err)}`);
-    }
-    e.itemsFailed = view.itemErrors?.length ?? 0;
-  }
-  if (kind?.journal !== undefined) {
-    try {
-      e.extra = kind.journal(view);
-    } catch (err) {
-      log(`job ${view.id}: the kind's journal() threw: ${String(err)}`);
-    }
-  }
-  return e as unknown as JobDoneEvent;
 }

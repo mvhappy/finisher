@@ -83,6 +83,11 @@ export interface CallCtx {
   readonly rights?: JobRights;
 }
 
+/**
+ * A host call (Decision 5a). `params` are exactly what the process sent: validating them is the
+ * family's trust boundary (a plugin process is untrusted; 8B decodes each method's params
+ * before acting on them, and checks `rights`).
+ */
 export type OnCall = (ctx: CallCtx, method: string, params: unknown) => Effect.Effect<unknown, FinError>;
 
 export interface FamilySpec {

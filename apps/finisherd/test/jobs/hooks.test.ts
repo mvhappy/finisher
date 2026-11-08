@@ -75,7 +75,7 @@ describe("kind hooks", () => {
     const v = await t.runJob("test.echo", { value: 1, report: ["pid"] });
     expect(v.state).toBe("succeeded");
     expect(seen).toMatchObject({ pidAlive: false, dir: true });
-    expect(existsSync(seen.dirPath!)).toBe(false);
+    await until(() => !existsSync(seen.dirPath!));
   });
 
   test("result_and_phase_persisted_before_the_hook", async () => {

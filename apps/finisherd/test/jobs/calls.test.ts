@@ -64,8 +64,9 @@ describe("the call router", () => {
     r.call(1, "a", null);
     r.call(2, "b", null);
     await new Promise((res) => setTimeout(res, 10));
-    r.close();
-    await until(() => interrupted === 2);
+    // `close` resolves once the open calls have ended (9a review M1).
+    await r.close();
+    expect(interrupted).toBe(2);
     expect(sent).toEqual([]);
     r.call(3, "c", null);
     expect(sent).toEqual([]);
@@ -85,5 +86,14 @@ describe("the call router", () => {
     const { r: bare, sent: none } = router(undefined);
     bare.call(5, "x.y", null);
     expect(none).toEqual([{ t: "reply", id: 5, error: { code: "INVALID_REQUEST", message: "no host call x.y", details: { method: "x.y" } } }]);
+  });
+
+  test("calls_after_the_answer_are_refused", async () => {
+    const { r, sent } = router(() => Effect.succeed("late"));
+    r.refuse("after the job's answer");
+    r.call(1, "test.echo", null);
+    expect(sent).toEqual([
+      { t: "reply", id: 1, error: { code: "INVALID_REQUEST", message: "no host call is taken after the job's answer", details: { method: "test.echo", after: "answer" } } },
+    ]);
   });
 });

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { openControlStore } from "../../src/control/db.ts";
 import { checkPrepared, createFiles, removeJobDir, sweep } from "../../src/jobs/files.ts";
 import { JobStore } from "../../src/jobs/store.ts";
-import { closeTestEngines, OWNER, testEngine } from "../support/jobs.ts";
+import { closeTestEngines, OWNER, testEngine, until } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
@@ -134,9 +134,10 @@ describe("job files", () => {
     const t = await testEngine();
     const v = await t.runJob("test.files", { failOnAttempt: 1 }, { maxAttempts: 1 });
     expect(v.state).toBe("failed");
-    expect(existsSync(join(t.serverData, "jobs", v.id))).toBe(false);
+    // The directory goes right after the job's end is announced (9a review H2).
+    await until(() => !existsSync(join(t.serverData, "jobs", v.id)));
     const ok = await t.runJob("test.echo", { value: 1 });
-    expect(existsSync(join(t.serverData, "jobs", ok.id))).toBe(false);
+    await until(() => !existsSync(join(t.serverData, "jobs", ok.id)));
     expect(readdirSync(join(t.serverData, "jobs"))).toEqual([]);
   });
 

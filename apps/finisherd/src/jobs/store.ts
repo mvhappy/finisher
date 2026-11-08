@@ -61,11 +61,21 @@ export interface TransitionPatch {
   readonly extra?: unknown;
   readonly isolation?: unknown;
   readonly pausedFrom?: JobState | null;
+  /** Only with a terminal state: `announce` marks a row whose `job.done` is not out yet (9a review H2). */
+  readonly phase?: "announce";
 }
+
+/**
+ * The engine's phase column. `run` and `hooks` while a job is unfinished (Decision 40); a
+ * finished row is `announce` until its `job.done` went to the sink, then `done` (a restart
+ * re-emits `job.done` for an `announce` row, 9a review H2). Rows finished before that rule are
+ * `run` or `hooks` and count as announced.
+ */
+export type JobPhase = "run" | "hooks" | "announce" | "done";
 
 /** A job's full row: the view plus the engine's own columns. */
 export type JobRow = JobView & {
-  readonly phase: "run" | "hooks";
+  readonly phase: JobPhase;
   readonly checkpoint?: unknown;
   readonly extra?: unknown;
   readonly isolation?: unknown;
@@ -109,7 +119,7 @@ interface Row {
   parent: string | null;
   priority: Priority;
   state: JobState;
-  phase: "run" | "hooks";
+  phase: JobPhase;
   pausedFrom: JobState | null;
   warm: number;
   attempts: number;
@@ -221,6 +231,8 @@ export class JobStore {
       ),
       hooks: p("UPDATE jobs SET phase = 'hooks', result = ? WHERE id = ? AND state = 'running'"),
       checkpoint: p("UPDATE jobs SET checkpoint = ? WHERE id = ?"),
+      announced: p("UPDATE jobs SET phase = 'done' WHERE id = ? AND finishedAt IS NOT NULL AND phase = 'announce'"),
+      unannounced: p(`SELECT ${COLUMNS} FROM jobs WHERE finishedAt IS NOT NULL AND phase = 'announce' ORDER BY finishedAt, id`),
       items: p("SELECT item, value, error FROM job_items WHERE jobId = ? ORDER BY item"),
       writeItem: p("INSERT INTO job_items (jobId, item, value, error) VALUES (?, ?, ?, ?) ON CONFLICT (jobId, item) DO UPDATE SET value = excluded.value, error = excluded.error"),
       unfinished: p("SELECT COUNT(*) AS n FROM jobs WHERE finishedAt IS NULL"),
@@ -333,7 +345,7 @@ export class JobStore {
     if (!LEGAL[cur.state].includes(to)) refuse(`illegal job transition ${cur.state} → ${to} (${id})`);
     const now = this.#clock();
     const pick = <K extends keyof TransitionPatch>(k: K, fallback: unknown): unknown => (k in patch ? patch[k] : fallback);
-    const phase = to === "queued" ? "run" : cur.phase;
+    const phase = to === "queued" ? "run" : TERMINAL_JOB_STATES.includes(to) && patch.phase !== undefined ? patch.phase : cur.phase;
     const finishedAt = TERMINAL_JOB_STATES.includes(to) ? now : null;
     // `startedAt` is the first start: set by the first move to `running`, then never changed.
     const startedAt = cur.startedAt ?? (to === "running" ? now : null);
@@ -366,6 +378,16 @@ export class JobStore {
     const changed = this.#s1("hooks").run(JSON.stringify(result ?? null), id).changes;
     if (Number(changed) !== 1) refuse(`enterHooks of job ${id}, which is not running`);
     return this.get(id) ?? refuse(`job ${id} vanished`);
+  }
+
+  /** The terminal row's `job.done` went to the sink (9a review H2). */
+  announced(id: string): void {
+    this.#s1("announced").run(id);
+  }
+
+  /** Finished rows whose `job.done` may not have gone out (the last run died in between). */
+  unannounced(): JobRow[] {
+    return this.#many(this.#s1("unannounced").all() as unknown as Row[]);
   }
 
   /** Stores the newest checkpoint; the caller throttles (Decision 26). */
@@ -461,8 +483,13 @@ export class JobStore {
     return this.#inState("paused");
   }
 
+  /** Unfinished rows in `state`, oldest first, with the engine's columns. */
+  rowsIn(state: JobState): JobRow[] {
+    return this.#many(this.#s1("inState").all(state) as unknown as Row[]);
+  }
+
   #inState(state: JobState): JobView[] {
-    return this.#many(this.#s1("inState").all(state) as unknown as Row[]).map(viewOf);
+    return this.rowsIn(state).map(viewOf);
   }
 
   /**

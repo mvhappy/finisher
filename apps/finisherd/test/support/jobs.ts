@@ -3,9 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
-import { Effect, Exit, Fiber, Layer, Stream } from "effect";
+import { type Clock, Duration, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect";
+import { TestClock } from "effect/testing";
 import { type ControlStore, ControlStoreTag, openControlStore } from "../../src/control/db.ts";
-import type { JobEngine, JobEvent } from "../../src/jobs/engine.ts";
+import { Engine, type JobEngine, type JobEvent } from "../../src/jobs/engine.ts";
+import type { EngineHost } from "../../src/jobs/host.ts";
 import { JobEventSinkTag, type MemorySink, memorySink } from "../../src/jobs/events.ts";
 import { buildJobEngine, type JobEngineOptions } from "../../src/jobs/layer.ts";
 import { JobStore } from "../../src/jobs/store.ts";
@@ -110,4 +112,30 @@ export async function until<A>(f: () => A | undefined | false, ms = WAIT_MS): Pr
     if (Date.now() > end) throw new Error("condition not met in time");
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+/** A `TestClock` for an engine (`clock` option); `adjust` moves it, `close` releases it. */
+export async function testClock(): Promise<{ clock: Clock.Clock; adjust(ms: number): Promise<void>; close(): Promise<void> }> {
+  const scope = await Effect.runPromise(Scope.make());
+  const tc = await Effect.runPromise(TestClock.make().pipe(Scope.provide(scope)));
+  return {
+    clock: tc as unknown as Clock.Clock,
+    async adjust(ms) {
+      await Effect.runPromise(tc.adjust(Duration.millis(ms)));
+      // Let the fibers the sleeps woke run.
+      await new Promise((r) => setTimeout(r, 5));
+    },
+    close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+  };
+}
+
+/** The engine's host (for the test-hooks process kills and abandonment). */
+export function hostOf(engine: JobEngine): EngineHost {
+  if (!(engine instanceof Engine)) throw new Error("not a job engine");
+  return engine.d.host;
+}
+
+/** The process id of the job's worker, once it runs. */
+export function procOf(t: TestEngine, job: string): Promise<number> {
+  return until(() => t.engine.workers().processes.find((p) => p.job === job && p.role === "worker" && p.pid !== undefined)?.proc);
 }

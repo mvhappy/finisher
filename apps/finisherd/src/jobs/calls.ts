@@ -2,7 +2,10 @@
 // to its family's `onCall` (a helper's to its `HelperProgram.onCall`) with a `CallCtx`; the
 // Effect's value or `FinError` goes back as `reply {id, value}` / `reply {id, error}`. At most
 // 16 calls are in flight per process (the 17th is answered `CALL_LIMIT`); replies may leave
-// in any order; calls still open when the process exits are interrupted.
+// in any order; calls still open when the process exits are interrupted, and the attempt
+// waits for them to end (9a review M1). `onCall` receives `params` exactly as the process sent
+// them: validating them is the family's trust boundary (8B's host API decodes each method's
+// params before acting on them).
 import type { HostMsg, JobError } from "@finisher/core-types";
 import { Cause, Effect, Exit, Fiber } from "effect";
 import { toFinError } from "../errors.ts";
@@ -31,6 +34,7 @@ export class CallRouter {
   readonly #send: (msg: HostMsg) => unknown;
   readonly #run: RunFork;
   #closed = false;
+  #refusing: string | undefined;
 
   /**
    * `ctx` is read at each call (the job's view changes); `send` writes to the process and
@@ -63,6 +67,10 @@ export class CallRouter {
   /** A `call` message from the process. */
   call(id: number, method: string, params: unknown): void {
     if (this.#closed) return;
+    if (this.#refusing !== undefined) {
+      this.#reply(id, { error: replyError("INVALID_REQUEST", `no host call is taken ${this.#refusing}`, { method, after: "answer" }) });
+      return;
+    }
     if (this.#open.has(id)) {
       this.#reply(id, { error: replyError("INVALID_REQUEST", `call ${id} is already open`, { id }) });
       return;
@@ -88,12 +96,21 @@ export class CallRouter {
     });
   }
 
-  /** The process exited: every open call is interrupted and no reply is sent. */
-  close(): void {
+  /** New calls are answered `INVALID_REQUEST` (`why`: e.g. "after the job's answer"); open ones go on. */
+  refuse(why: string): void {
+    this.#refusing ??= why;
+  }
+
+  /** The process exited: every open call is interrupted, no reply is sent; resolves once they ended. */
+  async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     const open = [...this.#open.values()];
     this.#open.clear();
-    if (open.length > 0) this.#run(Fiber.interruptAll(open));
+    if (open.length > 0) await awaitExit(this.#run(Fiber.interruptAll(open)));
   }
+}
+
+function awaitExit(fiber: Fiber.Fiber<unknown, unknown>): Promise<void> {
+  return new Promise((resolve) => fiber.addObserver(() => resolve()));
 }
