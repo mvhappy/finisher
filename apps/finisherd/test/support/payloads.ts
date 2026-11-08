@@ -50,6 +50,8 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "fonts.status": {},
   "fonts.fetch": {},
   "fonts.plan": { projectId: P, branch: "main", ops: [] },
+  "media.look": { projectId: P, at: ["0"] },
+  "media.capabilities": {},
   "diagnostics.status": {},
   "diagnostics.export": {},
   "diagnostics.purge": { selector: "all" },

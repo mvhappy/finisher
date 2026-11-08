@@ -25,7 +25,7 @@ pub fn plan_hash(plan: &FramePlan) -> String {
     blake3::hash(json.as_bytes()).to_hex().to_string()
 }
 
-fn adapter(a: AdapterSummary) -> GpuAdapter {
+pub(super) fn adapter(a: AdapterSummary) -> GpuAdapter {
     GpuAdapter {
         backend: a.backend,
         device_type: a.device_type,
@@ -37,7 +37,7 @@ fn adapter(a: AdapterSummary) -> GpuAdapter {
 }
 
 /// The worker's GPU, made on first use (`FIN_GPU` picks the adapter).
-fn gpu(warm: &mut Warm) -> Result<&mut GpuState, JobError> {
+pub(super) fn gpu(warm: &mut Warm) -> Result<&mut GpuState, JobError> {
     if warm.gpu.is_none() {
         let choice = AdapterChoice::from_env().map_err(job_error)?;
         let gpu = Gpu::new(choice).map_err(job_error)?;

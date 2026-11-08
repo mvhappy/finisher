@@ -18,6 +18,7 @@ import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import type { KindRegistry, KindSpec, MemoryRule } from "../kinds.ts";
+import { mediaCapabilitiesKind } from "./media.capabilities.ts";
 
 export const MEDIA_FAMILY = "media";
 export const MEDIA_LOOK = "media.look";
@@ -215,8 +216,9 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
   };
 }
 
-/** Registers the family and the kind. */
+/** Registers the family and its kinds (`media.look`, `media.capabilities`). */
 export function registerMediaKinds(registry: KindRegistry, deps: MediaKindDeps): void {
   registerMediaFamily(registry);
   registry.registerKind(mediaLookKind(deps));
+  registry.registerKind(mediaCapabilitiesKind());
 }

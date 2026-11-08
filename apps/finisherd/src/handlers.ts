@@ -11,6 +11,9 @@ import { issueChallenge } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
+import { JobEngineTag } from "./jobs/layer.ts";
+import { mediaCapabilities } from "./media/caps.ts";
+import { look as mediaLook } from "./media/look.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
 import { PluginsTag } from "./plugins/registries.ts";
@@ -46,6 +49,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
     const plugins = yield* PluginsTag;
+    const engine = yield* JobEngineTag;
     const tickets = yield* TicketsTag;
     const everyConnection = yield* ConnectionRegistryTag;
     const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
@@ -63,6 +67,13 @@ export const HandlersLive = FinRpcs.toLayer(
     const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
       const p = principalOf(options);
       audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
+    };
+    // `media.look` and `media.capabilities` (6A Task 13): jobs on the engine's `media` family.
+    const mediaDeps = { registry, engine };
+    const capabilitiesOf = mediaCapabilities(mediaDeps);
+    const ownerOf = (options: object) => {
+      const p = principalOf(options);
+      return { kind: p.kind, id: p.id };
     };
     const projects = {
       isOpen: registry.isOpen,
@@ -142,7 +153,11 @@ export const HandlersLive = FinRpcs.toLayer(
           Effect.flatMap(requireAbsolute("dir", dir), (d) => {
             const c = chainOf(options);
             return registry.open(d, relocate, { projectId: c?.openedProject, attachOnly: c?.facts.attached === true });
-          }),
+          }).pipe(
+            // A project open means looks are coming: a media worker is started now (a family or
+            // a pool that cannot, or an engine that is closing, is nothing the caller needs).
+            Effect.tap(() => Effect.ignore(engine.warm("media"))),
+          ),
         ),
       // Protocol 2: the probe is for `projectId` (opened on demand, `PROJECT_NOT_FOUND` otherwise).
       // For a principal with roots the file is opened beneath its project's folder, through no
@@ -203,6 +218,8 @@ export const HandlersLive = FinRpcs.toLayer(
       "eval.frame": ({ projectId, branch, timeline, at }) => guard("eval.frame", registry.evalFrame(projectId, branch ?? "main", timeline, at)),
       "eval.audio": ({ projectId, branch, timeline, from, to }) =>
         guard("eval.audio", registry.evalAudio(projectId, branch ?? "main", timeline, from, to)),
+      "media.look": (req, options) => guard("media.look", mediaLook(mediaDeps, ownerOf(options), req)),
+      "media.capabilities": (_, options) => guard("media.capabilities", capabilitiesOf(ownerOf(options))),
       "fonts.catalog": () => guard("fonts.catalog", fonts.catalog()),
       "fonts.status": () => guard("fonts.status", fonts.status()),
       // `pinned` needs the project open (its pins are the engine's): opened on demand.

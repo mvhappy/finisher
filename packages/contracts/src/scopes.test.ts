@@ -21,6 +21,7 @@ const NEEDS: Record<string, ResolverName> = {
   tx: "branch",
   path: "probePath",
   importDir: "importDir",
+  out: "outDir",
 };
 
 test("rpc_scopes_cover_every_rpc", () => {

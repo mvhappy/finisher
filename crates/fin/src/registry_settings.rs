@@ -166,6 +166,14 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         || schema_of::<eval::AudioArgs>("eval.audio"),
     ),
     cmd(
+        "media.caps",
+        "media",
+        "",
+        "codecs, GPU and worker versions of this machine's media worker (server only)",
+        false,
+        || schema_of::<project::NoArgs>("media.caps"),
+    ),
+    cmd(
         "fonts.ls",
         "fonts",
         "[--catalog|--cached|--pinned] [--detail]",

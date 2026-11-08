@@ -14,6 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::format::VideoCodec;
 use crate::info::Size;
 
 /// The most times one `media.look` renders.
@@ -188,6 +189,58 @@ pub struct LookResult {
     pub skipped: Vec<LookSkipped>,
     pub adapter: GpuAdapter,
     pub stats: LookStats,
+}
+
+/// `media.capabilities` v1 takes no params.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilitiesParams {}
+
+/// How a codec direction is served on this machine (spec §6.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CapSupport {
+    Hardware,
+    Software,
+    None,
+}
+
+/// One codec's support: the shape of `fin-codecs`' `CodecSupport`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CodecCaps {
+    pub codec: VideoCodec,
+    pub decode: CapSupport,
+    pub encode: CapSupport,
+    /// The backends that would be used, decode first.
+    pub backends: Vec<String>,
+}
+
+/// What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CodecCapabilities {
+    pub video: Vec<CodecCaps>,
+}
+
+/// The worker binary's versions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerInfo {
+    /// The `fin-workers` crate's version.
+    pub version: String,
+    /// [`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).
+    pub render_version: u32,
+}
+
+/// What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
+/// (`null` when no adapter, not even a software one, can be opened) and the worker's versions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCapabilities {
+    pub codecs: CodecCapabilities,
+    pub gpu: Option<GpuAdapter>,
+    pub worker: WorkerInfo,
 }
 
 /// `in/snapshot.json` (plan 6A Decision 2).

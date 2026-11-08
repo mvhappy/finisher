@@ -1,4 +1,5 @@
-//! The `media` worker family (sub-project 6 spec §3; plan 6A Task 11): `media.look` v1.
+//! The `media` worker family (sub-project 6 spec §3; plan 6A Tasks 11 and 13): `media.look` v1
+//! and `media.capabilities` v1.
 //!
 //! - **Inputs** come from the job directory only (`start.files`, opened with `fin-shm`'s
 //!   no-follow [`checked_open`](fin_shm::checked_open) below the [`JobDir`](fin_shm::JobDir)),
@@ -19,6 +20,7 @@ use fin_jobs::worker::{Family, JobCtx};
 use fin_jobs::{JobError, KindVersion, Retry, StartJob};
 use serde_json::Value;
 
+mod caps;
 mod fonts;
 mod inputs;
 mod look;
@@ -26,7 +28,10 @@ mod open_cache;
 pub mod replay;
 mod sources;
 
-static KINDS: &[KindVersion] = &[KindVersion::new("media.look", 1)];
+static KINDS: &[KindVersion] = &[
+    KindVersion::new("media.look", 1),
+    KindVersion::new("media.capabilities", 1),
+];
 
 /// The GPU state a warm worker keeps.
 pub(crate) struct GpuState {
@@ -82,6 +87,7 @@ impl Family for MediaFamily {
         self.state.jobs += 1;
         match (job.kind.as_str(), job.kind_version) {
             ("media.look", 1) => look::run(job, ctx, &mut self.state),
+            ("media.capabilities", 1) => caps::run(job, &mut self.state),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),

@@ -33,7 +33,8 @@ import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
-import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
@@ -78,8 +79,19 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       // to the journal (D34).
       const runLog = Effect.runForkWith(yield* Effect.context<never>()); // the server's (stderr) logger
       const logSink = (level: "debug" | "warning", message: string) => void runLog(level === "debug" ? Effect.logDebug(message) : Effect.logWarning(message));
+      // The project registry first: the `media.look` kind reads from it (its engine writes a
+      // job's inputs), and it closes after the job engine.
+      const registryContext = yield* Layer.build(layerProjectRegistry(serverData, registry));
+      const projects = Context.get(registryContext, ProjectRegistry);
       const jobsContext = yield* Layer.build(
-        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions }).pipe(
+        layerJobEngine(serverData, {
+          diagnostics: () => diagnostics.enabled(),
+          ...jobOptions,
+          register: (r) => {
+            registerMediaKinds(r, { serverData, projects });
+            jobOptions?.register?.(r);
+          },
+        }).pipe(
           Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
         ),
       );
@@ -137,7 +149,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
-              layerProjectRegistry(serverData, registry),
+              Layer.succeedContext(registryContext),
               fontsLayer,
               layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),

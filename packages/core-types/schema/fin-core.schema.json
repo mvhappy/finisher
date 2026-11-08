@@ -1179,6 +1179,20 @@
       ],
       "type": "string"
     },
+    "CapSupport": {
+      "description": "How a codec direction is served on this machine (spec §6.2).",
+      "enum": [
+        "hardware",
+        "software",
+        "none"
+      ],
+      "type": "string"
+    },
+    "CapabilitiesParams": {
+      "additionalProperties": false,
+      "description": "`media.capabilities` v1 takes no params.",
+      "type": "object"
+    },
     "CaptionBox": {
       "description": "A box behind the block. One equal to the default (transparent, no padding) is no box.",
       "properties": {
@@ -1813,6 +1827,49 @@
       "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
       "type": "string",
       "x-fin-class": "meta"
+    },
+    "CodecCapabilities": {
+      "description": "What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.",
+      "properties": {
+        "video": {
+          "items": {
+            "$ref": "#/$defs/CodecCaps"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "video"
+      ],
+      "type": "object"
+    },
+    "CodecCaps": {
+      "description": "One codec's support: the shape of `fin-codecs`' `CodecSupport`.",
+      "properties": {
+        "backends": {
+          "description": "The backends that would be used, decode first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec"
+        },
+        "decode": {
+          "$ref": "#/$defs/CapSupport"
+        },
+        "encode": {
+          "$ref": "#/$defs/CapSupport"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
     },
     "CollectPolicy": {
       "description": "A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by\n`fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of\nthe project is recorded, and setting it purges the project's entries. A project whose\npolicy is not known (not open here) is neither: the journal drops its new entries and\npurges nothing.",
@@ -8261,6 +8318,32 @@
         }
       ]
     },
+    "MediaCapabilities": {
+      "description": "What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use\n(`null` when no adapter, not even a software one, can be opened) and the worker's versions.",
+      "properties": {
+        "codecs": {
+          "$ref": "#/$defs/CodecCapabilities"
+        },
+        "gpu": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuAdapter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worker": {
+          "$ref": "#/$defs/WorkerInfo"
+        }
+      },
+      "required": [
+        "codecs",
+        "worker"
+      ],
+      "type": "object"
+    },
     "MediaInfo": {
       "description": "What a media file is (spec §6.3).",
       "properties": {
@@ -14609,6 +14692,26 @@
         "jobsServed",
         "lifetimeS",
         "sandboxed"
+      ],
+      "type": "object"
+    },
+    "WorkerInfo": {
+      "description": "The worker binary's versions.",
+      "properties": {
+        "renderVersion": {
+          "description": "[`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "The `fin-workers` crate's version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "renderVersion"
       ],
       "type": "object"
     },

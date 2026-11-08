@@ -303,6 +303,11 @@ fn replay_fonts(server: &Server, subst: &[(String, String)]) {
     assert_eq!(audio["exit"]["value"]["timeline"], "tl1", "{audio}");
     let plan = Conn::open(server, subst).replay("fonts-plan");
     assert_eq!(plan["exit"]["value"], json!({ "ops": [], "notes": [] }));
+    let look = Conn::open(server, subst).replay("media-look-range");
+    assert_eq!(
+        look["exit"]["cause"][0]["error"]["code"], "INVALID_RANGE",
+        "{look}"
+    );
     let catalog = Conn::open(server, subst).replay_to("fonts-catalog", REPORT_KEYS);
     assert!(
         catalog["exit"]["value"]["entries"]

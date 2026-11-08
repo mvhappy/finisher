@@ -70,6 +70,8 @@ fn main() {
         g.subschema_for::<fin_media::MediaInfo>();
         g.subschema_for::<fin_media::jobs::LookParams>();
         g.subschema_for::<fin_media::jobs::LookResult>();
+        g.subschema_for::<fin_media::jobs::CapabilitiesParams>();
+        g.subschema_for::<fin_media::jobs::MediaCapabilities>();
         g.subschema_for::<fin_media::jobs::JobSnapshot>();
         g.subschema_for::<fin_media::jobs::RenderManifest>();
         g.subschema_for::<fin_library::RawRel>();

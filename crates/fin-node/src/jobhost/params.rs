@@ -3,7 +3,7 @@
 
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
-use fin_media::jobs::LookParams;
+use fin_media::jobs::{CapabilitiesParams, LookParams};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -15,12 +15,20 @@ static PARAMS: &[&[KindParams]] = &[
 ];
 
 /// Sub-project 6's media kinds (`fin_media::jobs`; the worker side is `fin-workers media`).
-static MEDIA: &[KindParams] = &[KindParams {
-    kind: "media.look",
-    version: 1,
-    validate: validate_look,
-    schema: schema_as::<LookParams>,
-}];
+static MEDIA: &[KindParams] = &[
+    KindParams {
+        kind: "media.look",
+        version: 1,
+        validate: validate_look,
+        schema: schema_as::<LookParams>,
+    },
+    KindParams {
+        kind: "media.capabilities",
+        version: 1,
+        validate: validate_as::<CapabilitiesParams>,
+        schema: schema_as::<CapabilitiesParams>,
+    },
+];
 
 /// `LookParams`, then the checks serde cannot make (counts, sizes, the output name), as the
 /// worker makes them.

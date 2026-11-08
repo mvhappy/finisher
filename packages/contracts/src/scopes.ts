@@ -57,11 +57,13 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  * - `openDir` / `createDir`: `dir`, canonicalised; `openDir` reads its project's id
  *   (`finisher.project.json`) and whether that project is open here;
  * - `probePath` / `importDir`: the path, canonical and absolute (`INVALID_PATH` otherwise);
+ * - `outDir`: the payload's `out`, an absolute folder the call writes files into (optional),
+ *   canonical; for a principal with roots it must lie inside the call's project folder;
  * - `branch`: the payload's branch references (a name, an id or `name#id`), as ids through
  *   the store, when a policy reads them (5A: the write targets of `agent`/`mcp` principals
  *   with branch limits; 5E: protected branches).
  */
-export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "branch";
+export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "branch";
 
 /** Resolved facts an escalation may read. */
 export interface RuleFacts {
@@ -193,6 +195,12 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "fonts.status": { scopes: ["server.read"] },
   "fonts.fetch": { scopes: ["fonts.fetch"], resolve: PROJECT },
   "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
+  // Plan 6A Task 13. A look reads the project and submits a job (`jobs.submit` and the kind's own
+  // `project.read`, spec §6.7); its frames go to `out`, which a principal with roots may name only
+  // inside its project's folder. It commits nothing, so it takes no branch write guard.
+  "media.look": { scopes: ["project.read", "jobs.submit"], resolve: [...BRANCH, "outDir"] },
+  // What this machine's media worker can decode and draw on.
+  "media.capabilities": { scopes: ["server.read"] },
   "diagnostics.status": { scopes: ["diagnostics.read"] },
   // Redacted for a caller that is not a person; the content itself is human-only (Decision 22).
   "diagnostics.export": {

@@ -909,6 +909,13 @@ export type Link =
  */
 export type CancelReason = "cancel" | "pause";
 /**
+ * How a codec direction is served on this machine (spec §6.2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CapSupport".
+ */
+export type CapSupport = "hardware" | "software" | "none";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UnmeasuredReason".
  */
@@ -927,6 +934,11 @@ export type Chroma = "mono" | "yuv420" | "yuv422" | "yuv444";
  * via the `definition` "ChromaSiting".
  */
 export type ChromaSiting = "unknown" | "left" | "center" | "topLeft";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoCodec".
+ */
+export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
 /**
  * A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by
  * `fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of
@@ -1658,11 +1670,6 @@ export type JobSpawnProgram =
  * via the `definition` "JobSpawnRole".
  */
 export type JobSpawnRole = "worker" | "helper";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoCodec".
- */
-export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
 /**
  * Clockwise display rotation in degrees, from the track matrix.
  *
@@ -3801,6 +3808,13 @@ export interface Tx {
   txId: string;
 }
 /**
+ * `media.capabilities` v1 takes no params.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CapabilitiesParams".
+ */
+export interface CapabilitiesParams {}
+/**
  * A caption's words at the plan's time, and its layout when it was measured. `layout` is
  * `null` when it was not, and `unmeasured` says why (plan 4C Decision 36).
  *
@@ -4020,6 +4034,30 @@ export interface CatalogSource {
   sha256?: string | null;
   size?: number | null;
   url: string;
+}
+/**
+ * What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecCapabilities".
+ */
+export interface CodecCapabilities {
+  video: CodecCaps[];
+}
+/**
+ * One codec's support: the shape of `fin-codecs`' `CodecSupport`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecCaps".
+ */
+export interface CodecCaps {
+  /**
+   * The backends that would be used, decode first.
+   */
+  backends: string[];
+  codec: VideoCodec;
+  decode: CapSupport;
+  encode: CapSupport;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5943,6 +5981,34 @@ export interface ManifestFonts {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
+ * (`null` when no adapter, not even a software one, can be opened) and the worker's versions.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaCapabilities".
+ */
+export interface MediaCapabilities {
+  codecs: CodecCapabilities;
+  gpu?: GpuAdapter | null;
+  worker: WorkerInfo;
+}
+/**
+ * The worker binary's versions.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerInfo".
+ */
+export interface WorkerInfo {
+  /**
+   * [`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).
+   */
+  renderVersion: number;
+  /**
+   * The `fin-workers` crate's version.
+   */
+  version: string;
 }
 /**
  * What a media file is (spec §6.3).
