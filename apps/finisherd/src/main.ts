@@ -31,6 +31,7 @@ import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
 import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
+import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
@@ -204,7 +205,23 @@ export const serve = ({
         revoke: { ...revokeDeps, revoke: (ref) => credentials.markEnded(ref, "owner") },
       });
       sessionCredentials.drain();
-      const agentCore: AgentCore = { store: agentStore, credentials: sessionCredentials, lineage: new BranchLineage(), clock: agentClock, ids: agentIds };
+      // Its journal records metadata to the diagnostics journal and content to the trace store (D34).
+      const agentJournal = new AgentJournal({
+        diagnostics: diagnostics.journal,
+        traces: diagnostics.traces,
+        store: agentStore,
+        ids: agentIds,
+        clock: agentClock,
+        log: (message, fields) => logSink("warning", `${message} ${JSON.stringify(fields ?? {})}`),
+      });
+      const agentCore: AgentCore = {
+        store: agentStore,
+        credentials: sessionCredentials,
+        lineage: new BranchLineage(),
+        clock: agentClock,
+        ids: agentIds,
+        journal: agentJournal,
+      };
       onAgentCore?.(agentCore);
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);

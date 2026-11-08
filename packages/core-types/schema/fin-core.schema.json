@@ -10297,6 +10297,26 @@
             "null"
           ]
         },
+        "tracesMaxMiB": {
+          "description": "The agent-trace store's size cap in MiB, 64–65536 (default 2048).",
+          "format": "uint32",
+          "maximum": 65536,
+          "minimum": 64,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tracesRetentionDays": {
+          "description": "The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).",
+          "format": "uint32",
+          "maximum": 365,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "training": {
           "anyOf": [
             {

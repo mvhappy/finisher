@@ -198,6 +198,26 @@ export declare class Journal {
     hostname: string,
     testOptions?: { statsEveryMs?: number; flushEveryMs?: number },
   ): Journal;
+  /**
+   * The agent-trace store (`<serverData>/agent-traces`; sp7 §12.1): training only, its own caps
+   * (`privacy.tracesMaxMiB`, `tracesRetentionDays`), whole-session eviction; follows the
+   * project policies and the key of the journal open on the folder (open that first).
+   */
+  static openTraces(
+    serverData: string,
+    privacyJson: string | null,
+    hostname: string,
+    testOptions?: { statsEveryMs?: number; flushEveryMs?: number; maxTotalBytes?: number; maxFileBytes?: number },
+  ): Journal;
+  /** Whether training is in force (content may be recorded): one atomic load. */
+  readonly training: boolean;
+  /** Whether an entry of the project would be recorded now (`default`; not `never`, not unknown). */
+  recordsProject(projectId: string): boolean;
+  /**
+   * Queues `bytes` as a blob, written before the first entry that references it: the `Body`
+   * for a content field, or `undefined` (training off, over 4 MiB, a type not in `MEDIA_TYPES`).
+   */
+  attachBlob(bytes: Uint8Array, mediaType: string): { blob: { hash: string; bytes: number; mediaType: string } } | undefined;
   /** Why the `privacy` section given to `open` was unusable (recording is then off). */
   readonly openWarning: string | undefined;
   /** This process run's id (a ULID). */

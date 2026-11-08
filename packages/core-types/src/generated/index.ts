@@ -5864,6 +5864,14 @@ export interface PrivacySettings {
    * The age cap in days, 1–365 (default 30).
    */
   retentionDays?: number | null;
+  /**
+   * The agent-trace store's size cap in MiB, 64–65536 (default 2048).
+   */
+  tracesMaxMiB?: number | null;
+  /**
+   * The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).
+   */
+  tracesRetentionDays?: number | null;
   training?: Switch | null;
 }
 /**

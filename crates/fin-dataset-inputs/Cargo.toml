@@ -1,0 +1,17 @@
+[package]
+name = "fin-dataset-inputs"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The dataset builder's inputs: readers of the diagnostics journal and the agent-trace store, and nothing else"
+
+# The builder reads recorded data only (sp7 §12.1, §16.2): never `control.db`, never product
+# state. `scripts/check-crate-deps.mjs` holds this crate to fin-core and fin-journal.
+[dependencies]
+fin-core = { path = "../fin-core" }
+serde_json = "1"
+
+[dev-dependencies]
+fin-journal = { path = "../fin-journal" }
+tempfile = "3"

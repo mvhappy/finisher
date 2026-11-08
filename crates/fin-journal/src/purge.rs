@@ -75,6 +75,10 @@ impl Writer {
         while n < closed && files_total + blobs_live - freed(self, n) > max_total {
             n += 1;
         }
+        let sessions = match self.sh.opts.whole_sessions && n > 0 {
+            true => self.sessions_in(&self.files[..n])?,
+            false => Default::default(),
+        };
         let mut result = Ok(());
         let mut removed = 0;
         for f in &self.files[..n] {
@@ -91,6 +95,9 @@ impl Writer {
         }
         if removed > 0 {
             result = result.and(files::sync_dir(&self.dir));
+        }
+        if result.is_ok() {
+            result = self.evict_sessions(sessions);
         }
         result = result.and(self.blobs.gc(&self.dir).map(|_| ()));
         self.publish();
@@ -170,7 +177,7 @@ impl Writer {
 
     /// For each file, `plan` says (delete whole, a byte string a matching line must contain,
     /// rewrite at all); a rewrite drops the lines `hit` matches.
-    fn rewrite_each(
+    pub(crate) fn rewrite_each(
         &mut self,
         plan: impl Fn(&FileMeta) -> (bool, Option<String>, bool),
         hit: impl Fn(&Envelope) -> bool,

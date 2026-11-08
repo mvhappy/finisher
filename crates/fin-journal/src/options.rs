@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fin_core::events::ScrubCtx;
+use fin_core::events::{Purposes, ScrubCtx};
 
 use crate::{Clock, SystemClock};
 
@@ -27,7 +27,8 @@ pub struct JournalOptions {
     /// The stats window (1 minute).
     pub stats_every: Duration,
     pub clock: Arc<dyn Clock>,
-    /// An override of the 16-byte keyed hash (tests only). `None`, the default, is the
+    /// An override of the 16-byte keyed hash: tests, and the agent-trace store, which keys with
+    /// the diagnostics journal's key ([`crate::Journal::shared_keyer`]). `None`, the default, is the
     /// per-install key in `events/key` (Decision 6), which [`crate::Journal::hash`],
     /// [`crate::Journal::id_ref`] and `record_value`'s wire kinds use; blobs always use the
     /// install key.
@@ -36,6 +37,46 @@ pub struct JournalOptions {
     /// temp, user and host; `fin-core` reads none): [`server_scrub`] in the server. The
     /// default scrubs absolute paths only.
     pub scrub: ScrubCtx,
+    /// The purposes this instance records (all, for the diagnostics journal). The agent-trace
+    /// store records training only (sp7 §12.1): its consent is the user's with diagnostics
+    /// masked off, so it writes nothing, and makes no directory, unless training is on.
+    pub purposes: Purposes,
+    /// Which `privacy` keys replace [`JournalOptions::max_age`] and
+    /// [`JournalOptions::max_total_bytes`].
+    pub caps_keys: CapsKeys,
+    /// Eviction by the caps removes whole agent sessions (`ctx.actor.session`), oldest
+    /// first: when a file goes, every other entry of a session it held goes too, and later
+    /// entries of that session are not written (the agent-trace store; never half a
+    /// conversation).
+    pub whole_sessions: bool,
+}
+
+/// The settings keys of an instance's caps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapsKeys {
+    /// `privacy.retentionDays` and `privacy.maxMiB`.
+    Diagnostics,
+    /// `privacy.tracesRetentionDays` and `privacy.tracesMaxMiB`.
+    AgentTraces,
+}
+
+/// The agent-trace store's defaults (sp7 §12.1): 2 GiB, 90 days.
+pub const TRACES_MAX_BYTES: u64 = 2 << 30;
+pub const TRACES_MAX_AGE: Duration = Duration::from_secs(90 * 86_400);
+
+impl JournalOptions {
+    /// The agent-trace store's options (`<server-data>/agent-traces/`): training only, its
+    /// own caps and keys, whole-session eviction.
+    pub fn agent_traces() -> JournalOptions {
+        JournalOptions {
+            max_total_bytes: TRACES_MAX_BYTES,
+            max_age: TRACES_MAX_AGE,
+            purposes: Purposes::TRAINING,
+            caps_keys: CapsKeys::AgentTraces,
+            whole_sessions: true,
+            ..JournalOptions::default()
+        }
+    }
 }
 
 /// The server's [`ScrubCtx`]: its home, `server_data`, temp dir, user and host names, from
@@ -86,6 +127,9 @@ impl Default for JournalOptions {
             clock: Arc::new(SystemClock),
             key: None,
             scrub: ScrubCtx::default(),
+            purposes: Purposes::ALL,
+            caps_keys: CapsKeys::Diagnostics,
+            whole_sessions: false,
         }
     }
 }
@@ -102,6 +146,9 @@ impl fmt::Debug for JournalOptions {
             .field("flush_bytes", &self.flush_bytes)
             .field("stats_every", &self.stats_every)
             .field("key", &self.key.as_ref().map(|_| "<set>"))
+            .field("purposes", &self.purposes)
+            .field("caps_keys", &self.caps_keys)
+            .field("whole_sessions", &self.whole_sessions)
             .finish_non_exhaustive()
     }
 }

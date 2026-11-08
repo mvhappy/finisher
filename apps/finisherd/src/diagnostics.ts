@@ -261,6 +261,8 @@ export interface ExportRequest {
   readonly cursor?: string | undefined;
   readonly limit?: number | undefined;
   readonly asUpload?: "diagnostics" | "training" | undefined;
+  /** The diagnostics journal (default) or the agent-trace store (sp7 §12.1). */
+  readonly store?: "diagnostics" | "agentTraces" | undefined;
 }
 
 /** What `record` needs to know of the request's connection. */
@@ -272,6 +274,8 @@ export interface RecordFrom {
 
 export interface DiagnosticsShape {
   readonly journal: Journal;
+  /** The agent-trace store (`<server-data>/agent-traces`; training only; sp7 §12.1). */
+  readonly traces: Journal;
   /** Whether any purpose is on (`finisherd.json` `diagnostics.enabled`). */
   readonly enabled: () => boolean;
   /** Called with the new value each time recording turns on or off. */
@@ -284,6 +288,7 @@ export interface DiagnosticsShape {
   readonly status: () => Effect.Effect<DiagnosticsReport, FinError>;
   /** `redact`: content fields removed (a caller that is not a person, Decision 22). */
   readonly export: (req: ExportRequest, redact: boolean) => Effect.Effect<ExportPage, FinError>;
+  /** Purges both stores' entries (their reports summed); never product state (`control.db`). */
   readonly purge: (selector: unknown) => Effect.Effect<PurgeReport, FinError>;
   /** Events dropped by the per-principal rate limit since start. */
   readonly rateLimited: () => number;
@@ -322,10 +327,17 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
     const started = performance.now();
     const first = readPrivacy(serverData);
     const journal = Journal.open(serverData, privacyArg(first), hostname(), testOptions());
+    // The agent-trace store after the journal, whose project policies it follows.
+    const traces = Journal.openTraces(serverData, privacyArg(first), hostname(), testOptions());
     const warn = (w: string | undefined) => {
       if (w !== undefined) process.stderr.write(`finisherd: warning: settings.json privacy: ${w}\n`);
     };
     warn(journal.openWarning);
+    /** Both stores under one `privacy` section; the journal's warning stands for both. */
+    const apply = (arg: string | null) => {
+      traces.applySettings(arg);
+      return journal.applySettings(arg);
+    };
     // Acknowledged by the writer (bounded) before the server reports ready, so a kill right
     // after ready cannot lose `session.start` and `openSession`; a slow disk only delays it.
     if (!journal.startSession(JSON.stringify(sessionStart()), START_ACK_MS)) {
@@ -360,7 +372,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
       }
       candidate = NONE;
       applied = arg;
-      warn(journal.applySettings(arg));
+      warn(apply(arg));
       changed();
     };
     yield* Effect.acquireRelease(
@@ -377,6 +389,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
         Effect.promise(async () => {
           remove();
           await journal.endSession((performance.now() - started) / 1000).catch(() => false);
+          await traces.close().catch(() => undefined);
           await journal.close().catch(() => undefined);
         }),
     );
@@ -414,6 +427,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
 
     return {
       journal,
+      traces,
       enabled: () => journal.enabled,
       onEnabledChange: (f) => void listeners.push(f),
       timed: (tag, self) =>
@@ -468,7 +482,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
           applied = arg;
           hadFile = true;
           candidate = NONE;
-          const refused = journal.applySettings(arg);
+          const refused = apply(arg);
           changed();
           if (refused !== undefined) {
             return yield* Effect.fail(
@@ -480,7 +494,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
       status: () => attemptJson<DiagnosticsReport>(() => journal.status()),
       export: (req, redact) =>
         attemptJson<ExportPage>(() =>
-          journal.export(
+          (req.store === "agentTraces" ? traces : journal).export(
             JSON.stringify(req.filter ?? {}),
             req.cursor,
             Math.min(Math.max(Math.trunc(req.limit ?? 1000), 1), 1000),
@@ -488,7 +502,12 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
             redact,
           ),
         ),
-      purge: (selector) => attemptJson<PurgeReport>(() => journal.purge(JSON.stringify(selector))),
+      purge: (selector) =>
+        Effect.zipWith(
+          attemptJson<PurgeReport>(() => journal.purge(JSON.stringify(selector))),
+          attemptJson<PurgeReport>(() => traces.purge(JSON.stringify(selector))),
+          (a, b) => ({ removed: a.removed + b.removed, files: a.files + b.files, blobs: a.blobs + b.blobs }),
+        ),
       rateLimited: () => rateLimited,
     } satisfies DiagnosticsShape;
   });

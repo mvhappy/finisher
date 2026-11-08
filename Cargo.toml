@@ -13,6 +13,7 @@ default-members = [
     "crates/fin-compositor",
     "crates/fin-container",
     "crates/fin-core",
+    "crates/fin-dataset-inputs",
     "crates/fin-fonts",
     "crates/fin-jobhost",
     "crates/fin-jobs",

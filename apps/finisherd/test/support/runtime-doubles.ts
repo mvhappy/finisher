@@ -12,7 +12,7 @@ import type { AgentCore } from "../../src/agent/core.ts";
 import { type BranchRegistry, SessionCredentials } from "../../src/agent/credentials.ts";
 import { BranchLineage } from "../../src/agent/reach.ts";
 import { Runtime, type RuntimeDeps } from "../../src/agent/runtime.ts";
-import type { RuntimeJournal, SessionPlan, SessionPlanner, StartRequest, ToolCall, ToolExecutor, ToolOutcome } from "../../src/agent/runtime-deps.ts";
+import { NO_JOURNAL, type RuntimeJournal, type SessionPlan, type SessionPlanner, type StartRequest, type ToolCall, type ToolExecutor, type ToolOutcome } from "../../src/agent/runtime-deps.ts";
 import type { AgentStore } from "../../src/agent/store.ts";
 import { Credentials } from "../../src/auth/credentials.ts";
 import { Audit } from "../../src/control/audit.ts";
@@ -95,7 +95,7 @@ export function testCore(store: AgentStore, control: ControlStore, clock: Clock)
     credentials: auth,
     revoke: { audit, tickets: { dropWhere: () => 0 }, connections: { closeWhere: () => 0, revoke: () => {} }, revoke: (ref) => auth.markEnded(ref, "owner") },
   });
-  return { store, credentials, lineage: new BranchLineage(), clock, ids: systemIds(clock), auth };
+  return { store, credentials, lineage: new BranchLineage(), clock, ids: systemIds(clock), journal: NO_JOURNAL, auth };
 }
 
 export function journal(): RuntimeJournal & { readonly entries: { kind: string; [k: string]: unknown }[]; failSessions: boolean } {

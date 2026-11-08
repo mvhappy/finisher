@@ -750,6 +750,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-dataset-inputs"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-journal",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "fin-dav1d-sys"
 version = "0.0.0"
 dependencies = [

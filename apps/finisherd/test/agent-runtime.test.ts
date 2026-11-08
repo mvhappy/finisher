@@ -352,7 +352,8 @@ describe("agent runtime", () => {
     expect(answered.approval).toMatchObject({ status: "answered", decision: "allow", by: "local:local", consumedAt: expect.any(Number) });
     expect(store.ledger().read(session.id, "tokens").limit).toBe(101_000);
     expect(credential(h, session.id)).toBe("live");
-    expect(h.journal.entries.filter((e) => e.kind === "approval")).toHaveLength(1);
+    // Opened, then answered (Task 10 records the decision).
+    expect(h.journal.entries.filter((e) => e.kind === "approval").map((e) => e.id)).toEqual([approval!.id, approval!.id]);
     expect((await failure(h.runtime.approve("01JC0000000000000000000099", "allow", {}, PEOPLE))).code).toBe("APPROVAL_NOT_FOUND");
   });
 

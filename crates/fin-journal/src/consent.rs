@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::control::{Control, Stamp, pack};
 use crate::handle::ConsentCtl;
-use crate::{Consent, Journal, JournalOptions};
+use crate::{CapsKeys, Consent, Journal, JournalOptions};
 
 /// One purpose's switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -51,6 +51,18 @@ pub struct PrivacySettings {
     #[serde(default, rename = "maxMiB", skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 16, max = 4096))]
     pub max_mib: Option<u32>,
+    /// The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 365))]
+    pub traces_retention_days: Option<u32>,
+    /// The agent-trace store's size cap in MiB, 64–65536 (default 2048).
+    #[serde(
+        default,
+        rename = "tracesMaxMiB",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(range(min = 64, max = 65536))]
+    pub traces_max_mib: Option<u32>,
 }
 
 impl PrivacySettings {
@@ -69,6 +81,14 @@ impl PrivacySettings {
         }
         if s.max_mib.is_some_and(|m| !(16..=4096).contains(&m)) {
             return Err("privacy.maxMiB is not 16–4096".into());
+        }
+        if s.traces_retention_days
+            .is_some_and(|d| !(1..=365).contains(&d))
+        {
+            return Err("privacy.tracesRetentionDays is not 1–365".into());
+        }
+        if s.traces_max_mib.is_some_and(|m| !(64..=65536).contains(&m)) {
+            return Err("privacy.tracesMaxMiB is not 64–65536".into());
         }
         Ok(s)
     }
@@ -217,6 +237,16 @@ pub fn resolve_state(
     env: &EnvOverrides,
     last_good: Option<&PrivacySettings>,
 ) -> (ConsentState, Option<PrivacySettings>, Option<String>) {
+    resolve_masked(privacy, env, last_good, Purposes::ALL)
+}
+
+/// [`resolve_state`] for an instance that records only `mask` ([`masked`]).
+pub(crate) fn resolve_masked(
+    privacy: Option<&Value>,
+    env: &EnvOverrides,
+    last_good: Option<&PrivacySettings>,
+    mask: Purposes,
+) -> (ConsentState, Option<PrivacySettings>, Option<String>) {
     let (settings, warning) = match PrivacySettings::parse(privacy) {
         Ok(s) => (Some(s), None),
         Err(m) => (
@@ -274,7 +304,7 @@ pub fn resolve_state(
         env: env_p,
         do_not_track: env.do_not_track,
     };
-    (state, settings, warning)
+    (masked(state, mask, training.1), settings, warning)
 }
 
 /// The consent in force from the raw `privacy` section, the environment and the last good
@@ -289,15 +319,42 @@ pub fn resolve(
     (s.consent(), good, warning)
 }
 
-/// The caps from the settings (`retentionDays`, `maxMiB`), else the options' (ms, bytes).
-pub(crate) fn caps_of(s: Option<&PrivacySettings>, age_ms: u64, total: u64) -> (u64, u64) {
-    let age = s
-        .and_then(|s| s.retention_days)
-        .map_or(age_ms, |d| u64::from(d) * 86_400_000);
-    let total = s
-        .and_then(|s| s.max_mib)
-        .map_or(total, |m| u64::from(m) << 20);
+/// The caps from the settings (`retentionDays`, `maxMiB`, or the trace store's keys), else
+/// the options' (ms, bytes).
+pub(crate) fn caps_of(
+    s: Option<&PrivacySettings>,
+    keys: CapsKeys,
+    age_ms: u64,
+    total: u64,
+) -> (u64, u64) {
+    let (days, mib) = match (s, keys) {
+        (None, _) => (None, None),
+        (Some(s), CapsKeys::Diagnostics) => (s.retention_days, s.max_mib),
+        (Some(s), CapsKeys::AgentTraces) => (s.traces_retention_days, s.traces_max_mib),
+    };
+    let age = days.map_or(age_ms, |d| u64::from(d) * 86_400_000);
+    let total = mib.map_or(total, |m| u64::from(m) << 20);
     (age, total)
+}
+
+/// `state` as an instance that records only `mask` sees it: a purpose outside the mask is
+/// off (the agent-trace store's diagnostics), and the basis is the remaining purpose's.
+pub(crate) fn masked(
+    mut state: ConsentState,
+    mask: Purposes,
+    training_basis: Basis,
+) -> ConsentState {
+    if !mask.contains(Purpose::Diagnostics) && state.diagnostics == Switch::On {
+        state.diagnostics = Switch::Off;
+        state.basis = training_basis;
+    }
+    if !mask.has_training() && state.training == TrainingState::On {
+        state.training = TrainingState::Off;
+    }
+    if !mask.contains(Purpose::Diagnostics) {
+        state.env = state.env.intersect(mask);
+    }
+    state
 }
 
 impl Journal {
@@ -311,13 +368,15 @@ impl Journal {
         env: EnvOverrides,
         opts: JournalOptions,
     ) -> (Journal, Option<String>) {
-        let (state, last_good, warning) = resolve_state(privacy, &env, None);
+        let (state, last_good, warning) = resolve_masked(privacy, &env, None, opts.purposes);
         let ctl = ConsentCtl {
             env,
             last_good,
             state,
             base_age_ms: opts.max_age.as_millis() as u64,
             base_total: opts.max_total_bytes,
+            mask: opts.purposes,
+            caps_keys: opts.caps_keys,
         };
         (Journal::open_ctl(dir, ctl, opts), warning)
     }
@@ -330,9 +389,15 @@ impl Journal {
     pub fn apply_settings(&self, privacy: Option<&Value>) -> Option<String> {
         let h = self.h.as_ref()?;
         let mut c = h.sh.lock_consent();
-        let (mut next, good, warning) = resolve_state(privacy, &c.env, c.last_good.as_ref());
+        let (mut next, good, warning) =
+            resolve_masked(privacy, &c.env, c.last_good.as_ref(), c.mask);
         c.last_good = good;
-        let (age, total) = caps_of(c.last_good.as_ref(), c.base_age_ms, c.base_total);
+        let (age, total) = caps_of(
+            c.last_good.as_ref(),
+            c.caps_keys,
+            c.base_age_ms,
+            c.base_total,
+        );
         let age_changed = h.sh.caps_age.swap(age, Relaxed) != age;
         let total_changed = h.sh.caps_total.swap(total, Relaxed) != total;
         let caps_changed = age_changed || total_changed;
@@ -358,6 +423,15 @@ impl Journal {
         h.sh.word.store(pack(stamp), Release);
         h.control_after(seen, Control::Consent { from, to: next });
         warning
+    }
+
+    /// The caps in force: the age cap in ms and the size cap in bytes (the settings' keys
+    /// for this instance, else its options).
+    pub fn caps(&self) -> (u64, u64) {
+        match &self.h {
+            Some(h) => (h.sh.caps_age.load(Relaxed), h.sh.caps_total.load(Relaxed)),
+            None => (0, 0),
+        }
     }
 
     /// The consent in force.

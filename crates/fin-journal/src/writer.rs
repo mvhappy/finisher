@@ -98,6 +98,8 @@ pub(crate) struct Writer {
     pub state_dirty: bool,
     pub state_other: Map<String, Value>,
     pub session: crate::session::SessionState,
+    /// Sessions whole-session eviction removed (`evict.rs`).
+    pub evicted: crate::evict::Evicted,
 }
 
 impl Writer {
@@ -138,6 +140,7 @@ impl Writer {
             state_dirty: init.dirty,
             state_other: init.other,
             session: Default::default(),
+            evicted: Default::default(),
         }
     }
 
@@ -352,6 +355,9 @@ impl Writer {
             {
                 self.sh.skipped_unknown.fetch_add(1, Relaxed);
             }
+            return false;
+        }
+        if self.evicted(&p) {
             return false;
         }
         let purposes = p.stamp.purposes.intersect(self.gate());

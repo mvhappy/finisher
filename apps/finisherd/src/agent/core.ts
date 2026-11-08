@@ -4,6 +4,7 @@
 import { Context } from "effect";
 import type { Clock, Ids } from "./clock.ts";
 import type { SessionCredentials } from "./credentials.ts";
+import type { RuntimeJournal } from "./runtime-deps.ts";
 import type { BranchLineage } from "./reach.ts";
 import type { AgentStore } from "./store.ts";
 
@@ -13,6 +14,8 @@ export interface AgentCore {
   readonly lineage: BranchLineage;
   readonly clock: Clock;
   readonly ids: Ids;
+  /** The runtime's journal (Task 10's `AgentJournal` over both D34 stores). */
+  readonly journal: RuntimeJournal;
 }
 
 export class AgentCoreTag extends Context.Service<AgentCoreTag, AgentCore>()("finisherd/AgentCore") {}

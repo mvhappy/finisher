@@ -330,6 +330,7 @@ export class Runtime extends RuntimeEngine {
       })();
       return this.serial(found.sessionId, async () => {
         const { approval, session } = this.store.answerApproval(approvalId, decision, principalRef(by));
+        this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
         if (approval.kind !== "budget" || decision !== "allow") return { approval, session };
         const b = this.budget(session);

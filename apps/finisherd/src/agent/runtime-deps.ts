@@ -1,7 +1,7 @@
 // What the runtime engine (plan 7A Task 6b) needs from the rest of finisherd beside Task 7's
 // `AgentCore` (store, session credentials) and `openSession`, as interfaces: the start planner
 // and the session environment (Task 12 and 8b fill them from the catalogue, the roles and the
-// `fin` map), the journal (Task 10), the tool executors (8b's built-in tools; tests' fakes) and
+// `fin` map), the journal (Task 10's `AgentJournal`, `journal.ts`), the tool executors (8b's built-in tools; tests' fakes) and
 // pricing (the catalogue). The journal and pricing have defaults here.
 import type { AgentProvider, AgentSessionStartPayload, Approval, BudgetSpec, CostBasis, FinError, Harness, Mode, Principal, Session, Usage, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
@@ -79,11 +79,20 @@ export interface RuntimeJournal {
   session(sessionId: string, session: Session | undefined, phase: JournalPhase, reason: string | null): void | Promise<void>;
   /** One model call's usage, priced (an `agent.turn`'s metadata). */
   turn(r: { session: Session; runId: string; usage: Usage }): void;
-  /** The exact model traffic of one call (built-in only): the `agent.turn` content. */
+  /**
+   * The exact model traffic of one call (built-in only): the `agent.turn` content. **A call's
+   * `capture` event comes before its `usage` event** (the turn is recorded at `usage` and joins
+   * the capture before it; a failed attempt's `usage` has none). `request` is the body as sent
+   * (`ModelResult.capture.request`, JSON text); `response` is the chunks as received, or
+   * `{chunks, stopReason?, upstream?, latencyMs?, ttftMs?}` with those `ModelResult` fields,
+   * which the turn's metadata takes (`agent/journal-content.ts` `captureMeta`).
+   */
   capture(r: { session: Session; runId: string; request: unknown; response: unknown }): void;
+  /** A call announced; its turn is the run's last recorded one (its model call's `usage` came first). */
   toolCall(r: { session: Session; runId: string; callId: string; providerId: string; tool: string; input: unknown }): void;
   /** A result; `synthetic` for one recovery or an interrupt wrote. */
   toolResult(r: { sessionId: string; runId: string; callId: string; ok: boolean; output: unknown; synthetic: boolean }): void;
+  /** An approval opened, answered or expired (`agent.approval` records the decisions). */
   approval(r: { session: Session; approval: Approval }): void;
 }
 
