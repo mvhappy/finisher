@@ -134,6 +134,12 @@ export interface RuleOf<T extends FinRpcTag> {
    * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
    */
   readonly deviceOnly?: (payload: PayloadOf<T>) => boolean;
+  /**
+   * True for a payload that acts beyond any one project (`jobs.pause|resume {all}`,
+   * `jobs.workers`): only a principal whose `projects` is `"*"` may send it; any other is
+   * `SCOPE_DENIED {reason: reach}`, after its scopes are checked (5C-2 review M2).
+   */
+  readonly allProjects?: (payload: PayloadOf<T>) => boolean;
 }
 
 /** A rule with its RPC's types erased, as the chain reads it. */
@@ -146,6 +152,7 @@ export interface RpcRule {
   readonly author?: string;
   readonly unconfirmed?: "readOnly" | "service";
   readonly deviceOnly?: (payload: never) => boolean;
+  readonly allProjects?: (payload: never) => boolean;
 }
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
@@ -237,9 +244,21 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "jobs.wait": { scopes: ["jobs.read"] },
   "jobs.watch": { scopes: ["jobs.read"] },
   "jobs.cancel": { scopes: ["jobs.read"], resolve: ["job"], escalate: (_, facts) => jobControl(facts) },
-  "jobs.pause": { scopes: ["jobs.read"], resolve: ["job"], escalate: (p, facts) => (p.all === true ? ["jobs.control"] : jobControl(facts)) },
-  "jobs.resume": { scopes: ["jobs.read"], resolve: ["job"], escalate: (p, facts) => (p.all === true ? ["jobs.control"] : jobControl(facts)) },
-  "jobs.workers": { scopes: ["jobs.control"] },
+  // `{all}` and `jobs.workers` act on every project's jobs and processes: `jobs.control` and a
+  // principal that reaches every project (review M2).
+  "jobs.pause": {
+    scopes: ["jobs.read"],
+    resolve: ["job"],
+    escalate: (p, facts) => (p.all === true ? ["jobs.control"] : jobControl(facts)),
+    allProjects: (p) => p.all === true,
+  },
+  "jobs.resume": {
+    scopes: ["jobs.read"],
+    resolve: ["job"],
+    escalate: (p, facts) => (p.all === true ? ["jobs.control"] : jobControl(facts)),
+    allProjects: (p) => p.all === true,
+  },
+  "jobs.workers": { scopes: ["jobs.control"], allProjects: () => true },
   "diagnostics.status": { scopes: ["diagnostics.read"] },
   // Redacted for a caller that is not a person; the content itself is human-only (Decision 22).
   "diagnostics.export": {

@@ -249,6 +249,7 @@ export class JobStore {
       items: p("SELECT item, value, error FROM job_items WHERE jobId = ? ORDER BY item"),
       writeItem: p("INSERT INTO job_items (jobId, item, value, error) VALUES (?, ?, ?, ?) ON CONFLICT (jobId, item) DO UPDATE SET value = excluded.value, error = excluded.error"),
       unfinished: p("SELECT COUNT(*) AS n FROM jobs WHERE finishedAt IS NULL"),
+      unfinishedByOwner: p("SELECT ownerKind, ownerId, COUNT(*) AS n FROM jobs WHERE finishedAt IS NULL GROUP BY ownerKind, ownerId"),
       inState: p(`SELECT ${COLUMNS} FROM jobs WHERE finishedAt IS NULL AND state = ? ORDER BY createdAt, id`),
       inHooks: p(`SELECT ${COLUMNS} FROM jobs WHERE finishedAt IS NULL AND state = 'running' AND phase = 'hooks' ORDER BY createdAt, id`),
       nthFinished: p("SELECT finishedAt FROM jobs WHERE finishedAt IS NOT NULL ORDER BY finishedAt DESC LIMIT 1 OFFSET ?"),
@@ -484,6 +485,12 @@ export class JobStore {
 
   unfinishedCount(): number {
     return Number((this.#s1("unfinished").get() as { n: number }).n);
+  }
+
+  /** Unfinished jobs per owner. */
+  unfinishedByOwner(): Array<{ owner: JobOwner; n: number }> {
+    const rows = this.#s1("unfinishedByOwner").all() as unknown as Array<{ ownerKind: string; ownerId: string; n: number }>;
+    return rows.map((r) => ({ owner: { kind: r.ownerKind, id: r.ownerId }, n: Number(r.n) }));
   }
 
   running(): JobView[] {

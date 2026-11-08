@@ -319,6 +319,7 @@ mod tests {
             ("JOB_CANCELLED", 4),
             ("WAIT_TIMEOUT", 5),
             ("WATCH_LAGGING", 5),
+            ("TOO_MANY_WATCHES", 5),
             ("SCOPE_DENIED", 7),
         ] {
             assert_eq!(crate::output::exit_code(code), exit, "{code}");

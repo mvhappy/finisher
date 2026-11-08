@@ -14,12 +14,25 @@ export const JOB_WAIT_MAX_MS = 600_000;
 export const JOB_WAIT_DEFAULT_MS = 60_000;
 /** Events a `jobs.watch` holds for a reader that falls behind; past it the stream ends `WATCH_LAGGING`. */
 export const WATCH_BUFFER = 256;
+/** Open `jobs.wait` and `jobs.watch` calls one principal may hold at once; past it `TOO_MANY_WATCHES`. */
+export const JOB_CALLS_MAX = 16;
+/** The largest `jobs.submit` params, serialised (bytes of JSON). */
+export const JOB_PARAMS_MAX_BYTES = 256 * 1024;
+/** The longest `jobs.submit` `idemKey`, in characters. */
+export const IDEM_KEY_MAX = 128;
+/** At most this many states in one `jobs.list` filter (there are fewer distinct ones). */
+export const JOB_STATES_MAX = 8;
+/** Unfinished jobs one owner other than `local`, `console`, a device or `system` may hold (the engine's default). */
+export const JOB_OWNER_LIMIT = 1000;
 
 /**
  * `jobs.submit` (`jobs.submit` and the kind's own scopes): only kinds that opt in to RPC
  * submission (`KindSpec.rpc`); any other is `JOB_KIND_UNKNOWN`. `project` must be in the caller's
- * reach (`PROJECT_NOT_FOUND`). `challenge`: the console's typed code, needed only for a kind
- * whose scopes include a human-only one.
+ * reach (`PROJECT_NOT_FOUND`), and a caller limited to some projects must name one
+ * (`INVALID_REQUEST`). `params` at most `JOB_PARAMS_MAX_BYTES` serialised, `idemKey` at most
+ * `IDEM_KEY_MAX` characters; `priority: interactive` is a person's only (anyone else gets the
+ * kind's default). `challenge`: the console's typed code, needed only for a kind whose scopes
+ * include a human-only one.
  */
 export const JobsSubmitPayload = Schema.Struct({
   kind: Schema.String,
@@ -46,7 +59,10 @@ export const JobsListPayload = Schema.Struct({
 });
 export const JobsListSuccess = Schema.Struct({ jobs: Schema.Array(JobViewSchema), next: Schema.optional(Schema.String) });
 
-/** `jobs.wait`: until all (`any`: one) of `ids` finished, else `WAIT_TIMEOUT`. */
+/**
+ * `jobs.wait`: until all (`any`: one) of `ids` finished, else `WAIT_TIMEOUT`. With `jobs.watch`,
+ * at most `JOB_CALLS_MAX` open per principal (`TOO_MANY_WATCHES`).
+ */
 export const JobsWaitPayload = Schema.Struct({
   ids: Schema.Array(Schema.String),
   any: Schema.optional(Schema.Boolean),
@@ -54,7 +70,7 @@ export const JobsWaitPayload = Schema.Struct({
 });
 export const JobsListOfViews = Schema.Struct({ jobs: Schema.Array(JobViewSchema) });
 
-/** `jobs.watch`: `ids` first sends each job's current view, then only their events. */
+/** `jobs.watch`: `ids` (1 to `JOB_IDS_MAX`) first sends each job's current view, then only their events. */
 export const JobsWatchPayload = Schema.Struct({ ids: Schema.optional(Schema.Array(Schema.String)) });
 
 /** One `jobs.watch` item: a job's new state, its progress, or one of its items. */
@@ -69,7 +85,11 @@ export const JobWatchEventSchema = Schema.Union([
 ]);
 export type JobWatchEvent = typeof JobWatchEventSchema.Type;
 
-/** `jobs.pause` / `jobs.resume`: one job (`jobs.submit` for one's own, `jobs.control` for another's) or every job (`jobs.control`). */
+/**
+ * `jobs.pause` / `jobs.resume`: one job (`jobs.submit` for one's own, `jobs.control` for
+ * another's) or every job (`jobs.control`, and a principal that reaches every project: else
+ * `SCOPE_DENIED {reason: reach}`).
+ */
 export const JobsTargetPayload = Schema.Struct({
   job: Schema.optional(Schema.String),
   all: Schema.optional(Schema.Boolean),
@@ -77,5 +97,5 @@ export const JobsTargetPayload = Schema.Struct({
 /** The job's view after a pause or resume of one job; `{}` for `{all}`. */
 export const JobsTargetSuccess = Schema.Struct({ job: Schema.optional(JobViewSchema) });
 
-/** `jobs.workers` (`jobs.control`): pools, warm workers, live processes, stuck pools, the host's caps. */
+/** `jobs.workers` (`jobs.control`, and every project in reach): pools, warm workers, live processes, stuck pools, the host's caps. */
 export const JobsWorkersSuccess = Schema.Unknown;

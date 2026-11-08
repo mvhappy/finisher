@@ -9,6 +9,7 @@ import { open, realpath } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import type { FinError, Principal, RpcRule, RuleFacts, Scope } from "@finisher/contracts";
 import { Effect } from "effect";
+import { finError } from "../errors.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "../paths.ts";
 
 /** What the chain needs from the project registry. */
@@ -135,6 +136,11 @@ export function resolve(
       const v = field(payload, "project");
       if (typeof v === "string") projects.push(v);
     }
+    // A rule that reads jobs without the engine's view of them would let every call through
+    // as `none` with no kind scopes: a wiring defect, never an open rule (review L1).
+    if ((want.has("jobKind") || want.has("job")) && job?.jobs === undefined) {
+      return yield* Effect.fail(finError("INTERNAL", "a jobs rule reached the chain without the job engine", { reason: "noJobs" }));
+    }
     // A kind clients may not submit has no scopes to add: its handler answers JOB_KIND_UNKNOWN.
     if (want.has("jobKind")) {
       const kind = field(payload, "kind");
@@ -143,7 +149,7 @@ export function resolve(
     }
     if (want.has("job")) {
       const id = field(payload, "job");
-      const rel = typeof id === "string" && job?.jobs !== undefined ? job.jobs.relation(job.principal, id) : "none";
+      const rel = typeof id === "string" && job !== undefined && job.jobs !== undefined ? job.jobs.relation(job.principal, id) : "none";
       facts = { ...facts, job: rel };
     }
     // The handler gets the canonical folder, so it opens what was checked (review H2).

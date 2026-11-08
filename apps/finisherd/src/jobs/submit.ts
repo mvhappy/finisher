@@ -1,14 +1,14 @@
 // Submit and wait (spec §6.1, 5C-1 plan Decision 27): a submit is validated (kind, params,
-// `maxAttempts`, files, pools and stuck pools), answered from an equal `idemKey` or an active
-// `dedupeKey`, refused past the queue limit, then inserted, indexed and dispatched in its own
-// turn. `wait` resolves once all (or `any`) of the jobs finished, or fails `WAIT_TIMEOUT`.
-import type { FinError, JobOwner, JobView } from "@finisher/contracts";
+// the kind's project rules, `maxAttempts`, files, pools and stuck pools), answered from an equal
+// `idemKey` or an active `dedupeKey`, refused past the queue limit or the owner's own limit
+// (5C-2 review M4), then inserted, indexed and dispatched in its own turn. `wait` resolves once all (or `any`) of the jobs finished, or fails `WAIT_TIMEOUT`.
+import { type FinError, JOB_OWNER_LIMIT, type JobOwner, type JobView } from "@finisher/contracts";
 import { validateJobParams } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import { type Engine, finished, MAX_ATTEMPTS_LIMIT, type SubmitSpec } from "./engine.ts";
 import { resolveOrFn, validateMappedFiles } from "./kinds.ts";
-import { jobNotFound } from "./access.ts";
+import { jobNotFound, ownerKey, ownerLimited } from "./access.ts";
 
 export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView {
   const { store } = e.d;
@@ -18,6 +18,11 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
   const checked = validateJobParams(kind.kind, kind.version, spec.params);
   if (!checked.ok) throw finError("JOB_PARAMS_INVALID", `the params of ${kind.kind} are invalid: ${checked.errors.join("; ")}`, { errors: checked.errors });
   const params = checked.params;
+  if (kind.requiresProject === true && spec.project === undefined) {
+    throw finError("INVALID_REQUEST", `a ${kind.kind} job names its project`, { field: "project", kind: kind.kind });
+  }
+  const outside = kind.paramsReach?.(params as never, { project: spec.project }) ?? [];
+  if (outside.length > 0) throw finError("JOB_PARAMS_INVALID", `the params of ${kind.kind} reach outside the job's project: ${outside.join("; ")}`, { errors: [...outside] });
   const max = spec.maxAttempts;
   if (max !== undefined && !(Number.isInteger(max) && max >= 1 && max <= MAX_ATTEMPTS_LIMIT)) {
     const errors = [`maxAttempts: an integer from 1 to ${MAX_ATTEMPTS_LIMIT}, not ${JSON.stringify(max)}`];
@@ -46,6 +51,10 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
   if (e.unfinished >= e.d.queueLimit) {
     throw finError("JOB_QUEUE_FULL", "the job queue is full", { limit: e.d.queueLimit }, "wait for jobs to finish, or cancel some");
   }
+  const ownerLimit = e.d.ownerLimit ?? JOB_OWNER_LIMIT;
+  if (ownerLimited(owner) && (e.owned.get(ownerKey(owner)) ?? 0) >= ownerLimit) {
+    throw finError("JOB_QUEUE_FULL", `this ${owner.kind} already has ${ownerLimit} unfinished jobs`, { limit: ownerLimit, reason: "owner" }, "wait for your jobs to finish, or cancel some");
+  }
   const priority = spec.priority ?? kind.defaultPriority;
   const view = store.insert({
     kind: kind.kind,
@@ -64,6 +73,7 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
     ...(dedupeKey === undefined ? {} : { dedupeKey }),
   });
   e.unfinished++;
+  e.countOwned(owner, 1);
   e.publish({ type: "state", job: view });
   e.enqueue(view, kind);
   // A warm job with a ready worker of its key goes to it now, without `schedule()` (Decision 35).
@@ -85,7 +95,7 @@ export function waitJobs(e: Engine, ids: ReadonlyArray<string>, opts: { readonly
       let cancel = (): void => {};
       const cleanup = (): void => {
         cancel();
-        e.waiters.delete(onDone);
+        for (const id of ids) e.unwait(id, onDone);
       };
       const onDone = (): void => {
         const views = check();
@@ -101,7 +111,7 @@ export function waitJobs(e: Engine, ids: ReadonlyArray<string>, opts: { readonly
           ),
         );
       });
-      e.waiters.add(onDone);
+      for (const id of ids) e.addWaiter(id, onDone);
       return Effect.sync(cleanup);
     });
   });

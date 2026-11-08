@@ -26,7 +26,7 @@ export type { JobEvent } from "./view.ts";
 export { stoppedRun, type WarmLease } from "./attempt-flow.ts";
 export { type EngineDeps, type JobEngine, JobEngineTag, type SubmitSpec, type WorkersView } from "./api.ts";
 import type { EngineDeps, JobEngine, SubmitSpec, WorkersView } from "./api.ts";
-import { jobNotFound } from "./access.ts";
+import { jobNotFound, ownerKey, ownerLimited } from "./access.ts";
 
 export const QUEUE_LIMIT = 50_000;
 /** How long a job waits queued for an abandoned process of its last attempt to exit (9b review H1). */
@@ -71,8 +71,13 @@ export class Engine implements JobEngine {
   readonly #progress = new Map<string, { p: JobProgress; last: number; cancel?: (() => void) | undefined }>();
   readonly #listeners = new Set<(job: JobView) => void>();
   readonly #eventListeners = new Set<(e: JobEvent) => void>();
-  /** Called after every end and every run's end (`wait`, `settled`). */
-  readonly waiters = new Set<() => void>();
+  /**
+   * By job id, called after that job's end and each of its runs' end (`wait`, `settled`): an
+   * ending job wakes only its own waiters (5C-2 review M1).
+   */
+  readonly waiters = new Map<string, Set<() => void>>();
+  /** Unfinished jobs per limited owner (`ownerKey`; `ownerLimited`), kept in memory (5C-2 review M4). */
+  readonly owned = new Map<string, number>();
   readonly #bus: PubSub.PubSub<JobEvent>;
   #wake: { at: number; cancel: () => void } | undefined;
   /** `pause {all}`: nothing is dispatched until `resume {all}`. */
@@ -129,6 +134,8 @@ export class Engine implements JobEngine {
   async start(): Promise<void> {
     await recover(this);
     this.unfinished = this.d.store.unfinishedCount();
+    this.owned.clear();
+    for (const { owner, n } of this.d.store.unfinishedByOwner()) if (ownerLimited(owner)) this.owned.set(ownerKey(owner), n);
     // Real time: listeners attach once the engine is returned, whatever clock it runs on.
     if (this.#replay !== undefined && this.#replay.length > 0) setTimeout(() => (this.#replay = undefined), REPLAY_WINDOW_MS).unref();
     else this.#replay = undefined;
@@ -167,8 +174,21 @@ export class Engine implements JobEngine {
   transition(id: string, to: JobState, patch: TransitionPatch = {}): JobView {
     const before = this.d.store.row(id);
     const view = this.d.store.transition(id, to, patch);
-    if (before !== undefined) this.unfinished += (finished(view) ? 0 : 1) - (finished(before) ? 0 : 1);
+    if (before !== undefined) {
+      const delta = (finished(view) ? 0 : 1) - (finished(before) ? 0 : 1);
+      this.unfinished += delta;
+      if (delta !== 0) this.countOwned(before.owner, delta);
+    }
     return view;
+  }
+
+  /** Adds `delta` to `owner`'s unfinished jobs, when its owner kind is limited. */
+  countOwned(owner: JobOwner, delta: number): void {
+    if (!ownerLimited(owner)) return;
+    const key = ownerKey(owner);
+    const n = (this.owned.get(key) ?? 0) + delta;
+    if (n > 0) this.owned.set(key, n);
+    else this.owned.delete(key);
   }
 
   #onProgress(job: string, p: JobProgress): void {
@@ -384,7 +404,7 @@ export class Engine implements JobEngine {
     this.#sendDone(view, stats);
     this.publish({ type: "state", job: view });
     for (const l of [...this.#listeners]) this.#tell(l, view);
-    this.wakeWaiters();
+    this.wakeWaiters(view.id);
     this.pump();
   }
 
@@ -412,17 +432,32 @@ export class Engine implements JobEngine {
       const on = (): void => {
         const v = this.d.store.get(id);
         if (v !== undefined && !finished(v) && this.runs.has(id)) return;
-        this.waiters.delete(on);
+        this.unwait(id, on);
         resolve();
       };
-      this.waiters.add(on);
+      this.addWaiter(id, on);
       on();
     });
   }
 
-  /** Wakes `settled` and `wait` callers. */
-  wakeWaiters(): void {
-    for (const w of [...this.waiters]) w();
+  /** Calls `w` after `id` ends or one of its runs ends, until `unwait`. */
+  addWaiter(id: string, w: () => void): void {
+    const set = this.waiters.get(id);
+    if (set === undefined) this.waiters.set(id, new Set([w]));
+    else set.add(w);
+  }
+
+  unwait(id: string, w: () => void): void {
+    const set = this.waiters.get(id);
+    if (set === undefined) return;
+    set.delete(w);
+    if (set.size === 0) this.waiters.delete(id);
+  }
+
+  /** Wakes the `settled` and `wait` callers of `id`. */
+  wakeWaiters(id: string): void {
+    const set = this.waiters.get(id);
+    if (set !== undefined) for (const w of [...set]) w();
   }
 
   submit(owner: JobOwner, spec: SubmitSpec): Effect.Effect<JobView, FinError> {

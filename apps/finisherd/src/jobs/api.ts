@@ -81,4 +81,6 @@ export interface EngineDeps {
   /** The warm workers' held-files check runs (test-hooks builds with real processes). */
   readonly heldFilesCheck: boolean;
   readonly queueLimit: number;
+  /** Unfinished jobs per limited owner (`access.ts` `ownerLimited`; default `JOB_OWNER_LIMIT`). */
+  readonly ownerLimit?: number;
 }

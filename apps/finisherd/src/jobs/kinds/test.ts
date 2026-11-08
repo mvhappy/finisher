@@ -51,8 +51,10 @@ export const testOnCall: OnCall = (ctx, method, params) => {
   }
 };
 
-// Test kinds may be submitted by RPC (5C-2's tests drive `jobs.submit` with them).
-const base = { family: "test", version: 1, scopes: [], rpc: true, resources: ["cpu"], defaultPriority: "normal", qos: "normal", timeoutS: 600 } as const;
+// Test kinds may be submitted by RPC (5C-2's tests drive `jobs.submit` with them); their params
+// name no paths, so every params object agrees with any project.
+const noPaths = (): ReadonlyArray<string> => [];
+const base = { family: "test", version: 1, scopes: [], rpc: true, paramsReach: noPaths, resources: ["cpu"], defaultPriority: "normal", qos: "normal", timeoutS: 600 } as const;
 
 function kind<P>(k: Partial<KindSpec<P>> & { readonly kind: string }): KindSpec<P> {
   return { ...base, ...k } as KindSpec<P>;
@@ -151,7 +153,8 @@ export function registerTestKinds(
     }),
     kind({ kind: "test.badHello", family: "testbad" }),
     kind<TestFailParams>({ kind: "test.fail" }),
-    kind<TestPluginMinorParams>({ kind: "test.pluginMinor", family: "testplugin", warm: true }),
+    // A plugin family's kind is never submittable by RPC (review M3).
+    kind<TestPluginMinorParams>({ kind: "test.pluginMinor", family: "testplugin", warm: true, rpc: false }),
   ] as KindSpec<never>[];
   for (const k of kinds) registry.registerKind({ ...k, ...(opts.overrides?.[k.kind] ?? {}) } as KindSpec<never>);
 }

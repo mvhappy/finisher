@@ -122,7 +122,8 @@ export type JobView = typeof JobViewSchema.Type;
  * live in `crates/fin/src/output.rs`): 3 the request (`JOBHOST_STATE`: a job host call on a
  * group or host the caller should know is gone), 4 a job that did not succeed and the
  * result codes it carries, 5 unavailable for now (`WATCH_LAGGING`: a `jobs.watch` reader fell
- * `WATCH_BUFFER` events behind; list again, then watch again), 6 internal (`UNKNOWN_MESSAGE` and
+ * `WATCH_BUFFER` events behind; list again, then watch again. `TOO_MANY_WATCHES`: the principal
+ * already has `JOB_CALLS_MAX` `jobs.wait`/`jobs.watch` calls open; end one, then retry), 6 internal (`UNKNOWN_MESSAGE` and
  * `CALL_LIMIT` appear only in `reply` errors to a worker).
  */
 export const JOB_ERROR_CODES = {
@@ -147,6 +148,7 @@ export const JOB_ERROR_CODES = {
   RESOURCE_STUCK: 5,
   WORKER_OOM: 5,
   WATCH_LAGGING: 5,
+  TOO_MANY_WATCHES: 5,
   UNKNOWN_MESSAGE: 6,
   CALL_LIMIT: 6,
 } as const satisfies Record<string, 3 | 4 | 5 | 6>;

@@ -130,6 +130,14 @@ test("job_rpcs_need_jobs_scopes_by_ownership (5C-2 Decision 5)", () => {
   }
   for (const t of ["jobs.pause", "jobs.resume"] as const) expect(requiredScopes(t, { all: true }), t).toEqual(["jobs.read", "jobs.control"]);
   expect(requiredScopes("jobs.workers", {})).toEqual(["jobs.control"]);
+  // Review M2: `{all}` and `jobs.workers` act on every project, and are the only rules that do.
+  const all = (Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>).filter((t) => ruleOf(t).allProjects !== undefined).sort();
+  expect(all).toEqual(["jobs.pause", "jobs.resume", "jobs.workers"]);
+  for (const t of ["jobs.pause", "jobs.resume"] as const) {
+    expect(ruleOf(t).allProjects?.({ all: true } as never), t).toBe(true);
+    expect(ruleOf(t).allProjects?.({ job: "j" } as never), t).toBe(false);
+  }
+  expect(ruleOf("jobs.workers").allProjects?.({} as never)).toBe(true);
   // No job scope is human-only; a kind's human-only scope is confirmed by default.
   for (const s of ["jobs.read", "jobs.submit", "jobs.control"] as const) expect(HUMAN_ONLY.has(s)).toBe(false);
   expect(needsConfirmation("jobs.submit", { kind: "k", params: {} })).toBe(false);

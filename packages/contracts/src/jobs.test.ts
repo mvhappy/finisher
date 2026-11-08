@@ -56,5 +56,6 @@ test("fin_job_codes_are_all_in_job_error_codes", () => {
   ]);
   expect(jobs.size).toBeGreaterThan(15);
   expect(jobs.has("WATCH_LAGGING")).toBe(true);
+  expect(jobs.has("TOO_MANY_WATCHES")).toBe(true);
   for (const code of jobs) expect(Object.keys(JOB_ERROR_CODES), code).toContain(code);
 });

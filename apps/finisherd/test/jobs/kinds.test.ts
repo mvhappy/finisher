@@ -54,6 +54,23 @@ describe("job kinds", () => {
     expect(resolveOrFn(["cpu"], {})).toEqual(["cpu"]);
   });
 
+  test("registry_refuses_unknown_scopes_and_rpc_kinds_without_a_params_reach_or_of_plugins", () => {
+    const r = makeKindRegistry();
+    r.registerFamily(fam);
+    r.registerFamily({ ...fam, family: "plug", profile: "plugin", program: { path: "/x", args: [] } });
+    r.registerFamily({ ...fam, family: "plugid", pluginId: "@a/b" });
+    // Review L2: a scope outside `SCOPES` is held by no principal.
+    expect(() => r.registerKind(spec({ kind: "fam.typo", scopes: ["library.scna"] }))).toThrow(/unknown scopes library.scna/);
+    r.registerKind(spec({ kind: "fam.scan", scopes: ["library.scan"] }));
+    // Review M3: an RPC kind checks its params against the job's project, and no plugin's kind is one.
+    expect(() => r.registerKind(spec({ kind: "fam.rpc", rpc: true }))).toThrow(/declares paramsReach/);
+    expect(() => r.registerKind(spec({ kind: "plug.rpc", family: "plug", rpc: true, paramsReach: () => [] }))).toThrow(/plugin family's kind cannot be submitted by RPC/);
+    expect(() => r.registerKind(spec({ kind: "plugid.rpc", family: "plugid", rpc: true, paramsReach: () => [] }))).toThrow(/plugin family/);
+    r.registerKind(spec({ kind: "fam.rpc", rpc: true, paramsReach: () => [] }));
+    r.registerKind(spec({ kind: "plug.local", family: "plug" }));
+    expect(r.kind("fam.rpc")?.rpc).toBe(true);
+  });
+
   test("mapped_file_names_validated", () => {
     for (const ok of ["a", "out/", "in/snapshot.json", "a/b/c/d.bin", "x_y-z.1", "console", "com0", "con_x", ".hidden"]) {
       expect(mappedFileNameError(ok), ok).toBeUndefined();

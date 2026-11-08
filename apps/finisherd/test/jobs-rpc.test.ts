@@ -1,64 +1,18 @@
 // The `jobs.*` RPCs (5C-2 plan Task 1) through the real chain over a real job engine with the
 // test kinds: scopes, ownership, reach, kind scopes and confirmation, dedupe per owner,
 // `jobs.watch` and its lagging bound, and `server.status`'s job caps.
-import type { FinError, JobView, JobWatchEvent, Principal, Scope } from "@finisher/contracts";
-import { Duration, Effect, Exit, Fiber, Stream } from "effect";
+import type { JobView } from "@finisher/contracts";
+import { Duration, Effect, Fiber, Stream } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
-import { withChain } from "../src/chain/chain.ts";
-import type { ChainProjects } from "../src/chain/resolve.ts";
-import { Connections } from "../src/connections.ts";
-import type { Audit, AuditInput } from "../src/control/audit.ts";
+import type { Audit } from "../src/control/audit.ts";
 import { canSee } from "../src/jobs/access.ts";
-import { chainJobs, jobHandlers } from "../src/jobs/rpc.ts";
 import { watchJobs } from "../src/jobs/watch.ts";
 import { CONSOLE, LOCAL } from "../src/principal.ts";
 import { sandboxWarning, serverStatus } from "../src/server-admin.ts";
-import { closeTestEngines, type TestEngine, testEngine, until } from "./support/jobs.ts";
-
-const A = "01aaaaaaaaaaaaaaaaaaaaaaaa";
-const B = "01bbbbbbbbbbbbbbbbbbbbbbbb";
-const MINT: Scope[] = ["server.read", "project.read", "project.write", "review.write", "jobs.read", "jobs.submit", "library.read", "library.scan", "diagnostics.read", "diagnostics.record"];
-const agent = (id: string, more: Partial<Principal> = {}): Principal => ({ kind: "agent", id, scopes: MINT, projects: [A], branches: "*", human: false, ...more });
-
-const projects: ChainProjects = {
-  isOpen: () => true,
-  dirOf: () => undefined,
-  resolveBranch: (_p, ref) => Effect.succeed(ref),
-  branches: () => Effect.succeed([]),
-};
+import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
+import { A, agent, B, code, err, normalised, rpc } from "./support/jobs-rpc.ts";
 
 afterEach(() => closeTestEngines());
-
-/** The chained job handlers over `t`, with one connection per principal. */
-function rpc(t: TestEngine) {
-  const connections = new Connections("socket", () => "/sd/run/fin.sock");
-  const audited: AuditInput[] = [];
-  const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
-  const chained = withChain(jobHandlers({ engine: t.engine, guard: (_, e) => e }), { connections, projects, jobs: chainJobs(t.engine), audit }) as unknown as Record<
-    string,
-    (p: unknown, o: unknown) => unknown
-  >;
-  let next = 1;
-  const as = (principal: Principal) => {
-    const id = next++;
-    connections.attach(id, { close() {}, closeAfterReply() {}, terminate() {} });
-    connections.get(id)!.principal = principal;
-    const options = { client: { id }, headers: {} };
-    return {
-      call: (tag: string, payload: unknown) => Effect.runPromiseExit(chained[tag]!(payload, options) as Effect.Effect<unknown, FinError>),
-      ok: async <A = JobView>(tag: string, payload: unknown): Promise<A> => {
-        const exit = await Effect.runPromiseExit(chained[tag]!(payload, options) as Effect.Effect<A, FinError>);
-        if (Exit.isFailure(exit)) throw new Error(`${tag}: ${JSON.stringify(Exit.findErrorOption(exit))}`);
-        return exit.value;
-      },
-      stream: (payload: unknown) => chained["jobs.watch"]!(payload, options) as Stream.Stream<JobWatchEvent, FinError>,
-    };
-  };
-  return { as, audited };
-}
-
-const err = (exit: Exit.Exit<unknown, FinError>): FinError | undefined => (Exit.isSuccess(exit) ? undefined : (Exit.findErrorOption(exit) as { value?: FinError }).value);
-const code = (exit: Exit.Exit<unknown, FinError>) => err(exit)?.code;
 
 describe("jobs RPCs", () => {
   test("ownership_and_reach: others' jobs and jobs out of reach answer as unknown ones", async () => {
@@ -78,7 +32,8 @@ describe("jobs RPCs", () => {
     const other = err(await a1.call("jobs.get", { job: mine.id }));
     const none = err(await a1.call("jobs.get", { job: unknown }));
     expect(other?.code).toBe("JOB_NOT_FOUND");
-    expect({ ...other, details: undefined, message: other?.message.replace(mine.id, "X") }).toEqual({ ...none, details: undefined, message: none?.message.replace(unknown, "X") });
+    expect(normalised(other, mine.id)).toEqual(normalised(none, unknown));
+    expect(other?.details).toEqual({ job: mine.id });
     for (const tag of ["jobs.cancel", "jobs.pause", "jobs.resume"]) expect(code(await a1.call(tag, { job: mine.id })), tag).toBe("JOB_NOT_FOUND");
     expect(code(await a1.call("jobs.wait", { ids: [mine.id], timeoutMs: 10 }))).toBe("JOB_NOT_FOUND");
 
@@ -166,7 +121,7 @@ describe("jobs RPCs", () => {
     const local = as(LOCAL);
     const a = await local.ok("jobs.submit", { kind: "test.sleep", params: { ms: 60_000 } });
     expect((await local.ok("jobs.submit", { kind: "test.sleep", params: { ms: 60_000 } })).id).toBe(a.id);
-    const b = await as(agent("01agent1")).ok("jobs.submit", { kind: "test.sleep", params: { ms: 60_000 } });
+    const b = await as(agent("01agent1")).ok("jobs.submit", { kind: "test.sleep", params: { ms: 60_000 }, project: A });
     expect(b.id).not.toBe(a.id);
     expect(b.owner).toEqual({ kind: "agent", id: "01agent1" });
     for (const id of [a.id, b.id]) await local.ok("jobs.cancel", { job: id });

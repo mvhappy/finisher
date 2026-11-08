@@ -328,7 +328,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // (`details.reason`); a worker built for another envelope (`details.expected`, `got`); a
     // wait that timed out; an `io:` pool two abandoned processes hold (`details.pool`); a job's
     // group over its memory limit (`details.limit`, `used`); a `jobs.watch` reader that fell
-    // `details.buffer` events behind (5C-2: list again, then watch again).
+    // `details.buffer` events behind (5C-2: list again, then watch again); a principal with
+    // `details.limit` `jobs.wait`/`jobs.watch` calls already open (5C-2 review M1).
     "JOB_QUEUE_FULL",
     "WORKER_UNAVAILABLE",
     "WORKER_PROTOCOL_MISMATCH",
@@ -336,6 +337,7 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "RESOURCE_STUCK",
     "WORKER_OOM",
     "WATCH_LAGGING",
+    "TOO_MANY_WATCHES",
     // A registry folder that cannot be read; the clock is more than a day before the last
     // refresh (`fix`: set the clock, then refresh) (8A Task 9a). `REGISTRY_STALE` is a warning.
     "REGISTRY_UNREACHABLE",

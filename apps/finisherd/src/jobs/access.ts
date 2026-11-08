@@ -11,6 +11,15 @@ import type { JobQuery } from "./store.ts";
 /** The owner a principal's submits record. */
 export const ownerOf = (p: Principal): JobOwner => ({ kind: p.kind, id: p.id });
 
+/**
+ * Owner kinds with no per-owner limit (5C-2 review M4): a person's (`console`, a device), the
+ * owner's `local` and in-process `system`. Every other owner (agents, MCP, plugins) holds at
+ * most `EngineDeps.ownerLimit` unfinished jobs, so none can fill the global queue alone.
+ */
+const UNLIMITED_OWNERS: ReadonlySet<string> = new Set(["local", "console", "device", "system"]);
+export const ownerLimited = (o: JobOwner): boolean => !UNLIMITED_OWNERS.has(o.kind);
+export const ownerKey = (o: JobOwner): string => `${o.kind}:${o.id}`;
+
 const owns = (p: Principal, job: Pick<JobView, "owner">): boolean => job.owner.kind === p.kind && job.owner.id === p.id;
 
 /** Whether the job's project and library are in the principal's reach. */
@@ -23,6 +32,20 @@ export function inReach(p: Principal, job: Pick<JobView, "project" | "library">)
 /** Whether `p` sees `job`. */
 export function canSee(p: Principal, job: Pick<JobView, "owner" | "project" | "library">): boolean {
   return inReach(p, job) && (owns(p, job) || p.scopes.includes("jobs.control"));
+}
+
+/**
+ * `canSee` for one principal, its lists read once into sets: O(1) per job, for a watcher that
+ * checks every event the engine publishes (5C-2 review M1).
+ */
+export function seer(p: Principal): (job: Pick<JobView, "owner" | "project" | "library">) => boolean {
+  const projects = p.projects === "*" ? undefined : new Set(p.projects);
+  const libraries = p.scopes.includes("library.read");
+  const control = p.scopes.includes("jobs.control");
+  return (job) =>
+    (job.project === undefined || projects === undefined || projects.has(job.project)) &&
+    (job.library === undefined || libraries) &&
+    (control || owns(p, job));
 }
 
 /** Whose `job` is to `p`, for the chain's `job` resolver: `none` when unknown or not visible. */
