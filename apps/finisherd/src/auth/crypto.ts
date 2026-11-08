@@ -9,7 +9,10 @@
 //
 //   proof = HMAC(K, "finisherd/hello/v2" ‖ s(envId) ‖ s(endpoint) ‖ clientNonce ‖ serverNonce)
 //   mac   = HMAC(K, "fin/prove/v2"       ‖ s(envId) ‖ s(endpoint) ‖ serverNonce ‖ clientNonce)
-//   credentialKey(kind, id) = HMAC(credential.master, "fin/credential-key/v1" ‖ s(kind) ‖ s(id))
+//   credentialKey(envId, kind, id) = HMAC(credential.master, "fin/credential-key/v2" ‖ s(envId) ‖ s(kind) ‖ s(id))
+//
+// The environment id is bound in (review of Tasks 8–9, M3): a `credential.master` copied with
+// `auth/` into another server data, or kept across a `control.reset`, derives no key there.
 //
 // `tests/fixtures/auth/handshake.json` pins these bytes for the TS and Rust implementations.
 // Nothing here logs: keys, nonces and MACs never leave the process except as MACs on the wire.
@@ -17,7 +20,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { dirname, basename, join } from "node:path";
 import { realpathSync } from "node:fs";
 
-export const LABEL = { hello: "finisherd/hello/v2", prove: "fin/prove/v2", credentialKey: "fin/credential-key/v1" } as const;
+export const LABEL = { hello: "finisherd/hello/v2", prove: "fin/prove/v2", credentialKey: "fin/credential-key/v2" } as const;
 
 export const NONCE_BYTES = 32;
 export const KEY_BYTES = 32;
@@ -68,8 +71,8 @@ export function proveMac(key: Buffer, envId: string, endpoint: string, serverNon
 }
 
 /** An `agent`/`mcp` credential's key, derived from `credential.master` (never stored). */
-export function credentialKey(master: Buffer, kind: "agent" | "mcp", id: string): Buffer {
-  return hmac(master, macInput(LABEL.credentialKey, [kind, id]));
+export function credentialKey(master: Buffer, envId: string, kind: "agent" | "mcp", id: string): Buffer {
+  return hmac(master, macInput(LABEL.credentialKey, [envId, kind, id]));
 }
 
 /** Constant-time equality after a length check. */

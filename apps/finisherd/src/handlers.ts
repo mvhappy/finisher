@@ -1,20 +1,23 @@
 // `FinRpcs` handlers. Every failure reaches the client as `FinError { code, message, details, fix }`.
+import { randomBytes } from "node:crypto";
 import { type FinError, FinRpcs, PROTOCOL_VERSION } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
 import { TicketsTag } from "./auth/tickets.ts";
 import { CredentialsTag } from "./auth/credentials.ts";
+import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
-import { chainOf, withChain, writeGuardOf } from "./chain/chain.ts";
+import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
-import { issueChallenge } from "./auth/challenges.ts";
+import { issueChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { agentHandlers } from "./agent/rpc.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
+import { metaJson } from "./history.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
 import { PluginsTag } from "./plugins/registries.ts";
 import { probeFor } from "./probe.ts";
@@ -63,10 +66,30 @@ export const HandlersLive = FinRpcs.toLayer(
      */
     const withMeta = <A>(options: { readonly headers: unknown }, f: (meta: CallMeta) => Effect.Effect<A, FinError>) =>
       Effect.flatMap(writeGuardOf(options), (guard) => f({ ...actorFor(principalOf(options), options.headers), guard }));
+    /**
+     * `f` with a `metaJson` whose guard names only the caller's credential, for the changes made
+     * outside `Store::write` (review of 5A Tasks 8–9, L1): refused once the credential is ended.
+     * A call that did not pass the chain is a defect, as a write's is.
+     */
+    const withCredential = <A>(options: { readonly headers: unknown }, f: (meta: CallMeta) => Effect.Effect<A, FinError>) =>
+      Effect.suspend(() => {
+        const c = chainOf(options);
+        if (c === undefined) return Effect.die(new Error("a credential-checked call reached its handler without the chain"));
+        const credential = credentialOf(c.principal);
+        return f({ ...actorFor(c.principal, options.headers), guard: { denyBranches: [], ...(credential === undefined ? {} : { credential }) } });
+      });
     /** An `ok` audit row of `kind` for the call's principal (consent changes, purges). */
     const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
       const p = principalOf(options);
       audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
+    };
+    /** The owner's revocations (`auth.credential.revoke`, `rotateMaster`): the one revoke path. */
+    const ownerRevoke = {
+      audit,
+      tickets,
+      connections: everyConnection,
+      revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "owner"),
+      persist: () => credentials.persist(),
     };
     const projects = {
       isOpen: registry.isOpen,
@@ -110,7 +133,13 @@ export const HandlersLive = FinRpcs.toLayer(
         guard(
           "auth.revokeSelf",
           revokeSelf(
-            { audit, tickets, connections: everyConnection, ...(handshake.deps.revoke === undefined ? {} : { revoke: handshake.deps.revoke }) },
+            {
+              audit,
+              tickets,
+              connections: everyConnection,
+              ...(handshake.deps.revoke === undefined ? {} : { revoke: handshake.deps.revoke }),
+              persist: () => credentials.persist(),
+            },
             principalOf(options),
             {
               transport: connections.transport,
@@ -139,7 +168,17 @@ export const HandlersLive = FinRpcs.toLayer(
       // The owner's agent and MCP credentials (5A Task 9, `auth/credentials.ts`): revoking goes
       // the one revoke path (the store, tickets, connections and streams, writes in flight).
       "auth.credential.mint": (req, options) =>
-        guard("auth.credential.mint", Effect.try({ try: () => credentials.mint(principalOf(options), req), catch: toFinError })),
+        guard(
+          "auth.credential.mint",
+          Effect.try({
+            try: () => {
+              const minted = credentials.mint(principalOf(options), req);
+              noteMinted(connections.get(options.client.id), minted.credential.id);
+              return minted;
+            },
+            catch: toFinError,
+          }),
+        ),
       "auth.credential.list": ({ all }) => guard("auth.credential.list", Effect.sync(() => ({ credentials: credentials.list(all === true) }))),
       "auth.credential.revoke": ({ id }) =>
         guard(
@@ -147,8 +186,34 @@ export const HandlersLive = FinRpcs.toLayer(
           Effect.sync(() => {
             const kind = credentials.kindOf(id);
             if (kind === undefined) return { revoked: false };
-            const deps = { audit, tickets, connections: everyConnection, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.end(ref, "owner") };
-            return { revoked: revokeCredential(deps, { kind, id }, { rpc: "auth.credential.revoke", reason: "owner" }).revoked };
+            return { revoked: revokeCredential(ownerRevoke, { kind, id }, { rpc: "auth.credential.revoke", reason: "owner" }).revoked };
+          }),
+        ),
+      // A new `credential.master` (review of Tasks 8–9, M3): every credential ends with it.
+      "auth.credential.rotateMaster": (_, options) =>
+        guard(
+          "auth.credential.rotateMaster",
+          Effect.try({
+            try: () => {
+              const by = principalOf(options);
+              let ended = 0;
+              for (const ref of credentials.rotateMaster(randomBytes(KEY_BYTES))) {
+                try {
+                  if (revokeCredential(ownerRevoke, ref, { rpc: "auth.credential.rotateMaster", reason: "owner" }).revoked) ended++;
+                } catch (e) {
+                  // The new master already stops it from proving; its connections end at their next request.
+                  process.stderr.write(`finisherd: warning: cannot end credential ${ref.id}: ${String(e)}\n`);
+                }
+              }
+              audit.append({
+                kind: "credential.rotateMaster",
+                principal: { kind: by.kind, id: by.id },
+                outcome: "ok",
+                details: { count: ended, transport: connections.transport },
+              });
+              return { ended };
+            },
+            catch: toFinError,
           }),
         ),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
@@ -215,10 +280,14 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("history.cherryPick", withMeta(options, (m) => registry.history(payload.projectId, "cherryPick", payload, m))),
       "history.revert": (payload, options) =>
         guard("history.revert", withMeta(options, (m) => registry.history(payload.projectId, "revert", payload, m))),
-      "project.acknowledgeRewind": ({ projectId, branch, generation }) =>
-        guard("project.acknowledgeRewind", Effect.map(registry.acknowledgeRewind(projectId, branch, generation), (acknowledged) => ({ acknowledged }))),
-      "project.acknowledgeSalvage": ({ projectId, copy }) =>
-        guard("project.acknowledgeSalvage", Effect.map(registry.acknowledgeSalvage(projectId, copy), (acknowledged) => ({ acknowledged }))),
+      // Not records, but changes a revoked credential must not make either (L1): the guard's credential.
+      "project.acknowledgeRewind": ({ projectId, branch, generation }, options) =>
+        guard(
+          "project.acknowledgeRewind",
+          withCredential(options, (meta) => Effect.map(registry.acknowledgeRewind(projectId, branch, generation, meta), (acknowledged) => ({ acknowledged }))),
+        ),
+      "project.acknowledgeSalvage": ({ projectId, copy }, options) =>
+        guard("project.acknowledgeSalvage", withCredential(options, (meta) => Effect.map(registry.acknowledgeSalvage(projectId, copy, meta), (acknowledged) => ({ acknowledged })))),
       "tx.get": ({ projectId, txId }) => guard("tx.get", registry.txGet(projectId, txId)),
       "eval.frame": ({ projectId, branch, timeline, at }) => guard("eval.frame", registry.evalFrame(projectId, branch ?? "main", timeline, at)),
       "eval.audio": ({ projectId, branch, timeline, from, to }) =>
@@ -240,13 +309,13 @@ export const HandlersLive = FinRpcs.toLayer(
             Effect.sync(() => auditAs(options, "diagnostics.purge", { reason: purgeReason(selector) })),
           ),
         ),
-      "diagnostics.project": ({ projectId, collect }) =>
+      "diagnostics.project": ({ projectId, collect }, options) =>
         guard(
           "diagnostics.project",
           Effect.andThen(registry.ensure(projectId), () => {
             const engine = registry.engineOf(projectId);
             if (engine === undefined) return Effect.fail(finError("PROJECT_NOT_FOUND", `project ${projectId} is not open`, { projectId }));
-            return attemptJson<{ project: string; collect: "default" | "never" }>(() => engine.setCollect(collect));
+            return withCredential(options, (meta) => attemptJson<{ project: string; collect: "default" | "never" }>(() => engine.setCollect(collect, metaJson(meta))));
           }),
         ),
       "diagnostics.consent": ({ purpose, value }, options) =>

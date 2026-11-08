@@ -463,8 +463,10 @@ pub fn untrusted(endpoint: &Endpoint, reason: &str) -> CoreError {
              itself. Restart it from the same Finisher release as this command, then try again.",
         );
     }
-    // A server answers a credential it does not know, or one revoked or expired, without a
-    // proof, exactly as a squatter would (so ids cannot be probed): say both.
+    // A server answers a credential it does not know without a proof, exactly as a squatter
+    // would (so ids cannot be probed): say both. One it minted and then revoked or that
+    // expired is proved and refused by name (`CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED`;
+    // review of 5A Tasks 8–9, L4), so it never gets here.
     let named =
         reason == "noProof" && std::env::var_os(CREDENTIAL_ENV).is_some_and(|v| !v.is_empty());
     CoreError::new(
@@ -473,8 +475,8 @@ pub fn untrusted(endpoint: &Endpoint, reason: &str) -> CoreError {
     )
     .with_details(details)
     .with_fix(if named {
-        "The server did not accept the credential file named by FIN_CREDENTIAL: it may have been \
-         revoked or have expired, or belong to another Finisher server. Ask the owner of this \
+        "The server does not know the credential file named by FIN_CREDENTIAL: it may belong to \
+         another Finisher server, or have ended more than 180 days ago. Ask the owner of this \
          Finisher server for a new credential. If that does not help, another program may be \
          listening where your Finisher server should be."
     } else {

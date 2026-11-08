@@ -20,7 +20,7 @@ interface Vectors {
     proveInput: string;
     mac: string;
   }>;
-  credentialKeys: Array<{ kind: "agent" | "mcp"; id: string; input: string; key: string }>;
+  credentialKeys: Array<{ envId: string; kind: "agent" | "mcp"; id: string; input: string; key: string }>;
 }
 
 const vectors = JSON.parse(
@@ -43,9 +43,15 @@ describe("handshake crypto", () => {
     }
     const master = key("credentialMaster");
     for (const c of vectors.credentialKeys) {
-      expect(macInput(LABEL.credentialKey, [c.kind, c.id]).toString("hex")).toBe(c.input);
-      expect(credentialKey(master, c.kind, c.id).toString("hex")).toBe(c.key);
+      expect(macInput(LABEL.credentialKey, [c.envId, c.kind, c.id]).toString("hex")).toBe(c.input);
+      expect(credentialKey(master, c.envId, c.kind, c.id).toString("hex")).toBe(c.key);
     }
+    // Review of Tasks 8–9, M3: the environment id is bound in, so another server data's copy
+    // of the same master derives a different key for the same credential.
+    const [a, , other] = vectors.credentialKeys;
+    expect(other!.id).toBe(a!.id);
+    expect(other!.envId).not.toBe(a!.envId);
+    expect(other!.key).not.toBe(a!.key);
   });
 
   test("length_prefixes_make_fields_unambiguous", () => {

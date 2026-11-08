@@ -108,3 +108,13 @@ export const CredentialListSuccess = Schema.Struct({ credentials: Schema.Array(C
  */
 export const CredentialRevokePayload = Schema.Struct({ id: Schema.String, challenge: ChallengeField });
 export const CredentialRevokeSuccess = Schema.Struct({ revoked: Schema.Boolean });
+
+/**
+ * `auth.credential.rotateMaster {}` (`auth.admin`, a typed code; review of Tasks 8–9, M3): a new
+ * `credential.master` is written, so no key derived from the old one proves again, and every
+ * credential not ended yet is revoked through the one revoke path. `ended` counts them. The
+ * remedy when `credential.master` may have been copied, or an old `control.db` was restored
+ * (which brings back rows that were revoked after that copy).
+ */
+export const CredentialRotateMasterPayload = Schema.Struct({ challenge: ChallengeField });
+export const CredentialRotateMasterSuccess = Schema.Struct({ ended: Schema.Number });

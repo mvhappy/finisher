@@ -7,8 +7,9 @@ use super::names::NameTable;
 /// `finisherd` RPC methods (`@finisher/contracts` `FinRpcs`), plus the `diagnostics.*` RPCs of
 /// Task D4, the handshake's `auth.prove` (5A Task 3) and `auth.ticket`, `auth.whoami`,
 /// `auth.revokeSelf` (5A Task 6), `console.challenge` (5A Task 7), `server.status`, `server.stop`
-/// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9), and the
-/// plugin and registry RPCs (8A Tasks 9a and 9b) and the `agent.*` RPCs (7A Task 2).
+/// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9),
+/// `auth.credential.rotateMaster` (review of 5A Tasks 8–9, M3), the plugin and registry RPCs
+/// (8A Tasks 9a and 9b) and the `agent.*` RPCs (7A Task 2).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -33,6 +34,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "auth.credential.list",
         "auth.credential.mint",
         "auth.credential.revoke",
+        "auth.credential.rotateMaster",
         "auth.prove",
         "auth.revokeSelf",
         "auth.ticket",

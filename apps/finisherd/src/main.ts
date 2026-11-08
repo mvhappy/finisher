@@ -3,6 +3,7 @@
 // Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { Cause, Context, Deferred, Effect, Exit, Layer, Logger } from "effect";
@@ -21,7 +22,7 @@ import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
 import { sweepExpired } from "./auth/revoke.ts";
-import { KeysTag, rotateKeys } from "./auth/keys.ts";
+import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
@@ -67,6 +68,9 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
       // while this server listens is always this server's. `auth/` and `run/` are private.
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
+      // `auth/` stays out of Time Machine (review of Tasks 8–9, M3): a backup of
+      // `credential.master` would outlive every rotation. Best effort: a warning if it fails.
+      excludeFromBackups(authDir(serverData));
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const tickets = yield* makeTickets();
@@ -108,20 +112,33 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
       };
-      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
-      const fontsLayer = layerFonts(serverData, fonts);
       // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
       // request re-checks; expired ones are ended by the sweep, revoked ones at once.
-      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock);
+      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock, (key) =>
+        writeKeyFile(join(authDir(serverData), KEY_FILES.credentialMaster), key),
+      );
       everyConnection.useLiveness((p) => credentials.isLive(p));
+      // One last write of ended credentials before the control store closes (it closes after).
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          credentials.persist();
+          credentials.dispose();
+        }),
+      );
       const handshake = new Handshake({
         keys,
         envId,
         audit,
-        credentials: (ref) => credentials.lookup(ref),
-        revoke: (ref) => credentials.end(ref, "self"),
+        credentials: (ref) => credentials.forHello(ref),
+        revoke: (ref) => credentials.markEnded(ref, "self"),
       });
-      const revokeDeps = { audit, tickets, connections: everyConnection, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.end(ref, "expired") };
+      const revokeDeps = {
+        audit,
+        tickets,
+        connections: everyConnection,
+        revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "expired"),
+        persist: () => credentials.persist(),
+      };
       // A busy store fails one sweep, never the timer: the next one tries again.
       const sweep = () => {
         try {
@@ -139,6 +156,8 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
+      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
+      const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
       const stopped = Deferred.makeUnsafe<void>();
       const listeners = [

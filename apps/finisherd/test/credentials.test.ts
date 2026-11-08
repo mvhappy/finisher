@@ -14,7 +14,7 @@ import { Credentials, TOUCH_WRITE_MS } from "../src/auth/credentials.ts";
 import { authDir, readKeyFile } from "../src/auth/keys.ts";
 import { revokeCredential, sweepExpired } from "../src/auth/revoke.ts";
 import { Tickets } from "../src/auth/tickets.ts";
-import { APPROVAL_TTL_MS, keepApproval, MAX_APPROVALS } from "../src/chain/chain.ts";
+import { APPROVAL_TTL_MS, keepApproval, MAX_APPROVALS, MAX_APPROVALS_PER_PRINCIPAL } from "../src/chain/chain.ts";
 import { ConnectionRegistry } from "../src/connections.ts";
 import { Audit } from "../src/control/audit.ts";
 import { type ControlStore, controlDbPath, openControlStore } from "../src/control/db.ts";
@@ -65,7 +65,7 @@ describe("Credentials (units)", () => {
     const { credential, file } = creds.mint(CONSOLE, { kind: "agent", label: "  night run  " });
     expect(credential).toMatchObject({ kind: "agent", label: "night run", scopes: MINT_DEFAULT_SCOPES, projects: "*", branches: "*", status: "live", createdBy: "console:console" });
     expect(file).toEqual({ v: 1, kind: "agent", id: credential.id, key: file.key, env: store.envId });
-    expect(b64u.decode(file.key)).toEqual(credentialKey(master, "agent", credential.id));
+    expect(b64u.decode(file.key)).toEqual(credentialKey(master, store.envId, "agent", credential.id));
     const own = creds.mint(CONSOLE, { kind: "mcp", label: "adapter", scopes: ["project.read"], projects: ["01p"], branches: ["own", "br2", "own"] }).credential;
     expect(own).toMatchObject({ scopes: ["project.read"], projects: ["01p"], branches: ["own", "br2"] });
     const p = creds.lookup({ kind: "mcp", id: own.id })!.principal;
@@ -211,7 +211,7 @@ describe("Credentials (units)", () => {
     await store.close();
     const again = open();
     expect(again.lookup({ kind: "agent", id: live.id })?.principal.branches).toEqual(["own"]);
-    expect(again.keyFor("agent", live.id)).toEqual(credentialKey(master, "agent", live.id));
+    expect(again.keyFor("agent", live.id)).toEqual(credentialKey(master, store.envId, "agent", live.id));
     expect(again.lookup({ kind: "agent", id: gone.id })).toBeUndefined();
   });
 });
@@ -224,12 +224,24 @@ test("child_env_passes_fin_credential_path (and never one inherited)", () => {
 
 test("approvals are bounded: at most MAX_APPROVALS, each for APPROVAL_TTL_MS (review of Task 5, L6)", () => {
   const approvals = new Map<string, { tag: string; principal: string; at: number }>();
-  for (let i = 0; i < MAX_APPROVALS + 10; i++) keepApproval(approvals, `a${i}`, { tag: "t", principal: "agent:x", at: 1000 + i });
+  for (let i = 0; i < MAX_APPROVALS + 10; i++) keepApproval(approvals, `a${i}`, { tag: "t", principal: `agent:${i % 20}`, at: 1000 + i });
   expect(approvals.size).toBe(MAX_APPROVALS);
   expect(approvals.has("a0")).toBe(false);
   expect(approvals.has(`a${MAX_APPROVALS + 9}`)).toBe(true);
   keepApproval(approvals, "late", { tag: "t", principal: "agent:x", at: 1000 + MAX_APPROVALS + 9 + APPROVAL_TTL_MS });
   expect([...approvals.keys()]).toEqual(["late"]);
+});
+
+test("review of Tasks 8–9, L5: one principal keeps at most MAX_APPROVALS_PER_PRINCIPAL pending", () => {
+  const approvals = new Map<string, { tag: string; principal: string; at: number }>();
+  for (let i = 0; i < 10; i++) keepApproval(approvals, `other${i}`, { tag: "t", principal: "agent:other", at: 1000 + i });
+  // A loop of one agent asking pushes out only its own oldest, never the others'.
+  for (let i = 0; i < MAX_APPROVALS * 2; i++) keepApproval(approvals, `loop${i}`, { tag: "t", principal: "agent:loop", at: 2000 + i });
+  const of = (who: string) => [...approvals.values()].filter((v) => v.principal === who).length;
+  expect(of("agent:loop")).toBe(MAX_APPROVALS_PER_PRINCIPAL);
+  expect(of("agent:other")).toBe(10);
+  expect(approvals.has(`loop${MAX_APPROVALS * 2 - 1}`)).toBe(true);
+  expect(approvals.has(`loop${MAX_APPROVALS * 2 - 1 - MAX_APPROVALS_PER_PRINCIPAL}`)).toBe(false);
 });
 
 // --- A server in this process, with a clock the test moves ---------------------------------
@@ -376,13 +388,17 @@ describe("credentials on a server", () => {
     expect(performance.now() - at).toBeLessThan(100);
     expect(code(ended)).toBe("CREDENTIAL_REVOKED");
     expect(code(await other.call("auth.whoami", {}))).not.toBeUndefined();
-    // No new proof, now or after a restart; revoking again changes nothing.
-    expect((await proveAs(file)).proved).toBe(false);
+    // Never proved again, now or after a restart: the server proves itself, then refuses it by
+    // name (review of Tasks 8–9, L4); revoking again changes nothing.
+    const now = await proveAs(file);
+    expect([now.proved, code(now.exit)]).toEqual([true, "CREDENTIAL_REVOKED"]);
     expect(ok(await confirmed(console, "auth.credential.revoke", { id: credential.id }))).toEqual({ revoked: false });
     await stopServer();
     await startInProcess();
     const r = await proveAs(file);
-    expect([r.proved, code(r.exit)]).toEqual([false, "UNAUTHENTICATED"]);
+    expect([r.proved, code(r.exit)]).toEqual([true, "CREDENTIAL_REVOKED"]);
+    // The refused connection stays unproved.
+    expect(code(await r.client.call("auth.whoami", {}))).toBe("UNAUTHENTICATED");
   });
 
   test("credential_survives_server_restart", async () => {
@@ -420,9 +436,9 @@ describe("credentials on a server", () => {
     await startInProcess();
     const { file } = await mint({});
     const master = readKeyFile(join(authDir(serverData), "credential.master"));
-    const forged = { ...file, key: b64u.encode(credentialKey(Buffer.alloc(32, 1), "agent", file.id)) };
+    const forged = { ...file, key: b64u.encode(credentialKey(Buffer.alloc(32, 1), file.env, "agent", file.id)) };
     expect((await proveAs(forged)).proved).toBe(false);
-    expect(b64u.decode(file.key)).toEqual(credentialKey(master, "agent", file.id));
+    expect(b64u.decode(file.key)).toEqual(credentialKey(master, file.env, "agent", file.id));
     const console = await asConsole();
     const listed = JSON.stringify(ok(await console.call("auth.credential.list", { all: true })));
     expect(listed).not.toContain(file.key);

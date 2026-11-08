@@ -3,13 +3,24 @@
 //   <server-data>/auth/   (0700; protected owner-only DACL on Windows)
 //     local.key            `fin`'s key        — new at every start
 //     console.key          the console's key  — new at every start
-//     credential.master    derives agent/MCP credential keys — created once, kept
+//     credential.master    derives agent/MCP credential keys — created once, kept until
+//                          `finisherd auth rotate-master` (which ends every credential)
 //   <server-data>/run/    (0700) only the Unix socket `fin.sock`
 //
 // Each file is base64url (no padding) of 32 random bytes plus `\n`, mode 0600, written to a
 // temp file in the same private directory (so it inherits the DACL on Windows), fsynced,
-// renamed over the old one, and the directory fsynced (`writeKeyFile`). `rotateKeys` runs after the server lock and before any listener opens, so
+// renamed over the old one, and the directory fsynced (`writeKeyFile`).
+//
+// Backups (review of Tasks 8–9, M3): on macOS `auth/` is excluded from Time Machine
+// (`tmutil addexclusion`, the sticky `NSURLIsExcludedFromBackupKey` exclusion that moves with
+// the folder) at every start. Windows File History backs up libraries and the profile's
+// folders, which the default server data (`%LOCALAPPDATA%`) is not in; other backup tools and
+// Linux have no standard switch, so the README tells the owner to leave `auth/` out. A
+// `credential.master` restored from a backup, or an old `control.db` restored beside it,
+// brings back credentials that were revoked after that backup: `finisherd auth rotate-master`
+// ends them all. `rotateKeys` runs after the server lock and before any listener opens, so
 // a key read from disk while a server listens is always that server's. Keys are never logged.
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { readFileSync } from "node:fs";
@@ -130,6 +141,26 @@ export function rotateKeys(serverData: string, io: KeyFs = REAL_FS): Keys {
     writeKeyFile(masterPath, credentialMaster, process.platform, io);
   }
   return { local, console, credentialMaster };
+}
+
+/** Runs a command (tests inject one); the exit status, `null` when it could not run. */
+export type RunCommand = (command: string, args: ReadonlyArray<string>) => number | null;
+
+const runCommand: RunCommand = (command, args) => {
+  const r = spawnSync(command, args, { stdio: "ignore", timeout: 10_000 });
+  return r.error === undefined ? r.status : null;
+};
+
+/**
+ * Keeps `dir` out of backups where the OS has a switch for it (module docs): on macOS
+ * `tmutil addexclusion` (no administrator rights needed for this sticky form). Never fails the
+ * start: a warning on stderr. Answers whether it was excluded.
+ */
+export function excludeFromBackups(dir: string, platform: NodeJS.Platform = process.platform, run: RunCommand = runCommand): boolean {
+  if (platform !== "darwin") return false;
+  if (run("/usr/bin/tmutil", ["addexclusion", dir]) === 0) return true;
+  process.stderr.write(`finisherd: warning: cannot exclude ${dir} from Time Machine backups; leave it out of backups yourself\n`);
+  return false;
 }
 
 /** The keys this server rotated at start (5A Task 3's handshake reads them). */

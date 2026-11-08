@@ -1,7 +1,7 @@
 // Agent and MCP credentials (spec §4.1, §4.5; plan 5A Task 9, Decisions 32–34).
 //
 // - **Stored without a key:** a row of `control.db` `credentials` (chain `auth`); the key is
-//   `credentialKey(credential.master, kind, id)`, recomputed for every handshake, so a copy of
+//   `credentialKey(credential.master, envId, kind, id)`, recomputed for every handshake, so a copy of
 //   `control.db` holds no secret.
 // - **Live** means not revoked and not expired: idle past `idleExpiryS` since it was last used
 //   (or minted), or past `absoluteExpiryAt`. Only a live credential gets a hello proof
@@ -93,7 +93,8 @@ const parseList = (text: string): "*" | ReadonlyArray<string> => JSON.parse(text
 
 export class Credentials {
   readonly #store: ControlStore;
-  readonly #master: Buffer;
+  #master: Buffer;
+  readonly #saveMaster: ((key: Buffer) => void) | undefined;
   readonly #audit: Audit;
   readonly #clock: () => number;
   readonly #rows = new Map<string, CredentialRow>();
@@ -102,10 +103,16 @@ export class Credentials {
   readonly #insert: StatementSync;
   readonly #touch: StatementSync;
   readonly #end: StatementSync;
+  /** Rows ended in memory and not yet written (`persist`). */
+  readonly #unsaved = new Set<string>();
+  #retry: ReturnType<typeof setTimeout> | undefined;
+  #backoffMs = 500;
 
-  constructor(store: ControlStore, master: Buffer, audit: Audit, clock: () => number = Date.now) {
+  /** `saveMaster` writes a new `credential.master` durably (`rotateMaster`; none in unit tests). */
+  constructor(store: ControlStore, master: Buffer, audit: Audit, clock: () => number = Date.now, saveMaster?: (key: Buffer) => void) {
     this.#store = store;
     this.#master = master;
+    this.#saveMaster = saveMaster;
     this.#audit = audit;
     this.#clock = clock;
     const db = store.db;
@@ -224,7 +231,7 @@ export class Credentials {
       outcome: "ok",
       details: { credentialId: row.id, scopes: [...scopes] },
     });
-    const key = credentialKey(this.#master, row.kind, row.id);
+    const key = credentialKey(this.#master, this.#store.envId, row.kind, row.id);
     return { credential: this.view(row), file: { v: 1, kind: row.kind, id: row.id, key: b64u.encode(key), env: this.#store.envId } };
   }
 
@@ -232,7 +239,25 @@ export class Credentials {
   lookup(ref: CredentialRef): { key: Buffer; principal: Principal } | undefined {
     const row = this.#live(ref.kind, ref.id);
     if (row === undefined) return undefined;
-    return { key: credentialKey(this.#master, row.kind, row.id), principal: this.principal(row) };
+    return { key: credentialKey(this.#master, this.#store.envId, row.kind, row.id), principal: this.principal(row) };
+  }
+
+  /**
+   * What the handshake answers for `ref` (review of Tasks 8–9, L4): a live credential's key and
+   * principal; for one that exists but has ended, its key too and why it ended, so the server
+   * proves itself and then refuses it (`CREDENTIAL_REVOKED` or `CREDENTIAL_EXPIRED`) instead
+   * of looking like a squatter. An unknown id (or a row deleted 180 days after it ended) gets
+   * nothing, so ids still cannot be probed.
+   */
+  forHello(ref: CredentialRef): { key: Buffer; principal: Principal; ended?: "revoked" | "expired" } | undefined {
+    const row = this.#rows.get(ref.id);
+    if (row === undefined || row.kind !== ref.kind) return undefined;
+    const status = this.#status(row, this.#clock());
+    return {
+      key: credentialKey(this.#master, this.#store.envId, row.kind, row.id),
+      principal: this.principal(row),
+      ...(status === "live" ? {} : { ended: status }),
+    };
   }
 
   keyFor(kind: CredentialKind, id: string): Buffer | undefined {
@@ -273,19 +298,82 @@ export class Credentials {
   }
 
   /**
-   * Ends `ref` in the store (`revoke.ts` calls it first, then drops its tickets and
-   * connections); true when it was not ended yet (an expired one not yet swept included).
+   * Ends `ref` in memory (`revoke.ts` step 1, review of Tasks 8–9, L2): from now on no
+   * handshake proves it and no request of it runs. Writing it to the store is `persist`'s,
+   * which the revoke path calls last, so a busy store never stops a revocation. True when it
+   * was not ended yet (an expired one not yet swept included).
    */
-  end(ref: CredentialRef, reason: EndReason): boolean {
+  markEnded(ref: CredentialRef, reason: EndReason): boolean {
     const row = this.#rows.get(ref.id);
     if (row === undefined || row.kind !== ref.kind || row.revokedAt !== undefined) return false;
     const now = this.#clock();
     // An owner or self revocation of one that has already expired is recorded as its expiry.
     const why: EndReason = reason !== "expired" && this.#status(row, now) === "expired" ? "expired" : reason;
-    this.#end.run(now, why, row.id);
     row.revokedAt = now;
     row.revokedReason = why;
+    this.#unsaved.add(row.id);
     return true;
+  }
+
+  /**
+   * Writes every ended row not saved yet. A failure (a busy store) is retried after 1 s,
+   * doubling up to a minute, until it lands; meanwhile the row is ended in memory. Until then a
+   * restart would bring the credential back (TASKS records it).
+   */
+  persist(): void {
+    if (this.#retry !== undefined) {
+      clearTimeout(this.#retry);
+      this.#retry = undefined;
+    }
+    for (const id of [...this.#unsaved]) {
+      const row = this.#rows.get(id);
+      if (row?.revokedAt === undefined) {
+        this.#unsaved.delete(id);
+        continue;
+      }
+      try {
+        this.#end.run(row.revokedAt, row.revokedReason ?? "owner", id);
+        this.#unsaved.delete(id);
+      } catch (e) {
+        process.stderr.write(`finisherd: warning: cannot record a credential's end yet (retrying): ${String(e)}\n`);
+        this.#backoffMs = Math.min(this.#backoffMs * 2, 60_000);
+        this.#retry = setTimeout(() => this.persist(), this.#backoffMs);
+        this.#retry.unref();
+        return;
+      }
+    }
+    this.#backoffMs = 500;
+  }
+
+  /** Ends `ref` and writes it at once (`markEnded`, then `persist`). */
+  end(ref: CredentialRef, reason: EndReason): boolean {
+    const ended = this.markEnded(ref, reason);
+    if (ended) this.persist();
+    return ended;
+  }
+
+  /** Stops the retry timer (the server's shutdown; the control store closes after). */
+  dispose(): void {
+    if (this.#retry !== undefined) clearTimeout(this.#retry);
+    this.#retry = undefined;
+  }
+
+  /** Ended rows not written yet (tests). */
+  unsaved(): number {
+    return this.#unsaved.size;
+  }
+
+  /**
+   * Replaces `credential.master` with `master` (review of Tasks 8–9, M3): written first (a
+   * failure changes nothing), then used for every key from now on, so no credential file made
+   * before proves again. Answers the credentials not ended yet, which the caller revokes
+   * through the one revoke path so their connections and writes in flight end too.
+   */
+  rotateMaster(master: Buffer): ReadonlyArray<CredentialRef> {
+    if (this.#saveMaster === undefined) throw finError("INTERNAL", "this server cannot write credential.master", {});
+    this.#saveMaster(master);
+    this.#master = master;
+    return [...this.#rows.values()].filter((r) => r.revokedAt === undefined).map((r) => ({ kind: r.kind, id: r.id }));
   }
 
   /** The kind of credential `id`, when there is one. */

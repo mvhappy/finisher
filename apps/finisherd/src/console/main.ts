@@ -8,6 +8,7 @@ import { defaultServerData } from "../config.ts";
 import { connectConsole, ConsoleError } from "./client.ts";
 import { agent } from "./commands/agent.ts";
 import { audit } from "./commands/audit.ts";
+import { auth } from "./commands/auth.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
 import { mcp } from "./commands/mcp.ts";
@@ -19,7 +20,18 @@ import { plugin } from "./plugin.ts";
 import { type Prompt, ttyPrompt } from "./prompt.ts";
 import { registry } from "./registry.ts";
 
-const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = { status, stop, audit, diagnostics, project, plugin, registry, agent, mcp };
+const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
+  status,
+  stop,
+  audit,
+  diagnostics,
+  project,
+  agent,
+  mcp,
+  auth,
+  plugin,
+  registry,
+};
 
 export const HELP = `Usage: finisherd [serve] [--server-data <dir>]
        finisherd <command> [--server-data <dir>]
@@ -47,6 +59,7 @@ short code, and goes ahead once you type the code back.
   agent revoke <id>                        end a credential: its connections close now
   mcp setup --out <file> [--label <name>] [--scope <scope>]...
                                            a credential for the MCP adapter
+  auth rotate-master                       a new key for all credentials: every one of them ends
 
 Reading recorded content needs no code:
   diagnostics export --content [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
@@ -83,6 +96,7 @@ export interface ConsoleDeps {
   readonly prompt?: Prompt;
   readonly output?: Output;
   readonly env?: NodeJS.ProcessEnv;
+  readonly createFile?: CommandContext["createFile"];
 }
 
 /** Runs one console command; resolves with its exit code (`fin`'s codes). */
@@ -108,6 +122,7 @@ export async function runConsole(argv: ReadonlyArray<string>, deps: ConsoleDeps 
       prompt: deps.prompt ?? ttyPrompt(),
       output,
       connect: () => connectConsole(serverData),
+      createFile: deps.createFile,
     });
   } catch (e) {
     if (e instanceof ConsoleError) return printFailure(output, e.error);

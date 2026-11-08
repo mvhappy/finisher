@@ -16,7 +16,11 @@
 //
 // Limits (review of Task 7, M2): sockets that have not upgraded are capped on their own
 // (`MAX_UNAUTHENTICATED`) and closed if they do not upgrade within the header timeout, so a
-// loopback slowloris cannot use up the WebSockets' room; WebSockets are capped per ticket owner
+// loopback slowloris cannot use up the WebSockets' room. Once they are all taken, a new socket
+// first closes those that have waited longer than `AT_CAP_GRACE_MS` (a short header timeout
+// at the cap; review of Tasks 8–9): the slots are not reserved for anyone, so any local user
+// can still hold them by reopening sockets faster than that, which blocks new app WebSockets
+// meanwhile (TASKS records the residual); WebSockets are capped per ticket owner
 // (`MAX_WS_PER_OWNER`: a credential, or one `local` connection), for `local` as a whole and in
 // all, with `RESERVED_WS` of them only for `device` and `console` principals (the app and the
 // owner), so a principal minting tickets cannot lock out the UI.
@@ -139,6 +143,8 @@ export interface WebSocketServerOptions {
   readonly headersTimeoutMs?: number;
   /** Open sockets that have not upgraded at most (default `MAX_UNAUTHENTICATED`). */
   readonly maxUnauthenticated?: number;
+  /** At the cap, how long a socket may have waited before a new one closes it (default `AT_CAP_GRACE_MS`). */
+  readonly atCapGraceMs?: number;
   /** WebSockets at most, every principal together (default `MAX_WEBSOCKETS`). */
   readonly maxWebSockets?: number;
 }
@@ -147,6 +153,8 @@ export interface WebSocketServerOptions {
 export const HEADERS_TIMEOUT_MS = 10_000;
 /** Open sockets that have not upgraded yet, at most: past it a new one is closed at once. */
 export const MAX_UNAUTHENTICATED = 16;
+/** Once `MAX_UNAUTHENTICATED` are open, the header timeout of the ones already open. */
+export const AT_CAP_GRACE_MS = 1_000;
 /** WebSockets at most: the UI and a few tools, never a flood. */
 export const MAX_WEBSOCKETS = 64;
 /** Of `MAX_WEBSOCKETS`, the ones only `device` and `console` principals may take. */
@@ -217,10 +225,11 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
 
     const timeout = options.headersTimeoutMs ?? HEADERS_TIMEOUT_MS;
     const maxUnauthenticated = options.maxUnauthenticated ?? MAX_UNAUTHENTICATED;
+    const atCapGrace = options.atCapGraceMs ?? AT_CAP_GRACE_MS;
     const maxWebSockets = options.maxWebSockets ?? MAX_WEBSOCKETS;
     const slots = new WebSocketSlots(maxWebSockets);
-    /** Sockets that have not upgraded, with what marks one upgraded (it stops counting). */
-    const unauthenticated = new Map<Duplex, () => void>();
+    /** Sockets that have not upgraded: when each opened, and what marks it upgraded (it stops counting). */
+    const unauthenticated = new Map<Duplex, { readonly openedAt: number; readonly upgraded: () => void }>();
     const http: Server = yield* Effect.acquireRelease(
       Effect.sync(() => {
         // Slow or idle clients before the upgrade are cut off (checked every second); the
@@ -248,6 +257,15 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     // time, whether it sends half a request or nothing at all.
     http.on("connection", (socket: Duplex) => {
       if (unauthenticated.size >= maxUnauthenticated) {
+        // At the cap the header timeout is short: the ones that have waited past it go first.
+        const now = Date.now();
+        for (const [old, p] of [...unauthenticated]) {
+          if (now - p.openedAt < atCapGrace) continue;
+          p.upgraded();
+          old.destroy();
+        }
+      }
+      if (unauthenticated.size >= maxUnauthenticated) {
         socket.destroy();
         return;
       }
@@ -257,7 +275,7 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         clearTimeout(timer);
         unauthenticated.delete(socket);
       };
-      unauthenticated.set(socket, upgraded);
+      unauthenticated.set(socket, { openedAt: Date.now(), upgraded });
       socket.once("close", upgraded);
     });
     http.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -282,7 +300,7 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         return;
       }
       socket.once("close", release);
-      unauthenticated.get(socket)?.();
+      unauthenticated.get(socket)?.upgraded();
       wss.handleUpgrade(req, socket, head, (conn) => {
         // Paused until a handler reads it, so nothing is dropped.
         conn.pause();
