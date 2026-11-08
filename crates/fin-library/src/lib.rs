@@ -5,8 +5,16 @@
 //! ([`collide`]), placeholder and reparse-tag rules ([`placeholder`], [`reparse`]), exclusion
 //! rules and globs ([`exclude`], [`glob`]), one listing as scan entries ([`listing`]), volume
 //! rules ([`volume`]), and the [`source::Source`] a scan reads through, with a fake
-//! filesystem behind `test-hooks` (`source::fake`). No module here makes an OS call; the
-//! per-OS sources, volume identity and the safe opener (`open_for_read`) are Tasks 2–3.
+//! filesystem behind `test-hooks` (`source::fake`). Those modules make no OS call.
+//!
+//! Task 2 (Linux and macOS): the native [`source::NativeSource`] (`getdents64` + `statx`;
+//! `getattrlistbulk`), volume identity ([`identity`], [`root_state`]), the safe opener
+//! ([`open_for_read`], the only open of a file under a root) and the process's dataless
+//! policy ([`process`]). Windows is Task 3.
+//!
+//! Task 4: the parallel walker ([`walk()`], [`mod@walk`]; deadlines in [`timing`]) and, behind
+//! `test-hooks`, the overlay that marks real paths as placeholders, delays, errors and mount
+//! changes for worker tests (`overlay`).
 //!
 //! **Read-only roots:** nothing in this crate creates, writes, renames, locks or deletes
 //! anything under a root.
@@ -16,19 +24,31 @@ pub mod exclude;
 pub mod glob;
 pub mod listing;
 pub mod names;
+pub mod open;
 pub mod placeholder;
+pub mod process;
 pub mod raw;
 pub mod reparse;
 pub mod source;
+pub mod timing;
 pub mod types;
 pub mod volume;
+pub mod walk;
+
+#[cfg(feature = "test-hooks")]
+pub mod overlay;
 
 pub use collide::{Collision, collisions};
 pub use exclude::{ExcludeSpec, Excludes};
+pub use open::open_for_read;
 pub use raw::RawRel;
-pub use source::{Attrs, DirHandle, RawEntry, RootStat, Source};
+pub use source::{Attrs, DirHandle, Listing, RawEntry, RootStat, Source};
+pub use timing::Timing;
 pub use types::{
-    DirDone, EntryType, Expect, OpenError, Placeholder, RootState, SampleEntry, ScanBatch,
-    ScanEntry, VolumeIdentity,
+    DirDone, EntryType, Expect, KnownDir, OpenError, Placeholder, RootState, SampleEntry,
+    ScanBatch, ScanEntry, VolumeIdentity,
 };
-pub use volume::classify_root;
+pub use volume::{classify_root, identity, root_state};
+pub use walk::{
+    CancelToken, KnownDirs, WalkError, WalkMode, WalkOpts, WalkStop, WalkSummary, walk,
+};

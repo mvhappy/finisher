@@ -52,6 +52,9 @@ fn yes() -> bool {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RootSpec {
     pub(super) volume: VolumeSpec,
+    /// The root directory's own mtime ([`crate::source::Source::dir_mtime`]).
+    #[serde(default)]
+    pub(super) mtime_ns: i64,
     #[serde(default)]
     pub(super) stat_delay_ms: u64,
     #[serde(default)]
@@ -91,6 +94,9 @@ pub(super) struct NodeSpec {
     reparse_tag: Option<String>,
     #[serde(default)]
     mount_root: bool,
+    /// A nested mount's volume key (`Source::volume` of the directory); the root's by default.
+    #[serde(default)]
+    volume_key: Option<String>,
     #[serde(default)]
     automount: bool,
     #[serde(default)]
@@ -112,6 +118,7 @@ pub(super) struct Node {
     pub(super) open_error: Option<String>,
     pub(super) error: Option<String>,
     pub(super) read_delay: Duration,
+    pub(super) volume_key: Option<String>,
     pub(super) children: Vec<Node>,
 }
 
@@ -133,7 +140,7 @@ fn hex(s: &str) -> Result<Vec<u8>, FakeError> {
         .collect()
 }
 
-pub(super) fn error(name: &str) -> io::Error {
+pub(crate) fn error(name: &str) -> io::Error {
     let kind = match name {
         "notFound" => io::ErrorKind::NotFound,
         "permissionDenied" => io::ErrorKind::PermissionDenied,
@@ -145,7 +152,7 @@ pub(super) fn error(name: &str) -> io::Error {
     io::Error::new(kind, format!("fake {name}"))
 }
 
-fn check_error(name: &Option<String>) -> Result<(), FakeError> {
+pub(crate) fn check_error(name: &Option<String>) -> Result<(), FakeError> {
     match name.as_deref() {
         None
         | Some(
@@ -221,6 +228,7 @@ fn build(spec: &NodeSpec, parent_dev: &str) -> Result<Node, FakeError> {
         open_error: spec.open_error.clone(),
         error: spec.error.clone(),
         read_delay: Duration::from_millis(spec.read_delay_ms),
+        volume_key: spec.volume_key.clone(),
         children,
     })
 }
