@@ -104,8 +104,8 @@ describe("server", () => {
     await invalid("project.create", { dir: "x", name: "Demo", rate: "30" }, "dir");
     await invalid("project.create", { dir: `${tmp}/a/../b`, name: "Demo", rate: "30" }, "dir");
     await invalid("project.open", { dir: "./x" }, "dir");
-    await invalid("asset.probe", { path: "a/../b" }, "path");
-    await invalid("asset.probe", { path: `${tmp}/./clip.mov` }, "path");
+    await invalid("asset.probe", { projectId: "01aaaaaaaaaaaaaaaaaaaaaaaa", path: "a/../b" }, "path");
+    await invalid("asset.probe", { projectId: "01aaaaaaaaaaaaaaaaaaaaaaaa", path: `${tmp}/./clip.mov` }, "path");
     const created = await c.call("project.create", { dir: join(tmp, "p"), name: "Demo", rate: "30" });
     expect(created.ok).toBe(true);
     const projectId = (created as { value: { projectId: string } }).value.projectId;
@@ -113,7 +113,7 @@ describe("server", () => {
     // Absolute, normalised paths still reach the handler.
     const opened = await c.call("project.open", { dir: join(tmp, "p") });
     expect(opened.ok).toBe(true);
-    const missing = await c.call("asset.probe", { path: join(tmp, "missing.mov") });
+    const missing = await c.call("asset.probe", { projectId, path: join(tmp, "missing.mov") });
     expect(!missing.ok && missing.error.code).not.toBe("INVALID_PATH");
   });
 });

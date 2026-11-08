@@ -32,9 +32,20 @@ pub struct WriteGuard {
     /// Branches no write may change (`BRANCH_PROTECTED`).
     #[serde(default)]
     pub deny_branches: Vec<String>,
-    /// When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise). Absent
+    /// means no allow-list; `null` is refused, so a sender's bug cannot open the guard.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "allow_list"
+    )]
+    #[schemars(with = "Vec<String>")]
     pub allow_branches: Option<Vec<String>>,
+}
+
+/// `allowBranches` when present: a list, never `null`.
+fn allow_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(d).map(Some)
 }
 
 /// Whether `guard` lets a write change `target` (a branch the store resolved): a denied one
@@ -165,6 +176,12 @@ mod tests {
         assert_eq!(g.deny_branches, Vec::<String>::new());
         assert_eq!(g.allow_branches, Some(vec!["br2".to_string()]));
         assert!(serde_json::from_str::<WriteGuard>(r#"{"deny":["br2"]}"#).is_err());
+        // `null` would read as no allow-list: refused (review of Task 5, L2).
+        assert!(serde_json::from_str::<WriteGuard>(r#"{"allowBranches":null}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<WriteGuard>("{}").unwrap(),
+            WriteGuard::default()
+        );
         assert_eq!(
             serde_json::to_value(WriteGuard::default()).unwrap(),
             json!({ "denyBranches": [] })

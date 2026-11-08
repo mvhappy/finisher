@@ -125,18 +125,18 @@ export async function run() {
     const doomed = write(["clip", "delete", "c1"]);
     for (const args of [["--help"], ["schema"], ["clip", "insert"]]) raw(args);
 
-    const ws = await connectWs(server.info);
+    const ws = await connectWs(server);
     sockets.push(ws);
-    const head = (await ws.call("snapshot.get", { projectId, branch: "main" })).rev;
+    const { rev: head, generation } = await ws.call("snapshot.get", { projectId, branch: "main" });
     const tx = (txId, baseRev, ops) => ({ txId, author: "e2e", branch: "main", baseRev, schemaVersion: 2, ops });
     const stale = tx(`${marker}-stale`, head - 1, [
       { op: "clip.insert", id: "$c", track: "t1", at: "30", asset: "a1", sourceIn: "0", duration: "1" },
     ]);
-    const rebased = await ws.call("tx.commit", { projectId, tx: stale });
+    const rebased = await ws.call("tx.commit", { projectId, tx: stale, generation });
     const retried = (await ws.call("tx.get", { projectId, txId: e1.txId })).tx;
-    await ws.call("tx.commit", { projectId, tx: retried });
+    await ws.call("tx.commit", { projectId, tx: retried, generation });
     const clash = tx(`${marker}-clash`, doomed.rev - 1, [{ op: "clip.delete", clip: "c1" }]);
-    const refused = await ws.call("tx.commit", { projectId, tx: clash }).then(
+    const refused = await ws.call("tx.commit", { projectId, tx: clash, generation }).then(
       () => undefined,
       (e) => String(e.message),
     );

@@ -86,7 +86,7 @@ describe("the handshake on a real server", () => {
 
   test("hello_without_nonce_has_no_proof", async () => {
     const answer = ok<Record<string, unknown>>(await (await connect()).call("server.hello", {}));
-    expect(answer.protocolVersion).toBe(1);
+    expect(answer.protocolVersion).toBe(2);
     expect(answer).not.toHaveProperty("proof");
     expect(answer).not.toHaveProperty("serverNonce");
   });
@@ -177,7 +177,7 @@ describe("the handshake on a real server", () => {
     expect(bad).toMatchObject({ _tag: "Exit", requestId: "41", exit: { _tag: "Failure", cause: [{ _tag: "Fail", error: { code: "INVALID_REQUEST" } }] } });
     expect(c.transcript.some((t) => t.dir === "<<" && (t.line.includes('"Defect"') || t.line.includes('"Die"')))).toBe(false);
     // The connection still works.
-    expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(1);
+    expect(ok<{ protocolVersion: number }>(await c.call("server.hello", {})).protocolVersion).toBe(2);
   });
 
   test("oversized_frame_is_frame_too_large_then_closed", async () => {

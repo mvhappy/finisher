@@ -17,6 +17,15 @@ export interface ProjectRef {
   readonly rev: number;
 }
 
+export interface OpenExpect {
+  readonly projectId?: string | undefined;
+  readonly attachOnly?: boolean;
+}
+
+/** The folder holds another project than the one checked (a swap between check and open). */
+const changed = (dir: string, projectId: string) =>
+  finError("PROJECT_NOT_FOUND", `the folder ${dir} no longer holds project ${projectId}`, { dir, projectId, reason: "changed" }, "open the project by its folder again");
+
 /** One open project: its engine and a commit lock. */
 interface OpenProject {
   readonly engine: Engine;
@@ -28,7 +37,12 @@ interface OpenProject {
 export interface ProjectRegistryShape {
   /** `idemKey`: a retry with the same key returns the project that create made. */
   readonly create: (dir: string, name: string, rate: string, idemKey?: string) => Effect.Effect<ProjectRef, FinError>;
-  readonly open: (dir: string, relocate?: boolean) => Effect.Effect<ProjectRef, FinError>;
+  /**
+   * `expect.projectId`: the project the chain read in the folder: another one there now is
+   * `PROJECT_NOT_FOUND {reason: changed}`, checked before it is registered. `attachOnly`: only
+   * an engine open here already answers (the caller was not checked for loading one).
+   */
+  readonly open: (dir: string, relocate?: boolean, expect?: OpenExpect) => Effect.Effect<ProjectRef, FinError>;
   /** With `generation`, refused with `HISTORY_REWOUND` when the branch moved under the caller. */
   readonly commit: (projectId: string, tx: unknown, generation?: Generation, meta?: CallMeta) => Effect.Effect<CommittedTx, FinError>;
   /** `branch`: an id, a name or `<name>#<id>`; resolved to the id first. */
@@ -280,22 +294,34 @@ export function makeProjectRegistry(
     const call = <A>(p: OpenProject, f: (engine: Engine) => Promise<string>): Effect.Effect<A, FinError> =>
       Effect.tapError(attemptJson<A>(() => f(p.engine)), (e) => Effect.sync(() => (isEngineDead(e) ? evict(p) : undefined)));
 
-    const openDir = (dir: string, relocate: boolean): Promise<OpenProject> => {
+    const openDir = (dir: string, relocate: boolean, expected?: string): Promise<OpenProject> => {
       if (closed) return Promise.reject(shuttingDown());
       const id = byDir.get(dir);
       const known = id === undefined ? undefined : byId.get(id);
       if (known) {
+        if (expected !== undefined && known.engine.projectId !== expected) return Promise.reject(changed(dir, expected));
         index.touch(known.engine.projectId, known.dir);
         return Promise.resolve(known);
       }
       let pending = opening.get(dir);
       if (!pending) {
         pending = Engine.open(serverData, dir, { relocate })
-          .then((engine) => register(engine, dir))
+          .then((engine) => {
+            // Before `register`: a project other than the one checked is never taken on.
+            if (expected !== undefined && engine.projectId !== expected) {
+              void engine.close().catch(() => undefined);
+              throw changed(dir, expected);
+            }
+            return register(engine, dir);
+          })
           .finally(() => opening.delete(dir));
         opening.set(dir, pending);
       }
-      return pending;
+      // A caller joining another's open checks its own expectation.
+      return pending.then((p) => {
+        if (expected !== undefined && p.engine.projectId !== expected) throw changed(dir, expected);
+        return p;
+      });
     };
 
     const ref = (p: OpenProject): Effect.Effect<ProjectRef, FinError> =>
@@ -368,7 +394,18 @@ export function makeProjectRegistry(
           );
         }),
 
-      open: (dir, relocate = false) => Effect.flatMap(attempt(() => openDir(resolve(dir), relocate)), ref),
+      open: (dir, relocate = false, expect = {}) =>
+        Effect.suspend(() => {
+          if (expect.attachOnly === true && expect.projectId !== undefined) {
+            const p = byId.get(expect.projectId);
+            if (p === undefined) {
+              const fix = "open the project by its folder again";
+              return Effect.fail(finError("PROJECT_NOT_FOUND", `project ${expect.projectId} is not open here`, { projectId: expect.projectId, dir }, fix));
+            }
+            return ref(p);
+          }
+          return Effect.flatMap(attempt(() => openDir(resolve(dir), relocate, expect.projectId)), ref);
+        }),
 
       commit: (projectId, tx, generation, meta) =>
         Effect.flatMap(get(projectId), (p) =>

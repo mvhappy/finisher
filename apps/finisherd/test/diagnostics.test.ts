@@ -1,6 +1,7 @@
 // The server's diagnostics (plan D, Task D4): settings before the journal, the live watch and
 // its last-good rule, env overrides, `finisherd.json`, sessions, uncaught errors, RPC timing,
 // the source per transport and the `diagnostics.*` RPCs.
+import { connectWs } from "./support/ws-client.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -349,32 +350,8 @@ describe("rpc timing", () => {
 });
 
 describe("sources and diagnostics.record", () => {
-  const ws = (token: string, port: number) =>
-    new Promise<{ call: (tag: string, payload: unknown) => Promise<Record<string, unknown>>; close: () => void }>((resolve, reject) => {
-      const sock = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { Authorization: `Bearer ${token}` } } as unknown as string[]);
-      const waiting = new Map<string, (f: Record<string, unknown>) => void>();
-      let next = 1;
-      sock.onmessage = (e) => {
-        for (const line of String(e.data).split("\n").filter(Boolean)) {
-          const f = JSON.parse(line) as Record<string, unknown>;
-          waiting.get(f.requestId as string)?.(f);
-        }
-      };
-      sock.onerror = () => reject(new Error("websocket error"));
-      sock.onopen = () =>
-        resolve({
-          call: (tag, payload) =>
-            new Promise((done) => {
-              const id = String(next++);
-              waiting.set(id, done);
-              sock.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
-            }),
-          close: () => sock.close(),
-        });
-    });
-
   test("source_is_fin_on_socket_and_ui_on_websocket; consent_rpc_refuses_training_on_from_fin_source; consent_rpc_allows_training_on_from_ui", async () => {
-    const { info } = await start();
+    await start();
     const c = await client();
     // `fin` may send cli.command; the UI may send nothing yet.
     expect(ok<{ recorded: boolean }>(await record(c))).toEqual({ recorded: true });
@@ -385,7 +362,8 @@ describe("sources and diagnostics.record", () => {
       expect(refused.error.fix).toMatch(/Finisher app.*settings\.json.*FIN_TRAINING=on/);
     }
     expect(existsSync(settingsPath(serverData))).toBe(false);
-    const ui = await ws(info.token, info.wsPort);
+    // The WebSocket is still the `ui` source until 5A Task 7 takes sources from principals.
+    const ui = await connectWs(server!);
     try {
       const viaUi = await ui.call("diagnostics.record", { kind: "cli.command", kv: 1, payload: cli() });
       expect((viaUi.exit as { _tag: string })._tag).toBe("Failure");

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// finisherd: serves `FinRpcs` over the local socket/pipe and a bearer-token WebSocket.
+// finisherd: serves `FinRpcs` over the local socket/pipe and a ticketed WebSocket.
 // Usage: node apps/finisherd/src/main.ts [--server-data <dir>]
 // Logs go to stderr only; stdout stays empty.
 import { pathToFileURL } from "node:url";
@@ -7,8 +7,8 @@ import { runMain } from "@effect/platform-node/NodeRuntime";
 import { Cause, Context, Effect, Exit, Layer, Logger } from "effect";
 import {
   ensureServerData,
-  newToken,
   parseArgs,
+  readOrigins,
   removeServerInfo,
   type ServerInfo,
   startFailure,
@@ -21,14 +21,16 @@ import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { KeysTag, rotateKeys } from "./auth/keys.ts";
 import { Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
-import { LOCAL } from "./principal.ts";
+import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
-import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, serveRpc } from "./transport.ts";
+import { MAX_FRAME } from "./protocol.ts";
+import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
+import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -55,21 +57,45 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
-      const token = newToken();
+      const tickets = yield* makeTickets();
       // The journal opens under the settings already read, before any transport listens.
       const diagnostics = yield* makeDiagnostics(serverData, diagnosticsOptions);
 
       const local = yield* makeLocalSocketServer(socket);
-      const ws = yield* Effect.mapError(makeWebSocketServer(token), (e) => startFailure(e.reason.cause ?? e));
+      const audit = Context.get(control, AuditTag);
+      // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
+      let wsPort = 0;
+      const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: () => readOrigins(serverData) });
+      const { server: ws, port } = yield* Effect.mapError(
+        makeTicketedWebSocketServer({
+          check,
+          // A message over the frame cap and its slack is dropped by ws (close 1009); one just over
+          // the cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
+          maxPayload: MAX_FRAME + 64 * 1024,
+          onRefused: (r) => {
+            if (r.reason === "badPath" || r.reason === "badVersion") return;
+            audit.append({
+              kind: "auth.fail",
+              principal: { kind: "anonymous", id: "" },
+              credentialKind: "ticket",
+              outcome: "failed",
+              code: "UNAUTHENTICATED",
+              details: { reason: r.reason, transport: "ws" },
+            });
+          },
+        }),
+        (e) => startFailure(e.reason.cause ?? e),
+      );
+      wsPort = port;
       // The endpoints both MACs bind (Decision 7): the socket's real path or the pipe's name.
       const localEndpoint = canonicalEndpoint(socket);
-      const wsEndpoint = `ws://127.0.0.1:${portOf(ws)}`;
+      const wsEndpoint = `ws://127.0.0.1:${wsPort}`;
       const connections = {
         local: new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint),
-        // The bearer token (until Task 6's tickets) is as good as `local.key`: both are the user's files.
-        ws: new Connections("ws", () => wsEndpoint, LOCAL),
+        // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
+        ws: new Connections("ws", () => wsEndpoint),
       };
-      const handshake = new Handshake({ keys, envId, audit: Context.get(control, AuditTag) });
+      const handshake = new Handshake({ keys, envId, audit });
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local, "fin", connections.local), serveRpc(ws, "ui", connections.ws)).pipe(
           Layer.provide(
@@ -81,13 +107,14 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),
               Layer.succeed(HandshakeTag, handshake),
+              Layer.succeed(TicketsTag, tickets),
             ),
           ),
         ),
       );
 
       const publish = (enabled: boolean) =>
-        writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, envId, diagnostics: { enabled } });
+        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId, diagnostics: { enabled } });
       // Set when `finisherd.json` is removed: a late gate change must not bring it back.
       let stopped = false;
       const info = yield* Effect.acquireRelease(

@@ -70,6 +70,11 @@ export class NdjsonClient {
     return { id, done };
   }
 
+  /** Numbers the next request 1 again (after the handshake, whose answers have all arrived). */
+  restartIds(): void {
+    this.#nextId = 1;
+  }
+
   interrupt(id: string): void {
     this.send({ _tag: "Interrupt", requestId: id });
   }
@@ -170,6 +175,7 @@ export async function connectProved(server: { info: ServerInfo; serverData: stri
   const client = await NdjsonClient.connect(server.info.socket);
   ok(await prove(client, server.info, keyOf(server.serverData, credential), credential));
   client.transcript.length = 0;
+  client.restartIds();
   return client;
 }
 
@@ -183,7 +189,6 @@ export interface ServerInfo {
   pid: number;
   wsPort: number;
   socket: string;
-  token: string;
   protocolVersion: number;
   envId: string;
   diagnostics: { enabled: boolean };
@@ -243,6 +248,17 @@ export async function startServer(
     }
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+/** The generation `branch` is read at now (`snapshot.get`): protocol 2 requires it on writes. */
+export async function generationOf(c: NdjsonClient, projectId: string, branch = "main"): Promise<{ incarnation: string; n: number }> {
+  return ok<{ generation: { incarnation: string; n: number } }>(await c.call("snapshot.get", { projectId, branch })).generation;
+}
+
+/** `tx.commit` of `t` at its branch's current generation. */
+export async function commit(c: NdjsonClient, projectId: string, t: Record<string, unknown>): Promise<Exit> {
+  const generation = await generationOf(c, projectId, typeof t.branch === "string" ? t.branch : "main");
+  return c.call("tx.commit", { projectId, tx: t, generation });
 }
 
 export function tx(txId: string, baseRev: number, ops: unknown[]): Record<string, unknown> {

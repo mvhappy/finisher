@@ -3,7 +3,7 @@
 // branch it writes) and the human-only scopes (spec §4.6). Defaults per principal kind are
 // `defaultScopes` in `auth.ts` (Decision 20).
 import { Schema } from "effect";
-import type { RpcGroup } from "effect/rpc";
+import type { Rpc, RpcGroup } from "effect/rpc";
 import type { FinRpcs } from "./rpc.ts";
 
 export const SCOPES = [
@@ -67,102 +67,149 @@ export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "
 export interface RuleFacts {
   /** `project.open`: the folder's project is already open on this server (attaching). */
   readonly attached?: boolean;
+  /**
+   * A project the call names by id is not open here, so serving it reopens it from disk
+   * (taking its lease): that needs `project.write` whatever the RPC's own scopes (Decision 15).
+   */
+  readonly reopens?: boolean;
 }
 
-export interface RpcRule {
+/** The decoded payload of RPC `T`. */
+export type PayloadOf<T extends FinRpcTag> = Rpc.Payload<Rpc.ExtractTag<RpcGroup.Rpcs<typeof FinRpcs>, T>>;
+
+/** The rule of RPC `T`: its escalation reads `T`'s own payload type. */
+export interface RuleOf<T extends FinRpcTag> {
   /** Required, all of them (Decision 18). */
   readonly scopes: ReadonlyArray<Scope>;
   readonly resolve?: ReadonlyArray<ResolverName>;
   /** More scopes this call needs, from its payload and the resolved facts (Decision 21). */
-  readonly escalate?: (payload: never, facts: RuleFacts) => ReadonlyArray<Scope>;
-  /** Payload fields (dotted paths) naming a branch the call writes to: policy and the guard. */
+  readonly escalate?: (payload: PayloadOf<T>, facts: RuleFacts) => ReadonlyArray<Scope>;
+  /**
+   * Set exactly on the RPCs that write (every call whose handler passes a write guard to the
+   * store; `WRITE_RPCS`): the payload fields (dotted paths) naming a branch the call writes to,
+   * for the policy stage. `[]`: it writes, but names no existing branch (a new branch, a
+   * recovery): the guard still limits what it may change.
+   */
   readonly writes?: ReadonlyArray<string>;
+  /**
+   * The payload field holding the author a new branch records (`createdBy`): for a principal
+   * with branch limits the server sets it to the principal's own author, so `"own"` cannot be
+   * claimed by naming someone else (review of Task 5, M4).
+   */
+  readonly author?: string;
 }
 
-const rule = <P = unknown>(
-  scopes: ReadonlyArray<Scope>,
-  more: { resolve?: ReadonlyArray<ResolverName>; escalate?: (payload: P, facts: RuleFacts) => ReadonlyArray<Scope>; writes?: ReadonlyArray<string> } = {},
-): RpcRule => ({ scopes, ...more }) as RpcRule;
+/** A rule with its RPC's types erased, as the chain reads it. */
+export interface RpcRule {
+  readonly scopes: ReadonlyArray<Scope>;
+  readonly resolve?: ReadonlyArray<ResolverName>;
+  readonly escalate?: (payload: never, facts: RuleFacts) => ReadonlyArray<Scope>;
+  readonly writes?: ReadonlyArray<string>;
+  readonly author?: string;
+}
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
 const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
 
 /**
  * Every RPC's rule (spec §4.5 and §4.8); the mapped type makes a missing RPC a type error and
- * `scopes.test.ts` compares the keys with `FinRpcs`.
+ * types each escalation by its RPC's payload; `scopes.test.ts` compares the keys with `FinRpcs`
+ * and the writers with `WRITE_RPCS`.
  *
  * Until 5A Task 7 the diagnostics RPCs keep the scopes every `local` caller holds
  * (`diagnostics.read`): Task 7 makes `diagnostics.consent`, `diagnostics.purge`,
  * `diagnostics.project {collect: "default"}` and content exports need `diagnostics.admin`, moving
  * their tests to the console in the same commit. No `agent`/`mcp` credential exists before Task 9.
  */
-export const RPC_SCOPES: { readonly [T in FinRpcTag]: RpcRule } = {
-  "server.hello": rule(["public"]),
-  "auth.prove": rule(["public"]),
-  "project.create": rule(["project.create"], { resolve: ["createDir"] }),
+export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
+  "server.hello": { scopes: ["public"] },
+  "auth.prove": { scopes: ["public"] },
+  "auth.ticket": { scopes: ["server.read"] },
+  "auth.whoami": { scopes: ["server.read"] },
+  // No id: a credential can revoke only itself.
+  "auth.revokeSelf": { scopes: ["server.read"] },
+  "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
-  "project.open": rule<{ relocate?: boolean }>(["project.read"], {
+  "project.open": {
+    scopes: ["project.read"],
     resolve: ["openDir"],
     escalate: (p, facts) => [...(facts.attached === true ? [] : (["project.write"] as const)), ...(p.relocate === true ? (["project.confirm"] as const) : [])],
-  }),
-  // Protocol 2 (Task 6) adds `projectId`; until then the path's reach is the principal's projects.
-  "asset.probe": rule(["project.write"], { resolve: ["probePath"] }),
-  "tx.commit": rule(["project.write"], { resolve: BRANCH, writes: ["tx.branch"] }),
-  "snapshot.get": rule(["project.read"], { resolve: BRANCH }),
-  "ops.subscribe": rule(["project.read"], { resolve: BRANCH }),
-  "project.status": rule(["project.read"], { resolve: PROJECT }),
-  "project.takeover": rule<{ confirm: boolean }>(["project.admin"], {
-    resolve: PROJECT,
-    escalate: (p) => (p.confirm ? ["project.confirm"] : []),
-  }),
-  "project.verify": rule(["project.read"], { resolve: PROJECT }),
-  "project.rebuild": rule(["project.admin"], { resolve: PROJECT }),
-  "project.compact": rule(["project.admin"], { resolve: PROJECT }),
-  // Recovery writes new branches only (never an existing one).
-  "project.recover": rule(["project.admin"], { resolve: ["project", "importDir"] }),
+  },
+  // Protocol 2: the probe is for `projectId`, and a principal with roots probes only inside its folder.
+  "asset.probe": { scopes: ["project.write"], resolve: ["project", "probePath"] },
+  "tx.commit": { scopes: ["project.write"], resolve: BRANCH, writes: ["tx.branch"] },
+  "snapshot.get": { scopes: ["project.read"], resolve: BRANCH },
+  "ops.subscribe": { scopes: ["project.read"], resolve: BRANCH },
+  "project.status": { scopes: ["project.read"], resolve: PROJECT },
+  "project.takeover": { scopes: ["project.admin"], resolve: PROJECT, escalate: (p) => (p.confirm ? ["project.confirm"] : []) },
+  "project.verify": { scopes: ["project.read"], resolve: PROJECT },
+  "project.rebuild": { scopes: ["project.admin"], resolve: PROJECT },
+  "project.compact": { scopes: ["project.admin"], resolve: PROJECT },
+  // Recovery makes new branches and may re-apply a `branchSet` to a live one: the guard limits it.
+  "project.recover": { scopes: ["project.admin"], resolve: ["project", "importDir"], writes: [], author: "author" },
   // A new branch is the writer's own; its parent is only read.
-  "branch.create": rule(["project.write"], { resolve: BRANCH }),
-  "branch.list": rule(["project.read"], { resolve: PROJECT }),
-  "branch.set": rule(["project.write"], { resolve: BRANCH, writes: ["branch"] }),
-  "history.undo": rule(["project.write"], { resolve: BRANCH, writes: ["branch"] }),
-  "history.redo": rule(["project.write"], { resolve: BRANCH, writes: ["branch"] }),
-  "history.checkpoint": rule(["project.write"], { resolve: BRANCH, writes: ["branch"] }),
-  "history.merge": rule(["project.write"], { resolve: BRANCH, writes: ["into"] }),
-  "history.cherryPick": rule(["project.write"], { resolve: BRANCH, writes: ["into"] }),
-  "history.revert": rule(["project.write"], { resolve: BRANCH, writes: ["branch"] }),
-  "project.acknowledgeRewind": rule(["project.write"], { resolve: BRANCH }),
-  "project.acknowledgeSalvage": rule(["project.write"], { resolve: PROJECT }),
-  "project.events": rule(["project.read"], { resolve: PROJECT }),
-  "tx.get": rule(["project.read"], { resolve: PROJECT }),
-  "eval.frame": rule(["project.read"], { resolve: BRANCH }),
-  "eval.audio": rule(["project.read"], { resolve: BRANCH }),
-  "fonts.catalog": rule(["server.read"]),
-  "fonts.status": rule(["server.read"]),
-  "fonts.fetch": rule(["fonts.fetch"], { resolve: PROJECT }),
-  "fonts.plan": rule(["project.read"], { resolve: BRANCH }),
-  "diagnostics.status": rule(["diagnostics.read"]),
-  "diagnostics.export": rule(["diagnostics.read"]),
-  "diagnostics.purge": rule(["diagnostics.read"]),
-  "diagnostics.project": rule(["diagnostics.read"], { resolve: PROJECT }),
-  "diagnostics.consent": rule(["diagnostics.read"]),
-  "diagnostics.record": rule(["diagnostics.record"]),
+  "branch.create": { scopes: ["project.write"], resolve: BRANCH, writes: [], author: "author" },
+  "branch.list": { scopes: ["project.read"], resolve: PROJECT },
+  "branch.set": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
+  "history.undo": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
+  "history.redo": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
+  "history.checkpoint": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
+  "history.merge": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
+  "history.cherryPick": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
+  "history.revert": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
+  "project.acknowledgeRewind": { scopes: ["project.write"], resolve: BRANCH },
+  "project.acknowledgeSalvage": { scopes: ["project.write"], resolve: PROJECT },
+  "project.events": { scopes: ["project.read"], resolve: PROJECT },
+  "tx.get": { scopes: ["project.read"], resolve: PROJECT },
+  "eval.frame": { scopes: ["project.read"], resolve: BRANCH },
+  "eval.audio": { scopes: ["project.read"], resolve: BRANCH },
+  "fonts.catalog": { scopes: ["server.read"] },
+  "fonts.status": { scopes: ["server.read"] },
+  "fonts.fetch": { scopes: ["fonts.fetch"], resolve: PROJECT },
+  "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
+  "diagnostics.status": { scopes: ["diagnostics.read"] },
+  "diagnostics.export": { scopes: ["diagnostics.read"] },
+  "diagnostics.purge": { scopes: ["diagnostics.read"] },
+  "diagnostics.project": { scopes: ["diagnostics.read"], resolve: PROJECT },
+  "diagnostics.consent": { scopes: ["diagnostics.read"] },
+  "diagnostics.record": { scopes: ["diagnostics.record"] },
   // Plugins and registries (sub-project 8A Decision 29). Reads and refreshes are open to any
   // principal with `plugin.read` (a refresh by a non-human installs nothing, 9b); the
   // registries themselves are the owner's (`plugin.admin` is human-only).
-  "registry.list": rule(["plugin.read"]),
-  "registry.status": rule(["plugin.read"]),
-  "registry.add": rule(["plugin.admin"]),
-  "registry.remove": rule(["plugin.admin"]),
-  "registry.forget": rule(["plugin.admin"]),
-  "registry.refresh": rule(["plugin.read"]),
-  "plugin.list": rule(["plugin.read"]),
-  "plugin.search": rule(["plugin.read"]),
-  "plugin.info": rule(["plugin.read"]),
+  "registry.list": { scopes: ["plugin.read"] },
+  "registry.status": { scopes: ["plugin.read"] },
+  "registry.add": { scopes: ["plugin.admin"] },
+  "registry.remove": { scopes: ["plugin.admin"] },
+  "registry.forget": { scopes: ["plugin.admin"] },
+  "registry.refresh": { scopes: ["plugin.read"] },
+  "plugin.list": { scopes: ["plugin.read"] },
+  "plugin.search": { scopes: ["plugin.read"] },
+  "plugin.info": { scopes: ["plugin.read"] },
 };
+
+/** The RPCs that write through the store's guard: exactly the rules with `writes`. */
+export const WRITE_RPCS: ReadonlySet<FinRpcTag> = new Set(
+  (Object.keys(RPC_SCOPES) as FinRpcTag[]).filter((t) => (RPC_SCOPES[t] as RpcRule).writes !== undefined),
+);
+
+/** `tag`'s rule with its types erased. */
+export function ruleOf(tag: FinRpcTag): RpcRule {
+  return RPC_SCOPES[tag] as RpcRule;
+}
+
+/** The scopes `tag` needs before any escalation (its rule's own). */
+export function baseScopes(tag: FinRpcTag): ReadonlyArray<Scope> {
+  return ruleOf(tag).scopes;
+}
+
+/** The scopes `tag` needs beyond its own for `payload` and the resolved `facts`. */
+export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): ReadonlyArray<Scope> {
+  const r = ruleOf(tag);
+  const more = [...(r.escalate?.(payload as never, facts) ?? []), ...(facts.reopens === true ? (["project.write"] as const) : [])];
+  return [...new Set(more)].filter((s) => !r.scopes.includes(s));
+}
 
 /** Every scope `tag` needs for `payload`, given the resolved `facts`. */
 export function requiredScopes(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): ReadonlyArray<Scope> {
-  const r = RPC_SCOPES[tag];
-  const more = r.escalate?.(payload as never, facts) ?? [];
-  return [...new Set([...r.scopes, ...more])];
+  return [...new Set([...baseScopes(tag), ...escalatedScopes(tag, payload, facts)])];
 }

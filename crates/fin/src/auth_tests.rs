@@ -281,3 +281,24 @@ fn credential_files_are_read_up_to_4_kib() {
     write_private(&file, &pad(MAX_CREDENTIAL_BYTES as usize + 1));
     assert!(read_credential_file(&file).unwrap().is_none());
 }
+
+#[test]
+fn only_regular_files_are_read() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory where a credential file should be: nothing (review of Task 5, L7).
+    let sub = dir.path().join("c.json");
+    std::fs::create_dir(&sub).unwrap();
+    assert!(read_credential_file(&sub).unwrap().is_none());
+    // A FIFO is neither read nor waited on.
+    #[cfg(unix)]
+    {
+        let fifo = dir.path().join("fifo.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if made {
+            assert!(read_credential_file(&fifo).unwrap().is_none());
+        }
+    }
+}

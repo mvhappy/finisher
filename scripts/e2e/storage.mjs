@@ -45,7 +45,7 @@ export async function run() {
     assertEqual(mainBranch(exported).head, head, "status head");
     assertEqual(mainBranch(exported).exportedThrough, head, "status exportedThrough");
 
-    let ws = await connectWs(a.info);
+    let ws = await connectWs(a);
     sockets.push(ws);
     const before = await ws.call("snapshot.get", { projectId, branch: "main" });
     assertEqual(before.rev, head, "snapshot rev before delete");
@@ -64,7 +64,7 @@ export async function run() {
     a = await startServer(dataA);
     servers.push(a);
     fin(dataA, project, ["project", "open", project]);
-    ws = await connectWs(a.info);
+    ws = await connectWs(a);
     sockets.push(ws);
     const after = await ws.call("snapshot.get", { projectId, branch: "main" });
     assertEqual(model(after), model(before), "snapshot after rebuild");
@@ -83,7 +83,7 @@ export async function run() {
     const refused = finRaw(dataB, project, ["clip", "insert", "--track", "t2", "--at", "0", "--asset", "a1", "--dur", "1s"]);
     assertEqual(refused.status, 4, "commit through the read-only server exits 4");
 
-    const wsB = await connectWs(b.info);
+    const wsB = await connectWs(b);
     sockets.push(wsB);
     const snapB = await wsB.call("snapshot.get", { projectId, branch: "main" });
     assertEqual(snapB.rev, head, "follower snapshot rev");

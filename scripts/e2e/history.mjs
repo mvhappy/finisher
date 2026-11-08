@@ -28,7 +28,7 @@ export async function run() {
     const raw = (args, env) => finRaw(sd, project, args, env ?? {});
     const created = fin(sd, tmp, ["project", "create", project, "--name", "History"]);
     const projectId = created.project.projectId;
-    const ws = await connectWs(server.info);
+    const ws = await connectWs(server);
     sockets.push(ws);
     const snap = (branch) => ws.call("snapshot.get", { projectId, branch });
     const heads = () => Object.fromEntries(f(["branch", "ls", "--all"]).branches.map((b) => [b.display, b.head]));

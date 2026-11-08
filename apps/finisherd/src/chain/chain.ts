@@ -11,7 +11,7 @@
 //   7. after (sub-project 7's hooks; nothing in 5A but `project.open`'s reach re-check).
 // A refusal at stages 2–5 is audited (`auth.denied`: tag, code, scope or rule, principal kind;
 // never the payload) and counted in `rpc.stats` (`timed`), never journalled.
-import { type FinError, type FinRpcTag, PUBLIC_RPCS, type Principal, RPC_SCOPES, STREAM_RPCS } from "@finisher/contracts";
+import { type FinError, type FinRpcTag, PUBLIC_RPCS, type Principal, type RuleFacts, ruleOf, STREAM_RPCS } from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
 import { unauthenticated } from "../auth/handshake.ts";
@@ -20,13 +20,29 @@ import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
-import { DEFAULT_POLICIES, type PolicyRule, runPolicies } from "./policy.ts";
+import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies } from "./policy.ts";
 import { type ChainProjects, resolve } from "./resolve.ts";
 
 export type { Outcome, PolicyRule } from "./policy.ts";
 
 /** The guard of a write no rule limits. */
 export const OPEN_GUARD: WriteGuard = { denyBranches: [] };
+
+/**
+ * The guard a write handler passes to the store. A write that did not pass the chain, or a
+ * branch-limited principal's write without an allow-list, is a defect (`INTERNAL`), never an
+ * open guard (review of Task 5, H1 and L3).
+ */
+export function writeGuardOf(options: object): Effect.Effect<WriteGuard> {
+  return Effect.suspend(() => {
+    const c = chainOf(options);
+    if (c === undefined) return Effect.die(new Error("a write reached its handler without the chain's guard"));
+    if (branchLimited(c.principal) && c.guard.allowBranches === undefined) {
+      return Effect.die(new Error("a branch-limited principal's write has no allow-list"));
+    }
+    return Effect.succeed(c.guard);
+  });
+}
 
 export interface ChainDeps {
   readonly connections: Connections;
@@ -40,16 +56,20 @@ export interface ChainDeps {
   readonly approvals?: Map<string, { readonly tag: string; readonly principal: string; readonly at: number }>;
 }
 
-/** What a handler sees in its options beside Effect's: the policy stage's guard. */
+/** What a handler sees in its options beside Effect's: the policy stage's guard and what was resolved. */
 export interface ChainOptions {
   readonly guard: WriteGuard;
   readonly principal: Principal;
+  readonly facts: RuleFacts;
+  /** `project.open`: the project its folder named when it was checked. */
+  readonly openedProject?: string;
 }
 
-/** The chain's guard and principal of a handler call (an `OPEN_GUARD` outside the chain). */
+/** The chain's options of a handler call; `undefined` outside the chain (a write then refuses). */
 export function chainOf(options: object): ChainOptions | undefined {
   const o = options as Partial<ChainOptions>;
-  return o.guard === undefined || o.principal === undefined ? undefined : { guard: o.guard, principal: o.principal };
+  if (o.guard === undefined || o.principal === undefined) return undefined;
+  return { guard: o.guard, principal: o.principal, facts: o.facts ?? {}, ...(o.openedProject === undefined ? {} : { openedProject: o.openedProject }) };
 }
 
 type Handler = (payload: unknown, options: { readonly client: { readonly id: number }; readonly [k: string]: unknown }) => unknown;
@@ -97,7 +117,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
   /** Stages 2–5; the resolved payload and the guard, or the refusal. */
   const check = (tag: FinRpcTag, payload: unknown, clientId: number) => {
     const principal = deps.connections.principalOf(clientId);
-    const rule = RPC_SCOPES[tag];
+    const rule = ruleOf(tag);
     const stages = Effect.gen(function* () {
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
       const resolved = yield* resolve(rule, payload, deps.projects);
@@ -109,7 +129,12 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
         approvals.set(approvalId, { tag, principal: `${principal.kind}:${principal.id}`, at: Date.now() });
         return yield* Effect.fail(approvalRequired(tag, approvalId, outcome.ask.reason));
       }
-      return { payload: resolved.payload, guard: outcome.guard, principal, openedProject: resolved.openedProject };
+      // A branch-limited principal's new branches carry its own author, whatever it sent (M4).
+      const stamped =
+        rule.author !== undefined && branchLimited(principal)
+          ? { ...(resolved.payload as Record<string, unknown>), [rule.author]: authorOf(principal) }
+          : resolved.payload;
+      return { payload: stamped, guard: outcome.guard, principal, facts: resolved.facts, openedProject: resolved.openedProject };
     });
     return Effect.tapError(stages, deny(tag, principal, deps.connections.transport));
   };
@@ -121,25 +146,30 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     return got === opened ? Effect.succeed(result) : Effect.fail(outOfReach(typeof got === "string" ? got : undefined));
   };
 
+  type Checked = Effect.Success<ReturnType<typeof check>>;
+  const optionsOf = <O extends object>(options: O, c: Checked) => ({
+    ...options,
+    guard: c.guard,
+    principal: c.principal,
+    facts: c.facts,
+    ...(c.openedProject === undefined ? {} : { openedProject: c.openedProject }),
+  });
+  /** A refusal counted in `rpc.stats` (streams too: only their refusals, review M5). */
+  const counted = (tag: FinRpcTag, payload: unknown, clientId: number) =>
+    Effect.catchCause(check(tag, payload, clientId), (cause) => timed(tag, Effect.failCause(cause)));
+
   const out: Record<string, Handler> = {};
   for (const [tag, handler] of Object.entries(handlers) as Array<[FinRpcTag, Handler]>) {
     if (streams.has(tag)) {
       out[tag] = (payload, options) =>
         Stream.unwrap(
-          Effect.map(check(tag, payload, options.client.id), (c) =>
-            handler(c.payload, { ...options, guard: c.guard, principal: c.principal }) as Stream.Stream<unknown, FinError>,
-          ),
+          Effect.map(counted(tag, payload, options.client.id), (c) => handler(c.payload, optionsOf(options, c)) as Stream.Stream<unknown, FinError>),
         );
       continue;
     }
     out[tag] = (payload, options) =>
-      Effect.flatMap(
-        Effect.catchCause(check(tag, payload, options.client.id), (cause) => timed(tag, Effect.failCause(cause))),
-        (c) =>
-          Effect.flatMap(
-            handler(c.payload, { ...options, guard: c.guard, principal: c.principal }) as Effect.Effect<unknown, FinError>,
-            after(tag, c.principal, c.openedProject),
-          ),
+      Effect.flatMap(counted(tag, payload, options.client.id), (c) =>
+        Effect.flatMap(handler(c.payload, optionsOf(options, c)) as Effect.Effect<unknown, FinError>, after(tag, c.principal, c.openedProject)),
       );
   }
   return out as H;

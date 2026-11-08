@@ -32,18 +32,28 @@ const projectOf = (payload: unknown): string | undefined => {
   return typeof v === "string" ? v : undefined;
 };
 
+/** Whether `p` may write only to some branches (`branches` is not `"*"`). */
+export function branchLimited(p: Principal): boolean {
+  return p.branches !== "*";
+}
+
 /**
  * Agent branch limits: a principal whose `branches` is not `"*"` writes only to those branches
  * (ids or names, resolved through the store; `"own"` = every branch whose author is
- * `authorOf(principal)`). A write elsewhere is `BRANCH_NOT_ALLOWED`; an allowed one carries the
- * allowed ids as the guard's `allowBranches`. A new branch (`branch.create`) is the writer's own.
+ * `authorOf(principal)`). A write elsewhere is `BRANCH_NOT_ALLOWED`. **Every** write of such a
+ * principal (every rule with `writes`, an empty list included) carries the allowed ids as the
+ * guard's `allowBranches`, so what the payload does not name (a recovery re-applying a
+ * `branchSet`) is still limited inside the store (review of Task 5, H1). A new branch
+ * (`branch.create`, recovery's) is in no list and not a target: it becomes the writer's own.
  */
 export const agentBranchLimits: PolicyRule = ({ tag, rule, principal, payload, projects }) =>
   Effect.gen(function* () {
+    if (!branchLimited(principal) || rule.writes === undefined) return undefined;
     const projectId = projectOf(payload);
-    if (principal.branches === "*" || (rule.writes ?? []).length === 0 || projectId === undefined) return undefined;
+    // Every writing RPC names its project; one that does not is refused, never left open.
+    if (projectId === undefined) return { deny: branchNotAllowed(tag, "") };
     const allowed = new Set<string>();
-    for (const entry of principal.branches) {
+    for (const entry of principal.branches === "*" ? [] : principal.branches) {
       if (entry === "own") {
         for (const b of yield* projects.branches(projectId)) if (b.createdBy === authorOf(principal)) allowed.add(b.id);
       } else {
@@ -71,7 +81,7 @@ export function runPolicies(rules: ReadonlyArray<PolicyRule>, input: PolicyInput
       if (!("allow" in o)) return o;
       for (const b of o.guard.denyBranches ?? []) deny.add(b);
       const only = o.guard.allowBranches;
-      if (only !== undefined && only !== null) allow = allow === undefined ? new Set(only) : new Set([...allow].filter((b) => only.includes(b)));
+      if (only !== undefined) allow = allow === undefined ? new Set(only) : new Set([...allow].filter((b) => only.includes(b)));
     }
     const guard: WriteGuard = { denyBranches: [...deny], ...(allow === undefined ? {} : { allowBranches: [...allow] }) };
     return { allow: true, guard } satisfies Outcome;

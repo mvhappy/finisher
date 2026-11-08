@@ -2,7 +2,7 @@
 // End-to-end check: fin → finisherd → WebSocket subscriber.
 //
 // Builds `fin` (release) and fin-node, starts finisherd in a temp server-data dir, opens an
-// `ops.subscribe` stream from rev 0 over the bearer-token WebSocket, runs the editing flow
+// `ops.subscribe` stream from rev 0 over the ticketed WebSocket, runs the editing flow
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //

@@ -13,7 +13,15 @@ import type {
 } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
-import { AuthProvePayload, AuthProveSuccess, ServerHelloPayload, ServerHelloSuccess } from "./auth.ts";
+import {
+  AuthProvePayload,
+  AuthProveSuccess,
+  AuthTicketPayload,
+  AuthTicketSuccess,
+  AuthWhoamiSuccess,
+  ServerHelloPayload,
+  ServerHelloSuccess,
+} from "./auth.ts";
 import { FinError } from "./errors.ts";
 import {
   BranchCreatePayload,
@@ -112,7 +120,8 @@ export const ProjectRefSuccess = Schema.Struct({
   rev: Schema.Number,
 });
 
-export const AssetProbePayload = Schema.Struct({ path: Schema.String });
+/** Protocol 2: the probe is for `projectId` (reach: the path must be in that project's folder). */
+export const AssetProbePayload = Schema.Struct({ projectId: Schema.String, path: Schema.String });
 const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
 const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });
 const LottieInfoSchema = Schema.Struct({
@@ -179,14 +188,13 @@ export const GenerationSchema = Schema.Struct({
 /**
  * `generation`: the generation the client read the branch at (from `snapshot.get`). With it
  * the commit is refused with `HISTORY_REWOUND` when that history was rewound or the database
- * rebuilt since, instead of being rebased over a history the client never saw. Optional so
- * that protocol-1 clients keep working; every client that reads before it writes should send
- * it (`fin` always does).
+ * rebuilt since, instead of being rebased over a history the client never saw. Required since
+ * protocol 2 (spec §3.6).
  */
 export const TxCommitPayload = Schema.Struct({
   projectId: Schema.String,
   tx: Schema.Unknown,
-  generation: Schema.optional(GenerationSchema),
+  generation: GenerationSchema,
 });
 export const CommittedTxSchema = Schema.Unknown;
 
@@ -270,13 +278,13 @@ export type TxGetResult = CommittedTx | TxSetAside | null;
 /**
  * `generation`: what the caller read `fromRev` at (from `snapshot.get`). When the branch was
  * rewound or the database rebuilt since, the stream ends at once with `HISTORY_REWOUND`
- * instead of continuing a history the caller never saw. Optional for protocol-1 clients.
+ * instead of continuing a history the caller never saw. Required since protocol 2.
  */
 export const OpsSubscribePayload = Schema.Struct({
   projectId: Schema.String,
   branch: Schema.String,
   fromRev: Schema.Number,
-  generation: Schema.optional(GenerationSchema),
+  generation: GenerationSchema,
 });
 
 /**
@@ -351,6 +359,10 @@ export const FinRpcs = RpcGroup.make(
   }),
   // The handshake's second half (5A Decision 9): binds the hello's credential to the connection.
   Rpc.make("auth.prove", { payload: AuthProvePayload, success: AuthProveSuccess, error: FinError }),
+  // 5A Task 6: one-time WebSocket tickets, the caller's principal, a credential revoking itself.
+  Rpc.make("auth.ticket", { payload: AuthTicketPayload, success: AuthTicketSuccess, error: FinError }),
+  Rpc.make("auth.whoami", { payload: Schema.Struct({}), success: AuthWhoamiSuccess, error: FinError }),
+  Rpc.make("auth.revokeSelf", { payload: Schema.Struct({}), success: Schema.Struct({}), error: FinError }),
   Rpc.make("project.create", {
     payload: ProjectCreatePayload,
     success: ProjectRefSuccess,

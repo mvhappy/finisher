@@ -12651,14 +12651,11 @@
       "description": "The branches a write may change, by branch id (`br<n>`, `main`). The default guards\nnothing.",
       "properties": {
         "allowBranches": {
-          "description": "When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise).",
+          "description": "When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise). Absent\nmeans no allow-list; `null` is refused, so a sender's bug cannot open the guard.",
           "items": {
             "type": "string"
           },
-          "type": [
-            "array",
-            "null"
-          ]
+          "type": "array"
         },
         "denyBranches": {
           "default": [],

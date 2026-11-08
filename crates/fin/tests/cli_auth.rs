@@ -36,6 +36,8 @@ enum Hello {
     Fails,
     /// A server from before the handshake: protocol 1, no handshake fields.
     Protocol1,
+    /// Protocol 1 with every handshake field and a valid proof: still too old (5A Task 6).
+    Protocol1WithProof,
 }
 
 /// What a squatter would like fin to print and do.
@@ -61,7 +63,7 @@ impl Fake {
         let sd = root.join("sd");
         std::fs::create_dir_all(sd.join("auth")).unwrap();
         support::auth::write_private(&sd.join("auth/local.key"), &format!("{FAKE_KEY}\n"));
-        let info = json!({ "pid": 1, "wsPort": 2, "socket": socket, "protocolVersion": 1, "envId": ENV, "diagnostics": { "enabled": true } });
+        let info = json!({ "pid": 1, "wsPort": 2, "socket": socket, "protocolVersion": 2, "envId": ENV, "diagnostics": { "enabled": true } });
         std::fs::write(sd.join("finisherd.json"), info.to_string()).unwrap();
         let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
@@ -135,13 +137,17 @@ fn hello(mode: Hello, endpoint: &str, payload: &Value) -> Value {
         Hello::NoProof | Hello::WrongKey | Hello::Fails | Hello::Protocol1 => {
             (ENV, endpoint.to_string(), vec![9u8; 32])
         }
+        Hello::Protocol1WithProof => (ENV, endpoint.to_string(), key()),
         Hello::ForeignEnv => ("01otherenv0000000000000000", endpoint.to_string(), key()),
         Hello::OtherEndpoint => (ENV, "/elsewhere/run/fin.sock".to_string(), key()),
     };
-    let mut answer = json!({ "protocolVersion": 1, "serverVersion": "0.0.0", "capabilities": [], "envId": env, "endpoint": at, "serverNonce": B64.encode(sn) });
+    let mut answer = json!({ "protocolVersion": 2, "serverVersion": "0.0.0", "capabilities": [], "envId": env, "endpoint": at, "serverNonce": B64.encode(sn) });
     if !matches!(mode, Hello::NoProof) {
         let proof = support::auth::mac(&k, "finisherd/hello/v2", env, &at, &cn, &sn);
         answer["proof"] = json!(B64.encode(proof));
+    }
+    if matches!(mode, Hello::Protocol1WithProof) {
+        answer["protocolVersion"] = json!(1);
     }
     answer
 }
@@ -159,6 +165,7 @@ fn fin_refuses_server_without_proof() {
         (Hello::OtherEndpoint, "endpointMismatch"),
         (Hello::Fails, "helloFailed"),
         (Hello::Protocol1, "versionMismatch"),
+        (Hello::Protocol1WithProof, "versionMismatch"),
     ] {
         let fake = Fake::start(mode);
         let run = fin(&fake.sd, &cwd(), &["fonts", "status"]);

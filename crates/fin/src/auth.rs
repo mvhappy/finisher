@@ -52,9 +52,8 @@ pub const LABEL_PROVE: &str = "fin/prove/v2";
 pub const KEY_BYTES: usize = 32;
 /// The most fin reads of a key or credential file; a longer one is malformed.
 pub const MAX_CREDENTIAL_BYTES: u64 = 4096;
-/// The protocol whose hello carries the handshake. A server below it that answers without the
-/// handshake's fields is from an older release (`versionMismatch`), not a squatter. Until 5A
-/// Task 6 this branch's own server still says protocol 1, so the missing fields decide.
+/// The protocol whose hello carries the handshake (5A Task 6). A server that says less (or no
+/// version) is from an older release (`versionMismatch`), not a squatter: no MAC is sent.
 pub const HANDSHAKE_PROTOCOL: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,13 +170,39 @@ fn unsafe_credential(path: &Path, problem: &str, mode: u32) -> CoreError {
     )
 }
 
-/// The text of a key or credential file: `Ok(None)` when it cannot be read or is over
-/// [`MAX_CREDENTIAL_BYTES`]; an error when it is not private (Unix: the opened file's owner and
-/// mode, so a swap after the check reads nothing else).
+/// `O_NONBLOCK`: opening a FIFO put where a key file should be must not hang `fin`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const O_NONBLOCK: i32 = 0x0004;
+
+/// Opens `path` for reading, never blocking on a FIFO (Unix).
+fn open_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+/// The text of a key or credential file: `Ok(None)` when it cannot be read, is not a regular
+/// file (a FIFO, a device, a directory) or is over [`MAX_CREDENTIAL_BYTES`]; an error when it is
+/// not private (Unix: the opened file's owner and mode, so a swap after the check reads nothing
+/// else).
 fn read_private(path: &Path) -> Result<Option<String>, CoreError> {
-    let Ok(file) = std::fs::File::open(path) else {
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Ok(None);
+    }
+    let Ok(file) = open_nonblocking(path) else {
         return Ok(None);
     };
+    // Checked again on what was opened: a swap after the first check is caught here.
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Ok(None);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
@@ -344,7 +369,7 @@ pub fn handshake(conn: &mut Client, cred: &Credential, expect: &Expect) -> Resul
     };
     let field = |k: &str| answer.get(k).and_then(Value::as_str);
     let version = answer.get("protocolVersion").and_then(Value::as_u64);
-    if version.is_none_or(|v| v < HANDSHAKE_PROTOCOL) && answer.get("serverNonce").is_none() {
+    if version.is_none_or(|v| v < HANDSHAKE_PROTOCOL) {
         return Err(Failure::Untrusted("versionMismatch"));
     }
     let Some(env) = field("envId") else {

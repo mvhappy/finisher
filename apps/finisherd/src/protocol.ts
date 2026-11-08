@@ -16,6 +16,7 @@ import type { Socket } from "effect/socket/Socket";
 import { SocketServer } from "effect/socket/SocketServer";
 import type { Connections } from "./connections.ts";
 import { finError } from "./errors.ts";
+import { UpgradePrincipal } from "./upgrade.ts";
 
 /** The longest line either side reads: 16 MiB (spec §4.3). */
 export const MAX_FRAME = 16 * 1024 * 1024;
@@ -199,6 +200,8 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
           closing: false,
         };
         const close = () => Deferred.doneUnsafe(closed, Exit.void);
+        // A WebSocket carries its ticket's principal (`upgrade.ts`); a socket starts anonymous.
+        const ticketed = Option.getOrUndefined(yield* Effect.serviceOption(UpgradePrincipal));
         clients.set(clientId, client);
         connections.attach(clientId, {
           close,
@@ -212,7 +215,7 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
                 Effect.sync(close),
               ),
             ),
-        });
+        }, ticketed);
         yield* Scope.addFinalizer(
           scope,
           Effect.suspend(() => {
