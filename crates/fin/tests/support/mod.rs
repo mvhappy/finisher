@@ -1,7 +1,7 @@
 //! A real `finisherd` for `fin`'s online tests, and a `fin` runner.
 //!
 //! `Server::start()` spawns `node apps/finisherd/src/main.ts --server-data <tmp>` and waits for
-//! `finisherd.json`. When Node 26+, `pnpm install` or the fin-node binary is missing it returns
+//! `finisherd.json`. When Node 24+, `pnpm install` or the fin-node binary is missing it returns
 //! `None` (after printing why) — but never silently: each test binary also has
 //! `server_tests_ran_or_explicitly_skipped`, which fails in that case unless
 //! `FIN_SKIP_SERVER_TESTS=1` says the skip is intended. With `FIN_REQUIRE_SERVER=1` (CI) every
@@ -53,9 +53,9 @@ fn why_unavailable(root: &Path) -> Option<String> {
         .next()
         .and_then(|m| m.parse().ok())
         .unwrap_or(0);
-    if major < 26 {
+    if major < 24 {
         return Some(format!(
-            "finisherd needs Node 26+, found {version} (source .superpowers/env.sh)"
+            "finisherd needs Node 24+, found {version} (source .superpowers/env.sh)"
         ));
     }
     if !root.join("apps/finisherd/node_modules").is_dir() {

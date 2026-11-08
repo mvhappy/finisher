@@ -64,7 +64,8 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
   e.unfinished++;
   e.publish({ type: "state", job: view });
   e.enqueue(view, kind);
-  e.pump();
+  // A warm job with a ready worker of its key goes to it now, without `schedule()` (Decision 35).
+  if (!e.warmPools.handOff(view.id)) e.pump();
   return e.view(view.id) ?? view;
 }
 
