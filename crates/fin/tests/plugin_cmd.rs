@@ -155,8 +155,11 @@ fn build_registry(root: &Path, name: &str, spec: &Value) -> Built {
     }
 }
 
+/// A `file:` URL for an absolute path. `canonicalize` gives verbatim `\\?\E:\…` paths on
+/// Windows, which are not file URLs (Node: `ERR_INVALID_FILE_URL_PATH`), so the prefix goes.
 fn url_of(path: &Path) -> String {
-    let p = path.display().to_string().replace('\\', "/");
+    let p = path.display().to_string();
+    let p = p.strip_prefix(r"\\?\").unwrap_or(&p).replace('\\', "/");
     if p.starts_with('/') {
         format!("file://{p}")
     } else {

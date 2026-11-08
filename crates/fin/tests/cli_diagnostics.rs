@@ -7,7 +7,6 @@ mod support;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,19 +15,8 @@ use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 use serde_json::{Value, json};
 use support::{fin_cmd, finish};
 
-/// Where a fake listens: a socket file on Unix, a named pipe on Windows, whose local sockets
-/// are named pipes only (`fin` takes a `\\.\pipe\` path in `FIN_SERVER` or `finisherd.json`).
 fn endpoint(root: &Path) -> PathBuf {
-    if cfg!(windows) {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        PathBuf::from(format!(
-            r"\\.\pipe\fin-diag-test-{}-{n}",
-            std::process::id()
-        ))
-    } else {
-        root.join("fake.sock")
-    }
+    support::fake_endpoint(root, "fake.sock")
 }
 
 /// What a connection does after it answered its first request.

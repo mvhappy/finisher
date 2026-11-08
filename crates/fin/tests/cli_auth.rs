@@ -59,7 +59,7 @@ impl Fake {
     fn start(mode: Hello) -> Fake {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let socket = root.join("fake.sock");
+        let socket = support::fake_endpoint(&root, "fake.sock");
         let sd = root.join("sd");
         std::fs::create_dir_all(sd.join("auth")).unwrap();
         support::auth::write_private(&sd.join("auth/local.key"), &format!("{FAKE_KEY}\n"));

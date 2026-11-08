@@ -24,15 +24,7 @@ fn fake_server(
 ) -> JoinHandle<usize> {
     std::fs::create_dir_all(sd.join("run")).unwrap();
     let key = support::auth::give_key(sd);
-    let socket: PathBuf = if cfg!(windows) {
-        PathBuf::from(format!(
-            r"\\.\pipe\fin-hardening-{}-{}",
-            std::process::id(),
-            sd.display().to_string().len()
-        ))
-    } else {
-        sd.join("run").join("fin.sock")
-    };
+    let socket: PathBuf = support::fake_endpoint(&sd.join("run"), "fin.sock");
     let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
     let info = json!({ "pid": 1, "wsPort": 1, "socket": socket.display().to_string(), "protocolVersion": 2, "envId": "01test0000000000000000000a" });

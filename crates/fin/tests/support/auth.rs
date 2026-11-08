@@ -156,7 +156,7 @@ pub fn fake_failing_server(code: &str) -> FailingServer {
     use interprocess::local_socket::{GenericFilePath, ListenerOptions};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let socket = root.join("failing.sock");
+    let socket = super::fake_endpoint(&root, "failing.sock");
     let sd = root.join("sd");
     let key = give_key(&sd);
     let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();

@@ -23,6 +23,24 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// Where a fake server listens: `<root>/<file>` (a socket file) on Unix, a named pipe unique to
+/// this process and call on Windows, whose local sockets are named pipes only (`fin` takes a
+/// `\\.\pipe\` path in `FIN_SERVER` or `finisherd.json`). Tests in one binary run in parallel,
+/// so a pipe name shared by two of them makes the second listener fail with access denied.
+pub fn fake_endpoint(root: &Path, file: &str) -> PathBuf {
+    if cfg!(windows) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let stem = file.trim_end_matches(".sock");
+        PathBuf::from(format!(
+            r"\\.\pipe\fin-test-{stem}-{}-{n}",
+            std::process::id()
+        ))
+    } else {
+        root.join(file)
+    }
+}
+
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
