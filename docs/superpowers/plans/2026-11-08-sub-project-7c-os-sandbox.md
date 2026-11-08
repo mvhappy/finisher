@@ -199,6 +199,123 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 - [ ] **Step 4 (H2):** Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
 - [ ] **Step 5:** conclusions into the spec (each marked *verified on <host class>*), tick `TASKS.md`. **Commit** `docs: record spike S9 conclusions` (spec and `TASKS.md` only).
 
+#### S9 results (Windows)
+
+*Verified on a Windows 11 Pro host (build 26300; AMD discrete and integrated GPUs) on 2026-11-08: a non-elevated, medium-integrity user process in the console session (started through Task Scheduler), a normal AppContainer (not LPAC), Node 24.22.2, wgpu 30.0.1, `windows` 0.62.2. Spike code and raw logs stay outside the repository, on the host and on the VM. No credential file was opened: the sign-in checks used dummy store files, and Claude Code's behaviour was read from the embedded code of the installed 2.1.319 binary.*
+
+**Verdict: Decision 16 holds; Decision 17's fallback is not needed.** Capability SIDs derived from a name are honoured for a normal AppContainer, on files, directories and named pipes, and a process of session B cannot open session A's directory.
+
+1. **Capability SIDs (B7, Decision 16).**
+   - `DeriveCapabilitySidsFromName(n)` is `S-1-15-3-1024-` followed by the eight little-endian 32-bit words of SHA-256 over the UTF-16LE of **`n` upper-cased**. The derivation is case-insensitive, and Rust can compute it without the API (checked against an independent SHA-256 for three names).
+   - **Interaction with the owner-only DACL.** The session directory sits below `private_dir`'s protected owner-only DACL (`D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`) and carries an inheritable allow ACE (`0x1301bf`: modify, no `WRITE_DAC`/`WRITE_OWNER`) for session A's capability. Results:
+     - Project X's container with capability A can read, create, list and `mkdir` there.
+     - The same container with capability B, or with no session capability, is refused (`ERROR_ACCESS_DENIED`) for A's files and A's listing.
+     - Another project's container that carries capability A is admitted. A capability is not bound to a container; the launcher alone decides which capability a process gets.
+     - A grant to the container SID (a project directory) admits that project only.
+   - **Objects the container creates** inherit the capability ACE and the owner-only ACEs, and get a Low label (`S:(ML;;NW;;;LW)`). Capability B cannot read them.
+   - **Owner rights don't reach the container.** It can neither change the DACL (`WRITE_DAC` → 5) nor take ownership of the session directory or of its own files, although the user owns both.
+   - **Revoke** applies to the next open. Handles that are already open were not tested.
+   - **Ancestors.** The token keeps `SeChangeNotifyPrivilege` (with `SeIncreaseWorkingSetPrivilege` only), so open-by-path needs no grant on ancestors. `<server-data>` and `agents/` stay unlistable and un-stat-able.
+   - **Broker cost** per grant or revoke (process start subtracted): about 1 ms on an empty session directory, about 105 ms with 2,000 files below it (inheritance propagation).
+2. **Images and the toolchain.**
+   - The executable the launcher starts is opened with the launcher's token and needs no grant.
+   - Every image the container opens itself (a child process, a non-system DLL) needs read and execute. Without it, `CreateProcess` inside the container fails with 5.
+   - **One static capability SID granted RX once on the toolchain roots, and added to every sandboxed process, works** (a child exe started from inside through that grant alone). Per-container grants on large trees are therefore unnecessary.
+3. **The server pipe (Task 10).** The pipe used `pipe_sec::sddl`'s descriptor (`D:P(A;;GA;;;<user>)(A;;GA;;;SY)(A;;0x12008b;;;<container SID>)S:(ML;;NW;;;LW)`), and the client opened it with `GENERIC_READ | FILE_WRITE_DATA`, as `fin` does.
+   - Project X's container connects, and the server reads its container SID from the client's token.
+   - Project Y's container is refused with 5, whatever unrelated capabilities it holds.
+   - **`GENERIC_READ | GENERIC_WRITE` is refused** (the ACE grants no append, EA or attribute writes), so keep `fin`'s mask.
+   - Without the Low label the container still connected on this build. Keep the label.
+   - A capability SID in the pipe DACL works as well, but `peer_allowed` checks the container SID, so `PipeServer.allow(<container SID>)` per project stays the design.
+   - **A container cannot create a named pipe outside `\\.\pipe\LOCAL\`** (5). Inside `LOCAL\`, which redirects into its own namespace, it can.
+4. **Job objects.**
+   - **Nesting:** the launcher was already in a job (Task Scheduler's), and a launcher that puts itself in another job first can still give the container its own kill-on-close job.
+   - **Assignment at creation:** `PROC_THREAD_ATTRIBUTE_JOB_LIST` works together with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`, so no suspended-then-assign window is needed.
+   - **Active-process limit:** with a limit of 1, every `CreateProcess` from inside fails with `ERROR_NOT_ENOUGH_QUOTA` (1816) and the completion port gets `ACTIVE_PROCESS_LIMIT` (3). With a limit of 3, two children start.
+   - **Memory limit:** at 64 MB, allocation fails at 62 MB and the port gets `JOB_MEMORY_LIMIT` (10).
+   - **Inside the container:** it can create a job and assign its own child (nested jobs are not blocked). `CREATE_BREAKAWAY_FROM_JOB` is refused (5) unless the job has `BREAKAWAY_OK`, which therefore must never be set.
+   - **Launcher death:** killing the launcher killed the container.
+   - **WER:** a WerFault started for the container is not counted in its job.
+5. **Desktop.**
+   - A **named** `CreateWindowStationW` fails with 5 from this non-elevated, medium-integrity context. An **unnamed** one (`NULL` name, as Chromium does; read the name back with `GetUserObjectInformationW`) works.
+   - Inside the container, `OpenInputDesktop` is refused.
+   - Without a private desktop, the container started on the user's `WinSta0\Default`.
+6. **Network.**
+   - With no capability, TCP to the internet fails with `WSAEACCES` (10013).
+   - With `internetClient`, it connects.
+   - Loopback to a listener of the same user timed out with and without `internetClient`; there is no exemption.
+7. **The environment block is rewritten.**
+   - **What changes:** creating an AppContainer process replaces `TEMP`, `TMP` and `LOCALAPPDATA` with `<LOCALAPPDATA of the block>\Packages\<container name>\AC\Temp` and `…\AC`, and the launcher's `TEMP` is ignored.
+   - **The leak:** by default `TEMP` is per container, that is per project, and session B read a file that session A wrote there.
+   - **The fix (verified):** the launcher sets `LOCALAPPDATA=<session>\localappdata` in the block and pre-creates `<session>\localappdata\Packages\finisher-<project-uuid>\AC\Temp`, which inherits the session's capability ACE. `TEMP` then lands in the session directory and session B is refused.
+   - **Nested processes:** a process the container starts keeps the `TEMP` it is given; there is no rewrite.
+   - Other per-container folders (`AC\INetCache`, cookies) were not tested.
+8. **Node 24.22.2 in the container.**
+   - **Works:** file operations in granted roots, rename, `fs.watch`, `worker_threads`, crypto, `os.userInfo`, `os.networkInterfaces`, `fs.realpathSync.native`, and a `net` client on the server pipe. DNS and HTTPS work only with `internetClient`. The server-data root stays unreadable. Child processes with `stdio: 'inherit'` or `'ignore'` work.
+   - **(a) Script paths fail.** Node's JS `realpath` (used for the main script and for every `require` by path) `lstat`s each ancestor, including the drive root. On this host `C:\` and `E:\` have no `ALL APPLICATION PACKAGES` ACE, and neither do `C:\Users`, the profile or `AppData`. So `node script.js` fails with `EPERM, lstat 'C:\'`. `--preserve-symlinks --preserve-symlinks-main` on the command line avoids it (main script plus relative `require` verified), and so does `node -e`. The `NODE_OPTIONS` form was not tested.
+   - **(b) Piped stdio hangs.** `spawn`, `spawnSync` and `execSync` with **piped stdio hang forever**, and the `spawnSync` timeout does not fire. libuv names its stdio pipes `\\?\pipe\uv\…`; the container may not create them (point 3), libuv reports `EADDRINUSE` and retries forever. So Node tools that spawn with pipes from inside a container hang: npm scripts, Node hooks that run commands, and Node MCP servers started by the CLI.
+   - **Unaffected:** pipes the parent creates outside the container (`finisherd` starting a Node plugin host). Rust `std::process` with pipes works inside, and Claude Code 2.1.319 (Bun) starts (`--version`). S8 ran real Claude Code turns with PowerShell.
+9. **wgpu over D3D12**, with no capability (toolchain read only): enumerates the discrete, integrated and WARP adapters, picks the discrete GPU, and runs a 1M-element compute pass with a correct readback. This holds on a private desktop and on the user's desktop.
+10. **Media Foundation**, with no capability:
+    - **Decode:** `SourceReader` decodes a 4 s 720p H.264 MP4 both through a D3D11 DXGI device manager (120/120 frames in DXGI surfaces, so DXVA) and in software.
+    - **Encode:** the vendor's hardware **encoder** MFTs (H.264, HEVC, AV1) enumerate and activate.
+    - **Sharing:** a D3D11 texture shared by NT handle opens on D3D12 (`OpenSharedHandle`).
+    - **Decoder MFTs:** hardware decoder MFT enumeration returns none on this GPU, unsandboxed as well; decode goes through DXVA.
+    - **Grants:** the media file itself needs a grant; without one, `0x80070005`.
+    - sp6's "to be proven in 6B's validation" is answered for this GPU only.
+11. **WER (Decision 22).**
+    - **Error mode set before `CreateProcess` and inherited:** an access violation in the container starts no WerFault and logs no Application Error event.
+    - **`__fastfail` (`int 0x29`) still reaches WER.** The service starts two headless `WerFault.exe -u` (one parented to the crashing process, one to the service). This holds with `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`, and also with a per-user `WerAddExcludedApplication` entry.
+    - **No visible trace:** no window appeared (no WerFault had a main window), and no report directory appeared under the per-user or machine `ReportArchive`/`ReportQueue`.
+    - **Exclusion not provable here:** this host wrote no report for unsandboxed crashes either, so the exclusion's effect on reports could not be observed.
+    - **Without the error mode,** both crash kinds start WerFault and log event 1000.
+    - **Conclusion:** the inherited error mode is required, and the reworded `fastfail_dies_without_wer` assertion (no window, no report; not "no process") is the right one.
+12. **The sign-in store shared in place (B7, Windows).**
+    - **Links without elevation.** A file symbolic link is refused (no `SeCreateSymbolicLinkPrivilege`, Developer Mode off), so §8.6's Windows file symlink is unavailable on a default machine. A hard link works (same volume). The file has one DACL under both names: an ACE for one shared sign-in capability on the store file alone let sessions A and B read through their own links, and an in-place write through A's link was seen by B. A could not list the sign-in home or create a file in it, and without the capability it was refused. A directory junction can be created, but the target's ACL still applies.
+    - **Rename breaks the link.** A temp-and-rename write through A's hard link replaced A's name with a private file and left the home stale.
+    - **Claude Code 2.1.319: no link works.** The CLI's code applies on every OS.
+      - Its file store is `<dir>\.credentials.json`, with `<dir>` = `CLAUDE_SECURESTORAGE_CONFIG_DIR` when set, else the config directory.
+      - It writes by temp file (`<file>.tmp.<hex>`) and rename. Its in-place fallback **refuses a target with more than one link** (`EMLINK`, "it is hard-linked"), and its reader **refuses symlinks** (`O_NOFOLLOW`, "refused-symlink").
+      - The first refresh therefore replaces a hard link, and a symlink is refused.
+      - A server-side flag (`tengu_windows_credman`, cached in `.claude.json`) or `CLAUDE_CODE_FORCE_WINDOWS_CREDMAN=1` moves the Windows store to Credential Manager, under a target name keyed by the store directory (`Claude Code-credentials-<first 8 hex of SHA-256 of the dir>`). A container cannot reach Credential Manager (S8).
+    - **What should work instead (recommendation for 7D and spec §8.6; not exercised with a real sign-in):**
+      - The session gets a per-session `CLAUDE_CONFIG_DIR` plus `CLAUDE_SECURESTORAGE_CONFIG_DIR=<server-data>/providers/claude/store/`, a directory that holds only the store. The user's sign-in command sets both variables.
+      - The sandbox grants the shared sign-in capability modify on that one directory, since temp and rename need create and delete there, and nothing else of `providers/`.
+      - Claude Code loads nothing from that directory as configuration, so the persistence escape stays closed.
+      - The variable is undocumented, so re-validate it per CLI version; §8.6's fallback (the sign-in home as config directory) remains the fallback.
+    - **Codex** keeps `auth.json` as a file in its home. Its write pattern was not checked here (compiled binary); B7 on Linux/macOS decides, since the code is the same.
+
+**Recommendations for Task 9.**
+- **Capabilities:**
+  - Implement Decision 16 as written. Derive the session capability in Rust (SHA-256 of the upper-cased UTF-16LE `finisher-session-<id>`), and make point 1's matrix the escape test.
+  - Add two **static** capabilities to every sandboxed process: one for the read-only toolchain roots (granted once, point 2) and, for agents, one per harness for the sign-in store (point 12), instead of granting the store to every session's capability.
+- **Process set-up:**
+  - `desktop.rs` creates the window station unnamed.
+  - `launch.rs` sets `LOCALAPPDATA` in the block to a per-session directory and pre-creates the derived `AC\Temp`, and also sets `TMPDIR`.
+  - Assign the job with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, and never set `BREAKAWAY_OK`.
+  - Map `ACTIVE_PROCESS_LIMIT`/1816 and `JOB_MEMORY_LIMIT` to `sandbox.violation`.
+- **`worker` profile:** it can stay capability-free for D3D12, DXVA decode and the MF encoders.
+- **Escape and compatibility suite:** add Node's root `lstat` and the hang on piped `spawn` from inside the container. **Owner decision needed** on Node tools inside a Windows container: carry `--preserve-symlinks(-main)`, upstream a libuv fix (create stdio pipes under `LOCAL\` inside an AppContainer), or accept and document the limit for Node hooks and Node MCP servers.
+
+**Recommendations for Task 10.**
+- **Session directories:**
+  - The broker creates them with the capability ACE already in the creating security descriptor (nothing to propagate).
+  - Their revoke is their deletion at session end, still recorded in the WAL for the sweep.
+  - Grants on existing trees cost about 50 ms per 1,000 files.
+- **Pipe:** `PipeServer.allow(<container SID>)` as planned. `fin` keeps `GENERIC_READ | FILE_WRITE_DATA`, and the Low label stays.
+
+**Not tested.**
+- Real sign-in, refresh in place and parallel refresh. `system/init` and `account/read` labels (they need a person signing in).
+- Codex's store writer.
+- `CLAUDE_SECURESTORAGE_CONFIG_DIR` with a real sign-in.
+- The `NODE_OPTIONS` form of the Node flags.
+- Bun's own piped spawn inside a container (relied on S8).
+- Other GPU vendors and hybrid laptops. HEVC without the extensions. Hardware decoder MFTs.
+- WER report creation on a host that keeps reports.
+- Handles that stay open across a revoke.
+- A second local account.
+- The other per-container folders.
+
 ### Task 1: `fin-sandbox`: the policy, the profiles and enumeration — tier: opus — 7C-1
 
 **Files:**
