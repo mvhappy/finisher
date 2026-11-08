@@ -901,11 +901,32 @@ fn help_schema_and_refusals_are_recorded_with_online_false() {
         return;
     };
     let (sd, root) = (&server.sd, &server.root);
-    assert_eq!(fin(sd, root, &["help", "clip"]).code, 0);
-    assert_error(&fin(sd, root, &["clip", "insert"]), 2, "USAGE");
+    // Each record is best effort within `fin`'s 50 ms budget (connect, handshake, write), which a
+    // loaded machine can miss (Windows, full suite): a command is run again until it lands.
+    let recorded = |name: &str, run: &dyn Fn()| {
+        for _ in 0..10 {
+            run();
+            let end = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < end {
+                if !commands(&lines(sd, root, &["--kind", "cli.command"]), name).is_empty() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        panic!("{name} was never recorded");
+    };
+    recorded("help", &|| {
+        assert_eq!(fin(sd, root, &["help", "clip"]).code, 0)
+    });
+    recorded("other", &|| {
+        assert_error(&fin(sd, root, &["clip", "insert"]), 2, "USAGE")
+    });
     // A refusal the client makes itself (the server was never asked), with a server running.
-    let r = fin(sd, root, &["diagnostics", "consent", "training", "on"]);
-    assert_error(&r, 2, "USAGE");
+    recorded("diagnostics.consent", &|| {
+        let r = fin(sd, root, &["diagnostics", "consent", "training", "on"]);
+        assert_error(&r, 2, "USAGE");
+    });
     let found = wait(sd, root, &["--kind", "cli.command"], |e| {
         !commands(e, "help").is_empty()
             && !commands(e, "other").is_empty()
