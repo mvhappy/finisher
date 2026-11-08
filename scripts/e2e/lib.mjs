@@ -1,15 +1,20 @@
 // Shared helpers of the e2e scenarios: running `fin`, starting finisherd, a WebSocket RPC client.
 import { spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 export const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 export const WIN = process.platform === "win32";
-export const FIN = join(ROOT, "target", "release", WIN ? "fin.exe" : "fin");
+/** Where cargo builds: `CARGO_TARGET_DIR` when set (relative to the repository, as the builds below run there), else `target/`. */
+export const TARGET_DIR = resolve(ROOT, process.env.CARGO_TARGET_DIR || "target");
+export const FIN = join(TARGET_DIR, "release", WIN ? "fin.exe" : "fin");
+/** The publisher tooling (`cargo build --release -p fin-plugin-cli`): not part of the app. */
+export const FIN_PLUGIN = join(TARGET_DIR, "release", WIN ? "fin-plugin.exe" : "fin-plugin");
 export const START_TIMEOUT_MS = Number(process.env.E2E_START_TIMEOUT_MS ?? 30_000);
 
 /** What the watchdog must clean up: the spawned servers and the temp dir, once they exist. */
@@ -21,6 +26,20 @@ export function parseFrames(text) {
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line));
+}
+
+/**
+ * A fresh temp dir for a scenario, as a real path. The server's socket lives in it
+ * (`<dir>/<server-data>/run/fin.sock`) and a unix socket path may hold 104 bytes (macOS; Linux
+ * 108): when `os.tmpdir()` is deep (macOS's `/var/folders/…/T`) the dir goes under `/tmp`
+ * instead, so no scenario depends on how long the user's `TMPDIR` is. Names under it must stay
+ * short (`prefix` ≤ 20 characters, server-data `s`).
+ */
+export function scenarioTmp(prefix) {
+  const probe = `${prefix}XXXXXX/server-data/run/fin.sock`;
+  let base = realpathSync(tmpdir());
+  if (!WIN && Buffer.byteLength(join(base, probe)) > 100 && existsSync("/tmp")) base = realpathSync("/tmp");
+  return realpathSync(mkdtempSync(join(base, prefix)));
 }
 
 export function log(message) {

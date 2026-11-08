@@ -2,10 +2,8 @@
 // checkpoints, try keep/drop, cherry-pick, revert, a merge the other way, dry runs, and a
 // real `project recover --create`, all through `fin` -> finisherd, with WebSocket subscribers
 // checking which branch each record is published to.
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, startServer, stopServer } from "./lib.mjs";
+import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer } from "./lib.mjs";
 import { writeFixture } from "./fixture.mjs";
 import { clipsOf, failure, watch } from "./history-lib.mjs";
 import { dryRuns, recover } from "./history-extra.mjs";
@@ -15,7 +13,7 @@ const settle = () => new Promise((r) => setTimeout(r, 300));
 
 export async function run() {
   const started = Date.now();
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-history-")));
+  const tmp = scenarioTmp("finisher-e2e-hist-");
   live.tmp = tmp;
   const sd = join(tmp, "server");
   const project = join(tmp, "history project");

@@ -17,11 +17,11 @@
 // `project default` and purges answer `HUMAN_ONLY` (exit 7). Those steps, and reading what was
 // stored with its content, run as the server's console (`consoleCall`, `storedEntries`).
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { hostname, tmpdir, userInfo } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
 import { writeFixture } from "./fixture.mjs";
-import { assertEqual, connectWs, consoleCall, fin, finRaw, live, log, removeTmp, startServer, stopServer, storedEntries, waitFor } from "./lib.mjs";
+import { assertEqual, connectWs, consoleCall, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer, storedEntries, waitFor } from "./lib.mjs";
 import { contentProblems, exportEntries, filesUnder, keyer, leaks, loadContentFields } from "./diagnostics-lib.mjs";
 
 const step = (n, text) => log(`step ${n}: ${text}`);
@@ -40,7 +40,7 @@ export async function run() {
   const started = Date.now();
   const saved = Object.fromEntries(SWITCHES.map((k) => [k, process.env[k]]));
   for (const k of SWITCHES) delete process.env[k];
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-diag-")));
+  const tmp = scenarioTmp("finisher-e2e-diag-");
   live.tmp = tmp;
   const sd = join(tmp, "server");
   const sdB = join(tmp, "server-b");

@@ -232,3 +232,34 @@ test("the e2e handshake MACs match the shared vectors (5A Task 6: connectWs prov
     assert.equal(handshakeMac(key, v.labels.prove, [h.envId, h.endpoint, sn, cn]).toString("hex"), h.mac, h.name);
   }
 });
+
+// The harness honours CARGO_TARGET_DIR and keeps the server's socket path short.
+const LIB = new URL("./e2e/lib.mjs", import.meta.url).href;
+const inChild = (code, env) =>
+  spawnSync(process.execPath, ["--input-type=module", "-e", `import * as lib from ${JSON.stringify(LIB)}; ${code}`], { encoding: "utf8", env: { ...process.env, ...env } });
+
+test("fin and fin-plugin are looked for in CARGO_TARGET_DIR when it is set", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const set = inChild("console.log(JSON.stringify([lib.TARGET_DIR, lib.FIN, lib.FIN_PLUGIN]))", { CARGO_TARGET_DIR: "/somewhere/else" });
+  const [dir, fin, plugin] = JSON.parse(set.stdout);
+  assert.equal(dir, "/somewhere/else");
+  assert.ok(fin.startsWith("/somewhere/else/release/fin") && plugin.startsWith("/somewhere/else/release/fin-plugin"));
+  const unset = inChild("console.log(lib.TARGET_DIR)", { CARGO_TARGET_DIR: "" });
+  assert.equal(unset.stdout.trim(), join(root, "target"));
+});
+
+test("scenarioTmp keeps the socket path under 104 bytes whatever TMPDIR is", { skip: process.platform === "win32" }, () => {
+  const deep = mkdtempSync(join(tmpdir(), "d".repeat(60)));
+  try {
+    const r = inChild(
+      "const d = lib.scenarioTmp('finisher-e2e-plug-'); console.log(d); console.log(Buffer.byteLength(d + '/server-data/run/fin.sock'));",
+      { TMPDIR: deep },
+    );
+    const [dir, bytes] = r.stdout.trim().split("\n");
+    assert.ok(Number(bytes) <= 104, `${dir}: ${bytes} bytes`);
+    assert.ok(existsSync(dir));
+    rmSync(dir, { recursive: true, force: true });
+  } finally {
+    rmSync(deep, { recursive: true, force: true });
+  }
+});

@@ -6,7 +6,11 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins ...]  (default: every scenario)
+//
+// Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
+// `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
+// server's unix socket path would pass 104 bytes.
 //
 // The "storage" scenario (scripts/e2e/storage.mjs) edits, exports, deletes the database,
 // rebuilds from the folder and checks a second finisherd follows the folder read-only.
@@ -28,6 +32,12 @@
 // `log.commit`, `cli.command` and the op log, the leak grep, a `never` project on two servers,
 // training by env only, withdrawal and `purge --all` (plan D7).
 //
+// The "plugins" scenario (scripts/e2e/plugins*.mjs) drives the plugin lifecycle end to end with
+// `fin-plugin`-built registries (a plain folder and a git clone the run resets): the console adds
+// them by their root's hash, a person installs, `fin` and agents are refused, packs, fonts and
+// code plugins, widening updates, advisories, a `TUF_ROLLBACK`, trust kept on removal, the bundled
+// pack's owner switch across tampering, the journal's free-text grep and each step's audit row.
+//
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -39,16 +49,18 @@ import { run as runStorage } from "./e2e/storage.mjs";
 import { run as runHistory } from "./e2e/history.mjs";
 import { run as runReel } from "./e2e/reel.mjs";
 import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
+import { run as runPlugins } from "./e2e/plugins.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins };
 
 async function main(argv) {
   if (!argv.includes("--skip-build")) {
     build("cargo", ["build", "--release", "-p", "fin"]);
+    build("cargo", ["build", "--release", "-p", "fin-plugin-cli"]); // publisher tooling: the plugins scenario builds registries with it
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
   }

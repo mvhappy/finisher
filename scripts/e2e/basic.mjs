@@ -1,9 +1,7 @@
 // The "basic" scenario: fin -> finisherd -> WebSocket subscriber sees every committed rev.
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFixture } from "./fixture.mjs";
-import { assertEqual, connectWs, fin, live, log, removeTmp, startServer, stopServer, waitFor } from "./lib.mjs";
+import { assertEqual, connectWs, fin, live, log, removeTmp, scenarioTmp, startServer, stopServer, waitFor } from "./lib.mjs";
 
 /**
  * Checks that `seen` (the subscriber's revs, in arrival order) is exactly `committed`
@@ -24,7 +22,7 @@ export async function run() {
   const started = Date.now();
 
   // realpath: macOS tmp is a symlink (/var → /private/var), and fin echoes resolved paths.
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-")));
+  const tmp = scenarioTmp("finisher-e2e-");
   live.tmp = tmp;
   const serverData = join(tmp, "server-data");
   let server;
