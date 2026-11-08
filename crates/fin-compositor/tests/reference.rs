@@ -5,124 +5,28 @@
 //! `FIN_BLESS_T0=1` rewrites the goldens (native only); `FIN_REFERENCE_PNG=<dir>` writes each
 //! output as a PNG for inspection.
 
+mod common;
+
 use std::collections::{BTreeMap, HashMap};
 
+use common::{Case, Patterns, SourceSpec, cases, write_png};
 use fin_compositor::{
     LayerIssue, SourceFrame, SourceProvider, base_box, layer_matrix, reference, transform_point,
 };
 use fin_core::Rational;
-use fin_core::eval::{FramePlan, Layer};
-use fin_media::testing::{Rect, Yuv420, pattern, read_id_rgba};
-use fin_media::{
-    ColourTags, FrameEntry, PixelFormat, RENDER_VERSION, Rotation, SampleTable, Size, display_size,
-    frame_at,
-};
+use fin_core::eval::Layer;
+use fin_media::testing::{Rect, read_id_rgba};
+use fin_media::{ColourTags, PixelFormat, RENDER_VERSION, Rotation, Size, display_size};
 use serde::Deserialize;
 use serde_json::json;
 
-const CORPUS: [&str; 4] = [
-    include_str!("corpus/basic.json"),
-    include_str!("corpus/blend.json"),
-    include_str!("corpus/transitions.json"),
-    include_str!("corpus/geometry.json"),
-];
 const GOLDEN: &str = include_str!("golden/t0.json");
-
-#[derive(Debug, Deserialize)]
-struct PatternSpec {
-    width: u32,
-    height: u32,
-    seed: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct SourceSpec {
-    pattern: PatternSpec,
-    rate: Rational,
-    rotation: Rotation,
-    colour: ColourTags,
-}
-
-#[derive(Debug, Deserialize)]
-struct Case {
-    name: String,
-    out: [u32; 2],
-    plan: FramePlan,
-    sources: BTreeMap<String, SourceSpec>,
-    #[serde(default)]
-    ids: Vec<String>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Golden {
     render_version: u32,
     hashes: BTreeMap<String, String>,
-}
-
-/// A CFR table of 10,000 frames at `rate`.
-fn table(rate: Rational) -> SampleTable {
-    let (ts, d) = (rate.num() as u32, rate.den() as u32);
-    let frames = (0..10_000u32)
-        .map(|i| FrameEntry {
-            ct: i as i64 * d as i64,
-            pts: i as i64 * d as i64,
-            duration: d,
-            keyframe: true,
-            decode_index: i,
-            offset: 0,
-            size: 1,
-        })
-        .collect();
-    SampleTable::new(ts, frames).unwrap()
-}
-
-/// Pattern pictures chosen by `frame_at` at each layer's source time.
-struct Patterns<'a> {
-    sources: &'a BTreeMap<String, SourceSpec>,
-    cache: HashMap<(String, u32), Yuv420>,
-}
-
-impl Patterns<'_> {
-    fn index(&self, l: &Layer) -> Option<u32> {
-        let s = l.source.as_ref()?;
-        let spec = self.sources.get(&s.asset)?;
-        Some(frame_at(&table(spec.rate), s.time).index as u32)
-    }
-}
-
-impl SourceProvider for Patterns<'_> {
-    fn frame(&mut self, l: &Layer) -> Result<SourceFrame<'_>, LayerIssue> {
-        let s = l.source.as_ref().expect("clip layers have a source");
-        let Some(spec) = self.sources.get(&s.asset) else {
-            return Err(LayerIssue {
-                code: "ORIGINALS_MISSING".into(),
-                details: json!({ "asset": s.asset }),
-            });
-        };
-        let index = self.index(l).expect("source present");
-        let (w, h, seed) = (spec.pattern.width, spec.pattern.height, spec.pattern.seed);
-        let p = self
-            .cache
-            .entry((s.asset.clone(), index))
-            .or_insert_with(|| pattern(index, w, h, seed));
-        Ok(SourceFrame {
-            format: PixelFormat::I420,
-            size: Size::new(w, h),
-            planes: [&p.y, &p.u, &p.v],
-            strides: [w as usize, w.div_ceil(2) as usize, w.div_ceil(2) as usize],
-            colour: spec.colour.resolve_defaults(h),
-            rotation: spec.rotation,
-            pixel_aspect: Rational::from_int(1),
-        })
-    }
-}
-
-fn cases() -> Vec<Case> {
-    CORPUS
-        .iter()
-        .flat_map(|c| serde_json::from_str::<Vec<Case>>(c).unwrap())
-        .collect()
 }
 
 /// Where layer `l` (unrotated) lands in the output: its base box under its transform.
@@ -148,14 +52,6 @@ fn landed(c: &Case, l: &Layer, spec: &SourceSpec) -> Rect {
         width: (b[0] - a[0]) * sx,
         height: (b[1] - a[1]) * sy,
     }
-}
-
-fn write_png(dir: &str, name: &str, size: Size, rgba: &[u8]) {
-    let f = std::fs::File::create(format!("{dir}/{name}.png")).unwrap();
-    let mut e = png::Encoder::new(std::io::BufWriter::new(f), size.width, size.height);
-    e.set_color(png::ColorType::Rgba);
-    e.set_depth(png::BitDepth::Eight);
-    e.write_header().unwrap().write_image_data(rgba).unwrap();
 }
 
 #[test]

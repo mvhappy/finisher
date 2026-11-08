@@ -14,75 +14,23 @@ mod ingest;
 mod layer;
 mod mipchain;
 
-use fin_core::eval::{FramePlan, ItemKind};
+use std::convert::Infallible;
+
+use fin_core::eval::FramePlan;
 use fin_media::Size;
-use serde_json::json;
 
-use crate::output::{RenderOutput, Skipped};
-use crate::source::SourceProvider;
-
-fn skipped(item: &str, kind: ItemKind, code: &str, details: serde_json::Value) -> Skipped {
-    Skipped {
-        item: item.to_string(),
-        kind,
-        code: code.to_string(),
-        details,
-    }
-}
+use crate::output::RenderOutput;
+use crate::source::{SourceProvider, walk};
 
 /// Renders `plan` at `out` (the plan's resolution scaled to `out`).
 pub fn render(plan: &FramePlan, src: &mut dyn SourceProvider, out: Size) -> RenderOutput {
     let (w, h) = (out.width as usize, out.height as usize);
     let mut acc = vec![[0.0f32; 3]; w * h];
-    let mut skips = Vec::new();
-    for l in &plan.layers {
-        if l.kind != ItemKind::Clip || l.children.is_some() {
-            skips.push(skipped(
-                &l.item,
-                l.kind,
-                "LAYER_UNAVAILABLE",
-                json!({ "reason": "notYet" }),
-            ));
-            continue;
-        }
-        for e in &l.effects {
-            skips.push(skipped(
-                &l.item,
-                l.kind,
-                "LAYER_UNAVAILABLE",
-                json!({ "reason": "notYet", "effect": e.id, "effectKind": e.kind }),
-            ));
-        }
-        if let Some(m) = &l.mask {
-            skips.push(skipped(
-                &l.item,
-                l.kind,
-                "LAYER_UNAVAILABLE",
-                json!({ "reason": "notYet", "mask": m.matte }),
-            ));
-        }
-        if l.source.is_none() {
-            skips.push(skipped(
-                &l.item,
-                l.kind,
-                "LAYER_UNAVAILABLE",
-                json!({ "reason": "noSource" }),
-            ));
-            continue;
-        }
-        match src.frame(l) {
-            Ok(frame) => match ingest::readable(&frame) {
-                Ok(()) => layer::draw(&mut acc, out, plan.resolution, l, &frame),
-                Err(details) => skips.push(skipped(
-                    &l.item,
-                    l.kind,
-                    "UNSUPPORTED_PIXEL_FORMAT",
-                    details,
-                )),
-            },
-            Err(issue) => skips.push(skipped(&l.item, l.kind, &issue.code, issue.details)),
-        }
-    }
+    let skipped = walk(plan, src, |l, frame| {
+        layer::draw(&mut acc, out, plan.resolution, l, frame);
+        Ok::<(), Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {});
     debug_assert!(
         acc.iter().all(|p| p.iter().all(|c| c.is_finite())),
         "the reference produced a non-finite value"
@@ -97,7 +45,7 @@ pub fn render(plan: &FramePlan, src: &mut dyn SourceProvider, out: Size) -> Rend
     RenderOutput {
         size: out,
         rgba8,
-        skipped: skips,
+        skipped,
     }
 }
 
