@@ -378,10 +378,25 @@ Notes for later tasks (review of Tasks 1, 2, 10):
 - Task 3: finisherd caps its own inbound lines at 16 MiB (socket and WebSocket, `FRAME_TOO_LARGE`); today only `fin` caps what it reads.
 - Sub-project 9 (packaging): the control store's checkpoint worker is started with `new Worker(new URL("./checkpoint-worker.ts", import.meta.url))` and relies on Node's type stripping; a bundled or packaged finisherd must ship that file (or a compiled `.js`, with the URL changed) next to `control/db.ts`.
 
-## Sub-project 5B: pairing, devices, remote access and environments (designed; not planned yet)
+## Sub-project 5B: pairing, devices, remote access and environments (planned 2026-11-08)
 
 Spec: control-plane spec §5. Needs 5A (built).
-- [ ] Plan 5B
+- [x] Plan 5B: `docs/superpowers/plans/2026-11-08-sub-project-5b-pairing-and-remote-access.md` (branch `sp5b-remote`; 15 tasks; four questions for the owner at its end: device confirmations, ports and SSH tunnels, self-pairing of the desktop renderer, trusted-certificate routes). One line per task below; each task ticks its line with as-built notes.
+- [ ] Task 1: contracts, the `devices` chain and the device principal
+- [ ] Task 2: the vault, the identity key and the secret box
+- [ ] Task 3: certificates, SPKI pins and QR codes
+- [ ] Task 4: confirmations for every human principal
+- [ ] Task 5: routes, the environment descriptor and moved server data
+- [ ] Task 6: the HTTP front and per-listener limits
+- [ ] Task 7: DPoP and server nonces
+- [ ] Task 8: pairing
+- [ ] Task 9: tokens, device tickets and revocation
+- [ ] Task 10: the remote listener, `settings.write` and `FIN_LISTEN`
+- [ ] Task 11: allowed roots for devices
+- [ ] Task 12: console commands
+- [ ] Task 13: e2e `remote` scenario and a device test client
+- [ ] Task 14: spec as built, architecture pointer, README and tracker
+- [ ] Task 15: cross-platform validation (controller-run)
 - [ ] Make `server.stop`, and every other confirmed call, confirmable by a device with `auth.admin` (the chain answers `CONFIRMATION_REQUIRED` until then; spec §4.7, §4.17)
 
 ## Sub-project 5C-1: job engine (in progress)
@@ -524,10 +539,23 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-5d-library-indexer.md` (spe
 - [ ] Task 16: spec as built, architecture pointer, tracker
 - [ ] Task 17: cross-platform validation (controller-run)
 
-## Sub-project 5E: review workflow (designed; not planned yet)
+## Sub-project 5E: review workflow (planned 2026-11-08)
 
 Spec: control-plane spec §8. Needs 5A (built) and 4B. 5C-2 (the job RPCs) is tracked under 5C-1.
-- [ ] Plan 5E
+- [x] Plan 5E: `docs/superpowers/plans/2026-11-08-sub-project-5e-review-workflow.md` (branch `sp5e-review`; 13 tasks; four questions for the owner at its end: re-derived reviews, merging a stale review, the scope of "reject all", plugin suggestions). It registers `review.verdict` v1 with sources `finisherd` and `agent` (the 7A Task 11 note), moves 8A's `plugin_suggestions` into `pluginSuggestion` items, and keeps auto merge `AUTO_MERGE_UNAVAILABLE` until sub-project 10. One line per task below; each task ticks its line with as-built notes.
+- [ ] Task 1: the `drop` record kind and what is dropped
+- [ ] Task 2: format 3, the `drops` index and `Store::drop`
+- [ ] Task 3: merge limits and the review plan
+- [ ] Task 4: `review.verdict` v1
+- [ ] Task 5: contracts, the reviews store and `history.drop`
+- [ ] Task 6: protected branches and the policy
+- [ ] Task 7: the review workflow
+- [ ] Task 8: conflict items, re-derivation and plugin suggestions
+- [ ] Task 9: the internal auto-merge path
+- [ ] Task 10: `fin review` and the console
+- [ ] Task 11: e2e `review` scenario
+- [ ] Task 12: spec as built, architecture pointer, README and tracker
+- [ ] Task 13: cross-platform validation (controller-run)
 
 ## Sub-project 6: media engine (designed 2026-11-07, revision 2 after review)
 
