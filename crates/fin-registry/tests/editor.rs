@@ -187,3 +187,63 @@ fn key_ring_folders_are_0700_and_keys_0600() {
     KeyRing::new(&fresh).add(&SigningKey::generate()).unwrap();
     assert_eq!(mode(&fresh), 0o700);
 }
+
+/// A manifest naming a file in another case or normalisation than the package stores it is
+/// refused on every OS: APFS and NTFS would find `Styles/Bold.json` as `styles/bold.json`,
+/// Linux would not, and a package must validate alike everywhere.
+#[test]
+fn publish_refuses_a_manifest_file_spelt_otherwise_than_the_package() {
+    use fin_plugin_api::PackageFiles;
+    let mut r = Reg::new(None);
+    let acme = r.publisher("acme");
+    let src = r.tmp.path().join("src");
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "manifestVersion": 1,
+        "id": "@acme/pack",
+        "version": "1.0.0",
+        "kind": "content",
+        "hostApi": "^1.0",
+        "license": "MIT",
+        "publisher": { "name": "Test" },
+        "contributes": { "captionStyles": [{ "name": "bold", "file": "Styles/Bold.json" }] },
+    }))
+    .unwrap();
+    support::write_tree(
+        &src,
+        &[
+            ("finisher-plugin.json", &manifest),
+            ("styles/bold.json", b"{\"weight\": 700}"),
+            ("caf\u{e9}.json", b"{}"),
+        ],
+    );
+    let pkg = r.tmp.path().join("pack.finpkg");
+    fin_registry::package::pack(&src, &[], &pkg).unwrap();
+    let before = Reg::files(&r.repo);
+    let e = r.b.publish(&pkg, &acme).unwrap_err();
+    assert_eq!(e.code, "PLUGIN_MANIFEST_INVALID", "{e:?}");
+    assert_eq!(
+        e.details["problems"][0]["details"]["reason"], "fileMissing",
+        "{e:?}"
+    );
+    assert_eq!(Reg::files(&r.repo), before);
+
+    // Both directory views answer by exact spelling.
+    let pkg_files = fin_registry::package::DirFiles(&src);
+    let plan_files = fin_registry::plan::DirFiles(&src);
+    let views: [&dyn PackageFiles; 2] = [&pkg_files, &plan_files];
+    for files in views {
+        assert!(files.exists("styles/bold.json"));
+        assert!(files.read("styles/bold.json").is_some());
+        assert!(files.exists("caf\u{e9}.json"));
+        for other in [
+            "Styles/Bold.json",
+            "styles/BOLD.json",
+            "STYLES/bold.json",
+            "cafe\u{301}.json",
+        ] {
+            assert!(!files.exists(other), "{other}");
+            assert!(files.read(other).is_none(), "{other}");
+        }
+        assert!(!files.exists("styles"), "a directory is not a file");
+    }
+}
