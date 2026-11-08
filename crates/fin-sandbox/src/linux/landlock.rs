@@ -18,7 +18,10 @@
 //! [`Net`] (and 80 and 443 for `agent`), `bind` never (for `agent`, `bind` is left to the
 //! launcher's task). At ABI ≥ 6 abstract sockets and signals are scoped to the domain.
 //!
-//! A root is opened `O_PATH | O_NOFOLLOW`; a link is refused (the caller resolved links), and
+//! A root is opened `O_PATH` by `openat2` with `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`;
+//! a link anywhere on its path is refused (the caller resolved links, and a parent swapped for
+//! a link after that must not redirect the grant), a read-write device must be a character
+//! device, and
 //! a root that does not exist is skipped: Landlock cannot grant a path that is not there, and
 //! nothing can create it later, because its parent is not granted.
 
@@ -174,7 +177,8 @@ pub fn ruleset_from(
         rs = add_path(rs, p, write, v)?;
     }
     for d in &policy.devices {
-        rs = add_path(rs, &d.path, device_access(d.access) & handled, v)?;
+        let chr = d.access == DeviceAccess::ReadWrite;
+        rs = add_rule(rs, &d.path, device_access(d.access) & handled, v, chr)?;
     }
     if abi.0 >= 9 {
         for s in &policy.unix_sockets {
@@ -257,6 +261,17 @@ fn add_path(
     access: BitFlags<AccessFs>,
     v: ABI,
 ) -> Result<RulesetCreated, ApplyError> {
+    add_rule(rs, path, access, v, false)
+}
+
+/// [`add_path`]; with `chr`, `path` must be a character device.
+fn add_rule(
+    rs: RulesetCreated,
+    path: &Path,
+    access: BitFlags<AccessFs>,
+    v: ABI,
+    chr: bool,
+) -> Result<RulesetCreated, ApplyError> {
     let rule_err = |error: String| ApplyError::Rule {
         path: path.to_path_buf(),
         error,
@@ -268,6 +283,9 @@ fn add_path(
         {
             return Ok(rs);
         }
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(rule_err("is a symbolic link, or lies under one".into()));
+        }
         Err(e) => return Err(rule_err(e.to_string())),
     };
     // SAFETY: `st` is written by fstat before it is read.
@@ -275,6 +293,9 @@ fn add_path(
     // SAFETY: a valid descriptor and a valid out pointer.
     if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
         return Err(rule_err(io::Error::last_os_error().to_string()));
+    }
+    if chr && st.st_mode & libc::S_IFMT != libc::S_IFCHR {
+        return Err(rule_err("is not a character device".into()));
     }
     let access = match st.st_mode & libc::S_IFMT {
         libc::S_IFDIR => access,
@@ -288,20 +309,29 @@ fn add_path(
         .map_err(|e| rule_err(e.to_string()))
 }
 
-/// `open(path, O_PATH | O_NOFOLLOW | O_CLOEXEC)`.
+/// `openat2(AT_FDCWD, path, O_PATH | O_CLOEXEC, RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)`:
+/// `ELOOP` when any component is a link (`openat2` exists from 5.6, below the 6.2 floor).
 fn open_path(path: &Path) -> io::Result<OwnedFd> {
     let c = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a NUL in the path"))?;
-    // SAFETY: a valid C string; the descriptor is owned below.
+    // SAFETY: `open_how` is plain data; all zeroes is a valid value.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+    // SAFETY: a valid C string and a valid `open_how` of the size passed; the descriptor is
+    // owned below.
     let fd = unsafe {
-        libc::open(
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
             c.as_ptr(),
-            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
         )
     };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `fd` is a fresh descriptor nobody else owns.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }

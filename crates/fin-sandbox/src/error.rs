@@ -22,6 +22,10 @@ pub enum PolicyError {
     /// The same path is both granted (`read` or `write`) and in `deny_read`.
     #[error("{field}: {} is both granted and denied", path.display())]
     GrantedAndDenied { field: String, path: PathBuf },
+    /// A device rule at, under or above a denied or protected root (device rules are granted
+    /// as they are, not enumerated, so the overlap would re-grant the root).
+    #[error("device {} overlaps the denied or protected root {}", device.display(), root.display())]
+    DeviceOverlaps { device: PathBuf, root: PathBuf },
     /// A rule the profile does not allow (`net`, `unix_sockets`, `devices`, `limits`, `mach`).
     #[error("profile {profile:?}: {reason}")]
     Profile { profile: Profile, reason: String },

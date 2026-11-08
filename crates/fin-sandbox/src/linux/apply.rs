@@ -21,11 +21,14 @@ pub struct Applied {
 
 /// Restricts the calling process to `policy` at the kernel's ABI.
 pub fn restrict_self(policy: &SandboxPolicy) -> Result<Applied, ApplyError> {
-    restrict_self_at(policy, query().abi()?)
+    let abi = query().abi()?;
+    enforce(ruleset(policy, abi)?, abi)
 }
 
 /// Restricts the calling process to `policy` using only the rights of `abi` (≤ the
-/// kernel's; tests run the same cases at ABI 3 and at the kernel's).
+/// kernel's; tests run the same cases at ABI 3 and at the kernel's). Test builds only: a
+/// shipped caller always applies the kernel's full ABI.
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn restrict_self_at(policy: &SandboxPolicy, abi: Abi) -> Result<Applied, ApplyError> {
     let rs = ruleset(policy, abi)?;
     enforce(rs, abi)

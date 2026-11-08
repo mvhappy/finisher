@@ -9,9 +9,12 @@ use fin_sandbox::linux::landlock::{Abi, Support, query};
 
 pub const PROBE: &str = env!("CARGO_BIN_EXE_fin-sandbox-probe");
 
-/// The errnos a denial may show: Landlock answers `EACCES` (and `EXDEV` for a link or rename
-/// it refuses), a scope `EPERM`. Anything else (`ENOENT` above all) is not a denial.
-pub const DENIALS: [i32; 3] = [libc::EACCES, libc::EPERM, libc::EXDEV];
+/// The errnos a filesystem or TCP denial may show: Landlock answers `EACCES` (and `EXDEV` for
+/// a link or rename it refuses). Anything else (`ENOENT` above all, and `EPERM`, which sticky
+/// directories and `protected_hardlinks` also give) is not a denial.
+pub const DENIALS: [i32; 2] = [libc::EACCES, libc::EXDEV];
+/// The ops a Landlock scope refuses, with `EPERM`.
+pub const SCOPED: [&str; 1] = ["signal-parent"];
 
 /// The kernel's ABI, or `None` with a printed reason (Landlock disabled: Task 3's stubbed run
 /// covers that case). `FIN_REQUIRE_LANDLOCK=1` turns the skip into a failure.
@@ -42,8 +45,14 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    pub fn denied(&self) -> bool {
-        matches!(self, Outcome::Ran(Some(e)) if DENIALS.contains(e))
+    /// Did `op` (the probe's op and its arguments) show a denial?
+    pub fn denied<S: AsRef<str>>(&self, op: &[S]) -> bool {
+        let scoped = op.first().is_some_and(|o| SCOPED.contains(&o.as_ref()));
+        match self {
+            Outcome::Ran(Some(e)) if scoped => *e == libc::EPERM,
+            Outcome::Ran(Some(e)) => DENIALS.contains(e),
+            _ => false,
+        }
     }
 }
 

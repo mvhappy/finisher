@@ -257,6 +257,13 @@ impl SandboxPolicy {
         }
         for d in &self.devices {
             check_path("devices", &d.path)?;
+            let overlaps = |r: &&PathBuf| d.path.starts_with(r) || r.starts_with(&d.path);
+            if let Some(r) = denied.iter().chain(&self.protect).find(overlaps) {
+                return Err(PolicyError::DeviceOverlaps {
+                    device: d.path.clone(),
+                    root: r.clone(),
+                });
+            }
         }
         for w in &self.write {
             if let Some(p) = self.protect.iter().find(|p| w.starts_with(p)) {

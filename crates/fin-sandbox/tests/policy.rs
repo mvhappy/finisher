@@ -208,3 +208,36 @@ fn the_policy_round_trips_as_json_and_refuses_unknown_fields() {
     extra["readEverything"] = serde_json::json!(true);
     assert!(serde_json::from_value::<SandboxPolicy>(extra).is_err());
 }
+
+#[test]
+fn a_device_rule_never_overlaps_a_denied_or_protected_root() {
+    // Device rules are not enumerated, so one at, under or above a denied or protected root
+    // would re-grant it.
+    for (dev, root) in [
+        ("r/secret", "r/secret"),
+        ("r/secret/inner", "r/secret"),
+        ("r", "r/secret"),
+        ("w/locked/x", "w/locked"),
+        ("w", "w/locked"),
+    ] {
+        let mut p = base(Profile::Worker);
+        p.devices = vec![DeviceRule {
+            path: abs(dev),
+            access: DeviceAccess::Read,
+        }];
+        assert_eq!(
+            p.validate(),
+            Err(PolicyError::DeviceOverlaps {
+                device: abs(dev),
+                root: abs(root)
+            }),
+            "{dev}"
+        );
+    }
+    let mut p = base(Profile::Worker);
+    p.devices = vec![DeviceRule {
+        path: abs("dev/dri"),
+        access: DeviceAccess::Read,
+    }];
+    p.validate().unwrap();
+}

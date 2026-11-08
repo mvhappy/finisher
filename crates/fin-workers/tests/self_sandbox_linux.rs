@@ -142,8 +142,17 @@ fn self_apply_fails_closed() {
             json!({ "profile": "plugin", "args": {} }).to_string(),
             "not applied by the process itself",
         ),
-        (request(&linked).1, ""),
     ];
+    // With Landlock off every request fails as disabled; with it on, the link is named.
+    let link_reason = if matches!(query(), Support::Abi(_)) {
+        "is a symbolic link"
+    } else {
+        "disabled"
+    };
+    let cases = cases
+        .into_iter()
+        .chain([(request(&linked).1, link_reason)])
+        .collect::<Vec<_>>();
     for (raw, want) in cases {
         let mut cmd = std::process::Command::new(support::BIN);
         let out = cmd

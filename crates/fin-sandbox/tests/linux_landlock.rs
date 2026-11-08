@@ -112,7 +112,7 @@ fn check(pick: impl Fn(&str) -> bool) -> Vec<String> {
             ran += 1;
             let got = run(case, Some(abi), port);
             let ok = match case.expect.as_str() {
-                "deny" => got.denied(),
+                "deny" => got.denied(&case.op),
                 "allow" => got == Outcome::Ran(None),
                 other => panic!("{}: unknown expectation {other}", case.name),
             };
@@ -241,7 +241,7 @@ fn tsync_restricts_every_thread() {
         json_file(&t, "p.json", &policy(&t)),
     ];
     // The attempt runs on the thread that existed before the restriction.
-    assert!(probe(&flags, &["read".into(), s(&t.join("out/secret"))]).denied());
+    assert!(probe(&flags, &["read".into(), s(&t.join("out/secret"))]).denied(&["read"]));
 }
 
 #[test]
@@ -272,5 +272,42 @@ fn a_missing_root_grants_nothing() {
     p.write.push(t.join("later"));
     let flags = ["--policy".to_string(), json_file(&t, "p.json", &p)];
     // Its parent is not granted, so it cannot be created after the restriction either.
-    assert!(probe(&flags, &["mkdir".into(), s(&t.join("later"))]).denied());
+    assert!(probe(&flags, &["mkdir".into(), s(&t.join("later"))]).denied(&["mkdir"]));
+}
+
+#[test]
+fn a_root_reached_through_a_linked_parent_is_refused() {
+    let Some(_) = landlock_or_skip("a_root_reached_through_a_linked_parent_is_refused") else {
+        return;
+    };
+    let (_d, t) = tempdir();
+    fixture(&t);
+    // `validate` is lexical, so `lnk/secret` passes it; the open must not follow `lnk`.
+    std::os::unix::fs::symlink(t.join("out"), t.join("lnk")).unwrap();
+    let mut p = policy(&t);
+    p.read = ReadPolicy::Only(vec![t.join("lnk/secret")]);
+    let flags = ["--policy".to_string(), json_file(&t, "p.json", &p)];
+    match probe(&flags, &["read".into(), s(&t.join("out/secret"))]) {
+        Outcome::Apply(e) => assert!(e.contains("is a symbolic link"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_read_write_device_must_be_a_character_device() {
+    let Some(_) = landlock_or_skip("a_read_write_device_must_be_a_character_device") else {
+        return;
+    };
+    let (_d, t) = tempdir();
+    fixture(&t);
+    let mut p = policy(&t);
+    p.devices = vec![fin_sandbox::DeviceRule {
+        path: t.join("out/secret"),
+        access: fin_sandbox::DeviceAccess::ReadWrite,
+    }];
+    let flags = ["--policy".to_string(), json_file(&t, "p.json", &p)];
+    match probe(&flags, &["read".into(), s(&t.join("out/secret"))]) {
+        Outcome::Apply(e) => assert!(e.contains("not a character device"), "{e}"),
+        other => panic!("{other:?}"),
+    }
 }

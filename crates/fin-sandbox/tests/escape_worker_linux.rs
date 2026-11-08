@@ -34,7 +34,6 @@ impl Tree {
             ("lib/photos/c.jpg", "c"),
             ("other-lib/d.jpg", "d"),
             ("home/.ssh/id_ed25519", "x"),
-            ("dev/renderD128", ""),
             ("dev/card0", ""),
         ] {
             write(&t.join(p), text);
@@ -54,8 +53,9 @@ impl Tree {
             tmp: self.p("srv/jobs/j1/tmp"),
             caches: vec![self.p("srv/cache/fonts")],
             devices: vec![
+                // A read-write row must be a character device (tests cannot `mknod`).
                 DeviceRule {
-                    path: self.p("dev/renderD128"),
+                    path: PathBuf::from("/dev/null"),
                     access: DeviceAccess::ReadWrite,
                 },
                 DeviceRule {
@@ -82,6 +82,13 @@ impl Tree {
                 library_roots: vec![self.p("lib")],
             },
         }
+    }
+
+    /// The same attempt without a sandbox (a control: a denied case must succeed there, so
+    /// the denial seen under the profile is the profile's).
+    fn control(&self, op: &[&str]) -> Outcome {
+        let op: Vec<String> = op.iter().map(|a| a.replace("$T", &s(&self.t))).collect();
+        probe(&["--none".to_string()], &op)
     }
 
     /// One attempt under the worker profile built from `input`.
@@ -113,10 +120,16 @@ fn check(test: &str, input: impl Fn(&Tree) -> WorkerInput, cases: &[(&[&str], bo
         let ok = if *allow {
             got == Outcome::Ran(None)
         } else {
-            got.denied()
+            got.denied(op)
         };
         if !ok {
             failures.push(format!("{op:?} (allow: {allow}): {got:?}"));
+        }
+        if !*allow {
+            let control = Tree::new().control(op);
+            if control != Outcome::Ran(None) {
+                failures.push(format!("{op:?} unsandboxed (control): {control:?}"));
+            }
         }
     }
     assert!(failures.is_empty(), "{test}: {failures:#?}");
@@ -146,7 +159,8 @@ fn worker_cold_reads_only_manifest() {
             (&["read", "$T/home/.ssh/id_ed25519"], DENY),
             (&["read", "/etc/passwd"], DENY),
             // Devices: read-write and read-only nodes.
-            (&["write", "$T/dev/renderD128"], ALLOW),
+            (&["write", "/dev/null"], ALLOW),
+            (&["write", "/dev/zero"], DENY),
             (&["read", "$T/dev/card0"], ALLOW),
             (&["write", "$T/dev/card0"], DENY),
         ],
@@ -226,19 +240,20 @@ fn worker_cannot_exec_or_reach_the_network() {
     for op in [
         vec!["exec", "/bin/sh"],
         vec!["exec", "/bin/true"],
-        // Not even a copy of a program in its own write root.
+        // Not the worker's own binary either (outside every root).
         vec!["exec", own.to_str().unwrap()],
         vec!["connect-tcp", port.as_str()],
         vec!["bind-tcp", "0"],
         vec!["signal-parent"],
     ] {
         let got = tree.attempt(&input, &op, false);
-        assert!(got.denied(), "{op:?}: {got:?}");
+        assert!(got.denied(&op), "{op:?}: {got:?}");
     }
+    // Not even a copy of a program in its own write root.
     let copy = tree.p("srv/jobs/j1/tmp/prog");
     std::fs::copy("/bin/true", &copy).unwrap();
     let got = tree.attempt(&input, &["exec", copy.to_str().unwrap()], false);
-    assert!(got.denied(), "exec from tmp: {got:?}");
+    assert!(got.denied(&["exec"]), "exec from tmp: {got:?}");
 }
 
 #[test]
@@ -249,7 +264,7 @@ fn worker_profile_reaches_threads_started_before_it() {
     let tree = Tree::new();
     let got = tree.attempt(&tree.cold(), &["read", "$T/srv/auth/local.key"], true);
     if abi.0 >= fin_sandbox::linux::landlock::TSYNC_ABI {
-        assert!(got.denied(), "{got:?}");
+        assert!(got.denied(&["read"]), "{got:?}");
     } else {
         assert!(
             matches!(got, Outcome::Apply(ref e) if e.contains("threads")),
