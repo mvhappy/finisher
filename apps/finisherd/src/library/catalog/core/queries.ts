@@ -8,6 +8,7 @@ import { CatalogFailure } from "../protocol.ts";
 import { decodeProbe } from "./probe-codec.ts";
 import { DirChains, base64 } from "./rel.ts";
 import { DisplayPaths } from "./search.ts";
+import { stageQueries } from "./stage-rows.ts";
 
 const bad = (q: string, at: string): CatalogFailure =>
   new CatalogFailure("CATALOG_ARGS_INVALID", `catalog query core.${q}: invalid arguments`, { at });
@@ -175,9 +176,10 @@ function files(db: DatabaseSync, args: unknown): { dir?: DirRow; matches?: DirRo
 
 /**
  * `file {fileId} | {relKey}`: every row with that id or key (several → `PATH_AMBIGUOUS` for
- * the caller), each with its raw `rel` chain, and the stage rows of a single match.
+ * the caller), each with its raw `rel` chain, its `dev` and its NFC `display` path, and the
+ * stage rows of a single match.
  */
-function file(db: DatabaseSync, args: unknown): { matches: Array<FileRow & { rel: { components: string[] } }>; stages: unknown[] } {
+function file(db: DatabaseSync, args: unknown): { matches: Array<FileRow & { rel: { components: string[] }; display: string; dev: string | null }>; stages: unknown[] } {
   if (!isObj(args)) throw bad("file", "args");
   let rows: Array<Record<string, unknown>>;
   if (args.fileId !== undefined) {
@@ -187,7 +189,14 @@ function file(db: DatabaseSync, args: unknown): { matches: Array<FileRow & { rel
     rows = db.prepare(`SELECT ${FILE_COLS} FROM files WHERE relKey = ? ORDER BY id`).all(args.relKey) as Array<Record<string, unknown>>;
   } else throw bad("file", "fileId");
   const chains = new DirChains(db);
-  const matches = rows.map((r) => ({ ...fileRow(r), rel: chains.file(r.dirId as number, r.name as Uint8Array) }));
+  const paths = new DisplayPaths(db);
+  const devOf = db.prepare("SELECT dev FROM files WHERE id = ?");
+  const matches = rows.map((r) => ({
+    ...fileRow(r),
+    rel: chains.file(r.dirId as number, r.name as Uint8Array),
+    display: paths.file(r.dirId as number, r.nameNfc as string),
+    dev: ((devOf.get(r.id as number) as { dev: string | null } | undefined)?.dev ?? null) as string | null,
+  }));
   const fp = matches.length === 1 ? matches[0]?.fp : null;
   const stages =
     fp == null ? [] : db.prepare("SELECT stage, version, state, code, jobId, attempts, at FROM stages WHERE fp = ? ORDER BY stage").all(fp);
@@ -367,4 +376,4 @@ function dirRel(db: DatabaseSync, args: unknown): { rel?: { components: string[]
   return { rel: { components: new DirChains(db).of(ids[0]!) } };
 }
 
-export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines, dirRel };
+export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines, dirRel, ...stageQueries };

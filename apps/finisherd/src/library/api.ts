@@ -1,8 +1,8 @@
 // The in-process library API for sub-projects 6 and 8 (plan 5D "Frozen interfaces", Tasks
-// 10–12). Task 10 provides the members below; Task 11 adds `locate`, `registerStage`,
-// `prioritize` and `stageStates`, Task 13 `reach` and the contracts' `LibraryView` schema
-// (this interface is its shape until then).
-import type { FinError, JobView } from "@finisher/contracts";
+// 10–12). Task 10 provides `list`, `get`, `pools`, `online`, `use`, `hash` and `onFile`; Task 11
+// `locate`, `registerStage`, `prioritize` and `stageStates`; Task 13 adds `reach` and the
+// contracts' `LibraryView` schema (this interface is its shape until then).
+import type { FinError, JobView, Priority } from "@finisher/contracts";
 import { Context, type Effect } from "effect";
 import type { LibraryPools } from "./pools.ts";
 import type { LibraryState, LibraryStorage } from "./registry.ts";
@@ -21,6 +21,73 @@ export interface ExpectWire {
   readonly size: number;
   readonly mtimeNs: string;
   readonly fileId?: string;
+  /** The catalogued entry's device (`Expect.dev`): the opener checks a nested mount's file against it. */
+  readonly dev?: string;
+}
+
+/**
+ * One file a stage job reads (Decision 39): its worker opens it **only** through
+ * `fin_library::open_for_read(root, rel, expect, hydrate)`. `display` is the NFC path below the
+ * root (for messages, never for opening).
+ */
+export interface StageFile {
+  readonly library: string;
+  readonly fileId: number;
+  readonly root: string;
+  readonly rel: RawRelWire;
+  readonly display: string;
+  readonly expect: ExpectWire;
+  readonly hydrate: boolean;
+  readonly fp: string;
+  readonly size: number;
+  readonly kind?: string;
+  /** The stored `fin_probe::Probe`. */
+  readonly probe?: unknown;
+  readonly storage: LibraryStorage;
+}
+
+/** A stage sub-projects 6 and 8 register (Decisions 39–42). */
+export interface StageSpec {
+  /** `/^[a-z][a-zA-Z0-9.:-]{0,63}$/`; `probe` is reserved (built in). */
+  readonly name: string;
+  /** Opaque; a change re-queues this stage only. */
+  readonly version: string;
+  readonly appliesTo: (f: StageFile) => boolean;
+  readonly dependsOn?: ReadonlyArray<string>;
+  /** A registered batch kind whose items are fingerprints and whose result keeps the default `{items, itemErrors}` shape. */
+  readonly jobKind: string;
+  /** Fingerprints per job, ≤ 256. */
+  readonly batch: number;
+  readonly params: (files: ReadonlyArray<StageFile>, ctx: { readonly library: string; readonly pools: LibraryPools }) => unknown;
+  /** Default `background`. */
+  readonly priority?: Priority;
+  /** Jobs queued or running per library, default 2. */
+  readonly maxInFlight?: number;
+  /** A cache hit in the owner's index: the row is `done` without a job. */
+  readonly isDone?: (fp: string) => Effect.Effect<boolean>;
+}
+
+/** Where a file is (`Libraries.locate`, Decision 45). */
+export interface Located {
+  readonly library: string;
+  readonly fileId: number;
+  readonly root: string;
+  readonly rel: RawRelWire;
+  readonly display: string;
+  readonly expect: ExpectWire;
+  readonly hydrate: boolean;
+  readonly state: FileState;
+  readonly match: "path" | "alias" | "fingerprint" | "hash";
+  readonly offline: boolean;
+}
+
+/** A stage row of one library (`Libraries.stageStates`). */
+export interface StageState {
+  readonly library: string;
+  readonly stage: string;
+  readonly version: string;
+  readonly state: string;
+  readonly code?: string;
 }
 
 export type FileEvent = {
@@ -81,6 +148,18 @@ export interface Libraries {
   /** A `library.hash` job of up to 64 catalogued files (Decision 38). */
   hash(library: string, fileIds: ReadonlyArray<number>): Effect.Effect<JobView, FinError>;
   onFile(listener: (e: FileEvent) => void): () => void;
+  /**
+   * A path under a library root or one of its aliases (by `relKey`; several rows →
+   * `PATH_AMBIGUOUS`), else a fingerprint, else a full hash; nothing when no library holds it.
+   * `INVALID_PATH` for a relative path or one with `.`/`..` components.
+   */
+  locate(ref: { readonly path?: string; readonly fingerprint?: string; readonly fullHash?: string }): Effect.Effect<Located | undefined, FinError>;
+  /** Registers a stage (throws on an invalid spec or a duplicate name). */
+  registerStage(spec: StageSpec): void;
+  /** Runs `stage` for `fp` now at `normal` priority, after its dependencies (Decision 41). */
+  prioritize(fp: string, stage: string): Effect.Effect<void, FinError>;
+  /** The stage rows of `fp` in every library holding it. */
+  stageStates(fp: string): Effect.Effect<ReadonlyArray<StageState>>;
 }
 
 export class LibrariesTag extends Context.Service<LibrariesTag, Libraries>()("finisherd/Libraries") {}

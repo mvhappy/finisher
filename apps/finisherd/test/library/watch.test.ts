@@ -88,7 +88,8 @@ describe("watched libraries", () => {
     expect((await rig.t.wait(job2.id, 30_000)).state).toBe("succeeded");
     await until(() => rig.journal.some((j) => j.payload.trigger === "watch"));
     const counts = await exec(rig.catalogs.reader.counts(library.id));
-    expect(counts.files.present).toBe(7);
+    // The probe stage (Task 11) may already have probed `new.mov` (one byte: `probeFailed`).
+    expect((counts.files.present ?? 0) + (counts.files.probeFailed ?? 0)).toBe(7);
   });
 
   test("watch_failure_degrades_the_library", { timeout: 60_000 }, async () => {

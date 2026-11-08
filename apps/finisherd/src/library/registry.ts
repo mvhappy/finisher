@@ -158,7 +158,7 @@ interface DbRow {
 }
 
 const MAX_NAME = 64;
-const STAGE_NAME = /^[a-z][a-zA-Z0-9.:-]{0,63}$/;
+export const STAGE_NAME = /^[a-z][a-zA-Z0-9.:-]{0,63}$/;
 
 function invalid(field: string, why: string): FinError {
   return finError("INVALID_REQUEST", `${field}: ${why}`, { field });

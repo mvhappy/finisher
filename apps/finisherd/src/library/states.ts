@@ -1,8 +1,11 @@
 // Small pieces of the library service (plan 5D Task 10): running its Effects, timers, and the
 // offline reasons of root states (Decisions 17, 18).
 import type { RootState, VolumeIdentity } from "@finisher/core-types";
-import { FinError } from "@finisher/contracts";
+import { FinError, type JobOwner } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
+
+/** The owner of every job the library service and the stage pump submit. */
+export const SYSTEM_OWNER: JobOwner = { kind: "system", id: "library" };
 
 export interface ServiceTimers {
   after(ms: number, f: () => void): () => void;

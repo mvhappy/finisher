@@ -20,26 +20,28 @@
 //   (`LibraryScanResult.identity`) and from an `online` re-probe (a silent key change the
 //   probe confirmed); a new key moves the library's pools.
 import type { LibraryScanResult, RawRel, RootState, Timing, VolumeIdentity } from "@finisher/core-types";
-import { FinError, type JobOwner, type JobView, type Priority } from "@finisher/contracts";
+import { FinError, type JobView, type Priority } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { JobEngine } from "../jobs/api.ts";
-import type { FileEvent, Libraries, LibraryView, LibraryWarning, LastScan } from "./api.ts";
+import type { FileEvent, Libraries, LibraryView, LibraryWarning, LastScan, Located, StageSpec, StageState } from "./api.ts";
 import type { CatalogCounts, Catalogs } from "./catalog/client.ts";
 import { type ApplyCounts, emptyCounts } from "./catalog/core/apply.ts";
-import { FileEvents, type JournalLike, type ScanMode, journaled, libraryScanPayload, recordScan } from "./events.ts";
+import { FileEvents, type JournalLike, type ScanMode, batchEvents, journaled, libraryScanPayload, probedEvents, recordScan } from "./events.ts";
 import type { RootHealth } from "./health.ts";
-import { hashParams, scanParams } from "./kind-params.ts";
+import { scanParams } from "./kind-params.ts";
 import type { LibraryKindEvents } from "./kinds.ts";
 import { DAY_MS, type PlanLibrary, type WatchState, plan } from "./plan.ts";
+import { type LocateRef, locate } from "./locate.ts";
 import { type LibraryPools, LibraryPoolBook } from "./pools.ts";
+import { StagePump, submitHash } from "./pump.ts";
 import type { LibraryRow, Registry } from "./registry.ts";
-import { type ServiceTimers, WARNING_REASONS, exec, identityOf, offlineReason, realTimers, sameVolume, toFin } from "./states.ts";
+import { SYSTEM_OWNER, type ServiceTimers, WARNING_REASONS, exec, identityOf, offlineReason, realTimers, sameVolume, toFin } from "./states.ts";
+import { StageRegistry } from "./stages.ts";
 import { Usage } from "./usage.ts";
 import type { WatchEvent } from "./watch.ts";
 
-export { type ServiceTimers, exec, offlineReason, realTimers };
+export { SYSTEM_OWNER, type ServiceTimers, exec, offlineReason, realTimers };
 
-export const SYSTEM_OWNER: JobOwner = { kind: "system", id: "library" };
 /** A re-probe of an offline root waits this long (spin-up tolerance, Decision 18). */
 export const RECHECK_PROBE_MS = 60_000;
 /** Missing rows older than this are purged after a full scan (Decision 25). */
@@ -90,11 +92,15 @@ export class LibraryService implements Libraries {
   readonly registry: Registry;
   readonly book: LibraryPoolBook;
   readonly usage: Usage;
+  /** The stage framework (Task 11). */
+  readonly stages: StagePump;
   readonly #d: LibraryServiceDeps;
   readonly #clock: () => number;
   readonly #timers: ServiceTimers;
   readonly #live = new Map<string, Live>();
   readonly #files: FileEvents;
+  /** Libraries whose catalog is open. */
+  readonly #attached = new Set<string>();
   readonly #unsubscribe: () => void;
   #timer: (() => void) | undefined;
   #ticking = false;
@@ -109,7 +115,15 @@ export class LibraryService implements Libraries {
     this.book = new LibraryPoolBook((name, size) => deps.engine.definePool(name, size));
     this.usage = new Usage(this.#clock, () => this.replan());
     this.#files = new FileEvents((m) => this.log("warning", m));
-    this.#unsubscribe = deps.engine.onDone((job) => this.#jobDone(job));
+    this.stages = new StagePump({
+      registry: deps.registry, catalogs: deps.catalogs, engine: deps.engine, book: this.book, stages: new StageRegistry(), files: this.#files,
+      clock: this.#clock, timers: this.#timers, log: (level, m) => this.log(level, m), attached: (id) => this.#attached.has(id),
+      offline: (lib, job) => this.kindEvents.offline?.(lib, job),
+    });
+    this.#unsubscribe = deps.engine.onDone((job) => {
+      this.stages.jobDone(job);
+      this.#jobDone(job);
+    });
     deps.catalogs.onWatch((e) => this.#watchEvent(e));
   }
 
@@ -120,6 +134,11 @@ export class LibraryService implements Libraries {
   /** The service's dependencies (`admin.ts`, `fresh.ts`). */
   get deps(): LibraryServiceDeps {
     return this.#d;
+  }
+
+  /** `Libraries.onFile`'s bus (`admin.ts`, the pump). */
+  get fileEvents(): FileEvents {
+    return this.#files;
   }
 
   now(): number {
@@ -134,9 +153,13 @@ export class LibraryService implements Libraries {
       batchApplied: (lib, job, applied) => {
         const sj = this.#live.get(lib)?.jobs.get(job);
         if (sj !== undefined) for (const k of Object.keys(sj.applied) as Array<keyof ApplyCounts>) sj.applied[k] += applied[k];
+        const events = batchEvents(lib, applied.files);
+        for (const e of events) this.#files.emit(e);
+        if (events.some((e) => e.type !== "missing")) this.stages.kick(lib);
       },
       probed: (lib, _job, applied) => {
-        for (const m of applied.moved) this.#files.emit({ type: "moved", library: lib, fileId: m.from });
+        for (const e of probedEvents(lib, applied)) this.#files.emit(e);
+        if ((applied.probed ?? []).length > 0) this.stages.kick(lib);
       },
       rescan: (lib, dirs) => void this.submitScan(lib, { mode: "dirs", dirs, trigger: "demand" }),
       offline: (lib, job) => {
@@ -179,6 +202,8 @@ export class LibraryService implements Libraries {
     if (row.state === "offline") this.#d.health.note(row.id, "unreachable");
     await this.#refreshCounts(row.id);
     await this.startWatch(row);
+    this.#attached.add(row.id);
+    void this.stages.attach(row.id).catch((e) => this.log("warning", `library service: library ${row.id}'s stages: ${toFin(e).code}`));
     if (rebuilt && opts.isNew !== true && row.state !== "paused") void this.submitScan(row.id, { mode: "full", trigger: "schedule" });
     return { rebuilt };
   }
@@ -407,6 +432,7 @@ export class LibraryService implements Libraries {
       this.log("warning", `library service: library ${id} is offline (${reason})`);
     }
     await exec(this.#d.catalogs.indexer.setOffline(id, true)).catch(() => undefined);
+    await this.stages.stop(id);
     this.replan();
   }
 
@@ -418,6 +444,7 @@ export class LibraryService implements Libraries {
     this.#d.health.note(id, "online");
     await exec(this.#d.catalogs.indexer.setOffline(id, false)).catch(() => undefined);
     this.log("debug", `library service: library ${id} is online again`);
+    this.stages.kick(id);
     await this.submitScan(id, { mode: "full", trigger: "mount" });
   }
 
@@ -472,6 +499,8 @@ export class LibraryService implements Libraries {
 
   /** Forgets a removed library (its jobs are cancelled and its catalog closed by the caller). */
   forget(id: string): void {
+    this.#attached.delete(id);
+    this.stages.forget(id);
     this.#live.delete(id);
     this.usage.forget(id);
     this.#d.health.forget(id);
@@ -510,25 +539,38 @@ export class LibraryService implements Libraries {
   }
 
   hash(library: string, fileIds: ReadonlyArray<number>): Effect.Effect<JobView, FinError> {
-    return Effect.suspend(() => {
-      const row = this.registry.get(library);
-      if (row === undefined) return Effect.fail(new FinError({ code: "LIBRARY_NOT_FOUND", message: "there is no such library", details: { id: library } }));
-      const params = Effect.try({ try: () => hashParams(row, fileIds, this.book.readSlots(library)), catch: (e) => new FinError({ code: "INVALID_REQUEST", message: String((e as Error).message), details: {} }) });
-      return Effect.flatMap(params, (p) =>
-        p === undefined
-          ? Effect.fail(new FinError({ code: "LIBRARY_METADATA_ONLY", message: "the library is catalogued from metadata only", details: { id: library } }))
-          : this.#d.engine.submit(SYSTEM_OWNER, { kind: "library.hash", params: p, library }),
-      );
-    });
+    return submitHash({ registry: this.registry, engine: this.#d.engine, book: this.book }, library, fileIds);
   }
 
   onFile(listener: (e: FileEvent) => void): () => void {
     return this.#files.on(listener);
   }
 
+  // Task 11's members: locate and the stage framework.
+
+  locate(ref: LocateRef): Effect.Effect<Located | undefined, FinError> {
+    return Effect.tryPromise({
+      try: () => locate({ registry: this.registry, reader: this.#d.catalogs.reader, attached: (id) => this.#attached.has(id) }, ref),
+      catch: toFin,
+    });
+  }
+
+  registerStage(spec: StageSpec): void {
+    this.stages.register(spec);
+  }
+
+  prioritize(fp: string, stage: string): Effect.Effect<void, FinError> {
+    return this.stages.prioritize(fp, stage);
+  }
+
+  stageStates(fp: string): Effect.Effect<ReadonlyArray<StageState>> {
+    return Effect.promise(() => this.stages.stageStates(fp).catch(() => []));
+  }
+
   /** Stops the planner and stops listening; the engine and catalogs close after it. */
   close(): void {
     this.#closed = true;
+    this.stages.close();
     this.#timer?.();
     this.#timer = undefined;
     this.#unsubscribe();

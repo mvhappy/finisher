@@ -456,8 +456,8 @@ Decisions 11, 22, 25, 27.
 
 **Interfaces:** `registerStage`, `prioritize`, `stageStates`, `onFile`, `locate`, `pools`, `hash` (the frozen `Libraries` members). Decisions 20, 39–42, 45.
 
-- [ ] **Step 1: Write failing tests:** `stage_runs_after_probe_for_applicable_files`, `stage_file_carries_raw_path_and_expect`, `depends_on_orders_stages`, `version_bump_requeues_only_that_stage`, `max_in_flight_per_library`, `same_fp_in_two_libraries_never_in_two_jobs`, `offline_and_stuck_failures_cost_no_attempt`, `offline_and_paused_stop_the_pump`, `cloud_only_skipped_unless_hydrate`, `is_done_skips_the_job`, `poison_item_fails_permanently_for_version`, `failed_job_retried_after_1h_three_times`, `prioritize_jumps_the_queue_with_dependencies`, `restart_reconciles_queued_and_running`, `locate_by_path_alias_fp_hash`, `locate_ambiguous_and_cloud_only`, `file_events_for_every_change`, `remove_keeps_vectors_dir`.
-- [ ] **Step 2: Implement.** **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): the library stage framework and source location`.
+- [x] **Step 1: Write failing tests:** `stage_runs_after_probe_for_applicable_files`, `stage_file_carries_raw_path_and_expect`, `depends_on_orders_stages`, `version_bump_requeues_only_that_stage`, `max_in_flight_per_library`, `same_fp_in_two_libraries_never_in_two_jobs`, `offline_and_stuck_failures_cost_no_attempt`, `offline_and_paused_stop_the_pump`, `cloud_only_skipped_unless_hydrate`, `is_done_skips_the_job`, `poison_item_fails_permanently_for_version`, `failed_job_retried_after_1h_three_times`, `prioritize_jumps_the_queue_with_dependencies`, `restart_reconciles_queued_and_running`, `locate_by_path_alias_fp_hash`, `locate_ambiguous_and_cloud_only`, `file_events_for_every_change`, `remove_keeps_vectors_dir`.
+- [x] **Step 2: Implement.** **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): the library stage framework and source location`.
 
 ### Task 12: Search and lookup — tier: sonnet — query core after Task 7a; freshness after Task 10
 

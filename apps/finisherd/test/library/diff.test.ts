@@ -242,7 +242,7 @@ describe("renames, hard links and moves", () => {
     await apply("s2", batch([entry(["A"], "x.mov"), entry(["B"], "copy.mov")], [done(["A"], 1), done(["B"], 1)]));
     const fresh = rows()["B/copy.mov"]!;
     expect(rows()["A/a.mov"]).toMatchObject({ state: "missing" });
-    expect(await run(probe(fresh.id as number, "fp1:same"))).toEqual({ updated: 1, stale: 0, moved: [{ from: fresh.id, to: old.id }] });
+    expect(await run(probe(fresh.id as number, "fp1:same"))).toEqual({ updated: 1, stale: 0, moved: [{ from: fresh.id, to: old.id }], probed: [{ fileId: old.id, fp: "fp1:same" }] });
     expect(rows()["B/copy.mov"]).toMatchObject({ id: old.id, firstSeen: old.firstSeen, state: "present", fp: "fp1:same" });
     expect(rows()["A/a.mov"]).toBeUndefined();
     // A second fingerprint of a row is no move.

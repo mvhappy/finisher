@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ControlStore, openControlStore } from "../../../src/control/db.ts";
 import { type Catalogs, startCatalogThreads } from "../../../src/library/catalog/client.ts";
-import { type LibraryWiring, libraryWiring } from "../../../src/library/layer.ts";
+import type { KindRegistry } from "../../../src/jobs/kinds.ts";
+import { type LibraryWiring, type LibraryWiringOptions, libraryWiring } from "../../../src/library/layer.ts";
 import type { LibraryService } from "../../../src/library/service.ts";
 import { type TestEngine, testEngine } from "../../support/jobs.ts";
 import { FAST } from "./kinds.ts";
@@ -20,6 +21,8 @@ export interface LiveRig {
   readonly control: ControlStore;
   readonly serverData: string;
   readonly journal: Array<{ kind: string; payload: Record<string, unknown> }>;
+  /** Stops everything as if `finisherd` died, keeping the data (a restart reuses `serverData`). */
+  crash(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -32,9 +35,19 @@ export function liveRoots(): string {
   return d;
 }
 
-export async function liveRig(opts: { watchQuietMs?: number } = {}): Promise<LiveRig> {
-  const serverData = realpathSync(mkdtempSync(join(tmpdir(), "fin-libsvc-data-")));
-  dirs.push(serverData);
+export interface LiveRigOptions {
+  readonly watchQuietMs?: number;
+  /** More kinds (the stage tests' `test.stage`). */
+  readonly register?: (kinds: KindRegistry) => void;
+  /** The service's clock and timers (the engine keeps real time). */
+  readonly service?: NonNullable<LibraryWiringOptions["service"]>;
+  /** Reuse a server data folder (a restart). */
+  readonly serverData?: string;
+}
+
+export async function liveRig(opts: LiveRigOptions = {}): Promise<LiveRig> {
+  const serverData = opts.serverData ?? realpathSync(mkdtempSync(join(tmpdir(), "fin-libsvc-data-")));
+  if (opts.serverData === undefined) dirs.push(serverData);
   const jobsRoot = join(serverData, "jobs");
   mkdirSync(jobsRoot, { recursive: true, mode: 0o700 });
   const control = openControlStore(serverData, { serverId: "sid-test", checkpoint: false });
@@ -46,11 +59,19 @@ export async function liveRig(opts: { watchQuietMs?: number } = {}): Promise<Liv
     control,
     catalogs,
     journal: { enabled: true, record: (kind, _kv, _ctx, payload) => void journal.push({ kind, payload: JSON.parse(payload) as Record<string, unknown> }) },
-    service: { timing: FAST },
+    service: { timing: FAST, ...opts.service },
   });
   let t: TestEngine;
   try {
-    t = await testEngine({ serverData, keepData: true, cores: 4, register: (k) => wiring.register(k) });
+    t = await testEngine({
+      serverData,
+      keepData: true,
+      cores: 4,
+      register: (k) => {
+        wiring.register(k);
+        opts.register?.(k);
+      },
+    });
   } catch (e) {
     await catalogs.shutdown();
     await control.close();
@@ -66,6 +87,14 @@ export async function liveRig(opts: { watchQuietMs?: number } = {}): Promise<Liv
     control,
     serverData,
     journal,
+    async crash() {
+      if (closed) return;
+      closed = true;
+      svc.close();
+      await t.crash();
+      await catalogs.shutdown();
+      await control.close();
+    },
     async close() {
       if (closed) return;
       closed = true;

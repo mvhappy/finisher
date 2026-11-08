@@ -76,7 +76,7 @@ export class Watches {
     let watcher: FSWatcher;
     try {
       watcher = fsWatch(root, { recursive: true, encoding: "buffer", persistent: true }, (_type, name) => {
-        if (w !== undefined) this.#event(lib, w, name);
+        if (w !== undefined) this.#event(lib, w, name as Buffer | string | null);
       });
     } catch (e) {
       return { ok: false, reason: codeOf(e) };
@@ -111,11 +111,14 @@ export class Watches {
     for (const lib of [...this.#watches.keys()]) this.unwatch(lib);
   }
 
-  #event(lib: string, w: Watch, name: Buffer | null): void {
+  #event(lib: string, w: Watch, name: Buffer | string | null): void {
     if (this.#watches.get(lib) !== w) return;
     if (name === null) w.all = true;
     else if (!w.all) {
-      const parts = splitRaw(name);
+      // Node's recursive watcher on Linux (`internal/fs/recursive_watch`) ignores `encoding:
+      // "buffer"` and hands names as UTF-8 strings: a non-UTF-8 name arrives lossy, and its
+      // directory then maps to its deepest catalogued ancestor like any unknown one.
+      const parts = splitRaw(typeof name === "string" ? Buffer.from(name, "utf8") : name);
       if (parts.length === 0 || parts.some((p) => p[0] === DOT)) return;
       const dir = this.#known(lib, parts.slice(0, -1));
       w.dirs.set(dir.join("/"), dir);

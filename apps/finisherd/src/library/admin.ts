@@ -5,12 +5,11 @@ import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { RawRel } from "@finisher/core-types";
 import { FinError, type JobView, type Priority } from "@finisher/contracts";
-import { libraryProbeVersion } from "@finisher/fin-node";
 import type { LibraryView } from "./api.ts";
 import { libraryDir } from "./catalog/open.ts";
-import { probeParams } from "./kind-params.ts";
+import { submitProbe } from "./pump.ts";
 import type { Actor, LibraryPatch, NewLibrary } from "./registry.ts";
-import { type LibraryService, SYSTEM_OWNER, exec } from "./service.ts";
+import { type LibraryService, exec } from "./service.ts";
 
 const ACTIVE = ["queued", "running", "paused"] as const;
 /** Files of `libraries/<id>/` that belong to sub-project 8E, never deleted here (Decision 42). */
@@ -68,7 +67,10 @@ export async function setLibrary(svc: LibraryService, id: string, patch: Library
     for (const job of svc.deps.engine.list({ kind: "library.scan", library: id, state: [...ACTIVE], limit: 500 }).jobs) {
       await exec(svc.deps.engine.cancel(job.id)).catch(() => undefined);
     }
+    await svc.stages.stop(id);
   }
+  if (row.state !== "paused" && before.state === "paused") svc.stages.kick(id);
+  if (patch.stages !== undefined || patch.kinds !== undefined || patch.hydrate !== undefined) svc.stages.kick(id);
   const filters = patch.include !== undefined || patch.exclude !== undefined;
   if (filters && row.state !== "paused" && row.state !== "offline") await svc.submitScan(id, { mode: "full", trigger: "demand" });
   svc.replan();
@@ -131,7 +133,7 @@ export async function scanLibrary(svc: LibraryService, id: string, req: { readon
 }
 
 /**
- * A `library.probe` job of up to 256 catalogued files (for the probe stage, Task 11). A
+ * A `library.probe` job of up to 256 catalogued files (the probe stage's submit, `pump.ts`). A
  * metadata-only library (Decision 14) opens nothing: its files are recorded `skipped` with
  * `METADATA_ONLY` instead, and no job is submitted.
  */
@@ -143,15 +145,5 @@ export async function probeFiles(
 ): Promise<{ job?: JobView; skipped: number }> {
   const row = svc.registry.get(library);
   if (row === undefined) throw notFound(library);
-  const { engine, catalogs } = svc.deps;
-  const params = probeParams(row, fileIds, svc.book.readSlots(library));
-  if (params !== undefined) {
-    const job = await exec(engine.submit(SYSTEM_OWNER, { kind: "library.probe", params, library, ...(priority === undefined ? {} : { priority }) }));
-    return { job, skipped: 0 };
-  }
-  const { lines } = await exec(catalogs.reader.fileLines(library, { fileIds: [...fileIds], hydrate: true }));
-  const version = libraryProbeVersion();
-  const rows = lines.map((l) => ({ fileId: l.id, size: l.expect.size, mtimeNs: l.expect.mtimeNs, probeVersion: version, state: "skipped" as const, code: "METADATA_ONLY" }));
-  if (rows.length > 0) await exec(catalogs.indexer.applyProbed(library, rows));
-  return { skipped: rows.length };
+  return submitProbe({ catalogs: svc.deps.catalogs, engine: svc.deps.engine, book: svc.book, files: svc.fileEvents }, row, fileIds, priority);
 }

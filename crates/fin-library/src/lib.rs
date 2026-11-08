@@ -49,6 +49,8 @@ pub mod walk;
 
 #[cfg(feature = "test-hooks")]
 pub mod overlay;
+#[cfg(feature = "test-hooks")]
+pub mod params_test;
 
 pub use budget::{BudgetedReader, Throttle};
 pub use collide::{Collision, collisions};

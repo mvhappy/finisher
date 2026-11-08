@@ -10,7 +10,9 @@ import { Context, Effect, Layer } from "effect";
 import type { FileRow, DirRow, FileLineRow } from "./core/queries.ts";
 import type { SearchPage, SearchRequest } from "./core/snapshot.ts";
 import type { PendingFile } from "./core/ops.ts";
+import type { StagePendingFile, StageRow } from "./core/stage-rows.ts";
 import type { ApplyCounts } from "./core/apply.ts";
+import type { FileChanges } from "./core/file-events.ts";
 import { guardedClock } from "./clock.ts";
 import { CATALOG_EXTENSIONS, type CatalogExtensionRegistry } from "./extensions.ts";
 import { CatalogFailure, type Ready, type Reply, type WireError, assertCloneable } from "./protocol.ts";
@@ -155,7 +157,10 @@ export interface CatalogCounts {
 export interface ProbedApplied {
   readonly updated: number;
   readonly stale: number;
+  /** `from`: the new row, deleted; `to`: the missing row that took its path and probe (it keeps its id). */
   readonly moved: ReadonlyArray<{ readonly from: number; readonly to: number }>;
+  /** Every row that landed, by its id after the apply (a moved one by `to`), with its fingerprint. */
+  readonly probed?: ReadonlyArray<{ readonly fileId: number; readonly fp: string | null }>;
 }
 
 /** Picks the one file a key names (Decision 11); see `ReaderClient.resolve`. */
@@ -173,6 +178,8 @@ export function pickMatch<R extends { readonly id: number; readonly state: strin
 
 export interface BatchApplied extends ApplyCounts {
   readonly transactions: number;
+  /** The rows the batch file changed, by what each became (`Libraries.onFile`, Task 11). */
+  readonly files?: FileChanges;
 }
 
 export interface ScanRecord {
@@ -206,7 +213,7 @@ export interface StageRowSet {
   readonly fp: string;
   readonly stage: string;
   readonly version: string;
-  readonly state: "queued" | "running" | "done" | "failed" | "stale";
+  readonly state: "queued" | "running" | "done" | "failed" | "stale" | "skipped";
   readonly code?: string | null;
   readonly jobId?: string | null;
   readonly attempts?: number | null;
@@ -215,7 +222,20 @@ export interface StageRowSet {
 
 export type PendingArgs =
   | { readonly stage: "probe"; readonly probeVersion: number; readonly exts: ReadonlyArray<string> | null; readonly limit: number }
-  | { readonly stage: string; readonly version: string; readonly maxAttempts?: number; readonly limit: number };
+  | {
+      readonly stage: string;
+      readonly version: string;
+      readonly maxAttempts?: number;
+      readonly limit: number;
+      /** Each must be `done` at its version. */
+      readonly dependsOn?: ReadonlyArray<{ readonly stage: string; readonly version: string }>;
+      /** Also `cloudOnly` files (a hydrating library). */
+      readonly hydrate?: boolean;
+      /** Failed rows only when they failed no later than this (the pump's retry time). */
+      readonly retryBefore?: number;
+      /** Only these fingerprints (≤ 256). */
+      readonly fps?: ReadonlyArray<string>;
+    };
 
 export interface IndexerClient {
   /** Runs `ext`'s op `op` in the indexer, inside one transaction. */
@@ -251,6 +271,10 @@ export interface IndexerClient {
   /** The text of a job's `in/dirs.ndjson` (Decision 27), for a `prepare` that writes it through `ctx.open`. */
   knownDirs(lib: string, gen: number): Effect.Effect<{ text: string; dirs: number }, FinError>;
   pending(lib: string, args: PendingArgs): Effect.Effect<{ files: PendingFile[] }, FinError>;
+  /** A stage's next files (`pendingStage`). */
+  pendingStage(lib: string, args: Exclude<PendingArgs, { readonly stage: "probe" }>): Effect.Effect<{ files: StagePendingFile[] }, FinError>;
+  /** A stage's rows at other versions become `stale` (Decision 42). */
+  stagesStale(lib: string, stage: string, version: string): Effect.Effect<{ stale: number }, FinError>;
   /**
    * Deletes rows missing since before `before` and marked missing in a generation before
    * `beforeGen` (both: a clock jump alone purges nothing), ≤ 500 per transaction.
@@ -289,7 +313,7 @@ export interface ReaderClient {
   file(
     lib: string,
     ref: { readonly fileId: number } | { readonly relKey: string },
-  ): Effect.Effect<{ matches: Array<FileRow & { rel: { components: string[] } }>; stages: unknown[] }, FinError>;
+  ): Effect.Effect<{ matches: Array<FileRow & { rel: { components: string[] }; display: string; dev: string | null }>; stages: unknown[] }, FinError>;
   search(lib: string, args: Record<string, unknown>): Effect.Effect<{ hits: Array<FileRow & { score: number }> }, FinError>;
   lookup(lib: string, args: { fingerprints?: string[]; hashes?: string[] }): Effect.Effect<{ matches: Array<{ key: string; display: string; file: FileRow }> }, FinError>;
   /**
@@ -318,6 +342,11 @@ export interface ReaderClient {
    */
   resolve(lib: string, relKey: string): Effect.Effect<FileRow & { rel: { components: string[] } }, FinError>;
   stageCounts(lib: string): Effect.Effect<{ stages: Array<{ stage: string; version: string; state: string; n: number }> }, FinError>;
+  /** Stage rows by fingerprint, job, state or stage (`stageRows`). */
+  stageRows(
+    lib: string,
+    args: { readonly fps?: ReadonlyArray<string>; readonly jobIds?: ReadonlyArray<string>; readonly states?: ReadonlyArray<string>; readonly stage?: string; readonly limit?: number },
+  ): Effect.Effect<{ rows: StageRow[] }, FinError>;
   stats(): Effect.Effect<{ queries: number; searches: number; open: number; snapshots: number }, FinError>;
 }
 
@@ -402,6 +431,8 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     writeKnownDirs: (lib, gen, path) => fx(() => indexer.call("writeKnownDirs", { lib, gen, path })),
     knownDirs: (lib, gen) => fx(() => indexer.call("knownDirs", { lib, gen })),
     pending: (lib, args) => core(lib, "pending", args),
+    pendingStage: (lib, args) => core(lib, "pending", args),
+    stagesStale: (lib, stage, version) => core(lib, "stagesStale", { stage, version }),
     purgeMissing: (lib, cutoff) => fx(() => indexer.call("purgeMissing", { lib, before: cutoff.before, beforeGen: cutoff.beforeGen })),
     testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
     setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
@@ -425,6 +456,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         Effect.try({ try: () => pickMatch(r.matches), catch: (e) => e as FinError }),
       ),
     stageCounts: (lib) => read(lib, "stageCounts", {}),
+    stageRows: (lib, args) => read(lib, "stageRows", args),
     stats: () => fx(() => reader.call("stats", {})),
   };
   let stopped: Promise<void> | undefined;

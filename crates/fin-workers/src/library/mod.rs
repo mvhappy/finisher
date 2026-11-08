@@ -27,11 +27,22 @@ mod hash;
 mod jobfiles;
 mod probe;
 mod scan;
+#[cfg(feature = "test-hooks")]
+mod stage_test;
 
+#[cfg(not(feature = "test-hooks"))]
 static KINDS: &[KindVersion] = &[
     KindVersion::new("library.scan", 1),
     KindVersion::new("library.probe", 1),
     KindVersion::new("library.hash", 1),
+];
+/// Test builds add `test.stage`, the stage framework's test kind (plan 5D Task 11).
+#[cfg(feature = "test-hooks")]
+static KINDS: &[KindVersion] = &[
+    KindVersion::new("library.scan", 1),
+    KindVersion::new("library.probe", 1),
+    KindVersion::new("library.hash", 1),
+    KindVersion::new("test.stage", 1),
 ];
 
 /// The `library` family.
@@ -68,6 +79,8 @@ impl Family for LibraryFamily {
             ("library.scan", 1) => scan::run(job, ctx),
             ("library.probe", 1) => probe::run(job, ctx, self.warm),
             ("library.hash", 1) => hash::run(job, ctx, self.warm),
+            #[cfg(feature = "test-hooks")]
+            ("test.stage", 1) => stage_test::run(job, ctx),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family library has no kind {kind} v{version}"),

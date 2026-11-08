@@ -51,6 +51,7 @@ import { type FtsStatements, ftsRemove, ftsReplace } from "../fts.ts";
 import { CatalogFailure } from "../protocol.ts";
 import { type CollisionStatements, prepareCollisions, recomputeCollisions } from "./collisions.ts";
 import { type Budget, type Work, chunks, room } from "./steps.ts";
+import { type FileIdSink, noteFile } from "./file-events.ts";
 
 /** A second empty listing confirms a drop to zero only when it started this long after the first was applied. */
 export const EMPTY_CONFIRM_MS = 60_000;
@@ -131,6 +132,8 @@ export interface DiffConn {
    * start): an id outside it needs no rename lookup. `undefined` outside `applyRows`.
    */
   ids: Set<string> | undefined;
+  /** The rows the current batch file changed (`Libraries.onFile`); `undefined` outside one. */
+  events: FileIdSink | undefined;
   offline: boolean;
 }
 
@@ -205,7 +208,7 @@ export function prepareDiff(db: DatabaseSync): DiffConn {
     idsPresent: db.prepare("SELECT DISTINCT hex(fileId) AS id FROM files WHERE fileId IN (SELECT unhex(value) FROM json_each(?))"),
   };
   return {
-    st, coll: prepareCollisions(db), listings: new Map(), touched: new Set(), unsuspected: new Set(), ids: undefined, offline: false,
+    st, coll: prepareCollisions(db), listings: new Map(), touched: new Set(), unsuspected: new Set(), ids: undefined, events: undefined, offline: false,
   };
 }
 
@@ -338,7 +341,10 @@ function* resolveRenames(diff: DiffConn, fts: FtsStatements, missing: ReadonlyAr
     yield* room(b, 1);
     touch(diff, m.fileId);
     const next = diff.st.pointing.get(m.id) as { id: number } | undefined;
-    if (next !== undefined && mergeInto(diff, fts, m.id, next.id, (diff.st.fileFull.get(m.id) as Full).fp !== null)) n++;
+    if (next !== undefined && mergeInto(diff, fts, m.id, next.id, (diff.st.fileFull.get(m.id) as Full).fp !== null)) {
+      n++;
+      noteFile(diff.events, "renamed", m.id);
+    }
   }
   return n;
 }
@@ -348,6 +354,7 @@ function* markFiles(diff: DiffConn, ids: ReadonlyArray<Gone>, ctx: DiffCtx, code
   for (const part of chunks(ids, STEP_ROWS)) {
     yield* room(b, part.length);
     diff.st.markFileIds.run(ctx.at, ctx.gen, code, JSON.stringify(part.map((r) => r.id)));
+    for (const r of part) noteFile(diff.events, "missing", r.id);
   }
 }
 
@@ -406,6 +413,7 @@ function* stateSubtree(diff: DiffConn, dirId: number, b: Budget, dirIds: S, file
       if (rows.length === 0) break;
       yield* room(b, rows.length);
       fileIds.run(JSON.stringify(rows.map((r) => r.id)));
+      for (const r of rows) noteFile(diff.events, "changed", r.id);
       if (rows.length < limit(b)) break;
     }
   }

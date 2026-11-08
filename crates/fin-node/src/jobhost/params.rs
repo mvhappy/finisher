@@ -11,6 +11,8 @@ static PARAMS: &[&[KindParams]] = &[
     fin_library::params::PARAMS,
     #[cfg(feature = "test-hooks")]
     fin_jobs::test_kinds::PARAMS,
+    #[cfg(feature = "test-hooks")]
+    fin_library::params_test::PARAMS,
 ];
 
 /// The longest params JSON a job may carry: a `start` must fit a 1 MiB line (Decision 4)

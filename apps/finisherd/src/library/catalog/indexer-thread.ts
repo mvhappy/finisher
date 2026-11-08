@@ -25,6 +25,7 @@ import { ftsRemove, ftsSettle } from "./fts.ts";
 import { checkLibraryId, openCatalog } from "./open.ts";
 import { CatalogFailure, type Reply, type Request, nextTurn, toWire } from "./protocol.ts";
 import { Watches } from "../watch.ts";
+import { newSink, settleEvents } from "./core/file-events.ts";
 
 export interface IndexerData {
   readonly extensions: ReadonlyArray<CatalogExtensionRef>;
@@ -236,15 +237,20 @@ async function applyBatchFile(a: Record<string, unknown>): Promise<unknown> {
   checkRootEmpty(c.apply.diff, batches.flatMap((b) => b.dirsDone));
   const counts = emptyCounts();
   const ctx = { job, gen, at: stamp(c, at), startedAt };
+  const sink = newSink();
+  c.apply.diff.events = sink;
   try {
     await applyRowsInTx(c, lib, rows, ctx, counts, fault);
   } catch (e) {
     // The time was handed out even though the transaction rolled back: keep it (`attemptStart`).
     if (catalogs.get(lib) === c) tx(c, 1, () => c.db.prepare(CLOCK_SET).run(String(ctx.at)));
     throw e;
+  } finally {
+    c.apply.diff.events = undefined;
   }
   stats.batchFiles++;
-  return { ...counts, transactions: Math.ceil(rows.length / txRows) };
+  // Which rows changed, for `Libraries.onFile` (read after the last transaction committed).
+  return { ...counts, transactions: Math.ceil(rows.length / txRows), files: settleEvents(c.db, sink) };
 }
 
 async function applyRowsInTx(

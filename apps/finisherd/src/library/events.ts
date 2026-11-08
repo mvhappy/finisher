@@ -10,7 +10,8 @@
 import type { LibraryScan, ScanTrigger } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
 import type { FileEvent } from "./api.ts";
-import type { CatalogCounts } from "./catalog/client.ts";
+import type { CatalogCounts, ProbedApplied } from "./catalog/client.ts";
+import type { FileChanges } from "./catalog/core/file-events.ts";
 import type { ApplyCounts } from "./catalog/core/apply.ts";
 import type { LibraryStorage } from "./registry.ts";
 
@@ -83,6 +84,20 @@ export function recordScan(journal: JournalLike | undefined, payload: LibrarySca
   } catch (e) {
     log(`library service: the journal refused a library.scan: ${(e as Error).message}`);
   }
+}
+
+/** The file events of one landed scan batch file (Task 11): one per changed row. */
+export function batchEvents(lib: string, files: FileChanges | undefined): FileEvent[] {
+  if (files === undefined) return [];
+  const out: FileEvent[] = [];
+  for (const type of ["added", "changed", "missing", "renamed"] as const) for (const fileId of files[type]) out.push({ type, library: lib, fileId });
+  return out;
+}
+
+/** The file events of landed probe outcomes: `moved` for a row merged into its missing twin (by the id it kept), else `probed`. */
+export function probedEvents(lib: string, applied: ProbedApplied): FileEvent[] {
+  const moved = new Set(applied.moved.map((m) => m.to));
+  return (applied.probed ?? []).map((p) => ({ type: moved.has(p.fileId) ? "moved" : "probed", library: lib, fileId: p.fileId, ...(p.fp === null ? {} : { fp: p.fp }) }));
 }
 
 /** `Libraries.onFile` listeners: each is called in turn; one that throws is logged, never fatal. */
