@@ -13,7 +13,7 @@ use std::time::Duration;
 use fin_jobs::{JobError, Retry};
 use fin_library::batchfile;
 use fin_library::params::{BatchCall, LibraryScanParams, ScanMode};
-use fin_library::{ExcludeSpec, KnownDir, ScanBatch, Timing};
+use fin_library::{ExcludeSpec, ScanBatch, Timing};
 use serde_json::{Value, json};
 use support::{End, Ev, Job, identity_of, overlay, rel, run_job, write_file};
 
@@ -48,12 +48,15 @@ fn start(job: &Job, p: &LibraryScanParams, with_dirs: bool) -> fin_jobs::Start {
     job.start("library.scan", serde_json::to_value(p).unwrap(), grants)
 }
 
-/// Reads and removes nothing: decodes the batch a `library.batch` call names.
+/// Reads and removes nothing: decodes the batch file a `library.batch` call names, which
+/// holds one line, one `ScanBatch`.
 fn read_batch(job: &Job, call: &Value) -> ScanBatch {
     let c: BatchCall = serde_json::from_value(call.clone()).unwrap();
     assert!(!c.file.contains('/'), "a plain name");
     let f = std::fs::File::open(job.out().join(&c.file)).expect("the file exists at the call");
-    let b = batchfile::decode(std::io::BufReader::new(f)).unwrap();
+    let mut lines = batchfile::decode(std::io::BufReader::new(f)).unwrap();
+    assert_eq!(lines.len(), 1);
+    let b = lines.remove(0);
     assert_eq!(b.seq, c.seq);
     b
 }
@@ -207,19 +210,10 @@ fn poll_lists_only_changed_directories() {
         Ok(json!({}))
     })
     .result();
+    // The lines the indexer writes: `{dir, mtimeNs, listed}`.
     let known: Vec<Value> = dirs
         .iter()
-        .map(|d| {
-            serde_json::to_value(KnownDir {
-                dir: d.dir.clone(),
-                mtime_ns: d.mtime_ns,
-                entries: d.entries,
-                listed_gen: Some(1),
-                mount_root: false,
-                volume: None,
-            })
-            .unwrap()
-        })
+        .map(|d| json!({ "dir": d.dir, "mtimeNs": d.mtime_ns.map(|t| t.to_string()), "listed": true }))
         .collect();
     // A new file in d2 moves its mtime.
     std::thread::sleep(Duration::from_millis(20));
@@ -249,17 +243,7 @@ fn a_resumed_full_scan_skips_listings_of_its_generation() {
     let root = tempfile::tempdir().unwrap();
     tree(root.path(), 3, 2);
     let known: Vec<Value> = (0..3)
-        .map(|d| {
-            serde_json::to_value(KnownDir {
-                dir: rel(&[&format!("d{d}")]),
-                mtime_ns: None,
-                entries: 2,
-                listed_gen: Some(1),
-                mount_root: false,
-                volume: None,
-            })
-            .unwrap()
-        })
+        .map(|d| json!({ "dir": rel(&[&format!("d{d}")]), "mtimeNs": null, "listed": true }))
         .collect();
     let job = Job::new();
     job.write_in("in/dirs.ndjson", &known);
@@ -330,4 +314,58 @@ fn cancel_stops_a_slow_scan() {
     }
     assert!(!run.events.iter().any(|e| matches!(e, Ev::Checkpoint(_))));
     assert!(p.wait().success());
+}
+
+#[test]
+fn dir_done_counts_every_entry_and_follows_them() {
+    let root = tempfile::tempdir().unwrap();
+    // Two kept files and three the default rules exclude: dot-file, Thumbs.db, a conflict
+    // copy. All five are emitted, so the listing's `entries` is 5 (plan 5D Task 7b).
+    for n in [
+        "a.mov",
+        "b.mov",
+        ".hidden",
+        "Thumbs.db",
+        "c (conflicted copy).mov",
+    ] {
+        write_file(root.path(), &format!("d/{n}"), b"x");
+    }
+    write_file(root.path(), "e/only.mov", b"x");
+    let job = Job::new();
+    let mut p = run_job(start(&job, &params(root.path(), ScanMode::Full), false));
+    let mut batches = Vec::new();
+    p.drive(|_, call| {
+        batches.push(read_batch(&job, call));
+        Ok(json!({}))
+    })
+    .result();
+    let d = rel(&["d"]);
+    let in_d = |b: &ScanBatch| b.entries.iter().filter(|e| e.dir == d).count();
+    let total: usize = batches.iter().map(in_d).sum();
+    assert_eq!(total, 5);
+    let excluded = batches
+        .iter()
+        .flat_map(|b| &b.entries)
+        .filter(|e| e.dir == d && e.excluded.is_some())
+        .count();
+    assert!(excluded >= 2, "{excluded} excluded");
+    let done = batches
+        .iter()
+        .flat_map(|b| &b.dirs_done)
+        .find(|x| x.dir == d)
+        .unwrap();
+    assert_eq!(done.entries as usize, total);
+    // Every entry of a directory comes before its DirDone, in file order.
+    let mut closed = BTreeSet::new();
+    for b in &batches {
+        for e in &b.entries {
+            assert!(
+                !closed.contains(&e.dir.display()),
+                "entry after its DirDone"
+            );
+        }
+        for x in &b.dirs_done {
+            closed.insert(x.dir.display());
+        }
+    }
 }

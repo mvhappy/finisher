@@ -21,10 +21,31 @@
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead};
 
+use serde::Deserialize;
+
 use crate::exclude::Excludes;
 use crate::names;
 use crate::raw::RawRel;
 use crate::types::{KnownDir, VolumeIdentity};
+
+/// One line of `in/dirs.ndjson` as read ([`KnownDirs::from_ndjson`]).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Line {
+    dir: RawRel,
+    #[serde(default)]
+    mtime_ns: Option<String>,
+    #[serde(default)]
+    listed: bool,
+    #[serde(default)]
+    entries: u32,
+    #[serde(default)]
+    listed_gen: Option<u64>,
+    #[serde(default)]
+    mount_root: bool,
+    #[serde(default)]
+    volume: Option<VolumeIdentity>,
+}
 
 /// The catalog's directories, by raw chain, with each one's known subdirectories.
 #[derive(Debug, Clone, Default)]
@@ -42,20 +63,40 @@ impl KnownDirs {
         k
     }
 
-    /// Reads `in/dirs.ndjson` (one [`KnownDir`] per line; blank lines ignored).
-    pub fn from_ndjson(r: impl BufRead) -> io::Result<Self> {
+    /// Reads `in/dirs.ndjson` for a scan of `generation` (blank lines ignored). Each line is
+    /// what the indexer writes, `{dir, mtimeNs, listed}`: `listed` says the directory was
+    /// listed completely in this generation (a resumed full scan skips it). The richer
+    /// fields of [`KnownDir`] (`entries`, `listedGen`, `mountRoot`, `volume`) are accepted
+    /// and optional; without `entries` the walker's own empty-suspect rules stay inert (the
+    /// catalog applies them, plan 5D Task 7b), without `mountRoot` and `volume` so do the
+    /// nested-mount checks.
+    pub fn from_ndjson(r: impl BufRead, generation: u64) -> io::Result<Self> {
+        let bad =
+            |e: &dyn std::fmt::Display| io::Error::new(io::ErrorKind::InvalidData, e.to_string());
         let mut k = Self::default();
         for line in r.lines() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            let d: KnownDir = serde_json::from_str(&line)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            d.dir
-                .validate()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            k.insert(d);
+            let l: Line = serde_json::from_str(&line).map_err(|e| bad(&e))?;
+            l.dir.validate().map_err(|e| bad(&e))?;
+            let mtime_ns = l
+                .mtime_ns
+                .map(|t| t.parse::<i64>().map_err(|e| bad(&e)))
+                .transpose()?;
+            k.insert(KnownDir {
+                dir: l.dir,
+                mtime_ns,
+                entries: l.entries,
+                listed_gen: if l.listed {
+                    Some(generation)
+                } else {
+                    l.listed_gen
+                },
+                mount_root: l.mount_root,
+                volume: l.volume,
+            });
         }
         Ok(k)
     }

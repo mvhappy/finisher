@@ -586,12 +586,8 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
-      libraryProbeHang(root, hang) {
-        native.libraryProbeHangForTest(root, hang);
-      },
-      libraryProbeStarted(root) {
-        return native.libraryProbeStartedForTest(root);
-      },
+      libraryProbeHang: (root, hang) => native.libraryProbeHangForTest(root, hang),
+      libraryProbeStarted: (root) => native.libraryProbeStartedForTest(root),
       packPlugin(src, out) {
         try {
           return native.packPluginForTest(src, out);

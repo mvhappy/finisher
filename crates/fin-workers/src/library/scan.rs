@@ -75,7 +75,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
     }
     let out = grant(ctx, OUT_DIR)?;
     let known = match ctx.file(DIRS_FILE) {
-        Some(g) => Some(jobfiles::known_dirs(&g.path)?),
+        Some(g) => Some(jobfiles::known_dirs(&g.path, p.generation)?),
         None => None,
     };
     let walk_mode = mode(&p, known)?;

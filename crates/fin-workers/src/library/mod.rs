@@ -11,9 +11,9 @@
 //!   a file fails, ends the job with `LIBRARY_OFFLINE {state}` and `retry: never`; the
 //!   outcome of the failing file is dropped, so nothing is ever marked missing under an
 //!   offline root.
-//! - **Batches** (Decision 26): the scan writes `out/scan-<seq>.ndjson` and `call
-//!   library.batch {file, seq}`; the reply means the indexer applied it, and only then is
-//!   the file removed.
+//! - **Batches** (Decision 26): the scan writes `out/scan-<seq>.ndjson` (one line, one
+//!   generated `ScanBatch`; `fin_library::batchfile`) and `call library.batch {file, seq}`;
+//!   the reply means the indexer applied it, and only then is the file removed.
 //! - **Probe results** (Decision 34): up to 32 outcomes per `call library.probed`, then one
 //!   `item` per file they cover. `changed` outcomes travel with them (the catalog rescans
 //!   those files' directories); a `cancelled` outcome is dropped with its item unacknowledged.

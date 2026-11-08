@@ -6,8 +6,10 @@
 //! fields; results are read by the service and tolerate additions.
 //!
 //! **Granted files** (names as the host's `files` list gives them): `out/` (scan: the
-//! batch files, written), `in/dirs.ndjson` (scan: one [`KnownDir`](crate::KnownDir) per line,
-//! optional), `in/files.ndjson` (probe and hash: one [`FileLine`] per item).
+//! batch files, written), `in/dirs.ndjson` (scan, optional: one line per present or
+//! unreadable directory, `{dir: RawRel, mtimeNs: string | null, listed: bool}` as the
+//! indexer's `writeKnownDirs` writes it; [`KnownDirs::from_ndjson`](crate::KnownDirs)),
+//! `in/files.ndjson` (probe and hash: one [`FileLine`] per item).
 //!
 //! **Host calls:** [`CALL_BATCH`] `{file, seq}` after each batch file is written (the reply
 //! means the indexer applied it), [`CALL_PROBED`] `{results}` (≤ [`PROBED_MAX`]

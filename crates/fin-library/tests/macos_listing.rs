@@ -3,6 +3,8 @@
 //! `ATTR_CMN_ERROR` slot after `returned`, the name's `attrreference_t`, the per-type tails)
 //! holds at runtime; listed facts open through `open_for_read`; NFD and case behave as APFS
 //! and HFS+ store them.
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(target_os = "macos")]
 
 mod support;

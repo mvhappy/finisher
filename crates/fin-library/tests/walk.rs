@@ -701,7 +701,7 @@ fn known_dirs_read_from_ndjson() {
         text.push_str(&serde_json::to_string(k).unwrap());
         text.push_str("\n\n");
     }
-    let back = KnownDirs::from_ndjson(text.as_bytes()).unwrap();
+    let back = KnownDirs::from_ndjson(text.as_bytes(), 3).unwrap();
     assert_eq!(back.len(), 7);
     assert_eq!(back.children(&rel("a")), [b"x".to_vec(), b"y".to_vec()]);
     assert_eq!(back.get(&rel("b")), known.get(&rel("b")));
@@ -710,8 +710,20 @@ fn known_dirs_read_from_ndjson() {
         line,
         json!({ "dir": { "components": ["YQ=="] }, "mtimeNs": "10", "entries": 4, "listedGen": 3, "mountRoot": false })
     );
-    assert!(KnownDirs::from_ndjson(&b"{\"dir\": 1}"[..]).is_err());
-    assert!(KnownDirs::from_ndjson(&b"{\"dir\": {\"components\": [\"Lg==\"]}}"[..]).is_err());
+    // The indexer's own line: `listed` stands for "listed completely in this generation".
+    let line = br#"{"dir":{"components":["YQ=="]},"mtimeNs":"10","listed":true}
+{"dir":{"components":["Yg=="]},"mtimeNs":null,"listed":false}
+"#;
+    let seven = KnownDirs::from_ndjson(&line[..], 7).unwrap();
+    let a = seven.get(&rel("a")).unwrap();
+    assert_eq!(
+        (a.mtime_ns, a.listed_gen, a.entries, a.mount_root),
+        (Some(10), Some(7), 0, false)
+    );
+    let b = seven.get(&rel("b")).unwrap();
+    assert_eq!((b.mtime_ns, b.listed_gen), (None, None));
+    assert!(KnownDirs::from_ndjson(&b"{\"dir\": 1}"[..], 3).is_err());
+    assert!(KnownDirs::from_ndjson(&b"{\"dir\": {\"components\": [\"Lg==\"]}}"[..], 3).is_err());
 }
 
 /// Fails one entry's stat in `a`'s listing (an unreadable entry, `EIO`).

@@ -17,9 +17,10 @@ fn input_invalid(what: &str, e: impl std::fmt::Display) -> JobError {
 }
 
 /// `in/dirs.ndjson`.
-pub fn known_dirs(path: &Path) -> Result<KnownDirs, JobError> {
+pub fn known_dirs(path: &Path, generation: u64) -> Result<KnownDirs, JobError> {
     let f = File::open(path).map_err(|e| input_invalid("in/dirs.ndjson", e))?;
-    KnownDirs::from_ndjson(BufReader::new(f)).map_err(|e| input_invalid("in/dirs.ndjson", e))
+    KnownDirs::from_ndjson(BufReader::new(f), generation)
+        .map_err(|e| input_invalid("in/dirs.ndjson", e))
 }
 
 /// The lines of `path` (`in/files.ndjson`) whose id is in `wanted`, in file order.

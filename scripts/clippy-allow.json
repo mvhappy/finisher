@@ -36,8 +36,16 @@
     "reason": "Opens the server lock file in the server data directory."
   },
   {
+    "path": "crates/fin-node/src/registry/mod.rs",
+    "reason": "Reads a plugin source directory's manifest in validateManifest; plugin sources are never library paths."
+  },
+  {
     "path": "crates/fin-workers/src/library/jobfiles.rs",
     "reason": "Opens the job's own in/*.ndjson grants, paths the host handed the process; never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/test_hooks.rs",
+    "reason": "Reads a test plugin's manifest to pack it (test-hooks builds only)."
   },
   {
     "path": "crates/fin-workers/src/test_family/mod.rs",

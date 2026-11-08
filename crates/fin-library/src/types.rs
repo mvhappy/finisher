@@ -182,8 +182,10 @@ pub struct ScanBatch {
     pub dirs_done: Vec<DirDone>,
 }
 
-/// One directory the catalog knows (Decision 27), one line of a scan job's `in/dirs.ndjson`
-/// (written by the indexer, read by the walker, [`crate::walk::KnownDirs`]):
+/// One directory the catalog knows (Decision 27) as the walker holds it. A line of a scan
+/// job's `in/dirs.ndjson` is `{dir, mtimeNs, listed}` (written by the indexer; `listed`
+/// becomes `listed_gen` of the scan's generation) with these fields optional
+/// ([`crate::walk::KnownDirs::from_ndjson`]):
 ///
 /// - `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the
 ///   directory when it differs;
