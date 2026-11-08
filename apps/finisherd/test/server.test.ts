@@ -1,10 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { lockExclusive } from "@finisher/fin-node";
 import { socketPath } from "../src/config.ts";
 import { childEnv } from "../src/env.ts";
+import { until } from "./support/jobs.ts";
 import { commit, generationOf, addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 /**
@@ -54,6 +55,23 @@ async function createProject(c: NdjsonClient, name = "Demo"): Promise<string> {
 }
 
 describe("finisherd", () => {
+  test("server_starts_with_the_job_engine", async () => {
+    const { stderr } = await start();
+    // One start line with the host's capabilities; nothing is sandboxed before sub-project 7.
+    await until(() => /finisherd job engine: killTree=\w+ .*sandboxed=false/.test(stderr()));
+    const line = stderr().split("\n").find((l) => l.includes("finisherd job engine:")) ?? "";
+    // Job Objects on Windows; a delegated cgroup or process groups on Linux; process groups on macOS.
+    expect(line).toMatch(WIN ? /killTree=jobObject/ : process.platform === "linux" ? /killTree=(cgroup|processGroup)/ : /killTree=processGroup/);
+    expect(line).toContain("sandbox=none");
+    // The engine's start ran: an empty jobs root, and the store's chain is in control.db.
+    expect(readdirSync(join(serverData, "jobs"))).toEqual([]);
+  });
+
+  test.skipIf(WIN)("jobs_dir_is_private", async () => {
+    await start();
+    expect(statSync(join(serverData, "jobs")).mode & 0o777).toBe(0o700);
+  });
+
   test("hello returns protocol 2; finisherd.json and run/fin.sock are 0600; finisherd_json_has_no_token", async () => {
     const { info } = await start();
     expect(info.protocolVersion).toBe(2);

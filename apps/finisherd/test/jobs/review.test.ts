@@ -14,11 +14,13 @@ import { JobStore } from "../../src/jobs/store.ts";
 import { FakeHost, recordingHost } from "../support/fake-host.ts";
 import { closeTestEngines, failure, hostOf, OWNER, procOf, run, testEngine, until, testClock, waitThroughBackoff } from "../support/jobs.ts";
 
-afterEach(closeTestEngines);
 
 const win = process.platform === "win32";
 const scratch: string[] = [];
-afterEach(() => {
+// Engines close before their data goes (Vitest runs `afterEach` hooks last-registered first,
+// so two hooks would remove a directory an open engine still writes into).
+afterEach(async () => {
+  await closeTestEngines();
   for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 function tmp(): string {

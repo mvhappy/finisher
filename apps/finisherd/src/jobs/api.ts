@@ -13,6 +13,7 @@ import type { RunnerEnv } from "./runner.ts";
 import type { JobQuery, JobStore } from "./store.ts";
 import type { Timers } from "./timers.ts";
 import type { JobEvent } from "./view.ts";
+import type { WarmWorkerInfo } from "./warm.ts";
 
 export interface SubmitSpec {
   readonly kind: string;
@@ -29,8 +30,8 @@ export interface SubmitSpec {
 
 export interface WorkersView {
   readonly pools: ReadonlyArray<PoolView>;
-  /** Warm workers (Task 11). */
-  readonly warm: ReadonlyArray<never>;
+  /** Warm workers (Decision 36). */
+  readonly warm: ReadonlyArray<WarmWorkerInfo>;
   readonly processes: ReadonlyArray<ProcView>;
   readonly stuck: ReadonlyArray<string>;
   readonly caps: JobHostCaps;
@@ -72,5 +73,7 @@ export interface EngineDeps {
   readonly log: RunnerEnv["log"];
   readonly diagnostics: () => boolean;
   readonly testHooks: boolean;
+  /** The warm workers' held-files check runs (test-hooks builds with real processes). */
+  readonly heldFilesCheck: boolean;
   readonly queueLimit: number;
 }

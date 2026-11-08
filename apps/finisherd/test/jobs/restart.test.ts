@@ -11,10 +11,12 @@ import type { SucceededCtx } from "../../src/jobs/kinds.ts";
 import { JobStore } from "../../src/jobs/store.ts";
 import { closeTestEngines, run, type TestEngine, testClock, testEngine, until } from "../support/jobs.ts";
 
-afterEach(closeTestEngines);
 
 const scratch: string[] = [];
-afterEach(() => {
+// Engines close before their data goes (Vitest runs `afterEach` hooks last-registered first,
+// so two hooks would remove a directory an open engine still writes into).
+afterEach(async () => {
+  await closeTestEngines();
   for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 function serverData(): string {
