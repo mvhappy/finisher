@@ -13,6 +13,7 @@ import type {
 } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
+import { TxSetAsideSchema } from "./tx-set-aside.ts";
 import {
   AgentApprovalAnswerPayload,
   AgentApprovalAnswerSuccess,
@@ -335,20 +336,8 @@ export const ProjectEventSchema = Schema.Union([
  */
 export type ProjectEvent = Exclude<EngineEvent, { type: "applied" } | { type: "lagged" } | { type: "collect" }>;
 
+export { TxSetAsideSchema };
 export const TxGetPayload = Schema.Struct({ projectId: Schema.String, txId: Schema.String });
-/**
- * A tx that is not (or no longer) on its branch: kept in quarantine. `reason`: `SUPERSEDED`,
- * `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`, `MALFORMED`,
- * `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.
- */
-export const TxSetAsideSchema = Schema.Struct({
-  setAside: Schema.Struct({
-    txId: Schema.String,
-    branch: Schema.String,
-    reason: Schema.String,
-    origin: Schema.String,
-  }),
-});
 /** `tx.get`: the `CommittedTx`, a set-aside record, or `null` when the server never saw it. */
 export const TxGetSuccess = Schema.NullOr(Schema.Union([TxSetAsideSchema, CommittedTxSchema]));
 export type TxGetResult = CommittedTx | TxSetAside | null;
