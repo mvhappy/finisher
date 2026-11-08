@@ -145,7 +145,8 @@ describe("jobs RPC limits", () => {
     });
     expect((await local.ok("jobs.submit", { kind: "test.echo", params: { value: 1 }, idemKey: "k".repeat(IDEM_KEY_MAX) })).idemKey).toHaveLength(IDEM_KEY_MAX);
     for (const j of [j2, j3, other, ...mine]) await local.ok("jobs.cancel", { job: j.id });
-    expect(engineOf(t.engine).owned.size).toBe(0);
+    // agent3's echo may still be running: each count drops as its jobs finish.
+    await until(() => engineOf(t.engine).owned.size === 0);
   }, 60_000);
 
   test("list_states_and_watch_ids_are_bounded_and_the_chain_needs_the_engine", async () => {
