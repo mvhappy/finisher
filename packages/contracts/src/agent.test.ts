@@ -13,6 +13,7 @@ import {
   WATCH_ITEM_TYPES,
   WatchItem,
 } from "./agent.ts";
+import { ProviderKey } from "./agent-admin.ts";
 import { defaultScopes } from "./auth.ts";
 import { MINT_DEFAULT_SCOPES } from "./credentials.ts";
 import { STREAM_RPCS } from "./diagnostics.ts";
@@ -139,9 +140,34 @@ const AGENT_RPCS = [
 ] as const;
 type AgentTag = (typeof AGENT_RPCS)[number];
 
+/** The owner's agent settings (Task 12, `agent-admin.ts`): rule and whether a change takes the typed code. */
+const ADMIN_RPCS = {
+  "agent.key.set": { scopes: ["agent.admin"], confirmed: true },
+  "agent.key.list": { scopes: ["agent.admin"], confirmed: false },
+  "agent.key.remove": { scopes: ["agent.admin"], confirmed: true },
+  "agent.local.set": { scopes: ["agent.admin"], confirmed: true },
+  "agent.local.show": { scopes: ["agent.admin"], confirmed: false },
+  "agent.local.test": { scopes: ["agent.admin"], confirmed: false },
+  "agent.local.remove": { scopes: ["agent.admin"], confirmed: true },
+  "training.closedTargets.get": { scopes: ["server.read"], confirmed: false },
+  "training.closedTargets.set": { scopes: ["settings.admin"], confirmed: true },
+} as const;
+
 describe("the group", () => {
   it("holds exactly the agent RPCs of spec §3.5", () => {
-    expect([...FinRpcs.requests.keys()].filter((t) => t.startsWith("agent.")).sort()).toEqual([...AGENT_RPCS].sort());
+    const admin = new Set<string>(Object.keys(ADMIN_RPCS));
+    expect([...FinRpcs.requests.keys()].filter((t) => t.startsWith("agent.") && !admin.has(t)).sort()).toEqual([...AGENT_RPCS].sort());
+  });
+
+  it("the owner's agent settings are human-only, each change with the typed code, no key in an answer", () => {
+    for (const [tag, want] of Object.entries(ADMIN_RPCS) as [keyof typeof ADMIN_RPCS, (typeof ADMIN_RPCS)[keyof typeof ADMIN_RPCS]][]) {
+      expect(ruleOf(tag).scopes, tag).toEqual(want.scopes);
+      expect(needsConfirmation(tag, {}), tag).toBe(want.confirmed);
+      expect(WRITE_RPCS.has(tag), tag).toBe(false);
+    }
+    // A stored key is named by its metadata only: no field can carry the key.
+    expect(Object.keys(ProviderKey.fields).sort()).toEqual(["createdAt", "id", "label", "projectId", "provider"]);
+    for (const s of ["agent.admin", "settings.admin"] as const) expect(HUMAN_ONLY.has(s)).toBe(true);
   });
 
   it("rpc_stats_excludes_streams: agent.watch is the one new stream", () => {

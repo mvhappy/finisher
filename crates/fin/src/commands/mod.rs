@@ -80,11 +80,10 @@ pub fn configured_branch(
     if let Some(b) = &globals.branch {
         return Ok((b.clone(), false));
     }
-    if crate::agent_session::active() && !backend.dry_run_only() {
-        return Ok((
-            crate::agent_session::session_default_branch(backend)?,
-            false,
-        ));
+    if !backend.dry_run_only()
+        && let Some(session) = crate::agent_session::session_state(backend)?
+    {
+        return Ok((session.default_branch, false));
     }
     if let Some((sd, project_id)) = backend.config_scope()?
         && let Some(b) = crate::config::default_branch(&sd, &project_id)?

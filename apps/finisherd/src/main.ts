@@ -44,13 +44,14 @@ import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
-import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { makeProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { agentWarnings } from "./agent/warnings.ts";
+import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -61,6 +62,9 @@ export interface ServeOptions {
   readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
   /** The agent runtime's shared pieces, handed to tests once built (7A-2). */
   readonly onAgentCore?: (core: AgentCore) => void;
+  /** The agent runtime's options (tests: the fake harness's scripts) and its parts once booted. */
+  readonly agents?: AgentServeOptions;
+  readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
   /** The job engine's options (tests: the test kinds). */
   readonly jobs?: JobEngineOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
@@ -75,6 +79,8 @@ export const serve = ({
   serverData,
   onReady,
   onAgentCore,
+  agents: agentOptions,
+  onAgentRuntime,
   registry,
   fonts,
   diagnostics: diagnosticsOptions,
@@ -245,6 +251,20 @@ export const serve = ({
         journal: agentJournal,
       };
       onAgentCore?.(agentCore);
+      // The project registry, then the agent runtime over it (7A Task 12): recovery, the outbox
+      // and the credential reconcile run here, before either transport serves a request.
+      const projectRegistry = yield* makeProjectRegistry(serverData, registry);
+      const agentRuntime = yield* buildAgentRuntime({
+        serverData,
+        core: agentCore,
+        registry: projectRegistry,
+        db: Context.get(control, ControlStoreTag).db,
+        audit,
+        endpoint: socket,
+        log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
+        ...(agentOptions === undefined ? {} : { options: agentOptions }),
+      });
+      onAgentRuntime?.(agentRuntime);
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
@@ -258,7 +278,7 @@ export const serve = ({
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
-              layerProjectRegistry(serverData, registry),
+              Layer.succeed(ProjectRegistry, projectRegistry),
               fontsLayer,
               layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),
@@ -271,6 +291,7 @@ export const serve = ({
               Layer.succeed(ConnectionRegistryTag, everyConnection),
               Layer.succeed(ServerControlTag, serverControl),
               Layer.succeed(AgentCoreTag, agentCore),
+              Layer.succeed(AgentRuntimeTag, agentRuntime),
             ),
           ),
         ),

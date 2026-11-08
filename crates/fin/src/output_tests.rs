@@ -4,6 +4,12 @@ use super::*;
 #[test]
 fn exit_codes_follow_the_contract() {
     assert_eq!(exit_code("USAGE"), 2);
+    assert_eq!(exit_code("APPROVAL_PENDING"), 8);
+    assert_eq!(exit_code("APPROVAL_DENIED"), 7);
+    assert_eq!(exit_code("ROLE_UNKNOWN"), 3);
+    assert_eq!(exit_code("PROVIDER_AUTH"), 5);
+    assert_eq!(exit_code("TOOL_TIMEOUT"), 5);
+    assert_eq!(exit_code("AGENT_ARGS"), 2);
     assert_eq!(exit_code("TICKET_LIMIT"), 5);
     assert_eq!(exit_code("CREDENTIAL_LIMIT"), 4);
     assert_eq!(exit_code("CREDENTIAL_REVOKED"), 7);

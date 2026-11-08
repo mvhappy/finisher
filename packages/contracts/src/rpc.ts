@@ -39,6 +39,21 @@ import {
   WatchItem,
 } from "./agent.ts";
 import {
+  AgentKeyListSuccess,
+  AgentKeyRemovePayload,
+  AgentKeyRemoveSuccess,
+  AgentKeySetPayload,
+  AgentKeySetSuccess,
+  AgentLocalRemovePayload,
+  AgentLocalRemoveSuccess,
+  AgentLocalSetPayload,
+  AgentLocalSetSuccess,
+  AgentLocalShowSuccess,
+  AgentLocalTestSuccess,
+  TrainingClosedTargetsSetPayload,
+  TrainingClosedTargetsSuccess,
+} from "./agent-admin.ts";
+import {
   AuthProvePayload,
   AuthProveSuccess,
   AuthTicketPayload,
@@ -551,4 +566,15 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.providers", { payload: Schema.Struct({}), success: AgentProvidersSuccess, error: FinError }),
   Rpc.make("agent.self", { payload: Schema.Struct({}), success: AgentSelfSuccess, error: FinError }),
   Rpc.make("agent.self.try", { payload: AgentSelfTryPayload, success: AgentSelfSuccess, error: FinError }),
+  // The owner's agent settings (Task 12; `agent-admin.ts`): the OpenRouter key, the local
+  // endpoint and the closed-model-targets counsel gate. No answer holds a key.
+  Rpc.make("agent.key.set", { payload: AgentKeySetPayload, success: AgentKeySetSuccess, error: FinError }),
+  Rpc.make("agent.key.list", { payload: Schema.Struct({}), success: AgentKeyListSuccess, error: FinError }),
+  Rpc.make("agent.key.remove", { payload: AgentKeyRemovePayload, success: AgentKeyRemoveSuccess, error: FinError }),
+  Rpc.make("agent.local.set", { payload: AgentLocalSetPayload, success: AgentLocalSetSuccess, error: FinError }),
+  Rpc.make("agent.local.show", { payload: Schema.Struct({}), success: AgentLocalShowSuccess, error: FinError }),
+  Rpc.make("agent.local.test", { payload: Schema.Struct({}), success: AgentLocalTestSuccess, error: FinError }),
+  Rpc.make("agent.local.remove", { payload: AgentLocalRemovePayload, success: AgentLocalRemoveSuccess, error: FinError }),
+  Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
+  Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
 );

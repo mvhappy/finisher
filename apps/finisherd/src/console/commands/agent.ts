@@ -1,6 +1,8 @@
-// `finisherd agent mint|ls|revoke` and the mint `finisherd mcp setup` shares (spec §4.7, plan 5A Task 9): the
-// owner's agent and MCP credentials. Minting and revoking need a terminal and a typed code;
-// listing reads only and runs anywhere.
+// `finisherd agent mint|credentials|revoke` and the mint `finisherd mcp setup` shares (spec §4.7, plan 5A
+// Task 9): the owner's agent and MCP credentials. Minting and revoking need a terminal and a
+// typed code; listing reads only and runs anywhere. The agent session commands (`agent start|ls|
+// show|…`, 7A Task 12) are `agent/console.ts`'s; `agent ls` lists sessions since then, and the
+// credentials moved to `agent credentials`.
 //
 // A minted credential's file is the only copy of its key. With `--out` the console creates the
 // file **before** it mints (`createPrivateFile`: new, owner-only from creation, and its open
@@ -16,15 +18,17 @@ import { SCOPES } from "@finisher/contracts";
 import { createPrivateFile, type PrivateFile } from "@finisher/fin-node";
 import { consoleError, valueOf } from "../client.ts";
 import { confirmed, requireTty } from "../confirm.ts";
+import { agentSessions, SESSION_COMMANDS } from "../../agent/console.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
 export async function agent(ctx: CommandContext): Promise<number> {
   const [sub, ...rest] = ctx.args.words;
   if (sub === "mint") return mint(ctx, "agent", rest);
-  if (sub === "ls" || sub === "list") return list(ctx, rest);
+  if (sub === "credentials") return list(ctx, rest);
   if (sub === "revoke") return revoke(ctx, rest);
-  return usage(sub === undefined ? "agent needs a command: mint, ls or revoke" : `unknown agent command: ${sub}`);
+  if (sub !== undefined && SESSION_COMMANDS.has(sub)) return agentSessions(ctx, sub, rest);
+  return usage(sub === undefined ? "agent needs a command (finisherd help lists them)" : `unknown agent command: ${sub}`);
 }
 
 /** `30s`, `15m`, `24h`, `7d` (or plain seconds) as seconds; `none` as `null` where allowed. */
@@ -151,8 +155,8 @@ function line(c: Credential): string {
 }
 
 async function list(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
-  onlyFlags(ctx.args, "agent ls", ["all", "json"]);
-  if (rest.length > 0) usage("agent ls takes --all and --json only");
+  onlyFlags(ctx.args, "agent credentials", ["all", "json"]);
+  if (rest.length > 0) usage("agent credentials takes --all and --json only");
   const { credentials } = await withConnection(ctx, async (c) =>
     valueOf<{ credentials: Credential[] }>(await c.call("auth.credential.list", has(ctx.args, "all") ? { all: true } : {})),
   );
@@ -165,7 +169,7 @@ async function list(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<n
 async function revoke(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
   onlyFlags(ctx.args, "agent revoke", []);
   const [id, ...more] = rest;
-  if (id === undefined || more.length > 0) usage("agent revoke needs one credential id (agent ls lists them)");
+  if (id === undefined || more.length > 0) usage("agent revoke needs one credential id (agent credentials lists them)");
   requireTty(ctx.prompt, "agent revoke");
   const { revoked } = await withConnection(ctx, async (c) => {
     const { credentials } = valueOf<{ credentials: Credential[] }>(await c.call("auth.credential.list", {}));

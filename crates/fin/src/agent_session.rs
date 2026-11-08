@@ -59,6 +59,8 @@ pub fn active() -> bool {
 thread_local! {
     /// The state this run last read or wrote: one `agent.self` per `fin` run.
     static STATE: std::cell::RefCell<Option<SelfState>> = const { std::cell::RefCell::new(None) };
+    /// The agent credential is not a session's (`agent.self` said `SESSION_NOT_FOUND`).
+    static NOT_A_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn remember(state: SelfState) -> SelfState {
@@ -82,10 +84,22 @@ pub fn state(backend: &dyn Backend) -> Result<SelfState, CoreError> {
     Ok(remember(state))
 }
 
-/// The branch a command with no `--branch` writes under an agent credential: the session's
-/// default (its root, or the `fin try` it switched to), never `fin-config.json`'s.
-pub fn session_default_branch(backend: &dyn Backend) -> Result<String, CoreError> {
-    Ok(state(backend)?.default_branch)
+/// The session's branch state, or `None` when this run has no agent credential or its agent
+/// credential is not a session's: one the owner minted by hand (`finisherd agent mint`), for
+/// which `agent.self` answers `SESSION_NOT_FOUND`. Such a credential opens its project by folder
+/// and writes `main` unless told otherwise, as before 7A; the server still sets its author.
+pub fn session_state(backend: &dyn Backend) -> Result<Option<SelfState>, CoreError> {
+    if !active() || NOT_A_SESSION.with(std::cell::Cell::get) {
+        return Ok(None);
+    }
+    match state(backend) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.code == "SESSION_NOT_FOUND" => {
+            NOT_A_SESSION.with(|n| n.set(true));
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn try_call(backend: &dyn Backend, action: &str, branch: &str) -> Result<SelfState, CoreError> {

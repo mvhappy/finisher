@@ -334,8 +334,7 @@ impl Online {
             return Ok(id.clone());
         }
         // An agent session works on its own project (`project.open` is refused to it).
-        if crate::agent_session::active() {
-            let session = crate::agent_session::state(self)?;
+        if let Some(session) = crate::agent_session::session_state(self)? {
             crate::agent_session::check_folder(self.project.as_deref(), &session)?;
             crate::diag::note_project(&session.project_id);
             return Ok(self.project_id.get_or_init(|| session.project_id).clone());

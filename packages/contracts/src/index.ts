@@ -5,6 +5,7 @@ export * from "./history.ts";
 export * from "./audit.ts";
 export * from "./agent-events.ts";
 export * from "./agent.ts";
+export * from "./agent-admin.ts";
 export * from "./diagnostics.ts";
 export * from "./auth.ts";
 export * from "./credentials.ts";

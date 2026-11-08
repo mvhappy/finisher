@@ -297,6 +297,18 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // subtree by the handler (the payload names no project, so the policy stage cannot).
   "agent.self": { scopes: ["project.read"], kinds: SESSION_OWN },
   "agent.self.try": { scopes: ["project.write"], resolve: ["branch"], kinds: SESSION_OWN },
+  // The owner's agent settings (Task 12): the key, the local endpoint (`agent.admin`) and the
+  // counsel gate (`settings.admin`), each change with the typed code; reading them needs none.
+  // A key's project is checked for reach when named.
+  "agent.key.set": { scopes: ["agent.admin"], resolve: PROJECT },
+  "agent.key.list": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
+  "agent.key.remove": { scopes: ["agent.admin"] },
+  "agent.local.set": { scopes: ["agent.admin"] },
+  "agent.local.show": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
+  "agent.local.test": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
+  "agent.local.remove": { scopes: ["agent.admin"] },
+  "training.closedTargets.get": { scopes: ["server.read"] },
+  "training.closedTargets.set": { scopes: ["settings.admin"] },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */

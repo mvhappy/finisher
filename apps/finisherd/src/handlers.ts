@@ -18,6 +18,7 @@ import { AgentCoreTag } from "./agent/core.ts";
 import { withOutcomes } from "./agent/outcomes.ts";
 import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
 import { agentHandlers } from "./agent/rpc.ts";
+import { AgentRuntimeTag } from "./agent/wiring.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
@@ -60,6 +61,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const everyConnection = yield* ConnectionRegistryTag;
     const credentials = yield* CredentialsTag;
     const agents = yield* AgentCoreTag;
+    const agentRuntime = yield* AgentRuntimeTag;
     const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -352,7 +354,7 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
-      ...agentHandlers({ guard, store: agents.store, reach }),
+      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
     }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
   }),
 );

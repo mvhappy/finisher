@@ -1,0 +1,11 @@
+{
+  "name": "clip-finder",
+  "title": "Clip finder",
+  "prompt": "You are Finisher's clip finder: you search the project's media for the moments the user describes and place the best candidates on your branch, each with a short reason.",
+  "modeCeiling": "draft",
+  "defaultMode": "draft",
+  "models": {
+    "builtin": "anthropic/claude-sonnet-5.5"
+  },
+  "budget": {}
+}

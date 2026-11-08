@@ -1,6 +1,7 @@
 // What the console shows and asks (plan 5A Decision 30): through this interface, so unit tests
 // drive it without a terminal. The real one needs stdin and stdout to be terminals.
 import { createInterface } from "node:readline";
+import { Writable } from "node:stream";
 import { safe } from "./safe.ts";
 
 /** `text` line by line with the controls and bidirectional overrides taken out (review M1). */
@@ -13,6 +14,8 @@ export interface Prompt {
   show(text: string): void;
   /** Asks `question` and resolves with the line typed (`""` at end of input). */
   ask(question: string): Promise<string>;
+  /** Like `ask`, without echoing what is typed (a key pasted for `provider key set`). */
+  secret?(question: string): Promise<string>;
 }
 
 /**
@@ -36,6 +39,30 @@ export function ttyPrompt(stdin: NodeJS.ReadStream = process.stdin, stdout: Node
         });
         // Ctrl-C at the question cancels it, as end of input does (review of Tasks 8–9, M2:
         // the command then cleans up, removing a reserved credential file).
+        rl.once("SIGINT", () => rl.close());
+        rl.once("close", () => {
+          if (!answered) resolve("");
+        });
+      }),
+    secret: (question) =>
+      new Promise((resolve) => {
+        // Nothing typed is written back: readline's own echo goes through a muted output.
+        let muted = false;
+        const output = new Writable({
+          write: (chunk, _enc, done) => {
+            if (!muted) stdout.write(chunk);
+            done();
+          },
+        });
+        const rl = createInterface({ input: stdin, output, terminal: true });
+        let answered = false;
+        rl.question(plain(question), (line) => {
+          answered = true;
+          stdout.write("\n");
+          rl.close();
+          resolve(line);
+        });
+        muted = true;
         rl.once("SIGINT", () => rl.close());
         rl.once("close", () => {
           if (!answered) resolve("");

@@ -12,7 +12,7 @@ import { answerChallenge, issueChallenge } from "../src/auth/challenges.ts";
 import { authDir } from "../src/auth/keys.ts";
 import { connectConsole } from "../src/console/client.ts";
 import { CONFIRM_TRIES } from "../src/console/confirm.ts";
-import { CONFLICT_CODES, DENIED_CODES, JOB_RESULT_CODES, UNAVAILABLE_CODES, USAGE_CODES, VALIDATION_CODES } from "../src/console/exit-codes.ts";
+import { CONFLICT_CODES, DENIED_CODES, JOB_RESULT_CODES, PENDING_CODES, UNAVAILABLE_CODES, USAGE_CODES, VALIDATION_CODES } from "../src/console/exit-codes.ts";
 import { isServeCommand, runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import type { Connection } from "../src/connections.ts";
@@ -147,6 +147,7 @@ describe("dispatch and connection", () => {
       return [...body.matchAll(/"([A-Z0-9_]+)"/g)].map((m) => m[1]);
     };
     expect(DENIED_CODES).toEqual(list("DENIED_CODES"));
+    expect(PENDING_CODES).toEqual(list("PENDING_CODES"));
     expect(USAGE_CODES).toEqual(list("USAGE_CODES"));
     expect(CONFLICT_CODES).toEqual(list("CONFLICT_CODES"));
     expect(JOB_RESULT_CODES).toEqual(list("JOB_RESULT_CODES"));
@@ -168,6 +169,14 @@ describe("the terminal gate and typed codes", () => {
     ["agent", "mint", "--label", "x"],
     ["agent", "revoke", "01aaaaaaaaaaaaaaaaaaaaaaaa"],
     ["mcp", "setup", "--out", "/nowhere/mcp.json"],
+    // 7A Task 12: answering approvals, deleting sessions and the owner's agent settings.
+    ["agent", "approve", "01aaaaaaaaaaaaaaaaaaaaaaaa", "allow"],
+    ["agent", "delete", "01aaaaaaaaaaaaaaaaaaaaaaaa"],
+    ["provider", "key", "set", "openrouter"],
+    ["provider", "key", "rm", "01aaaaaaaaaaaaaaaaaaaaaaaa"],
+    ["provider", "local", "set", "ollama"],
+    ["provider", "local", "rm"],
+    ["training", "closed-targets", "cleared"],
   ];
 
   test("non_tty_is_console_needs_tty", { timeout: 60_000 }, async () => {
@@ -355,13 +364,13 @@ describe("read-only, service and confirmed commands", () => {
     expect((await run(["agent", "mint", "--label", "wrong", "--out", other], person(() => "ZZZZZZ"))).code).toBe(7);
     expect(existsSync(other)).toBe(false);
     // Listing needs no terminal.
-    const listed = await run(["agent", "ls", "--json"], NOT_A_TERMINAL);
+    const listed = await run(["agent", "credentials", "--json"], NOT_A_TERMINAL);
     expect(listed.code, listed.err).toBe(0);
     const creds = (JSON.parse(listed.out) as { credentials: Array<Record<string, unknown>> }).credentials;
     expect(creds).toHaveLength(1);
     expect(creds[0]).toMatchObject({ id: file.id, label: "night run", scopes: ["server.read", "project.read"], branches: ["own"], idleExpiryS: 7200, status: "live" });
     expect(listed.out).not.toContain(file.key);
-    expect((await run(["agent", "ls"], NOT_A_TERMINAL)).out).toContain(file.id);
+    expect((await run(["agent", "credentials"], NOT_A_TERMINAL)).out).toContain(file.id);
     // `mcp setup` writes an mcp credential; without --out `agent mint` shows the file once.
     const mcpOut = join(tmp, "mcp.json");
     expect((await run(["mcp", "setup", "--out", mcpOut])).code).toBe(0);
@@ -375,8 +384,8 @@ describe("read-only, service and confirmed commands", () => {
     expect(revoked.code, revoked.err).toBe(0);
     expect(revoked.out).toContain(`Revoked credential ${file.id}`);
     expect(p.asked).toBe(1);
-    expect((await run(["agent", "ls"], NOT_A_TERMINAL)).out).not.toContain(file.id);
-    expect((await run(["agent", "ls", "--all"], NOT_A_TERMINAL)).out).toMatch(new RegExp(`${file.id}  agent  revoked`));
+    expect((await run(["agent", "credentials"], NOT_A_TERMINAL)).out).not.toContain(file.id);
+    expect((await run(["agent", "credentials", "--all"], NOT_A_TERMINAL)).out).toMatch(new RegExp(`${file.id}  agent  revoked`));
     expect((await run(["agent", "revoke", file.id])).out).toContain("nothing changed");
   });
 

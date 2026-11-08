@@ -338,7 +338,8 @@ export const LocalPreset = Schema.Literals(["ollama", "lmstudio", "custom"]);
  */
 export const AgentProvidersSuccess = Schema.Struct({
   providers: Schema.Array(ProviderInfo),
-  openrouter: Schema.Struct({ keySet: Schema.Boolean }),
+  /** `keySet`: the server's default key; `projects`: those in the caller's reach with a key of their own. */
+  openrouter: Schema.Struct({ keySet: Schema.Boolean, projects: Schema.optionalKey(Schema.Array(Id)) }),
   local: Schema.Struct({ configured: Schema.Boolean, preset: Schema.optionalKey(LocalPreset), reachable: Schema.optionalKey(Schema.Boolean) }),
   /** Persistent status warnings (`SANDBOX_DISABLED` until 7C). */
   warnings: Schema.optionalKey(Schema.Array(AgentWarning)),

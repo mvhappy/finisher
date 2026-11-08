@@ -9,12 +9,20 @@ use super::names::NameTable;
 /// `auth.revokeSelf` (5A Task 6), `console.challenge` (5A Task 7), `server.status`, `server.stop`
 /// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9),
 /// `auth.credential.rotateMaster` (review of 5A Tasks 8–9, M3), the plugin and registry RPCs
-/// (8A Tasks 9a and 9b) and the `agent.*` RPCs (7A Task 2).
+/// (8A Tasks 9a and 9b), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
+/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
         "agent.approval.answer",
         "agent.approval.list",
+        "agent.key.list",
+        "agent.key.remove",
+        "agent.key.set",
+        "agent.local.remove",
+        "agent.local.set",
+        "agent.local.show",
+        "agent.local.test",
         "agent.providers",
         "agent.self",
         "agent.self.try",
@@ -94,6 +102,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "server.status",
         "server.stop",
         "snapshot.get",
+        "training.closedTargets.get",
+        "training.closedTargets.set",
         "tx.commit",
         "tx.get",
         "other",

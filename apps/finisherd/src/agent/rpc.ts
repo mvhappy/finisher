@@ -1,30 +1,46 @@
-// The agent RPCs' handlers (sub-project 7A). Task 2 fixes the contracts, their scopes and the
-// chain's refusals; the runtime behind them arrives with Tasks 3b–12, and Task 12 replaces this
-// file. Until then every other call that passes the chain answers `SERVER_UNAVAILABLE`, so the chain,
-// the audit and `server.hello`'s capabilities can already be exercised end to end.
+// The agent RPCs' handlers (sub-project 7 §3.5; plan 7A Tasks 2, 7 and 12) over the runtime
+// `main.ts` builds (`wiring.ts`). The chain has checked scopes, kinds (`agent.session.*` driving
+// calls are a person's in 7A) and the human-only typed code before any of these runs.
 //
-// `agent.self` and `agent.self.try` (Task 7, Decision 14a) are served now: the calling session's
-// own default branch and tries, which `fin` reads and writes in place of `fin-config.json`.
-import type { FinError, Session } from "@finisher/contracts";
+// - **Reach:** a payload that names a session or an approval names no project, so every session
+//   and approval handler resolves it through `sessionInReach`/`approvalInReach` (out of reach
+//   answers exactly what a missing one does: `SESSION_NOT_FOUND`, `APPROVAL_NOT_FOUND`); lists
+//   filter by the caller's projects (`projectsFilter`).
+// - **Start** passes the call's actor and the chain's guard (`{...actorFor(by, headers), guard}`),
+//   so the root branch is created exactly as the starter's own `branch.create` would be.
+// - **Watch** takes `fromNode` (a node id) as the seq after it, and a `WATCH_LAGGING` names the
+//   last node delivered (`lastNode`) beside its seq, so the client watches again from it.
+// - `agent.self` and `agent.self.try` (Task 7, Decision 14a): the calling session's own default
+//   branch and tries, which `fin` reads and writes in place of `fin-config.json`.
+// - The owner's settings (`agent.key.*`, `agent.local.*`, `training.closedTargets.*`) are
+//   `admin.ts`'s; no answer holds a key.
+import type { FinError, Principal, Session } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import { chainOf } from "../chain/chain.ts";
+import { actorFor, type CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import type { BranchReach } from "./reach.ts";
+import { approvalInReach, projectsFilter, sessionInReach } from "./session-access.ts";
 import type { AgentStore } from "./store.ts";
+import type { AgentRuntimeParts } from "./wiring.ts";
 
 type Guard = <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
+type Options = { readonly headers: unknown; readonly client: { readonly id: number } };
 
 export interface AgentRpcDeps {
   /** `handlers.ts`' `guard`: defects become `INTERNAL`, the call is timed into `rpc.stats`. */
   readonly guard: Guard;
-  readonly store?: AgentStore;
-  readonly reach?: BranchReach;
+  readonly store: AgentStore;
+  readonly reach: BranchReach;
+  readonly agents: AgentRuntimeParts;
+  /** The principal the chain bound to the call. */
+  readonly principalOf: (options: object) => Principal;
 }
 
 /** The session the calling credential is (its id); `SESSION_NOT_FOUND` for any other. */
-function selfOf(deps: AgentRpcDeps, options: object): Effect.Effect<Session, FinError> {
+function selfOf(store: AgentStore, options: object): Effect.Effect<Session, FinError> {
   const p = chainOf(options)?.principal;
-  const s = p?.kind === "agent" ? deps.store?.get(p.id) : undefined;
+  const s = p?.kind === "agent" ? store.get(p.id) : undefined;
   return s === undefined
     ? Effect.fail(finError("SESSION_NOT_FOUND", "this credential is not an agent session's", {}, "Run this from inside an agent session."))
     : Effect.succeed(s);
@@ -42,61 +58,133 @@ function selfView(store: AgentStore, s: Session) {
 }
 
 const sync = <A>(f: () => A) => Effect.try({ try: f, catch: toFinError });
+const promised = <A>(f: () => Promise<A>) => Effect.tryPromise({ try: f, catch: toFinError });
 
-function agentSelf(deps: AgentRpcDeps) {
-  return (_: unknown, options: object) =>
-    deps.guard("agent.self", Effect.flatMap(selfOf(deps, options), (s) => sync(() => selfView(deps.store!, s))));
+const inReachOf = (p: Principal) => (projectId: string) => p.projects === "*" || p.projects.includes(projectId);
+
+/** `WATCH_LAGGING` with the last delivered node's id beside its seq (`fromNode` for the next watch). */
+function lagging(deps: AgentRpcDeps, sessionId: string, e: FinError): FinError {
+  if (e.code !== "WATCH_LAGGING") return e;
+  const details = (e.details ?? {}) as { lastSeq?: unknown };
+  const lastNode = typeof details.lastSeq === "number" && details.lastSeq > 0 ? deps.agents.lookup.nodeIdAt(sessionId, details.lastSeq) : undefined;
+  return finError(e.code, e.message, { ...details, ...(lastNode === undefined ? {} : { lastNode }) }, "watch again with fromNode set to details.lastNode");
 }
-
-/**
- * `record` a try (its branch must be in the session's subtree), make one (or the root) the
- * default, or `clear` one (restoring the default it replaced). Branches are kept by id.
- */
-function agentSelfTry(deps: AgentRpcDeps) {
-  return ({ action, branch }: { readonly action: "record" | "setDefault" | "clear"; readonly branch: string }, options: object) =>
-    deps.guard(
-      "agent.self.try",
-      Effect.gen(function* () {
-        const s = yield* selfOf(deps, options);
-        const store = deps.store!;
-        const id = yield* deps.reach!.inSubtree(s, branch);
-        yield* sync(() => {
-          if (action === "record") store.recordTry(s.id, id);
-          else if (action === "setDefault") store.setDefaultBranch(s.id, id);
-          else store.clearTry(s.id, id);
-        });
-        return yield* sync(() => selfView(store, s));
-      }),
-    );
-}
-
-const unwired = (tag: string): FinError =>
-  finError(
-    "SERVER_UNAVAILABLE",
-    `${tag}: the agent runtime is not running on this server yet`,
-    { reason: "agentRuntimeNotWired" },
-    "This version of Finisher has the agent calls defined but not switched on. Update Finisher.",
-  );
-
-/** One handler failing as unwired, under the call's timing. */
-const unavailable = (tag: string, deps: AgentRpcDeps) => () => deps.guard(tag, Effect.fail(unwired(tag)));
 
 export function agentHandlers(deps: AgentRpcDeps) {
+  const { guard, store, agents } = deps;
+  const { runtime, admin } = agents;
+  const by = deps.principalOf;
+  /** `f` on the session `sessionId` when it is in the caller's reach. */
+  const onSession = <A>(tag: string, options: object, sessionId: string, f: (s: Session, p: Principal) => Effect.Effect<A, FinError>) =>
+    guard(tag, Effect.suspend(() => {
+      const p = by(options);
+      return Effect.flatMap(sessionInReach(store, p, sessionId), (s) => f(s, p));
+    }));
+  const metaOf = (options: Options): CallMeta => {
+    const c = chainOf(options);
+    return { ...actorFor(by(options), options.headers), ...(c === undefined ? {} : { guard: c.guard }) };
+  };
+
   return {
-    "agent.session.start": unavailable("agent.session.start", deps),
-    "agent.session.prompt": unavailable("agent.session.prompt", deps),
-    "agent.session.steer": unavailable("agent.session.steer", deps),
-    "agent.session.interrupt": unavailable("agent.session.interrupt", deps),
-    "agent.session.resume": unavailable("agent.session.resume", deps),
-    "agent.session.end": unavailable("agent.session.end", deps),
-    "agent.session.list": unavailable("agent.session.list", deps),
-    "agent.session.get": unavailable("agent.session.get", deps),
-    "agent.session.delete": unavailable("agent.session.delete", deps),
-    "agent.watch": () => Stream.fail(unwired("agent.watch")),
-    "agent.approval.list": unavailable("agent.approval.list", deps),
-    "agent.approval.answer": unavailable("agent.approval.answer", deps),
-    "agent.providers": unavailable("agent.providers", deps),
-    "agent.self": deps.store === undefined ? unavailable("agent.self", deps) : agentSelf(deps),
-    "agent.self.try": deps.store === undefined || deps.reach === undefined ? unavailable("agent.self.try", deps) : agentSelfTry(deps),
+    "agent.session.start": (req: Parameters<typeof runtime.start>[0], options: Options) =>
+      guard("agent.session.start", Effect.suspend(() => runtime.start(req, by(options), metaOf(options)))),
+    "agent.session.prompt": ({ sessionId, text, attachments }: { sessionId: string; text: string; attachments?: ReadonlyArray<unknown> }, options: Options) =>
+      onSession("agent.session.prompt", options, sessionId, (s, p) => Effect.map(runtime.prompt(s.id, text, p, attachments), (run) => ({ run }))),
+    "agent.session.steer": ({ sessionId, text }: { sessionId: string; text: string }, options: Options) =>
+      onSession("agent.session.steer", options, sessionId, (s, p) => runtime.steer(s.id, text, p)),
+    "agent.session.interrupt": ({ sessionId }: { sessionId: string }, options: Options) =>
+      onSession("agent.session.interrupt", options, sessionId, (s, p) => Effect.map(runtime.interrupt(s.id, p), (session) => ({ session }))),
+    "agent.session.resume": ({ sessionId }: { sessionId: string }, options: Options) =>
+      onSession("agent.session.resume", options, sessionId, (s, p) => Effect.map(runtime.resume(s.id, p), (r) => ({ session: r.session }))),
+    "agent.session.end": ({ sessionId }: { sessionId: string }, options: Options) =>
+      onSession("agent.session.end", options, sessionId, (s, p) => Effect.map(runtime.end(s.id, p), (session) => ({ session }))),
+    "agent.session.list": (q: { projectId?: string; status?: Session["status"]; cursor?: string; limit?: number }, options: Options) =>
+      guard("agent.session.list", sync(() => {
+        const projects = projectsFilter(by(options));
+        return store.list({ ...q, ...(projects === undefined ? {} : { projects }) });
+      })),
+    "agent.session.get": ({ sessionId }: { sessionId: string }, options: Options) =>
+      onSession("agent.session.get", options, sessionId, (s) =>
+        sync(() => ({ session: s, runs: store.runs(s.id), approvals: store.approvals(s.id).filter((a) => a.status === "open") })),
+      ),
+    // The owner's (`agent.admin`, typed code): ends it, abandons its unmerged transactions (Task 11), removes it.
+    "agent.session.delete": ({ sessionId }: { sessionId: string }, options: Options) =>
+      onSession("agent.session.delete", options, sessionId, (s, p) => Effect.as(runtime.delete(s.id, p), { deleted: true as const })),
+    "agent.watch": ({ sessionId, fromNode }: { sessionId: string; fromNode?: string }, options: Options) =>
+      Stream.unwrap(
+        Effect.map(
+          Effect.flatMap(sessionInReach(store, by(options), sessionId), (s) => {
+            if (fromNode === undefined) return Effect.succeed({ s, fromSeq: 1 });
+            const seq = agents.lookup.nodeSeq(s.id, fromNode);
+            return seq === undefined
+              ? Effect.fail(finError("NOT_FOUND", "the session has no such node", { sessionId, fromNode }, "watch from a node id this session's watch gave you, or from the start"))
+              : Effect.succeed({ s, fromSeq: seq + 1 });
+          }),
+          ({ s, fromSeq }) => runtime.watch(s.id, fromSeq).pipe(Stream.mapError((e) => lagging(deps, s.id, e))),
+        ),
+      ).pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),
+    "agent.approval.list": (q: { sessionId?: string; projectId?: string; status?: "open" | "answered" | "expired" }, options: Options) =>
+      guard("agent.approval.list", Effect.suspend(() => {
+        const p = by(options);
+        const list = () =>
+          sync(() => ({
+            approvals: agents.lookup
+              .approvalIds({ ...q, ...(projectsFilter(p) === undefined ? {} : { projects: projectsFilter(p)! }) })
+              .flatMap((id) => store.approval(id) ?? []),
+          }));
+        return q.sessionId === undefined ? list() : Effect.flatMap(sessionInReach(store, p, q.sessionId), list);
+      })),
+    // A person's (`agent.approve`, typed code). `remember` adds command rules, which arrive with 7B.
+    "agent.approval.answer": (
+      req: { id: string; decision: "allow" | "deny"; remember?: "session" | "project"; add?: { tokens?: number; moneyMicros?: number; wallMs?: number } },
+      options: Options,
+    ) =>
+      guard("agent.approval.answer", Effect.suspend(() => {
+        if (req.remember !== undefined) {
+          return Effect.fail(finError("INVALID_REQUEST", "remembered answers are command rules, which arrive with sub-project 7B", { field: "remember", reason: "rulesIn7B" }, "answer without remember"));
+        }
+        const p = by(options);
+        return Effect.flatMap(approvalInReach(store, p, req.id), ({ approval }) =>
+          Effect.map(runtime.approve(approval.id, req.decision, req.add ?? {}, p), (r) => ({ approval: r.approval })),
+        );
+      })),
+    "agent.providers": (_: unknown, options: Options) =>
+      guard("agent.providers", Effect.suspend(() => admin.providers(agents.adapters, inReachOf(by(options))))),
+    "agent.self": (_: unknown, options: Options) => guard("agent.self", Effect.flatMap(selfOf(store, options), (s) => sync(() => selfView(store, s)))),
+    /**
+     * `record` a try (its branch must be in the session's subtree), make one (or the root) the
+     * default, or `clear` one (restoring the default it replaced). Branches are kept by id.
+     */
+    "agent.self.try": ({ action, branch }: { readonly action: "record" | "setDefault" | "clear"; readonly branch: string }, options: Options) =>
+      guard(
+        "agent.self.try",
+        Effect.gen(function* () {
+          const s = yield* selfOf(store, options);
+          const id = yield* deps.reach.inSubtree(s, branch);
+          yield* sync(() => {
+            if (action === "record") store.recordTry(s.id, id);
+            else if (action === "setDefault") store.setDefaultBranch(s.id, id);
+            else store.clearTry(s.id, id);
+          });
+          return yield* sync(() => selfView(store, s));
+        }),
+      ),
+    // The owner's settings (`admin.ts`).
+    "agent.key.set": (req: { provider: string; key: string; label?: string; projectId?: string }, options: Options) =>
+      guard("agent.key.set", promised(async () => ({ key: await admin.keySet(by(options), req) }))),
+    "agent.key.list": () => guard("agent.key.list", sync(() => ({ keys: admin.keyList() }))),
+    "agent.key.remove": ({ id }: { id: string }, options: Options) =>
+      guard("agent.key.remove", promised(async () => ({ removed: await admin.keyRemove(by(options), id) }))),
+    "agent.local.set": ({ endpoint }: { endpoint: string }, options: Options) =>
+      guard("agent.local.set", sync(() => {
+        const { preset, warnings } = admin.localSet(by(options), endpoint);
+        return { preset, ...(warnings.length === 0 ? {} : { warnings }) };
+      })),
+    "agent.local.show": () => guard("agent.local.show", sync(() => admin.localShow())),
+    "agent.local.test": () => guard("agent.local.test", promised(() => admin.localTest())),
+    "agent.local.remove": (_: unknown, options: Options) => guard("agent.local.remove", sync(() => ({ removed: admin.localRemove(by(options)) }))),
+    "training.closedTargets.get": () => guard("training.closedTargets.get", sync(() => ({ state: admin.closedTargets() }))),
+    "training.closedTargets.set": ({ state }: { state: "pendingCounsel" | "cleared" | "excluded" }, options: Options) =>
+      guard("training.closedTargets.set", sync(() => ({ state: admin.setClosedTargets(by(options), state) }))),
   };
 }

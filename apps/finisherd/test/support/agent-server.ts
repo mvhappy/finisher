@@ -8,6 +8,7 @@ import { Effect, Fiber } from "effect";
 import { expect } from "vitest";
 import { b64u, canonicalEndpoint, helloProof, proveMac, sameMac } from "../../src/auth/crypto.ts";
 import type { AgentCore } from "../../src/agent/core.ts";
+import type { AgentRuntimeParts, AgentServeOptions } from "../../src/agent/wiring.ts";
 import { serve, StderrLogger } from "../../src/main.ts";
 import { connectProved, type Exit, hello, NdjsonClient, ok, type ServerInfo } from "./ndjson-client.ts";
 
@@ -16,15 +17,32 @@ export function testClock(start = Date.now()) {
   return { now: () => now, advance: (ms: number) => (now += ms) };
 }
 
+/** A fetch that reaches loopback only: a test server never asks the network for anything. */
+export const loopbackFetch: typeof fetch = (input, init) => {
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+  if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost" && url.hostname !== "[::1]") {
+    return Promise.reject(new Error(`tests do not reach ${url.hostname}`));
+  }
+  return fetch(input, init);
+};
+
 export class AgentServer {
   readonly clients: NdjsonClient[] = [];
   readonly time = testClock();
-  #running: { fiber: Fiber.Fiber<unknown, unknown>; info: ServerInfo; core: AgentCore } | undefined;
+  #running: { fiber: Fiber.Fiber<unknown, unknown>; info: ServerInfo; core: AgentCore; agents: AgentRuntimeParts } | undefined;
 
   readonly serverData: string;
+  /** The agent runtime's options (7A Task 12: the fake harness's scripts, no timers). */
+  agentOptions: AgentServeOptions;
 
-  constructor(serverData: string) {
+  constructor(serverData: string, agentOptions: AgentServeOptions = {}) {
     this.serverData = serverData;
+    this.agentOptions = { timers: false, fetch: loopbackFetch, ...agentOptions };
+  }
+
+  /** The runtime, admin and adapters `main.ts` built (7A Task 12). */
+  get agents(): AgentRuntimeParts {
+    return this.#running!.agents;
   }
 
   get info(): ServerInfo {
@@ -39,16 +57,19 @@ export class AgentServer {
     let ready!: (i: ServerInfo) => void;
     const info = new Promise<ServerInfo>((r) => (ready = r));
     let core: AgentCore | undefined;
+    let agents: AgentRuntimeParts | undefined;
     const fiber = Effect.runFork(
       serve({
         serverData: this.serverData,
         credentials: { clock: this.time.now, sweepMs: 20 },
         onAgentCore: (c) => (core = c),
+        agents: this.agentOptions,
+        onAgentRuntime: (a) => (agents = a),
         onReady: (i) => ready(i as ServerInfo),
       }).pipe(Effect.provide(StderrLogger)),
     );
     const got = await info;
-    this.#running = { fiber, info: got, core: core! };
+    this.#running = { fiber, info: got, core: core!, agents: agents! };
   }
 
   async stop(): Promise<void> {
@@ -59,7 +80,16 @@ export class AgentServer {
   }
 
   async local(): Promise<NdjsonClient> {
-    const c = await connectProved({ info: this.info, serverData: this.serverData });
+    return this.connect("local");
+  }
+
+  /** The owner's console connection (human-only calls with the typed code: `confirmed`). */
+  async console(): Promise<NdjsonClient> {
+    return this.connect("console");
+  }
+
+  async connect(credential: "local" | "console"): Promise<NdjsonClient> {
+    const c = await connectProved({ info: this.info, serverData: this.serverData }, credential);
     this.clients.push(c);
     return c;
   }

@@ -14,6 +14,8 @@ import { diagnostics } from "./commands/diagnostics.ts";
 import { mcp } from "./commands/mcp.ts";
 import { project } from "./commands/project.ts";
 import { status } from "./commands/status.ts";
+import { training } from "./commands/training.ts";
+import { provider } from "../secrets/console.ts";
 import { stop } from "./commands/stop.ts";
 import { one, type Output, parseArgs, printFailure, processOutput } from "./format.ts";
 import { plugin } from "./plugin.ts";
@@ -27,6 +29,8 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   diagnostics,
   project,
   agent,
+  provider,
+  training,
   mcp,
   auth,
   plugin,
@@ -41,7 +45,7 @@ Commands for the running server, as its owner:
   stop                                     stop the server gracefully
   audit [--since <date>] [--kind <kind>] [--limit <n>] [--json]
                                            the security audit log, newest first
-  agent ls [--all] [--json]                agent and MCP credentials (live ones, or all)
+  agent credentials [--all] [--json]       agent and MCP credentials (live ones, or all)
 
 These change something: each needs an interactive terminal, shows what it will do and a
 short code, and goes ahead once you type the code back.
@@ -60,6 +64,30 @@ short code, and goes ahead once you type the code back.
   mcp setup --out <file> [--label <name>] [--scope <scope>]...
                                            a credential for the MCP adapter
   auth rotate-master                       a new key for all credentials: every one of them ends
+
+Agent sessions (sub-project 7):
+  agent start --project <dir|id> [--provider openrouter|local] [--model <id>] [--role <role>]
+              [--mode plan|draft|auto] [--base <branch>] [--title <text>]
+              [--prompt <text> | --prompt-file <file>] [--budget-usd <n>] [--budget-tokens <n>]
+  agent ls [--project <dir|id>] [--status <status>] [--json]
+  agent show <id> [--nodes] [--json]
+  agent prompt|steer <id> <text>
+  agent interrupt|resume|end <id>          a session's branch stays when it is interrupted or ended
+  agent watch <id> [--json]                its conversation as it happens, until the session ends
+  agent providers [--json]                 the harnesses, whether keys are set, the local endpoint
+  provider key ls [--json]                 the stored model keys (never their values)
+  provider local show|test [--json]        the local model endpoint, and whether it answers
+  training closed-targets [--json]         the counsel gate on closed-model training targets
+These change something (each needs an interactive terminal and the typed code):
+  agent approve <approval> allow|deny [--add <amount>]
+                                           --add raises a budget: USD, tokens (200k) or time (30m)
+  agent delete <id>                        removes a session's conversation; its branch stays
+  provider key set openrouter [--project <dir|id>] [--label <name>]
+                                           asks for the key without showing it (never an argument)
+  provider key rm <id>
+  provider local set <ollama|lmstudio|url>
+  provider local rm
+  training closed-targets pendingCounsel|cleared|excluded
 
 Reading recorded content needs no code:
   diagnostics export --content [--store diagnostics|agentTraces] [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
