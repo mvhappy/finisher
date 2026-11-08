@@ -12,6 +12,7 @@ interface Status {
   connections: Record<string, number>;
   journal: { enabled: boolean };
   auditFailures: number;
+  jobs?: { caps: { killTree: string; watchdog: boolean; cgroupMemory: boolean; leafLimits: boolean; sandbox: string; sandboxed: boolean } };
   warnings: Array<Record<string, unknown>>;
 }
 
@@ -30,6 +31,10 @@ export async function status(ctx: CommandContext): Promise<number> {
   const conns = Object.entries(s.connections).map(([k, n]) => `${k} ${n}`);
   o.out(`Connections: ${conns.length > 0 ? conns.join(", ") : "none"}`);
   o.out(`Diagnostics: ${s.journal.enabled ? "recording" : "not recording"}`);
+  if (s.jobs !== undefined) {
+    const c = s.jobs.caps;
+    o.out(`Jobs: kill tree ${c.killTree}, watchdog ${c.watchdog ? "on" : "off"}, memory limits ${c.cgroupMemory ? "kernel" : "sampled"}, leaf limits ${c.leafLimits ? "on" : "off"}, ${c.sandboxed ? `sandboxed (${c.sandbox})` : "unsandboxed"}`);
+  }
   if (s.auditFailures > 0) o.out(`Audit log: ${s.auditFailures} entries could not be written since start`);
   for (const w of s.warnings) o.out(`Warning: ${String(w.code)}`);
   return 0;

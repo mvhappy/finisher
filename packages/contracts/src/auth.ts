@@ -91,8 +91,18 @@ export const ConsoleChallengeSuccess = Schema.Struct({ code: Schema.String, expi
 /**
  * `server.status {}` (spec §4.8; `server.read`): the server's version, protocol and
  * environment, its listeners, live connections per principal kind, whether the journal
- * records, audit writes that failed since start, and standing warnings (`{code, …}`).
+ * records, audit writes that failed since start, what the job host enforces (5C-2: `jobs.caps`,
+ * `JobEngine.workers().caps`) and standing warnings (`{code, …}`; `SANDBOX_DISABLED` while job
+ * workers run unconfined).
  */
+export const JobHostCapsSchema = Schema.Struct({
+  killTree: Schema.String,
+  watchdog: Schema.Boolean,
+  cgroupMemory: Schema.Boolean,
+  leafLimits: Schema.Boolean,
+  sandbox: Schema.String,
+  sandboxed: Schema.Boolean,
+});
 export const ServerStatusSuccess = Schema.Struct({
   version: Schema.String,
   protocol: Schema.Number,
@@ -102,6 +112,7 @@ export const ServerStatusSuccess = Schema.Struct({
   connections: Schema.Record(Schema.String, Schema.Number),
   journal: Schema.Struct({ enabled: Schema.Boolean }),
   auditFailures: Schema.Number,
+  jobs: Schema.Struct({ caps: JobHostCapsSchema }),
   warnings: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 

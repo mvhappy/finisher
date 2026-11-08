@@ -16,6 +16,7 @@ mod fixes;
 pub mod fonts;
 pub mod history;
 pub mod item;
+pub mod job;
 pub mod keyframe;
 pub mod look;
 pub mod marker;

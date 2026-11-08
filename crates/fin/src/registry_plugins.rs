@@ -1,8 +1,9 @@
 //! The 8A `plugin` and `registry` commands' registry entries (plan 8A Task 12c), listed after
 //! the settings commands in [`crate::registry::commands`]. The human-only ones are listed too:
-//! `fin` sends them and the server refuses them with `HUMAN_ONLY` (exit 7).
+//! `fin` sends them and the server refuses them with `HUMAN_ONLY` (exit 7). Then the 5C-2 `job`
+//! commands and `wait`.
 
-use crate::commands::{plugin, project};
+use crate::commands::{job, plugin, project};
 use crate::registry::{Command, schema_of};
 
 const fn cmd(
@@ -127,5 +128,50 @@ pub const PLUGIN_COMMANDS: &[Command] = &[
         "--root <sha256>",
         "human-only: the server refuses fin (HUMAN_ONLY, exit 7)",
         || schema_of::<plugin::ForgetArgs>("registry.forget"),
+    ),
+];
+
+pub const JOB_COMMANDS: &[Command] = &[
+    cmd(
+        "job.ls",
+        "job",
+        "[--state <s>]… [--kind <k>] [--mine] [--limit <n>] [--cursor <c>]",
+        "the jobs this principal sees (its own; every owner's with jobs.control), newest first",
+        || schema_of::<job::LsArgs>("job.ls"),
+    ),
+    cmd(
+        "job.show",
+        "job",
+        "<id>",
+        "one job's view (another owner's or out of reach: JOB_NOT_FOUND)",
+        || schema_of::<job::IdArgs>("job.show"),
+    ),
+    cmd(
+        "job.cancel",
+        "job",
+        "<id>",
+        "cancel a job; its view once the run ended",
+        || schema_of::<job::IdArgs>("job.cancel"),
+    ),
+    cmd(
+        "job.pause",
+        "job",
+        "(<id>|--all)",
+        "pause a job, or dispatch and every job (--all: jobs.control)",
+        || schema_of::<job::TargetArgs>("job.pause"),
+    ),
+    cmd(
+        "job.resume",
+        "job",
+        "(<id>|--all)",
+        "resume a paused job, or every job and dispatch (--all)",
+        || schema_of::<job::TargetArgs>("job.resume"),
+    ),
+    cmd(
+        "wait",
+        "job",
+        "<id>… [--any] [--timeout <s>]",
+        "wait for jobs: exit 0 succeeded, 4 JOB_FAILED, 5 WAIT_TIMEOUT",
+        || schema_of::<job::WaitArgs>("wait"),
     ),
 ];

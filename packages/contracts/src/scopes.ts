@@ -74,9 +74,14 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  *   canonical; for a principal with roots it must lie inside the call's project folder;
  * - `branch`: the payload's branch references (a name, an id or `name#id`), as ids through
  *   the store, when a policy reads them (5A: the write targets of `agent`/`mcp` principals
- *   with branch limits; 5E: protected branches).
+ *   with branch limits; 5E: protected branches);
+ * - `jobProject`: the payload's `project` (a job's, 5C-2), checked for reach; unlike `project` it
+ *   opens nothing, so it adds no reopen rule;
+ * - `jobKind`: the payload's `kind` as that kind's own scopes (`RuleFacts.kindScopes`), for a
+ *   kind clients may submit;
+ * - `job`: the payload's `job` as whose it is to the caller (`RuleFacts.job`).
  */
-export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "branch";
+export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "branch" | "jobProject" | "jobKind" | "job";
 
 /** Resolved facts an escalation may read. */
 export interface RuleFacts {
@@ -87,7 +92,17 @@ export interface RuleFacts {
    * (taking its lease): that needs `project.write` whatever the RPC's own scopes (Decision 15).
    */
   readonly reopens?: boolean;
+  /** `jobs.submit`: the scopes of the kind named, a kind clients may submit (5C-2 Decision 5). */
+  readonly kindScopes?: ReadonlyArray<Scope>;
+  /**
+   * The job a call names, as the caller sees it (5C-2 Decision 4): `own`, `other` (another
+   * owner's, visible through `jobs.control`) or `none` (unknown, or not visible to the caller).
+   */
+  readonly job?: "own" | "other" | "none";
 }
+
+/** Acting on one job: one's own (or one the caller cannot see) takes `jobs.submit`, another's `jobs.control`. */
+const jobControl = (facts: RuleFacts): ReadonlyArray<Scope> => (facts.job === "other" ? ["jobs.control"] : ["jobs.submit"]);
 
 /** The decoded payload of RPC `T`. */
 export type PayloadOf<T extends FinRpcTag> = Rpc.Payload<Rpc.ExtractTag<RpcGroup.Rpcs<typeof FinRpcs>, T>>;
@@ -140,6 +155,12 @@ export interface RuleOf<T extends FinRpcTag> {
    * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
    */
   readonly deviceOnly?: (payload: PayloadOf<T>) => boolean;
+  /**
+   * True for a payload that acts beyond any one project (`jobs.pause|resume {all}`,
+   * `jobs.workers`): only a principal whose `projects` is `"*"` may send it; any other is
+   * `SCOPE_DENIED {reason: reach}`, after its scopes are checked (5C-2 review M2).
+   */
+  readonly allProjects?: (payload: PayloadOf<T>) => boolean;
 }
 
 /** A rule with its RPC's types erased, as the chain reads it. */
@@ -153,6 +174,7 @@ export interface RpcRule {
   readonly unconfirmed?: "readOnly" | "service";
   readonly kinds?: ReadonlyArray<PrincipalKind>;
   readonly deviceOnly?: (payload: never) => boolean;
+  readonly allProjects?: (payload: never) => boolean;
 }
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
@@ -239,6 +261,30 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   },
   // What this machine's media worker can decode and draw on.
   "media.capabilities": { scopes: ["server.read"] },
+  // The job engine (5C-2, spec §6.7). None writes through the store's guard (no `writes`); none of
+  // the job scopes is human-only, but a kind's own scopes join `jobs.submit` and may be (then the
+  // confirmation applies by default). Ownership and reach are the handler's (`jobs/access.ts`).
+  "jobs.submit": { scopes: ["jobs.submit"], resolve: ["jobProject", "jobKind"], escalate: (_, facts) => facts.kindScopes ?? [] },
+  "jobs.get": { scopes: ["jobs.read"], resolve: ["job"] },
+  "jobs.list": { scopes: ["jobs.read"], resolve: ["jobProject"] },
+  "jobs.wait": { scopes: ["jobs.read"] },
+  "jobs.watch": { scopes: ["jobs.read"] },
+  "jobs.cancel": { scopes: ["jobs.read"], resolve: ["job"], escalate: (_, facts) => jobControl(facts) },
+  // `{all}` and `jobs.workers` act on every project's jobs and processes: `jobs.control` and a
+  // principal that reaches every project (review M2).
+  "jobs.pause": {
+    scopes: ["jobs.read"],
+    resolve: ["job"],
+    escalate: (p, facts) => (p.all === true ? ["jobs.control"] : jobControl(facts)),
+    allProjects: (p) => p.all === true,
+  },
+  "jobs.resume": {
+    scopes: ["jobs.read"],
+    resolve: ["job"],
+    escalate: (p, facts) => (p.all === true ? ["jobs.control"] : jobControl(facts)),
+    allProjects: (p) => p.all === true,
+  },
+  "jobs.workers": { scopes: ["jobs.control"], allProjects: () => true },
   "diagnostics.status": { scopes: ["diagnostics.read"] },
   // Redacted for a caller that is not a person; the content itself is human-only (Decision 22).
   "diagnostics.export": {

@@ -92,6 +92,20 @@ import {
 } from "./credentials.ts";
 import { FinError } from "./errors.ts";
 import {
+  JobIdPayload,
+  JobsListOfViews,
+  JobsListPayload,
+  JobsListSuccess,
+  JobsSubmitPayload,
+  JobsTargetPayload,
+  JobsTargetSuccess,
+  JobsWaitPayload,
+  JobsWatchPayload,
+  JobsWorkersSuccess,
+  JobWatchEventSchema,
+} from "./job-rpcs.ts";
+import { JobViewSchema } from "./jobs.ts";
+import {
   BranchCreatePayload,
   BranchCreateSuccess,
   BranchListPayload,
@@ -485,6 +499,16 @@ export const FinRpcs = RpcGroup.make(
   /** Plan 6A Task 13: looks at a timeline, and what this machine's media worker can do. */
   Rpc.make("media.look", { payload: MediaLookPayload, success: MediaLookSuccess, error: FinError }),
   Rpc.make("media.capabilities", { payload: Schema.Struct({}), success: MediaCapabilitiesSuccess, error: FinError }),
+  // 5C-2: the job engine (spec §6.7). Others' jobs and jobs out of reach are `JOB_NOT_FOUND`.
+  Rpc.make("jobs.submit", { payload: JobsSubmitPayload, success: JobViewSchema, error: FinError }),
+  Rpc.make("jobs.get", { payload: JobIdPayload, success: JobViewSchema, error: FinError }),
+  Rpc.make("jobs.list", { payload: JobsListPayload, success: JobsListSuccess, error: FinError }),
+  Rpc.make("jobs.wait", { payload: JobsWaitPayload, success: JobsListOfViews, error: FinError }),
+  Rpc.make("jobs.watch", { payload: JobsWatchPayload, success: JobWatchEventSchema, error: FinError, stream: true }),
+  Rpc.make("jobs.cancel", { payload: JobIdPayload, success: JobViewSchema, error: FinError }),
+  Rpc.make("jobs.pause", { payload: JobsTargetPayload, success: JobsTargetSuccess, error: FinError }),
+  Rpc.make("jobs.resume", { payload: JobsTargetPayload, success: JobsTargetSuccess, error: FinError }),
+  Rpc.make("jobs.workers", { payload: Schema.Struct({}), success: JobsWorkersSuccess, error: FinError }),
   // Scope `diagnostics` (plan D, Decision 32).
   Rpc.make("diagnostics.status", { payload: DiagnosticsStatusPayload, success: DiagnosticsStatusSuccess, error: FinError }),
   Rpc.make("diagnostics.export", { payload: DiagnosticsExportPayload, success: DiagnosticsExportSuccess, error: FinError }),

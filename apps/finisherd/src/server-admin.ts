@@ -2,6 +2,7 @@
 // `server.stop` (`auth.admin`: the graceful stop Windows lacks, a service command that needs no
 // terminal) and the owner's audit log (`auth.audit.list`, `auth.audit.purge`, `auth.admin`).
 import { PROTOCOL_VERSION, type AuditKind, type FinError } from "@finisher/contracts";
+import type { JobHostCaps } from "@finisher/fin-node";
 import { Context, Effect } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import type { ConnectionRegistry, Transport } from "./connections.ts";
@@ -25,6 +26,22 @@ export interface AdminDeps {
   readonly audit: Audit;
   readonly connections: ConnectionRegistry;
   readonly journalEnabled: () => boolean;
+  /** What the job host enforces (`JobEngine.workers().caps`, 5C-2). */
+  readonly jobCaps: () => JobHostCaps;
+}
+
+/**
+ * The standing warning while job workers and plugin processes run unconfined (5C-2 Decision 9,
+ * spec §6.2): until sub-project 7's sandbox, or wherever its OS mechanism is disabled.
+ */
+export function sandboxWarning(caps: JobHostCaps): Record<string, unknown> | undefined {
+  if (caps.sandboxed) return undefined;
+  return {
+    code: "SANDBOX_DISABLED",
+    sandbox: caps.sandbox,
+    message: "job workers and plugin processes run without a sandbox: only the cleared environment, private job folders and the kill tree confine them",
+    fix: "run only plugins you trust until this machine's sandbox is available",
+  };
 }
 
 export interface AuditPurgeRequest {
@@ -32,20 +49,35 @@ export interface AuditPurgeRequest {
   readonly before?: number | undefined;
 }
 
-/** `server.status`: no secret, no key, no ticket; counts and endpoints only. */
+/** `server.status`: no secret, no key, no ticket; counts, endpoints and the job host's caps only. */
 export function serverStatus(deps: AdminDeps) {
-  return Effect.sync(() => ({
-    version: SERVER_VERSION,
-    protocol: PROTOCOL_VERSION,
-    envId: deps.control.envId,
-    pid: process.pid,
-    listeners: [...deps.control.listeners()],
-    connections: deps.connections.count(),
-    journal: { enabled: deps.journalEnabled() },
-    auditFailures: deps.audit.failures(),
-    // Persistent status warnings: agent tools run unsandboxed until 7C (owner decision F2).
-    warnings: agentWarnings() as Array<Record<string, unknown>>,
-  }));
+  return Effect.sync(() => {
+    const caps = deps.jobCaps();
+    const sandbox = sandboxWarning(caps);
+    return {
+      version: SERVER_VERSION,
+      protocol: PROTOCOL_VERSION,
+      envId: deps.control.envId,
+      pid: process.pid,
+      listeners: [...deps.control.listeners()],
+      connections: deps.connections.count(),
+      journal: { enabled: deps.journalEnabled() },
+      auditFailures: deps.audit.failures(),
+      jobs: {
+        caps: {
+          killTree: caps.killTree,
+          watchdog: caps.watchdog,
+          cgroupMemory: caps.cgroupMemory,
+          leafLimits: caps.leafLimits,
+          sandbox: caps.sandbox,
+          sandboxed: caps.sandboxed,
+        },
+      },
+      // The job host's sandbox (5C-2), then the agent runtime's: agent tools run unsandboxed
+      // until 7C (owner decision F2).
+      warnings: [...(sandbox === undefined ? [] : [sandbox]), ...(agentWarnings() as Array<Record<string, unknown>>)],
+    };
+  });
 }
 
 /**

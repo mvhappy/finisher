@@ -241,6 +241,36 @@ export async function run() {
     const expiring = await mint("expiring", { scopes: ["project.read"] });
     assertEqual(as(expiring.path, ["whoami"]).status, 0, "the credential to expire works");
 
+    step("5b", "jobs: fin look --no-wait then fin wait and fin job; an agent sees and controls only its own jobs");
+    const jobber = await mint("jobber", { scopes: ["server.read", "project.read", "jobs.read", "jobs.submit"], projects: [projectId] });
+    {
+      const id = local(["look", "--at", "0", "--size", "16x16", "--no-wait"]).job.id;
+      const waited = finRaw(sd, project, ["wait", id, "--timeout", "120"], tempEnv);
+      // Without a GPU adapter the look fails GPU_UNAVAILABLE, which is still a job that ended.
+      if (waited.status !== 0) {
+        assertEqual([waited.status, waited.json?.error?.code, waited.json?.error?.details?.failed?.[0]?.code], [4, "JOB_FAILED", "GPU_UNAVAILABLE"], `fin wait: ${waited.text}`);
+      }
+      assertEqual(local(["job", "show", id]).state, waited.status === 0 ? "succeeded" : "failed", "fin job show agrees with fin wait");
+      assertEqual(local(["job", "pause", "--all"]), {}, "local pauses dispatch");
+      const queued = local(["look", "--at", "0", "--size", "17x17", "--no-wait"]).job.id;
+      assertEqual(local(["job", "ls", "--state", "queued"]).jobs.map((j) => j.id), [queued], "the queued look");
+      refused(finRaw(sd, project, ["wait", queued, "--timeout", "1"], tempEnv), "WAIT_TIMEOUT", "a wait that times out", 5);
+      refused(as(jobber.path, ["job", "show", queued]), "JOB_NOT_FOUND", "an agent reads local's job", 3);
+      refused(as(jobber.path, ["job", "cancel", queued]), "JOB_NOT_FOUND", "an agent cancels local's job", 3);
+      refused(as(jobber.path, ["wait", queued, "--timeout", "1"]), "JOB_NOT_FOUND", "an agent waits on local's job", 3);
+      refused(as(jobber.path, ["job", "pause", "--all"]), "SCOPE_DENIED", "an agent pauses every job");
+      assertEqual(as(jobber.path, ["job", "ls"]).json.jobs, [], "an agent lists none of local's jobs");
+      const own = as(jobber.path, ["look", "--at", "0", "--size", "18x18", "--no-wait"]);
+      assertEqual(own.status, 0, `the agent's own look: ${own.text}`);
+      assertEqual(as(jobber.path, ["job", "show", own.json.job.id]).json.owner.kind, "agent", "the agent's job is its own");
+      assertEqual(as(jobber.path, ["job", "cancel", own.json.job.id]).json.state, "cancelled", "the agent cancels its own job");
+      assertEqual(local(["job", "cancel", queued]).state, "cancelled", "local cancels its job");
+      refused(finRaw(sd, project, ["wait", queued], tempEnv), "JOB_FAILED", "waiting on a cancelled job", 4);
+      assertEqual(local(["job", "resume", "--all"]), {}, "local resumes dispatch");
+      const status = await consoleRpc(server, "server.status", {}, { confirm: false });
+      assertEqual([status.jobs.caps.sandboxed, status.warnings.some((w) => w.code === "SANDBOX_DISABLED")], [false, true], "server.status: job caps and the sandbox warning");
+    }
+
     step(6, "a squatted socket is untrusted; a restart rotates the keys; expiry; fin across the restart");
     if (!WIN) {
       // A squatter listens where a stale `finisherd.json` points and answers the hello without a proof.
@@ -329,7 +359,7 @@ export async function run() {
     }
     const kinds = (k, outcome) => audit.filter((e) => e.kind === k && (outcome === undefined || e.outcome === outcome));
     assertEqual(kinds("auth.fail").length >= 1, true, "the bad proofs are auth.fail rows");
-    assertEqual(kinds("credential.mint").length, 3, "credential.mint rows");
+    assertEqual(kinds("credential.mint").length, 4, "credential.mint rows");
     assertEqual(kinds("credential.revoke").length >= 1, true, "a credential.revoke row");
     assertEqual(kinds("auth.denied").filter((e) => e.code === "HUMAN_ONLY").length >= 3, true, "HUMAN_ONLY rows");
     for (const code of ["SCOPE_DENIED", "BRANCH_NOT_ALLOWED"]) {
@@ -349,7 +379,7 @@ export async function run() {
       needles.add(bytes.toString("base64url"));
     }
     needles.add(oldLocalKey.trim());
-    for (const c of [reader, writer, expiring]) needles.add(c.file.key);
+    for (const c of [reader, writer, expiring, jobber]) needles.add(c.file.key);
     const sources = [
       ...outputs,
       ...serverFiles(sd),

@@ -2,7 +2,7 @@
 // 20, 31–40). A family's crate registers its `FamilySpec`, its kinds' `KindSpec`s and its
 // helpers' `HelperProgram`s here; the engine reads them. Params are validated by Rust
 // (`validateJobParams`), never here.
-import type { FinError, JobOwner, JobRights, JobView, JobVia, MappedFile, Priority, HelperSpec } from "@finisher/contracts";
+import { type FinError, type HelperSpec, type JobOwner, type JobRights, type JobView, type JobVia, type MappedFile, type Priority, SCOPES } from "@finisher/contracts";
 import type { FileHandle } from "node:fs/promises";
 import type { Effect } from "effect";
 
@@ -21,8 +21,25 @@ export interface KindSpec<P = unknown, R = unknown> {
   readonly kind: string;
   readonly version: number;
   readonly family: string;
-  /** Checked by 5C-2. */
+  /** What submitting it takes beside `jobs.submit` (5C-2: the chain checks them on `jobs.submit`). */
   readonly scopes: ReadonlyArray<string>;
+  /**
+   * Clients may submit it with `jobs.submit` (5C-2 Decision 6); any other kind is
+   * `JOB_KIND_UNKNOWN` there and reached only through its own RPC or in-process callers. A kind
+   * that opts in must accept only params whose paths and project agree with the job's `project`:
+   * the chain checks the caller's reach over that `project`, never the params, so the kind
+   * declares `paramsReach` (the registry refuses `rpc` without it, and from a plugin family:
+   * review M3; sub-project 8 decides how plugins' kinds are submitted).
+   */
+  readonly rpc?: boolean;
+  /**
+   * What is wrong with `params` for a job of `project` (paths outside its folder, another
+   * project named inside them), or `[]`: called on every submit, before the job is stored, and
+   * answered as `JOB_PARAMS_INVALID {errors}`. Required for an `rpc` kind.
+   */
+  readonly paramsReach?: (params: P, job: { readonly project?: string | undefined }) => ReadonlyArray<string>;
+  /** A job of this kind names its `project` (`INVALID_REQUEST {field: project}` otherwise; review M3). */
+  readonly requiresProject?: boolean;
   readonly resources: OrFn<P, ReadonlyArray<PoolName>>;
   readonly warm?: boolean;
   readonly defaultPriority: Priority;
@@ -182,6 +199,7 @@ export function resolveOrFn<P, T>(v: OrFn<P, T>, params: P): T {
 /** The variables of `finisherd`'s environment a family may pass to its processes (`FamilySpec.env`). */
 export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU"]);
 
+const KNOWN_SCOPES: ReadonlySet<string> = new Set(SCOPES);
 const FAMILY = /^[a-z][a-z0-9]{0,31}$/;
 const KIND = /^[a-z][A-Za-z0-9]*\.[a-z][A-Za-z0-9]*$/;
 const SEGMENT = /^[A-Za-z0-9._-]+$/;
@@ -285,6 +303,14 @@ export function makeKindRegistry(): KindRegistry {
       if (!families.has(k.family)) refuse(`kind ${k.kind}: unknown family ${k.family}`);
       if (!Number.isInteger(k.version) || k.version < 1) refuse(`kind ${k.kind}: version must be a positive integer`);
       if (!(k.timeoutS > 0)) refuse(`kind ${k.kind}: timeoutS must be positive`);
+      // A scope outside the vocabulary is held by no principal: a typo that would lock the kind (review L2).
+      const unknown = k.scopes.filter((sc) => !KNOWN_SCOPES.has(sc));
+      if (unknown.length > 0) refuse(`kind ${k.kind}: unknown scopes ${unknown.join(", ")}`);
+      if (k.rpc === true) {
+        const f = families.get(k.family) as FamilySpec;
+        if (f.profile === "plugin" || f.pluginId !== undefined) refuse(`kind ${k.kind}: a plugin family's kind cannot be submitted by RPC (sub-project 8)`);
+        if (typeof k.paramsReach !== "function") refuse(`kind ${k.kind}: an rpc kind declares paramsReach`);
+      }
       if (k.files !== undefined && typeof k.files !== "function") {
         const errors = validateMappedFiles(k.files);
         if (errors.length > 0) refuse(`kind ${k.kind}: ${errors.join("; ")}`);
