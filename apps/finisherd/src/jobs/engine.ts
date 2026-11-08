@@ -2,9 +2,9 @@
 // loop over the pools and the scheduler, the transitions of a cold job's attempts, the hook
 // phase, `job.done` and the bus. Its public types are in `api.ts`; cancel, pause, resume,
 // abandonment and the hold of a job with an abandoned process in `control.ts`; start-up
-// recovery, retention and close in `restart.ts`. Until later tasks: a `warm` kind runs cold and
-// `warm(family)` does nothing (Task 11). The retry policy and isolation (Decisions 31, 32) are
-// in `retry.ts` over the pure `isolation.ts`.
+// recovery, retention and close in `restart.ts`; warm workers, their direct hand-off at submit
+// and `warm(family)` in `warm.ts` (Task 11). The retry policy and isolation (Decisions 31, 32)
+// are in `retry.ts` over the pure `isolation.ts`.
 import type { FinError, FinErrorData, JobOwner, JobProgress, JobState, JobView } from "@finisher/contracts";
 import { Effect, type Fiber, PubSub, Stream } from "effect";
 import { finError, toFinError } from "../errors.ts";
@@ -18,6 +18,8 @@ import { runOnSucceeded } from "./hooks.ts";
 import { RunControl } from "./run-control.ts";
 import { type AttemptOutcome, ALIVE_MS, type RunnerEnv, runAttempt } from "./runner.ts";
 import { QueueIndex, type QueuedJob, schedule } from "./schedule.ts";
+import { WarmPools } from "./warm.ts";
+import type { FamilySpec } from "./kinds.ts";
 import { type JobQuery, type JobRow, type JobStore, type TransitionPatch, viewOf } from "./store.ts";
 import { type JobEvent, type RunStats, doneEvent, newStats, withProgress } from "./view.ts";
 
@@ -53,6 +55,12 @@ export function stoppedRun(o: AttemptOutcome): boolean {
 
 const promise = <A>(f: () => Promise<A>): Effect.Effect<A, FinError> => Effect.tryPromise({ try: f, catch: toFinError });
 
+/** A warm worker lent to one dispatch (`warm.ts`): `run` is its attempt; `release` gives it back unused. */
+export interface WarmLease {
+  run(row: JobRow, kind: KindSpec, family: FamilySpec, params: unknown, control: RunControl): Promise<AttemptOutcome>;
+  release(): void;
+}
+
 /**
  * The engine. Its members without `#` are internal: `control.ts` and `restart.ts` use them;
  * callers see only `JobEngine`.
@@ -68,6 +76,9 @@ export class Engine implements JobEngine {
   readonly active = new Set<Promise<void>>();
   readonly resources = new Map<string, ReadonlyArray<string>>();
   readonly abandonment: Abandonment;
+  readonly warmPools: WarmPools;
+  /** The scheduler (a test may spy on it: a direct hand-off never calls it). */
+  schedule: typeof schedule = schedule;
   /** Queued jobs held back while a process of their last attempt is abandoned and alive (9b review H1). */
   readonly held = new Map<string, () => void>();
   /** Views re-announced at start, for listeners that attach just after it (9b review M5). */
@@ -97,6 +108,7 @@ export class Engine implements JobEngine {
     this.#bus = Effect.runSync(PubSub.sliding<JobEvent>(4096));
     this.abandonment = new Abandonment(d.pools, d.log, () => this.pump(), (job) => this.#release(job));
     d.host.onAbandonedExit = (proc) => this.abandonment.exited(proc);
+    this.warmPools = new WarmPools(this);
     this.env = {
       host: d.host,
       store: d.store,
@@ -187,12 +199,14 @@ export class Engine implements JobEngine {
       this.#hold(view.id);
       return;
     }
+    const warm = this.warmPools.tag(view, kind);
     const q: QueuedJob = {
       id: view.id,
       priority: view.priority,
       createdAt: view.createdAt,
       resources,
       ...(view.nextRunAt === undefined ? {} : { nextRunAt: view.nextRunAt }),
+      ...(warm === undefined ? {} : { warm }),
     };
     this.queue.add(q);
     if (q.nextRunAt !== undefined) this.#wakeAt(q.nextRunAt);
@@ -239,25 +253,36 @@ export class Engine implements JobEngine {
 
   /** Dispatches what can run now (synchronously: a submit's job starts in its own turn). */
   pump(): void {
-    if (this.closing || this.pausedAll) return;
-    for (const d of schedule({ queue: this.queue, pools: this.d.pools, warm: new Map() }, this.d.now())) {
-      if (d.mode === "cold") this.#dispatch(d.job);
+    if (this.closing || this.pausedAll || this.crashed) return;
+    for (const d of this.schedule({ queue: this.queue, pools: this.d.pools, warm: this.warmPools.schedState() }, this.d.now())) {
+      if (d.mode === "cold") this.dispatch(d.job);
+      else if (d.mode === "warm") this.warmPools.dispatchQueued(d.job, d.family, d.key);
+      else this.warmPools.spawnFor(d.family, d.key, d.retire);
     }
   }
 
-  #dispatch(id: string): void {
+  /** Starts queued job `id`, cold or on the warm worker `lease` lends; false (the lease given back) when it cannot run. */
+  dispatch(id: string, lease?: WarmLease): boolean {
     const resources = this.resources.get(id) ?? [];
-    this.queue.remove(id);
     const row = this.d.store.row(id);
-    if (row === undefined || row.state !== "queued" || !this.d.pools.take(resources)) {
-      this.d.log("error", `job ${id}: dispatched but not runnable (${row?.state ?? "gone"})`);
-      return;
+    const runnable = row?.state === "queued";
+    if (!runnable || !this.d.pools.take(resources, lease === undefined ? undefined : this.warmPools.overrun())) {
+      // A warm job whose slots are taken waits in the queue; anything else is a bug.
+      if (runnable && lease !== undefined) this.d.log("debug", `job ${id}: its slots are taken; it waits`);
+      else {
+        this.queue.remove(id);
+        this.d.log("error", `job ${id}: dispatched but not runnable (${row?.state ?? "gone"})`);
+      }
+      lease?.release();
+      return false;
     }
-    const view = this.transition(id, "running", { attempts: row.attempts + 1, nextRunAt: null });
+    this.queue.remove(id);
+    const view = this.transition(id, "running", { attempts: row.attempts + 1, nextRunAt: null, warm: lease !== undefined });
     this.publish({ type: "state", job: view });
     const control = new RunControl();
     this.runs.set(id, control);
-    this.track(this.#run(id, resources, control));
+    this.track(this.#run(id, resources, control, lease));
+    return true;
   }
 
   /** Keeps `p` among the runs `close` waits for. */
@@ -268,12 +293,17 @@ export class Engine implements JobEngine {
   }
 
   /** One attempt and what follows it. Whatever throws, the slots go back and the job ends (9a review H3). */
-  async #run(id: string, resources: ReadonlyArray<string>, control: RunControl): Promise<void> {
+  async #run(id: string, resources: ReadonlyArray<string>, control: RunControl, lease?: WarmLease): Promise<void> {
     let given = false;
     const give = (): void => {
       if (given) return;
       given = true;
       this.d.pools.give(resources);
+      // The warm worker is ready again (or gone): what waits for it or for the slots goes now.
+      if (lease !== undefined) {
+        lease.release();
+        this.pump();
+      }
     };
     try {
       const row = this.d.store.row(id);
@@ -290,7 +320,7 @@ export class Engine implements JobEngine {
         await completeIsolation(this, row, kind);
         return;
       }
-      const outcome = await runAttempt(this.env, row, kind, family, plan.params, control);
+      const outcome = lease === undefined ? await runAttempt(this.env, row, kind, family, plan.params, control) : await lease.run(row, kind, family, plan.params, control);
       const stats = this.#statsOf(id);
       stats.runMicros += outcome.runMicros;
       stats.helpers += outcome.helpers;
@@ -484,8 +514,16 @@ export class Engine implements JobEngine {
     return Effect.try({ try: () => resumeJobs(this, target), catch: toFinError });
   }
 
-  warm(): Effect.Effect<void, FinError> {
-    return Effect.void;
+  /** Pre-warming (Decision 36): one worker of the family now if its pool has none. */
+  warm(family: string): Effect.Effect<void, FinError> {
+    return Effect.suspend(() => {
+      const f = this.kinds.family(family);
+      if (f === undefined) return Effect.fail(finError("JOB_KIND_UNKNOWN", `no worker family ${family}`, { family }));
+      if (!this.warmPools.families().has(family)) return Effect.fail(finError("WORKER_UNAVAILABLE", `the ${family} family serves no warm kind`, { family, reason: "notWarm" }));
+      if (this.closing) return Effect.fail(finError("WORKER_UNAVAILABLE", "the job engine is closing", { reason: "closing" }));
+      this.warmPools.prewarm(f);
+      return Effect.void;
+    });
   }
 
   definePool(name: PoolName, size: number): void {
@@ -497,7 +535,7 @@ export class Engine implements JobEngine {
     const pools = this.d.pools.snapshot();
     return {
       pools,
-      warm: [],
+      warm: this.warmPools.list(),
       processes: this.d.host.processes(),
       stuck: pools.filter((p) => p.stuck).map((p) => p.name),
       caps: this.d.host.caps(),

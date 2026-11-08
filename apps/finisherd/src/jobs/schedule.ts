@@ -17,13 +17,16 @@ export interface QueuedJob {
   readonly createdAt: number;
   readonly nextRunAt?: number;
   readonly resources: ReadonlyArray<string>;
-  readonly warm?: { readonly family: string; readonly key: string };
+  /** `fresh`: the job ran before, so its retry takes a worker that has served no job (Decision 31). */
+  readonly warm?: { readonly family: string; readonly key: string; readonly fresh?: boolean };
 }
 
 export interface WarmWorkerView {
   readonly key: string;
   readonly state: "spawning" | "ready" | "busy";
   readonly idleSince?: number;
+  /** Jobs it has served (a `fresh` job takes only a worker with none). */
+  readonly served?: number;
 }
 
 export interface SchedState {
@@ -130,6 +133,18 @@ export class QueueIndex {
     return this.#byId.get(id)?.job;
   }
 
+  /** The first due warm job of `(family, key)`, by (createdAt, id). */
+  warmHead(family: string, key: string, now: number): QueuedJob | undefined {
+    const prefix = `w:${family}:${key}|`;
+    let best: QueuedJob | undefined;
+    for (const [k, b] of this.#buckets) {
+      if (!k.startsWith(prefix)) continue;
+      const first = dueStream(b, now).next();
+      if (first.done !== true && (best === undefined || byAge(first.value, best) < 0)) best = first.value;
+    }
+    return best;
+  }
+
   /** Each FIFO's due jobs in order, lazily (for `schedule`). */
   *streams(now: number): Generator<Iterator<QueuedJob>> {
     for (const b of this.#buckets.values()) yield dueStream(b, now);
@@ -233,7 +248,8 @@ class Plan {
     const { family, key } = j.warm;
     const pool = this.#warm.get(family);
     if (pool === undefined || !this.#fits(j.resources, this.#overrun)) return false;
-    const ready = pool.workers.find((w) => w.key === key && w.state === "ready" && w.retiring !== true);
+    const fresh = j.warm.fresh === true;
+    const ready = pool.workers.find((w) => w.key === key && w.state === "ready" && w.retiring !== true && (!fresh || (w.served ?? 0) === 0));
     if (ready === undefined) return "wait";
     Object.assign(ready, { state: "busy" });
     this.#take(j.resources);
@@ -249,6 +265,7 @@ class Plan {
   place(j: QueuedJob): void {
     if (j.warm === undefined) return;
     const { family, key } = j.warm;
+    const fresh = j.warm.fresh === true;
     const pool = this.#warm.get(family);
     if (pool === undefined) return;
     if (pool.spawning.has(key) || pool.workers.some((w) => w.key === key && w.state === "spawning")) return;
@@ -258,11 +275,13 @@ class Plan {
       this.out.push({ mode: "spawnWarm", family, key });
       return;
     }
-    if (pool.workers.some((w) => w.key === key && w.retiring !== true)) return;
+    // A fresh retry may retire a worker of its own key that has served jobs; any other job waits for its key's workers.
+    if (!fresh && pool.workers.some((w) => w.key === key && w.retiring !== true)) return;
     const busyKeys = this.#dueKeys.get(family) ?? new Set<string>();
     let retire: number | undefined;
     pool.workers.forEach((w, i) => {
-      if (w.state !== "ready" || w.retiring === true || w.key === key || busyKeys.has(w.key)) return;
+      if (w.state !== "ready" || w.retiring === true) return;
+      if (w.key === key ? !fresh || (w.served ?? 0) === 0 : busyKeys.has(w.key)) return;
       const best = retire === undefined ? undefined : pool.workers[retire];
       if (best === undefined || (w.idleSince ?? Infinity) < (best.idleSince ?? Infinity)) retire = i;
     });
