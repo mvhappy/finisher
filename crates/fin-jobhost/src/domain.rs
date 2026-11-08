@@ -109,6 +109,8 @@ pub(crate) struct Placement {
     /// Its primary thread, still suspended (`HANDLE`), owned by the spawn code.
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub thread: std::os::windows::io::RawHandle,
+    /// Its pid (the suspended-spawn probe of test-hooks builds reads it).
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub pid: u32,
 }
 

@@ -36,6 +36,11 @@ import { BranchLineage } from "./agent/reach.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
+// Registers the `jobs` migration chain: imported before the control store opens.
+import "./jobs/store.ts";
+import { JobEventSinkTag } from "./jobs/events.ts";
+import { journalSink } from "./jobs/journal-sink.ts";
+import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { MAX_FRAME } from "./protocol.ts";
@@ -53,6 +58,8 @@ export interface ServeOptions {
   readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
   /** The agent runtime's shared pieces, handed to tests once built (7A-2). */
   readonly onAgentCore?: (core: AgentCore) => void;
+  /** The job engine's options (tests: the test kinds). */
+  readonly jobs?: JobEngineOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
@@ -61,7 +68,16 @@ export interface ServeOptions {
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
  * engines and remove `finisherd.json`.
  */
-export const serve = ({ serverData, onReady, onAgentCore, registry, fonts, diagnostics: diagnosticsOptions, credentials: credentialOptions }: ServeOptions) =>
+export const serve = ({
+  serverData,
+  onReady,
+  onAgentCore,
+  registry,
+  fonts,
+  diagnostics: diagnosticsOptions,
+  credentials: credentialOptions,
+  jobs: jobOptions,
+}: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -82,6 +98,20 @@ export const serve = ({ serverData, onReady, onAgentCore, registry, fonts, diagn
       const tickets = yield* makeTickets();
       // The journal opens under the settings already read, before any transport listens.
       const diagnostics = yield* makeDiagnostics(serverData, diagnosticsOptions);
+      // The job engine (5C-1) after the control store and the journal, so it closes before them
+      // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
+      // to the journal (D34).
+      const runLog = Effect.runForkWith(yield* Effect.context<never>()); // the server's (stderr) logger
+      const logSink = (level: "debug" | "warning", message: string) => void runLog(level === "debug" ? Effect.logDebug(message) : Effect.logWarning(message));
+      const jobsContext = yield* Layer.build(
+        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions }).pipe(
+          Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
+        ),
+      );
+      const caps = Context.get(jobsContext, JobEngineTag).workers().caps;
+      yield* Effect.logInfo(
+        `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
+      );
 
       const local = yield* makeLocalSocketServer(socket);
       const audit = Context.get(control, AuditTag);
@@ -194,6 +224,7 @@ export const serve = ({ serverData, onReady, onAgentCore, registry, fonts, diagn
               layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
+              Layer.succeedContext(jobsContext),
               Layer.succeed(KeysTag, keys),
               Layer.succeed(HandshakeTag, handshake),
               Layer.succeed(CredentialsTag, credentials),

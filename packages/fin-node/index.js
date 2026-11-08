@@ -519,6 +519,13 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
+      heldPaths(pid) {
+        try {
+          return native.heldPathsForTest(pid);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
       libraryProbeHang: (root, hang) => native.libraryProbeHangForTest(root, hang),
       libraryProbeStarted: (root) => native.libraryProbeStartedForTest(root),
       packPlugin(src, out) {

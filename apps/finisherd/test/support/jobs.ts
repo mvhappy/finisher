@@ -1,5 +1,5 @@
 // A job engine over a temp server data and the test-hooks `fin-workers` (5C-1 plan Task 9a).
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
@@ -69,6 +69,7 @@ export async function testEngine(
       testKinds: true,
       cgroups: "off",
       cores: 4,
+      ...((engineOpts.jobHost as { fake?: boolean } | undefined)?.fake === true ? { heldFilesCheck: false } : {}),
       ...engineOpts,
       timing: { killWaitMs: 2000, exitDrainMs: 100, ...(engineOpts.timing ?? {}) },
     }).pipe(Effect.provide(layer)),
@@ -112,6 +113,27 @@ export async function testEngine(
   };
   open.push(t);
   return t;
+}
+
+/**
+ * Whether process `pid` is gone: no such process, or (Linux) a zombie. A killed grandchild is
+ * reparented and stays a zombie until init reaps it, which a loaded machine delays; `kill(pid, 0)`
+ * still succeeds on a zombie.
+ */
+export function processGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    return (e as { code?: string }).code === "ESRCH";
+  }
+  if (process.platform !== "linux") return false;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+    return state === "Z" || state === "X";
+  } catch {
+    return true;
+  }
 }
 
 /** Polls `f` until it is truthy (≤ `ms`). */

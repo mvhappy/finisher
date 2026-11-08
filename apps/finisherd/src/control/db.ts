@@ -2,7 +2,7 @@
 // spec §3.1). It holds the environment id, the server-id map and the audit log (chain `core`),
 // and each later area's tables in its own migration chain (`migrations.ts`).
 //
-// `node:sqlite` APIs used, all present in Node 24.22 (Electron 44/45) as well as 26.12:
+// `node:sqlite` APIs used, all present in Node 24.22 (the repository's Node and the one Electron 44/45 embed):
 // `new DatabaseSync(path)`, `exec`, `prepare` with `run`/`get`/`all`, `close`, and the
 // `errcode` property of its errors (with a message fallback). PRAGMAs set the busy timeout and
 // the other options rather than constructor options, so nothing depends on a newer `open` API.

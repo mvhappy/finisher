@@ -18,16 +18,22 @@ export class FakeHost implements JobHostLike {
     this.script = script;
   }
 
-  /** The engine option that starts this host. */
-  get factory(): JobHostFactory {
-    return async (_opts, onEvent) => {
-      this.onEvent = onEvent;
-      return this;
-    };
+  /** The engine option that starts this host (marked `fake`: its processes have no files to check). */
+  get factory(): JobHostFactory & { readonly fake: true } {
+    return Object.assign(
+      async (_opts: Parameters<JobHostFactory>[0], onEvent: Parameters<JobHostFactory>[1]) => {
+        this.onEvent = onEvent;
+        return this;
+      },
+      { fake: true as const },
+    );
   }
 
+  /** What `caps()` reports (tests may turn the sandbox on). */
+  capsOverride: Partial<JobHostCaps> = {};
+
   caps(): JobHostCaps {
-    return { killTree: "processGroup", watchdog: false, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false };
+    return { killTree: "processGroup", watchdog: false, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false, ...this.capsOverride };
   }
 
   openGroup(_spec: JobGroupSpec): number {

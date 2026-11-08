@@ -27,7 +27,7 @@
 - **`fin`** gains `auth.rs` (credential discovery, the handshake, the retry), exit class 7, `fin whoami`, `projectId` on probes, a frame cap and an overall deadline, and its test hooks behind a `test-hooks` feature.
 
 **Tech Stack:**
-- Node 24, the target (owner decision 2026-11-07, spec §1.6: Electron 44/45 embed Node 24.22). The repository still pins Node 26.12 until the `TASKS.md` switch lands; until then use only APIs present in both, so this plan does not wait for the switch (`node:sqlite`, `node:crypto`); Effect 4.0.6 (`effect/rpc`); `ws` 8 (MIT; already installed under `@effect/platform-node`, now a direct, pinned dependency); vitest.
+- Node 24, the target (owner decision 2026-11-07, spec §1.6: Electron 44/45 embed Node 24.22). The repository moved to Node 24.22.2 on 2026-11-08 (`TASKS.md`); use only APIs present in Node 24 (`node:sqlite`, `node:crypto`); Effect 4.0.6 (`effect/rpc`); `ws` 8 (MIT; already installed under `@effect/platform-node`, now a direct, pinned dependency); vitest.
 - Rust 2024: `hmac` 0.12 and `sha2` 0.10 (MIT OR Apache-2.0) in `fin`; `base64` 0.22 (MIT OR Apache-2.0) if not already in the lock file; `windows-sys` 0.61 (already in the tree) with `Win32_Security`, `Win32_Security_Authorization`, `Win32_System_Pipes`, `Win32_System_Threading`, `Win32_System_IO`, `Win32_Storage_FileSystem` in `fin-node`.
 - **No other new dependency.** No JOSE, TLS, keychain or certificate crates (5B).
 

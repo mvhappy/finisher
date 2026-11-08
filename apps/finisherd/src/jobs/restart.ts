@@ -102,7 +102,7 @@ function retention(e: Engine, leftovers: boolean): void {
       if (!leftovers || e.closing) return;
       const removed = await sweepLeftovers(e.d.root, (id) => {
         const row = e.d.store.row(id);
-        return row !== undefined && row.finishedAt === undefined;
+        return (row !== undefined && row.finishedAt === undefined) || e.warmPools.owns(id);
       });
       if (removed.length > 0) e.d.log("debug", `job engine: deleted ${removed.length} leftover job directories`);
     }),
@@ -136,6 +136,7 @@ async function doClose(e: Engine): Promise<void> {
   }
   while (e.active.size > 0) await Promise.allSettled([...e.active]);
   e.dropAllProgress();
+  await e.warmPools.close();
   await e.d.host.shutdown(SHUTDOWN_GRACE_MS).catch((err) => e.d.log("warning", `job host shutdown: ${toFinError(err).message}`));
   e.shutdownBus();
 }
