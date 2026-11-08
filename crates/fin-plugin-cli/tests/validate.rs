@@ -160,6 +160,17 @@ fn font_catalogs_get_the_hosts_rules() {
 #[test]
 fn font_catalogs_must_merge_into_the_built_in_one() {
     let tmp = tempfile::tempdir().unwrap();
+    // The built-in file under a new id and family (its own family would be taken first).
+    let mut copy = catalog("acme-copy", None);
+    copy["entries"][0]["family"] = json!("Acme Copy");
+    for style in copy["entries"][0]["styles"].as_array_mut().unwrap() {
+        style["file"]["faces"][0]["family"] = json!("Acme Copy");
+    }
+    // Review H1: a face (or an entry) named like a built-in family would win new pins for it.
+    let mut shadow = catalog("acme-shadow", Some(9));
+    shadow["entries"][0]["styles"][0]["file"]["faces"][0]["family"] = json!("Inter");
+    let mut shadow_entry = catalog("acme-shadow-entry", Some(10));
+    shadow_entry["entries"][0]["family"] = json!("noto sans");
     // A built-in id; the built-in file under a new id; the pack's own file listed twice.
     for (name, catalogs, index, reason, rule) in [
         (
@@ -169,12 +180,20 @@ fn font_catalogs_must_merge_into_the_built_in_one() {
             "catalogIdTaken",
             "catalogIdTaken",
         ),
+        ("builtin-file", vec![copy], 0, "catalogMerge", "unique"),
         (
-            "builtin-file",
-            vec![catalog("acme-copy", None)],
+            "shadow-face-family",
+            vec![shadow],
             0,
-            "catalogMerge",
-            "unique",
+            "catalogIdTaken",
+            "catalogIdTaken",
+        ),
+        (
+            "shadow-entry-family",
+            vec![shadow_entry],
+            0,
+            "catalogIdTaken",
+            "catalogIdTaken",
         ),
         (
             "twice",

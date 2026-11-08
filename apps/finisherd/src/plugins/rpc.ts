@@ -183,6 +183,7 @@ export function pluginHandlers({ plugins, audit, guard }: PluginRpcDeps) {
         ),
       );
     },
+    "plugin.discard": ({ planId }: { readonly planId: string }, options: Options) => guard("plugin.discard", lifecycle.discard(planId, askerOf(options))),
     "plugin.install": (req: PluginInstallRequest, options: Options): Effect.Effect<PluginInstallResult, FinError> => {
       const by = askerOf(options);
       // Read before the install: a failed one may delete its plan.

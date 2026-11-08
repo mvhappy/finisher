@@ -231,6 +231,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // owner's (`plugin.install`), enabling and disabling too (`plugin.admin`). A suggestion is
   // about a project the caller reads.
   "plugin.plan": { scopes: ["plugin.read"], escalate: (p) => (p.allowDowngrade === true ? ["plugin.install"] : []) },
+  // Giving up a plan is its maker's (the handler checks who made it); nothing else changes.
+  "plugin.discard": { scopes: ["plugin.read"] },
   "plugin.install": { scopes: ["plugin.install"] },
   "plugin.remove": { scopes: ["plugin.install"] },
   "plugin.enable": { scopes: ["plugin.admin"] },

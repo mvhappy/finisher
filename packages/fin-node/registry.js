@@ -56,6 +56,10 @@ export function defineRegistry({ native, call, toFinError }) {
       return call(this.#native.packContent(dir));
     }
 
+    packStyle(dir, name) {
+      return call(this.#native.packStyle(dir, name));
+    }
+
     bundledList() {
       try {
         return this.#native.bundledList();

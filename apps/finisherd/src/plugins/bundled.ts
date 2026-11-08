@@ -95,7 +95,7 @@ export function makeBundled({ native, tables, lifecycle, audit, root }: BundledD
         return item;
       }
       if (row !== undefined && row.source === "bundled" && row.version === v.version && row.treeHash === v.treeHash) {
-        if (yield* lifecycle.restoreBundled(v.id)) record("plugin.enable", { pluginId: v.id });
+        if ((yield* lifecycle.restoreBundled(v.id)) === "enabled") record("plugin.enable", { pluginId: v.id });
         return item;
       }
       const done = yield* lifecycle.installBundled(root, v);

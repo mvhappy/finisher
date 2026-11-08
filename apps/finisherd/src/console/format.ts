@@ -4,6 +4,7 @@
 import type { AuditEntry } from "@finisher/contracts";
 import { consoleError, type Failure } from "./client.ts";
 import { exitCodeOf } from "./exit-codes.ts";
+import { safe } from "./safe.ts";
 
 /** Where the console writes: stdout for answers, stderr for errors. */
 export interface Output {
@@ -18,9 +19,10 @@ export const processOutput: Output = {
 
 /** Prints `e` and answers its exit code. */
 export function printFailure(o: Output, e: Failure): number {
-  const details = e.details !== undefined && e.details !== null && Object.keys(e.details).length > 0 ? ` ${JSON.stringify(e.details)}` : "";
-  o.err(`finisherd: ${e.code}: ${e.message}${details}`);
-  if (e.fix !== undefined) o.err(`finisherd: fix: ${e.fix}`);
+  const details = e.details !== undefined && e.details !== null && Object.keys(e.details).length > 0 ? ` ${safe(JSON.stringify(e.details))}` : "";
+  // Messages can carry what a registry wrote (an advisory, a plugin name): plain text only.
+  o.err(`finisherd: ${safe(e.code)}: ${safe(e.message)}${details}`);
+  if (e.fix !== undefined) o.err(`finisherd: fix: ${safe(e.fix)}`);
   return exitCodeOf(e.code);
 }
 

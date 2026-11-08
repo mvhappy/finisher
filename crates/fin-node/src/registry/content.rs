@@ -54,7 +54,11 @@ fn title(m: &Manifest, files: &DirFiles<'_>, key: &str) -> String {
     found.unwrap_or_else(|| key.to_string())
 }
 
-fn read(base: &std::path::Path, rel: &str) -> std::result::Result<PackContent, CoreError> {
+/// The manifest of the installed content pack at store folder `rel`, and the folder.
+fn open_pack(
+    base: &std::path::Path,
+    rel: &str,
+) -> std::result::Result<(Manifest, std::path::PathBuf), CoreError> {
     let dir = package_dir(base, rel).ok_or_else(|| {
         CoreError::new("PLUGIN_NOT_INSTALLED", "not a store folder")
             .with_details(json!({ "reason": "dir" }))
@@ -64,6 +68,70 @@ fn read(base: &std::path::Path, rel: &str) -> std::result::Result<PackContent, C
     if m.kind != PluginKind::Content {
         return Err(damaged(fin_plugin_api::MANIFEST_FILE, "not a content pack"));
     }
+    Ok((m, dir))
+}
+
+/// One caption style of the pack, its file parsed and validated as at install.
+fn style_entry(
+    m: &Manifest,
+    files: &DirFiles<'_>,
+    s: &fin_plugin_api::manifest::CaptionStyleContribution,
+) -> std::result::Result<StyleEntry, CoreError> {
+    let bytes = files
+        .read(&s.file)
+        .ok_or_else(|| damaged(&s.file, "missing"))?;
+    let style = fin_core::captions::parse_style_file(&bytes).map_err(|e| damaged(&s.file, e))?;
+    let mut style = serde_json::to_value(&style).map_err(|e| damaged(&s.file, e))?;
+    if let Some(o) = style.as_object_mut() {
+        o.remove("id");
+    }
+    Ok(StyleEntry {
+        name: s.name.clone(),
+        title: s.title.as_deref().map(|k| title(m, files, k)),
+        style,
+    })
+}
+
+/// One caption style of a pack (`plugin.content.get`): only that style's file is parsed, so
+/// serving one style does not re-read the pack's font catalogs or its other styles (review L2).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackStyle {
+    id: String,
+    version: String,
+    /// Every caption style name of the pack, for the answer to an unknown name.
+    available: Vec<String>,
+    /// The style, when the pack has one of that name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found: Option<StyleEntry>,
+}
+
+fn read_style(
+    base: &std::path::Path,
+    rel: &str,
+    name: &str,
+) -> std::result::Result<PackStyle, CoreError> {
+    let (m, dir) = open_pack(base, rel)?;
+    let files = DirFiles(&dir);
+    let found = match m.contributes.caption_styles.iter().find(|s| s.name == name) {
+        Some(s) => Some(style_entry(&m, &files, s)?),
+        None => None,
+    };
+    Ok(PackStyle {
+        id: m.id.to_string(),
+        version: m.version.to_string(),
+        available: m
+            .contributes
+            .caption_styles
+            .iter()
+            .map(|s| s.name.clone())
+            .collect(),
+        found,
+    })
+}
+
+fn read(base: &std::path::Path, rel: &str) -> std::result::Result<PackContent, CoreError> {
+    let (m, dir) = open_pack(base, rel)?;
     let files = DirFiles(&dir);
     let mut font_catalogs = Vec::new();
     for c in &m.contributes.font_catalogs {
@@ -76,20 +144,7 @@ fn read(base: &std::path::Path, rel: &str) -> std::result::Result<PackContent, C
     }
     let mut caption_styles = Vec::new();
     for s in &m.contributes.caption_styles {
-        let bytes = files
-            .read(&s.file)
-            .ok_or_else(|| damaged(&s.file, "missing"))?;
-        let style =
-            fin_core::captions::parse_style_file(&bytes).map_err(|e| damaged(&s.file, e))?;
-        let mut style = serde_json::to_value(&style).map_err(|e| damaged(&s.file, e))?;
-        if let Some(o) = style.as_object_mut() {
-            o.remove("id");
-        }
-        caption_styles.push(StyleEntry {
-            name: s.name.clone(),
-            title: s.title.as_deref().map(|k| title(&m, &files, k)),
-            style,
-        });
+        caption_styles.push(style_entry(&m, &files, s)?);
     }
     Ok(PackContent {
         id: m.id.to_string(),
@@ -112,6 +167,19 @@ impl Registry {
         let inner = self.inner.clone();
         on_worker(env, &self.worker, move || {
             encode(&read(&inner.base, &dir).map_err(reject)?)
+        })
+    }
+
+    /// One caption style of the installed content pack in `dir`: `{id, version, available:
+    /// [name], found?: {name, title?, style}}` JSON, only that style's file read and validated.
+    #[napi(catch_unwind, ts_return_type = "Promise<string>")]
+    pub fn pack_style<'e>(&self, env: &'e Env, dir: String, name: String) -> Result<Object<'e>> {
+        if dir.is_empty() {
+            return Err(bad_request("the pack folder", "empty"));
+        }
+        let inner = self.inner.clone();
+        on_worker(env, &self.worker, move || {
+            encode(&read_style(&inner.base, &dir, &name).map_err(reject)?)
         })
     }
 }

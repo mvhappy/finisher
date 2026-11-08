@@ -362,6 +362,12 @@ export declare class Registry {
    * contentInvalid}` when one no longer is).
    */
   packContent(dir: string): Promise<string>;
+  /**
+   * One caption style of the installed content pack in `dir`: `{ id, version, available:
+   * [name], found?: { name, title?, style } }` JSON. Only that style's file is read and
+   * validated (`plugin.content.get` serves one style, not the pack).
+   */
+  packStyle(dir: string, name: string): Promise<string>;
   /** The bundled plugins compiled into this binary: `[{ id, version, treeHash }]` JSON. */
   bundledList(): string;
   /**

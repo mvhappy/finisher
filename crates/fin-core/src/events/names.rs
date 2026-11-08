@@ -288,6 +288,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "ops.subscribe",
         "plugin.content.get",
         "plugin.disable",
+        "plugin.discard",
         "plugin.enable",
         "plugin.info",
         "plugin.install",

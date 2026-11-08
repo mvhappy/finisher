@@ -123,7 +123,8 @@ fn full(p: &PackageSpec) -> Result<FullPackage> {
     })
 }
 
-/// A font catalog of copies of the built-in catalog's first entry, one per id.
+/// A font catalog of copies of the built-in catalog's first entry, one per id, each with a
+/// family and a file of its own (a pack may not reuse the built-in catalog's families, review H1).
 fn font_catalog(ids: &[String]) -> Result<Vec<u8>> {
     let builtin = fin_fonts::FontCatalog::builtin();
     let first = builtin
@@ -135,6 +136,15 @@ fn font_catalog(ids: &[String]) -> Result<Vec<u8>> {
         .map(|id| {
             let mut e = first.clone();
             e.id = id.clone();
+            e.family = format!("Pack {id}");
+            e.styles.truncate(1);
+            for style in &mut e.styles {
+                style.file.sha256 =
+                    fin_registry::tuf::sha256_hex(format!("{id}/{}", style.id).as_bytes());
+                for face in &mut style.file.faces {
+                    face.family = e.family.clone();
+                }
+            }
             e
         })
         .collect();

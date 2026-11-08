@@ -66,6 +66,8 @@ import {
   RegistryStatusSuccess,
 } from "./plugins.ts";
 import {
+  PluginDiscardPayload,
+  PluginDiscardSuccess,
   PluginStatePayload,
   PluginInstallPayload,
   PluginInstallSuccess,
@@ -486,6 +488,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("plugin.info", { payload: PluginInfoPayload, success: PluginInfoSuccess, error: FinError }),
   Rpc.make("plugin.content.get", { payload: PluginContentGetPayload, success: PluginContentGetSuccess, error: FinError }),
   Rpc.make("plugin.plan", { payload: PluginPlanPayload, success: PluginPlanSuccess, error: FinError }),
+  Rpc.make("plugin.discard", { payload: PluginDiscardPayload, success: PluginDiscardSuccess, error: FinError }),
   Rpc.make("plugin.install", { payload: PluginInstallPayload, success: PluginInstallSuccess, error: FinError }),
   Rpc.make("plugin.remove", { payload: PluginRemovePayload, success: PluginRemoveSuccess, error: FinError }),
   Rpc.make("plugin.enable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),

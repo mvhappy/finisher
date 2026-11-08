@@ -145,7 +145,9 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const advised = placed.registryId == null ? [] : yield* attemptJson<Revoked[]>(() => native.revocations(placed.registryId!, JSON.stringify([{ id: placed.id, version: placed.version }])));
       const revokedNow = advised.length > 0 || staged.warnings?.some((w) => w.code === "advisory" && w.details?.action === "disable") === true;
       const content = placed.kind === "content";
-      const keepOff = content && prev !== undefined && prev.state === "disabled";
+      // The owner's switch survives an update: a pack they turned off stays off, also a bundled
+      // one that was revoked meanwhile (its `enabled` is still their choice, review M2).
+      const keepOff = content && prev !== undefined && (prev.state === "disabled" || (prev.state === "revoked" && prev.source === "bundled" && !prev.enabled));
       const enabled = content && !keepOff && !revokedNow;
       const state: InstalledRow["state"] = revokedNow ? "revoked" : enabled ? "active" : "disabled";
       const autoUpdate = content && (autoUpdateReq ?? prev?.autoUpdate ?? false);
@@ -259,22 +261,23 @@ export function makeLifecycle(deps: LifecycleDeps) {
         }
         // Another start of the same app got here first: nothing to do.
         if (prev !== undefined && prev.version === entry.version && prev.treeHash === entry.treeHash) return undefined;
-        if (prev !== undefined && prev.version === entry.version) {
-          // The same version with other bytes (the app was rebuilt): replaced, not updated.
-          yield* Effect.ignore(attempt(() => native.removePlugin(prev!.id, prev!.version, false)));
-          const gone = prev;
-          yield* Effect.try({ try: () => tables.store.tx(() => tables.deletePlugin(gone.id)), catch: toFinError });
-          prev = undefined;
-        }
+        // The same version with other bytes (the app was rebuilt) is replaced, not updated: it
+        // is planned as a fresh install and the old copy goes only once that plan exists, so a
+        // plan that fails leaves the pack as it was (review M2). What the owner chose is kept.
+        const rebuilt = prev !== undefined && prev.version === entry.version ? prev : undefined;
         const body = {
           id: entry.id,
           source: { kind: "bundled", root },
-          update: prev !== undefined,
+          update: prev !== undefined && rebuilt === undefined,
           // An older app than the installed version (a rollback) installs its own version.
-          allowDowngrade: prev !== undefined,
-          ...(prev === undefined ? {} : { installed: installedPlugin(prev, tables.grants(entry.id)) }),
+          allowDowngrade: prev !== undefined && rebuilt === undefined,
+          ...(prev === undefined || rebuilt !== undefined ? {} : { installed: installedPlugin(prev, tables.grants(entry.id)) }),
         };
         const plan = yield* attemptJson<InstallPlan>(() => native.plan(JSON.stringify(body)));
+        if (rebuilt !== undefined) {
+          yield* Effect.ignore(attempt(() => native.removePlugin(rebuilt.id, rebuilt.version, false)));
+          yield* Effect.try({ try: () => tables.store.tx(() => tables.deletePlugin(rebuilt.id)), catch: toFinError });
+        }
         const row: PlanRow = {
           id: plan.planId,
           digest: plan.digest,
@@ -291,11 +294,18 @@ export function makeLifecycle(deps: LifecycleDeps) {
           expiresAt: plan.expiresAt,
         };
         yield* Effect.try({ try: () => tables.addPlan(row), catch: toFinError });
-        return yield* place(row, { copyleft: false, thirdPartyCode: false }, false, BUNDLED_BY).pipe(
+        // `undefined` keeps the owner's automatic-update choice of the installed version.
+        const done = yield* place(row, { copyleft: false, thirdPartyCode: false }, rebuilt?.autoUpdate, BUNDLED_BY).pipe(
           Effect.tapError(() =>
             Effect.sync(() => tables.deletePlan(row.id)).pipe(Effect.andThen(Effect.ignore(attempt(() => native.discardPlan(row.id))))),
           ),
         );
+        // A rebuilt pack the owner had switched off stays off.
+        if (rebuilt !== undefined && !rebuilt.enabled && done.plugin.enabled) {
+          tables.setState(entry.id, false, "disabled", clock());
+          return { ...done, plugin: tables.installedOne(entry.id)! };
+        }
+        return done;
       }),
     );
 
@@ -305,18 +315,21 @@ export function makeLifecycle(deps: LifecycleDeps) {
       Effect.sync(() => {
         const row = tables.installedOne(id);
         if (row === undefined || row.source !== "bundled" || row.state === "revoked") return false;
-        return tables.setState(id, false, "revoked", clock());
+        // Only `state` changes: `enabled` stays the owner's choice, so the restore below puts
+        // back what they had (review M2). Nothing is served while the state is `revoked`.
+        return tables.setState(id, row.enabled, "revoked", clock());
       }),
     );
 
-  /** A revoked bundled plugin whose resources match the app again: back to the state a fresh install has. */
-  const restoreBundled = (id: string): Effect.Effect<boolean> =>
+  /** A revoked bundled plugin whose resources match the app again: back to what the owner had (on, unless they switched it off). */
+  const restoreBundled = (id: string): Effect.Effect<"enabled" | "kept" | false> =>
     locked(
       Effect.sync(() => {
         const row = tables.installedOne(id);
         if (row === undefined || row.source !== "bundled" || row.state !== "revoked") return false;
-        const content = row.kind === "content";
-        return tables.setState(id, content, content ? "active" : "disabled", clock());
+        const on = row.kind === "content" && row.enabled;
+        if (!tables.setState(id, on, on ? "active" : "disabled", clock())) return false;
+        return on ? "enabled" : "kept"; // "kept": the owner had it off, and it stays off
       }),
     );
 
@@ -352,6 +365,21 @@ export function makeLifecycle(deps: LifecycleDeps) {
           return { suggestionId };
         },
         catch: toFinError,
+      }),
+    /**
+     * The maker of plan `planId` gives it up: its row and staged files go, and its slot of
+     * `TOO_MANY_PLANS` is free again (review M3). Only the principal who made it may; anyone
+     * else, and a plan that is gone, gets `PLAN_EXPIRED` alike.
+     */
+    discard: (planId: string, by: Asker): Effect.Effect<{ discarded: true }, FinError> =>
+      Effect.gen(function* () {
+        const row = tables.plan(planId);
+        if (row === undefined || row.byKind !== by.kind || row.byId !== by.id) {
+          return yield* Effect.fail(finError("PLAN_EXPIRED", `no plan ${planId}: it expired, was used or was never made`, { reason: "missing" }, "Make a new plan."));
+        }
+        tables.deletePlan(row.id);
+        yield* Effect.ignore(attempt(() => native.discardPlan(row.id)));
+        return { discarded: true as const };
       }),
     /** Deletes expired plans' rows and fin-registry's expired staging; returns how many. */
     sweep: (): Effect.Effect<number, FinError> =>

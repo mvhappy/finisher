@@ -157,6 +157,44 @@ describe("updates with the app", () => {
     expect(f.storeDirs(ID).length).toBe(1);
   });
 
+  /** Review M2 of Tasks 10 and 12: the app's own housekeeping must not undo the owner's switch. */
+  test("a_rebuilt_app_keeps_an_owner_disabled_pack_off", async () => {
+    const root = copyOfReal();
+    const s = f.service({ bundledRoot: root });
+    standIn(s, [entry(join(root, "captions-basic"), ID, "1.0.0")]);
+    await run(s.plugins.syncBundled());
+    await run(s.life.disable(ID));
+    writeFileSync(join(root, "captions-basic", "messages", "en.json"), JSON.stringify({ "style.bold": "Bolder", "style.clean": "Clean", "style.punch": "Punch" }));
+    standIn(s, [entry(join(root, "captions-basic"), ID, "1.0.0")]);
+    await run(s.plugins.syncBundled());
+    expect(s.tables.installedOne(ID)).toMatchObject({ enabled: false, state: "disabled", version: "1.0.0" });
+    expect(f.storeDirs(ID).length).toBe(1);
+    // An enabled one stays on, with its automatic-update choice.
+    await run(s.life.enable(ID));
+    const row = s.tables.installedFull(ID)!;
+    s.tables.replacePlugin({ ...row, autoUpdate: true } as never, 1);
+    writeFileSync(join(root, "captions-basic", "messages", "en.json"), JSON.stringify({ "style.bold": "Boldest", "style.clean": "Clean", "style.punch": "Punch" }));
+    standIn(s, [entry(join(root, "captions-basic"), ID, "1.0.0")]);
+    await run(s.plugins.syncBundled());
+    expect(s.tables.installedOne(ID)).toMatchObject({ enabled: true, state: "active", autoUpdate: true });
+  });
+
+  test("a_plan_that_fails_leaves_the_installed_pack_in_place", async () => {
+    const root = copyOfReal();
+    const s = f.service({ bundledRoot: root });
+    standIn(s, [entry(join(root, "captions-basic"), ID, "1.0.0")]);
+    await run(s.plugins.syncBundled());
+    const before = s.tables.installedFull(ID)!;
+    const dirs = f.storeDirs(ID);
+    // The rebuilt resources do not match the hash compiled into this binary: the plan is refused.
+    writeFileSync(join(root, "captions-basic", "messages", "en.json"), JSON.stringify({ "style.bold": "Bolder", "style.clean": "Clean", "style.punch": "Punch" }));
+    const rebuilt = { id: ID, version: "1.0.0", treeHash: hooks.treeHash(join(root, "captions-basic")) };
+    expect(await codeOf(s.life.installBundled(root, rebuilt))).toBe("PLUGIN_BUNDLED_MISMATCH");
+    expect(s.tables.installedFull(ID)).toEqual(before);
+    expect(s.tables.grants(ID).length).toBeGreaterThanOrEqual(0);
+    expect(f.storeDirs(ID)).toEqual(dirs);
+  });
+
   test("two_starts_at_once_install_it_once", async () => {
     const s = f.service();
     await Promise.all([run(s.plugins.syncBundled()), run(s.plugins.syncBundled())]);
@@ -180,7 +218,8 @@ describe("tampered resources", () => {
     const again = f.service({ bundledRoot: root });
     const status = await run(again.plugins.syncBundled());
     expect(status.plugins).toEqual([{ id: ID, version: "1.0.0", ok: false, code: "PLUGIN_BUNDLED_MISMATCH" }]);
-    expect(again.tables.installedOne(ID)).toMatchObject({ enabled: false, state: "revoked" });
+    // Revoking changes the state only: `enabled` stays the owner's choice (review M2).
+    expect(again.tables.installedOne(ID)).toMatchObject({ enabled: true, state: "revoked" });
     expect((await run(again.h["plugin.list"]())).bundled?.plugins[0]).toMatchObject({ ok: false, code: "PLUGIN_BUNDLED_MISMATCH" });
     expect(await codeOf(again.life.enable(ID))).toBe("PLUGIN_REVOKED");
     expect(again.rows().find((r) => r.kind === "plugin.revoke")).toMatchObject({ principalKind: "system", code: "PLUGIN_BUNDLED_MISMATCH", details: { pluginId: ID } });
@@ -190,6 +229,25 @@ describe("tampered resources", () => {
     await run(fixed.plugins.syncBundled());
     expect(fixed.tables.installedOne(ID)).toMatchObject({ enabled: true, state: "active" });
     expect((await run(fixed.h["plugin.list"]())).bundled?.plugins[0]).toEqual({ id: ID, version: "1.0.0", ok: true });
+  });
+
+  test("revoke_and_restore_keep_an_owner_disabled_pack_off", async () => {
+    const root = copyOfReal();
+    const s = f.service({ bundledRoot: root });
+    await run(s.plugins.syncBundled());
+    await run(s.life.disable(ID));
+    const style = join(root, "captions-basic", "styles", "bold.json");
+    const original = readFileSync(style);
+    writeFileSync(style, original.toString("utf8").replace('"maxChars": 24', '"maxChars": 240'));
+    const again = f.service({ bundledRoot: root });
+    await run(again.plugins.syncBundled());
+    expect(again.tables.installedOne(ID)).toMatchObject({ enabled: false, state: "revoked" });
+    writeFileSync(style, original);
+    const fixed = f.service({ bundledRoot: root });
+    await run(fixed.plugins.syncBundled());
+    // Back as the owner left it: off, not switched on by the repair.
+    expect(fixed.tables.installedOne(ID)).toMatchObject({ enabled: false, state: "disabled" });
+    expect(fixed.rows().filter((r) => r.kind === "plugin.enable")).toEqual([]);
   });
 
   test("a_tampered_tree_is_never_installed", async () => {

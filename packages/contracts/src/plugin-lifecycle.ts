@@ -58,6 +58,16 @@ export const PluginInstallSuccess = Schema.Struct({
 });
 export type PluginInstallResult = typeof PluginInstallSuccess.Type;
 
+/**
+ * `plugin.discard` (`plugin.read`): the maker of a plan gives it up (the console does so on
+ * every exit after a plan is made but not installed: cancelled, refused, typed wrongly), which
+ * deletes its row and staged files and frees its slot of `TOO_MANY_PLANS` (review M3). Only the
+ * principal who made the plan may; for anyone else, and for a plan that is gone, the answer is
+ * the same `PLAN_EXPIRED` (a plan id is not something to probe).
+ */
+export const PluginDiscardPayload = Schema.Struct({ planId: Schema.String.check(Schema.isPattern(/^p[0-9a-f]{24}$/)) });
+export const PluginDiscardSuccess = Schema.Struct({ discarded: Schema.Boolean });
+
 /** `plugin.remove` (`plugin.install`, owner): deletes the store directory, its data with `purgeData`. */
 export const PluginRemovePayload = Schema.Struct({ id: PluginIdSchema, purgeData: Schema.optional(Schema.Boolean), challenge: ChallengeField });
 export const PluginRemoveSuccess = Schema.Struct({ removed: Schema.Boolean });

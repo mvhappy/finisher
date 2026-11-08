@@ -53,6 +53,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "ops.subscribe",
       "plugin.content.get",
       "plugin.disable",
+      "plugin.discard",
       "plugin.enable",
       "plugin.info",
       "plugin.install",

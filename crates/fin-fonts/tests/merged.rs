@@ -86,6 +86,58 @@ fn merge_refuses_taken_ids() {
     assert!(base.merged(&[a.clone(), a]).is_err());
 }
 
+/// Review H1 (Tasks 10 and 12): `find_face` matches face families before entry families, and
+/// the built-in `inter` has `Inter Variable` faces, so a pack face called `Inter` would win
+/// new pins for the style family `Inter`.
+#[test]
+fn merge_refuses_a_family_the_catalog_already_has() {
+    let base = FontCatalog::builtin();
+    assert!(base.entry("inter").is_some_and(|e| e.family == "Inter"));
+    let taken = |c: FontCatalog| {
+        let err = base.merged(&[c]).unwrap_err();
+        assert_eq!(err.code, "FONT_CATALOG_INVALID");
+        assert_eq!(err.details["rule"], "catalogIdTaken");
+        err
+    };
+
+    // A pack face named like a built-in entry family (the shadowing attack) …
+    let (mut shadow, _) = pack("pack-shadow", 11);
+    shadow.entries[0].styles[0].file.faces[0].family = "Inter".into();
+    let err = taken(shadow);
+    assert_eq!(err.details["family"], "Inter");
+    assert_eq!(
+        err.details["path"],
+        "/extra/0/entries/0/styles/0/file/faces/0/family"
+    );
+    // … a pack entry family named like one (any case) …
+    let (mut entry, _) = pack("pack-entry", 12);
+    entry.entries[0].family = "inter".into();
+    assert_eq!(taken(entry).details["path"], "/extra/0/entries/0/family");
+    // … and either named like a built-in face family.
+    let face = &base.entry("inter").unwrap().styles[0].file.faces[0].family;
+    let (mut other, _) = pack("pack-face", 13);
+    other.entries[0].family = face.clone();
+    taken(other);
+
+    // Packs do not shadow each other's families either, faces or entries.
+    let (mut a, _) = pack("pack-a", 14);
+    a.entries[0].styles[0].file.faces[0].family = "Shared Family".into();
+    let (mut b, _) = pack("pack-b", 15);
+    b.entries[0].family = "Shared Family".into();
+    let err = base.merged(&[a.clone(), b]).unwrap_err();
+    assert_eq!(err.details["path"], "/extra/1/entries/0/family");
+
+    // The plan and validate rule is the same one, naming the catalog that fails.
+    let (mut late, _) = pack("pack-late", 16);
+    late.entries[0].styles[0].file.faces[0].family = "Inter Variable".into();
+    let (ok, _) = pack("pack-ok", 17);
+    let (k, err) = base.first_unmergeable(&[ok, late]).unwrap();
+    assert_eq!(
+        (k, err.details["rule"].clone()),
+        (1, "catalogIdTaken".into())
+    );
+}
+
 #[test]
 fn merge_refuses_the_same_bytes_under_two_ids() {
     let base = FontCatalog::builtin();

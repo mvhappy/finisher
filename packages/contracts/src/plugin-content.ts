@@ -11,9 +11,13 @@ export const PackStyleNameSchema = Schema.String.check(Schema.isPattern(/^[a-z0-
 
 /**
  * `plugin.content.get` (`plugin.read`): the contribution `name` of `kind` from the content
- * pack `id`, which must be installed, enabled and not revoked (`PLUGIN_NOT_FOUND` otherwise,
- * whether or not it is installed: a disabled pack serves nothing). Only caption styles are read
- * this way; font catalogs are merged into `fonts.catalog`.
+ * pack `id`, which must be installed, enabled and not revoked. Answers, by what is wrong:
+ * `PLUGIN_NOT_INSTALLED` (no such plugin), `NOT_FOUND` (a code plugin, or a pack with no style
+ * of that name; `details.available` lists the pack's), `PLUGIN_REVOKED` (an advisory revoked
+ * it), `PLUGIN_BUNDLED_MISMATCH` (a bundled pack that does not match the app) and
+ * `PLUGIN_DISABLED` (the owner switched it off), and `PLUGIN_MANIFEST_INVALID {reason:
+ * contentInvalid}` when its files no longer validate. Only caption styles are read this way;
+ * font catalogs are merged into `fonts.catalog`.
  */
 export const PluginContentGetPayload = Schema.Struct({
   id: PluginIdSchema,
@@ -25,14 +29,16 @@ export type PluginContentGetRequest = typeof PluginContentGetPayload.Type;
 /**
  * The style as the pack ships it, checked as `style.add` checks its values: a `CaptionStyle`
  * without its `id` (the project gives its copy one). `title` is the pack's `en` message for the
- * style, else its key.
+ * style, else its key. The server validated `style` with the host's own parser
+ * (`parse_style_file`), so the schema checks the envelope and the type below narrows `style` to
+ * the generated `CaptionStyle`.
  */
-export interface PluginContentResult {
-  readonly id: string;
-  readonly version: string;
-  readonly kind: "captionStyle";
-  readonly name: string;
-  readonly title?: string;
-  readonly style: Omit<CaptionStyle, "id">;
-}
-export const PluginContentGetSuccess = Schema.Unknown;
+export const PluginContentGetSuccess = Schema.Struct({
+  id: Schema.String,
+  version: Schema.String,
+  kind: Schema.Literal("captionStyle"),
+  name: PackStyleNameSchema,
+  title: Schema.optional(Schema.String),
+  style: Schema.Record(Schema.String, Schema.Unknown),
+});
+export type PluginContentResult = Omit<typeof PluginContentGetSuccess.Type, "style"> & { readonly style: Omit<CaptionStyle, "id"> };

@@ -6,7 +6,7 @@ import { chmodSync, cpSync, existsSync, readFileSync, writeFileSync } from "node
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Exit, Scope } from "effect";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { catalogJson, FontServer, sha256 } from "../../../packages/fin-node/test/fontserver.ts";
 import { type FontsShape, makeFonts } from "../src/fonts.ts";
 import type { FontSink } from "../src/plugins/content.ts";
@@ -172,6 +172,48 @@ describe("font catalogs", () => {
   });
 });
 
+describe("families (review H1)", () => {
+  test("a_pack_face_named_like_a_builtin_family_is_refused_at_plan", async () => {
+    const shadow = catalogOf("acme-shadow");
+    const doc = JSON.parse(shadow.text) as { entries: Array<{ family: string; styles: Array<{ file: { faces: Array<{ family: string }> } }> }> };
+    doc.entries[0]!.styles[0]!.file.faces[0]!.family = "Inter"; // the built-in entry's family; its faces are "Inter Variable"
+    const entryFamily = JSON.parse(shadow.text) as typeof doc;
+    entryFamily.entries[0]!.family = "inter"; // any case
+    const s = await f.setup(
+      {
+        packages: [
+          fontPack("@acme/shadow", "1.0.0", JSON.stringify(doc)),
+          fontPack("@acme/shadow-entry", "1.0.0", JSON.stringify(entryFamily)),
+          fontPack("@acme/fine", "1.0.0", catalogOf("acme-fine", "fine").text),
+        ],
+      },
+      options(),
+    );
+    for (const id of ["@acme/shadow", "@acme/shadow-entry"]) {
+      expect((await failure(s.life.plan({ id }, CONSOLE)))?.details, id).toMatchObject({ reason: "catalogIdTaken" });
+    }
+    await run(s.life.plan({ id: "@acme/fine" }, CONSOLE));
+  });
+});
+
+describe("what a plan counts (review L4)", () => {
+  test("plan_time_merge_counts_disabled_and_revoked_packs", async () => {
+    const s = await f.setup({ packages: [{ id: "@acme/fonts", version: "1.0.0", fonts: ["shared-sans"] }, { id: "@beta/fonts", version: "1.0.0", fonts: ["shared-sans"] }] }, options());
+    await install(s, "@acme/fonts");
+    // Switched off: its entries leave the served catalog, but its ids stay taken for a new plan.
+    await run(s.life.disable("@acme/fonts"));
+    expect(await catalogIds()).not.toContain("shared-sans");
+    expect((await failure(s.life.plan({ id: "@beta/fonts" }, CONSOLE)))?.details).toMatchObject({ reason: "catalogIdTaken" });
+    // Revoked: the same. Removing it is what frees them.
+    f.publish(s.reg, { advisories: [advisory("@acme/fonts", "1.0.0")] });
+    await run(s.h["registry.refresh"]({ id: "team" }, as(CONSOLE)));
+    expect(s.tables.installedOne("@acme/fonts")).toMatchObject({ state: "revoked" });
+    expect((await failure(s.life.plan({ id: "@beta/fonts" }, CONSOLE)))?.details).toMatchObject({ reason: "catalogIdTaken" });
+    await run(s.life.remove("@acme/fonts", false));
+    await run(s.life.plan({ id: "@beta/fonts" }, CONSOLE));
+  });
+});
+
 describe("caption styles", () => {
   test("content_get_returns_style", async () => {
     const s = await f.setup({ packages: [{ id: "@acme/captions", version: "1.2.0", styles: ["punchy", "calm"] }] }, options());
@@ -209,6 +251,34 @@ describe("caption styles", () => {
     const toolPlan = (await run(s.life.plan({ id: "@acme/tool" }, CONSOLE))).plan;
     await run(s.life.install({ planId: toolPlan.planId, digest: toolPlan.digest, accept: { thirdPartyCode: true } }, CONSOLE));
     expect(await codeOf(content(s, "@acme/tool", "punchy"))).toBe("NOT_FOUND");
+  });
+
+  /** Review L2: one style is parsed, once; the pack's other files and catalogs are not re-read per call. */
+  test("content_get_parses_only_the_style_it_serves_and_caches_it", async () => {
+    const s = await f.setup({ packages: [{ id: "@acme/captions", version: "1.0.0", styles: ["punchy", "calm"] }] }, options());
+    await install(s, "@acme/captions");
+    const style = vi.spyOn(s.native, "packStyle");
+    const whole = vi.spyOn(s.native, "packContent");
+    // A damaged sibling does not matter to a style that is fine …
+    const dir = join(f.serverData, "plugins", s.tables.installedFull("@acme/captions")!.dir);
+    chmodSync(join(dir, "styles", "calm.json"), 0o644);
+    writeFileSync(join(dir, "styles", "calm.json"), "{ not json");
+    const first = await run(content(s, "@acme/captions", "punchy"));
+    expect(first.name).toBe("punchy");
+    // … and is served from memory the second time, also to another principal.
+    expect(await run(content(s, "@acme/captions", "punchy", AGENT))).toEqual(first);
+    expect(style).toHaveBeenCalledTimes(1);
+    expect(whole).not.toHaveBeenCalled();
+    // The damaged one is found when it is asked for (and a failure is not cached).
+    expect(await codeOf(content(s, "@acme/captions", "calm"))).toBe("PLUGIN_MANIFEST_INVALID");
+    expect(await codeOf(content(s, "@acme/captions", "calm"))).toBe("PLUGIN_MANIFEST_INVALID");
+    expect(style).toHaveBeenCalledTimes(3);
+    // The enabled state is checked on every call, cached or not.
+    await run(s.life.disable("@acme/captions"));
+    expect(await codeOf(content(s, "@acme/captions", "punchy"))).toBe("PLUGIN_DISABLED");
+    await run(s.life.enable("@acme/captions"));
+    expect((await run(content(s, "@acme/captions", "punchy"))).name).toBe("punchy");
+    expect(style).toHaveBeenCalledTimes(3);
   });
 
   test("a damaged store file serves nothing", async () => {

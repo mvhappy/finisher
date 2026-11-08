@@ -13,8 +13,19 @@
 //   installed, is disabled or is revoked (a bundled pack whose files no longer match the app
 //   included) serves nothing.
 //
-// Everything is read from the pack's store folder by fin-node (`Registry.packContent`), which
-// validates each file again as the install did.
+// Everything is read from the pack's store folder by fin-node, which validates each file again
+// as the install did: `Registry.packContent` for the font catalogs of a sync, and
+// `Registry.packStyle` for `plugin.content.get`, which parses only the style it serves. A
+// served style is cached per store folder (`row.dir` holds the version and the tree hash, so a
+// changed pack is a new key; a folder that is gone or damaged is found by the next sync, which
+// reads it whole).
+//
+// **What a plan counts (review L4).** The plan-time catalog rule (`first_unmergeable`, in
+// fin-registry's plan and `fin-plugin validate`) merges onto the built-in catalog plus the packs
+// *installed*, whether enabled, disabled or revoked; `sync()` merges only the serving ones. So
+// a pack that is switched off, or revoked, still holds its entry ids and families against a
+// new plan: turning it back on can never find its ids taken. The cost is that removing it is
+// the way to free them.
 import type { FinError, PluginContentGetRequest, PluginContentResult } from "@finisher/contracts";
 import type { Registry } from "@finisher/fin-node";
 import { Effect } from "effect";
@@ -63,8 +74,20 @@ export interface ContentDeps {
 /** Whether the pack's contributions are served: a content pack that is enabled and active. */
 const serving = (r: { readonly kind: string; readonly enabled: boolean; readonly state: string }): boolean => r.kind === "content" && r.enabled && r.state === "active";
 
+/** How many served styles are kept (each is a few KiB). */
+const STYLE_CACHE_MAX = 64;
+
+interface PackStyle {
+  readonly id: string;
+  readonly version: string;
+  readonly available: ReadonlyArray<string>;
+  readonly found?: { readonly name: string; readonly title?: string; readonly style: PluginContentResult["style"] };
+}
+
 export function makeContent({ native, tables, fonts }: ContentDeps) {
   let problems: ReadonlyArray<ContentProblem> = [];
+  // `<store folder>\n<style name>` → the style, least recently used first.
+  const served = new Map<string, PluginContentResult>();
   // What the font manager has now: the packs and their folders, so an unchanged set costs nothing.
   let applied: string | undefined;
 
@@ -125,21 +148,31 @@ export function makeContent({ native, tables, fonts }: ContentDeps) {
       if (!row.enabled) {
         return yield* Effect.fail(finError("PLUGIN_DISABLED", `${req.id} is disabled`, { id: req.id }, "An owner can enable it."));
       }
-      const content = yield* attemptJson<PackContent>(() => native.packContent(row.dir));
-      const found = content.captionStyles.find((s) => s.name === req.name);
+      const key = `${row.dir}\n${req.name}`;
+      const hit = served.get(key);
+      if (hit !== undefined) {
+        served.delete(key); // most recently used goes last
+        served.set(key, hit);
+        return hit;
+      }
+      const pack = yield* attemptJson<PackStyle>(() => native.packStyle(row.dir, req.name));
+      const found = pack.found;
       if (found === undefined) {
         return yield* Effect.fail(
-          finError("NOT_FOUND", `${req.id} has no caption style ${req.name}`, { kind: "captionStyle", id: req.id, name: req.name, available: content.captionStyles.map((s) => s.name) }, "Name one of the pack's styles."),
+          finError("NOT_FOUND", `${req.id} has no caption style ${req.name}`, { kind: "captionStyle", id: req.id, name: req.name, available: pack.available }, "Name one of the pack's styles."),
         );
       }
-      return {
-        id: content.id,
-        version: content.version,
+      const result: PluginContentResult = {
+        id: pack.id,
+        version: pack.version,
         kind: "captionStyle" as const,
         name: found.name,
         ...(found.title === undefined ? {} : { title: found.title }),
         style: found.style,
       };
+      served.set(key, result);
+      if (served.size > STYLE_CACHE_MAX) served.delete(served.keys().next().value!);
+      return result;
     });
 
   return { sync, get, problems: (): ReadonlyArray<ContentProblem> => problems };

@@ -413,13 +413,25 @@ pub(crate) fn is_advisories(t: &TargetInfo) -> bool {
 
 /// Parses an advisories file; one that does not parse is `REGISTRY_INVALID`.
 pub(crate) fn advisory_file(name: &str, bytes: &[u8]) -> Result<AdvisoryFile, TufError> {
-    serde_json::from_slice(bytes).map_err(|e| {
+    let invalid = |why: String, field: Option<&str>| {
         TufError::new(
             "REGISTRY_INVALID",
-            format!("{name}: {e}"),
-            json!({ "reason": "advisories", "target": name }),
+            format!("{name}: {why}"),
+            json!({ "reason": "advisories", "target": name, "field": field }),
         )
-    })
+    };
+    let file: AdvisoryFile =
+        serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string(), None))?;
+    // Text a person reads: plain and short (a control character could rewrite the screen).
+    for a in &file.advisories {
+        a.check().map_err(|field| {
+            invalid(
+                format!("an advisory's {field} is too long or holds a control character"),
+                Some(field),
+            )
+        })?;
+    }
+    Ok(file)
 }
 
 /// `tough` reports a delegated role's failures as `targets`; name the role it was loading.

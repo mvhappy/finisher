@@ -66,6 +66,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "plugin.search": {},
   "plugin.info": { id: "@acme/pack" },
   "plugin.plan": { id: "@acme/pack" },
+  "plugin.discard": { planId: "p" + "0".repeat(24) },
   "plugin.install": { planId: "p" + "0".repeat(24), digest: "0".repeat(64) },
   "plugin.remove": { id: "@acme/pack" },
   "plugin.enable": { id: "@acme/pack" },

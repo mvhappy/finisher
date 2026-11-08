@@ -4,6 +4,7 @@
 // connects or asks.
 import type { InstallPlan, Listing, Permission, PluginInfo } from "@finisher/core-types";
 import type { InstalledRow, RegistryEntry } from "@finisher/contracts";
+import { safe } from "./safe.ts";
 
 /** The warnings the person must see before anything else, with the words they are shown in. */
 const LOUD: Record<string, (w: { details?: Record<string, unknown> }) => string[]> = {
@@ -21,16 +22,16 @@ const LOUD: Record<string, (w: { details?: Record<string, unknown> }) => string[
   yanked: () => ["!! YANKED", "   The publisher withdrew this version."],
 };
 
-const asText = (v: unknown): string => (Array.isArray(v) ? v.map(asText).join(", ") : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
+const asText = (v: unknown): string => (Array.isArray(v) ? v.map(asText).join(", ") : typeof v === "object" && v !== null ? safe(JSON.stringify(v)) : safe(v));
 
 /** `net (origins: https://api.example.org)` — the permission's key and what it grants. */
 export function permissionText(p: Permission): string {
   const { perm, ...rest } = p as { perm: string } & Record<string, unknown>;
-  const detail = Object.entries(rest).map(([k, v]) => `${k}: ${asText(v)}`);
-  return detail.length === 0 ? perm : `${perm} (${detail.join("; ")})`;
+  const detail = Object.entries(rest).map(([k, v]) => `${safe(k)}: ${asText(v)}`);
+  return detail.length === 0 ? safe(perm) : `${safe(perm)} (${detail.map(safe).join("; ")})`;
 }
 
-const bytesText = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`);
+const bytesText = (n: number): string => (!Number.isFinite(n) ? "?" : n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`);
 
 const quieter = (w: { code: string; details?: Record<string, unknown> }): string => {
   const d = w.details ?? {};
@@ -46,7 +47,7 @@ const quieter = (w: { code: string; details?: Record<string, unknown> }): string
     case "advisory":
       return `Advisory: ${asText(d.summary ?? d.id ?? "see the registry")}`;
     default:
-      return Object.keys(d).length === 0 ? w.code : `${w.code}: ${JSON.stringify(d)}`;
+      return Object.keys(d).length === 0 ? safe(w.code) : `${safe(w.code)}: ${safe(JSON.stringify(d))}`;
   }
 };
 
@@ -54,7 +55,7 @@ const quieter = (w: { code: string; details?: Record<string, unknown> }): string
 function diffLines(plan: InstallPlan): string[] {
   const { added, widened, removed, riskUp } = plan.diff;
   if (plan.action === "install") return [];
-  const out: string[] = [`Compared with ${plan.from ?? "the installed version"}:`];
+  const out: string[] = [`Compared with ${safe(plan.from ?? "the installed version")}:`];
   if (added.length + widened.length + removed.length === 0) out.push("  No permission changes.");
   for (const p of added) out.push(`  + adds ${permissionText(p)}`);
   for (const w of widened) out.push(`  ~ widens ${permissionText(w.from)}  →  ${permissionText(w.to)}`);
@@ -82,58 +83,58 @@ export function renderPlan(plan: InstallPlan): Rendered {
   }
   const { plugin, source } = plan;
   const verb = plan.action === "install" ? "Install" : plan.action === "update" ? "Update" : "DOWNGRADE";
-  const move = plan.from == null ? plugin.version : `${plan.from} → ${plugin.version}`;
-  const from = source.kind === "registry" && source.registryId != null ? ` from registry ${source.registryId}` : ` (${source.kind})`;
-  lines.push(`${verb} ${plugin.id} ${move}${from}`);
-  lines.push(`  ${plugin.kind === "code" ? "a code plugin" : "a content pack"} by ${plugin.publisher}, ${bytesText(plan.bytes)} unpacked`);
-  lines.push(`  Licence: ${plan.licence.spdx} (${plan.licence.class})`);
-  lines.push(`  Risk: ${plan.risk}`);
+  const move = plan.from == null ? safe(plugin.version) : `${safe(plan.from)} → ${safe(plugin.version)}`;
+  const from = source.kind === "registry" && source.registryId != null ? ` from registry ${safe(source.registryId)}` : ` (${safe(source.kind)})`;
+  lines.push(`${verb} ${safe(plugin.id)} ${move}${from}`);
+  lines.push(`  ${plugin.kind === "code" ? "a code plugin" : "a content pack"} by ${safe(plugin.publisher)}, ${bytesText(plan.bytes)} unpacked`);
+  lines.push(`  Licence: ${safe(plan.licence.spdx)} (${safe(plan.licence.class)})`);
+  lines.push(`  Risk: ${safe(plan.risk)}`);
   if (plan.permissions.length === 0) lines.push("Permissions: none");
   else {
     lines.push(`Permissions (${plan.permissions.length}):`);
-    for (const p of plan.permissions) lines.push(`  [${p.risk}] ${permissionText(p.permission)}`);
+    for (const p of plan.permissions) lines.push(`  [${safe(p.risk)}] ${permissionText(p.permission)}`);
   }
   lines.push(...diffLines(plan));
-  for (const m of plan.models ?? []) lines.push(`Model: ${m.id} (${bytesText(m.bytes)}, ${m.licence})`);
+  for (const m of plan.models ?? []) lines.push(`Model: ${safe(m.id)} (${bytesText(m.bytes)}, ${safe(m.licence)})`);
   const rest = warnings.filter((w) => !(w.code in LOUD));
   if (rest.length > 0) {
     lines.push("Also:");
     for (const w of rest) lines.push(`  ${quieter(w)}`);
   }
-  if (plan.registryStaleDays != null && !rest.some((w) => w.code === "registryStale")) lines.push(`  Its registry's data is ${plan.registryStaleDays} days past its expiry`);
-  lines.push(`Plan ${plan.planId} expires ${new Date(plan.expiresAt).toISOString()}`);
+  if (plan.registryStaleDays != null && !rest.some((w) => w.code === "registryStale")) lines.push(`  Its registry's data is ${safe(plan.registryStaleDays)} days past its expiry`);
+  lines.push(`Plan ${safe(plan.planId)} expires ${new Date(plan.expiresAt).toISOString()}`);
   return { lines, thirdPartyCode: warnings.some((w) => w.code === "thirdPartyCode"), copyleft: warnings.some((w) => w.code === "copyleft") };
 }
 
 /** One installed plugin as a line. */
 export function installedLine(p: InstalledRow): string {
   const state = p.state === "active" ? (p.enabled ? "enabled" : "disabled") : p.state;
-  const from = p.source === "registry" && p.registryId !== undefined ? ` from ${p.registryId}` : ` (${p.source})`;
-  return `${p.id} ${p.version}  ${p.kind}  ${state}${p.autoUpdate ? "  auto-update" : ""}${from}${p.registryStaleDays === undefined ? "" : `  registry ${p.registryStaleDays} days stale`}`;
+  const from = p.source === "registry" && p.registryId !== undefined ? ` from ${safe(p.registryId)}` : ` (${safe(p.source)})`;
+  return `${safe(p.id)} ${safe(p.version)}  ${safe(p.kind)}  ${safe(state)}${p.autoUpdate ? "  auto-update" : ""}${from}${p.registryStaleDays === undefined ? "" : `  registry ${safe(p.registryStaleDays)} days stale`}`;
 }
 
 /** A search hit as a line. */
-export const listingLine = (l: Listing): string => `${l.id} ${l.latest}  ${l.kind}  ${l.license}  registry ${l.registryId}`;
+export const listingLine = (l: Listing): string => `${safe(l.id)} ${safe(l.latest)}  ${safe(l.kind)}  ${safe(l.license)}  registry ${safe(l.registryId)}`;
 
 /** A registry as lines for `registry ls` and `registry status`. */
 export function registryLines(e: RegistryEntry): string[] {
-  const last = e.lastRefresh === undefined ? "never refreshed" : `refreshed ${new Date(e.lastRefresh.at).toISOString()}${e.lastRefresh.ok ? "" : ` (failed: ${e.lastRefresh.code ?? "error"})`}`;
-  const stale = e.staleDays == null ? "" : `, ${e.staleDays} days past expiry (up to ${e.maxStaleDays} allowed)`;
+  const last = e.lastRefresh === undefined ? "never refreshed" : `refreshed ${new Date(e.lastRefresh.at).toISOString()}${e.lastRefresh.ok ? "" : ` (failed: ${safe(e.lastRefresh.code ?? "error")})`}`;
+  const stale = e.staleDays == null ? "" : `, ${safe(e.staleDays)} days past expiry (up to ${safe(e.maxStaleDays)} allowed)`;
   return [
-    `${e.id}  ${e.path ?? ""}`,
-    `  root ${e.rootSha256}`,
-    `  ${e.plugins} plugins, ${e.advisories} advisories, ${last}${stale}`,
+    `${safe(e.id)}  ${safe(e.path ?? "")}`,
+    `  root ${safe(e.rootSha256)}`,
+    `  ${safe(e.plugins)} plugins, ${safe(e.advisories)} advisories, ${last}${stale}`,
   ];
 }
 
 /** What a plugin's registries sign about it, for `plugin info`. */
 export function infoLines(id: string, installed: InstalledRow | undefined, registries: ReadonlyArray<PluginInfo>): string[] {
-  const out = [id];
+  const out = [safe(id)];
   out.push(installed === undefined ? "  not installed" : `  installed: ${installedLine(installed)}`);
   for (const r of registries) {
-    out.push(`  registry ${r.registryId}:`);
-    for (const v of r.versions) out.push(`    ${v.version}  ${v.kind}  ${v.license}  ${bytesText(v.bytesUnpacked)}${v.yanked ? "  YANKED" : ""}`);
-    for (const a of r.advisories) out.push(`    advisory ${a.id} (${a.severity}, ${a.action}): ${a.summary}`);
+    out.push(`  registry ${safe(r.registryId)}:`);
+    for (const v of r.versions) out.push(`    ${safe(v.version)}  ${safe(v.kind)}  ${safe(v.license)}  ${bytesText(v.bytesUnpacked)}${v.yanked ? "  YANKED" : ""}`);
+    for (const a of r.advisories) out.push(`    advisory ${safe(a.id)} (${safe(a.severity)}, ${safe(a.action)}): ${safe(a.summary)}`);
   }
   if (registries.length === 0) out.push("  no registry lists it");
   return out;

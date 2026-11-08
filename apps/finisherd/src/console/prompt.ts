@@ -1,6 +1,10 @@
 // What the console shows and asks (plan 5A Decision 30): through this interface, so unit tests
 // drive it without a terminal. The real one needs stdin and stdout to be terminals.
 import { createInterface } from "node:readline";
+import { safe } from "./safe.ts";
+
+/** `text` line by line with the controls and bidirectional overrides taken out (review M1). */
+const plain = (text: string): string => text.split("\n").map(safe).join("\n");
 
 export interface Prompt {
   /** Whether a person can be asked: stdin and stdout are both terminals. */
@@ -20,12 +24,12 @@ export interface Prompt {
 export function ttyPrompt(stdin: NodeJS.ReadStream = process.stdin, stdout: NodeJS.WriteStream = process.stdout): Prompt {
   return {
     isInteractive: () => stdin.isTTY === true && stdout.isTTY === true,
-    show: (text) => void stdout.write(`${text}\n`),
+    show: (text) => void stdout.write(`${plain(text)}\n`),
     ask: (question) =>
       new Promise((resolve) => {
         const rl = createInterface({ input: stdin, output: stdout, terminal: true });
         let answered = false;
-        rl.question(question, (line) => {
+        rl.question(plain(question), (line) => {
           answered = true;
           rl.close();
           resolve(line);

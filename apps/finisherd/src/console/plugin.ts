@@ -13,6 +13,7 @@ import type { CommandContext } from "./commands/context.ts";
 import { withConnection } from "./commands/context.ts";
 import { has, one, onlyFlags, usage } from "./format.ts";
 import { infoLines, installedLine, listingLine, renderPlan, widens } from "./plugin-render.ts";
+import { safe } from "./safe.ts";
 import type { ConsoleConnection } from "./client.ts";
 
 const ID = /^@[a-z0-9][a-z0-9-]{1,38}\/[a-z0-9][a-z0-9-]{1,63}$/;
@@ -95,8 +96,8 @@ async function ls(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<num
   else {
     if (list.plugins.length === 0) ctx.output.out("No plugins installed.");
     for (const p of list.plugins) ctx.output.out(installedLine(p));
-    for (const b of list.bundled?.plugins ?? []) if (!b.ok) ctx.output.out(`!! ${b.id} ${b.version}: ${b.code ?? "its files do not match this build"}`);
-    for (const p of list.problems ?? []) ctx.output.out(`!! ${p.id} ${p.version}: ${p.reason}; it was switched off`);
+    for (const b of list.bundled?.plugins ?? []) if (!b.ok) ctx.output.out(`!! ${safe(b.id)} ${safe(b.version)}: ${safe(b.code ?? "its files do not match this build")}`);
+    for (const p of list.problems ?? []) ctx.output.out(`!! ${safe(p.id)} ${safe(p.version)}: ${safe(p.reason)}; it was switched off`);
   }
   return 0;
 }
@@ -107,14 +108,14 @@ function askForRegistry(e: ConsoleError): ConsoleError {
   if (d.reason === "rootChanged") {
     return consoleError(
       "USAGE",
-      `registry ${d.registry ?? "?"}, which ${d.id ?? "this plugin"} was installed from, now has another root: it is not the same registry`,
+      `registry ${safe(d.registry ?? "?")}, which ${safe(d.id ?? "this plugin")} was installed from, now has another root: it is not the same registry`,
       { reason: "rootChanged", registry: d.registry },
       "Check the registry you trust, then say which one to take the update from with --registry <id>.",
     );
   }
   return consoleError(
     "USAGE",
-    `${d.registries?.length ?? "several"} registries list ${d.id ?? "this plugin"}: ${(d.registries ?? []).join(", ")}`,
+    `${d.registries?.length ?? "several"} registries list ${safe(d.id ?? "this plugin")}: ${(d.registries ?? []).map(safe).join(", ")}`,
     { reason: "ambiguous", registries: d.registries ?? [] },
     "Say which one with --registry <id>.",
   );
@@ -149,24 +150,33 @@ async function install(ctx: CommandContext, rest: ReadonlyArray<string>, update:
   };
   const done = await withConnection(ctx, async (c) => {
     const p = await plan(c, ctx, request, downgrade);
-    const shown = renderPlan(p);
-    for (const line of shown.lines) ctx.prompt.show(line);
-    if (update && !widens(p) && p.action === "update") ctx.prompt.show("This update asks for nothing the installed version did not.");
-    if (shown.copyleft && !has(ctx.args, "accept-copyleft")) {
-      throw consoleError("USAGE", "this plugin is under copyleft terms: nothing was installed", { reason: "copyleft" }, "Read the licence, then run the command again with --accept-copyleft.");
+    // A plan holds one of the maker's few slots (`TOO_MANY_PLANS`) and its staged files until it
+    // is installed or expires: every way out of here but a finished install gives it up (review M3).
+    let finished = false;
+    try {
+      const shown = renderPlan(p);
+      for (const line of shown.lines) ctx.prompt.show(line);
+      if (update && !widens(p) && p.action === "update") ctx.prompt.show("This update asks for nothing the installed version did not.");
+      if (shown.copyleft && !has(ctx.args, "accept-copyleft")) {
+        throw consoleError("USAGE", "this plugin is under copyleft terms: nothing was installed", { reason: "copyleft" }, "Read the licence, then run the command again with --accept-copyleft.");
+      }
+      await approve(ctx, p, shown.thirdPartyCode);
+      const body = {
+        planId: p.planId,
+        digest: p.digest,
+        accept: { ...(shown.copyleft ? { copyleft: true } : {}), ...(shown.thirdPartyCode ? { thirdPartyCode: true } : {}) },
+        ...(autoUpdate === undefined ? {} : { autoUpdate }),
+      };
+      const result = await confirmed<PluginInstallResult>(c, ctx.prompt, `This ${p.action}s ${safe(p.plugin.id)} ${safe(p.plugin.version)}, exactly as the plan above.`, "plugin.install", body);
+      finished = true;
+      return result;
+    } finally {
+      if (!finished) await c.call("plugin.discard", { planId: p.planId }).catch(() => undefined); // best effort: it expires anyway
     }
-    await approve(ctx, p, shown.thirdPartyCode);
-    const body = {
-      planId: p.planId,
-      digest: p.digest,
-      accept: { ...(shown.copyleft ? { copyleft: true } : {}), ...(shown.thirdPartyCode ? { thirdPartyCode: true } : {}) },
-      ...(autoUpdate === undefined ? {} : { autoUpdate }),
-    };
-    return confirmed<PluginInstallResult>(c, ctx.prompt, `This ${p.action}s ${p.plugin.id} ${p.plugin.version}, exactly as the plan above.`, "plugin.install", body);
   });
   const row = done.plugin;
   const did = done.action === "install" ? "Installed" : done.action === "update" ? "Updated" : "Downgraded";
-  ctx.output.out(`${did} ${row.id} ${row.version}${row.enabled ? " (enabled)" : " (switched off: this version of Finisher cannot run code plugins yet)"}.`);
+  ctx.output.out(`${did} ${safe(row.id)} ${safe(row.version)}${row.enabled ? " (enabled)" : " (switched off: this version of Finisher cannot run code plugins yet)"}.`);
   if (row.autoUpdate) ctx.output.out("It updates itself when a refresh finds a newer version that asks for nothing more.");
   return 0;
 }
@@ -175,11 +185,11 @@ async function install(ctx: CommandContext, rest: ReadonlyArray<string>, update:
 async function approve(ctx: CommandContext, p: InstallPlan, thirdParty: boolean): Promise<void> {
   if (thirdParty) {
     ctx.prompt.show("Installing it accepts the risk above.");
-    const typed = (await ctx.prompt.ask(`Type the plugin's id (${p.plugin.id}) to accept third-party code and continue: `)).trim();
+    const typed = (await ctx.prompt.ask(`Type the plugin's id (${safe(p.plugin.id)}) to accept third-party code and continue: `)).trim();
     if (typed !== p.plugin.id) throw consoleError("CONFIRMATION_REQUIRED", `the plugin's id was not typed back, so nothing was ${p.action === "install" ? "installed" : "changed"}`, { reason: "cancelled" });
     return;
   }
-  const typed = (await ctx.prompt.ask(`Type yes to ${p.action} ${p.plugin.id} ${p.plugin.version}: `)).trim().toLowerCase();
+  const typed = (await ctx.prompt.ask(`Type yes to ${p.action} ${safe(p.plugin.id)} ${safe(p.plugin.version)}: `)).trim().toLowerCase();
   if (typed !== "yes") throw consoleError("CONFIRMATION_REQUIRED", `you did not type yes, so nothing was ${p.action === "install" ? "installed" : "changed"}`, { reason: "cancelled" });
 }
 
@@ -202,6 +212,6 @@ async function setEnabled(ctx: CommandContext, sub: "enable" | "disable", rest: 
   const { plugin: row } = await withConnection(ctx, (c) =>
     confirmed<{ plugin: InstalledRow }>(c, ctx.prompt, `This ${sub}s ${id} on this server.`, `plugin.${sub}`, { id }),
   );
-  ctx.output.out(`${row.id} is now ${row.enabled ? "enabled" : "disabled"}.`);
+  ctx.output.out(`${safe(row.id)} is now ${row.enabled ? "enabled" : "disabled"}.`);
   return 0;
 }

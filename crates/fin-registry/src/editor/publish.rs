@@ -269,6 +269,12 @@ impl RepoBuilder {
     /// publisher's `advisories.json`; signed by the registry's targets key, into the
     /// registry-wide one.
     pub fn advise(&mut self, a: Advisory, key: &SigningKey) -> Result<(), EditorError> {
+        a.check().map_err(|field| {
+            EditorError::invalid(
+                "advisories",
+                format!("the advisory's {field} is too long or holds a control character"),
+            )
+        })?;
         let pubkey = key.public();
         let targets_ids =
             super::state::ids(&self.st.root.signed.roles[&tough::schema::RoleType::Targets]);

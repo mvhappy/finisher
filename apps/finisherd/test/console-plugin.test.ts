@@ -4,7 +4,7 @@
 // what they widen, downgrades, ambiguity questions, and the terminal gate. Real server (child
 // process), real registries built by `fin-node`'s test hooks, and a scripted person.
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -159,14 +159,18 @@ describe("registry add", () => {
   test("console_add_without_root_requires_typed_hash", { timeout: 60_000 }, async () => {
     await start();
     const reg = registry({ packages: ["@acme/pack@1.0.0"] });
-    // Nothing typed, then something else typed: no registry is added, nothing is trusted.
-    for (const typed of ["", "0".repeat(64)]) {
+    // Nothing typed, then something else typed: no registry is added, nothing is trusted. The
+    // hash is asked for before it is shown (review L1): nothing of the folder's root appears
+    // on a screen that is not matched, neither its hash nor its key ids.
+    for (const typed of ["", "0".repeat(64), "not a hash"]) {
       const p = person(typed);
       const r = await run(["registry", "add", "team", "--dir", reg.dir], p);
       expect(r.code, typed).toBe(7);
       expect(r.err).toContain("CONFIRMATION_REQUIRED");
-      expect(p.shown.join("\n")).toContain(reg.rootSha256);
-      expect(p.asked).toEqual(["Type the SHA-256 to trust this root: "]);
+      expect(p.shown.join("\n")).not.toContain(reg.rootSha256);
+      expect(p.shown.join("\n")).not.toMatch(/root keys|[0-9a-f]{64}/);
+      expect(r.err + r.out).not.toContain(reg.rootSha256);
+      expect(p.asked, typed).toEqual(["Root SHA-256: "]);
     }
     expect((await run(["registry", "ls", "--json"], NOT_A_TERMINAL)).out).toContain('"registries":[]');
     expect(await audited("registry.trust")).toEqual([]);
@@ -175,6 +179,8 @@ describe("registry add", () => {
     const r = await run(["registry", "add", "team", "--dir", reg.dir], p);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
+    // Only now, matched, the root is described.
+    expect(p.shown.join("\n")).toContain("That matches this folder's first root:");
     expect(p.shown.join("\n")).toMatch(/root keys: [0-9a-f]{64}.*\(1 must sign\)/);
     expect(r.out).toContain(`Added registry team (root ${reg.rootSha256})`);
     expect(r.out).toContain("It lists 1 plugins");
@@ -188,12 +194,25 @@ describe("registry add", () => {
     const bad = await run(["registry", "add", "team", "--dir", reg.dir, "--root-sha256", "0".repeat(64)]);
     expect(bad.code).toBe(7);
     expect(bad.err).toContain("REGISTRY_UNTRUSTED");
-    expect((await run(["registry", "add", "team", "--dir", reg.dir, "--root", join(reg.dir, "metadata", "1.root.json")])).code).toBe(0);
+    // A root file inside the registry's folder is warned about (review L1), and works.
+    const inside = person();
+    expect((await run(["registry", "add", "team", "--dir", reg.dir, "--root", join(reg.dir, "metadata", "1.root.json")], inside)).code).toBe(0);
+    expect(inside.shown.join("\n")).toContain("is inside the registry's folder");
     expect((await run(["registry", "add", "team", "--dir", reg.dir, "--root-sha256", reg.rootSha256])).err).toContain("REGISTRY_EXISTS");
     // Usage mistakes are caught before anything connects.
     expect((await run(["registry", "add", "team"])).code).toBe(2);
     expect((await run(["registry", "add", "team", "--dir", reg.dir, "--root", "x", "--root-sha256", reg.rootSha256])).code).toBe(2);
     expect((await run(["registry", "add", "Team", "--dir", reg.dir])).code).toBe(2);
+  });
+
+  test("a_root_file_outside_the_folder_is_not_warned_about", { timeout: 60_000 }, async () => {
+    await start();
+    const reg = registry({ packages: ["@acme/pack@1.0.0"] });
+    const outside = join(tmp, "publisher-root.json");
+    copyFileSync(join(reg.dir, "metadata", "1.root.json"), outside);
+    const p = person();
+    expect((await run(["registry", "add", "team", "--dir", reg.dir, "--root", outside], p)).code).toBe(0);
+    expect(p.shown.join("\n")).not.toContain("inside the registry's folder");
   });
 
   test("registry_rm_and_forget_keep_and_drop_trust", { timeout: 60_000 }, async () => {
@@ -245,6 +264,21 @@ describe("plugin install", () => {
     const again = await run(["plugin", "install", "@acme/pack"], person("yes"));
     expect(again.code).not.toBe(0);
     expect(again.err).toContain("PLUGIN_ALREADY_INSTALLED");
+  });
+
+  /** Review M3: a plan made and not installed gave up its slot (a principal has 4 open at most). */
+  test("every_exit_after_a_plan_discards_it", { timeout: 90_000 }, async () => {
+    await start();
+    await addTeam(registry({ packages: ["@acme/pack@1.0.0", { id: "@acme/gpl", version: "1.0.0", license: "MPL-2.0" }, code("1.0.0", [{ perm: "project:read" }])] }));
+    // Eight abandoned plans: cancelled with `no`, refused for want of --accept-copyleft, and the
+    // third-party code's id typed wrong. Without the discard the fifth would be TOO_MANY_PLANS.
+    for (let i = 0; i < 3; i++) expect((await run(["plugin", "install", "@acme/pack"], person("no"))).err).toContain("CONFIRMATION_REQUIRED");
+    for (let i = 0; i < 3; i++) expect((await run(["plugin", "install", "@acme/gpl"], person("yes"))).err).toContain("--accept-copyleft");
+    for (let i = 0; i < 2; i++) expect((await run(["plugin", "install", ID], person("wrong"))).err).toContain("CONFIRMATION_REQUIRED");
+    const r = await run(["plugin", "install", "@acme/pack"], person("yes"));
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(await plugins()).toContainEqual(expect.objectContaining({ id: "@acme/pack", enabled: true }));
   });
 
   test("auto_update_flag_is_sent_and_shown", { timeout: 60_000 }, async () => {

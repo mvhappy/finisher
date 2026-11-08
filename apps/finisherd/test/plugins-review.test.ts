@@ -119,6 +119,34 @@ describe("M2: what non-human principals may cost", () => {
     await run(s.life.plan({ id: "@acme/pack" }, AGENT));
   });
 
+  /** Review M3 of Tasks 10 and 12: the maker gives a plan up, and only the maker. */
+  test("plan_discard_is_the_makers_and_frees_the_slot", async () => {
+    const s = await f.setup({ packages: ["@acme/pack@1.0.0"] });
+    const staging = join(f.serverData, "plugins", "staging");
+    const plans: string[] = [];
+    for (let i = 0; i < MAX_OPEN_PLANS; i++) plans.push((await run(s.life.plan({ id: "@acme/pack" }, CONSOLE))).plan.planId);
+    expect(await codeOf(s.life.plan({ id: "@acme/pack" }, CONSOLE))).toBe("TOO_MANY_PLANS");
+    // Anyone else, however privileged, gets the answer a missing plan gets (a plan id is not probed).
+    const other = { kind: "device", id: "01device00000000000000000a", human: true };
+    for (const stranger of [other, AGENT, LOCAL]) {
+      expect(await codeOf(s.h["plugin.discard"]({ planId: plans[0]! }, as(stranger)))).toBe("PLAN_EXPIRED");
+    }
+    expect(s.tables.plan(plans[0]!)).toBeDefined();
+    // The maker's discard deletes the row and the staged files, and a new plan fits.
+    expect(await run(s.h["plugin.discard"]({ planId: plans[0]! }, as(CONSOLE)))).toEqual({ discarded: true });
+    expect(s.tables.plan(plans[0]!)).toBeUndefined();
+    expect(existsSync(join(staging, plans[0]!))).toBe(false);
+    expect(readdirOrEmpty(staging).length).toBe(MAX_OPEN_PLANS - 1);
+    expect(await codeOf(s.h["plugin.discard"]({ planId: plans[0]! }, as(CONSOLE)))).toBe("PLAN_EXPIRED");
+    const again = (await run(s.life.plan({ id: "@acme/pack" }, CONSOLE))).plan;
+    // A discarded plan installs nothing; the digest of a live one still does.
+    expect(await codeOf(s.life.install({ planId: plans[0]!, digest: again.digest }, CONSOLE))).toBe("PLAN_EXPIRED");
+    // An agent gives up its own plans as well.
+    const mine = (await run(s.life.plan({ id: "@acme/pack" }, AGENT))).plan.planId;
+    expect(await run(s.h["plugin.discard"]({ planId: mine }, as(AGENT)))).toEqual({ discarded: true });
+    expect(s.tables.plan(mine)).toBeUndefined();
+  });
+
   test("suggestions_are_deduplicated_and_capped", async () => {
     const s = f.service();
     const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
