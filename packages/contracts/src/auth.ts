@@ -66,6 +66,22 @@ export const AuthTicketSuccess = Schema.Struct({ ticket: Schema.String, expiresA
 /** `auth.whoami`: the principal this connection runs as. */
 export const AuthWhoamiSuccess = Schema.Struct({ principal: PrincipalSchema });
 
+/** How long a console challenge stays valid, in seconds (Decision 30). */
+export const CHALLENGE_TTL_S = 60;
+
+/**
+ * The typed confirmation of a mutating human-only RPC from a `console` principal (Decision
+ * 30): the code `console.challenge` issued to the same connection, typed back by the person.
+ * Single use; ignored for every other principal.
+ */
+export const ChallengeField = Schema.optional(Schema.String);
+
+/**
+ * `console.challenge {}` (console principals only): a fresh 6-character Crockford code,
+ * valid for 60 s on this connection only; `expiresAt` in ms since the epoch.
+ */
+export const ConsoleChallengeSuccess = Schema.Struct({ code: Schema.String, expiresAt: Schema.Number });
+
 /**
  * The WebSocket subprotocols (spec §4.3): a client offers `finisher.v2` and one
  * `finisher.ticket.<ticket>`; the server answers `finisher.v2`.

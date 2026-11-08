@@ -13,12 +13,15 @@
 //   5. `consent training on` is refused, `FIN_TRAINING=on` records an intent, a hand edit of
 //      `settings.json` opts in and `consent training off` withdraws (both `consent.changed`),
 //      the training upload view is then empty, and `purge --all` leaves no key and no blobs.
+// Since 5A Task 7 `fin` is not a person: its exports are redacted, and consent changes,
+// `project default` and purges answer `HUMAN_ONLY` (exit 7). Those steps, and reading what was
+// stored with its content, run as the server's console (`consoleCall`, `storedEntries`).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { writeFixture } from "./fixture.mjs";
-import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, startServer, stopServer, waitFor } from "./lib.mjs";
+import { assertEqual, connectWs, consoleCall, fin, finRaw, live, log, removeTmp, startServer, stopServer, storedEntries, waitFor } from "./lib.mjs";
 import { contentProblems, exportEntries, filesUnder, keyer, leaks, loadContentFields } from "./diagnostics-lib.mjs";
 
 const step = (n, text) => log(`step ${n}: ${text}`);
@@ -67,6 +70,11 @@ export async function run() {
     };
     const show = () => f(["diagnostics", "show"]);
     const exported = (args = []) => (runs++, exportEntries(sd, project, args, agent()));
+    /** `fin` asks for something only a person may: refused, exit 7, nothing changed. */
+    const humanOnly = (args) => {
+      const r = raw(args);
+      assertEqual([r.status, r.json?.error?.code], [7, "HUMAN_ONLY"], `fin ${args.join(" ")}`);
+    };
 
     step(1, "diagnostics and training off by env: three edits and an undo leave no events/");
     const created = fin(sd, tmp, ["project", "create", project, "--name", "Diag"]);
@@ -191,7 +199,9 @@ export async function run() {
     assertEqual(d, ["accepted", "deduped"], "first edit, then its retry");
     const c = one(commitOf(idRef(clash.txId)), "conflicting edit").payload;
     assertEqual([c.outcome, c.code], ["conflict", "CONFLICT"], "conflicting edit");
-    assertEqual(all.flatMap((e) => contentProblems(e, fields)), [], "content recorded without training");
+    // What was stored, read by a person (content included): none without training.
+    const stored = (await storedEntries(server)).filter((e) => e.ts >= since);
+    assertEqual(stored.flatMap((e) => contentProblems(e, fields)), [], "content recorded without training");
 
     // The join: every committed log.commit names a txId the op log holds.
     const known = new Map(
@@ -229,7 +239,9 @@ export async function run() {
     assertEqual(exportEntries(sdB, project, ["--project", projectId]), [], "the follower's entries of a never project");
     if (!exportEntries(sdB, project).some((e) => e.kind === "session.start")) throw new Error("the follower's journal is not recording");
     await stopServer(follower);
-    assertEqual(f(["diagnostics", "project", "default"]).collect, "default", "project default again");
+    // Clearing the flag binds every collaborator: the console's, confirmed.
+    humanOnly(["diagnostics", "project", "default"]);
+    assertEqual((await consoleCall(server, "diagnostics.project", { projectId, collect: "default" })).collect, "default", "project default again");
 
     step(5, "training: fin cannot opt in; FIN_TRAINING=on records an intent; withdrawal and purge --all");
     const refusedOn = raw(["diagnostics", "consent", "training", "on"]);
@@ -243,8 +255,12 @@ export async function run() {
       () => exported(["--kind", "log.commit"]).find((e) => e.ctx?.txId === taught.txId),
       5_000,
     );
-    if (!Array.isArray(trained.payload.intent) || !trained.consent.purposes.includes("training")) {
-      throw new Error(`the training edit has no intent: ${JSON.stringify(trained)}`);
+    // `fin` gets it redacted; the console, a person, sees the intent.
+    if (trained.payload.intent !== undefined) throw new Error(`fin's export kept the intent: ${JSON.stringify(trained)}`);
+    humanOnly(["diagnostics", "export", "--content"]);
+    const kept = (await storedEntries(server, { kinds: ["log.commit"] })).find((e) => e.ctx?.txId === taught.txId);
+    if (!Array.isArray(kept?.payload.intent) || !kept.consent.purposes.includes("training")) {
+      throw new Error(`the training edit has no intent: ${JSON.stringify(kept)}`);
     }
     // Without the env training is `undecided` again. A restart journals no `consent.changed`
     // (the stamps and `rev` show it), so the person's other way in, a hand edit of
@@ -255,7 +271,9 @@ export async function run() {
     const current = existsSync(settings) ? JSON.parse(readFileSync(settings, "utf8")) : {};
     writeFileSync(settings, `${JSON.stringify({ ...current, privacy: { ...current.privacy, training: "on" } }, null, 2)}\n`);
     await waitFor("the hand edit to opt in", () => show().consent.training === "on", 5_000, () => "", 250);
-    assertEqual(f(["diagnostics", "consent", "training", "off"]).training, "off", "consent training off");
+    humanOnly(["diagnostics", "consent", "training", "off"]);
+    assertEqual(show().consent.training, "on", "fin changed nothing");
+    assertEqual((await consoleCall(server, "diagnostics.consent", { purpose: "training", value: "off" })).training, "off", "consent training off");
     const changes = exported(["--kind", "consent.changed"])
       .filter((e) => e.ts >= changedSince)
       .map((e) => [e.payload.from, e.payload.to]);
@@ -268,8 +286,9 @@ export async function run() {
       "consent.changed for the opt-in and the withdrawal",
     );
     assertEqual(exported(["--as-upload", "training"]), [], "training upload view after the withdrawal");
-    // `fin` records no `cli.command` for a purge, so nothing writes a new key after it.
-    const purged = f(["diagnostics", "purge", "--all"]);
+    // The console sends no events, so nothing writes a new key after the purge.
+    humanOnly(["diagnostics", "purge", "--all"]);
+    const purged = await consoleCall(server, "diagnostics.purge", { selector: "all" });
     if (!(purged.removed >= 1)) throw new Error(`purge --all removed nothing: ${JSON.stringify(purged)}`);
     assertEqual([existsSync(join(events, "key")), existsSync(join(events, "blobs"))], [false, false], "key and blobs/ after purge --all");
     log(`PASS diagnostics in ${((Date.now() - started) / 1000).toFixed(1)}s`);

@@ -93,6 +93,17 @@ export interface RuleOf<T extends FinRpcTag> {
    * claimed by naming someone else (review of Task 5, M4).
    */
   readonly author?: string;
+  /**
+   * A mutating operation: whenever the call needs a human-only scope, a `console` principal
+   * must send the typed code of a fresh `console.challenge` of the same connection
+   * (`challenge`; Decision 30), or it is `CONFIRMATION_REQUIRED`.
+   */
+  readonly confirm?: true;
+  /**
+   * True for a payload only a `device` may send (the app's onboarding question: training on).
+   * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
+   */
+  readonly deviceOnly?: (payload: PayloadOf<T>) => boolean;
 }
 
 /** A rule with its RPC's types erased, as the chain reads it. */
@@ -102,6 +113,8 @@ export interface RpcRule {
   readonly escalate?: (payload: never, facts: RuleFacts) => ReadonlyArray<Scope>;
   readonly writes?: ReadonlyArray<string>;
   readonly author?: string;
+  readonly confirm?: true;
+  readonly deviceOnly?: (payload: never) => boolean;
 }
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
@@ -111,11 +124,6 @@ const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
  * Every RPC's rule (spec §4.5 and §4.8); the mapped type makes a missing RPC a type error and
  * types each escalation by its RPC's payload; `scopes.test.ts` compares the keys with `FinRpcs`
  * and the writers with `WRITE_RPCS`.
- *
- * Until 5A Task 7 the diagnostics RPCs keep the scopes every `local` caller holds
- * (`diagnostics.read`): Task 7 makes `diagnostics.consent`, `diagnostics.purge`,
- * `diagnostics.project {collect: "default"}` and content exports need `diagnostics.admin`, moving
- * their tests to the console in the same commit. No `agent`/`mcp` credential exists before Task 9.
  */
 export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "server.hello": { scopes: ["public"] },
@@ -124,12 +132,15 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.whoami": { scopes: ["server.read"] },
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
+  // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
+  "console.challenge": { scopes: ["auth.admin"] },
   "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": {
     scopes: ["project.read"],
     resolve: ["openDir"],
     escalate: (p, facts) => [...(facts.attached === true ? [] : (["project.write"] as const)), ...(p.relocate === true ? (["project.confirm"] as const) : [])],
+    confirm: true,
   },
   // Protocol 2: the probe is for `projectId`, and a principal with roots probes only inside its folder.
   "asset.probe": { scopes: ["project.write"], resolve: ["project", "probePath"] },
@@ -137,7 +148,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "snapshot.get": { scopes: ["project.read"], resolve: BRANCH },
   "ops.subscribe": { scopes: ["project.read"], resolve: BRANCH },
   "project.status": { scopes: ["project.read"], resolve: PROJECT },
-  "project.takeover": { scopes: ["project.admin"], resolve: PROJECT, escalate: (p) => (p.confirm ? ["project.confirm"] : []) },
+  "project.takeover": { scopes: ["project.admin"], resolve: PROJECT, escalate: (p) => (p.confirm ? ["project.confirm"] : []), confirm: true },
   "project.verify": { scopes: ["project.read"], resolve: PROJECT },
   "project.rebuild": { scopes: ["project.admin"], resolve: PROJECT },
   "project.compact": { scopes: ["project.admin"], resolve: PROJECT },
@@ -164,10 +175,22 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "fonts.fetch": { scopes: ["fonts.fetch"], resolve: PROJECT },
   "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
   "diagnostics.status": { scopes: ["diagnostics.read"] },
-  "diagnostics.export": { scopes: ["diagnostics.read"] },
-  "diagnostics.purge": { scopes: ["diagnostics.read"] },
-  "diagnostics.project": { scopes: ["diagnostics.read"], resolve: PROJECT },
-  "diagnostics.consent": { scopes: ["diagnostics.read"] },
+  // Redacted for a caller that is not a person; the content itself is human-only (Decision 22).
+  "diagnostics.export": { scopes: ["diagnostics.read"], escalate: (p) => (p.content === true ? ["diagnostics.admin"] : []) },
+  "diagnostics.purge": { scopes: ["diagnostics.admin"], confirm: true },
+  // Setting `never` stays open; clearing it binds every collaborator.
+  "diagnostics.project": {
+    scopes: ["diagnostics.read"],
+    resolve: PROJECT,
+    escalate: (p) => (p.collect === "default" ? ["diagnostics.admin"] : []),
+    confirm: true,
+  },
+  // Every consent change needs a person; training on, the app's onboarding question alone.
+  "diagnostics.consent": {
+    scopes: ["diagnostics.admin"],
+    confirm: true,
+    deviceOnly: (p) => p.purpose === "training" && p.value === "on",
+  },
   "diagnostics.record": { scopes: ["diagnostics.record"] },
 };
 

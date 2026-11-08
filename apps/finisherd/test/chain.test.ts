@@ -10,7 +10,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { unauthenticated } from "../src/auth/handshake.ts";
 import { checkScopes } from "../src/chain/authorize.ts";
 import { type ChainDeps, chainOf, type PolicyRule, withChain, writeGuardOf } from "../src/chain/chain.ts";
-import { approvalRequired, branchNotAllowed, humanOnlyFixes, pathNotAllowed, scopeDenied } from "../src/chain/fixes.ts";
+import { confirmationRequired, issueChallenge } from "../src/auth/challenges.ts";
+import { approvalRequired, branchNotAllowed, consentUiOnly, humanOnlyFixes, pathNotAllowed, scopeDenied } from "../src/chain/fixes.ts";
 import { canonicalPath, type ChainProjects, PROJECT_FILE_MAX, projectIdIn } from "../src/chain/resolve.ts";
 import { Connections } from "../src/connections.ts";
 import type { Audit, AuditInput } from "../src/control/audit.ts";
@@ -77,14 +78,16 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}) {
     },
   };
   // Every writing RPC, and a read by id, record what reaches them too.
-  for (const t of [...WRITE_RPCS, "snapshot.get"]) handlers[t] ??= unary(t);
+  for (const t of [...WRITE_RPCS, "snapshot.get", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export"]) handlers[t] ??= unary(t);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
   const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
   const call = (tag: string, payload: unknown) =>
     Effect.runPromiseExit(chained[tag]!(payload, { client: { id: 1 }, headers: {} }) as Effect.Effect<unknown, FinError>);
   const stream = (tag: string, payload: unknown) =>
     Effect.runPromiseExit(Stream.runCollect(chained[tag]!(payload, { client: { id: 1 }, headers: {} }) as Stream.Stream<unknown, FinError>));
-  return { seen, audited, call, stream };
+  /** A fresh `console.challenge` code of client 1. */
+  const challenge = () => issueChallenge(connections.get(1)!).code;
+  return { seen, audited, call, stream, challenge };
 }
 
 const code = (exit: Exit.Exit<unknown, FinError>): string | undefined =>
@@ -131,14 +134,21 @@ describe("the chain", () => {
     }
     // Every escalation, through the chain.
     open = new Set([A]);
-    const escalations: Array<[string, unknown]> = [
+    const escalations: Array<[string, Record<string, unknown>]> = [
       ["project.takeover", { projectId: A, confirm: true }],
       ["project.open", { dir: dirA, relocate: true }],
+      // 5A Task 7: the diagnostics operations a person keeps.
+      ["diagnostics.consent", { purpose: "diagnostics", value: "off" }],
+      ["diagnostics.consent", { purpose: "training", value: "unset" }],
+      ["diagnostics.purge", { selector: "all" }],
+      ["diagnostics.project", { projectId: A, collect: "default" }],
+      ["diagnostics.export", { content: true }],
     ];
     for (const [tag, payload] of escalations) {
       for (const p of kinds) {
         const h = harness(p);
-        const got = code(await h.call(tag, payload));
+        // The console types its connection's code back (Decision 30).
+        const got = code(await h.call(tag, p.kind === "console" ? { ...payload, challenge: h.challenge() } : payload));
         const want = p.kind === "console" ? undefined : p.kind === "anonymous" ? "UNAUTHENTICATED" : "HUMAN_ONLY";
         expect(got, `${tag} × ${p.kind}`).toBe(want);
         expect(h.seen.length, `${tag} × ${p.kind}`).toBe(want === undefined ? 1 : 0);
@@ -146,6 +156,8 @@ describe("the chain", () => {
     }
     // Without the escalation, local may.
     expect(code(await harness(LOCAL).call("project.takeover", { projectId: A, confirm: false }))).toBeUndefined();
+    expect(code(await harness(LOCAL).call("diagnostics.project", { projectId: A, collect: "never" }))).toBeUndefined();
+    expect(code(await harness(LOCAL).call("diagnostics.export", {}))).toBeUndefined();
   });
 
   test("all_listed_scopes_are_required", async () => {
@@ -269,14 +281,16 @@ describe("the chain", () => {
       branchNotAllowed("tx.commit", "main"),
       approvalRequired("tx.commit", "01approval0000000000000000", "testRule"),
       unauthenticated("unproved"),
+      consentUiOnly("diagnostics.consent", p),
+      confirmationRequired("diagnostics.purge", "missing"),
     ];
     for (const e of all) {
       expect(e.fix, e.code).toBeDefined();
       expect(e.fix, e.code).not.toMatch(/`|\bfinisherd [a-z-]+|\bfin [a-z-]+/);
     }
-    for (const e of humanOnlyFixes()) {
+    for (const e of [...humanOnlyFixes(), consentUiOnly("diagnostics.consent", p)]) {
       expect(e.fix).toMatch(/^Only you, the owner of this Finisher server, can /);
-      expect(e.details).toMatchObject({ where: "console" });
+      expect(["console", "app"]).toContain((e.details as { where?: unknown }).where);
     }
     expect(defaultScopes("local")).not.toContain("project.confirm");
   });

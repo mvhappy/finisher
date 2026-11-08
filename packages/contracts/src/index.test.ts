@@ -29,6 +29,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "branch.create",
       "branch.list",
       "branch.set",
+      "console.challenge",
       "diagnostics.consent",
       "diagnostics.export",
       "diagnostics.project",

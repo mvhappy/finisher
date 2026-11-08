@@ -195,7 +195,7 @@ registry! {
     ConsentChanged(p::ConsentChanged) = "consent.changed" v 1 [FinNode];
     JournalDropped(p::JournalDropped) = "journal.dropped" v 1 [FinNode];
     LogCommit(p::LogCommit) = "log.commit" v 1 [FinNode];
-    CliCommand(p::CliCommand) = "cli.command" v 1 via w::CliCommandIn [Fin];
+    CliCommand(p::CliCommand) = "cli.command" v 1 via w::CliCommandIn [Fin, Mcp];
     RpcStats(p::RpcStats) = "rpc.stats" v 1 [Finisherd];
     EvalStats(p::EvalStats) = "eval.stats" v 1 [FinNode];
     FontsFetch(p::FontsFetch) = "fonts.fetch" v 1 [FinNode];
@@ -203,7 +203,7 @@ registry! {
     PluginLifecycle(p::PluginLifecycle) = "plugin.lifecycle" v 1 [FinNode];
     RegistryRefresh(p::RegistryRefresh) = "registry.refresh" v 1 [FinNode];
     ErrorInternal(p::ErrorInternal) = "error.internal" v 1 [FinNode, Finisherd];
-    ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Finisherd, FinNode];
+    ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Mcp, Finisherd, FinNode];
     JobDone(p::JobDone) = "job.done" v 1 [Finisherd];
     WorkerExit(p::WorkerExit) = "worker.exit" v 1 [Finisherd];
     AgentSession(p::AgentSession) = "agent.session" v 1 via wa::AgentSessionIn [Agent];

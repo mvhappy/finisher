@@ -1,7 +1,7 @@
 // The server's diagnostics (plan D, Task D4): settings before the journal, the live watch and
 // its last-good rule, env overrides, `finisherd.json`, sessions, uncaught errors, RPC timing,
-// the source per transport and the `diagnostics.*` RPCs.
-import { connectWs } from "./support/ws-client.ts";
+// `diagnostics.record` and the `diagnostics.*` RPCs. Sources, actors and the human-only rules
+// from principals (5A Task 7) are `diagnostics-principals.test.ts`.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +13,10 @@ import { rpcMethods } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { settingsPath } from "../src/config.ts";
-import { callMeta, locationOf, makeDiagnostics, TokenBucket } from "../src/diagnostics.ts";
+import { actorFor, locationOf, makeDiagnostics, TokenBucket } from "../src/diagnostics.ts";
 import { CAPABILITIES } from "../src/handlers.ts";
-import { connectProved, NdjsonClient, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
+import { CONSOLE, LOCAL } from "../src/principal.ts";
+import { confirmed, connectProved, NdjsonClient, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
 
 const WIN = process.platform === "win32";
 let tmp: string;
@@ -47,8 +48,8 @@ async function start(extra: Record<string, string> = {}): Promise<RunningServer>
   return server;
 }
 
-async function client(): Promise<NdjsonClient> {
-  const c = await connectProved(server!);
+async function client(credential: "local" | "console" = "local"): Promise<NdjsonClient> {
+  const c = await connectProved(server!, credential);
   clients.push(c);
   return c;
 }
@@ -175,14 +176,14 @@ describe("settings and the journal", () => {
         writeSettings({ privacy: { diagnostics: "on", retentionDays: 0 } });
         await until(() => warn.mock.calls.some(([m]) => String(m).includes("retentionDays")));
         const before = readFileSync(settingsPath(serverData), "utf8");
-        const e = await Effect.runPromise(Effect.flip(d.consent("fin", "diagnostics", "off")));
+        const e = await Effect.runPromise(Effect.flip(d.consent(CONSOLE, "diagnostics", "off")));
         expect(e.code).toBe("SETTINGS_INVALID");
         expect(e.fix).toContain("privacy.retentionDays");
         expect(readFileSync(settingsPath(serverData), "utf8")).toBe(before);
         expect(d.enabled()).toBe(true);
         // Fixed by hand: the opt-out applies and says so.
         writeSettings({ privacy: { diagnostics: "on" } });
-        const c = await Effect.runPromise(d.consent("fin", "diagnostics", "off"));
+        const c = await Effect.runPromise(d.consent(CONSOLE, "diagnostics", "off"));
         expect(c.diagnostics).toBe("off");
         expect(d.enabled()).toBe(false);
       });
@@ -216,8 +217,8 @@ describe("settings and the journal", () => {
     writeSettings({ privacy: { diagnostics: "off" } });
     const { info } = await start({ FIN_DIAGNOSTICS: "on" });
     expect(info).toMatchObject({ diagnostics: { enabled: true } });
-    const c = await client();
-    const consent = ok<ConsentState>(await c.call("diagnostics.consent", { purpose: "diagnostics", value: "off" }));
+    const c = await client("console");
+    const consent = ok<ConsentState>(await confirmed(c, "diagnostics.consent", { purpose: "diagnostics", value: "off" }));
     // The setting is written, but the environment still decides.
     expect(consent).toMatchObject({ diagnostics: "on", basis: "env", env: ["diagnostics"] });
     expect(JSON.parse(readFileSync(settingsPath(serverData), "utf8")).privacy).toEqual({ diagnostics: "off" });
@@ -350,35 +351,6 @@ describe("rpc timing", () => {
 });
 
 describe("sources and diagnostics.record", () => {
-  test("source_is_fin_on_socket_and_ui_on_websocket; consent_rpc_refuses_training_on_from_fin_source; consent_rpc_allows_training_on_from_ui", async () => {
-    await start();
-    const c = await client();
-    // `fin` may send cli.command; the UI may send nothing yet.
-    expect(ok<{ recorded: boolean }>(await record(c))).toEqual({ recorded: true });
-    const refused = await c.call("diagnostics.consent", { purpose: "training", value: "on" });
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) {
-      expect(refused.error.code).toBe("CONSENT_UI_ONLY");
-      expect(refused.error.fix).toMatch(/Finisher app.*settings\.json.*FIN_TRAINING=on/);
-    }
-    expect(existsSync(settingsPath(serverData))).toBe(false);
-    // The WebSocket is still the `ui` source until 5A Task 7 takes sources from principals.
-    const ui = await connectWs(server!);
-    try {
-      const viaUi = await ui.call("diagnostics.record", { kind: "cli.command", kv: 1, payload: cli() });
-      expect((viaUi.exit as { _tag: string })._tag).toBe("Failure");
-      expect(JSON.stringify(viaUi)).toContain("EVENT_INVALID");
-      const on = await ui.call("diagnostics.consent", { purpose: "training", value: "on" });
-      expect((on.exit as { value: ConsentState }).value).toMatchObject({ training: "on", basis: "user" });
-    } finally {
-      ui.close();
-    }
-    const [e] = (await exported(c, { kinds: ["cli.command"] })) as Envelope[];
-    expect(e!.source).toBe("fin");
-    // Off and unset stay open to `fin`: unset is undecided again.
-    expect(ok<ConsentState>(await c.call("diagnostics.consent", { purpose: "training", value: "unset" })).training).toBe("undecided");
-  });
-
   test("record_rpc_refuses_unlisted_kind and record_rpc_size_cap", async () => {
     await start();
     const c = await client();
@@ -394,7 +366,7 @@ describe("sources and diagnostics.record", () => {
     expect(!bad.ok && bad.error.code).toBe("EVENT_INVALID");
   });
 
-  test("record_rate_limited_per_source_across_connections", async () => {
+  test("record_rate_limited_per_principal_across_connections", async () => {
     await start();
     const [a, b] = [await client(), await client()];
     const recorded = async (c: NdjsonClient, n: number, tag: string) => {
@@ -406,16 +378,15 @@ describe("sources and diagnostics.record", () => {
     expect(await recorded(b, 60, "b")).toBeLessThan(30);
   });
 
-  test("call_meta_from_headers_validates_actor", async () => {
-    expect(callMeta({ "fin-actor-kind": "agent", "fin-actor-session": "s1", "fin-actor-call": "c".repeat(300) })).toEqual({
+  test("local_actor_from_headers_validates_actor", async () => {
+    expect(actorFor(LOCAL, { "fin-actor-kind": "agent", "fin-actor-session": "s1", "fin-actor-call": "c".repeat(300) })).toEqual({
       actor: { kind: "agent", session: "s1" },
     });
-    expect(callMeta([["fin-actor-kind", "root"]])).toEqual({ actor: { kind: "unknown" } });
-    expect(callMeta(undefined)).toEqual({ actor: { kind: "unknown" } });
-    // `fin` may claim only a person or an agent; the UI's connection more.
-    expect(callMeta({ "fin-actor-kind": "system" }, "fin")).toEqual({ actor: { kind: "unknown" } });
-    expect(callMeta({ "fin-actor-kind": "plugin" }, "fin")).toEqual({ actor: { kind: "unknown" } });
-    expect(callMeta({ "fin-actor-kind": "system" }, "ui")).toEqual({ actor: { kind: "system" } });
+    expect(actorFor(LOCAL, [["fin-actor-kind", "root"]])).toEqual({ actor: { kind: "unknown" } });
+    expect(actorFor(LOCAL, undefined)).toEqual({ actor: { kind: "unknown" } });
+    // `local` may claim only a person or an agent.
+    expect(actorFor(LOCAL, { "fin-actor-kind": "system" })).toEqual({ actor: { kind: "unknown" } });
+    expect(actorFor(LOCAL, { "fin-actor-kind": "plugin" })).toEqual({ actor: { kind: "unknown" } });
     await start();
     const c = await client();
     const headers: Array<[string, string]> = [
@@ -454,6 +425,8 @@ describe("diagnostics RPCs", () => {
 
     const page = ok<ExportPage>(await c.call("diagnostics.export", { filter: { kinds: ["cli.command"] }, limit: 2 }));
     expect(page.lines).toHaveLength(2);
+    // `fin` is not a person: its export is redacted (5A Decision 22).
+    expect(page.redacted).toBe(true);
     const second = ok<ExportPage>(await c.call("diagnostics.export", { filter: { kinds: ["cli.command"] }, limit: 2, cursor: page.next }));
     expect(second.lines[0]!.id > page.lines[1]!.id).toBe(true);
     expect(await exported(c, { kinds: ["cli.command"] })).toHaveLength(5);
@@ -467,12 +440,14 @@ describe("diagnostics RPCs", () => {
     expect(await exported(c, { project: projectId })).toHaveLength(0);
     const project = JSON.parse(readFileSync(join(tmp, "P", "finisher.project.json"), "utf8"));
     expect(project.collect).toBe("never");
-    ok(await c.call("diagnostics.project", { projectId, collect: "default" }));
+    // Clearing the flag and purging are a person's (5A Task 7): the console, with a typed code.
+    const person = await client("console");
+    ok(await confirmed(person, "diagnostics.project", { projectId, collect: "default" }));
 
-    const purged = ok<{ removed: number }>(await c.call("diagnostics.purge", { selector: "all" }));
+    const purged = ok<{ removed: number }>(await confirmed(person, "diagnostics.purge", { selector: "all" }));
     expect(purged.removed).toBeGreaterThan(0);
     expect(existsSync(join(serverData, "events", "key"))).toBe(false);
-    const badSel = await c.call("diagnostics.purge", { selector: { project: "not-an-id" } });
+    const badSel = await confirmed(person, "diagnostics.purge", { selector: { project: "not-an-id" } });
     expect(!badSel.ok && badSel.error.code).toBe("INVALID_ARGS");
   });
 });

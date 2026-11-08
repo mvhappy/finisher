@@ -6,6 +6,9 @@
 // stable across runs: the temp directory becomes `/fixture`, the project id
 // `01fixtureproject0000000000` and the database's incarnation `01fixtureincarnation000000`
 // (same 26-char shape). Since protocol 2 every write and subscription carries a generation.
+// The console's confirmed scenarios (5A Decision 30) record only the confirmed call, after a
+// `console.challenge` that is left out; its code becomes `0FIXTURECHALLENGE0`, which
+// `rpc_contract.rs` replaces with a code of its own connection.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,16 +28,19 @@ import {
 const OUT = fileURLToPath(new URL("../../../crates/fin/tests/fixtures/rpc/", import.meta.url));
 const FIXTURE_PROJECT_ID = "01fixtureproject0000000000";
 const FIXTURE_INCARNATION = "01fixtureincarnation000000";
+const FIXTURE_CHALLENGE = "0FIXTURECHALLENGE0";
 
 const tmp = mkdtempSync(join(tmpdir(), "finisherd-fixtures-"));
 let server: RunningServer | undefined;
 let projectId = "";
 let incarnation = "";
+let challenge = "";
 
 function normalize(line: string): string {
   let out = line.split(JSON.stringify(tmp).slice(1, -1)).join("/fixture");
   if (projectId) out = out.split(projectId).join(FIXTURE_PROJECT_ID);
   if (incarnation) out = out.split(incarnation).join(FIXTURE_INCARNATION);
+  if (challenge) out = out.split(`"challenge":"${challenge}"`).join(`"challenge":"${FIXTURE_CHALLENGE}"`);
   return out;
 }
 
@@ -54,6 +60,21 @@ async function scenario(name: string, run: (c: NdjsonClient) => Promise<void>, c
   await run(c);
   await c.close();
   write(name, c);
+}
+
+/**
+ * A console scenario of one mutating human-only call: the challenge is asked for first and left
+ * out of the transcript; `send(code)` makes the recorded call.
+ */
+async function confirmedScenario(name: string, send: (c: NdjsonClient, code: string) => Promise<void>): Promise<void> {
+  const c = await connectProved(server!, "console");
+  challenge = ok<{ code: string }>(await c.call("console.challenge", {})).code;
+  c.transcript.length = 0;
+  c.restartIds();
+  await send(c, challenge);
+  await c.close();
+  write(name, c);
+  challenge = "";
 }
 
 try {
@@ -173,14 +194,10 @@ try {
   });
 
   // Already open here: relocate changes nothing, the answer is the usual ref. A relocation is a
-  // person's decision (5A Task 5): the console asks.
-  await scenario(
-    "project-open-relocate",
-    async (c) => {
-      ok(await c.call("project.open", { dir, relocate: true }));
-    },
-    "console",
-  );
+  // person's decision (5A Task 5): the console asks, with its typed code (Task 7).
+  await confirmedScenario("project-open-relocate", async (c, code) => {
+    ok(await c.call("project.open", { dir, relocate: true, challenge: code }));
+  });
 
   // The status now, then the client interrupts.
   await scenario("project-events", async (c) => {
@@ -225,8 +242,9 @@ try {
   await unary("project-recover-dismiss-unknown", "project.recover", { txId: "fx-rc2", ...who, dismiss: "000000000000" }, "NOT_FOUND");
   await unary("project-recover-groups", "project.recover", { txId: "fx-rc1", ...who, create: "all", dryRun: true });
 
-  // Diagnostics (plan D, Task D4): the local socket is the `fin` source. Mirrored in
-  // `rpc_contract.rs` `replay_diagnostics`.
+  // Diagnostics (plan D, Task D4; 5A Task 7): `local` is the `fin` source, its exports are
+  // redacted, and consent changes, `project default` and purges are the console's, confirmed.
+  // Mirrored in `rpc_contract.rs` `replay_diagnostics`.
   const cliCommand = {
     name: "item.trim",
     flags: ["project"],
@@ -240,11 +258,18 @@ try {
   await server_("diagnostics-record", "diagnostics.record", { kind: "cli.command", kv: 1, payload: cliCommand });
   await server_("diagnostics-record-unlisted", "diagnostics.record", { kind: "log.commit", kv: 1, payload: {} }, "EVENT_INVALID");
   await server_("diagnostics-consent-training-on", "diagnostics.consent", { purpose: "training", value: "on" }, "CONSENT_UI_ONLY");
-  await server_("diagnostics-consent", "diagnostics.consent", { purpose: "diagnostics", value: "on" });
+  await server_("diagnostics-consent-human-only", "diagnostics.consent", { purpose: "diagnostics", value: "on" }, "HUMAN_ONLY");
+  await confirmedScenario("diagnostics-consent", async (c, code) => {
+    ok(await c.call("diagnostics.consent", { purpose: "diagnostics", value: "on", challenge: code }));
+  });
   await server_("diagnostics-status", "diagnostics.status", {});
   await server_("diagnostics-export", "diagnostics.export", { filter: { kinds: ["cli.command"] }, limit: 10 });
-  await unary("diagnostics-project", "diagnostics.project", { collect: "default" });
-  await server_("diagnostics-purge", "diagnostics.purge", { selector: { before: 0 } });
+  await confirmedScenario("diagnostics-project", async (c, code) => {
+    ok(await c.call("diagnostics.project", { projectId, collect: "default", challenge: code }));
+  });
+  await confirmedScenario("diagnostics-purge", async (c, code) => {
+    ok(await c.call("diagnostics.purge", { selector: { before: 0 }, challenge: code }));
+  });
 
   // Last: it changes the database's incarnation.
   await unary("project-rebuild", "project.rebuild", {});

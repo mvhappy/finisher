@@ -9,7 +9,8 @@ import { chainOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { stillCanonical } from "./chain/resolve.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionsTag } from "./connections.ts";
-import { type CallMeta, callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
+import { issueChallenge } from "./auth/challenges.ts";
+import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
@@ -18,13 +19,18 @@ import { ProjectRegistry } from "./projects.ts";
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
 
+/** The audit's word for a purge selector (never the project id or the date). */
+const purgeReason = (selector: unknown): string =>
+  selector === "all" ? "all" : selector !== null && typeof selector === "object" && "before" in selector ? "before" : "project";
+
 /** Defects (thrown exceptions, bugs) become `INTERNAL` instead of an RPC defect frame. */
 const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
   Effect.catchDefect(self, (defect) => Effect.fail(toFinError(defect)));
 
 /**
  * The handlers of one transport: built once per transport (`Layer.fresh`), with that transport's
- * `RpcSource` (local socket `fin`, WebSocket `ui`) and `Connections`. Every non-stream call is
+ * `Connections`. The journal's source and a call's actor come from the call's principal
+ * (`sourceOf`, `actorFor`; 5A Decision 27), never from the transport. Every non-stream call is
  * timed into `rpc.stats` (`guard`); the stream handlers do not use it. Every RPC passes the
  * middleware chain first (`withChain`, 5A Task 5): authentication, resolvers, scopes, reach and
  * policy; every write takes the chain's guard to the store (`meta`).
@@ -34,7 +40,6 @@ export const HandlersLive = FinRpcs.toLayer(
     const registry = yield* ProjectRegistry;
     const fonts = yield* Fonts;
     const diagnostics = yield* Diagnostics;
-    const source = yield* RpcSource;
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
@@ -48,7 +53,12 @@ export const HandlersLive = FinRpcs.toLayer(
      * (`INTERNAL`), never an open guard (review of Task 5, H1 and L3).
      */
     const withMeta = <A>(options: { readonly headers: unknown }, f: (meta: CallMeta) => Effect.Effect<A, FinError>) =>
-      Effect.flatMap(writeGuardOf(options), (guard) => f({ ...callMeta(options.headers, source), guard }));
+      Effect.flatMap(writeGuardOf(options), (guard) => f({ ...actorFor(principalOf(options), options.headers), guard }));
+    /** An `ok` audit row of `kind` for the call's principal (consent changes, purges). */
+    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
+      const p = principalOf(options);
+      audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
+    };
     const projects = {
       isOpen: registry.isOpen,
       dirOf: registry.dirOf,
@@ -94,6 +104,18 @@ export const HandlersLive = FinRpcs.toLayer(
             () => connections.link(options.client.id)?.closeAfterReply(),
             (pred) => tickets.dropWhere(pred),
           ),
+        ),
+      // The console's typed confirmations (Decision 30): a code for this connection only.
+      "console.challenge": (_, options) =>
+        guard(
+          "console.challenge",
+          Effect.suspend(() => {
+            const c = connections.get(options.client.id);
+            if (principalOf(options).kind !== "console" || c === undefined) {
+              return Effect.fail(finError("INVALID_REQUEST", "console.challenge is for the server's console", { tag: "console.challenge" }));
+            }
+            return Effect.succeed(issueChallenge(c));
+          }),
         ),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
       "project.create": ({ dir, name, rate, idemKey }) =>
@@ -178,8 +200,15 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("fonts.fetch", Effect.andThen(req.pinned === undefined ? Effect.void : registry.ensure(req.pinned), fonts.fetch(req))),
       "fonts.plan": ({ projectId, branch, ops }) => guard("fonts.plan", registry.fontsPlan(projectId, branch, ops)),
       "diagnostics.status": () => guard("diagnostics.status", diagnostics.status()),
-      "diagnostics.export": (req) => guard("diagnostics.export", diagnostics.export(req)),
-      "diagnostics.purge": ({ selector }) => guard("diagnostics.purge", diagnostics.purge(selector)),
+      // A caller that is not a person gets content removed (Decision 22); `content: true` is human-only.
+      "diagnostics.export": (req, options) => guard("diagnostics.export", diagnostics.export(req, !principalOf(options).human)),
+      "diagnostics.purge": ({ selector }, options) =>
+        guard(
+          "diagnostics.purge",
+          Effect.tap(diagnostics.purge(selector), () =>
+            Effect.sync(() => auditAs(options, "diagnostics.purge", { reason: purgeReason(selector) })),
+          ),
+        ),
       "diagnostics.project": ({ projectId, collect }) =>
         guard(
           "diagnostics.project",
@@ -189,9 +218,16 @@ export const HandlersLive = FinRpcs.toLayer(
             return attemptJson<{ project: string; collect: "default" | "never" }>(() => engine.setCollect(collect));
           }),
         ),
-      "diagnostics.consent": ({ purpose, value }) => guard("diagnostics.consent", diagnostics.consent(source, purpose, value)),
-      "diagnostics.record": (req, { client, headers }) =>
-        guard("diagnostics.record", diagnostics.record(source, client.id, req, headers)),
+      "diagnostics.consent": ({ purpose, value }, options) =>
+        guard(
+          "diagnostics.consent",
+          Effect.tap(diagnostics.consent(principalOf(options), purpose, value), () => Effect.sync(() => auditAs(options, "consent.change", { purpose, value }))),
+        ),
+      "diagnostics.record": (req, options) =>
+        guard(
+          "diagnostics.record",
+          diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
+        ),
     }), { connections, projects, audit, timed: guard });
   }),
 );

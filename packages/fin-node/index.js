@@ -333,8 +333,8 @@ export class Journal {
     return sync(() => this.#native.statusNow());
   }
 
-  async export(filterJson, cursor, limit, asUpload) {
-    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null)));
+  async export(filterJson, cursor, limit, asUpload, redact) {
+    return call(sync(() => this.#native.export(filterJson, cursor ?? null, limit, asUpload ?? null, redact === true)));
   }
 
   async purge(selectorJson) {

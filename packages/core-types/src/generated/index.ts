@@ -1101,13 +1101,15 @@ export type Ulid = string;
  */
 export type KindName = string;
 /**
- * Which program emitted an entry. The server sets it from the transport (local socket →
- * `fin`, WebSocket → `ui`), never from the payload.
+ * Which program emitted an entry. The server sets it from the connection's principal (5A
+ * Decision 27: `local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` →
+ * `ui`), never from the payload. `console`, a person at the server, sends no events of its
+ * own; `mcp`, the MCP adapter (D16), sends the kinds `fin` does.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Source".
  */
-export type Source = "fin" | "finisherd" | "finNode" | "ui" | "agent";
+export type Source = "fin" | "finisherd" | "finNode" | "ui" | "agent" | "console" | "mcp";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "EventPayload".
@@ -4012,7 +4014,9 @@ export interface Envelope {
 }
 /**
  * One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as
- * the next request's `cursor`; absent on the last page.
+ * the next request's `cursor`; absent on the last page. `redacted`: content fields (and the
+ * blob references inside them) were removed, as for a caller that is not a person (5A
+ * Decision 22); absent otherwise.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ExportPage".
@@ -4020,6 +4024,7 @@ export interface Envelope {
 export interface ExportPage {
   lines: Envelope[];
   next?: string;
+  redacted?: boolean;
 }
 /**
  * Which entries to read. Empty fields match everything.

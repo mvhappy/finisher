@@ -96,7 +96,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       };
       const handshake = new Handshake({ keys, envId, audit });
       yield* Layer.build(
-        Layer.mergeAll(serveRpc(local, "fin", connections.local), serveRpc(ws, "ui", connections.ws)).pipe(
+        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
               layerProjectRegistry(serverData, registry),

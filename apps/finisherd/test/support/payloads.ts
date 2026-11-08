@@ -14,6 +14,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "auth.ticket": {},
   "auth.whoami": {},
   "auth.revokeSelf": {},
+  "console.challenge": {},
   "project.create": { dir: "/nowhere/never-created", name: "X", rate: "30" },
   "project.open": { dir: "/nowhere/never-opened" },
   "asset.probe": { projectId: P, path: "/nowhere/a.png" },

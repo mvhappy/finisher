@@ -179,6 +179,15 @@ export async function connectProved(server: { info: ServerInfo; serverData: stri
   return client;
 }
 
+/**
+ * A mutating human-only call as the console makes it (5A Decision 30): asks this connection for
+ * a `console.challenge` and sends `tag` with its code typed back (`challenge`).
+ */
+export async function confirmed(c: { call(tag: string, payload: unknown): Promise<Exit> }, tag: string, payload: Record<string, unknown>): Promise<Exit> {
+  const { code } = ok<{ code: string }>(await c.call("console.challenge", {}));
+  return c.call(tag, { ...payload, challenge: code });
+}
+
 /** Unwraps a successful exit or throws with the error frame. */
 export function ok<A = unknown>(exit: Exit): A {
   if (!exit.ok) throw new Error(`expected success, got ${JSON.stringify(exit.error)}`);

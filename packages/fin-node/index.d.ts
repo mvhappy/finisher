@@ -226,8 +226,8 @@ export declare class Journal {
   status(): Promise<string>;
   /** The `JournalStatus` JSON as last published, without waiting. */
   statusNow(): string;
-  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`). */
-  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training"): Promise<string>;
+  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`; `redact`: content removed). */
+  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training" | null, redact?: boolean): Promise<string>;
   /** Purges (`PurgeSelector` JSON); resolves to the `PurgeReport` JSON. */
   purge(selectorJson: string): Promise<string>;
   /** What this server knows of a project's flag (`null`: unknown). Engines set it themselves. */

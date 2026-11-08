@@ -3449,7 +3449,7 @@
       "type": "string"
     },
     "ExportPage": {
-      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page.",
+      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page. `redacted`: content fields (and the\nblob references inside them) were removed, as for a caller that is not a person (5A\nDecision 22); absent otherwise.",
       "properties": {
         "lines": {
           "items": {
@@ -3459,6 +3459,9 @@
         },
         "next": {
           "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -10026,13 +10029,15 @@
       "type": "object"
     },
     "Source": {
-      "description": "Which program emitted an entry. The server sets it from the transport (local socket →\n`fin`, WebSocket → `ui`), never from the payload.",
+      "description": "Which program emitted an entry. The server sets it from the connection's principal (5A\nDecision 27: `local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` →\n`ui`), never from the payload. `console`, a person at the server, sends no events of its\nown; `mcp`, the MCP adapter (D16), sends the kinds `fin` does.",
       "enum": [
         "fin",
         "finisherd",
         "finNode",
         "ui",
-        "agent"
+        "agent",
+        "console",
+        "mcp"
       ],
       "type": "string"
     },

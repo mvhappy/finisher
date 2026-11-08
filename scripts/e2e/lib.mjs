@@ -165,9 +165,11 @@ export function handshakeMac(key, label, fields) {
 
 /**
  * Proves `credential` (`local` or `console`, `<server-data>/auth/<credential>.key`) over the
- * server's socket and calls `tag` once (5A Decision 6): the same handshake `fin` runs.
+ * server's socket and calls `tag` once (5A Decision 6): the same handshake `fin` runs. With
+ * `confirm`, a console asks for a `console.challenge` first and types its code back in
+ * `challenge` (5A Decision 30: the mutating human-only calls).
  */
-export function socketCall(server, tag, payload, credential = "local") {
+export function socketCall(server, tag, payload, credential = "local", { confirm = false } = {}) {
   const key = Buffer.from(readFileSync(join(server.serverData, "auth", `${credential}.key`), "utf8").trim(), "base64url");
   return new Promise((resolve, reject) => {
     const sock = connect({ path: server.info.socket });
@@ -205,7 +207,8 @@ export function socketCall(server, tag, payload, credential = "local") {
         if (proof.length !== want.length || !timingSafeEqual(proof, want)) throw new Error("the server did not prove itself");
         const mac = handshakeMac(key, "fin/prove/v2", [hello.envId, hello.endpoint, sn, cn]).toString("base64url");
         value(await call("auth.prove", { mac }), "auth.prove");
-        resolve(value(await call(tag, payload), tag));
+        const challenge = confirm ? { challenge: value(await call("console.challenge", {}), "console.challenge").code } : {};
+        resolve(value(await call(tag, { ...payload, ...challenge }), tag));
       } catch (e) {
         reject(e);
       } finally {
@@ -213,6 +216,23 @@ export function socketCall(server, tag, payload, credential = "local") {
       }
     });
   });
+}
+
+/** A mutating human-only call as the server's console makes it: proved as `console`, confirmed. */
+export function consoleCall(server, tag, payload) {
+  return socketCall(server, tag, payload, "console", { confirm: true });
+}
+
+/** Every entry the journal stored (content included: the console is a person), oldest first. */
+export async function storedEntries(server, filter = {}) {
+  const out = [];
+  let cursor;
+  for (;;) {
+    const page = await socketCall(server, "diagnostics.export", { filter, content: true, ...(cursor ? { cursor } : {}) }, "console");
+    out.push(...page.lines);
+    if (page.next === undefined) return out;
+    cursor = page.next;
+  }
 }
 
 /**

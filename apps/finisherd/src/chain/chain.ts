@@ -5,15 +5,29 @@
 //   3. resolve (`resolve.ts`): projects, directories and paths become current facts;
 //   4. authorise (`authorize.ts`): scopes (all), human-only, reach;
 //   5. policy (`policy.ts`): branch write targets resolved through the store, then
-//      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`);
+//      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`); then a
+//      `console` principal's mutating human-only call must carry its connection's typed
+//      challenge (`auth/challenges.ts`, Decision 30: `CONFIRMATION_REQUIRED`);
 //   6. the handler, with the resolved payload and the guard (`options.guard`), which every
 //      write passes into `fin-node` for the store to check inside its write transaction;
 //   7. after (sub-project 7's hooks; nothing in 5A but `project.open`'s reach re-check).
 // A refusal at stages 2–5 is audited (`auth.denied`: tag, code, scope or rule, principal kind;
-// never the payload) and counted in `rpc.stats` (`timed`), never journalled.
-import { type FinError, type FinRpcTag, PUBLIC_RPCS, type Principal, type RuleFacts, ruleOf, STREAM_RPCS } from "@finisher/contracts";
+// never the payload; a missing confirmation is `console.refused`) and counted in `rpc.stats`
+// (`timed`), never journalled.
+import {
+  type FinError,
+  type FinRpcTag,
+  HUMAN_ONLY,
+  PUBLIC_RPCS,
+  type Principal,
+  requiredScopes,
+  type RuleFacts,
+  ruleOf,
+  STREAM_RPCS,
+} from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
+import { answerChallenge, confirmationRequired } from "../auth/challenges.ts";
 import { unauthenticated } from "../auth/handshake.ts";
 import type { Connections, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
@@ -84,6 +98,8 @@ const DENIALS = new Map<string, string>([
   ["BRANCH_NOT_ALLOWED", "agentBranchLimits"],
   ["BRANCH_PROTECTED", "protectedBranches"],
   ["APPROVAL_REQUIRED", "ask"],
+  ["CONSENT_UI_ONLY", "deviceOnly"],
+  ["CONFIRMATION_REQUIRED", "confirmation"],
 ]);
 
 /** `handlers` with the chain in front of each one. */
@@ -99,7 +115,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (rule === undefined) return;
       const d = (e.details ?? {}) as Record<string, unknown>;
       deps.audit?.append({
-        kind: "auth.denied",
+        kind: e.code === "CONFIRMATION_REQUIRED" ? "console.refused" : "auth.denied",
         principal: { kind: principal.kind, id: principal.id },
         outcome: "denied",
         code: e.code,
@@ -128,6 +144,11 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
         const approvalId = ulid();
         approvals.set(approvalId, { tag, principal: `${principal.kind}:${principal.id}`, at: Date.now() });
         return yield* Effect.fail(approvalRequired(tag, approvalId, outcome.ask.reason));
+      }
+      // Last, so that a typed code is used up only by a call that goes ahead.
+      if (rule.confirm === true && principal.kind === "console" && requiredScopes(tag, payload, resolved.facts).some((s) => HUMAN_ONLY.has(s))) {
+        const refusal = answerChallenge(deps.connections.get(clientId), (payload as { challenge?: unknown } | null)?.challenge);
+        if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal));
       }
       // A branch-limited principal's new branches carry its own author, whatever it sent (M4).
       const stamped =

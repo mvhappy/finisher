@@ -44,6 +44,33 @@ test("escalations_add_the_human_only_scopes", () => {
   expect(requiredScopes("project.open", { dir: "/d", relocate: true }, { attached: true })).toEqual(["project.read", "project.confirm"]);
 });
 
+test("diagnostics_admin_guards_consent_purge_project_default_and_content (5A Task 7)", () => {
+  expect(requiredScopes("diagnostics.consent", { purpose: "diagnostics", value: "off" })).toEqual(["diagnostics.admin"]);
+  expect(requiredScopes("diagnostics.purge", { selector: "all" })).toEqual(["diagnostics.admin"]);
+  expect(requiredScopes("diagnostics.project", { projectId: "p", collect: "never" })).toEqual(["diagnostics.read"]);
+  expect(requiredScopes("diagnostics.project", { projectId: "p", collect: "default" })).toEqual(["diagnostics.read", "diagnostics.admin"]);
+  expect(requiredScopes("diagnostics.export", {})).toEqual(["diagnostics.read"]);
+  expect(requiredScopes("diagnostics.export", { content: true })).toEqual(["diagnostics.read", "diagnostics.admin"]);
+  // Training on is a device's alone; nothing else is device-only.
+  const deviceOnly = (tag: keyof typeof RPC_SCOPES, p: unknown) => ruleOf(tag).deviceOnly?.(p as never) === true;
+  expect(deviceOnly("diagnostics.consent", { purpose: "training", value: "on" })).toBe(true);
+  expect(deviceOnly("diagnostics.consent", { purpose: "training", value: "off" })).toBe(false);
+  expect(deviceOnly("diagnostics.consent", { purpose: "diagnostics", value: "on" })).toBe(false);
+  expect(Object.keys(RPC_SCOPES).filter((t) => ruleOf(t as keyof typeof RPC_SCOPES).deviceOnly !== undefined)).toEqual(["diagnostics.consent"]);
+});
+
+test("confirm_marks_the_mutating_human_only_rpcs (Decision 30)", () => {
+  const confirmed = Object.keys(RPC_SCOPES).filter((t) => ruleOf(t as keyof typeof RPC_SCOPES).confirm === true);
+  expect(confirmed.sort()).toEqual(["diagnostics.consent", "diagnostics.project", "diagnostics.purge", "project.open", "project.takeover"]);
+  // Each takes the typed code; reading content and asking for a code need none.
+  for (const tag of confirmed) {
+    const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
+    expect(Object.keys(rpc.payloadSchema.fields ?? {}), tag).toContain("challenge");
+  }
+  expect(ruleOf("diagnostics.export").confirm).toBeUndefined();
+  expect(ruleOf("console.challenge").confirm).toBeUndefined();
+});
+
 test("defaults_follow_owner_decision_5", () => {
   for (const s of HUMAN_ONLY) expect(SCOPES).toContain(s);
   const local = defaultScopes("local");
@@ -89,6 +116,8 @@ test("human_only_needs_follow_the_payload_alone (never whether a project is open
     ["project.open", { dir: "/d", relocate: true }],
     ["project.takeover", { projectId: "p", confirm: true }],
     ["project.takeover", { projectId: "p", confirm: false }],
+    ["diagnostics.project", { projectId: "p", collect: "default" }],
+    ["diagnostics.project", { projectId: "p", collect: "never" }],
   ];
   for (const [tag, payload] of payloads) {
     const human = facts.map((f) => requiredScopes(tag, payload, f).filter((s) => HUMAN_ONLY.has(s)).join(","));
