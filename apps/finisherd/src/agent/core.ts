@@ -4,6 +4,7 @@
 import { Context } from "effect";
 import type { Clock, Ids } from "./clock.ts";
 import type { SessionCredentials } from "./credentials.ts";
+import type { OutcomeTracker } from "./outcomes.ts";
 import type { BranchLineage } from "./reach.ts";
 import type { AgentStore } from "./store.ts";
 
@@ -11,6 +12,8 @@ export interface AgentCore {
   readonly store: AgentStore;
   readonly credentials: SessionCredentials;
   readonly lineage: BranchLineage;
+  /** What became of each agent transaction (Task 11): the chains' after stage and session delete feed it. */
+  readonly outcomes: OutcomeTracker;
   readonly clock: Clock;
   readonly ids: Ids;
 }

@@ -10,6 +10,7 @@ import type { ProviderAdapter } from "../../src/agent/adapter.ts";
 import { type Clock, manualClock, systemIds } from "../../src/agent/clock.ts";
 import type { AgentCore } from "../../src/agent/core.ts";
 import { type BranchRegistry, SessionCredentials } from "../../src/agent/credentials.ts";
+import { OutcomeTracker } from "../../src/agent/outcomes.ts";
 import { BranchLineage } from "../../src/agent/reach.ts";
 import { Runtime, type RuntimeDeps } from "../../src/agent/runtime.ts";
 import type { Pricing, RuntimeJournal, SessionPlan, SessionPlanner, StartRequest, ToolCall, ToolExecutor, ToolOutcome } from "../../src/agent/runtime-deps.ts";
@@ -99,7 +100,9 @@ export function testCore(store: AgentStore, control: ControlStore, clock: Clock)
     credentials: auth,
     revoke: { audit, tickets: { dropWhere: () => 0 }, connections: { closeWhere: () => 0, revoke: () => {} }, revoke: (ref) => auth.markEnded(ref, "owner"), persist: () => auth.persist() },
   });
-  return { store, credentials, lineage: new BranchLineage(), clock, ids: systemIds(clock), auth };
+  const lineage = new BranchLineage();
+  const outcomes = new OutcomeTracker({ store, lineage, clock: () => clock.now(), verdicts: { version: () => null, emit: () => false } });
+  return { store, credentials, lineage, outcomes, clock, ids: systemIds(clock), auth };
 }
 
 export function journal(): RuntimeJournal & { readonly entries: { kind: string; [k: string]: unknown }[]; failSessions: boolean } {

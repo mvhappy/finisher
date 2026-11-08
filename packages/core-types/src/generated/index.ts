@@ -4740,6 +4740,10 @@ export interface HelperGrant {
  * reverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert
  * committed nothing (`ALREADY_PRESENT`: the target holds the record's origin root;
  * `ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.
+ * `origins`: the txIds the operation acted on, each with the records its `origin` chain
+ * leads to (a copy of a copy), first seen first: an undo's units, a cherry-pick's origin, a
+ * reverted group's records; empty (and omitted) for a redo and for nothing done (7A
+ * Decision 27).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "HistoryResult".
@@ -4748,6 +4752,7 @@ export interface HistoryResult {
   committed: CommittedTx[];
   dryRun: boolean;
   noOp?: string | null;
+  origins?: string[];
   undone: string[];
 }
 /**
@@ -5737,9 +5742,10 @@ export interface MediaInfo1 {
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
  * `skipConflicting`; they are offered again by the next merge); `excluded`: source records
  * never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
- * the merge. A retry of a committed merge answers from the log: its records and their
- * origins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an
- * empty answer, not an error.
+ * the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
+ * copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
+ * log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+ * Nothing left to merge is an empty answer, not an error.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "MergeReport".
@@ -5750,6 +5756,7 @@ export interface MergeReport {
   excluded: Conflict[];
   mergeId: string;
   merged: string[];
+  origins?: string[];
   skipped: Conflict[];
   sourceState: BranchState;
 }

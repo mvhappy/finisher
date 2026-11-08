@@ -53,6 +53,7 @@ mod hash;
 mod history;
 mod jobhost;
 mod journal;
+mod kinds;
 mod library;
 mod maintenance;
 mod private_dir;
@@ -72,6 +73,7 @@ pub use jobhost::{
     JobHost, JobKindVersion, job_kind_versions, resolve_memory_rule, validate_job_params,
 };
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
+pub use kinds::kind_version;
 pub use library::{library_canonical_root, library_probe_root, library_probe_status};
 #[cfg(feature = "test-hooks")]
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};

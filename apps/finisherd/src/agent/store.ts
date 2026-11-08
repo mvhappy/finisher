@@ -17,6 +17,7 @@ import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
 import { agent0001 } from "../control/migrations/agent/0001.ts";
 import { agent0002 } from "../control/migrations/agent/0002.ts";
+import { agent0003 } from "../control/migrations/agent/0003.ts";
 import { finError } from "../errors.ts";
 import { dirOlderThan, ensureAgentsRoot, listSessionDirs, makeSessionDirs, readBlob, removeBlob, removeSessionDir, sweepBlobs, writeBlob } from "./blobs.ts";
 import type { Clock, Ids } from "./clock.ts";
@@ -25,12 +26,13 @@ import { initialState, next, type SessionEffect, type SessionEvent, type Session
 import type { Appended, ApprovalRow, NewApproval, NewNode, NewSession, NodeRow, OutboxEffect, OutboxItem, Recovery, RunRow, RunStart, SessionQuery, SessionRow } from "./store-rows.ts";
 import { type Applied, addUsage, approvalExpired, INLINE_MAX, invalid, outboxOf, SYNTHETIC_RESULT, STORE_SQL, sessionNotFound, stateOf } from "./store-rows.ts";
 import { sessionInsertArgs, sessionListQuery, toApproval, toNode, toRun, toSession, ZERO_USAGE } from "./store-rows.ts";
+import { SessionTxOutcomes } from "./store-outcomes.ts";
 import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, SessionTxs, type TxOutcome } from "./store-tables.ts";
 
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [agent0001, agent0002], { formatVersion: 2, minReaderVersion: 1 });
+registerChain("agent", [agent0001, agent0002, agent0003], { formatVersion: 3, minReaderVersion: 1 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -52,6 +54,8 @@ export class AgentStore {
   readonly #txs: SessionTxs;
   readonly #states: SessionStates;
   readonly #ledger: DbLedger;
+  /** The outcome ledger (Task 11): every outcome of every agent transaction. */
+  readonly outcomes: SessionTxOutcomes;
   /** Synthetic results written since the store opened. */
   #closed = 0;
   /** `<server-data>/agents`. */
@@ -65,6 +69,7 @@ export class AgentStore {
     this.#txs = new SessionTxs(control);
     this.#states = new SessionStates(control);
     this.#ledger = new DbLedger(control);
+    this.outcomes = new SessionTxOutcomes(control);
     this.#s = Object.fromEntries(Object.entries(STORE_SQL).map(([k, sql]) => [k, control.db.prepare(sql)]));
   }
 
@@ -430,6 +435,13 @@ export class AgentStore {
    */
   async purgeTxs(of: { readonly projectId: string } | { readonly sessionId: string }): Promise<number> {
     const [column, value] = "projectId" in of ? ["projectId", of.projectId] : ["sessionId", of.sessionId];
+    // Their outcomes first, while the rows still name them.
+    await Effect.runPromise(
+      this.#cs.deleteInBatches(
+        `DELETE FROM session_tx_outcomes WHERE seq IN (SELECT o.seq FROM session_tx_outcomes o JOIN session_txs t USING (txId) WHERE t.${column} = ? LIMIT ?)`,
+        [value],
+      ),
+    );
     return Effect.runPromise(
       this.#cs.deleteInBatches(`DELETE FROM session_txs WHERE txId IN (SELECT txId FROM session_txs WHERE ${column} = ? LIMIT ?)`, [value]),
     );

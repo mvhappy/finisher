@@ -8,10 +8,9 @@
 use fin_core::branch::BranchState;
 use fin_core::history::plan_merge;
 use fin_core::{CommittedTx, CoreError, Link, Tx};
-use rusqlite::params;
 use serde_json::json;
 
-use super::SqlLog;
+use super::{SqlLog, origins};
 use crate::branch::create::{check_key, key_reused};
 use crate::branch::index;
 use crate::commit::{check_args_hash, same_args_hash};
@@ -64,13 +63,20 @@ impl Store {
         let first = format!("{}-1", r.tx_id);
         loop {
             if let Some(report) = self.write(&first, r.dry_run, |ctx| plan(ctx, &r))? {
-                return Ok(report);
+                return self.merge_origins(report);
             }
             // Deduped; gone again (an import rewound it since): the merge runs again.
             if let Some(existing) = db::find_tx(&self.conn, &first)? {
-                return self.merged_before(&r, existing);
+                let report = self.merged_before(&r, existing)?;
+                return self.merge_origins(report);
             }
         }
+    }
+
+    /// `report` with `origins`: what its copies stand for (7A Decision 27).
+    fn merge_origins(&self, mut report: MergeReport) -> Result<MergeReport, StoreError> {
+        report.origins = origins::chains(&self.conn, report.merged.iter().cloned())?;
+        Ok(report)
     }
 
     /// The answer to a retried merge: its group as committed.
@@ -84,14 +90,7 @@ impl Store {
             _ => return Err(key_reused(&existing)),
         };
         same_args_hash(r.args_hash.as_deref(), existing)?;
-        let ids: Vec<String> = {
-            let mut stmt = self.conn.prepare_cached(
-                "SELECT tx_id FROM record_links WHERE kind = 'merge' AND merge_id = ?1
-                 ORDER BY branch, seq",
-            )?;
-            let rows = stmt.query_map(params![r.tx_id], |row| row.get(0))?;
-            rows.collect::<Result<_, _>>()?
-        };
+        let ids = origins::merge_group(&self.conn, &r.tx_id)?;
         let mut committed = Vec::with_capacity(ids.len());
         for id in ids {
             committed.extend(db::find_tx(&self.conn, &id)?);
@@ -104,6 +103,7 @@ impl Store {
             excluded: Vec::new(),
             source_state: state_of(&self.conn, &from)?,
             dry_run: false,
+            origins: Vec::new(),
         })
     }
 }
@@ -175,5 +175,6 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
         excluded: plan.excluded,
         source_state: state_of(txn, &from)?,
         dry_run: ctx.dry_run,
+        origins: Vec::new(),
     })
 }

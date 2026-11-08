@@ -355,7 +355,13 @@ describe("10, 12, 13", () => {
     await store.sweep(clock.now());
     expect(store.get(b.id)).toBeUndefined();
     expect([...store.sessionOfTx(["T1", "T2", "T3"]).keys()].sort()).toEqual(["T1", "T2", "T3"]);
+    // Their root and project stay on the rows; their outcomes (Task 11) go with them.
+    expect(store.sessionOfTx(["T2"]).get("T2")).toMatchObject({ projectId: "P2" });
+    store.outcomes.record({ txId: "T2", via: "merge", verdict: "merged", by: "user", sessionId: b.id, at: 4 });
+    store.outcomes.record({ txId: "T1", via: "archive", verdict: "abandoned", by: "user", sessionId: a.id, at: 4 });
     expect(await store.purgeTxs({ projectId: "P2" })).toBe(2);
+    expect(store.outcomes.of("T2")).toEqual([]);
+    expect(store.outcomes.of("T1")).toHaveLength(1);
     expect(await store.purgeTxs({ sessionId: a.id })).toBe(1);
     expect(store.sessionOfTx(["T1", "T2", "T3"]).size).toBe(0);
   });

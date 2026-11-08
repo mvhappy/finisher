@@ -348,6 +348,11 @@ export function kindNames() {
   return native.kindNames();
 }
 
+/** The newest payload version of kind `name` that `source` may emit; `null` for none (reserved, unknown, not that source). */
+export function kindVersion(name, source) {
+  return native.kindVersion(name, source) ?? null;
+}
+
 /** Why a `privacy` section (JSON) is not one the journal accepts, naming the key; `undefined` when it is. */
 export function validatePrivacy(privacyJson) {
   return native.validatePrivacy(privacyJson) ?? undefined;

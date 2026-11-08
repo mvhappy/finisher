@@ -4556,7 +4556,7 @@
     },
     "HistoryResult": {
       "additionalProperties": false,
-      "description": "The answer of a history operation ([`Store::undo`](crate::Store::undo),\n[`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and\nrolled back, `dry_run`; a retry of a committed operation answers with its records,\n`dry_run` false), and what they act on: the units an undo undoes, the undo a redo\nreverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert\ncommitted nothing (`ALREADY_PRESENT`: the target holds the record's origin root;\n`ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.",
+      "description": "The answer of a history operation ([`Store::undo`](crate::Store::undo),\n[`Store::redo`](crate::Store::redo)): the records it committed, in order (or planned and\nrolled back, `dry_run`; a retry of a committed operation answers with its records,\n`dry_run` false), and what they act on: the units an undo undoes, the undo a redo\nreverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert\ncommitted nothing (`ALREADY_PRESENT`: the target holds the record's origin root;\n`ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.\n`origins`: the txIds the operation acted on, each with the records its `origin` chain\nleads to (a copy of a copy), first seen first: an undo's units, a cherry-pick's origin, a\nreverted group's records; empty (and omitted) for a redo and for nothing done (7A\nDecision 27).",
       "properties": {
         "committed": {
           "items": {
@@ -4572,6 +4572,12 @@
             "string",
             "null"
           ]
+        },
+        "origins": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "undone": {
           "items": {
@@ -7977,7 +7983,7 @@
     },
     "MergeReport": {
       "additionalProperties": false,
-      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after\nthe merge. A retry of a committed merge answers from the log: its records and their\norigins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an\nempty answer, not an error.",
+      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after\nthe merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a\ncopy), first seen first (7A Decision 27). A retry of a committed merge answers from the\nlog: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.\nNothing left to merge is an empty answer, not an error.",
       "properties": {
         "committed": {
           "items": {
@@ -7998,6 +8004,12 @@
           "type": "string"
         },
         "merged": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "origins": {
           "items": {
             "type": "string"
           },

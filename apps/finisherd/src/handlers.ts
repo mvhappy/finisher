@@ -15,6 +15,7 @@ import { issueChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { AgentCoreTag } from "./agent/core.ts";
+import { withOutcomes } from "./agent/outcomes.ts";
 import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
 import { agentHandlers } from "./agent/rpc.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
@@ -105,7 +106,8 @@ export const HandlersLive = FinRpcs.toLayer(
     // Agent sessions (7A Task 7): branch reach over their root's subtree, path reach over their
     // project folder and its libraries, the server's author, `session_txs` after every write.
     const reach = new BranchReach(agents.store, agents.lineage, projects);
-    const hooks = agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now });
+    // Then the outcome tracker (Task 11), once the session's own rows are written.
+    const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
     const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p))];
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
     const defaultBranchOf = (p: { readonly kind: string; readonly id: string }) => {

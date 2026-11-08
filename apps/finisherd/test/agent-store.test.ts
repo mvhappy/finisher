@@ -73,7 +73,7 @@ const count = (table: string, where = "1 = 1", ...args: string[]): number =>
 
 describe("agent store", () => {
   test("agent_chain_is_registered", () => {
-    expect(control.db.prepare("SELECT value FROM meta WHERE key = 'formatVersion.agent'").get()).toEqual({ value: "2" });
+    expect(control.db.prepare("SELECT value FROM meta WHERE key = 'formatVersion.agent'").get()).toEqual({ value: "3" });
     for (const t of ["sessions", "runs", "nodes", "session_txs", "session_state", "approvals", "budgets", "budget_days", "session_outbox"]) {
       expect(count(t)).toBe(0);
     }
@@ -253,7 +253,7 @@ describe("agent store", () => {
     store.recordTx({ txId: "T1", sessionId: b.id, callId: null, attribution: "none", at: 40 }); // a retried after stage: kept as first written
     const m = store.sessionOfTx(["T1", "T2", "T3", "T-human"]);
     expect([...m.keys()].sort()).toEqual(["T1", "T2", "T3"]);
-    expect(m.get("T1")).toEqual({ txId: "T1", sessionId: a.id, callId: "C1", attribution: "exact", at: 10 });
+    expect(m.get("T1")).toEqual({ txId: "T1", sessionId: a.id, callId: "C1", attribution: "exact", at: 10, projectId: a.projectId, rootBranch: a.rootBranch });
     expect(m.get("T2")).toMatchObject({ sessionId: a.id, callId: null, attribution: "none" });
     expect(store.txsOfSession(a.id).map((t) => t.txId)).toEqual(["T1", "T2"]);
     expect(store.txsOfSession(a.id, 15).map((t) => t.txId)).toEqual(["T2"]);

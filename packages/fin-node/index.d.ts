@@ -272,6 +272,13 @@ export declare function blake3KeyedHex(key: Uint8Array, data: Uint8Array): strin
 export declare function kindNames(): string[];
 
 /**
+ * The newest payload version of kind `name` that `source` (`agent`, `finisherd`, …) may emit,
+ * or `null` for an unknown kind, a reserved one (version 0) or one that source may not send
+ * (7A Task 11: `review.verdict` is emitted once 5E gives it a version).
+ */
+export declare function kindVersion(name: string, source: string): number | null;
+
+/**
  * Why a `privacy` section (JSON; `"null"` for none) is not one the journal accepts, naming the
  * first bad key (`privacy.retentionDays: …`); `undefined` when it is.
  */

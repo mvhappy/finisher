@@ -7,9 +7,11 @@
 //! - [`checkpoint`]: `Store::checkpoint`, `Store::find_checkpoint`.
 //! - [`merge`] holds `Store::merge`.
 //! - [`pick`]: `Store::cherry_pick`, `Store::revert`.
+//! - [`origins`]: what a result's records stand for (`origins`, 7A Decision 27).
 
 pub(crate) mod checkpoint;
 pub(crate) mod merge;
+pub(crate) mod origins;
 pub(crate) mod pick;
 pub(crate) mod undo;
 

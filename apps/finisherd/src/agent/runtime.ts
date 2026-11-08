@@ -322,7 +322,10 @@ export class Runtime extends RuntimeEngine {
     return attempt(() => {
       this.#guard();
       return this.serial(sessionId, async () => {
-        if (this.session(sessionId).status !== "ended") await this.#endIn(sessionId, "deleted");
+        const session = this.session(sessionId);
+        if (session.status !== "ended") await this.#endIn(sessionId, "deleted");
+        // Its unmerged transactions are abandoned (Task 11) before its product state goes.
+        this.core.outcomes.observeSessionDeleted(session);
         await this.store.delete(sessionId);
         this.forgetBudget(sessionId);
         await this.drain();

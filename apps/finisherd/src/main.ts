@@ -31,6 +31,7 @@ import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
 import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
+import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
@@ -209,7 +210,10 @@ export const serve = ({
       sessionCredentials.reconcile();
       // Owner decision F2: before 7C agent tools are never sandboxed; sessions run, warned.
       for (const w of agentWarnings()) yield* Effect.logWarning(`finisherd: ${w.code}: ${w.message}`);
-      const agentCore: AgentCore = { store: agentStore, credentials: sessionCredentials, lineage: new BranchLineage(), clock: agentClock, ids: agentIds };
+      // The outcome tracker (Task 11) emits 5E's `review.verdict` into this journal once the kind exists.
+      const lineage = new BranchLineage();
+      const outcomes = new OutcomeTracker({ store: agentStore, lineage, clock: agentClock.now, verdicts: journalVerdicts(diagnostics.journal) });
+      const agentCore: AgentCore = { store: agentStore, credentials: sessionCredentials, lineage, outcomes, clock: agentClock, ids: agentIds };
       onAgentCore?.(agentCore);
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);

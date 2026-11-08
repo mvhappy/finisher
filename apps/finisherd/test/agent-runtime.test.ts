@@ -499,8 +499,12 @@ describe("agent runtime", () => {
     h.tool.hold = true;
     const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "trim" }, PEOPLE, META));
     await until(() => h.tool.waiting().length === 1, "the tool running");
+    store.recordTx({ txId: "T-open", sessionId: session.id, callId: null, attribution: "none", at: 0 });
     await run(h.runtime.delete(session.id, PEOPLE));
     expect(store.get(session.id)).toBeUndefined();
+    // Its unmerged transaction is abandoned (Task 11), and the row outlives it.
+    expect(store.outcomes.of("T-open")).toMatchObject([{ verdict: "abandoned", via: "archive", by: "user" }]);
+    expect(store.sessionOfTx(["T-open"]).get("T-open")?.outcome).toBe("abandoned");
     expect(existsSync(join(dir, "agents", session.id))).toBe(false);
     expect(credential(h, session.id)).toBe("revoked");
     expect(h.runtime.stats().live).toBe(0);

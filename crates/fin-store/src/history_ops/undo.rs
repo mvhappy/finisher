@@ -86,6 +86,20 @@ impl Store {
         Ok(derive_stacks(&own, author, &log.merged_away(&id)?))
     }
 
+    /// An undo's `origins` (7A Decision 27): its units' records (a merge group's copies) with
+    /// their origin chains (a copy leads to what it copied). A redo names none.
+    fn undo_origins(
+        &self,
+        which: Which,
+        mut out: HistoryResult,
+    ) -> Result<HistoryResult, StoreError> {
+        if which == Which::Undo {
+            let units = super::origins::units(&self.conn, &out.undone)?;
+            out.origins = super::origins::chains(&self.conn, units)?;
+        }
+        Ok(out)
+    }
+
     fn history(&mut self, r: &HistoryReq, which: Which) -> Result<HistoryResult, StoreError> {
         check_key(&r.tx_id)?;
         check_args_hash(r.args_hash.as_deref(), &r.tx_id)?;
@@ -99,18 +113,18 @@ impl Store {
         }
         loop {
             if let Some(c) = self.write(&r.tx_id, r.dry_run, |ctx| plan(ctx, r, which))? {
-                return Ok(result(c, r.dry_run));
+                return self.undo_origins(which, result(c, r.dry_run));
             }
             // Deduped; gone again (an import rewound it since): the operation runs again.
             if let Some(existing) = db::find_tx(&self.conn, &r.tx_id)? {
-                return match (which, existing.link.as_deref()) {
+                let out = match (which, existing.link.as_deref()) {
                     (Which::Undo, Some(Link::Undo { .. }))
-                    | (Which::Redo, Some(Link::Redo { .. })) => Ok(result(
-                        same_args_hash(r.args_hash.as_deref(), existing)?,
-                        false,
-                    )),
-                    _ => Err(key_reused(&existing)),
+                    | (Which::Redo, Some(Link::Redo { .. })) => {
+                        result(same_args_hash(r.args_hash.as_deref(), existing)?, false)
+                    }
+                    _ => return Err(key_reused(&existing)),
                 };
+                return self.undo_origins(which, out);
             }
         }
     }
@@ -122,6 +136,7 @@ fn result(c: CommittedTx, dry_run: bool) -> HistoryResult {
         committed: vec![c],
         dry_run,
         no_op: None,
+        origins: Vec::new(),
     }
 }
 
