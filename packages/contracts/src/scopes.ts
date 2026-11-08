@@ -49,6 +49,9 @@ export const HUMAN_ONLY: ReadonlySet<Scope> = new Set<Scope>([
   "plugin.admin",
 ]);
 
+/** The `library.set` fields only a person changes (`library.admin`; the only ones audited). */
+export const LIBRARY_ADMIN_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "aliases"] as const;
+
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
 
 /**
@@ -244,6 +247,25 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.enable": { scopes: ["plugin.admin"] },
   "plugin.disable": { scopes: ["plugin.admin"] },
   "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
+  // Libraries (5D Decision 47). Adding and removing are the owner's, with a typed code in the
+  // console; `library.set` needs `library.scan` for the ordinary fields and `library.admin`
+  // (human-only) for the ones only a person decides. Everything that reads needs `library.read`
+  // and reaches the libraries the caller reads (`libraryReach`); a scan also needs `jobs.submit`,
+  // and so does hashing candidates, which submits jobs.
+  "library.add": { scopes: ["library.admin"] },
+  "library.remove": { scopes: ["library.admin"] },
+  "library.set": {
+    scopes: ["library.scan"],
+    escalate: (p) => (LIBRARY_ADMIN_FIELDS.some((f) => p[f] !== undefined) ? ["library.admin"] : []),
+  },
+  "library.list": { scopes: ["library.read"] },
+  "library.status": { scopes: ["library.read"] },
+  "library.files": { scopes: ["library.read"] },
+  "library.file": { scopes: ["library.read"] },
+  "library.search": { scopes: ["library.read"] },
+  "library.lookup": { scopes: ["library.read"], escalate: (p) => (p.hashCandidates === true ? ["library.scan", "jobs.submit"] : []) },
+  "library.scan": { scopes: ["library.scan", "jobs.submit"] },
+  "library.watch": { scopes: ["library.read"] },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */

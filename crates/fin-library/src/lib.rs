@@ -23,9 +23,13 @@
 //! `test-hooks`, the overlay that marks real paths as placeholders, delays, errors and mount
 //! changes for worker tests (`overlay`).
 //!
+//! Task 13: `asset.probe` of a catalogued file ([`asset`]): [`fin_probe::probe_with`] over the
+//! safe opener, its refusals as the codes the RPC answers.
+//!
 //! **Read-only roots:** nothing in this crate creates, writes, renames, locks or deletes
 //! anything under a root.
 
+pub mod asset;
 pub mod batchfile;
 pub mod budget;
 pub mod collide;
@@ -52,6 +56,7 @@ pub mod overlay;
 #[cfg(feature = "test-hooks")]
 pub mod params_test;
 
+pub use asset::probe_asset;
 pub use budget::{BudgetedReader, Throttle};
 pub use collide::{Collision, collisions};
 pub use exclude::{ExcludeSpec, Excludes};

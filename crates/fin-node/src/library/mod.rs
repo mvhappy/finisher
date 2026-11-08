@@ -8,7 +8,9 @@
 //!   root's [`fin_library::RootState`] against its stored identity, one outstanding stat per
 //!   root (`fin_library::root_state` is single-flight; [`rootprobe`]);
 //! - [`library_probe_status`]: how many roots' latest probe timed out;
-//! - [`library_probe_version`]: `fin_probe::PROBE_VERSION`, for the catalog.
+//! - [`library_probe_version`]: `fin_probe::PROBE_VERSION`, for the catalog;
+//! - [`asset_probe::library_probe_file`] (Task 13): `asset.probe` of a catalogued file, opened
+//!   through `open_for_read` with its row.
 //!
 //! Nothing here opens a file under a root, and nothing writes there. Values cross as JSON
 //! strings, like the rest of this crate.
@@ -27,6 +29,7 @@ use serde_json::json;
 
 use crate::{encode, reject};
 
+mod asset_probe;
 mod rootprobe;
 
 /// This module's own results (`Result` here is napi's).

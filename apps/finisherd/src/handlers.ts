@@ -17,6 +17,10 @@ import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { metaJson } from "./history.ts";
+import { JobEngineTag } from "./jobs/layer.ts";
+import { LibraryServiceTag } from "./library/layer.ts";
+import { cataloguedAt } from "./library/reach.ts";
+import { libraryHandlers } from "./library/rpc.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
 import { PluginsTag } from "./plugins/registries.ts";
 import { probeFor } from "./probe.ts";
@@ -54,6 +58,8 @@ export const HandlersLive = FinRpcs.toLayer(
     const tickets = yield* TicketsTag;
     const everyConnection = yield* ConnectionRegistryTag;
     const credentials = yield* CredentialsTag;
+    const library = yield* LibraryServiceTag;
+    const jobEngine = yield* JobEngineTag;
     const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -96,6 +102,8 @@ export const HandlersLive = FinRpcs.toLayer(
       indexedDirOf: registry.indexedDirOf,
       resolveBranch: registry.resolveBranch,
       branches: (projectId: string) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
+      // 5D Decision 47: reach to a library file is a catalogued row, never a path prefix.
+      libraryFile: (path: string) => cataloguedAt(library, path),
     };
     return withChain(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
@@ -328,6 +336,7 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
+      ...libraryHandlers({ service: library, engine: jobEngine, guard }),
     }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
   }),
 );

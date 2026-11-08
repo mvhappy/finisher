@@ -9,7 +9,10 @@ import { open, realpath } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import type { FinError, Principal, RpcRule, RuleFacts } from "@finisher/contracts";
 import { Effect } from "effect";
+import type { CataloguedFile } from "../library/reach.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "../paths.ts";
+
+export { libraryReach } from "../library/reach.ts";
 
 /** What the chain needs from the project registry. */
 export interface ChainProjects {
@@ -26,6 +29,12 @@ export interface ChainProjects {
   resolveBranch(projectId: string, ref: string): Effect.Effect<string, FinError>;
   /** Every branch with its author (`createdBy`), archived ones too. */
   branches(projectId: string): Effect.Effect<ReadonlyArray<{ readonly id: string; readonly createdBy: string }>, FinError>;
+  /**
+   * 5D Decision 47: the one live catalogued row at an absolute path under a library's own root
+   * (never an alias); several rows `PATH_AMBIGUOUS`. A principal with roots reaches a path
+   * outside them only through such a row, in a library it reaches.
+   */
+  libraryFile?(path: string): Effect.Effect<CataloguedFile | undefined, FinError>;
 }
 
 export interface Resolved {
@@ -35,6 +44,8 @@ export interface Resolved {
   readonly projects: ReadonlyArray<string>;
   /** Every path it reads or creates, canonical: reach is checked on each. */
   readonly paths: ReadonlyArray<string>;
+  /** The paths of `paths` a library row may reach (`asset.probe`'s: Decision 47). */
+  readonly probePaths: ReadonlyArray<string>;
   readonly facts: RuleFacts;
   /** `project.open`: the project its folder names, when the folder says. */
   readonly openedProject?: string;
@@ -106,6 +117,7 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
     const want = new Set(rule.resolve ?? []);
     const projects: string[] = [];
     const paths: string[] = [];
+    const probePaths: string[] = [];
     let out = payload as Record<string, unknown>;
     let facts: RuleFacts = {};
     let openedProject: string | undefined;
@@ -134,6 +146,7 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
     if (want.has("probePath")) {
       const path = yield* Effect.flatMap(requireAbsolute("path", String(out.path)), canonical);
       paths.push(path);
+      probePaths.push(path);
       out = { ...out, path };
       // Protocol 2: the probe is for this project, so only its folder counts as a root.
       if (typeof out.projectId === "string") pathsIn = out.projectId;
@@ -150,6 +163,7 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
       payload: out,
       projects,
       paths,
+      probePaths,
       facts,
       ...(openedProject === undefined ? {} : { openedProject }),
       ...(pathsIn === undefined ? {} : { pathsIn }),

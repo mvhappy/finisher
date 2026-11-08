@@ -11,6 +11,7 @@
 //   4. the scopes the resolved facts add (attaching or loading, a reopen), so that a refusal
 //      never tells a caller whether a project outside its reach is open here (review of
 //      Task 5, L1).
+// Reach to a path outside a principal's roots is granted by one catalogued library row (5D).
 import {
   baseScopes,
   escalatedScopes,
@@ -24,7 +25,7 @@ import {
 } from "@finisher/contracts";
 import { Effect } from "effect";
 import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, scopeDenied } from "./fixes.ts";
-import { type ChainProjects, inside, type Resolved, rootsOf } from "./resolve.ts";
+import { type ChainProjects, inside, libraryReach, type Resolved, rootsOf } from "./resolve.ts";
 
 /** The scope half of stage 4: human-only first, then every required scope. */
 export function checkScopes(tag: string, required: ReadonlyArray<Scope>, principal: Principal): FinError | undefined {
@@ -63,8 +64,16 @@ export function authorize(
     }
     const roots = yield* rootsOf(principal, deps, resolved.pathsIn);
     if (roots !== undefined) {
-      const outside = resolved.paths.find((p) => !roots.some((r) => inside(p, r)));
-      if (outside !== undefined) return yield* Effect.fail(pathNotAllowed(tag, outside));
+      for (const p of resolved.paths) {
+        if (roots.some((r) => inside(p, r))) continue;
+        // 5D Decision 47: a library file is reached by its catalogued row, in a library the
+        // principal reaches (never by a prefix, never through an alias).
+        if (resolved.probePaths.includes(p) && principal.scopes.includes("library.read") && deps.libraryFile !== undefined) {
+          const row = yield* deps.libraryFile(p);
+          if (row !== undefined && libraryReach(principal, row.library)) continue;
+        }
+        return yield* Effect.fail(pathNotAllowed(tag, p));
+      }
     }
     const escalated = checkScopes(tag, escalatedScopes(tag, payload, resolved.facts), principal);
     if (escalated !== undefined) return yield* Effect.fail(escalated);

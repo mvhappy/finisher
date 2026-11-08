@@ -314,6 +314,10 @@ function validateNew(input: NewLibrary) {
 export class Registry {
   readonly #store: ControlStore;
   readonly #serverData: string;
+  /** The server data folder (`removeLibrary` deletes a catalog below it). */
+  get serverData(): string {
+    return this.#serverData;
+  }
   readonly #audit: Audit | undefined;
   readonly #tools: RootTools;
   readonly #clock: () => number;

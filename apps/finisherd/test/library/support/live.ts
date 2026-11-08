@@ -5,6 +5,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Audit } from "../../../src/control/audit.ts";
 import { type ControlStore, openControlStore } from "../../../src/control/db.ts";
 import { type Catalogs, startCatalogThreads } from "../../../src/library/catalog/client.ts";
 import type { KindRegistry } from "../../../src/jobs/kinds.ts";
@@ -41,6 +42,8 @@ export interface LiveRigOptions {
   readonly register?: (kinds: KindRegistry) => void;
   /** The service's clock and timers (the engine keeps real time). */
   readonly service?: NonNullable<LibraryWiringOptions["service"]>;
+  /** The audit the registry writes `library.*` rows to. */
+  readonly audit?: Audit;
   /** Reuse a server data folder (a restart). */
   readonly serverData?: string;
 }
@@ -58,6 +61,7 @@ export async function liveRig(opts: LiveRigOptions = {}): Promise<LiveRig> {
     jobsRoot,
     control,
     catalogs,
+    ...(opts.audit === undefined ? {} : { audit: opts.audit }),
     journal: { enabled: true, record: (kind, _kv, _ctx, payload) => void journal.push({ kind, payload: JSON.parse(payload) as Record<string, unknown> }) },
     service: { timing: FAST, ...opts.service },
   });

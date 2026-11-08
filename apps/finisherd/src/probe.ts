@@ -1,10 +1,10 @@
 // `asset.probe`'s probe (review of Task 5, M2; the dangling-symlink finding after it).
 import type { FinError, Principal, Probe } from "@finisher/contracts";
-import { probe, probeBeneath } from "@finisher/fin-node";
+import { libraryProbeFile, probe, probeBeneath } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { pathNotAllowed } from "./chain/fixes.ts";
-import { type ChainProjects, inside, rootsOf } from "./chain/resolve.ts";
-import { attemptJson } from "./errors.ts";
+import { type ChainProjects, inside, libraryReach, rootsOf } from "./chain/resolve.ts";
+import { attemptJson, finError } from "./errors.ts";
 
 const TAG = "asset.probe";
 
@@ -24,6 +24,20 @@ export function probeFor(
   path: string,
 ): Effect.Effect<Probe, FinError> {
   return Effect.gen(function* () {
+    // 5D Decision 47: a catalogued library file is read through the opener with its row, for
+    // every principal that reaches its library; `probe(path)` never opens a library file.
+    const row = principal === undefined || deps.libraryFile === undefined ? undefined : yield* deps.libraryFile(path);
+    if (row !== undefined && principal !== undefined && libraryReach(principal, row.library)) {
+      // A placeholder's data is not on this machine: refused without reading, unless the
+      // library hydrates (`FILE_CLOUD_ONLY`, `open_for_read` decides the rest).
+      if (row.state === "cloudOnly" && !row.hydrate) {
+        return yield* Effect.fail(finError("FILE_CLOUD_ONLY", "the file is a cloud placeholder whose data is not on this machine", {}, "Make the file available offline in its sync client, then try again."));
+      }
+      if (row.offline) {
+        return yield* Effect.fail(finError("LIBRARY_OFFLINE", "the file's library is offline", { library: row.library }, "Wait for the library to come back, or ask the owner of this Finisher server to check its folder."));
+      }
+      return yield* attemptJson<Probe>(() => libraryProbeFile(row.root, row.rel, row.expect, row.hydrate, path));
+    }
     // "Restricted" is decided by `rootsOf` alone, as the chain decides it (review of Task 7, L3).
     const roots = principal === undefined ? [] : yield* rootsOf(principal, deps, projectId);
     if (roots === undefined) return yield* attemptJson<Probe>(() => probe(path));

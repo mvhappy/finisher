@@ -54,6 +54,17 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "history.redo",
       "history.revert",
       "history.undo",
+      "library.add",
+      "library.file",
+      "library.files",
+      "library.list",
+      "library.lookup",
+      "library.remove",
+      "library.scan",
+      "library.search",
+      "library.set",
+      "library.status",
+      "library.watch",
       "ops.subscribe",
       "plugin.content.get",
       "plugin.disable",
@@ -93,9 +104,9 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
   );
 });
 
-test("ops.subscribe and project.events are streaming rpcs and the others are not", () => {
+test("ops.subscribe, project.events and library.watch are streaming rpcs and the others are not", () => {
   for (const [tag, rpc] of FinRpcs.requests) {
-    expect(RpcSchema.isStreamSchema(rpc.successSchema)).toBe(tag === "ops.subscribe" || tag === "project.events");
+    expect(RpcSchema.isStreamSchema(rpc.successSchema)).toBe(tag === "ops.subscribe" || tag === "project.events" || tag === "library.watch");
   }
 });
 

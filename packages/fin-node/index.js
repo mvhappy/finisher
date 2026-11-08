@@ -9,6 +9,7 @@ export {
   validateJobParams,
   workersBinaryPath,
 } from "./jobhost.js";
+export { libraryProbeFile } from "./library.js";
 export { PipeServer } from "./pipe.js";
 
 export class Engine {

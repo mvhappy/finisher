@@ -12,3 +12,4 @@ export * from "./jobs.ts";
 export * from "./plugins.ts";
 export * from "./plugin-lifecycle.ts";
 export * from "./plugin-content.ts";
+export * from "./library.ts";

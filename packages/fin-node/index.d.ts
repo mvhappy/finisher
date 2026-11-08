@@ -540,6 +540,8 @@ export declare function libraryProbeStatus(): { stuckProbes: number };
 export declare function libraryProbeVersion(): number;
 // The job host and the job params helpers (`jobhost.js`).
 export * from "./jobhost.js";
+// `asset.probe` of a catalogued library file (`library.js`).
+export * from "./library.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 

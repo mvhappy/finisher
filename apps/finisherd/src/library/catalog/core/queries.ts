@@ -9,6 +9,7 @@ import { decodeProbe } from "./probe-codec.ts";
 import { DirChains, base64 } from "./rel.ts";
 import { DisplayPaths } from "./search.ts";
 import { stageQueries } from "./stage-rows.ts";
+import { viewQueries } from "./view-queries.ts";
 
 const bad = (q: string, at: string): CatalogFailure =>
   new CatalogFailure("CATALOG_ARGS_INVALID", `catalog query core.${q}: invalid arguments`, { at });
@@ -376,4 +377,4 @@ function dirRel(db: DatabaseSync, args: unknown): { rel?: { components: string[]
   return { rel: { components: new DirChains(db).of(ids[0]!) } };
 }
 
-export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines, dirRel, ...stageQueries };
+export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines, dirRel, ...viewQueries, ...stageQueries };
