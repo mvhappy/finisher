@@ -537,6 +537,8 @@ export declare function libraryProbeRoot(root: string, identityJson: string, tim
 export declare function libraryProbeStatus(): { stuckProbes: number };
 // The job host and the job params helpers (`jobhost.js`).
 export * from "./jobhost.js";
+// The native Windows pipe listener (`pipe.js`).
+export * from "./pipe.js";
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:

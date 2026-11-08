@@ -14,7 +14,7 @@ import { Context, Deferred, Effect, Exit, Option, Queue, Schema, Scope } from "e
 import { Rpc, type RpcGroup, RpcSerialization, RpcServer } from "effect/rpc";
 import type { Socket } from "effect/socket/Socket";
 import { SocketServer } from "effect/socket/SocketServer";
-import type { Connections } from "./connections.ts";
+import { ConnectionPeer, type Connections } from "./connections.ts";
 import { finError } from "./errors.ts";
 import { UpgradePrincipal } from "./upgrade.ts";
 
@@ -205,6 +205,8 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
         const close = () => Deferred.doneUnsafe(closed, Exit.void);
         // A WebSocket carries its ticket's principal (`upgrade.ts`); a socket starts anonymous.
         const ticketed = Option.getOrUndefined(yield* Effect.serviceOption(UpgradePrincipal));
+        // A pipe connection carries its client's pid and token SID (`pipe.ts`).
+        const peer = Option.getOrUndefined(yield* Effect.serviceOption(ConnectionPeer));
         clients.set(clientId, client);
         connections.attach(clientId, {
           close,
@@ -219,7 +221,7 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
                 Effect.sync(close),
               ),
             ),
-        }, ticketed);
+        }, ticketed, peer);
         yield* Scope.addFinalizer(
           scope,
           Effect.suspend(() => {

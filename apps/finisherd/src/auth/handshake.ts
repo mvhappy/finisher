@@ -154,7 +154,7 @@ export class Handshake {
       credentialKind,
       outcome: "failed",
       code: reason === "revoked" ? "CREDENTIAL_REVOKED" : reason === "expired" ? "CREDENTIAL_EXPIRED" : "UNAUTHENTICATED",
-      details: { reason, transport: conn.transport },
+      details: { reason, transport: conn.transport, ...(conn.peer === undefined ? {} : { peer: conn.peer }) },
     });
     if (conn.failures >= MAX_PROVE_FAILURES) connections.link(clientId)?.closeAfterReply();
   }
