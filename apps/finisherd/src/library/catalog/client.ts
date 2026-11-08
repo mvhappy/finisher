@@ -8,6 +8,7 @@ import { Worker } from "node:worker_threads";
 import { FinError } from "@finisher/contracts";
 import { Context, Effect, Layer } from "effect";
 import type { FileRow, DirRow } from "./core/queries.ts";
+import type { SearchPage, SearchRequest } from "./core/snapshot.ts";
 import type { PendingFile } from "./core/ops.ts";
 import type { ApplyCounts } from "./core/apply.ts";
 import { guardedClock } from "./clock.ts";
@@ -31,6 +32,8 @@ export interface CatalogThreadsOptions {
    * line on stderr. The service turns it into a fatal health event.
    */
   readonly onFatal?: (e: FinError) => void;
+  /** Search snapshots (Decision 43): idle lifetime in ms and live count; tests lower them. */
+  readonly snapshot?: { readonly ttlMs?: number; readonly max?: number };
   /** Enables `IndexerClient.testFault` (tests only). */
   readonly testHooks?: boolean;
 }
@@ -271,7 +274,21 @@ export interface ReaderClient {
     ref: { readonly fileId: number } | { readonly relKey: string },
   ): Effect.Effect<{ matches: Array<FileRow & { rel: { components: string[] } }>; stages: unknown[] }, FinError>;
   search(lib: string, args: Record<string, unknown>): Effect.Effect<{ hits: Array<FileRow & { score: number }> }, FinError>;
-  lookup(lib: string, args: { fingerprints?: string[]; hashes?: string[] }): Effect.Effect<{ matches: Array<{ key: string; file: FileRow }> }, FinError>;
+  lookup(lib: string, args: { fingerprints?: string[]; hashes?: string[] }): Effect.Effect<{ matches: Array<{ key: string; display: string; file: FileRow }> }, FinError>;
+  /**
+   * Present rows without a full hash whose size is one of `sizes` (≤ 1,000 sizes), at most
+   * `limit` (≤ 1,000) ids, lowest first: what `library.lookup {hashCandidates}` hashes.
+   */
+  hashCandidates(lib: string, args: { sizes: number[]; limit: number }): Effect.Effect<{ fileIds: number[]; more: boolean }, FinError>;
+  /**
+   * One page of a name search across `libraries` (Decision 43): with terms, the first page
+   * snapshots up to 2,000 ranked hits in the reader and `next` pages that snapshot; without
+   * terms, a score-free keyset by `lastChange`. `args` are the query and filters
+   * (`{query?, kind?, state?, since?, durationMs?, width?, height?, size?}`) and must be the
+   * same on every page of one search. Failures: `CURSOR_EXPIRED`, `CURSOR_INVALID`,
+   * `SEARCH_QUERY_INVALID`, `CATALOG_NOT_OPEN`.
+   */
+  searchPage(req: SearchRequest): Effect.Effect<SearchPage, FinError>;
   counts(lib: string): Effect.Effect<CatalogCounts, FinError>;
   /**
    * The one file at `relKey` (live rows first, then missing ones): several answer
@@ -279,7 +296,7 @@ export interface ReaderClient {
    */
   resolve(lib: string, relKey: string): Effect.Effect<FileRow & { rel: { components: string[] } }, FinError>;
   stageCounts(lib: string): Effect.Effect<{ stages: Array<{ stage: string; version: string; state: string; n: number }> }, FinError>;
-  stats(): Effect.Effect<{ queries: number; open: number }, FinError>;
+  stats(): Effect.Effect<{ queries: number; searches: number; open: number; snapshots: number }, FinError>;
 }
 
 export interface Catalogs {
@@ -320,7 +337,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
       },
       onFatal,
     ),
-    Thread.start("./reader-thread.ts", "library-reader", { extensions }, onFatal),
+    Thread.start("./reader-thread.ts", "library-reader", { extensions, ...(opts.snapshot?.ttlMs === undefined ? {} : { snapshotTtlMs: opts.snapshot.ttlMs }), ...(opts.snapshot?.max === undefined ? {} : { snapshotMax: opts.snapshot.max }) }, onFatal),
   ]);
   if (ix.status === "rejected" || rd.status === "rejected") {
     if (ix.status === "fulfilled") await ix.value.stop();
@@ -369,6 +386,8 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     file: (lib, ref) => read(lib, "file", ref),
     search: (lib, args) => read(lib, "search", args),
     lookup: (lib, args) => read(lib, "lookup", args),
+    hashCandidates: (lib, args) => read(lib, "hashCandidates", args),
+    searchPage: (req) => fx(() => reader.call("searchPage", req)),
     counts: (lib) => read(lib, "counts", {}),
     resolve: (lib, relKey) =>
       Effect.flatMap(read<{ matches: Array<FileRow & { rel: { components: string[] } }> }>(lib, "file", { relKey }), (r) =>

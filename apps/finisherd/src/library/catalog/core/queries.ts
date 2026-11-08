@@ -7,6 +7,7 @@ import { matchExpression } from "../fts.ts";
 import { CatalogFailure } from "../protocol.ts";
 import { decodeProbe } from "./probe-codec.ts";
 import { DirChains, base64 } from "./rel.ts";
+import { DisplayPaths } from "./search.ts";
 
 const bad = (q: string, at: string): CatalogFailure =>
   new CatalogFailure("CATALOG_ARGS_INVALID", `catalog query core.${q}: invalid arguments`, { at });
@@ -242,10 +243,14 @@ function search(db: DatabaseSync, args: unknown): { hits: Array<FileRow & { scor
   return { hits: rows.map((r) => ({ ...fileRow(r), score: r.score as number })) };
 }
 
-/** `lookup {fingerprints? ≤ 1000, hashes? ≤ 1000}`: exact matches, `key` the matched value. */
-function lookup(db: DatabaseSync, args: unknown): { matches: Array<{ key: string; file: FileRow }> } {
+/**
+ * `lookup {fingerprints? ≤ 1000, hashes? ≤ 1000}`: exact matches in any state (the caller
+ * sees `state`), `key` the matched value, `display` the file's NFC path.
+ */
+function lookup(db: DatabaseSync, args: unknown): { matches: Array<{ key: string; display: string; file: FileRow }> } {
   if (!isObj(args)) throw bad("lookup", "args");
-  const out: Array<{ key: string; file: FileRow }> = [];
+  const out: Array<{ key: string; display: string; file: FileRow }> = [];
+  const paths = new DisplayPaths(db);
   for (const [key, col] of [["fingerprints", "fp"], ["hashes", "fullHash"]] as const) {
     const vals = args[key];
     if (vals === undefined) continue;
@@ -253,9 +258,24 @@ function lookup(db: DatabaseSync, args: unknown): { matches: Array<{ key: string
     const rows = db
       .prepare(`SELECT ${FILE_COLS} FROM files WHERE ${col} IN (SELECT value FROM json_each(?)) ORDER BY id`)
       .all(JSON.stringify(vals)) as Array<Record<string, unknown>>;
-    for (const r of rows) out.push({ key: r[col] as string, file: fileRow(r) });
+    for (const r of rows) out.push({ key: r[col] as string, display: paths.file(r.dirId as number, r.nameNfc as string), file: fileRow(r) });
   }
   return { matches: out };
+}
+
+/**
+ * `hashCandidates {sizes ≤ 1000, limit ≤ 1000}`: ids of `present` rows without a full hash
+ * whose size is one of `sizes`, lowest first; `more` when the limit cut the list.
+ */
+function hashCandidates(db: DatabaseSync, args: unknown): { fileIds: number[]; more: boolean } {
+  if (!isObj(args) || !isInt(args.limit) || args.limit < 1 || args.limit > 1000) throw bad("hashCandidates", "limit");
+  const sizes = args.sizes;
+  if (!Array.isArray(sizes) || sizes.length > 1000 || !sizes.every(isInt)) throw bad("hashCandidates", "sizes");
+  if (sizes.length === 0) return { fileIds: [], more: false };
+  const rows = db
+    .prepare("SELECT id FROM files WHERE state = 'present' AND fullHash IS NULL AND size IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT ?")
+    .all(JSON.stringify(sizes), args.limit + 1) as Array<{ id: number }>;
+  return { fileIds: rows.slice(0, args.limit).map((r) => r.id), more: rows.length > args.limit };
 }
 
 /**
@@ -281,4 +301,4 @@ function stageCounts(db: DatabaseSync): { stages: Array<{ stage: string; version
   return { stages: rows as Array<{ stage: string; version: string; state: string; n: number }> };
 }
 
-export const coreQueries = { files, file, search, lookup, counts, stageCounts };
+export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts };
