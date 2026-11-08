@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "allowImportingTsExtensions": true, "noEmit": true, "types": ["node"] },
-  "include": ["index.d.ts", "jobhost.d.ts", "loader.d.ts", "test"],
+  "include": ["index.d.ts", "jobhost.d.ts", "loader.d.ts", "registry.d.ts", "test"],
   "exclude": ["test/native"]
 }

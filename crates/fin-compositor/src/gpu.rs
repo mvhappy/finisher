@@ -240,6 +240,8 @@ pub struct Compositor {
     sampler: wgpu::Sampler,
     readback: Readback,
     shader_blends: bool,
+    /// The last render's readback (map and copy out), for diagnostics.
+    last_readback_micros: u64,
 }
 
 impl Compositor {
@@ -261,7 +263,14 @@ impl Compositor {
             sampler,
             readback: Readback::default(),
             shader_blends: false,
+            last_readback_micros: 0,
         }
+    }
+
+    /// Microseconds the last successful [`Compositor::render`] spent reading the picture
+    /// back from the GPU (`render.stats`' `readback` phase).
+    pub fn last_readback_micros(&self) -> u64 {
+        self.last_readback_micros
     }
 
     /// Sends every blend mode through `blend.wgsl`, never a fixed-function blend (to check the
@@ -327,7 +336,10 @@ impl Compositor {
             return Err(e);
         }
         let (skipped, buffer) = encoded?;
+        let started = std::time::Instant::now();
         let rgba8 = readback::read(gpu, &buffer, out.width, out.height)?;
+        self.last_readback_micros =
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         Ok(RenderOutput {
             size: out,
             rgba8,

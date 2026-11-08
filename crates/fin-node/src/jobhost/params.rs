@@ -2,7 +2,8 @@
 //! decoded by its Rust type, registered by the family's crate in one static list.
 
 use fin_jobs::KindParams;
-use fin_jobs::kinds::find;
+use fin_jobs::kinds::{find, schema_as, validate_as};
+use fin_media::jobs::{CapabilitiesParams, LookParams};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -10,7 +11,40 @@ use serde_json::{Value, json};
 static PARAMS: &[&[KindParams]] = &[
     #[cfg(feature = "test-hooks")]
     fin_jobs::test_kinds::PARAMS,
+    MEDIA,
 ];
+
+/// Sub-project 6's media kinds (`fin_media::jobs`; the worker side is `fin-workers media`).
+static MEDIA: &[KindParams] = &[
+    KindParams {
+        kind: "media.look",
+        version: 1,
+        validate: validate_look,
+        schema: schema_as::<LookParams>,
+    },
+    KindParams {
+        kind: "media.capabilities",
+        version: 1,
+        validate: validate_as::<CapabilitiesParams>,
+        schema: schema_as::<CapabilitiesParams>,
+    },
+];
+
+/// `LookParams`, then the checks serde cannot make (counts, sizes, the output name), as the
+/// worker makes them.
+fn validate_look(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<LookParams>(params)?;
+    let p: LookParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    // The plan samples are the host's: `prepare` computes them from the snapshot it writes. A
+    // submitter's would only ever be ignored (the worker prefers the kind's), so say so.
+    if !p.plan_samples.is_empty() {
+        return Err(vec![
+            "params.planSamples: computed by the kind's prepare; leave it out".to_string(),
+        ]);
+    }
+    Ok(filled)
+}
 
 /// The longest params JSON a job may carry: a `start` must fit a 1 MiB line (Decision 4)
 /// beside its other fields, so longer params would make a job that can never run.
@@ -45,7 +79,7 @@ pub struct JobKindVersion {
     pub version: u32,
 }
 
-/// The kinds and versions `validateJobParams` knows (release builds: none yet).
+/// The kinds and versions `validateJobParams` knows (release builds: the media kinds).
 #[napi(catch_unwind)]
 pub fn job_kind_versions() -> Vec<JobKindVersion> {
     PARAMS

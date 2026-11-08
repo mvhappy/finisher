@@ -2,4 +2,4 @@ target/
 corpus/
 artifacts/
 coverage/
-Cargo.lock
+# Cargo.lock IS committed: the nightly fuzz job builds from it (7-day dependency-age rule).

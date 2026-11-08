@@ -71,8 +71,23 @@ pub struct AdapterSummary {
     pub name: String,
     pub vendor: u32,
     pub device: u32,
+    /// The driver's major version, read from its version string (`None` when it has no
+    /// number): diagnostics record this, never the strings (spec §15).
+    pub driver_major: Option<u32>,
     /// A CPU adapter (lavapipe, WARP): slow but correct.
     pub software: bool,
+}
+
+/// The first number in a driver's version text (`"Mesa 25.2.8 (LLVM 20.1.2)"` → 25,
+/// `"580.95.05"` → 580), `None` when there is none or it does not fit a `u32`.
+pub fn driver_major(driver_info: &str) -> Option<u32> {
+    let digits = driver_info
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_digit())?
+        .0;
+    let run = &driver_info[digits..];
+    let end = run.find(|c: char| !c.is_ascii_digit()).unwrap_or(run.len());
+    run[..end].parse().ok()
 }
 
 /// A device and queue on one adapter. Uncaptured wgpu errors and device loss are recorded,
@@ -181,6 +196,7 @@ impl Gpu {
             name: info.name.clone(),
             vendor: info.vendor,
             device: info.device,
+            driver_major: driver_major(&info.driver_info),
             software,
         };
         Ok(Gpu {
@@ -279,6 +295,20 @@ mod tests {
             AdapterChoice::parse("cuda").unwrap_err().code,
             "GPU_UNAVAILABLE"
         );
+    }
+
+    #[test]
+    fn driver_major_is_the_first_number() {
+        for (text, want) in [
+            ("Mesa 25.2.8 (LLVM 20.1.2)", Some(25)),
+            ("580.95.05", Some(580)),
+            ("32.0.101.6078", Some(32)),
+            ("", None),
+            ("no digits here", None),
+            ("99999999999.1", None),
+        ] {
+            assert_eq!(driver_major(text), want, "{text:?}");
+        }
     }
 
     #[test]

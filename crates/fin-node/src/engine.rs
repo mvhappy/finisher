@@ -189,6 +189,14 @@ impl Engine {
         AsyncTask::new(StoreTask::new(self.inner.clone(), call))
     }
 
+    pub(crate) fn offload<'e>(
+        &self,
+        env: &'e Env,
+        f: impl FnOnce() -> Result<String> + Send + 'static,
+    ) -> Result<Object<'e>> {
+        worker::offload(env, &self.worker, f)
+    }
+
     pub(crate) fn long<'e>(
         &self,
         env: &'e Env,

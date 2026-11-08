@@ -13,7 +13,8 @@ mod traits;
 
 pub use av1::{Av1EncoderConfig, DecodeThreads, open_av1_encoder};
 pub use caps::{
-    Capabilities, CodecSupport, Support, capabilities, open_decoder, open_decoder_with,
+    Capabilities, CodecSupport, Support, capabilities, open_decoder, open_decoder_limited,
+    open_decoder_with,
 };
 pub use frame::{DecodedFrame, EncodedPacket, Plane, RawFrame};
 pub use reader::FrameReader;

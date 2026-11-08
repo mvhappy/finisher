@@ -69,6 +69,8 @@ export interface PrepareCtx<P> {
 }
 
 export interface SucceededCtx<P, R> extends PrepareCtx<P> {
+  /** What `prepare` returned as `extra` (the host's own, persisted with the job). */
+  readonly extra: unknown;
   readonly result: R;
   readonly items: ReadonlyMap<string, ItemOutcome>;
   readonly rerun: boolean;
@@ -114,6 +116,12 @@ export interface FamilySpec {
   readonly onCall?: OnCall;
   readonly diagKinds?: ReadonlyArray<string>;
   readonly pluginId?: string;
+  /**
+   * Names of variables copied from `finisherd`'s own environment into the family's processes,
+   * beside the `childEnv()` allow-list (`media`: `FIN_GPU`, which picks the adapter). A fixed
+   * list written in code; a variable that is not set is not passed.
+   */
+  readonly env?: ReadonlyArray<string>;
 }
 
 export interface HelperProgram {
@@ -160,6 +168,9 @@ export function programFor(program: ProgramSpec, mode: SpawnMode): ProgramSpec {
 export function resolveOrFn<P, T>(v: OrFn<P, T>, params: P): T {
   return typeof v === "function" ? (v as (params: P) => T)(params) : v;
 }
+
+/** The variables of `finisherd`'s environment a family may pass to its processes (`FamilySpec.env`). */
+export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU"]);
 
 const FAMILY = /^[a-z][a-z0-9]{0,31}$/;
 const KIND = /^[a-z][A-Za-z0-9]*\.[a-z][A-Za-z0-9]*$/;
@@ -249,6 +260,13 @@ export function makeKindRegistry(): KindRegistry {
       const slots = f.warm?.slots;
       if (slots !== undefined && (!Number.isInteger(slots) || slots < 1 || slots > 2)) refuse(`family ${f.family}: warm slots must be 1 or 2`);
       if (typeof f.program !== "function" && f.program.args.includes(WARM_ARG)) refuse(`family ${f.family}: the engine appends ${WARM_ARG}`);
+      // `env` copies variables of `finisherd`'s own environment into the family's processes: a
+      // list written in code for built-in families, never a plugin's (review L4).
+      if (f.env !== undefined) {
+        if (f.profile === "plugin" || f.pluginId !== undefined) refuse(`family ${f.family}: a plugin family cannot take variables from finisherd's environment`);
+        const bad = f.env.filter((n) => !FAMILY_ENV.has(n));
+        if (bad.length > 0) refuse(`family ${f.family}: env ${bad.join(", ")} is not one of ${[...FAMILY_ENV].join(", ")}`);
+      }
       families.set(f.family, f);
     },
     registerKind(k) {

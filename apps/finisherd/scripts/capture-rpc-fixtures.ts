@@ -169,6 +169,9 @@ try {
   await unary("eval-frame", "eval.frame", { at: "1" });
   await unary("eval-audio", "eval.audio", { from: "0", to: "5" });
   await unary("fonts-plan", "fonts.plan", { branch: "main", ops: [addAsset("$p")] });
+  // Media (plan 6A Task 13): a look past the end of the (empty) timeline, refused before any job.
+  // A rendered look names the GPU it ran on, so it has no fixture.
+  await unary("media-look-range", "media.look", { at: ["99"] }, "INVALID_RANGE");
   const server_ = async (name: string, tag: string, payload: Record<string, unknown>, code?: string) =>
     scenario(name, async (c) => {
       const exit = await c.call(tag, payload);
