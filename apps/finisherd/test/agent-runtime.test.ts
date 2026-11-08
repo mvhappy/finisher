@@ -11,9 +11,8 @@ import { manualClock, systemIds } from "../src/agent/clock.ts";
 import { FakeAdapter, type FakeScript } from "../src/agent/fake.ts";
 import { AgentStore, SERVER_RESTART } from "../src/agent/store.ts";
 import { type ControlStore, openControlStore } from "../src/control/db.ts";
-import { REPORTED_PRICING } from "../src/agent/runtime-deps.ts";
 import { credentialPath } from "../src/agent/credentials.ts";
-import { FinTool, makeRuntime, META, PEOPLE } from "./support/runtime-doubles.ts";
+import { FinTool, makeRuntime, META, PEOPLE, TEST_PRICING } from "./support/runtime-doubles.ts";
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 let dir: string;
@@ -502,7 +501,7 @@ describe("agent runtime", () => {
   test("call_gate_reserves_before_a_model_call_and_stops_at_the_cap", async () => {
     const usage = { type: "usage", input: 10, output: 10, cacheRead: 0, cacheWrite: 0, reasoning: 0, costMicros: 400 };
     const adapter = FakeAdapter([{ turns: [[...toolTurn(["call_1", ["view"]]), { emit: [usage] }], toolTurn(["call_2", ["view"]])] }]);
-    const h = harness(adapter, { pricing: { ...REPORTED_PRICING, projected: () => 1000 } });
+    const h = harness(adapter, { pricing: { ...TEST_PRICING, projected: () => 1000 } });
     await h.runtime.boot();
     h.tool.hold = true;
     const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go", budget: { modelCallsPerRun: 1, moneyMicros: 1200 } }, PEOPLE, META));
