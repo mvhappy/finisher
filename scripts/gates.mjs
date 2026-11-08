@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { listedCrates } from "./check-clippy-config.mjs";
 
 const steps = [
   ["node", ["scripts/check-file-size.mjs"]],
@@ -16,6 +17,10 @@ const steps = [
   ["node", ["scripts/check-native-deps.mjs"]],
   ["node", ["scripts/check-runtime-libs.mjs"]],
   ["node", ["scripts/check-crate-deps.mjs"]],
+  ["node", ["scripts/check-clippy-config.mjs"]],
+  // The library-reader gate (plan 5D Decision 21): the crates that handle library paths, with
+  // `disallowed-methods` denied (the unlisted `allow`s are check-clippy-config's).
+  ["cargo", ["clippy", "-q", ...listedCrates(".").flatMap((c) => ["-p", c]), "--all-targets", "--", "-D", "clippy::disallowed_methods"]],
   ["cargo", ["build", "-q", "-p", "fin-core", "--target", "wasm32-unknown-unknown"]],
   ["cargo", ["build", "-q", "-p", "fin-text", "--target", "wasm32-unknown-unknown"]],
   ["cargo", ["build", "-q", "-p", "fin-plugin-api", "--target", "wasm32-unknown-unknown"]],

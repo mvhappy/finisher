@@ -2,6 +2,9 @@
 //! groups on Unix, Job Objects on Windows. Where the OSes differ (Windows has no signals), the
 //! assertions say so.
 
+// Tests drive the host and inspect job directories and process state by path; none is a
+// library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 mod host_support;
 
 use std::collections::BTreeMap;

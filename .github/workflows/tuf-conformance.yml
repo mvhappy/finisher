@@ -1,0 +1,71 @@
+name: tuf-conformance
+
+# The TUF client of fin-registry against the upstream conformance suite (pinned in
+# scripts/tuf-conformance/suite.json) and against the attack matrix of
+# scripts/tuf-conformance/attacks.mjs (rollback, freeze, mix-and-match, key rotation, threshold,
+# expired metadata, endless data). Linux only: the suite drives the client under libfaketime.
+# The client is the `tuf_conformance_client` example with the test-only HTTP transport; it is
+# built here and nowhere that ships (scripts/check-test-hooks.mjs).
+
+on:
+  push:
+    branches: [main, bootstrap, spike]
+    paths:
+      - "crates/fin-registry/**"
+      - "crates/fin-plugin-api/**"
+      - "crates/fin-plugin-cli/**"
+      - "scripts/tuf-conformance/**"
+      - "scripts/e2e/plugins-lib.mjs"
+      - ".github/workflows/tuf-conformance.yml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - "crates/fin-registry/**"
+      - "crates/fin-plugin-api/**"
+      - "crates/fin-plugin-cli/**"
+      - "scripts/tuf-conformance/**"
+      - "scripts/e2e/plugins-lib.mjs"
+      - ".github/workflows/tuf-conformance.yml"
+      - "Cargo.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  tuf-conformance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build the client under test and the publisher tool
+        run: |
+          cargo build --release -p fin-registry --features test-http --example tuf_conformance_client
+          cargo build --release -p fin-plugin-cli
+      - name: Attack matrix
+        # Exit 1 when the client does anything but refuse an attack (or accept a healthy repository).
+        run: node scripts/tuf-conformance/attacks.mjs --out attack-matrix.md
+      - name: Upstream suite
+        # The action installs the suite (and faketime) and runs it against the client; the
+        # expected failures are in client.sh.xfails, next to the entrypoint.
+        if: ${{ !cancelled() }}
+        uses: theupdateframework/tuf-conformance@8535468cf76f5395a579809c4e72ca5698a2a1cd # main, 2026-11-02 (v2 + 13)
+        with:
+          entrypoint: ${{ github.workspace }}/scripts/tuf-conformance/client.sh
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        env:
+          TUF_CONFORMANCE_SHA: 8535468cf76f5395a579809c4e72ca5698a2a1cd
+        run: |
+          {
+            echo "### Attack matrix"
+            echo
+            cat attack-matrix.md
+            echo
+            if [ -f tuf-conformance-report.json ]; then
+              node scripts/tuf-conformance/summary.mjs tuf-conformance-report.json scripts/tuf-conformance/client.sh.xfails
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

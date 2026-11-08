@@ -1,0 +1,59 @@
+# The client trusts a new generation only after the whole chain verified (8A review focus 2:
+# trusted_files_written_only_after_full_chain). The suite expects each role to be kept as soon as
+# it verified (python-tuf persists timestamp, then snapshot). A failed refresh leaves the trusted
+# set byte-identical here, so these cases fail the refresh as they should and then differ only in
+# which versions the client keeps.
+test_unsigned_metadata[snapshot]
+test_unsigned_metadata[targets]
+test_url_and_metadata_version_mismatch[snapshot]
+test_url_and_metadata_version_mismatch[targets]
+test_targets_hash_mismatch
+test_snapshot_hash_mismatch
+test_snapshot_404
+test_targets_404
+test_snapshot_expired
+test_targets_expired
+
+# `tough` takes the content of a timestamp whose version equals the trusted one (and then fails
+# closed fetching the snapshot it names); the specification keeps the trusted copy.
+test_timestamp_content_changes
+
+# Key types and digests Finisher registries do not use (Decision 9: ed25519; targets carry
+# SHA-256): refused with REGISTRY_INVALID, not accepted.
+test_download_with_hash_algorithms[hashes1]
+test_rsa_keytype_and_scheme[rsa/rsassa-pss-sha384]
+test_rsa_keytype_and_scheme[rsa/rsassa-pss-sha512]
+test_ecdsa_keytype_and_scheme[ecdsa/ecdsa-sha2-nistp384]
+test_mldsa_keytype_and_scheme[ml-dsa/ml-dsa-44/1]
+test_mldsa_keytype_and_scheme[ml-dsa/ml-dsa-65/1]
+test_mldsa_keytype_and_scheme[ml-dsa/ml-dsa-87/1]
+
+# Delegated role names with URL-special characters: refused (fail closed); Finisher's roles are
+# publisher names, `[a-z0-9-]` only.
+test_unusual_role_name[?]
+test_unusual_role_name[#]
+test_unusual_role_name[/delegatedrole]
+test_unusual_role_name[../delegatedrole]
+
+# Delegation graphs. `tough` refuses a repository in which a delegated role lists a target outside
+# the paths it was delegated ("Target file not delegated"), where python-tuf ignores that target;
+# and the client loads every delegated role of the snapshot (a registry lists all of its plugins)
+# instead of searching the graph per requested path, so the roles requested differ in set and
+# order. Nothing here accepts a role or a target the suite says must be refused.
+test_graph_traversal[two-level-test-DFS-order-of-traversal]
+test_graph_traversal[three-level-delegation-test-DFS-order-of-traversal]
+test_graph_traversal[two-level-terminating-ignores-all-but-roles-descendants]
+test_graph_traversal[three-level-terminating-ignores-all-but-roles-descendants]
+test_graph_traversal[two-level-ignores-all-branches-not-matching-paths]
+test_graph_traversal[three-level-ignores-all-branches-not-matching-paths]
+test_graph_traversal[two-roles-delegating-to-a-third]
+test_targetfile_search[no delegations]
+test_targetfile_search[targetpath matches wildcard]
+test_targetfile_search[targetpath with separators x]
+test_targetfile_search[targetpath with separators y]
+test_targetfile_search[targetpath is not delegated by all roles in the chain]
+test_targetfile_search[wildcard does not match path separator]
+test_targetfile_search[targetpath matches question mark wildcard]
+test_targetfile_search[targetpath does not match question mark wildcard]
+test_targetfile_search[targetpath matching is case sensitive]
+test_delegation_not_in_snapshot

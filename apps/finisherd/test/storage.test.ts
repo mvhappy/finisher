@@ -10,7 +10,7 @@ import { Effect, Exit, Fiber, PubSub, Scope, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { Channel, follower, Hubs } from "../src/hubs.ts";
 import { makeProjectRegistry, type ProjectRegistryShape, type RegistryOptions } from "../src/projects.ts";
-import { addAsset, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
+import { commit, generationOf, addAsset, connectProved, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
 const servers: RunningServer[] = [];
@@ -32,7 +32,7 @@ afterEach(async () => {
 async function server(name = "sd"): Promise<NdjsonClient> {
   const s = await startServer(join(tmp, name));
   servers.push(s);
-  const c = await NdjsonClient.connect(s.info.socket);
+  const c = await connectProved(s);
   clients.push(c);
   return c;
 }
@@ -54,7 +54,7 @@ describe("storage RPCs", () => {
     const c = await server();
     const dir = join(tmp, "Мій проект");
     const { projectId } = ok<{ projectId: string }>(await c.call("project.create", { dir, name: "Demo", rate: "30" }));
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
+    ok(await commit(c, projectId, tx("tx-1", 0, [addAsset()])));
 
     const status = ok<Status>(await c.call("project.status", { projectId }));
     expect(status.lease.state).toBe("held");
@@ -100,7 +100,7 @@ describe("storage RPCs", () => {
   test("ops.subscribe with a stale generation ends at once with HISTORY_REWOUND", async () => {
     const c = await server();
     const { projectId } = ok<{ projectId: string }>(await c.call("project.create", { dir: join(tmp, "p"), name: "Demo", rate: "30" }));
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
+    ok(await commit(c, projectId, tx("tx-1", 0, [addAsset()])));
     const snap = ok<{ rev: number; generation: unknown }>(await c.call("snapshot.get", { projectId, branch: "main" }));
     const revs: number[] = [];
     const live = c.stream("ops.subscribe", { projectId, branch: "main", fromRev: 0, generation: snap.generation }, (v) =>
@@ -153,15 +153,16 @@ describe("storage RPCs", () => {
     expect(status.readOnly?.reason).toBe("LEASE_HELD");
 
     const revs: number[] = [];
-    const sub = follower.stream("ops.subscribe", { projectId, branch: "main", fromRev: 0 }, (v) => revs.push((v as { rev: number }).rev));
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-2", 1, [addAsset("$b")]) }));
+    const generation = await generationOf(follower, projectId);
+    const sub = follower.stream("ops.subscribe", { projectId, branch: "main", fromRev: 0, generation }, (v) => revs.push((v as { rev: number }).rev));
+    ok(await commit(writer, projectId, tx("tx-1", 0, [addAsset()])));
+    ok(await commit(writer, projectId, tx("tx-2", 1, [addAsset("$b")])));
     await until(() => (revs.length >= 2 ? revs : undefined), 15_000, "imported revs");
     expect(revs).toEqual([1, 2]);
     const got = ok<{ rev: number }>(await follower.call("tx.get", { projectId, txId: "tx-2" }));
     expect(got.rev).toBe(2);
     // The follower takes no edits.
-    const refused = await follower.call("tx.commit", { projectId, tx: tx("tx-f", 2, [addAsset("$c")]) });
+    const refused = await commit(follower, projectId, tx("tx-f", 2, [addAsset("$c")]));
     expect(refused.ok ? undefined : refused.error.code).toBe("PROJECT_READ_ONLY");
     follower.interrupt(sub.id);
     await sub.done;

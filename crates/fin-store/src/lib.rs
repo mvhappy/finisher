@@ -24,6 +24,7 @@ mod derived;
 mod diffs;
 mod export;
 pub mod fsio;
+mod guard;
 mod history;
 mod history_ops;
 pub mod identity;
@@ -75,6 +76,7 @@ pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
+pub use guard::WriteGuard;
 pub use history::Generation;
 pub use history_ops::checkpoint::CheckpointReq;
 pub use history_ops::merge::MergeReq;
@@ -247,6 +249,8 @@ pub struct Store {
     measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
     /// What the last write did ([`Store::take_write_outcome`]).
     write_outcome: Option<WriteOutcome>,
+    /// What writes check their target branch against ([`Store::with_guard`]).
+    guard: WriteGuard,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }

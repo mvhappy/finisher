@@ -23,6 +23,7 @@ fn fake_server(
     answer: impl Fn(usize, &Value) -> Option<Vec<u8>> + Send + 'static,
 ) -> JoinHandle<usize> {
     std::fs::create_dir_all(sd.join("run")).unwrap();
+    let key = support::auth::give_key(sd);
     let socket: PathBuf = if cfg!(windows) {
         PathBuf::from(format!(
             r"\\.\pipe\fin-hardening-{}-{}",
@@ -34,7 +35,7 @@ fn fake_server(
     };
     let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
-    let info = json!({ "pid": 1, "wsPort": 1, "socket": socket.display().to_string(), "token": "t", "protocolVersion": 1, "envId": "01test0000000000000000000a" });
+    let info = json!({ "pid": 1, "wsPort": 1, "socket": socket.display().to_string(), "protocolVersion": 2, "envId": "01test0000000000000000000a" });
     std::fs::write(sd.join("finisherd.json"), info.to_string()).unwrap();
     std::thread::spawn(move || {
         let stream = listener.accept().unwrap();
@@ -47,6 +48,17 @@ fn fake_server(
             }
             let request: Value = serde_json::from_str(&line).unwrap();
             if request["_tag"] != "Request" {
+                continue;
+            }
+            // The handshake is answered at once and not counted.
+            if let Some(reply) = support::auth::handshake_answer(&request, &key) {
+                if reader
+                    .get_mut()
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .is_err()
+                {
+                    return n;
+                }
                 continue;
             }
             n += 1;

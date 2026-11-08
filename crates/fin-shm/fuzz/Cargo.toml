@@ -1,0 +1,25 @@
+# `cargo fuzz` targets for fin-shm (plan 6A Task 10). Not a workspace member (its own
+# `[workspace]`, and `crates/*` matches only direct children): run with `cargo fuzz run
+# ring_header` from this directory (nightly, or `RUSTC_BOOTSTRAP=1 ... -s none` on stable).
+[package]
+name = "fin-shm-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+fin-shm = { path = ".." }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "ring_header"
+path = "fuzz_targets/ring_header.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

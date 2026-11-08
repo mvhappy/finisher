@@ -1,15 +1,3 @@
-import type {
-  HostMsg,
-  JobGroupSpec,
-  JobHostCaps,
-  JobHostEvent,
-  JobHostKillReason,
-  JobHostOptions,
-  JobMemoryRule,
-  JobSpawnRequest,
-  JobWatch,
-} from "@finisher/core-types";
-
 /** A rejected fin-node call: `message` is the core message; `code` is a stable SCREAMING_SNAKE code. */
 export interface FinNodeError extends Error {
   code: string;
@@ -48,7 +36,8 @@ export declare class Engine {
    * `relocate`: the project now lives in `projectDir` although the folder it was recorded at
    * cannot be reached (otherwise `PROJECT_ORIGINAL_UNREACHABLE`). Never set it automatically.
    */
-  static open(serverData: string, projectDir: string, options?: { relocate?: boolean }): Promise<Engine>;
+  /** `expectId`: the project the folder must hold, checked before the lease (`PROJECT_NOT_FOUND {reason: changed}`). */
+  static open(serverData: string, projectDir: string, options?: { relocate?: boolean; expectId?: string }): Promise<Engine>;
   readonly projectId: string;
   /** Head revision of `branch` (0 when it does not exist). */
   head(branch: string): Promise<number>;
@@ -56,8 +45,12 @@ export declare class Engine {
    * Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generationJson`
    * (`{"incarnation": string, "n": number}`, from `opsSinceAt` or `status`), rejects with
    * `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
-   * `metaJson` (`{actor: {kind, session?, call?}}`, finisherd's `callMeta`) is the actor of the
-   * `log.commit` diagnostics entry; every writing branch and history call takes it too.
+   * `metaJson` (`{actor?: {kind, session?, call?}, guard?: WriteGuard}`): `actor` (finisherd's
+   * `callMeta`) is the actor of the `log.commit` diagnostics entry; `guard` (branch ids:
+   * `{denyBranches?, allowBranches?}`) is checked by the store inside the write transaction
+   * against the branch the call changes (`BRANCH_PROTECTED`, `BRANCH_NOT_ALLOWED`). A
+   * `metaJson` or `guard` that does not decode is `INVALID_OP`. Every writing branch and
+   * history call (and `recover`) takes it too.
    */
   commit(txJson: string, generationJson?: string, metaJson?: string): Promise<string>;
   /** Resolves to `{ rev, project, generation: { incarnation, n } }` JSON, read together. */
@@ -234,8 +227,8 @@ export declare class Journal {
   status(): Promise<string>;
   /** The `JournalStatus` JSON as last published, without waiting. */
   statusNow(): string;
-  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`). */
-  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training"): Promise<string>;
+  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`; `redact`: content removed). */
+  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training" | null, redact?: boolean): Promise<string>;
   /** Purges (`PurgeSelector` JSON); resolves to the `PurgeReport` JSON. */
   purge(selectorJson: string): Promise<string>;
   /** What this server knows of a project's flag (`null`: unknown). Engines set it themselves. */
@@ -296,7 +289,15 @@ export declare class FontManager {
   readonly autoFetch: boolean;
   /** `fonts.autoFetch`, at run time (`FIN_FONTS_OFFLINE=1` keeps it off). */
   setAutoFetch(on: boolean): void;
-  /** The `FontCatalog` JSON. */
+  /**
+   * Replaces the enabled plugin packs' font catalogs: `[{ id, catalogs: [<catalog.json
+   * text>] }]` JSON, in merge order; returns `{ rejected: [{ id, code, message, details }] }`
+   * JSON. A pack whose catalogs break the built-in catalog's rules, or clash with it or an
+   * earlier pack (`FONT_CATALOG_INVALID`, rule `catalogIdTaken` or `unique`), is left out
+   * whole; the others merge. Pins are untouched (a pinned font keeps its cached file).
+   */
+  setExtraCatalogs(packsJson: string): string;
+  /** The `FontCatalog` JSON: the built-in catalog and the enabled packs' entries. */
   catalog(): string;
   /** Resolves to the `FontsStatus` JSON: every file's state. */
   status(): Promise<string>;
@@ -319,21 +320,96 @@ export declare class Registry {
   /**
    * Makes a plan from `{ id, source: { kind: "registry", registry, version? }, update?,
    * allowDowngrade?, installed?: InstalledPlugin, knownIds? }` JSON; resolves to the
-   * `InstallPlan` JSON. Until local registries exist (8A Task 7) a registry source is
-   * `REGISTRY_NOT_FOUND`; test builds also take `{ kind: "package", archive, registryId,
-   * staleDays?, yanked? }`.
+   * `InstallPlan` JSON. A registry source is resolved in the registry's trusted metadata and
+   * fetched with its signed length and SHA-256 checked (`REGISTRY_NOT_FOUND`,
+   * `PLUGIN_NOT_FOUND`, `TUF_TARGET_MISMATCH`); `{ kind: "bundled", root }` plans the
+   * compiled-in plugin `id` from `<root>/<name>` (the app's resources) against the hash built
+   * into this binary (`PLUGIN_BUNDLED_MISMATCH`, `PLUGIN_NOT_FOUND`) and installs only the
+   * compiled-in version; test builds also take `{ kind: "package",
+   * archive, registryId, staleDays?, yanked? }` and `testAgentFacing`.
    */
   plan(reqJson: string): Promise<string>;
   /**
-   * Installs the plan with its digest (`Accept` JSON: `{ copyleft?, thirdPartyCode? }`);
-   * resolves to the `InstalledPlugin` JSON or rejects with `PLAN_EXPIRED`, `PLAN_MISMATCH`,
+   * Installs the plan with its digest (`Accept` JSON: `{ copyleft?, thirdPartyCode? }`;
+   * `checksJson`: `{ installedDirs? }`, the installed plugins' package directories, whose font
+   * catalog ids must still be free); resolves to the `InstalledPlugin` JSON or rejects with
+   * `PLAN_EXPIRED`, `PLAN_MISMATCH` (`reason: installed` when an id was taken since),
    * `COPYLEFT_NOT_ACCEPTED` or `THIRD_PARTY_CODE_NOT_ACCEPTED`.
    */
-  commit(planId: string, digest: string, acceptJson?: string): Promise<string>;
+  commit(planId: string, digest: string, acceptJson?: string, checksJson?: string): Promise<string>;
+  /** The staged `InstallPlan` JSON; rejects with `PLAN_EXPIRED` once it is gone. */
+  stagedPlan(planId: string): Promise<string>;
+  /** Deletes a plan and its staged files; resolves to whether there was one. */
+  discardPlan(planId: string): Promise<boolean>;
+  /**
+   * The installed versions (`[{ id, version }]` JSON) a `disable` advisory of registry `id`
+   * applies to: `[{ id, version, advisory }]` JSON.
+   */
+  revocations(id: string, installedJson: string): Promise<string>;
   /** Deletes a version from the store (and the plugin's data with `purgeData`). */
   removePlugin(id: string, version: string, purgeData: boolean): Promise<void>;
   /** Deletes expired and broken plans; resolves to how many. */
   sweep(): Promise<number>;
+  /**
+   * Every version directory in the store, readable or not: `[{ id, version, dir }]` JSON, with
+   * `dir` as `control.db` records it (`store/@<publisher>/<name>/<version>-<hash12>`).
+   */
+  installedDirs(): Promise<string>;
+  /**
+   * The contributions of the installed content pack in `dir` (as `control.db` records it):
+   * `{ id, version, fontCatalogs: [text], captionStyles: [{ name, title?, style }] }` JSON,
+   * every file validated again as at install (`PLUGIN_MANIFEST_INVALID {reason:
+   * contentInvalid}` when one no longer is).
+   */
+  packContent(dir: string): Promise<string>;
+  /**
+   * One caption style of the installed content pack in `dir`: `{ id, version, available:
+   * [name], found?: { name, title?, style } }` JSON. Only that style's file is read and
+   * validated (`plugin.content.get` serves one style, not the pack).
+   */
+  packStyle(dir: string, name: string): Promise<string>;
+  /** The bundled plugins compiled into this binary: `[{ id, version, treeHash }]` JSON. */
+  bundledList(): string;
+  /**
+   * Re-hashes each bundled plugin's tree under `root` and compares it with the compiled-in
+   * hash: `[{ id, version, treeHash, ok, code?, reason? }]` JSON (`code` is
+   * `PLUGIN_BUNDLED_MISMATCH`; `reason` is `missing`, `unreadable` or `treeHash`).
+   */
+  bundledVerify(root: string): Promise<string>;
+  /** Test builds only: replaces the compiled-in list for this `Registry`; `null` restores it. */
+  setBundledForTest(listJson: string | null): void;
+  /**
+   * Every added registry's `RegistryStatus` as a `RegistryList` JSON (`{ registries,
+   * problems }`): a registry that cannot be opened is a problem and hides no other.
+   */
+  registryList(): Promise<string>;
+  /** One registry's `RegistryStatus` JSON; rejects with `REGISTRY_NOT_FOUND`. */
+  registryStatus(id: string): Promise<string>;
+  /**
+   * Adds the local-folder registry `{ id, path }` (JSON) trusted through `rootJson`:
+   * `{ kind: "file", path }` (a root file of the folder) or `{ kind: "sha256", sha256 }`.
+   * Resolves to its `RegistryStatus` JSON; rejects with `REGISTRY_INVALID`,
+   * `REGISTRY_EXISTS` or `REGISTRY_UNTRUSTED` (the root is none of the folder's; nothing is
+   * written). Nothing is fetched: refresh next.
+   */
+  registryAdd(cfgJson: string, rootJson: string): Promise<string>;
+  /** Deletes the registry's config; its trusted metadata stays (Decision 14). */
+  registryRemove(id: string): Promise<void>;
+  /** Deletes the trusted metadata of a root no registry uses. */
+  registryForget(rootSha256: string): Promise<void>;
+  /**
+   * Refreshes the registry from its folder; resolves to `{ status, report }` JSON
+   * (`RegistryStatus`, `RefreshReport`) or rejects with `TUF_*`, `CLOCK_SUSPECT`,
+   * `REGISTRY_INVALID`. Journals `registry.refresh` with `byHuman`.
+   */
+  registryRefresh(id: string, byHuman: boolean): Promise<string>;
+  /**
+   * Plugins the registries list: `{ text?, kind?, registry? }` JSON; resolves to a `Listing`
+   * array JSON.
+   */
+  search(queryJson: string): Promise<string>;
+  /** What each registry signs about plugin `id`: a `PluginInfo` array JSON (empty when none). */
+  info(id: string): Promise<string>;
 }
 
 /**
@@ -390,86 +466,46 @@ export declare function makePrivateDir(path: string): void;
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
- * image?, lottie?, font?, lut?, fingerprint, size }`).
+ * image?, lottie?, font?, lut?, fingerprint, size }`). Never blocks: anything but a regular file
+ * (a folder, FIFO, socket or device) rejects with `ASSET_UNREADABLE`, `details.reason: "NotAFile"`.
  */
 export declare function probe(path: string): Promise<string>;
 
-// The job host's JSON shapes are fin-jobhost's `wire` types, generated into core-types.
-export type {
-  JobGroupSpec,
-  JobHostCaps,
-  JobHostEvent,
-  JobHostExitInfo,
-  JobHostKillReason,
-  JobHostOptions,
-  JobHostQos,
-  JobMemoryRule,
-  JobSpawnRequest,
-  JobWatch,
-} from "@finisher/core-types";
-
-/** What `JobHost.send` did: queued; `full` (the process is not reading its stdin and is being
- * killed as hung); `gone` (it exited, its stdin is closed, or the id is unknown). Neither names
- * how the process ends: that comes with its `exit` event. */
-export type JobHostSendResult = "ok" | "full" | "gone";
+/**
+ * `probe` of a file that must be inside `root` (a canonical folder): `path` is `root` joined
+ * with plain components, none of them a symlink, decided on the open file (Linux `openat2`
+ * `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`; elsewhere one no-follow open per component, or on
+ * Windows no reparse point and a final path inside the root). Otherwise rejects with
+ * `PATH_NOT_ALLOWED` (`details.reason`: `outsideRoot` or `symlink`).
+ */
+export declare function probeBeneath(root: string, path: string): Promise<string>;
 
 /**
- * `fin-jobhost`'s host (spawning, kill trees, framing, timers). Nothing waits on the JS thread:
- * `start`, `spawn`, `killGroup` and `shutdown` settle from the host's threads; `openGroup`
- * allocates; `send` enqueues. Errors are `FinNodeError`s: `WORKER_UNAVAILABLE`
- * (`details.reason`) when no process could be started, `JOBHOST_STATE` (`details.reason`:
- * `unknownGroup`, `groupClosed`, `shutDown`) for a group or host the caller should know is
- * gone, `INVALID_REQUEST` (`details.field`) for an argument it cannot read, `INTERNAL` for an
- * answer the host lost (`details.reason: "unanswered"`).
- *
- * Events: per process `spawned`, `hello`, its messages and `stderr` lines, then `exit`
- * (`JobHostEvent`). A process's `spawn` has resolved, and the code after an `await` of it has
- * run, before its `spawned` reaches `onEvent`.
- *
- * The event callback is weak: a running host or process does not keep Node alive (pending
- * `start`, `spawn`, `killGroup` and `shutdown` promises do). Keep the process alive by other
- * means (a server, a timer) while jobs run.
+ * Resolves a library root for `library.add` (plan 5D Decision 3), on a thread of its own:
+ * resolves to `{ root, rootKey, identity, storage }` JSON: the canonical absolute path (links
+ * resolved), its lookup key (NFC, `/` separators, lower-cased on a case-insensitive volume),
+ * the `VolumeIdentity` (`@finisher/core-types`) and the detected storage kind (`local`,
+ * `network`, `sync:<provider>`). Rejects `LIBRARY_ROOT_INVALID` (`details.reason`: `relative`,
+ * `notFound`, `notDirectory`, `notUtf8`, `serverData`: the root holds or lies inside
+ * `serverData`) or `LIBRARY_ROOT_UNREADABLE` (`details.code`; `TIMEOUT` past `timeoutMs`,
+ * default 60 s). Opens no file under the root.
  */
-export declare class JobHost {
-  private constructor();
-  /** Resolves once the host runs (its Unix watchdog or Windows spawn broker started). */
-  static start(opts: JobHostOptions, onEvent: (e: JobHostEvent) => void): Promise<JobHost>;
-  caps(): JobHostCaps;
-  /** Allocates a group id; its OS objects are made at its first spawn. */
-  openGroup(spec: JobGroupSpec): number;
-  /** Resolves to the process id before any event of the process reaches `onEvent`. */
-  spawn(group: number, req: JobSpawnRequest): Promise<number>;
-  /** Enqueues `msg`; see `JobHostSendResult`. */
-  send(proc: number, msg: HostMsg): JobHostSendResult;
-  watch(proc: number, w: JobWatch | null): void;
-  closeStdin(proc: number): void;
-  killGroup(group: number, reason: JobHostKillReason): Promise<void>;
-  /** Queues the group's release (later spawns fail; live processes are killed). */
-  closeGroup(group: number): void;
-  shutdown(graceMs: number): Promise<void>;
-  /** @internal Test builds only: kills one process as a crash would. */
-  readonly killProcForTest: ((proc: number) => void) | undefined;
-  /** @internal Test builds only: its exit is held `holdMs` (60 s) once seen, so a kill abandons it. */
-  readonly abandonForTest: ((proc: number, holdMs?: number) => void) | undefined;
-  /** @internal Test builds only: events wait `ms` before they reach JS (a slow event loop). */
-  readonly pauseEventsForTest: ((ms: number) => void) | undefined;
-}
+export declare function libraryCanonicalRoot(path: string, serverData: string, timeoutMs?: number): Promise<string>;
 
 /**
- * Decodes `params` with the kind's Rust params type; errors name the field. Params over 512 KiB
- * of JSON are refused (`ok: false`); a `version` that is not a `u32` throws `INVALID_REQUEST`.
+ * A library root's state now against its stored `VolumeIdentity` JSON: resolves to the
+ * `RootState` JSON of `@finisher/core-types`. Never runs on the libuv pool or the JS thread.
+ * One stat per root is in flight (`fin_library::root_state` is single-flight): a call while one
+ * is pending waits on it. Past `timeoutMs` (default 60 s) it resolves `{ state: "timeout" }`
+ * and the stat thread is left to finish (that root counts in `libraryProbeStatus().stuckProbes`
+ * until a later probe of it answers anything else).
  */
-export declare function validateJobParams(
-  kind: string,
-  version: number,
-  params: unknown,
-): { ok: true; params: unknown } | { ok: false; errors: string[] };
-/** The kinds and versions `validateJobParams` knows (release builds: none yet). */
-export declare function jobKindVersions(): Array<{ kind: string; version: number }>;
-/** A group memory rule (Decision 20) in bytes for `totalBytes` of RAM; `undefined` without a bound. */
-export declare function resolveMemoryRule(rule: JobMemoryRule, totalBytes: number): number | undefined;
-/** `fin-workers[.exe]` in `dir` (default: the directory the fin-node binary was loaded from). */
-export declare function workersBinaryPath(dir?: string): string;
+export declare function libraryProbeRoot(root: string, identityJson: string, timeoutMs?: number): Promise<string>;
+
+/** What the root probes are doing: `stuckProbes` roots whose latest probe timed out. */
+export declare function libraryProbeStatus(): { stuckProbes: number };
+// The job host and the job params helpers (`jobhost.js`).
+export * from "./jobhost.js";
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:
@@ -482,6 +518,10 @@ export declare const testHooks:
         path: string,
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
       ): void;
+      /** While `hang` is true the stat of library root `root` blocks, as on a dead hard mount. */
+      libraryProbeHang(root: string, hang: boolean): void;
+      /** How many stats of library root `root` have started. */
+      libraryProbeStarted(root: string): number;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
        * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
        * 48 kHz stereo) fixture. */
@@ -491,5 +531,17 @@ export declare const testHooks:
       ): void;
       /** Packs an unpacked plugin into a `.finpkg`; returns the archive's SHA-256. */
       packPlugin(src: string, out: string): string;
+      /**
+       * Builds a signed local-folder registry in `dir` (keys in `keysDir`, outside it) from
+       * `{ packages?, advisories?, yanks?, maxStaleDays?, ageDays? }`: a package is
+       * `"@pub/name@1.0.0"` (a content pack) or `{ id, version, kind?: "content" | "code",
+       * permissions?, license?, fonts?: string[] }`; `ageDays`: signed as of that many days
+       * ago. Returns `{ rootSha256, rootFile }` JSON.
+       */
+      /** The tree hash of the files under `dir`: what `build.rs` puts in `BUNDLED_PLUGINS`. */
+      treeHash(dir: string): string;
+      buildRegistry(dir: string, keysDir: string, specJson: string): string;
+      /** Publishes more packages, yanks and advisories (the same spec) to a built registry. */
+      publishToRegistry(dir: string, keysDir: string, specJson: string): void;
     }
   | undefined;

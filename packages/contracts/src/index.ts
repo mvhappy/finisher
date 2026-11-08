@@ -1,8 +1,13 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 export { FinError } from "./errors.ts";
 export * from "./rpc.ts";
 export * from "./history.ts";
 export * from "./audit.ts";
 export * from "./agent-events.ts";
 export * from "./diagnostics.ts";
+export * from "./auth.ts";
+export * from "./scopes.ts";
 export * from "./jobs.ts";
+export * from "./plugins.ts";
+export * from "./plugin-lifecycle.ts";
+export * from "./plugin-content.ts";

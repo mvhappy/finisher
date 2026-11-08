@@ -146,3 +146,32 @@ fn export_limit_keeps_newest() {
     };
     assert_eq!(j.export(&since, None).count(), 0);
 }
+
+/// A redacted page (an export for a caller that is not a person, 5A Decision 22) drops entries
+/// of kinds this build does not know rather than passing their payload through (review of
+/// 5A Task 7, L5).
+#[test]
+fn redaction_drops_unknown_kinds() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let j = Journal::open(&events(&dir), training(), opts(&c));
+    j.record(Source::FinNode, None, commit_with_intent(2));
+    j.record(Source::FinNode, None, commit_with_intent(3));
+    j.flush().unwrap();
+    let page = j.export_page(&Filter::default(), None, None, 100).unwrap();
+    assert_eq!(page.lines.len(), 2);
+    // The second entry as a later build might have written it: a kind version unknown here.
+    let mut text = serde_json::to_value(&page).unwrap();
+    text["lines"][1]["kv"] = serde_json::json!(999);
+    text["lines"][1]["payload"]["secret"] = serde_json::json!("never shown");
+    let mut page: fin_journal::ExportPage = serde_json::from_value(text).unwrap();
+    page.redact();
+    assert!(page.redacted);
+    assert_eq!(page.lines.len(), 1);
+    assert!(page.lines[0].payload.get("intent").is_none());
+    assert!(
+        !serde_json::to_string(&page)
+            .unwrap()
+            .contains("never shown")
+    );
+}

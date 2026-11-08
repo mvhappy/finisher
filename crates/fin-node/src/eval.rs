@@ -110,7 +110,7 @@ fn eval(store: &Shared, call: Call) -> Result<Reply> {
             let (_, project) = head(store, &branch)?;
             let manager = store.fonts.manager();
             let planned =
-                fin_fonts::plan::plan_pins(&project, &ops, manager.catalog()).map_err(reject)?;
+                fin_fonts::plan::plan_pins(&project, &ops, &manager.catalog()).map_err(reject)?;
             // Decision 34: planned files are fetched at once (in the background).
             let value = serde_json::to_value(&planned).unwrap_or(Value::Null);
             manager.request(planned_shas(&value).into_iter());

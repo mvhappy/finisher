@@ -1,8 +1,9 @@
 // finisherd runs as `node src/main.ts`: Node strips the types itself, with no build step, and
 // refuses syntax that is not erasable (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX). vitest transforms
 // TypeScript on its own, so this test loads every source file in a plain `node` child.
-// `control/checkpoint-worker.ts` runs on import (it is a worker's entry point); the control
-// store tests load it in a real worker thread, and `scripts/check-strip-types.mjs` covers it.
+// The worker entry points run on import: `control/checkpoint-worker.ts` and the library
+// catalog's `indexer-thread.ts` and `reader-thread.ts`. The control store and catalog tests load
+// them in real worker threads, and `scripts/check-strip-types.mjs` covers them.
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -10,7 +11,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
-const ENTRY_POINTS = new Set(["control/checkpoint-worker.ts"]);
+const ENTRY_POINTS = new Set([
+  "control/checkpoint-worker.ts",
+  "library/catalog/indexer-thread.ts",
+  "library/catalog/reader-thread.ts",
+]);
 
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {

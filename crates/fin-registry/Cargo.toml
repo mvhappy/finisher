@@ -20,6 +20,9 @@ hex = "0.4"
 jiff = "0.2"
 olpc-cjson = "0.1"
 pem = "3"
+# `editor::keys_inside` compares folder identities (volume and file id); already in the
+# tree through walkdir (MIT OR Unlicense).
+same-file = "1"
 schemars = { version = "1", features = ["semver1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -49,6 +52,17 @@ required-features = ["test-http"]
 # Windows x64 builds `aws-lc-sys` without NASM from its bundled objects (8A Task 1).
 [target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
+
+# Owner-only DACLs on key folders and key files (`private.rs`); already in the tree through
+# tempfile and same-file (MIT OR Apache-2.0).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # The HTTP transport's tests (`tests/http_transport.rs`); dev-only, so no shipped build has it.

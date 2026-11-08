@@ -10,8 +10,7 @@
 //! probe needs are kept, as raw text; the rest (`layers`, `assets`, …) are skipped as they are
 //! read. `slots`, `fonts` and each `chars` glyph become trees only up to [`TREE_LIMIT`].
 
-use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use fin_core::{AssetKind, CoreError, LottieInfo, Rational, SlotSpec};
@@ -35,8 +34,8 @@ const TREE_LIMIT: usize = MIB as usize;
 
 /// A member's bytes, refused past `limit` or [`RATIO_LIMIT`] times its compressed size
 /// (`file_size` bounds a declared compressed size).
-fn member(
-    archive: &mut zip::ZipArchive<&mut File>,
+fn member<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<&mut R>,
     file_size: u64,
     name: &str,
     limit: u64,
@@ -324,7 +323,11 @@ fn info(bytes: &[u8], name: &str) -> Result<LottieInfo, String> {
     })
 }
 
-pub(crate) fn probe(file: &mut File, size: u64, path: &Path) -> Result<Probe, CoreError> {
+pub(crate) fn probe<R: Read + Seek>(
+    file: &mut R,
+    size: u64,
+    path: &Path,
+) -> Result<Probe, CoreError> {
     let parsed = (|| {
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| format!("not a dotLottie archive: {e}"))?;

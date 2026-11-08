@@ -26,7 +26,7 @@ fn only_exit(name: &str) -> Result<Value, CoreError> {
 #[test]
 fn success_fixtures_decode_to_their_values() {
     let hello = only_exit("hello").unwrap();
-    assert_eq!(hello["protocolVersion"], 1);
+    assert_eq!(hello["protocolVersion"], 2);
     assert!(
         hello["capabilities"]
             .as_array()
@@ -155,7 +155,7 @@ fn a_silent_server_is_a_typed_timeout_and_a_missing_one_is_unavailable() {
     let silent = endpoint("silent");
     let listener = listen(&silent);
     let held = std::thread::spawn(move || listener.accept());
-    let mut client = Client::connect(&silent, Duration::from_millis(200)).unwrap();
+    let mut client = Client::open(&silent, Duration::from_millis(200), None).unwrap();
     let server_side = held.join().unwrap().unwrap();
     let hello = client.call("server.hello", json!({})).unwrap_err();
     assert_eq!(hello.code, "SERVER_TIMEOUT");
@@ -181,7 +181,7 @@ fn a_silent_server_is_a_typed_timeout_and_a_missing_one_is_unavailable() {
             .unwrap();
         reader.get_mut().flush().unwrap();
     });
-    let mut client = Client::connect(&half, Duration::from_secs(5)).unwrap();
+    let mut client = Client::open(&half, Duration::from_secs(5), None).unwrap();
     let cut = client.commit(json!({}), "tx-10").unwrap_err();
     server.join().unwrap();
     assert_eq!(
@@ -194,7 +194,7 @@ fn a_silent_server_is_a_typed_timeout_and_a_missing_one_is_unavailable() {
     );
     let gone = endpoint("none");
     assert_eq!(
-        Client::connect(&gone, Duration::from_millis(200))
+        Client::open(&gone, Duration::from_millis(200), None)
             .err()
             .unwrap()
             .code,
@@ -218,7 +218,7 @@ fn a_full_socket_buffer_costs_at_most_the_budget() {
         std::thread::sleep(Duration::from_secs(3));
         drop(conn);
     });
-    let mut client = Client::connect(&Endpoint::Socket(path), Duration::from_secs(5)).unwrap();
+    let mut client = Client::open(&Endpoint::Socket(path), Duration::from_secs(5), None).unwrap();
     // Far past any socket buffer (a few hundred KiB).
     let big = json!({ "filler": "a".repeat(4 << 20) });
     let started = std::time::Instant::now();

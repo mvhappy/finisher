@@ -14,7 +14,7 @@ use super::SqlLog;
 use crate::branch::create::{check_key, key_reused};
 use crate::commit::{check_args_hash, same_args_hash};
 use crate::db::{self, Counters};
-use crate::write::{Draft, WriteCtx, writable};
+use crate::write::{Draft, WriteCtx};
 use crate::{HistoryResult, Store, StoreError};
 
 /// [`Store::cherry_pick`]'s request.
@@ -93,7 +93,7 @@ impl Store {
         };
         self.pick(&common, Which::CherryPick, |ctx| {
             let txn = ctx.txn;
-            let into = writable(txn, &r.into)?.id;
+            let into = ctx.target(&r.into)?.id;
             let measurer = ctx.measurer.clone();
             let head = ctx.head(&into)?;
             let log = SqlLog::with_head(txn, &into, head.rev, &head.project)
@@ -129,7 +129,7 @@ impl Store {
         };
         self.pick(&common, Which::Revert, |ctx| {
             let txn = ctx.txn;
-            let branch = writable(txn, &r.branch)?.id;
+            let branch = ctx.target(&r.branch)?.id;
             let mut ids = Counters::load(txn)?;
             let measurer = ctx.measurer.clone();
             let head = ctx.head(&branch)?;

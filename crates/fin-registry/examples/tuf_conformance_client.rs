@@ -10,6 +10,11 @@
 //! Exit 0 on success, 1 otherwise. The trust store lives in `D/.fin-trust/`; after every
 //! command the trusted files are mirrored into `D` under non-versioned names. Freshness is
 //! `strict` on the system clock and the layout is generic (no publisher rules).
+//!
+//! The suite runs the client under `faketime <time> <client …>` for its expiry cases. Where
+//! `libfaketime` is not available (macOS), `scripts/tuf-conformance/faketime` stands in for it and
+//! sets `FIN_TUF_FAKE_NOW_MS` (milliseconds since the Unix epoch), which freezes this client's
+//! clock there; without it the clock is the system's.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +22,8 @@ use std::sync::Arc;
 
 use fin_registry::transport::HttpTransport;
 use fin_registry::tuf::{
-    Freshness, Layout, Policy, SystemClock, TrustStore, TrustedRepo, TufError, sha256_hex,
+    Clock, FixedClock, Freshness, Layout, Policy, SystemClock, TrustStore, TrustedRepo, TufError,
+    sha256_hex,
 };
 
 #[derive(Default)]
@@ -79,6 +85,16 @@ fn file_name(target: &str) -> String {
         .collect()
 }
 
+/// The system clock, or the frozen time `FIN_TUF_FAKE_NOW_MS` names.
+fn clock() -> Result<Box<dyn Clock>, String> {
+    match std::env::var("FIN_TUF_FAKE_NOW_MS") {
+        Ok(ms) => Ok(Box::new(FixedClock::at_ms(ms.parse().map_err(|e| {
+            format!("FIN_TUF_FAKE_NOW_MS is not a number of milliseconds: {e}")
+        })?))),
+        Err(_) => Ok(Box::new(SystemClock)),
+    }
+}
+
 fn run(a: Args) -> Result<(), String> {
     let dir = a.metadata_dir.ok_or("--metadata-dir is required")?;
     let tuf = |e: TufError| e.to_string();
@@ -98,7 +114,7 @@ fn run(a: Args) -> Result<(), String> {
             let targets = a.target_base_url.clone().unwrap_or_else(|| url.clone());
             let t = Arc::new(HttpTransport::new(&url, &targets));
             let mut repo = TrustedRepo::open(store(&dir)?).map_err(tuf)?;
-            let r = repo.refresh(t.clone(), &POLICY, &SystemClock);
+            let r = repo.refresh(t.clone(), &POLICY, clock()?.as_ref());
             mirror(&dir, &repo)?;
             r.map_err(tuf)?;
             if cmd == "refresh" {

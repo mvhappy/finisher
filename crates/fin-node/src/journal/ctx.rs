@@ -5,8 +5,9 @@
 
 use fin_core::CoreError;
 use fin_core::events::{Actor, ActorKind, BranchId, Ctx, MAX_RAW_ID, ProjectId};
+use fin_store::WriteGuard;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// A context as a server sends it: raw ids, which the journal keys (Decision 7).
 #[derive(Debug, Default, Deserialize)]
@@ -28,7 +29,9 @@ pub(crate) struct RawActor {
     call: Option<String>,
 }
 
-/// The `metaJson` an engine call that writes takes (`callMeta(headers)` in finisherd).
+/// The `metaJson` an engine call that writes takes (`{actor?, guard?}`: `callMeta(headers)`
+/// and the chain's write guard in finisherd). Only the actor is read here; the guard is read
+/// by [`guard_of_meta`], strictly.
 #[derive(Debug, Default, Deserialize)]
 struct RawMeta {
     #[serde(default)]
@@ -42,6 +45,33 @@ pub(crate) fn actor_of_meta(meta_json: Option<&str>) -> RawActor {
         .and_then(|m| serde_json::from_str::<RawMeta>(m).ok())
         .and_then(|m| m.actor)
         .unwrap_or_default()
+}
+
+/// The write guard of a call's `metaJson` (`{actor?, guard?: WriteGuard}`; sub-project 5A
+/// Decision 17): the default (no limit) without `metaJson` or without `guard`. Unlike the
+/// actor, it is never guessed: a `metaJson` that is not a JSON object, or a `guard` that is
+/// not a `WriteGuard` (`null` included), is `INVALID_OP` and the call writes nothing.
+pub(crate) fn guard_of_meta(meta_json: Option<&str>) -> Result<WriteGuard, CoreError> {
+    let Some(m) = meta_json else {
+        return Ok(WriteGuard::default());
+    };
+    let invalid = |reason: String| {
+        CoreError::new(
+            "INVALID_OP",
+            format!("the call's write guard does not decode: {reason}"),
+        )
+        .with_details(json!({ "field": "metaJson.guard", "reason": reason }))
+        .with_fix(
+            "send metaJson as {actor?, guard?: {denyBranches?: [branchId], allowBranches?: \
+             [branchId]}} (WriteGuard in @finisher/core-types)",
+        )
+    };
+    let meta = serde_json::from_str::<serde_json::Map<String, Value>>(m)
+        .map_err(|e| invalid(format!("metaJson is not a JSON object: {e}")))?;
+    match meta.get("guard") {
+        None => Ok(WriteGuard::default()),
+        Some(g) => WriteGuard::deserialize(g).map_err(|e| invalid(e.to_string())),
+    }
 }
 
 pub(crate) fn event_invalid(m: impl Into<String>) -> CoreError {

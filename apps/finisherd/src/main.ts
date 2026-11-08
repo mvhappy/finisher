@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// finisherd: serves `FinRpcs` over the local socket/pipe and a bearer-token WebSocket.
-// Usage: node apps/finisherd/src/main.ts [--server-data <dir>]
-// Logs go to stderr only; stdout stays empty.
+// finisherd: serves `FinRpcs` over the local socket/pipe and a ticketed WebSocket.
+// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
+//        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
+// Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Cause, Context, Effect, Exit, Layer, Logger } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Layer, Logger } from "effect";
 import {
   ensureServerData,
-  newToken,
   parseArgs,
+  cachedOrigins,
   removeServerInfo,
   type ServerInfo,
   startFailure,
@@ -16,14 +17,23 @@ import {
   writeServerInfo,
 } from "./config.ts";
 import { serverId } from "@finisher/fin-node";
+import { canonicalEndpoint } from "./auth/crypto.ts";
+import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { KeysTag, rotateKeys } from "./auth/keys.ts";
-import { layerAudit } from "./control/audit.ts";
+import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
+import { AuditTag, layerAudit } from "./control/audit.ts";
+import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
+import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
-import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, serveRpc } from "./transport.ts";
+import { MAX_FRAME } from "./protocol.ts";
+import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
+import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
+import { ServerControlTag } from "./server-admin.ts";
+import { isServeCommand, runConsole } from "./console/main.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -34,7 +44,10 @@ export interface ServeOptions {
   readonly onReady?: (info: ServerInfo) => void;
 }
 
-/** Runs the server until interrupted; finalizers stop the transports, close engines and remove `finisherd.json`. */
+/**
+ * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
+ * engines and remove `finisherd.json`.
+ */
 export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -50,41 +63,89 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
-      const token = newToken();
+      const tickets = yield* makeTickets();
       // The journal opens under the settings already read, before any transport listens.
       const diagnostics = yield* makeDiagnostics(serverData, diagnosticsOptions);
 
       const local = yield* makeLocalSocketServer(socket);
-      const ws = yield* Effect.mapError(makeWebSocketServer(token), (e) => startFailure(e.reason.cause ?? e));
+      const audit = Context.get(control, AuditTag);
+      // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
+      let wsPort = 0;
+      const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: cachedOrigins(serverData) });
+      const { server: ws, port } = yield* Effect.mapError(
+        makeTicketedWebSocketServer({
+          check,
+          // A message over the frame cap and its slack is dropped by ws (close 1009); one just over
+          // the cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
+          maxPayload: MAX_FRAME + 64 * 1024,
+          onRefused: (r) => {
+            if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
+            audit.append({
+              kind: "auth.fail",
+              principal: { kind: "anonymous", id: "" },
+              credentialKind: "ticket",
+              outcome: "failed",
+              code: "UNAUTHENTICATED",
+              details: { reason: r.reason, transport: "ws" },
+            });
+          },
+        }),
+        (e) => startFailure(e.reason.cause ?? e),
+      );
+      wsPort = port;
+      // The endpoints both MACs bind (Decision 7): the socket's real path or the pipe's name.
+      const localEndpoint = canonicalEndpoint(socket);
+      const wsEndpoint = `ws://127.0.0.1:${wsPort}`;
+      const everyConnection = new ConnectionRegistry();
+      const connections = {
+        local: everyConnection.add(new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint)),
+        // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
+        ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
+      };
+      const handshake = new Handshake({ keys, envId, audit });
+      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
+      const fontsLayer = layerFonts(serverData, fonts);
+      // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
+      const stopped = Deferred.makeUnsafe<void>();
+      const listeners = [
+        { transport: connections.local.transport, endpoint: localEndpoint },
+        { transport: connections.ws.transport, endpoint: wsEndpoint },
+      ] as const;
+      const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void) };
       yield* Layer.build(
-        Layer.mergeAll(serveRpc(local, "fin"), serveRpc(ws, "ui")).pipe(
+        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
               layerProjectRegistry(serverData, registry),
-              layerFonts(serverData, fonts),
+              fontsLayer,
+              layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),
+              Layer.succeed(HandshakeTag, handshake),
+              Layer.succeed(TicketsTag, tickets),
+              Layer.succeed(ConnectionRegistryTag, everyConnection),
+              Layer.succeed(ServerControlTag, serverControl),
             ),
           ),
         ),
       );
 
       const publish = (enabled: boolean) =>
-        writeServerInfo(serverData, { pid: process.pid, wsPort: portOf(ws), socket, token, envId, diagnostics: { enabled } });
+        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId, diagnostics: { enabled } });
       // Set when `finisherd.json` is removed: a late gate change must not bring it back.
-      let stopped = false;
+      let removed = false;
       const info = yield* Effect.acquireRelease(
         Effect.try({ try: () => publish(diagnostics.enabled()), catch: startFailure }),
         () =>
           Effect.sync(() => {
-            stopped = true;
+            removed = true;
             removeServerInfo(serverData);
           }),
       );
       // `fin` reads `diagnostics.enabled` to decide whether to send anything (Decision 23).
       diagnostics.onEnabledChange((enabled) => {
-        if (stopped) return;
+        if (removed) return;
         try {
           publish(enabled);
         } catch (e) {
@@ -94,7 +155,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       yield* Effect.logInfo(`finisherd ready: socket=${socket} wsPort=${info.wsPort} serverData=${serverData}`);
       onReady?.(info);
       yield* Effect.addFinalizer(() => Effect.logInfo("finisherd shutting down"));
-      return yield* Effect.never;
+      return yield* Deferred.await(stopped);
     }),
   );
 
@@ -102,9 +163,16 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
 export const StderrLogger = Logger.layer([Logger.withConsoleError(Logger.formatSimple)]);
 
 function main(argv: ReadonlyArray<string>): void {
+  // Decision 29: no argument, `serve` or only flags serve; any other first word is a console command.
+  if (!isServeCommand(argv)) {
+    void runConsole(argv).then((code) => {
+      process.exitCode = code;
+    });
+    return;
+  }
   let serverData: string;
   try {
-    ({ serverData } = parseArgs(argv));
+    ({ serverData } = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv));
   } catch (e) {
     process.stderr.write(`finisherd: ${(e as Error).message}\n`);
     process.exitCode = 2;

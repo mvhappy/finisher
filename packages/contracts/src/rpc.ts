@@ -13,6 +13,23 @@ import type {
 } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
+import {
+  AuthProvePayload,
+  AuthProveSuccess,
+  AuthTicketPayload,
+  AuthTicketSuccess,
+  AuthWhoamiSuccess,
+  AuditListPayload,
+  AuditListSuccess,
+  AuditPurgePayload,
+  AuditPurgeSuccess,
+  ChallengeField,
+  ConsoleChallengeSuccess,
+  ServerHelloPayload,
+  ServerHelloSuccess,
+  ServerStatusSuccess,
+  ServerStopSuccess,
+} from "./auth.ts";
 import { FinError } from "./errors.ts";
 import {
   BranchCreatePayload,
@@ -32,6 +49,37 @@ import {
   RecordSuccess,
   RecoverReportSuccess,
 } from "./history.ts";
+import {
+  PluginInfoPayload,
+  PluginInfoSuccess,
+  PluginListPayload,
+  PluginListSuccess,
+  PluginSearchPayload,
+  PluginSearchSuccess,
+  RegistryAddPayload,
+  RegistryForgetPayload,
+  RegistryIdPayload,
+  RegistryRemovePayload,
+  RegistryListSuccess,
+  RegistryRefreshPayload,
+  RegistryRefreshSuccess,
+  RegistryStatusSuccess,
+} from "./plugins.ts";
+import {
+  PluginDiscardPayload,
+  PluginDiscardSuccess,
+  PluginStatePayload,
+  PluginInstallPayload,
+  PluginInstallSuccess,
+  PluginPlanPayload,
+  PluginPlanSuccess,
+  PluginRemovePayload,
+  PluginRemoveSuccess,
+  PluginStateSuccess,
+  PluginSuggestPayload,
+  PluginSuggestSuccess,
+} from "./plugin-lifecycle.ts";
+import { PluginContentGetPayload, PluginContentGetSuccess } from "./plugin-content.ts";
 import {
   DiagnosticsConsentPayload,
   DiagnosticsConsentSuccess,
@@ -71,12 +119,6 @@ export type TxPayload = Tx;
 export type ProjectPayload = Project;
 export type CommittedTxPayload = CommittedTx;
 
-export const ServerHelloPayload = Schema.Struct({});
-export const ServerHelloSuccess = Schema.Struct({
-  protocolVersion: Schema.Number,
-  serverVersion: Schema.String,
-  capabilities: Schema.Array(Schema.String),
-});
 
 /**
  * `idemKey`: makes a retry of this create (its answer lost) return the project it made rather
@@ -96,13 +138,16 @@ export const ProjectCreatePayload = Schema.Struct({
 export const ProjectOpenPayload = Schema.Struct({
   dir: Schema.String,
   relocate: Schema.optional(Schema.Boolean),
+  /** The console's typed confirmation of a relocation (5A Decision 30). */
+  challenge: ChallengeField,
 });
 export const ProjectRefSuccess = Schema.Struct({
   projectId: Schema.String,
   rev: Schema.Number,
 });
 
-export const AssetProbePayload = Schema.Struct({ path: Schema.String });
+/** Protocol 2: the probe is for `projectId` (reach: the path must be in that project's folder). */
+export const AssetProbePayload = Schema.Struct({ projectId: Schema.String, path: Schema.String });
 const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
 const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });
 const LottieInfoSchema = Schema.Struct({
@@ -169,14 +214,13 @@ export const GenerationSchema = Schema.Struct({
 /**
  * `generation`: the generation the client read the branch at (from `snapshot.get`). With it
  * the commit is refused with `HISTORY_REWOUND` when that history was rewound or the database
- * rebuilt since, instead of being rebased over a history the client never saw. Optional so
- * that protocol-1 clients keep working; every client that reads before it writes should send
- * it (`fin` always does).
+ * rebuilt since, instead of being rebased over a history the client never saw. Required since
+ * protocol 2 (spec §3.6).
  */
 export const TxCommitPayload = Schema.Struct({
   projectId: Schema.String,
   tx: Schema.Unknown,
-  generation: Schema.optional(GenerationSchema),
+  generation: GenerationSchema,
 });
 export const CommittedTxSchema = Schema.Unknown;
 
@@ -199,6 +243,8 @@ export const ProjectTakeoverPayload = Schema.Struct({
   projectId: Schema.String,
   /** Needed on sync folders, which never take over without a person's say-so. */
   confirm: Schema.Boolean,
+  /** The console's typed confirmation of `confirm: true` (5A Decision 30). */
+  challenge: ChallengeField,
 });
 export const ProjectAcknowledgeRewindPayload = Schema.Struct({
   projectId: Schema.String,
@@ -260,13 +306,13 @@ export type TxGetResult = CommittedTx | TxSetAside | null;
 /**
  * `generation`: what the caller read `fromRev` at (from `snapshot.get`). When the branch was
  * rewound or the database rebuilt since, the stream ends at once with `HISTORY_REWOUND`
- * instead of continuing a history the caller never saw. Optional for protocol-1 clients.
+ * instead of continuing a history the caller never saw. Required since protocol 2.
  */
 export const OpsSubscribePayload = Schema.Struct({
   projectId: Schema.String,
   branch: Schema.String,
   fromRev: Schema.Number,
-  generation: Schema.optional(GenerationSchema),
+  generation: GenerationSchema,
 });
 
 /**
@@ -339,6 +385,18 @@ export const FinRpcs = RpcGroup.make(
     success: ServerHelloSuccess,
     error: FinError,
   }),
+  // The handshake's second half (5A Decision 9): binds the hello's credential to the connection.
+  Rpc.make("auth.prove", { payload: AuthProvePayload, success: AuthProveSuccess, error: FinError }),
+  // 5A Task 6: one-time WebSocket tickets, the caller's principal, a credential revoking itself.
+  Rpc.make("auth.ticket", { payload: AuthTicketPayload, success: AuthTicketSuccess, error: FinError }),
+  Rpc.make("auth.whoami", { payload: Schema.Struct({}), success: AuthWhoamiSuccess, error: FinError }),
+  Rpc.make("auth.revokeSelf", { payload: Schema.Struct({}), success: Schema.Struct({}), error: FinError }),
+  Rpc.make("console.challenge", { payload: Schema.Struct({}), success: ConsoleChallengeSuccess, error: FinError }),
+  // 5A Task 8: the server's own state and graceful stop; the owner's audit log.
+  Rpc.make("server.status", { payload: Schema.Struct({}), success: ServerStatusSuccess, error: FinError }),
+  Rpc.make("server.stop", { payload: Schema.Struct({}), success: ServerStopSuccess, error: FinError }),
+  Rpc.make("auth.audit.list", { payload: AuditListPayload, success: AuditListSuccess, error: FinError }),
+  Rpc.make("auth.audit.purge", { payload: AuditPurgePayload, success: AuditPurgeSuccess, error: FinError }),
   Rpc.make("project.create", {
     payload: ProjectCreatePayload,
     success: ProjectRefSuccess,
@@ -417,4 +475,23 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("diagnostics.project", { payload: DiagnosticsProjectPayload, success: DiagnosticsProjectSuccess, error: FinError }),
   Rpc.make("diagnostics.consent", { payload: DiagnosticsConsentPayload, success: DiagnosticsConsentSuccess, error: FinError }),
   Rpc.make("diagnostics.record", { payload: DiagnosticsRecordPayload, success: DiagnosticsRecordSuccess, error: FinError }),
+  // Plugins and registries (sub-project 8A Tasks 9a and 9b): the registries and what they
+  // offer, then plans, approvals and the lifecycle.
+  Rpc.make("registry.list", { payload: Schema.Struct({}), success: RegistryListSuccess, error: FinError }),
+  Rpc.make("registry.status", { payload: RegistryIdPayload, success: RegistryStatusSuccess, error: FinError }),
+  Rpc.make("registry.add", { payload: RegistryAddPayload, success: RegistryStatusSuccess, error: FinError }),
+  Rpc.make("registry.remove", { payload: RegistryRemovePayload, success: Schema.Struct({ removed: Schema.Boolean }), error: FinError }),
+  Rpc.make("registry.forget", { payload: RegistryForgetPayload, success: Schema.Struct({ forgotten: Schema.Boolean }), error: FinError }),
+  Rpc.make("registry.refresh", { payload: RegistryRefreshPayload, success: RegistryRefreshSuccess, error: FinError }),
+  Rpc.make("plugin.list", { payload: PluginListPayload, success: PluginListSuccess, error: FinError }),
+  Rpc.make("plugin.search", { payload: PluginSearchPayload, success: PluginSearchSuccess, error: FinError }),
+  Rpc.make("plugin.info", { payload: PluginInfoPayload, success: PluginInfoSuccess, error: FinError }),
+  Rpc.make("plugin.content.get", { payload: PluginContentGetPayload, success: PluginContentGetSuccess, error: FinError }),
+  Rpc.make("plugin.plan", { payload: PluginPlanPayload, success: PluginPlanSuccess, error: FinError }),
+  Rpc.make("plugin.discard", { payload: PluginDiscardPayload, success: PluginDiscardSuccess, error: FinError }),
+  Rpc.make("plugin.install", { payload: PluginInstallPayload, success: PluginInstallSuccess, error: FinError }),
+  Rpc.make("plugin.remove", { payload: PluginRemovePayload, success: PluginRemoveSuccess, error: FinError }),
+  Rpc.make("plugin.enable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
+  Rpc.make("plugin.disable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
+  Rpc.make("plugin.suggest", { payload: PluginSuggestPayload, success: PluginSuggestSuccess, error: FinError }),
 );

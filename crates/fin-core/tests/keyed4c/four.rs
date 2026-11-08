@@ -150,11 +150,14 @@ pub fn slips(since: &[CommittedTx]) -> BTreeMap<String, Rational> {
 /// re-run's policy code the head explains: blamed on a committed record, or naming in its
 /// details an entity a committed record changed (spec §4.3 blames only when one step did), or
 /// raised at one of the `drifted` op indexes ([`super::partner_drift`]), where our own
-/// shift-less move put a partner somewhere our later op's position does not follow.
+/// shift-less move put a partner somewhere our later op's position does not follow, or a
+/// position-inside-an-item code at one of the `self_drifted` indexes ([`super::self_drift`]),
+/// where our own slide or overwrite move moved an edge across our later op's kept position.
 pub fn refusal_allowed(
     e: &CoreError,
     since: &[CommittedTx],
     drifted: &std::collections::BTreeSet<usize>,
+    self_drifted: &std::collections::BTreeSet<usize>,
 ) -> Result<(), String> {
     if e.code != "CONFLICT" {
         return Err(format!("not a conflict: {e:?}"));
@@ -188,6 +191,8 @@ pub fn refusal_allowed(
             .all(|b| b.is_ascii_uppercase() || b == b'_');
         let policy = code
             && (drifted.contains(&c.op_index)
+                || self_drifted.contains(&c.op_index)
+                    && super::SELF_DRIFT_CODES.contains(&c.reason.as_str())
                 || c.against_tx
                     .as_ref()
                     .is_some_and(|t| since.iter().any(|s| s.tx.tx_id == *t))

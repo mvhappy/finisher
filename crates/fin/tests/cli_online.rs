@@ -308,7 +308,7 @@ fn no_server_and_no_project_are_typed_errors() {
     assert_eq!(run.json["error"]["fix"], "start finisherd");
     // finisherd.json names a socket nobody listens on.
     std::fs::create_dir_all(&sd).unwrap();
-    let info = json!({ "pid": 1, "wsPort": 1, "socket": s(&sd.join("run").join("fin.sock")), "token": "t", "protocolVersion": 1 });
+    let info = json!({ "pid": 1, "wsPort": 1, "socket": s(&sd.join("run").join("fin.sock")), "protocolVersion": 2 });
     std::fs::write(sd.join("finisherd.json"), info.to_string()).unwrap();
     assert_error(
         &fin(&sd, &root, &["view", "--project", "."]),
@@ -675,11 +675,35 @@ fn read_only_commit_exits_4() {
     ]);
     assert_error(&refused, 4, "PROJECT_READ_ONLY");
     assert_eq!(refused.json["error"]["details"]["reason"], "LEASE_HELD");
-    // The holder is alive: no takeover, confirmed or not.
-    assert_error(
-        &run(&["project", "takeover", "--confirm"]),
-        4,
-        "LEASE_TAKEOVER_REFUSED",
+    // A confirmed takeover is a person's decision (5A Task 5): fin is refused...
+    let human = run(&["project", "takeover", "--confirm"]);
+    assert_error(&human, 7, "HUMAN_ONLY");
+    assert_eq!(human.json["error"]["details"]["scope"], "project.confirm");
+    // ...and the console, a person, is refused too while the holder is alive (with the typed
+    // code; without it the server asks for one first).
+    let id = status["status"]["projectId"]
+        .as_str()
+        .or_else(|| status["projectId"].as_str())
+        .expect("the status names the project")
+        .to_string();
+    let mut console = support::console::Console::open(&follower);
+    let unconfirmed = console.call(
+        "project.takeover",
+        json!({ "projectId": id, "confirm": true }),
+    );
+    assert_eq!(
+        support::console::error_code(&unconfirmed).as_deref(),
+        Some("CONFIRMATION_REQUIRED"),
+        "{unconfirmed}"
+    );
+    let exit = console.confirmed(
+        "project.takeover",
+        json!({ "projectId": id, "confirm": true }),
+    );
+    assert_eq!(
+        support::console::error_code(&exit).as_deref(),
+        Some("LEASE_TAKEOVER_REFUSED"),
+        "{exit}"
     );
     // Reads work on the follower.
     assert_eq!(ok(run(&["status"]))["assets"], json!(["a1"]));

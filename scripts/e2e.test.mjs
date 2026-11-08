@@ -11,6 +11,7 @@ import { clipsOf, failure } from "./e2e/history-lib.mjs";
 import { contentFields, contentProblems, kindDef, leaks, loadContentFields, parseJsonl } from "./e2e/diagnostics-lib.mjs";
 import { audioSummary, blessing, checkGolden, cubicBezier, engineProblem, firstDifference, frameGolden, hashTree, layerSummary } from "./e2e/reel-lib.mjs";
 import { realCache } from "./e2e/reel-real.mjs";
+import { handshakeMac } from "./e2e/lib.mjs";
 
 test("parseFrames splits one message carrying several NDJSON frames", () => {
   const text = `${JSON.stringify({ _tag: "Chunk", requestId: "1", values: [] })}\n${JSON.stringify({ _tag: "Exit", requestId: "1" })}\n`;
@@ -220,4 +221,45 @@ test("diagnostics: leaks finds needles and any unkeyed blake3 hash, skipping emp
     { file: "b.jsonl", needle: "blake3:" },
   ]);
   assert.deepEqual(parseJsonl('{"a":1}\n\n{"b":2}\n'), [{ a: 1 }, { b: 2 }]);
+});
+
+test("the e2e handshake MACs match the shared vectors (5A Task 6: connectWs proves over the socket)", () => {
+  const v = JSON.parse(readFileSync(new URL("../tests/fixtures/auth/handshake.json", import.meta.url), "utf8"));
+  for (const h of v.handshakes) {
+    const key = Buffer.from(v.keys[h.key], "base64url");
+    const [cn, sn] = [Buffer.from(h.clientNonce, "hex"), Buffer.from(h.serverNonce, "hex")];
+    assert.equal(handshakeMac(key, v.labels.hello, [h.envId, h.endpoint, cn, sn]).toString("hex"), h.proof, h.name);
+    assert.equal(handshakeMac(key, v.labels.prove, [h.envId, h.endpoint, sn, cn]).toString("hex"), h.mac, h.name);
+  }
+});
+
+// The harness honours CARGO_TARGET_DIR and keeps the server's socket path short.
+const LIB = new URL("./e2e/lib.mjs", import.meta.url).href;
+const inChild = (code, env) =>
+  spawnSync(process.execPath, ["--input-type=module", "-e", `import * as lib from ${JSON.stringify(LIB)}; ${code}`], { encoding: "utf8", env: { ...process.env, ...env } });
+
+test("fin and fin-plugin are looked for in CARGO_TARGET_DIR when it is set", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const set = inChild("console.log(JSON.stringify([lib.TARGET_DIR, lib.FIN, lib.FIN_PLUGIN]))", { CARGO_TARGET_DIR: "/somewhere/else" });
+  const [dir, fin, plugin] = JSON.parse(set.stdout);
+  assert.equal(dir, "/somewhere/else");
+  assert.ok(fin.startsWith("/somewhere/else/release/fin") && plugin.startsWith("/somewhere/else/release/fin-plugin"));
+  const unset = inChild("console.log(lib.TARGET_DIR)", { CARGO_TARGET_DIR: "" });
+  assert.equal(unset.stdout.trim(), join(root, "target"));
+});
+
+test("scenarioTmp keeps the socket path under 104 bytes whatever TMPDIR is", { skip: process.platform === "win32" }, () => {
+  const deep = mkdtempSync(join(tmpdir(), "d".repeat(60)));
+  try {
+    const r = inChild(
+      "const d = lib.scenarioTmp('finisher-e2e-plug-'); console.log(d); console.log(Buffer.byteLength(d + '/server-data/run/fin.sock'));",
+      { TMPDIR: deep },
+    );
+    const [dir, bytes] = r.stdout.trim().split("\n");
+    assert.ok(Number(bytes) <= 104, `${dir}: ${bytes} bytes`);
+    assert.ok(existsSync(dir));
+    rmSync(dir, { recursive: true, force: true });
+  } finally {
+    rmSync(deep, { recursive: true, force: true });
+  }
 });

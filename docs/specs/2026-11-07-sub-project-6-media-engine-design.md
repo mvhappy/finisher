@@ -286,6 +286,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
 - **Codecs are the OS's or hardware's for patent-encumbered formats** (H.264, HEVC, AAC) and **royalty-free software** for AV1, VP9 and Opus (D13, arch §18). Finisher ships no H.264 or HEVC implementation of its own. Two owner decisions refine this:
   - **Linux AAC-LC** (decision 1): Linux has no OS AAC codec, so AAC-LC is decoded with symphonia and encoded with a vendored vo-aacenc (§6.4); HE-AAC sources need the codec plugin. Counsel checks the exposure before release.
   - **Export encoders** (decision 9, scope stated by follow-up decision F3 of 2026-11-07): the rule "**OS vendors' encoders only**" for H.264 and HEVC **applies to exports only**. H.264 export (and QA renders and mattes, which follow it, §6.2) uses VideoToolbox on macOS or Microsoft's own H.264 encoder MFT on Windows, never a GPU vendor's encoder (NVENC, AMD's or Intel's MFTs, VA-API drivers). **Internal preview proxies are exempt: they are never distributed, stay inside the user's installation, and may use any hardware encoder, GPU-vendor ones included.** Elsewhere export is AV1 (SVT-AV1), or H.264 through the codec plugin. There is no built-in HEVC encoding; HEVC export comes only from the codec plugin.
+  - *As built (6A):* the royalty-free software codecs are C libraries built from pinned submodules (§6.4): SVT-AV1 with cmake, **dav1d with the `cc` crate** (`fin-dav1d-sys`, no meson or ninja), each behind a small C shim of Finisher's so Rust mirrors no library struct; nasm is the one extra tool, for their x86_64 assembly.
 - **OS codecs are driven at the codec level:**
   - macOS: `VTDecompressionSession` / `VTCompressionSession` (stateful: the OS parses the bitstream);
   - Windows: Media Foundation transforms (`IMFTransform`; the hardware MFT bound explicitly by adapter, arch §27.3), stateful; and **D3D11VA directly** for HEVC without the HEVC Video Extensions (arch §27.3), which is **stateless**;
@@ -296,7 +297,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
   - **HEVC encoding on VA-API** is not in `cros-codecs`, and none is needed: there is no built-in HEVC encoding (decision 9).
 - *As built (6A-1), `fin-container`'s limits* apply per file (`maxBoxes` 1 M, `maxBoxBytes` 64 MiB, `maxDepth` 16) and per track: `maxSamples` (10 M) bounds a track's samples, which are also at most the file's length in bytes (a fragment run with no per-sample fields costs no bytes a sample), and bounds the **presented frames** after edit lists (`maxPresentedFrames`; up to 1,024 edits may repeat the media), counted before any frame is stored, with the samples an edit looks at bounded by twice that (`maxEditWork`). A video sample in a fragment must have at least one byte. Times that overflow 64 bits are `MEDIA_CORRUPT`.
 - **Process-based backends** (the FFmpeg plugin, others) implement the same `Decoder`/`Encoder` traits through a helper process that 5C starts as the job's sibling, with packets and frames in `fin-shm` rings (§3.4, §6.5).
-- **Every backend has a vendor class** in `fin-media`'s static tables: `os` (VideoToolbox, AudioToolbox, Microsoft's MFTs), `gpu` (a GPU vendor's MFT, VA-API, NVDEC/NVENC), `software` (rav1d, SVT-AV1, libvpx, libopus, symphonia, vo-aacenc) or `plugin`. The export encoder policy (§9.2) and the capability report are keyed on it.
+- **Every backend has a vendor class** in `fin-media`'s static tables: `os` (VideoToolbox, AudioToolbox, Microsoft's MFTs), `gpu` (a GPU vendor's MFT, VA-API, NVDEC/NVENC), `software` (dav1d, SVT-AV1, libvpx, libopus, symphonia, vo-aacenc) or `plugin`. The export encoder policy (§9.2) and the capability report are keyed on it.
 
 ### 6.2 Formats per OS
 
@@ -316,7 +317,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
 |---|---|---|---|---|
 | H.264 (8-bit, High) | VideoToolbox (HW) | MF + hardware MFT | VA-API (Intel, AMD) through `cros-codecs`; NVDEC (6G) | **none** (patents) |
 | HEVC Main / Main10 | VideoToolbox (HW) | MF with the HEVC Video Extensions, else D3D11VA through `cros-codecs` | VA-API through `cros-codecs`; NVDEC (6G) | **none** |
-| AV1 | VideoToolbox on M3 and later | MF (AV1 extension) or D3D11VA | VA-API | `rav1d` (all OSes) |
+| AV1 | VideoToolbox on M3 and later | MF (AV1 extension) or D3D11VA | VA-API | dav1d (all OSes) |
 | VP9 | VideoToolbox after `VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_VP9)` (verified on an M4) | MF / D3D11VA | VA-API | libvpx |
 | ProRes 422/4444 | VideoToolbox | — | — | none (plugin) |
 
@@ -361,7 +362,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
 
 | Library | Use | Integration |
 |---|---|---|
-| `rav1d` (Rust port of dav1d) | AV1 decode | crate; **maintenance risk** (§16.2): dav1d through a minimal FFI is the fallback if `rav1d` stalls, is > 15 % slower, or fails conformance (6A measures it) |
+| dav1d (VideoLAN) | AV1 decode | own minimal FFI through a small C shim, built from source at a pinned tag (arch §27.3) by `fin-dav1d-sys` with the `cc` crate (no meson or ninja), never a prebuilt download. Replaced `rav1d` after 6A-1 (as built below) |
 | SVT-AV1 | AV1 encode: proxies without a hardware encoder, every AV1 export, test fixtures | own minimal FFI, built from source at a pinned tag (arch §27.3), never a prebuilt download |
 | libvpx | VP9 decode where the OS has none | own minimal FFI, built from source at a pinned tag (decoder only) |
 | libopus | Opus decode/encode | own minimal FFI, built from source at a pinned tag |
@@ -371,7 +372,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
 | `cros-codecs` | stateless decoding state machines and parsers (6B) | crate, with Finisher's VA-API and D3D11VA backends |
 | `fin-container` | sample tables, edit lists, fragments, limits, MP4 mux, WebM demux | ours; fuzzed (§13.5) |
 
-*As built (6A-1):* `rav1d` 1.1.0's crate package leaves out its `*.h` files, so its aarch64 assembly cannot build: the assembly is enabled on x86_64 only, and aarch64 runs rav1d's Rust paths, 2.7–4.2× slower than dav1d 1.5.3 on an Apple M4 (627 against ~1,710 fps at 540p, 257 against ~1,090 at 1080p, frame delay 1). That is past the 15 % threshold: the dav1d FFI follow-up is open in `TASKS.md`. After the 6A-1 review, rav1d decodes with **one thread**: with worker threads its debug-only `DisjointMut` overlap checker panicked once on test input, which in release builds (unchecked) would be a data race on untrusted media. Single-threaded on aarch64 it decodes 215 fps at 540p and 22 fps at 1080p, which makes the dav1d decision urgent for 6A-2's latency budgets (§14). SVT-AV1 v4.3.0 is built once by `fin-svt-sys` (a featureless crate) through a small C shim of Finisher's that owns its configuration struct; `fin-codecs` and `fin-svt-sys` are not default workspace members until 6A-2 needs them.
+*As built (6A-1, then the dav1d switch):* 6A-1 shipped `rav1d` 1.1.0, whose crate package leaves out its `*.h` files, so its aarch64 assembly could not build (aarch64 ran its Rust paths, 2.7–4.2× slower than dav1d), and whose debug-only `DisjointMut` checker caught two worker threads writing one buffer region on test input (a data race in release builds on untrusted media), so it was forced to one thread: 215 fps at 540p and 22 fps at 1080p on an Apple M4. It was replaced before 6A-2 by **dav1d 1.5.4** (the submodule `third_party/dav1d`) in `fin-dav1d-sys`, a featureless crate whose `build.rs` does what dav1d's meson build does for the shipped targets with the `cc` crate alone: it writes `config.h`/`config.asm` (probing the assembler for `.func`, `.arch` and the aarch64 extensions as meson does), compiles the bit-depth templates once per depth, assembles the x86_64 assembly with nasm (already needed by SVT-AV1) and the aarch64 `.S` with the C compiler, always at `-O3` with `NDEBUG` and logging compiled out, and refuses any other dav1d version until its source lists are re-checked. So no meson, ninja or Python on any OS. aarch64 Windows (MSVC, whose `cl` cannot assemble GNU `.S`) builds dav1d's C paths only. A ~170-line C shim of Finisher's owns every dav1d struct, so Rust mirrors none of their layouts. Decoding is **multi-threaded**: `DecodeThreads {threads, frame_delay}` (dav1d 1.x runs tile, frame and post-filter work on one pool; 0/0 is a worker per logical processor and ⌈√threads⌉ frames in flight). With frames in flight, a second `dav1d_get_picture` with no packet in between drains, so `receive` asks once per packet and drains only after the new `VideoDecoder::finish` (end of stream); `FrameReader` resumes a run whose target is still in flight. Decodes with frames in flight are bit-exact with one thread (sequential, backwards, shuffled), and 50 repeated decodes four at a time agree; the same suite is clean under ThreadSanitizer (dav1d's C instrumented) and passes on Linux aarch64 (GCC) and x86_64 (nasm). Throughput on an Apple M4 (pattern clips of ~2 kB a frame, planes copied out; the machine was shared, so best observed): one thread, frame delay 1: ~1,000 fps at 540p and ~490 at 1080p, on par with dav1d 1.5.3's own CLI on the same input; all cores, frame delay 1: ~1,190 and ~670; all cores, frame delay 4: ~1,900 and ~1,280. A cold random access 30 frames into a 1080p GOP takes ~31 ms on all cores (84 ms on one). SVT-AV1 v4.3.0 is built once by `fin-svt-sys` (a featureless crate) through a small C shim of Finisher's that owns its configuration struct; `fin-codecs`, `fin-svt-sys` and `fin-dav1d-sys` are not default workspace members until 6A-2 needs them.
 
 ### 6.5 The process codec backend
 
@@ -682,8 +683,7 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 | Component | Licence (SPDX) | Patent terms | Use |
 |---|---|---|---|
 | wgpu, naga | MIT OR Apache-2.0 | — | compositor |
-| `rav1d` | BSD-2-Clause | AOMedia Patent License 1.0 (AV1) | AV1 decode. **Maintenance risk:** a single-sponsor port (Prossimo/ISRG); the last release is 1.1.0 of 2025-05-06, though the repository had commits in late October 2026 and no maintenance-mode announcement was found; dav1d, upstream for every fix, is the fallback |
-| dav1d (fallback) | BSD-2-Clause | AOMedia Patent License 1.0 | AV1 decode if `rav1d` falls short |
+| dav1d 1.5.4 | BSD-2-Clause; its x86_64 assembly includes x264's `x86inc.asm` (ISC) | AOMedia Patent License 1.0 (AV1) | AV1 decode (`fin-dav1d-sys`, the submodule `third_party/dav1d`) |
 | SVT-AV1 | BSD-3-Clause-Clear (since v0.9) | AOMedia Patent License 1.0 (the BSD-3-Clause-Clear text itself grants no patent rights; the grant is in `PATENTS.md`) | AV1 encode |
 | libvpx | BSD-3-Clause | Google's WebM patent grant (`PATENTS`) | VP9 decode |
 | libopus | BSD-3-Clause | royalty-free grants listed in its `COPYING` | Opus |
@@ -718,6 +718,9 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 | `mp4` 0.14 (MIT) | last release 2023; no edit lists. `fin-probe` uses it today and moves to `fin-container` in 6A |
 | `muxide`, `re_mp4` | young or demux-only |
 | `svt-av1-sys`, `vpx-sys`, `audiopus` | unmaintained bindings; own FFI instead |
+| `rav1d` 1.1 (BSD-2-Clause) | used in 6A-1, replaced by dav1d: its crate package leaves out the headers its aarch64 assembly needs (aarch64 ran Rust paths, 2.7–4.2× slower than dav1d), and with worker threads its debug-only `DisjointMut` checker caught two threads writing one buffer region (a data race in release builds on untrusted media), so it had to run single-threaded; a single-sponsor port whose last release is of 2025-05 |
+| `dav1d` 0.11 / `dav1d-sys` 0.8 (MIT) | link a system libdav1d through `system-deps` (pkg-config); no vendored build |
+| `libdav1d-sys` 0.7 (BSD-2-Clause) | builds a vendored dav1d (1.4.3, older than the current release) with meson and ninja, two more build tools on every OS |
 
 ### 16.3 Licence gates
 
@@ -778,7 +781,7 @@ All errors use the one shape `{code, message, details, fix?}` (arch §19). Job-l
 | `fin-media` | new | pixel formats, colour tags and matrices, `MediaInfo`, the sample table and `frame_at`, `RENDER_VERSION`, media job params and results, capability and template types; test pattern generators (`testing`) | yes, pure |
 | `fin-container` | new | sample tables, edit lists, fragments, limits and codec configurations over `mp4-atom`; MP4 mux; WebM demux (6B) | yes, pure |
 | `fin-shm` | new | the mapped-file channel: job-directory layout, rings, open and mapping rules (§3.4) | no |
-| `fin-codecs` | new | `Decoder`/`Encoder` traits; backends `apple`, `mf`, `stateless` (`cros-codecs` with `vaapi` and `d3d11va`), `nv` (6G), `av1` (rav1d, SVT-AV1), `vpx` (decode), `opus`, `audio` (symphonia, OS AAC); the process backend client; the capability probe | no |
+| `fin-codecs` | new | `Decoder`/`Encoder` traits; backends `apple`, `mf`, `stateless` (`cros-codecs` with `vaapi` and `d3d11va`), `nv` (6G), `av1` (dav1d, SVT-AV1), `vpx` (decode), `opus`, `audio` (symphonia, OS AAC); the process backend client; the capability probe | no |
 | `fin-compositor` | new | render graph, WGSL, effects, blend, masks, ingest, coverage, mips, readback; `reference` (CPU oracle) | yes (WebGPU) |
 | `fin-audio` | new | mixer, resampler, WSOLA, audio effects, loudness, limiter, waveform peaks | yes, pure |
 | `fin-captions` | new | caption and text-slot raster over `fin-text` and `swash` | yes, pure |
@@ -805,7 +808,7 @@ Each sub-batch gets its own plan, is green on all three OSes before the next sta
 
 | Batch | Delivers | Depends on |
 |---|---|---|
-| **6A-1 Foundations** | `fin-media` (types, nearest-frame `frame_at`), frame-id patterns, the MP4 muxer, `fin-container` over `mp4-atom`, software AV1 (`rav1d`, SVT-AV1), the CPU reference compositor, probing through `fin-container`, the native-library gates | 4C |
+| **6A-1 Foundations** | `fin-media` (types, nearest-frame `frame_at`), frame-id patterns, the MP4 muxer, `fin-container` over `mp4-atom`, software AV1 (dav1d, SVT-AV1; `rav1d` until the dav1d switch), the CPU reference compositor, probing through `fin-container`, the native-library gates | 4C |
 | **6A-2 First pixels** | the wgpu compositor core, `fin-shm`, the `media` worker family with `media.look`, job inputs in `fin-node`, `fin look`, media fields in `job.done`, `media.capabilities`, e2e and CI, validation | 6A-1, **5C-1** (the engine, warm workers, mapped files; 5C-2 only for `fin look --no-wait`) |
 | **6B-1 Stateful platform codecs and proxies** | VideoToolbox, Media Foundation (stateful) decode and encode, including Microsoft's H.264 encoder MFT; backend vendor classes and the encoder policy (§6.2); the capability report (with N/LTSC guidance); the Linux Landlock worker profile (§3.5.1); HDR → SDR tone mapping; `VideoInfo` display/rotation (§4.4); proxies, thumbnails, filmstrips; the cache, its index and eviction; HTTP serving and capability URLs; WebM demux; deep probe | 6A-2 |
 | **6B-2 Stateless platform codecs** | `cros-codecs` backends for VA-API (run-time libva) and D3D11VA; VA-API encode (proxies only); `media.frames` | 6B-1 |
@@ -826,7 +829,7 @@ Each sub-batch gets its own plan, is green on all three OSes before the next sta
 | 3 | `fin-shm`: rings in job directories; the host never maps a file a less-trusted process can still write; `O_NOFOLLOW`, `nlink == 1`, size caps | §3.4 |
 | 4 | Own sample tables, edit lists and limits on top of `mp4-atom`'s box layer | §6.1 |
 | 5 | Stateless decoding (VA-API, D3D11VA) on `cros-codecs` with run-time-loaded libva | §6.1, §6.6 |
-| 6 | `rav1d` for AV1 decode, dav1d as the measured fallback; SVT-AV1, libvpx (decode), libopus through own FFI from pinned sources | §6.4 |
+| 6 | dav1d for AV1 decode (`rav1d` measured and replaced after 6A-1); dav1d, SVT-AV1, libvpx (decode), libopus through own FFI from pinned sources | §6.4 |
 | 7 | The sampling rule is the nearest frame; ties go to the earlier frame; proxies keep one frame per original frame | §7.1, §10.2 |
 | 8 | `rgba16float` intermediates, 8-bit sources and output (amends arch §12.8); fixed-function and fused passes for `normal`, `screen`, `add` | §5.1 |
 | 9 | Coverage-based edges and an explicit-level box mip chain, identical in both compositors | §5.1 |
@@ -895,7 +898,7 @@ F2. **Hosts where Landlock is disabled (amends decision 6).** On a Linux host wi
 | Risk | Mitigation |
 |---|---|
 | GPU variance across vendors breaks T1 | the CPU oracle isolates shader bugs from tolerance issues; per-stage tolerance tests; WARP/lavapipe as CI baselines; hardware rows in each validation task |
-| `rav1d` stalls or lags dav1d | 6A measures both; dav1d FFI is the fallback |
+| dav1d's meson-free build drifts from upstream on an update | `fin-dav1d-sys/build.rs` refuses any other dav1d version until its source lists and `config.h` are re-checked against `meson.build`; the native gate pins the submodule commit and licence hashes |
 | `cros-codecs` is shaped for ChromeOS and its VA-API backend assumes a linked libva | 6B-2 starts with a spike; our own backends over its parsers and state machines if its backend cannot use run-time loading |
 | `mp4-atom` allocates on hostile input | `fin-container`'s pre-checks and caps; fuzzing of the combination; own box layer for affected boxes as the fallback |
 | 5C slips and blocks 6A-2 | 6A-1 needs nothing from 5C; the `media` family is tested against 5C's `test.*` harness as soon as it exists |
@@ -921,7 +924,7 @@ F2. **Hosts where Landlock is disabled (amends decision 6).** On a Linux host wi
 | **H3** owner question 2 | rewritten (Electron loads ffmpeg at start; default build has H.264/AAC; recommend the exception plus the open-codecs zip; WebCodecs hardware H.264 to verify; AV1 proxies otherwise; facts marked to verify); decided as recommended in revision 3 (§21) |
 | **H4** H.264/HEVC export | owner question 9 (OS vendor vs GPU vendor encoders, Windows N/LTSC, HEVC template, D31 and Windows 10's end of support); §6.2, §9.2, §16.4; decided in revision 3 (§21) |
 | **H5** licence gate | §16.3: keyed on `cargo metadata` (`links`, native build-deps), licence-file hashes, a run-time library gate, the Docker SBOM gate |
-| Licences: rav1d, MPL §3.2, `mp4-atom` | §16.2 (rav1d risk), §16.1 (MPL §3.2 in `THIRD_PARTY_NOTICES.md`, gated), §6.1 (`mp4-atom` for boxes; tables, edit lists and limits ours; justified) |
+| Licences: dav1d, MPL §3.2, `mp4-atom` | §16.2 (dav1d replaces `rav1d`), §16.1 (MPL §3.2 in `THIRD_PARTY_NOTICES.md`, gated), §6.1 (`mp4-atom` for boxes; tables, edit lists and limits ours; justified) |
 | **M1** determinism | §13.4 (`libm` pinned exactly), §5.1 (guarded division), §8.1 (own scalar resampler), §5.1 (box mip chain, explicit level, in both compositors) |
 | **M2** no clamp-to-border | §5.1 coverage edges in shader and reference |
 | **M3** budgets | §14: D31-minimum column; fixed-function `normal`/`screen`/`add` with fused passes (§5.1); RAM-scaled worker limits |

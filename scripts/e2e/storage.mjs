@@ -1,9 +1,8 @@
 // The "storage" scenario: edit, export, delete the database, rebuild from the folder, and a
 // second server following the same folder read-only.
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, startServer, stopServer, waitFor } from "./lib.mjs";
+import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer, waitFor } from "./lib.mjs";
 import { writeFixture } from "./fixture.mjs";
 
 /** The model of a `snapshot.get` answer: without the generation and incarnation, which a rebuild changes. */
@@ -16,7 +15,7 @@ const step = (n, text) => log(`step ${n}: ${text}`);
 
 export async function run() {
   const started = Date.now();
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-storage-")));
+  const tmp = scenarioTmp("finisher-e2e-stor-");
   live.tmp = tmp;
   const dataA = join(tmp, "server-a");
   const dataB = join(tmp, "server-b");
@@ -45,7 +44,7 @@ export async function run() {
     assertEqual(mainBranch(exported).head, head, "status head");
     assertEqual(mainBranch(exported).exportedThrough, head, "status exportedThrough");
 
-    let ws = await connectWs(a.info);
+    let ws = await connectWs(a);
     sockets.push(ws);
     const before = await ws.call("snapshot.get", { projectId, branch: "main" });
     assertEqual(before.rev, head, "snapshot rev before delete");
@@ -64,7 +63,7 @@ export async function run() {
     a = await startServer(dataA);
     servers.push(a);
     fin(dataA, project, ["project", "open", project]);
-    ws = await connectWs(a.info);
+    ws = await connectWs(a);
     sockets.push(ws);
     const after = await ws.call("snapshot.get", { projectId, branch: "main" });
     assertEqual(model(after), model(before), "snapshot after rebuild");
@@ -83,7 +82,7 @@ export async function run() {
     const refused = finRaw(dataB, project, ["clip", "insert", "--track", "t2", "--at", "0", "--asset", "a1", "--dur", "1s"]);
     assertEqual(refused.status, 4, "commit through the read-only server exits 4");
 
-    const wsB = await connectWs(b.info);
+    const wsB = await connectWs(b);
     sockets.push(wsB);
     const snapB = await wsB.call("snapshot.get", { projectId, branch: "main" });
     assertEqual(snapB.rev, head, "follower snapshot rev");

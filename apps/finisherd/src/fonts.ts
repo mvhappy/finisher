@@ -7,6 +7,7 @@ import { FontManager } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope } from "effect";
 import { readSettings, type Settings, settingsPath } from "./config.ts";
 import { attempt, attemptJson } from "./errors.ts";
+import type { FontPack, PackRejected } from "./plugins/content.ts";
 
 /** `fonts.fetch`'s payload. */
 export interface FontsFetchRequest {
@@ -20,6 +21,12 @@ export interface FontsShape {
   readonly catalog: () => Effect.Effect<FontCatalog, FinError>;
   readonly status: () => Effect.Effect<FontsStatus, FinError>;
   readonly fetch: (req: FontsFetchRequest) => Effect.Effect<FontsStatus, FinError>;
+  /**
+   * The enabled plugin packs' font catalogs (8A Task 12a), replacing the previous set: merged
+   * into the catalog under the built-in rules; a pack that breaks them or clashes is left out
+   * and returned.
+   */
+  readonly setExtraCatalogs: (packs: ReadonlyArray<FontPack>) => Effect.Effect<ReadonlyArray<PackRejected>, FinError>;
   /** Whether background fetching is on now (the setting and `FIN_FONTS_OFFLINE`). */
   readonly autoFetch: () => boolean;
 }
@@ -60,6 +67,7 @@ export function makeFonts(serverData: string, { settingsPollMs = 1000 }: FontsOp
       catalog: () => attempt(async () => JSON.parse(manager.catalog()) as FontCatalog),
       status: () => attemptJson<FontsStatus>(() => manager.status()),
       fetch: (req) => attemptJson<FontsStatus>(() => manager.fetch(JSON.stringify(req))),
+      setExtraCatalogs: (packs) => Effect.map(attempt(async () => JSON.parse(manager.setExtraCatalogs(JSON.stringify(packs))) as { rejected: PackRejected[] }), (r) => r.rejected),
       autoFetch: () => manager.autoFetch,
     } satisfies FontsShape;
   });

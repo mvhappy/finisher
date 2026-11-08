@@ -91,7 +91,7 @@ fn commit(n: &mut Node, step: &str, ops: Vec<Op>) -> Result<fin_core::CommittedT
 /// `ops` with the pins `plan_pins` plans for them prepended (logged as `planned`).
 fn with_pins(n: &mut Node, fonts: &Fonts, step: &str, ops: Vec<Op>) -> Result<Vec<Op>, String> {
     let (_, head) = n.store.snapshot(MAIN).map_err(|e| e.to_string())?;
-    let plan = fin_fonts::plan::plan_pins(&head, &ops, fonts.fetcher.catalog())
+    let plan = fin_fonts::plan::plan_pins(&head, &ops, &fonts.fetcher.catalog())
         .map_err(|e| format!("{step}: plan_pins: {}: {}", e.code, e.message))?;
     let pins: Vec<Value> = plan
         .ops

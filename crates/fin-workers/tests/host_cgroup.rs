@@ -3,6 +3,9 @@
 //! the test process is alone in its cgroup, and is skipped with a notice where `systemd-run
 //! --user` is not available.
 
+// Tests drive the host and inspect job directories and process state by path; none is a
+// library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(target_os = "linux")]
 
 mod host_support;

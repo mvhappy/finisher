@@ -90,7 +90,7 @@ export async function recover({ tmp, sd, server, servers, sockets, writeFixture 
   cpSync(join(b, ".finisher", "segments"), moved, { recursive: true });
 
   step(18, "recover lists nothing, imports B's side, plans, then creates");
-  const ws = await connectWs(server.info);
+  const ws = await connectWs(server);
   sockets.push(ws);
   const snap = (branch) => ws.call("snapshot.get", { projectId, branch });
   const main0 = await snap("main");

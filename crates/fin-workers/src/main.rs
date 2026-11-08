@@ -17,6 +17,7 @@
 //! before any runtime starts, so until then a requested self-sandbox exits 78 (fail closed).
 
 mod families;
+mod library;
 #[cfg(feature = "test-hooks")]
 mod test_family;
 #[cfg(unix)]

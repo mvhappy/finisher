@@ -14,6 +14,9 @@ use serde_json::{Map, Value, json};
 use support::Server;
 
 const FIXTURE_PROJECT: &str = "01fixtureproject0000000000";
+const FIXTURE_INCARNATION: &str = "01fixtureincarnation000000";
+/// The console's typed code in the confirmed fixtures (replaced with this connection's own).
+const FIXTURE_CHALLENGE: &str = "0FIXTURECHALLENGE0";
 
 fn fixture(name: &str) -> Vec<String> {
     let path = format!("{}/tests/fixtures/rpc/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -66,6 +69,11 @@ struct Conn {
 
 impl Conn {
     fn open(server: &Server, subst: &[(String, String)]) -> Conn {
+        Conn::open_as(server, subst, "local")
+    }
+
+    /// Proved as `credential` (`local`, or `console` for the human-only fixtures).
+    fn open_as(server: &Server, subst: &[(String, String)], credential: &str) -> Conn {
         let name = server
             .socket
             .as_str()
@@ -77,10 +85,24 @@ impl Conn {
         stream
             .set_recv_timeout(Some(Duration::from_secs(30)))
             .unwrap();
+        let mut io = BufReader::new(stream);
+        // Since 5A Task 4 a connection proves before anything but the hello.
+        support::auth::prove(&mut io, &server.sd, &server.socket, credential);
         Conn {
-            io: BufReader::new(stream),
+            io,
             subst: subst.to_vec(),
         }
+    }
+
+    /// Asks this console connection for a `console.challenge` and substitutes its code for the
+    /// fixtures' `0FIXTURECHALLENGE0` (5A Decision 30: a code is bound to its connection).
+    fn confirming(mut self) -> Conn {
+        self.send(&json!({ "_tag": "Request", "id": "challenge", "tag": "console.challenge", "payload": {}, "headers": [] }));
+        let got = self.frame();
+        assert_eq!(got["exit"]["_tag"], "Success", "{got}");
+        let code = got["exit"]["value"]["code"].as_str().unwrap().to_string();
+        self.subst.push((FIXTURE_CHALLENGE.to_string(), code));
+        self
     }
 
     fn send_line(&mut self, line: &str) {
@@ -133,8 +155,17 @@ impl Conn {
     }
 }
 
+/// The generation `branch` is read at now: protocol 2 requires it on every commit.
+fn generation(c: &mut Conn, project_id: &str, branch: &str) -> Value {
+    c.send(&json!({ "_tag": "Request", "id": "gen", "tag": "snapshot.get", "payload": { "projectId": project_id, "branch": branch }, "headers": [] }));
+    let got = c.frame();
+    assert_eq!(got["exit"]["_tag"], "Success", "{got}");
+    got["exit"]["value"]["generation"].clone()
+}
+
 fn commit(c: &mut Conn, id: &str, project_id: &str, tx: Value) {
-    c.send(&json!({ "_tag": "Request", "id": id, "tag": "tx.commit", "payload": { "projectId": project_id, "tx": tx }, "headers": [] }));
+    let generation = generation(c, project_id, tx["branch"].as_str().unwrap_or("main"));
+    c.send(&json!({ "_tag": "Request", "id": id, "tag": "tx.commit", "payload": { "projectId": project_id, "tx": tx, "generation": generation }, "headers": [] }));
     let got = c.frame();
     assert_eq!(got["exit"]["_tag"], "Success", "{got}");
 }
@@ -162,7 +193,7 @@ fn captured_frames_replay_against_a_live_server() {
     let mut subst = vec![("/fixture".to_string(), tmp[1..tmp.len() - 1].to_string())];
 
     let hello = Conn::open(&server, &subst).replay("hello");
-    assert_eq!(hello["exit"]["value"]["protocolVersion"], 1, "{hello}");
+    assert_eq!(hello["exit"]["value"]["protocolVersion"], 2, "{hello}");
     Conn::open(&server, &subst).replay("ping");
     let created = Conn::open(&server, &subst).replay("project-create");
     let project_id = created["exit"]["value"]["projectId"]
@@ -170,6 +201,12 @@ fn captured_frames_replay_against_a_live_server() {
         .unwrap()
         .to_string();
     subst.push((FIXTURE_PROJECT.to_string(), project_id.clone()));
+    // The captured requests carry the capture's database incarnation (protocol 2 generations).
+    let incarnation = generation(&mut Conn::open(&server, &subst), &project_id, "main");
+    subst.push((
+        FIXTURE_INCARNATION.to_string(),
+        incarnation["incarnation"].as_str().unwrap().to_string(),
+    ));
     let retried = Conn::open(&server, &subst).replay("project-create-retry");
     assert_eq!(
         retried["exit"]["value"]["projectId"], project_id,
@@ -244,7 +281,10 @@ fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str)
         stale["exit"]["cause"][0]["error"]["details"]["reason"],
         "GENERATION"
     );
-    let relocated = Conn::open(server, subst).replay("project-open-relocate");
+    // A relocation is a person's decision (5A Task 5): the console replays it.
+    let relocated = Conn::open_as(server, subst, "console")
+        .confirming()
+        .replay("project-open-relocate");
     assert_eq!(relocated["exit"]["value"]["rev"], 4, "{relocated}");
     replay_events(server, subst);
     replay_history(server, subst, project_id);
@@ -399,7 +439,12 @@ fn replay_diagnostics(server: &Server, subst: &[(String, String)], project_id: &
         refused["exit"]["cause"][0]["error"]["code"],
         "CONSENT_UI_ONLY"
     );
-    let consent = Conn::open(server, subst).replay_to("diagnostics-consent", REPORT_KEYS);
+    // Consent changes, `project default` and purges are a person's (5A Task 7): `fin` is
+    // refused, the console confirms each with its own code.
+    let human = Conn::open(server, subst).replay("diagnostics-consent-human-only");
+    assert_eq!(human["exit"]["cause"][0]["error"]["code"], "HUMAN_ONLY");
+    let console = || Conn::open_as(server, subst, "console").confirming();
+    let consent = console().replay_to("diagnostics-consent", REPORT_KEYS);
     assert_eq!(consent["exit"]["value"]["diagnostics"], "on", "{consent}");
     // Its `kinds` and `projects` are keyed by what this run holds: compared to the value's keys.
     let status = Conn::open(server, subst).replay_to("diagnostics-status", REPORT_KEYS - 1);
@@ -409,12 +454,13 @@ fn replay_diagnostics(server: &Server, subst: &[(String, String)], project_id: &
         page["exit"]["value"]["lines"][0]["kind"], "cli.command",
         "{page}"
     );
-    let project = Conn::open(server, subst).replay("diagnostics-project");
+    assert_eq!(page["exit"]["value"]["redacted"], true, "{page}");
+    let project = console().replay("diagnostics-project");
     assert_eq!(
         project["exit"]["value"],
         json!({ "project": project_id, "collect": "default" })
     );
-    Conn::open(server, subst).replay("diagnostics-purge");
+    console().replay("diagnostics-purge");
 }
 
 /// `project-events`: the first chunk (the status now), its ack, then the interrupt. Status

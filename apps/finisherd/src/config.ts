@@ -1,6 +1,6 @@
 // Server-data location, local socket path and the `finisherd.json` discovery file.
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
@@ -62,21 +62,19 @@ export function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = 
   return { serverData: serverData ?? defaultServerData(env) };
 }
 
-/** Contents of `<server-data>/finisherd.json` (mode 0600). */
+/**
+ * Contents of `<server-data>/finisherd.json` (mode 0600). No secret since 5A Task 6: a WebSocket
+ * needs a one-time ticket minted over a proved connection, not a token from this file.
+ */
 export interface ServerInfo {
   readonly pid: number;
   readonly wsPort: number;
   readonly socket: string;
-  readonly token: string;
   readonly protocolVersion: number;
   /** The environment id (`control.db` `meta`, 5A). */
   readonly envId: string;
   /** Whether the server records diagnostics now (plan D, Decision 23: `fin` sends nothing when false). */
   readonly diagnostics: { readonly enabled: boolean };
-}
-
-export function newToken(): string {
-  return randomBytes(32).toString("base64url");
 }
 
 export function infoPath(serverData: string): string {
@@ -256,6 +254,57 @@ export function readPrivacy(serverData: string): { privacy?: unknown; error?: st
 export function privacyArg(read: { privacy?: unknown; error?: string; missing?: true }): string | null {
   if (read.error !== undefined) return "<unusable settings.json>";
   return read.privacy === undefined ? null : JSON.stringify(read.privacy);
+}
+
+/**
+ * `settings.json` `server.origins`: browser origins (besides the server's own) allowed to open
+ * the WebSocket (spec §4.3). Each entry is normalised (`new URL(o).origin`); entries that are
+ * not origins are skipped. A missing or unusable file allows none.
+ */
+export function readOrigins(serverData: string): ReadonlyArray<string> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(settingsPath(serverData), "utf8"));
+  } catch {
+    return [];
+  }
+  const origins = (raw as { server?: { origins?: unknown } } | null)?.server?.origins;
+  if (!Array.isArray(origins)) return [];
+  const out: string[] = [];
+  for (const o of origins) {
+    if (typeof o !== "string") continue;
+    try {
+      const origin = new URL(o).origin;
+      if (origin !== "null") out.push(origin);
+    } catch {
+      // not an origin
+    }
+  }
+  return out;
+}
+
+/**
+ * `readOrigins`, read again only when `settings.json` changes (its mtime, size or inode): the
+ * upgrade check runs before any authentication, so it must not read a file per attempt
+ * (review of Task 6, finding 8). A file that cannot be stat'ed is no origins.
+ */
+export function cachedOrigins(serverData: string, read: (serverData: string) => ReadonlyArray<string> = readOrigins): () => ReadonlyArray<string> {
+  let key: string | undefined;
+  let value: ReadonlyArray<string> = [];
+  return () => {
+    let now: string;
+    try {
+      const st = statSync(settingsPath(serverData), { bigint: true });
+      now = `${st.mtimeNs}:${st.size}:${st.ino}`;
+    } catch {
+      now = "missing";
+    }
+    if (now !== key) {
+      key = now;
+      value = now === "missing" ? [] : read(serverData);
+    }
+    return value;
+  };
 }
 
 export function removeServerInfo(serverData: string): void {

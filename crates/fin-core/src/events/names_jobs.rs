@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer};
 use super::class::Name;
 use super::names::NameTable;
 
-/// Job kinds. `test.*` now; 5D, sub-project 6 and 8C add theirs.
+/// Job kinds. `test.*`, 5D's `library.*`; sub-project 6 and 8C add theirs.
 pub static JOB_KINDS: NameTable = NameTable::new(
     "JOB_KINDS",
     &[
@@ -30,6 +30,9 @@ pub static JOB_KINDS: NameTable = NameTable::new(
         "test.badHello",
         "test.pluginMinor",
         "test.fail",
+        "library.scan",
+        "library.probe",
+        "library.hash",
     ],
 );
 

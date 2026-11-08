@@ -12,6 +12,41 @@ pub const VALIDATION: i32 = 3;
 pub const CONFLICT: i32 = 4;
 pub const UNAVAILABLE: i32 = 5;
 pub const INTERNAL: i32 = 6;
+/// "This needs a different principal, usually a person" (spec §3.5): an agent must not retry.
+pub const DENIED: i32 = 7;
+
+/// Codes that mean denied (exit 7, spec §3.5 and §4.13): the server would not accept this
+/// caller, or this caller would not accept the server (`SERVER_UNTRUSTED`).
+pub const DENIED_CODES: &[&str] = &[
+    "UNAUTHENTICATED",
+    "SERVER_UNTRUSTED",
+    "SCOPE_DENIED",
+    "HUMAN_ONLY",
+    "PATH_NOT_ALLOWED",
+    "BRANCH_PROTECTED",
+    "BRANCH_NOT_ALLOWED",
+    "CREDENTIAL_REVOKED",
+    "APPROVAL_REQUIRED",
+    "CONSOLE_NEEDS_TTY",
+    "CONFIRMATION_REQUIRED",
+    // Plugin registries (sub-project 8A Task 9a, spec §13): a person must look. The root is not
+    // the pinned one, or signed metadata did not verify (`TUF_*`: signatures, thresholds,
+    // rollback, expiry beyond `maxStaleDays`, delegations, a target that is not what was signed).
+    "REGISTRY_UNTRUSTED",
+    "TUF_SIGNATURE",
+    "TUF_THRESHOLD",
+    "TUF_ROLLBACK",
+    "TUF_EXPIRED",
+    "TUF_DELEGATION",
+    "TUF_TARGET_MISMATCH",
+    // Plugins (8A Tasks 9b, 10, 12c): a version a signed advisory revoked; a bundled plugin
+    // whose files are not what the app was built with; a plan approved without accepting its
+    // copyleft terms or its third-party code.
+    "PLUGIN_REVOKED",
+    "PLUGIN_BUNDLED_MISMATCH",
+    "COPYLEFT_NOT_ACCEPTED",
+    "THIRD_PARTY_CODE_NOT_ACCEPTED",
+];
 
 /// Codes that mean "the request was well-formed but rejected by validation" (exit 3).
 const VALIDATION_CODES: &[&str] = &[
@@ -152,6 +187,30 @@ const VALIDATION_CODES: &[&str] = &[
     "EVENT_KIND_UNKNOWN",
     "EVENT_INVALID",
     "EVENT_TOO_LARGE",
+    // Registries and plugins (sub-project 8A Task 9a): no such registry or plugin; a registry
+    // whose metadata does not parse, breaks a size cap or the layout (`details.reason`).
+    "REGISTRY_NOT_FOUND",
+    "REGISTRY_INVALID",
+    "PLUGIN_NOT_FOUND",
+    // Packages and manifests (8A Tasks 2–3): a manifest or package that breaks the rules
+    // (`details.path`, `details.reason`), a contribution this host does not consume, an unsafe
+    // or oversized package, a host API, platform or Node version it does not fit.
+    "PLUGIN_MANIFEST_INVALID",
+    "PLUGIN_CONTRIBUTION_UNSUPPORTED",
+    "PACKAGE_UNSAFE",
+    "PACKAGE_TOO_LARGE",
+    "PLUGIN_HOST_API",
+    "PLUGIN_PLATFORM",
+    "PLUGIN_NODE_VERSION",
+    // The lifecycle (8A Task 9b): a plan gone or expired, or no longer what is installed;
+    // nothing installed under that id; that version already installed; an older version
+    // without `--allow-downgrade`; a bundled plugin (it updates with the app).
+    "PLAN_EXPIRED",
+    "PLAN_MISMATCH",
+    "PLUGIN_NOT_INSTALLED",
+    "PLUGIN_ALREADY_INSTALLED",
+    "PLUGIN_DOWNGRADE_REFUSED",
+    "PLUGIN_BUNDLED",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -178,6 +237,8 @@ const CONFLICT_CODES: &[&str] = &[
     "LEASE_LOST",
     "HISTORY_REWOUND",
     "TX_SET_ASIDE",
+    // A registry with this id exists (8A Task 9a).
+    "REGISTRY_EXISTS",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -198,7 +259,17 @@ const JOB_RESULT_CODES: &[&str] = &[
 /// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
 /// `CONSENT_UI_ONLY` (plan D, Decision 14b): turning `training` on is a person's choice (the
 /// `fix` names the ways in).
-const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE", "CONSENT_UI_ONLY"];
+/// `FRAME_TOO_LARGE`: a request over the server's 16 MiB frame limit (5A Decision 13).
+const USAGE_CODES: &[&str] = &[
+    "USAGE",
+    "TX_TOO_LARGE",
+    "CONSENT_UI_ONLY",
+    "FRAME_TOO_LARGE",
+    // Plugins (8A): a manifest over 256 KiB; several registries list the plugin (or its
+    // registry's root changed, `details.reason: rootChanged`): name one with `--registry`.
+    "MANIFEST_TOO_LARGE",
+    "REGISTRY_AMBIGUOUS",
+];
 
 /// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
 /// a resource another process holds (`DB_IN_USE`: a rebuild needs the project database to
@@ -208,6 +279,8 @@ const USAGE_CODES: &[&str] = &["USAGE", "TX_TOO_LARGE", "CONSENT_UI_ONLY"];
 /// `SERVER_SHUTTING_DOWN` and `CANCELLED` (the server interrupted the request, e.g. while
 /// stopping) are transient: retrying against a (re)started server can succeed.
 const UNAVAILABLE_CODES: &[&str] = &[
+    // Too many WebSocket tickets at once (5A, review of Task 6): wait and retry.
+    "TICKET_LIMIT",
     "SERVER_UNAVAILABLE",
     "SERVER_RUNNING",
     "SERVER_START_FAILED",
@@ -232,6 +305,15 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "JOURNAL_UNAVAILABLE",
     "SETTINGS_INVALID",
     "SETTINGS_WRITE_FAILED",
+    // The compositor's GPU (sub-project 6 spec §17): no adapter, not even a software one; the
+    // device was lost; an allocation failed. 5C retries the last two on a fresh worker.
+    "GPU_UNAVAILABLE",
+    "GPU_DEVICE_LOST",
+    "GPU_OUT_OF_MEMORY",
+    // A job's mapped file failed `fin-shm`'s checks (a link, a hard link, a special file, a
+    // size against its ring header or cap, a truncation while read; sub-project 6 spec §17):
+    // the job failed, not the request.
+    "SHM_REFUSED",
     // Jobs (5C-1 Decision 41): 50,000 unfinished jobs; no worker could be started
     // (`details.reason`); a worker built for another envelope (`details.expected`, `got`); a
     // wait that timed out; an `io:` pool two abandoned processes hold (`details.pool`); a job's
@@ -242,11 +324,24 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "WAIT_TIMEOUT",
     "RESOURCE_STUCK",
     "WORKER_OOM",
+    // A registry folder that cannot be read; the clock is more than a day before the last
+    // refresh (`fix`: set the clock, then refresh) (8A Task 9a). `REGISTRY_STALE` is a warning.
+    "REGISTRY_UNREACHABLE",
+    "CLOCK_SUSPECT",
+    // `REGISTRY_STALE` (a warning in `plugin ls`); a disabled plugin; a code plugin with no
+    // runtime yet; too many open plans or suggestions for this principal (8A Tasks 9b, 12a):
+    // wait, then retry.
+    "REGISTRY_STALE",
+    "PLUGIN_DISABLED",
+    "PLUGIN_RUNTIME_UNAVAILABLE",
+    "TOO_MANY_PLANS",
+    "TOO_MANY_SUGGESTIONS",
 ];
 
 /// The one place error codes become exit codes.
 pub fn exit_code(code: &str) -> i32 {
     match code {
+        c if DENIED_CODES.contains(&c) => DENIED,
         c if USAGE_CODES.contains(&c) => USAGE,
         c if CONFLICT_CODES.contains(&c) || JOB_RESULT_CODES.contains(&c) => CONFLICT,
         c if UNAVAILABLE_CODES.contains(&c) => UNAVAILABLE,
@@ -324,157 +419,5 @@ pub fn install_panic_hook() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exit_codes_follow_the_contract() {
-        assert_eq!(exit_code("USAGE"), 2);
-        assert_eq!(exit_code("TX_TOO_LARGE"), 2);
-        assert_eq!(exit_code("CONFLICT"), 4);
-        assert_eq!(exit_code("SEGMENT_COLLISION"), 4);
-        assert_eq!(exit_code("RECORD_TOO_LARGE"), 3);
-        assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
-        assert_eq!(exit_code("PROJECT_READ_ONLY"), 4);
-        assert_eq!(exit_code("LEASE_TAKEOVER_REFUSED"), 4);
-        assert_eq!(exit_code("LEASE_LOST"), 4);
-        assert_eq!(exit_code("HISTORY_REWOUND"), 4);
-        assert_eq!(exit_code("TX_SET_ASIDE"), 4);
-        assert_eq!(exit_code("UNSUPPORTED_HASH"), 3);
-        for code in [
-            "UNSUPPORTED_CONTAINER",
-            "UNSUPPORTED_TRANSFORM",
-            "MEDIA_CORRUPT",
-            "MEDIA_LIMIT",
-        ] {
-            assert_eq!(exit_code(code), 3, "{code}");
-        }
-        assert_eq!(exit_code("VERIFY_FAILED"), 3);
-        assert_eq!(exit_code("DB_IN_USE"), 5);
-        assert_eq!(exit_code("CONTROL_DB_BUSY"), 5);
-        assert_eq!(exit_code("CONSENT_UI_ONLY"), 2);
-        assert_eq!(exit_code("JOURNAL_UNAVAILABLE"), 5);
-        assert_eq!(exit_code("SETTINGS_INVALID"), 5);
-        assert_eq!(exit_code("SETTINGS_WRITE_FAILED"), 5);
-        assert_eq!(exit_code("EVENT_KIND_UNKNOWN"), 3);
-        assert_eq!(exit_code("EVENT_INVALID"), 3);
-        assert_eq!(exit_code("EVENT_TOO_LARGE"), 3);
-        assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
-        assert_eq!(exit_code("FONTS_DAMAGED"), 5);
-        assert_eq!(exit_code("TRACK_LOCKED"), 3);
-        assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
-        assert_eq!(exit_code("NOT_ADJACENT"), 3);
-        for code in [
-            "ALREADY_LINKED",
-            "SLIDE_BLOCKED",
-            "MOVE_INTO_ITSELF",
-            "LINK_LEGS_OVERLAP",
-            "TRANSITION_NO_HANDLES",
-            "TRANSITION_EXISTS",
-            "TRANSITION_INVALID",
-            "TRACK_NOT_EMPTY",
-            "TIMELINE_NOT_EMPTY",
-            "TIMELINE_NESTED",
-            "PARAM_UNKNOWN",
-            "PARAM_TYPE",
-            "SLOT_UNKNOWN",
-            "PARAM_ANIMATED",
-            "PARAM_NOT_ANIMATABLE",
-            "BIN_NOT_EMPTY",
-            "BIN_CYCLE",
-            "NESTED_CYCLE",
-            "NESTED_TOO_LARGE",
-        ] {
-            assert_eq!(exit_code(code), 3, "{code}");
-        }
-        for code in [
-            "SERVER_UNAVAILABLE",
-            "SERVER_RUNNING",
-            "SERVER_START_FAILED",
-            "SERVER_TIMEOUT",
-            "ENGINE_CLOSED",
-            "ENGINE_BUSY",
-            "SERVER_SHUTTING_DOWN",
-            "CANCELLED",
-        ] {
-            assert_eq!(exit_code(code), 5, "{code}");
-        }
-        for code in [
-            "INTERNAL",
-            "SOMETHING_NEW",
-            "PROTOCOL_ERROR",
-            "PROTOCOL_MISMATCH",
-            "DB_ERROR",
-            "IO_ERROR",
-        ] {
-            assert_eq!(exit_code(code), 6, "{code}");
-        }
-        for code in [
-            "PROJECT_NOT_FOUND",
-            "PROJECT_EXISTS",
-            "PROJECT_INVALID",
-            "BRANCH_NOT_FOUND",
-            "PROJECT_DB_MISSING",
-            "PROJECT_DB_MISMATCH",
-            "SERVER_DATA_UNSAFE",
-            "PROJECT_DIR_UNWRITABLE",
-            "INVALID_NAME",
-            "INVALID_PATH",
-            "IDEM_KEY_REUSED",
-            "DB_TOO_NEW",
-            "NOT_A_PROJECT_DB",
-            "NEWER_FORMAT",
-            "INVALID_FORMAT",
-            "REPLAY_FAILED",
-            "CLIP_OVERLAP",
-            "CLIP_EMPTY",
-            "CLIP_NEGATIVE",
-            "INVALID_ID",
-            "BINDINGS_MISMATCH",
-            "PROJECT_COPY",
-            "PROJECT_ORIGINAL_UNREACHABLE",
-            "NAME_TAKEN",
-            "BRANCH_ARCHIVED",
-            "NOTHING_TO_UNDO",
-            "NOTHING_TO_REDO",
-            "FONT_INVALID",
-            "FONT_NOT_IN_CATALOG",
-            "FONT_CATALOG_INVALID",
-        ] {
-            assert_eq!(exit_code(code), 3, "{code}");
-        }
-        for code in VALIDATION_CODES {
-            assert_eq!(exit_code(code), 3, "{code}");
-        }
-    }
-
-    #[test]
-    fn job_codes_follow_decision_41() {
-        for code in [
-            "INVALID_REQUEST",
-            "JOB_KIND_UNKNOWN",
-            "JOB_PARAMS_INVALID",
-            "JOB_NOT_FOUND",
-            "JOBHOST_STATE",
-        ] {
-            assert_eq!(exit_code(code), 3, "{code}");
-        }
-        for code in JOB_RESULT_CODES {
-            assert_eq!(exit_code(code), 4, "{code}");
-        }
-        for code in [
-            "JOB_QUEUE_FULL",
-            "WORKER_UNAVAILABLE",
-            "WORKER_PROTOCOL_MISMATCH",
-            "WAIT_TIMEOUT",
-            "RESOURCE_STUCK",
-            "WORKER_OOM",
-        ] {
-            assert_eq!(exit_code(code), 5, "{code}");
-        }
-        // Only in `reply` errors to a worker: never an exit of their own.
-        for code in ["UNKNOWN_MESSAGE", "CALL_LIMIT"] {
-            assert_eq!(exit_code(code), 6, "{code}");
-        }
-    }
-}
+#[path = "output_tests.rs"]
+mod tests;

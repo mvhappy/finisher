@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { testHooks } from "@finisher/fin-node";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { catalogJson, FontServer, sha256, waitFor } from "../../../packages/fin-node/test/fontserver.ts";
-import { addAsset, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
+import { commit, addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
 let serverData: string;
@@ -51,7 +51,7 @@ async function start(catalog: string, env: Record<string, string> = {}): Promise
     FIN_FONTS_TEST_NO_PROXY: "1",
     ...env,
   });
-  client = await NdjsonClient.connect(server.info.socket);
+  client = await connectProved(server);
   return client;
 }
 
@@ -115,7 +115,7 @@ describe("fonts RPCs", () => {
     const c = await start("{ not a catalog");
     const dir = join(tmp, "p");
     const { projectId } = ok<{ projectId: string }>(await c.call("project.create", { dir, name: "Demo", rate: "30" }));
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
+    ok(await commit(c, projectId, tx("tx-1", 0, [addAsset()])));
     const status = ok<{ fonts: unknown; warnings: Array<{ code: string; fix?: string }> }>(await c.call("project.status", { projectId }));
     expect(status.fonts).toEqual({ missing: [], fetching: [], failed: [] });
     const damaged = status.warnings.find((w) => w.code === "FONTS_DAMAGED");
@@ -129,7 +129,7 @@ describe("eval RPCs", () => {
     const c = await start(catalogJson([]));
     const dir = join(tmp, "p");
     const { projectId } = ok<{ projectId: string }>(await c.call("project.create", { dir, name: "Demo", rate: "30" }));
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset(), insert(0, 5)]) }));
+    ok(await commit(c, projectId, tx("tx-1", 0, [addAsset(), insert(0, 5)])));
     const frame = ok<{ timeline: string; t: string; layers: Array<{ kind: string }> }>(
       await c.call("eval.frame", { projectId, at: "1" }),
     );

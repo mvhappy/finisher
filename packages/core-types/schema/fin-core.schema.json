@@ -43,6 +43,20 @@
       ],
       "type": "string"
     },
+    "AdvisoryAction": {
+      "oneOf": [
+        {
+          "const": "warn",
+          "description": "Shown with the plugin; nothing changes.",
+          "type": "string"
+        },
+        {
+          "const": "disable",
+          "description": "The plugin is disabled on refresh by any principal (`PLUGIN_REVOKED`).",
+          "type": "string"
+        }
+      ]
+    },
     "AgentApproval": {
       "description": "`agent.approval`: an approval was answered or expired.",
       "properties": {
@@ -2373,6 +2387,51 @@
       ],
       "type": "object"
     },
+    "DirDone": {
+      "additionalProperties": false,
+      "description": "Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the\njob's batches. `complete: false` (an error, a timeout, a placeholder or automount\ndirectory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.\n`entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a\nnested mount root (Decision 17, per directory), which the indexer keeps as\n[`KnownDir::volume`].",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "dir": {
+          "$ref": "#/$defs/RawRel"
+        },
+        "entries": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mtimeNs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "dir",
+        "complete",
+        "entries"
+      ],
+      "type": "object"
+    },
     "Dirs": {
       "description": "The job directory and the process's private temp directory.",
       "properties": {
@@ -2760,6 +2819,16 @@
         "effect",
         "style",
         "font"
+      ],
+      "type": "string"
+    },
+    "EntryType": {
+      "description": "The type of a directory entry as listed (never by following a link). Windows reparse\npoints with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a\n[`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a\ndirectory nor a link (sockets, devices, FIFOs) is `other`.",
+      "enum": [
+        "file",
+        "dir",
+        "symlink",
+        "other"
       ],
       "type": "string"
     },
@@ -3430,6 +3499,36 @@
         }
       ]
     },
+    "ExcludeSpec": {
+      "additionalProperties": false,
+      "description": "The library's patterns, as stored and as sent to a scan worker.",
+      "properties": {
+        "caseSensitive": {
+          "description": "The root's case sensitivity: keys and patterns are folded when `false`.",
+          "type": "boolean"
+        },
+        "exclude": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "caseSensitive"
+      ],
+      "type": "object"
+    },
     "ExitReason": {
       "description": "Why a process ended. A closed list (`worker_exit_reasons_closed`).",
       "enum": [
@@ -3448,8 +3547,40 @@
       ],
       "type": "string"
     },
+    "Expect": {
+      "additionalProperties": false,
+      "description": "What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the\ncatalog has one, file id. TS `ExpectWire`.",
+      "properties": {
+        "dev": {
+          "description": "The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the\nopener crosses them and checks the opened handle against this device; without one,\nthe handle must be on the root's mount.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "mtimeNs"
+      ],
+      "type": "object"
+    },
     "ExportPage": {
-      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page.",
+      "description": "One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as\nthe next request's `cursor`; absent on the last page. `redacted`: content fields (and the\nblob references inside them) were removed, as for a caller that is not a person (5A\nDecision 22); absent otherwise.",
       "properties": {
         "lines": {
           "items": {
@@ -3459,6 +3590,9 @@
         },
         "next": {
           "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -4220,6 +4354,36 @@
       ],
       "type": "string"
     },
+    "HashOutcome": {
+      "description": "What the `library.hash` kind reports for one file; `hash` is `blake3:<hex>`.",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "As [`crate::probe::ProbeOutcome::state`]: `present`, or why there is no hash.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "state"
+      ],
+      "type": "object"
+    },
     "Hashed": {
       "pattern": "^k1:[0-9a-f]{32}$",
       "type": "string",
@@ -4582,6 +4746,10 @@
       "properties": {
         "action": {
           "$ref": "#/$defs/PlanAction"
+        },
+        "agentFacing": {
+          "description": "The package contributes agent-facing content (spec §4.2): an update of it never\ninstalls without a person's approval (§5.3).",
+          "type": "boolean"
         },
         "bytes": {
           "description": "Unpacked bytes.",
@@ -6473,6 +6641,53 @@
       ],
       "type": "object"
     },
+    "KnownDir": {
+      "additionalProperties": false,
+      "description": "One directory the catalog knows (Decision 27) as the walker holds it. A line of a scan\njob's `in/dirs.ndjson` is `{dir, mtimeNs, listed}` (written by the indexer; `listed`\nbecomes `listed_gen` of the scan's generation) with these fields optional\n([`crate::walk::KnownDirs::from_ndjson`]):\n\n- `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the\n  directory when it differs;\n- `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is\n  `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);\n- `listed_gen`: the full-scan generation in which it was last listed completely; a\n  resumed full scan of that generation skips its listing and still descends;\n- `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is\n  `ROOT_UNMOUNTED` (Decision 17), never listed and never missing;\n- `volume`: that nested mount's volume as last listed (`DirDone.volume`); a different\n  volume there now (a different key its file ids and sample do not confirm,\n  [`crate::volume::same_volume`]) is `ROOT_VOLUME_CHANGED`, also never listed and never\n  missing.",
+      "properties": {
+        "dir": {
+          "$ref": "#/$defs/RawRel"
+        },
+        "entries": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listedGen": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mountRoot": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mtimeNs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "dir"
+      ],
+      "type": "object"
+    },
     "Layer": {
       "description": "One item drawn at the plan's time. `local` is the time from the item's start: negative for\na transition's incoming item before its cut, past `duration` for the outgoing one after it.\nAn adjustment layer carries effects only (its transform and crop are the defaults); a\nnested item is a group layer whose `children` are its timeline's layers.",
       "properties": {
@@ -6545,6 +6760,382 @@
         "crop",
         "opacity",
         "blend"
+      ],
+      "type": "object"
+    },
+    "LibraryBatchCall": {
+      "additionalProperties": false,
+      "description": "The `library.batch` call's params.",
+      "properties": {
+        "file": {
+          "description": "A plain file name inside the job's `out/`.",
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "LibraryFileLine": {
+      "additionalProperties": false,
+      "description": "One line of `in/files.ndjson`: a catalogued file to read (Decision 20).",
+      "properties": {
+        "expect": {
+          "$ref": "#/$defs/Expect"
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "rel": {
+          "$ref": "#/$defs/RawRel"
+        }
+      },
+      "required": [
+        "id",
+        "rel",
+        "expect"
+      ],
+      "type": "object"
+    },
+    "LibraryHashParams": {
+      "additionalProperties": false,
+      "description": "`library.hash` (Decision 38): as [`LibraryProbeParams`], without the extension filter.",
+      "properties": {
+        "files": {
+          "default": "in/files.ndjson",
+          "type": "string"
+        },
+        "hydrate": {
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "library": {
+          "type": "string"
+        },
+        "readBps": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "root": {
+          "type": "string"
+        },
+        "volume": {
+          "$ref": "#/$defs/VolumeIdentity"
+        }
+      },
+      "required": [
+        "library",
+        "root",
+        "hydrate",
+        "volume",
+        "items"
+      ],
+      "type": "object"
+    },
+    "LibraryHashResult": {
+      "description": "What `library.hash` reports: one value per item (`blake3:<hex>`) went through `item`;\nhere only the counts.",
+      "properties": {
+        "changed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "datalessPolicy": {
+          "type": "string"
+        },
+        "states": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "states",
+        "changed",
+        "datalessPolicy"
+      ],
+      "type": "object"
+    },
+    "LibraryProbeParams": {
+      "additionalProperties": false,
+      "description": "`library.probe` (Decision 34): items are catalog file ids (decimal strings); the\n`in/files.ndjson` grant holds a [`FileLine`] for each, and only the lines named by `items`\nrun (the engine's `restrict` narrows `items`, not the file).",
+      "properties": {
+        "extensions": {
+          "description": "Extensions to probe (lower case, no dot); absent probes everything (`kinds: all`).\nOthers are `skipped` with code [`KIND_FILTER`] (Decision 37).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "files": {
+          "default": "in/files.ndjson",
+          "description": "The grant that holds the lines.",
+          "type": "string"
+        },
+        "hydrate": {
+          "description": "The library's setting: a placeholder is read only when `true` (Decision 6).",
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "library": {
+          "type": "string"
+        },
+        "readBps": {
+          "description": "The library's bandwidth budget for this job's slot, in bytes per second (Decision 36).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "root": {
+          "type": "string"
+        },
+        "volume": {
+          "$ref": "#/$defs/VolumeIdentity",
+          "description": "The stored identity the root is judged against before and during the job."
+        }
+      },
+      "required": [
+        "library",
+        "root",
+        "hydrate",
+        "volume",
+        "items"
+      ],
+      "type": "object"
+    },
+    "LibraryProbeResult": {
+      "description": "What `library.probe` reports: outcomes by state (the outcomes themselves went through\n`library.probed`).",
+      "properties": {
+        "changed": {
+          "description": "Files whose outcome was `changed`: their directories need a rescan (Task 5).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "datalessPolicy": {
+          "type": "string"
+        },
+        "states": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "states",
+        "changed",
+        "datalessPolicy"
+      ],
+      "type": "object"
+    },
+    "LibraryProbedCall": {
+      "additionalProperties": false,
+      "description": "The `library.probed` call's params.",
+      "properties": {
+        "results": {
+          "items": {
+            "$ref": "#/$defs/ProbeOutcome"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "results"
+      ],
+      "type": "object"
+    },
+    "LibraryScanMode": {
+      "description": "What a scan lists (`WalkMode`).",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "Every directory; resumable by `gen` and `in/dirs.ndjson` (Decision 27).",
+          "type": "string"
+        },
+        {
+          "const": "dirs",
+          "description": "Exactly the directories in `dirs` (plus new subdirectories they report).",
+          "type": "string"
+        },
+        {
+          "const": "poll",
+          "description": "The known directories whose mtime changed, and new ones (Decision 28).",
+          "type": "string"
+        }
+      ]
+    },
+    "LibraryScanParams": {
+      "additionalProperties": false,
+      "description": "`library.scan`.",
+      "properties": {
+        "dirs": {
+          "description": "`mode: dirs`: the directories to list.",
+          "items": {
+            "$ref": "#/$defs/RawRel"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "excludes": {
+          "$ref": "#/$defs/ExcludeSpec"
+        },
+        "gen": {
+          "description": "The generation a full scan writes (`gen`; a word reserved in Rust 2024).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "library": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/LibraryScanMode"
+        },
+        "root": {
+          "description": "The library's canonical root: an absolute directory.",
+          "type": "string"
+        },
+        "threads": {
+          "description": "Read threads; absent means 64 (local roots), the service passes 32 for network and\nsync roots (Decision 9).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Scaled deadlines. Test builds only: a release worker refuses the field."
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The library's stored volume identity, which the first stat is judged against\n(Decision 17); absent for the first scan of a new library."
+        }
+      },
+      "required": [
+        "library",
+        "root",
+        "mode",
+        "gen",
+        "excludes"
+      ],
+      "type": "object"
+    },
+    "LibraryScanResult": {
+      "description": "What a scan did (`WalkSummary`, with the identity it measured).",
+      "properties": {
+        "batches": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "datalessPolicy": {
+          "description": "The process's dataless policy, as the OS reports it (`off` on macOS, Decision 6).",
+          "type": "string"
+        },
+        "entries": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "identity": {
+          "$ref": "#/$defs/VolumeIdentity",
+          "description": "The identity the first stat measured (refreshed into the library after a full scan)."
+        },
+        "incomplete": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stuck": {
+          "description": "Read threads still stuck in an abandoned read when the walk ended.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unchanged": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "listed",
+        "incomplete",
+        "timeouts",
+        "unchanged",
+        "skipped",
+        "entries",
+        "batches",
+        "stuck",
+        "datalessPolicy"
       ],
       "type": "object"
     },
@@ -6883,6 +7474,42 @@
           "type": "object"
         }
       ]
+    },
+    "Listing": {
+      "description": "A plugin in search results: its newest version that is not yanked.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "latest": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "registryId": {
+          "type": "string"
+        },
+        "versions": {
+          "description": "Versions offered to new installs (not yanked), oldest first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "registryId",
+        "id",
+        "latest",
+        "versions",
+        "kind",
+        "license"
+      ],
+      "type": "object"
     },
     "LogCommit": {
       "properties": {
@@ -9123,6 +9750,51 @@
       ],
       "type": "object"
     },
+    "Placeholder": {
+      "description": "A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the\nlibrary has `hydrate`.",
+      "oneOf": [
+        {
+          "const": "dataless",
+          "description": "macOS `SF_DATALESS`, on a file or a directory.",
+          "type": "string"
+        },
+        {
+          "const": "icloudStub",
+          "description": "A legacy iCloud `.<name>.icloud` stub, standing for `<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "nextcloud",
+          "description": "A Nextcloud `<name>.nextcloud` virtual file, standing for `<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "owncloud",
+          "description": "An ownCloud `<name>.owncloud` virtual file, standing for `<name>`.",
+          "type": "string"
+        },
+        {
+          "const": "recallOnOpen",
+          "description": "Windows `FILE_ATTRIBUTE_RECALL_ON_OPEN`.",
+          "type": "string"
+        },
+        {
+          "const": "recallOnData",
+          "description": "Windows `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`.",
+          "type": "string"
+        },
+        {
+          "const": "offline",
+          "description": "Windows `FILE_ATTRIBUTE_OFFLINE`.",
+          "type": "string"
+        },
+        {
+          "const": "unpinned",
+          "description": "Windows `FILE_ATTRIBUTE_UNPINNED`: online-only even with the other bits clear.",
+          "type": "string"
+        }
+      ]
+    },
     "PlanAction": {
       "enum": [
         "install",
@@ -9393,6 +10065,38 @@
       "description": "`@<publisher>/<name>` (8A Decision 2).",
       "pattern": "^@[a-z0-9][a-z0-9-]{1,38}/[a-z0-9][a-z0-9-]{1,63}$",
       "type": "string"
+    },
+    "PluginInfo": {
+      "description": "Everything a registry signs about one plugin.",
+      "properties": {
+        "advisories": {
+          "description": "In-scope advisories that apply to at least one listed version.",
+          "items": {
+            "$ref": "#/$defs/SignedAdvisory"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "registryId": {
+          "type": "string"
+        },
+        "versions": {
+          "description": "Every version, yanked ones included, oldest first.",
+          "items": {
+            "$ref": "#/$defs/VersionInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "registryId",
+        "id",
+        "versions",
+        "advisories"
+      ],
+      "type": "object"
     },
     "PluginKind": {
       "oneOf": [
@@ -9705,6 +10409,53 @@
       ],
       "type": "object"
     },
+    "ProbeOutcome": {
+      "description": "What `library.probed` reports for one file.",
+      "properties": {
+        "code": {
+          "description": "The error code of a state other than `present`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "description": "`fp1`, whenever the file could be read that far, even if the probe failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Probe"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probeVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "probeVersion",
+        "state"
+      ],
+      "type": "object"
+    },
     "ProcessHelperKind": {
       "description": "A helper's kind.",
       "enum": [
@@ -9947,6 +10698,23 @@
       "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
       "type": "string"
     },
+    "RawRel": {
+      "additionalProperties": false,
+      "description": "Raw components below a library root, outermost first (empty for the root): base64 of each name's bytes (Unix bytes; Windows UTF-16 as WTF-8).",
+      "properties": {
+        "components": {
+          "items": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "components"
+      ],
+      "type": "object"
+    },
     "RecoverGroup": {
       "additionalProperties": false,
       "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `records_branch`: the branch the records were on;\n- `branch`, `fork_seq`, `fork_hash`: the fork `create` uses: an existing branch, the seq\n  and its record; or, with `fork_group`, the branch that group makes (`branch` its name,\n  `fork_hash` absent: its record is written then); none for a group that cannot be made\n  for want of a fork (`NO_COMMON_HISTORY`);\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has neither records with ops nor checkpoints, and its child groups\n  fork where it does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it whole (fix each, or dismiss it);\n- `notes`: rows `create` leaves in quarantine while making the rest (`NAME_TAKEN`,\n  `BRANCH_NOT_FOUND`, …; they come back as a group of their own), and copies whose source\n  is not here (`SOURCE_NOT_FOUND`).",
@@ -10102,6 +10870,109 @@
       ],
       "type": "object"
     },
+    "RefreshReport": {
+      "description": "What a refresh found.",
+      "properties": {
+        "changed": {
+          "description": "Whether the trusted set changed.",
+          "type": "boolean"
+        },
+        "rootVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rootsAdded": {
+          "description": "Roots newly trusted by this refresh.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshotVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "staleDays": {
+          "description": "Whole days the metadata is past its earliest expiry, when it is.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "targetsVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestampVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/Warning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "rootVersion",
+        "timestampVersion",
+        "snapshotVersion",
+        "targetsVersion",
+        "rootsAdded",
+        "changed",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "RegistryList": {
+      "description": "`registry.list`'s answer.",
+      "properties": {
+        "problems": {
+          "items": {
+            "$ref": "#/$defs/RegistryProblem"
+          },
+          "type": "array"
+        },
+        "registries": {
+          "items": {
+            "$ref": "#/$defs/RegistryStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "registries",
+        "problems"
+      ],
+      "type": "object"
+    },
+    "RegistryProblem": {
+      "description": "A registry that could not be opened (its config or trusted set is damaged); the others\nare still listed.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
     "RegistryRefresh": {
       "description": "`registry.refresh`: one refresh of a registry's trusted metadata.",
       "properties": {
@@ -10149,6 +11020,77 @@
         "targetsLog2",
         "byHuman",
         "micros"
+      ],
+      "type": "object"
+    },
+    "RegistryStatus": {
+      "description": "One added registry (spec §5.1: `registry.json` and the trusted set).",
+      "properties": {
+        "advisories": {
+          "description": "Advisories in scope of the trusted set.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "description": "`relaxed` for local folders.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`local`: a folder (a git registry is a folder the user pulls).",
+          "type": "string"
+        },
+        "lastRefreshAt": {
+          "description": "Seconds since the epoch of the last successful refresh, `None` before the first.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxStaleDays": {
+          "description": "`maxStaleDays` from the signed root (default 7, at most 90).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "plugins": {
+          "description": "Plugins listed (with at least one version), yanked-only ones included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rootSha256": {
+          "description": "The root this registry is trusted through (also the name of its trust directory).",
+          "type": "string"
+        },
+        "staleDays": {
+          "description": "Whole days past the trusted metadata's earliest expiry, `None` while fresh.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "trusted": {
+          "$ref": "#/$defs/TrustedVersions"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "path",
+        "rootSha256",
+        "freshness",
+        "trusted",
+        "plugins",
+        "advisories",
+        "staleDays",
+        "maxStaleDays",
+        "lastRefreshAt"
       ],
       "type": "object"
     },
@@ -10225,6 +11167,139 @@
           "const": "in",
           "description": "The incoming item (B).",
           "type": "string"
+        }
+      ]
+    },
+    "RootState": {
+      "description": "A root's state (Decision 17): `online` carries the identity measured now (its key may\ndiffer from the stored one when the change was confirmed harmless); every other state\nputs the library offline with its catalog intact (Decision 18).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A root's volume (Decision 15), measured at add and refreshed at each full scan.\n\n- `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw\n  fields are never stored;\n- `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);\n- `dev_id`: the device id, informational only (never compared alone);\n- `mount_root`: the root is a mount root (Decision 17's unmount rule);\n- `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows\n  information class, `fake`);\n- `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a\n  key change.",
+          "properties": {
+            "caseSensitive": {
+              "type": "boolean"
+            },
+            "devId": {
+              "type": "string"
+            },
+            "enumeration": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "mountRoot": {
+              "type": "boolean"
+            },
+            "remote": {
+              "type": "boolean"
+            },
+            "rootFileId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sample": {
+              "items": {
+                "$ref": "#/$defs/SampleEntry"
+              },
+              "type": "array"
+            },
+            "state": {
+              "const": "online",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "key",
+            "kind",
+            "devId",
+            "mountRoot",
+            "caseSensitive",
+            "enumeration",
+            "remote",
+            "sample"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unreachable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "code"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "const": "unmounted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "state": {
+              "const": "volumeChanged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "const": "empty",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "const": "timeout",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -10319,6 +11394,147 @@
           "type": "object"
         }
       ]
+    },
+    "SampleEntry": {
+      "additionalProperties": false,
+      "description": "One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:\nentries are matched by file id, size and mtime.",
+      "properties": {
+        "fileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "mtimeNs"
+      ],
+      "type": "object"
+    },
+    "ScanBatch": {
+      "additionalProperties": false,
+      "description": "One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.",
+      "properties": {
+        "dirsDone": {
+          "items": {
+            "$ref": "#/$defs/DirDone"
+          },
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ScanEntry"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "entries",
+        "dirsDone"
+      ],
+      "type": "object"
+    },
+    "ScanEntry": {
+      "additionalProperties": false,
+      "description": "One entry of a directory listing, as a scan reports it (Decision 25 keys rows by\n`(dir, name)` on raw bytes).\n\n- `name`: the raw component the entry is opened by; for a Nextcloud, ownCloud or iCloud\n  stub it is the name the stub **stands for** (`placeholder` says which stub), so the row\n  survives hydration; a stub whose real file is also listed is `excluded` with\n  `STUB_SHADOWED` under its own name.\n- `name_nfc`, `name_lossy`: the NFC display name ([`crate::names`]); `rel_key`: the\n  lookup key, `/`-joined and case-folded on case-insensitive roots. Neither is unique.\n- `dev`, `file_id`: rename hints only (`dev:fileId`, Decision 22); `None` where the OS or\n  server gives none.\n- `mount_root`: the entry is the root of a nested mount; `automount`: an automount point,\n  never descended (`excluded: AUTOMOUNT`).\n- `excluded`: the exclusion code ([`crate::exclude::code`]) or `None`.",
+      "properties": {
+        "automount": {
+          "type": "boolean"
+        },
+        "dev": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dir": {
+          "$ref": "#/$defs/RawRel"
+        },
+        "entryType": {
+          "$ref": "#/$defs/EntryType"
+        },
+        "excluded": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mountRoot": {
+          "type": "boolean"
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nameLossy": {
+          "type": "boolean"
+        },
+        "nameNfc": {
+          "type": "string"
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Placeholder"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relKey": {
+          "type": "string"
+        },
+        "reparseTag": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dir",
+        "name",
+        "nameNfc",
+        "nameLossy",
+        "relKey",
+        "entryType",
+        "size",
+        "mtimeNs",
+        "mountRoot",
+        "automount"
+      ],
+      "type": "object"
     },
     "Scope": {
       "description": "Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are\naddressed as `effects.<fx>.<param>`.",
@@ -10613,6 +11829,15 @@
       ],
       "type": "object"
     },
+    "Severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "type": "string"
+    },
     "Shape": {
       "description": "A fade or crossfade side over a segment: `p` is its progress at the segment's ends (0 → 1\nacross the whole fade). Its amplitude factor is `curve(p)` for `fadeIn`/`crossIn` and\n`curve(1 − p)` for `fadeOut`/`crossOut` (`linear`: `x`; `equalPower`: `sqrt(x)`-shaped, as\nthe mixer defines it).",
       "properties": {
@@ -10683,6 +11908,51 @@
       ],
       "type": "string"
     },
+    "SignedAdvisory": {
+      "description": "An advisory with the role that signed it.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/AdvisoryAction"
+        },
+        "id": {
+          "type": "string"
+        },
+        "plugin": {
+          "description": "The plugin id, `@publisher/name`.",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "signedBy": {
+          "description": "`targets` for registry-wide advisories, else the publisher.",
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "versions": {
+          "description": "A semver range of affected versions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signedBy",
+        "id",
+        "plugin",
+        "versions",
+        "severity",
+        "action",
+        "summary"
+      ],
+      "type": "object"
+    },
     "Size": {
       "properties": {
         "height": {
@@ -10748,13 +12018,15 @@
       "type": "object"
     },
     "Source": {
-      "description": "Which program emitted an entry. The server sets it from the transport (local socket →\n`fin`, WebSocket → `ui`), never from the payload.",
+      "description": "Which program emitted an entry. The server sets it from the connection's principal (5A\nDecision 27: `local` and `agent` → `fin`, `mcp` → `mcp`, `console` → `console`, `device` →\n`ui`), never from the payload. `console`, a person at the server, sends no events of its\nown; `mcp`, the MCP adapter (D16), sends the kinds `fin` does.",
       "enum": [
         "fin",
         "finisherd",
         "finNode",
         "ui",
-        "agent"
+        "agent",
+        "console",
+        "mcp"
       ],
       "type": "string"
     },
@@ -11001,7 +12273,7 @@
     },
     "TargetCustom": {
       "additionalProperties": false,
-      "description": "A target's signed custom metadata (`custom` in the delegated targets role).",
+      "description": "A package target's signed custom metadata (`custom` in its publisher's delegated role): one\ntype for the editor that signs it, the TUF client that reads it and the plan that checks it.",
       "properties": {
         "bytesUnpacked": {
           "format": "uint64",
@@ -11900,6 +13172,33 @@
       ],
       "type": "object"
     },
+    "Timing": {
+      "additionalProperties": false,
+      "description": "How long the walker waits.\n\n- `first_stat`: the root's first stat of a walk, spin-up included (60 s); past it the\n  root is `timeout` and the walk answers offline;\n- `entry`: one step of a directory read (its open, a batch of names, one entry's stat;\n  30 s); a read with no step for that long leaves the directory `unreadable` with code\n  `TIMEOUT` and the walk goes on (its thread is left behind);\n- `flush`: a batch holding anything is handed to the sink at least this often (5 s), so a\n  slow walk still reports progress per directory.",
+      "properties": {
+        "entry": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "firstStat": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "flush": {
+          "default": 5000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "firstStat",
+        "entry"
+      ],
+      "type": "object"
+    },
     "Track": {
       "properties": {
         "gain": {
@@ -12267,6 +13566,38 @@
       ],
       "type": "string"
     },
+    "TrustedVersions": {
+      "description": "The versions of the trusted metadata roles; a role not yet fetched has none.",
+      "properties": {
+        "root": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshot": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "targets": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root",
+        "timestamp",
+        "snapshot",
+        "targets"
+      ],
+      "type": "object"
+    },
     "Tx": {
       "properties": {
         "argsHash": {
@@ -12488,6 +13819,70 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "VersionInfo": {
+      "description": "One published version.",
+      "properties": {
+        "bytesUnpacked": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostApi": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "license": {
+          "type": "string"
+        },
+        "manifestSha256": {
+          "type": "string"
+        },
+        "permissionsDigest": {
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "type": "array"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "target": {
+          "description": "The target name, its signed length and SHA-256.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "version",
+        "yanked",
+        "kind",
+        "hostApi",
+        "platforms",
+        "license",
+        "permissionsDigest",
+        "manifestSha256",
+        "bytesUnpacked",
+        "target",
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
     "VideoCodec": {
       "oneOf": [
         {
@@ -12615,6 +14010,73 @@
         "nominalRate",
         "vfr",
         "frames"
+      ],
+      "type": "object"
+    },
+    "VolumeIdentity": {
+      "additionalProperties": false,
+      "description": "A root's volume (Decision 15), measured at add and refreshed at each full scan.\n\n- `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw\n  fields are never stored;\n- `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);\n- `dev_id`: the device id, informational only (never compared alone);\n- `mount_root`: the root is a mount root (Decision 17's unmount rule);\n- `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows\n  information class, `fake`);\n- `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a\n  key change.",
+      "properties": {
+        "caseSensitive": {
+          "type": "boolean"
+        },
+        "devId": {
+          "type": "string"
+        },
+        "enumeration": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "mountRoot": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": "boolean"
+        },
+        "rootFileId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sample": {
+          "items": {
+            "$ref": "#/$defs/SampleEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "devId",
+        "mountRoot",
+        "caseSensitive",
+        "enumeration",
+        "remote",
+        "sample"
+      ],
+      "type": "object"
+    },
+    "Warning": {
+      "description": "A warning `{code, details}`, e.g. `REGISTRY_STALE {days, maxStaleDays, role}`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "code",
+        "details"
       ],
       "type": "object"
     },
@@ -12985,6 +14447,28 @@
           "type": "object"
         }
       ]
+    },
+    "WriteGuard": {
+      "additionalProperties": false,
+      "description": "The branches a write may change, by branch id (`br<n>`, `main`). The default guards\nnothing.",
+      "properties": {
+        "allowBranches": {
+          "description": "When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise). Absent\nmeans no allow-list; `null` is refused, so a sender's bug cannot open the guard.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "denyBranches": {
+          "default": [],
+          "description": "Branches no write may change (`BRANCH_PROTECTED`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

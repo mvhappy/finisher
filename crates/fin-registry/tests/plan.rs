@@ -220,7 +220,7 @@ fn plan_refuses_incompatible_host_api_platform_and_node() {
         &req,
         &ctx,
         &fx.host,
-        &fin_registry::FixedClock(NOW),
+        &fin_registry::FixedClock::at_ms(NOW),
     )
     .unwrap_err();
     assert_eq!(e.code, "PLUGIN_NODE_VERSION");
@@ -411,6 +411,7 @@ fn catalog_id_taken_refused() {
     assert_eq!(e.code, "PLUGIN_MANIFEST_INVALID");
     assert_eq!(e.reason(), Some("catalogIdTaken"));
     assert_eq!(e.details["entry"], json!("acme-sans"));
+    assert_eq!(e.details["rule"], json!("catalogIdTaken"));
     // Free ids plan; an id repeated inside the pack is refused too.
     fx.host.taken.clear();
     fx.plan_target(fx.target(&fonts("@acme/fonts"), &default_files()))
@@ -421,4 +422,34 @@ fn catalog_id_taken_refused() {
         .plan_target(fx.target(&fonts("@acme/fonts"), &files))
         .unwrap_err();
     assert_eq!(e.reason(), Some("catalogIdTaken"));
+}
+
+/// Review M1: a plan whose registry is not where the installed version came from carries a
+/// `registryChanged` warning, and it is part of the digest.
+#[test]
+fn registry_changed_is_a_warning_in_the_digest() {
+    let fx = Fx::new();
+    let t = fx.target(&content("@acme/pack", "1.0.0"), &default_files());
+    let plain = fx
+        .plan(
+            PlanInput::Registry(Box::new(t.clone())),
+            &PlanRequest {
+                id: "@acme/pack".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let changed = fx
+        .plan(
+            PlanInput::Registry(Box::new(t)),
+            &PlanRequest {
+                id: "@acme/pack".into(),
+                registry_changed: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(plain.warnings.iter().all(|w| w.code != "registryChanged"));
+    assert!(changed.warnings.iter().any(|w| w.code == "registryChanged"));
+    assert_ne!(plain.digest, changed.digest);
 }

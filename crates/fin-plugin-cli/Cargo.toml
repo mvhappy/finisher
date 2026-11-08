@@ -12,6 +12,11 @@ name = "fin-plugin"
 path = "src/main.rs"
 
 [dependencies]
+# `validate` (and `pack`, `registry publish`) check caption styles and font catalogs as the host
+# does at install (8A Task 12c): `fin_core::captions::parse_style_file`, `FontCatalog::from_json`
+# and the catalog merge rule.
+fin-core = { path = "../fin-core" }
+fin-fonts = { path = "../fin-fonts" }
 fin-plugin-api = { path = "../fin-plugin-api" }
 fin-registry = { path = "../fin-registry" }
 semver = "1"
