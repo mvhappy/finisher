@@ -96,7 +96,7 @@ describe("job kinds", () => {
   test("test_kinds_register", async () => {
     const r = makeKindRegistry();
     registerTestKinds(r, { binaryDir: "/bin-dir" });
-    expect(r.kinds().length).toBe(18);
+    expect(r.kinds().length).toBe(19);
     expect(r.kind("test.crash")?.batch?.restrict({ items: ["a", "b"], how: "abort" } as never, ["b"])).toEqual({ items: ["b"], how: "abort" });
     expect(r.kind("test.checkpoint")?.resumable).toBe(true);
     expect(r.kind("test.warm")).toMatchObject({ warm: true, defaultPriority: "interactive" });

@@ -11132,13 +11132,14 @@
       "type": "object"
     },
     "TestCrashHow": {
-      "description": "How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/\n`EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, or `exit(3)`.",
+      "description": "How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/\n`EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, `exit(3)`, or by allocating until its\ngroup's memory limit kills it (`oom`; it aborts past 2 GiB).",
       "enum": [
         "abort",
         "segv",
         "bus",
         "fastfail",
-        "exit"
+        "exit",
+        "oom"
       ],
       "type": "string"
     },
@@ -11305,6 +11306,41 @@
     "TestExitAfterResultParams": {
       "additionalProperties": false,
       "description": "`test.exitAfterResult`: writes `result` and exits 0 at once.",
+      "type": "object"
+    },
+    "TestFailParams": {
+      "additionalProperties": false,
+      "description": "`test.fail`: answers `error {code, retry}` on every attempt up to `failUntil` (every\nattempt without it), then succeeds with the attempt number.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "failUntil": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retry": {
+          "$ref": "#/$defs/Retry",
+          "default": "never"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "TestFailResult": {
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt"
+      ],
       "type": "object"
     },
     "TestFileReport": {

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { openControlStore } from "../../src/control/db.ts";
 import { checkPrepared, createFiles, removeJobDir, sweep } from "../../src/jobs/files.ts";
 import { JobStore } from "../../src/jobs/store.ts";
-import { closeTestEngines, OWNER, testEngine, until } from "../support/jobs.ts";
+import { closeTestEngines, OWNER, testEngine, until, testClock, waitThroughBackoff } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
@@ -61,8 +61,9 @@ describe("job files", () => {
   });
 
   test("out_dir_emptied_between_attempts", async () => {
-    const t = await testEngine();
-    const v = await t.runJob("test.files", { failOnAttempt: 1 });
+    const clock = await testClock();
+    const t = await testEngine({ clock: clock.clock });
+    const v = await waitThroughBackoff(t, clock, (await t.submit("test.files", { failOnAttempt: 1 })).id);
     expect(v.state).toBe("succeeded");
     expect(v.attempts).toBe(2);
     // Attempt 1 left `attempt.txt` in out/; attempt 2 found it empty.

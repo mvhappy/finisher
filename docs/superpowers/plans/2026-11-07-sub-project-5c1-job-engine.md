@@ -1033,7 +1033,7 @@ export function backoffMs(attemptsSoFar: number): number;                       
 ```
 Decisions 31, 32.
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - pure:
     - `classification_table` (every row of Decision 31, in its order), `backoff_is_5s_times_2_to_the_n` (n = 1, 2, 3 → 10 s, 20 s, 40 s; capped at 300 s);
     - `isolation_properties` (fast-check, over n ≤ 256 items with any set of p deterministic poison items and all other items healthy: acknowledged items never re-run; isolation ends with exactly those p poisoned and the rest done; crash runs ≤ `min(2n, 2⌈log₂ n⌉ + 2p)`, so the budget is never exhausted; with p = 0 nothing is poisoned);
@@ -1049,7 +1049,7 @@ Decisions 31, 32.
     - `fresh_retry_once_at_once` (`error retry: fresh`), `deterministic_error_not_retried`, `mismatch_not_retried` (`testbad` family);
     - `oom_with_item_in_flight_isolates`, `oom_without_item_fails`;
     - `interactive_retries_once_at_once_and_is_never_isolated`.
-- [ ] **Step 2: Implement.** **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): job retries with backoff and isolation of crashing batches`.
+- [x] **Step 2: Implement.** **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(finisherd): job retries with backoff and isolation of crashing batches`.
 
 ### Task 11: Warm workers — tier: opus — after Task 10
 

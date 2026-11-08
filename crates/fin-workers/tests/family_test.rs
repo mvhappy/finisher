@@ -167,7 +167,7 @@ fn run_start(s: Start) -> Proc {
     p
 }
 
-const TEST_KINDS: [&str; 16] = [
+const TEST_KINDS: [&str; 17] = [
     "test.sleep",
     "test.echo",
     "test.progressFlood",
@@ -184,6 +184,7 @@ const TEST_KINDS: [&str; 16] = [
     "test.garbage",
     "test.exitAfterResult",
     "test.helper",
+    "test.fail",
 ];
 
 #[test]

@@ -400,7 +400,7 @@ describe("L2–L5", () => {
       if (req.role === "helper") host.emit({ type: "message", proc, msg: { t: "error", job: "", error: { code: "CODEC_BROKEN", message: "no codec" } } });
     });
     const t = await testEngine({ jobHost: fake.factory });
-    const v = await t.runJob("test.helper", { helper: "ok" });
+    const v = await t.runJob("test.helper", { helper: "ok" }, { maxAttempts: 1 });
     expect(v.error).toMatchObject({ code: "HELPER_FAILED", details: { helper: "test", code: "CODEC_BROKEN" } });
   });
 
@@ -410,7 +410,7 @@ describe("L2–L5", () => {
       host.emit({ type: "hello", proc, hello: { v: 1, minor: 0, role: "helper", family: "test", kind: "codec", id: "test", pid: 1 } as Hello });
     });
     const t = await testEngine({ jobHost: fake.factory });
-    const v = await t.runJob("test.helper", { helper: "ok" });
+    const v = await t.runJob("test.helper", { helper: "ok" }, { maxAttempts: 1 });
     expect(v.error).toMatchObject({ code: "HELPER_FAILED", details: { code: "WORKER_PROTOCOL_MISMATCH" } });
   });
 

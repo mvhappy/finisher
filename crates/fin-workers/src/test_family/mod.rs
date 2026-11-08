@@ -36,6 +36,7 @@ static TEST_KINDS: &[KindVersion] = &[
     KindVersion::new("test.garbage", 1),
     KindVersion::new("test.exitAfterResult", 1),
     KindVersion::new("test.helper", 1),
+    KindVersion::new("test.fail", 1),
 ];
 static TESTBAD_KINDS: &[KindVersion] = &[KindVersion::new("test.badHello", 1)];
 static TESTPLUGIN_KINDS: &[KindVersion] = &[KindVersion::new("test.pluginMinor", 1)];
@@ -155,7 +156,22 @@ pub(crate) fn die(how: CrashHow) -> ! {
         CrashHow::Segv => segv(),
         CrashHow::Bus => bus(),
         CrashHow::Fastfail => fastfail(),
+        CrashHow::Oom => oom(),
     }
+}
+
+/// Allocates and touches 16 MiB every 20 ms until the group's memory limit ends the process.
+fn oom() -> ! {
+    let mut held: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..128 {
+        let mut chunk = vec![0u8; 16 << 20];
+        for i in (0..chunk.len()).step_by(4096) {
+            chunk[i] = 1;
+        }
+        held.push(std::hint::black_box(chunk));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::process::abort()
 }
 
 #[cfg(unix)]

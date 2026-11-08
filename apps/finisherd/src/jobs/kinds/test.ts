@@ -7,6 +7,7 @@ import type {
   TestCheckpointParams,
   TestCrashParams,
   TestEchoParams,
+  TestFailParams,
   TestFilesParams,
   TestHelperParams,
   TestPluginMinorParams,
@@ -147,6 +148,7 @@ export function registerTestKinds(
       helpers: [{ kind: "codec", id: "test", profile: "worker", files: ["helper.bin"] }],
     }),
     kind({ kind: "test.badHello", family: "testbad" }),
+    kind<TestFailParams>({ kind: "test.fail" }),
     kind<TestPluginMinorParams>({ kind: "test.pluginMinor", family: "testplugin", warm: true }),
   ] as KindSpec<never>[];
   for (const k of kinds) registry.registerKind({ ...k, ...(opts.overrides?.[k.kind] ?? {}) } as KindSpec<never>);

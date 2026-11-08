@@ -31,7 +31,7 @@ export function awaitFiber<A, E>(fiber: Fiber.Fiber<A, E>): Promise<Exit.Exit<A,
  */
 export async function runHook<A>(
   env: RunnerEnv,
-  hook: "prepare" | "onSucceeded",
+  hook: "prepare" | "onSucceeded" | "resourceHealthy",
   effect: Effect.Effect<A, FinError>,
   timeoutS: number,
   control?: RunControl,

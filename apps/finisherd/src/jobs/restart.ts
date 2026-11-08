@@ -37,16 +37,6 @@ export function isResumable(store: JobStore, row: JobRow, kind: KindSpec): boole
 }
 
 /**
- * What the next attempt runs: a batch kind's params restricted to the items not acknowledged
- * yet (acknowledged items never re-run); otherwise the job's params. Task 10 adds isolation.
- */
-export function runParams(store: JobStore, row: JobRow, kind: KindSpec): unknown {
-  const left = itemsLeft(store, row, kind);
-  if (left === undefined || kind.batch === undefined || left.length === kind.batch.items(row.params as never).length) return row.params;
-  return kind.batch.restrict(row.params as never, left);
-}
-
-/**
  * A `running` row in `phase: run` whose run is over without an outcome: `interrupted`; back to
  * `queued` when resumable with attempts left, else it stays `interrupted` with
  * `JOB_INTERRUPTED`. After a crash (`graceful` false: the next start found the row) the

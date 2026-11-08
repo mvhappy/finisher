@@ -1793,12 +1793,13 @@ export type PurgeSelector =
     };
 /**
  * How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
- * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, or `exit(3)`.
+ * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, `exit(3)`, or by allocating until its
+ * group's memory limit kills it (`oom`; it aborts past 2 GiB).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestCrashHow".
  */
-export type TestCrashHow = "abort" | "segv" | "bus" | "fastfail" | "exit";
+export type TestCrashHow = "abort" | "segv" | "bus" | "fastfail" | "exit" | "oom";
 /**
  * `test.spawn`: the grandchild stays in the group or leaves it with `setsid`.
  *
@@ -5616,6 +5617,28 @@ export interface TestEchoResult {
  * via the `definition` "TestExitAfterResultParams".
  */
 export interface TestExitAfterResultParams {}
+/**
+ * `test.fail`: answers `error {code, retry}` on every attempt up to `failUntil` (every
+ * attempt without it), then succeeds with the attempt number.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFailParams".
+ */
+export interface TestFailParams {
+  code: string;
+  failUntil?: number;
+  /**
+   * How the engine may retry after a worker `error` (Decision 31).
+   */
+  retry?: "never" | "backoff" | "fresh";
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TestFailResult".
+ */
+export interface TestFailResult {
+  attempt: number;
+}
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TestFileReport".

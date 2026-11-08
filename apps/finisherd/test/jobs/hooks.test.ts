@@ -7,7 +7,7 @@ import { Deferred, Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import type { JobEngine } from "../../src/jobs/engine.ts";
 import type { JobRow } from "../../src/jobs/store.ts";
-import { closeTestEngines, run, testEngine, until } from "../support/jobs.ts";
+import { closeTestEngines, run, testEngine, until, testClock, waitThroughBackoff } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
@@ -23,7 +23,9 @@ function alive(pid: number): boolean {
 describe("kind hooks", () => {
   test("prepare_writes_before_any_process", async () => {
     const holder: { engine?: JobEngine; processes?: number | undefined } = {};
+    const clock = await testClock();
     const t = await testEngine({
+      clock: clock.clock,
       testKinds: {
         overrides: {
           "test.files": {
@@ -40,7 +42,7 @@ describe("kind hooks", () => {
       },
     });
     holder.engine = t.engine;
-    const v = await t.runJob("test.files", { failOnAttempt: 1 });
+    const v = await waitThroughBackoff(t, clock, (await t.submit("test.files", { failOnAttempt: 1 })).id);
     expect(v.state).toBe("succeeded");
     expect(holder.processes).toBe(0);
     // Once per job directory: attempt 2 reused it, so `extra` is still attempt 1's.

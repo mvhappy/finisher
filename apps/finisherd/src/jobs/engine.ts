@@ -3,15 +3,16 @@
 // phase, `job.done` and the bus. Its public types are in `api.ts`; cancel, pause, resume,
 // abandonment and the hold of a job with an abandoned process in `control.ts`; start-up
 // recovery, retention and close in `restart.ts`. Until later tasks: a `warm` kind runs cold and
-// `warm(family)` does nothing (Task 11); a failure ends the job unless the worker asked for a
-// retry (Task 10).
+// `warm(family)` does nothing (Task 11). The retry policy and isolation (Decisions 31, 32) are
+// in `retry.ts` over the pure `isolation.ts`.
 import type { FinError, FinErrorData, JobOwner, JobProgress, JobState, JobView } from "@finisher/contracts";
 import { Effect, type Fiber, PubSub, Stream } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import { Abandonment, cancelJob, pauseJobs, pausedAfterRun, resumeJobs } from "./control.ts";
 import { removeJobDir, jobDirs } from "./files.ts";
 import { type KindRegistry, type KindSpec, type PoolName, resolveOrFn } from "./kinds.ts";
-import { closeEngine, crashEngine, interruptRow, recover, runParams } from "./restart.ts";
+import { closeEngine, crashEngine, interruptRow, recover } from "./restart.ts";
+import { afterFailure, afterSuccess, completeIsolation, runPlan } from "./retry.ts";
 import { submitJob, waitJobs } from "./submit.ts";
 import { runOnSucceeded } from "./hooks.ts";
 import { RunControl } from "./run-control.ts";
@@ -283,13 +284,19 @@ export class Engine implements JobEngine {
         if (row !== undefined) await this.end(id, "failed", { error: data(finError("JOB_KIND_UNKNOWN", `no kind ${row.kind}`, { kind: row.kind })) });
         return;
       }
-      const outcome = await runAttempt(this.env, row, kind, family, runParams(this.d.store, row, kind), control);
+      const plan = runPlan(this, row, kind);
+      if ("complete" in plan) {
+        give();
+        await completeIsolation(this, row, kind);
+        return;
+      }
+      const outcome = await runAttempt(this.env, row, kind, family, plan.params, control);
       const stats = this.#statsOf(id);
       stats.runMicros += outcome.runMicros;
       stats.helpers += outcome.helpers;
       give();
       if (this.crashed) return;
-      await this.#afterAttempt(id, row, kind, outcome, control);
+      await this.#afterAttempt(id, row, kind, outcome, control, plan.items ?? []);
     } catch (e) {
       give();
       if (this.crashed) return;
@@ -304,8 +311,11 @@ export class Engine implements JobEngine {
     }
   }
 
-  async #afterAttempt(id: string, row: JobRow, kind: KindSpec, outcome: AttemptOutcome, control: RunControl): Promise<void> {
-    if (outcome.ok) return this.#succeed(id, kind, outcome.value);
+  async #afterAttempt(id: string, row: JobRow, kind: KindSpec, outcome: AttemptOutcome, control: RunControl, items: ReadonlyArray<string>): Promise<void> {
+    if (outcome.ok) {
+      await afterSuccess(this, row, kind, outcome, items);
+      return this.#keepPause(id, control);
+    }
     if (control.requested === "cancel") {
       await this.end(id, "cancelled", { error: data(finError("JOB_CANCELLED", "the job was cancelled")) });
       return;
@@ -317,20 +327,22 @@ export class Engine implements JobEngine {
       else await interruptRow(this, this.d.store.row(id) ?? row, kind, true);
       return;
     }
-    if (this.#retryable(row.attempts, row.maxAttempts, outcome)) {
-      const view = this.transition(id, "queued", { error: data(outcome.error), nextRunAt: null });
-      this.dropProgress(id);
-      this.publish({ type: "state", job: view });
-      this.enqueue(view, kind);
-      this.pump();
-      return;
-    }
-    await this.end(id, "failed", { error: data(outcome.error) });
+    await afterFailure(this, row, kind, outcome, items);
+    this.#keepPause(id, control);
   }
 
-  /** Task 9a's minimal policy (Task 10 replaces it): only a worker's own retry hint retries, at once. */
-  #retryable(attempts: number, maxAttempts: number, o: AttemptOutcome): boolean {
-    return !o.ok && o.cause === "worker" && o.retry !== undefined && o.retry !== "never" && attempts < maxAttempts;
+  /** A pause asked during a run the policy re-queued (a retry, the next isolation run) still pauses the job. */
+  #keepPause(id: string, control: RunControl): void {
+    if (!control.pauseRequested || control.requested === "cancel" || this.closing || this.d.store.row(id)?.state !== "queued") return;
+    this.queue.remove(id);
+    this.held.get(id)?.();
+    this.held.delete(id);
+    this.publish({ type: "state", job: this.transition(id, "paused", { pausedFrom: "queued" }) });
+  }
+
+  /** The job ran isolation (`job.done`'s `isolated`). */
+  markIsolated(id: string): void {
+    this.#statsOf(id).isolated = true;
   }
 
   #statsOf(id: string): RunStats {
@@ -343,7 +355,7 @@ export class Engine implements JobEngine {
   }
 
   /** The worker succeeded: result and `phase: hooks` persisted first, then `onSucceeded` (Decision 40). */
-  async #succeed(id: string, kind: KindSpec, value: unknown): Promise<void> {
+  async succeed(id: string, kind: KindSpec, value: unknown): Promise<void> {
     this.publish({ type: "state", job: this.d.store.enterHooks(id, value) });
     const row = this.d.store.row(id);
     if (row !== undefined) await this.runHooks(row, kind, value, false);

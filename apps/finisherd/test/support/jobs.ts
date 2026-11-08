@@ -125,12 +125,20 @@ export async function until<A>(f: () => A | undefined | false, ms = WAIT_MS): Pr
   }
 }
 
+export interface TestClockHandle {
+  readonly clock: Clock.Clock;
+  now(): number;
+  adjust(ms: number): Promise<void>;
+  close(): Promise<void>;
+}
+
 /** A `TestClock` for an engine (`clock` option); `adjust` moves it, `close` releases it. */
-export async function testClock(): Promise<{ clock: Clock.Clock; adjust(ms: number): Promise<void>; close(): Promise<void> }> {
+export async function testClock(): Promise<TestClockHandle> {
   const scope = await Effect.runPromise(Scope.make());
   const tc = await Effect.runPromise(TestClock.make().pipe(Scope.provide(scope)));
   return {
     clock: tc as unknown as Clock.Clock,
+    now: () => (tc as unknown as Clock.Clock).currentTimeMillisUnsafe(),
     async adjust(ms) {
       await Effect.runPromise(tc.adjust(Duration.millis(ms)));
       // Let the fibers the sleeps woke run.
@@ -149,4 +157,20 @@ export function hostOf(engine: JobEngine): EngineHost {
 /** The process id of the job's worker, once it runs. */
 export function procOf(t: TestEngine, job: string): Promise<number> {
   return until(() => t.engine.workers().processes.find((p) => p.job === job && p.role === "worker" && p.pid !== undefined)?.proc);
+}
+
+/** Waits for the job's end, moving `clock` past each backoff (`nextRunAt`) on the way; `delays` records them. */
+export async function waitThroughBackoff(t: TestEngine, clock: TestClockHandle, id: string, delays: number[] = [], ms = WAIT_MS): Promise<JobView> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = t.jobs.get(id);
+    if (v?.finishedAt !== undefined) return t.wait(id);
+    if (v?.state === "queued" && v.nextRunAt !== undefined) {
+      const wait = v.nextRunAt - clock.now();
+      delays.push(wait);
+      await clock.adjust(Math.max(1, wait));
+      await until(() => t.jobs.get(id)?.nextRunAt === undefined || t.jobs.get(id)?.finishedAt !== undefined);
+    } else await new Promise((r) => setTimeout(r, 10));
+    if (Date.now() > end) throw new Error("the job did not end in time");
+  }
 }

@@ -12,7 +12,7 @@ import { checkNoLinks, createJobDir, isPrepared, jobDirs, markPrepared } from ".
 import { MAX_ITEM_CHARS } from "../../src/jobs/runner.ts";
 import { JobStore } from "../../src/jobs/store.ts";
 import { FakeHost, recordingHost } from "../support/fake-host.ts";
-import { closeTestEngines, failure, hostOf, OWNER, procOf, run, testEngine, until } from "../support/jobs.ts";
+import { closeTestEngines, failure, hostOf, OWNER, procOf, run, testEngine, until, testClock, waitThroughBackoff } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
@@ -43,7 +43,9 @@ describe("9a review", () => {
     writeFileSync(join(victim, "keep.txt"), "precious");
     writeFileSync(join(victim2, "deep.bin"), "precious too");
     let root = "";
+    const clock = await testClock();
     const t = await testEngine({
+      clock: clock.clock,
       testKinds: {
         overrides: {
           "test.files": {
@@ -65,7 +67,7 @@ describe("9a review", () => {
       },
     });
     root = join(t.serverData, "jobs");
-    const v = await t.runJob("test.files", { failOnAttempt: 1 }, { maxAttempts: 3 });
+    const v = await waitThroughBackoff(t, clock, (await t.submit("test.files", { failOnAttempt: 1 }, { maxAttempts: 3 })).id);
     expect(v.state).toBe("failed");
     expect(v.attempts).toBe(2);
     expect(v.error).toMatchObject({ code: "JOB_FAILED", details: { problem: "link" } });
@@ -178,7 +180,7 @@ describe("9a review", () => {
       },
     });
     t.engine.onDone(() => order.push("done"));
-    const v = await t.submit("test.call", { method: "test.hold" });
+    const v = await t.submit("test.call", { method: "test.hold" }, { maxAttempts: 1 });
     const proc = await procOf(t, v.id);
     await new Promise((r) => setTimeout(r, 200)); // the call is open
     hostOf(t.engine).killProcForTest?.(proc);
@@ -200,7 +202,9 @@ describe("9a review", () => {
 
   test("prepare_runs_once_across_retries", async () => {
     let calls = 0;
+    const clock = await testClock();
     const t = await testEngine({
+      clock: clock.clock,
       testKinds: {
         overrides: {
           "test.files": {
@@ -216,7 +220,7 @@ describe("9a review", () => {
         },
       },
     });
-    const v = await t.runJob("test.files", { failOnAttempt: 1 }, { maxAttempts: 2 });
+    const v = await waitThroughBackoff(t, clock, (await t.submit("test.files", { failOnAttempt: 1 }, { maxAttempts: 2 })).id);
     expect(v.state).toBe("succeeded");
     expect(v.attempts).toBe(2);
     expect(calls).toBe(1);
@@ -264,7 +268,7 @@ describe("9a review", () => {
       setImmediate(() => host.emit({ type: "message", proc, msg: { t: "begin", job: "x", item: "i".repeat(MAX_ITEM_CHARS + 1) } }));
     });
     const t = await testEngine({ jobHost: fake.factory });
-    const v = await t.runJob("test.crash", { items: ["a"], how: "exit" });
+    const v = await t.runJob("test.crash", { items: ["a"], how: "exit" }, { priority: "interactive", maxAttempts: 1 });
     expect(v.error).toMatchObject({ code: "WORKER_CRASHED", details: { protocol: "itemTooLong" } });
   });
 });

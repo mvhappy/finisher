@@ -29,6 +29,7 @@ pub static JOB_KINDS: NameTable = NameTable::new(
         "test.helper",
         "test.badHello",
         "test.pluginMinor",
+        "test.fail",
     ],
 );
 

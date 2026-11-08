@@ -18,7 +18,7 @@ describe("liveness through the engine", () => {
 
   test("stalled_job_fails_job_stalled", async () => {
     const t = await testEngine({ testKinds: { overrides: { "test.stall": { stallS: 0.3 } } } });
-    const v = await t.runJob("test.stall", {});
+    const v = await t.runJob("test.stall", {}, { maxAttempts: 1 });
     expect(v.state).toBe("failed");
     expect(v.error?.code).toBe("JOB_STALLED");
     expect(t.sink.exits[0]?.reason).toBe("stalled");
@@ -27,7 +27,7 @@ describe("liveness through the engine", () => {
   test("timeout_fails_job_timeout", async () => {
     const t = await testEngine({ testKinds: { overrides: { "test.sleep": { timeoutS: 0.3 } } } });
     const t0 = Date.now();
-    const v = await t.runJob("test.sleep", { ms: 10_000 });
+    const v = await t.runJob("test.sleep", { ms: 10_000 }, { maxAttempts: 1 });
     expect(v.state).toBe("failed");
     expect(v.error?.code).toBe("JOB_TIMEOUT");
     expect(Date.now() - t0).toBeLessThan(8000);
@@ -43,7 +43,7 @@ describe("liveness through the engine", () => {
 
   test("a_crash_stores_the_stderr_tail_and_the_signal", async () => {
     const t = await testEngine();
-    const v = await t.runJob("test.crash", { items: ["a"], poison: ["a"], how: "abort" });
+    const v = await t.runJob("test.crash", { items: ["a"], poison: ["a"], how: "abort" }, { priority: "interactive", maxAttempts: 1 });
     expect(v.error?.code).toBe("WORKER_CRASHED");
     const details = v.error?.details as Record<string, unknown>;
     if (process.platform !== "win32") expect(details.signal).toBe("abrt");
@@ -89,6 +89,8 @@ describe("exit verdicts", () => {
       expect([i.reason, v.reason, v.error.code]).toEqual([i.reason, reason, code]);
     }
     expect(exitVerdict(info({ reason: "resourceFault" }), false).error.details).toMatchObject({ resourceFault: true });
+    expect(exitVerdict(info({ reason: "exited", signal: "bus" }), false).error.details).toMatchObject({ resourceFault: true, signal: "bus" });
+    expect(exitVerdict(info({ reason: "exited", code: -1073741818 }), false).error.details).toMatchObject({ resourceFault: true });
     expect(exitVerdict(info({ reason: "oom", memoryPeak: 9 }), false).error.details).toMatchObject({ used: 9 });
     expect(exitVerdict(info({ reason: "exited", code: 1, stderrTail: "boom" }), false).error.details).toMatchObject({ exitCode: 1, stderrTail: "boom" });
   });

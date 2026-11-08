@@ -21,6 +21,7 @@ import type {
 import type { FinError } from "@finisher/contracts";
 import { JobHost, type JobHostSendResult } from "@finisher/fin-node";
 import { finError } from "../errors.ts";
+import { isResourceFault } from "./isolation.ts";
 
 export type { JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 
@@ -268,6 +269,9 @@ export function exitVerdict(info: JobHostExitInfo, ended: boolean): ExitVerdict 
   switch (info.reason) {
     case "exited":
       if (ended && info.code === 0) return { reason: "done", error: finError("WORKER_CRASHED", "the worker exited", facts) };
+      if (!ended && isResourceFault(info)) {
+        return { reason: "crashed", error: finError("WORKER_CRASHED", "a mapped file or disk failed under the worker", { ...facts, resourceFault: true, ...tail }) };
+      }
       return {
         reason: "crashed",
         error: finError("WORKER_CRASHED", ended ? "the worker crashed after its answer" : "the worker exited without an answer", { ...facts, ...tail }),

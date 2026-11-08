@@ -146,7 +146,8 @@ describe("runs", () => {
     expect(t.sink.exits[0]).toMatchObject({ role: "worker", family: "test", reason: "done", exitCode: 0, jobsServed: 1, sandboxed: false });
     expect(t.sink.exits[0]!.lifetimeS).toBeGreaterThan(0);
 
-    const failed = await t.runJob("test.crash", { items: ["x"], poison: ["x"], how: "abort" });
+    // Interactive with one attempt: neither retried nor isolated (Task 10).
+    const failed = await t.runJob("test.crash", { items: ["x"], poison: ["x"], how: "abort" }, { priority: "interactive", maxAttempts: 1 });
     expect(failed.state).toBe("failed");
     expect(failed.error?.code).toBe("WORKER_CRASHED");
     expect(t.sink.done[1]).toMatchObject({ outcome: "failed", code: "WORKER_CRASHED", items: 1 });
