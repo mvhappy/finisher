@@ -798,6 +798,8 @@ dependencies = [
 name = "fin-plugin-cli"
 version = "0.0.0"
 dependencies = [
+ "fin-core",
+ "fin-fonts",
  "fin-plugin-api",
  "fin-registry",
  "semver",

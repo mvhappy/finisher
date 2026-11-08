@@ -50,4 +50,19 @@ impl FontCatalog {
         out.validate()?;
         Ok(out)
     }
+
+    /// The first of `extra` that does not merge into this catalog after the ones before it,
+    /// and the [`FontCatalog::merged`] error it gets (its `details.path` reads `/extra/0/…`):
+    /// the rule a pack's catalogs are held to when the pack is planned or validated (8A Task
+    /// 12c), so a pack that would be left out at sync is refused before it installs.
+    pub fn first_unmergeable(&self, extra: &[FontCatalog]) -> Option<(usize, CoreError)> {
+        let mut catalog = self.clone();
+        for (index, one) in extra.iter().enumerate() {
+            match catalog.merged(std::slice::from_ref(one)) {
+                Ok(merged) => catalog = merged,
+                Err(e) => return Some((index, e)),
+            }
+        }
+        None
+    }
 }

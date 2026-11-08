@@ -260,7 +260,7 @@ describe("approval", () => {
     await run(s.life.install({ planId: fa.planId, digest: fa.digest }, CONSOLE));
     before = snapshot();
     e = await failure(s.life.install({ planId: fb.planId, digest: fb.digest }, CONSOLE));
-    expect([e?.code, e?.details]).toEqual(["PLAN_MISMATCH", { reason: "installed", field: "catalogIds", entry: "shared-sans" }]);
+    expect([e?.code, e?.details]).toEqual(["PLAN_MISMATCH", { reason: "installed", field: "catalogIds", rule: "catalogIdTaken", entry: "shared-sans" }]);
     expect(snapshot()).toEqual(before);
     expect(storeDirs("@beta/fonts")).toEqual([]);
     // Planned now, it is refused at plan time.

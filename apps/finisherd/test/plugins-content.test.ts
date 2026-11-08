@@ -107,29 +107,53 @@ describe("font catalogs", () => {
     expect(await catalogIds()).toEqual([...builtin, "acme-sans"]);
   });
 
-  test("merge_refuses_taken_ids: the plan refuses a built-in id, a clash that slips through leaves the pack out", async () => {
+  test("merge_refuses_taken_ids: the plan refuses a built-in id and another pack's file, a clash that slips through leaves the pack out", async () => {
     const builtin = await catalogIds();
     const taken = catalogOf(builtin[0]!, "1");
     const first = catalogOf("acme-one", "2");
     // The same font file under another id: no id clashes, but one file may not be listed twice.
-    const twin = { ...first, text: catalogJson([{ id: "acme-twin", bytes: first.bytes, url: server.serve("acme-one.ttf", first.bytes) }]) };
-    const s = await f.setup({ packages: [fontPack("@acme/shadow", "1.0.0", taken.text), fontPack("@acme/one", "1.0.0", first.text), fontPack("@acme/twin", "1.0.0", twin.text)] }, options());
+    const twinText = catalogJson([{ id: "acme-twin", bytes: first.bytes, url: server.serve("acme-one.ttf", first.bytes) }]);
+    const second = catalogOf("acme-two", "3");
+    const s = await f.setup(
+      {
+        packages: [
+          fontPack("@acme/shadow", "1.0.0", taken.text),
+          fontPack("@acme/one", "1.0.0", first.text),
+          fontPack("@acme/twin", "1.0.0", twinText),
+          fontPack("@acme/two", "1.0.0", second.text),
+        ],
+      },
+      options(),
+    );
 
     const refused = await failure(s.life.plan({ id: "@acme/shadow" }, CONSOLE));
     expect(refused?.code).toBe("PLUGIN_MANIFEST_INVALID");
-    expect(refused?.details).toMatchObject({ reason: "catalogIdTaken" });
+    expect(refused?.details).toMatchObject({ reason: "catalogIdTaken", rule: "catalogIdTaken" });
 
     await install(s, "@acme/one");
-    await install(s, "@acme/twin");
+    // Task 12c: the twin is refused when it is planned, no longer installed and left out at sync.
+    const twin = await failure(s.life.plan({ id: "@acme/twin" }, CONSOLE));
+    expect(twin?.code).toBe("PLUGIN_MANIFEST_INVALID");
+    expect(twin?.details).toMatchObject({ reason: "catalogMerge", rule: "unique", path: "/contributes/fontCatalogs/0/file" });
+    expect(s.tables.installedFull("@acme/twin")).toBeUndefined();
+
+    // A clash that gets past the plan anyway (here a store file rewritten to the twin's catalog)
+    // is left out at sync, and the owner sees it in the list.
+    await install(s, "@acme/two");
+    const file = join(f.serverData, "plugins", s.tables.installedFull("@acme/two")!.dir, "fonts", "catalog0.json");
+    chmodSync(file, 0o644);
+    writeFileSync(file, twinText);
+    const again = f.service(options());
+    await run(fonts.setExtraCatalogs([]));
+    await run(again.plugins.content.sync());
     expect(await catalogIds()).toEqual([...builtin, "acme-one"]);
-    expect(s.plugins.problems()).toEqual([{ id: "@acme/twin", version: "1.0.0", reason: "fontCatalogRejected", code: "FONT_CATALOG_INVALID" }]);
-    // The owner sees it in the list.
-    const list = await run(s.h["plugin.list"]());
-    expect(list.problems).toEqual([{ id: "@acme/twin", version: "1.0.0", reason: "fontCatalogRejected", code: "FONT_CATALOG_INVALID" }]);
-    // Removing the pack that holds the file lets the twin in at the next change.
-    await run(s.life.remove("@acme/one", false));
+    const problem = { id: "@acme/two", version: "1.0.0", reason: "fontCatalogRejected", code: "FONT_CATALOG_INVALID" };
+    expect(again.plugins.problems()).toEqual([problem]);
+    expect((await run(again.h["plugin.list"]())).problems).toEqual([problem]);
+    // Removing the pack that holds the file lets the other in at the next change.
+    await run(again.life.remove("@acme/one", false));
     expect(await catalogIds()).toEqual([...builtin, "acme-twin"]);
-    expect(s.plugins.problems()).toEqual([]);
+    expect(again.plugins.problems()).toEqual([]);
   });
 
   test("a pack whose files no longer validate is left out and listed", async () => {

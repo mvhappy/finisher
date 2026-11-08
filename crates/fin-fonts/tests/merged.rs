@@ -1,5 +1,6 @@
 //! Plugin packs' font catalogs merged into the built-in one (8A Task 12a): new ids only, the
-//! merged catalog validated whole, and a fetcher that follows a replaced catalog.
+//! merged catalog validated whole, the first pack catalog that does not merge (Task 12c), and a
+//! fetcher that follows a replaced catalog.
 
 mod support;
 
@@ -94,6 +95,32 @@ fn merge_refuses_the_same_bytes_under_two_ids() {
     let err = base.merged(&[a, b]).unwrap_err();
     assert_eq!(err.code, "FONT_CATALOG_INVALID");
     assert_eq!(err.details["rule"], "unique");
+}
+
+/// 8A Task 12c: the plan's rule, one catalog after the other, naming the first that fails.
+#[test]
+fn first_unmergeable_names_the_catalog_that_fails() {
+    let base = FontCatalog::builtin();
+    let (a, _) = pack("pack-a", 7);
+    let (b, _) = pack("pack-b", 8);
+    assert!(base.first_unmergeable(&[a.clone(), b.clone()]).is_none());
+    assert!(base.first_unmergeable(&[]).is_none());
+    // The same file under another id, after a catalog that merges.
+    let (mut twin, _) = pack("pack-twin", 7);
+    twin.entries[0].styles[0].file.faces[0].family = "Another".into();
+    let (k, err) = base
+        .first_unmergeable(&[b.clone(), a.clone(), twin])
+        .unwrap();
+    assert_eq!(k, 2);
+    assert_eq!(err.details["rule"], "unique");
+    // A built-in id.
+    let (taken, _) = pack("noto-sans", 9);
+    let (k, err) = base.first_unmergeable(&[taken, b]).unwrap();
+    assert_eq!(
+        (k, err.details["rule"].clone()),
+        (0, "catalogIdTaken".into())
+    );
+    assert_eq!(err.details["id"], "noto-sans");
 }
 
 #[test]

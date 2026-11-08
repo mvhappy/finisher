@@ -411,6 +411,7 @@ fn catalog_id_taken_refused() {
     assert_eq!(e.code, "PLUGIN_MANIFEST_INVALID");
     assert_eq!(e.reason(), Some("catalogIdTaken"));
     assert_eq!(e.details["entry"], json!("acme-sans"));
+    assert_eq!(e.details["rule"], json!("catalogIdTaken"));
     // Free ids plan; an id repeated inside the pack is refused too.
     fx.host.taken.clear();
     fx.plan_target(fx.target(&fonts("@acme/fonts"), &default_files()))

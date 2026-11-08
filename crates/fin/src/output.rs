@@ -39,6 +39,13 @@ pub const DENIED_CODES: &[&str] = &[
     "TUF_EXPIRED",
     "TUF_DELEGATION",
     "TUF_TARGET_MISMATCH",
+    // Plugins (8A Tasks 9b, 10, 12c): a version a signed advisory revoked; a bundled plugin
+    // whose files are not what the app was built with; a plan approved without accepting its
+    // copyleft terms or its third-party code.
+    "PLUGIN_REVOKED",
+    "PLUGIN_BUNDLED_MISMATCH",
+    "COPYLEFT_NOT_ACCEPTED",
+    "THIRD_PARTY_CODE_NOT_ACCEPTED",
 ];
 
 /// Codes that mean "the request was well-formed but rejected by validation" (exit 3).
@@ -177,6 +184,25 @@ const VALIDATION_CODES: &[&str] = &[
     "REGISTRY_NOT_FOUND",
     "REGISTRY_INVALID",
     "PLUGIN_NOT_FOUND",
+    // Packages and manifests (8A Tasks 2–3): a manifest or package that breaks the rules
+    // (`details.path`, `details.reason`), a contribution this host does not consume, an unsafe
+    // or oversized package, a host API, platform or Node version it does not fit.
+    "PLUGIN_MANIFEST_INVALID",
+    "PLUGIN_CONTRIBUTION_UNSUPPORTED",
+    "PACKAGE_UNSAFE",
+    "PACKAGE_TOO_LARGE",
+    "PLUGIN_HOST_API",
+    "PLUGIN_PLATFORM",
+    "PLUGIN_NODE_VERSION",
+    // The lifecycle (8A Task 9b): a plan gone or expired, or no longer what is installed;
+    // nothing installed under that id; that version already installed; an older version
+    // without `--allow-downgrade`; a bundled plugin (it updates with the app).
+    "PLAN_EXPIRED",
+    "PLAN_MISMATCH",
+    "PLUGIN_NOT_INSTALLED",
+    "PLUGIN_ALREADY_INSTALLED",
+    "PLUGIN_DOWNGRADE_REFUSED",
+    "PLUGIN_BUNDLED",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -217,6 +243,10 @@ const USAGE_CODES: &[&str] = &[
     "TX_TOO_LARGE",
     "CONSENT_UI_ONLY",
     "FRAME_TOO_LARGE",
+    // Plugins (8A): a manifest over 256 KiB; several registries list the plugin (or its
+    // registry's root changed, `details.reason: rootChanged`): name one with `--registry`.
+    "MANIFEST_TOO_LARGE",
+    "REGISTRY_AMBIGUOUS",
 ];
 
 /// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
@@ -257,6 +287,14 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // refresh (`fix`: set the clock, then refresh) (8A Task 9a). `REGISTRY_STALE` is a warning.
     "REGISTRY_UNREACHABLE",
     "CLOCK_SUSPECT",
+    // `REGISTRY_STALE` (a warning in `plugin ls`); a disabled plugin; a code plugin with no
+    // runtime yet; too many open plans or suggestions for this principal (8A Tasks 9b, 12a):
+    // wait, then retry.
+    "REGISTRY_STALE",
+    "PLUGIN_DISABLED",
+    "PLUGIN_RUNTIME_UNAVAILABLE",
+    "TOO_MANY_PLANS",
+    "TOO_MANY_SUGGESTIONS",
 ];
 
 /// The one place error codes become exit codes.
@@ -394,6 +432,31 @@ mod tests {
             ("TUF_EXPIRED", 7),
             ("TUF_DELEGATION", 7),
             ("TUF_TARGET_MISMATCH", 7),
+            // Plugins (8A, spec §13).
+            ("MANIFEST_TOO_LARGE", 2),
+            ("REGISTRY_AMBIGUOUS", 2),
+            ("PLUGIN_MANIFEST_INVALID", 3),
+            ("PLUGIN_CONTRIBUTION_UNSUPPORTED", 3),
+            ("PACKAGE_UNSAFE", 3),
+            ("PACKAGE_TOO_LARGE", 3),
+            ("PLUGIN_HOST_API", 3),
+            ("PLUGIN_PLATFORM", 3),
+            ("PLUGIN_NODE_VERSION", 3),
+            ("PLAN_EXPIRED", 3),
+            ("PLAN_MISMATCH", 3),
+            ("PLUGIN_NOT_INSTALLED", 3),
+            ("PLUGIN_ALREADY_INSTALLED", 3),
+            ("PLUGIN_DOWNGRADE_REFUSED", 3),
+            ("PLUGIN_BUNDLED", 3),
+            ("REGISTRY_STALE", 5),
+            ("PLUGIN_DISABLED", 5),
+            ("PLUGIN_RUNTIME_UNAVAILABLE", 5),
+            ("TOO_MANY_PLANS", 5),
+            ("TOO_MANY_SUGGESTIONS", 5),
+            ("PLUGIN_REVOKED", 7),
+            ("PLUGIN_BUNDLED_MISMATCH", 7),
+            ("COPYLEFT_NOT_ACCEPTED", 7),
+            ("THIRD_PARTY_CODE_NOT_ACCEPTED", 7),
         ] {
             assert_eq!(exit_code(code), exit, "{code}");
         }

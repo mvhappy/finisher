@@ -345,8 +345,9 @@ impl Registry {
     }
 }
 
-/// `PLAN_MISMATCH {reason: installed, field: catalogIds}` when the staged pack's font ids are
-/// taken by now (another pack installed since the plan was made).
+/// `PLAN_MISMATCH {reason: installed, field: catalogIds, rule, entry?}` when the staged pack's
+/// font catalogs no longer merge (another pack installed since the plan took an id, a file or a
+/// face).
 fn recheck(
     inner: &Inner,
     plan_id: &str,
@@ -355,19 +356,21 @@ fn recheck(
     let Some(dirs) = &checks.installed_dirs else {
         return Ok(());
     };
-    let clash = host::staged_catalog_clash(&inner.store, plan_id, dirs);
-    if clash.is_empty() {
+    let Some(clash) = host::staged_catalog_clash(&inner.store, plan_id, dirs) else {
         return Ok(());
-    }
-    Err(RegistryError::new(
-        "PLAN_MISMATCH",
-        format!(
-            "font catalog id {:?} was taken since the plan was made",
-            clash[0]
+    };
+    let mut details = json!({ "reason": "installed", "field": "catalogIds", "rule": clash.rule });
+    let message = match &clash.entry {
+        Some(entry) => {
+            details["entry"] = json!(entry);
+            format!("font catalog id {entry:?} was taken since the plan was made")
+        }
+        None => format!(
+            "the pack's font catalog no longer merges: {}",
+            clash.message
         ),
-        json!({ "reason": "installed", "field": "catalogIds", "entry": clash[0] }),
-    )
-    .with_fix("make a new plan"))
+    };
+    Err(RegistryError::new("PLAN_MISMATCH", message, details).with_fix("make a new plan"))
 }
 
 fn plan(

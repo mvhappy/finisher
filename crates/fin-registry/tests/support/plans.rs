@@ -9,7 +9,7 @@ use fin_plugin_api::{
     host_api,
 };
 use fin_registry::package::{pack, tree_hash};
-use fin_registry::plan::{InstallPlan, PlanHost, PlanInput, PlanRequest, make_plan};
+use fin_registry::plan::{CatalogClash, InstallPlan, PlanHost, PlanInput, PlanRequest, make_plan};
 use fin_registry::target::{VerifiedTarget, custom_for};
 use fin_registry::{FixedClock, RegistryError, Store};
 use serde_json::{Value, json};
@@ -64,18 +64,24 @@ pub struct TestHost {
 }
 
 impl PlanHost for TestHost {
-    fn font_catalog_ids(&self, bytes: &[u8]) -> Vec<String> {
-        let v: Value = serde_json::from_slice(bytes).unwrap_or_default();
-        v["entries"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e["id"].as_str().map(String::from))
-            .collect()
-    }
-
-    fn taken_font_ids(&self, _except: &PluginId) -> BTreeSet<String> {
-        self.taken.clone()
+    /// Entry ids only (structural catalogs): one the host or an earlier catalog has clashes.
+    fn catalog_clash(&self, catalogs: &[Vec<u8>], _except: &PluginId) -> Option<CatalogClash> {
+        let mut seen = self.taken.clone();
+        for (index, bytes) in catalogs.iter().enumerate() {
+            let v: Value = serde_json::from_slice(bytes).unwrap_or_default();
+            let ids = v["entries"].as_array().into_iter().flatten();
+            for id in ids.filter_map(|e| e["id"].as_str()) {
+                if !seen.insert(id.to_string()) {
+                    return Some(CatalogClash {
+                        index,
+                        rule: "catalogIdTaken".into(),
+                        entry: Some(id.into()),
+                        message: format!("{id} is taken"),
+                    });
+                }
+            }
+        }
+        None
     }
 }
 

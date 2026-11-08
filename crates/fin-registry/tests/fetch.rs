@@ -6,7 +6,7 @@ mod support;
 use fin_plugin_api::{PluginId, SourceClass, StructuralChecks, ValidateCtx, host_api};
 use fin_registry::Store;
 use fin_registry::advisory::{Advisory, AdvisoryAction, Severity};
-use fin_registry::plan::{PlanHost, PlanInput, PlanRequest, make_plan};
+use fin_registry::plan::{CatalogClash, PlanHost, PlanInput, PlanRequest, make_plan};
 use fin_registry::registry::{Registry, RegistryConfig, RootSource};
 use fin_registry::tuf::sha256_hex;
 use serde_json::json;
@@ -44,11 +44,8 @@ fn id(s: &str) -> PluginId {
 struct NoFonts;
 
 impl PlanHost for NoFonts {
-    fn font_catalog_ids(&self, _: &[u8]) -> Vec<String> {
-        Vec::new()
-    }
-    fn taken_font_ids(&self, _: &PluginId) -> std::collections::BTreeSet<String> {
-        Default::default()
+    fn catalog_clash(&self, _: &[Vec<u8>], _: &PluginId) -> Option<CatalogClash> {
+        None
     }
 }
 
