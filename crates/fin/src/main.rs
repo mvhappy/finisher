@@ -46,6 +46,7 @@ use commands::eval::EvalCmd;
 use commands::fonts::{FontEdit, FontsCmd};
 use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, UndoArgs};
 use commands::item::ItemCmd;
+use commands::job::{JobCmd, WaitArgs};
 use commands::keyframe::KeyframeCmd;
 use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
@@ -110,6 +111,9 @@ enum Cmd {
     #[command(subcommand)]
     Eval(EvalCmd),
     Look(LookArgs),
+    #[command(subcommand)]
+    Job(JobCmd),
+    Wait(WaitArgs),
     #[command(subcommand)]
     Media(MediaCmd),
     #[command(subcommand)]
@@ -293,6 +297,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Style(c)) => edit(g, Edit::Style(c)),
         Some(Cmd::Eval(c)) => commands::eval::run(backend()?.as_ref(), g, &c),
         Some(Cmd::Look(a)) => commands::look::run(backend()?.as_ref(), g, &a),
+        Some(Cmd::Job(c)) => commands::job::run(backend()?.as_ref(), &c),
+        Some(Cmd::Wait(a)) => commands::job::wait(backend()?.as_ref(), &a),
         Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
@@ -460,6 +466,12 @@ mod tests {
             "registry add team --dir d --root-sha256 ab",
             "registry rm team",
             "registry forget --root ab",
+            "job ls --state failed --kind media.look --mine --limit 5",
+            "job show 01job",
+            "job cancel 01job",
+            "job pause --all",
+            "job resume 01job",
+            "wait 01job 01job2 --any --timeout 5",
             "batch",
             "help clip",
             "whoami",
