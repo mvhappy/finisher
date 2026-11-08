@@ -21,29 +21,29 @@ pub(crate) fn temp_sibling(path: &Path) -> PathBuf {
 
 /// Writes `bytes` to `path` atomically and durably.
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_mode(path, bytes, 0o666)
+    write_with(path, bytes, |tmp| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+    })
 }
 
-/// [`write`] for secrets: the temp file is created owner-only (mode 0600 on Unix), so the
-/// bytes are never readable by others, not even before the rename. On Windows the file takes
-/// the ACL of its folder: keep key folders where only their owner can read.
+/// [`write`] for secrets: the temp file is created owner-only ([`crate::private`]: mode 0600
+/// on Unix, a protected owner-only DACL on Windows), so the bytes are never readable by
+/// others, not even before the rename, and the file keeps that once renamed.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_mode(path, bytes, 0o600)
+    write_with(path, bytes, crate::private::create_new)
 }
 
-fn write_mode(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+fn write_with(
+    path: &Path,
+    bytes: &[u8],
+    create: impl FnOnce(&Path) -> std::io::Result<fs::File>,
+) -> std::io::Result<()> {
     let tmp = temp_sibling(path);
     let r = (|| {
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(mode);
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        let mut f = opts.open(&tmp)?;
+        let mut f = create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);

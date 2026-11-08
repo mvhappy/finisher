@@ -128,7 +128,7 @@ impl From<fin_registry::editor::EditorError> for CliError {
             code: e.code,
             message: e.message,
             details: e.details,
-            fix: fix.map(String::from),
+            fix: e.fix.or(fix.map(String::from)),
         }
     }
 }

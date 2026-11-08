@@ -11,8 +11,11 @@ use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use tough::schema::key::{Ed25519Key, Ed25519Scheme, Key};
 
+use serde_json::json;
+
 use super::EditorError;
 use crate::atomic;
+use crate::private::{self, Kind};
 
 /// The DER prefix of an ed25519 SubjectPublicKeyInfo (RFC 8410), before the 32 key bytes.
 const SPKI_PREFIX: [u8; 12] = [
@@ -65,8 +68,11 @@ impl SigningKey {
         SigningKey::from_pkcs8(p.contents())
     }
 
+    /// Reads a private key file, refused (`KEY_UNPROTECTED`) when anyone but its owner can
+    /// reach it, as `ssh` refuses an unprotected key ([`crate::private`]).
     pub fn read(path: &Path) -> Result<SigningKey, EditorError> {
         let text = fs::read_to_string(path).map_err(|e| EditorError::io("read", path, e))?;
+        refuse_unprotected(path, Kind::File)?;
         SigningKey::from_pem(&text)
     }
 
@@ -74,9 +80,9 @@ impl SigningKey {
         pem::encode(&pem::Pem::new("PRIVATE KEY", self.pkcs8.clone()))
     }
 
-    /// Writes the key as PEM, temp then rename, the temp file created with mode 0600 on Unix
-    /// (never readable by others, even for a moment). On Windows the file inherits its
-    /// folder's ACL: keep key folders in the owner's profile, where only the owner can read.
+    /// Writes the key as PEM, temp then rename, the temp file created owner-only (0600 on
+    /// Unix, a protected owner-only DACL on Windows), so it is never readable by others, even
+    /// for a moment, whatever the folder allows.
     pub fn write(&self, path: &Path) -> Result<(), EditorError> {
         atomic::write_private(path, self.to_pem().as_bytes())
             .map_err(|e| EditorError::io("write", path, e))
@@ -172,32 +178,58 @@ impl KeyRing {
         self.dir.join(format!("{key_id}.pem"))
     }
 
-    /// Creates the ring folder, and any missing folder above it, owner-only (0700 on Unix).
-    /// Every write into the ring creates it through here: an existing folder keeps its mode.
+    /// Creates the ring folder, and any missing folder above it, owner-only from creation
+    /// (0700 on Unix, a protected owner-only DACL on Windows). Every write into the ring
+    /// creates it through here; an existing ring folder is refused when it is not private.
     pub(crate) fn create(&self) -> Result<(), EditorError> {
-        let mut b = fs::DirBuilder::new();
-        b.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            b.mode(0o700);
+        let mut missing = Vec::new();
+        let mut cur = self.dir.as_path();
+        loop {
+            match fs::metadata(cur) {
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    missing.push(cur);
+                    match cur.parent() {
+                        Some(p) if !p.as_os_str().is_empty() => cur = p,
+                        _ => break,
+                    }
+                }
+                Err(e) => return Err(EditorError::io("create", cur, e)),
+            }
         }
-        b.create(&self.dir)
-            .map_err(|e| EditorError::io("create", &self.dir, e))
+        for d in missing.into_iter().rev() {
+            match private::create_dir(d) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && d.is_dir() => {}
+                Err(e) => return Err(EditorError::io("create", d, e)),
+            }
+        }
+        self.check()
     }
 
-    /// Saves `key` in the ring; a new ring folder is created owner-only (0700 on Unix).
+    /// Refuses (`KEY_UNPROTECTED`) a ring folder anyone but its owner can reach; a ring that
+    /// does not exist yet passes.
+    pub(crate) fn check(&self) -> Result<(), EditorError> {
+        if fs::metadata(&self.dir).is_err() {
+            return Ok(());
+        }
+        refuse_unprotected(&self.dir, Kind::Folder)
+    }
+
+    /// Saves `key` in the ring; a new ring folder is created owner-only.
     pub fn add(&self, key: &SigningKey) -> Result<(), EditorError> {
         self.create()?;
         key.write(&self.path(&key.public().key_id()))
     }
 
-    /// The private key whose id is `key_id`, if this ring holds it.
+    /// The private key whose id is `key_id`, if this ring holds it. The ring folder and the
+    /// key file must be private ([`SigningKey::read`]).
     pub fn get(&self, key_id: &str) -> Result<Option<SigningKey>, EditorError> {
         let p = self.path(key_id);
         if !p.exists() {
             return Ok(None);
         }
+        self.check()?;
         SigningKey::read(&p).map(Some)
     }
 
@@ -211,4 +243,30 @@ impl KeyRing {
         }
         Ok(out)
     }
+}
+
+/// `KEY_UNPROTECTED {path, problems}`, with the command that fixes it, when someone but the
+/// owner (and the OS) can reach the key folder or key file `path`.
+fn refuse_unprotected(path: &Path, kind: Kind) -> Result<(), EditorError> {
+    let u = match private::check(path, kind) {
+        Ok(None) => return Ok(()),
+        Ok(Some(u)) => u,
+        Err(e) => return Err(EditorError::io("check the permissions of", path, e)),
+    };
+    let what = match kind {
+        Kind::Folder => "key folder",
+        Kind::File => "private key",
+    };
+    let mut e = EditorError::new(
+        "KEY_UNPROTECTED",
+        format!(
+            "the {what} {} is not private ({}): others could read or replace the signing \
+             keys; fix it, and rotate keys others may have read",
+            path.display(),
+            u.problems.join(", ")
+        ),
+        json!({ "path": path.display().to_string(), "problems": u.problems }),
+    );
+    e.fix = Some(u.fix);
+    Err(e)
 }

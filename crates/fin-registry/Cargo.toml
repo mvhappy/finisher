@@ -53,6 +53,17 @@ required-features = ["test-http"]
 [target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 
+# Owner-only DACLs on key folders and key files (`private.rs`); already in the tree through
+# tempfile and same-file (MIT OR Apache-2.0).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # The HTTP transport's tests (`tests/http_transport.rs`); dev-only, so no shipped build has it.
 fin-registry = { path = ".", features = ["test-http"] }

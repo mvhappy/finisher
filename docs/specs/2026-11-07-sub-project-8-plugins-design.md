@@ -334,7 +334,7 @@ control.db: registries, plugins, plugin_grants, plugin_plans (cp §3.1)
 
 ### 5.6 Publisher tooling (`fin-plugin`, a separate binary, not shipped in the app)
 
-`fin-plugin new <kind>`, `validate`, `pack` (reproducible), `test` (§7.4), and `registry init|delegate|publish|yank|advise|rotate-key|resign-timestamp`, built on `fin-registry`'s editor (§6.6). Keys are ed25519 PEM files; `fin-plugin` never uploads anything.
+`fin-plugin new <kind>`, `validate`, `pack` (reproducible), `test` (§7.4), and `registry init|delegate|publish|yank|advise|rotate-key|resign-timestamp`, built on `fin-registry`'s editor (§6.6). Keys are ed25519 PEM files; `fin-plugin` never uploads anything. Private keys and the key-ring folder are owner-only from creation: 0600 and 0700 on Unix; on Windows a protected DACL (nothing inherited) granting only the current user and `SYSTEM` (the OS, which can read any file already; services that run as it without backup semantics would otherwise fail). A key folder or private key that anyone else can reach is refused, ssh-style, with `KEY_UNPROTECTED {path, problems}` and the `chmod` or `icacls` command that fixes it. On Unix that means any group or other mode bit; on Windows it means an owner other than the user, `SYSTEM` or Administrators, a NULL DACL (FAT, exFAT), or an allow ACE for any other SID.
 
 ---
 
