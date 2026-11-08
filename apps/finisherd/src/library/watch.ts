@@ -72,8 +72,14 @@ export function splitRaw(name: Uint8Array, windows = process.platform === "win32
   return out;
 }
 
-/** Whether a relative path (`fs.watch`'s `ignore`) has a dot component. */
-export const dotPath = (rel: string): boolean => rel.split(/[\\/]/).some((c) => c.startsWith("."));
+/**
+ * Whether a relative path (`fs.watch`'s `ignore`) has a dot component. With `encoding:
+ * "buffer"` Node passes it as bytes where the watch is native (Windows' recursive watch), as a
+ * string where Node walks the tree itself (Linux): both are taken (a dot and the separators are
+ * ASCII, so the bytes need no decoding).
+ */
+export const dotPath = (rel: string | Uint8Array): boolean =>
+  typeof rel === "string" ? rel.split(/[\\/]/).some((c) => c.startsWith(".")) : splitRaw(rel).some((c) => c[0] === DOT);
 
 function readMaxUserWatches(): number | undefined {
   try {

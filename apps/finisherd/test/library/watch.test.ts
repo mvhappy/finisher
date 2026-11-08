@@ -102,6 +102,11 @@ describe("Watches", () => {
     expect(dotPath(".git/x")).toBe(true);
     expect(dotPath("a/.x")).toBe(true);
     expect(dotPath("a/b.mov")).toBe(false);
+    // `encoding: "buffer"` hands `ignore` bytes where the watch is native (Windows): a string
+    // method there threw and ended the catalog thread (CATALOG_THREAD_FAILED, 2026-11-08 run).
+    expect(dotPath(Buffer.from(".git/x"))).toBe(true);
+    expect(dotPath(Buffer.from("a/.x"))).toBe(true);
+    expect(dotPath(Buffer.from("a/b.mov"))).toBe(false);
     const events: WatchEvent[] = [];
     const w = new Watches((e) => events.push(e), { quietMs: 200, native: false, known: (_lib, parts) => parts.map((p) => Buffer.from(p).toString("base64")) });
     expect(w.watch("01lib", root)).toEqual({ ok: true });
