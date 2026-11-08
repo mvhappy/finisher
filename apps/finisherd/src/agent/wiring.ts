@@ -194,10 +194,9 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       local: () => admin.local(),
       localModels: (e) => listLocalModels(e.baseUrl, d.options?.fetch),
       // Best effort: the cached listing stands when OpenRouter cannot be reached.
-      refreshListing: async () => {
-        if (!prices.stale()) return;
-        await prices.refresh(catalogue.openrouterBaseUrl, d.options?.fetch ?? fetch, AbortSignal.timeout(10_000)).catch((e: unknown) => log(`OpenRouter's model list was not refreshed: ${String(e)}`));
-      },
+      // One fetch at a time, and none for 15 minutes after a failure (`OpenRouterPrices`).
+      refreshListing: () =>
+        prices.refreshIfStale(catalogue.openrouterBaseUrl, d.options?.fetch ?? fetch, AbortSignal.timeout(10_000), (e: unknown) => log(`OpenRouter's model list was not refreshed: ${String(e)}`)),
     });
     const runtime = new Runtime({
       core,

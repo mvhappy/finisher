@@ -176,8 +176,25 @@ pub fn roots(project: Option<&Path>) -> Result<Option<(PathBuf, PathBuf)>, CoreE
         // No project folder from the runtime: nothing is readable (fail closed).
         return Err(not_allowed(".", "noProject"));
     };
+    names_the_sessions_project(&dir)?;
     let workspace = dir.join("workspace").join(&session);
     Ok(Some((workspace, dir)))
+}
+
+/// `FIN_PROJECT_DIR` is the runtime's word, but a harness that is not the built-in one (a CLI
+/// agent in 7D/7E) sets its own environment: so the folder is also checked against the session's
+/// project, as the server knows it (`agent.self`, once per run): its `finisher.project.json` must
+/// name that project, else nothing is readable (`PATH_NOT_ALLOWED`, `projectMismatch`). A
+/// credential that is not a session's (one the owner minted by hand) has no project to compare.
+fn names_the_sessions_project(dir: &Path) -> Result<(), CoreError> {
+    let backend = crate::backend::select(None)?;
+    let Some(session) = crate::agent_session::session_state(backend.as_ref())? else {
+        return Ok(());
+    };
+    match crate::agent_session::folder_project_id(dir) {
+        Some(id) if id == session.project_id => Ok(()),
+        _ => Err(not_allowed(".", "projectMismatch")),
+    }
 }
 
 /// Confines `path` when this run has an agent credential; nothing otherwise.

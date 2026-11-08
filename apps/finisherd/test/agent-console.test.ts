@@ -201,6 +201,27 @@ describe("provider keys, the local endpoint and the counsel gate from the consol
     expect((await run(["provider", "key", "rm", id], person())).out).toContain(`Removed key ${id}.`);
   });
 
+  test("provider key set refuses a terminal that cannot hide input instead of asking with an echo (L4)", async () => {
+    const KEY = "sk-or-v1-noecho0123456789";
+    let asked = 0;
+    const shown: string[] = [];
+    // Interactive, but only the echoing `ask`: no `secret`.
+    const echoing: Prompt = {
+      isInteractive: () => true,
+      show: (text) => void shown.push(text),
+      ask: async () => {
+        asked++;
+        return KEY;
+      },
+    };
+    const r = await run(["provider", "key", "set", "openrouter"], echoing);
+    expect(r.code).toBe(7);
+    expect(r.err).toContain("CONSOLE_NEEDS_TTY");
+    expect(asked).toBe(0);
+    expect(r.out + r.err + shown.join("\n")).not.toContain(KEY);
+    expect((await run(["provider", "key", "ls"])).out).not.toContain("server default");
+  });
+
   test("provider local set, show, test and rm", async () => {
     const models = createServer((req, res) => {
       if (req.url === "/v1/models") res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [{ id: "qwen3:8b" }] }));

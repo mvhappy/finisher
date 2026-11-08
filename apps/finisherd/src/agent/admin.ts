@@ -9,7 +9,7 @@
 //   `local` and the preset, never the host or port.
 // - **The counsel gate** (`training.closedModelTargets`) is recorded by a person and audited.
 // - Every change is audited as `settings.write` with words only (`rpc`, `value`, `projectId`).
-import { AGENT_KEY_MAX, type AgentWarning, type ClosedModelTargets, type Harness, type Principal, type ProviderInfo, type ProviderKey } from "@finisher/contracts";
+import { type AgentWarning, type ClosedModelTargets, type Harness, type Principal, type ProviderInfo, type ProviderKey } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import type { SecretStore } from "../secrets/store.ts";
@@ -32,6 +32,12 @@ export interface AdminDeps {
   /** How long `agent.local.test` and `agent.providers` wait for the local server (ms). */
   readonly probeMs?: number;
 }
+
+/** What an API key looks like (the console checks the same before it asks for the typed code). */
+export const KEY_RULE = /^[\x21-\x7e]{8,1024}$/;
+export const KEY_RULE_TEXT = "an API key is 8–1024 printable characters without spaces";
+
+const keyInReach = (by: Principal, k: { projectId?: string }) => by.projects === "*" || (k.projectId !== undefined && by.projects.includes(k.projectId));
 
 const storeUnavailable = () =>
   finError("SECRET_STORE_UNAVAILABLE", "this host has no secret store Finisher can use yet", { platform: process.platform }, "the keychain backend arrives with sub-project 5B");
@@ -95,10 +101,16 @@ export class AgentAdmin {
     const secrets = this.deps.secrets ?? (() => {
       throw storeUnavailable();
     })();
-    // Checked here, never by the schema: its refusal would quote the key back.
-    if (req.key.length === 0 || req.key.length > AGENT_KEY_MAX) throw finError("SECRET_INVALID", `an API key is 1–${AGENT_KEY_MAX} characters`, { field: "key" });
+    // The server's default key spends for every project: only a caller who reaches them all may set it.
+    if (req.projectId === undefined && by.projects !== "*") {
+      throw finError("SCOPE_DENIED", "the server's default key is set by a caller who reaches every project", { reason: "serverDefaultKey" }, "give the key to one project (`--project`), or set it as the owner");
+    }
+    // Checked here, never by the schema: its refusal would quote the key back. Trimmed first,
+    // then the console's rule, so a key the console would refuse is refused on the wire too.
+    const key = req.key.trim();
+    if (!KEY_RULE.test(key)) throw finError("SECRET_INVALID", KEY_RULE_TEXT, { field: "key" }, "copy the key again from OpenRouter's keys page");
     const label = req.label ?? (req.projectId === undefined ? "server default" : `project ${req.projectId}`);
-    const value = Buffer.from(req.key.trim(), "utf8");
+    const value = Buffer.from(key, "utf8");
     let id: string;
     try {
       id = await secrets.put({ provider: "openrouter", label, ...(req.projectId === undefined ? {} : { projectId: req.projectId }), value });
@@ -109,14 +121,16 @@ export class AgentAdmin {
     return secrets.list().find((k) => k.id === id)!;
   }
 
-  keyList(): ProviderKey[] {
+  /** The keys `by` reaches: a project's key when its project is in reach, the server's default only for `*`. */
+  keyList(by: Principal): ProviderKey[] {
     if (this.deps.secrets === undefined) throw storeUnavailable();
-    return this.deps.secrets.list();
+    return this.deps.secrets.list().filter((k) => keyInReach(by, k));
   }
 
   async keyRemove(by: Principal, id: string): Promise<boolean> {
     if (this.deps.secrets === undefined) throw storeUnavailable();
-    if (!this.deps.secrets.list().some((k) => k.id === id)) return false;
+    // A key out of reach is answered as a missing one.
+    if (!this.deps.secrets.list().some((k) => k.id === id && keyInReach(by, k))) return false;
     await this.deps.secrets.remove(id);
     this.deps.audit(by, { rpc: "agent.key.remove", value: "openrouter" });
     return true;

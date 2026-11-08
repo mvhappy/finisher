@@ -16,6 +16,7 @@
 import type { Harness, Principal, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
+import { OPENROUTER_ID } from "./catalogue/prices.ts";
 import { budgetFor, MODE_RANK, type Role, roleUnknown } from "./roles.ts";
 import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
 import type { LocalEndpoint } from "./settings.ts";
@@ -34,8 +35,6 @@ export interface PlannerDeps {
   readonly refreshListing?: () => Promise<void>;
 }
 
-/** `<maker>/<model>`, with an optional `:variant` (OpenRouter's id shape). */
-const OPENROUTER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const LOCAL_ID = /^[^\s\u0000-\u001f/\\][^\s\u0000-\u001f]{0,199}$/;
 
 function modelUnknown(model: string | undefined, reason: string, fix: string): never {

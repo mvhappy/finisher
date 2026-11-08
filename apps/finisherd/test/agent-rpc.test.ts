@@ -321,6 +321,45 @@ describe("providers, keys, the local endpoint and the counsel gate", () => {
     expect(JSON.stringify(audit)).not.toContain("sk-or-v1-abcdefgh01");
   });
 
+  test("a key is trimmed, then held to the console's rule: 8–1024 printable characters (L1)", async () => {
+    await server.start();
+    const owner = await server.console();
+    for (const [what, key] of [
+      ["spaces only", "          "],
+      ["short once trimmed", "   short   "],
+      ["inner space", "sk-or-v1 0123456789abcdef"],
+      ["a newline inside", "sk-or-v1-0123\n456789abcdef"],
+      ["a control character", "sk-or-v1-0123\u0007456789abcdef"],
+      ["not ASCII", "sk-or-v1-0123456789abcdéf"],
+      ["too long once trimmed", `  ${"k".repeat(1025)}  `],
+    ] as const) {
+      const refused = await confirmed(owner, "agent.key.set", { provider: "openrouter", key });
+      expect(code(refused), what).toBe("SECRET_INVALID");
+      expect(JSON.stringify(refused), what).not.toContain(key.trim().slice(0, 12) || "unreachable-needle");
+    }
+    expect(ok<{ keys: unknown[] }>(await owner.call("agent.key.list", {})).keys).toEqual([]);
+    // The padding goes; what is left obeys the rule (8 and 1024 are both allowed).
+    ok(await confirmed(owner, "agent.key.set", { provider: "openrouter", key: "  sk-or-v1-0123456789abcdef \n" }));
+    ok(await confirmed(owner, "agent.key.set", { provider: "openrouter", key: "k".repeat(8), label: "low" }));
+    ok(await confirmed(owner, "agent.key.set", { provider: "openrouter", key: `\t${"k".repeat(1024)}\t`, label: "high" }));
+    expect(ok<{ keys: unknown[] }>(await owner.call("agent.key.list", {})).keys.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("a schema refusal of agent.key.set never quotes the key (an over-long label)", async () => {
+    await server.start();
+    const owner = await server.console();
+    const SENTINEL = "sk-or-v1-SENTINELKEY0123456789";
+    const refused = await confirmed(owner, "agent.key.set", { provider: "openrouter", key: SENTINEL, label: "L".repeat(5000) });
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused)).not.toContain(SENTINEL);
+    expect(JSON.stringify(refused)).not.toContain("SENTINELKEY");
+    // Nothing was stored, and the key is in no later answer.
+    expect(ok<{ keys: unknown[] }>(await owner.call("agent.key.list", {})).keys).toEqual([]);
+    const audit = JSON.stringify(await owner.call("auth.audit.list", {}));
+    expect(audit).not.toContain("SENTINELKEY");
+    expect(existsSync(join(server.serverData, "secrets.json"))).toBe(false);
+  });
+
   test("the local endpoint is validated and holds no secret", async () => {
     await server.start();
     const owner = await server.console();

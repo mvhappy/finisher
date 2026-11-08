@@ -5,6 +5,7 @@
 // refused before anything is read or sent, so a key never lands in shell history or `ps`.
 // Listing names keys by id, label and project only. CLI sign-in (`provider signin`) is 7D/7E's.
 import type { AgentWarning, ProviderKey } from "@finisher/contracts";
+import { KEY_RULE, KEY_RULE_TEXT } from "../agent/admin.ts";
 import { projectArg } from "../agent/console.ts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
@@ -59,11 +60,14 @@ async function keySet(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
   const project = one(ctx.args, "project");
   const projectId = project === undefined ? undefined : await projectArg(project);
   const label = one(ctx.args, "label");
-  const ask = ctx.prompt.secret ?? ctx.prompt.ask;
-  const key = (await ask.call(ctx.prompt, "OpenRouter key (not shown): ")).trim();
+  // Never the echoing `ask`: a pasted key would be shown (and kept in the terminal's scrollback).
+  if (ctx.prompt.secret === undefined) {
+    throw consoleError("CONSOLE_NEEDS_TTY", "this terminal cannot hide what you type, so the key was not asked for", { reason: "noSecretPrompt" }, "run `finisherd provider key set` in a terminal that supports hidden input");
+  }
+  const key = (await ctx.prompt.secret("OpenRouter key (not shown): ")).trim();
   if (key === "") throw consoleError("CONFIRMATION_REQUIRED", "no key was given, so nothing was changed", { reason: "cancelled" });
   // The store's own rule, checked before anything is sent (and never quoted back).
-  if (!/^[\x21-\x7e]{8,1024}$/.test(key)) throw consoleError("SECRET_INVALID", "an API key is 8–1024 printable characters without spaces", { field: "key" }, "Copy the key again from OpenRouter's keys page.");
+  if (!KEY_RULE.test(key)) throw consoleError("SECRET_INVALID", KEY_RULE_TEXT, { field: "key" }, "Copy the key again from OpenRouter's keys page.");
   const saved = await withConnection(ctx, (c) =>
     confirmed<{ key: ProviderKey }>(
       c,

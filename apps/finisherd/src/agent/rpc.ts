@@ -172,7 +172,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
     // The owner's settings (`admin.ts`).
     "agent.key.set": (req: { provider: string; key: string; label?: string; projectId?: string }, options: Options) =>
       guard("agent.key.set", promised(async () => ({ key: await admin.keySet(by(options), req) }))),
-    "agent.key.list": () => guard("agent.key.list", sync(() => ({ keys: admin.keyList() }))),
+    "agent.key.list": (_req: unknown, options: Options) => guard("agent.key.list", sync(() => ({ keys: admin.keyList(by(options)) }))),
     "agent.key.remove": ({ id }: { id: string }, options: Options) =>
       guard("agent.key.remove", promised(async () => ({ removed: await admin.keyRemove(by(options), id) }))),
     "agent.local.set": ({ endpoint }: { endpoint: string }, options: Options) =>

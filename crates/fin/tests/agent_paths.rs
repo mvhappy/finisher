@@ -290,6 +290,77 @@ fn project_flag_cannot_widen_the_roots() {
     refused(&relative);
 }
 
+/// Review L2: `FIN_PROJECT_DIR` is not trusted on its own (a CLI harness sets its own
+/// environment): its `finisher.project.json` must name the credential's session project. A
+/// folder of another project, or one with no project file, makes nothing readable; the session's
+/// own folder still works.
+#[test]
+fn project_dir_must_name_the_sessions_project() {
+    let Some(host) = AgentHost::start("project_dir_must_name_the_sessions_project") else {
+        return;
+    };
+    let (dir, project) = host.project();
+    let s = host.open(&project, "draft");
+    let ws = host.workspace(&dir, &s);
+    std::fs::write(ws.join("w.json"), "[]").unwrap();
+    // Another real project, with a words file inside it and inside a workspace-shaped folder.
+    let root = &host.server.root;
+    ok(host.fin(root, &["project", "create", "other", "--name", "Other"]));
+    let other = root.join("other");
+    let other_ws = other.join("workspace").join(&s.id);
+    std::fs::create_dir_all(&other_ws).unwrap();
+    std::fs::write(other.join("w.json"), "[]").unwrap();
+    std::fs::write(other_ws.join("w.json"), "[]").unwrap();
+    // A folder that is no project at all.
+    let bare = root.join("bare");
+    std::fs::create_dir_all(bare.join("workspace").join(&s.id)).unwrap();
+    std::fs::write(bare.join("w.json"), "[]").unwrap();
+    let import = |words: &str| {
+        [
+            "caption",
+            "import",
+            "--track",
+            "t9",
+            "--words",
+            words,
+            "--style",
+            "preset:bold",
+        ]
+        .map(String::from)
+    };
+    let run_with = |cwd: &Path, project_dir: &Path, words: &str| {
+        let args = import(words);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        host.agent_env(
+            &s,
+            cwd,
+            &args,
+            &[("FIN_PROJECT_DIR", project_dir.as_os_str())],
+        )
+    };
+    for (cwd, project_dir, words) in [
+        (&other_ws, &other, other.join("w.json")),
+        (&other_ws, &other, other_ws.join("w.json")),
+        (&ws, &other, other.join("w.json")),
+        (&bare, &bare, bare.join("w.json")),
+    ] {
+        let run = run_with(cwd, project_dir, &words.display().to_string());
+        refused(&run);
+        assert_eq!(
+            run.json["error"]["details"]["reason"], "projectMismatch",
+            "{}",
+            run.stdout
+        );
+    }
+    // The session's own folder works (past the confinement: the track does not exist).
+    let run = run_with(&ws, &dir, "w.json");
+    assert_ne!(
+        run.json["error"]["code"], "PATH_NOT_ALLOWED",
+        "{}",
+        run.stdout
+    );
+}
+
 #[test]
 fn server_tests_ran_or_explicitly_skipped() {
     support::server_tests_ran_or_explicitly_skipped();
