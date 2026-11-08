@@ -247,3 +247,75 @@ fn publish_refuses_a_manifest_file_spelt_otherwise_than_the_package() {
         assert!(!files.exists("styles"), "a directory is not a file");
     }
 }
+
+/// `git` with a fixed identity and no hooks or signing, or `None` when git is missing.
+fn git(dir: &std::path::Path, args: &[&str]) -> Option<()> {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(["-c", "commit.gpgsign=false", "-c", "core.autocrlf=true"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some(())
+}
+
+/// A registry published from git survives a checkout under `core.autocrlf=true` (Git for
+/// Windows' default) byte for byte: `init` writes `.gitattributes` with `* -text`. Without it
+/// the clone's JSON turns CRLF and the client refuses it (`REGISTRY_INVALID {reason: tooLarge}`,
+/// the 2026-11-08 Windows run of the e2e `plugins` scenario).
+#[test]
+fn init_keeps_git_checkouts_byte_for_byte() {
+    let mut r = Reg::new(None);
+    let acme = r.publisher("acme");
+    r.b.publish(&r.pkg("@acme/pack", "1.0.0"), &acme).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(r.repo.join(".gitattributes")).unwrap(),
+        fin_registry::editor::GITATTRIBUTES
+    );
+    if git(&r.repo, &["init", "-q"]).is_none() {
+        eprintln!("SKIPPED: git is not installed; the checkout half of this test did not run");
+        return;
+    }
+    git(&r.repo, &["add", "-A"]).unwrap();
+    git(&r.repo, &["commit", "-q", "-m", "1.0.0"]).unwrap();
+    let clone = r.tmp.path().join("clone");
+    let (from, to) = (r.repo.display().to_string(), clone.display().to_string());
+    git(r.tmp.path(), &["clone", "-q", &from, &to]).unwrap();
+    let mut want = Reg::files(&r.repo);
+    want.retain(|k, _| !k.starts_with(".git/"));
+    let mut got = Reg::files(&clone);
+    got.retain(|k, _| !k.starts_with(".git/"));
+    assert_eq!(
+        got.keys().collect::<Vec<_>>(),
+        want.keys().collect::<Vec<_>>()
+    );
+    for (k, v) in &want {
+        assert!(got[k] == *v, "{k} changed in the checkout");
+    }
+}
+
+#[test]
+fn init_keeps_a_publishers_gitattributes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("registry");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join(".gitattributes"), "*.json binary\n").unwrap();
+    RepoBuilder::init(
+        &repo,
+        &tmp.path().join("keys"),
+        &[SigningKey::generate()],
+        1,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".gitattributes")).unwrap(),
+        "*.json binary\n"
+    );
+}

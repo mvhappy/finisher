@@ -37,6 +37,26 @@ fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, EditorError> {
         .map_err(|e| EditorError::invalid("parse", format!("{}: {e}", path.display())))
 }
 
+/// What `init` writes to `<dir>/.gitattributes` when the folder has none.
+pub const GITATTRIBUTES: &str = "\
+# Written by fin-plugin. Registry metadata and packages are signed byte for byte, so git must
+# never change their line endings (Git for Windows' default core.autocrlf=true would turn the
+# JSON into CRLF on checkout and every signed length and hash would fail).
+* -text
+";
+
+/// A registry is often published from a git repository. Without this file a clone on Windows
+/// checks the metadata out with CRLF line endings (`REGISTRY_INVALID {reason: tooLarge}`). A
+/// `.gitattributes` the publisher already has is left as it is.
+fn write_gitattributes(dir: &Path) -> Result<(), EditorError> {
+    let p = dir.join(".gitattributes");
+    if std::fs::symlink_metadata(&p).is_ok() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| EditorError::io("create", dir, e))?;
+    crate::atomic::write(&p, GITATTRIBUTES.as_bytes()).map_err(|e| EditorError::io("write", &p, e))
+}
+
 fn nz(v: u64) -> NonZeroU64 {
     NonZeroU64::new(v.max(1)).expect("at least 1")
 }
@@ -281,6 +301,7 @@ impl RepoBuilder {
         let mut root = root;
         root.expires = b.expires(b.expiry.root);
         let signed = sign(root, root_keys);
+        write_gitattributes(dir)?;
         b.write_metadata("1.root.json", &signed.bytes)?;
         b.st.root = signed.signed;
         b.commit(Change {

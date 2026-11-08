@@ -31,6 +31,7 @@ use tough::schema::{Signature, Signed};
 pub use keys::{KeyRing, PublicKey, SigningKey};
 pub use paths::keys_inside;
 pub use rotate::Role;
+pub use state::GITATTRIBUTES;
 
 use crate::atomic;
 use crate::tuf::{Clock, SystemClock};
