@@ -51,10 +51,15 @@ export function authorize(
     if (refused !== undefined) return yield* Effect.fail(refused);
     if (principal.projects !== "*") {
       const allowed = principal.projects;
+      // `project.open` by folder: a folder that names no project, and one that names a project
+      // outside the principal's reach, get the same answer, without the id, so a caller cannot
+      // learn which folders are projects or what they are (review of Task 6, finding 5). A
+      // folder that names no project cannot be checked: closed, as an unknown project.
+      if (tag === "project.open" && (resolved.openedProject === undefined || !allowed.includes(resolved.openedProject))) {
+        return yield* Effect.fail(outOfReach(undefined));
+      }
       const outside = resolved.projects.find((p) => !allowed.includes(p));
       if (outside !== undefined) return yield* Effect.fail(outOfReach(outside));
-      // A folder that names no project cannot be checked: closed, as an unknown project.
-      if (tag === "project.open" && resolved.openedProject === undefined) return yield* Effect.fail(outOfReach(undefined));
     }
     const roots = yield* rootsOf(principal, deps, resolved.pathsIn);
     if (roots !== undefined) {

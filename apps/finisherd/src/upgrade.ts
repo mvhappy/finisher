@@ -121,7 +121,16 @@ export interface WebSocketServerOptions {
   readonly onRefused?: (result: Extract<UpgradeResult, { ok: false }>) => void;
   readonly maxPayload: number;
   readonly host?: string;
+  /** How long a client may take to send its request headers (default `HEADERS_TIMEOUT_MS`). */
+  readonly headersTimeoutMs?: number;
+  /** Open TCP connections at most, WebSockets included (default `MAX_HTTP_CONNECTIONS`). */
+  readonly maxConnections?: number;
 }
+
+/** Before authentication a client gets this long to send its headers (review of Task 6, finding 8). */
+export const HEADERS_TIMEOUT_MS = 10_000;
+/** Open connections to the loopback WebSocket listener at most: the UI and a few tools, never a flood. */
+export const MAX_HTTP_CONNECTIONS = 64;
 
 /**
  * A `SocketServer` on `127.0.0.1:0` whose sockets passed `check`. `bind` reports the port once
@@ -135,14 +144,19 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     let onConnection = (a: Accepted) => void pending.push(a);
 
     const http: Server = yield* Effect.acquireRelease(
-      Effect.sync(() =>
-        createServer((req, res) => {
+      Effect.sync(() => {
+        const timeout = options.headersTimeoutMs ?? HEADERS_TIMEOUT_MS;
+        // Slow or idle clients before the upgrade are cut off (checked every second); the
+        // connection count bounds the rest.
+        const server = createServer({ headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 }, (req, res) => {
           // Nothing is served over plain HTTP.
           const status = req.url?.split("?")[0] === RPC_PATH ? 426 : 404;
           res.writeHead(status, { "content-type": "application/json", connection: "close" });
           res.end(status === 426 ? JSON.stringify({ protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } }) : "");
-        }),
-      ),
+        });
+        server.maxConnections = options.maxConnections ?? MAX_HTTP_CONNECTIONS;
+        return server;
+      }),
       (server) =>
         Effect.callback<void>((resume) => {
           for (const c of wss.clients) c.terminate();

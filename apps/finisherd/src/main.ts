@@ -8,7 +8,7 @@ import { Cause, Context, Effect, Exit, Layer, Logger } from "effect";
 import {
   ensureServerData,
   parseArgs,
-  readOrigins,
+  cachedOrigins,
   removeServerInfo,
   type ServerInfo,
   startFailure,
@@ -19,7 +19,7 @@ import { serverId } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { KeysTag, rotateKeys } from "./auth/keys.ts";
-import { Connections } from "./connections.ts";
+import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
@@ -64,7 +64,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       const audit = Context.get(control, AuditTag);
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
-      const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: () => readOrigins(serverData) });
+      const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: cachedOrigins(serverData) });
       const { server: ws, port } = yield* Effect.mapError(
         makeTicketedWebSocketServer({
           check,
@@ -89,10 +89,11 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       // The endpoints both MACs bind (Decision 7): the socket's real path or the pipe's name.
       const localEndpoint = canonicalEndpoint(socket);
       const wsEndpoint = `ws://127.0.0.1:${wsPort}`;
+      const everyConnection = new ConnectionRegistry();
       const connections = {
-        local: new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint),
+        local: everyConnection.add(new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint)),
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
-        ws: new Connections("ws", () => wsEndpoint),
+        ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
       };
       const handshake = new Handshake({ keys, envId, audit });
       yield* Layer.build(
@@ -106,6 +107,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(KeysTag, keys),
               Layer.succeed(HandshakeTag, handshake),
               Layer.succeed(TicketsTag, tickets),
+              Layer.succeed(ConnectionRegistryTag, everyConnection),
             ),
           ),
         ),

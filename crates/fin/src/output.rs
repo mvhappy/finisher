@@ -210,6 +210,8 @@ const USAGE_CODES: &[&str] = &[
 /// `SERVER_SHUTTING_DOWN` and `CANCELLED` (the server interrupted the request, e.g. while
 /// stopping) are transient: retrying against a (re)started server can succeed.
 const UNAVAILABLE_CODES: &[&str] = &[
+    // Too many WebSocket tickets at once (5A, review of Task 6): wait and retry.
+    "TICKET_LIMIT",
     "SERVER_UNAVAILABLE",
     "SERVER_RUNNING",
     "SERVER_START_FAILED",
@@ -323,6 +325,7 @@ mod tests {
     #[test]
     fn exit_codes_follow_the_contract() {
         assert_eq!(exit_code("USAGE"), 2);
+        assert_eq!(exit_code("TICKET_LIMIT"), 5);
         assert_eq!(exit_code("TX_TOO_LARGE"), 2);
         assert_eq!(exit_code("CONFLICT"), 4);
         assert_eq!(exit_code("SEGMENT_COLLISION"), 4);

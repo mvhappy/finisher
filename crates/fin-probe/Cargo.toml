@@ -32,6 +32,14 @@ sha2 = "0.11"
 # dotLottie archives (stored and deflated members).
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+# Opening a probed file without blocking, beneath a root (`openat2`, `openat`, `fcntl`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+# The final path of a probed file's handle (`GetFinalPathNameByHandleW`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 # `tests/media.rs`: rotated, VFR and edited files from the muxer's test knobs.
 fin-container = { path = "../fin-container", features = ["testing"] }

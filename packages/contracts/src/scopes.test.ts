@@ -29,7 +29,7 @@ test("rpc_scopes_cover_every_rpc", () => {
       if (need !== undefined) expect(rule.resolve ?? [], `${tag}.${f}`).toContain(need);
     }
     // Every write target is a payload field the branch resolver covers.
-    for (const w of rule.writes ?? []) expect(fields, tag).toContain(w.split(".")[0]);
+    for (const w of [...(rule.writes ?? []), ...(rule.targets ?? [])]) expect(fields, tag).toContain(w.split(".")[0]);
     if (rule.author !== undefined) expect(fields, tag).toContain(rule.author);
   }
   // Only the handshake is public.

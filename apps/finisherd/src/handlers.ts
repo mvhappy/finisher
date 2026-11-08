@@ -1,19 +1,18 @@
 // `FinRpcs` handlers. Every failure reaches the client as `FinError { code, message, details, fix }`.
-import { type FinError, FinRpcs, PROTOCOL_VERSION, type Probe } from "@finisher/contracts";
-import { probe } from "@finisher/fin-node";
+import { type FinError, FinRpcs, PROTOCOL_VERSION } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
 import { TicketsTag } from "./auth/tickets.ts";
 import { chainOf, withChain, writeGuardOf } from "./chain/chain.ts";
-import { stillCanonical } from "./chain/resolve.ts";
 import { AuditTag } from "./control/audit.ts";
-import { ConnectionsTag } from "./connections.ts";
+import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
+import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
@@ -44,6 +43,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
     const tickets = yield* TicketsTag;
+    const everyConnection = yield* ConnectionRegistryTag;
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
@@ -82,8 +82,9 @@ export const HandlersLive = FinRpcs.toLayer(
       "auth.ticket": ({ ttlS }, options) =>
         guard(
           "auth.ticket",
-          Effect.sync(() => {
+          Effect.try({ try: () => {
             const principal = principalOf(options);
+            // `TICKET_LIMIT` past the principal's mint rate or the global cap.
             const minted = tickets.mint(principal, ttlS);
             audit.append({
               kind: "auth.ticket",
@@ -92,17 +93,20 @@ export const HandlersLive = FinRpcs.toLayer(
               details: { transport: connections.transport },
             });
             return minted;
-          }),
+          }, catch: toFinError }),
         ),
       "auth.whoami": (_, options) => guard("auth.whoami", Effect.sync(() => ({ principal: principalOf(options) }))),
       "auth.revokeSelf": (_, options) =>
         guard(
           "auth.revokeSelf",
           revokeSelf(
-            handshake.deps,
+            { audit, tickets, connections: everyConnection, ...(handshake.deps.revoke === undefined ? {} : { revoke: handshake.deps.revoke }) },
             principalOf(options),
-            () => connections.link(options.client.id)?.closeAfterReply(),
-            (pred) => tickets.dropWhere(pred),
+            {
+              transport: connections.transport,
+              clientId: options.client.id,
+              closeAfterReply: () => connections.link(options.client.id)?.closeAfterReply(),
+            },
           ),
         ),
       // The console's typed confirmations (Decision 30): a code for this connection only.
@@ -131,18 +135,14 @@ export const HandlersLive = FinRpcs.toLayer(
           }),
         ),
       // Protocol 2: the probe is for `projectId` (opened on demand, `PROJECT_NOT_FOUND` otherwise).
-      // For a principal with roots the checked path is re-checked around the probe: a symlink
-      // swapped in after the chain's check is refused (review of Task 5, M2).
+      // For a principal with roots the file is opened beneath its project's folder, through no
+      // symlink: one swapped in after the chain's check, or a dangling one, is refused (`probe.ts`).
       "asset.probe": ({ projectId, path }, options) =>
         guard(
           "asset.probe",
           Effect.andThen(
             registry.ensure(projectId),
-            Effect.flatMap(requireAbsolute("path", path), (p) => {
-              const roots = chainOf(options)?.principal.projects !== "*";
-              const check = roots ? stillCanonical("asset.probe", p) : Effect.void;
-              return Effect.andThen(check, Effect.tap(attemptJson<Probe>(() => probe(p)), () => check));
-            }),
+            Effect.flatMap(requireAbsolute("path", path), (p) => probeFor(chainOf(options)?.principal, projects, projectId, p)),
           ),
         ),
       "tx.commit": ({ projectId, tx, generation }, options) =>

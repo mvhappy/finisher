@@ -1,6 +1,6 @@
 // Server-data location, local socket path and the `finisherd.json` discovery file.
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
@@ -281,6 +281,30 @@ export function readOrigins(serverData: string): ReadonlyArray<string> {
     }
   }
   return out;
+}
+
+/**
+ * `readOrigins`, read again only when `settings.json` changes (its mtime, size or inode): the
+ * upgrade check runs before any authentication, so it must not read a file per attempt
+ * (review of Task 6, finding 8). A file that cannot be stat'ed is no origins.
+ */
+export function cachedOrigins(serverData: string, read: (serverData: string) => ReadonlyArray<string> = readOrigins): () => ReadonlyArray<string> {
+  let key: string | undefined;
+  let value: ReadonlyArray<string> = [];
+  return () => {
+    let now: string;
+    try {
+      const st = statSync(settingsPath(serverData), { bigint: true });
+      now = `${st.mtimeNs}:${st.size}:${st.ino}`;
+    } catch {
+      now = "missing";
+    }
+    if (now !== key) {
+      key = now;
+      value = now === "missing" ? [] : read(serverData);
+    }
+    return value;
+  };
 }
 
 export function removeServerInfo(serverData: string): void {

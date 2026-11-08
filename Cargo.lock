@@ -798,12 +798,14 @@ dependencies = [
  "fin-testfonts",
  "fin-text",
  "imagesize",
+ "libc",
  "roxmltree",
  "schemars",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

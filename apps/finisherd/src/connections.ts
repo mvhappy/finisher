@@ -154,5 +154,8 @@ export class ConnectionRegistry {
   }
 }
 
+/** Every transport's connections (revocation reaches them all). */
+export class ConnectionRegistryTag extends Context.Service<ConnectionRegistryTag, ConnectionRegistry>()("finisherd/ConnectionRegistry") {}
+
 /** The connections of the transport a handler serves (provided per transport, `transport.ts`). */
 export class ConnectionsTag extends Context.Service<ConnectionsTag, Connections>()("finisherd/Connections") {}

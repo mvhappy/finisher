@@ -2,10 +2,14 @@
 // bytes (base64url) bound to the caller's principal; the server keeps only `SHA-256(ticket)`
 // with the principal and the expiry. A ticket is taken by one upgrade (`upgrade.ts`), whether
 // or not it is still live, and never again; expired ones are swept every 10 s. Tickets are
-// never logged, audited or put in an error.
+// never logged, audited or put in an error. Each principal holds at most `MAX_TICKETS_PER_PRINCIPAL`
+// live tickets (a new one drops its own oldest) and mints at most `MINT_RATE`; past the global
+// `MAX_LIVE_TICKETS` a mint is refused rather than another principal's ticket dropped (review of
+// Task 6, finding 4: one principal could evict the UI's ticket).
 import { createHash, randomBytes } from "node:crypto";
-import { TICKET_DEFAULT_TTL_S, TICKET_MAX_TTL_S } from "@finisher/contracts";
+import { type FinError, TICKET_DEFAULT_TTL_S, TICKET_MAX_TTL_S } from "@finisher/contracts";
 import { Context, Effect, type Scope } from "effect";
+import { finError } from "../errors.ts";
 import type { Principal } from "../principal.ts";
 
 /** A ticket is 32 random bytes in base64url (43 characters). */
@@ -13,32 +17,72 @@ export const TICKET_BYTES = 32;
 const TICKET_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 /** How often expired tickets are dropped. */
 export const SWEEP_MS = 10_000;
-/** Live tickets kept at most: past it the oldest is dropped (a minting flood bounds memory). */
+/** Live tickets kept at most, every principal together: past it a mint is refused (`TICKET_LIMIT`). */
 export const MAX_LIVE_TICKETS = 1024;
+/** Live tickets one principal holds at most: a newer one drops that principal's oldest. */
+export const MAX_TICKETS_PER_PRINCIPAL = 8;
+/** Mints per principal: a burst, then this many per second. */
+export const MINT_RATE = { perSecond: 4, burst: 16 } as const;
+/** Principals with a mint bucket at once (oldest dropped past it). */
+const MAX_BUCKETS = 1024;
+
+/** A principal's own key: one bucket and one ticket cap per credential. */
+const ownerOf = (p: Principal): string => `${p.kind}:${p.id}`;
+
+/** `TICKET_LIMIT` (exit 5): try again shortly. */
+function ticketLimit(reason: "rateLimited" | "full"): FinError {
+  return finError(
+    "TICKET_LIMIT",
+    reason === "full" ? "the server holds as many live tickets as it can" : "too many tickets asked for in a short time",
+    { reason },
+    "Wait a few seconds and try again.",
+  );
+}
 
 const digest = (ticket: string): string => createHash("sha256").update(ticket, "utf8").digest("base64url");
 
 export class Tickets {
-  readonly #live = new Map<string, { readonly principal: Principal; readonly expiresAt: number }>();
+  readonly #live = new Map<string, { readonly principal: Principal; readonly owner: string; readonly expiresAt: number }>();
+  readonly #buckets = new Map<string, { tokens: number; at: number }>();
   readonly #now: () => number;
 
   constructor(now: () => number = Date.now) {
     this.#now = now;
   }
 
-  /** A ticket for `principal`, live for `ttlS` seconds (default 30, at most 60, at least 1). */
+  /**
+   * A ticket for `principal`, live for `ttlS` seconds (default 30, at most 60, at least 1).
+   * Throws `TICKET_LIMIT` past the principal's mint rate or the global cap.
+   */
   mint(principal: Principal, ttlS: number = TICKET_DEFAULT_TTL_S): { ticket: string; expiresAt: number } {
     const ttl = Number.isFinite(ttlS) ? Math.min(TICKET_MAX_TTL_S, Math.max(1, Math.floor(ttlS))) : TICKET_DEFAULT_TTL_S;
+    const owner = ownerOf(principal);
+    if (!this.#take(owner)) throw ticketLimit("rateLimited");
+    // The principal's own oldest first (the map keeps insertion order).
+    const own = [...this.#live].filter(([, e]) => e.owner === owner);
+    for (const [key] of own.slice(0, Math.max(0, own.length - MAX_TICKETS_PER_PRINCIPAL + 1))) this.#live.delete(key);
     if (this.#live.size >= MAX_LIVE_TICKETS) this.sweep();
-    while (this.#live.size >= MAX_LIVE_TICKETS) {
-      const oldest = this.#live.keys().next().value;
-      if (oldest === undefined) break;
-      this.#live.delete(oldest);
-    }
+    if (this.#live.size >= MAX_LIVE_TICKETS) throw ticketLimit("full");
     const ticket = randomBytes(TICKET_BYTES).toString("base64url");
     const expiresAt = this.#now() + ttl * 1000;
-    this.#live.set(digest(ticket), { principal, expiresAt });
+    this.#live.set(digest(ticket), { principal, owner, expiresAt });
     return { ticket, expiresAt };
+  }
+
+  /** One mint from `owner`'s bucket. */
+  #take(owner: string): boolean {
+    const now = this.#now();
+    let b = this.#buckets.get(owner);
+    if (b === undefined) {
+      b = { tokens: MINT_RATE.burst, at: now };
+      this.#buckets.set(owner, b);
+      if (this.#buckets.size > MAX_BUCKETS) this.#buckets.delete(this.#buckets.keys().next().value!);
+    }
+    b.tokens = Math.min(MINT_RATE.burst, b.tokens + ((now - b.at) / 1000) * MINT_RATE.perSecond);
+    b.at = now;
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
   }
 
   /** The principal of a live `ticket`, which is used up; `undefined` for an unknown or expired one. */

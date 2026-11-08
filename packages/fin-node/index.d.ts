@@ -36,7 +36,8 @@ export declare class Engine {
    * `relocate`: the project now lives in `projectDir` although the folder it was recorded at
    * cannot be reached (otherwise `PROJECT_ORIGINAL_UNREACHABLE`). Never set it automatically.
    */
-  static open(serverData: string, projectDir: string, options?: { relocate?: boolean }): Promise<Engine>;
+  /** `expectId`: the project the folder must hold, checked before the lease (`PROJECT_NOT_FOUND {reason: changed}`). */
+  static open(serverData: string, projectDir: string, options?: { relocate?: boolean; expectId?: string }): Promise<Engine>;
   readonly projectId: string;
   /** Head revision of `branch` (0 when it does not exist). */
   head(branch: string): Promise<number>;
@@ -382,9 +383,19 @@ export declare function makePrivateDir(path: string): void;
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
- * image?, lottie?, font?, lut?, fingerprint, size }`).
+ * image?, lottie?, font?, lut?, fingerprint, size }`). Never blocks: anything but a regular file
+ * (a folder, FIFO, socket or device) rejects with `ASSET_UNREADABLE`, `details.reason: "NotAFile"`.
  */
 export declare function probe(path: string): Promise<string>;
+
+/**
+ * `probe` of a file that must be inside `root` (a canonical folder): `path` is `root` joined
+ * with plain components, none of them a symlink, decided on the open file (Linux `openat2`
+ * `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`; elsewhere one no-follow open per component, or on
+ * Windows no reparse point and a final path inside the root). Otherwise rejects with
+ * `PATH_NOT_ALLOWED` (`details.reason`: `outsideRoot` or `symlink`).
+ */
+export declare function probeBeneath(root: string, path: string): Promise<string>;
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:

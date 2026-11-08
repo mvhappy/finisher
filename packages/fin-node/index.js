@@ -76,7 +76,7 @@ export class Engine {
   }
 
   static async open(serverData, projectDir, options = {}) {
-    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true)));
+    return new Engine(await call(native.Engine.open(serverData, projectDir, options.relocate === true, options.expectId ?? null)));
   }
 
   get projectId() {
@@ -504,6 +504,10 @@ export function makePrivateDir(path) {
 
 export function probe(path) {
   return call(native.probe(path));
+}
+
+export function probeBeneath(root, path) {
+  return call(native.probeBeneath(root, path));
 }
 
 export class Registry {

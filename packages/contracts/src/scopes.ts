@@ -88,6 +88,12 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly writes?: ReadonlyArray<string>;
   /**
+   * Branches the call changes state on without writing a record through the store's guard
+   * (`project.acknowledgeRewind`): the payload fields naming them, checked by the policy stage
+   * like `writes` (agent branch limits; review of Task 6, finding 7).
+   */
+  readonly targets?: ReadonlyArray<string>;
+  /**
    * The payload field holding the author a new branch records (`createdBy`): for a principal
    * with branch limits the server sets it to the principal's own author, so `"own"` cannot be
    * claimed by naming someone else (review of Task 5, M4).
@@ -112,6 +118,7 @@ export interface RpcRule {
   readonly resolve?: ReadonlyArray<ResolverName>;
   readonly escalate?: (payload: never, facts: RuleFacts) => ReadonlyArray<Scope>;
   readonly writes?: ReadonlyArray<string>;
+  readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
   readonly confirm?: true;
   readonly deviceOnly?: (payload: never) => boolean;
@@ -164,7 +171,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "history.merge": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
   "history.cherryPick": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
   "history.revert": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
-  "project.acknowledgeRewind": { scopes: ["project.write"], resolve: BRANCH },
+  // Clears a branch's rewind warning: a branch-limited principal only on its own branches.
+  "project.acknowledgeRewind": { scopes: ["project.write"], resolve: BRANCH, targets: ["branch"] },
   "project.acknowledgeSalvage": { scopes: ["project.write"], resolve: PROJECT },
   "project.events": { scopes: ["project.read"], resolve: PROJECT },
   "tx.get": { scopes: ["project.read"], resolve: PROJECT },

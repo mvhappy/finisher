@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultScopes, type FinError, HUMAN_ONLY, type Principal, type Scope, SCOPES, WRITE_RPCS } from "@finisher/contracts";
+import { defaultScopes, type FinError, HUMAN_ONLY, type Principal, type Probe, type Scope, SCOPES, WRITE_RPCS } from "@finisher/contracts";
+import { probe } from "@finisher/fin-node";
 import { Effect, Exit, Stream } from "effect";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { unauthenticated } from "../src/auth/handshake.ts";
@@ -14,6 +15,7 @@ import { confirmationRequired, issueChallenge } from "../src/auth/challenges.ts"
 import { approvalRequired, branchNotAllowed, consentUiOnly, humanOnlyFixes, pathNotAllowed, scopeDenied } from "../src/chain/fixes.ts";
 import { canonicalPath, type ChainProjects, PROJECT_FILE_MAX, projectIdIn } from "../src/chain/resolve.ts";
 import { Connections } from "../src/connections.ts";
+import { probeFor } from "../src/probe.ts";
 import type { Audit, AuditInput } from "../src/control/audit.ts";
 import { ANONYMOUS, CONSOLE, LOCAL } from "../src/principal.ts";
 import { SAMPLE_PAYLOADS } from "./support/payloads.ts";
@@ -52,7 +54,7 @@ interface Seen {
 }
 
 /** A chain over recording handlers; `principal` is bound to client 1. */
-function harness(principal: Principal, more: Partial<ChainDeps> = {}) {
+function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Record<string, unknown> = {}) {
   const seen: Seen[] = [];
   const audited: AuditInput[] = [];
   const connections = new Connections("socket", () => "/sd/run/fin.sock");
@@ -78,7 +80,8 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}) {
     },
   };
   // Every writing RPC, and a read by id, record what reaches them too.
-  for (const t of [...WRITE_RPCS, "snapshot.get", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export"]) handlers[t] ??= unary(t);
+  for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export"]) handlers[t] ??= unary(t);
+  Object.assign(handlers, real);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
   const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
   const call = (tag: string, payload: unknown) =>
@@ -179,8 +182,12 @@ describe("the chain", () => {
   test("create_and_open_reach_by_directory", async () => {
     open = new Set([A, B]);
     const h = harness(agent({ scopes: [...MINT, "project.create"] }));
-    expect(code(await h.call("project.open", { dir: dirB }))).toBe("PROJECT_NOT_FOUND");
-    expect(code(await h.call("project.open", { dir: join(tmp, "no-project-here") }))).toBe("PROJECT_NOT_FOUND");
+    // Another's project and no project at all answer the same, without an id (review of Task 6, 5).
+    const theirs = error(await h.call("project.open", { dir: dirB }));
+    const none = error(await h.call("project.open", { dir: join(tmp, "no-project-here") }));
+    expect(theirs.code).toBe("PROJECT_NOT_FOUND");
+    expect([theirs.message, theirs.details, theirs.fix]).toEqual([none.message, none.details, none.fix]);
+    expect(JSON.stringify(theirs)).not.toContain(B);
     expect(code(await h.call("project.create", { dir: join(tmp, "new"), name: "N", rate: "30" }))).toBe("PATH_NOT_ALLOWED");
     expect(code(await h.call("project.create", { dir: join(dirA, "workspace", "new"), name: "N", rate: "30" }))).toBeUndefined();
     expect(h.seen.map((s) => s.tag)).toEqual(["project.create"]);
@@ -220,6 +227,10 @@ describe("the chain", () => {
     expect(error(await h.call("tx.commit", commit("main")))).toMatchObject({ code: "BRANCH_NOT_ALLOWED", details: { branch: "main" } });
     expect(code(await h.call("tx.commit", commit("feature")))).toBe("BRANCH_NOT_ALLOWED");
     expect(code(await h.call("tx.commit", commit("mine")))).toBeUndefined();
+    // Acknowledging a rewind acts on the branch: limited the same way (review of Task 6, 7).
+    const ack = (branch: string) => ({ projectId: A, branch, generation: 1 });
+    expect(code(await h.call("project.acknowledgeRewind", ack("main")))).toBe("BRANCH_NOT_ALLOWED");
+    expect(code(await h.call("project.acknowledgeRewind", ack("mine")))).toBeUndefined();
     // Making a branch is always the writer's own.
     expect(code(await h.call("branch.create", { projectId: A, txId: "t", author: "a", from: "main" }))).toBeUndefined();
     // No limits: an open guard.
@@ -392,6 +403,53 @@ describe("review of Task 5", () => {
     const both = harness(agent({ projects: [A, B] }));
     expect(code(await both.call("asset.probe", { projectId: B, path: join(dirA, "clip.png") }))).toBe("PATH_NOT_ALLOWED");
     expect(code(await both.call("asset.probe", { projectId: A, path: join(dirA, "clip.png") }))).toBeUndefined();
+  });
+
+  // The path check cannot see through a dangling symlink (it canonicalises to itself), and a
+  // symlink may be swapped in after it: the real probe opens beneath the root, through none.
+  test.skipIf(WIN)("a dangling or swapped symlink cannot redirect a probe", async () => {
+    open = new Set([A]);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"/>';
+    const secret = join(tmp, "secret.svg");
+    writeFileSync(secret, svg);
+    writeFileSync(join(dirA, "workspace", "ok.svg"), svg);
+    const link = join(dirA, "workspace", "flip.svg");
+    symlinkSync("/nonexistent/secret.svg", link);
+    // Run between the chain's check and the probe: the swap an attacker races for.
+    let swap = () => {};
+    const reached: string[] = [];
+    const real = {
+      "asset.probe": (p: { projectId?: string; path: string }, o: object) =>
+        Effect.suspend(() => {
+          reached.push(p.path);
+          swap();
+          return probeFor(chainOf(o)?.principal, projects, p.projectId, p.path);
+        }),
+    };
+    const h = harness(agent(), {}, real);
+    const probed = async (path: string) => h.call("asset.probe", { projectId: A, path });
+    const ok = await probed(join(dirA, "workspace", "ok.svg"));
+    expect(Exit.isSuccess(ok) && (ok.value as Probe).fingerprint).toMatch(/^fp1:/);
+    // Dangling: the chain passes it (inside the project), the open refuses it.
+    const dangling = await probed(link);
+    expect(error(dangling)).toMatchObject({ code: "PATH_NOT_ALLOWED", details: { path: link } });
+    expect(reached).toEqual([join(dirA, "workspace", "ok.svg"), link]);
+    // Swapped to a file outside after the check: refused, no fingerprint or size of it.
+    swap = () => {
+      rmSync(link);
+      symlinkSync(secret, link);
+    };
+    const swapped = await probed(link);
+    expect(error(swapped).code).toBe("PATH_NOT_ALLOWED");
+    expect(JSON.stringify(error(swapped))).not.toContain("fp1:");
+    expect(JSON.stringify(error(swapped))).not.toContain(secret);
+    // What the swap would have read with a plain probe.
+    expect((JSON.parse(await probe(link)) as Probe).fingerprint).toMatch(/^fp1:/);
+    // Unrestricted principals keep the plain probe, which follows a symlink.
+    swap = () => {};
+    const local = harness(LOCAL, {}, real);
+    const followed = await local.call("asset.probe", { projectId: A, path: link });
+    expect(Exit.isSuccess(followed) && (followed.value as Probe).image).toEqual({ width: 12, height: 8 });
   });
 
   test("M3: finisher.project.json is read only as a small regular file", async () => {
