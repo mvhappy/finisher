@@ -46,6 +46,7 @@ use serde_json::json;
 
 mod auto;
 mod bundled;
+mod cert;
 mod commit_log;
 mod engine;
 mod eval;
@@ -68,6 +69,7 @@ mod pipe_server;
 mod pipe_win;
 mod private_dir;
 mod private_file;
+mod qr;
 mod registry;
 mod server_lock;
 mod tasks;
@@ -75,6 +77,7 @@ mod tasks;
 mod test_hooks;
 #[cfg(feature = "test-hooks")]
 mod test_registry;
+mod tls;
 mod vault;
 mod worker;
 
@@ -98,6 +101,7 @@ pub use private_file::{PrivateFile, create_private_file};
 pub use registry::{Registry, validate_manifest};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;
+pub use tls::{qr_svg, qr_text, self_signed_cert};
 pub use vault::{IdentityKey, Vault, VaultBackend, generate_identity_key, identity_key, spki_pin};
 
 /// Marks a napi error message as a serialized `CoreError`. Must match `index.js`.

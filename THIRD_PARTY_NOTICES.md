@@ -519,6 +519,20 @@ status: used (sub-project 5B, Task 2), as Cargo dependencies; no code is copied.
   - MIT: `endi` 1.1.1, `generic-array` 0.14.7, `memoffset` 0.9.1, `winnow` 1.0.4, `xdg-home` 1.3.0, `zbus_macros` 4.4.0, `zvariant_derive` 4.2.0, `zvariant_utils` 2.1.0;
   - Unlicense OR MIT: `byteorder` 1.5.0;
 
+## rcgen and qrcode — `fin-node` (remote-listener certificates and pairing QR codes)
+status: used (sub-project 5B, Task 3), as Cargo dependencies; no code is copied.
+- `rcgen` 0.14.10 (MIT OR Apache-2.0), `default-features = false` with `ring` and `pem`:
+  self-signed certificates from the identity key; with it `yasna` 0.6.0, `time` 0.3.55,
+  `time-core` 0.1.9, `time-macros` 0.2.32, `deranged` 0.5.9, `num-conv` 0.2.2, `powerfmt`
+  0.2.1 (all MIT OR Apache-2.0); `pem` is listed below;
+- `qrcode` 0.14.1 (MIT OR Apache-2.0), `default-features = false` with `svg` only (its Unicode
+  renderer needs no feature): the pairing link as SVG and as text;
+- tests only (never shipped): `rqrr` 0.11 ((MIT OR Apache-2.0) AND ISC) decodes the QR code
+  back, with `g2p`, `g2gen`, `g2poly`, `lru` and `hashbrown` (MIT or MIT OR Apache-2.0);
+- **not used:** `rcgen`'s `x509-parser` feature: `x509-parser`, `asn1-rs`, `der-parser`, `nom`
+  and `oid-registry` appear in `Cargo.lock` as unselected optional dependencies and are never
+  built.
+
 ## Catalog fonts (OFL-1.1) — fetched at run time, never distributed
 status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
 upstream files by SHA-256 at pinned commits and release tags, and each machine downloads

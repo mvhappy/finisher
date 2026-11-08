@@ -3,6 +3,8 @@
 // (`SECRETS_KEY_INVALID`, `SECRET_STORE_UNAVAILABLE`, `IDENTITY_MISMATCH`, …).
 import { native, sync } from "./native.js";
 
+export { qrSvg, qrText, selfSignedCert } from "./tls.js";
+
 /** Small named secrets in the OS keychain or the server data's private `secrets/` folder. */
 export class Vault {
   #native;

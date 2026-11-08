@@ -405,6 +405,8 @@ export * from "./library.js";
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).
 export * from "./vault.js";
+// Self-signed certificates and QR codes (`tls.js`, 5B).
+export * from "./tls.js";
 // The plugin store and registries (`registry.js`).
 export { Registry } from "./registry.js";
 
