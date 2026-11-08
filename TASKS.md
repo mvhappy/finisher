@@ -582,6 +582,7 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
   - [ ] 6A residuals (spec §25.5): the worker's font cache follows links (6B-1's sandbox work opens it no-follow); the warm sandbox rule (warm kinds run cold under a sandbox, unenforced without one; no new warm untrusted-input kind before 7C); encode golden and e2e T0 have Linux entries only; Windows UNC and 8.3 untested; `driverMajor` unchecked on real drivers; no hardware Linux GPU
   - [ ] Playback/scrubbing: `FrameReader::open` takes dav1d's default frame delay (⌈√threads⌉ frames in flight, `reader.rs`), so the first frame after a seek waits for them; scrubbing may want `frame_delay: 1` on seeks (Windows 1080p: delay 1 ~320 fps vs ~685 fps at delay 4)
 - [ ] 6B-1: stateful platform codecs and proxies
+  - [ ] Plan written (2026-11-08): `docs/superpowers/plans/2026-11-08-sub-project-6b1-platform-codecs-and-proxies.md` (22 tasks in batches A–G; branch `sp6b1-platform-codecs`). Task 18, the Linux Landlock worker profile, waits for 7C's Linux `worker` profile; Tasks 4–5 need a macOS host, 6–7 a Windows 11 host. Four questions for the owner in the plan: proxy audio in 6C (Decision 4), capability URLs as the only media HTTP auth (13), warm kinds cold under Landlock (15), libvpx in 6B-2 (16)
 - [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
 - [ ] 6D: layers (effects, masks and mattes, nested, images, SVG, Lottie, captions raster)
@@ -600,6 +601,7 @@ Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `doc
 - [ ] Signing-key ceremony (decision 7): 3 offline root keys held by the owner, 2-of-3, before the first registry is published
 - [ ] 8A: packages, registries and lifecycle (Tasks 1–14 done and merged; Task 15, the cross-platform validation: Windows done 2026-11-08, macOS owed)
 - [ ] 8B: plugin host and SDKs (Rust, TS)
+  - [ ] Plan written (2026-11-08): `docs/superpowers/plans/2026-11-08-sub-project-8b-plugin-runtime.md` (20 tasks in batches A–H; branch `sp8b-plugin-runtime`). One wire: plugins speak the `fin-jobs` envelope (5C-1 Decision 44). Task 6's agent rows wait for 7A-2, Task 16 (confinement) for 7C's `plugin` profile, Task 17 (hooks) for 7F. Five questions for the owner in the plan: plugin kinds never by `jobs.submit` (Decision 6), egress without credentials until 8G (10), store re-hash before 7C (16), `PLUGINS_UNCONFINED` on every unconfined host (17), merging without hooks (20)
   - 8B plan note (5C-1 batch A review, M3): the engine spawns a warm plugin process as `<path> <args…> --warm` (`Program::Path` included); the SDKs must read a trailing `--warm` as "send `ready` after each job"; a plugin family's `FamilySpec.program` is the cold argv only
 - [ ] 8C: analysis foundation and speech (transcription, alignment, boundary-correction retrain)
 - [ ] 8D: scenes and audio analysis
