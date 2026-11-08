@@ -297,9 +297,8 @@ impl RepoBuilder {
             .iter()
             .map(|(p, k)| (p, k.to_pem()))
             .collect();
-        let dir = self.keys.dir();
-        std::fs::create_dir_all(dir).map_err(|e| EditorError::io("create", dir, e))?;
-        let p = dir.join(PENDING);
+        self.keys.create()?;
+        let p = self.keys.dir().join(PENDING);
         let bytes = serde_json::to_vec_pretty(&raw).expect("a map serialises");
         crate::atomic::write(&p, &bytes).map_err(|e| EditorError::io("write", &p, e))
     }
