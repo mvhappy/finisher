@@ -94,5 +94,13 @@
   {
     "path": "crates/fin-node/tests/media_inputs.rs",
     "reason": "Tests build and inspect temporary trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/vault/file.rs",
+    "reason": "The vault's file store reads and writes the server data's own secrets/ folder and the key file the owner names; never a library file."
+  },
+  {
+    "path": "crates/fin-node/tests/vault.rs",
+    "reason": "Tests build and inspect a temporary server data's secrets/ folder by path; none is a library reader."
   }
 ]

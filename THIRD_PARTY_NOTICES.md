@@ -495,6 +495,30 @@ status: used (sub-project 6A, Task 11), as Cargo dependencies; no code is copied
 - `fdeflate` 0.3 (MIT OR Apache-2.0): `png`'s fast deflate; the rest of its stack (`flate2`,
   `crc32fast`, `miniz_oxide`) is listed under `fin-fonts` and "Other Cargo dependencies".
 
+## keyring, secret-service and zbus — `fin-node` (the vault's OS keychain)
+status: used (sub-project 5B, Task 2), as Cargo dependencies; no code is copied.
+- `keyring` **=3.6.3** (MIT OR Apache-2.0), `default-features = false` with `apple-native`,
+  `windows-native`, `async-secret-service`, `async-io`, `crypto-rust`: the macOS Keychain
+  through `security-framework` 3 (MIT OR Apache-2.0), Windows Credential Manager through
+  `windows-sys` (MIT OR Apache-2.0), the Linux Secret Service through `secret-service` 4.0.0
+  (MIT OR Apache-2.0) over the pure-Rust D-Bus `zbus` 4.4.0, `zbus_names`, `zvariant` (MIT),
+  with `aes`, `cbc`, `hkdf`, `sha2` (MIT OR Apache-2.0) and the `async-io` executor stack
+  (`async-io`, `async-executor`, `async-channel`, `async-broadcast`, `event-listener`,
+  `futures-lite`, `polling`: Apache-2.0 OR MIT);
+- `secret-service` is also a direct dependency on Linux, only to ask whether the default
+  collection is locked before `keyring` reads it (so a locked keychain never prompts);
+- **not used:** `keyring`'s `sync-secret-service`/`linux-native` backends: `dbus` and
+  `libdbus-sys` (libdbus is AFL-2.1 OR GPL-2.0+) appear in `Cargo.lock` as unselected optional
+  dependencies and are never built (`crates/fin-node/tests/vault.rs` `no_dbus_feature`);
+- `ring` 0.17 (the identity key, the wrapped file store) and `base64` 0.22 (MIT OR Apache-2.0)
+  were already in the tree.
+- the rest of that graph, new with it (each crate's licence text is its own `LICENSE-*` file
+  in its package on crates.io):
+  - MIT OR Apache-2.0: `block-padding` 0.3.3, `cipher` 0.4.4, `crossbeam-utils` 0.8.23, `enumflags2_derive` 0.7.12, `enumflags2` 0.7.12, `inout` 0.1.4, `ordered-stream` 0.2.0, `piper` 0.2.5, `proc-macro-crate` 3.5.0, `serde_repr` 0.1.21, `sha1` 0.10.7, `toml_datetime` 1.1.2+spec-1.1.0, `toml_edit` 0.25.17+spec-1.1.0, `toml_parser` 1.1.5+spec-1.1.0, `windows_x86_64_msvc` 0.53.1;
+  - Apache-2.0 OR MIT: `async-fs` 2.2.0, `async-lock` 3.4.2, `async-task` 4.7.1, `atomic-waker` 1.1.2, `blocking` 1.7.0, `concurrent-queue` 2.5.0, `event-listener-strategy` 0.5.4, `parking` 2.2.1, `zeroize_derive` 1.5.0;
+  - MIT: `endi` 1.1.1, `generic-array` 0.14.7, `memoffset` 0.9.1, `winnow` 1.0.4, `xdg-home` 1.3.0, `zbus_macros` 4.4.0, `zvariant_derive` 4.2.0, `zvariant_utils` 2.1.0;
+  - Unlicense OR MIT: `byteorder` 1.5.0;
+
 ## Catalog fonts (OFL-1.1) — fetched at run time, never distributed
 status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
 upstream files by SHA-256 at pinned commits and release tags, and each machine downloads

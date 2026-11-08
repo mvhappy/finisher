@@ -52,6 +52,7 @@ mod eval;
 mod fonts;
 mod hash;
 mod history;
+mod identity;
 mod jobhost;
 mod journal;
 mod kinds;
@@ -74,6 +75,7 @@ mod tasks;
 mod test_hooks;
 #[cfg(feature = "test-hooks")]
 mod test_registry;
+mod vault;
 mod worker;
 
 pub use engine::Engine;
@@ -96,6 +98,7 @@ pub use private_file::{PrivateFile, create_private_file};
 pub use registry::{Registry, validate_manifest};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;
+pub use vault::{IdentityKey, Vault, VaultBackend, generate_identity_key, identity_key, spki_pin};
 
 /// Marks a napi error message as a serialized `CoreError`. Must match `index.js`.
 const ERROR_PREFIX: &str = "FIN_CORE_ERROR:";

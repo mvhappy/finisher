@@ -74,6 +74,9 @@ import { run as runAuth } from "./e2e/auth.mjs";
 import { run as runLook } from "./e2e/look.mjs";
 import { run as runAgent } from "./e2e/agent.mjs";
 
+// The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
+process.env.FIN_SECRETS ??= "file";
+
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 

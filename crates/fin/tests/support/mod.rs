@@ -217,6 +217,8 @@ impl Server {
             .arg(&self.sd)
             .args(&self.args)
             .env_remove("FIN_SERVER")
+            // Tests never touch the OS keychain (5B Decision 4); a test's own env may override it.
+            .env("FIN_SECRETS", "file")
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
@@ -276,6 +278,8 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
     cmd.args(args)
         .current_dir(cwd)
         .env("FIN_SERVER_DATA", sd)
+        // A server `fin` starts keeps its secrets in files, never the OS keychain (5B Decision 4).
+        .env("FIN_SECRETS", "file")
         .env_remove("FIN_SERVER")
         .env_remove("FIN_OFFLINE_SNAPSHOT")
         .env_remove("FIN_TEST_COMMIT_GATE")

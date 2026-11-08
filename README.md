@@ -26,6 +26,13 @@ their build scripts, not in clippy. A check-only run can skip the SVT-AV1 C buil
 `FIN_SVT_CHECK_ONLY=1`, but rav1d still needs nasm, so install it (`apt install nasm`, or extract
 the `.deb` into a user directory and add its `usr/bin` to `PATH`).
 
+Secrets: a server keeps its identity key and the data key of stored provider keys in the OS
+keychain when it answers without a prompt, else in files in its private data folder
+(`FIN_SECRETS=auto|keychain|file`; `FIN_SECRETS_KEY_FILE` encrypts the files). The tests, the
+e2e harness and `fin`'s test support always run servers with `FIN_SECRETS=file`, and a local
+`.superpowers/env.sh` (git-ignored) should export it too: unsigned macOS builds prompt on every
+keychain access.
+
 ## Run it
 
 Sub-projects 2, 4A, 4B and 4C ship the core with durable storage, history and the full edit model: `finisherd` (the local server)

@@ -16,6 +16,8 @@ export default defineConfig({
     env: {
       // fin-node tests load the `test-hooks` build, never the production binary.
       FIN_NODE_BINARY_DIR: fileURLToPath(new URL("packages/fin-node/test/native/", import.meta.url)),
+      // Servers under test keep their secrets in files, never in the OS keychain (5B Decision 4).
+      FIN_SECRETS: "file",
     },
   },
 });

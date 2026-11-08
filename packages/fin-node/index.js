@@ -18,6 +18,7 @@ export {
   libraryWatchStart,
 } from "./library.js";
 export { PipeServer } from "./pipe.js";
+export { generateIdentityKey, identityKey, spkiPin, Vault } from "./vault.js";
 
 export class Engine {
   #native;

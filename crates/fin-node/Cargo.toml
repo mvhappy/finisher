@@ -54,6 +54,27 @@ napi-derive = { version = "3", default-features = false, features = ["strict"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 5B Task 2: the vault's OS keychain (macOS Keychain, Windows Credential Manager, the Secret
+# Service on Linux through the pure-Rust `zbus`; MIT OR Apache-2.0). Pinned exactly; the
+# `dbus` backends (libdbus is AFL-2.1 OR GPL-2.0+) are never enabled.
+keyring = { version = "=3.6.3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "async-io",
+    "crypto-rust",
+] }
+# The identity key (P-256, PKCS#8), the wrapped file store's AES-256-GCM, random bytes
+# (Apache-2.0 AND ISC; already in the tree through rustls).
+ring = "0.17.14"
+# PEM bodies and SPKI pins (MIT OR Apache-2.0; already in the tree).
+base64 = "0.22.1"
+
+# The Secret Service lock check before `keyring` touches it: a locked collection is never
+# unlocked (that prompts), the vault falls back to the file store (5B Decision 4). The same
+# crate `keyring` uses, with the same pure-Rust features.
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "=4.0.0", default-features = false, features = ["rt-async-io-crypto-rust"] }
 
 # `createPrivateFile` checks the new file's owner against the effective uid (MIT OR Apache-2.0).
 [target.'cfg(unix)'.dependencies]

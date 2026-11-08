@@ -17,6 +17,8 @@ export interface ServerControl {
   readonly listeners: () => ReadonlyArray<{ readonly transport: Transport; readonly endpoint: string }>;
   /** Starts the graceful shutdown: `serve` returns, its finalizers run, the process exits 0. */
   readonly stop: () => void;
+  /** Standing warnings of the server itself (5B: where secrets are kept). */
+  readonly warnings?: () => ReadonlyArray<Record<string, unknown>>;
 }
 
 export class ServerControlTag extends Context.Service<ServerControlTag, ServerControl>()("finisherd/ServerControl") {}
@@ -75,7 +77,12 @@ export function serverStatus(deps: AdminDeps) {
       },
       // The job host's sandbox (5C-2), then the agent runtime's: agent tools run unsandboxed
       // until 7C (owner decision F2).
-      warnings: [...(sandbox === undefined ? [] : [sandbox]), ...(agentWarnings() as Array<Record<string, unknown>>)],
+      warnings: [
+        ...(sandbox === undefined ? [] : [sandbox]),
+        ...(agentWarnings() as Array<Record<string, unknown>>),
+        // Where secrets are kept (5B Decision 4): a file store standing in for the keychain.
+        ...(deps.control.warnings?.() ?? []),
+      ],
     };
   });
 }

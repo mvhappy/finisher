@@ -27,6 +27,8 @@ import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connec
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
+import { DeviceStore } from "./auth/devices.ts";
+import { openSecrets } from "./secrets/vault.ts";
 // Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
 import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
@@ -100,6 +102,14 @@ export const serve = ({
       const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
       const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
       const envId = Context.get(control, ControlStoreTag).envId;
+      // Paired devices (5B Task 1) and the vault with the identity key (Task 2): after the control
+      // store, before any listener. A lost identity key revokes every device (a rotation).
+      const devices = new DeviceStore(Context.get(control, ControlStoreTag), Context.get(control, AuditTag), credentialOptions?.clock);
+      yield* Effect.addFinalizer(() => Effect.sync(() => devices.dispose()));
+      const secrets = yield* Effect.try({
+        try: () => openSecrets({ serverData, store: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), devices }),
+        catch: startFailure,
+      });
       // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
       // while this server listens is always this server's. `auth/` and `run/` are private.
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
@@ -296,6 +306,7 @@ export const serve = ({
         db: Context.get(control, ControlStoreTag).db,
         audit,
         endpoint: socket,
+        secretBox: secrets.box,
         log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
         ...(agentOptions === undefined ? {} : { options: agentOptions }),
       });
@@ -308,7 +319,7 @@ export const serve = ({
         { transport: connections.local.transport, endpoint: localEndpoint },
         { transport: connections.ws.transport, endpoint: wsEndpoint },
       ] as const;
-      const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void) };
+      const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void), warnings: secrets.warnings };
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
