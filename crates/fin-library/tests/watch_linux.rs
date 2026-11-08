@@ -64,6 +64,14 @@ fn quiet(rx: &Receiver<WatchMsg>, ms: u64) -> Vec<WatchMsg> {
     out
 }
 
+/// One write is several events (create, modify, close), which the thread may read in more than
+/// one batch: lets the repeats of `dir` land, and nothing else.
+fn settle(rx: &Receiver<WatchMsg>, dir: &RawRel) {
+    for m in quiet(rx, 300) {
+        assert_eq!(m, WatchMsg::Dirs(vec![dir.clone()]), "only {dir} again");
+    }
+}
+
 #[test]
 fn watches_directories_and_skips_dot_directories() {
     let t = tempfile::tempdir().unwrap();
@@ -78,6 +86,7 @@ fn watches_directories_and_skips_dot_directories() {
     assert_eq!(ready(&rx), 3);
     fs::write(root.join("a/b/new.mov"), b"x").unwrap();
     dirs_until(&rx, &rel(&["a", "b"]));
+    settle(&rx, &rel(&["a", "b"]));
     // Dot-entries and anything in a dot-directory say nothing.
     fs::write(root.join(".hidden"), b"x").unwrap();
     fs::write(root.join(".cache/deep/x"), b"x").unwrap();
@@ -88,6 +97,7 @@ fn watches_directories_and_skips_dot_directories() {
     std::thread::sleep(Duration::from_millis(100));
     fs::write(root.join("a/c/x.mov"), b"x").unwrap();
     dirs_until(&rx, &rel(&["a", "c"]));
+    settle(&rx, &rel(&["a", "c"]));
     w.close();
     fs::write(root.join("a/after.mov"), b"x").unwrap();
     assert_eq!(quiet(&rx, 300), vec![], "nothing after close");

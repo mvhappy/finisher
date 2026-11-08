@@ -29,7 +29,7 @@ import { probeFor } from "../../src/probe.ts";
 import { libraryHandlers } from "../../src/library/rpc.ts";
 import { relComponents } from "../../src/library/paths.ts";
 import { cataloguedAt, libraryOf } from "../../src/library/reach.ts";
-import { failure } from "../support/jobs.ts";
+import { failure, until } from "../support/jobs.ts";
 import { SAMPLE_PAYLOADS } from "../support/payloads.ts";
 import { overlay, tree } from "./support/kinds.ts";
 import { closeLiveRigs, type LiveRig, liveRig, liveRoots } from "./support/live.ts";
@@ -184,6 +184,8 @@ async function addAndScan(rig: LiveRig, root: string, extra: object = {}) {
   const h = handlers(rig);
   const added = await h.call<{ library: { id: string; name: string }; job?: { id: string } }>("library.add", { root, name: "Raw", ...extra });
   expect((await rig.t.wait(added.job!.id, 30_000)).state).toBe("succeeded");
+  // The job ends before the service has noted its end (the catalog's scan row, its counts).
+  await until(() => rig.svc.view(rig.svc.registry.get(added.library.id)!).lastScan !== undefined);
   return { h, id: added.library.id, added };
 }
 

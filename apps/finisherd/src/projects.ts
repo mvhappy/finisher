@@ -1,8 +1,6 @@
 // ProjectRegistry: open Engines, the `app.db` project index, per-(project, branch) op hubs and
 // per-project event hubs fed by each engine's `onEvent`.
-import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { resolve } from "node:path";
 import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
 import type { EngineEvent, FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
@@ -11,6 +9,7 @@ import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
 import type { CallMeta } from "./diagnostics.ts";
 import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResult } from "./history.ts";
 import { follower, Hubs, type Stamped } from "./hubs.ts";
+import { ProjectIndex } from "./project-index.ts";
 
 /** What `prepareMediaJob` resolves to: the rev written and the plan's BLAKE3 at each time. */
 export interface MediaJobPrepared {
@@ -154,37 +153,6 @@ function holdLibraries(p: OpenProject, use: NonNullable<RegistryOptions["library
 
 export const DEFAULT_HUB_CAPACITY = 1024;
 const MAIN = "main";
-
-/** `<server-data>/app.db`: `projects(id, dir, last_opened)`. */
-class ProjectIndex {
-  readonly #db: DatabaseSync;
-
-  constructor(serverData: string) {
-    mkdirSync(serverData, { recursive: true });
-    this.#db = new DatabaseSync(join(serverData, "app.db"));
-    this.#db.exec(
-      "CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, dir TEXT NOT NULL, last_opened INTEGER NOT NULL)",
-    );
-  }
-
-  touch(id: string, dir: string): void {
-    this.#db
-      .prepare(
-        "INSERT INTO projects (id, dir, last_opened) VALUES (?, ?, ?) " +
-          "ON CONFLICT(id) DO UPDATE SET dir = excluded.dir, last_opened = excluded.last_opened",
-      )
-      .run(id, dir, Date.now());
-  }
-
-  dirOf(id: string): string | undefined {
-    const row = this.#db.prepare("SELECT dir FROM projects WHERE id = ?").get(id) as { dir?: string } | undefined;
-    return row?.dir;
-  }
-
-  close(): void {
-    this.#db.close();
-  }
-}
 
 /** A rewound history, as the op stream reports it to a subscriber that saw it. */
 function historyRewound(details: Record<string, unknown>): FinError {
