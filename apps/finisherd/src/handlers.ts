@@ -14,6 +14,12 @@ import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
+import { AgentCoreTag } from "./agent/core.ts";
+import { withOutcomes } from "./agent/outcomes.ts";
+import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
+import { agentHandlers } from "./agent/rpc.ts";
+import { AgentRuntimeTag } from "./agent/wiring.ts";
+import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { Fonts } from "./fonts.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { mediaCapabilities } from "./media/caps.ts";
@@ -63,6 +69,8 @@ export const HandlersLive = FinRpcs.toLayer(
     const credentials = yield* CredentialsTag;
     const library = yield* LibraryServiceTag;
     const jobEngine = yield* JobEngineTag;
+    const agents = yield* AgentCoreTag;
+    const agentRuntime = yield* AgentRuntimeTag;
     const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -115,6 +123,17 @@ export const HandlersLive = FinRpcs.toLayer(
       // 5D Decision 47: reach to a library file is a catalogued row, never a path prefix.
       libraryFile: (path: string) => cataloguedAt(library, path),
     };
+    // Agent sessions (7A Task 7): branch reach over their root's subtree, path reach over their
+    // project folder and its libraries, the server's author, `session_txs` after every write.
+    const reach = new BranchReach(agents.store, agents.lineage, projects);
+    // Then the outcome tracker (Task 11), once the session's own rows are written.
+    const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p))];
+    /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
+    const defaultBranchOf = (p: { readonly kind: string; readonly id: string }) => {
+      const s = p.kind === "agent" ? agents.store.get(p.id) : undefined;
+      return s === undefined ? {} : { defaultBranch: agents.store.state(s.id).defaultBranch };
+    };
     return withChain(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
       "server.hello": (req, { client }) =>
@@ -145,7 +164,14 @@ export const HandlersLive = FinRpcs.toLayer(
             return minted;
           }, catch: toFinError }),
         ),
-      "auth.whoami": (_, options) => guard("auth.whoami", Effect.sync(() => ({ principal: principalOf(options) }))),
+      "auth.whoami": (_, options) =>
+        guard(
+          "auth.whoami",
+          Effect.sync(() => {
+            const principal = principalOf(options);
+            return { principal, ...defaultBranchOf(principal) };
+          }),
+        ),
       "auth.revokeSelf": (_, options) =>
         guard(
           "auth.revokeSelf",
@@ -353,6 +379,7 @@ export const HandlersLive = FinRpcs.toLayer(
         ),
       ...pluginHandlers({ plugins, audit, guard }),
       ...libraryHandlers({ service: library, engine: jobEngine, guard }),
-    }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
+      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
+    }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
   }),
 );

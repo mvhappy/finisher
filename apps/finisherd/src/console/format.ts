@@ -35,7 +35,9 @@ export interface Args {
 /** Flags that take a value; every other flag is a switch. */
 const VALUED = new Set([
   "server-data", "since", "kind", "limit", "before", "project", "label", "scope", "branch", "idle", "absolute", "out",
-  "dir", "root", "root-sha256", "registry",
+  "dir", "root", "root-sha256", "registry", "store",
+  // Agent sessions (7A Task 12).
+  "model", "role", "mode", "base", "title", "prompt", "prompt-file", "budget-usd", "budget-tokens", "provider", "harness", "status", "add",
 ]);
 
 export function usage(message: string, fix = "Run `finisherd help` to list the commands."): never {

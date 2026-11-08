@@ -230,8 +230,27 @@ export class Journal {
     return new Journal(sync(() => native.Journal.open(serverData, privacyJson ?? null, hostname, test)));
   }
 
+  /** The agent-trace store of the folder (`<serverData>/agent-traces`); open `Journal.open` first. */
+  static openTraces(serverData, privacyJson, hostname, testOptions) {
+    const test = testOptions === undefined ? null : JSON.stringify(testOptions);
+    return new Journal(sync(() => native.Journal.openTraces(serverData, privacyJson ?? null, hostname, test)));
+  }
+
   get openWarning() {
     return this.#native.openWarning ?? undefined;
+  }
+
+  get training() {
+    return this.#native.training;
+  }
+
+  recordsProject(projectId) {
+    return sync(() => this.#native.recordsProject(projectId));
+  }
+
+  attachBlob(bytes, mediaType) {
+    const body = sync(() => this.#native.attachBlob(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), mediaType));
+    return body === null || body === undefined ? undefined : JSON.parse(body);
   }
 
   get session() {
@@ -352,6 +371,11 @@ export function blake3KeyedHex(key, data) {
 /** Every kind name of fin-core's event registry. */
 export function kindNames() {
   return native.kindNames();
+}
+
+/** The newest payload version of kind `name` that `source` may emit; `null` for none (reserved, unknown, not that source). */
+export function kindVersion(name, source) {
+  return native.kindVersion(name, source) ?? null;
 }
 
 /** Why a `privacy` section (JSON) is not one the journal accepts, naming the key; `undefined` when it is. */

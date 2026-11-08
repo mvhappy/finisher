@@ -10,6 +10,9 @@ const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "auth.audit.list": "readOnly",
   "auth.credential.list": "readOnly",
   "server.stop": "service",
+  "agent.key.list": "readOnly",
+  "agent.local.show": "readOnly",
+  "agent.local.test": "readOnly",
 };
 
 /** The resolver a payload field needs (spec §4.4 stage 3). */

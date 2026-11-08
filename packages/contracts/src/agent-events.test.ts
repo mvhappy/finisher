@@ -23,6 +23,8 @@ const samples: ProviderEvent[] = [
   { type: "exited", code: 1, signal: null },
   { type: "exited", code: null, signal: "SIGKILL" },
   { type: "capture", request: { model: "m" }, response: { id: "gen-1" } },
+  { type: "notice", name: "retry", details: { attempt: 1, code: "PROVIDER_RATE_LIMITED", delayMs: 3000 } },
+  { type: "notice", name: "marker" },
   { type: "unknown", name: "rateLimitUpdate" },
 ];
 

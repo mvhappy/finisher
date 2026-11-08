@@ -65,7 +65,12 @@ export const TICKET_DEFAULT_TTL_S = 30;
 export const AuthTicketPayload = Schema.Struct({ ttlS: Schema.optional(Schema.Number) });
 export const AuthTicketSuccess = Schema.Struct({ ticket: Schema.String, expiresAt: Schema.Number });
 /** `auth.whoami`: the principal this connection runs as. */
-export const AuthWhoamiSuccess = Schema.Struct({ principal: PrincipalSchema });
+/**
+ * `defaultBranch`: an agent session's own default branch (sub-project 7A Decision 14a; its root,
+ * or a `fin try` it made the default), which `fin` writes when no `--branch` is given; absent
+ * for every other principal.
+ */
+export const AuthWhoamiSuccess = Schema.Struct({ principal: PrincipalSchema, defaultBranch: Schema.optionalKey(Schema.String) });
 
 /** How long a console challenge stays valid, in seconds (Decision 30). */
 export const CHALLENGE_TTL_S = 60;

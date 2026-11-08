@@ -10,6 +10,7 @@
 
 #![allow(dead_code)]
 
+pub mod agent_host;
 pub mod auth;
 pub mod console;
 pub mod fontserver;
@@ -126,6 +127,9 @@ pub struct Server {
     pub socket: String,
     /// Extra environment for finisherd (kept across restarts).
     pub env: Vec<(String, OsString)>,
+    /// The script node runs (default `apps/finisherd/src/main.ts`) and its extra arguments.
+    pub script: PathBuf,
+    pub args: Vec<OsString>,
 }
 
 impl Server {
@@ -156,6 +160,37 @@ impl Server {
             sd,
             socket: String::new(),
             env,
+            script: repo.join("apps/finisherd/src/main.ts"),
+            args: Vec::new(),
+        };
+        server.spawn();
+        Some(server)
+    }
+
+    /// Like [`Server::start`], but node runs `script` (relative to the repository) with `args`
+    /// after `--server-data <sd>`; `args` may name paths under `root` (`{root}` is replaced).
+    pub fn start_script(test: &str, script: &str, args: &[&str]) -> Option<Server> {
+        let repo = repo_root();
+        if let Some(reason) = why_unavailable(&repo) {
+            assert!(!env_on(REQUIRE_ENV), "{test}: {REQUIRE_ENV}=1 but {reason}");
+            eprintln!("SKIPPED {test}: {reason}");
+            return None;
+        }
+        let (tmp, root) = real_tempdir();
+        let sd = root.join("server-data");
+        let args = args
+            .iter()
+            .map(|a| OsString::from(a.replace("{root}", &root.display().to_string())))
+            .collect();
+        let mut server = Server {
+            child: None,
+            _tmp: tmp,
+            root,
+            sd,
+            socket: String::new(),
+            env: Vec::new(),
+            script: repo.join(script),
+            args,
         };
         server.spawn();
         Some(server)
@@ -177,9 +212,10 @@ impl Server {
             .open(self.root.join("finisherd.log"))
             .unwrap();
         let child = Command::new("node")
-            .arg(repo_root().join("apps/finisherd/src/main.ts"))
+            .arg(&self.script)
             .arg("--server-data")
             .arg(&self.sd)
+            .args(&self.args)
             .env_remove("FIN_SERVER")
             .envs(self.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::null())
@@ -252,6 +288,7 @@ pub fn fin_cmd(sd: &Path, cwd: &Path, args: &[&str]) -> Command {
         .env_remove("FIN_CALL_IDEM")
         .env_remove("FIN_TEST_PANIC")
         .env_remove("FIN_CREDENTIAL")
+        .env_remove("FIN_PROJECT_DIR")
         .env_remove("FIN_TEST_AUTH_GATE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

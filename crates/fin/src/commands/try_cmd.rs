@@ -1,5 +1,7 @@
 //! `fin try [name]`, `fin try keep`, `fin try drop`: a scratch branch the default switches to
-//! (`<server-data>/fin-config.json`), merged back or archived when done (Decision 32).
+//! (`<server-data>/fin-config.json`), merged back or archived when done (Decision 32). Under an
+//! agent session's credential the default and the tries are the session's own, on the server
+//! (`agent.self.try`; plan 7A Decision 14a), and the file is untouched.
 
 use clap::{Args, Subcommand};
 use fin_core::CoreError;
@@ -10,6 +12,7 @@ use serde_json::{Value, json};
 use super::branch::{self, find};
 use super::history::{merge_doc, merge_refs, record_doc};
 use super::{Globals, configured_branch, target_branch};
+use crate::agent_session;
 use crate::backend::Backend;
 use crate::config;
 use crate::output::usage;
@@ -54,6 +57,13 @@ fn scope(backend: &dyn Backend) -> Result<(std::path::PathBuf, String), CoreErro
 }
 
 pub fn run(backend: &dyn Backend, g: &Globals, a: &TryArgs) -> Result<Value, CoreError> {
+    if agent_session::active() && !backend.dry_run_only() {
+        return match &a.sub {
+            None => session_start(backend, g, a.name.as_deref()),
+            Some(TrySub::Keep) => session_finish(backend, g, true),
+            Some(TrySub::Drop) => session_finish(backend, g, false),
+        };
+    }
     match &a.sub {
         None => start(backend, g, a.name.as_deref()),
         Some(TrySub::Keep) => finish(backend, g, true),
@@ -123,6 +133,62 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
             config::set_default_branch(&sd, &project_id, back)?;
         }
         config::forget_try(&sd, &project_id, &id)?;
+    }
+    doc["switchedTo"] = json!(parent);
+    Ok(doc)
+}
+
+/// `fin try` in an agent session: the branch is made from the session's default (in its
+/// subtree), recorded on the server and made the default.
+fn session_start(
+    backend: &dyn Backend,
+    g: &Globals,
+    name: Option<&str>,
+) -> Result<Value, CoreError> {
+    let from = target_branch(backend, g)?;
+    let r = branch::create(backend, g, name, &from, None)?;
+    let dry = r["dryRun"] == json!(true);
+    let view = r["branch"].clone();
+    if !dry {
+        agent_session::record_try(backend, view["id"].as_str().unwrap_or_default())?;
+    }
+    let mut doc = record_doc(&r["record"], dry);
+    doc["branch"] = view;
+    Ok(doc)
+}
+
+/// `fin try keep|drop` in an agent session: the current default must be one of the session's
+/// tries; it is merged into (or archived back to) the default it replaced, which the server
+/// restores when the try is cleared.
+fn session_finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreError> {
+    let state = agent_session::state(backend)?;
+    let current = g
+        .branch
+        .clone()
+        .unwrap_or_else(|| state.default_branch.clone());
+    let views = branch::list(backend, true)?;
+    let view = find(&views, &current)?;
+    let id = view["id"].as_str().unwrap_or_default().to_string();
+    let Some(entry) = state.tries.iter().find(|t| t.branch == id) else {
+        return Err(usage(
+            format!("{current:?} is not a try branch this session made with `fin try`"),
+            json!({ "branch": current }),
+            "fin try",
+        ));
+    };
+    let parent = entry.previous_default.clone();
+    let mut doc = if keep {
+        merge_doc(&merge_refs(backend, g, &id, &parent, false)?)
+    } else {
+        let (r, dry) = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
+        let mut doc = record_doc(&r, dry);
+        let mut archived = view.clone();
+        archived["state"] = json!("archived");
+        doc["branch"] = archived;
+        doc
+    };
+    if !g.dry_run {
+        agent_session::clear_try(backend, &id)?;
     }
     doc["switchedTo"] = json!(parent);
     Ok(doc)

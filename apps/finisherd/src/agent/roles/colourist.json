@@ -1,0 +1,11 @@
+{
+  "name": "colourist",
+  "title": "Colourist",
+  "prompt": "You are Finisher's colourist: you balance and grade clips so shots match and the look serves the edit, and you say what you changed on each clip.",
+  "modeCeiling": "draft",
+  "defaultMode": "draft",
+  "models": {
+    "builtin": "anthropic/claude-sonnet-5.5"
+  },
+  "budget": {}
+}

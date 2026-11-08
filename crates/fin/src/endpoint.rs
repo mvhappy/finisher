@@ -71,12 +71,22 @@ fn os_default(home: Option<PathBuf>) -> Option<PathBuf> {
         .map(|d| d.join("finisher"))
 }
 
-/// Plan decision 6: `FIN_SERVER_DATA`, else the per-OS application data directory.
+/// Plan decision 6: `FIN_SERVER_DATA`, else the per-OS application data directory. None at
+/// all while `FIN_CREDENTIAL` is set (plan 7A Decision 14b): a credential's `fin` reads nothing
+/// in server data (no `local.key`, no `finisherd.json`, no `fin-config.json`), and its endpoint
+/// comes from `FIN_SERVER` alone.
 pub fn server_data() -> Option<PathBuf> {
+    if credential_set() {
+        return None;
+    }
     match std::env::var_os(SERVER_DATA_ENV) {
         Some(dir) if !dir.is_empty() => Some(paths::resolve(Path::new(&dir))),
         _ => os_default(paths::home()),
     }
+}
+
+fn credential_set() -> bool {
+    std::env::var_os(crate::auth::CREDENTIAL_ENV).is_some_and(|v| !v.is_empty())
 }
 
 /// Reads `socket` (and checks `protocolVersion`) from a `finisherd.json` document.
@@ -127,6 +137,12 @@ pub fn info_env_id() -> Option<String> {
 pub fn resolve() -> Result<Endpoint, CoreError> {
     if let Some(spec) = std::env::var_os(SERVER_ENV).filter(|v| !v.is_empty()) {
         return Ok(Endpoint::parse(&spec.to_string_lossy()));
+    }
+    if credential_set() {
+        return Err(unavailable(json!({
+            "reason": "FIN_CREDENTIAL is set: the server is the one FIN_SERVER names, and it is not set",
+            "env": SERVER_ENV,
+        })));
     }
     let Some(sd) = server_data() else {
         return Err(unavailable(

@@ -36,7 +36,8 @@ pub mod storage;
 pub use agent::{
     AgentApproval, AgentMode, AgentSession, AgentToolCall, AgentToolResult, AgentTurn,
     ApprovalDecision, ApprovalKind, Attribution, Capture, CostBasis, DecidedBy, Harness,
-    MAX_TOOL_TX_IDS, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason, Weights,
+    MAX_TOOL_TX_IDS, Provenance, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason,
+    Weights,
 };
 pub use cli::CliCommand;
 pub use consent::ConsentChanged;

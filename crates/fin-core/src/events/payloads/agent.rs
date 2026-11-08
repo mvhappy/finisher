@@ -6,7 +6,10 @@
 //! `agent.turn`, `agent.toolCall` and `agent.toolResult` are training-only: under diagnostics
 //! they keep their metadata and drop their content. Every session and turn carries its
 //! **provenance** (`harness`, `provider`, `model`, `weights`; `upstream` on turns) as required
-//! meta fields, so a later filter on it needs no join and no training content (§12.7).
+//! meta fields, so a later filter on it needs no join and no training content (§12.7). The
+//! agent-trace store's copies of `agent.toolCall`, `agent.toolResult` and `agent.approval`
+//! carry it too ([`Provenance`]): content is never without it, even once the diagnostics
+//! journal's entries of the session have aged out (owner decision 1).
 //!
 //! These are the stored forms. `finisherd` sends the wire forms of `wire_agent.rs`: raw model
 //! ids and upstream names, which become a table name or a keyed hash, and unkeyed BLAKE3
@@ -17,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::Body;
 use crate::events::approx::approx_struct;
-use crate::events::class::{Code, Content, Hashed, IdRef, Name};
+use crate::events::class::{Blake3Hex, Code, Content, Hashed, IdRef, Name};
 use crate::events::names;
 
 /// The most txIds one `agent.toolResult` lists.
@@ -80,6 +83,30 @@ pub enum SignIn {
     Key,
     Unknown,
 }
+
+/// A session's provenance, as the agent-trace store stamps it on every content entry that is
+/// not a session or a turn (those carry the same fields flat).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Provenance {
+    pub harness: Harness,
+    #[serde(deserialize_with = "names::agent_provider")]
+    pub provider: Name,
+    #[serde(deserialize_with = "names::agent_model")]
+    pub model: Name,
+    // As on `agent.session`: the keyed hash of the model id when `model` is `other`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Hashed")]
+    pub model_hash: Option<Hashed>,
+    pub weights: Weights,
+}
+approx_struct!(Provenance {
+    harness,
+    provider,
+    model,
+    model_hash,
+    weights
+});
 
 /// `agent.session`: a session started, resumed, was interrupted or ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -240,13 +267,24 @@ pub struct AgentTurn {
     pub cost_micros: Option<u64>,
     pub cost_basis: CostBasis,
     pub capture: Capture,
-    pub system_hash: Hashed,
-    pub tools_hash: Hashed,
+    // The keyed hashes of the system prompt and the tool definitions (exact capture only: a
+    // stream turn has neither).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Hashed")]
+    pub system_hash: Option<Hashed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Hashed")]
+    pub tools_hash: Option<Hashed>,
     // The keyed hash of the BLAKE3 of the full request body as sent (exact capture only): the
     // emitter sends the unkeyed `blake3:<hex>` and the wire form keys it, like `systemHash`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Hashed")]
     pub body_hash: Option<Hashed>,
+    // The unkeyed BLAKE3 of the same body, beside the content it hashes (the agent-trace
+    // store's copy only): the replay checks each rebuilt body against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Content<Blake3Hex>", extend("x-fin-content" = "modelInput"))]
+    pub body_blake3: Option<Content<Blake3Hex>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Content<Body>", extend("x-fin-content" = "modelInput"))]
     pub messages_delta: Option<Content<Body>>,
@@ -286,6 +324,7 @@ approx_struct!(AgentTurn {
     system_hash,
     tools_hash,
     body_hash,
+    body_blake3,
     messages_delta,
     output,
     system,
@@ -309,6 +348,10 @@ pub struct AgentToolCall {
     #[schemars(with = "Name")]
     pub command: Option<Name>,
     pub args_hash: Hashed,
+    // The session's provenance (the agent-trace store's copy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Provenance")]
+    pub provenance: Option<Provenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Content<Body>", extend("x-fin-content" = "toolArgs"))]
     pub args: Option<Content<Body>>,
@@ -319,6 +362,7 @@ approx_struct!(AgentToolCall {
     tool,
     command,
     args_hash,
+    provenance,
     args
 });
 
@@ -354,6 +398,10 @@ pub struct AgentToolResult {
     #[schemars(length(max = 64))]
     pub tx_ids: Vec<IdRef>,
     pub attribution: Attribution,
+    // The session's provenance (the agent-trace store's copy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Provenance")]
+    pub provenance: Option<Provenance>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,6 +416,7 @@ approx_struct!(AgentToolResult {
     micros,
     tx_ids,
     attribution,
+    provenance,
     truncated,
     output
 });
@@ -418,6 +467,10 @@ pub struct AgentApproval {
     pub decision: ApprovalDecision,
     pub by: DecidedBy,
     pub latency_ms: u64,
+    // The session's provenance (the agent-trace store's copy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Provenance")]
+    pub provenance: Option<Provenance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Content<Body>", extend("x-fin-content" = "userText"))]
     pub subject: Option<Content<Body>>,
@@ -429,5 +482,6 @@ approx_struct!(AgentApproval {
     decision,
     by,
     latency_ms,
+    provenance,
     subject
 });

@@ -75,6 +75,10 @@ impl Writer {
         while n < closed && files_total + blobs_live - freed(self, n) > max_total {
             n += 1;
         }
+        let sessions = match self.sh.opts.whole_sessions && n > 0 {
+            true => self.sessions_in(&self.files[..n])?,
+            false => Default::default(),
+        };
         let mut result = Ok(());
         let mut removed = 0;
         for f in &self.files[..n] {
@@ -91,6 +95,9 @@ impl Writer {
         }
         if removed > 0 {
             result = result.and(files::sync_dir(&self.dir));
+        }
+        if result.is_ok() {
+            result = self.evict_sessions(sessions);
         }
         result = result.and(self.blobs.gc(&self.dir).map(|_| ()));
         self.publish();
@@ -110,8 +117,9 @@ impl Writer {
             PurgeSelector::All => self.purge_all()?,
             PurgeSelector::Project(id) => {
                 let needle = format!("\"project\":\"{id}\"");
+                let needles = vec![needle];
                 self.rewrite_each(
-                    |f| (false, Some(needle.clone()), f.bytes > 0),
+                    |f| (false, &needles, f.bytes > 0),
                     |e| {
                         e.ctx
                             .as_ref()
@@ -122,7 +130,7 @@ impl Writer {
             }
             PurgeSelector::Before(ts) => {
                 let ts = *ts;
-                self.rewrite_each(|f| (f.end_ts < ts, None, f.start_ts < ts), |e| e.ts < ts)?
+                self.rewrite_each(|f| (f.end_ts < ts, &[], f.start_ts < ts), |e| e.ts < ts)?
             }
         };
         r.blobs += self.blobs.gc(&self.dir)?;
@@ -168,11 +176,12 @@ impl Writer {
         Ok(r)
     }
 
-    /// For each file, `plan` says (delete whole, a byte string a matching line must contain,
-    /// rewrite at all); a rewrite drops the lines `hit` matches.
-    fn rewrite_each(
+    /// For each file, `plan` says (delete whole, byte strings a matching line must contain one
+    /// of, none: every line is a candidate; rewrite at all); a rewrite drops the lines `hit`
+    /// matches. A file holding none of the strings is not parsed.
+    pub(crate) fn rewrite_each<'n>(
         &mut self,
-        plan: impl Fn(&FileMeta) -> (bool, Option<String>, bool),
+        plan: impl Fn(&FileMeta) -> (bool, &'n [String], bool),
         hit: impl Fn(&Envelope) -> bool,
     ) -> io::Result<PurgeReport> {
         let mut r = PurgeReport::default();
@@ -180,7 +189,7 @@ impl Writer {
         while i < self.files.len() {
             let f = self.files[i].clone();
             let path = self.dir.join(&f.name);
-            let (whole, needle, rewrite) = plan(&f);
+            let (whole, needles, rewrite) = plan(&f);
             if !whole && !rewrite {
                 i += 1;
                 continue;
@@ -203,19 +212,17 @@ impl Writer {
                 r.files += 1;
                 continue;
             }
-            if needle
-                .as_ref()
-                .is_some_and(|n| !blobs::contains(&text, n.as_bytes()))
-            {
+            let any = |hay: &[u8]| {
+                needles.is_empty() || needles.iter().any(|n| blobs::contains(hay, n.as_bytes()))
+            };
+            if !any(&text) {
                 i += 1;
                 continue;
             }
             let mut kept = Vec::with_capacity(text.len());
             let mut removed = 0;
             for l in lines(&text) {
-                let candidate = needle
-                    .as_ref()
-                    .is_none_or(|n| blobs::contains(l, n.as_bytes()));
+                let candidate = any(l);
                 let e = candidate
                     .then(|| serde_json::from_slice::<Envelope>(l).ok())
                     .flatten();

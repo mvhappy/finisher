@@ -14,6 +14,7 @@ default-members = [
     "crates/fin-compositor",
     "crates/fin-container",
     "crates/fin-core",
+    "crates/fin-dataset-inputs",
     "crates/fin-dav1d-sys",
     "crates/fin-fonts",
     "crates/fin-jobhost",

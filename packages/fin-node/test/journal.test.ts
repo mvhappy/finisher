@@ -239,7 +239,8 @@ describe("Journal", () => {
     const p = (await all(j)).find((e) => e.kind === "error.panic")!;
     const payload = p.payload as Record<string, unknown>;
     expect(payload).toMatchObject({ where: "finNode", thread: "worker", thirdParty: false });
-    expect(payload.location).toMatch(/^crates\/fin-node\/src\/journal\/mod\.rs:\d+$/);
+    // The test hook's own panic site (`journal/test_api.rs`).
+    expect(payload.location).toMatch(/^crates\/fin-node\/src\/journal\/test_api\.rs:\d+$/);
     expect(payload.messageHash).toMatch(/^k1:/);
     expect(payload.message).toBeUndefined();
     expect(JSON.stringify(p)).not.toContain(tmpdir());

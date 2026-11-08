@@ -3,6 +3,8 @@
 
 mod addr;
 mod agent_env;
+mod agent_paths;
+mod agent_session;
 mod auth;
 mod backend;
 mod client;
@@ -221,7 +223,11 @@ fn parse_named(args: Vec<OsString>) -> Result<(Cli, Option<String>), CoreError> 
         .map_err(|e| clap_usage(&e))?;
     diag::note_matches(&cmd, &matches);
     let cli = Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))?;
-    Ok((cli, agent_env::command_name(&matches)))
+    let name = agent_env::command_name(&matches);
+    // Under an agent credential, file arguments are confined before anything opens them (14c).
+    agent_paths::check_project(cli.globals.project.as_deref())?;
+    agent_paths::check_matches(&matches, name.as_deref(), cli.globals.project.as_deref())?;
+    Ok((cli, name))
 }
 
 #[cfg(test)]
@@ -243,6 +249,9 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
             path,
         }) => match command.as_slice() {
             [p] if p == "param" => commands::schema::params(scope.as_deref(), path.as_deref()),
+            [c] if c == "commands" && scope.is_none() && path.is_none() => {
+                Ok(commands::schema::index(&configure(Cli::command())))
+            }
             _ if scope.is_some() || path.is_some() => Err(output::usage(
                 "--scope and --path belong to fin schema param",
                 json!({ "command": command }),

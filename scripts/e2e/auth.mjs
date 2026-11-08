@@ -77,7 +77,9 @@ export async function run() {
     /** `fin` as `local` (no credential file), expecting success. */
     const local = (args, cwd = project) => fin(sd, cwd, args, tempEnv);
     /** `fin` with a credential file, whatever the exit. */
-    const as = (file, args) => finRaw(sd, project, args, { ...tempEnv, FIN_CREDENTIAL: file });
+    // Under an agent credential `fin` reads no server data: the endpoint is FIN_SERVER alone
+    // (7A Decision 14b) and the project folder FIN_PROJECT_DIR alone (the 8b review).
+    const as = (file, args) => finRaw(sd, project, args, { ...tempEnv, FIN_CREDENTIAL: file, FIN_SERVER: server.info.socket, FIN_PROJECT_DIR: project });
     const refused = (r, code, what, status = 7) => {
       assertEqual([r.status, r.json?.error?.code], [status, code], what);
       if (r.json.error.fix !== undefined) assertEqual(COMMAND_IN_FIX.test(r.json.error.fix), false, `${what}: the fix names a command: ${r.json.error.fix}`);

@@ -38,7 +38,42 @@ pub fn map() -> Value {
         "modes": "ripple (default for clips) | overwrite (default for other kinds; lift for deletes) | roll (trims); echoed as resolved.mode",
         "write": "{rev, txId, bindings, diff, resolved}; --dry-run: {dryRun:true, txId, bindings, diff, resolved}",
         "error": "{error:{code, message, details, fix}}",
-        "exit": "0 ok, 2 USAGE, 3 validation, 4 CONFLICT, 5 SERVER_UNAVAILABLE, 6 internal, 7 denied (needs a person; do not retry)",
+        "exit": "0 ok, 2 USAGE, 3 validation, 4 CONFLICT, 5 SERVER_UNAVAILABLE, 6 internal, 7 denied (needs a person; do not retry), 8 APPROVAL_PENDING (a person was asked: wait, then repeat)",
         "more": "fin help <group>; fin schema <cmd>",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map;
+    use crate::output::exit_code;
+
+    /// The map feeds the agent's system prompt: it must name every exit class an agent can see,
+    /// exit 8 (pending: wait, then repeat) included, and each named class must be the exit the
+    /// binary really uses.
+    #[test]
+    fn exit_line_names_every_class_including_pending() {
+        let m = map();
+        let line = m["exit"].as_str().expect("exit is text");
+        assert!(
+            line.contains("8 APPROVAL_PENDING (a person was asked: wait, then repeat)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("7 denied (needs a person; do not retry)"),
+            "{line}"
+        );
+        for (code, name) in [
+            (2, "USAGE"),
+            (5, "SERVER_UNAVAILABLE"),
+            (7, "APPROVAL_DENIED"),
+            (8, "APPROVAL_PENDING"),
+        ] {
+            assert_eq!(exit_code(name), code, "{name}");
+            assert!(
+                line.contains(&format!("{code} ")),
+                "exit {code} is not in the map: {line}"
+            );
+        }
+    }
 }

@@ -77,6 +77,8 @@ export function valueOf<A = unknown>(exit: Exit): A {
 /** A proved `console` connection. */
 export interface ConsoleConnection {
   call(tag: string, payload: unknown): Promise<Exit>;
+  /** A streaming call (`agent.watch`): each value to `onValue`; `stop` interrupts it. */
+  stream(tag: string, payload: unknown, onValue: (v: unknown) => void): { done: Promise<Exit>; stop(): void };
   close(): Promise<void>;
 }
 
@@ -123,5 +125,12 @@ export async function connectConsole(serverData: string): Promise<ConsoleConnect
     await client.close();
     throw e;
   }
-  return { call: (tag, payload) => client.call(tag, payload), close: () => client.close() };
+  return {
+    call: (tag, payload) => client.call(tag, payload),
+    stream: (tag, payload, onValue) => {
+      const { id, done } = client.stream(tag, payload, onValue);
+      return { done, stop: () => client.interrupt(id) };
+    },
+    close: () => client.close(),
+  };
 }

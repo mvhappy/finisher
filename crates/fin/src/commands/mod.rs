@@ -72,13 +72,20 @@ pub struct Globals {
 }
 
 /// The branch reference a command names: `--branch`, else the project's default in
-/// `fin-config.json`, else `main`; and whether it came from the file.
+/// `fin-config.json`, else `main`; and whether it came from the file. Under an agent session's
+/// credential the default is the session's own (its root, or its `fin try`), from the server,
+/// and `fin-config.json` is never read (plan 7A Decision 14a).
 pub fn configured_branch(
     backend: &dyn Backend,
     globals: &Globals,
 ) -> Result<(String, bool), CoreError> {
     if let Some(b) = &globals.branch {
         return Ok((b.clone(), false));
+    }
+    if !backend.dry_run_only()
+        && let Some(session) = crate::agent_session::session_state(backend)?
+    {
+        return Ok((session.default_branch, false));
     }
     if let Some((sd, project_id)) = backend.config_scope()?
         && let Some(b) = crate::config::default_branch(&sd, &project_id)?
@@ -110,13 +117,20 @@ pub(crate) fn stale_default(branch: &str, views: &[Value]) -> CoreError {
 }
 
 /// The author of this command's records: `$FIN_AUTHOR` when set and not empty, else `fin`
-/// (undo stacks are per author).
+/// (undo stacks are per author). Under an agent session's credential the server sets it
+/// (`agent:<role>:<session>`, Decision 14d), so `FIN_AUTHOR` is not even sent.
 pub fn author() -> String {
+    if crate::agent_session::active() {
+        return AGENT_AUTHOR.to_string();
+    }
     std::env::var("FIN_AUTHOR")
         .ok()
         .filter(|a| !a.is_empty())
         .unwrap_or_else(|| "fin".to_string())
 }
+
+/// What an agent session's `fin` sends as the author: the server replaces it with the session's.
+pub const AGENT_AUTHOR: &str = "agent";
 
 /// One write command's input, as typed flags or as a `batch` line.
 #[derive(Debug, Clone)]

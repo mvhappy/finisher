@@ -37,6 +37,7 @@ mod control;
 mod disk;
 mod dispatch;
 mod encode;
+mod evict;
 mod export;
 mod faults;
 mod files;
@@ -63,7 +64,9 @@ pub use export::Export;
 #[cfg(feature = "test-hooks")]
 pub use faults::Faults;
 pub use fin_core::events::CollectPolicy;
-pub use options::{JournalOptions, KeyFn, server_scrub};
+pub use options::{
+    CapsKeys, JournalOptions, KeyFn, TRACES_MAX_AGE, TRACES_MAX_BYTES, server_scrub,
+};
 pub use projects::{ProjectPolicy, ProjectScope};
 pub use purge::{PurgeReport, PurgeSelector};
 pub use read::{Entries, Filter};
@@ -102,12 +105,15 @@ impl Journal {
     /// Never fails: an unusable directory suspends the journal. The directory is created
     /// only by the first write. The consent's `rev` is a floor: `state.json` numbers it.
     pub fn open(dir: &Path, consent: Consent, opts: JournalOptions) -> Journal {
+        let state = consent::ConsentState::of(consent);
         let ctl = handle::ConsentCtl {
             env: consent::EnvOverrides::default(),
             last_good: None,
-            state: consent::ConsentState::of(consent),
+            state: consent::masked(state, opts.purposes, state.basis),
             base_age_ms: opts.max_age.as_millis() as u64,
             base_total: opts.max_total_bytes,
+            mask: opts.purposes,
+            caps_keys: opts.caps_keys,
         };
         Journal::open_ctl(dir, ctl, opts)
     }
@@ -139,7 +145,7 @@ impl Journal {
             .then(|| key::Key::load_or_generate(dir).map(Arc::new))
             .flatten();
         let (age, total) = (ctl.base_age_ms, ctl.base_total);
-        let (age, total) = consent::caps_of(ctl.last_good.as_ref(), age, total);
+        let (age, total) = consent::caps_of(ctl.last_good.as_ref(), ctl.caps_keys, age, total);
         let sh = Arc::new(Shared {
             word: AtomicU64::new(pack(Stamp {
                 purposes: state.purposes(),
@@ -153,6 +159,7 @@ impl Journal {
             dropped_total: AtomicU64::new(0),
             skipped_unknown: AtomicU64::new(0),
             scopes: Mutex::new(Default::default()),
+            projects_sent: Mutex::new(Default::default()),
             status: Mutex::new(Snapshot::default()),
             session,
             opts,

@@ -17,7 +17,7 @@ describe("budget", () => {
     const b = new Budget(new MemoryLedger(), "s1", limits({ tokens: 1000, moneyMicros: 5000 }), clock, { price });
     b.startRun();
     const first = b.canCall(usage({ input: 100, output: 400 }));
-    expect(first).toEqual({ ok: true, reservation: { micros: 4100, day: utcDay(clock.now()) } });
+    expect(first).toEqual({ ok: true, reservation: { micros: 4100, tokens: 500, day: utcDay(clock.now()) } });
     b.release(first.ok ? first.reservation : null);
     expect(b.canCall(usage({ input: 100, output: 901 }))).toMatchObject({ ok: false, kind: "tokens", used: 0, limit: 1000 });
     b.charge(usage({ input: 100, output: 100 }), 1100);
@@ -143,10 +143,13 @@ describe("reservations and attempts (review H3, B2)", () => {
     expect(ledger.read("b", "money").reserved).toBe(0);
   });
 
-  it("an unknown price reserves nothing: the call is charged after it", () => {
+  it("an unknown price reserves no money, only tokens: the call is charged after it", () => {
     const ledger = new MemoryLedger();
     const b = new Budget(ledger, "s", limits({ moneyMicros: 10 }), manualClock(), { price: () => null });
-    expect(b.canCall(usage({ output: 1_000_000 }))).toEqual({ ok: true, reservation: null });
+    const r = b.canCall(usage({ output: 1_000_000 }));
+    expect(r).toMatchObject({ ok: true, reservation: { micros: 0, tokens: 1_000_000 } });
+    b.release(r.ok ? r.reservation : null);
+    expect(ledger.read("s", "tokens").reserved).toBe(0);
     expect(b.charge(usage({ output: 5 }), 50).stop).toEqual({ kind: "money", used: 50, limit: 10 });
   });
 

@@ -2,7 +2,7 @@
 // `ProviderEvent`s, each bound to the instance (process or HTTP stream) that emitted it; the
 // runtime alone writes nodes, budgets and journal entries, and drops events from an instance
 // it replaced. No session fork (cut in revision 2).
-import { type FinError, type Harness, type Mode, ProviderEvent } from "@finisher/contracts";
+import { type AgentProvider, type FinError, type Harness, type Mode, ProviderEvent } from "@finisher/contracts";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 import { finError } from "../errors.ts";
 
@@ -39,6 +39,8 @@ export interface ProviderRef {
 export interface SessionSpec {
   readonly sessionId: string;
   readonly projectId: string;
+  /** The session's provider (the built-in agent's preset: `openrouter` or `local`). */
+  readonly provider?: AgentProvider;
   readonly model: string;
   readonly role: string;
   readonly mode: Mode;
@@ -49,6 +51,28 @@ export interface SessionSpec {
   /** The session environment (§8.5) for processes the adapter starts. */
   readonly env: Readonly<Record<string, string>>;
   readonly providerRef: ProviderRef | null;
+  /** The runtime's budget check before each model call, for an adapter whose loop runs here (7A-2). */
+  readonly gate?: CallGate;
+}
+
+/** Tokens a model call is projected to use (the catalogue's `Usage`). */
+export interface ProjectedUsage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly reasoning: number;
+}
+
+/**
+ * Decision 21's check before each model call. `ok` reserves the projected money until the
+ * call's `usage` event settles it (one reservation per `usage` event, oldest first); an attempt
+ * that ends without a `usage` event calls `release`. `ok: false` ends the run: the runtime
+ * stops the session at a safe point (`BUDGET_EXCEEDED`), or, for a per-run cap, only the run.
+ */
+export interface CallGate {
+  beforeCall(projected: ProjectedUsage): { readonly ok: true } | { readonly ok: false; readonly error: FinError };
+  release(): void;
 }
 
 export interface TurnInput {

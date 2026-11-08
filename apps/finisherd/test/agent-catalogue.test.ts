@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { BUNDLED_CATALOGUE, Catalogue, type Usage, ZERO_USAGE } from "../src/agent/catalogue/catalogue.ts";
 import { discoverCodexModels, parseClaudeInitialize, parseCodexModelPage } from "../src/agent/catalogue/cli-models.ts";
-import { OpenRouterPrices, parseModels } from "../src/agent/catalogue/prices.ts";
+import { LISTING_MAX_BYTES, OpenRouterPrices, parseModels, REFRESH_BACKOFF_MS } from "../src/agent/catalogue/prices.ts";
+import { cataloguePricing } from "../src/agent/runtime-deps.ts";
 import { manualClock } from "../src/agent/clock.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/catalogue.test.json", import.meta.url));
@@ -37,7 +38,7 @@ async function prices(): Promise<OpenRouterPrices> {
   const { port } = server.address() as AddressInfo;
   const p = new OpenRouterPrices(join(mkdtempSync(join(tmpdir(), "fin-prices-")), "agents", "openrouter-models.json"), manualClock());
   try {
-    expect(await p.refresh(`http://127.0.0.1:${port}/api/v1`)).toBe(3);
+    expect(await p.refresh(`http://127.0.0.1:${port}/api/v1`)).toBe(4);
   } finally {
     server.close();
   }
@@ -140,9 +141,109 @@ describe("describing and pricing any model id", () => {
 describe("OpenRouter's models API cache", () => {
   it("parses the listing, skipping entries without an id or a window", () => {
     const models = parseModels(json("openrouter-models.json"));
-    expect(models.map((m) => m.id)).toEqual(["acme-closed/big", "acme-closed/weights-on-hf", "openai/test-codex-1"]);
+    expect(models.map((m) => m.id)).toEqual(["acme-closed/big", "acme-closed/weights-on-hf", "openai/test-codex-1", "openrouter/auto"]);
     expect(models[2]).toMatchObject({ maxOutput: 4096, price: { cacheRead: 0, cacheWrite: 0 } });
     expect(code(() => parseModels({}))).toBe("PROVIDER_PROTOCOL");
+  });
+
+  it("never reads a missing or negative price as free (H1): `-1` is an unknown price, only a literal 0 is free", async () => {
+    const entry = (id: string, pricing: unknown) => ({ id, context_length: 1000, top_provider: {}, supported_parameters: ["tools"], pricing });
+    const listed = parseModels({
+      data: [
+        entry("m/router", { prompt: "-1", completion: "-1" }),
+        entry("m/half", { prompt: "0.000001" }),
+        entry("m/blank", { prompt: "", completion: "" }),
+        entry("m/negative-number", { prompt: -0.000001, completion: 0.000002 }),
+        entry("m/nan", { prompt: "cheap", completion: "0.000002" }),
+        entry("m/none", undefined),
+        entry("m/free", { prompt: "0", completion: "0" }),
+        entry("m/paid", { prompt: "0.000001", completion: "0.000002", input_cache_read: "-1" }),
+      ],
+    });
+    const byId = Object.fromEntries(listed.map((m) => [m.id, m]));
+    for (const id of ["m/router", "m/half", "m/blank", "m/negative-number", "m/nan", "m/none"]) expect(byId[id], id).toBeDefined();
+    for (const id of ["m/router", "m/half", "m/blank", "m/negative-number", "m/nan", "m/none"]) expect(byId[id]!.price, id).toBeUndefined();
+    expect(byId["m/free"]!.price).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(byId["m/paid"]!.price).toEqual({ input: 1_000_000, output: 2_000_000, cacheRead: 0, cacheWrite: 0 });
+
+    // Through the fixture's `openrouter/auto` ("-1"): the catalogue has no price, so a session
+    // cannot start on it (`PRICING_UNKNOWN`), and usage is charged `unknown`, never $0 `priced`.
+    const p = await prices();
+    const cat = Catalogue.load(BUNDLED_CATALOGUE, { prices: p });
+    expect(cat.describe("openrouter", "openrouter/auto")).toMatchObject({ source: "openrouter", window: 2_000_000 });
+    expect(cat.describe("openrouter", "openrouter/auto").price).toBeUndefined();
+    expect(cat.describe("openrouter", "acme-closed/weights-on-hf").price).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    const pricing = cataloguePricing(cat);
+    expect(pricing.known("openrouter", "openrouter/auto")).toBe(false);
+    expect(pricing.known("openrouter", "acme-closed/big")).toBe(true);
+    expect(pricing.known("openrouter", "acme-closed/weights-on-hf")).toBe(true);
+    expect(cat.price("openrouter", "openrouter/auto", usage({ input: 10, output: 10 }))).toEqual({ micros: 0, basis: "unknown" });
+  });
+
+  it("refreshes one fetch at a time, backs off 15 minutes after a failure, caps the body and drops bad ids (M1)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fin-prices-"));
+    const clock = manualClock();
+    const p = new OpenRouterPrices(join(dir, "agents", "openrouter-models.json"), clock);
+    const good = JSON.stringify({ data: [{ id: "m/one", context_length: 1000, pricing: { prompt: "0.000001", completion: "0.000002" } }] });
+
+    // Single-flight: concurrent callers share one fetch.
+    let calls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const slow = (async () => {
+      calls++;
+      await gate;
+      return new Response(good);
+    }) as unknown as typeof fetch;
+    const together = Promise.all([p.refreshIfStale("http://x/api/v1", slow), p.refreshIfStale("http://x/api/v1", slow), p.refresh("http://x/api/v1", slow)]);
+    release();
+    await together;
+    expect(calls).toBe(1);
+    expect(p.get("m/one")?.price?.input).toBe(1_000_000);
+
+    // A failure is not retried for 15 minutes, then is.
+    clock.advance(25 * 60 * 60_000);
+    let attempts = 0;
+    const errors: unknown[] = [];
+    const down = (async () => {
+      attempts++;
+      return new Response("no", { status: 503 });
+    }) as unknown as typeof fetch;
+    await p.refreshIfStale("http://x/api/v1", down, undefined, (e) => errors.push(e));
+    await p.refreshIfStale("http://x/api/v1", down, undefined, (e) => errors.push(e));
+    expect(attempts).toBe(1);
+    expect(errors).toHaveLength(1);
+    clock.advance(REFRESH_BACKOFF_MS - 1);
+    await p.refreshIfStale("http://x/api/v1", down);
+    expect(attempts).toBe(1);
+    clock.advance(2);
+    await p.refreshIfStale("http://x/api/v1", down);
+    expect(attempts).toBe(2);
+    // Backed off again after the second failure; a success clears it.
+    await p.refreshIfStale("http://x/api/v1", down);
+    expect(attempts).toBe(2);
+    clock.advance(REFRESH_BACKOFF_MS + 1);
+    await p.refreshIfStale("http://x/api/v1", (async () => new Response(good)) as unknown as typeof fetch);
+    expect(p.stale()).toBe(false);
+
+    // The body is streamed and capped: a listing over the cap is refused without being read whole.
+    const huge = (async () =>
+      new Response(
+        new ReadableStream({
+          pull(c) {
+            c.enqueue(new Uint8Array(1024 * 1024));
+          },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(p.refresh("http://x/api/v1", huge)).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    const declared = (async () => new Response("{}", { headers: { "content-length": String(LISTING_MAX_BYTES + 1) } })) as unknown as typeof fetch;
+    clock.advance(REFRESH_BACKOFF_MS + 1);
+    await expect(p.refresh("http://x/api/v1", declared)).rejects.toMatchObject({ code: "PROVIDER_PROTOCOL" });
+
+    // Ids that are not OpenRouter's shape never enter the catalogue.
+    const ids = ["ok/model", "ok/model:free", "no-slash", "bad id/model", "../etc/passwd", "a/b/c", `${"x".repeat(65)}/m`, "ok/with\nnewline"];
+    const listed = parseModels({ data: ids.map((id) => ({ id, context_length: 1000, pricing: { prompt: "0", completion: "0" } })) });
+    expect(listed.map((m) => m.id)).toEqual(["ok/model", "ok/model:free"]);
   });
 
   it("is written to server data, read back on start, and goes stale after a day", async () => {

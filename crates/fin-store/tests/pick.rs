@@ -988,3 +988,47 @@ fn new_copy_of_a_root_settles_every_branch_holding_one() {
     assert_eq!(states(&f), states(&s));
     assert_verifies(&f);
 }
+
+/// 7A Decision 27: each result names what it acted on with the records their origin chains
+/// lead to (a copy of a copy), so a reader needs no link walking of its own.
+#[test]
+fn origins_name_what_was_acted_on() {
+    let Env { _tmp, mut s } = project();
+    let side = branch(&mut s, "b2", "side", MAIN);
+    let m = merged_group(&mut s);
+    assert_eq!(m.merged, ["e1", "e2"]);
+    assert_eq!(m.origins, ["e1", "e2"]);
+    // main's copies, copied again: each leads back to the edit it copies.
+    let again = merge(&mut s, "m2", MAIN, &side);
+    assert_eq!(again.merged, ["m-1", "m-2"]);
+    assert_eq!(again.origins, ["m-1", "e1", "m-2", "e2"]);
+    // A retried merge answers from the log, with the same origins.
+    assert_eq!(merge(&mut s, "m2", MAIN, &side).origins, again.origins);
+    // A revert names its group's records and what they copy.
+    let r = revert(&mut s, "v1", "m", MAIN);
+    assert_eq!(r.origins, ["m-1", "e1", "m-2", "e2"]);
+    // Nothing reverted, nothing named.
+    assert!(revert(&mut s, "v2", "m", MAIN).origins.is_empty());
+    // An undo names its units; a redo names none.
+    // An undo of a merge unit names the group's records and what they copy.
+    let u = undo(&mut s, "u1", "carol", &side);
+    assert_eq!(u.undone, ["m2"]);
+    assert_eq!(u.origins, ["m2-1", "m-1", "e1", "m2-2", "m-2", "e2"]);
+    let redo = s
+        .redo(HistoryReq {
+            tx_id: "r1".into(),
+            author: "carol".into(),
+            branch: side.clone(),
+            dry_run: false,
+            args_hash: None,
+            to: None,
+        })
+        .unwrap();
+    assert!(redo.origins.is_empty());
+    // A cherry-pick names its origin.
+    edit(&mut s, "br1", "e3", "alice", vec![insert("$q", 40, 2)]);
+    assert_eq!(pick(&mut s, "p1", "e3", MAIN).origins, ["e3"]);
+    // Origins are omitted from the JSON when empty, so older readers see the same bytes.
+    let json = serde_json::to_value(&redo).unwrap();
+    assert!(json.get("origins").is_none());
+}

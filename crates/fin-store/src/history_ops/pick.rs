@@ -10,7 +10,7 @@ use fin_core::history::{Outcome, Planned, plan_cherry_pick, plan_revert};
 use fin_core::{CommittedTx, Link, RecordKind, Tx};
 use rusqlite::{OptionalExtension, params};
 
-use super::SqlLog;
+use super::{SqlLog, origins};
 use crate::branch::create::{check_key, key_reused};
 use crate::commit::{check_args_hash, same_args_hash};
 use crate::db::{self, Counters};
@@ -144,6 +144,18 @@ impl Store {
         })
     }
 
+    /// `r` with `origins` (7A Decision 27): a cherry-pick's origin, or the records of the
+    /// group a revert reverts, with their origin chains. Nothing committed, nothing named.
+    fn pick_origins(&self, mut r: HistoryResult) -> Result<HistoryResult, StoreError> {
+        let named = match r.committed.first().and_then(|c| c.link.as_deref()) {
+            Some(Link::CherryPick { origin, .. }) => vec![origin.clone()],
+            Some(Link::Revert { reverts }) => origins::merge_group(&self.conn, reverts)?,
+            _ => Vec::new(),
+        };
+        r.origins = origins::chains(&self.conn, named)?;
+        Ok(r)
+    }
+
     fn pick(
         &mut self,
         c: &Common<'_>,
@@ -174,14 +186,15 @@ impl Store {
                 .map(Ok)
             })?;
             if let Some(out) = wrote {
-                return Ok(result(out, c.dry_run));
+                return self.pick_origins(result(out, c.dry_run));
             }
             // Deduped; gone again (an import rewound it since): the operation runs again.
             if let Some(existing) = db::find_tx(&self.conn, c.tx_id)? {
                 if existing.link.as_deref().map(Link::kind) != Some(which.kind()) {
                     return Err(key_reused(&existing));
                 }
-                return Ok(result(Ok(same_args_hash(c.args_hash, existing)?), false));
+                let r = result(Ok(same_args_hash(c.args_hash, existing)?), false);
+                return self.pick_origins(r);
             }
         }
     }
@@ -199,6 +212,7 @@ fn result(c: Result<CommittedTx, &'static str>, dry_run: bool) -> HistoryResult 
         undone,
         dry_run,
         no_op,
+        origins: Vec::new(),
     }
 }
 

@@ -20,6 +20,7 @@ import {
   needsConfirmation,
   PUBLIC_RPCS,
   type Principal,
+  type RpcRule,
   type RuleFacts,
   ruleOf,
   STREAM_RPCS,
@@ -33,6 +34,7 @@ import type { Connections, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
+import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
 import { type ChainProjects, resolve } from "./resolve.ts";
@@ -68,6 +70,20 @@ export function writeGuardOf(options: object): Effect.Effect<WriteGuard> {
  */
 export function credentialOf(p: Principal): string | undefined {
   return p.kind === "agent" || p.kind === "mcp" ? `${p.kind}:${p.id}` : undefined;
+}
+
+/**
+ * `payload` with `author` as the author of what it writes: `tx.commit`'s `tx.author`, the
+ * `author` of every other write (history calls, a new branch's `createdBy`, recovery's).
+ */
+export function stampAuthor(tag: FinRpcTag, rule: RpcRule, payload: unknown, author: string): unknown {
+  if (payload === null || typeof payload !== "object") return payload;
+  const p = payload as Record<string, unknown>;
+  if (tag === "tx.commit") {
+    return p.tx !== null && typeof p.tx === "object" ? { ...p, tx: { ...(p.tx as Record<string, unknown>), author } } : p;
+  }
+  if (rule.writes === undefined && rule.author === undefined) return p;
+  return { ...p, [rule.author ?? "author"]: author };
 }
 
 /** Approvals kept in memory at most, and for how long (review of Task 5, L6). */
@@ -112,6 +128,8 @@ export interface ChainDeps {
   /** Notes a request of an `agent`/`mcp` credential (its idle expiry, Task 9). */
   readonly touch?: (p: Principal) => void;
   readonly clock?: () => number;
+  /** What the chain asks of agent sessions (sub-project 7A Task 7); none: 5A's chain. */
+  readonly hooks?: ChainHooks;
 }
 
 /** What a handler sees in its options beside Effect's: the policy stage's guard and what was resolved. */
@@ -153,6 +171,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
   const policies = deps.policies ?? DEFAULT_POLICIES;
   const approvals: Approvals = deps.approvals ?? new Map();
   const timed = deps.timed ?? ((_, self) => self);
+  const hooks = deps.hooks ?? {};
   const clock = deps.clock ?? Date.now;
 
   const deny = (tag: string, principal: Principal, transport: Transport) => (e: FinError) =>
@@ -186,7 +205,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects);
-      yield* authorize(tag, principal, payload, resolved, deps.projects);
+      yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
       const outcome = yield* runPolicies(policies, { tag, rule, principal, payload: resolved.payload, projects: deps.projects });
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);
       if ("ask" in outcome) {
@@ -208,12 +227,12 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (rule.unconfirmed === "service" && principal.human && principal.kind !== "console") {
         return yield* Effect.fail(confirmationRequired(tag, "missing"));
       }
-      // A credential's new branches carry its own author, whatever it sent (M4; review of Tasks
-      // 8–9, M1: whatever its branch limits, or it could plant an `own` branch for another).
-      const stamped =
-        rule.author !== undefined && stampsAuthor(principal)
-          ? { ...(resolved.payload as Record<string, unknown>), [rule.author]: authorOf(principal) }
-          : resolved.payload;
+      // A credential's writes carry its own author, whatever it sent (M4; review of Tasks 8–9,
+      // M1: whatever its branch limits, or it could plant an `own` branch for another; 7A
+      // Decision 14d: its records too, so `FIN_AUTHOR` cannot speak for someone else).
+      const stamped = stampsAuthor(principal)
+        ? stampAuthor(tag, rule, resolved.payload, hooks.authorOf?.(principal) ?? authorOf(principal))
+        : resolved.payload;
       const credential = credentialOf(principal);
       const guard: WriteGuard = credential === undefined ? outcome.guard : { ...outcome.guard, credential };
       return { payload: stamped, guard, principal, facts: resolved.facts, openedProject: resolved.openedProject };
@@ -221,11 +240,15 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     return Effect.tapError(stages, deny(tag, principal, deps.connections.transport));
   };
 
-  /** Stage 7: `project.open` opened the project its folder named when it was checked. */
-  const after = (tag: string, principal: Principal, opened: string | undefined) => (result: unknown) => {
-    if (tag !== "project.open" || principal.projects === "*") return Effect.succeed(result);
+  /**
+   * Stage 7: `project.open` opened the project its folder named when it was checked; then the
+   * hooks' own (an agent session's writes recorded under it).
+   */
+  const after = (tag: FinRpcTag, c: Checked, headers: unknown) => (result: unknown) => {
+    const recorded = hooks.after === undefined ? Effect.succeed(result) : Effect.as(hooks.after(tag, c.principal, c.payload, result, headers), result);
+    if (tag !== "project.open" || c.principal.projects === "*") return recorded;
     const got = (result as { projectId?: unknown } | null)?.projectId;
-    return got === opened ? Effect.succeed(result) : Effect.fail(outOfReach(typeof got === "string" ? got : undefined));
+    return got === c.openedProject ? recorded : Effect.fail(outOfReach(typeof got === "string" ? got : undefined));
   };
 
   type Checked = Effect.Success<ReturnType<typeof check>>;
@@ -251,7 +274,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     }
     out[tag] = (payload, options) =>
       Effect.flatMap(counted(tag, payload, options.client.id), (c) =>
-        Effect.flatMap(handler(c.payload, optionsOf(options, c)) as Effect.Effect<unknown, FinError>, after(tag, c.principal, c.openedProject)),
+        Effect.flatMap(handler(c.payload, optionsOf(options, c)) as Effect.Effect<unknown, FinError>, after(tag, c, options.headers)),
       );
   }
   return out as H;

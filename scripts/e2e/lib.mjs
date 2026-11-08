@@ -74,8 +74,11 @@ export function assertNoTestHooks() {
 
 /** Runs `fin` and returns `{ status, json }`, whatever the exit code. */
 export function finRaw(serverData, cwd, args, extraEnv = {}) {
-  const env = { ...process.env, FIN_SERVER_DATA: serverData, ...extraEnv };
-  delete env.FIN_SERVER; // find the server through <server-data>/finisherd.json
+  // Find the server through <server-data>/finisherd.json, unless the caller names it (a
+  // credential's `fin` takes the endpoint from FIN_SERVER alone: 7A Decision 14b).
+  const env = { ...process.env, FIN_SERVER_DATA: serverData };
+  delete env.FIN_SERVER;
+  Object.assign(env, extraEnv);
   // fin has its own 30 s server timeouts; this bounds a hang the watchdog cannot interrupt
   // (spawnSync blocks the event loop).
   const out = spawnSync(FIN, args, { cwd, encoding: "utf8", env, timeout: 60_000 });

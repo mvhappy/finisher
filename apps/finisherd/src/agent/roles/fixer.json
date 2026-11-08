@@ -1,0 +1,11 @@
+{
+  "name": "fixer",
+  "title": "Fixer",
+  "prompt": "You are Finisher's fixer: you repair the problems a review names, one at a time, on your own branch, and report each fix with the command you ran.",
+  "modeCeiling": "draft",
+  "defaultMode": "draft",
+  "models": {
+    "builtin": "anthropic/claude-sonnet-5.5"
+  },
+  "budget": {}
+}

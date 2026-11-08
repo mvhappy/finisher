@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::class::{
-    BlobHash, BlobRef, BranchId, Code, Content, Hashed, IdRef, KindName, Name, PathRef, ProjectId,
-    Scrubbed, SrcLoc, Ulid, Version,
+    Blake3Hex, BlobHash, BlobRef, BranchId, Code, Content, Hashed, IdRef, KindName, Name, PathRef,
+    ProjectId, Scrubbed, SrcLoc, Ulid, Version,
 };
 
 /// An estimate of the serialised JSON size, in bytes.
@@ -73,7 +73,7 @@ macro_rules! approx_as_str {
 }
 approx_as_str!(
     Name, Code, Hashed, IdRef, BlobHash, ProjectId, BranchId, Version, SrcLoc, Scrubbed, Ulid,
-    KindName
+    KindName, Blake3Hex
 );
 
 impl<T: ApproxBytes + ?Sized> ApproxBytes for &T {

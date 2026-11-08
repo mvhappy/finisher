@@ -13,6 +13,47 @@ import type {
 } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
+import { TxSetAsideSchema } from "./tx-set-aside.ts";
+import {
+  AgentApprovalAnswerPayload,
+  AgentApprovalAnswerSuccess,
+  AgentApprovalListPayload,
+  AgentApprovalListSuccess,
+  AgentProvidersSuccess,
+  AgentSelfSuccess,
+  AgentSelfTryPayload,
+  AgentSessionControlPayload,
+  AgentSessionControlSuccess,
+  AgentSessionDeletePayload,
+  AgentSessionDeleteSuccess,
+  AgentSessionGetPayload,
+  AgentSessionGetSuccess,
+  AgentSessionListPayload,
+  AgentSessionListSuccess,
+  AgentSessionPromptPayload,
+  AgentSessionPromptSuccess,
+  AgentSessionStartPayload,
+  AgentSessionStartSuccess,
+  AgentSessionSteerPayload,
+  AgentSessionSteerSuccess,
+  AgentWatchPayload,
+  WatchItem,
+} from "./agent.ts";
+import {
+  AgentKeyListSuccess,
+  AgentKeyRemovePayload,
+  AgentKeyRemoveSuccess,
+  AgentKeySetPayload,
+  AgentKeySetSuccess,
+  AgentLocalRemovePayload,
+  AgentLocalRemoveSuccess,
+  AgentLocalSetPayload,
+  AgentLocalSetSuccess,
+  AgentLocalShowSuccess,
+  AgentLocalTestSuccess,
+  TrainingClosedTargetsSetPayload,
+  TrainingClosedTargetsSuccess,
+} from "./agent-admin.ts";
 import {
   AuthProvePayload,
   AuthProveSuccess,
@@ -318,20 +359,8 @@ export const ProjectEventSchema = Schema.Union([
  */
 export type ProjectEvent = Exclude<EngineEvent, { type: "applied" } | { type: "lagged" } | { type: "collect" }>;
 
+export { TxSetAsideSchema };
 export const TxGetPayload = Schema.Struct({ projectId: Schema.String, txId: Schema.String });
-/**
- * A tx that is not (or no longer) on its branch: kept in quarantine. `reason`: `SUPERSEDED`,
- * `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`, `MALFORMED`,
- * `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`.
- */
-export const TxSetAsideSchema = Schema.Struct({
-  setAside: Schema.Struct({
-    txId: Schema.String,
-    branch: Schema.String,
-    reason: Schema.String,
-    origin: Schema.String,
-  }),
-});
 /** `tx.get`: the `CommittedTx`, a set-aside record, or `null` when the server never saw it. */
 export const TxGetSuccess = Schema.NullOr(Schema.Union([TxSetAsideSchema, CommittedTxSchema]));
 export type TxGetResult = CommittedTx | TxSetAside | null;
@@ -572,4 +601,32 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("library.lookup", { payload: LibraryLookupPayload, success: LibraryLookupSuccess, error: FinError }),
   Rpc.make("library.scan", { payload: LibraryScanPayload, success: LibraryScanSuccess, error: FinError }),
   Rpc.make("library.watch", { payload: LibraryWatchPayload, success: LibraryWatchEventSchema, error: FinError, stream: true }),
+  // The agent runtime (sub-project 7A Task 2): sessions, the watch stream, approvals and the
+  // calling session's own state.
+  Rpc.make("agent.session.start", { payload: AgentSessionStartPayload, success: AgentSessionStartSuccess, error: FinError }),
+  Rpc.make("agent.session.prompt", { payload: AgentSessionPromptPayload, success: AgentSessionPromptSuccess, error: FinError }),
+  Rpc.make("agent.session.steer", { payload: AgentSessionSteerPayload, success: AgentSessionSteerSuccess, error: FinError }),
+  Rpc.make("agent.session.interrupt", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.resume", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.end", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.list", { payload: AgentSessionListPayload, success: AgentSessionListSuccess, error: FinError }),
+  Rpc.make("agent.session.get", { payload: AgentSessionGetPayload, success: AgentSessionGetSuccess, error: FinError }),
+  Rpc.make("agent.session.delete", { payload: AgentSessionDeletePayload, success: AgentSessionDeleteSuccess, error: FinError }),
+  Rpc.make("agent.watch", { payload: AgentWatchPayload, success: WatchItem, error: FinError, stream: true }),
+  Rpc.make("agent.approval.list", { payload: AgentApprovalListPayload, success: AgentApprovalListSuccess, error: FinError }),
+  Rpc.make("agent.approval.answer", { payload: AgentApprovalAnswerPayload, success: AgentApprovalAnswerSuccess, error: FinError }),
+  Rpc.make("agent.providers", { payload: Schema.Struct({}), success: AgentProvidersSuccess, error: FinError }),
+  Rpc.make("agent.self", { payload: Schema.Struct({}), success: AgentSelfSuccess, error: FinError }),
+  Rpc.make("agent.self.try", { payload: AgentSelfTryPayload, success: AgentSelfSuccess, error: FinError }),
+  // The owner's agent settings (Task 12; `agent-admin.ts`): the OpenRouter key, the local
+  // endpoint and the closed-model-targets counsel gate. No answer holds a key.
+  Rpc.make("agent.key.set", { payload: AgentKeySetPayload, success: AgentKeySetSuccess, error: FinError }),
+  Rpc.make("agent.key.list", { payload: Schema.Struct({}), success: AgentKeyListSuccess, error: FinError }),
+  Rpc.make("agent.key.remove", { payload: AgentKeyRemovePayload, success: AgentKeyRemoveSuccess, error: FinError }),
+  Rpc.make("agent.local.set", { payload: AgentLocalSetPayload, success: AgentLocalSetSuccess, error: FinError }),
+  Rpc.make("agent.local.show", { payload: Schema.Struct({}), success: AgentLocalShowSuccess, error: FinError }),
+  Rpc.make("agent.local.test", { payload: Schema.Struct({}), success: AgentLocalTestSuccess, error: FinError }),
+  Rpc.make("agent.local.remove", { payload: AgentLocalRemovePayload, success: AgentLocalRemoveSuccess, error: FinError }),
+  Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
+  Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
 );

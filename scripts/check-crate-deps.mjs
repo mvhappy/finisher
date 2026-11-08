@@ -7,6 +7,9 @@
 //   it), and only `fin-workers` and `fin-wasm` link `fin-compositor`;
 // - `fin-workers` takes `fin-fonts` with `default-features = false` and without `fetch`
 //   (workers never fetch).
+// - `fin-dataset-inputs` (the dataset builder's inputs; sp7 §12.1, §16.2) links no Finisher
+//   crate but `fin-core`: its readers reach the journal's files only, never `control.db` or
+//   any crate that opens it (`fin-node`, `fin-registry`, `fin-store`, …).
 // Each breach is CRATE_DEPENDENCY naming the path's two ends.
 import { fileURLToPath } from "node:url";
 import { Graph, documents, metadata } from "./cargo-graph.mjs";
@@ -17,6 +20,8 @@ export const RULES = [
   { from: "fin", forbid: MEDIA, why: "fin links no media crate" },
   { from: "fin-node", forbid: ["fin-codecs", "fin-compositor", "fin-graphics", "wgpu"], why: "fin-node never links codecs, the compositor or wgpu" },
 ];
+/** Members whose closure may hold no other workspace member than the listed ones. */
+export const CONFINED = [{ crate: "fin-dataset-inputs", may: ["fin-core"], why: "the dataset builder reads the journal's files only, never control.db" }];
 /** Crates only the listed members may link. */
 export const ONLY = [
   { crate: "fin-codecs", by: ["fin-workers"] },
@@ -47,6 +52,13 @@ export function check(doc) {
       const name = g.name(id);
       if (name === o.crate || o.by.includes(name)) continue;
       if (reach(name).has(o.crate)) breach(name, o.crate, `only ${o.by.join(" and ")} may link it`);
+    }
+  }
+  for (const c of CONFINED) {
+    if (!g.member(c.crate)) continue;
+    for (const id of g.members) {
+      const name = g.name(id);
+      if (name !== c.crate && !c.may.includes(name) && reach(c.crate).has(name)) breach(c.crate, name, c.why);
     }
   }
   const workers = g.packages.get(g.member("fin-workers"));

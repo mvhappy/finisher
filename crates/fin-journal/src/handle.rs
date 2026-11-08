@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use fin_core::events::Ulid as EventUlid;
-use fin_core::events::{AnyPayload, Ctx, Source};
+use fin_core::events::{AnyPayload, Ctx, Purposes, Source};
 
 use crate::consent::{ConsentState, EnvOverrides, PrivacySettings};
 use crate::control::{Control, Data, Pending, SyncSlot, unpack};
@@ -30,6 +30,9 @@ pub(crate) struct ConsentCtl {
     pub state: ConsentState,
     pub base_age_ms: u64,
     pub base_total: u64,
+    /// The purposes this instance records ([`JournalOptions::purposes`]).
+    pub mask: Purposes,
+    pub caps_keys: crate::CapsKeys,
 }
 
 /// What the callers and the writer share.
@@ -47,6 +50,8 @@ pub(crate) struct Shared {
     pub(crate) skipped_unknown: AtomicU64,
     /// Open [`crate::ProjectScope`]s per project id.
     pub(crate) scopes: Mutex<std::collections::HashMap<String, usize>>,
+    /// What callers told this instance of each project, and the instances that follow it.
+    pub(crate) projects_sent: Mutex<crate::projects::Sent>,
     pub(crate) status: Mutex<Snapshot>,
     /// The process run (a ULID): every entry's `session` unless `record_value` names another.
     pub(crate) session: EventUlid,
