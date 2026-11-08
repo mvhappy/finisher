@@ -193,10 +193,10 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 
 **Files:** Create (git-ignored): `archive/s9/{notes.md, linux/, macos/, windows/, h2/}`. Modify: `TASKS.md` (the S9 line), spec §8.2–8.6 and §4.5–4.6 with the conclusions.
 
-- [ ] **Step 1 (B5, Linux; kernel ≥ 6.2):** on the Linux VM, a 6.2-series kernel, and a supported kernel booted with `landlock` left out of `lsm=`: a seccomp filter that checks the architecture and refuses x32/compat, io_uring, `AF_UNIX` and the other calls of Decision 11, each denial observed; libuv and the installed Codex and Claude Code still run (the io_uring fallback included); the per-CLI validation list of spec §8.3 (SSSD/LDAP user lookup, gpg-agent signing, git credential-cache, fsmonitor) and whether `AF_NETLINK`/`NETLINK_ROUTE` is needed; whether any newer Landlock ABI mediates pathname sockets; on the Landlock-disabled boot, that the status probe of Decision 12 says `Disabled` and a process runs. Record the base toolchain read list for `data/linux/toolchain-base.txt`.
-- [ ] **Step 2 (B6, macOS 14+):** under a log-only `(deny default)` profile, the minimal `mach-lookup` list per CLI and for `fin` and `fin-workers`; with default-deny, `open`, `osascript`, `launchctl` and `security` fail, nothing starts outside the sandbox, and a test keychain item created for the spike is unreadable. Record `data/macos/mach-*.txt` candidates and the base toolchain list.
-- [ ] **Step 3 (B7, the user's own sign-in, never copied):** with a test account a person signs in to through each CLI's own flow, in a sign-in home: where each CLI keeps its store per OS (file or keychain; keyed by config directory?); whether a per-session `CLAUDE_CONFIG_DIR`/`CODEX_HOME` holding a link to the store works and refreshes **in place**; parallel sessions refreshing at once; a file link on Windows without elevation; else the fallback of spec §8.6; that `system/init` and `account/read` report the sign-in kind and an account label; **per-session capability SIDs on a session directory under a normal AppContainer**, and that a second session's process cannot open it (decides Decision 16 or 17). No spike script opens a credential file.
-- [ ] **Step 4 (H2):** Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
+- [~] **Step 1 (B5, Linux; kernel ≥ 6.2):** *Linux Landlock status query done (see S9 results (Linux)); seccomp moved to Task 4; the Landlock-disabled boot and the toolchain read list are still open.* on the Linux VM, a 6.2-series kernel, and a supported kernel booted with `landlock` left out of `lsm=`: a seccomp filter that checks the architecture and refuses x32/compat, io_uring, `AF_UNIX` and the other calls of Decision 11, each denial observed; libuv and the installed Codex and Claude Code still run (the io_uring fallback included); the per-CLI validation list of spec §8.3 (SSSD/LDAP user lookup, gpg-agent signing, git credential-cache, fsmonitor) and whether `AF_NETLINK`/`NETLINK_ROUTE` is needed; whether any newer Landlock ABI mediates pathname sockets; on the Landlock-disabled boot, that the status probe of Decision 12 says `Disabled` and a process runs. Record the base toolchain read list for `data/linux/toolchain-base.txt`.
+- [x] **Step 2 (B6, macOS 14+):** *done, see S9 results (macOS).* under a log-only `(deny default)` profile, the minimal `mach-lookup` list per CLI and for `fin` and `fin-workers`; with default-deny, `open`, `osascript`, `launchctl` and `security` fail, nothing starts outside the sandbox, and a test keychain item created for the spike is unreadable. Record `data/macos/mach-*.txt` candidates and the base toolchain list.
+- [ ] **Step 3 (B7, Windows still in progress elsewhere; the user's own sign-in, never copied):** with a test account a person signs in to through each CLI's own flow, in a sign-in home: where each CLI keeps its store per OS (file or keychain; keyed by config directory?); whether a per-session `CLAUDE_CONFIG_DIR`/`CODEX_HOME` holding a link to the store works and refreshes **in place**; parallel sessions refreshing at once; a file link on Windows without elevation; else the fallback of spec §8.6; that `system/init` and `account/read` report the sign-in kind and an account label; **per-session capability SIDs on a session directory under a normal AppContainer**, and that a second session's process cannot open it (decides Decision 16 or 17). No spike script opens a credential file.
+- [ ] **Step 4 (H2):** *moved to 7D/7E or a later S9 rerun.* Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
 - [ ] **Step 5:** conclusions into the spec (each marked *verified on <host class>*), tick `TASKS.md`. **Commit** `docs: record spike S9 conclusions` (spec and `TASKS.md` only).
 
 #### S9 results (macOS)
@@ -285,6 +285,26 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 - `appleevent-send` to Finder beyond `osascript` failing to start.
 - The Metal shader-cache cost of denying `bsd.dirhelper`.
 - Codex's keyring store mode.
+
+#### S9 results (Linux)
+
+**Tested** (Ubuntu 24.04, kernel 6.8.0 generic, glibc 2.39; active LSMs `lockdown,capability,landlock,yama,apparmor`):
+
+- `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` returns ABI **4**. The `ERRATA` flag returns 5, so the distro has backported fixes 1 and 3.
+- Kernel config: `CONFIG_IO_URING=y`, `CONFIG_X86_X32_ABI` not set, `CONFIG_SECCOMP_FILTER=y`.
+- Under Docker's default seccomp profile the Landlock version query still returns 4, but `prctl(PR_GET_SECCOMP)` returns 2 and `/proc/self/status` shows `Seccomp: 2`. With `seccomp=unconfined` it returns 0.
+
+**Recommendations for Task 3 / Decision 12:**
+
+- `PR_GET_SECCOMP == 2` must **not** be read as "Landlock disabled": every default Docker container reports it while Landlock works. The Landlock status comes from the version query alone.
+- Map `EPERM` from the version query to `Disabled`, as well as `ENOSYS` and `EOPNOTSUPP`. Some older container seccomp profiles answer unknown syscalls with `EPERM` (unverified).
+
+**Not tested yet:**
+
+- A real Landlock-disabled boot. A static status probe and kernels (6.8 and mainline 6.2) were prepared for a throwaway QEMU VM, but none was booted. Expectation, unverified: `EOPNOTSUPP` when Landlock is built in but left out of `lsm=`, `ENOSYS` when it is not built.
+- B5 seccomp (architecture/x32 check, io_uring refusal, the socket policy, and how a refused call appears to Rust, Node and glibc) **moves to Task 4**. Build and test it there with an established, permissively licensed Rust seccomp library (for example `seccompiler`, Apache-2.0, at least 7 days old), not a hand-written C filter. Note for Task 4: glibc 2.34+ falls back from `clone3` to `clone` only on `ENOSYS`, so refusing `clone3` with `EPERM` would likely break threads; use `ENOSYS` for refused syscalls that have a fallback (untested).
+- The base toolchain read list, and whether a newer Landlock ABI mediates pathname sockets.
+- H2, all of it (the Claude Code isolation flags, `system/init`, `--max-budget-usd`, `--disallowedTools`, the Codex `-c project_doc_max_bytes=0` and `developer_instructions` checks). It moves to 7D/7E or a later S9 rerun. Versions seen: Codex 0.167.0, Claude Code 2.1.319.
 
 ### Task 1: `fin-sandbox`: the policy, the profiles and enumeration — tier: opus — 7C-1
 
