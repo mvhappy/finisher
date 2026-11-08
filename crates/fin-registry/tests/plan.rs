@@ -220,7 +220,7 @@ fn plan_refuses_incompatible_host_api_platform_and_node() {
         &req,
         &ctx,
         &fx.host,
-        &fin_registry::FixedClock(NOW),
+        &fin_registry::FixedClock::at_ms(NOW),
     )
     .unwrap_err();
     assert_eq!(e.code, "PLUGIN_NODE_VERSION");

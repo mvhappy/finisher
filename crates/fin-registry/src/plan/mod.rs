@@ -66,6 +66,12 @@ pub struct PlanRequest {
     /// Other plugin ids people may confuse this one with (installed, bundled, listed).
     #[serde(default)]
     pub known_ids: Vec<String>,
+    /// Tests only (`fin-node`'s `test-hooks` builds set it): mark the plan agent-facing, since
+    /// no agent-facing kind is consumable in 8A and the update rule must still be tested
+    /// (8A Decision 23).
+    #[doc(hidden)]
+    #[serde(default)]
+    pub test_agent_facing: bool,
 }
 
 /// What a plan needs from crates above this one; `fin-node` implements it over `fin-fonts`.
@@ -212,6 +218,7 @@ fn build(
         models: models(&manifest),
         warnings,
         registry_stale_days: stale,
+        agent_facing: manifest.agent_facing() || req.test_agent_facing,
         tree_hash: unpacked.tree_hash.clone(),
         target_sha256,
         expires_at: now.saturating_add(PLAN_TTL_MS),

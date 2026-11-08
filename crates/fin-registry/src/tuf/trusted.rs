@@ -20,14 +20,15 @@ use url::Url;
 use super::adapter::{self, Adapter, State};
 use super::checks;
 use super::clock::{self, unix_secs};
+use super::custom;
 use super::custom::ADVISORIES_FILE;
-use super::custom::{self, PackageCustom};
 use super::error::{from_tough, verify_error};
 use super::freshness;
 use super::{Clock, Layout, Policy, RefreshReport, TrustState, TrustStore, TufError, Warning};
 use crate::advisory::AdvisoryFile;
 use crate::atomic;
 use crate::package::hex;
+use crate::target::TargetCustom;
 use crate::transport::{Transport, TransportError};
 
 /// A target of the trusted metadata.
@@ -45,11 +46,11 @@ pub struct TargetInfo {
 
 impl TargetInfo {
     /// The package custom metadata, when this target is a package carrying valid metadata.
-    pub fn package(&self) -> Option<PackageCustom> {
+    pub fn package(&self) -> Option<TargetCustom> {
         if !self.name.ends_with(".finpkg") {
             return None;
         }
-        PackageCustom::from_map(&self.custom)
+        TargetCustom::from_map(&self.custom)
     }
 
     /// The path of the target's file under `targets/`.

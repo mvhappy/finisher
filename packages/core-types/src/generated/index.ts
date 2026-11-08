@@ -4510,6 +4510,11 @@ export interface IgnoredTrack {
 export interface InstallPlan {
   action: PlanAction;
   /**
+   * The package contributes agent-facing content (spec §4.2): an update of it never
+   * installs without a person's approval (§5.3).
+   */
+  agentFacing?: boolean;
+  /**
    * Unpacked bytes.
    */
   bytes: number;
@@ -5377,7 +5382,8 @@ export interface UnitEntry {
       };
 }
 /**
- * A target's signed custom metadata (`custom` in the delegated targets role).
+ * A package target's signed custom metadata (`custom` in its publisher's delegated role): one
+ * type for the editor that signs it, the TUF client that reads it and the plan that checks it.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "TargetCustom".

@@ -1,11 +1,12 @@
 // Plugins and registries over RPC (sub-project 8A Task 9a; spec §3.7, §5). The reads and the
-// registry administration; plans, installs and the lifecycle follow in Task 9b.
+// registry administration; plans, installs and the lifecycle are `plugin-lifecycle.ts` (9b).
 //
 // What the Rust side computes (registry status, listings, package info, refresh reports) is a
 // generated type of `@finisher/core-types`; the schemas below are the payloads and the rows
 // `control.db` owns (installed plugins).
 import type { Listing, PluginInfo, RefreshReport, RegistryList, RegistryStatus } from "@finisher/core-types";
 import { Schema } from "effect";
+import type { RefreshApplied } from "./plugin-lifecycle.ts";
 
 export type { Listing, PluginInfo, RefreshReport, RegistryList, RegistryStatus } from "@finisher/core-types";
 
@@ -34,9 +35,14 @@ export const RegistryForgetPayload = Schema.Struct({ rootSha256: Sha256Schema })
 /** `registry.refresh`: one registry, or every added one without `id`. */
 export const RegistryRefreshPayload = Schema.Struct({ id: Schema.optional(RegistryIdSchema) });
 
-/** `RegistryStatus` of fin-registry (the generated type) plus what `control.db` knows of it. */
+/**
+ * `RegistryStatus` of fin-registry (the generated type) plus what `control.db` knows of it. The
+ * folder's `path` is shown to people only (`console`, `local`): an `agent` or `mcp` principal
+ * holding `plugin.read` never learns where a registry lives.
+ */
 export const RegistryEntrySchema = Schema.Unknown;
-export type RegistryEntry = RegistryStatus & {
+export type RegistryEntry = Omit<RegistryStatus, "path"> & {
+  readonly path?: string;
   readonly addedBy: string;
   readonly addedAt: number;
   /** The last refresh this server made of it, whoever asked. */
@@ -63,6 +69,8 @@ export interface RegistryRefreshResult {
   /** A person asked: only then may anything install from what was found (Task 9b). */
   readonly byHuman: boolean;
   readonly results: ReadonlyArray<RefreshResult>;
+  /** What the refreshes changed in the installed plugins. */
+  readonly applied: RefreshApplied;
 }
 export const RegistryRefreshSuccess = Schema.Unknown;
 

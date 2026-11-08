@@ -6,11 +6,13 @@
 //! and never holds the JS thread or the libuv pool. Each call journals `plugin.lifecycle`
 //! ([`log`]). Nothing a package ships runs.
 //!
-//! Sources: `registry` (a configured local registry; there are none until 8A Task 7, so it is
-//! `REGISTRY_NOT_FOUND`) and, in `test-hooks` builds only, `package` (a `.finpkg` file
-//! described as a publisher would sign it, standing in for a verified target).
+//! Sources: `registry` (an added local-folder registry: the version is resolved in its trusted
+//! metadata, fetched with its signed length as the cap and checked against its signed SHA-256,
+//! 8A Task 9b) and, in `test-hooks` builds only, `package` (a `.finpkg` file described as a
+//! publisher would sign it, standing in for a verified target).
 
 mod host;
+mod lifecycle;
 mod log;
 mod registries;
 
@@ -96,6 +98,19 @@ struct PlanReq {
     installed: Option<InstalledPlugin>,
     #[serde(default)]
     known_ids: Vec<String>,
+    /// Mark the plan agent-facing (`PlanRequest::test_agent_facing`).
+    #[cfg(feature = "test-hooks")]
+    #[serde(default)]
+    test_agent_facing: bool,
+}
+
+/// `Registry.commit`'s re-checks against `control.db` (8A Task 9b, review M2).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommitChecks {
+    /// The package directories of the installed plugins: their font catalogs' ids are taken.
+    #[serde(default)]
+    installed_dirs: Option<Vec<String>>,
 }
 
 struct Inner {
@@ -169,6 +184,10 @@ impl Registry {
                     allow_downgrade: req.allow_downgrade,
                     installed: req.installed,
                     known_ids: req.known_ids,
+                    #[cfg(feature = "test-hooks")]
+                    test_agent_facing: req.test_agent_facing,
+                    #[cfg(not(feature = "test-hooks"))]
+                    test_agent_facing: false,
                 },
             );
             match &out {
@@ -190,7 +209,8 @@ impl Registry {
     }
 
     /// Installs the plan `plan_id` approved with `digest` (`Accept` JSON for the copyleft and
-    /// third-party-code acceptances); resolves to the `InstalledPlugin` JSON.
+    /// third-party-code acceptances; `CommitChecks` JSON for the re-checks against
+    /// `control.db`); resolves to the `InstalledPlugin` JSON.
     #[napi(catch_unwind, ts_return_type = "Promise<string>")]
     pub fn commit<'e>(
         &self,
@@ -198,6 +218,7 @@ impl Registry {
         plan_id: String,
         digest: String,
         accept_json: Option<String>,
+        checks_json: Option<String>,
     ) -> Result<Object<'e>> {
         let inner = self.inner.clone();
         on_worker(env, &self.worker, move || {
@@ -205,10 +226,15 @@ impl Registry {
                 Some(s) => serde_json::from_str(&s).map_err(|e| bad_request("accept", e))?,
                 None => Accept::default(),
             };
+            let checks: CommitChecks = match checks_json {
+                Some(s) => serde_json::from_str(&s).map_err(|e| bad_request("checks", e))?,
+                None => CommitChecks::default(),
+            };
             let started = Instant::now();
             let staged = inner.store.plan(&plan_id).ok();
             let now = fin_registry::Clock::now_ms(&SystemClock);
-            let out = inner.store.commit(&plan_id, &digest, &accept, now);
+            let out = recheck(&inner, &plan_id, &checks)
+                .and_then(|()| inner.store.commit(&plan_id, &digest, &accept, now));
             let r = out.as_ref().map(|_| ());
             match &staged {
                 Some(p) => {
@@ -276,29 +302,74 @@ impl Registry {
     }
 }
 
+/// `PLAN_MISMATCH {reason: installed, field: catalogIds}` when the staged pack's font ids are
+/// taken by now (another pack installed since the plan was made).
+fn recheck(
+    inner: &Inner,
+    plan_id: &str,
+    checks: &CommitChecks,
+) -> std::result::Result<(), RegistryError> {
+    let Some(dirs) = &checks.installed_dirs else {
+        return Ok(());
+    };
+    let clash = host::staged_catalog_clash(&inner.store, plan_id, dirs);
+    if clash.is_empty() {
+        return Ok(());
+    }
+    Err(RegistryError::new(
+        "PLAN_MISMATCH",
+        format!(
+            "font catalog id {:?} was taken since the plan was made",
+            clash[0]
+        ),
+        json!({ "reason": "installed", "field": "catalogIds", "entry": clash[0] }),
+    )
+    .with_fix("make a new plan"))
+}
+
 fn plan(
     inner: &Inner,
     source: SourceReq,
     req: &PlanRequest,
 ) -> std::result::Result<fin_registry::plan::InstallPlan, RegistryError> {
-    let src = resolve(inner, source)?;
+    let (src, fetched) = resolve(inner, source, req)?;
     let ctx = host::ctx(SourceClass::Registry, inner.node.clone());
     let plan_host = host::Host {
         store: &inner.store,
     };
-    make_plan(src, &inner.store, req, &ctx, &plan_host, &SystemClock)
+    let out = make_plan(src, &inner.store, req, &ctx, &plan_host, &SystemClock);
+    if let Some(f) = fetched {
+        let _ = std::fs::remove_file(f);
+    }
+    out
 }
 
-/// The package a source names.
+/// The package a source names, and the file fetched for it (removed after the plan).
 #[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
-fn resolve(inner: &Inner, source: SourceReq) -> std::result::Result<PlanInput, RegistryError> {
+fn resolve(
+    inner: &Inner,
+    source: SourceReq,
+    req: &PlanRequest,
+) -> std::result::Result<(PlanInput, Option<PathBuf>), RegistryError> {
     match source {
-        SourceReq::Registry { registry, .. } => Err(RegistryError::new(
-            "REGISTRY_NOT_FOUND",
-            format!("no registry {registry:?} is configured"),
-            json!({}),
-        )
-        .with_fix("add a local registry first")),
+        SourceReq::Registry { registry, version } => {
+            let reg = fin_registry::registry::Registry::open(&inner.base, &registry)?;
+            let id = PluginId::parse(&req.id).map_err(|e| {
+                RegistryError::new(
+                    "PLUGIN_NOT_FOUND",
+                    format!("{:?} is not a plugin id: {}", req.id, e.reason()),
+                    json!({ "reason": e.reason() }),
+                )
+            })?;
+            let out = inner.store.fetch_path();
+            match reg.verified_target(&id, version.as_ref(), &out, &SystemClock) {
+                Ok(t) => Ok((PlanInput::Registry(Box::new(t)), Some(out))),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&out);
+                    Err(e)
+                }
+            }
+        }
         #[cfg(feature = "test-hooks")]
         SourceReq::Package {
             archive,
@@ -314,8 +385,8 @@ fn resolve(inner: &Inner, source: SourceReq) -> std::result::Result<PlanInput, R
             let d = fin_registry::target::describe_package(Path::new(&archive), &scratch)?;
             let mut custom = d.custom;
             custom.yanked = yanked;
-            Ok(PlanInput::Registry(Box::new(
-                fin_registry::target::VerifiedTarget {
+            Ok((
+                PlanInput::Registry(Box::new(fin_registry::target::VerifiedTarget {
                     registry_id,
                     archive: archive.into(),
                     length: d.length,
@@ -323,8 +394,9 @@ fn resolve(inner: &Inner, source: SourceReq) -> std::result::Result<PlanInput, R
                     custom,
                     stale_days,
                     warnings: Vec::new(),
-                },
-            )))
+                })),
+                None,
+            ))
         }
     }
 }

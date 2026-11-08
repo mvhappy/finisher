@@ -4597,6 +4597,10 @@
         "action": {
           "$ref": "#/$defs/PlanAction"
         },
+        "agentFacing": {
+          "description": "The package contributes agent-facing content (spec §4.2): an update of it never\ninstalls without a person's approval (§5.3).",
+          "type": "boolean"
+        },
         "bytes": {
           "description": "Unpacked bytes.",
           "format": "uint64",
@@ -10589,7 +10593,7 @@
     },
     "TargetCustom": {
       "additionalProperties": false,
-      "description": "A target's signed custom metadata (`custom` in the delegated targets role).",
+      "description": "A package target's signed custom metadata (`custom` in its publisher's delegated role): one\ntype for the editor that signs it, the TUF client that reads it and the plan that checks it.",
       "properties": {
         "bytesUnpacked": {
           "format": "uint64",

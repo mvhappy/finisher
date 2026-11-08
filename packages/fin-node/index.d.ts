@@ -311,17 +311,29 @@ export declare class Registry {
   /**
    * Makes a plan from `{ id, source: { kind: "registry", registry, version? }, update?,
    * allowDowngrade?, installed?: InstalledPlugin, knownIds? }` JSON; resolves to the
-   * `InstallPlan` JSON. Until local registries exist (8A Task 7) a registry source is
-   * `REGISTRY_NOT_FOUND`; test builds also take `{ kind: "package", archive, registryId,
-   * staleDays?, yanked? }`.
+   * `InstallPlan` JSON. A registry source is resolved in the registry's trusted metadata and
+   * fetched with its signed length and SHA-256 checked (`REGISTRY_NOT_FOUND`,
+   * `PLUGIN_NOT_FOUND`, `TUF_TARGET_MISMATCH`); test builds also take `{ kind: "package",
+   * archive, registryId, staleDays?, yanked? }` and `testAgentFacing`.
    */
   plan(reqJson: string): Promise<string>;
   /**
-   * Installs the plan with its digest (`Accept` JSON: `{ copyleft?, thirdPartyCode? }`);
-   * resolves to the `InstalledPlugin` JSON or rejects with `PLAN_EXPIRED`, `PLAN_MISMATCH`,
+   * Installs the plan with its digest (`Accept` JSON: `{ copyleft?, thirdPartyCode? }`;
+   * `checksJson`: `{ installedDirs? }`, the installed plugins' package directories, whose font
+   * catalog ids must still be free); resolves to the `InstalledPlugin` JSON or rejects with
+   * `PLAN_EXPIRED`, `PLAN_MISMATCH` (`reason: installed` when an id was taken since),
    * `COPYLEFT_NOT_ACCEPTED` or `THIRD_PARTY_CODE_NOT_ACCEPTED`.
    */
-  commit(planId: string, digest: string, acceptJson?: string): Promise<string>;
+  commit(planId: string, digest: string, acceptJson?: string, checksJson?: string): Promise<string>;
+  /** The staged `InstallPlan` JSON; rejects with `PLAN_EXPIRED` once it is gone. */
+  stagedPlan(planId: string): Promise<string>;
+  /** Deletes a plan and its staged files; resolves to whether there was one. */
+  discardPlan(planId: string): Promise<boolean>;
+  /**
+   * The installed versions (`[{ id, version }]` JSON) a `disable` advisory of registry `id`
+   * applies to: `[{ id, version, advisory }]` JSON.
+   */
+  revocations(id: string, installedJson: string): Promise<string>;
   /** Deletes a version from the store (and the plugin's data with `purgeData`). */
   removePlugin(id: string, version: string, purgeData: boolean): Promise<void>;
   /** Deletes expired and broken plans; resolves to how many. */
@@ -440,9 +452,13 @@ export declare const testHooks:
       packPlugin(src: string, out: string): string;
       /**
        * Builds a signed local-folder registry in `dir` (keys in `keysDir`, outside it) from
-       * `{ packages?: ["@pub/name@1.0.0", ...], maxStaleDays?, ageDays? }` (content packs;
-       * `ageDays`: signed as of that many days ago); returns `{ rootSha256, rootFile }` JSON.
+       * `{ packages?, advisories?, yanks?, maxStaleDays?, ageDays? }`: a package is
+       * `"@pub/name@1.0.0"` (a content pack) or `{ id, version, kind?: "content" | "code",
+       * permissions?, license?, fonts?: string[] }`; `ageDays`: signed as of that many days
+       * ago. Returns `{ rootSha256, rootFile }` JSON.
        */
       buildRegistry(dir: string, keysDir: string, specJson: string): string;
+      /** Publishes more packages, yanks and advisories (the same spec) to a built registry. */
+      publishToRegistry(dir: string, keysDir: string, specJson: string): void;
     }
   | undefined;

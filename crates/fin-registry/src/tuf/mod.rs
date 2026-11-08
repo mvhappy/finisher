@@ -17,7 +17,7 @@ pub(crate) mod trusted;
 
 pub(crate) use checks::publisher_name_ok as checks_publisher_name;
 pub use clock::{CLOCK_SLACK_SECS, Clock, FixedClock, SystemClock};
-pub use custom::{DEFAULT_MAX_STALE_DAYS, MAX_STALE_DAYS_CAP, PackageCustom, permissions_digest};
+pub use custom::{DEFAULT_MAX_STALE_DAYS, MAX_STALE_DAYS_CAP, permissions_digest};
 pub use error::TufError;
 pub use store::{TrustState, TrustStore};
 pub use trusted::{TargetInfo, TrustedRepo, sha256_hex};

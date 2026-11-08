@@ -97,3 +97,68 @@ pub(crate) fn ctx(source: SourceClass, node: Option<semver::Version>) -> Validat
         content_checks: &Checks,
     }
 }
+
+/// The entry ids the staged plan `plan_id`'s font catalogs share with the built-in catalog and
+/// the packs in `installed` (package directories relative to `base`, as `control.db` records
+/// them), other versions of the plan's own plugin aside: the commit's re-check of the
+/// plan-time `catalogIdTaken` rule (8A Task 9b, review M2).
+pub(crate) fn staged_catalog_clash(
+    store: &Store,
+    plan_id: &str,
+    installed: &[String],
+) -> Vec<String> {
+    use fin_plugin_api::PackageFiles;
+    let pkg = store.staging_dir().join(plan_id).join("pkg");
+    let Some(m) = read_manifest(&pkg) else {
+        return Vec::new();
+    };
+    let files = DirFiles(&pkg);
+    let mine: BTreeSet<String> = m
+        .contributes
+        .font_catalogs
+        .iter()
+        .filter_map(|c| files.read(&c.file))
+        .flat_map(|b| catalog_ids(&b))
+        .collect();
+    if mine.is_empty() {
+        return Vec::new();
+    }
+    let mut taken: BTreeSet<String> = FontCatalog::builtin()
+        .entries
+        .iter()
+        .map(|e| e.id.clone())
+        .collect();
+    for rel in installed {
+        let Some(dir) = package_dir(store.base(), rel) else {
+            continue;
+        };
+        match read_manifest(&dir) {
+            Some(other) if other.id != m.id && other.kind == PluginKind::Content => {
+                taken.extend(pack_catalog_ids(&dir, &other));
+            }
+            _ => {}
+        }
+    }
+    mine.intersection(&taken).cloned().collect()
+}
+
+fn read_manifest(dir: &Path) -> Option<Manifest> {
+    let bytes = std::fs::read(dir.join(fin_plugin_api::MANIFEST_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// `base/<rel>` for a `store/…` package directory, `/`-separated with no `.` or `..` part.
+fn package_dir(base: &Path, rel: &str) -> Option<std::path::PathBuf> {
+    let mut parts = rel.split('/');
+    if parts.next() != Some("store") {
+        return None;
+    }
+    let mut p = base.join("store");
+    for part in parts {
+        if part.is_empty() || part == "." || part == ".." || part.contains('\\') {
+            return None;
+        }
+        p.push(part);
+    }
+    Some(p)
+}

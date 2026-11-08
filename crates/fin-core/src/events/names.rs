@@ -229,7 +229,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
 
 /// `finisherd` RPC methods (`@finisher/contracts` `FinRpcs`), plus the `diagnostics.*` RPCs of
 /// Task D4, the handshake's `auth.prove` (5A Task 3) and `auth.ticket`, `auth.whoami`,
-/// `auth.revokeSelf` (5A Task 6).
+/// `auth.revokeSelf` (5A Task 6), and the plugin and registry RPCs (8A Tasks 9a and 9b).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -260,9 +260,15 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "history.revert",
         "history.undo",
         "ops.subscribe",
+        "plugin.disable",
+        "plugin.enable",
         "plugin.info",
+        "plugin.install",
         "plugin.list",
+        "plugin.plan",
+        "plugin.remove",
         "plugin.search",
+        "plugin.suggest",
         "project.acknowledgeRewind",
         "project.acknowledgeSalvage",
         "project.compact",

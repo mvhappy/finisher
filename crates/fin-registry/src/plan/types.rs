@@ -38,6 +38,10 @@ pub struct InstallPlan {
     pub warnings: Vec<PlanWarning>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_stale_days: Option<u16>,
+    /// The package contributes agent-facing content (spec §4.2): an update of it never
+    /// installs without a person's approval (§5.3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_facing: bool,
     /// `package::tree_hash` of the staged tree; re-checked at commit.
     pub tree_hash: String,
     /// The signed target's SHA-256, for registry plans.

@@ -559,5 +559,12 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
+      publishToRegistry(dir, keysDir, specJson) {
+        try {
+          native.publishToRegistryForTest(dir, keysDir, specJson);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
     }
   : undefined;

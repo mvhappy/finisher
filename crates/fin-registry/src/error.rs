@@ -75,3 +75,14 @@ impl fmt::Display for RegistryError {
 }
 
 impl std::error::Error for RegistryError {}
+
+impl From<crate::tuf::TufError> for RegistryError {
+    fn from(e: crate::tuf::TufError) -> RegistryError {
+        RegistryError {
+            code: e.code.to_string(),
+            message: e.message,
+            details: e.details,
+            fix: None,
+        }
+    }
+}

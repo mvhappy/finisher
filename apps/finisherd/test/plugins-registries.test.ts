@@ -81,13 +81,13 @@ describe("plugins chain", () => {
     // 8A's code opens the same database: the chain is added, nothing else is touched.
     control = openControlStore(serverData, { serverId: "sid-1", checkpoint: false });
     expect(control.envId).toBe(env);
-    for (const t of ["registries", "plugins", "plugin_grants", "plugin_plans"]) {
+    for (const t of ["registries", "plugins", "plugin_grants", "plugin_plans", "plugin_suggestions"]) {
       expect(control.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get(), t).toEqual({ n: 0 });
     }
     const meta = (k: string) => (control.db.prepare("SELECT value FROM meta WHERE key = ?").get(k) as { value: string } | undefined)?.value;
-    expect(meta("formatVersion.plugins")).toBe("1");
+    expect(meta("formatVersion.plugins")).toBe("2");
     expect(meta("minReaderVersion.plugins")).toBe("1");
-    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins'").all()).toEqual([{ n: 1 }]);
+    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }]);
     expect(control.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE kind = 'listener.start'").get()).toEqual({ n: 1 });
   });
 
@@ -316,8 +316,8 @@ describe("handlers", () => {
     await run(h["registry.add"](addReq(r), as(CONSOLE)));
     const before = rows().length;
     await run(h["registry.refresh"]({ id: "team" }, as(LOCAL)));
-    expect((await run(h["registry.list"]())).registries).toHaveLength(1);
-    expect((await run(h["registry.status"]({ id: "team" }))).id).toBe("team");
+    expect((await run(h["registry.list"]({}, as(LOCAL)))).registries).toHaveLength(1);
+    expect((await run(h["registry.status"]({ id: "team" }, as(LOCAL)))).id).toBe("team");
     expect(await run(h["plugin.list"]())).toEqual({ plugins: [] });
     expect((await run(h["plugin.search"]({ text: "pack" }))).map((l) => l.id)).toEqual(["@acme/pack"]);
     expect((await run(h["plugin.info"]({ id: "@acme/pack" }))).registries).toHaveLength(1);

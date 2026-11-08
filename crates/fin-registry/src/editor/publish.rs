@@ -13,8 +13,9 @@ use super::state::{Change, role_keys};
 use super::{EditorError, PublicKey, RepoBuilder, SigningKey};
 use crate::advisory::{Advisory, AdvisoryFile};
 use crate::package::{DirFiles, Limits, unpack_bytes};
+use crate::target::TargetCustom;
 use crate::tuf::TargetInfo;
-use crate::tuf::custom::{self, PackageCustom};
+use crate::tuf::custom;
 
 fn target_name(name: &str) -> Result<TargetName, EditorError> {
     TargetName::new(name).map_err(|e| EditorError::invalid("targetName", e.to_string()))
@@ -221,7 +222,7 @@ impl RepoBuilder {
             ));
         }
         let bytes_unpacked = unpacked.files.values().map(|f| f.size).sum();
-        let custom = PackageCustom::from_manifest(&manifest, &unpacked.manifest, bytes_unpacked);
+        let custom = TargetCustom::from_manifest(&manifest, &unpacked.manifest, bytes_unpacked);
         let target = target_of(&bytes, custom.to_map());
         let sha = hex::encode(target.hashes.sha256.as_ref());
         self.write_target(&custom::consistent_target_path(&name, &sha), &bytes)?;

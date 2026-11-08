@@ -48,6 +48,24 @@ describe("scopes", () => {
     for (const tag of NEW) expect(requiredScopes(tag, SAMPLE_PAYLOADS[tag])).toEqual(RPC_SCOPES[tag].scopes);
   });
 
+  test("lifecycle_rpcs_have_their_scopes", () => {
+    const want: Record<string, Scope[]> = {
+      "plugin.plan": ["plugin.read"],
+      "plugin.install": ["plugin.install"],
+      "plugin.remove": ["plugin.install"],
+      "plugin.enable": ["plugin.admin"],
+      "plugin.disable": ["plugin.admin"],
+      "plugin.suggest": ["plugin.suggest", "project.read"],
+    };
+    for (const [tag, scopes] of Object.entries(want)) {
+      expect(RPC_SCOPES[tag as keyof typeof RPC_SCOPES].scopes, tag).toEqual(scopes);
+      expect(requiredScopes(tag as keyof typeof RPC_SCOPES, SAMPLE_PAYLOADS[tag as keyof typeof SAMPLE_PAYLOADS]), tag).toEqual(scopes);
+    }
+    // Only a downgrade escalates, to the owner's scope; nothing of the lifecycle writes a branch.
+    expect(requiredScopes("plugin.plan", { id: "@acme/pack", version: "1.0.0", allowDowngrade: true })).toEqual(["plugin.read", "plugin.install"]);
+    for (const tag of Object.keys(want)) expect(RPC_SCOPES[tag as keyof typeof RPC_SCOPES].writes, tag).toBeUndefined();
+  });
+
   test("owner_scopes_are_human_only", () => {
     expect([...HUMAN_ONLY].filter((s) => s.startsWith("plugin."))).toEqual(["plugin.install", "plugin.admin"]);
     const local = defaultScopes("local");

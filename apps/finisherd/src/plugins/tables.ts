@@ -1,13 +1,14 @@
 // The `plugins` chain's tables (8A Task 9a, spec §5.1): the only module that touches
-// `registries`, `plugins`, `plugin_grants` and `plugin_plans`. Importing it registers the chain
+// `registries`, `plugins`, `plugin_grants`, `plugin_plans` and `plugin_suggestions`. Importing it registers the chain
 // (`main.ts` imports it before it opens the control store). Statements are prepared once.
 import type { StatementSync } from "node:sqlite";
 import type { InstalledRow, RegistryEntry } from "@finisher/contracts";
 import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
 import { plugins0001 } from "../control/migrations/plugins/0001.ts";
+import { plugins0002 } from "../control/migrations/plugins/0002.ts";
 
-registerChain("plugins", [plugins0001], { formatVersion: 1, minReaderVersion: 1 });
+registerChain("plugins", [plugins0001, plugins0002], { formatVersion: 2, minReaderVersion: 1 });
 
 /** `<kind>:<id>` of a principal, as stored in `addedBy`, `installedBy` and `lastRefreshBy`. */
 export const actorOf = (p: { readonly kind: string; readonly id: string }): string => `${p.kind}:${p.id}`;
@@ -60,6 +61,41 @@ interface RegistryDbRow {
   lastRefreshByHuman: number | null;
   lastRefreshOk: number | null;
   lastRefreshCode: string | null;
+}
+
+/** An installed plugin as a plan is made against it (fin-registry's `InstalledPlugin` fields). */
+export interface InstalledFull extends InstalledRow {
+  readonly treeHash: string;
+  readonly targetSha256?: string;
+  readonly dir: string;
+}
+
+/** A `plugin_plans` row (Decision 18; review M4: who made it). */
+export interface PlanRow {
+  readonly id: string;
+  readonly digest: string;
+  readonly pluginId: string;
+  readonly version: string;
+  readonly source: string;
+  readonly registryId?: string;
+  readonly action: string;
+  readonly byKind: string;
+  readonly byId: string;
+  readonly human: boolean;
+  /** The installed version and grants the plan was made against (review M2), JSON or null. */
+  readonly base: string | null;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+}
+
+export interface SuggestionRow {
+  readonly id: string;
+  readonly pluginId: string;
+  readonly projectId: string;
+  readonly reason: string;
+  readonly byKind: string;
+  readonly byId: string;
+  readonly createdAt: number;
 }
 
 interface PluginDbRow {
@@ -128,6 +164,23 @@ export class PluginTables {
         "INSERT INTO plugins (id, version, source, registryId, targetSha256, treeHash, dir, kind, enabled, state, autoUpdate, installedBy, installedAt, updatedAt) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ),
+      full: p(`SELECT ${PLG}, treeHash, targetSha256, dir FROM plugins WHERE id = ?`),
+      replacePlugin: p(
+        "UPDATE plugins SET version = ?, source = ?, registryId = ?, targetSha256 = ?, treeHash = ?, dir = ?, kind = ?, enabled = ?, state = ?, autoUpdate = ?, updatedAt = ? WHERE id = ?",
+      ),
+      setState: p("UPDATE plugins SET enabled = ?, state = ?, updatedAt = ? WHERE id = ?"),
+      deletePlugin: p("DELETE FROM plugins WHERE id = ?"),
+      grants: p("SELECT permission FROM plugin_grants WHERE pluginId = ? ORDER BY rowid"),
+      deleteGrants: p("DELETE FROM plugin_grants WHERE pluginId = ?"),
+      addGrant: p("INSERT INTO plugin_grants (pluginId, version, permission, grantedBy, grantedAt) VALUES (?, ?, ?, ?, ?)"),
+      plan: p("SELECT * FROM plugin_plans WHERE id = ?"),
+      addPlan: p(
+        "INSERT INTO plugin_plans (id, digest, pluginId, version, source, registryId, action, byKind, byId, human, base, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ),
+      deletePlan: p("DELETE FROM plugin_plans WHERE id = ?"),
+      expiredPlans: p("DELETE FROM plugin_plans WHERE expiresAt <= ?"),
+      addSuggestion: p("INSERT INTO plugin_suggestions (id, pluginId, projectId, reason, byKind, byId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+      suggestions: p("SELECT * FROM plugin_suggestions ORDER BY createdAt, id"),
     };
   }
 
@@ -178,5 +231,78 @@ export class PluginTables {
       r.installedAt,
       r.installedAt,
     );
+  }
+
+  /** The installed row with its store fields, for a plan's `installed`. */
+  installedFull(id: string): InstalledFull | undefined {
+    const r = this.#s.full!.get(id) as (PluginDbRow & { treeHash: string; targetSha256: string | null; dir: string }) | undefined;
+    if (r === undefined) return undefined;
+    return { ...toInstalled(r), treeHash: r.treeHash, ...(r.targetSha256 === null ? {} : { targetSha256: r.targetSha256 }), dir: r.dir };
+  }
+
+  /** The granted permissions of `id`, as stored (canonical JSON), in grant order. */
+  grants(id: string): string[] {
+    return (this.#s.grants!.all(id) as Array<{ permission: string }>).map((g) => g.permission);
+  }
+
+  /** Replaces `id`'s grants with `permissions` (canonical JSON) for `version`. */
+  setGrants(id: string, version: string, permissions: ReadonlyArray<string>, by: string, at: number): void {
+    this.#s.deleteGrants!.run(id);
+    for (const perm of permissions) this.#s.addGrant!.run(id, version, perm, by, at);
+  }
+
+  /** Points the row of `r.id` at a new version at `at` (an update), keeping who first installed it. */
+  replacePlugin(r: Omit<NewPluginRow, "installedBy" | "installedAt">, at: number): void {
+    this.#s.replacePlugin!.run(
+      r.version,
+      r.source,
+      r.registryId ?? null,
+      r.targetSha256 ?? null,
+      r.treeHash,
+      r.dir,
+      r.kind,
+      r.enabled === true ? 1 : 0,
+      r.state ?? "active",
+      r.autoUpdate === true ? 1 : 0,
+      at,
+      r.id,
+    );
+  }
+
+  setState(id: string, enabled: boolean, state: InstalledRow["state"], at: number): boolean {
+    return Number(this.#s.setState!.run(enabled ? 1 : 0, state, at, id).changes) > 0;
+  }
+
+  deletePlugin(id: string): void {
+    this.#s.deletePlugin!.run(id);
+    this.#s.deleteGrants!.run(id);
+  }
+
+  plan(id: string): PlanRow | undefined {
+    const r = this.#s.plan!.get(id) as (Omit<PlanRow, "human" | "registryId"> & { human: number; registryId: string | null }) | undefined;
+    if (r === undefined) return undefined;
+    const { registryId, human, ...rest } = r;
+    return { ...rest, human: human === 1, ...(registryId === null ? {} : { registryId }) };
+  }
+
+  addPlan(r: PlanRow): void {
+    this.#s.addPlan!.run(r.id, r.digest, r.pluginId, r.version, r.source, r.registryId ?? null, r.action, r.byKind, r.byId, r.human ? 1 : 0, r.base, r.createdAt, r.expiresAt);
+  }
+
+  deletePlan(id: string): void {
+    this.#s.deletePlan!.run(id);
+  }
+
+  /** Deletes the plans expired at `now`; returns how many. */
+  deleteExpiredPlans(now: number): number {
+    return Number(this.#s.expiredPlans!.run(now).changes);
+  }
+
+  addSuggestion(r: SuggestionRow): void {
+    this.#s.addSuggestion!.run(r.id, r.pluginId, r.projectId, r.reason, r.byKind, r.byId, r.createdAt);
+  }
+
+  suggestions(): SuggestionRow[] {
+    return this.#s.suggestions!.all() as unknown as SuggestionRow[];
   }
 }

@@ -90,6 +90,13 @@ impl Store {
         self.base.join("staging")
     }
 
+    /// A fresh path in staging for a fetched package (`.tmp-fetch-<rand>.finpkg`): the caller
+    /// removes it after the plan; the staging sweep removes one left behind.
+    pub fn fetch_path(&self) -> PathBuf {
+        self.staging_dir()
+            .join(format!(".tmp-fetch-{}.finpkg", rand_suffix()))
+    }
+
     fn store_dir(&self) -> PathBuf {
         self.base.join("store")
     }
@@ -257,6 +264,17 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes the plan `plan_id` and its staged files (a plan nobody will approve); `false`
+    /// when there was none.
+    pub fn discard(&self, plan_id: &str) -> bool {
+        let _busy = self.lock();
+        if !is_plan_id(plan_id) {
+            return false;
+        }
+        let staged = self.staging_dir().join(plan_id);
+        staged.exists() && fs::remove_dir_all(&staged).is_ok()
+    }
+
     /// Deletes expired or unreadable plans (and half-built ones older than a plan's life);
     /// returns how many.
     pub fn sweep_staging(&self, now: u64) -> u32 {
@@ -278,7 +296,15 @@ impl Store {
             } else {
                 self.plan(&name).map_or(true, |p| now >= p.expires_at)
             };
-            if gone && fs::remove_dir_all(&path).is_ok() {
+            if !gone {
+                continue;
+            }
+            let removed = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            if removed.is_ok() {
                 n += 1;
             }
         }

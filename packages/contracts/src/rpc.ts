@@ -57,6 +57,18 @@ import {
   RegistryStatusSuccess,
 } from "./plugins.ts";
 import {
+  PluginIdOnlyPayload,
+  PluginInstallPayload,
+  PluginInstallSuccess,
+  PluginPlanPayload,
+  PluginPlanSuccess,
+  PluginRemovePayload,
+  PluginRemoveSuccess,
+  PluginStateSuccess,
+  PluginSuggestPayload,
+  PluginSuggestSuccess,
+} from "./plugin-lifecycle.ts";
+import {
   DiagnosticsConsentPayload,
   DiagnosticsConsentSuccess,
   DiagnosticsExportPayload,
@@ -441,8 +453,8 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("diagnostics.project", { payload: DiagnosticsProjectPayload, success: DiagnosticsProjectSuccess, error: FinError }),
   Rpc.make("diagnostics.consent", { payload: DiagnosticsConsentPayload, success: DiagnosticsConsentSuccess, error: FinError }),
   Rpc.make("diagnostics.record", { payload: DiagnosticsRecordPayload, success: DiagnosticsRecordSuccess, error: FinError }),
-  // Plugins and registries (sub-project 8A Task 9a): the registries and what they offer. Plans,
-  // installs and the lifecycle come with Task 9b.
+  // Plugins and registries (sub-project 8A Tasks 9a and 9b): the registries and what they
+  // offer, then plans, approvals and the lifecycle.
   Rpc.make("registry.list", { payload: Schema.Struct({}), success: RegistryListSuccess, error: FinError }),
   Rpc.make("registry.status", { payload: RegistryIdPayload, success: RegistryStatusSuccess, error: FinError }),
   Rpc.make("registry.add", { payload: RegistryAddPayload, success: RegistryStatusSuccess, error: FinError }),
@@ -452,4 +464,10 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("plugin.list", { payload: PluginListPayload, success: PluginListSuccess, error: FinError }),
   Rpc.make("plugin.search", { payload: PluginSearchPayload, success: PluginSearchSuccess, error: FinError }),
   Rpc.make("plugin.info", { payload: PluginInfoPayload, success: PluginInfoSuccess, error: FinError }),
+  Rpc.make("plugin.plan", { payload: PluginPlanPayload, success: PluginPlanSuccess, error: FinError }),
+  Rpc.make("plugin.install", { payload: PluginInstallPayload, success: PluginInstallSuccess, error: FinError }),
+  Rpc.make("plugin.remove", { payload: PluginRemovePayload, success: PluginRemoveSuccess, error: FinError }),
+  Rpc.make("plugin.enable", { payload: PluginIdOnlyPayload, success: PluginStateSuccess, error: FinError }),
+  Rpc.make("plugin.disable", { payload: PluginIdOnlyPayload, success: PluginStateSuccess, error: FinError }),
+  Rpc.make("plugin.suggest", { payload: PluginSuggestPayload, success: PluginSuggestSuccess, error: FinError }),
 );

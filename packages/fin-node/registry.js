@@ -1,4 +1,4 @@
-// The plugin store and registries class of the binding (8A Tasks 8 and 9a). A factory over the
+// The plugin store and registries class of the binding (8A Tasks 8, 9a and 9b). A factory over the
 // loader's `native` binding and error adapter, so `index.js` stays small and this file has no
 // import cycle with it.
 
@@ -24,8 +24,20 @@ export function defineRegistry({ native, call, toFinError }) {
       return call(this.#native.plan(reqJson));
     }
 
-    commit(planId, digest, acceptJson) {
-      return call(this.#native.commit(planId, digest, acceptJson ?? null));
+    commit(planId, digest, acceptJson, checksJson) {
+      return call(this.#native.commit(planId, digest, acceptJson ?? null, checksJson ?? null));
+    }
+
+    stagedPlan(planId) {
+      return call(this.#native.stagedPlan(planId));
+    }
+
+    discardPlan(planId) {
+      return call(this.#native.discardPlan(planId));
+    }
+
+    revocations(id, installedJson) {
+      return call(this.#native.revocations(id, installedJson));
     }
 
     removePlugin(id, version, purgeData) {

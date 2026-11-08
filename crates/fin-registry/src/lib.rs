@@ -20,6 +20,7 @@ mod atomic;
 pub mod clock;
 pub mod editor;
 pub mod error;
+mod fetch;
 pub mod package;
 pub mod plan;
 mod private;

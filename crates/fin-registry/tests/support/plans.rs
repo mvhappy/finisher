@@ -172,7 +172,7 @@ impl Fx {
             req,
             &ctx(source),
             &self.host,
-            &FixedClock(NOW),
+            &FixedClock::at_ms(NOW),
         )
     }
 

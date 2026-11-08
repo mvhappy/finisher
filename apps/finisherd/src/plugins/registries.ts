@@ -14,6 +14,7 @@ import type { Listing, PluginInfo, RefreshReport, RegistryList, RegistryStatus }
 import { Context, Effect, Layer } from "effect";
 import { ControlStoreTag } from "../control/db.ts";
 import { attempt, attemptJson, finError, toFinError } from "../errors.ts";
+import { type Installed, type Lifecycle, makeLifecycle } from "./lifecycle.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
 
 export { actorOf, PluginTables } from "./tables.ts";
@@ -32,8 +33,14 @@ export interface PluginsShape {
   readonly add: (req: RegistryAddRequest, by: Asker) => Effect.Effect<RegistryEntry, FinError>;
   readonly remove: (id: string) => Effect.Effect<void, FinError>;
   readonly forget: (rootSha256: string) => Effect.Effect<void, FinError>;
-  /** One registry (its failure fails the call) or every added one (failures are results). */
-  readonly refresh: (id: string | undefined, by: Asker) => Effect.Effect<RegistryRefreshResult, FinError>;
+  /**
+   * One registry (its failure fails the call) or every added one (failures are results). A
+   * refresh that succeeds applies the registry's `disable` advisories; a person's also updates
+   * content packs with automatic updates on (`updates`: what they did, for the audit log).
+   */
+  readonly refresh: (id: string | undefined, by: Asker) => Effect.Effect<RegistryRefreshResult & { readonly updates: ReadonlyArray<Installed> }, FinError>;
+  /** Plans, approvals and the lifecycle (Task 9b). */
+  readonly lifecycle: Lifecycle;
   readonly installed: () => Effect.Effect<InstalledRow[], FinError>;
   readonly search: (q: PluginSearchRequest) => Effect.Effect<Listing[], FinError>;
   readonly info: (id: string) => Effect.Effect<PluginInfoResult, FinError>;
@@ -55,7 +62,12 @@ function entryOf(status: RegistryStatus, row: RegistryRow | undefined): Registry
   };
 }
 
-export function makePlugins(native: Registry, tables: PluginTables, clock: () => number = Date.now): PluginsShape {
+export interface MakePluginsOptions {
+  /** Test builds only: plans for these ids are marked agent-facing (Decision 23). */
+  readonly testAgentFacing?: (id: string) => boolean;
+}
+
+export function makePlugins(native: Registry, tables: PluginTables, clock: () => number = Date.now, options: MakePluginsOptions = {}): PluginsShape {
   const list = () => attemptJson<RegistryList>(() => native.registryList());
   const row = (id: string) => tables.registry(id);
 
@@ -79,8 +91,27 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
         }),
     });
 
+  const failed = (r: RefreshResult) => (r.ok ? undefined : finError(r.error.code, r.error.message, r.error.details, r.error.fix));
+  const lifecycle = makeLifecycle({
+    native,
+    tables,
+    clock,
+    ...(options.testAgentFacing === undefined ? {} : { testAgentFacing: options.testAgentFacing }),
+    refreshOne: (id, by) => Effect.flatMap(refreshOne(id, by), (r) => (r.ok ? Effect.void : Effect.fail(failed(r)!))),
+  });
+
+  /** One registry's refresh and what it changed in the installed plugins. */
+  const refreshApplying = (id: string, by: Asker) =>
+    Effect.gen(function* () {
+      const result = yield* refreshOne(id, by);
+      if (!result.ok) return { result, revoked: [], updates: [] };
+      const applied = yield* lifecycle.afterRefresh(id, by);
+      return { result, revoked: applied.revoked, updates: applied.updated };
+    });
+
   return {
     tables,
+    lifecycle,
     registries,
     status,
     add: (req, by) =>
@@ -102,15 +133,19 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     forget: (rootSha256) => attempt(() => native.registryForget(rootSha256)),
     refresh: (id, by) =>
       Effect.gen(function* () {
-        if (id !== undefined) {
-          const one = yield* refreshOne(id, by);
-          if (!one.ok) return yield* Effect.fail(finError(one.error.code, one.error.message, one.error.details, one.error.fix));
-          return { byHuman: by.human, results: [one] };
-        }
-        const ids = (yield* list()).registries.map((r) => r.id);
+        const ids = id !== undefined ? [id] : (yield* list()).registries.map((r) => r.id);
         const results: RefreshResult[] = [];
-        for (const rid of ids) results.push(yield* refreshOne(rid, by));
-        return { byHuman: by.human, results };
+        const revoked: Array<RegistryRefreshResult["applied"]["revoked"][number]> = [];
+        const updates: Installed[] = [];
+        for (const rid of ids) {
+          const one = yield* refreshApplying(rid, by);
+          if (id !== undefined && !one.result.ok) return yield* Effect.fail(failed(one.result)!);
+          results.push(one.result);
+          revoked.push(...one.revoked);
+          updates.push(...one.updates);
+        }
+        const updated = updates.map((u) => ({ id: u.plugin.id, from: u.plan.from ?? "", to: u.plugin.version }));
+        return { byHuman: by.human, results, applied: { revoked, updated }, updates };
       }),
     installed: () =>
       Effect.gen(function* () {
@@ -148,9 +183,11 @@ export function reconcile(native: Registry, tables: PluginTables, clock: () => n
 
 export interface PluginsOptions {
   readonly clock?: () => number;
+  /** How often expired plans are swept (Decision 18: every minute, and at start). */
+  readonly sweepMs?: number;
 }
 
-export const layerPlugins = (serverData: string, { clock = Date.now }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag> =>
+export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000 }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag> =>
   Layer.effect(
     PluginsTag,
     Effect.gen(function* () {
@@ -158,6 +195,16 @@ export const layerPlugins = (serverData: string, { clock = Date.now }: PluginsOp
       const native = yield* Effect.try({ try: () => Registry.open(serverData), catch: toFinError });
       const tables = new PluginTables(control);
       yield* reconcile(native, tables, clock);
-      return makePlugins(native, tables, clock);
+      const plugins = makePlugins(native, tables, clock);
+      yield* Effect.ignore(plugins.lifecycle.sweep());
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const timer = setInterval(() => void Effect.runPromise(Effect.ignore(plugins.lifecycle.sweep())), sweepMs);
+          timer.unref();
+          return timer;
+        }),
+        (timer) => Effect.sync(() => clearInterval(timer)),
+      );
+      return plugins;
     }),
   );
