@@ -150,7 +150,7 @@ Principal {
 ### 3.3 The audit log
 
 - A security record for the owner (arch §16): rows in `control.db` `audit {id, at, kind, principalKind, principalId, credentialKind, outcome, code?, remote?, count, details JSON}`.
-- **Kinds:** `auth.fail` (bad proof, bad ticket, bad DPoP proof, rate-limited), `auth.denied` (a human-only, scope, reach or policy denial: RPC, scope, principal kind), `auth.ticket`, `credential.mint|revoke|expire`, `pair.offer|redeem|approve|reject|expire`, `device.revoke|rename`, `consent.change`, `diagnostics.purge`, `settings.write`, `project.takeoverConfirmed`, `project.relocated`, `listener.start|stop` (with the SPKI pin), `env.moved|adopted|reset`, `library.add|remove|set`, `history.drop`, `review.merge` (protected targets; `auto: true` for auto merges, §8.5), `review.policy` (old and new value), `console.refused` (a console command refused for lack of a TTY or a confirmation); reserved for 7/8: `grant`, `approval`, `hook.block`, `hook.modify`, `sandbox.violation`, `plugin.install`.
+- **Kinds:** `auth.fail` (bad proof, bad ticket, bad DPoP proof, rate-limited), `auth.denied` (a human-only, scope, reach or policy denial: RPC, scope, principal kind), `auth.ticket`, `credential.mint|revoke|expire`, `pair.offer|redeem|approve|reject|expire`, `device.revoke|rename`, `consent.change`, `diagnostics.purge`, `settings.write`, `project.takeoverConfirmed`, `project.relocated`, `listener.start|stop` (with the SPKI pin), `env.moved|adopted|reset`, `library.add|remove|set`, `history.drop`, `review.merge` (protected targets; `auto: true` for auto merges, §8.5), `review.policy` (old and new value), `console.refused` (a console command refused for lack of a confirmation; a missing TTY is refused by the console itself, before it connects), `audit.purge` (written after the purge, with its count, so the log never ends empty); reserved for 7/8: `grant`, `approval`, `hook.block`, `hook.modify`, `sandbox.violation`, `plugin.install`.
 - **Aggregation:** `auth.fail` rows are aggregated **per credential kind (and remote address, in 5B) per minute**, with `count`, so a flood of connections cannot flood the log.
 - **Always on.** Consent does not gate it, `DO_NOT_TRACK` does not stop it; it is never uploaded, never part of `fin diagnostics export`, never read by the dataset builder.
 - **What it may hold** that the journal may not (owner decision 4): device names and remote addresses, **for pairing, revocation and failed authentication only** (`pair.*`, `device.revoke`, `credential.revoke`, `auth.fail`); every other kind records neither. Never secrets, tokens, MACs, nonces, links, paths or request payloads.
@@ -338,10 +338,10 @@ These are refused with **`HUMAN_ONLY`** (exit 7) for every non-human principal, 
 | `auth.whoami`, `auth.revokeSelf` | `server.read` | → `{principal}` / `{}` |
 | `auth.credential.mint` | `auth.admin` | `{kind: agent\|mcp, label, scopes?, projects?, branches?, idleS?, absoluteS?}` → `{credential, file}` (the file contents; shown once) |
 | `auth.credential.list`, `auth.credential.revoke` | `auth.admin` | — |
-| `auth.audit.list`, `auth.audit.purge` | `auth.admin` | `{since?, kind?, cursor?, limit ≤ 1000}` → `{entries, next?}` |
+| `auth.audit.list`, `auth.audit.purge` | `auth.admin` | list: `{since?, kind?, cursor?, limit ≤ 1000}` → `{entries, next?}`; purge (typed code): `{all: true} \| {before}` → `{removed}` |
 | `console.challenge` | `auth.admin` | `{}` → `{code, expiresAt}` (console principals only) |
 | `server.status` | `server.read` | → `{version, protocol, envId, listeners, connections: {kind: count}, journal, auditFailures, warnings: [{code, …}]}`; `warnings` are persistent (for example `SANDBOX_DISABLED {profile, reason}`, agent §8.9) and `fin status` shows them |
-| `server.stop` | `auth.admin` | → `{}`, then a graceful shutdown |
+| `server.stop` | `auth.admin` | → `{stopping: true}`, then, once that reply is written, a graceful shutdown (no typed code: a service command) |
 
 `fin` changes: the handshake in a new `crates/fin/src/auth.rs` (key discovery: `FIN_CREDENTIAL`, else `<server-data>/auth/local.key`; the retry of §4.2); exit class 7; `fin whoami`; `fin asset add` and `fin asset probe` send `projectId`.
 

@@ -14,6 +14,7 @@ import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
+import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -44,6 +45,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const audit = yield* AuditTag;
     const tickets = yield* TicketsTag;
     const everyConnection = yield* ConnectionRegistryTag;
+    const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
@@ -121,6 +123,11 @@ export const HandlersLive = FinRpcs.toLayer(
             return Effect.succeed(issueChallenge(c));
           }),
         ),
+      // The server itself and the owner's audit log (5A Task 8, `server-admin.ts`).
+      "server.status": () => guard("server.status", serverStatus(admin)),
+      "server.stop": (_, options) => guard("server.stop", serverStop(admin, connections.link(options.client.id)?.afterReply)),
+      "auth.audit.list": (req) => guard("auth.audit.list", auditList(admin, req)),
+      "auth.audit.purge": (req, options) => guard("auth.audit.purge", auditPurge(admin, req, principalOf(options), connections.transport)),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
       "project.create": ({ dir, name, rate, idemKey }) =>
         guard("project.create", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.create(d, name, rate, idemKey))),

@@ -144,6 +144,11 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.revokeSelf": { scopes: ["server.read"] },
   // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
   "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  // 5A Task 8. Stopping is the owner's, but service managers call it without a terminal.
+  "server.status": { scopes: ["server.read"] },
+  "server.stop": { scopes: ["auth.admin"], unconfirmed: "service" },
+  "auth.audit.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.audit.purge": { scopes: ["auth.admin"] },
   "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": {

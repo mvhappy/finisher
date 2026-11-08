@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // finisherd: serves `FinRpcs` over the local socket/pipe and a ticketed WebSocket.
-// Usage: node apps/finisherd/src/main.ts [--server-data <dir>]
-// Logs go to stderr only; stdout stays empty.
+// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
+//        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
+// Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Cause, Context, Effect, Exit, Layer, Logger } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Layer, Logger } from "effect";
 import {
   ensureServerData,
   parseArgs,
@@ -30,6 +31,8 @@ import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
+import { ServerControlTag } from "./server-admin.ts";
+import { isServeCommand, runConsole } from "./console/main.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -40,7 +43,10 @@ export interface ServeOptions {
   readonly onReady?: (info: ServerInfo) => void;
 }
 
-/** Runs the server until interrupted; finalizers stop the transports, close engines and remove `finisherd.json`. */
+/**
+ * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
+ * engines and remove `finisherd.json`.
+ */
 export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -96,6 +102,13 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
       };
       const handshake = new Handshake({ keys, envId, audit });
+      // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
+      const stopped = Deferred.makeUnsafe<void>();
+      const listeners = [
+        { transport: connections.local.transport, endpoint: localEndpoint },
+        { transport: connections.ws.transport, endpoint: wsEndpoint },
+      ] as const;
+      const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void) };
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
@@ -108,6 +121,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(HandshakeTag, handshake),
               Layer.succeed(TicketsTag, tickets),
               Layer.succeed(ConnectionRegistryTag, everyConnection),
+              Layer.succeed(ServerControlTag, serverControl),
             ),
           ),
         ),
@@ -116,18 +130,18 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       const publish = (enabled: boolean) =>
         writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId, diagnostics: { enabled } });
       // Set when `finisherd.json` is removed: a late gate change must not bring it back.
-      let stopped = false;
+      let removed = false;
       const info = yield* Effect.acquireRelease(
         Effect.try({ try: () => publish(diagnostics.enabled()), catch: startFailure }),
         () =>
           Effect.sync(() => {
-            stopped = true;
+            removed = true;
             removeServerInfo(serverData);
           }),
       );
       // `fin` reads `diagnostics.enabled` to decide whether to send anything (Decision 23).
       diagnostics.onEnabledChange((enabled) => {
-        if (stopped) return;
+        if (removed) return;
         try {
           publish(enabled);
         } catch (e) {
@@ -137,7 +151,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       yield* Effect.logInfo(`finisherd ready: socket=${socket} wsPort=${info.wsPort} serverData=${serverData}`);
       onReady?.(info);
       yield* Effect.addFinalizer(() => Effect.logInfo("finisherd shutting down"));
-      return yield* Effect.never;
+      return yield* Deferred.await(stopped);
     }),
   );
 
@@ -145,9 +159,16 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
 export const StderrLogger = Logger.layer([Logger.withConsoleError(Logger.formatSimple)]);
 
 function main(argv: ReadonlyArray<string>): void {
+  // Decision 29: no argument, `serve` or only flags serve; any other first word is a console command.
+  if (!isServeCommand(argv)) {
+    void runConsole(argv).then((code) => {
+      process.exitCode = code;
+    });
+    return;
+  }
   let serverData: string;
   try {
-    ({ serverData } = parseArgs(argv));
+    ({ serverData } = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv));
   } catch (e) {
     process.stderr.write(`finisherd: ${(e as Error).message}\n`);
     process.exitCode = 2;

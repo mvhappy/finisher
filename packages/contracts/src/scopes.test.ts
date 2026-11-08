@@ -7,6 +7,8 @@ import { HUMAN_ONLY, needsConfirmation, RPC_SCOPES, requiredScopes, type Resolve
 const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "console.challenge": "readOnly",
   "diagnostics.export": "readOnly",
+  "auth.audit.list": "readOnly",
+  "server.stop": "service",
 };
 
 /** The resolver a payload field needs (spec §4.4 stage 3). */

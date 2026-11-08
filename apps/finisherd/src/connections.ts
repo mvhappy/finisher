@@ -52,6 +52,8 @@ export interface Link {
   closeAfterReply(): void;
   /** Answers every open request with `error`, then closes. */
   terminate(error: FinError): void;
+  /** Runs `f` once the reply being written now has been sent (`server.stop`). */
+  afterReply?(f: () => void): void;
 }
 
 /** `<kind>:<id>` of a principal (revocation is by credential). */

@@ -22,6 +22,8 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
       "asset.probe",
+      "auth.audit.list",
+      "auth.audit.purge",
       "auth.prove",
       "auth.revokeSelf",
       "auth.ticket",
@@ -61,6 +63,8 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "project.takeover",
       "project.verify",
       "server.hello",
+      "server.status",
+      "server.stop",
       "snapshot.get",
       "tx.commit",
       "tx.get",

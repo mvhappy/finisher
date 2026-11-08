@@ -37,6 +37,8 @@ export const AUDIT_KINDS = [
   "history.drop",
   "review.merge",
   "console.refused",
+  // The owner purged the audit log (5A Task 8): written after the purge, with its count.
+  "audit.purge",
   "grant",
   "approval",
   "hook.block",
