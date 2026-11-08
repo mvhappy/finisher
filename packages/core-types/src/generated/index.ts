@@ -1596,6 +1596,13 @@ export type SourceKind = "bundled" | "registry" | "dev";
  */
 export type JobHostKillTree = "jobObject" | "cgroup" | "processGroup";
 /**
+ * A sandbox profile's state on this host.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostProfileState".
+ */
+export type JobHostProfileState = "enforced" | "disabled" | "unavailable";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobHostCgroups".
  */
@@ -5693,11 +5700,27 @@ export interface JobHostCaps {
    */
   leafLimits: boolean;
   /**
+   * Warm workers can be granted per job (plan 7C Task 12): warm kinds run warm under an
+   * enforced profile only then.
+   */
+  perJobGrants: boolean;
+  profiles: JobHostProfiles;
+  /**
    * The spawner's name (`none` unsandboxed).
    */
   sandbox: string;
+  /**
+   * Every profile is enforced.
+   */
   sandboxed: boolean;
   watchdog: boolean;
+}
+/**
+ * What each sandbox profile gets (plan 7C Decision 4).
+ */
+export interface JobHostProfiles {
+  plugin: JobHostProfileState;
+  worker: JobHostProfileState;
 }
 /**
  * `progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).
@@ -5736,6 +5759,11 @@ export interface JobHostOptions {
    * alone). `exit`, `spawned` and `groupEmpty` are not counted: a process has one of each.
    */
   eventQueueBytes?: number;
+  /**
+   * `<server-data>`: the sandbox spawner places each process's grants against it (plan 7C
+   * Task 7). Without it, a profile that is enforced on this host refuses every spawn.
+   */
+  serverData?: string;
   timing?: JobHostTiming;
   /**
    * The Unix host watchdog (default on; ignored on Windows).
@@ -5754,6 +5782,16 @@ export interface JobHostTiming {
   hungMs?: number;
   killWaitMs?: number;
   rssSampleMs?: number;
+}
+/**
+ * [`JobHostProfileState`] per profile.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostProfiles".
+ */
+export interface JobHostProfiles1 {
+  plugin: JobHostProfileState;
+  worker: JobHostProfileState;
 }
 /**
  * A group memory rule (Decision 20).

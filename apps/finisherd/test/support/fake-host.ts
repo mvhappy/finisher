@@ -33,7 +33,7 @@ export class FakeHost implements JobHostLike {
   capsOverride: Partial<JobHostCaps> = {};
 
   caps(): JobHostCaps {
-    return { killTree: "processGroup", watchdog: false, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false, ...this.capsOverride };
+    return { killTree: "processGroup", watchdog: false, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false, profiles: { worker: "disabled", plugin: "disabled" }, perJobGrants: false, ...this.capsOverride };
   }
 
   openGroup(_spec: JobGroupSpec): number {

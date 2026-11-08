@@ -246,6 +246,8 @@ class ColdAttempt extends AttemptBase {
       grants: [
         { path: dirs.tmp, mode: "readWrite" },
         ...files.map((f) => ({ path: mappedPath(dirs.job, f.name), mode: f.mode })),
+        // What the worker reads outside its directory (sources, caches; plan 7C Task 7).
+        ...(kind.reads?.(this.a.extra) ?? []).map((path) => ({ path, mode: "read" as const })),
       ],
       qos: row.priority === "interactive" ? "normal" : kind.qos,
       label: `${kind.kind} ${row.id}`,

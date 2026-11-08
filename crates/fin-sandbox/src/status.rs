@@ -81,6 +81,29 @@ pub const READY: &[(Profile, Os)] = &[];
 
 /// The variable of the test hook (`test-hooks` builds only).
 pub const TEST_ENV: &str = "FIN_TEST_SANDBOX_STATUS";
+/// The test hook that adds rows to [`READY`] for this OS (`test-hooks` builds only):
+/// `FIN_TEST_SANDBOX_READY=worker,plugin`.
+pub const TEST_READY_ENV: &str = "FIN_TEST_SANDBOX_READY";
+
+/// [`READY`], with the test hook's rows in `test-hooks` builds.
+pub fn ready() -> Vec<(Profile, Os)> {
+    #[allow(unused_mut)]
+    let mut rows = READY.to_vec();
+    #[cfg(feature = "test-hooks")]
+    if let Ok(v) = std::env::var(TEST_READY_ENV) {
+        for name in v.split(',') {
+            let p = match name.trim() {
+                "agent" => Profile::Agent,
+                "hook" => Profile::Hook,
+                "worker" => Profile::Worker,
+                "plugin" => Profile::Plugin,
+                _ => continue,
+            };
+            rows.push((p, Os::current()));
+        }
+    }
+    rows
+}
 
 /// The OS mechanism on this host, whatever the profile.
 pub fn mechanism() -> Mechanism {
@@ -140,7 +163,7 @@ fn os_mechanism() -> Mechanism {
 
 /// What `profile` gets on this host.
 pub fn status(profile: Profile) -> Mechanism {
-    status_with(profile, mechanism(), READY)
+    status_with(profile, mechanism(), &ready())
 }
 
 /// [`status`] for a given mechanism and table (pure, for tests).
@@ -160,7 +183,8 @@ pub fn status_with(profile: Profile, mechanism: Mechanism, ready: &[(Profile, Os
 /// Every profile's status.
 pub fn all() -> SandboxStatus {
     let m = mechanism();
-    let s = |p| status_with(p, m.clone(), READY);
+    let ready = ready();
+    let s = |p| status_with(p, m.clone(), &ready);
     SandboxStatus {
         os: Os::current().into(),
         agent: s(Profile::Agent),

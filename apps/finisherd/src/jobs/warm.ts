@@ -81,18 +81,25 @@ export class WarmPools {
   }
 
   /**
-   * Whether a sandbox is in force (H3, owner decision): then warm kinds run cold, until
-   * sub-project 7C grants a warm worker each job's paths instead of the whole jobs root.
+   * Whether a sandbox is in force for `profile`'s warm workers (H3, owner decision): then warm
+   * kinds run cold, until the job host grants a warm worker each job's paths instead of the
+   * whole jobs root (`caps().perJobGrants`, plan 7C Task 12). The job host's spawner applies
+   * each profile on its own (`caps().profiles`, Task 7); with no profile named, any applied
+   * one counts. A warm worker that sandboxed itself counts for every family.
    */
-  sandboxed(): boolean {
-    return this.#selfSandboxed || this.#e.d.host.caps().sandboxed;
+  sandboxed(profile?: "worker" | "plugin"): boolean {
+    if (this.#selfSandboxed) return true;
+    const caps = this.#e.d.host.caps();
+    if (caps.perJobGrants) return false;
+    const applied = (p: "worker" | "plugin") => caps.profiles[p] === "enforced";
+    return profile === undefined ? applied("worker") || applied("plugin") : applied(profile);
   }
 
   /** A job's warm tag: a `warm` kind at `interactive` priority (Decision 35), else `undefined`. */
   tag(row: JobView, kind: KindSpec): { family: string; key: string; fresh?: true } | undefined {
-    if (kind.warm !== true || row.priority !== "interactive" || this.sandboxed()) return undefined;
+    if (kind.warm !== true || row.priority !== "interactive") return undefined;
     const f = this.families().get(kind.family);
-    if (f === undefined) return undefined;
+    if (f === undefined || this.sandboxed(f.profile)) return undefined;
     let key = "";
     try {
       key = f.warmKey?.(row) ?? "";
@@ -182,7 +189,7 @@ export class WarmPools {
 
   /** `warm(family)`: one worker now when the pool has none (Decision 36's pre-warming). */
   prewarm(f: FamilySpec): void {
-    if (this.sandboxed() || (this.#byFamily.get(f.family) ?? []).some((w) => w.state !== "retiring")) return;
+    if (this.sandboxed(f.profile) || (this.#byFamily.get(f.family) ?? []).some((w) => w.state !== "retiring")) return;
     if (f.warmKey !== undefined) {
       // A `""`-key worker would serve no job of a keyed family (L5).
       this.#e.d.log("debug", `warm(${f.family}): its workers are keyed by job; the first job spawns its worker`);
@@ -246,7 +253,7 @@ export class WarmPools {
       return out;
     }
     // Under a sandbox a worker is never handed another job (H3): its grant covers every job.
-    if (this.sandboxed()) {
+    if (this.sandboxed(w.family.profile)) {
       this.#retire(w, "done");
       return out;
     }
@@ -319,7 +326,7 @@ export class WarmPools {
   /** A new worker (none while the engine closes, L1). */
   #spawn(f: FamilySpec, key: string, program: ProgramSpec): Worker | undefined {
     const e = this.#e;
-    if (e.closing || e.crashed || this.sandboxed()) return undefined;
+    if (e.closing || e.crashed || this.sandboxed(f.profile)) return undefined;
     const id = this.#nextId++;
     const rule = f.memory?.interactive;
     const memoryBytes = rule === undefined ? undefined : resolveMemoryRule(rule, e.d.totalMem);

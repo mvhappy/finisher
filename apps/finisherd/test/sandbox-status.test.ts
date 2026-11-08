@@ -30,7 +30,7 @@ const DISABLED: SandboxMechanism = { kind: "disabled", reason: "landlockDisabled
 const NOT_READY: SandboxMechanism = { kind: "disabled", reason: "profileNotReady" };
 const ENFORCED: SandboxMechanism = { kind: "enforced", detail: "landlock abi 8" };
 
-const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false } as const;
+const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false, profiles: { worker: "disabled", plugin: "disabled" }, perJobGrants: false } as const;
 const deps = (status: SandboxStatus, reporter?: SandboxReporter) => ({
   control: { envId: "env", listeners: () => [], stop: () => {} },
   audit: { failures: () => 0 } as unknown as Audit,

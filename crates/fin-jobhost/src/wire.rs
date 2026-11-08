@@ -49,6 +49,11 @@ pub struct JobHostOptions {
     #[serde(default)]
     #[schemars(with = "u32")]
     pub event_queue_bytes: Option<u32>,
+    /// `<server-data>`: the sandbox spawner places each process's grants against it (plan 7C
+    /// Task 7). Without it, a profile that is enforced on this host refuses every spawn.
+    #[serde(default)]
+    #[schemars(with = "PathBuf")]
+    pub server_data: Option<PathBuf>,
 }
 
 /// The host's timers in milliseconds; unset ones take the defaults.
@@ -517,7 +522,40 @@ pub struct JobHostCaps {
     pub leaf_limits: bool,
     /// The spawner's name (`none` unsandboxed).
     pub sandbox: String,
+    /// Every profile is enforced.
     pub sandboxed: bool,
+    /// What each sandbox profile gets (plan 7C Decision 4).
+    pub profiles: JobHostProfiles,
+    /// Warm workers can be granted per job (plan 7C Task 12): warm kinds run warm under an
+    /// enforced profile only then.
+    pub per_job_grants: bool,
+}
+
+/// A sandbox profile's state on this host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum JobHostProfileState {
+    Enforced,
+    Disabled,
+    Unavailable,
+}
+
+/// [`JobHostProfileState`] per profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct JobHostProfiles {
+    pub worker: JobHostProfileState,
+    pub plugin: JobHostProfileState,
+}
+
+impl From<crate::spawner::ProfileState> for JobHostProfileState {
+    fn from(s: crate::spawner::ProfileState) -> Self {
+        match s {
+            crate::spawner::ProfileState::Enforced => JobHostProfileState::Enforced,
+            crate::spawner::ProfileState::Disabled => JobHostProfileState::Disabled,
+            crate::spawner::ProfileState::Unavailable => JobHostProfileState::Unavailable,
+        }
+    }
 }
 
 impl From<HostCaps> for JobHostCaps {
@@ -533,6 +571,11 @@ impl From<HostCaps> for JobHostCaps {
             leaf_limits: c.leaf_limits,
             sandbox: c.sandbox.to_owned(),
             sandboxed: c.sandboxed,
+            profiles: JobHostProfiles {
+                worker: c.profiles.worker.into(),
+                plugin: c.profiles.plugin.into(),
+            },
+            per_job_grants: c.per_job_grants,
         }
     }
 }

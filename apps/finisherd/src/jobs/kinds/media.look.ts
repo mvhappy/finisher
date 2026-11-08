@@ -244,8 +244,11 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
           join(deps.serverData, "fonts"),
           JSON.stringify(request),
         );
-        return { extra: { planSamples: done.planSamples, rev: done.rev } };
+        const reads = yield* Effect.promise(() => canonicalReads([...(done.sources ?? []), join(deps.serverData, "fonts")]));
+        return { extra: { planSamples: done.planSamples, rev: done.rev, reads } };
       }),
+    // The sources and the font cache, granted to the worker per file (plan 7C Task 7).
+    reads: readsOf,
     onSucceeded: (ctx) =>
       Effect.tryPromise({
         try: async (): Promise<LookResult> => {
@@ -302,6 +305,25 @@ export function lookJournal(job: JobView): Readonly<Record<string, unknown>> {
 }
 
 /** The plan hashes `prepare` computed, in `at` order (`extra.planSamples`). */
+/** Each existing path resolved (a missing one is left out: the worker reports it missing). */
+async function canonicalReads(paths: ReadonlyArray<string>): Promise<string[]> {
+  const out = new Set<string>();
+  for (const p of paths) {
+    if (!isAbsolute(p)) continue;
+    try {
+      out.add(await realpath(p));
+    } catch {
+      // Missing or unreadable: not granted.
+    }
+  }
+  return [...out].sort();
+}
+
+function readsOf(extra: unknown): ReadonlyArray<string> {
+  const reads = (extra as { reads?: unknown } | null | undefined)?.reads;
+  return Array.isArray(reads) ? reads.filter((r): r is string => typeof r === "string") : [];
+}
+
 function planSamplesOf(extra: unknown): ReadonlyArray<string> {
   const samples = (extra as { planSamples?: ReadonlyArray<{ blake3?: unknown }> } | null | undefined)?.planSamples;
   if (!Array.isArray(samples)) throw finError("JOB_FAILED", "the job lost the plan samples its prepare computed", {});

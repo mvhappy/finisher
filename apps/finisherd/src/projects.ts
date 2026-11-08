@@ -11,10 +11,11 @@ import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResul
 import { follower, Hubs, type Stamped } from "./hubs.ts";
 import { ProjectIndex } from "./project-index.ts";
 
-/** What `prepareMediaJob` resolves to: the rev written and the plan's BLAKE3 at each time. */
+/** What `prepareMediaJob` resolves to: the rev written, the plan's BLAKE3 at each time and the files the worker opens. */
 export interface MediaJobPrepared {
   readonly rev: number;
   readonly planSamples: ReadonlyArray<{ readonly at: string; readonly blake3: string }>;
+  readonly sources?: ReadonlyArray<string>;
 }
 
 export interface ProjectRef {

@@ -258,6 +258,21 @@ fn third_party_code_is_high_risk_and_warned_first() {
     assert_eq!(codes(&plan), ["thirdPartyCode", "copyleft"]);
     assert_eq!(plan.warnings[0].details["confined"], json!(false));
     assert_eq!(plan.permissions[0].risk, Risk::Low);
+    // Plan 7C Task 7: where the job host applies the `plugin` profile, the warning says so (it
+    // stays high risk) and the digest differs.
+    let confined = fx
+        .plan(
+            PlanInput::Registry(Box::new(fx.target(&m, &default_files()))),
+            &PlanRequest {
+                id: "@acme/tool".into(),
+                plugin_confined: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(confined.risk, Risk::High);
+    assert_eq!(confined.warnings[0].details["confined"], json!(true));
+    assert_ne!(confined.digest, plan.digest);
     // Bundled code is not third-party.
     let src = fx.bundled(
         &code("@finisher/tool", "1.0.0", json!([])),

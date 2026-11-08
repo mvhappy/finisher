@@ -124,6 +124,8 @@ impl Host {
             leaf_limits: i.domain.leaf_limits(),
             sandbox: i.opts.spawner.name(),
             sandboxed: i.opts.spawner.sandboxed(),
+            profiles: i.opts.spawner.profiles(),
+            per_job_grants: i.opts.spawner.per_job_grants(),
         }
     }
 
