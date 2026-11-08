@@ -74,13 +74,17 @@ pub fn referenced_assets(plans: &[FramePlan]) -> BTreeSet<String> {
     out
 }
 
-/// `stored` as an absolute path: itself, else below `project_dir`.
+/// `stored` as an absolute path: itself, else below `project_dir`, component by component, so
+/// a stored `assets/x.mp4` takes the platform's separator (`…\assets\x.mp4` on Windows, not
+/// `…\assets/x.mp4`).
 fn resolve(project_dir: &Path, stored: &str) -> PathBuf {
     let p = Path::new(stored);
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        project_dir.join(p)
+        let mut out = project_dir.to_path_buf();
+        out.extend(p.components());
+        out
     }
 }
 
@@ -163,4 +167,22 @@ pub fn write_json(dir: &Path, name: &str, value: &impl Serialize) -> Result<(), 
         _ => dir.to_path_buf(),
     };
     fin_shm::write_input(&dir, name, &bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_relative_stored_path_takes_the_platform_separator() {
+        let dir = std::env::temp_dir().join("p");
+        assert_eq!(
+            resolve(&dir, "assets/rel.mp4"),
+            dir.join("assets").join("rel.mp4")
+        );
+        assert_eq!(
+            resolve(&dir, "assets/rel.mp4").to_str().unwrap(),
+            dir.join("assets").join("rel.mp4").to_str().unwrap()
+        );
+    }
 }
