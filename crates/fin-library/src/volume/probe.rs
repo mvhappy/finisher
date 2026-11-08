@@ -70,14 +70,19 @@ pub(crate) fn run(root: &Path, timeout: Duration) -> Option<Answer> {
 fn measure(path: &Path, probe: &Arc<Probe>) {
     hooks::on_probe(path);
     let answer = super::root_stat(path).map_err(|e| super::unreachable_code(&e));
+    // The probe leaves the pending map before its answer is published: a caller that comes
+    // after the answer exists starts a fresh measurement instead of joining a finished one (it
+    // would otherwise be told what the root was, not what it is).
+    {
+        let mut g = pending();
+        if let Some(map) = g.as_mut()
+            && map.get(path).is_some_and(|p| Arc::ptr_eq(p, probe))
+        {
+            map.remove(path);
+        }
+    }
     *probe.answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(answer);
     probe.ready.notify_all();
-    let mut g = pending();
-    if let Some(map) = g.as_mut()
-        && map.get(path).is_some_and(|p| Arc::ptr_eq(p, probe))
-    {
-        map.remove(path);
-    }
 }
 
 /// Test hooks (feature `test-hooks`): hold a root's probe before it measures, and count the

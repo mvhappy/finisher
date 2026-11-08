@@ -25,6 +25,8 @@ interface Rec {
   readonly sent: Array<{ proc: number; msg: HostMsg }>;
   /** `performance.now()` at each job's `start`. */
   readonly starts: Map<string, number>;
+  /** Jobs whose worker has reported progress: it has begun running them (a `start` sent is not that). */
+  readonly running: Set<string>;
   /** Holds every event of the next process spawned until `release()`. */
   holdNext(): void;
   release(): void;
@@ -35,6 +37,9 @@ interface Rec {
 function proxied(): { factory: JobHostFactory; rec: Rec } {
   let deliver: (e: JobHostEvent) => void = () => {};
   let holdNext = false;
+  // Bumped by `release()`: a spawn still in flight then (its process id is known only when the
+  // host answers) must not start holding afterwards, or its `hello` would be held for good.
+  let epoch = 0;
   const holding = new Set<number>();
   const held: JobHostEvent[] = [];
   const rec: Rec = {
@@ -42,9 +47,12 @@ function proxied(): { factory: JobHostFactory; rec: Rec } {
     spawns: [],
     sent: [],
     starts: new Map(),
+    running: new Set(),
     readyMemory: undefined,
     holdNext: () => void (holdNext = true),
     release() {
+      epoch++;
+      holdNext = false;
       holding.clear();
       for (const e of held.splice(0)) deliver(e);
     },
@@ -54,6 +62,7 @@ function proxied(): { factory: JobHostFactory; rec: Rec } {
       held.push(e);
       return null;
     }
+    if (e.type === "message" && e.msg.t === "progress") rec.running.add(e.msg.job);
     if (e.type === "message" && e.msg.t === "ready" && rec.readyMemory !== undefined) return { ...e, memory: rec.readyMemory };
     return e;
   };
@@ -73,9 +82,10 @@ function proxied(): { factory: JobHostFactory; rec: Rec } {
       },
       spawn: async (g, r) => {
         const hold = holdNext;
+        const since = epoch;
         holdNext = false;
         const proc = await h.spawn(g, r);
-        if (hold) holding.add(proc);
+        if (hold && since === epoch) holding.add(proc);
         rec.spawns.push({ group: g, req: r, proc });
         return proc;
       },
@@ -121,11 +131,14 @@ describe("hand-off", () => {
 
   // Measured from `submit` to the `start` handed to the host's `send` (the message is then on
   // the process's writer queue; the writer thread's `write(2)` is not part of the figure).
-  // Beside the rest of the suite the tail measures the machine (full `pnpm test` runs saw
-  // p99 9–21 ms where this file alone stays under 5), so the repo's pattern applies: the
-  // budget, p99 ≤ 5 ms with 10,000 cold jobs queued over 1,000 samples, only with
-  // `FIN_STRICT_TIMING=1`; otherwise a lighter load (2,000 queued, 300 samples), a median
-  // ≤ 2 ms and a p99 ≤ 50 ms. `scripts/jobs-budget.ts` records the strict figure.
+  // Beside the rest of the suite (or any other load) the figures measure the machine (full
+  // `pnpm test` runs saw p99 9–21 ms and, at load average 20, a median of 5 ms where this file
+  // alone stays under 5), so the repo's pattern applies: the budget, p99 ≤ 5 ms with 10,000
+  // cold jobs queued over 1,000 samples, only with `FIN_STRICT_TIMING=1`. Otherwise a lighter
+  // load (2,000 queued, 300 samples) and what load cannot change: no scheduling pass in any
+  // warm submit's own turn (the queue is never walked, Decision 35), and generous time bounds
+  // (a median ≤ 25 ms, a p99 ≤ 250 ms) that still catch a hand-off waiting on a cold spawn.
+  // `scripts/jobs-budget.ts` records the strict figure.
   test("dispatch_p99_under_5ms_under_load", { timeout: 180_000 }, async () => {
     const strict = process.env.FIN_STRICT_TIMING === "1";
     const { factory, rec } = proxied();
@@ -136,23 +149,33 @@ describe("hand-off", () => {
     await t.runJob("test.warm", { value: "warm-up" });
     const N = strict ? 1000 : 300;
     const lat: number[] = [];
+    const engine = t.engine as Engine;
+    const real = engine.schedule;
+    let passes = 0;
+    engine.schedule = (s, now) => (passes++, real(s, now));
+    let passesInSubmit = 0;
     for (let i = 0; i < N; i++) {
       const t0 = performance.now();
-      const v = await t.submit("test.warm", { value: i });
+      const before = passes;
+      const v = Effect.runSync(engine.submit(OWNER, { kind: "test.warm", params: { value: i } }));
+      passesInSubmit += passes - before;
       expect(await t.wait(v.id)).toMatchObject({ state: "succeeded" });
       lat.push((rec.starts.get(v.id) ?? Infinity) - t0);
     }
+    engine.schedule = real;
     lat.sort((a, b) => a - b);
     const cold = t.engine.workers().processes.filter((p) => p.family === "test" && p.job !== undefined).length;
     const p50 = lat[Math.floor(N * 0.5)] as number;
     const p99 = lat[Math.ceil(N * 0.99) - 1] as number;
     console.log(`warm hand-off on ${process.platform}${strict ? " (strict)" : ""}: p50 ${p50.toFixed(3)} ms, p99 ${p99.toFixed(3)} ms, max ${(lat[N - 1] as number).toFixed(3)} ms (cold processes now: ${cold})`);
     expect(lat.every(Number.isFinite)).toBe(true);
+    // Cold jobs finishing meanwhile do pump, but never inside a warm submit's own turn.
+    expect(passesInSubmit).toBe(0);
     if (strict) {
       if (linux) expect(p99).toBeLessThanOrEqual(5);
     } else {
-      expect(p50).toBeLessThanOrEqual(2);
-      expect(p99).toBeLessThanOrEqual(50);
+      expect(p50).toBeLessThanOrEqual(25);
+      expect(p99).toBeLessThanOrEqual(250);
     }
   });
 
@@ -340,13 +363,12 @@ describe("lifecycle", () => {
     const old = resultOf(await t.runJob("test.warm", { value: 1 })).pid;
     rec.holdNext(); // the replacement's `hello` waits
     await t.runJob("test.warm", { value: 2 });
-    await until(() => warmList(t).length === 2);
-    expect(warmList(t).map((w) => w.state).sort()).toEqual(["ready", "spawning"]);
-    // The old worker keeps serving: no job waits for the cold start.
-    const t0 = Date.now();
+    // The old worker is `busy` until its `ready` arrives, a moment after the job's result.
+    await until(() => warmList(t).map((w) => w.state).sort().join() === "ready,spawning");
+    // The old worker keeps serving: no job waits for the cold start. The replacement's `hello`
+    // is held until `release()`, so a job that waited for it would never finish (no time bound needed).
     const third = resultOf(await t.runJob("test.warm", { value: 3 }));
     expect(third).toMatchObject({ pid: old, served: 3 });
-    expect(Date.now() - t0).toBeLessThan(5000);
     expect(warmExits(t)).toEqual([]);
     rec.release();
     await until(() => warmExits(t).length === 1);
@@ -358,10 +380,13 @@ describe("lifecycle", () => {
 
 describe("failures", () => {
   test("crash_mid_job_retries_on_fresh_worker", async () => {
-    const t = await testEngine();
+    const { factory, rec } = proxied();
+    const t = await testEngine({ jobHost: factory });
     const first = resultOf(await t.runJob("test.warm", { value: 0 }));
     const v = await t.submit("test.warm", { value: 1, delayMs: 1500 });
     await until(() => warmList(t)[0]?.state === "busy");
+    // Mid-job means the worker is running it (`busy` is only the engine's view of the hand-off).
+    await until(() => rec.running.has(v.id));
     hostOf(t.engine).killProcForTest?.(await procOfPid(t, first.pid));
     const done = await t.wait(v.id);
     expect(done).toMatchObject({ state: "succeeded", attempts: 2 });
@@ -431,9 +456,13 @@ describe("failures", () => {
   });
 
   test("cancel_keeps_a_cooperative_worker", async () => {
-    const t = await testEngine();
+    const { factory, rec } = proxied();
+    const t = await testEngine({ jobHost: factory });
     const v = await t.submit("test.warm", { value: 1, delayMs: 30_000 });
     const w = await until(() => warmList(t).find((x) => x.state === "busy"));
+    // `busy` is the engine's view; cancel only once the worker is running the job, or it may
+    // be cancelled before it started (and never count as served).
+    await until(() => rec.running.has(v.id));
     const cancelled = await run(t.engine.cancel(v.id));
     expect(cancelled).toMatchObject({ state: "cancelled", error: { code: "JOB_CANCELLED" } });
     expect(await readyWorker(t)).toMatchObject({ pid: w.pid });
@@ -442,9 +471,12 @@ describe("failures", () => {
   });
 
   test("cancel_kills_an_uncooperative_worker", async () => {
-    const t = await testEngine({ testKinds: { overrides: { "test.hang": { warm: true, defaultPriority: "interactive" } } } });
+    const { factory, rec } = proxied();
+    const t = await testEngine({ jobHost: factory, testKinds: { overrides: { "test.hang": { warm: true, defaultPriority: "interactive" } } } });
     const v = await t.submit("test.hang", {});
     await until(() => warmList(t).find((x) => x.state === "busy"));
+    // The worker reports progress once it hangs; a cancel sent before that is answered, not ridden out.
+    await until(() => rec.running.has(v.id));
     const t0 = Date.now();
     const cancelled = await run(t.engine.cancel(v.id));
     const took = Date.now() - t0;

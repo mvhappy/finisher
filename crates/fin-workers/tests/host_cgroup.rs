@@ -1,7 +1,9 @@
 //! Delegated cgroups v2 (5C-1 plan, Task 4; Decision 16). Each test runs itself again inside a
 //! transient user unit with `Delegate=yes` (`systemd-run --user -p Delegate=yes --wait`), where
 //! the test process is alone in its cgroup, and is skipped with a notice where `systemd-run
-//! --user` is not available.
+//! --user` is not available. Where the unit's cgroup is not the test's alone (other processes
+//! in it, as when agents share a cgroup, or a write into it meets `EBUSY`) a test is skipped
+//! with a notice too, unless `FIN_REQUIRE_CGROUP=1` (CI) makes that a failure.
 
 // Tests drive the host and inspect job directories and process state by path; none is a
 // library reader (`scripts/clippy-allow.json`).
@@ -20,13 +22,39 @@ use host_support::*;
 use serde_json::{Value, json};
 
 const INNER: &str = "FIN_TEST_CGROUP_INNER";
+const REQUIRE: &str = "FIN_REQUIRE_CGROUP";
+const EBUSY: i32 = 16;
 const MIB: u64 = 1 << 20;
+
+fn required() -> bool {
+    std::env::var(REQUIRE).is_ok_and(|v| v == "1")
+}
+
+/// Skips `test` with a notice (`false`), or fails it when `FIN_REQUIRE_CGROUP=1`.
+fn unavailable(test: &str, why: &str) -> bool {
+    assert!(!required(), "{test}: {REQUIRE}=1 but {why}");
+    eprintln!("{test}: skipped, {why}");
+    false
+}
+
+/// Whether this process is alone in its cgroup, which the delegated unit gives it. Another
+/// agent's processes in the same cgroup make the detection (rightly) refuse it.
+fn alone(test: &str) -> bool {
+    let cg = own_cgroup();
+    let me = std::process::id();
+    let others: Vec<u32> = procs(&cg).into_iter().filter(|p| *p != me).collect();
+    others.is_empty()
+        || unavailable(
+            test,
+            &format!("{} holds other processes {others:?}", cg.display()),
+        )
+}
 
 /// `true` inside the delegated unit; otherwise runs `test` there (or skips) and answers
 /// `false`.
 fn inside(test: &str) -> bool {
     if std::env::var_os(INNER).is_some() {
-        return true;
+        return alone(test);
     }
     let probe = Command::new("systemd-run")
         .args([
@@ -47,6 +75,9 @@ fn inside(test: &str) -> bool {
         return false;
     }
     let mut c = Command::new("systemd-run");
+    if let Some(v) = std::env::var_os(REQUIRE) {
+        c.arg(format!("-E{REQUIRE}={}", v.to_string_lossy()));
+    }
     c.args([
         "--user",
         "-p",
@@ -271,13 +302,23 @@ fn setsid_grandchild_gone_after_host_sigkill() {
         return;
     }
     let cg = own_cgroup();
-    // This test process moves aside, so the host process is alone in the root.
+    // This test process moves aside, so the host process is alone in the root. A cgroup that
+    // cannot take it (`EBUSY`: it is shared, or its controllers rule out processes) is not one
+    // this test can run in.
     std::fs::create_dir_all(cg.join("outer")).unwrap();
-    std::fs::write(
+    match std::fs::write(
         cg.join("outer/cgroup.procs"),
         std::process::id().to_string(),
-    )
-    .unwrap();
+    ) {
+        Err(e) if e.raw_os_error() == Some(EBUSY) => {
+            unavailable(
+                "setsid_grandchild_gone_after_host_sigkill",
+                &format!("{} refuses a process (EBUSY): {e}", cg.display()),
+            );
+            return;
+        }
+        r => r.unwrap(),
+    }
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",

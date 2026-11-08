@@ -37,6 +37,17 @@ use crate::client::Client;
 /// The write of an event (and the connect of a panic report) takes at most this long.
 pub const BUDGET: Duration = Duration::from_millis(50);
 
+/// Test hook (`test-hooks` builds only): `FIN_TEST_DIAG_BUDGET_MS=<ms>` replaces [`BUDGET`]. A
+/// late event is dropped for good, so on a loaded machine a test that waits for one cannot
+/// poll its way to it: it widens the budget of the `fin` it runs instead.
+pub const BUDGET_ENV: &str = "FIN_TEST_DIAG_BUDGET_MS";
+
+fn budget() -> Duration {
+    crate::backend::test_hook(BUDGET_ENV)
+        .and_then(|v| v.to_str()?.parse().ok())
+        .map_or(BUDGET, Duration::from_millis)
+}
+
 /// What the discovery file said about recording: unknown (not read, or an older server), on, off.
 const UNKNOWN: u8 = 0;
 const ENABLED: u8 = 1;
@@ -131,15 +142,19 @@ fn allowed() -> bool {
 
 /// The discovery file's `diagnostics.enabled` (`endpoint.rs` calls this for a file it read).
 pub fn note_discovery(info: &Value) {
-    let v = match info
+    DISCOVERY.store(discovery_of(info), Ordering::Relaxed);
+}
+
+/// What the discovery file says about recording: on, off, or nothing (an older server).
+fn discovery_of(info: &Value) -> u8 {
+    match info
         .pointer("/diagnostics/enabled")
         .and_then(Value::as_bool)
     {
         Some(true) => ENABLED,
         Some(false) => DISABLED,
         None => UNKNOWN,
-    };
-    DISCOVERY.store(v, Ordering::Relaxed);
+    }
 }
 
 // ---- what the run did -----------------------------------------------------------------------
@@ -338,7 +353,7 @@ fn send_by(client: &mut Client, req: &Value, deadline: Instant) {
 /// server that cannot be reached in time means nothing is recorded. Never fails, never waits
 /// for a reply.
 pub fn finish(result: &Result<Value, CoreError>, exit: i32) {
-    let deadline = Instant::now() + BUDGET;
+    let deadline = Instant::now() + budget();
     if !allowed() {
         return;
     }
@@ -415,7 +430,7 @@ fn panic_event(info: &PanicHookInfo<'_>) -> ErrorPanicIn {
 /// is written not to panic: no unwrap, no indexing, and the one thread it needs (the
 /// connection's) is spawned with `std::thread::Builder`, whose failure is an error.
 pub fn report_panic(info: &PanicHookInfo<'_>) {
-    let deadline = Instant::now() + BUDGET;
+    let deadline = Instant::now() + budget();
     if env_opt_out(|k| std::env::var(k).ok()) {
         return;
     }
